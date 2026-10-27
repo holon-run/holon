@@ -612,7 +612,12 @@ async fn waiter_in_turn(
     parent_turn: &str,
     request: Option<(String, i64)>,
 ) -> TaskRecord {
-    if runtime.storage().read_turn_by_id(parent_turn).unwrap().is_none() {
+    if runtime
+        .storage()
+        .read_turn_by_id(parent_turn)
+        .unwrap()
+        .is_none()
+    {
         persist_completed_task_parent_fixture(runtime, parent_turn, owner)
             .await
             .unwrap();
@@ -1866,6 +1871,7 @@ async fn live_shared_reply_fixture(
 #[async_trait]
 impl AgentProvider for LiveSharedReplyProvider {
     async fn complete_turn(&self, request: ProviderTurnRequest) -> Result<ProviderTurnResponse> {
+        let material = request.material.clone();
         let round = {
             let mut requests = self.requests.lock().await;
             requests.push(request);
@@ -1891,6 +1897,7 @@ impl AgentProvider for LiveSharedReplyProvider {
             }]
         };
         Ok(ProviderTurnResponse {
+            material,
             blocks,
             stop_reason: None,
             input_tokens: 10,

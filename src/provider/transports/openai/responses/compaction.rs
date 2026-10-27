@@ -925,7 +925,7 @@ fn sanitize_openai_store_false_compact_items(items: &[Value]) -> Vec<Value> {
         .collect()
 }
 
-struct OpenAiCompactedItems {
+pub(in super::super) struct OpenAiCompactedItems {
     items: Vec<Value>,
     _material: crate::provider::ProviderRequestMaterial,
 }
@@ -937,7 +937,7 @@ impl std::ops::Deref for OpenAiCompactedItems {
     }
 }
 
-async fn send_openai_compact_request(
+pub(in super::super) async fn send_openai_compact_request(
     client: &Client,
     url: String,
     body: Value,

@@ -142,6 +142,7 @@ pub(crate) fn attach_original_command_terminal_memory_to_owner(
                 .context("Command Memory original source lost")?;
             let limits = ledger.limits();
             let request = crate::runtime_db::task_snapshot::TaskDomainLoadRequest {
+                recovery_at: None,
                 query: Default::default(),
                 capture: super::super::resident_task::TaskCaptureRequest::current(),
                 record_limit: usize::try_from(limits.record_limit)?,
@@ -227,6 +228,7 @@ pub(crate) fn attach_original_child_terminal_memory_to_owner(
                 .context("child Memory original source lost")?;
             let limits = ledger.limits();
             let request = crate::runtime_db::task_snapshot::TaskDomainLoadRequest {
+                recovery_at: None,
                 query: Default::default(),
                 capture: super::super::resident_task::TaskCaptureRequest::current(),
                 record_limit: usize::try_from(limits.record_limit)?,

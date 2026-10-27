@@ -223,6 +223,7 @@ async fn ordinary_timer_wait_never_adopts_raw_late_or_decodes_a_foreign_body() -
     let runtime = runtime(home.path())?;
     let at = runtime.now();
     let late = TimerRecord {
+        calendar: None,
         id: "raw-late-wait-timer".into(),
         agent_id: runtime.instance_agent_id().into(),
         created_at: at,

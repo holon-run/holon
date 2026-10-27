@@ -273,7 +273,12 @@ impl AgentProvider for GeminiProvider {
                 if !response.status().is_success() {
                     let status = response.status();
                     let retry_after = parse_retry_after(response.headers());
-                    let body = super::read_error_response_body(response, request_trace.as_ref(), &material).await?;
+                    let body = super::read_error_response_body(
+                        response,
+                        request_trace.as_ref(),
+                        &material,
+                    )
+                    .await?;
                     return Err(classify_status_error_with_trace(
                         "Gemini request failed",
                         "response_status",

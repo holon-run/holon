@@ -36,14 +36,14 @@ mod task_writes;
 pub(crate) use task_stop_phase::worktree_receipt_exists_tx;
 #[path = "prepared_current_writes.rs"]
 mod current_writes;
+#[path = "prepared_live_input.rs"]
+mod live_input;
 #[path = "prepared_input_native_birth.rs"]
 mod native_input;
 #[path = "prepared_task_status_metadata.rs"]
 mod task_status_metadata;
 #[path = "prepared_task_stop_result.rs"]
 mod task_stop_result;
-#[path = "prepared_live_input.rs"]
-mod live_input;
 
 /// Every argument of the original queue transaction is frozen before its owner
 /// ticket begins. No field is inferred from a callback or the current database.
@@ -209,6 +209,11 @@ enum InputTransitionCommand {
     TaskResult(PreparedTaskResultTransition),
     LiveInputAttachment(LiveInputAttachmentCommand),
     LiveInputRecovery(LiveInputRecoveryCommand),
+    ContextBudgetStopRecovery {
+        agent_id: String,
+        protocol: ExecutionProtocolTransition,
+        audit_events: Vec<AuditEvent>,
+    },
     ProviderResultHandoff(ProviderResultHandoffCommand),
     TaskStatusMetadata(task_status_metadata::PreparedTaskStatusMetadataCommand),
     Timer(PreparedTimerTransition),
@@ -244,6 +249,9 @@ impl InputTransitionCommand {
             Self::TaskResult(_) => InputMutationFamily::TaskResult,
             Self::LiveInputAttachment(_) => InputMutationFamily::LiveInputAttachment,
             Self::LiveInputRecovery(_) => InputMutationFamily::LiveInputRecovery,
+            Self::ContextBudgetStopRecovery { .. } => {
+                InputMutationFamily::ContextBudgetStopRecovery
+            }
             Self::ProviderResultHandoff(_) => InputMutationFamily::ProviderResultHandoff,
             Self::Timer(_) => InputMutationFamily::Timer,
             Self::TaskStopProgress(_)
@@ -266,6 +274,7 @@ impl InputTransitionCommand {
             Self::TaskResult(command) => command.agent_id(),
             Self::LiveInputAttachment(command) => &command.expected_attempt.agent_id,
             Self::LiveInputRecovery(command) => &command.expected_attempt.agent_id,
+            Self::ContextBudgetStopRecovery { agent_id, .. } => agent_id,
             Self::ProviderResultHandoff(command) => &command.expected_attempt.agent_id,
             Self::TaskStatusMetadata(command) => &command.scope().agent_id,
             Self::Timer(command) => command.agent_id(),
@@ -292,6 +301,38 @@ pub(crate) struct PreparedInputTransition {
     auto_base_descriptor: Option<PreparedInputMutation>,
 }
 impl PreparedInputTransition {
+    /// One original scheduler recovery transaction, with its own replay receipt.
+    pub(crate) fn context_budget_stop_recovery(
+        scope: InputEvidenceScope,
+        command_nonce: String,
+        prepared_at: chrono::DateTime<Utc>,
+        command: crate::domain::execution_protocol::RecheckContextBudgetStop,
+        audit_events: Vec<AuditEvent>,
+    ) -> Result<Self> {
+        anyhow::ensure!(
+            !command.command_id.is_empty()
+                && !command.work_item_id.is_empty()
+                && audit_events.iter().all(|event| !event.id.is_empty()),
+            "context budget recovery has an empty original address"
+        );
+        let agent_id = scope.agent_id.clone();
+        Self::prepare(
+            scope,
+            command_nonce,
+            prepared_at,
+            InputTransitionCommand::ContextBudgetStopRecovery {
+                agent_id,
+                protocol: ExecutionProtocolTransition {
+                    commands: vec![
+                        crate::domain::execution_protocol::ExecutionProtocolCommand::RecheckContextBudgetStop(Box::new(command)),
+                    ],
+                    ..Default::default()
+                },
+                audit_events,
+            },
+        )
+    }
+
     /// A separate original transaction, never a synthetic State mutation.
     pub(crate) fn audit(
         scope: InputEvidenceScope,
@@ -1085,8 +1126,11 @@ impl PreparedInputTransition {
             if let Some(admission) = &queue.supervised_invocation {
                 anyhow::ensure!(
                     scopes.contains(&admission.parent_scope)
-                        && scopes.iter().filter(|scope|
-                            scope.agent_id == admission.parent_scope.agent_id).count() == 1,
+                        && scopes
+                            .iter()
+                            .filter(|scope| scope.agent_id == admission.parent_scope.agent_id)
+                            .count()
+                            == 1,
                     "supervised invocation group omits its original parent writer"
                 );
             }
@@ -1127,14 +1171,12 @@ impl PreparedInputTransition {
             .as_ref()
             .context("supervised invocation omitted its frozen parent admission")?;
         anyhow::ensure!(
-            scope == &admission.parent_scope
-                && admission.parent_task.agent_id == scope.agent_id,
+            scope == &admission.parent_scope && admission.parent_task.agent_id == scope.agent_id,
             "supervised invocation parent scope differs from its frozen owner"
         );
         if lookup_input_mutation_receipt_tx(tx, &prepared.descriptor)?.is_some() {
             crate::runtime_db::input_evidence_snapshot::require_original_input_recovery_scope(
-                tx,
-                scope,
+                tx, scope,
             )?;
             return Ok(());
         }
@@ -1195,6 +1237,9 @@ impl PreparedInputTransition {
             }
             InputTransitionCommand::LiveInputRecovery(command) => {
                 live_input::validate_recovery(command, &self.primary_scope)?
+            }
+            InputTransitionCommand::ContextBudgetStopRecovery { protocol, .. } => {
+                self.validate_protocol_namespace(protocol)?
             }
             InputTransitionCommand::ProviderResultHandoff(command) => {
                 live_input::validate_handoff(command, &self.primary_scope)?
@@ -1378,7 +1423,8 @@ impl PreparedInputTransition {
                         admission.parent_scope.agent_id == admission.parent_task.agent_id
                             && admission.parent_scope.agent_id != self.primary_scope.agent_id
                             && admission.parent_scope.identity_incarnation > 0
-                            && admission.child_incarnation == self.primary_scope.identity_incarnation
+                            && admission.child_incarnation
+                                == self.primary_scope.identity_incarnation
                             && !admission.parent_task.id.is_empty()
                             && self.descriptor.scopes().contains(&admission.parent_scope),
                         "supervised invocation differs from its frozen owner scopes"
@@ -1645,6 +1691,7 @@ impl PreparedInputTransition {
             // Turn, Tool, Continuation and canonical evidence already reject
             // existing foreign owners in their original validators.
             InputTransitionCommand::Audit { .. }
+            | InputTransitionCommand::ContextBudgetStopRecovery { .. }
             | InputTransitionCommand::Posture { .. }
             | InputTransitionCommand::Terminal(_)
             | InputTransitionCommand::TaskResult(_)
@@ -2250,6 +2297,12 @@ impl RuntimeTransitionRepository<'_> {
                         &command.expected_attempt, &command.expected_turn, &command.predecessor,
                         command.fault, Some(tasks.allowed_keys()))?, InputMutationResult::Transition)
                 }
+                InputTransitionCommand::ContextBudgetStopRecovery { agent_id, protocol, audit_events } => {
+                    let (value, outcome) = repository.commit_execution_protocol_recovery_plan_tx(
+                        tx, agent_id, Some(scope), &protocol.commands, audit_events, None,
+                    )?;
+                    (value, InputMutationResult::ContextBudgetStopRecovery { outcome })
+                }
                 InputTransitionCommand::ProviderResultHandoff(command) => {
                     let tasks = task_transaction.as_ref().context("provider handoff omitted Task proof")?;
                     (repository.commit_provider_result_handoff_tx(tx, Some(scope),
@@ -2633,10 +2686,14 @@ impl PreparedInputTransition {
             &crate::runtime_db::command_task_terminal::OriginalCommandTaskInputView<'_, '_, '_>,
         >,
     ) -> Result<crate::runtime_db::input_evidence_snapshot::ExistingAdmissionInputProof> {
-        if matches!(self.command.as_ref(), InputTransitionCommand::Timer(_)
-            | InputTransitionCommand::LiveInputAttachment(_)
-            | InputTransitionCommand::LiveInputRecovery(_)
-            | InputTransitionCommand::ProviderResultHandoff(_)) {
+        if matches!(
+            self.command.as_ref(),
+            InputTransitionCommand::ContextBudgetStopRecovery { .. }
+                | InputTransitionCommand::Timer(_)
+                | InputTransitionCommand::LiveInputAttachment(_)
+                | InputTransitionCommand::LiveInputRecovery(_)
+                | InputTransitionCommand::ProviderResultHandoff(_)
+        ) {
             anyhow::bail!("new Timer/live input command requires Active identity");
         }
         if let Some(proof) =
@@ -2667,8 +2724,9 @@ impl PreparedInputTransition {
             validate_agent_state_mutation_tx(tx, Some(mutation))
         };
         let (transcript, briefs, tools) = match self.command.as_ref() {
-            InputTransitionCommand::Audit { .. } => {
-                bail!("Deleting identity cannot begin an independent Audit command");
+            InputTransitionCommand::Audit { .. }
+            | InputTransitionCommand::ContextBudgetStopRecovery { .. } => {
+                bail!("Deleting identity cannot begin an independent Audit/recovery command");
             }
             InputTransitionCommand::Work { .. }
             | InputTransitionCommand::Focus { .. }
@@ -2810,14 +2868,18 @@ impl PreparedInputTransition {
                 for command in &queue.execution_protocol.commands {
                     let attempt_and_outcome = match command {
                         Command::Settle(settle) => {
-                            Some((&settle.outcome.attempt_id, &settle.outcome.outcome_id))
+                            Some((&settle.outcome.attempt_id, Some(&settle.outcome.outcome_id)))
                         }
                         Command::Interrupt(interrupt) => {
-                            Some((&interrupt.attempt_id, &interrupt.outcome_id))
+                            Some((&interrupt.attempt_id, Some(&interrupt.outcome_id)))
+                        }
+                        Command::FinalizeInterrupted(finalize) => {
+                            Some((&finalize.attempt_id, None))
                         }
                         Command::RegisterWorkItem(_)
                         | Command::Admit(_)
                         | Command::AdvanceWorkItemSourceRevision(_)
+                        | Command::RecheckContextBudgetStop(_)
                         | Command::RecoverInterruptedTaskResultClaim(_)
                         | Command::RecoverUnadvancedTaskResultClaim(_) => {
                             anyhow::bail!(
@@ -2875,7 +2937,9 @@ impl PreparedInputTransition {
                         if let ExecutionBinding::WorkItem { work_item_id } = &attempt.binding {
                             roots.insert(Key::new(Family::WorkExecution, work_item_id));
                         }
-                        derived.insert(Key::new(Family::Outcome, outcome_id));
+                        if let Some(outcome_id) = outcome_id {
+                            derived.insert(Key::new(Family::Outcome, outcome_id));
+                        }
                     }
                 }
                 if let Some(completion) = queue.completion.as_ref() {
@@ -2900,6 +2964,7 @@ impl PreparedInputTransition {
             }
         };
         let mutation = match self.command.as_ref() {
+            InputTransitionCommand::ContextBudgetStopRecovery { .. } => unreachable!(),
             InputTransitionCommand::Terminal(command) => Some(&command.agent_state),
             InputTransitionCommand::Queue(queue) => queue.command.agent_state.as_ref(),
             InputTransitionCommand::LiveInputAttachment(_)
@@ -2984,6 +3049,7 @@ impl PreparedInputTransition {
             derived.insert(Key::new(Family::ToolExecution, &tool.id));
         }
         let terminal = match self.command.as_ref() {
+            InputTransitionCommand::ContextBudgetStopRecovery { .. } => None,
             InputTransitionCommand::Terminal(command) => Some(&command.turn_record),
             InputTransitionCommand::Queue(queue) => queue.command.turn_record.as_ref(),
             InputTransitionCommand::LiveInputAttachment(_)
@@ -3103,6 +3169,14 @@ impl PreparedInputTransition {
         let mut projection_guards = Vec::new();
         match self.command.as_ref() {
             InputTransitionCommand::ExternalTrigger(_) => return Ok(None),
+            InputTransitionCommand::ContextBudgetStopRecovery { protocol, .. } => {
+                let [crate::domain::execution_protocol::ExecutionProtocolCommand::RecheckContextBudgetStop(command)] =
+                    protocol.commands.as_slice()
+                else {
+                    anyhow::bail!("context budget recovery requires its original single recheck");
+                };
+                keys.insert(WorkKey::new(WorkFamily::Work, &command.work_item_id));
+            }
             InputTransitionCommand::Timer(timer) => {
                 if let Some(cancelled_waits) = timer.cancellation_waits_tx(tx)? {
                     keys.extend(cancelled_waits.iter().filter_map(|wait| {

@@ -204,7 +204,7 @@ pub(crate) struct PreparedWaitForSettlement {
     pub(crate) tool_execution: Option<crate::types::ToolExecutionRecord>,
     pub(crate) brief: Option<crate::types::BriefRecord>,
     pub(crate) brief_publication_scope: Option<WaitForBriefPublicationScope>,
-    _scheduling_material: Option<Arc<super::input_evidence_budget::BudgetViewGuard>>,
+    _scheduling_material: Vec<Arc<super::input_evidence_budget::BudgetViewGuard>>,
 }
 
 pub(crate) enum PrepareWaitForOutcome {
@@ -472,20 +472,22 @@ impl RuntimeHandle {
         reason: String,
         recheck_after_ms: Option<u64>,
         condition_id: Option<String>,
-    ) -> std::pin::Pin<Box<impl std::future::Future<Output = Result<PrepareWaitForOutcome>> + Send + 'a>> {
+    ) -> std::pin::Pin<
+        Box<impl std::future::Future<Output = Result<PrepareWaitForOutcome>> + Send + 'a>,
+    > {
         Box::pin(async move {
-        let mut mutation = self.begin_mutation().await?;
-        mutation
-            .prepare_wait_for_outcome_with_id(
-                agent_id,
-                work_item_id,
-                wake,
-                resource,
-                reason,
-                recheck_after_ms,
-                condition_id,
-            )
-            .await
+            let mut mutation = self.begin_mutation().await?;
+            mutation
+                .prepare_wait_for_outcome_with_id(
+                    agent_id,
+                    work_item_id,
+                    wake,
+                    resource,
+                    reason,
+                    recheck_after_ms,
+                    condition_id,
+                )
+                .await
         })
     }
 
@@ -760,8 +762,9 @@ impl RuntimeHandle {
                 "cancelled_wait_condition_ids": &cancelled_wait_condition_ids,
             }),
         ));
-        let execution_protocol =
-            self.execution_wait_settlement_transition(&condition, work_item.as_ref(), now).await?;
+        let execution_protocol = self
+            .execution_wait_settlement_transition(&condition, work_item.as_ref(), now)
+            .await?;
         let command = crate::runtime_db::transitions::WaitTransitionCommand {
             task_result_admission: None,
             agent_id: agent_id.to_string(),
@@ -808,7 +811,7 @@ impl RuntimeHandle {
                 tool_execution: None,
                 brief: None,
                 brief_publication_scope: None,
-                _scheduling_material: scheduling_material,
+                _scheduling_material: scheduling_material.into_iter().collect(),
             },
         )))
     }
@@ -891,13 +894,48 @@ impl RuntimeHandle {
             .with_safe_context("task_id", &task.id)
             .with_safe_context("result_message_id", &result_message_id)
         })?;
-        let db = self.inner.runtime_db.clone();
-        let read_result_message_id = result_message_id.clone();
-        let settlement_record = tokio::task::spawn_blocking(move || {
-            db.task_result_settlements()
-                .latest_for_message(&read_result_message_id)
-        })
-        .await??;
+        use super::resident_task::{TaskCaptureRequest, TaskFamily, TaskKey, TaskReadError};
+        let task_read = self
+            .capture_task_read(&TaskCaptureRequest {
+                include_active: false,
+                include_unsettled: false,
+                terminal_limit: 0,
+                required_keys: std::collections::BTreeSet::from([TaskKey::new(
+                    TaskFamily::Task,
+                    &task.id,
+                )]),
+                recovery_source_ids: Default::default(),
+            })
+            .await?;
+        let result_ids = task_read
+            .tasks
+            .coverage
+            .task_result_ids
+            .get(&task.id)
+            .ok_or_else(|| {
+                TaskReadError::NeedsPreparation(TaskKey::new(TaskFamily::Task, &task.id))
+            })?;
+        let mut settlement_record = None;
+        for id in result_ids {
+            let metadata = task_read
+                .tasks
+                .coverage
+                .result_metadata
+                .get(id)
+                .ok_or_else(|| {
+                    TaskReadError::NeedsPreparation(TaskKey::new(TaskFamily::ResultSettlement, id))
+                })?;
+            if metadata.message_id == result_message_id {
+                anyhow::ensure!(
+                    settlement_record.is_none(),
+                    "Task result Message is not unique"
+                );
+                settlement_record = Some(super::task_reads::result_record(
+                    &task_read.tasks,
+                    metadata,
+                )?);
+            }
+        }
         let Some(settlement_record) = settlement_record else {
             return Ok(PrepareWaitForOutcome::Immediate(
                 WaitForRegistrationOutcome::TaskResultUnavailable {
@@ -907,7 +945,20 @@ impl RuntimeHandle {
                 },
             ));
         };
-        let state = self.agent_state().await?;
+        let settlement_material = self.inner.input_evidence_budget.register_owned_bytes(
+            &task_read.tasks.scope,
+            super::input_evidence_budget::InputMemoryCategory::Candidate,
+            super::input_evidence_budget::OwnedBytesEstimate {
+                payload_bytes: super::input_evidence_budget::serialized_bytes(settlement_record)?
+                    .checked_mul(8)
+                    .context("Task result admission material overflow")?,
+                metadata_estimate_bytes: u64::try_from(std::mem::size_of_val(settlement_record))?
+                    .checked_mul(8)
+                    .context("Task result admission metadata overflow")?,
+            },
+        )?;
+        let settlement_record = settlement_record.clone();
+        let state = task_read.state.as_ref().clone();
         let current_activation_id = state
             .current_execution_binding
             .as_ref()
@@ -1015,11 +1066,34 @@ impl RuntimeHandle {
             (result_message, existing_entry)
         };
         let result_message_id = result_message.id.clone();
-        let db = self.inner.runtime_db.clone();
-        let agent_id = task.agent_id.clone();
-        let agent_wait_conditions =
-            tokio::task::spawn_blocking(move || db.wait_conditions().snapshot_for_agent(&agent_id))
-                .await??;
+        let mut mutation = self.begin_mutation().await?;
+        let mut work_request = super::work_reads::live_work_request();
+        work_request
+            .required_trigger_message_ids
+            .extend([source_message_id.clone(), result_message_id.clone()]);
+        if let Some(id) = condition_id.as_deref() {
+            work_request
+                .mandatory_roots
+                .insert(super::resident_work::WorkKey::new(
+                    super::resident_work::WorkFamily::Wait,
+                    id,
+                ));
+        }
+        mutation.prepare_owner_work_request(&work_request).await?;
+        let work = mutation.capture_work(&work_request)?;
+        let (wait_witness, wait_material) = self.capture_task_result_wait_witness(
+            &mutation,
+            &work,
+            condition_id.as_deref(),
+            &[&source_message_id, &result_message_id],
+        )?;
+        drop(mutation);
+        let agent_wait_conditions: Vec<_> = wait_witness
+            .live_waits
+            .iter()
+            .chain(&wait_witness.exact_waits)
+            .cloned()
+            .collect();
         let carries_result_trigger = |record: &WaitConditionRecord| {
             matches!(
                 record.status,
@@ -1111,12 +1185,7 @@ impl RuntimeHandle {
                     .insert("wait_id".into(), condition.id.clone());
             }
         }
-        let storage = self.inner.storage.clone();
-        let agent_id = task.agent_id.clone();
-        let unresolved_waits = tokio::task::spawn_blocking(move || {
-            storage.raw_unresolved_wait_conditions_for_agent(&agent_id)
-        })
-        .await??;
+        let unresolved_waits = wait_witness.live_waits.clone();
         let replaced = replace_wait_conditions(
             unresolved_waits
                 .into_iter()
@@ -1340,7 +1409,7 @@ impl RuntimeHandle {
                                 canonical_recovery,
                                 source_message_id,
                                 source_queue,
-                                wait_conditions: agent_wait_conditions,
+                                wait_witness,
                             },
                         },
                     ),
@@ -1358,7 +1427,7 @@ impl RuntimeHandle {
                 tool_execution: None,
                 brief: None,
                 brief_publication_scope: None,
-                _scheduling_material: None,
+                _scheduling_material: vec![settlement_material, wait_material],
             },
         )))
     }
@@ -1683,7 +1752,7 @@ impl RuntimeHandle {
         interval_ms: Option<u64>,
         summary: Option<String>,
     ) -> Result<TimerRecord> {
-        let mut mutation = self.begin_mutation().await?;
+        let mutation = self.begin_mutation().await?;
         let created_at = self.now();
         let timer = TimerRecord {
             id: crate::ids::timer_id(),
@@ -1699,11 +1768,19 @@ impl RuntimeHandle {
             fire_count: 0,
             calendar: None,
         };
+        self.commit_timer_creation_owned(mutation, timer).await
+    }
+
+    async fn commit_timer_creation_owned(
+        &self,
+        mut mutation: super::state_mutation::RuntimeMutation,
+        timer: TimerRecord,
+    ) -> Result<TimerRecord> {
         let fault = self.take_transition_fault();
         let prepared = crate::runtime_db::transitions::PreparedInputTransition::timer(
             mutation.input_evidence_scope(),
             crate::ids::audit_event_id(),
-            created_at,
+            timer.created_at,
             crate::runtime_db::transitions::PreparedTimerTransition::create(timer.clone(), fault),
         )?;
         let committed = mutation.commit_prepared_timer_transition(prepared).await;
@@ -1735,15 +1812,38 @@ impl RuntimeHandle {
         timezone: impl Into<String>,
         summary: Option<String>,
     ) -> Result<TimerRecord> {
-        let _admission = self.execution_admission_lease()?;
-        let created_at = self.now();
+        let admission = self.execution_admission_lease()?;
         let calendar = crate::calendar::CalendarSchedule::new(expression, timezone)?;
+        let runtime = self.clone();
+        let (result_tx, result_rx) = tokio::sync::oneshot::channel();
+        self.spawn_owned_mutation(async move {
+            let _admission = admission;
+            let result = runtime
+                .schedule_calendar_timer_owned(calendar, summary)
+                .await;
+            if let Err(error) = &result {
+                tracing::warn!(error = %error, "owned calendar timer scheduling failed");
+            }
+            let _ = result_tx.send(result);
+        })?;
+        result_rx
+            .await
+            .map_err(|_| anyhow!("calendar timer scheduling worker stopped"))?
+    }
+
+    async fn schedule_calendar_timer_owned(
+        &self,
+        calendar: crate::calendar::CalendarSchedule,
+        summary: Option<String>,
+    ) -> Result<TimerRecord> {
+        let mutation = self.begin_mutation().await?;
+        let created_at = self.now();
         let next_fire_at = calendar.next_after(created_at)?.utc;
         let duration_ms = u64::try_from((next_fire_at - created_at).num_milliseconds())
             .context("calendar occurrence is outside supported timer range")?;
         let timer = TimerRecord {
             id: crate::ids::timer_id(),
-            agent_id: self.agent_id().await?,
+            agent_id: mutation.state.id.clone(),
             created_at,
             duration_ms,
             interval_ms: None,
@@ -1755,12 +1855,7 @@ impl RuntimeHandle {
             fire_count: 0,
             calendar: Some(calendar),
         };
-        self.record_timer_projection(&timer).await?;
-        self.inner
-            .storage
-            .append_event(&AuditEvent::legacy("timer_created", to_json_value(&timer)))?;
-        self.spawn_timer_loop(timer.clone());
-        Ok(timer)
+        self.commit_timer_creation_owned(mutation, timer).await
     }
 
     pub async fn cancel_timer(&self, timer_id: &str) -> Result<TimerRecord> {
@@ -2714,6 +2809,7 @@ mod mutation_tests {
         .unwrap();
         let now = runtime.now();
         let timer = TimerRecord {
+            calendar: None,
             id: crate::ids::timer_id(),
             agent_id: "default".into(),
             created_at: now,
@@ -2726,7 +2822,9 @@ mod mutation_tests {
             last_fired_at: None,
             fire_count: 0,
         };
-        runtime.record_timer_projection(&timer).await.unwrap();
+        crate::runtime::tests::support::persist_timer_creation_for_restart(&runtime, &timer)
+            .await
+            .unwrap();
         (home, workspace, runtime, timer)
     }
 

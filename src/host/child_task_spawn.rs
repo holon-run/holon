@@ -106,6 +106,7 @@ impl RuntimeHostBridge {
             request.byte_limit,
         );
         let bounded = TaskDomainLoadRequest {
+            recovery_at: None,
             query: Default::default(),
             capture: crate::runtime::resident_task::TaskCaptureRequest::current(),
             record_limit,
@@ -122,6 +123,7 @@ impl RuntimeHostBridge {
             scope, bytes, 8, &bounded, ledger,
         )?;
         let remaining = TaskDomainLoadRequest {
+            recovery_at: None,
             query: Default::default(),
             capture: crate::runtime::resident_task::TaskCaptureRequest::current(),
             record_limit: record_limit

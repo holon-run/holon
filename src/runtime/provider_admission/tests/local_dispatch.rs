@@ -310,7 +310,12 @@ async fn cooling_dispatch_rejection_scenario(readback_stop: Option<bool>, test_m
             let runtime = runtime.clone();
             tokio::spawn(async move {
                 runtime
-                    .settle_processed_message(scheduled.message, result, started)
+                    .finish_scheduled_message_processing(
+                        &scheduled.message,
+                        scheduled.running_state.current_run_id.as_deref().unwrap(),
+                        started,
+                        result,
+                    )
                     .await
             })
         };
@@ -379,7 +384,12 @@ async fn cooling_dispatch_rejection_scenario(readback_stop: Option<bool>, test_m
             let runtime = runtime.clone();
             tokio::spawn(async move {
                 runtime
-                    .settle_processed_message(scheduled.message, result, started)
+                    .finish_scheduled_message_processing(
+                        &scheduled.message,
+                        scheduled.running_state.current_run_id.as_deref().unwrap(),
+                        started,
+                        result,
+                    )
                     .await
             })
         };
@@ -465,7 +475,12 @@ async fn cooling_dispatch_rejection_scenario(readback_stop: Option<bool>, test_m
             let runtime = runtime.clone();
             tokio::spawn(async move {
                 runtime
-                    .settle_processed_message(scheduled.message, result, started)
+                    .finish_scheduled_message_processing(
+                        &scheduled.message,
+                        scheduled.running_state.current_run_id.as_deref().unwrap(),
+                        started,
+                        result,
+                    )
                     .await
             })
         };
@@ -492,7 +507,12 @@ async fn cooling_dispatch_rejection_scenario(readback_stop: Option<bool>, test_m
             .unwrap();
     } else {
         runtime
-            .settle_processed_message(scheduled.message, result, started)
+            .finish_scheduled_message_processing(
+                        &scheduled.message,
+                        scheduled.running_state.current_run_id.as_deref().unwrap(),
+                        started,
+                        result,
+                    )
             .await
             .unwrap();
     }
@@ -595,11 +615,13 @@ async fn cooling_dispatch_rejection_scenario(readback_stop: Option<bool>, test_m
         let mut durable = runtime.agent_state().await.unwrap();
         let terminal = durable.last_turn_terminal.clone().unwrap();
         let transition = crate::runtime::turn::TurnTerminalTransition {
-            turn_record: runtime
-                .storage()
-                .read_turn_by_id(&terminal.turn_id)
-                .unwrap()
-                .unwrap(),
+            turn_record: crate::runtime::turn::inputs::BuiltTurnRecord::fixture(
+                runtime
+                    .storage()
+                    .read_turn_by_id(&terminal.turn_id)
+                    .unwrap()
+                    .unwrap(),
+            ),
             terminal,
             prepared_work_item_completion: None,
             prepared_wait_for: None,
@@ -620,7 +642,11 @@ async fn cooling_dispatch_rejection_scenario(readback_stop: Option<bool>, test_m
         );
         if stop {
             durable.status = crate::types::AgentStatus::Stopped;
-            runtime.storage().write_agent(&durable).unwrap();
+            runtime
+                .runtime_db()
+                .agent_states()
+                .upsert_for_fixture(&durable)
+                .unwrap();
         }
         {
             // The writer committed, but its in-memory effects never ran.
@@ -1043,7 +1069,12 @@ async fn local_dispatch_rejection_scenario(with_timeline: bool) {
     assert_eq!(failure.safe_context, expected.safe_context);
     assert_eq!(failure.recovery_hint, expected.recovery_hint);
     runtime
-        .settle_processed_message(scheduled.message, result, processing_started)
+        .finish_scheduled_message_processing(
+            &scheduled.message,
+            scheduled.running_state.current_run_id.as_deref().unwrap(),
+            processing_started,
+            result,
+        )
         .await
         .unwrap();
 

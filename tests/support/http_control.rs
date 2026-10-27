@@ -587,7 +587,7 @@ pub async fn control_agent_reincarnation_clears_history_and_resets_turn_sequence
     old_state.total_output_tokens = 5678;
     old_state.total_model_rounds = 22;
     old_state.last_brief_at = Some(chrono::Utc::now());
-    storage.write_agent(&old_state)?;
+    storage.write_agent_for_fixture(&old_state)?;
     host.get_or_create_agent(agent_id).await?;
     host.spawn_daemon_deletion_coordinator();
     let (base, server) = spawn_server_for_host(host.clone()).await?;

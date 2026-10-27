@@ -375,6 +375,7 @@ impl AgentProvider for UpdateThenCompleteWorkItemProvider {
         }
         assert!(!blocks.is_empty(), "unexpected provider call {call}");
         Ok(ProviderTurnResponse {
+            material: request.material,
             blocks,
             stop_reason: None,
             input_tokens: 10,

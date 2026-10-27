@@ -479,6 +479,7 @@ impl RuntimeHandle {
                 } => {
                     let limits = self.inner.input_evidence_budget.limits();
                     let request = crate::runtime_db::task_snapshot::TaskDomainLoadRequest {
+                        recovery_at: None,
                         query: Default::default(),
                         capture: super::resident_task::TaskCaptureRequest::current(),
                         record_limit: usize::try_from(limits.record_limit)?,

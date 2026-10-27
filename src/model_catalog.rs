@@ -1455,7 +1455,7 @@ impl BuiltInModelCatalog {
                 evidence.constrain(SelectedConstraint {
                     field: ModelMetadataField::RuntimeMaxOutputTokens,
                     source: ModelMetadataConstraintSource::ModelUpperLimit,
-                    clamp: Some((requested_runtime_max_output_tokens, upper)),
+                    clamp: Some((requested_runtime_max_output_tokens as usize, upper as usize)),
                 });
                 upper
             }
@@ -1887,7 +1887,7 @@ fn percent_of(total: usize, percent: usize) -> usize {
 }
 
 fn constrain_budget(
-    evidence: &mut ModelMetadataEvidence,
+    evidence: &mut SelectedEvidence,
     field: ModelMetadataField,
     requested: usize,
     upper: usize,
@@ -1895,12 +1895,10 @@ fn constrain_budget(
 ) -> usize {
     let effective = requested.min(upper);
     if effective != requested {
-        evidence.constraints.push(ModelMetadataConstraint {
+        evidence.constrain(SelectedConstraint {
             field,
-            kind: ModelMetadataConstraintKind::Clamped,
             source,
-            requested: requested.to_string(),
-            effective: effective.to_string(),
+            clamp: Some((requested, effective)),
         });
     }
     effective
@@ -4473,6 +4471,7 @@ mod tests {
         let mut discovered = model.clone();
         discovered.source = ModelMetadataSource::RemoteDiscovered;
         let discovered_models = HashMap::from([(model_ref.clone(), discovered)]);
+        let overrides = HashMap::new();
 
         for (builtin, discovery, expected_source) in [
             (None, HashMap::new(), ModelMetadataSource::UnknownFallback),
@@ -4491,16 +4490,17 @@ mod tests {
                 &model_ref,
                 None,
                 builtin,
-                &HashMap::new(),
+                &overrides,
                 &discovery,
                 None,
                 &base_context(),
                 8_192,
                 None,
             );
-            let policy = resolved.policy;
+            let catalog_entry = resolved.clone().into_catalog_entry();
+            let policy = resolved.into_policy();
             assert_eq!(policy.context_window_tokens, None);
-            assert_eq!(resolved.catalog_entry.context_window_tokens, None);
+            assert_eq!(catalog_entry.context_window_tokens, None);
             assert_eq!(policy.prompt_budget_estimated_tokens, 128_000);
             assert_eq!(policy.compaction_trigger_estimated_tokens, 115_200);
             assert_eq!(policy.compaction_keep_recent_estimated_tokens, 43_776);
@@ -4557,7 +4557,7 @@ mod tests {
                     1_000,
                     None,
                 )
-                .policy;
+                .into_policy();
             assert_eq!(policy.context_window_tokens, Some(8_000));
             assert_eq!(policy.prompt_budget_estimated_tokens, 7_600);
             assert_eq!(
@@ -4594,20 +4594,24 @@ mod tests {
             prompt_budget_estimated_tokens: Some(64_000),
             ..ModelRuntimeOverride::default()
         };
+        let overrides = HashMap::new();
+        let discovered_models = HashMap::new();
         let resolved = catalog.resolve_metadata(
             &model.model_ref,
             Some(&route),
             Some(&model),
-            &HashMap::new(),
-            &HashMap::new(),
+            &overrides,
+            &discovered_models,
             Some(&fallback),
             &base_context(),
             8_192,
             None,
         );
-        assert_eq!(resolved.policy.context_window_tokens, None);
-        assert_eq!(resolved.catalog_entry.context_window_tokens, None);
-        assert_eq!(resolved.policy.prompt_budget_estimated_tokens, 64_000);
+        let catalog_entry = resolved.clone().into_catalog_entry();
+        let policy = resolved.into_policy();
+        assert_eq!(policy.context_window_tokens, None);
+        assert_eq!(catalog_entry.context_window_tokens, None);
+        assert_eq!(policy.prompt_budget_estimated_tokens, 64_000);
     }
 
     #[test]
@@ -4675,7 +4679,7 @@ mod tests {
                     1_000,
                     None,
                 )
-                .policy;
+                .into_policy();
             assert_eq!(policy.context_window_tokens, window.or(Some(16_000)));
             assert_eq!(policy.prompt_budget_estimated_tokens, budget);
             assert_eq!(policy.compaction_trigger_estimated_tokens, trigger);
@@ -4788,7 +4792,7 @@ mod tests {
                     100,
                     None,
                 )
-                .policy;
+                .into_policy();
             assert_eq!(policy.context_window_tokens, Some(1_000));
             assert_eq!(policy.prompt_budget_estimated_tokens, expected);
             assert_eq!(policy.compaction_trigger_estimated_tokens, expected);
@@ -4838,7 +4842,7 @@ mod tests {
                     output,
                     None,
                 )
-                .policy;
+                .into_policy();
             assert_eq!(known.prompt_budget_estimated_tokens, 95_000);
             assert_eq!(known.runtime_max_output_tokens, output);
         }

@@ -116,6 +116,7 @@ async fn cleanup_with_original_owner(
     let ledger = &runtime.inner.input_evidence_budget;
     let limits = ledger.limits();
     let request = TaskDomainLoadRequest {
+        recovery_at: None,
         query: Default::default(),
         capture: resident_task::TaskCaptureRequest::current(),
         record_limit: usize::try_from(limits.record_limit).unwrap(),

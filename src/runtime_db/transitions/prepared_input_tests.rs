@@ -430,11 +430,8 @@ fn queue_receipt_follows_exact_count_and_replay_carries_no_old_installation() ->
 #[test]
 fn started_posture_receipt_and_turn_assignment_roll_back_with_canonical_failure() -> Result<()> {
     let f = Fixture::new()?;
-    f.db.turn_records().upsert(&TurnRecord::new(
-        &f.scope.agent_id,
-        "turn:retained",
-        22,
-    ))?;
+    f.db.turn_records()
+        .upsert(&TurnRecord::new(&f.scope.agent_id, "turn:retained", 22))?;
     f.db.turn_records()
         .upsert(&TurnRecord::new("another-agent", "turn:foreign", 900))?;
     let mut queue = f.queue()?;
@@ -446,10 +443,9 @@ fn started_posture_receipt_and_turn_assignment_roll_back_with_canonical_failure(
     let before = f.state()?;
     let mut next = before.clone();
     next.current_turn_id = Some("turn:prepared".into());
-    next.turn_index = f
-        .db
-        .turn_records()
-        .prepare_next_index(&f.scope, next.turn_index)?;
+    next.turn_index =
+        f.db.turn_records()
+            .prepare_next_index(&f.scope, next.turn_index)?;
     assert_eq!(next.turn_index, 23);
     let mut turn = TurnRecord::new(&f.scope.agent_id, "turn:prepared", next.turn_index);
     turn.input_message_ids.push(message.id.clone());
@@ -490,7 +486,13 @@ fn started_posture_receipt_and_turn_assignment_roll_back_with_canonical_failure(
     };
     assert_eq!(f.state()?.turn_index, 23);
     assert_eq!(
-        value.effects.agent_state.as_ref().unwrap().record.turn_index,
+        value
+            .effects
+            .agent_state
+            .as_ref()
+            .unwrap()
+            .record
+            .turn_index,
         23
     );
     assert_eq!(value.effects.turns, vec![turn]);
@@ -506,18 +508,14 @@ fn started_posture_receipt_and_turn_assignment_roll_back_with_canonical_failure(
 fn started_posture_rejects_low_or_concurrently_advanced_history_index() -> Result<()> {
     for advance_history in [false, true] {
         let f = Fixture::new()?;
-        f.db.turn_records().upsert(&TurnRecord::new(
-            &f.scope.agent_id,
-            "turn:retained",
-            22,
-        ))?;
+        f.db.turn_records()
+            .upsert(&TurnRecord::new(&f.scope.agent_id, "turn:retained", 22))?;
         let before = f.state()?;
         let mut next = before.clone();
         next.current_turn_id = Some("turn:prepared".into());
-        let allocated = f
-            .db
-            .turn_records()
-            .prepare_next_index(&f.scope, next.turn_index)?;
+        let allocated =
+            f.db.turn_records()
+                .prepare_next_index(&f.scope, next.turn_index)?;
         assert_eq!(allocated, 23);
         next.turn_index = if advance_history { allocated } else { 1 };
         let turn = TurnRecord::new(&f.scope.agent_id, "turn:prepared", next.turn_index);
@@ -535,11 +533,10 @@ fn started_posture_rejects_low_or_concurrently_advanced_history_index() -> Resul
                 allocated,
             ))?;
         }
-        let error = f
-            .db
-            .transitions_in_scope(&f.scope)
-            .commit_prepared_transition(&prepared)
-            .unwrap_err();
+        let error =
+            f.db.transitions_in_scope(&f.scope)
+                .commit_prepared_transition(&prepared)
+                .unwrap_err();
         assert!(error
             .downcast_ref::<crate::runtime_db::RuntimeStateTransitionConflict>()
             .is_some());
@@ -565,17 +562,15 @@ fn started_posture_revalidates_canonical_admission_before_writing() -> Result<()
         let f = Fixture::new()?;
         let mut queue = f.queue()?;
         let message = queue.command.message_evidence.remove(0);
-        let message = f
-            .db
-            .messages()
-            .append_with_index_changes_in_scope(&f.scope, &message, &[])?
-            .record;
+        let message =
+            f.db.messages()
+                .append_with_index_changes_in_scope(&f.scope, &message, &[])?
+                .record;
         let before = f.state()?;
         let mut next = before.clone();
-        next.turn_index = f
-            .db
-            .turn_records()
-            .prepare_next_index(&f.scope, before.turn_index)?;
+        next.turn_index =
+            f.db.turn_records()
+                .prepare_next_index(&f.scope, before.turn_index)?;
         next.current_turn_id = Some("turn:invalid-admission".into());
         next.current_execution_binding = Some(WorkItemExecutionBinding {
             activation_id: Some("changed-activation".into()),
@@ -593,11 +588,8 @@ fn started_posture_revalidates_canonical_admission_before_writing() -> Result<()
             work_item_id: None,
             claimed_work_revision: None,
         });
-        let mut turn = TurnRecord::new(
-            &f.scope.agent_id,
-            "turn:invalid-admission",
-            next.turn_index,
-        );
+        let mut turn =
+            TurnRecord::new(&f.scope.agent_id, "turn:invalid-admission", next.turn_index);
         turn.trigger = Some(TurnTriggerSummary::from_message(&message));
         turn.input_message_ids.push(message.id);
         let prepared = PreparedInputTransition::posture(
@@ -607,11 +599,10 @@ fn started_posture_revalidates_canonical_admission_before_writing() -> Result<()
             f.posture(next, None)?,
             Some(turn.clone()),
         )?;
-        let error = f
-            .db
-            .transitions_in_scope(&f.scope)
-            .commit_prepared_transition(&prepared)
-            .unwrap_err();
+        let error =
+            f.db.transitions_in_scope(&f.scope)
+                .commit_prepared_transition(&prepared)
+                .unwrap_err();
         assert!(
             error.to_string().contains(if invalid_source {
                 "turn start execution binding does not match its input"
@@ -899,6 +890,39 @@ fn scope_group_cannot_omit_primary_or_repeat_a_scope() -> Result<()> {
     Ok(())
 }
 
+// These shape/namespace fixtures never admit a live task result.
+fn pending_obligation(agent: &str, message: &MessageEnvelope) -> WaitTaskResultObligation {
+    WaitTaskResultObligation {
+        expected: serde_json::from_value(serde_json::json!({
+            "result_identity": format!("result:{}", message.id),
+            "agent_id": agent,
+            "task_id": format!("task:{}", message.id),
+            "message_id": message.id,
+            "rejoin_generation": 1,
+            "parent_turn_id": "turn:parent",
+            "task_status": "completed",
+            "state": "persisted_pending",
+            "created_at": message.created_at,
+            "updated_at": message.created_at,
+        }))
+        .expect("structural task-result fixture"),
+        current_activation_id: None,
+        waiter_work_item_id: None,
+        canonical_recovery: false,
+        source_message_id: message.id.clone(),
+        source_queue: None,
+        wait_witness: WaitTaskResultWitness {
+            scope: InputEvidenceScope {
+                agent_id: agent.into(),
+                identity_incarnation: 1,
+            },
+            work_revision: 0,
+            live_waits: Vec::new(),
+            exact_waits: Vec::new(),
+        },
+    }
+}
+
 fn pending_wait(agent: &str, message: MessageEnvelope) -> WaitTransitionCommand {
     WaitTransitionCommand {
         agent_id: agent.into(),
@@ -916,6 +940,7 @@ fn pending_wait(agent: &str, message: MessageEnvelope) -> WaitTransitionCommand 
                 updated_at: message.created_at,
             },
             expected: None,
+            obligation: pending_obligation(agent, &message),
             message,
         }),
         agent_state: None,
@@ -2161,6 +2186,122 @@ fn original_work_command(
         fault,
     }
 }
+#[test]
+fn context_budget_recovery_receipts_preserve_rejection_and_publish_original_input() -> Result<()> {
+    use super::super::execution_protocol_repository::ExecutionProtocolRecoveryCommitOutcome;
+    use crate::domain::execution_protocol::{
+        ContextBudgetStop, ExecutionProtocolCommand, ExecutionProtocolState,
+        RecheckContextBudgetStop, RegisterWorkItemExecution, WorkItemExecutionRecord,
+        WorkItemExecutionState,
+    };
+
+    for configured_estimated_tokens in [4096, 8192] {
+        let f = Fixture::new()?;
+        let mut work = original_work_command(&f, None);
+        let WorkItemMutation::Insert { record } = &mut work.mutation else {
+            unreachable!()
+        };
+        record.plan_status = crate::types::WorkItemPlanStatus::Ready;
+        let work_id = record.id.clone();
+        let expected = WorkItemExecutionRecord {
+            source_revision: record.revision,
+            state: WorkItemExecutionState::Paused {
+                generation: 5,
+                reason: ContextBudgetStop {
+                    source_revision: record.revision,
+                    source_turn_id: "original-budget-stop".into(),
+                    configured_estimated_tokens: 4096,
+                }
+                .policy()?,
+            },
+        };
+        let seed = PreparedInputTransition::work(
+            f.scope.clone(),
+            "context-recovery-seed".into(),
+            f.at,
+            work,
+            ExecutionProtocolTransition {
+                bootstrap: Some(ExecutionProtocolState::empty(&f.scope.agent_id)),
+                commands: vec![ExecutionProtocolCommand::RegisterWorkItem(Box::new(
+                    RegisterWorkItemExecution {
+                        work_item_id: work_id.clone(),
+                        record: expected.clone(),
+                    },
+                ))],
+            },
+            false,
+        )?;
+        f.db.transitions_in_scope(&f.scope)
+            .commit_prepared_transition(&seed)?;
+        let original_state = f.state()?;
+        let prepared = PreparedInputTransition::context_budget_stop_recovery(
+            f.scope.clone(),
+            "context-recovery-original".into(),
+            f.at,
+            RecheckContextBudgetStop {
+                command_id: "context-recovery-command".into(),
+                work_item_id: work_id.clone(),
+                expected: expected.clone(),
+                configured_estimated_tokens,
+            },
+            vec![AuditEvent::legacy(
+                "context_budget_stop_recheck",
+                serde_json::json!({}),
+            )],
+        )?;
+        let InputMutationExecution::Committed { value, receipt } =
+            f.db.transitions_in_scope(&f.scope)
+                .commit_prepared_transition(&prepared)?
+        else {
+            panic!("original recovery must commit its own receipt")
+        };
+        let applied = configured_estimated_tokens == 8192;
+        assert_eq!(value.applied, applied);
+        assert_eq!(value.effects.audit_events.len(), usize::from(applied));
+        if applied {
+            assert!(!value.effects.input_evidence_delta.records.is_empty());
+        }
+        let InputMutationResult::ContextBudgetStopRecovery { outcome } = &receipt.outcome.result
+        else {
+            panic!("recovery receipt omitted its original disposition")
+        };
+        assert!(matches!(
+            (applied, outcome),
+            (true, ExecutionProtocolRecoveryCommitOutcome::Applied(true))
+                | (
+                    false,
+                    ExecutionProtocolRecoveryCommitOutcome::Rejected { .. }
+                )
+        ));
+        let protocol =
+            f.db.transitions()
+                .load_execution_protocol_state_if_initialized(&f.scope.agent_id)?
+                .unwrap();
+        if applied {
+            assert!(matches!(
+                protocol.work_items[&work_id].state,
+                WorkItemExecutionState::Runnable { generation: 6, .. }
+            ));
+        } else {
+            assert_eq!(protocol.work_items[&work_id], expected);
+        }
+        assert_eq!(f.state()?, original_state);
+        let before_replay = namespace_rows(&f)?;
+        let InputMutationExecution::Replayed {
+            receipt: replay, ..
+        } =
+            f.db.transitions_in_scope(&f.scope)
+                .commit_prepared_transition(&prepared)?
+        else {
+            panic!("exact recovery replay cannot return historical publication effects")
+        };
+        assert_eq!(replay, receipt);
+        assert_eq!(namespace_rows(&f)?, before_replay);
+        assert_eq!(f.receipt_count()?, 2);
+    }
+    Ok(())
+}
+
 fn original_focus_command(
     f: &Fixture,
     changed: bool,
@@ -2372,6 +2513,7 @@ fn original_work_flags_and_wait_admission_body_are_frozen_before_sql() -> Result
     let record = queue_mutation_record(&queue.command.mutation).clone();
     let mut wait = original_wait_command(&f, None)?;
     wait.task_result_admission = Some(WaitTaskResultAdmission {
+        obligation: pending_obligation(&f.scope.agent_id, &body),
         message: body.clone(),
         expected: None,
         record,

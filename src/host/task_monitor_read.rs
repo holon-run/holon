@@ -26,12 +26,6 @@ impl InvocationTaskRows {
             }),
         }
     }
-    pub(super) fn contains(&self, id: &str) -> bool {
-        match self {
-            Self::Loaded(read) => read.headers().contains_key(id),
-            Self::Cold(rows) => rows.contains_key(id),
-        }
-    }
     pub(super) fn ids(&self) -> impl Iterator<Item = &str> {
         let (loaded, cold) = match self {
             Self::Loaded(read) => (Some(read.headers()), None),

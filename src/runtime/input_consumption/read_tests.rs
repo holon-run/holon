@@ -642,6 +642,43 @@ async fn idle_named_input_read_reuses_scope_and_body_without_recharging() -> Res
     Ok(())
 }
 
+#[tokio::test]
+async fn queue_head_starvation_uses_qualified_queue_age_and_rate_limit() -> Result<()> {
+    let harness = LifecycleHarness::new();
+    let runtime = harness.runtime();
+    runtime.await_initial_resources().await;
+    let _refresh = runtime.hold_resource_refresh_for_test().await?;
+    let message = message();
+    runtime.enqueue(message.clone()).await?;
+    let material = material(runtime)?;
+    let entry = runtime
+        .with_idle_read(None, &material, |read| read.queue(&message.id))?
+        .context("qualified Queue missing")?;
+    let executor = crate::runtime::scheduler_executor::SchedulerDecisionExecutor::new(runtime);
+    let count = || -> Result<usize> {
+        Ok(runtime
+            .inner
+            .storage
+            .read_recent_events(64)?
+            .iter()
+            .filter(|event| {
+                event.kind == "scheduling_advisory" && event.data["kind"] == "queue_head_starved"
+            })
+            .count())
+    };
+    harness
+        .clock()
+        .advance(std::time::Duration::from_millis(10 * 60 * 1000 - 1));
+    material.read(|| executor.append_queue_head_starved_advisory_if_due(&entry, 1))?;
+    assert_eq!(count()?, 0);
+    harness.clock().advance(std::time::Duration::from_millis(1));
+    material.read(|| executor.append_queue_head_starved_advisory_if_due(&entry, 1))?;
+    assert_eq!(count()?, 1);
+    material.read(|| executor.append_queue_head_starved_advisory_if_due(&entry, 1))?;
+    assert_eq!(count()?, 1);
+    Ok(())
+}
+
 fn material(runtime: &RuntimeHandle) -> Result<ResourceReadMaterial> {
     ResourceReadMaterial::new(
         &runtime.inner.input_evidence_budget,

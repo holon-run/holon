@@ -246,6 +246,7 @@ fn actual_restart_clock() -> std::pin::Pin<Box<dyn std::future::Future<Output = 
                 0,
                 None,
                 detail,
+                false,
             )
             .await?;
         let old_running = wait_queued_running(&parent, &task.id, 1).await?.remove(0);
@@ -561,6 +562,7 @@ fn wait_stop_birth() -> std::pin::Pin<Box<dyn std::future::Future<Output = Resul
             .agent_invocation_service()
             .invoke(crate::types::InvokeAgentRequest {
                 target: crate::types::InvokeAgentTarget::ExistingAgent {
+                    reply_timeout_ms: None,
                     agent_id: target.agent_id.clone(),
                 },
                 message: "actual message wait remains waiting until original cancellation".into(),

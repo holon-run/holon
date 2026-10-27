@@ -68,6 +68,7 @@ impl Fixture {
         let at = Utc::now();
         TaskTransitionCommand {
             agent_id: "default".into(),
+            expected_owner_incarnation: self.runtime.instance_incarnation(),
             task: TaskRecord {
                 id: "task:runtime-original".into(),
                 agent_id: "default".into(),

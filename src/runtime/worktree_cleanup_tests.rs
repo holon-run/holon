@@ -82,6 +82,7 @@ async fn frozen_cleanup_preserves_clean_dirty_branch_and_missing_policies() -> R
         }
         let ledger = InputEvidenceBudgetLedger::new(StateMemoryLimits::default())?;
         let request = TaskDomainLoadRequest {
+            recovery_at: None,
             query: Default::default(),
             capture: TaskCaptureRequest::current(),
             record_limit: 4096,
@@ -137,6 +138,7 @@ async fn frozen_cleanup_keeps_a_registered_worktree_when_git_remove_fails() -> R
     )?;
     let ledger = InputEvidenceBudgetLedger::new(StateMemoryLimits::default())?;
     let request = TaskDomainLoadRequest {
+        recovery_at: None,
         query: Default::default(),
         capture: TaskCaptureRequest::current(),
         record_limit: 4096,
@@ -325,14 +327,14 @@ async fn original_bootstrap_interruption_keeps_clean_worktree_and_unbound_contra
         drop(runtime);
         let runtime = bootstrap_runtime(&repo)?;
         assert!(runtime.inner.recovered_tasks.lock().await.is_some());
-        runtime.bootstrap_recovery().await?;
+        runtime.bootstrap_recovery(None).await?;
         let interrupted = assert_bootstrap_worktree_retained(&runtime, &repo, &task, stopped)?;
         let counts = bootstrap_business_counts(&runtime)?;
-        runtime.bootstrap_recovery().await?;
+        runtime.bootstrap_recovery(None).await?;
         assert_eq!(bootstrap_business_counts(&runtime)?, counts);
         drop(runtime);
         let runtime = bootstrap_runtime(&repo)?;
-        runtime.bootstrap_recovery().await?;
+        runtime.bootstrap_recovery(None).await?;
         assert_eq!(
             assert_bootstrap_worktree_retained(&runtime, &repo, &task, stopped)?,
             interrupted

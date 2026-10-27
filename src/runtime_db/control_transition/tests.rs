@@ -211,6 +211,7 @@ impl Fixture {
             triggered_at: None,
         };
         let timer = TimerRecord {
+            calendar: None,
             id: "timer-1".into(),
             agent_id: self.key.agent_id.clone(),
             created_at: self.time,
@@ -324,6 +325,7 @@ impl Fixture {
                     protocol.attempts.insert(
                         "attempt-1".into(),
                         ExecutionAttempt {
+                            input_projection: None,
                             attempt_id: "attempt-1".into(),
                             agent_id: self.key.agent_id.clone(),
                             source_message_id: Some(message.id.clone()),
@@ -1502,6 +1504,7 @@ fn unfinished_obligations_preserve_exact_sources_but_completed_receipts_are_not_
 fn stop_cancels_a_real_completed_one_shot_pending_wake_without_loop_obligation() {
     let f = Fixture::new();
     let timer = TimerRecord {
+        calendar: None,
         id: "one-shot".into(),
         agent_id: f.key.agent_id.clone(),
         created_at: f.time,
@@ -1604,7 +1607,8 @@ fn stop_reports_changed_for_only_a_remaining_completed_timer_pending_wake() {
     f.db.transaction(|tx| {
         let mut state = f.db_state(tx)?; state.status = AgentStatus::Stopped;
         upsert_agent_state_tx(tx, &state)?;
-        let timer = TimerRecord { id:"legacy-one-shot".into(), agent_id:f.key.agent_id.clone(),
+        let timer = TimerRecord {
+    calendar: None, id:"legacy-one-shot".into(), agent_id:f.key.agent_id.clone(),
             created_at:f.time, duration_ms:1, interval_ms:None, repeat:false, status:TimerStatus::Completed,
             summary:None, next_fire_at:None, last_fired_at:Some(f.time), fire_count:1 };
         upsert_timer_tx(tx,&timer)?;

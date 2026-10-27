@@ -109,6 +109,7 @@ impl SchedulerProjection {
         Self::from_state_with_queue_len(storage, state, state.pending)
     }
 
+    #[cfg(test)]
     pub(crate) fn from_state_with_material(
         storage: &AppStorage,
         state: &AgentState,

@@ -112,6 +112,7 @@ impl RuntimeHandle {
         );
         let limits = self.inner.input_evidence_budget.limits();
         let request = crate::runtime_db::task_snapshot::TaskDomainLoadRequest {
+            recovery_at: None,
             query: Default::default(),
             capture: super::super::resident_task::TaskCaptureRequest::current(),
             record_limit: usize::try_from(limits.record_limit)?,
@@ -294,6 +295,7 @@ mod tests {
     }
     fn request() -> crate::runtime_db::task_snapshot::TaskDomainLoadRequest {
         crate::runtime_db::task_snapshot::TaskDomainLoadRequest {
+            recovery_at: None,
             query: Default::default(),
             capture: TaskCaptureRequest::current(),
             record_limit: 4096,
@@ -324,6 +326,7 @@ mod tests {
         )?;
         let command = TaskTransitionCommand {
             agent_id: "default".into(),
+            expected_owner_incarnation: f.parent.inner.identity_incarnation,
             task: frozen.task.clone(),
             agent_deletion: None,
             task_result_settlement: None,
@@ -550,6 +553,7 @@ mod tests {
         )?;
         let command = TaskTransitionCommand {
             agent_id: "default".into(),
+            expected_owner_incarnation: f.parent.inner.identity_incarnation,
             task: frozen.task.clone(),
             agent_deletion: None,
             task_result_settlement: None,
@@ -659,6 +663,7 @@ mod tests {
         let f = fixture().await?;
         let command = TaskTransitionCommand {
             agent_id: "default".into(),
+            expected_owner_incarnation: f.parent.inner.identity_incarnation,
             task: f.task.clone(),
             agent_deletion: None,
             task_result_settlement: None,

@@ -37,6 +37,7 @@ fn ledger() -> Result<InputEvidenceBudgetLedger> {
 }
 fn active_timer(f: &Fixture) -> TimerRecord {
     TimerRecord {
+        calendar: None,
         id: "original-active-timer".into(),
         agent_id: f.key.agent_id.clone(),
         created_at: f.time,

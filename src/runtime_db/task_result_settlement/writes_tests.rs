@@ -41,6 +41,14 @@ fn record(index: usize) -> TaskResultSettlementRecord {
         deferred_reason: None,
         deferred_at: None,
         next_recheck_at: Some(now + Duration::seconds(30)),
+        recovery_epoch: 0,
+        recovery_attempts: 0,
+        last_recovery_root_attempt_id: None,
+        last_recovery_admitted_at: None,
+        recovery_paused_at: None,
+        recovery_diagnostic_at: None,
+        source_projection: None,
+        reply_projection: None,
     }
 }
 fn task(record: &TaskResultSettlementRecord) -> TaskRecord {
@@ -578,6 +586,8 @@ fn lengths_only_preflight_counts_full_recovery_and_normalized_projection_before_
         authority_class: AuthorityClass::RuntimeInstruction,
         delivery_id: None,
         after_delivery_rowid: None,
+        reply_deadline_at: None,
+        requester_incarnation: None,
     });
     db.tasks().upsert(&large).unwrap();
     db.transaction(|tx| {

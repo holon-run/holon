@@ -416,22 +416,6 @@ fn single_plan<'tx, 'connection>(
     Ok(plan)
 }
 #[cfg(test)]
-pub(crate) fn prepare_admit_unsettled_snapshot_tx<'tx, 'connection>(
-    tx: &'tx Transaction<'connection>,
-    agent: &str,
-    owner: Option<&str>,
-    activation: &str,
-    anchor: Option<&str>,
-    identities: Option<&BTreeSet<String>>,
-    now: DateTime<Utc>,
-    limits: TaskResultWriteLimits,
-) -> Result<PreparedTaskResultMutation<'tx, 'connection>> {
-    select_admit_unsettled_snapshot_tx(
-        tx, agent, owner, activation, anchor, identities, now, limits,
-    )?
-    .materialize(limits)
-}
-#[cfg(test)]
 pub(crate) fn prepare_admit_message_tx<'tx, 'connection>(
     tx: &'tx Transaction<'connection>,
     agent: &str,
@@ -473,16 +457,6 @@ pub(crate) fn prepare_mark_deferred_tx<'tx, 'connection>(
     limits: TaskResultWriteLimits,
 ) -> Result<PreparedTaskResultMutation<'tx, 'connection>> {
     select_mark_deferred_tx(tx, message, reason, now, deadline, limits)?.materialize(limits)
-}
-#[cfg(test)]
-pub(crate) fn prepare_wake_deferred_for_owner_tx<'tx, 'connection>(
-    tx: &'tx Transaction<'connection>,
-    agent: &str,
-    owner: &str,
-    now: DateTime<Utc>,
-    limits: TaskResultWriteLimits,
-) -> Result<PreparedTaskResultMutation<'tx, 'connection>> {
-    select_wake_deferred_for_owner_tx(tx, agent, owner, now, limits)?.materialize(limits)
 }
 fn task_tx(
     tx: &Transaction<'_>,

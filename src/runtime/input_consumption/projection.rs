@@ -48,7 +48,8 @@ fn charge_projection(message: &MessageEnvelope) -> Result<()> {
         .and_then(|bytes| bytes.checked_add(8192))
         .ok_or_else(|| anyhow::anyhow!("input projection material overflow"))?;
     resource_io::charge_owned_payload(bytes)?;
-    resource_io::charge_owned_metadata(8192, 128)
+    resource_io::charge_owned_metadata(8192, 128)?;
+    Ok(())
 }
 
 #[derive(Clone, Copy)]

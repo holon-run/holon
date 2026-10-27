@@ -3,6 +3,7 @@ use std::path::{Path, PathBuf};
 
 use crate::diagnostics::attribution;
 use crate::runtime::closure::{derive_closure_decision, ClosureFacts};
+#[cfg(test)]
 use crate::storage::AppStorage;
 use crate::types::{
     AgentLifecycleHint, AgentListEntry, AgentModelState, AgentPostureProjection,
@@ -350,43 +351,6 @@ impl RuntimeHandle {
             } else {
                 RuntimePosture::Awake
             }),
-        })
-    }
-
-    pub(crate) fn closure_decision_from_storage(
-        storage: &AppStorage,
-        state: &AgentState,
-        material: &crate::diagnostics::resource_io::ResourceReadMaterial,
-    ) -> Result<ClosureDecision> {
-        material.read(|| {
-            let projection =
-                scheduler::SchedulerProjection::from_state_with_material(storage, state, material)?;
-            derive_closure_decision(ClosureFacts {
-                runtime_error: projection.runtime_error,
-                awaiting_operator_input: projection.current_work_item_waits_for_operator(),
-                active_blocking_tasks: projection
-                    .active_tasks
-                    .iter()
-                    .filter(|task| task.is_blocking())
-                    .count(),
-                active_waiting_intents: projection.active_waiting_intents,
-                active_agent_waiting_intents: projection.active_agent_waiting_intents,
-                active_timers: projection.active_timers,
-                waiting_work_item_scheduling_state: projection.waiting_work_item_scheduling_state,
-                work_signal: projection.try_work_reactivation_signal()?,
-                turn_started: state.turn_index > 0,
-                turn_in_progress: state.current_run_id.is_some(),
-                turn_terminal_kind: state
-                    .last_turn_terminal
-                    .as_ref()
-                    .filter(|record| record.turn_index == state.turn_index)
-                    .map(|record| record.kind),
-                runtime_posture: Some(if state.status == AgentStatus::Asleep {
-                    RuntimePosture::Sleeping
-                } else {
-                    RuntimePosture::Awake
-                }),
-            })
         })
     }
 
@@ -2490,6 +2454,7 @@ fn child_blocked_reason(
     })
 }
 
+#[cfg(test)]
 pub(super) fn build_child_agent_observability(
     agent: &AgentState,
     waiting_reason: Option<WaitingReason>,

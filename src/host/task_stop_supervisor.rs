@@ -86,6 +86,7 @@ impl RuntimeHost {
     fn task_stop_supervisor_request(&self) -> Result<TaskDomainLoadRequest> {
         let limits = self.inner.input_evidence_budget.limits();
         Ok(TaskDomainLoadRequest {
+            recovery_at: None,
             query: Default::default(),
             capture: TaskCaptureRequest::current(),
             record_limit: usize::try_from(limits.record_limit)?.min(65_536),

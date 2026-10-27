@@ -55,6 +55,8 @@ async fn loaded_child_summary_reads_task_count_state_and_observability_without_b
             authority_class: crate::types::AuthorityClass::RuntimeInstruction,
             delivery_id: None,
             after_delivery_rowid: None,
+            reply_deadline_at: None,
+            requester_incarnation: Some(child.instance_incarnation()),
         }),
     };
     persist_task_transition(&child, &task, "child_summary_active_task_ack").await?;

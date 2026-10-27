@@ -1299,6 +1299,7 @@ impl RuntimeHost {
                 request,
                 &self.inner.input_evidence_budget,
                 &crate::runtime_db::task_snapshot::TaskDomainLoadRequest {
+                    recovery_at: None,
                     query: Default::default(),
                     capture: crate::runtime::resident_task::TaskCaptureRequest::current(),
                     record_limit: request.record_limit,
@@ -1918,6 +1919,7 @@ mod tests {
             let authority = protocol::authority_fences_tx(tx, &scope.agent_id)?;
             let sequence = source.message_seq.unwrap();
             let attempt = ExecutionAttempt {
+                input_projection: None,
                 attempt_id: format!("activation:message:{}", source.id),
                 agent_id: scope.agent_id.clone(),
                 source_message_id: Some(source.id.clone()),
@@ -2155,6 +2157,7 @@ mod tests {
                     &request,
                     &host.inner.input_evidence_budget,
                     &crate::runtime_db::task_snapshot::TaskDomainLoadRequest {
+                        recovery_at: None,
                         query: Default::default(),
                         capture: crate::runtime::resident_task::TaskCaptureRequest::current(),
                         record_limit: request.record_limit,

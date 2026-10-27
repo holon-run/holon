@@ -155,6 +155,7 @@ pub(crate) fn charge_recovery_admission_tx(
 }
 
 impl TaskResultSettlementRepository<'_> {
+    #[cfg(test)]
     pub(crate) fn recovery_root_is_charged(
         &self,
         record: &TaskResultSettlementRecord,

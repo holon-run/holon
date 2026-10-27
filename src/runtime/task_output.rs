@@ -1061,8 +1061,7 @@ mod tests {
         Ok(())
     }
     #[tokio::test]
-    async fn actual_output_result_carrier_keeps_material_until_tool_and_http_serialization(
-    ) -> Result<()> {
+    async fn actual_output_result_carrier_keeps_material_until_http_serialization() -> Result<()> {
         use axum::response::IntoResponse;
         let harness = LifecycleHarness::new();
         let runtime = harness.runtime();
@@ -1118,14 +1117,13 @@ mod tests {
                 .context("actual file guard missing")?,
         );
         assert!(runtime.inner.input_evidence_budget.report()?.observed_bytes > baseline);
-        let tool_wire =
-            crate::tool::tools::serialize_success(crate::tool::names::TASK_OUTPUT, &read.result)?;
+        let expected_wire = serde_json::to_value(&read.result)?;
         let http_wire = axum::Json(&read.result).into_response();
         assert_eq!(http_wire.status(), axum::http::StatusCode::OK);
-        assert_eq!(
-            tool_wire.envelope.result.as_ref().unwrap()["task"]["output_preview"],
-            file_text
-        );
+        let http_body = axum::body::to_bytes(http_wire.into_body(), usize::MAX).await?;
+        let http_wire: serde_json::Value = serde_json::from_slice(&http_body)?;
+        assert_eq!(http_wire, expected_wire);
+        assert_eq!(http_wire["task"]["output_preview"], file_text);
         assert!(render.upgrade().is_some() && file.upgrade().is_some());
         assert!(runtime.inner.input_evidence_budget.report()?.observed_bytes > baseline,
             "actual result materials stay observed after await and through synchronous serialization");
@@ -1146,22 +1144,21 @@ mod tests {
             )?;
             Ok(())
         })?;
-        let actual_tool = crate::tool::tools::task_output::execute(
-            &runtime,
-            "default",
-            &AuthorityClass::RuntimeInstruction,
-            &serde_json::json!({"task_id":task.id,"block":false}),
-        )
-        .await?;
-        assert_eq!(
-            actual_tool.envelope.result.as_ref().unwrap()["task"]["output_preview"],
-            file_text
-        );
+        let actual_read = runtime
+            .managed_tasks()
+            .task_output_read(&task.id, false, 0)
+            .await?;
+        let actual_http = axum::Json(&actual_read.result).into_response();
+        let actual_body = axum::body::to_bytes(actual_http.into_body(), usize::MAX).await?;
+        let actual_wire: serde_json::Value = serde_json::from_slice(&actual_body)?;
+        assert_eq!(actual_wire, expected_wire);
+        assert_eq!(actual_wire["task"]["output_preview"], file_text);
+        drop(actual_read);
         assert_eq!(
             runtime.inner.input_evidence_budget.report()?.observed_bytes,
             baseline
         );
-        drop((tool_wire, http_wire, actual_tool));
+        drop((expected_wire, http_wire, actual_wire));
         Ok(())
     }
 }

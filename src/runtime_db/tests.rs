@@ -5556,7 +5556,7 @@ CREATE TABLE working_memory_deltas (
         // agent-a: stopped state, queued input, one open and one completed item.
         let mut stopped = AgentState::new("agent-a");
         stopped.status = crate::types::AgentStatus::Stopped;
-        db.agent_states().upsert(&stopped)?;
+        db.agent_states().upsert_for_fixture(&stopped)?;
         db.queue_entries().upsert(&QueueEntryRecord {
             message_id: "message-1".into(),
             agent_id: "agent-a".into(),
@@ -5575,7 +5575,8 @@ CREATE TABLE working_memory_deltas (
 
         // agent-b: active task wait on an open item, a delivered trigger, and
         // one active continuation suspending a second open item.
-        db.agent_states().upsert(&AgentState::new("agent-b"))?;
+        db.agent_states()
+            .upsert_for_fixture(&AgentState::new("agent-b"))?;
         let waiting_item = WorkItemRecord::new("agent-b", "waiting item", WorkItemState::Open);
         let suspended_item = WorkItemRecord::new("agent-b", "suspended item", WorkItemState::Open);
         db.work_items().insert_new(&waiting_item)?;
@@ -5680,7 +5681,8 @@ CREATE TABLE working_memory_deltas (
     fn agent_list_posture_rows_bounds_terminal_window_per_agent() -> Result<()> {
         let (_temp_dir, db_path, lock_path) = temp_paths()?;
         let db = RuntimeDb::open_and_migrate(&db_path, &lock_path)?;
-        db.agent_states().upsert(&AgentState::new("agent-a"))?;
+        db.agent_states()
+            .upsert_for_fixture(&AgentState::new("agent-a"))?;
         let window = crate::storage::read_models::WORK_QUEUE_NON_OPEN_WINDOW;
         for index in 0..(window + 3) {
             let mut record =
@@ -5701,7 +5703,8 @@ CREATE TABLE working_memory_deltas (
         let (_temp_dir, db_path, lock_path) = temp_paths()?;
         let db = RuntimeDb::open_and_migrate(&db_path, &lock_path)?;
         for agent_id in ["agent-a", "agent-b"] {
-            db.agent_states().upsert(&AgentState::new(agent_id))?;
+            db.agent_states()
+                .upsert_for_fixture(&AgentState::new(agent_id))?;
             db.work_items().insert_new(&WorkItemRecord::new(
                 agent_id,
                 "open item",
@@ -5732,7 +5735,8 @@ CREATE TABLE working_memory_deltas (
             .map(|index| format!("agent-{index}"))
             .collect::<Vec<_>>();
         for agent_id in &agent_ids {
-            db.agent_states().upsert(&AgentState::new(agent_id))?;
+            db.agent_states()
+                .upsert_for_fixture(&AgentState::new(agent_id))?;
             db.work_items().insert_new(&WorkItemRecord::new(
                 agent_id,
                 "open item",

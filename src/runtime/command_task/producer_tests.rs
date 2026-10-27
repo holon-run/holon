@@ -387,6 +387,7 @@ fn set_original_command_deleting(
         crate::runtime_db::evidence::insert_agent_deletion_job_tx(
             tx,
             &crate::types::AgentDeletionJob {
+    archive_path: None,
                 deletion_id: format!("original-command-delete-{}", task.id),
                 agent_id: task.agent_id.clone(),
                 mode,
@@ -699,6 +700,7 @@ async fn original_command_identity_material_precedes_bad_json_and_owns_only_its_
     let ledger =
         crate::runtime::input_evidence_budget::InputEvidenceBudgetLedger::new(Default::default())?;
     let request = crate::runtime_db::task_snapshot::TaskDomainLoadRequest {
+    recovery_at: None,
         query: Default::default(),
         capture: crate::runtime::resident_task::TaskCaptureRequest::current(),
         record_limit: 65536,

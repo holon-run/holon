@@ -77,6 +77,7 @@ fn tool(id: impl Into<String>, name: &str, input: serde_json::Value) -> ModelBlo
 #[async_trait]
 impl AgentProvider for LiveProvider {
     async fn complete_turn(&self, request: ProviderTurnRequest) -> Result<ProviderTurnResponse> {
+        let material = request.material.clone();
         let round = {
             let mut requests = self.requests.lock().await;
             requests.push(request);
@@ -278,6 +279,7 @@ impl AgentProvider for LiveProvider {
             runtime.inject_next_transition_fault(fault);
         }
         Ok(ProviderTurnResponse {
+            material,
             blocks,
             stop_reason: None,
             input_tokens: 10,
@@ -2332,6 +2334,7 @@ fn assert_provider_result_handoff(
                 .unwrap();
                 runtime
                     .record_incoming_transcript_entry(&scheduled.message)
+                    .await
                     .unwrap();
             }
             if check == ProviderHandoffCheck::Atomic {
@@ -3503,6 +3506,7 @@ async fn p2_round_limit_refuses_sources_without_an_available_next_request() {
         .unwrap();
     runtime
         .record_incoming_transcript_entry(&scheduled.message)
+        .await
         .unwrap();
     let outcome = Box::pin(runtime.run_agent_loop(
         "default",

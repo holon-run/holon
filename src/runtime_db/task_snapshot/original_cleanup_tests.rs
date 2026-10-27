@@ -662,6 +662,7 @@ fn original_task_cleanup_cannot_bypass_parent_cleanup_admission_fence() -> Resul
         crate::runtime_db::evidence::insert_agent_deletion_job_tx(
             tx,
             &crate::types::AgentDeletionJob {
+                archive_path: None,
                 deletion_id: "parent-fenced-late-result".into(),
                 agent_id: scope().agent_id,
                 mode: crate::types::AgentDeletionMode::ParentCleanup,

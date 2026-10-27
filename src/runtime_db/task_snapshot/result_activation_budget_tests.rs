@@ -22,6 +22,7 @@ fn result_activation_header_budget_precedes_oversized_projection_decode() -> Res
         result.activation_id=Some("header-activation".into());result.admitted_at=Some(at());
         let sequence=source.message_seq.context("actual source sequence")?;
         let admitted=admit_execution(&ExecutionProtocolState::empty("task-agent"),&AdmitExecution {attempt:ExecutionAttempt {
+    input_projection: None,
             attempt_id:"header-activation".into(),agent_id:"task-agent".into(),source_message_id:Some(source.id.clone()),
             source:ExecutionSource {identity:ExecutionSourceIdentity::QueueMessage {message_id:source.id.clone()},generation:sequence},
             binding:ExecutionBinding::Conversation {interaction_id:source.id.clone()},

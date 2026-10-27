@@ -455,9 +455,7 @@ impl AnthropicProvider {
             )?;
             for message in &request.conversation {
                 match message {
-                    ConversationMessage::UserText(text) => {
-                        resource_io::admit_cloned_value(text)?
-                    }
+                    ConversationMessage::UserText(text) => resource_io::admit_cloned_value(text)?,
                     ConversationMessage::UserBlocks(blocks) => {
                         resource_io::admit_cloned_value(blocks)?
                     }
@@ -487,7 +485,7 @@ impl AnthropicProvider {
                     prompt,
                     media_type,
                     data_base64,
-                ..
+                    ..
                 } = message
                 {
                     crate::diagnostics::resource_io::admit_cloned_value(&(

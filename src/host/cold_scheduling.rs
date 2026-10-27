@@ -102,7 +102,8 @@ impl RuntimeHost {
         identity: &AgentIdentityRecord,
         timer_limit: usize,
     ) -> Result<HeldColdSchedulingRead> {
-        self.acquire_cold_scheduling_query_in(identity, timer_limit, self.runtime_db()).await
+        self.acquire_cold_scheduling_query_in(identity, timer_limit, self.runtime_db())
+            .await
     }
 
     pub(super) async fn acquire_cold_scheduling_query_in(

@@ -3111,6 +3111,13 @@ preparation and failure-latch checks are unchanged.
 
 ### Original Input Native writer phase
 
+When queue selection has no runnable candidate, the scheduler retains the
+original queue-head starvation diagnostic. It prepares only that head's
+qualified Current Queue body in the same State/scope cut, with finite read
+material retained through the diagnostic. It does not use an unscoped Queue
+history fallback; the original age threshold and per-message rate limit remain
+unchanged.
+
 Supervised invocation admission freezes both the child's Input scope and the
 parent's original Task and scope. The source binding, parent Task update and
 child Message/Queue/State remain one SQL transaction with the original strict

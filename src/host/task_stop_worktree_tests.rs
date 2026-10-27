@@ -31,6 +31,7 @@ fn git(root: &Path, args: &[&str]) -> Result<()> {
 }
 fn request() -> TaskDomainLoadRequest {
     TaskDomainLoadRequest {
+        recovery_at: None,
         query: Default::default(),
         capture: TaskCaptureRequest::current(),
         record_limit: 4096,
@@ -44,9 +45,10 @@ fn work() -> WorkDomainLoadRequest {
         byte_limit: 16 * 1024 * 1024,
     }
 }
-fn command(task: TaskRecord) -> TaskTransitionCommand {
+fn command(task: TaskRecord, expected_owner_incarnation: u64) -> TaskTransitionCommand {
     TaskTransitionCommand {
         agent_id: task.agent_id.clone(),
+        expected_owner_incarnation,
         task,
         agent_deletion: None,
         task_result_settlement: None,
@@ -168,7 +170,7 @@ impl Fixture {
                 "fs-task-first-admission".into(),
                 at,
                 PreparedTaskTransition::new(
-                    command(task.clone()),
+                    command(task.clone(), scope.identity_incarnation),
                     Default::default(),
                     false,
                     None,
@@ -249,8 +251,14 @@ impl Fixture {
                 scope.clone(),
                 "original-fs-stop".into(),
                 task.updated_at,
-                PreparedTaskTransition::new(command(task), Default::default(), false, None, None)?
-                    .with_stop_intent(intent)?,
+                PreparedTaskTransition::new(
+                    command(task, scope.identity_incarnation),
+                    Default::default(),
+                    false,
+                    None,
+                    None,
+                )?
+                .with_stop_intent(intent)?,
             )?;
             let committed = host
                 .runtime_db()

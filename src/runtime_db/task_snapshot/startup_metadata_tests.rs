@@ -107,6 +107,7 @@ fn seed_with_attempt(
         |r| r.get(0),
     )?;
     let attempt = ExecutionAttempt {
+        input_projection: None,
         attempt_id: attempt_id.into(),
         agent_id: "task-agent".into(),
         source_message_id: Some(source.id.clone()),

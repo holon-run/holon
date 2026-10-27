@@ -23,6 +23,7 @@ fn scope(inc: u64) -> InputEvidenceScope {
 }
 fn attempt(id: &str, source: &str) -> ExecutionAttempt {
     ExecutionAttempt {
+        input_projection: None,
         attempt_id: id.into(),
         agent_id: "agent".into(),
         source_message_id: Some(source.into()),

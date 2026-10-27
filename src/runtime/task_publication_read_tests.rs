@@ -18,9 +18,14 @@ fn task(id: &str) -> TaskRecord {
         recovery: None,
     }
 }
-fn command(task: TaskRecord, fault: Option<TransitionFaultPoint>) -> TaskTransitionCommand {
+fn command(
+    task: TaskRecord,
+    fault: Option<TransitionFaultPoint>,
+    expected_owner_incarnation: u64,
+) -> TaskTransitionCommand {
     TaskTransitionCommand {
         agent_id: task.agent_id.clone(),
+        expected_owner_incarnation,
         task,
         agent_deletion: None,
         task_result_settlement: None,
@@ -77,11 +82,12 @@ async fn public_task_reads_wait_for_actual_inflight_publication_without_body_sql
     // The genuine W1 SQL/whole receipt can finish; its original in-memory
     // installation must await this existing Agent lock before publication.
     let agent = runtime.inner.agent.lock().await;
+    let expected_owner_incarnation = runtime.instance_incarnation();
     let writer = tokio::spawn(async move {
         owner
             .commit_task_transition(
                 operation,
-                command(original, None),
+                command(original, None, expected_owner_incarnation),
                 Default::default(),
                 false,
             )
@@ -184,6 +190,7 @@ async fn abandoned_original_publication_remains_gated_for_every_public_task_read
             command(
                 original.clone(),
                 Some(TransitionFaultPoint::BeforeCacheUpdate),
+                runtime.instance_incarnation(),
             ),
             Default::default(),
             false,

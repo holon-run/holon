@@ -444,6 +444,7 @@ fn original_protocol_only_change_reobserves_result_activation_without_task_row_w
         &ExecutionProtocolState::empty(&f.scope.agent_id),
         &AdmitExecution {
             attempt: ExecutionAttempt {
+                input_projection: None,
                 attempt_id: "activation:metadata-only".into(),
                 agent_id: f.scope.agent_id.clone(),
                 source_message_id: Some(source_id.clone()),

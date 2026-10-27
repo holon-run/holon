@@ -26,6 +26,9 @@ pub(super) fn visit_original(
 ) -> Result<()> {
     match prepared.command.as_ref() {
         InputTransitionCommand::Audit { events: values, .. } => events(values, visit)?,
+        InputTransitionCommand::ContextBudgetStopRecovery { audit_events, .. } => {
+            events(audit_events, visit)?;
+        }
         InputTransitionCommand::Posture { command, .. } => events(&command.audit_events, visit)?,
         InputTransitionCommand::Terminal(command) => events(&command.audit_events, visit)?,
         InputTransitionCommand::Work { command, .. } => events(&command.audit_events, visit)?,

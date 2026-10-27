@@ -323,6 +323,7 @@ impl WorkItemRepository<'_> {
                     params_from_iter(chunk.iter().map(AsRef::as_ref)),
                     &mut records,
                 )?;
+                Ok(())
             })?;
         }
         Ok(records)
@@ -3046,6 +3047,7 @@ impl WaitConditionRepository<'_> {
     }
 
     /// Preserve payload timestamp precision for full-record transition guards.
+    #[cfg(test)]
     pub(crate) fn snapshot_for_agent(&self, agent_id: &str) -> Result<Vec<WaitConditionRecord>> {
         self.db.with_read(|connection| {
             let mut statement = connection.prepare(

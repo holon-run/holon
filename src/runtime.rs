@@ -3536,28 +3536,6 @@ impl RuntimeHandle {
         result
     }
 
-    #[cfg(test)]
-    pub(crate) async fn record_timer_projection(&self, record: &TimerRecord) -> Result<()> {
-        let mut mutation = self.begin_mutation().await?;
-        let prepared = crate::runtime_db::transitions::PreparedInputTransition::timer(
-            mutation.input_evidence_scope(),
-            crate::ids::audit_event_id(),
-            record.created_at,
-            crate::runtime_db::transitions::PreparedTimerTransition::create(record.clone(), None),
-        )?;
-        let (commit, outcome) = mutation.commit_prepared_timer_transition(prepared).await?;
-        anyhow::ensure!(
-            matches!(
-                outcome,
-                crate::runtime_db::transitions::TimerMutationOutcome::Created { .. }
-            ),
-            "fixture Timer creation ACK differs"
-        );
-        drop(mutation);
-        self.apply_transition_commit(commit).await;
-        Ok(())
-    }
-
     pub(crate) fn work_item_written_event(
         &self,
         action: &str,
@@ -4957,19 +4935,10 @@ impl RuntimeHandle {
         message: MessageEnvelope,
         delivery: &AgentMessageDeliveryRecord,
     ) -> Result<AgentMessageDeliveryReceipt> {
-        let (_, receipt) = self.enqueue_internal(message, Some(delivery), None, None).await?;
+        let (_, receipt) = self
+            .enqueue_internal(message, Some(delivery), None, None)
+            .await?;
         receipt.context("delivery admission completed without a receipt")
-    }
-
-    #[cfg(test)]
-    pub(crate) async fn enqueue_original_spawn_with_fault_for_test(
-        &self,
-        message: MessageEnvelope,
-        fault: TransitionFaultPoint,
-    ) -> Result<MessageEnvelope> {
-        self.enqueue_internal(message, None, None, Some(fault))
-            .await
-            .map(|value| value.0)
     }
 
     #[cfg(test)]
@@ -5019,7 +4988,12 @@ impl RuntimeHandle {
         let enqueue_started_at = chrono::Utc::now();
         for attempt in 0..ENQUEUE_AGENT_STATE_MAX_ATTEMPTS {
             match self
-                .enqueue_attempt(&message, delivery, supervised_invocation, original_fault.take())
+                .enqueue_attempt(
+                    &message,
+                    delivery,
+                    supervised_invocation,
+                    original_fault.take(),
+                )
                 .await
             {
                 Ok(mut commit) => {
@@ -6149,6 +6123,7 @@ impl RuntimeHandle {
             // Readback may confirm a commit whose in-memory effects never ran.
             // Change only pending against the latest durable control-plane state.
             let command = crate::runtime_db::transitions::AgentPostureTransitionCommand {
+                expected_incarnation: None,
                 agent_id: source.agent_id.clone(),
                 agent_state: crate::runtime_db::transitions::AgentStateMutation {
                     expected: Some(Box::new(durable)),
@@ -6625,7 +6600,8 @@ impl RuntimeHandle {
         self,
         observation: Option<crate::startup::StartupObservation>,
     ) -> Result<()> {
-        self.bootstrap_with_startup_observation(observation.as_ref()).await?;
+        self.bootstrap_with_startup_observation(observation.as_ref())
+            .await?;
 
         loop {
             #[cfg(test)]
@@ -6694,7 +6670,9 @@ impl RuntimeHandle {
                         self.append_scheduler_decision(&decision).await?;
                     }
                     let next_recheck_at = [
-                        self.inner.runtime_db.next_provider_queue_recheck_at(&idle_read.state.id)?,
+                        self.inner
+                            .runtime_db
+                            .next_provider_queue_recheck_at(&idle_read.state.id)?,
                         idle_read.work.next_work_recheck_at()?,
                         idle_read.work.next_agent_wait_recheck_at()?,
                         self.next_queued_available_retry_at(

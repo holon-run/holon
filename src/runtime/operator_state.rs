@@ -73,6 +73,7 @@ impl StateProjectionMaterial {
 }
 
 impl RuntimeHandle {
+    #[cfg(test)]
     pub(crate) async fn operator_state_read_projection(
         &self,
         task_limit: usize,

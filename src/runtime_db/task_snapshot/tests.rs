@@ -194,6 +194,7 @@ fn complete_unsettled_frontier_includes_caller_admitted_open_activation() -> Res
         repositories::upsert_task_tx(tx,&value)?;upsert_pending_tx(tx,&result)?;
         let sequence=source.message_seq.context("actual source sequence")?;
         let admitted=admit_execution(&ExecutionProtocolState::empty("task-agent"),&AdmitExecution{attempt:ExecutionAttempt{
+    input_projection: None,
             attempt_id:"original-open-activation".into(),agent_id:"task-agent".into(),source_message_id:Some(source.id.clone()),
             source:ExecutionSource{identity:ExecutionSourceIdentity::QueueMessage{message_id:source.id.clone()},generation:sequence},
             binding:ExecutionBinding::Conversation{interaction_id:source.id.clone()},

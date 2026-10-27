@@ -121,7 +121,7 @@ fn canonical_root(db: &RuntimeDb) -> Result<ExecutionAttempt> {
 
     let mut attempt = root();
     db.agent_states()
-        .upsert(&AgentState::new(&attempt.agent_id))?;
+        .upsert_for_fixture(&AgentState::new(&attempt.agent_id))?;
     db.agent_identities().upsert(&AgentIdentityRecord::new(
         &attempt.agent_id,
         AgentKind::Named,
@@ -266,7 +266,7 @@ fn canonical_dispatch_survives_restart_and_benign_control_revision_changes() -> 
     let episode = canonical_episode(&db, &attempt)?;
     let admission = lease(&db, &[transport("canonical")])?;
     db.agent_states()
-        .upsert(&AgentState::new(&attempt.agent_id))?;
+        .upsert_for_fixture(&AgentState::new(&attempt.agent_id))?;
     drop(db);
     let db = reopen(&dir)?;
     assert!(matches!(
@@ -474,7 +474,7 @@ fn stopped_agent_or_invalid_owner_is_denied_without_charging() -> Result<()> {
             "stopped" => {
                 let mut state = AgentState::new(&attempt.agent_id);
                 state.status = AgentStatus::Stopped;
-                db.agent_states().upsert(&state)?;
+                db.agent_states().upsert_for_fixture(&state)?;
             }
             "identity" => {
                 let mut identity = db.agent_identities().latest(&attempt.agent_id)?.unwrap();

@@ -182,6 +182,7 @@ impl RuntimeHandle {
         }
         let limits = self.inner.input_evidence_budget.limits();
         let request = TaskDomainLoadRequest {
+            recovery_at: None,
             query: Default::default(),
             capture: super::super::resident_task::TaskCaptureRequest::current(),
             record_limit: usize::try_from(limits.record_limit)?,
@@ -309,6 +310,7 @@ impl RuntimeHandle {
         }
         let limits = self.inner.input_evidence_budget.limits();
         let request = TaskDomainLoadRequest {
+            recovery_at: None,
             query: Default::default(),
             capture: super::super::resident_task::TaskCaptureRequest::current(),
             record_limit: usize::try_from(limits.record_limit)?,
@@ -376,6 +378,7 @@ impl RuntimeHandle {
         }
         let command = crate::runtime_db::transitions::TaskTransitionCommand {
             agent_id: running.agent_id.clone(),
+            expected_owner_incarnation: self.inner.identity_incarnation,
             task: running.clone(),
             agent_deletion: None,
             task_result_settlement: None,

@@ -234,6 +234,7 @@ fn deleting(f: &Fixture, parent: bool) -> Result<()> {
             crate::runtime_db::evidence::insert_agent_deletion_job_tx(
                 tx,
                 &crate::types::AgentDeletionJob {
+                    archive_path: None,
                     deletion_id: "parent-cleanup-before-feedback".into(),
                     agent_id: f.scope.agent_id.clone(),
                     mode: crate::types::AgentDeletionMode::ParentCleanup,

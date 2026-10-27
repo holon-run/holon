@@ -417,6 +417,14 @@ fn fixture() -> Result<(TempDir, RuntimeDb)> {
             deferred_reason: None,
             deferred_at: None,
             next_recheck_at: None,
+            recovery_epoch: 0,
+            recovery_attempts: 0,
+            last_recovery_root_attempt_id: None,
+            last_recovery_admitted_at: None,
+            recovery_paused_at: None,
+            recovery_diagnostic_at: None,
+            source_projection: None,
+            reply_projection: None,
         };
         db.transaction(|tx| {
             upsert_pending_tx(tx, &settlement)?;

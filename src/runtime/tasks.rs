@@ -732,7 +732,7 @@ impl RuntimeHandle {
         recovered: bool,
     ) -> Result<TaskRecord> {
         let task_handles = self.inner.task_handles.lock().await;
-        if matches!(task_handles.get(&task.id), Some(command_task::ManagedTaskHandle::Async(handle)) if !handle.is_finished())
+        if matches!(task_handles.get(&task.id), Some(command_task::ManagedTaskHandle::Async(handle)) if !handle.lease().is_finished())
         {
             return Ok(self.task_record(&task.id).await?.unwrap_or(task));
         }
@@ -1736,13 +1736,38 @@ impl RuntimeHandle {
             else {
                 continue;
             };
+            let _reply_budget = self.inner.input_evidence_budget.register_owned_bytes(
+                &active.tasks.scope,
+                super::input_evidence_budget::InputMemoryCategory::Candidate,
+                super::input_evidence_budget::OwnedBytesEstimate {
+                    payload_bytes: super::input_evidence_budget::serialized_bytes(&reply)?
+                        .checked_mul(8)
+                        .context("message Wait outcome material overflow")?,
+                    metadata_estimate_bytes: u64::try_from(std::mem::size_of_val(&reply))?
+                        .checked_mul(8)
+                        .context("message Wait outcome metadata overflow")?,
+                },
+            )?;
+            let (response_delivery_id, response_message_id) = match &reply.reply {
+                crate::runtime_db::agent_message_delivery::MessageWaitReply::Explicit {
+                    delivery_id,
+                    message_id,
+                } => (delivery_id.as_str(), Some(message_id.as_str())),
+                crate::runtime_db::agent_message_delivery::MessageWaitReply::FinalBrief {
+                    message_id,
+                    ..
+                } => ("", Some(message_id.as_str())),
+                crate::runtime_db::agent_message_delivery::MessageWaitReply::ReplyTimeout {
+                    ..
+                } => ("", None),
+            };
             let (_detail_budget, retained_material) = self.agent_message_wait_reply_detail_budget(
                 &active.tasks,
                 task,
                 target_agent_id,
                 &message.agent_id,
-                &reply.delivery_id,
-                reply.message_id.as_deref(),
+                response_delivery_id,
+                response_message_id,
                 *boundary,
             )?;
             let mut detail = task.detail.clone().unwrap_or_else(|| serde_json::json!({}));
@@ -2309,6 +2334,7 @@ impl RuntimeHandle {
     ) -> Result<()> {
         let limits = self.inner.input_evidence_budget.limits();
         let request = crate::runtime_db::task_snapshot::TaskDomainLoadRequest {
+            recovery_at: None,
             query: Default::default(),
             capture: super::resident_task::TaskCaptureRequest::current(),
             record_limit: usize::try_from(limits.record_limit)?,

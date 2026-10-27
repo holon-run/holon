@@ -69,6 +69,7 @@ async fn exact_timer_query_rejects_foreign_before_body_decode_and_never_adopts_r
     let runtime = runtime(home.path())?;
     let at = runtime.now();
     let foreign = TimerRecord {
+        calendar: None,
         id: "foreign-wire-timer".into(),
         agent_id: "foreign-agent".into(),
         created_at: at,

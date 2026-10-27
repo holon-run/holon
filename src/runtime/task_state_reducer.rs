@@ -894,9 +894,12 @@ impl RuntimeHandle {
         detail["target_incarnation"] = serde_json::json!(incarnation);
         detail["cancellation_reason"] = serde_json::json!("agent_deleted");
         detail["output_summary"] = serde_json::json!(text);
-        let _ = self
-            .retain_task_owned_worktree_for_target_deletion_in_detail(&task.id, &mut detail)
-            .await?;
+        {
+            let mut mutation = self.begin_mutation().await?;
+            let _ = mutation
+                .retain_task_owned_worktree_for_target_deletion_in_detail(&task.id, &mut detail)
+                .await?;
+        }
         let mut message = original_message.clone();
         let prefix = if task.kind == TaskKind::AgentMessageWait {
             "agent-message-wait"
@@ -2581,7 +2584,7 @@ mod tests {
                 causation_id: None,
                 created_at: Utc::now(),
             });
-            db.agent_states().upsert(&updated).unwrap();
+            db.agent_states().upsert_for_fixture(&updated).unwrap();
             assert_eq!(
                 runtime
                     .refresh_enqueue_agent_state_baseline("default")

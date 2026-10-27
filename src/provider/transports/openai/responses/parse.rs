@@ -12,13 +12,8 @@ pub(super) async fn read_openai_streaming_response(
     trace: Option<&ProviderHttpTraceRequest>,
     max_bytes: Option<usize>,
 ) -> Result<Value> {
-    read_openai_streaming_response_with_material(
-        response,
-        trace,
-        max_bytes,
-        &Default::default(),
-    )
-    .await
+    read_openai_streaming_response_with_material(response, trace, max_bytes, &Default::default())
+        .await
 }
 
 pub(super) async fn read_openai_streaming_response_with_material(

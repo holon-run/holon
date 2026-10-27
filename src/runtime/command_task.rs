@@ -2931,6 +2931,7 @@ mod tests {
                     _ => panic!("command exact wait must reenter the provider only once"),
                 };
                 Ok(ProviderTurnResponse {
+                    material: Default::default(),
                     blocks,
                     stop_reason: None,
                     input_tokens: 10,

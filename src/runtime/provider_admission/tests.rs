@@ -464,7 +464,11 @@ async fn external_wait_dispatch_with_claim_race(race: Option<&'static str>) {
                             .latest("default")?
                             .expect("agent state");
                         state.last_wake_reason = Some("concurrent snapshot update".into());
-                        runtime.inner.runtime_db.agent_states().upsert(&state)?;
+                        runtime
+                            .inner
+                            .runtime_db
+                            .agent_states()
+                            .upsert_for_fixture(&state)?;
                     }
                     "wait" => {
                         let mut condition = runtime
@@ -1037,7 +1041,12 @@ async fn continuation_dispatch_scenario(
         assert_eq!(failure.code, "provider_dispatch_rejected");
         assert!(!failure.retryable);
         runtime
-            .settle_processed_message(message, result, processing_started)
+            .finish_scheduled_message_processing(
+                &message,
+                scheduled.running_state.current_run_id.as_deref().unwrap(),
+                processing_started,
+                result,
+            )
             .await
             .unwrap();
         let protocol = runtime
@@ -1168,7 +1177,12 @@ async fn continuation_dispatch_scenario(
                     .expect("cooling must stop before HTTP")
             ));
             runtime
-                .settle_processed_message(recovery_message.clone(), result, started)
+                .finish_scheduled_message_processing(
+                    &recovery_message,
+                    recovery.running_state.current_run_id.as_deref().unwrap(),
+                    started,
+                    result,
+                )
                 .await
                 .unwrap();
             assert_eq!(
@@ -1286,7 +1300,12 @@ async fn continuation_dispatch_scenario(
             );
             assert_eq!(server.calls.load(Ordering::SeqCst), 2);
             runtime
-                .settle_processed_message(replay.message, result, std::time::Instant::now())
+                .finish_scheduled_message_processing(
+                    &replay.message,
+                    replay.running_state.current_run_id.as_deref().unwrap(),
+                    std::time::Instant::now(),
+                    result,
+                )
                 .await
                 .unwrap();
             assert_wait_generation(replay_generation + 1);
@@ -1580,6 +1599,7 @@ async fn healthy_responses_do_not_apply_a_global_three_request_limit() {
         admission.before_dispatch().unwrap();
         admission
             .after_response(&Ok(ProviderTurnResponse {
+                material: Default::default(),
                 blocks: vec![ModelBlock::Text {
                     text: "usable".into(),
                 }],
@@ -1678,6 +1698,7 @@ async fn scarce_operator_probe_skips_auxiliary_until_usable_model_response() {
     assert_eq!(admission.episode().unwrap().total_requests, 0);
     admission.before_dispatch().unwrap();
     let response = ProviderTurnResponse {
+        material: Default::default(),
         blocks: vec![ModelBlock::Text {
             text: "usable".into(),
         }],

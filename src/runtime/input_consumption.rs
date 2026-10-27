@@ -199,6 +199,7 @@ pub(crate) fn render_batch(batch: &IdleInputBatchRecord) -> String {
     text
 }
 
+#[cfg(test)]
 pub(crate) fn render_recovered_operator_inputs(
     storage: &AppStorage,
     turn: &TurnRecord,
@@ -210,6 +211,7 @@ pub(crate) fn render_recovered_operator_inputs(
     render_admitted_operator_inputs(storage, turn, seen_messages)
 }
 
+#[cfg(test)]
 pub(crate) fn render_admitted_operator_inputs(
     storage: &AppStorage,
     turn: &TurnRecord,
@@ -1239,7 +1241,7 @@ impl RuntimeHandle {
                     .insert(identity.clone());
             }
         }
-        let ordinary_selection = selected
+        let ordinary_selection: BTreeSet<_> = selected
             .iter()
             .filter(|identity| !reply_sources.contains_key(*identity))
             .cloned()
@@ -1794,18 +1796,6 @@ impl RuntimeHandle {
         Ok(Some((id.clone(), turn.clone())))
     }
 
-    pub(super) fn idle_batch_source_turn(
-        &self,
-        agent_id: &str,
-        message_id: &str,
-    ) -> Result<Option<TurnRecord>> {
-        let scope = crate::runtime::resident_input_evidence::InputEvidenceScope {
-            agent_id: agent_id.to_owned(),
-            identity_incarnation: self.inner.identity_incarnation,
-        };
-        let material = ResourceReadMaterial::new(&self.inner.input_evidence_budget, &scope)?;
-        self.with_idle_read(None, &material, |read| read.source_turn(message_id))
-    }
     pub(super) fn idle_batch_recovery_message(
         &self,
         queue: &crate::queue::RuntimeQueue,

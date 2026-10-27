@@ -85,7 +85,8 @@ impl RuntimeHost {
         &self,
         identity: &AgentIdentityRecord,
     ) -> Result<HeldColdSummary> {
-        self.acquire_cold_summary_in(identity, self.runtime_db()).await
+        self.acquire_cold_summary_in(identity, self.runtime_db())
+            .await
     }
 
     pub(super) async fn acquire_cold_summary_in(

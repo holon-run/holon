@@ -377,6 +377,45 @@ impl CurrentTaskRecordRead {
                 _ => unreachable!("validated Task capture family"),
             })
     }
+
+    /// The selected Task's dependency closure includes its complete Result index.
+    /// Unprepared facts are errors, not evidence that a Message has no Result.
+    pub(in crate::runtime) fn result_for_message(
+        &self,
+        message_id: &str,
+    ) -> Result<Option<&TaskResultSettlementRecord>> {
+        let Some(task) = self.record() else {
+            return Ok(None);
+        };
+        let ids = self
+            .tasks
+            .coverage
+            .task_result_ids
+            .get(&task.id)
+            .ok_or_else(|| {
+                TaskReadError::NeedsPreparation(TaskKey::new(TaskFamily::Task, &task.id))
+            })?;
+        let mut selected = None;
+        for id in ids {
+            let metadata = self.tasks.coverage.result_metadata.get(id).ok_or_else(|| {
+                TaskReadError::NeedsPreparation(TaskKey::new(TaskFamily::ResultSettlement, id))
+            })?;
+            anyhow::ensure!(
+                metadata.result_identity == *id && metadata.task_id == task.id,
+                "selected Task Result index differs from metadata"
+            );
+            if metadata.message_id != message_id {
+                continue;
+            }
+            let record = result_record(&self.tasks, metadata)?;
+            anyhow::ensure!(
+                selected.is_none() && record.agent_id == task.agent_id,
+                "selected Task Message has ambiguous or foreign Results"
+            );
+            selected = Some(record);
+        }
+        Ok(selected)
+    }
 }
 
 impl RuntimeHandle {

@@ -44,7 +44,9 @@ pub(super) fn build_images_request(
     };
     request.material.admit_value(&(model, request))?;
     request.material.read(|| {
-        Ok(crate::diagnostics::resource_io::charge_owned_metadata(512, 32)?)
+        Ok(crate::diagnostics::resource_io::charge_owned_metadata(
+            512, 32,
+        )?)
     })?;
     let api = match dialect {
         OpenAiImagesDialect::OpenAi => ImageGenerationApi::OpenAiImages,

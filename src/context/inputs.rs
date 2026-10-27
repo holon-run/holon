@@ -161,6 +161,7 @@ pub(crate) trait ContextInputs {
             .map(ContextHistoryTurn::owned)
             .transpose()
     }
+    #[cfg(test)]
     fn idle_input_batch_for_turn(
         &self,
         id: &str,
@@ -909,6 +910,7 @@ impl ContextInputs for ResidentContextInputs<'_, '_> {
             _ => None,
         })
     }
+    #[cfg(test)]
     fn idle_input_batch_for_turn(
         &self,
         id: &str,
@@ -3852,6 +3854,14 @@ mod resident_tests {
                 deferred_reason: None,
                 deferred_at: None,
                 next_recheck_at: None,
+                recovery_epoch: 0,
+                recovery_attempts: 0,
+                last_recovery_root_attempt_id: None,
+                last_recovery_admitted_at: None,
+                recovery_paused_at: None,
+                recovery_diagnostic_at: None,
+                source_projection: None,
+                reply_projection: None,
             };
             upsert_pending_tx(&tx, &record).unwrap();
         }

@@ -6,6 +6,7 @@ use super::{
     state_mutation::PreparedSchedulerRead,
     task_queries::{TaskQueryLease, TaskQuerySpec},
 };
+#[cfg(test)]
 use crate::types::WaitConditionKind;
 use std::collections::BTreeMap;
 
@@ -15,14 +16,6 @@ pub(crate) struct ChildMonitorRead {
 impl ChildMonitorRead {
     pub(crate) fn state(&self) -> &AgentState {
         &self.read.state
-    }
-    pub(crate) fn closure(&self) -> Result<crate::types::ClosureDecision> {
-        RuntimeHandle::closure_decision_from_projection(
-            &self.read.state,
-            &self.read.projection,
-            None,
-            &self.read.acquisition,
-        )
     }
     /// Raw unresolved waits include closed Work owners, unlike the context queue.
     pub(crate) fn original_unresolved_waits(
@@ -48,6 +41,7 @@ impl ChildMonitorRead {
             Ok(wait)
         }))
     }
+    #[cfg(test)]
     pub(crate) fn has_lifecycle_blockers(&self) -> Result<bool> {
         if self.read.projection.active_tasks.iter().any(|task| {
             task.kind != TaskKind::ChildAgentTask
@@ -107,6 +101,13 @@ pub(crate) struct TaskParentTurnBodyRead {
 impl TaskParentTurnBodyRead {
     pub(crate) fn record(&self) -> &TaskRecord {
         self.read.record().expect("validated parent Turn Task body")
+    }
+
+    pub(crate) fn result_for_message(
+        &self,
+        message_id: &str,
+    ) -> Result<Option<&crate::runtime_db::TaskResultSettlementRecord>> {
+        self.read.result_for_message(message_id)
     }
 }
 

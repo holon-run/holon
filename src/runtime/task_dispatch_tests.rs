@@ -362,7 +362,11 @@ async fn actual_task_result_dispatch_and_recovery_decisions_do_not_read_body_tab
         _ => anyhow::bail!("actual Result has wrong family"),
     };
     let executor = SchedulerDecisionExecutor::new(&runtime);
-    assert!(executor.task_result_record_is_deliverable(&result.agent_id, record)?);
+    assert!(executor.task_result_record_is_deliverable(
+        &result.agent_id,
+        record,
+        Some(&result.id),
+    )?);
     let closure = RuntimeHandle::closure_decision_from_projection(
         &read.state,
         &read.projection,

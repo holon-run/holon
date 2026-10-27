@@ -30,7 +30,7 @@ async fn canonical_turn_start_uses_retained_history_high_water() {
         .unwrap();
     assert_eq!(runtime.agent_state().await.unwrap().turn_index, 0);
     runtime
-        .begin_interactive_turn_for_test(None, None)
+        .begin_interactive_turn(None, None, None)
         .await
         .unwrap();
     let state = runtime.agent_state().await.unwrap();
@@ -80,7 +80,7 @@ async fn canonical_turn_start_failure_keeps_memory_and_state_unchanged() {
         })
         .unwrap();
     assert!(runtime
-        .begin_interactive_turn_for_test(Some("uncommitted-binding"), None)
+        .begin_interactive_turn(None, Some("uncommitted-binding"), None)
         .await
         .is_err());
     assert_eq!(runtime.agent_state().await.unwrap(), before);
@@ -4093,8 +4093,7 @@ async fn turn_local_continuation_recovers_by_reprojecting_recent_turns() {
     )
     .unwrap();
 
-    let identity = runtime.agent_identity_view().await.unwrap();
-    let (_, available_tools, _, _, _) = runtime.provider_tool_selection(&identity).await.unwrap();
+    let (_, available_tools, _, _, _) = runtime.provider_tool_selection().await.unwrap();
     publish_committed_history_fixture(
         &runtime,
         "turn-large-history",

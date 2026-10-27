@@ -19,14 +19,19 @@ impl Deref for OwnedAgentListEntry {
 
 impl PartialEq for OwnedAgentListRead {
     fn eq(&self, other: &Self) -> bool {
-        self.entries.iter().map(|entry| &entry.entry)
+        self.entries
+            .iter()
+            .map(|entry| &entry.entry)
             .eq(other.entries.iter().map(|entry| &entry.entry))
     }
 }
 
 impl PartialEq<Vec<AgentListEntry>> for OwnedAgentListRead {
     fn eq(&self, other: &Vec<AgentListEntry>) -> bool {
-        self.entries.iter().map(|entry| &entry.entry).eq(other.iter())
+        self.entries
+            .iter()
+            .map(|entry| &entry.entry)
+            .eq(other.iter())
     }
 }
 
@@ -71,6 +76,7 @@ impl AsRef<[u8]> for FleetWire {
 }
 
 impl OwnedAgentListRead {
+    #[cfg(test)]
     pub(super) fn from_observer_entries(
         entries: Vec<AgentListEntry>,
         material: ResourceReadMaterial,
@@ -79,7 +85,10 @@ impl OwnedAgentListRead {
             let mut owned = Vec::new();
             for entry in entries {
                 crate::runtime_db::repositories::reserve_source_vec_slot(&mut owned)?;
-                owned.push(OwnedAgentListEntry { entry, material: material.clone() });
+                owned.push(OwnedAgentListEntry {
+                    entry,
+                    material: material.clone(),
+                });
             }
             Ok(Self { entries: owned })
         })

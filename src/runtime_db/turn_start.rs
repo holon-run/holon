@@ -12,7 +12,9 @@ use crate::types::{
     TurnRecord,
 };
 
+#[cfg(test)]
 use super::evidence::upsert_agent_state_tx;
+#[cfg(test)]
 use super::repositories::{upsert_turn_record_tx, validate_turn_record_identity};
 use super::{RuntimeStateTransitionConflict, TurnRecordRepository};
 
@@ -33,6 +35,7 @@ impl TurnRecordRepository<'_> {
         })
     }
 
+    #[cfg(test)]
     pub(crate) fn start(
         &self,
         expected: Option<&AgentState>,
@@ -98,9 +101,7 @@ impl TurnRecordRepository<'_> {
             }
             let next = next_turn_index_tx(tx, &state.id, 0)?;
             ensure!(
-                actual
-                    .as_ref()
-                    .is_none_or(|state| state.turn_index < next),
+                actual.as_ref().is_none_or(|state| state.turn_index < next),
                 "persisted turn counter is outside its canonical integer range"
             );
             state.turn_index = next;
@@ -113,11 +114,7 @@ impl TurnRecordRepository<'_> {
     }
 }
 
-fn next_turn_index_tx(
-    tx: &Transaction<'_>,
-    agent_id: &str,
-    current_index: u64,
-) -> Result<u64> {
+fn next_turn_index_tx(tx: &Transaction<'_>, agent_id: &str, current_index: u64) -> Result<u64> {
     let current = i64::try_from(current_index)
         .map_err(|_| anyhow!("turn index exceeds SQLite integer range"))?;
     let retained: Option<i64> = tx.query_row(
@@ -331,7 +328,7 @@ mod tests {
             if let Some(counter) = counter {
                 let mut state = AgentState::new("a");
                 state.turn_index = counter;
-                db.agent_states().upsert(&state)?;
+                db.agent_states().upsert_for_fixture(&state)?;
             }
             for (i, index) in history.iter().enumerate() {
                 db.turn_records()
@@ -468,10 +465,10 @@ mod tests {
         let fixture = TempRuntimeDb::new()?;
         let db = &fixture.db;
         let expected = AgentState::new("a");
-        db.agent_states().upsert(&expected)?;
+        db.agent_states().upsert_for_fixture(&expected)?;
         let mut actual = expected.clone();
         actual.pending = 1;
-        db.agent_states().upsert(&actual)?;
+        db.agent_states().upsert_for_fixture(&actual)?;
         let (state, record) = candidate("a", "one");
         assert!(db
             .turn_records()

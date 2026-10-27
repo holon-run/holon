@@ -417,8 +417,10 @@ struct InputProjectionProvider {
 #[async_trait]
 impl AgentProvider for InputProjectionProvider {
     async fn complete_turn(&self, request: ProviderTurnRequest) -> Result<ProviderTurnResponse> {
+        let material = request.material.clone();
         self.requests.lock().await.push(request);
         Ok(ProviderTurnResponse {
+            material,
             blocks: vec![ModelBlock::Text {
                 text: "Evidence received.".into(),
             }],

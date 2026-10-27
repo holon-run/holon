@@ -1,4 +1,4 @@
-use super::{task_state_reducer, *};
+use super::{state_mutation::RuntimeMutation, task_state_reducer, *};
 use std::ffi::OsString;
 #[path = "worktree_cleanup.rs"]
 mod cleanup;
@@ -427,6 +427,7 @@ impl RuntimeHandle {
         let scope = mutation.input_evidence_scope();
         let limits = self.inner.input_evidence_budget.limits();
         let request = crate::runtime_db::task_snapshot::TaskDomainLoadRequest {
+            recovery_at: None,
             query: Default::default(),
             capture: super::resident_task::TaskCaptureRequest::current(),
             record_limit: usize::try_from(limits.record_limit)?,

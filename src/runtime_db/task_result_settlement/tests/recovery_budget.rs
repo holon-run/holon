@@ -46,7 +46,12 @@ fn finite_recovery_diagnostic_preserves_namespace_epoch_cas_and_idempotence() ->
     for (agent, epoch) in [("other-agent", 0), ("agent-a", 1)] {
         let ack = db.transaction(|tx| {
             select_mark_recovery_diagnostic_tx(
-                tx, agent, &record.result_identity, epoch, now, limits,
+                tx,
+                agent,
+                &record.result_identity,
+                epoch,
+                now,
+                limits,
             )?
             .materialize(limits)?
             .execute()
@@ -57,10 +62,15 @@ fn finite_recovery_diagnostic_preserves_namespace_epoch_cas_and_idempotence() ->
     }
     db.transaction(|tx| {
         let prepared = select_mark_recovery_diagnostic_tx(
-            tx, "agent-a", &record.result_identity, 0, now, limits,
+            tx,
+            "agent-a",
+            &record.result_identity,
+            0,
+            now,
+            limits,
         )?
         .materialize(limits)?;
-        let mut changed = by_identity_tx(tx, &record.result_identity)?.unwrap();
+        let mut changed = latest_for_message_tx(tx, &record.message_id)?.unwrap();
         changed.recovery_epoch = 1;
         update_tx(tx, &changed)?;
         assert!(prepared.execute().is_err());
@@ -70,7 +80,12 @@ fn finite_recovery_diagnostic_preserves_namespace_epoch_cas_and_idempotence() ->
     for (at, expected) in [(now, true), (now + Duration::seconds(1), false)] {
         let ack = db.transaction(|tx| {
             select_mark_recovery_diagnostic_tx(
-                tx, "agent-a", &record.result_identity, 1, at, limits,
+                tx,
+                "agent-a",
+                &record.result_identity,
+                1,
+                at,
+                limits,
             )?
             .materialize(limits)?
             .execute()
@@ -90,7 +105,12 @@ fn finite_recovery_diagnostic_preserves_namespace_epoch_cas_and_idempotence() ->
     insert(&db, &unpaused);
     db.transaction(|tx| {
         let ack = select_mark_recovery_diagnostic_tx(
-            tx, "agent-a", &unpaused.result_identity, 0, now, limits,
+            tx,
+            "agent-a",
+            &unpaused.result_identity,
+            0,
+            now,
+            limits,
         )?
         .materialize(limits)?
         .execute()?;

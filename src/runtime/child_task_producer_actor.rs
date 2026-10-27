@@ -179,6 +179,7 @@ impl RuntimeHandle {
         let limits = self.inner.input_evidence_budget.limits();
         let scope = registration.input_evidence_scope();
         let limits_request = TaskDomainLoadRequest {
+            recovery_at: None,
             query: Default::default(),
             capture: super::resident_task::TaskCaptureRequest::current(),
             record_limit: usize::try_from(limits.record_limit)?,
@@ -244,6 +245,7 @@ impl RuntimeHandle {
     ) -> Result<()> {
         let limits = self.inner.input_evidence_budget.limits();
         let request = TaskDomainLoadRequest {
+            recovery_at: None,
             query: Default::default(),
             capture: super::resident_task::TaskCaptureRequest::current(),
             record_limit: usize::try_from(limits.record_limit)?,
@@ -346,6 +348,7 @@ impl RuntimeHandle {
         }
         let limits = self.inner.input_evidence_budget.limits();
         let request = TaskDomainLoadRequest {
+            recovery_at: None,
             query: Default::default(),
             capture: super::resident_task::TaskCaptureRequest::current(),
             record_limit: usize::try_from(limits.record_limit)?,

@@ -1487,6 +1487,7 @@ fn render_active_tasks(tasks: &[TaskRecord], total_count: usize) -> String {
     lines.join("\n")
 }
 
+#[cfg(test)]
 pub(crate) fn render_pending_task_results_from_snapshot(
     pending: &[PendingTaskResult],
     current_message: &MessageEnvelope,
@@ -4412,6 +4413,7 @@ fn render_turn_record_projection_with_transcript(
     )
 }
 
+#[cfg(test)]
 pub(crate) fn render_pending_task_result_records(
     storage: &AppStorage,
     message: &MessageEnvelope,
@@ -4445,6 +4447,7 @@ pub(crate) fn render_pending_task_result_records(
     Ok(render_pending_task_results_from_snapshot(&pending, message))
 }
 
+#[cfg(test)]
 pub(crate) fn render_pending_task_results(
     storage: &AppStorage,
     agent: &AgentState,
@@ -5158,7 +5161,9 @@ mod tests {
     fn replay_reference_fixture(restarts: usize) -> ReplayReferenceFixture {
         let dir = tempdir().unwrap();
         let storage = AppStorage::new_for_agent_for_test(dir.path(), "default").unwrap();
-        storage.write_agent(&AgentState::new("default")).unwrap();
+        storage
+            .write_agent_for_fixture(&AgentState::new("default"))
+            .unwrap();
         let make_message = |id: &str| {
             let mut message = MessageEnvelope::new(
                 "default",

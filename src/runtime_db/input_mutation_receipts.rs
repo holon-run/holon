@@ -50,6 +50,7 @@ pub(crate) enum InputMutationFamily {
     TaskResult,
     LiveInputAttachment,
     LiveInputRecovery,
+    ContextBudgetStopRecovery,
     ProviderResultHandoff,
     Timer,
     ExternalTrigger,
@@ -71,6 +72,7 @@ impl InputMutationFamily {
             Self::TaskResult => "task_result",
             Self::LiveInputAttachment => "live_input_attachment",
             Self::LiveInputRecovery => "live_input_recovery",
+            Self::ContextBudgetStopRecovery => "context_budget_stop_recovery",
             Self::ProviderResultHandoff => "provider_result_handoff",
             Self::Timer => "timer",
             Self::ExternalTrigger => "external_trigger",
@@ -257,6 +259,9 @@ pub(crate) enum InputMutationResult {
     ExternalTrigger {
         outcome: Box<super::transitions::ExternalTriggerMutationOutcome>,
     },
+    ContextBudgetStopRecovery {
+        outcome: super::transitions::execution_protocol_repository::ExecutionProtocolRecoveryCommitOutcome,
+    },
     Timer {
         outcome: Box<super::transitions::TimerMutationOutcome>,
     },
@@ -303,6 +308,7 @@ impl InputMutationOutcome {
                         | InputMutationFamily::Task
                         | InputMutationFamily::TaskResult
                         | InputMutationFamily::Timer
+                        | InputMutationFamily::ContextBudgetStopRecovery
                 ),
                 ReceiptError::InvalidOutcome("result family mismatch")
             ),
@@ -353,6 +359,17 @@ impl InputMutationOutcome {
             InputMutationResult::ChildTaskTerminal { ack } => ack.validate(prepared)?,
             InputMutationResult::TaskStatusMetadata { ack } => ack.validate(prepared)?,
             InputMutationResult::ExternalTrigger { outcome } => outcome.validate(prepared)?,
+            InputMutationResult::ContextBudgetStopRecovery { outcome } => {
+                ensure!(
+                    prepared.family() == InputMutationFamily::ContextBudgetStopRecovery
+                        && self.applied
+                            == matches!(
+                                outcome,
+                                super::transitions::execution_protocol_repository::ExecutionProtocolRecoveryCommitOutcome::Applied(true)
+                            ),
+                    ReceiptError::InvalidOutcome("context budget recovery result mismatch")
+                );
+            }
             InputMutationResult::Timer { outcome } => {
                 ensure!(
                     prepared.family() == InputMutationFamily::Timer,

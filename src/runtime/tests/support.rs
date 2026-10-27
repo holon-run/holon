@@ -788,6 +788,7 @@ impl AgentProvider for ReportCompactionProvider {
         }) {
             *self.checkpoint_calls.lock().await += 1;
             return Ok(ProviderTurnResponse {
+                material: request.material,
                 blocks: match self.checkpoint_output {
                     ReportCheckpointOutput::Text => vec![ModelBlock::Text {
                         text:

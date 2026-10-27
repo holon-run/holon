@@ -23,6 +23,7 @@ impl AgentProvider for Arc<ReplyGateProvider> {
             }
             if self.wait {
                 return Ok(ProviderTurnResponse {
+material: Default::default(),
                     blocks: vec![crate::provider::ModelBlock::ToolUse {
                         id: "reply-fixture-wait".into(),
                         name: "WaitFor".into(),

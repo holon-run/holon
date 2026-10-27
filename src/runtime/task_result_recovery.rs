@@ -130,7 +130,7 @@ pub(super) fn outstanding_recovery_message_id(
 impl RuntimeHandle {
     async fn enqueue_exact_recovery_continuation(
         &self,
-        result_message_id: &str,
+        record: crate::runtime_db::TaskResultSettlementRecord,
         predecessor: &WaitConditionRecord,
         mut message: MessageEnvelope,
         now: DateTime<Utc>,
@@ -145,9 +145,7 @@ impl RuntimeHandle {
 
         let mut mutation = self.begin_mutation().await?;
         let repository = self.inner.runtime_db.task_result_settlements();
-        let Some(record) = repository.latest_for_message(result_message_id)? else {
-            return Ok(false);
-        };
+        let result_message_id = record.message_id.clone();
         if repository
             .exact_waiter_recovery_continuation(&record, now)?
             .as_ref()
@@ -272,8 +270,22 @@ impl RuntimeHandle {
         {
             return Ok(false);
         }
-        let (wait_witness, _wait_observation) =
-            self.capture_exact_recovery_wait_witness(&mutation, &work, &predecessor.id, source_id)?;
+        let selected = tasks
+            .lookup(&super::resident_task::TaskKey::new(
+                super::resident_task::TaskFamily::ResultSettlement,
+                &record.result_identity,
+            ))?
+            .context("exact recovery Result is absent")?;
+        anyhow::ensure!(
+            matches!(&selected.fact, super::resident_task::CanonicalTaskFact::ResultSettlement(current) if current == &record),
+            "exact recovery Result differs from the selected current record"
+        );
+        let (wait_witness, _wait_observation) = self.capture_task_result_wait_witness(
+            &mutation,
+            &work,
+            Some(&predecessor.id),
+            &[source_id],
+        )?;
         let mut execution_protocol = ExecutionProtocolTransition::default();
         let mut work_items = Vec::new();
         let mut index_changes = Vec::new();
@@ -386,12 +398,12 @@ impl RuntimeHandle {
 
     /// The original admission transaction checks this Work revision, exact
     /// bodies and the live frontier before publishing a successor wait.
-    fn capture_exact_recovery_wait_witness(
+    pub(super) fn capture_task_result_wait_witness(
         &self,
         mutation: &super::state_mutation::RuntimeMutation,
         work: &super::resident_work::CapturedWork,
-        predecessor_id: &str,
-        source_id: &str,
+        predecessor_id: Option<&str>,
+        source_ids: &[&str],
     ) -> Result<(
         crate::runtime_db::transitions::WaitTaskResultWitness,
         Arc<super::input_evidence_budget::BudgetViewGuard>,
@@ -404,11 +416,15 @@ impl RuntimeHandle {
             "exact recovery Wait witness scope differs"
         );
         let live_waits = work.unresolved_wait_conditions()?;
-        let predecessor = work
-            .wait_condition(predecessor_id)?
-            .context("exact recovery predecessor Wait missing")?;
-        let mut exact_waits = work.waits_triggered_by(source_id)?;
-        exact_waits.push(predecessor);
+        let mut exact_waits = Vec::new();
+        for source_id in source_ids {
+            exact_waits.extend(work.waits_triggered_by(source_id)?);
+        }
+        if let Some(predecessor_id) = predecessor_id {
+            if let Some(predecessor) = work.wait_condition(predecessor_id)? {
+                exact_waits.push(predecessor);
+            }
+        }
         exact_waits.retain(|wait| {
             !matches!(
                 wait.status,
@@ -786,12 +802,7 @@ impl RuntimeHandle {
             let acceptance_message = message.clone();
             if let Some(predecessor) = exact_continuation {
                 enqueued |= self
-                    .enqueue_exact_recovery_continuation(
-                        &record.message_id,
-                        &predecessor,
-                        message,
-                        now,
-                    )
+                    .enqueue_exact_recovery_continuation(record.clone(), &predecessor, message, now)
                     .await?;
             } else {
                 self.enqueue(message).await?;

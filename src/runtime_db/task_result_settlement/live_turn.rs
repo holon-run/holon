@@ -136,10 +136,12 @@ impl TaskResultSettlementRepository<'_> {
         message_id: &str,
         now: DateTime<Utc>,
     ) -> Result<Option<String>> {
-        self.db.transaction(|tx| interrupted_admitted_result_anchor_tx(tx, agent_id, message_id, now))
+        self.db
+            .transaction(|tx| interrupted_admitted_result_anchor_tx(tx, agent_id, message_id, now))
     }
 
     /// Discovery is not a grant. The attachment transaction rechecks every identity.
+    #[cfg(test)]
     pub(crate) fn same_turn_candidates(
         &self,
         agent_id: &str,
@@ -147,7 +149,8 @@ impl TaskResultSettlementRepository<'_> {
         cutoff: DateTime<Utc>,
         limit: usize,
     ) -> Result<Vec<TaskResultSettlementRecord>> {
-        self.db.transaction(|tx| same_turn_candidates_tx(tx, agent_id, turn_id, cutoff, limit))
+        self.db
+            .transaction(|tx| same_turn_candidates_tx(tx, agent_id, turn_id, cutoff, limit))
     }
 
     /// A settlement's anchor turn is live only while its turn record is still
@@ -546,17 +549,6 @@ fn turn_matches_attempt_source(
         ExecutionBinding::Command => TurnOwner::Command,
     };
     turn.effective_owner() == owner
-}
-
-/// Discovery only: match the main same-turn query without granting replay.
-pub(crate) fn idle_read_source_is_live_tx(
-    tx: &Transaction<'_>,
-    record: &TaskResultSettlementRecord,
-    agent_id: &str,
-    turn_id: &str,
-    cutoff: DateTime<Utc>,
-) -> Result<bool> {
-    source_is_live_tx(tx, record, agent_id, turn_id, None, cutoff, None)
 }
 
 fn source_is_live_tx(
@@ -1497,25 +1489,25 @@ fn delivery_tx(
     }))
 }
 
-pub(crate) fn interrupted_admitted_result_anchor_tx(tx: &Transaction<'_>, agent_id: &str, message_id: &str, now: DateTime<Utc>) -> Result<Option<String>> {
+pub(crate) fn interrupted_admitted_result_anchor_tx(
+    tx: &Transaction<'_>,
+    agent_id: &str,
+    message_id: &str,
+    now: DateTime<Utc>,
+) -> Result<Option<String>> {
     let Some(record) = super::latest_for_message_tx(tx, message_id)? else {
         return Ok(None);
     };
-    if record.agent_id != agent_id
-        || record.state != TaskResultSettlementState::CallerAdmitted
-    {
+    if record.agent_id != agent_id || record.state != TaskResultSettlementState::CallerAdmitted {
         return Ok(None);
     }
     let Some(activation_id) = record.activation_id.as_deref() else {
         return Ok(None);
     };
-    let Some(attempt) = super::reply_admission_attempt_tx(tx, agent_id, activation_id)?
-    else {
+    let Some(attempt) = super::reply_admission_attempt_tx(tx, agent_id, activation_id)? else {
         return Ok(None);
     };
-    if attempt.state
-        != crate::domain::execution_protocol::ExecutionAttemptState::Interrupted
-    {
+    if attempt.state != crate::domain::execution_protocol::ExecutionAttemptState::Interrupted {
         return Ok(None);
     }
     let Some(turn) = attached_turn_for_activation_tx(tx, &attempt, true)? else {
@@ -1541,10 +1533,7 @@ pub(crate) fn interrupted_admitted_result_anchor_tx(tx: &Transaction<'_>, agent_
     }
     let recovery = RecoverySources {
         predecessor_turn_id: turn.turn_id.clone(),
-        activation_turns: BTreeMap::from([(
-            activation_id.to_owned(),
-            turn.turn_id.clone(),
-        )]),
+        activation_turns: BTreeMap::from([(activation_id.to_owned(), turn.turn_id.clone())]),
     };
     let live: Vec<_> = turn
         .live_input_batches
@@ -1591,7 +1580,13 @@ pub(crate) fn interrupted_admitted_result_anchor_tx(tx: &Transaction<'_>, agent_
     Ok(valid.then(|| anchor.to_owned()))
 }
 
-pub(crate) fn same_turn_candidates_tx(tx: &Transaction<'_>, agent_id: &str, turn_id: &str, cutoff: DateTime<Utc>, limit: usize) -> Result<Vec<TaskResultSettlementRecord>> {
+pub(crate) fn same_turn_candidates_tx(
+    tx: &Transaction<'_>,
+    agent_id: &str,
+    turn_id: &str,
+    cutoff: DateTime<Utc>,
+    limit: usize,
+) -> Result<Vec<TaskResultSettlementRecord>> {
     let records = super::records_tx(
         tx,
         "SELECT payload_json FROM task_result_settlements

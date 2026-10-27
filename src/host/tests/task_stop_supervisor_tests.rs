@@ -7,6 +7,7 @@ use crate::{
 
 fn request() -> TaskDomainLoadRequest {
     TaskDomainLoadRequest {
+        recovery_at: None,
         query: Default::default(),
         capture: crate::runtime::resident_task::TaskCaptureRequest::current(),
         record_limit: 4096,

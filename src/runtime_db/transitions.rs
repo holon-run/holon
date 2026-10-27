@@ -2407,29 +2407,6 @@ impl RuntimeTransitionRepository<'_> {
         )
     }
 
-    pub fn commit_work_item_focus_with_execution_protocol(
-        &self,
-        command: &WorkItemFocusTransitionCommand,
-        execution_protocol: &ExecutionProtocolTransition,
-    ) -> Result<TransitionCommit> {
-        self.commit_work_item_focus_internal(command, execution_protocol, true, None, false)
-    }
-
-    pub fn commit_work_item_focus_with_execution_protocol_and_completion_tool(
-        &self,
-        command: &WorkItemFocusTransitionCommand,
-        execution_protocol: &ExecutionProtocolTransition,
-        tool_execution: &ToolExecutionRecord,
-    ) -> Result<TransitionCommit> {
-        self.commit_work_item_focus_internal(
-            command,
-            execution_protocol,
-            true,
-            Some(tool_execution),
-            false,
-        )
-    }
-
     fn commit_work_item_focus_internal(
         &self,
         command: &WorkItemFocusTransitionCommand,
@@ -2647,6 +2624,7 @@ impl RuntimeTransitionRepository<'_> {
         Ok(commit)
     }
 
+    #[cfg(test)]
     pub fn commit_work_item(
         &self,
         command: &WorkItemTransitionCommand,
@@ -2654,6 +2632,7 @@ impl RuntimeTransitionRepository<'_> {
         self.commit_work_item_internal(command, &ExecutionProtocolTransition::default(), false)
     }
 
+    #[cfg(test)]
     fn commit_work_item_internal(
         &self,
         command: &WorkItemTransitionCommand,
@@ -3002,6 +2981,31 @@ impl RuntimeTransitionRepository<'_> {
         })
     }
 
+    #[cfg(test)]
+    pub fn commit_queue_terminal(
+        &self,
+        command: &QueueTransitionCommand,
+        execution_protocol: &ExecutionProtocolTransition,
+        completion: Option<&CompletionTransition>,
+        terminal_tool_executions: &[ToolExecutionRecord],
+        task_result_settlement: Option<
+            &crate::runtime_db::task_result_settlement::TaskResultActivationSettlement,
+        >,
+    ) -> Result<TransitionCommit> {
+        self.commit_queue_transaction(
+            command,
+            execution_protocol,
+            None,
+            None,
+            completion,
+            terminal_tool_executions,
+            &[],
+            None,
+            task_result_settlement,
+        )
+    }
+
+    #[cfg(test)]
     pub fn commit_queue_terminal_with_wait(
         &self,
         command: &QueueTransitionCommand,
@@ -3038,8 +3042,12 @@ impl RuntimeTransitionRepository<'_> {
     ) -> Result<TransitionCommit> {
         self.db.transaction(|tx| {
             let Some(task) = supervised_invocation::prepare_admission_tx(
-                tx, command, parent_task, child_incarnation,
-            )? else {
+                tx,
+                command,
+                parent_task,
+                child_incarnation,
+            )?
+            else {
                 return Ok(TransitionCommit::default());
             };
             upsert_task_tx(tx, &task)?;
@@ -3059,43 +3067,6 @@ impl RuntimeTransitionRepository<'_> {
                 None,
             )
         })
-    }
-
-    pub fn commit_queue_with_wait_trigger(
-        &self,
-        command: &QueueTransitionCommand,
-    ) -> Result<TransitionCommit> {
-        self.commit_queue_transaction(
-            command,
-            &ExecutionProtocolTransition::default(),
-            None,
-            None,
-            None,
-            &[],
-            &[],
-            None,
-            None,
-        )
-    }
-
-    pub fn commit_queue_with_execution_protocol_and_wait_transition(
-        &self,
-        command: &QueueTransitionCommand,
-        execution_protocol: &ExecutionProtocolTransition,
-        wait_transition: Option<&QueueWaitTransition>,
-        timer_wake_claim: Option<&TimerWakeClaim>,
-    ) -> Result<TransitionCommit> {
-        self.commit_queue_transaction(
-            command,
-            execution_protocol,
-            wait_transition,
-            None,
-            None,
-            &[],
-            &[],
-            timer_wake_claim,
-            None,
-        )
     }
 
     #[cfg(test)]
@@ -3139,6 +3110,7 @@ impl RuntimeTransitionRepository<'_> {
         )
     }
 
+    #[cfg(test)]
     fn commit_queue_transaction(
         &self,
         command: &QueueTransitionCommand,
@@ -3168,6 +3140,7 @@ impl RuntimeTransitionRepository<'_> {
         )
     }
 
+    #[cfg(test)]
     #[allow(clippy::too_many_arguments)]
     fn commit_queue_transaction_with_delivery(
         &self,
@@ -3201,6 +3174,7 @@ impl RuntimeTransitionRepository<'_> {
         )
     }
 
+    #[cfg(test)]
     fn commit_queue_transaction_full(
         &self,
         command: &QueueTransitionCommand,
@@ -7060,7 +7034,7 @@ mod tests {
             let mut initial = AgentState::new("agent-a");
             initial.current_work_item_id = Some(work.id.clone());
             initial.current_turn_work_item_id = Some(work.id.clone());
-            db.agent_states().upsert(&initial)?;
+            db.agent_states().upsert_for_fixture(&initial)?;
             let mut execution = ExecutionProtocolState::empty("agent-a");
             execution.work_items.insert(
                 work.id.clone(),
@@ -8521,7 +8495,8 @@ mod tests {
     #[test]
     fn startup_recovery_finalizes_poisoned_interrupted_replay_pair() -> Result<()> {
         let (_dir, db) = runtime_db()?;
-        db.agent_states().upsert(&AgentState::new("agent-a"))?;
+        db.agent_states()
+            .upsert_for_fixture(&AgentState::new("agent-a"))?;
         db.agent_identities().upsert(&active_agent("agent-a"))?;
         let now = Utc::now();
 
@@ -8629,7 +8604,8 @@ mod tests {
     #[test]
     fn startup_recovery_finalizes_completed_replay_pair_as_processed() -> Result<()> {
         let (_dir, db) = runtime_db()?;
-        db.agent_states().upsert(&AgentState::new("agent-a"))?;
+        db.agent_states()
+            .upsert_for_fixture(&AgentState::new("agent-a"))?;
         db.agent_identities().upsert(&active_agent("agent-a"))?;
         let now = Utc::now();
         let admission =

@@ -1,5 +1,6 @@
 use super::*;
 use crate::runtime_error::RuntimeError;
+use crate::types::TaskRecord;
 
 #[derive(Debug, Serialize, JsonSchema)]
 pub struct ToolExecutionArtifactContent {

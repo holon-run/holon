@@ -21,11 +21,13 @@ impl RuntimeHost {
         handle: &Handle,
     ) -> std::result::Result<AgentStateReadProjection, PublicAgentError> {
         db.check_read_scope().map_err(PublicAgentError::Runtime)?;
-        let runtime = handle.block_on(self.try_get_loaded_runtime_scoped(agent_id, db))
+        let runtime = handle
+            .block_on(self.try_get_loaded_runtime_scoped(agent_id, db))
             .map_err(PublicAgentError::Runtime)?;
         if let Some(runtime) = runtime {
             crate::diagnostics::record_projection_state_source_loaded();
-            return runtime.operator_state_read_projection_scoped(task_limit, timer_limit, db, handle)
+            return runtime
+                .operator_state_read_projection_scoped(task_limit, timer_limit, db, handle)
                 .map_err(PublicAgentError::Runtime);
         }
         let identity = self.active_agent_identity(agent_id)?;
@@ -48,7 +50,8 @@ impl RuntimeHost {
             material: scheduling_material,
             acquisition,
             reservations,
-        } = handle.block_on(self.acquire_cold_scheduling_query_in(&identity, timer_limit, db))
+        } = handle
+            .block_on(self.acquire_cold_scheduling_query_in(&identity, timer_limit, db))
             .map_err(PublicAgentError::Runtime)?;
         let agent_started = std::time::Instant::now();
         let agent_state = state.unwrap_or_else(|| stopped_unloaded_agent(agent_id));
@@ -101,7 +104,8 @@ impl RuntimeHost {
         crate::diagnostics::record_projection_state_tasks(tasks_started.elapsed());
         // Parent facts are frozen. Release before another agent's summary await.
         drop(reservations);
-        let active_children = self.child_agent_summaries_scoped(agent_id, db, handle)
+        let active_children = self
+            .child_agent_summaries_scoped(agent_id, db, handle)
             .map_err(PublicAgentError::Runtime)?;
         let agent = LightweightAgentStateProjection {
             identity: AgentIdentityView::from_owned_record(
@@ -160,7 +164,9 @@ impl RuntimeHost {
             .child_identity_reads(parent_agent_id, &self.inner.input_evidence_budget)?
         {
             db.check_read_cancellation()?;
-            if let Some(runtime) = handle.block_on(self.try_get_loaded_runtime_scoped(&identity.agent_id, db))? {
+            if let Some(runtime) =
+                handle.block_on(self.try_get_loaded_runtime_scoped(&identity.agent_id, db))?
+            {
                 let mut read = runtime.child_agent_summary_observation_scoped(db, handle)?;
                 read.observability._source_material = Some(material.guard()?);
                 read.acquisition.read(|| {
@@ -210,17 +216,6 @@ impl RuntimeHost {
 }
 
 impl RuntimeHostBridge {
-    pub(crate) fn identity_for_agent_scoped(
-        &self,
-        agent_id: &str,
-        db: &RuntimeDb,
-    ) -> Result<Option<AgentIdentityRecord>> {
-        db.check_read_scope()?;
-        let identity = self.host()?.agent_identity_record(agent_id)?;
-        db.check_read_scope()?;
-        Ok(identity)
-    }
-
     pub(crate) fn child_summaries_scoped(
         &self,
         parent_agent_id: &str,
@@ -254,7 +249,10 @@ mod tests {
         let agent_id = identity.agent_id;
         let mut agent = AgentState::new(&agent_id);
         agent.status = AgentStatus::Asleep;
-        host.runtime_db().agent_states().upsert(&agent).unwrap();
+        host.runtime_db()
+            .agent_states()
+            .upsert_for_fixture(&agent)
+            .unwrap();
         let db = host.runtime_db().with_read_scope(RuntimeDbReadScope::new(
             std::time::Instant::now() + Duration::from_secs(30),
         ));

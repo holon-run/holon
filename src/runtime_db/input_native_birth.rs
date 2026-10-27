@@ -547,6 +547,7 @@ pub(in crate::runtime_db) fn visit_execution_commands(
             C::RegisterWorkItem(c) => visit(Family::WorkExecution, &c.work_item_id)?,
             C::AdvanceWorkItemSourceRevision(c) => visit(Family::WorkExecution, &c.work_item_id)?,
             C::SetWorkItemReadiness(c) => visit(Family::WorkExecution, &c.work_item_id)?,
+            C::RecheckContextBudgetStop(c) => visit(Family::WorkExecution, &c.work_item_id)?,
             C::SuspendWorkItemContinuation(c) => visit(Family::WorkExecution, &c.work_item_id)?,
             C::ResumeWorkItemContinuation(c) => visit(Family::WorkExecution, &c.work_item_id)?,
             C::ReconcileWorkItemContinuationYield(c) => {
@@ -557,6 +558,7 @@ pub(in crate::runtime_db) fn visit_execution_commands(
             C::Admit(c) => visit(Family::Attempt, &c.attempt.attempt_id)?,
             C::Settle(c) => visit(Family::Outcome, &c.outcome.outcome_id)?,
             C::Interrupt(c) => visit(Family::Outcome, &c.outcome_id)?,
+            C::FinalizeInterrupted(c) => visit(Family::Attempt, &c.attempt_id)?,
             C::RecoverInterruptedTaskResultClaim(c) => visit(Family::Outcome, &c.outcome_id)?,
             C::RecoverUnadvancedTaskResultClaim(c) => visit(Family::Outcome, &c.outcome_id)?,
         }

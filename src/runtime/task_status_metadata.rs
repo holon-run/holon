@@ -360,6 +360,7 @@ mod tests {
             budget,
         );
         let request = TaskDomainLoadRequest {
+            recovery_at: None,
             query: Default::default(),
             capture: super::super::resident_task::TaskCaptureRequest::current(),
             byte_limit: 4096,

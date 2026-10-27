@@ -223,13 +223,18 @@ async fn generate_image_route_uses_captured_state_without_sql_or_mutable_agent_l
     let _agent = runtime.inner.agent.lock().await;
     let result = tokio::time::timeout(
         std::time::Duration::from_secs(1),
-        runtime.generate_image(ProviderGenerateImageRequest {
-            material: Default::default(),
-            prompt: "no provider call".into(),
-            size: None,
-            background: None,
-            output_format: None,
-        }),
+        runtime.generate_image(
+            None,
+            ProviderGenerateImageRequest {
+                material: Default::default(),
+                prompt: "no provider call".into(),
+                size: None,
+                aspect_ratio: None,
+                resolution: None,
+                background: None,
+                output_format: None,
+            },
+        ),
     )
     .await?;
     let error = result.unwrap_err();

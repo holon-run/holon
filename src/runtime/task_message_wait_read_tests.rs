@@ -27,6 +27,8 @@ fn waiting_task(runtime: &RuntimeHandle, id: &str) -> TaskRecord {
             authority_class: AuthorityClass::RuntimeInstruction,
             delivery_id: None,
             after_delivery_rowid: None,
+            reply_deadline_at: None,
+            requester_incarnation: Some(runtime.instance_incarnation()),
         }),
     }
 }
@@ -652,6 +654,7 @@ async fn actual_unbound_message_wait_creator_preserves_partial_contract_through_
             "original request".into(),
             "original-sender".into(),
             AuthorityClass::RuntimeInstruction,
+            None,
         )
         .await?;
     assert_eq!(

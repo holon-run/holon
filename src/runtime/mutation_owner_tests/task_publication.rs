@@ -11,6 +11,7 @@ fn tasks(agent_id: &str, incarnation: u64) -> Arc<ResidentTaskDomain> {
                 identity_incarnation: incarnation,
             },
             TaskCoverage {
+                recovery_at: None,
                 revision: 1,
                 stop: Default::default(),
                 output: Default::default(),

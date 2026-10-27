@@ -74,10 +74,12 @@ mod tests {
                     .unwrap();
                 let response = build_http_client().unwrap().get(url).send().await.unwrap();
                 trace.write_response_headers(response.status(), response.headers());
-                assert!(read_error_response_body(response, Some(&trace), &Default::default())
-                    .await
-                    .unwrap()
-                    .is_empty());
+                assert!(
+                    read_error_response_body(response, Some(&trace), &Default::default())
+                        .await
+                        .unwrap()
+                        .is_empty()
+                );
                 let path = trace.diagnostics(Some(503)).unwrap().path;
                 let events = std::fs::read_to_string(path).unwrap();
                 let summary = events

@@ -2116,7 +2116,12 @@ async fn execute_admitted_context_budget_failure(runtime: &RuntimeHandle) {
         .unwrap_err()
         .is::<crate::context::ContextPlanningError>());
     runtime
-        .settle_processed_message(scheduled.message, result, started)
+        .finish_scheduled_message_processing(
+            &scheduled.message,
+            scheduled.running_state.current_run_id.as_deref().unwrap(),
+            started,
+            result,
+        )
         .await
         .unwrap();
 }
@@ -7648,8 +7653,7 @@ async fn production_settlement_accepts_authoritative_revision_advance_while_in_f
 #[tokio::test]
 async fn context_budget_stop_keeps_admitted_revision_and_recheck_obeys_durable_waits() {
     use crate::domain::execution_protocol::{
-        ContextBudgetStop, ExecutionProtocolCommand, RecheckContextBudgetStop,
-        WorkItemExecutionState,
+        ContextBudgetStop, RecheckContextBudgetStop, WorkItemExecutionState,
     };
     use crate::runtime_db::transitions::execution_protocol_repository::ExecutionProtocolRecoveryCommitOutcome;
     let dir = tempdir().unwrap();
@@ -7766,19 +7770,19 @@ async fn context_budget_stop_keeps_admitted_revision_and_recheck_obeys_durable_w
     );
     let mut wait = task_wait_condition_for_work_item("context-recheck-wait", &owner.id);
     runtime.storage().append_wait_condition(&wait).unwrap();
-    let command =
-        ExecutionProtocolCommand::RecheckContextBudgetStop(Box::new(RecheckContextBudgetStop {
-            command_id: "context-budget-concurrent-source-recheck".into(),
-            work_item_id: owner.id.clone(),
-            expected: expected.clone(),
-            configured_estimated_tokens: configured_budget,
-        }));
+    let command = RecheckContextBudgetStop {
+        command_id: "context-budget-concurrent-source-recheck".into(),
+        work_item_id: owner.id.clone(),
+        expected: expected.clone(),
+        configured_estimated_tokens: configured_budget,
+    };
     assert!(matches!(
         runtime
-            .inner
-            .runtime_db
-            .transitions()
-            .commit_execution_protocol_recovery_plan("default", &[command.clone()], &[],)
+            .begin_mutation()
+            .await
+            .unwrap()
+            .commit_context_budget_stop_recovery(command.clone(), vec![])
+            .await
             .unwrap(),
         ExecutionProtocolRecoveryCommitOutcome::Rejected { .. }
     ));
@@ -7787,20 +7791,22 @@ async fn context_budget_stop_keeps_admitted_revision_and_recheck_obeys_durable_w
     runtime.storage().append_wait_condition(&wait).unwrap();
     assert!(matches!(
         runtime
-            .inner
-            .runtime_db
-            .transitions()
-            .commit_execution_protocol_recovery_plan("default", &[command.clone()], &[],)
+            .begin_mutation()
+            .await
+            .unwrap()
+            .commit_context_budget_stop_recovery(command.clone(), vec![])
+            .await
             .unwrap(),
         ExecutionProtocolRecoveryCommitOutcome::Applied(true)
     ));
     // Repeated delivery reads back the same command result, not a second generation.
     assert!(matches!(
         runtime
-            .inner
-            .runtime_db
-            .transitions()
-            .commit_execution_protocol_recovery_plan("default", &[command], &[],)
+            .begin_mutation()
+            .await
+            .unwrap()
+            .commit_context_budget_stop_recovery(command, vec![])
+            .await
             .unwrap(),
         ExecutionProtocolRecoveryCommitOutcome::Applied(false)
     ));

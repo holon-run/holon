@@ -574,10 +574,9 @@ fn prepared_result_projection_validates_original_before_writing_a_receipt() -> R
     .expect("unbounded source fits");
     let mut invalid = projection.clone();
     invalid.rendered.push_str("forged result");
-    let before = f
-        .db
-        .task_result_settlements()
-        .latest_for_message(&source.id)?;
+    let before =
+        f.db.task_result_settlements()
+            .latest_for_message(&source.id)?;
     let count = f.receipt_count()?;
     let command = |projection| TaskResultOperation::AdmitMessage {
         message_id: source.id.clone(),
@@ -589,8 +588,7 @@ fn prepared_result_projection_validates_original_before_writing_a_receipt() -> R
     let error = execute(&f, &invalid, &request(), &ledger).unwrap_err();
     assert!(format!("{error:#}").contains("projection"), "{error:#}");
     assert_eq!(
-        f.db
-            .task_result_settlements()
+        f.db.task_result_settlements()
             .latest_for_message(&source.id)?,
         before
     );
@@ -607,8 +605,7 @@ fn prepared_result_projection_validates_original_before_writing_a_receipt() -> R
     };
     assert_eq!(record.source_projection.as_ref(), Some(&projection));
     assert_eq!(
-        f.db
-            .task_result_settlements()
+        f.db.task_result_settlements()
             .latest_for_message(&source.id)?
             .as_ref(),
         Some(record)

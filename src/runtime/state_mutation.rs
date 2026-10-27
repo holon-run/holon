@@ -1134,7 +1134,8 @@ impl RuntimeMutation {
             QueueMutation::Consume(entry)
             | QueueMutation::Upsert(entry)
             | QueueMutation::CompareAndSet { record: entry, .. }
-            | QueueMutation::ParkProviderDispatch { record: entry, .. } => entry,
+            | QueueMutation::ParkProviderDispatch { record: entry, .. }
+            | QueueMutation::ConsumeSettledTaskResultRecovery { record: entry, .. } => entry,
         };
         if matches!(
             entry.status,
@@ -1322,6 +1323,32 @@ impl RuntimeMutation {
             };
             Ok((commit, *outcome))
         })
+    }
+
+    pub(super) async fn commit_context_budget_stop_recovery(
+        &mut self,
+        command: crate::domain::execution_protocol::RecheckContextBudgetStop,
+        audit_events: Vec<AuditEvent>,
+    ) -> Result<
+        crate::runtime_db::transitions::execution_protocol_repository::ExecutionProtocolRecoveryCommitOutcome,
+    >{
+        let prepared =
+            crate::runtime_db::transitions::PreparedInputTransition::context_budget_stop_recovery(
+                self.input_evidence_scope(),
+                crate::ids::audit_event_id(),
+                Utc::now(),
+                command,
+                audit_events,
+            )?;
+        let (commit, result) = self.commit_prepared_input_with_result(prepared).await?;
+        let crate::runtime_db::input_mutation_receipts::InputMutationResult::ContextBudgetStopRecovery {
+            outcome,
+        } = result
+        else {
+            anyhow::bail!("context budget recovery receipt has another result family");
+        };
+        self.runtime.apply_transition_commit(commit).await;
+        Ok(outcome)
     }
 
     pub(super) fn commit_prepared_timer_transition<'a>(
@@ -1823,6 +1850,20 @@ impl RuntimeMutation {
                 .queue
                 .pop_next_matching(|message| &message.id == message_id);
         }
+        #[cfg(test)]
+        if !committed.effects.queued_messages.is_empty() {
+            let checkpoint = self
+                .runtime
+                .inner
+                .queued_message_projection_checkpoint
+                .lock()
+                .expect("queue projection checkpoint lock poisoned")
+                .take();
+            if let Some(checkpoint) = checkpoint {
+                checkpoint.reached.notify_one();
+                checkpoint.release.notified().await;
+            }
+        }
         for message in &committed.effects.queued_messages {
             if self
                 .candidate
@@ -2204,108 +2245,115 @@ impl RuntimeMutation {
     ) -> Result<()> {
         for delta in &effects.related_task_deltas {
             anyhow::ensure!(
-                self.reservations.iter().enumerate().any(|(index, reservation)| {
-                    index != self.primary_index
-                        && delta.scope.agent_id == reservation.agent_id()
-                        && delta.scope.identity_incarnation == reservation.identity_incarnation()
-                }),
+                self.reservations
+                    .iter()
+                    .enumerate()
+                    .any(|(index, reservation)| {
+                        index != self.primary_index
+                            && delta.scope.agent_id == reservation.agent_id()
+                            && delta.scope.identity_incarnation
+                                == reservation.identity_incarnation()
+                    }),
                 "related Task delta has no reserved owner"
             );
         }
-        let known = self
-            .reservations
-            .iter()
-            .enumerate()
-            .map(|(index, reservation)| {
-                if index == self.primary_index {
-                    return Ok(KnownCommit::State {
-                        state: facts.state.clone(),
-                        episodes: facts.episodes.clone(),
-                        input_evidence: facts.input_evidence.clone(),
-                        work: facts.work.clone(),
-                        tasks: facts.tasks.clone(),
-                        scheduling: facts.scheduling.clone(),
-                        runtime: Some(facts.clone()),
-                    });
-                }
-                if let Some(member) = self
-                    .task_stop_readonly
-                    .iter()
-                    .find(|member| member.target().scope.agent_id == reservation.agent_id())
-                {
-                    anyhow::ensure!(
-                        !effects
-                            .agent_identities
-                            .iter()
-                            .any(|identity| identity.agent_id == reservation.agent_id())
-                            && effects
-                                .agent_state
-                                .as_ref()
-                                .is_none_or(|state| state.record.id != reservation.agent_id())
-                            && !effects
-                                .tasks
-                                .iter()
-                                .any(|task| task.agent_id == reservation.agent_id())
-                            && !effects.related_task_deltas.iter().any(|delta| {
-                                delta.scope.agent_id == reservation.agent_id()
-                            }),
-                        "initial Stop cannot mutate its readonly child"
-                    );
-                    return Ok(member.known());
-                }
-                let mut metadata = self.metadata[index]
-                    .as_ref()
-                    .ok_or_else(|| anyhow!("related runtime metadata snapshot is missing"))?
-                    .as_ref()
-                    .clone();
-                if let Some(identity) = effects
-                    .agent_identities
-                    .iter()
-                    .find(|identity| identity.agent_id == reservation.agent_id())
-                {
-                    anyhow::ensure!(
-                        identity.incarnation == reservation.identity_incarnation(),
-                        "committed related identity incarnation mismatch"
-                    );
-                    metadata.identity = Some(Arc::new(identity.clone()));
-                }
-                let deltas = effects
-                    .related_task_deltas
-                    .iter()
-                    .filter(|delta| delta.scope.agent_id == reservation.agent_id())
-                    .collect::<Vec<_>>();
-                if !deltas.is_empty() {
-                    anyhow::ensure!(
-                        metadata.identity.as_ref().is_some_and(|identity| {
-                            identity.incarnation == reservation.identity_incarnation()
-                                && identity.status == crate::types::AgentRegistryStatus::Active
-                        }),
-                        "related Task delta requires its active identity"
-                    );
-                    let prior = prior_publications
-                        .get(index)
-                        .context("related Task publication was not frozen")?
-                        .as_ref();
-                    let mut tasks = prior.and_then(|root| root.tasks.clone());
-                    for delta in deltas {
-                        tasks = tasks
-                            .as_ref()
-                            .map(|tasks| tasks.with_committed(delta).map(Arc::new))
-                            .transpose()?;
+        let known =
+            self.reservations
+                .iter()
+                .enumerate()
+                .map(|(index, reservation)| {
+                    if index == self.primary_index {
+                        return Ok(KnownCommit::State {
+                            state: facts.state.clone(),
+                            episodes: facts.episodes.clone(),
+                            input_evidence: facts.input_evidence.clone(),
+                            work: facts.work.clone(),
+                            tasks: facts.tasks.clone(),
+                            scheduling: facts.scheduling.clone(),
+                            runtime: Some(facts.clone()),
+                        });
                     }
-                    return Ok(KnownCommit::State {
-                        state: metadata.state.clone().context("related Task owner has no State")?,
-                        episodes: prior.and_then(|root| root.episodes.clone()),
-                        input_evidence: prior.and_then(|root| root.input_evidence.clone()),
-                        work: prior.and_then(|root| root.work.clone()),
-                        tasks,
-                        scheduling: prior.and_then(|root| root.scheduling.clone()),
-                        runtime: None,
-                    });
-                }
-                Ok(KnownCommit::Metadata(Arc::new(metadata)))
-            })
-            .collect::<Result<Vec<_>>>()?;
+                    if let Some(member) = self
+                        .task_stop_readonly
+                        .iter()
+                        .find(|member| member.target().scope.agent_id == reservation.agent_id())
+                    {
+                        anyhow::ensure!(
+                            !effects
+                                .agent_identities
+                                .iter()
+                                .any(|identity| identity.agent_id == reservation.agent_id())
+                                && effects
+                                    .agent_state
+                                    .as_ref()
+                                    .is_none_or(|state| state.record.id != reservation.agent_id())
+                                && !effects
+                                    .tasks
+                                    .iter()
+                                    .any(|task| task.agent_id == reservation.agent_id())
+                                && !effects.related_task_deltas.iter().any(|delta| {
+                                    delta.scope.agent_id == reservation.agent_id()
+                                }),
+                            "initial Stop cannot mutate its readonly child"
+                        );
+                        return Ok(member.known());
+                    }
+                    let mut metadata = self.metadata[index]
+                        .as_ref()
+                        .ok_or_else(|| anyhow!("related runtime metadata snapshot is missing"))?
+                        .as_ref()
+                        .clone();
+                    if let Some(identity) = effects
+                        .agent_identities
+                        .iter()
+                        .find(|identity| identity.agent_id == reservation.agent_id())
+                    {
+                        anyhow::ensure!(
+                            identity.incarnation == reservation.identity_incarnation(),
+                            "committed related identity incarnation mismatch"
+                        );
+                        metadata.identity = Some(Arc::new(identity.clone()));
+                    }
+                    let deltas = effects
+                        .related_task_deltas
+                        .iter()
+                        .filter(|delta| delta.scope.agent_id == reservation.agent_id())
+                        .collect::<Vec<_>>();
+                    if !deltas.is_empty() {
+                        anyhow::ensure!(
+                            metadata.identity.as_ref().is_some_and(|identity| {
+                                identity.incarnation == reservation.identity_incarnation()
+                                    && identity.status == crate::types::AgentRegistryStatus::Active
+                            }),
+                            "related Task delta requires its active identity"
+                        );
+                        let prior = prior_publications
+                            .get(index)
+                            .context("related Task publication was not frozen")?
+                            .as_ref();
+                        let mut tasks = prior.and_then(|root| root.tasks.clone());
+                        for delta in deltas {
+                            tasks = tasks
+                                .as_ref()
+                                .map(|tasks| tasks.with_committed(delta).map(Arc::new))
+                                .transpose()?;
+                        }
+                        return Ok(KnownCommit::State {
+                            state: metadata
+                                .state
+                                .clone()
+                                .context("related Task owner has no State")?,
+                            episodes: prior.and_then(|root| root.episodes.clone()),
+                            input_evidence: prior.and_then(|root| root.input_evidence.clone()),
+                            work: prior.and_then(|root| root.work.clone()),
+                            tasks,
+                            scheduling: prior.and_then(|root| root.scheduling.clone()),
+                            runtime: None,
+                        });
+                    }
+                    Ok(KnownCommit::Metadata(Arc::new(metadata)))
+                })
+                .collect::<Result<Vec<_>>>()?;
         let metadata = known
             .iter()
             .enumerate()
@@ -2971,7 +3019,10 @@ impl RuntimeHandle {
         &self,
         parent_task: &TaskRecord,
         child_incarnation: u64,
-    ) -> Result<(RuntimeMutation, super::resident_input_evidence::InputEvidenceScope)> {
+    ) -> Result<(
+        RuntimeMutation,
+        super::resident_input_evidence::InputEvidenceScope,
+    )> {
         anyhow::ensure!(
             child_incarnation == self.inner.identity_incarnation
                 && parent_task.agent_id != self.inner.mutation_owner.agent_id(),

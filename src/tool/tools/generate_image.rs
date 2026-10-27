@@ -85,7 +85,14 @@ pub(crate) async fn execute(
         .transpose()?;
 
     let request = material.read(|| {
-        material.admit_value(&(&prompt, &size, &args.aspect_ratio, &args.resolution, &background, &output_format))?;
+        material.admit_value(&(
+            &prompt,
+            &size,
+            &args.aspect_ratio,
+            &args.resolution,
+            &background,
+            &output_format,
+        ))?;
         Ok(ProviderGenerateImageRequest {
             prompt: prompt.clone(),
             size: size.clone(),
@@ -101,7 +108,9 @@ pub(crate) async fn execute(
         .await
         .map_err(generate_image_failed)?;
     material.read(|| {
-        Ok(crate::diagnostics::resource_io::charge_owned_metadata(4096, 32)?)
+        Ok(crate::diagnostics::resource_io::charge_owned_metadata(
+            4096, 32,
+        )?)
     })?;
     let generated_dir = runtime.agent_home().join("media").join("generated");
     fs::create_dir_all(&generated_dir).map_err(|error| {
@@ -120,7 +129,12 @@ pub(crate) async fn execute(
     let mut sources = Vec::new();
     for image in execution.response.images {
         material.read(|| {
-            crate::diagnostics::resource_io::admit_serialized_value(&(&generated_dir, &name, &workspace_id, &image.mime))?;
+            crate::diagnostics::resource_io::admit_serialized_value(&(
+                &generated_dir,
+                &name,
+                &workspace_id,
+                &image.mime,
+            ))?;
             crate::diagnostics::resource_io::charge_owned_metadata(4096, 32)?;
             Ok(())
         })?;

@@ -2524,9 +2524,6 @@ impl<'a> TurnExecution<'a> {
                 &material,
             )?
         };
-        let mut turn_model_state = &turn_model.model;
-        let turn_model_override = &turn_model_state.override_model;
-        let identity = runtime.agent_identity_view().await?;
         let time_timezone = runtime.current_time_timezone().await?;
         let (
             mut provider,
@@ -2626,9 +2623,9 @@ impl<'a> TurnExecution<'a> {
             "lineage_selected",
             serde_json::json!({
                 "agent_id": agent_id,
-                "model_override": turn_model_override,
+                "model_override": &turn_model.model.override_model,
                 "recovery_fallback_model": model_selection.fallback_model(),
-                "model": turn_model_state,
+                "model": &turn_model.model,
                 "builtin_web_search_selection": builtin_web_search_selection,
                 "tool_capability_projection": {
                     "policy": "static_agent_profile_runtime_route",
@@ -2864,7 +2861,7 @@ impl<'a> TurnExecution<'a> {
                                 provider_quota_clean_success_identities(
                                     provider.as_ref(),
                                     agent_id,
-                                    &turn_model_state.effective_model,
+                                    &turn_model.model.effective_model,
                                 )?
                             };
                             for (identity_key, model_ref) in identities {
@@ -2981,7 +2978,7 @@ impl<'a> TurnExecution<'a> {
                         }
                     });
                 } else {
-                    let mut context_config = runtime.current_context_config().await;
+                    let context_config = runtime.current_context_config().await;
                     let (turn_index, turn_budget) = {
                         let guard = runtime.inner.agent.lock().await;
                         (guard.state.turn_index, guard.state.turn_budget.clone())
@@ -3034,7 +3031,7 @@ impl<'a> TurnExecution<'a> {
                             context_config.prompt_budget_estimated_tokens,
                             context_config.compaction_trigger_estimated_tokens,
                             context_config.compaction_keep_recent_estimated_tokens,
-                            turn_model_state
+                            turn_model.model
                                 .resolved_policy
                                 .tool_output_truncation_estimated_tokens,
                             runtime_reminder.as_deref(),
@@ -4941,7 +4938,8 @@ impl<'a> TurnExecution<'a> {
                                 &result,
                                 &crate::tool::tools::ToolModelRenderContext {
                                     tool_execution_id: &record.id,
-                                    tool_output_budget_estimated_tokens: turn_model_state
+                                    tool_output_budget_estimated_tokens: turn_model
+                                        .model
                                         .resolved_policy
                                         .tool_output_truncation_estimated_tokens,
                                 },

@@ -1,5 +1,6 @@
 use super::*;
 
+use std::collections::hash_map::Entry;
 use std::ffi::OsString;
 
 use crate::diagnostics::attribution;

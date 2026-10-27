@@ -67,6 +67,7 @@ fn seed_canonical(tx: &Transaction<'_>) -> Result<(MessageEnvelope, ExecutionAtt
         },
     )?;
     let attempt = ExecutionAttempt {
+        input_projection: None,
         attempt_id: "attempt-a".into(),
         agent_id: "agent-a".into(),
         source_message_id: Some(message.id.clone()),

@@ -175,6 +175,7 @@ async fn registered_host_spawn_keeps_success_and_failure_after_original_monitor_
                     // Adversarial normalized/raw identity drift, not a public
                     // Host recreation path. No new scope proof is minted here.
                     let request = crate::runtime_db::task_snapshot::TaskDomainLoadRequest {
+                        recovery_at: None,
                         query: Default::default(),
                         capture: crate::runtime::resident_task::TaskCaptureRequest::current(),
                         record_limit: 65_536,
@@ -541,12 +542,14 @@ async fn cancelled_before_handle_publication_hands_unstarted_task_to_original_bo
             .expect_err("sealed no-start cannot register a physical worker");
         assert!(source.original_child_spawn_cancellation_error(&denied));
         let request = TaskDomainLoadRequest {
+            recovery_at: None,
             query: Default::default(),
             capture: crate::runtime::resident_task::TaskCaptureRequest::current(),
             record_limit: 65536,
             byte_limit: 64 * 1024 * 1024,
         };
         let small = TaskDomainLoadRequest {
+            recovery_at: None,
             query: Default::default(),
             capture: crate::runtime::resident_task::TaskCaptureRequest::current(),
             record_limit: 128,

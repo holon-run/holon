@@ -181,6 +181,7 @@ async fn cold_borrowed_queue_dual_consumers_keep_empty_fallback_and_rejection() 
     );
 
     let timer = TimerRecord {
+        calendar: None,
         id: "raw-borrowed-queue-timer".into(),
         agent_id: identity.agent_id.clone(),
         created_at: Utc::now(),

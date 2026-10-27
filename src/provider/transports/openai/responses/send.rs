@@ -16,8 +16,18 @@ pub(in super::super) async fn send_openai_responses_request(
     dispatch_guard: Option<&dyn ProviderDispatchGuard>,
 ) -> Result<ParsedOpenAiResponse> {
     send_openai_responses_request_with_material(
-        client, url, body, headers, trace, agent_id, provider, model_ref, dispatch_guard, &Default::default(),
-    ).await
+        client,
+        url,
+        body,
+        headers,
+        trace,
+        agent_id,
+        provider,
+        model_ref,
+        dispatch_guard,
+        &Default::default(),
+    )
+    .await
 }
 
 pub(in super::super) async fn send_openai_responses_request_with_material(
@@ -33,18 +43,21 @@ pub(in super::super) async fn send_openai_responses_request_with_material(
     material: &crate::provider::ProviderRequestMaterial,
 ) -> Result<ParsedOpenAiResponse> {
     let result: Result<ParsedOpenAiResponse> = async {
-        let request_trace = trace.map(|trace| {
-            trace.begin_request_with_material(
-                agent_id,
-                provider,
-                Some(model_ref),
-                url.as_str(),
-                "responses",
-                &headers,
-                &body,
-                material,
-            )
-        }).transpose()?.flatten();
+        let request_trace = trace
+            .map(|trace| {
+                trace.begin_request_with_material(
+                    agent_id,
+                    provider,
+                    Some(model_ref),
+                    url.as_str(),
+                    "responses",
+                    &headers,
+                    &body,
+                    material,
+                )
+            })
+            .transpose()?
+            .flatten();
         let mut request = client.post(&url).header("content-type", "application/json");
         for (name, value) in headers {
             request = request.header(name, value);
@@ -91,35 +104,38 @@ pub(in super::super) async fn send_openai_responses_request_with_material(
             ));
         }
 
-        let body = match tokio::time::timeout(response_body_timeout(), material.response_text(response)).await {
-            Ok(Ok(text)) => text,
-            Ok(Err(error)) => {
-                let error = match error.downcast::<reqwest::Error>() {
-                    Ok(error) => error,
-                    Err(error) => return Err(material.hold_error(error)),
-                };
-                return Err(classify_reqwest_transport_error_with_trace(
-                    "OpenAI-style response body failed",
-                    "response_body",
-                    provider,
-                    Some(model_ref),
-                    Some(url.as_str()),
-                    error,
-                    request_trace.as_ref(),
-                ));
-            }
-            Err(_elapsed) => {
-                return Err(timeout_transport_error_with_trace(
-                    "OpenAI-style response body read timed out",
-                    "response_body",
-                    provider,
-                    Some(model_ref),
-                    Some(url.as_str()),
-                    format!("timed out after {:?}", response_body_timeout()),
-                    request_trace.as_ref(),
-                ));
-            }
-        };
+        let body =
+            match tokio::time::timeout(response_body_timeout(), material.response_text(response))
+                .await
+            {
+                Ok(Ok(text)) => text,
+                Ok(Err(error)) => {
+                    let error = match error.downcast::<reqwest::Error>() {
+                        Ok(error) => error,
+                        Err(error) => return Err(material.hold_error(error)),
+                    };
+                    return Err(classify_reqwest_transport_error_with_trace(
+                        "OpenAI-style response body failed",
+                        "response_body",
+                        provider,
+                        Some(model_ref),
+                        Some(url.as_str()),
+                        error,
+                        request_trace.as_ref(),
+                    ));
+                }
+                Err(_elapsed) => {
+                    return Err(timeout_transport_error_with_trace(
+                        "OpenAI-style response body read timed out",
+                        "response_body",
+                        provider,
+                        Some(model_ref),
+                        Some(url.as_str()),
+                        format!("timed out after {:?}", response_body_timeout()),
+                        request_trace.as_ref(),
+                    ));
+                }
+            };
         let response_body_completed_at = chrono::Utc::now();
         trace_response_body(request_trace.as_ref(), &body);
         material.read(|| crate::diagnostics::resource_io::admit_json_payload(&body))?;
@@ -222,8 +238,18 @@ pub(in super::super) async fn send_openai_responses_streaming_request(
     dispatch_guard: Option<&dyn ProviderDispatchGuard>,
 ) -> Result<ParsedOpenAiResponse> {
     send_openai_responses_streaming_request_with_material(
-        client, url, &body, headers, trace, agent_id, provider, model_ref, dispatch_guard, &Default::default(),
-    ).await
+        client,
+        url,
+        &body,
+        headers,
+        trace,
+        agent_id,
+        provider,
+        model_ref,
+        dispatch_guard,
+        &Default::default(),
+    )
+    .await
 }
 
 pub(in super::super) async fn send_openai_responses_streaming_request_with_material(
@@ -239,18 +265,21 @@ pub(in super::super) async fn send_openai_responses_streaming_request_with_mater
     material: &crate::provider::ProviderRequestMaterial,
 ) -> Result<ParsedOpenAiResponse> {
     let result: Result<ParsedOpenAiResponse> = async {
-        let request_trace = trace.map(|trace| {
-            trace.begin_request_with_material(
-                agent_id,
-                provider,
-                Some(model_ref),
-                url.as_str(),
-                "responses_streaming",
-                &headers,
-                &body,
-                material,
-            )
-        }).transpose()?.flatten();
+        let request_trace = trace
+            .map(|trace| {
+                trace.begin_request_with_material(
+                    agent_id,
+                    provider,
+                    Some(model_ref),
+                    url.as_str(),
+                    "responses_streaming",
+                    &headers,
+                    &body,
+                    material,
+                )
+            })
+            .transpose()?
+            .flatten();
         let mut request = client
             .post(&url)
             .header("content-type", "application/json")
@@ -315,9 +344,13 @@ pub(in super::super) async fn send_openai_responses_streaming_request_with_mater
 
         // Allow the bounded image payload in both output-item and terminal events.
         let image_stream_limit = generates_image.then_some(96 * 1024 * 1024);
-        let terminal_response =
-            read_openai_streaming_response_with_material(response, request_trace.as_ref(), image_stream_limit, material)
-                .await?;
+        let terminal_response = read_openai_streaming_response_with_material(
+            response,
+            request_trace.as_ref(),
+            image_stream_limit,
+            material,
+        )
+        .await?;
         let response_body_completed_at = chrono::Utc::now();
         let parsed = material.read(|| {
             crate::diagnostics::resource_io::admit_serialized_value(&terminal_response)?;

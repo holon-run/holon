@@ -277,7 +277,10 @@ mod tests {
                 completed_at: Utc::now(),
                 duration_ms: 1,
             });
-            host.runtime_db().agent_states().upsert(&state).unwrap();
+            host.runtime_db()
+                .agent_states()
+                .upsert_for_fixture(&state)
+                .unwrap();
             for index in 0..17 {
                 let brief: crate::types::BriefRecord = serde_json::from_value(serde_json::json!({
                     "id": format!("{id}-brief-{index}"), "agent_id": id,

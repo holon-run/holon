@@ -200,6 +200,7 @@ impl Fixture {
             let authority = protocol::authority_fences_tx(tx, &self.source.agent_id)?;
             let sequence = self.source.message_seq.unwrap();
             let attempt = ExecutionAttempt {
+                input_projection: None,
                 attempt_id: format!("activation:message:{}", self.source.id),
                 agent_id: self.source.agent_id.clone(),
                 source_message_id: Some(self.source.id.clone()),

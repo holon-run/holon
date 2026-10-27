@@ -649,7 +649,7 @@ async fn cancelled_timer_wait_write_failure_rolls_back_every_domain() {
         .to_string()
         .contains("injected wait cancellation failure"));
     assert_eq!(
-        runtime.latest_timer(&timer.id).await.unwrap().unwrap(),
+        *runtime.latest_timer(&timer.id).await.unwrap().unwrap(),
         timer
     );
     assert_eq!(

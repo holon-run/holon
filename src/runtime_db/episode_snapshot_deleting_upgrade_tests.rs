@@ -188,6 +188,7 @@ impl Fixture {
                 &ExecutionProtocolState::empty(AGENT),
                 &AdmitExecution {
                     attempt: ExecutionAttempt {
+                        input_projection: None,
                         attempt_id: ATTEMPT.into(),
                         agent_id: AGENT.into(),
                         source_message_id: Some(source.id.clone()),

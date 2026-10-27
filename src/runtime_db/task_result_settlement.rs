@@ -24,18 +24,18 @@ pub(crate) mod live_turn;
 mod obligation;
 pub(crate) use obligation::{
     classify_obligation_tx, classify_obligation_with_waits_tx, exact_waiter_recovery_wait_tx,
-    settled_recovery_source_tx, TaskResultObligation,
+    TaskResultObligation,
 };
 mod provider_handoff;
 pub(crate) use provider_handoff::transfer_provider_admitted_tx;
 pub(crate) mod recovery_budget;
 mod recovery_observation;
-pub(in crate::runtime_db) use recovery_observation::observe_recovery_source_tx;
 pub(crate) use live_turn::{
     admit_live_task_results_tx, canonical_live_turn_id_tx, interrupted_admitted_result_anchor_tx,
     recover_live_task_results_tx, recovery_turn_for_activation_tx, same_turn_candidates_tx,
 };
 pub(crate) use recovery_budget::{charge_recovery_admission_tx, TASK_RESULT_RECOVERY_LIMIT};
+pub(in crate::runtime_db) use recovery_observation::observe_recovery_source_tx;
 
 mod writes;
 pub(crate) use writes::*;
@@ -282,6 +282,7 @@ impl TaskResultSettlementRepository<'_> {
         )
     }
 
+    #[cfg(test)]
     pub(crate) fn admit_unsettled_snapshot_with_projections(
         &self,
         agent_id: &str,
@@ -476,7 +477,8 @@ impl TaskResultSettlementRepository<'_> {
         record: &TaskResultSettlementRecord,
         require_owner_grant: bool,
     ) -> Result<bool> {
-        self.db.transaction(|tx| reply_source_consumption_matches_tx(tx, record, require_owner_grant))
+        self.db
+            .transaction(|tx| reply_source_consumption_matches_tx(tx, record, require_owner_grant))
     }
 
     /// The caller reserves rendered bytes and every waiter identity before this
@@ -502,6 +504,7 @@ impl TaskResultSettlementRepository<'_> {
         )
     }
 
+    #[cfg(test)]
     pub(crate) fn admit_reply_message_snapshot_with_projections(
         &self,
         agent_id: &str,
@@ -681,6 +684,7 @@ impl TaskResultSettlementRepository<'_> {
         self.admit_message_with_projection(agent_id, message_id, activation_id, None, now)
     }
 
+    #[cfg(test)]
     pub(crate) fn admit_message_with_projection(
         &self,
         agent_id: &str,
@@ -1025,6 +1029,27 @@ impl TaskResultSettlementRepository<'_> {
         })
     }
 
+    /// Canonical inspection for an unloaded agent, not a loaded Task read.
+    pub(crate) fn diagnostic_for_agent_message(
+        &self,
+        agent_id: &str,
+        message_id: &str,
+    ) -> Result<Option<TaskResultSettlementRecord>> {
+        self.db.with_read(|connection| {
+            connection
+                .query_row(
+                    "SELECT payload_json FROM task_result_settlements
+                     WHERE agent_id = ?1 AND message_id = ?2",
+                    params![agent_id, message_id],
+                    |row| row.get::<_, String>(0),
+                )
+                .optional()?
+                .map(|payload| serde_json::from_str(&payload))
+                .transpose()
+                .map_err(Into::into)
+        })
+    }
+
     #[cfg(test)]
     pub(crate) fn latest_for_message(
         &self,
@@ -1274,26 +1299,6 @@ fn settle_invalid_or_stale_tx(
     update_tx(tx, record)
 }
 
-fn existing_for_task_generation_tx(
-    tx: &Transaction<'_>,
-    task_id: &str,
-    rejoin_generation: u64,
-) -> Result<Option<TaskResultSettlementRecord>> {
-    tx.query_row(
-        "SELECT payload_json
-         FROM task_result_settlements
-         WHERE task_id = ?1 AND rejoin_generation = ?2
-         ORDER BY created_at ASC, result_identity ASC
-         LIMIT 1",
-        params![task_id, rejoin_generation],
-        |row| row.get::<_, String>(0),
-    )
-    .optional()?
-    .map(|payload| serde_json::from_str(&payload))
-    .transpose()
-    .map_err(Into::into)
-}
-
 pub(crate) enum RecoverySnapshotScope {
     NormalInput,
     RecoveryRoot(String),
@@ -1359,6 +1364,7 @@ pub(crate) fn recovery_snapshot_scope_tx(
 impl TaskResultSettlementRepository<'_> {
     /// Ineligible recovery roots must not reserve snapshot slots or bytes.
     /// Normal authorized input can still deliver a paused result.
+    #[cfg(test)]
     pub(crate) fn recovery_snapshot_candidates_for_owner(
         &self,
         agent_id: &str,
@@ -1367,9 +1373,19 @@ impl TaskResultSettlementRepository<'_> {
         now: DateTime<Utc>,
         limit: usize,
     ) -> Result<Vec<TaskResultSettlementRecord>> {
-        self.db.transaction(|tx| recovery_snapshot_candidates_for_owner_tx(tx, agent_id, work_item_id, activation_id, now, limit))
+        self.db.transaction(|tx| {
+            recovery_snapshot_candidates_for_owner_tx(
+                tx,
+                agent_id,
+                work_item_id,
+                activation_id,
+                now,
+                limit,
+            )
+        })
     }
 
+    #[cfg(test)]
     pub(crate) fn filter_recovery_snapshot_candidates(
         &self,
         agent_id: &str,
@@ -1377,7 +1393,9 @@ impl TaskResultSettlementRepository<'_> {
         records: &[TaskResultSettlementRecord],
         now: DateTime<Utc>,
     ) -> Result<Vec<TaskResultSettlementRecord>> {
-        self.db.transaction(|tx| filter_recovery_snapshot_candidates_tx(tx, agent_id, activation_id, records, now))
+        self.db.transaction(|tx| {
+            filter_recovery_snapshot_candidates_tx(tx, agent_id, activation_id, records, now)
+        })
     }
 }
 
@@ -1515,6 +1533,7 @@ fn records_tx(
         .collect()
 }
 
+#[cfg(test)]
 fn reply_message_candidates_tx(
     tx: &Transaction<'_>,
     agent_id: &str,
@@ -1573,6 +1592,7 @@ fn reply_message_candidates_tx(
     Ok(eligible)
 }
 
+#[cfg(test)]
 fn unsettled_for_owner_tx(
     tx: &Transaction<'_>,
     agent_id: &str,
@@ -1993,11 +2013,15 @@ mod projection_tests {
                     limits,
                 )?;
                 let error = match selection.with_admission_projections(Some(supplied), limits) {
-                    Ok(_) => panic!("oversized original must fail before decoding its invalid JSON"),
+                    Ok(_) => {
+                        panic!("oversized original must fail before decoding its invalid JSON")
+                    }
                     Err(error) => error,
                 };
                 assert!(
-                    error.downcast_ref::<TaskResultFootprintExhausted>().is_some(),
+                    error
+                        .downcast_ref::<TaskResultFootprintExhausted>()
+                        .is_some(),
                     "{error:#}"
                 );
             }
@@ -2357,15 +2381,24 @@ pub(crate) fn non_reply_source_matches_owner_tx(
         && crate::wake_contract::agent_message_reply_reference(&message).is_none())
 }
 
-pub(crate) fn reply_source_is_consumed_for_owner_tx(tx: &Transaction<'_>, record: &TaskResultSettlementRecord) -> Result<bool> {
+pub(crate) fn reply_source_is_consumed_for_owner_tx(
+    tx: &Transaction<'_>,
+    record: &TaskResultSettlementRecord,
+) -> Result<bool> {
     reply_source_consumption_matches_tx(tx, record, true)
 }
 
-pub(crate) fn reply_source_is_consumed_tx(tx: &Transaction<'_>, record: &TaskResultSettlementRecord) -> Result<bool> {
+pub(crate) fn reply_source_is_consumed_tx(
+    tx: &Transaction<'_>,
+    record: &TaskResultSettlementRecord,
+) -> Result<bool> {
     reply_source_consumption_matches_tx(tx, record, false)
 }
 
-pub(crate) fn reply_source_is_recoverable_tx(tx: &Transaction<'_>, record: &TaskResultSettlementRecord) -> Result<bool> {
+pub(crate) fn reply_source_is_recoverable_tx(
+    tx: &Transaction<'_>,
+    record: &TaskResultSettlementRecord,
+) -> Result<bool> {
     if record.state == TaskResultSettlementState::Settled {
         return Ok(false);
     }
@@ -2375,7 +2408,14 @@ pub(crate) fn reply_source_is_recoverable_tx(tx: &Transaction<'_>, record: &Task
     reply_source_is_consumed_for_owner_tx(tx, record)
 }
 
-pub(crate) fn recovery_snapshot_candidates_for_owner_tx(tx: &Transaction<'_>, agent_id: &str, work_item_id: Option<&str>, activation_id: &str, now: DateTime<Utc>, limit: usize) -> Result<Vec<TaskResultSettlementRecord>> {
+pub(crate) fn recovery_snapshot_candidates_for_owner_tx(
+    tx: &Transaction<'_>,
+    agent_id: &str,
+    work_item_id: Option<&str>,
+    activation_id: &str,
+    now: DateTime<Utc>,
+    limit: usize,
+) -> Result<Vec<TaskResultSettlementRecord>> {
     let RecoverySnapshotScope::RecoveryRoot(root) =
         recovery_snapshot_scope_tx(tx, agent_id, activation_id)?
     else {
@@ -2384,7 +2424,13 @@ pub(crate) fn recovery_snapshot_candidates_for_owner_tx(tx: &Transaction<'_>, ag
     recovery_budget::candidates_for_owner_tx(tx, agent_id, work_item_id, &root, now, limit)
 }
 
-pub(crate) fn filter_recovery_snapshot_candidates_tx(tx: &Transaction<'_>, agent_id: &str, activation_id: &str, records: &[TaskResultSettlementRecord], now: DateTime<Utc>) -> Result<Vec<TaskResultSettlementRecord>> {
+pub(crate) fn filter_recovery_snapshot_candidates_tx(
+    tx: &Transaction<'_>,
+    agent_id: &str,
+    activation_id: &str,
+    records: &[TaskResultSettlementRecord],
+    now: DateTime<Utc>,
+) -> Result<Vec<TaskResultSettlementRecord>> {
     let root = match recovery_snapshot_scope_tx(tx, agent_id, activation_id)? {
         RecoverySnapshotScope::NormalInput => {
             return Ok(records
@@ -2411,7 +2457,11 @@ pub(crate) fn filter_recovery_snapshot_candidates_tx(tx: &Transaction<'_>, agent
     Ok(eligible)
 }
 
-fn reply_source_consumption_matches_tx(tx: &Transaction<'_>, record: &TaskResultSettlementRecord, require_owner_grant: bool) -> Result<bool> {
+fn reply_source_consumption_matches_tx(
+    tx: &Transaction<'_>,
+    record: &TaskResultSettlementRecord,
+    require_owner_grant: bool,
+) -> Result<bool> {
     if !record_matches_durable_task_tx(tx, record)? {
         return Ok(false);
     }
@@ -2426,8 +2476,7 @@ fn reply_source_consumption_matches_tx(tx: &Transaction<'_>, record: &TaskResult
         return Ok(false);
     };
     let message: MessageEnvelope = serde_json::from_str(&payload)?;
-    let Some(reply_id) = crate::wake_contract::agent_message_reply_reference(&message)
-    else {
+    let Some(reply_id) = crate::wake_contract::agent_message_reply_reference(&message) else {
         return Ok(false);
     };
     let Some(payload) = tx
@@ -2493,8 +2542,7 @@ fn reply_source_consumption_matches_tx(tx: &Transaction<'_>, record: &TaskResult
     else {
         return Ok(false);
     };
-    let delivery: crate::types::AgentMessageDeliveryRecord =
-        serde_json::from_str(&payload)?;
+    let delivery: crate::types::AgentMessageDeliveryRecord = serde_json::from_str(&payload)?;
     if delivery.target_agent_id != record.agent_id
         || delivery.routing_context != reply.routing_context
         || delivery.outcome != crate::types::AgentMessageDeliveryOutcome::Accepted
@@ -2507,11 +2555,6 @@ fn reply_source_consumption_matches_tx(tx: &Transaction<'_>, record: &TaskResult
     if require_owner_grant {
         live_turn::consumed_reply_owner_matches_tx(tx, &task, reply_id, &delivery)
     } else {
-        live_turn::reply_source_queue_is_consumed_tx(
-            tx,
-            &record.agent_id,
-            reply_id,
-            &delivery,
-        )
+        live_turn::reply_source_queue_is_consumed_tx(tx, &record.agent_id, reply_id, &delivery)
     }
 }

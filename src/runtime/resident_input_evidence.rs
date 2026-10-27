@@ -2499,6 +2499,7 @@ mod tests {
             let mut qualified = turn(id, 1).as_ref().clone();
             qualified.record = match family {
                 InputEvidenceFamily::Attempt => PreparedInputEvidence::Attempt(ExecutionAttempt {
+                    input_projection: None,
                     attempt_id: id.into(),
                     agent_id: "agent-a".into(),
                     source_message_id: None,

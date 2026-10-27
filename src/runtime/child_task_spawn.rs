@@ -811,6 +811,7 @@ impl RuntimeHandle {
                 )?,
             );
         let request = crate::runtime_db::task_snapshot::TaskDomainLoadRequest {
+            recovery_at: None,
             query: Default::default(),
             capture: crate::runtime::resident_task::TaskCaptureRequest::current(),
             record_limit: records,

@@ -37,6 +37,7 @@ pub(crate) enum TaskResultObligation {
 }
 
 impl TaskResultSettlementRepository<'_> {
+    #[cfg(test)]
     pub(crate) fn settled_recovery_source(&self, source: &MessageEnvelope) -> Result<bool> {
         self.db
             .transaction(|tx| settled_recovery_source_tx(tx, source))
@@ -60,6 +61,7 @@ impl TaskResultSettlementRepository<'_> {
         })
     }
 
+    #[cfg(test)]
     pub(crate) fn exact_waiter_recovery_source(
         &self,
         source: &MessageEnvelope,
@@ -71,6 +73,7 @@ impl TaskResultSettlementRepository<'_> {
     /// The exact wait that owns this validated recovery source. Scanner-queued
     /// sources reach the waiter before they can carry a `wait_id` ref, so the
     /// triggered wait is the durable join and must be resolvable from it too.
+    #[cfg(test)]
     pub(crate) fn exact_waiter_recovery_wait(
         &self,
         source: &MessageEnvelope,
@@ -79,6 +82,7 @@ impl TaskResultSettlementRepository<'_> {
             .transaction(|tx| exact_waiter_recovery_wait_tx(tx, source, None))
     }
 
+    #[cfg(test)]
     pub(crate) fn exact_waiter_recovery_replay_wait(
         &self,
         source: &MessageEnvelope,
@@ -116,6 +120,7 @@ impl TaskResultSettlementRepository<'_> {
         })
     }
 
+    #[cfg(test)]
     pub(crate) fn exact_waiter_recovery_candidate(
         &self,
         agent_id: &str,

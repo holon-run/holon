@@ -383,6 +383,7 @@ mod tests {
                     created_at: message.created_at, updated_at: message.created_at,
                 })?;
                 let attempt = ExecutionAttempt {
+    input_projection: None,
                     attempt_id: "original-claim".into(), agent_id: "target".into(),
                     source_message_id: Some(message.id.clone()),
                     source: ExecutionSource {

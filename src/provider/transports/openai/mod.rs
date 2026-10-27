@@ -614,7 +614,8 @@ impl AgentProvider for OpenAiProvider {
                 sent_diagnostics.provider_transport = Some("openai_responses".into());
                 sent_diagnostics.endpoint_dialect = Some(self.route_endpoint.clone());
                 sent_diagnostics.streaming = Some(
-                    self.endpoint_contract.transport != OpenAiResponsesTransportContract::StandardJson,
+                    self.endpoint_contract.transport
+                        != OpenAiResponsesTransportContract::StandardJson,
                 );
                 sent_diagnostics.reasoning_effort = self.reasoning_effort.clone();
                 let plan_scope = plan.scope.clone();
@@ -749,29 +750,30 @@ impl AgentProvider for OpenAiProvider {
                     == OpenAiResponsesRemoteCompactionContract::Supported
                     && sent_diagnostics.openai_remote_compaction.is_none()
                 {
-                    sent_diagnostics.openai_remote_compaction = maybe_compact_openai_provider_window(
-                        &self.continuation,
-                        plan_scope.as_ref(),
-                        &plan_request_shape,
-                        self.compaction_policy,
-                        &self.client,
-                        openai_responses_compact_url(&self.base_url),
-                        headers,
-                        trace.as_ref(),
-                        request_agent_id(&request),
-                        &self.route_provider,
-                        &model_ref,
-                        request.dispatch_guard.as_deref(),
-                    )
-                    .await
-                    .or_else(|error| {
-                        // Optional IO must not discard an already usable response.
-                        if error.is::<super::http::DispatchGuardRejected>() {
-                            Ok(None)
-                        } else {
-                            Err(error)
-                        }
-                    })?;
+                    sent_diagnostics.openai_remote_compaction =
+                        maybe_compact_openai_provider_window(
+                            &self.continuation,
+                            plan_scope.as_ref(),
+                            &plan_request_shape,
+                            self.compaction_policy,
+                            &self.client,
+                            openai_responses_compact_url(&self.base_url),
+                            headers,
+                            trace.as_ref(),
+                            request_agent_id(&request),
+                            &self.route_provider,
+                            &model_ref,
+                            request.dispatch_guard.as_deref(),
+                        )
+                        .await
+                        .or_else(|error| {
+                            // Optional IO must not discard an already usable response.
+                            if error.is::<super::http::DispatchGuardRejected>() {
+                                Ok(None)
+                            } else {
+                                Err(error)
+                            }
+                        })?;
                 }
                 if self.service_tier.is_some() || parsed.served_service_tier.is_some() {
                     let controls = sent_diagnostics

@@ -48,7 +48,6 @@ impl RuntimeHandle {
         if mutation.state.status == AgentStatus::Stopped {
             bail!("cannot ensure default external ingress for stopped agent");
         }
-        let delivery_mode = CallbackDeliveryMode::WakeHint;
         let agent_id = mutation.state.id.clone();
         let now = Utc::now();
         let external_trigger_id = crate::ids::external_trigger_id();

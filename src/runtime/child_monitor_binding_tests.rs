@@ -340,6 +340,7 @@ async fn original_binding_target_raw_budget_precedes_decode_and_rechecks_target_
         |row| row.get(0),
     )?;
     let mut request = TaskDomainLoadRequest {
+        recovery_at: None,
         query: Default::default(),
         capture: crate::runtime::resident_task::TaskCaptureRequest::current(),
         record_limit: 65536,
@@ -516,6 +517,7 @@ async fn binding_queue_container_and_source_share_one_clamped_phase_allowance() 
     }
     let ledger = &f.runtime.inner.input_evidence_budget;
     let full = TaskDomainLoadRequest {
+        recovery_at: None,
         capture: crate::runtime::resident_task::TaskCaptureRequest::current(),
         query: Default::default(),
         record_limit: 65536,
@@ -812,6 +814,7 @@ async fn actual_new_subagent_invocation_has_exact_durable_recovery_and_typed_tar
     lease.cancel();
     lease.join().await?;
     let request = crate::runtime_db::task_snapshot::TaskDomainLoadRequest {
+        recovery_at: None,
         query: Default::default(),
         capture: crate::runtime::resident_task::TaskCaptureRequest::current(),
         record_limit: 65_536,

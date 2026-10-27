@@ -1210,7 +1210,9 @@ impl RuntimeHandle {
         })?;
         self.inner.resources.notify();
         // Recompute eligibility without clearing shared provider incidents.
-        self.inner.runtime_db.clear_agent_provider_queue_parking(&self.inner.default_agent_id)?;
+        self.inner
+            .runtime_db
+            .clear_agent_provider_queue_parking(&self.inner.default_agent_id)?;
         self.inner.view_image_candidate_health.lock().await.reset();
         *self
             .inner
@@ -2081,7 +2083,7 @@ fn prepare_runtime_storage(
     data_dir: PathBuf,
     initial_workspace: impl Into<InitialWorkspaceBinding>,
     runtime_db: Option<RuntimeDb>,
-    now: chrono::DateTime<chrono::Utc>,
+    _now: chrono::DateTime<chrono::Utc>,
 ) -> Result<PreparedRuntimeStorage> {
     let setup = prepare_runtime_storage_setup(agent_id, data_dir, initial_workspace, runtime_db)?;
     let budget = super::input_evidence_budget::InputEvidenceBudgetLedger::new(Default::default())?;
@@ -2249,6 +2251,7 @@ fn append_bootstrap_audit_event(
         byte_limit,
     };
     let tasks = crate::runtime_db::task_snapshot::TaskDomainLoadRequest {
+        recovery_at: None,
         query: Default::default(),
         capture: super::resident_task::TaskCaptureRequest::current(),
         record_limit,

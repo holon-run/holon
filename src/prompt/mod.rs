@@ -3143,8 +3143,8 @@ mod tests {
             identity: sample_identity(),
             agent_home: PathBuf::from("/tmp/agent-home"),
             execution: sample_execution_snapshot(),
-            loaded_agents_md: LoadedAgentsMd::default(),
-            loaded_agent_memory: LoadedAgentMemory::default(),
+            loaded_agents_md: LoadedAgentsMd::default().into(),
+            loaded_agent_memory: LoadedAgentMemory::default().into(),
             cache_identity: sample_cache_identity(),
             system_sections: Vec::new(),
             context_sections: Vec::new(),
@@ -3158,6 +3158,10 @@ mod tests {
             projection_evidence: ProjectionEvidenceIndex::new(),
             context_plan_evidence: ContextPlanEvidence::default(),
             recent_turns_reprojection: None,
+            frozen_history_policy: ContextHistoryPreparation::default(),
+            frozen_projection_budget: None,
+            frozen_recent_message_limit: None,
+            _resource_read_material: None,
         };
         let defaults = crate::provider::media::MediaToolDefaults {
             view_image: Some("test@default/vision-a".into()),

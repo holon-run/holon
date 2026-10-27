@@ -592,6 +592,7 @@ async fn child_observability_keeps_exact_active_tasks_and_brief_window_without_b
             "child-observability-actual-task".into(),
             TaskTransitionCommand {
                 agent_id: "scheduler-resident".into(),
+                expected_owner_incarnation: runtime.instance_incarnation(),
                 task: TaskRecord {
                     id: "child-observability-running".into(),
                     agent_id: "scheduler-resident".into(),

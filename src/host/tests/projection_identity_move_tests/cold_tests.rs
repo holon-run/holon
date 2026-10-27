@@ -17,6 +17,7 @@ async fn cold_fixture(
                 NamedAgentExistingBehavior::Reuse,
                 None,
                 AgentBootstrapDesiredState {
+                    default_initial_message: false,
                     template: None,
                     catalog_agent_home: None,
                     workspace: None,
@@ -194,6 +195,7 @@ async fn cold_identity_entrypoints_keep_missing_identity_and_scheduling_rejectio
         assert!(matches!(error, PublicAgentError::NotFound { agent_id } if agent_id == "missing"));
     }
     let timer = TimerRecord {
+        calendar: None,
         id: "unqualified-cold-identity".into(),
         agent_id: identity.agent_id.clone(),
         created_at: Utc::now(),

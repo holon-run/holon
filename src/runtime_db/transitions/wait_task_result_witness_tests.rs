@@ -38,8 +38,8 @@ fn capture(
         let witness = WaitTaskResultWitness {
             scope: f.scope.clone(),
             work_revision: snapshot.resident.coverage().revision,
-            live_waits,
-            exact_waits,
+            live_waits: live_waits.clone(),
+            exact_waits: exact_waits.clone(),
         };
         witness.validate_tx(tx, &f.scope.agent_id)?;
         Ok(witness)
@@ -71,7 +71,7 @@ fn bounded_wait_witness_ignores_unrelated_history_and_checks_exact_body() -> Res
             [&history.id],
         )?;
         assert_eq!(witness.validate_tx(tx, &f.scope.agent_id)?.len(), 2);
-        let mut changed = predecessor;
+        let mut changed = predecessor.clone();
         changed.waiting_for = "changed exact dependency".into();
         tx.execute(
             "UPDATE wait_conditions SET waiting_for=?2,payload_json=?3
@@ -127,7 +127,7 @@ fn bounded_wait_witness_rejects_new_frontier_revision_gaps_and_replaced_rows() -
             "UPDATE wait_conditions SET status='active' WHERE wait_condition_id=?1",
             [&live.id],
         )?;
-        let mut changed = live;
+        let mut changed = live.clone();
         changed.waiting_for = "replaced live body".into();
         tx.execute(
             "UPDATE wait_conditions SET waiting_for=?2,payload_json=?3

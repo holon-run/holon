@@ -960,7 +960,7 @@ mod tests {
                 // do not rewrite a Message after its Native/Current ACK.
                 assert!(prepared.message.turn_id.is_none());
                 let commit = target
-                    .enqueue_attempt(&prepared.message, Some(&prepared.record), None)
+                    .enqueue_attempt(&prepared.message, Some(&prepared.record), None, None)
                     .await?;
                 let receipt = commit
                     .delivery_receipt

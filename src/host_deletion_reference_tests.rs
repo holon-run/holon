@@ -416,7 +416,7 @@ mod deletion_reference_tests {
         });
         host.agent_storage(SOURCE_CHILD)
             .unwrap()
-            .write_agent(&state)
+            .write_agent_for_fixture(&state)
             .unwrap();
         seed_supervised_child_terminal(&host, &task.id, SOURCE_CHILD);
         // The shared seed helper creates a legacy first-generation source. Bind

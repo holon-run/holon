@@ -380,7 +380,9 @@ async fn p1_idle_recovery_rejection_terminal_fault_rolls_back_metadata_and_evide
                 )],
                 true,
                 Some(&transition),
-                Some(state.clone()),
+                Some(TerminalAgentStateUpdate {
+                    last_runtime_failure: state.last_runtime_failure.clone(),
+                }),
                 vec![artifacts.transcript.clone()],
                 vec![artifacts.brief.clone()],
                 None,
@@ -438,7 +440,9 @@ async fn p1_idle_recovery_rejection_terminal_fault_rolls_back_metadata_and_evide
                 Vec::new(),
                 true,
                 Some(&transition),
-                Some(state),
+                Some(TerminalAgentStateUpdate {
+                    last_runtime_failure: state.last_runtime_failure,
+                }),
                 vec![artifacts.transcript],
                 vec![artifacts.brief],
                 None,

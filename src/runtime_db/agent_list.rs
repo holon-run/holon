@@ -92,6 +92,7 @@ impl RuntimeDb {
         Ok(rows)
     }
 
+    #[cfg(test)]
     pub(crate) async fn agent_list_posture_rows_async(
         &self,
         agent_ids: Vec<String>,

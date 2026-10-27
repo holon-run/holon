@@ -1,6 +1,7 @@
 use super::message_dispatch::MessageDispatchPlan;
 use super::*;
 use crate::domain::execution_protocol::ExecutionBinding;
+use crate::runtime_db::RuntimeStateTransitionConflict;
 use crate::storage::WorkQueueReadModel;
 use crate::types::ExecutionAdmissionProvenance;
 
@@ -349,13 +350,18 @@ impl<'a> SchedulerDecisionExecutor<'a> {
         let request = super::work_reads::live_work_request();
         guard.prepare_owner_work_request(&request).await?;
         let work = guard.capture_work(&request)?;
-        let waits = work.unresolved_wait_conditions()?.into_iter()
+        let waits = work
+            .unresolved_wait_conditions()?
+            .into_iter()
             .filter(|wait| wait.status == crate::types::WaitConditionStatus::Triggered)
-            .filter_map(|wait| wait.trigger_message_id.clone()).collect();
-        let (selected, obligation) = self.select_runtime_queue_message(
-            &guard.queue, &waits, &candidate.provider_parked)?;
-        Ok(selected.is_some_and(|message| message.id == candidate.message.id)
-            && obligation == candidate.wait_obligation)
+            .filter_map(|wait| wait.trigger_message_id.clone())
+            .collect();
+        let (selected, obligation) =
+            self.select_runtime_queue_message(&guard.queue, &waits, &candidate.provider_parked)?;
+        Ok(
+            selected.is_some_and(|message| message.id == candidate.message.id)
+                && obligation == candidate.wait_obligation,
+        )
     }
 
     pub(super) fn new(runtime: &'a RuntimeHandle) -> Self {
@@ -367,19 +373,9 @@ impl<'a> SchedulerDecisionExecutor<'a> {
     /// (#3607). Rate limiting happens in the advisory itself.
     pub(super) fn append_queue_head_starved_advisory_if_due(
         &self,
-        agent_id: &str,
-        head_message_id: &str,
+        entry: &super::input_consumption::read::QualifiedQueueRead,
         queue_len: usize,
     ) -> Result<()> {
-        let Some(entry) = self
-            .runtime
-            .inner
-            .runtime_db
-            .queue_entries()
-            .latest(head_message_id)?
-        else {
-            return Ok(());
-        };
         let status = match entry.status {
             QueueEntryStatus::Queued => "queued",
             QueueEntryStatus::Interrupted => "interrupted",
@@ -393,8 +389,8 @@ impl<'a> SchedulerDecisionExecutor<'a> {
         }
         scheduler::append_queue_head_starved_advisory(
             &self.runtime.inner.storage,
-            agent_id,
-            head_message_id,
+            &entry.agent_id,
+            &entry.message_id,
             status,
             waiting_ms,
             queue_len,
@@ -716,18 +712,6 @@ impl<'a> SchedulerDecisionExecutor<'a> {
         if matches!(guard.state.status, AgentStatus::Stopped) || !guard.queue.is_empty() {
             return Ok(None);
         }
-        // Provider parking retains original inputs, without replacing waits.
-        for message in guard.queue.input_snapshot(guard.queue.len()) {
-            if self
-                .runtime
-                .inner
-                .runtime_db
-                .provider_queue_parking(&message.agent_id, &message.id)?
-                .is_none_or(|parking| parking.not_before <= self.runtime.now())
-            {
-                return Ok(None);
-            }
-        }
 
         let previous_status = guard.state.status.clone();
         let previous_run_id = guard.state.current_run_id.clone();
@@ -818,6 +802,27 @@ impl<'a> SchedulerDecisionExecutor<'a> {
                 )?;
                 let message = message.cloned();
                 let Some(message) = message else {
+                    if let Some(head) = guard.queue.peek() {
+                        let material = crate::diagnostics::resource_io::ResourceReadMaterial::new(
+                            &self.runtime.inner.input_evidence_budget,
+                            &guard.input_evidence_scope(),
+                        )?;
+                        // The diagnostic observes one same-view qualified Queue body;
+                        // it does not fall back to an unscoped history read.
+                        let entry =
+                            self.runtime
+                                .with_idle_read(Some(&guard.state), &material, |read| {
+                                    read.queue(&head.id)
+                                })?;
+                        if let Some(entry) = entry {
+                            material.read(|| {
+                                self.append_queue_head_starved_advisory_if_due(
+                                    &entry,
+                                    guard.queue.len(),
+                                )
+                            })?;
+                        }
+                    }
                     let poll = RunLoopPoll::Idle;
                     crate::diagnostics::record_scheduler_poll(
                         poll.outcome_name(),
@@ -1127,7 +1132,7 @@ impl<'a> SchedulerDecisionExecutor<'a> {
         let wait_transition = (canonical_claim.is_some() || settle_reducer_only_wait)
             .then(|| {
                 self.runtime
-                    .wait_resolution_transition_for_message(&persisted_message)
+                    .wait_resolution_transition_for_message(&persisted_message, &read.work)
             })
             .transpose()?
             .flatten();
@@ -1223,16 +1228,15 @@ impl<'a> SchedulerDecisionExecutor<'a> {
                             else {
                                 return Err(error);
                             };
+                        drop(planning_guard.take());
                         scheduler::append_interrupted_replay_source_advisory(
                             &self.runtime.inner.storage,
                             &persisted_message,
                             invalid,
                         )?;
-                        scheduler::append_scheduling_advisories(
-                            &self.runtime.inner.storage,
-                            &candidate.prior_state,
-                            candidate.queue_len,
-                        )?;
+                        self.runtime
+                            .append_prepared_scheduling_advisories(&read.advisories)
+                            .await?;
                         return Ok(PrepareMessageOutcome::Poll(
                             self.defer_or_quarantine_queue_head(
                                 &candidate,
@@ -1330,7 +1334,7 @@ impl<'a> SchedulerDecisionExecutor<'a> {
             drop(planning_guard.take());
             // Preserve ingress provenance; isolated caller bindings only affect dispatch.
             let projection = match Box::pin(self.runtime.prepare_input_projection(
-                &original_message,
+                &candidate.message,
                 &admission_state,
                 dispatch_plan.continuation_resolution.as_ref(),
             ))
@@ -1361,25 +1365,38 @@ impl<'a> SchedulerDecisionExecutor<'a> {
                 || refreshed.scheduling.revision != read.scheduling.revision
                 || refreshed.recovered_replies != read.recovered_replies
                 || refreshed_inputs.execution != inputs.execution
-                || inputs.unavailable.iter().any(|key| {
-                    !refreshed_inputs.unavailable.contains(key)
-                })
+                || inputs
+                    .unavailable
+                    .iter()
+                    .any(|key| !refreshed_inputs.unavailable.contains(key))
                 || inputs.message_turn_keys.iter().any(|(key, assignment)| {
                     refreshed_inputs.message_turn_keys.get(key) != Some(assignment)
                 })
-                || inputs.turn_transcript_keys.iter().any(|(key, transcripts)| {
-                    refreshed_inputs.turn_transcript_keys.get(key) != Some(transcripts)
-                })
-                || inputs.recovery_source_absences.iter().any(|(key, absence)| {
-                    refreshed_inputs.recovery_source_absences.get(key) != Some(absence)
-                })
-                || read.tasks.coverage.recovery_sources.iter().any(|(key, source)| {
-                    refreshed.tasks.coverage.recovery_sources.get(key) != Some(source)
-                })
-                || inputs.records.iter().any(|original| {
-                    !refreshed_inputs.records.iter().any(|current| {
-                        current.locator == original.locator
+                || inputs
+                    .turn_transcript_keys
+                    .iter()
+                    .any(|(key, transcripts)| {
+                        refreshed_inputs.turn_transcript_keys.get(key) != Some(transcripts)
                     })
+                || inputs
+                    .recovery_source_absences
+                    .iter()
+                    .any(|(key, absence)| {
+                        refreshed_inputs.recovery_source_absences.get(key) != Some(absence)
+                    })
+                || read
+                    .tasks
+                    .coverage
+                    .recovery_sources
+                    .iter()
+                    .any(|(key, source)| {
+                        refreshed.tasks.coverage.recovery_sources.get(key) != Some(source)
+                    })
+                || inputs.records.iter().any(|original| {
+                    !refreshed_inputs
+                        .records
+                        .iter()
+                        .any(|current| current.locator == original.locator)
                 })
             {
                 return Ok(PrepareMessageOutcome::Replan);
@@ -1663,7 +1680,7 @@ impl<'a> SchedulerDecisionExecutor<'a> {
                     let mut prepared =
                         crate::runtime_db::transitions::PreparedQueueTransition::new(command);
                     prepared.execution_protocol = execution_protocol;
-                    prepared.wait_transition = wait_transition;
+                    prepared.wait_transition = wait_transition.clone();
                     prepared.timer_wake_claim = timer_wake_claim;
                     guard.commit_prepared_queue(run_id.clone(), prepared).await
                 };
@@ -1915,7 +1932,12 @@ impl<'a> SchedulerDecisionExecutor<'a> {
             .inner
             .storage
             .active_wait_conditions_for_agent(agent_id)?;
-        self.task_result_record_is_deliverable_with_waits_and_source(agent_id, record, &active, source_message_id)
+        self.task_result_record_is_deliverable_with_waits_and_source(
+            agent_id,
+            record,
+            &active,
+            source_message_id,
+        )
     }
 
     #[cfg(test)]
@@ -1963,14 +1985,11 @@ impl<'a> SchedulerDecisionExecutor<'a> {
         }) {
             return Ok(false);
         }
-        Ok(!active_waits
-            .iter()
-            .any(|wait| {
-                wait.work_item_id == record.work_item_id
-                    && !(wait.kind == crate::types::WaitConditionKind::Task
-                        && source_message_id
-                            .is_some_and(|id| wait.trigger_message_id() == Some(id)))
-            }))
+        Ok(!active_waits.iter().any(|wait| {
+            wait.work_item_id == record.work_item_id
+                && !(wait.kind == crate::types::WaitConditionKind::Task
+                    && source_message_id.is_some_and(|id| wait.trigger_message_id() == Some(id)))
+        }))
     }
 
     fn canonical_activation_plan(
@@ -2730,7 +2749,9 @@ impl<'a> SchedulerDecisionExecutor<'a> {
                                 )
                                 && condition.trigger_message_id() == Some(message.id.as_str())
                                 && (scheduler::message_matches_wait_condition(message, condition)
-                                    || repaired_wait.as_ref().is_some_and(|wait| wait.id == condition.id))
+                                    || repaired_wait
+                                        .as_ref()
+                                        .is_some_and(|wait| wait.id == condition.id))
                         });
                 if matching.is_none() {
                     return Ok(CanonicalClaimOutcome::RejectQueued {
@@ -2807,8 +2828,11 @@ impl<'a> SchedulerDecisionExecutor<'a> {
             });
         }
         let recovery_of_attempt_id = if provider_source.is_some() {
-            let Some(predecessor) =
-                self.provider_recovery_source_attempt_id(message, existing_execution.as_ref())?
+            let Some(predecessor) = self.provider_recovery_source_attempt_id(
+                message,
+                existing_execution.as_ref(),
+                inputs,
+            )?
             else {
                 return Ok(CanonicalClaimOutcome::RejectQueued {
                     scenario_class,
@@ -2933,7 +2957,10 @@ impl<'a> SchedulerDecisionExecutor<'a> {
                 guard.queue.len(),
             )));
         }
-        if !self.queue_candidate_is_selected(&mut guard, candidate).await? {
+        if !self
+            .queue_candidate_is_selected(&mut guard, candidate)
+            .await?
+        {
             return Ok(PrepareMessageOutcome::Poll(RunLoopPoll::Idle));
         }
         let expected = self
@@ -3000,10 +3027,12 @@ impl<'a> SchedulerDecisionExecutor<'a> {
             fault: self.runtime.take_transition_fault(),
             brief_evidence: Vec::new(),
         };
-        let commit = guard.commit_prepared_queue(
-            crate::ids::audit_event_id(),
-            crate::runtime_db::transitions::PreparedQueueTransition::new(command),
-        ).await?;
+        let commit = guard
+            .commit_prepared_queue(
+                crate::ids::audit_event_id(),
+                crate::runtime_db::transitions::PreparedQueueTransition::new(command),
+            )
+            .await?;
         if !commit.applied {
             return Ok(PrepareMessageOutcome::Replan);
         }
@@ -3120,7 +3149,10 @@ impl<'a> SchedulerDecisionExecutor<'a> {
                 "queue_disposition=dropped".into(),
             ],
         )?;
-        if !self.queue_candidate_is_selected(&mut guard, candidate).await? {
+        if !self
+            .queue_candidate_is_selected(&mut guard, candidate)
+            .await?
+        {
             return Ok(false);
         }
         let mut next_state = guard.state.clone();
@@ -3646,16 +3678,20 @@ impl<'a> SchedulerDecisionExecutor<'a> {
         };
         match super::provider_recovery::resolve_from_captured(inputs, message, execution) {
             Ok(source) => {
-        let interrupted = self
-            .runtime
-            .inner
-            .runtime_db
-            .queue_entries()
-            .latest_for_preparation(&message.id)?
-            .is_some_and(|entry| entry.status == QueueEntryStatus::Interrupted);
+                let interrupted = self
+                    .runtime
+                    .inner
+                    .runtime_db
+                    .queue_entries()
+                    .latest_for_preparation(&message.id)?
+                    .is_some_and(|entry| entry.status == QueueEntryStatus::Interrupted);
                 Ok(if interrupted {
-                    source.interrupted_initial_attempt(message, execution).map(|attempt| attempt.attempt_id.clone())
-                } else { Some(source.predecessor.attempt_id) })
+                    source
+                        .interrupted_initial_attempt(message, execution)
+                        .map(|attempt| attempt.attempt_id.clone())
+                } else {
+                    Some(source.predecessor.attempt_id)
+                })
             }
             Err(error) if super::provider_recovery::is_preparation_error(&error) => Err(error),
             Err(_) => Ok(None),
@@ -3687,7 +3723,10 @@ impl<'a> SchedulerDecisionExecutor<'a> {
         quarantined.updated_at = self.runtime.now();
 
         let mut guard = self.runtime.begin_mutation().await?;
-        if !self.queue_candidate_is_selected(&mut guard, candidate).await? {
+        if !self
+            .queue_candidate_is_selected(&mut guard, candidate)
+            .await?
+        {
             return Ok(RunLoopPoll::Idle);
         }
         let mut next_state = guard.state.clone();
@@ -4298,7 +4337,6 @@ mod tests {
             let candidate = QueueCandidate {
                 message: source.clone(),
                 prior_state: guard.state.clone(),
-                queue_len: guard.queue.len(),
                 wait_obligation: false,
                 provider_parked: Default::default(),
             };
@@ -4540,6 +4578,7 @@ mod tests {
         let fences = authority_fences_tx(&tx, "default").unwrap();
         let command = AdmitExecution {
             attempt: ExecutionAttempt {
+                input_projection: None,
                 attempt_id: root_id.clone(),
                 agent_id: "default".into(),
                 source_message_id: Some(message.id.clone()),
@@ -5557,8 +5596,8 @@ mod tests {
         assert_eq!(first_id, second_id);
     }
 
-    #[test]
-    fn conversation_replay_lineage_requires_exact_trusted_source_and_owner() {
+    #[tokio::test]
+    async fn conversation_replay_lineage_requires_exact_trusted_source_and_owner() {
         use crate::domain::execution_protocol::*;
 
         let home = tempdir().unwrap();
@@ -5573,19 +5612,43 @@ mod tests {
             context_config(),
         )
         .unwrap();
-        let mut message = operator_prompt("retained conversation");
-        message.message_seq = Some(1);
+        let mut message = runtime
+            .enqueue(operator_prompt("retained conversation"))
+            .await
+            .unwrap();
         let scenario = scheduler::CanonicalActivationScenario::LifecycleExternalNudge {
             agent_id: message.agent_id.clone(),
         };
         let root_id = canonical_activation_id(&message.id);
-        let planned = SchedulerDecisionExecutor::new(&runtime)
-            .plan_execution_protocol_claim(&message, &scenario, &root_id, None, None, None)
+        let executor = SchedulerDecisionExecutor::new(&runtime);
+        let mut guard = runtime.begin_mutation().await.unwrap();
+        let read = guard
+            .prepare_scheduler_read(
+                Some(&message),
+                executor.planner_preparation_roots(&message).unwrap(),
+                std::collections::BTreeSet::from([message.id.clone()]),
+                runtime.now(),
+            )
+            .await
+            .unwrap();
+        let inputs = guard.capture_input_evidence().unwrap();
+        let planned = executor
+            .plan_execution_protocol_claim_from_captured(
+                &inputs,
+                &read.tasks,
+                &message,
+                &scenario,
+                &root_id,
+                None,
+                None,
+                None,
+            )
             .unwrap();
         let ExecutionProtocolCommand::Admit(command) = planned.commands.last().unwrap() else {
             panic!("expected conversation admission");
         };
-        let admitted = admit_execution(&ExecutionProtocolState::empty("default"), command).unwrap();
+        let admitted =
+            admit_execution(&ExecutionProtocolState::empty("default"), command.as_ref()).unwrap();
         assert!(canonical_lifecycle_attempt_lineage_is_valid(
             &admitted.state,
             &message,
@@ -6316,6 +6379,7 @@ mod tests {
             let incoming = runtime.enqueue(incoming).await?;
             let executor = SchedulerDecisionExecutor::new(&runtime);
             let candidate = QueueCandidate {
+                provider_parked: std::collections::BTreeSet::new(),
                 message: incoming.clone(),
                 prior_state: runtime.agent_state().await?,
                 wait_obligation: false,
@@ -6369,6 +6433,7 @@ mod tests {
                         upsert_turn_record_tx(tx, &turn)?;
                         let turn = committed_turn_record_tx(tx, "default", "race-turn")?.record;
                         let attempt = ExecutionAttempt {
+                            input_projection: None,
                             attempt_id: "race-attempt".into(),
                             agent_id: "default".into(),
                             source_message_id: Some(source.id.clone()),

@@ -119,6 +119,7 @@ fn exercise_post_dispatch_window(
                 "request".into(),
                 "peer".into(),
                 AuthorityClass::OperatorInstruction,
+                None,
             )
             .await?;
         // A Task-only write has no D4 Work footprint. Its successful original

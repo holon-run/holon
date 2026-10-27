@@ -453,8 +453,8 @@ impl AgentProvider for CheckedProvider {
         let conversation = request.conversation.iter().map(|message| match message {
             ConversationMessage::UserText(text) => json!({"user_text":text}),
             ConversationMessage::UserBlocks(blocks) => json!({"user_blocks":blocks}),
-            ConversationMessage::UserImage { prompt, media_type, data_base64 } =>
-                json!({"user_image":{"prompt":prompt,"media_type":media_type,"data_base64":data_base64}}),
+            ConversationMessage::UserImage { prompt, media_type, data_base64, optional_history } =>
+                json!({"user_image":{"prompt":prompt,"media_type":media_type,"data_base64":data_base64,"optional_history":optional_history}}),
             ConversationMessage::AssistantBlocks(blocks) => json!({"assistant_blocks":blocks}),
             ConversationMessage::UserToolResults(results) => json!({"tool_results":results}),
         }).collect::<Vec<_>>();

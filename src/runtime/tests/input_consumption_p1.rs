@@ -91,6 +91,7 @@ impl AgentProvider for ResultFallbackProvider {
             ));
         }
         Ok(ProviderTurnResponse {
+            material: request.material,
             blocks: vec![ModelBlock::Text {
                 text: "result handled".into(),
             }],
@@ -2322,7 +2323,10 @@ async fn p1_closed_admitted_reply_recovers_through_fenced_runtime_wake() {
             )
             .await
             .unwrap();
-            runtime.record_incoming_transcript_entry(source).unwrap();
+            runtime
+                .record_incoming_transcript_entry(source)
+                .await
+                .unwrap();
             let state = runtime.agent_state().await.unwrap();
             let activation = state
                 .current_execution_binding
@@ -3642,7 +3646,7 @@ async fn p1_null_ingress_turn_recovers_twice_without_rebinding_attempt_turns() {
             .await;
             assert!(prepared.message.turn_id.is_none());
             let commit = target
-                .enqueue_attempt(&prepared.message, Some(&prepared.record), None)
+                .enqueue_attempt(&prepared.message, Some(&prepared.record), None, None)
                 .await
                 .unwrap();
             target.apply_transition_commit(commit).await;
@@ -4418,6 +4422,7 @@ async fn p1_recovery_rejects_missing_or_foreign_snapshot_admission() {
             .attach_idle_sender_inputs(&anchor, 24 * 1024)
             .await
             .unwrap());
+        let mut source = target.storage().read_recent_turns(1).unwrap().remove(0);
         drop(target);
         drop(sender);
         drop(host);

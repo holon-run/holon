@@ -1,10 +1,10 @@
 //! Runtime read-model and recovery projections over canonical persistence.
 
+#[cfg(test)]
 use crate::runtime_db::agent_list::AgentPostureFacts;
-use std::{
-    borrow::Cow,
-    collections::{BTreeMap, BTreeSet, HashMap},
-};
+#[cfg(test)]
+use std::collections::{BTreeSet, HashMap};
+use std::{borrow::Cow, collections::BTreeMap};
 
 mod queue_latest;
 pub(crate) use queue_latest::{QueueLatestWork, QueueWorkBuilder};
@@ -111,6 +111,7 @@ pub struct RuntimeReadModelView<'a> {
 /// unbounded above, so open-set membership equals the per-agent
 /// `latest_many` openness check in
 /// `filter_active_wait_conditions_for_live_scope`.
+#[cfg(test)]
 fn live_scoped_wait_conditions(facts: &AgentPostureFacts) -> Vec<WaitConditionRecord> {
     let open_work_item_ids = facts
         .open_work_items
@@ -132,14 +133,7 @@ fn live_scoped_wait_conditions(facts: &AgentPostureFacts) -> Vec<WaitConditionRe
         .collect()
 }
 
-/// Pure work-queue assembly shared by the per-agent read model and batch
-/// projections. Mirrors the query-backed assembly exactly: facts come from
-/// one committed read view, so the response never mixes commits.
-pub(crate) fn work_queue_from_facts(facts: &AgentPostureFacts) -> WorkQueueReadModel {
-    let conditions = live_scoped_wait_conditions(facts);
-    work_queue_from_facts_with_conditions(facts, &conditions)
-}
-
+#[cfg(test)]
 fn work_queue_from_facts_with_conditions(
     facts: &AgentPostureFacts,
     conditions: &[WaitConditionRecord],
@@ -297,6 +291,7 @@ fn work_queue_from_facts_with_conditions(
 /// Pure posture derivation shared by the per-agent read model and batched
 /// projections. `agent` is the caller's AgentState; every other fact comes
 /// from one committed read view.
+#[cfg(test)]
 pub(crate) fn agent_posture_from_facts(
     agent: &AgentState,
     facts: &AgentPostureFacts,
@@ -338,6 +333,7 @@ pub(crate) fn agent_posture_from_facts(
 
 /// Posture precedence rules over an assembled work queue. The live wait
 /// conditions carry the `WaitingForTask` subject reference.
+#[cfg(test)]
 fn agent_posture_rules_from_work_queue(
     work_queue: &WorkQueueReadModel,
     live_wait_conditions: &[WaitConditionRecord],

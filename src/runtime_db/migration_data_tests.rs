@@ -142,6 +142,7 @@ fn seed(tx: &Transaction<'_>) -> Result<()> {
         }
     }
     let timer = TimerRecord {
+        calendar: None,
         id: "original-timer".into(),
         agent_id: "migration-agent".into(),
         created_at: at,
@@ -315,7 +316,10 @@ fn migration_data_matrix_preserves_task_input_status_and_scheduling_across_linea
         );
         assert_eq!(fixed[4].len(), 1, "TaskStatus delegation must survive");
         if let Some(expected) = &expected_fixed {
-            assert_eq!(&fixed, expected, "prefix={prefix}, legacy_start={legacy_start:?}");
+            assert_eq!(
+                &fixed, expected,
+                "prefix={prefix}, legacy_start={legacy_start:?}"
+            );
         } else {
             expected_fixed = Some(fixed.clone());
         }

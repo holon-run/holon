@@ -404,7 +404,11 @@ fn paused_recovery_observation_keeps_the_canonical_interrupted_anchor() -> Resul
             "INSERT INTO task_result_recovery_admissions
              (result_identity,recovery_epoch,root_attempt_id,admitted_at)
              VALUES(?1,?2,'activation:message:live-anchor',?3)",
-            params![paused.result_identity, paused.recovery_epoch, timestamp(Utc::now())],
+            params![
+                paused.result_identity,
+                paused.recovery_epoch,
+                timestamp(Utc::now())
+            ],
         )?;
         let observed = observe_recovery_source_tx(tx, &source, &[&paused], Utc::now())?;
         let replay = &observed.paused_replays[&paused.result_identity];

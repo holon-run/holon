@@ -539,6 +539,7 @@ impl AgentProvider for FailureProvider {
             }
         }
         Ok(ProviderTurnResponse {
+            material: Default::default(),
             blocks: vec![ModelBlock::Text {
                 text: "delivered".into(),
             }],
@@ -1127,7 +1128,12 @@ async fn admitted_exact_repair_recovers_its_consuming_owner_without_migrating_th
             successor.created_at = runtime.now();
             harness.arm_fault(fault);
             let error = runtime
-                .enqueue_exact_recovery_continuation(result_id, &wait, successor, runtime.now())
+                .enqueue_exact_recovery_continuation(
+                    before_result.clone(),
+                    &wait,
+                    successor,
+                    runtime.now(),
+                )
                 .await
                 .unwrap_err();
             crate::runtime::tests::support::assert_injected_transition_fault(&error);
@@ -1271,6 +1277,30 @@ async fn prepared_exact_successor_rejects_a_detached_captured_owner_close_atomic
         ))],
         ..ExecutionProtocolTransition::default()
     };
+    let capture_wait_witness = || async {
+        let mut mutation = runtime.begin_mutation().await.unwrap();
+        let mut work_request = crate::runtime::work_reads::live_work_request();
+        work_request
+            .required_trigger_message_ids
+            .insert(source_id.into());
+        work_request
+            .mandatory_roots
+            .insert(crate::runtime::resident_work::WorkKey::new(
+                crate::runtime::resident_work::WorkFamily::Wait,
+                &predecessor.id,
+            ));
+        mutation
+            .prepare_owner_work_request(&work_request)
+            .await
+            .unwrap();
+        let work = mutation.capture_work(&work_request).unwrap();
+        let witness = runtime
+            .capture_task_result_wait_witness(&mutation, &work, Some(&predecessor.id), &[source_id])
+            .unwrap();
+        drop(mutation);
+        witness
+    };
+    let (wait_witness, _wait_material) = capture_wait_witness().await;
     let mut command = WaitTransitionCommand {
         agent_id: "default".into(),
         work_items: vec![WorkItemMutation::Update {
@@ -1302,10 +1332,7 @@ async fn prepared_exact_successor_rejects_a_detached_captured_owner_close_atomic
                     .queue_entries()
                     .latest(source_id)
                     .unwrap(),
-                wait_conditions: runtime
-                    .storage()
-                    .latest_wait_conditions_for_agent("default")
-                    .unwrap(),
+                wait_witness,
             },
         }),
         agent_state: Some(AgentStateMutation {
@@ -1352,6 +1379,23 @@ async fn prepared_exact_successor_rejects_a_detached_captured_owner_close_atomic
         closed.execution_protocol.as_ref().unwrap().work_items[&waiter.id],
         expected_execution,
     );
+    let error = runtime
+        .runtime_db()
+        .transitions()
+        .commit_wait_with_execution_protocol(&command, &protocol)
+        .unwrap_err();
+    let conflict = error
+        .downcast_ref::<crate::runtime_db::RuntimeStateTransitionConflict>()
+        .expect("owner closure must invalidate the captured Work witness");
+    assert_eq!(conflict.domain(), "task_result_wait_witness");
+    harness.assert_unchanged(&closed);
+    let (wait_witness, _fresh_wait_material) = capture_wait_witness().await;
+    command
+        .task_result_admission
+        .as_mut()
+        .unwrap()
+        .obligation
+        .wait_witness = wait_witness;
     let error = runtime
         .runtime_db()
         .transitions()

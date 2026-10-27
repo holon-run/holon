@@ -253,23 +253,6 @@ impl RuntimeStore {
         self.runtime_db.transcript_entries().append(entry)
     }
 
-    pub(crate) fn start_turn(
-        &self,
-        expected: &AgentState,
-        state: &AgentState,
-        record: &TurnRecord,
-        incarnation: u64,
-    ) -> Result<AgentState> {
-        self.ensure_writable()?;
-        anyhow::ensure!(
-            self.agent_id.as_deref().is_none_or(|id| id == state.id),
-            "agent-scoped storage cannot start another agent's turn"
-        );
-        self.runtime_db
-            .turn_records()
-            .start(Some(expected), state, record, incarnation)
-    }
-
     pub fn append_transcript_entry(&self, entry: &TranscriptEntry) -> Result<()> {
         self.commit_transcript_evidence(entry).map(|_| ())
     }

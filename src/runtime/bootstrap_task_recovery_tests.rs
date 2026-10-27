@@ -19,6 +19,7 @@ use chrono::Utc;
 
 fn load() -> TaskDomainLoadRequest {
     TaskDomainLoadRequest {
+        recovery_at: None,
         query: Default::default(),
         capture: TaskCaptureRequest::current(),
         record_limit: 4096,

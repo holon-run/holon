@@ -140,10 +140,11 @@ async fn loaded_monitor_completed_and_delivery_paths_keep_actual_ack_without_tas
     assert_eq!(before.status, TaskStatus::Completed);
     assert_eq!(before.turn_id.as_deref(), Some(turn.as_str()));
     assert_eq!(roles.len(), 1);
-    assert!(host
-        .completed_child_terminal_from_storage(&storage, &identity, 0)
-        .await?
-        .is_some());
+    let result = host
+        .invocation_terminal_result(&storage, &identity, &delivery, before.clone(), false)
+        .await?;
+    assert_eq!(result.status, TaskStatus::Completed);
+    assert_eq!(result.task_detail.as_ref().unwrap()["turn_id"], turn);
     let parent_loop = parent.pause_run_loop_for_monitor_test().await;
     let child_loop = child.pause_run_loop_for_monitor_test().await;
     deny_task_state(&host)?;
@@ -166,7 +167,7 @@ async fn loaded_monitor_completed_and_delivery_paths_keep_actual_ack_without_tas
         "ordinary polls must retain the existing role without new preparation"
     );
     assert_eq!(
-        host.await_child_terminal_result(&identity.agent_id, 0, false)
+        host.invocation_terminal_result(&storage, &identity, &delivery, repeated, false)
             .await?
             .status,
         TaskStatus::Completed
@@ -266,10 +267,13 @@ async fn loaded_invocation_role_observes_all_parent_tasks_and_actual_writer_upda
         )
         .await?
         .is_none());
-    assert!(host
-        .completed_child_terminal_from_storage(&storage, &identity, 0)
-        .await?
-        .is_some());
+    let monitor = child.child_monitor_read(identity.incarnation).await?;
+    assert!(!monitor.has_lifecycle_blockers()?);
+    assert_eq!(
+        monitor.state().last_turn_terminal.as_ref().unwrap().turn_id,
+        turn
+    );
+    drop(monitor);
     drop(rows);
     restore_task_state(&host)?;
     drop((parent_loop, child_loop));
@@ -304,7 +308,6 @@ async fn loaded_monitor_task_none_foreign_and_incomplete_never_fall_back_to_stor
 {
     let (_home, host, parent, child, identity, _task, _delivery, turn) =
         admitted_invocation_fixture().await?;
-    let storage = host.agent_storage(&identity.agent_id)?;
     let mut roles = Vec::new();
     drop(
         host.invocation_task_rows(&identity.agent_id, identity.incarnation, &turn, &mut roles)
@@ -336,8 +339,12 @@ async fn loaded_monitor_task_none_foreign_and_incomplete_never_fall_back_to_stor
     deny_task_state(&host)?;
     for view in [None, Some(incomplete)] {
         child.replace_task_domain_for_reader_test(view).await?;
-        let error = host
-            .completed_child_terminal_from_storage(&storage, &identity, 0)
+        let runtime = host
+            .monitor_runtime(&identity.agent_id, identity.incarnation)
+            .await?
+            .context("loaded monitor runtime missing")?;
+        let error = runtime
+            .child_monitor_read(identity.incarnation)
             .await
             .err()
             .context("unprepared loaded Task must fail before storage")?;
@@ -380,7 +387,6 @@ async fn loaded_monitor_task_none_foreign_and_incomplete_never_fall_back_to_stor
 async fn registered_unavailable_monitor_runtime_is_not_a_cold_reader() -> Result<()> {
     let (_home, host, parent, child, identity, _task, _delivery, turn) =
         admitted_invocation_fixture().await?;
-    let storage = host.agent_storage(&identity.agent_id)?;
     let parent_loop = parent.pause_run_loop_for_monitor_test().await;
     let child_loop = child.pause_run_loop_for_monitor_test().await;
     let original_phase = host.inner.runtimes.read().await.agents[&identity.agent_id]
@@ -405,7 +411,7 @@ async fn registered_unavailable_monitor_runtime_is_not_a_cold_reader() -> Result
             .await
             .is_none());
         let error = host
-            .completed_child_terminal_from_storage(&storage, &identity, 0)
+            .monitor_runtime(&identity.agent_id, identity.incarnation)
             .await
             .err()
             .context("unavailable registered runtime must reject before cold SQL")?;
@@ -430,10 +436,18 @@ async fn registered_unavailable_monitor_runtime_is_not_a_cold_reader() -> Result
         .get_mut(&identity.agent_id)
         .context("monitor runtime entry disappeared")?
         .phase = original_phase;
-    assert!(host
-        .completed_child_terminal_from_storage(&storage, &identity, 0)
+    let monitor = host
+        .monitor_runtime(&identity.agent_id, identity.incarnation)
         .await?
-        .is_some());
+        .context("restored monitor runtime missing")?
+        .child_monitor_read(identity.incarnation)
+        .await?;
+    assert!(!monitor.has_lifecycle_blockers()?);
+    assert_eq!(
+        monitor.state().last_turn_terminal.as_ref().unwrap().turn_id,
+        turn
+    );
+    drop(monitor);
     restore_task_state(&host)?;
     drop((parent_loop, child_loop));
     host.unload_runtime(&identity.agent_id).await;

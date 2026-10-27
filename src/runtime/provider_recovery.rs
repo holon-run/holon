@@ -1,6 +1,4 @@
 //! Durable source resolution shared by recovery admission and context assembly.
-#[cfg(test)]
-use crate::storage::AppStorage;
 use std::collections::BTreeSet;
 
 use anyhow::{anyhow, bail, Result};
@@ -188,25 +186,12 @@ pub(crate) fn resolve_with(
     read_message: impl FnMut(&str) -> Result<Option<MessageEnvelope>>,
     read_turn: impl FnMut(&str) -> Result<Option<TurnRecord>>,
 ) -> Result<ProviderRecoverySource> {
-    resolve_with_source_relation(message, state, read_message, read_turn,
-        |_, _| Ok(true), |_, _| Ok(()), |_| Ok(()))
-}
-
-/// Shared authority/lineage validation over acquisition's read-only capability.
-#[cfg(test)]
-pub(crate) fn resolve_with_sources(
-    message: &MessageEnvelope,
-    state: &ExecutionProtocolState,
-    read_message: impl FnMut(&str) -> Result<Option<MessageEnvelope>>,
-    read_turn: impl FnMut(&str) -> Result<Option<TurnRecord>>,
-) -> Result<ProviderRecoverySource> {
-    // Preserve the existing admission/recovery contract outside context.
     resolve_with_source_relation(
         message,
         state,
         read_message,
         read_turn,
-        |source, turn| Ok(source.turn_id.as_deref() == Some(turn.turn_id.as_str())),
+        |_, _| Ok(true),
         |_, _| Ok(()),
         |_| Ok(()),
     )
@@ -527,6 +512,7 @@ pub(super) fn is_preparation_error(error: &anyhow::Error) -> bool {
             .is_some()
 }
 
+#[cfg(test)]
 pub(crate) fn resolve_for_context(
     storage: &AppStorage,
     message: &MessageEnvelope,
@@ -650,6 +636,7 @@ mod context_assignment_tests {
             &ExecutionProtocolState::empty("default"),
             &AdmitExecution {
                 attempt: ExecutionAttempt {
+                    input_projection: None,
                     attempt_id: "original-provider-attempt".into(),
                     agent_id: "default".into(),
                     source_message_id: Some(source.id.clone()),
@@ -741,7 +728,7 @@ mod context_assignment_tests {
         )
         .unwrap()
         .unwrap();
-        assert_eq!(resolved.source_turn.turn_id, turn.turn_id);
+        assert_eq!(resolved.source_turn().turn_id, turn.turn_id);
         assert_eq!(
             resolved.root_message.turn_id.as_deref(),
             Some("unstarted-preallocation-hint")

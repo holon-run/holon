@@ -227,6 +227,7 @@ impl AgentProvider for TaskResultReentryProvider {
             _ => anyhow::bail!("unexpected task-result provider call {call}"),
         };
         Ok(ProviderTurnResponse {
+            material: Default::default(),
             blocks,
             stop_reason: None,
             input_tokens: 10,

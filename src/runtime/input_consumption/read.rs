@@ -476,6 +476,7 @@ impl<'a, 'connection> IdleRead<'a, 'connection> {
             required_keys: keys,
         };
         let request = TaskDomainLoadRequest {
+            recovery_at: None,
             query: Default::default(),
             capture,
             record_limit: self.record_limit,

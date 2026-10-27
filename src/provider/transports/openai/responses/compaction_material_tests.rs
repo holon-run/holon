@@ -330,6 +330,7 @@ async fn compact_http_success_and_typed_error_keep_original_acquisition() -> Res
             None,
             "test",
             "test",
+            None,
             &material,
         )
         .await;

@@ -166,11 +166,9 @@ fn paused_recovery_observation_requires_this_source_root_in_the_current_epoch() 
         )?;
         let charged = observe_recovery_source_tx(tx, &source, &[&record], Utc::now())?;
         assert!(charged.paused_replays[&record.result_identity].root_is_charged);
-        assert!(
-            charged.paused_replays[&record.result_identity]
-                .interrupted_anchor
-                .is_none()
-        );
+        assert!(charged.paused_replays[&record.result_identity]
+            .interrupted_anchor
+            .is_none());
         assert!(!replay.root_is_charged);
         Ok(())
     })

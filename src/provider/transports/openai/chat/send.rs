@@ -41,18 +41,21 @@ pub(crate) async fn send_chat_completion_request_with_material(
 ) -> Result<ParsedOpenAiResponse> {
     let result: Result<ParsedOpenAiResponse> = async {
         let model_ref = provider_model_ref("openai", &body);
-        let request_trace = trace.map(|trace| {
-            trace.begin_request_with_material(
-                agent_id,
-                "openai",
-                Some(&model_ref),
-                url.as_str(),
-                "chat_completions",
-                &headers,
-                &body,
-                material,
-            )
-        }).transpose()?.flatten();
+        let request_trace = trace
+            .map(|trace| {
+                trace.begin_request_with_material(
+                    agent_id,
+                    "openai",
+                    Some(&model_ref),
+                    url.as_str(),
+                    "chat_completions",
+                    &headers,
+                    &body,
+                    material,
+                )
+            })
+            .transpose()?
+            .flatten();
         let mut request = client.post(&url).header("content-type", "application/json");
         for (name, value) in headers {
             request = request.header(name, value);
@@ -95,35 +98,38 @@ pub(crate) async fn send_chat_completion_request_with_material(
             ));
         }
 
-        let body = match tokio::time::timeout(response_body_timeout(), material.response_text(response)).await {
-            Ok(Ok(text)) => text,
-            Ok(Err(error)) => {
-                let error = match error.downcast::<reqwest::Error>() {
-                    Ok(error) => error,
-                    Err(error) => return Err(material.hold_error(error)),
-                };
-                return Err(classify_reqwest_transport_error_with_trace(
-                    "OpenAI Chat Completions response body failed",
-                    "response_body",
-                    "openai",
-                    Some(&model_ref),
-                    Some(url.as_str()),
-                    error,
-                    request_trace.as_ref(),
-                ));
-            }
-            Err(_elapsed) => {
-                return Err(timeout_transport_error_with_trace(
-                    "OpenAI Chat Completions response body read timed out",
-                    "response_body",
-                    "openai",
-                    Some(&model_ref),
-                    Some(url.as_str()),
-                    format!("timed out after {:?}", response_body_timeout()),
-                    request_trace.as_ref(),
-                ));
-            }
-        };
+        let body =
+            match tokio::time::timeout(response_body_timeout(), material.response_text(response))
+                .await
+            {
+                Ok(Ok(text)) => text,
+                Ok(Err(error)) => {
+                    let error = match error.downcast::<reqwest::Error>() {
+                        Ok(error) => error,
+                        Err(error) => return Err(material.hold_error(error)),
+                    };
+                    return Err(classify_reqwest_transport_error_with_trace(
+                        "OpenAI Chat Completions response body failed",
+                        "response_body",
+                        "openai",
+                        Some(&model_ref),
+                        Some(url.as_str()),
+                        error,
+                        request_trace.as_ref(),
+                    ));
+                }
+                Err(_elapsed) => {
+                    return Err(timeout_transport_error_with_trace(
+                        "OpenAI Chat Completions response body read timed out",
+                        "response_body",
+                        "openai",
+                        Some(&model_ref),
+                        Some(url.as_str()),
+                        format!("timed out after {:?}", response_body_timeout()),
+                        request_trace.as_ref(),
+                    ));
+                }
+            };
         let response_body_completed_at = chrono::Utc::now();
         trace_response_body(request_trace.as_ref(), &body);
 

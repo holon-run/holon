@@ -54,7 +54,10 @@ async fn actual_loaded_http_active_array_uses_canonical_records_with_task_state_
         Path(agent),
         State(state),
         HeaderMap::new(),
-        Query(LimitQuery { limit: Some(1) }),
+        Query(TaskListQuery {
+            status: None,
+            limit: Some(1),
+        }),
     )
     .await
     .map_err(|(status, body)| anyhow::anyhow!("HTTP active list failed {status}: {}", body.0))?

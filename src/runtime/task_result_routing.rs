@@ -350,6 +350,7 @@ impl RuntimeHandle {
         )]));
         mutation
             .prepare_owner_task_domain_request(&TaskDomainLoadRequest {
+                recovery_at: None,
                 query: Default::default(),
                 capture: task_request.clone(),
                 record_limit,
@@ -457,6 +458,7 @@ impl RuntimeHandle {
         )]));
         mutation
             .prepare_owner_task_domain_request(&TaskDomainLoadRequest {
+                recovery_at: None,
                 query: Default::default(),
                 capture: task_request.clone(),
                 record_limit,
@@ -513,6 +515,7 @@ impl RuntimeHandle {
                     .context("TaskResult parsed overlap records overflow")?,
             );
             let request = TaskDomainLoadRequest {
+                recovery_at: None,
                 query: Default::default(),
                 capture: task_request.clone(),
                 record_limit,

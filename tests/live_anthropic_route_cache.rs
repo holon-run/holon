@@ -86,6 +86,7 @@ async fn live_token_plan_coding_review_uses_builtin_cache_policy() -> Result<()>
             Duration::from_secs(300),
             provider.complete_turn(ProviderTurnRequest {
                 dispatch_guard: None,
+                material: Default::default(),
                 continuation_scope_id: None,
                 prompt_frame: frame.clone(),
                 conversation: conversation.clone(),
@@ -235,6 +236,7 @@ async fn live_exact_route_cache_control_and_diagnostics() -> Result<()> {
                     Duration::from_secs(90),
                     provider.complete_turn(ProviderTurnRequest {
                         dispatch_guard: None,
+                        material: Default::default(),
                         continuation_scope_id: None,
                         prompt_frame: frame.clone(),
                         conversation: conversation.clone(),

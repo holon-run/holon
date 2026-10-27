@@ -6,9 +6,11 @@ use rusqlite::{params, Connection, OptionalExtension, Transaction};
 use serde::de::DeserializeOwned;
 use sha2::{Digest, Sha256};
 
+#[cfg(test)]
+use crate::domain::execution_protocol::ExecutionAttempt;
 use crate::domain::execution_protocol::{
-    self, ExecutionAttempt, ExecutionOutcomeRecord, ExecutionProtocolCommand,
-    ExecutionProtocolState, ExecutionTransition, WorkItemExecutionState,
+    self, ExecutionOutcomeRecord, ExecutionProtocolCommand, ExecutionProtocolState,
+    ExecutionTransition, WorkItemExecutionState,
 };
 use crate::{
     runtime_db::transitions::{
@@ -24,7 +26,7 @@ pub(crate) struct PreparedExecutionProtocolCommands {
     results: Vec<PreparedCommandResult>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub(crate) enum ExecutionProtocolRecoveryCommitOutcome {
     Applied(bool),
     Rejected { reason: String },
@@ -1240,6 +1242,7 @@ fn validate_admission_authority_tx(
 
 impl RuntimeTransitionRepository<'_> {
     /// Read historical canonical evidence without loading the execution partition.
+    #[cfg(test)]
     pub(crate) fn execution_attempt_by_id(
         &self,
         agent_id: &str,
@@ -1302,7 +1305,7 @@ impl RuntimeTransitionRepository<'_> {
                 audit_events,
                 maintenance,
             )?
-            .record)
+            .1)
     }
 
     fn commit_execution_protocol_recovery_plan_inner(
@@ -1312,23 +1315,39 @@ impl RuntimeTransitionRepository<'_> {
         commands: &[ExecutionProtocolCommand],
         audit_events: &[crate::types::AuditEvent],
         maintenance: Option<&crate::runtime_db::OfflineInputMaintenance<'_>>,
-    ) -> Result<
-        crate::runtime_db::input_evidence_writes::InputEvidenceCommit<
-            ExecutionProtocolRecoveryCommitOutcome,
-        >,
-    > {
+    ) -> Result<(
+        super::TransitionCommit,
+        ExecutionProtocolRecoveryCommitOutcome,
+    )> {
+        self.db.transaction(|tx| {
+            self.commit_execution_protocol_recovery_plan_tx(
+                tx,
+                agent_id,
+                scope,
+                commands,
+                audit_events,
+                maintenance,
+            )
+        })
+    }
+
+    pub(super) fn commit_execution_protocol_recovery_plan_tx(
+        &self,
+        tx: &Transaction<'_>,
+        agent_id: &str,
+        scope: Option<&crate::runtime::resident_input_evidence::InputEvidenceScope>,
+        commands: &[ExecutionProtocolCommand],
+        audit_events: &[crate::types::AuditEvent],
+        maintenance: Option<&crate::runtime_db::OfflineInputMaintenance<'_>>,
+    ) -> Result<(
+        super::TransitionCommit,
+        ExecutionProtocolRecoveryCommitOutcome,
+    )> {
         if commands.is_empty() {
-            return Ok(
-                crate::runtime_db::input_evidence_writes::InputEvidenceCommit {
-                    work_delta: None,
-                    task_delta: None,
-                    task_material_budget_views: Vec::new(),
-                    agent_state: None,
-                    record: ExecutionProtocolRecoveryCommitOutcome::Applied(false),
-                    current_read_writes: None,
-                    input_delta: Default::default(),
-                },
-            );
+            return Ok((
+                Default::default(),
+                ExecutionProtocolRecoveryCommitOutcome::Applied(false),
+            ));
         }
         if commands.iter().any(|command| {
             !matches!(
@@ -1341,60 +1360,68 @@ impl RuntimeTransitionRepository<'_> {
         }) {
             bail!("execution protocol recovery plan contains a non-recovery command");
         }
-        self.db.transaction(|tx| {
-            if let Some(scope) = scope {
-                crate::runtime_db::input_evidence_writes::validate_input_evidence_scope_tx(
-                    tx, scope, agent_id,
-                )?;
-            }
-            let prepared =
-                match validate_execution_commands_tx(tx, agent_id, None, commands, &[], &[], &[]) {
-                    Ok(prepared) => prepared,
-                    Err(error) => {
-                        return Ok(
-                            crate::runtime_db::input_evidence_writes::InputEvidenceCommit {
-                    work_delta: None,
-                    task_delta: None,
-                    task_material_budget_views: Vec::new(),
-                                agent_state: None,
-                                record: ExecutionProtocolRecoveryCommitOutcome::Rejected {
-                                    reason: error.to_string(),
-                                },
-                                current_read_writes: None,
-                                input_delta: Default::default(),
-                            },
-                        );
-                    }
-                };
-            let input = if scope.is_none() {
-                let keys = prepared.as_ref().map(|x| x.input_keys()).unwrap_or_default();
-                Some(crate::runtime_db::input_evidence_snapshot::maintenance::prepare_offline_input_repair_tx(
-                    tx, self.db, agent_id, &keys, commands, maintenance,
-                )?)
-            } else { None };
-            let changed = prepared
-                .as_ref()
-                .is_some_and(PreparedExecutionProtocolCommands::has_writes);
-            let (_, input_delta) =
-                persist_execution_commands_with_input_facts_tx(tx, prepared, scope)?;
-            if changed {
-                for event in audit_events {
-                    crate::runtime_db::evidence::append_audit_event_tx(tx, Some(agent_id), event)?;
+        if let Some(scope) = scope {
+            crate::runtime_db::input_evidence_writes::validate_input_evidence_scope_tx(
+                tx, scope, agent_id,
+            )?;
+        }
+        let prepared =
+            match validate_execution_commands_tx(tx, agent_id, None, commands, &[], &[], &[]) {
+                Ok(prepared) => prepared,
+                Err(error) => {
+                    return Ok((
+                        Default::default(),
+                        ExecutionProtocolRecoveryCommitOutcome::Rejected {
+                            reason: error.to_string(),
+                        },
+                    ));
                 }
+            };
+        let input = if scope.is_none() {
+            let keys = prepared
+                .as_ref()
+                .map(|x| x.input_keys())
+                .unwrap_or_default();
+            Some(crate::runtime_db::input_evidence_snapshot::maintenance::prepare_offline_input_repair_tx(
+                tx, self.db, agent_id, &keys, commands, maintenance,
+            )?)
+        } else {
+            None
+        };
+        let changed = prepared
+            .as_ref()
+            .is_some_and(PreparedExecutionProtocolCommands::has_writes);
+        let (_, input_delta) = persist_execution_commands_with_input_facts_tx(tx, prepared, scope)?;
+        let mut events = Vec::new();
+        if changed {
+            super::AuditEventAck::admit_slots(audit_events.len())?;
+            events.reserve(audit_events.len());
+            for event in audit_events {
+                events.push(
+                    crate::runtime_db::evidence::append_audit_event_ack_tx(
+                        tx,
+                        Some(agent_id),
+                        event,
+                    )?
+                    .0,
+                );
             }
-            if let Some(input) = input { input.finish_tx(tx)?; }
-            Ok(
-                crate::runtime_db::input_evidence_writes::InputEvidenceCommit {
-                    work_delta: None,
-                    task_delta: None,
-                    task_material_budget_views: Vec::new(),
-                    agent_state: None,
-                    record: ExecutionProtocolRecoveryCommitOutcome::Applied(changed),
-                    current_read_writes: None,
-                    input_delta,
-                },
-            )
-        })
+        }
+        if let Some(input) = input {
+            input.finish_tx(tx)?;
+        }
+        Ok((
+            super::TransitionCommit {
+                applied: changed,
+                effects: Box::new(super::PostCommitEffects {
+                    audit_events: events,
+                    input_evidence_delta: input_delta,
+                    ..Default::default()
+                }),
+                ..Default::default()
+            },
+            ExecutionProtocolRecoveryCommitOutcome::Applied(changed),
+        ))
     }
 }
 
@@ -1453,11 +1480,8 @@ fn persist_state_inner_tx(
     previous: Option<&ExecutionProtocolState>,
     touched: Option<&BTreeSet<crate::runtime::resident_input_evidence::InputEvidenceKey>>,
 ) -> Result<()> {
-    use crate::runtime::resident_input_evidence::{
-        InputEvidenceFamily as Family, InputEvidenceKey as Key,
-    };
     crate::runtime_db::reclamation::ensure_work_admission_tx(tx, &state.agent_id)?;
-    persist_state_rows_tx(tx, state)
+    persist_state_rows_tx(tx, state, previous, touched)
 }
 
 pub(super) fn validate_agent_deletion_retirement_tx(
@@ -1555,11 +1579,19 @@ pub(crate) fn retire_agent_execution_tx(tx: &Transaction<'_>, agent_id: &str) ->
     }
     // This path can only retire already persisted records after deletion
     // admission. Ordinary protocol writes still enforce the admission fence.
-    persist_state_rows_tx(tx, &state)?;
+    persist_state_rows_tx(tx, &state, None, None)?;
     Ok(true)
 }
 
-fn persist_state_rows_tx(tx: &Transaction<'_>, state: &ExecutionProtocolState) -> Result<()> {
+fn persist_state_rows_tx(
+    tx: &Transaction<'_>,
+    state: &ExecutionProtocolState,
+    previous: Option<&ExecutionProtocolState>,
+    touched: Option<&BTreeSet<crate::runtime::resident_input_evidence::InputEvidenceKey>>,
+) -> Result<()> {
+    use crate::runtime::resident_input_evidence::{
+        InputEvidenceFamily as Family, InputEvidenceKey as Key,
+    };
     execution_protocol::assert_invariants(state)
         .map_err(|error| anyhow!("invalid execution protocol state: {error}"))?;
     tx.execute(

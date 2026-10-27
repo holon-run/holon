@@ -5,7 +5,7 @@ use super::*;
 pub(super) struct SelectedConstraint {
     pub field: ModelMetadataField,
     pub source: ModelMetadataConstraintSource,
-    pub clamp: Option<(u32, u32)>,
+    pub clamp: Option<(usize, usize)>,
 }
 
 impl SelectedConstraint {
@@ -34,12 +34,19 @@ impl SelectedConstraint {
 
 #[derive(Clone, Default)]
 pub(super) struct SelectedEvidence {
-    // One origin per field; six endpoint disables and one output-token clamp.
+    // One origin per field; six endpoint disables and four token-budget clamps.
     fields: [Option<(ModelMetadataField, ModelMetadataOrigin)>; 19],
-    constraints: [Option<SelectedConstraint>; 7],
+    constraints: [Option<SelectedConstraint>; 10],
 }
 
 impl SelectedEvidence {
+    pub fn source_for(&self, field: ModelMetadataField) -> Option<ModelMetadataOrigin> {
+        self.fields
+            .iter()
+            .flatten()
+            .find_map(|(key, origin)| (*key == field).then_some(*origin))
+    }
+
     pub fn record(&mut self, field: ModelMetadataField, origin: ModelMetadataOrigin) {
         if self.fields.iter().flatten().any(|(key, _)| *key == field) {
             return;
@@ -63,10 +70,11 @@ impl SelectedEvidence {
         let fields = self.fields.iter().flatten().count();
         let constraints = self.constraints.iter().flatten().count();
         // BTree nodes and Vec capacity, including both formatted constraint scalars.
+        let scalar_bytes = 2 * (usize::MAX.ilog10() as usize + 1);
         let bytes = fields
             * (std::mem::size_of::<(ModelMetadataField, ModelMetadataOrigin)>()
                 + 4 * std::mem::size_of::<usize>())
-            + constraints * (std::mem::size_of::<ModelMetadataConstraint>() + 20);
+            + constraints * (std::mem::size_of::<ModelMetadataConstraint>() + scalar_bytes);
         (bytes, fields + 3 * constraints)
     }
 

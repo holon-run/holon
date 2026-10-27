@@ -1318,6 +1318,7 @@ fn claim_only_attempt(db: &RuntimeDb) -> Result<ExecutionAttempt> {
             &[CanonicalInputEvidence::Message(source.clone())],
         )?;
         let attempt = ExecutionAttempt {
+            input_projection: None,
             attempt_id: "claim-attempt".into(),
             agent_id: "agent-a".into(),
             source_message_id: Some(source.id.clone()),
@@ -1548,6 +1549,7 @@ fn legacy_fixed_boundary_freezes_claim_only_relation() -> Result<()> {
         store_attempt(
             tx,
             &ExecutionAttempt {
+                input_projection: None,
                 attempt_id: "legacy-attempt".into(),
                 agent_id: "agent-a".into(),
                 source_message_id: Some(source.id.clone()),
@@ -1843,6 +1845,7 @@ fn install_provider_lineage(tx: &Transaction<'_>) -> Result<MessageEnvelope> {
         let attempt_id = format!("lineage-attempt-{index}");
         let outcome_id = format!("lineage-outcome-{index}");
         let attempt = ExecutionAttempt {
+            input_projection: None,
             attempt_id: attempt_id.clone(),
             agent_id: "agent-a".into(),
             source_message_id: Some(source.id.clone()),

@@ -292,7 +292,7 @@ impl RuntimeHandle {
                     true,
                 )
                 .await?;
-            let available_bytes = idle_input_available_bytes(&built);
+            let available_bytes = idle_input_budget(&built);
             if !idle_results_checked {
                 idle_results_checked = true;
                 if Box::pin(self.admit_idle_task_results(message, available_bytes)).await? {

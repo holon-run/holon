@@ -610,6 +610,7 @@ impl RuntimeHandle {
                     // current owner just to recover its original obligation.
                     let limits=ledger.limits();
                     let request=TaskDomainLoadRequest {
+    recovery_at: None,
                         query: Default::default(),
                         capture:resident_task::TaskCaptureRequest::current(),
                         record_limit:usize::try_from(limits.record_limit)?.min(65_536),

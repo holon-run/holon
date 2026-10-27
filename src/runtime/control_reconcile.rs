@@ -1198,6 +1198,7 @@ mod tests {
         let ledger = &f.runtime.inner.input_evidence_budget;
         let limits = ledger.limits();
         let request = crate::runtime_db::task_snapshot::TaskDomainLoadRequest {
+            recovery_at: None,
             query: Default::default(),
             capture: crate::runtime::resident_task::TaskCaptureRequest::current(),
             record_limit: usize::try_from(limits.record_limit).unwrap().min(65_536),

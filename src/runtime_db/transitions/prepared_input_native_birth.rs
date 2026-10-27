@@ -48,6 +48,11 @@ pub(super) fn visit_original(
 ) -> Result<()> {
     match prepared.command.as_ref() {
         InputTransitionCommand::Audit { .. } => {}
+        InputTransitionCommand::ContextBudgetStopRecovery {
+            protocol: value, ..
+        } => {
+            protocol(value, visit)?;
+        }
         InputTransitionCommand::Posture { started_turn, .. } => {
             if let Some(turn) = started_turn {
                 visit(Family::Turn, &turn.turn_id)?;

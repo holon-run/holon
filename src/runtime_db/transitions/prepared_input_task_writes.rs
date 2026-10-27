@@ -580,7 +580,9 @@ pub(super) fn prepare_supervised_parent_transaction_tx<'tx, 'connection, 'comman
     };
     let scope = &admission.parent_scope;
     crate::runtime_db::input_evidence_writes::validate_input_evidence_scope_tx(
-        tx, scope, &admission.parent_task.agent_id,
+        tx,
+        scope,
+        &admission.parent_task.agent_id,
     )?;
     let allowed = BTreeSet::from([TaskKey::new(TaskFamily::Task, &admission.parent_task.id)]);
     let mut capture = crate::runtime::resident_task::TaskCaptureRequest::current();
@@ -611,8 +613,13 @@ pub(super) fn prepare_supervised_parent_transaction_tx<'tx, 'connection, 'comman
     }
     let proof = tasks::prepare_task_write_tx(tx, scope, &allowed)?;
     tasks::preflight_task_write_snapshot_with_memory_budget_tx(
-        tx, &proof, &request, ledger, material.memory_budget.take(),
-    )?.require_current()?;
+        tx,
+        &proof,
+        &request,
+        ledger,
+        material.memory_budget.take(),
+    )?
+    .require_current()?;
     let original_material = (before.bytes, before.records);
     let material_total = (material.bytes, material.records);
     let guards = material.guards;
@@ -650,9 +657,16 @@ pub(super) fn finish_supervised_parent_tx(
     };
     tasks.finish(tx, &mut parent, ledger, memory)?;
     value.effects.related_task_deltas.push(
-        parent.effects.task_delta.take().context("supervised parent omitted Task delta")?,
+        parent
+            .effects
+            .task_delta
+            .take()
+            .context("supervised parent omitted Task delta")?,
     );
-    value.effects.task_material_budget_views.extend(parent.effects.task_material_budget_views);
+    value
+        .effects
+        .task_material_budget_views
+        .extend(parent.effects.task_material_budget_views);
     Ok(())
 }
 
@@ -1009,11 +1023,16 @@ pub(super) fn prepare_task_transaction_inner_tx<'tx, 'connection, 'command: 'tx>
     let before_material = tasks::task_maintenance_material_tx(tx, scope, &candidates)?;
     material.charge(before_material.bytes, before_material.records, 1)?;
     let mut allowed = tasks::qualified_task_recovery_selectors_tx(tx, scope, &candidates)?;
-    if matches!(prepared.command.as_ref(), InputTransitionCommand::LiveInputAttachment(_)
-        | InputTransitionCommand::LiveInputRecovery(_)
-        | InputTransitionCommand::ProviderResultHandoff(_)) {
+    if matches!(
+        prepared.command.as_ref(),
+        InputTransitionCommand::LiveInputAttachment(_)
+            | InputTransitionCommand::LiveInputRecovery(_)
+            | InputTransitionCommand::ProviderResultHandoff(_)
+    ) {
         anyhow::ensure!(
-            candidates.iter().filter(|key| key.family == TaskFamily::ResultSettlement)
+            candidates
+                .iter()
+                .filter(|key| key.family == TaskFamily::ResultSettlement)
                 .all(|key| allowed.contains(key)),
             "live Result source requires original Task preparation"
         );

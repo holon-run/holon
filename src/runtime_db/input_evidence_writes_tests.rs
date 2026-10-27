@@ -672,6 +672,7 @@ fn timer_fire_fixture(f: &Fixture, message_id: &str) -> Result<crate::runtime_db
     use crate::types::{AdmissionContext, MessageDeliverySurface, TimerRecord, TimerStatus};
     let now = Utc::now();
     let timer = TimerRecord {
+        calendar: None,
         id: format!("timer-{message_id}"),
         agent_id: f.scope.agent_id.clone(),
         created_at: now,

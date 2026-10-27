@@ -58,6 +58,7 @@ impl AgentProvider for WorktreeLifecycleProvider {
                 text: "diagnostic task completed".into(),
             });
         Ok(ProviderTurnResponse {
+            material: request.material,
             blocks: vec![block],
             stop_reason: None,
             input_tokens: 0,

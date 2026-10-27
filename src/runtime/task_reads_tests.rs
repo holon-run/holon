@@ -31,6 +31,7 @@ fn scope() -> super::super::resident_input_evidence::InputEvidenceScope {
 }
 fn load_request() -> TaskDomainLoadRequest {
     TaskDomainLoadRequest {
+        recovery_at: None,
         query: Default::default(),
         capture: TaskCaptureRequest::current(),
         record_limit: 4096,
@@ -254,6 +255,7 @@ pub(crate) fn admitted_fixture() -> Result<(CapturedTasks, Vec<MessageEnvelope>)
             &ExecutionProtocolState::empty("default"),
             &AdmitExecution {
                 attempt: ExecutionAttempt {
+                    input_projection: None,
                     attempt_id: "original-open-activation".into(),
                     agent_id: "default".into(),
                     source_message_id: Some(source.id.clone()),
@@ -304,6 +306,68 @@ pub(crate) fn admitted_fixture() -> Result<(CapturedTasks, Vec<MessageEnvelope>)
         messages.push(reply);
         Ok((captured, messages))
     })
+}
+
+#[test]
+fn captured_task_result_message_read_requires_complete_original_facts() -> Result<()> {
+    let (captured, messages) = admitted_fixture()?;
+    let expected = (*admitted_results(&captured, "original-open-activation")?[0]).clone();
+    let index = captured
+        .records
+        .iter()
+        .position(|row| row.locator.key == TaskKey::new(TaskFamily::Task, &expected.task_id))
+        .context("selected original Task")?;
+    let ledger = InputEvidenceBudgetLedger::new(crate::config::StateMemoryLimits::default())?;
+    let selector = ledger.register_owned_bytes(
+        &captured.scope,
+        InputMemoryCategory::Pins,
+        OwnedBytesEstimate {
+            payload_bytes: 0,
+            metadata_estimate_bytes: 128,
+        },
+    )?;
+    let mut read = CurrentTaskRecordRead {
+        tasks: captured,
+        index: Some(index),
+        _selector: selector,
+    };
+    assert_eq!(read.result_for_message(&messages[0].id)?, Some(&expected));
+    assert!(read.result_for_message(&messages[1].id)?.is_none());
+    assert!(read.result_for_message("not-a-result")?.is_none());
+
+    let metadata = read
+        .tasks
+        .coverage
+        .result_metadata
+        .remove(&expected.result_identity)
+        .context("original Result metadata")?;
+    assert!(read.result_for_message(&messages[0].id).is_err());
+    assert!(read.result_for_message("not-a-result").is_err());
+    read.tasks
+        .coverage
+        .result_metadata
+        .insert(expected.result_identity.clone(), metadata);
+
+    let ids = read
+        .tasks
+        .coverage
+        .task_result_ids
+        .remove(&expected.task_id)
+        .context("original Task Result index")?;
+    assert!(read.result_for_message(&messages[0].id).is_err());
+    read.tasks
+        .coverage
+        .task_result_ids
+        .insert(expected.task_id.clone(), ids);
+
+    read.tasks.scope.identity_incarnation += 1;
+    assert!(read.result_for_message(&messages[0].id).is_err());
+    read.tasks.scope.identity_incarnation -= 1;
+    read.tasks.records.retain(|row| {
+        row.locator.key != TaskKey::new(TaskFamily::ResultSettlement, &expected.result_identity)
+    });
+    assert!(read.result_for_message(&messages[0].id).is_err());
+    Ok(())
 }
 
 #[test]

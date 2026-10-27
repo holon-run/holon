@@ -225,6 +225,7 @@ impl RuntimeHandle {
                 )?,
             );
             let request = TaskDomainLoadRequest {
+                recovery_at: None,
                 capture: super::super::resident_task::TaskCaptureRequest::current(),
                 query: Default::default(),
                 record_limit,

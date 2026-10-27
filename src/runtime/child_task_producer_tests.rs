@@ -694,6 +694,7 @@ async fn child_current_entry_rejects_oversized_malformed_state_and_task_before_d
             .context("rollback retains original frozen body")?;
         let _resource_refresh = f.runtime.hold_resource_refresh_for_test().await?;
         let request = TaskDomainLoadRequest {
+            recovery_at: None,
             query: Default::default(),
             capture: resident_task::TaskCaptureRequest::current(),
             record_limit: 65_536,
@@ -833,6 +834,7 @@ async fn child_fresh_receipt_and_primary_joint_task_material_share_one_remaining
         .input_attempt()
         .context("actual original attempt missing")?;
     let request = TaskDomainLoadRequest {
+        recovery_at: None,
         query: Default::default(),
         capture: resident_task::TaskCaptureRequest::current(),
         record_limit: 65_536,
@@ -933,6 +935,7 @@ async fn child_full_state_native_nodes_are_rejected_before_all_three_decoders() 
         let frozen = f.source.frozen_terminal()?.unwrap();
         let _resource_refresh = f.runtime.hold_resource_refresh_for_test().await?;
         let request = TaskDomainLoadRequest {
+            recovery_at: None,
             query: Default::default(),
             capture: resident_task::TaskCaptureRequest::current(),
             record_limit: 65_536,
@@ -1066,6 +1069,7 @@ async fn child_receipt_nested_ack_nodes_are_budgeted_before_lookup_and_checksum(
         Ok(())
     })?;
         let request = TaskDomainLoadRequest {
+            recovery_at: None,
             query: Default::default(),
             capture: resident_task::TaskCaptureRequest::current(),
             record_limit: 4096,
@@ -1730,6 +1734,7 @@ async fn actual_task_ack_cannot_change_partial_generation_under_an_original_chil
         )
     })?;
     let request = crate::runtime_db::task_snapshot::TaskDomainLoadRequest {
+        recovery_at: None,
         query: Default::default(),
         capture: resident_task::TaskCaptureRequest::current(),
         record_limit: 65_536,
@@ -1932,6 +1937,7 @@ async fn child_physical_retirement_hands_exact_durable_monitor_to_real_reload_wi
             0,
             None,
             detail,
+            false,
         )
         .await?;
     let lease = {
@@ -1970,6 +1976,7 @@ async fn child_physical_retirement_hands_exact_durable_monitor_to_real_reload_wi
     // A real small request must reject the native Task material before decode,
     // keep the source responsibility, and release all temporary view guards.
     let request = TaskDomainLoadRequest {
+        recovery_at: None,
         query: Default::default(),
         capture: resident_task::TaskCaptureRequest::current(),
         record_limit: 1024,
@@ -2019,6 +2026,7 @@ async fn child_physical_retirement_hands_exact_durable_monitor_to_real_reload_wi
     // so the DB's original full hard cap fits its raw material, but Host slots
     // plus that same acquisition do not. Budget must win before JSON parsing.
     let high = TaskDomainLoadRequest {
+        recovery_at: None,
         query: Default::default(),
         capture: resident_task::TaskCaptureRequest::current(),
         record_limit: 131072,

@@ -27,6 +27,7 @@ fn current_queue_selector_includes_cancelled_pending_wake_without_a_new_birth() 
     let scope = scope();
     let at = "2026-10-21T00:00:00Z".parse()?;
     let timer = TimerRecord {
+        calendar: None,
         id: "timer".into(),
         agent_id: scope.agent_id,
         created_at: at,

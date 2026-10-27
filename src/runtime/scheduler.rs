@@ -196,14 +196,16 @@ mod projection;
 mod semantic_selection;
 
 pub(crate) use diagnostics::{
-    append_deferred_activation_advisory, append_ambiguous_wait_advisory, append_interrupted_replay_source_advisory,
-    append_queue_head_starved_advisory,
-    QUEUE_HEAD_STARVATION_AFTER_MS,
+    append_deferred_activation_advisory, append_ambiguous_wait_advisory,
 };
 #[cfg(test)]
 pub(crate) use diagnostics::append_scheduling_advisories;
 pub(crate) use diagnostics::scheduling_advisories_for_facts;
 pub(super) use diagnostics::{ambiguous_wait_advisory_event, pending_scheduling_advisory_events};
+pub(crate) use diagnostics::{
+    append_interrupted_replay_source_advisory, append_queue_head_starved_advisory,
+    QUEUE_HEAD_STARVATION_AFTER_MS,
+};
 // Preserve the pre-split scheduler facade even when the current crate has no callers.
 #[cfg(test)]
 pub(crate) use diagnostics::{scheduling_advisories, scheduling_advisories_with_queue_len};
