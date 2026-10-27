@@ -141,6 +141,13 @@ enum ProviderRoundDispatch {
     Interjected(Option<ProviderAttemptTimeline>),
 }
 
+fn boxed_provider_round<F: std::future::Future>(
+    build: impl FnOnce() -> F,
+) -> std::pin::Pin<Box<F>> {
+    // Construct the large round outside the turn's poll frame.
+    Box::pin(build())
+}
+
 struct CoolingInputBoundary<'a> {
     agent_id: &'a str,
     round: usize,
@@ -985,7 +992,36 @@ impl RuntimeHandle {
         }
     }
 
-    async fn complete_turn_with_cooling_recovery(
+    fn complete_turn_with_cooling_recovery<'a>(
+        &'a self,
+        provider: Arc<dyn AgentProvider>,
+        request: ProviderTurnRequest,
+        side_effect_boundary: bool,
+        may_reselect: bool,
+        excluded: &'a mut std::collections::BTreeSet<String>,
+        prior_attempts: Option<&'a ProviderAttemptTimeline>,
+        input: CoolingInputBoundary<'a>,
+    ) -> std::pin::Pin<
+        Box<
+            impl std::future::Future<
+                    Output = (ProviderRoundDispatch, DateTime<Utc>, DateTime<Utc>, u64),
+                > + Send
+                + 'a,
+        >,
+    > {
+        // Unwind construction before polling the round's provider callbacks.
+        Box::pin(self.complete_turn_with_cooling_recovery_inner(
+            provider,
+            request,
+            side_effect_boundary,
+            may_reselect,
+            excluded,
+            prior_attempts,
+            input,
+        ))
+    }
+
+    async fn complete_turn_with_cooling_recovery_inner(
         &self,
         provider: Arc<dyn AgentProvider>,
         request: ProviderTurnRequest,
@@ -2522,7 +2558,7 @@ impl TurnExecution<'_> {
                 provider_completed_at,
                 provider_round_ms,
                 turn_local_compaction,
-            ) = match Box::pin(async {
+            ) = match boxed_provider_round(|| async {
                 'provider_round: loop {
                 let context_build_started = Instant::now();
                 let context_build_started_at = chrono::Utc::now();

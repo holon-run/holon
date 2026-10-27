@@ -2774,10 +2774,8 @@ async fn wait_for_final_report_abandonment_leaves_no_partial_wait_or_result_brie
         provider.clone(),
         "default".into(),
         ContextConfig {
-            prompt_budget_estimated_tokens: 32768,
-            turn_projection_budget_ratio: 1.0,
             compaction_keep_recent_estimated_tokens: 2048,
-            ..context_config()
+            ..continuation_ready_context_config(&workspace, 32768)
         },
     )
     .unwrap();
@@ -2822,6 +2820,7 @@ async fn wait_for_final_report_abandonment_leaves_no_partial_wait_or_result_brie
     .expect("timed out waiting for abandoned WaitFor recovery");
     runtime_task.abort();
 
+    assert_eq!(*provider.calls.lock().await, 3);
     assert!(runtime
         .storage()
         .active_wait_conditions_for_agent("default")
