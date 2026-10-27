@@ -357,7 +357,12 @@ class RecoveryRun(FaultRun):
         return (record["recovery_attempts"] == 5
                 and any(barrier["root_attempt_id"] == designated for barrier in barriers))
 
-    def provider_outcomes_complete(self, snapshot, record):
+    def recovery_outcomes_complete(self, snapshot, record):
+        # Exhaustion can be diagnosed while the designated root is cooling
+        # before its barrier. Do not begin quiet observation before a required
+        # restart checkpoint has actually run.
+        if self.spec.get("restart") and not self.restarted:
+            return False
         rows = recovery_ledger(snapshot, record)
         if len(rows) != self.spec["goal"]:
             return False
@@ -666,7 +671,7 @@ class RecoveryRun(FaultRun):
                     and record.get("recovery_diagnostic_at") and not barriers):
                 # Startup may expose the diagnostic before the interrupted
                 # fifth root reaches its replayed provider request.
-                if not self.provider_outcomes_complete(snapshot, record):
+                if not self.recovery_outcomes_complete(snapshot, record):
                     time.sleep(.5)
                     continue
                 require_recovery_exhausted(snapshot, captured=self.captured)
