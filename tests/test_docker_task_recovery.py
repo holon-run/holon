@@ -1990,7 +1990,7 @@ class RecoveryRunnerTests(unittest.TestCase):
         self.assertIn("--suite fast --timeout 180", ci)
         self.assertIn("target/docker-e2e/task-result-fast", ci)
 
-    def test_controlled_suite_is_a_separate_compile_time_hard_gate_in_ci_and_release(self):
+    def test_controlled_suite_gate_cadence_is_nightly_release_and_pr_label_opt_in(self):
         manifest = recovery.validate_manifest(json.loads(recovery.MANIFEST.read_text()))
         self.assertEqual(manifest["suites"]["controlled"], [
             "controlled-exact-first", "controlled-scanner-first", "sixth-rejected",
@@ -2005,6 +2005,23 @@ class RecoveryRunnerTests(unittest.TestCase):
             self.assertIn("timeout-minutes: 100", gate)
             self.assertIn("--suite controlled --timeout 3600", gate)
             self.assertIn("holon:recovery-acceptance", gate)
+        # The CI gate is per-PR opt-in, not a blanket Rust-PR run: unconditional
+        # main coverage comes from the nightly full sweep, and only a labeled
+        # Rust/Docker PR re-adds the per-merge gate. Any softening of that
+        # condition (dropping the label, dropping the nightly sweep, or
+        # restoring the blanket rust trigger) changes this exact line.
+        ci = (ROOT / ".github/workflows/ci.yml").read_text()
+        ci_gate = re.split(r"\n  [a-z][a-z0-9-]*:\n",
+                           ci.split("  task-result-controlled-required:\n", 1)[1], 1)[0]
+        self.assertIn(
+            "if: needs.changes.outputs.full_sweep == 'true' || "
+            "(github.event_name == 'pull_request' && "
+            "(needs.changes.outputs.docker == 'true' || "
+            "needs.changes.outputs.rust == 'true') && "
+            "contains(github.event.pull_request.labels.*.name, "
+            "'recovery-acceptance'))",
+            ci_gate,
+        )
 
     def test_cli_rejects_insufficient_slow_budget_before_docker(self):
         with patch.object(recovery, "command") as command:
