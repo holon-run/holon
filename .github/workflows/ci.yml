@@ -1048,7 +1048,14 @@ jobs:
   task-result-controlled-required:
     name: Task-result controlled recovery required
     needs: changes
-    if: needs.changes.outputs.full_sweep == 'true' || needs.changes.outputs.docker == 'true' || needs.changes.outputs.rust == 'true'
+    # Controlled acceptance is the slowest CI tier: the feature-gated
+    # recovery-acceptance image build plus the real-backoff sixth-rejected
+    # case (~40 minutes measured). It does not run on every Rust PR.
+    # Unconditional coverage stays with the nightly full sweep and release
+    # E2E; a Rust/Docker PR opts in with the `recovery-acceptance` label
+    # (the same label pattern as the e2e-scheduler canary) when it changes
+    # task-result recovery invariants. The fast suite still runs per PR.
+    if: needs.changes.outputs.full_sweep == 'true' || (github.event_name == 'pull_request' && (needs.changes.outputs.docker == 'true' || needs.changes.outputs.rust == 'true') && contains(github.event.pull_request.labels.*.name, 'recovery-acceptance'))
     runs-on: ubuntu-latest
     timeout-minutes: 100
     steps:

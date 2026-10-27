@@ -81,6 +81,11 @@ The core/attestation job depends on all six and the
 separate controlled gate. CI and release both build a distinct compile-time
 `recovery-acceptance` image and run the three controlled cases as hard failures.
 That gate has a 100-minute workflow budget including the separate image build.
+In CI the controlled gate runs on the nightly full sweep and on Rust/Docker pull
+requests that carry the `recovery-acceptance` opt-in label (the same label
+pattern as the e2e-scheduler canary); it does not run on every Rust pull
+request, and plain main pushes do not repeat a labeled PR's completed gate.
+Release E2E keeps the gate unconditional.
 PR scheduler-required runs all three fast cases as hard-failure steps; this does not
 claim that a PR ran the slow suite. Python asset validation runs in
 `make docker-e2e-validate` without Docker.
