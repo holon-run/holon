@@ -5,6 +5,43 @@ unchanged catalog facts are preserved, not newly certified as vendor hard
 limits. An upstream candidate is evidence to review, not permission to change
 an endpoint, region, subscription entitlement, or runtime output policy.
 
+## Incremental review: 2026-10-28
+
+The previous Codex admission gap is now resolved by endpoint-specific evidence:
+OpenAI's [bundled Codex catalog at the reviewed revision](https://github.com/openai/codex/blob/126a0ee92ed2c5e73cd8a8f7e37563e8527552d7/codex-rs/models-manager/models.json)
+adds `gpt-6.1-terra`. Its default context is **500000**, not the general API's
+**1050000** or the opt-in maximum **872000**. Output default and ceiling are
+not specified; retain unknown capacities and the independent 8192-token runtime
+fallback. The metadata explicitly lists text/image input, parallel tools,
+shell execution, low verbosity, and `low/medium/high/xhigh/max/ultra`.
+It does not establish image generation or account-specific availability.
+Register this reviewed Codex model explicitly; do not relax the supplement's
+requirement for independent admission of future API-to-Codex candidates.
+
+OpenCode's [Go catalog](https://opencode.ai/v2/docs/console/go/) and
+[harness integration guide](https://opencode.ai/v2/docs/console/harnesses/)
+now distinguish native API formats from translated access. All 30 current
+Go text IDs have access to the existing Chat, Messages, and Responses endpoints,
+including the exact `gemini-4-argon` ID. This text eligibility is not evidence
+that translated routes inherit native vision, reasoning controls, cache
+controls, or token capacities. Preserve existing native-route metadata and
+preferences; narrow newly translated routes conservatively. Keep historical
+names independently registered rather than renaming or expanding them from
+their absence in the current table. The harness guide requires a stable
+`x-opencode-session`; this catalog review does not verify live session setup.
+
+The [Volcengine Responses effort matrix](https://ark.volcengine.com/region:cn-beijing/docs/responses-api-deep-thinking.md)
+now describes K3.1 `none/minimal` as disabling thinking while also saying
+thinking is always enabled. The [model card](https://ark.volcengine.com/models/kimi-k3-1-pro.md)
+still specifies always-on thinking and `low/high/max`; the
+[Responses schema](https://ark.volcengine.com/region:cn-beijing/docs/create-model-responses-api.md)
+adds conflicting sampling descriptions. Do not add disabling effort values
+or resolve the existing output-capacity conflict by inference.
+
+The independently reviewed endpoint sets and future EOS cutoffs are recorded
+in [the endpoint audit](endpoint-review.md). No paid inference, credentials,
+account qualification, or deployment was used as evidence.
+
 ## Incremental review: 2026-10-27
 
 The official [GPT-6.1 Terra API model page](https://developers.openai.com/api/docs/models/gpt-6.1-terra)

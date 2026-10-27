@@ -1912,7 +1912,9 @@ fn reasoning_effort_options(
     }
 
     let options = match (model_ref.provider.as_str(), model_ref.model.as_str()) {
-        ("openai-codex", "gpt-6.1-sol") => &["low", "medium", "high", "xhigh", "max", "ultra"][..],
+        ("openai-codex", "gpt-6.1-sol" | "gpt-6.1-terra") => {
+            &["low", "medium", "high", "xhigh", "max", "ultra"][..]
+        }
         ("openai-codex", "gpt-6-luna") => &["low", "medium", "high", "xhigh", "max"][..],
         ("openai-codex", "gpt-6-astra" | "gpt-6-sol") => {
             &["low", "medium", "high", "xhigh", "max"][..]
@@ -2008,7 +2010,45 @@ fn built_in_entries() -> Vec<BuiltInModelMetadata> {
 
 #[cfg(test)]
 fn built_in_route_definitions() -> Vec<BuiltInModelRouteDefinition> {
-    providers::route_definitions()
+    let mut definitions = providers::route_definitions();
+    let provider = provider_id("opencode-go");
+    for &(id, preferred) in crate::model_discovery::OPENCODE_GO_TEXT_MODELS {
+        for endpoint in ["default", "messages", "responses"] {
+            if endpoint == preferred {
+                continue;
+            }
+            definitions.push(BuiltInModelRouteDefinition {
+                legacy_provider: provider.clone(),
+                model_ref: ModelRef::new(provider.clone(), id),
+                endpoint: ProviderEndpointId::parse(endpoint).expect("valid Go endpoint"),
+                policy: BuiltInModelRoutePolicy {
+                    description: Some(
+                        "OpenCode Go translated text route; capacity, vision, reasoning controls, and explicit cache support are unconfirmed."
+                            .into(),
+                    ),
+                    context_window_tokens: Some(None),
+                    auto_compact_token_limit: Some(None),
+                    default_max_output_tokens: Some(None),
+                    max_output_tokens_upper_limit: Some(None),
+                    default_verbosity: Some(None),
+                    capabilities: ModelCapabilityOverride {
+                        parallel_tool_calls: Some(false),
+                        image_input: Some(false),
+                        image_generation: Some(false),
+                        supports_reasoning: Some(false),
+                        interactive_exec: Some(false),
+                        ..ModelCapabilityOverride::default()
+                    },
+                    reasoning_effort_options: Some(Vec::new()),
+                    cache_capabilities: Some(ModelRouteCacheCapabilities {
+                        cache_control: Some(false),
+                    }),
+                    ..BuiltInModelRoutePolicy::default()
+                },
+            });
+        }
+    }
+    definitions
 }
 
 #[cfg(test)]
@@ -2068,7 +2108,7 @@ mod tests {
     }
 
     #[test]
-    fn api_terra_does_not_grant_codex_endpoint_access() {
+    fn reviewed_codex_terra_keeps_endpoint_metadata_separate() {
         let catalog = BuiltInModelCatalog::new();
         let api = catalog
             .get(&ModelRef::parse("openai/gpt-6.1-terra").unwrap())
@@ -2078,12 +2118,43 @@ mod tests {
         assert!(catalog
             .get_route(&ModelRouteRef::parse("openai@default/gpt-6.1-terra").unwrap())
             .is_some());
-        assert!(catalog
-            .get(&ModelRef::parse("openai-codex/gpt-6.1-terra").unwrap())
-            .is_none());
-        assert!(catalog
-            .get_route(&ModelRouteRef::parse("openai-codex@default/gpt-6.1-terra").unwrap())
-            .is_none());
+        for catalog in [catalog, curated_catalog()] {
+            let model_ref = ModelRef::parse("openai-codex/gpt-6.1-terra").unwrap();
+            let codex = catalog.get(&model_ref).expect("reviewed Codex model");
+            assert_eq!(codex.context_window_tokens, Some(500_000));
+            assert_eq!(codex.default_max_output_tokens, None);
+            assert_eq!(codex.max_output_tokens_upper_limit, None);
+            assert!(catalog
+                .get_route(&ModelRouteRef::parse("openai-codex@default/gpt-6.1-terra").unwrap())
+                .is_some());
+            let policy = catalog.resolve_policy(
+                &model_ref,
+                &HashMap::new(),
+                &HashMap::new(),
+                None,
+                &base_context(),
+                8192,
+            );
+            assert_eq!(policy.prompt_budget_estimated_tokens, 475_000);
+            assert_eq!(policy.runtime_max_output_tokens, 8192);
+            assert_eq!(policy.verbosity, Some(ModelVerbosity::Low));
+            assert!(policy.capabilities.agent_turn);
+            assert!(policy.capabilities.parallel_tool_calls);
+            assert!(policy.capabilities.image_input);
+            assert!(policy.capabilities.interactive_exec);
+            assert!(!policy.capabilities.image_generation);
+            assert_eq!(
+                policy.reasoning_effort_options,
+                ["low", "medium", "high", "xhigh", "max", "ultra"]
+            );
+            assert!(policy.validate_reasoning_effort("ultra").is_ok());
+            assert!(policy.validate_reasoning_effort("none").is_err());
+            assert_eq!(
+                catalog.preferred_model_for_provider(&ProviderId::openai_codex()),
+                Some(ModelRef::new(ProviderId::openai_codex(), "gpt-6-astra"))
+            );
+        }
+        let catalog = BuiltInModelCatalog::new();
         assert!(catalog
             .get_route(
                 &ModelRouteRef::parse("openai-codex@default/gpt-daybreak-blue-latest").unwrap()
@@ -5375,7 +5446,7 @@ mod tests {
     }
 
     #[test]
-    fn opencode_iceman_is_chat_only_with_unknown_capabilities() {
+    fn opencode_iceman_has_translated_routes_with_unknown_capabilities() {
         for catalog in [curated_catalog(), BuiltInModelCatalog::new()] {
             let model_ref = ModelRef::parse("opencode-go/iceman-contributor-free").unwrap();
             let model = catalog.get(&model_ref).unwrap();
@@ -5400,7 +5471,7 @@ mod tests {
                         ))
                         .unwrap()
                     )
-                    .is_none());
+                    .is_some());
             }
         }
     }
@@ -5415,13 +5486,13 @@ mod tests {
             .filter(|model| model.model_ref.provider == provider)
             .collect::<Vec<_>>();
 
-        assert_eq!(models.len(), 41);
+        assert_eq!(models.len(), 42);
         for model in &models {
             assert_eq!(
                 model.capabilities.supports_reasoning,
                 !matches!(
                     model.model_ref.model.as_str(),
-                    "kimi-k3.1-pro" | "iceman-contributor-free"
+                    "kimi-k3.1-pro" | "iceman-contributor-free" | "gemini-4-argon"
                 )
             );
             assert!(model.reasoning_effort_options.is_empty());
@@ -5510,13 +5581,20 @@ mod tests {
                 .is_none());
         }
         for endpoint in ["messages", "responses"] {
-            for id in ["minimax-m3.1-flash", "minimax-m3.1-flash-free"] {
-                assert!(catalog
-                    .get_route(
-                        &ModelRouteRef::parse(&format!("opencode-go@{endpoint}/{id}")).unwrap()
-                    )
-                    .is_none());
-            }
+            assert!(catalog
+                .get_route(
+                    &ModelRouteRef::parse(&format!("opencode-go@{endpoint}/minimax-m3.1-flash"))
+                        .unwrap()
+                )
+                .is_some());
+            assert!(catalog
+                .get_route(
+                    &ModelRouteRef::parse(&format!(
+                        "opencode-go@{endpoint}/minimax-m3.1-flash-free"
+                    ))
+                    .unwrap()
+                )
+                .is_none());
         }
     }
 
@@ -5543,7 +5621,7 @@ mod tests {
     }
 
     #[test]
-    fn opencode_go_k31_is_chat_only_without_inheriting_native_specs() {
+    fn opencode_go_k31_supports_translation_without_inheriting_native_specs() {
         for catalog in [
             legacy_builtin_catalog().unwrap(),
             BuiltInModelCatalog::new(),
@@ -5564,7 +5642,96 @@ mod tests {
                         &ModelRouteRef::parse(&format!("opencode-go@{endpoint}/kimi-k3.1-pro"))
                             .unwrap()
                     )
-                    .is_none());
+                    .is_some());
+            }
+        }
+    }
+
+    #[test]
+    fn opencode_go_current_text_models_have_conservative_translated_routes() {
+        let ids = [
+            "grok-4.7",
+            "gpt-6-luna",
+            "gpt-5.6-luna",
+            "claude-haiku-5-5",
+            "gemini-4-argon",
+            "glm-5.3-flash",
+            "glm-5.3",
+            "glm-5.2",
+            "kimi-k3.1-pro",
+            "kimi-k3",
+            "kimi-k2.7-code",
+            "longcat-2.0",
+            "deepseek-v4.1-flash",
+            "deepseek-v4-pro",
+            "mimo-v2.6-flash",
+            "mimo-v2.6-pro",
+            "mimo-v2.5",
+            "mimo-v2.5-pro",
+            "minimax-m3.1-flash",
+            "minimax-m3",
+            "muse-spark-1.3-contributor",
+            "muse-spark-1.2-contributor",
+            "qwen3.8-max",
+            "qwen3.8-flash",
+            "qwen3.7-plus",
+            "hy4-preview",
+            "hy3",
+            "step-5-preview",
+            "beam-free",
+            "iceman-contributor-free",
+        ];
+        for catalog in [curated_catalog(), BuiltInModelCatalog::new()] {
+            for id in ids {
+                let model = ModelRef::new(provider_id("opencode-go"), id);
+                let preferred = catalog.preferred_route_for_model(&model).unwrap();
+                let native = match id {
+                    "grok-4.7"
+                    | "gpt-6-luna"
+                    | "gpt-5.6-luna"
+                    | "muse-spark-1.3-contributor"
+                    | "muse-spark-1.2-contributor" => "responses",
+                    "claude-haiku-5-5" | "minimax-m3" | "qwen3.8-max" | "qwen3.8-flash"
+                    | "qwen3.7-plus" => "messages",
+                    _ => "default",
+                };
+                assert_eq!(preferred.endpoint.as_str(), native, "{id}");
+                for endpoint in ["default", "messages", "responses"] {
+                    let route =
+                        ModelRouteRef::parse(&format!("opencode-go@{endpoint}/{id}")).unwrap();
+                    let route_entry = catalog.get_route(&route).expect("reviewed Go text route");
+                    if route == preferred {
+                        continue;
+                    }
+                    assert_eq!(route_entry.context_window_tokens, Some(None));
+                    assert_eq!(route_entry.default_max_output_tokens, Some(None));
+                    assert_eq!(route_entry.max_output_tokens_upper_limit, Some(None));
+                    assert_eq!(route_entry.default_verbosity, Some(None));
+                    assert_eq!(
+                        route_entry
+                            .cache_capabilities
+                            .as_ref()
+                            .unwrap()
+                            .cache_control,
+                        Some(false),
+                    );
+                    let policy = catalog.resolve_route_policy(
+                        &route,
+                        &HashMap::new(),
+                        &HashMap::new(),
+                        None,
+                        &base_context(),
+                        8192,
+                    );
+                    assert_eq!(policy.context_window_tokens, None, "{}", route.as_string());
+                    assert_eq!(policy.max_output_tokens_upper_limit, None);
+                    assert_eq!(policy.runtime_max_output_tokens, 8192);
+                    assert!(!policy.capabilities.image_input);
+                    assert!(!policy.capabilities.image_generation);
+                    assert!(!policy.capabilities.supports_reasoning);
+                    assert!(!policy.capabilities.parallel_tool_calls);
+                    assert!(policy.reasoning_effort_options.is_empty());
+                }
             }
         }
     }

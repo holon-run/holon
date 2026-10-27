@@ -1,12 +1,12 @@
 {
   "schema_version": 1,
-  "revision": "models-dev-075da82620b738f6da30c52e4e2cb4ff19a054dcaef9018519c233a71bc5f3f8",
+  "revision": "models-dev-0bc5ae4e21918c0396a4885bd6b427e7a5af4c60eddf65795fc05ad0f2f8f7bb",
   "upstream": {
     "source": "models.dev",
-    "revision": "075da82620b738f6da30c52e4e2cb4ff19a054dcaef9018519c233a71bc5f3f8",
-    "fetched_at": "2026-10-26T22:10:12.549495423+00:00",
-    "content_sha256": "075da82620b738f6da30c52e4e2cb4ff19a054dcaef9018519c233a71bc5f3f8",
-    "adapter_version": "0.54.1 (95236be5-dirty)"
+    "revision": "0bc5ae4e21918c0396a4885bd6b427e7a5af4c60eddf65795fc05ad0f2f8f7bb",
+    "fetched_at": "2026-10-27T21:07:32.644239882+00:00",
+    "content_sha256": "0bc5ae4e21918c0396a4885bd6b427e7a5af4c60eddf65795fc05ad0f2f8f7bb",
+    "adapter_version": "0.54.1 (6a848009-dirty)"
   },
   "models": [
     {
@@ -12228,8 +12228,8 @@
       "context_window_tokens": 1048576,
       "effective_context_window_percent": 95,
       "auto_compact_token_limit": 996147,
-      "default_max_output_tokens": 943717,
-      "max_output_tokens_upper_limit": 943717,
+      "default_max_output_tokens": 131072,
+      "max_output_tokens_upper_limit": 131072,
       "default_verbosity": null,
       "tool_output_truncation_estimated_tokens": 2500,
       "capabilities": {
@@ -12254,8 +12254,8 @@
       "context_window_tokens": 1048576,
       "effective_context_window_percent": 95,
       "auto_compact_token_limit": 996147,
-      "default_max_output_tokens": 131072,
-      "max_output_tokens_upper_limit": 131072,
+      "default_max_output_tokens": 943718,
+      "max_output_tokens_upper_limit": 943718,
       "default_verbosity": null,
       "tool_output_truncation_estimated_tokens": 2500,
       "capabilities": {
@@ -12361,8 +12361,8 @@
       "context_window_tokens": 1048576,
       "effective_context_window_percent": 95,
       "auto_compact_token_limit": 996147,
-      "default_max_output_tokens": 393216,
-      "max_output_tokens_upper_limit": 393216,
+      "default_max_output_tokens": 131072,
+      "max_output_tokens_upper_limit": 131072,
       "default_verbosity": null,
       "tool_output_truncation_estimated_tokens": 2500,
       "capabilities": {
@@ -13093,8 +13093,8 @@
       "context_window_tokens": 131072,
       "effective_context_window_percent": 95,
       "auto_compact_token_limit": 124518,
-      "default_max_output_tokens": 117964,
-      "max_output_tokens_upper_limit": 117964,
+      "default_max_output_tokens": 16384,
+      "max_output_tokens_upper_limit": 16384,
       "default_verbosity": null,
       "tool_output_truncation_estimated_tokens": 2500,
       "capabilities": {
@@ -13242,27 +13242,6 @@
       "auto_compact_token_limit": 7782,
       "default_max_output_tokens": 3686,
       "max_output_tokens_upper_limit": 3686,
-      "default_verbosity": null,
-      "tool_output_truncation_estimated_tokens": 2500,
-      "capabilities": {
-        "agent_turn": true,
-        "parallel_tool_calls": false,
-        "image_input": false,
-        "image_generation": false,
-        "supports_reasoning": false,
-        "interactive_exec": false
-      },
-      "source": "remote_discovered"
-    },
-    {
-      "model_ref": "openrouter/ibm-granite/granite-4.0-h-micro",
-      "display_name": "Granite 4.0 Micro",
-      "description": "Efficient model for low-latency assistance, extraction, and routine automation",
-      "context_window_tokens": 131000,
-      "effective_context_window_percent": 95,
-      "auto_compact_token_limit": 124450,
-      "default_max_output_tokens": 117900,
-      "max_output_tokens_upper_limit": 117900,
       "default_verbosity": null,
       "tool_output_truncation_estimated_tokens": 2500,
       "capabilities": {
@@ -15082,32 +15061,6 @@
       "source": "remote_discovered"
     },
     {
-      "model_ref": "openrouter/nvidia/nemotron-3-super-120b-a12b:free",
-      "display_name": "Nemotron 3 Super (free)",
-      "description": "Nemotron middle tier for collaborative agents and high-volume reasoning workloads",
-      "context_window_tokens": 262144,
-      "effective_context_window_percent": 95,
-      "auto_compact_token_limit": 249036,
-      "default_max_output_tokens": 235929,
-      "max_output_tokens_upper_limit": 235929,
-      "default_verbosity": null,
-      "tool_output_truncation_estimated_tokens": 2500,
-      "capabilities": {
-        "agent_turn": true,
-        "parallel_tool_calls": false,
-        "image_input": false,
-        "image_generation": false,
-        "supports_reasoning": true,
-        "interactive_exec": false
-      },
-      "reasoning_effort_options": [
-        "none",
-        "low",
-        "medium"
-      ],
-      "source": "remote_discovered"
-    },
-    {
       "model_ref": "openrouter/nvidia/nemotron-3-ultra-550b-a55b",
       "display_name": "Nemotron 3 Ultra 550B A55B",
       "description": "Largest Nemotron 3 model for maximum open-weight reasoning and agent accuracy",
@@ -16565,6 +16518,34 @@
       "source": "remote_discovered"
     },
     {
+      "model_ref": "openrouter/openai/gpt-6.1-terra-pro",
+      "display_name": "GPT-6.1 Terra Pro",
+      "description": "Frontier GPT model for professional reasoning, coding, and multimodal work",
+      "context_window_tokens": 1050000,
+      "effective_context_window_percent": 95,
+      "auto_compact_token_limit": 997500,
+      "default_max_output_tokens": 128000,
+      "max_output_tokens_upper_limit": 128000,
+      "default_verbosity": null,
+      "tool_output_truncation_estimated_tokens": 2500,
+      "capabilities": {
+        "agent_turn": true,
+        "parallel_tool_calls": false,
+        "image_input": true,
+        "image_generation": false,
+        "supports_reasoning": true,
+        "interactive_exec": false
+      },
+      "reasoning_effort_options": [
+        "low",
+        "medium",
+        "high",
+        "xhigh",
+        "max"
+      ],
+      "source": "remote_discovered"
+    },
+    {
       "model_ref": "openrouter/openai/gpt-audio",
       "display_name": "GPT-Audio",
       "description": "Speech generation model for controllable voice, narration, and audio delivery",
@@ -17249,6 +17230,27 @@
       "source": "remote_discovered"
     },
     {
+      "model_ref": "openrouter/prism-ml/ternary-bonsai-2-9b",
+      "display_name": "Ternary Bonsai 2 9B",
+      "description": "Multimodal reasoning model for visual analysis, planning, and tool use",
+      "context_window_tokens": 262144,
+      "effective_context_window_percent": 95,
+      "auto_compact_token_limit": 249036,
+      "default_max_output_tokens": 65536,
+      "max_output_tokens_upper_limit": 65536,
+      "default_verbosity": null,
+      "tool_output_truncation_estimated_tokens": 2500,
+      "capabilities": {
+        "agent_turn": true,
+        "parallel_tool_calls": false,
+        "image_input": true,
+        "image_generation": false,
+        "supports_reasoning": true,
+        "interactive_exec": false
+      },
+      "source": "remote_discovered"
+    },
+    {
       "model_ref": "openrouter/qwen/qwen-2.5-72b-instruct",
       "display_name": "Qwen2.5 72B Instruct",
       "description": "Qwen instruction model for multilingual chat, reasoning, and tool use",
@@ -17717,8 +17719,8 @@
       "context_window_tokens": 262144,
       "effective_context_window_percent": 95,
       "auto_compact_token_limit": 249036,
-      "default_max_output_tokens": 65536,
-      "max_output_tokens_upper_limit": 65536,
+      "default_max_output_tokens": 81920,
+      "max_output_tokens_upper_limit": 81920,
       "default_verbosity": null,
       "tool_output_truncation_estimated_tokens": 2500,
       "capabilities": {
@@ -19244,8 +19246,8 @@
       "context_window_tokens": 1050000,
       "effective_context_window_percent": 95,
       "auto_compact_token_limit": 997500,
-      "default_max_output_tokens": 945000,
-      "max_output_tokens_upper_limit": 945000,
+      "default_max_output_tokens": 65536,
+      "max_output_tokens_upper_limit": 65536,
       "default_verbosity": null,
       "tool_output_truncation_estimated_tokens": 2500,
       "capabilities": {
@@ -19265,8 +19267,8 @@
       "context_window_tokens": 1050000,
       "effective_context_window_percent": 95,
       "auto_compact_token_limit": 997500,
-      "default_max_output_tokens": 945000,
-      "max_output_tokens_upper_limit": 945000,
+      "default_max_output_tokens": 235929,
+      "max_output_tokens_upper_limit": 235929,
       "default_verbosity": null,
       "tool_output_truncation_estimated_tokens": 2500,
       "capabilities": {
@@ -19559,8 +19561,8 @@
       "context_window_tokens": 204800,
       "effective_context_window_percent": 95,
       "auto_compact_token_limit": 194560,
-      "default_max_output_tokens": 131072,
-      "max_output_tokens_upper_limit": 131072,
+      "default_max_output_tokens": 128000,
+      "max_output_tokens_upper_limit": 128000,
       "default_verbosity": null,
       "tool_output_truncation_estimated_tokens": 2500,
       "capabilities": {
@@ -19844,8 +19846,8 @@
       "context_window_tokens": 1048576,
       "effective_context_window_percent": 95,
       "auto_compact_token_limit": 996147,
-      "default_max_output_tokens": 393216,
-      "max_output_tokens_upper_limit": 393216,
+      "default_max_output_tokens": 943718,
+      "max_output_tokens_upper_limit": 943718,
       "default_verbosity": null,
       "tool_output_truncation_estimated_tokens": 2500,
       "capabilities": {
@@ -23625,6 +23627,35 @@
         "interactive_exec": false
       },
       "reasoning_effort_options": [
+        "low",
+        "medium",
+        "high",
+        "xhigh",
+        "max"
+      ],
+      "source": "remote_discovered"
+    },
+    {
+      "model_ref": "venice/openai-gpt-61-terra",
+      "display_name": "GPT-6.1 Terra",
+      "description": "Fast, efficient model for visual reasoning, precise computer use, and clear, natural writing.",
+      "context_window_tokens": 1050000,
+      "effective_context_window_percent": 95,
+      "auto_compact_token_limit": 997500,
+      "default_max_output_tokens": 128000,
+      "max_output_tokens_upper_limit": 128000,
+      "default_verbosity": null,
+      "tool_output_truncation_estimated_tokens": 2500,
+      "capabilities": {
+        "agent_turn": true,
+        "parallel_tool_calls": false,
+        "image_input": true,
+        "image_generation": false,
+        "supports_reasoning": true,
+        "interactive_exec": false
+      },
+      "reasoning_effort_options": [
+        "none",
         "low",
         "medium",
         "high",
