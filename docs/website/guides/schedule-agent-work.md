@@ -116,6 +116,24 @@ the timer when the run reaches a terminal state. Prefer an external callback for
 event-driven updates; for a one-time fallback on an external wait, use
 `WaitFor(recheck_after_ms=...)` instead of creating another schedule.
 
+### Calendar-based schedules
+
+For checks aligned to calendar rules rather than fixed millisecond intervals,
+use a standard five-field cron expression and an IANA timezone:
+
+```bash
+holon timer create --agent builder \
+  --calendar-expression "0 9 * * 1-5" \
+  --timezone "Asia/Tokyo" \
+  --summary "Weekday morning code health check"
+```
+
+The agent-tool equivalent:
+
+```json
+{ "calendar_expression": "0 9 * * 1-5", "timezone": "Asia/Tokyo", "summary": "Weekday morning code health check" }
+```
+
 ## 4. Cancel and confirm
 
 ```bash

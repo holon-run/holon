@@ -109,8 +109,13 @@ The Dashboard provides a runtime overview:
   completion) refresh the list in real time.
 - **Quick actions** — create agents, attach workspaces, and view agent detail.
 - **Agent lifecycle** — start, stop, and delete agents from the dashboard.
+  Creation flows distinguish acceptance, initialization, and failure feedback,
+  retiring the creation banner after a successful first turn.
   Before deleting, preserve needed results and review the confirmation and
   any blockers. Include private children only when you intend to remove them.
+- **Timer overview** — View active relative and calendar timers (with cron rules
+  and timezones), check upcoming fire times, and cancel timers in the agent
+  detail panel.
 
 ### Agent Conversation
 

@@ -137,6 +137,25 @@ The agent decides when ViewImage is relevant based on the task context. The
 tool is part of the `LocalEnvironment` capability family and is available to
 every agent by default.
 
+## Aggregate image budgets and multimodal preflight
+
+To prevent image-heavy sessions from exhausting provider context limits, Holon
+enforces request-level Markdown attachment bounds and multimodal preflight:
+
+- **Attachment limits** — Up to **8 unique images** or **20 MiB** of pre-base64
+  file bytes are admitted per request. Per-file limits (20 MB / 50 MP) continue
+  to apply.
+- **Priority and content deduplication** — Required images reserve capacity
+  before optional historical attachments. Identical files under different paths
+  are deduplicated by content hash, evaluating at most 16 distinct paths per
+  turn. Optional historical images that exceed the budget degrade gracefully
+  with text notices.
+- **Multimodal context estimation** — Transport preflight counts text and tool
+  payloads separately from images, probing dimensions from at most 64 KiB of
+  decoded header bytes. Approximate patch/tile heuristics estimate context
+  footprint without decoding pixel buffers or fetching remote URLs, verifying
+  upstream admission before dispatch.
+
 ## CLI verification
 
 ViewImage is a model-facing tool; it is not directly callable from the CLI.
