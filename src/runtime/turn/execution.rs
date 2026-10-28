@@ -391,6 +391,7 @@ impl RuntimeHandle {
             terminal_kind: TurnTerminalKind::Aborted,
             prepared_work_item_completion: None,
             prepared_wait_for: None,
+            provider_recovery_message: None,
             terminal_tool_executions: Vec::new(),
         }))
     }
@@ -482,6 +483,7 @@ impl RuntimeHandle {
                 terminal: record.clone(),
                 prepared_work_item_completion: None,
                 prepared_wait_for: None,
+                provider_recovery_message: None,
                 terminal_tool_executions,
             };
             self.persist_terminal_transition(&transition).await?;
@@ -536,6 +538,7 @@ impl RuntimeHandle {
             terminal_kind: TurnTerminalKind::Aborted,
             prepared_work_item_completion: None,
             prepared_wait_for: None,
+            provider_recovery_message: None,
             terminal_tool_executions: vec![pending.tool_execution.clone()],
         })
     }
@@ -628,6 +631,7 @@ impl RuntimeHandle {
                     terminal_kind: TurnTerminalKind::Aborted,
                     prepared_work_item_completion: None,
                     prepared_wait_for: None,
+                    provider_recovery_message: None,
                     terminal_tool_executions: Vec::new(),
                 }));
             }
@@ -801,6 +805,7 @@ impl RuntimeHandle {
                     terminal_kind,
                     prepared_work_item_completion: None,
                     prepared_wait_for: None,
+                    provider_recovery_message: None,
                     terminal_tool_executions: Vec::new(),
                 }));
             }
@@ -926,19 +931,6 @@ impl RuntimeHandle {
             },
             "side_effect_boundary_crossed": side_effect_boundary_crossed,
         }));
-        let queued = self.enqueue(message).await?;
-        self.append_original_audit_event(AuditEvent::legacy(
-            "recovery_enqueued",
-            serde_json::json!({
-                "agent_id": agent_id,
-                "message_id": queued.id,
-                "fallback_model_ref": fallback_ref,
-                "fallback_attempt": fallback_attempt + 1,
-                "recovery_delay_ms": recovery_delay_ms,
-                "source_terminal_kind": terminal_kind,
-            }),
-        ))
-        .await?;
         Ok(Some(AgentLoopOutcome {
             final_text,
             final_citations: Vec::new(),
@@ -947,6 +939,7 @@ impl RuntimeHandle {
             terminal,
             should_sleep: recovery_delay_ms.is_some(),
             sleep_duration_ms: recovery_delay_ms,
+            provider_recovery_message: Some(message),
             allow_sleep_runnable_work_override: false,
             terminal_kind,
             prepared_work_item_completion: None,
@@ -1196,8 +1189,11 @@ impl RuntimeHandle {
         let result = match boundary {
             Ok(()) => self.complete_turn_with_abort(provider, request).await,
             Err(error) => Err(error),
-        }
-        .map_err(|error| self.local_provider_dispatch_error(error));
+        };
+        let result = match result {
+            Ok(response) => Ok(response),
+            Err(error) => Err(self.local_provider_dispatch_error(error).await),
+        };
         let completed_at = Utc::now();
         let duration_ms = started.elapsed().as_millis() as u64;
         (
@@ -1774,6 +1770,7 @@ impl RuntimeHandle {
                         terminal,
                         prepared_work_item_completion: None,
                         prepared_wait_for: None,
+                        provider_recovery_message: None,
                         terminal_tool_executions: Vec::new(),
                     };
                     self.persist_provider_fixture_terminal(
@@ -1821,6 +1818,7 @@ impl RuntimeHandle {
                     turn_record,
                     prepared_work_item_completion: outcome.prepared_work_item_completion.clone(),
                     prepared_wait_for: outcome.prepared_wait_for.clone(),
+                    provider_recovery_message: None,
                     terminal_tool_executions: outcome.terminal_tool_executions.clone(),
                 },
                 QueueEntryStatus::Processed,
@@ -2692,6 +2690,7 @@ impl<'a> TurnExecution<'a> {
                         terminal_kind: TurnTerminalKind::Aborted,
                         prepared_work_item_completion: None,
                         prepared_wait_for: None,
+                        provider_recovery_message: None,
                         terminal_tool_executions: Vec::new(),
                     });
                 }
@@ -3130,6 +3129,7 @@ impl<'a> TurnExecution<'a> {
                                     terminal_kind: TurnTerminalKind::BaselineOverBudget,
                                     prepared_work_item_completion: None,
                                     prepared_wait_for: None,
+                                    provider_recovery_message: None,
                                     terminal_tool_executions: Vec::new(),
                                 }));
                             }
@@ -3949,6 +3949,7 @@ impl<'a> TurnExecution<'a> {
                             terminal_kind: TurnTerminalKind::Completed,
                             prepared_work_item_completion: None,
                             prepared_wait_for: prepared_wait_for.take(),
+                            provider_recovery_message: None,
                             terminal_tool_executions: if atomic_wait_settlement {
                                 Vec::new()
                             } else {
@@ -4257,6 +4258,7 @@ impl<'a> TurnExecution<'a> {
                         terminal_kind: TurnTerminalKind::Completed,
                         prepared_work_item_completion: prepared_work_item_completion.take(),
                         prepared_wait_for: prepared_wait_for.take(),
+                        provider_recovery_message: None,
                         terminal_tool_executions: Vec::new(),
                     });
                 }
@@ -4493,6 +4495,7 @@ impl<'a> TurnExecution<'a> {
                     terminal_kind: TurnTerminalKind::Aborted,
                     prepared_work_item_completion: prepared_work_item_completion.take(),
                     prepared_wait_for: prepared_wait_for.take(),
+                    provider_recovery_message: None,
                     terminal_tool_executions: Vec::new(),
                 });
             }
@@ -4637,6 +4640,7 @@ impl<'a> TurnExecution<'a> {
                     terminal_kind: TurnTerminalKind::Completed,
                     prepared_work_item_completion: prepared_work_item_completion.take(),
                     prepared_wait_for: prepared_wait_for.take(),
+                    provider_recovery_message: None,
                     terminal_tool_executions: Vec::new(),
                 });
             }
@@ -5462,6 +5466,7 @@ impl<'a> TurnExecution<'a> {
                     terminal_kind: TurnTerminalKind::Completed,
                     prepared_work_item_completion: prepared_work_item_completion.take(),
                     prepared_wait_for: prepared_wait_for.take(),
+                    provider_recovery_message: None,
                     terminal_tool_executions: Vec::new(),
                 });
             }

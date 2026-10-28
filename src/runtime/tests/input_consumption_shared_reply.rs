@@ -1813,7 +1813,12 @@ impl LiveSharedReplyProvider {
                 task.rejoin_fence().unwrap()
             );
             assert_eq!(
-                persisted.rejoin_fence().unwrap().parent_turn_id,
+                persisted
+                    .rejoin_fence()
+                    .unwrap()
+                    .source
+                    .parent_turn_id()
+                    .unwrap(),
                 turn.turn_id
             );
             let settlement = runtime
@@ -1821,7 +1826,7 @@ impl LiveSharedReplyProvider {
                 .task_result_settlements()
                 .latest_for_message(&source)?
                 .expect("live waiter must have a pending settlement");
-            assert_eq!(settlement.parent_turn_id, turn.turn_id);
+            assert_eq!(settlement.source.parent_turn_id().unwrap(), turn.turn_id);
             assert_eq!(
                 settlement.state,
                 TaskResultSettlementState::PersistedPending
@@ -2071,7 +2076,7 @@ async fn p2_shared_reply_live_cap_overflow_recovers_each_waiter_identity() {
     );
     for record in &records {
         assert_eq!(record.work_item_id.as_deref(), Some(work.as_str()));
-        assert_eq!(record.parent_turn_id, turn_id);
+        assert_eq!(record.source.parent_turn_id().unwrap(), turn_id);
         if attached.contains(&record.result_identity) {
             assert_eq!(record.state, TaskResultSettlementState::Settled);
             assert_eq!(
@@ -2246,8 +2251,14 @@ async fn p2_shared_reply_cross_parent_exact_wait_does_not_release_foreign_siblin
     let recovery_turn = runtime.storage().read_recent_turns(1).unwrap().remove(0);
     assert!(recovery_turn.terminal.is_some());
     assert!(recovery_turn.input_message_ids.contains(&original.id));
-    assert_ne!(promised_record.parent_turn_id, recovery_turn.turn_id);
-    assert_ne!(sibling_record.parent_turn_id, recovery_turn.turn_id);
+    assert_ne!(
+        promised_record.source.parent_turn_id().unwrap(),
+        recovery_turn.turn_id
+    );
+    assert_ne!(
+        sibling_record.source.parent_turn_id().unwrap(),
+        recovery_turn.turn_id
+    );
     assert_eq!(
         runtime
             .runtime_db()

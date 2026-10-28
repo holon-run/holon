@@ -865,15 +865,17 @@ struct RuntimeInner {
     queued_message_projection_checkpoint: StdMutex<Option<Arc<TransitionTestCheckpoint>>>,
     #[cfg(test)]
     provider_pause_commit_checkpoint: StdMutex<Option<Arc<TransitionTestCheckpoint>>>,
+    #[cfg(test)]
+    transition_notifications_checkpoint: StdMutex<Option<Arc<TransitionTestCheckpoint>>>,
     transition_warnings: StdMutex<Vec<PostCommitWarning>>,
 }
 
 #[cfg(test)]
 type ClaimSnapshotHook = Box<
     dyn FnOnce(
-            &RuntimeHandle,
-            Option<&Arc<provider_admission::ProviderTurnAdmission>>,
-        ) -> Result<()>
+            RuntimeHandle,
+            Option<Arc<provider_admission::ProviderTurnAdmission>>,
+        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<()>> + Send>>
         + Send,
 >;
 
@@ -3490,13 +3492,26 @@ impl RuntimeHandle {
         if !commit.applied {
             return TransitionApplyResult::default();
         }
-        self.apply_transition_notifications(&commit.effects).await
+        Box::pin(self.apply_transition_notifications(&commit.effects)).await
     }
 
     async fn apply_transition_notifications(
         &self,
         effects: &crate::runtime_db::transitions::PostCommitEffects,
     ) -> TransitionApplyResult {
+        #[cfg(test)]
+        {
+            let checkpoint = self
+                .inner
+                .transition_notifications_checkpoint
+                .lock()
+                .expect("transition notification checkpoint lock poisoned")
+                .take();
+            if let Some(checkpoint) = checkpoint {
+                checkpoint.reached.notify_one();
+                checkpoint.release.notified().await;
+            }
+        }
         let mut warnings = Vec::new();
         if effects.fault == Some(TransitionFaultPoint::BeforeEventPublication) {
             warnings.push(PostCommitWarning {
@@ -4591,8 +4606,12 @@ impl RuntimeHandle {
                 .map(|(_, turn)| turn)
                 .or_else(|| replay_source.as_ref().and_then(|(_, turn)| turn.as_ref()))
                 .and_then(|turn| turn.terminal.clone());
-            let mut started_turn =
-                Self::build_started_turn_record(&guard.state, message, prior_terminal.clone())?;
+            let mut started_turn = Self::build_started_turn_record(
+                &guard.state,
+                message,
+                prior_terminal.clone(),
+                self.now(),
+            )?;
             if let (Some(message), Some((source_id, _))) = (
                 message,
                 replay_source
@@ -5657,6 +5676,7 @@ impl RuntimeHandle {
         agent_update: Option<TerminalAgentStateUpdate>,
         transcript_entries: Vec<TranscriptEntry>,
         brief_evidence: Vec<BriefRecord>,
+        provider_pause: Option<&'a provider_admission::ProviderPauseSettlement<'a>>,
     ) -> std::pin::Pin<Box<impl std::future::Future<Output = Result<bool>> + Send + 'a>> {
         Box::pin(self.commit_queue_terminal_settlement_with_evidence_inner(
             record,
@@ -5666,6 +5686,7 @@ impl RuntimeHandle {
             agent_update,
             transcript_entries,
             brief_evidence,
+            provider_pause,
         ))
     }
 
@@ -5743,6 +5764,9 @@ impl RuntimeHandle {
             )?
         } else if let Some(prepared) = prepared_wait.as_deref() {
             prepared.execution_protocol.clone()
+        } else if provider_pause.is_some() {
+            // A winning Stop owns its attempt; defer until its branch is known.
+            Default::default()
         } else {
             execution_protocol_settlement_transition_from_facts(
                 &self.inner.storage,
@@ -5787,7 +5811,7 @@ impl RuntimeHandle {
             }
         }
         let original_audit_len = audit_events.len();
-        let mut command = crate::runtime_db::transitions::QueueTransitionCommand {
+        let command = crate::runtime_db::transitions::QueueTransitionCommand {
             agent_id: record.agent_id.clone(),
             operation: crate::runtime_db::transitions::QueueOperation::Settle,
             mutation: match provider_pause {
@@ -5804,11 +5828,24 @@ impl RuntimeHandle {
                         source: Box::new(settlement.source.clone()),
                     }
                 }
-                None => crate::runtime_db::transitions::QueueMutation::Upsert(record.clone()),
+                None => match terminal_transition
+                    .and_then(|transition| transition.provider_recovery_message.as_ref())
+                {
+                    Some(recovery) => {
+                        crate::runtime_db::transitions::QueueMutation::SettleWithProviderRecovery {
+                            record: record.clone(),
+                            recovery: Box::new(recovery.clone()),
+                        }
+                    }
+                    None => crate::runtime_db::transitions::QueueMutation::Upsert(record.clone()),
+                },
             },
             scheduler_claim_work_item: None,
             agent_state: None,
-            message_evidence: Vec::new(),
+            message_evidence: terminal_transition
+                .and_then(|transition| transition.provider_recovery_message.clone())
+                .into_iter()
+                .collect(),
             transcript_entries: transcript_entries
                 .into_iter()
                 .chain(
@@ -5853,8 +5890,44 @@ impl RuntimeHandle {
         }
         for attempt in 0..ENQUEUE_AGENT_STATE_MAX_ATTEMPTS {
             // Rebuild guard-dependent fields from the current baseline.
+            let mut command = command.clone();
             let mut mutation = self.begin_mutation().await?;
-            let agent_state = {
+            let mut stopped_provider_pause = false;
+            if let crate::runtime_db::transitions::QueueMutation::ParkProviderDispatch {
+                expected,
+                ..
+            } = &mut command.mutation
+            {
+                *expected = self
+                    .inner
+                    .runtime_db
+                    .queue_entries()
+                    .latest(&record.message_id)?
+                    .context("provider pause queue source disappeared")?;
+                // A committed Stop may win the dispatch before this pause
+                // settles. Its Aborted queue terminal and Stop Turn stay the
+                // canonical values; the pause only acknowledges them.
+                stopped_provider_pause = mutation.state.status == AgentStatus::Stopped
+                    && expected.status == crate::types::QueueEntryStatus::Aborted;
+            }
+            if stopped_provider_pause {
+                let stopped_queue = match &command.mutation {
+                    crate::runtime_db::transitions::QueueMutation::ParkProviderDispatch {
+                        expected,
+                        ..
+                    } => expected.clone(),
+                    _ => unreachable!("stopped provider pause keeps its queue source"),
+                };
+                command.mutation =
+                    crate::runtime_db::transitions::QueueMutation::Upsert(stopped_queue);
+                // The Stop already settled its own Turn and attempt; the pause
+                // settles no Turn and no execution command on top of them.
+                command.turn_record = None;
+            }
+            let agent_state = if stopped_provider_pause {
+                // The ACK does not rewrite any Stop-owned State field.
+                None
+            } else {
                 let guard = &mutation;
                 let mut state = if provider_pause.is_some() {
                     let mut state = guard.state.clone();
@@ -5890,6 +5963,12 @@ impl RuntimeHandle {
                     }
                     state
                 };
+                if terminal_transition
+                    .and_then(|transition| transition.provider_recovery_message.as_ref())
+                    .is_some()
+                {
+                    state.pending = guard.queue.len() + 1;
+                }
                 if let Some(settlement) = provider_pause {
                     state.pending = guard.queue.len()
                         + usize::from(
@@ -5944,23 +6023,39 @@ impl RuntimeHandle {
             command.audit_events = audit_events.clone();
             command.audit_events.truncate(original_audit_len);
             if let Some(settlement) = provider_pause {
-                let state = &command
-                    .agent_state
-                    .as_ref()
-                    .context("provider pause settlement requires agent state")?
-                    .record;
+                let state: &AgentState = if stopped_provider_pause {
+                    &mutation.state
+                } else {
+                    &command
+                        .agent_state
+                        .as_ref()
+                        .context("provider pause settlement requires agent state")?
+                        .record
+                };
                 let (brief, events) = settlement.evidence(state)?;
                 command.brief_evidence = vec![brief];
                 command.audit_events.extend(events);
             }
-            if let Some(transition) = terminal_transition {
-                command.audit_events.push(AuditEvent::legacy(
-                    "turn_terminal",
-                    serde_json::to_value(&transition.terminal)?,
-                ));
-                command
-                    .audit_events
-                    .push(Self::turn_record_audit_event(&transition.turn_record));
+            if !stopped_provider_pause {
+                if let Some(transition) = terminal_transition {
+                    command.audit_events.push(AuditEvent::legacy(
+                        "turn_terminal",
+                        serde_json::to_value(&transition.terminal)?,
+                    ));
+                    command
+                        .audit_events
+                        .push(Self::turn_record_audit_event(&transition.turn_record));
+                    if let Some(recovery) = transition.provider_recovery_message.as_ref() {
+                        command.audit_events.push(AuditEvent::legacy(
+                            "recovery_enqueued",
+                            serde_json::json!({
+                                "agent_id": recovery.agent_id,
+                                "message_id": recovery.id,
+                                "source_terminal_kind": transition.terminal.kind,
+                            }),
+                        ));
+                    }
+                }
             }
             if let Some(prepared) = prepared_completion {
                 command.audit_events.extend(prepared.audit_events.clone());
@@ -6004,7 +6099,37 @@ impl RuntimeHandle {
                 .transpose()?;
             let mut prepared =
                 crate::runtime_db::transitions::PreparedQueueTransition::new(command.clone());
-            prepared.execution_protocol = execution_protocol.clone();
+            prepared.execution_protocol = if stopped_provider_pause {
+                Default::default()
+            } else if provider_pause.is_some() {
+                execution_protocol_settlement_transition_from_facts(
+                    &self.inner.storage,
+                    &self.inner.runtime_db,
+                    &record,
+                    terminal_transition.map(|transition| &*transition.turn_record),
+                )?
+            } else {
+                execution_protocol.clone()
+            };
+            if stopped_provider_pause {
+                let settlement =
+                    provider_pause.context("stopped pause has no original dispatch")?;
+                let lease = self.provider_pause_control_lease(
+                    settlement.source,
+                    settlement.original_run_id,
+                    settlement.pause,
+                )?;
+                let original = crate::runtime_db::control_transition::ControlStoppedRun {
+                    agent_id: &settlement.source.agent_id,
+                    identity_incarnation: self.inner.identity_incarnation,
+                    owner_epoch: self.inner.mutation_owner.owner_epoch(),
+                    run_id: settlement.original_run_id,
+                    runtime_lease_id: lease.lease_id(),
+                    activation_id: lease.activation_id(),
+                    source: settlement.source,
+                };
+                prepared = prepared.with_stopped_provider_pause(&original, settlement.pause)?;
+            }
             prepared.task_result_settlement = task_result_settlement.clone();
             if let Some(completion) = completion {
                 prepared.completion = Some(completion);
@@ -6101,67 +6226,50 @@ impl RuntimeHandle {
     }
 
     async fn restore_parked_provider_source(&self, message_id: &str) -> Result<()> {
-        let source = self
-            .inner
-            .storage
-            .read_message_by_id(message_id)?
+        let mut mutation = self.begin_mutation().await?;
+        // The original pause already published its source. Readback may repair
+        // an unapplied projection, so it must not prepare from that candidate.
+        let inputs = mutation.capture_input_evidence()?;
+        let source = provider_recovery::captured_message(&inputs, message_id)?
             .context("parked provider source message missing")?;
-        for attempt in 0..ENQUEUE_AGENT_STATE_MAX_ATTEMPTS {
-            let mut guard = self.inner.agent.lock().await;
-            let durable = self
-                .inner
-                .runtime_db
-                .agent_states()
-                .latest_for_incarnation(&source.agent_id, self.inner.identity_incarnation)?
-                .context("parked provider agent state missing")?;
-            let missing = guard
-                .queue
-                .peek_next_matching(|queued| queued.id == source.id)
-                .is_none();
-            let mut restored = durable.clone();
-            restored.pending = guard.queue.len() + usize::from(missing);
-            // Readback may confirm a commit whose in-memory effects never ran.
-            // Change only pending against the latest durable control-plane state.
-            let command = crate::runtime_db::transitions::AgentPostureTransitionCommand {
-                expected_incarnation: None,
-                agent_id: source.agent_id.clone(),
-                agent_state: crate::runtime_db::transitions::AgentStateMutation {
-                    expected: Some(Box::new(durable)),
-                    record: Box::new(restored.clone()),
-                },
-                audit_events: Vec::new(),
-                fault: None,
-            };
-            let (mut rebased, _) =
-                rebase_committed_agent_state(&guard.last_persisted_state, &restored, &guard.state)?;
-            rebased.pending = restored.pending;
-            let mut commit = match self
-                .inner
-                .runtime_db
-                .transitions()
-                .commit_agent_posture(&command)
+        let durable = self
+            .inner
+            .runtime_db
+            .agent_states()
+            .latest_for_incarnation(&source.agent_id, self.inner.identity_incarnation)?
+            .context("parked provider agent state missing")?;
+        if mutation
+            .queue
+            .peek_next_matching(|queued| queued.id == source.id)
+            .is_none()
+        {
+            #[cfg(test)]
             {
-                Ok(commit) => commit,
-                Err(error)
-                    if attempt + 1 < ENQUEUE_AGENT_STATE_MAX_ATTEMPTS
-                        && retryable_enqueue_conflict(&error, &source.agent_id) =>
-                {
-                    continue;
+                let checkpoint = self
+                    .inner
+                    .queued_message_projection_checkpoint
+                    .lock()
+                    .expect("queue projection checkpoint lock poisoned")
+                    .take();
+                if let Some(checkpoint) = checkpoint {
+                    checkpoint.reached.notify_one();
+                    checkpoint.release.notified().await;
                 }
-                Err(error) => return Err(error),
-            };
-            if missing {
-                guard.queue.push(source);
             }
-            guard.state = rebased;
-            guard.last_persisted_state = restored;
-            commit.effects.agent_state = None;
-            drop(guard);
-            self.apply_transition_commit(commit).await;
-            self.inner.notify.notify_one();
-            return Ok(());
+            mutation.queue.push(source);
         }
-        unreachable!("parked source OCC retry loop always returns or errors")
+        // The original pause committed State and source together. Readback
+        // installs that exact publication; it cannot create a second writer.
+        anyhow::ensure!(
+            durable.pending == mutation.queue.len(),
+            "parked provider readback pending differs from committed queue"
+        );
+        mutation.state = durable.clone();
+        mutation.last_persisted_state = durable;
+        mutation.install_durable_readback().await?;
+        drop(mutation);
+        self.inner.notify.notify_one();
+        Ok(())
     }
 
     fn terminal_settlement_readback(
@@ -6385,6 +6493,7 @@ impl RuntimeHandle {
             turn_record: fallback_turn,
             prepared_work_item_completion: None,
             prepared_wait_for: None,
+            provider_recovery_message: None,
             terminal_tool_executions: Vec::new(),
         };
         let fallback_state = TerminalAgentStateUpdate {
@@ -6829,6 +6938,19 @@ impl RuntimeHandle {
         processing_started: std::time::Instant,
         processing_result: Result<turn::TurnTerminalTransition>,
     ) -> Result<()> {
+        if let Err(error) = &processing_result {
+            if let Some(pause) = provider_admission::dispatch_pause(error) {
+                return self
+                    .settle_provider_dispatch_pause(
+                        message,
+                        original_run_id,
+                        error,
+                        pause,
+                        u64::try_from(processing_started.elapsed().as_millis()).unwrap_or(u64::MAX),
+                    )
+                    .await;
+            }
+        }
         if self.original_run_was_settled_by_control_stop(message, original_run_id)? {
             // The caller retains the original completion guard across this
             // helper, then drops it before attempting ended memory recovery.
@@ -6837,17 +6959,6 @@ impl RuntimeHandle {
         let terminal_transition = match processing_result {
             Ok(transition) => transition,
             Err(err) => {
-                if let Some(pause) = provider_admission::dispatch_pause(&err) {
-                    return self
-                        .settle_provider_dispatch_pause(
-                            message,
-                            &err,
-                            pause,
-                            u64::try_from(processing_started.elapsed().as_millis())
-                                .unwrap_or(u64::MAX),
-                        )
-                        .await;
-                }
                 let aborted = err.downcast_ref::<CurrentRunAborted>().cloned();
                 let (terminal, queue_status, mut audit_events, failure_artifacts) = if let Some(
                     aborted,
@@ -6990,6 +7101,7 @@ impl RuntimeHandle {
                     turn_record,
                     prepared_work_item_completion: None,
                     prepared_wait_for: None,
+                    provider_recovery_message: None,
                     terminal_tool_executions: Vec::new(),
                 };
                 let committed_state = TerminalAgentStateUpdate {

@@ -90,6 +90,7 @@ async fn public_task_reads_wait_for_actual_inflight_publication_without_body_sql
                 command(original, None, expected_owner_incarnation),
                 Default::default(),
                 false,
+                None,
             )
             .await
     });
@@ -194,6 +195,7 @@ async fn abandoned_original_publication_remains_gated_for_every_public_task_read
             ),
             Default::default(),
             false,
+            None,
         )
         .await
         .err()

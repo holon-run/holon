@@ -270,6 +270,26 @@ impl RecoveryRead {
             crate::runtime::resident_task::TaskResultDependencyRelation::Invalid { .. }
         ))
     }
+    pub(super) fn terminal_reentry(&self, result_id: &str) -> Result<bool> {
+        let crate::runtime::resident_task::TaskResultDependencyRelation::QualifiedCurrent { task } =
+            &self.tasks.result_dependency(result_id)?.relation
+        else {
+            return Ok(false);
+        };
+        let row = self
+            .tasks
+            .lookup(&task.key)?
+            .ok_or_else(|| TaskReadError::NeedsPreparation(task.key.clone()))?;
+        row.validate(&self.tasks.scope)?;
+        anyhow::ensure!(
+            row.locator == *task,
+            "recovery Task dependency locator differs"
+        );
+        let CanonicalTaskFact::Task(task) = &row.fact else {
+            anyhow::bail!("recovery Task dependency family differs")
+        };
+        Ok(task.terminal_reentry())
+    }
     pub(super) fn outstanding(
         &self,
         work_item_id: Option<&str>,

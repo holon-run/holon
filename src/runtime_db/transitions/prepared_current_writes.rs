@@ -48,9 +48,16 @@ pub(super) fn visit_original(
             let record = match &queue.command.mutation {
                 QueueMutation::Consume(record) | QueueMutation::Upsert(record) => record,
                 QueueMutation::CompareAndSet { record, .. }
+                | QueueMutation::SettleWithProviderRecovery { record, .. }
+                | QueueMutation::ParkProviderDispatch { record, .. }
                 | QueueMutation::ConsumeSettledTaskResultRecovery { record, .. } => record,
             };
             visit(CurrentFamily::Queue, &record.message_id)?;
+            if let QueueMutation::SettleWithProviderRecovery { recovery, .. } =
+                &queue.command.mutation
+            {
+                visit(CurrentFamily::Queue, &recovery.id)?;
+            }
             if let Some(wait_command) = &queue.wait_registration {
                 wait(wait_command, visit)?;
             }

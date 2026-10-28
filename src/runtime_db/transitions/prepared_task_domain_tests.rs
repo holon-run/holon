@@ -89,6 +89,151 @@ fn aliases(f: &Fixture, id: &str) -> Result<usize> {
         params![f.scope.agent_id,f.scope.identity_incarnation,id],|r|r.get(0))?)
 }
 
+fn original_command_creation(f: &Fixture, id: &str) -> Result<PreparedInputTransition> {
+    let mut command = command(f, id, TaskStatus::Queued);
+    command.task.detail = Some(serde_json::json!({
+        "rejoin_obligation_id":id,"rejoin_generation":1,"cmd":"true",
+    }));
+    let creation = crate::runtime_db::command_task_creation::OriginalCommandTaskCreation::new(
+        f.scope.clone(),
+        command.task.clone(),
+    )?;
+    command.task = creation.task().clone();
+    PreparedInputTransition::task(
+        f.scope.clone(),
+        format!("create:{id}"),
+        f.at,
+        PreparedTaskTransition::new(command, Default::default(), true, None, None)?
+            .with_original_command_creation(std::sync::Arc::new(creation))?,
+    )
+}
+
+#[test]
+fn original_creator_proof_reuses_holder_across_preparation_retries() -> Result<()> {
+    let f = Fixture::new()?;
+    let ledger = ledger()?;
+    let id = "command:creator-retry";
+    let mut command = command(&f, id, TaskStatus::Queued);
+    command.task.detail = Some(serde_json::json!({
+        "rejoin_obligation_id":id,"rejoin_generation":1,"cmd":"true",
+    }));
+    let creation = std::sync::Arc::new(
+        crate::runtime_db::command_task_creation::OriginalCommandTaskCreation::new(
+            f.scope.clone(),
+            command.task.clone(),
+        )?,
+    );
+    command.task = creation.task().clone();
+    let mut original_receipt = None;
+    for attempt in 0..3 {
+        let prepared = PreparedInputTransition::task(
+            f.scope.clone(),
+            format!("create:{id}"),
+            f.at,
+            PreparedTaskTransition::new(command.clone(), Default::default(), true, None, None)?
+                .with_original_command_creation(std::sync::Arc::clone(&creation))?,
+        )?;
+        assert_eq!(std::sync::Arc::strong_count(&creation), 2);
+        match execute(&f, &prepared, &load_request(), &ledger)? {
+            InputMutationExecution::Committed { value, receipt } => {
+                assert_eq!(attempt, 0);
+                assert!(value.applied);
+                original_receipt = Some(receipt);
+            }
+            InputMutationExecution::Replayed { receipt, .. } => {
+                assert!(attempt > 0);
+                assert_eq!(Some(&receipt), original_receipt.as_ref());
+            }
+        }
+        drop(prepared);
+        assert_eq!(std::sync::Arc::strong_count(&creation), 1);
+        assert_eq!(ledger.report()?.observed_bytes, 0);
+    }
+    Ok(())
+}
+
+#[test]
+fn original_creator_transaction_persists_source_and_replays_without_reconstruction() -> Result<()> {
+    let f = Fixture::new()?;
+    let ledger = ledger()?;
+    let id = "command:creator-api";
+    let prepared = original_command_creation(&f, id)?;
+    let InputMutationExecution::Committed { value, receipt } =
+        execute(&f, &prepared, &load_request(), &ledger)?
+    else {
+        panic!("original creator must commit")
+    };
+    assert!(value.applied);
+    let task = f.db.tasks().latest(id)?.context("created Task missing")?;
+    assert_eq!(
+        task.rejoin_fence().unwrap().source.command_creation_id(),
+        Some(id)
+    );
+    let original: String = f.db.connection()?.query_row(
+        "SELECT original_task_json FROM command_task_creation_sources WHERE task_id=?1",
+        [id],
+        |r| r.get(0),
+    )?;
+    let original: TaskRecord = serde_json::from_str(&original)?;
+    assert!(original
+        .detail
+        .as_ref()
+        .unwrap()
+        .get("command_creation_id")
+        .is_none());
+    assert!(original
+        .detail
+        .as_ref()
+        .unwrap()
+        .get("parent_turn_id")
+        .is_none());
+    drop(value);
+    assert_eq!(ledger.report()?.observed_bytes, 0);
+    let InputMutationExecution::Replayed {
+        receipt: replayed, ..
+    } = execute(&f, &prepared, &load_request(), &ledger)?
+    else {
+        panic!("exact creator replay must return its original receipt")
+    };
+    assert_eq!(replayed, receipt);
+    assert_eq!(ledger.report()?.observed_bytes, 0);
+    Ok(())
+}
+
+#[test]
+fn creator_finalizer_failure_rolls_back_origin_task_and_receipt() -> Result<()> {
+    let f = Fixture::new()?;
+    let ledger = ledger()?;
+    let id = "command:creator-atomic-api";
+    let prepared = original_command_creation(&f, id)?;
+    f.db.connection()?.execute_batch(
+        "CREATE TRIGGER fail_creator_task_alias BEFORE INSERT ON task_domain_records
+         BEGIN SELECT RAISE(ABORT,'creator-finalizer-fault'); END;",
+    )?;
+    let before = f.receipt_count()?;
+    let error = execute(&f, &prepared, &load_request(), &ledger).unwrap_err();
+    assert!(
+        format!("{error:#}").contains("creator-finalizer-fault"),
+        "{error:#}"
+    );
+    assert!(f.db.tasks().latest(id)?.is_none());
+    let count: u64 = f.db.connection()?.query_row(
+        "SELECT count(*) FROM command_task_creation_sources WHERE task_id=?1",
+        [id],
+        |r| r.get(0),
+    )?;
+    assert_eq!(count, 0);
+    assert_eq!(f.receipt_count()?, before);
+    assert_eq!(ledger.report()?.observed_bytes, 0);
+    f.db.connection()?
+        .execute_batch("DROP TRIGGER fail_creator_task_alias")?;
+    assert!(matches!(
+        execute(&f, &prepared, &load_request(), &ledger)?,
+        InputMutationExecution::Committed { .. }
+    ));
+    Ok(())
+}
+
 #[test]
 fn original_task_whole_ack_installs_exact_fact_and_noop_replays_without_latest() -> Result<()> {
     let f = Fixture::new()?;

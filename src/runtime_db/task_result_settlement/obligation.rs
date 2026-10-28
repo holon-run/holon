@@ -185,7 +185,9 @@ pub(crate) fn settled_recovery_source_tx(
         || record.state != TaskResultSettlementState::Settled
         || record.disposition.is_none()
         || source.source_refs.get("task_result_identity") != Some(&record.result_identity)
-        || source.source_refs.get("task_result_parent_turn_id") != Some(&record.parent_turn_id)
+        || !record
+            .source
+            .matches_result_source_refs(&source.source_refs)
         || source.source_refs.get("task_result_rejoin_generation")
             != Some(&record.rejoin_generation.to_string())
         || !record_matches_durable_task_tx(tx, &record)?
@@ -261,6 +263,7 @@ pub(super) fn exact_waiter_recovery_source_tx(
             "task_result_message_id",
             "task_result_identity",
             "task_result_parent_turn_id",
+            "task_result_command_creation_id",
             "task_result_rejoin_generation",
             "task_result_owner_key",
         ]
@@ -321,7 +324,9 @@ pub(super) fn recovery_wake_admits_tx(
     };
     if anchor.agent_id != record.agent_id
         || source.source_refs.get("task_result_identity") != Some(&anchor.result_identity)
-        || source.source_refs.get("task_result_parent_turn_id") != Some(&anchor.parent_turn_id)
+        || !anchor
+            .source
+            .matches_result_source_refs(&source.source_refs)
         || source.source_refs.get("task_result_rejoin_generation")
             != Some(&anchor.rejoin_generation.to_string())
         || (anchor.result_identity != record.result_identity
@@ -396,7 +401,7 @@ fn classify_obligation_inner_tx(
         || record.message_id != expected.message_id
         || record.work_item_id != expected.work_item_id
         || record.rejoin_generation != expected.rejoin_generation
-        || record.parent_turn_id != expected.parent_turn_id
+        || record.source != expected.source
     {
         return Ok(TaskResultObligation::InvalidOrStale);
     }

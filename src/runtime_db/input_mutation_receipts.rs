@@ -428,7 +428,7 @@ impl InputMutationOutcome {
                         !record.result_identity.trim().is_empty()
                             && !record.task_id.trim().is_empty()
                             && !record.message_id.trim().is_empty()
-                            && !record.parent_turn_id.trim().is_empty()
+                            && record.source.validates_identity(&record.task_id)
                             && record.rejoin_generation > 0
                             && prepared
                                 .scopes()

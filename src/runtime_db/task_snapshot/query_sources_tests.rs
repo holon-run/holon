@@ -804,7 +804,13 @@ fn source_metadata_record_budget_counts_pending_stop_and_reverse_collections_bef
         .require_current()?;
         Ok(super::super::loader::current_coverage(tx, &scope())?.unwrap())
     })?;
-    for field in ["pending_effect_seqs", "records", "reverse"] {
+    for field in [
+        "pending_effect_seqs",
+        "records",
+        "reverse",
+        "recovery_sources",
+        "paused_replays",
+    ] {
         let mut bounded = request();
         bounded.record_limit = 32;
         let error=db.transaction(|tx| {
@@ -814,6 +820,10 @@ fn source_metadata_record_budget_counts_pending_stop_and_reverse_collections_bef
                 "pending_effect_seqs" => corrupt["stop"]["pending_effect_seqs"] = serde_json::json!((1..=64).collect::<Vec<u64>>()),
                 "records" => corrupt["stop"]["records"] = serde_json::Value::Object((1..=64).map(|n|(n.to_string(),serde_json::json!({"malformed":"must not decode"}))).collect()),
                 "reverse" => corrupt["task_result_ids"]["output-task"] = serde_json::json!((0..64).map(|n|format!("result-{n}")).collect::<Vec<_>>()),
+                "recovery_sources" => corrupt["recovery_sources"] = serde_json::Value::Object((0..64).map(|n|(n.to_string(),serde_json::json!({"malformed":"must not decode"}))).collect()),
+                "paused_replays" => corrupt["recovery_sources"]["source"] = serde_json::json!({
+                    "paused_replays": (0..64).map(|n|(n.to_string(),serde_json::json!({"malformed":"must not decode"}))).collect::<serde_json::Map<_,_>>()
+                }),
                 _ => unreachable!(),
             }
             tx.execute("UPDATE task_domain_current SET coverage_json=?1 WHERE agent_id=?2 AND identity_incarnation=?3",params![serde_json::to_string(&corrupt)?,scope().agent_id,scope().identity_incarnation])?;

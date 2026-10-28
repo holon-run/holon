@@ -226,10 +226,10 @@ fn enqueue(tx: &Transaction<'_>, message: &MessageEnvelope) -> Result<()> {
 fn migration_data_matrix_preserves_task_input_status_and_scheduling_across_lineages() -> Result<()>
 {
     let mut expected_fixed = None;
-    let cases = (80..=101)
+    let cases = (80..=102)
         .map(|version| (version, None))
         .chain([81, 83, 89].into_iter().flat_map(|start| {
-            (91..=101).map(move |version| (version, Some(start)))
+            (91..=102).map(move |version| (version, Some(start)))
         }));
     for (prefix, legacy_start) in cases {
         let home = tempfile::tempdir()?;
@@ -353,10 +353,10 @@ fn fresh_migration_has_no_invented_task_input_or_scheduling_members() -> Result<
         assert!(fixed[index].is_empty());
     }
     let count: usize = connection.query_row(
-        "SELECT COUNT(*) FROM schema_migrations WHERE version BETWEEN 81 AND 101",
+        "SELECT COUNT(*) FROM schema_migrations WHERE version BETWEEN 81 AND 102",
         [],
         |row| row.get(0),
     )?;
-    assert_eq!(count, 21);
+    assert_eq!(count, 22);
     Ok(())
 }

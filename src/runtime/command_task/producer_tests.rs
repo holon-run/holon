@@ -129,7 +129,10 @@ async fn original_command_task_none_named_terminal_keeps_actual_result_once_and_
         crate::runtime_db::evidence::committed_message_tx(tx, &task.agent_id, message_id)
     })?;
     let actual_task = runtime.inner.runtime_db.tasks().latest(&task.id)?.unwrap();
-    assert!(actual_task.rejoin_fence().is_err());
+    assert_eq!(
+        actual_task.rejoin_fence().map_err(anyhow::Error::msg)?,
+        task.rejoin_fence().map_err(anyhow::Error::msg)?
+    );
     assert!(actual_task
         .detail
         .as_ref()
@@ -149,8 +152,8 @@ async fn original_command_task_none_named_terminal_keeps_actual_result_once_and_
             [&task.id],
             |r| r.get::<_, usize>(0)
         )?,
-        0,
-        "no rejoin must not invent an obligation"
+        1,
+        "the original creation source retains exactly one Result obligation"
     );
     assert!(runtime
         .inner
@@ -408,7 +411,7 @@ fn set_original_command_deleting(
 }
 
 #[tokio::test]
-async fn original_command_operator_deleting_no_rejoin_delivers_actual_message_and_queue_once(
+async fn original_command_operator_deleting_preserves_creation_source_and_result_once(
 ) -> Result<()> {
     let (_home, _workspace, runtime, task, process, lease, source) =
         accepted_original_producer_fixture().await?;
@@ -430,7 +433,7 @@ async fn original_command_operator_deleting_no_rejoin_delivers_actual_message_an
     runtime.inner.runtime_db.transaction(|tx| {
         assert_eq!(tx.query_row("SELECT COUNT(*) FROM messages WHERE evidence_id=?1",[message_id],|r|r.get::<_,usize>(0))?,1);
         assert_eq!(tx.query_row("SELECT status FROM queue_entries WHERE message_id=?1",[message_id],|r|r.get::<_,String>(0))?,"queued");
-        assert_eq!(tx.query_row("SELECT COUNT(*) FROM task_result_settlements WHERE task_id=?1",[&task.id],|r|r.get::<_,usize>(0))?,0);
+        assert_eq!(tx.query_row("SELECT COUNT(*) FROM task_result_settlements WHERE task_id=?1 AND command_creation_id=?1",[&task.id],|r|r.get::<_,usize>(0))?,1);
         assert!(tx.query_row("SELECT EXISTS(SELECT 1 FROM input_evidence_current WHERE agent_id=?1 AND identity_incarnation=?2 AND family='message' AND record_id=?3)",rusqlite::params![task.agent_id,source.address().scope.identity_incarnation,message_id],|r|r.get::<_,bool>(0))?);
         Ok(())
     })?;
@@ -811,7 +814,7 @@ async fn original_command_started_parent_fence_survives_a_new_result_turn_hint()
         )
         .await?;
     let fence = task.rejoin_fence().map_err(anyhow::Error::msg)?;
-    assert_eq!(fence.parent_turn_id, original_parent);
+    assert_eq!(fence.source.parent_turn_id().unwrap(), original_parent);
     wait_for_latest_task(&runtime, &task.id, TaskStatus::Running).await;
     let lease = runtime
         .inner

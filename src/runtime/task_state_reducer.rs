@@ -82,6 +82,9 @@ pub(super) struct TaskTransition<'a> {
     pub(super) event_kind: &'static str,
     pub(super) message_evidence: Option<&'a MessageEnvelope>,
     audit_evidence: Option<&'a AuditEvent>,
+    original_command_creation: Option<
+        std::sync::Arc<crate::runtime_db::command_task_creation::OriginalCommandTaskCreation>,
+    >,
     pub(super) admit_result_message: bool,
     pub(super) agent_deletion: Option<crate::runtime_db::repositories::AgentDeletionRequest>,
 }
@@ -93,9 +96,20 @@ impl<'a> TaskTransition<'a> {
             event_kind,
             message_evidence: None,
             audit_evidence: None,
+            original_command_creation: None,
             admit_result_message: false,
             agent_deletion: None,
         }
+    }
+
+    pub(super) fn with_original_command_creation(
+        mut self,
+        creation: &std::sync::Arc<
+            crate::runtime_db::command_task_creation::OriginalCommandTaskCreation,
+        >,
+    ) -> Self {
+        self.original_command_creation = Some(std::sync::Arc::clone(creation));
+        self
     }
 
     #[cfg(test)]
@@ -655,6 +669,7 @@ impl RuntimeHandle {
                 command,
                 Default::default(),
                 true,
+                transition.original_command_creation.clone(),
             )
             .await?;
         #[cfg(test)]
@@ -3188,6 +3203,7 @@ mod tests {
                 },
                 Default::default(),
                 true,
+                None,
             )
             .await?;
         drop(mutation);
@@ -3204,7 +3220,10 @@ mod tests {
             .expect("original Result ACK");
         assert_eq!(settlement.task_id, winner.id);
         assert_eq!(settlement.rejoin_generation, 1);
-        assert_eq!(settlement.parent_turn_id, "original-parent-turn");
+        assert_eq!(
+            settlement.source.parent_turn_id(),
+            Some("original-parent-turn")
+        );
         runtime
             .commit_terminal_task_result(&incoming, "task_status_updated", &message)
             .await?;

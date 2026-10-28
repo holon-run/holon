@@ -78,6 +78,12 @@ pub(crate) fn context_config() -> ContextConfig {
     }
 }
 
+pub(crate) fn isolate_test_user_home(runtime: &RuntimeHandle) {
+    let mut config = (*runtime.inner.config_snapshot.load_full()).clone();
+    config.user_home_dir = None;
+    runtime.inner.config_snapshot.store(Arc::new(config));
+}
+
 pub(crate) fn continuation_ready_context_config(
     workspace: &TempDir,
     continuation_effective_budget: usize,
@@ -205,6 +211,7 @@ pub(crate) fn terminal_transition(
         turn_record: super::super::turn::inputs::BuiltTurnRecord::fixture(turn_record),
         prepared_work_item_completion: None,
         prepared_wait_for: None,
+        provider_recovery_message: None,
         terminal_tool_executions: Vec::new(),
     }
 }

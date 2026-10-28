@@ -1252,6 +1252,11 @@ fn inventory<'tx, 'connection, P: rusqlite::Params>(
         ""
     };
     let projection=format!("{prefix}result_identity,{prefix}agent_id,{prefix}task_id,{prefix}message_id,{prefix}work_item_id,{prefix}rejoin_generation,{prefix}parent_turn_id,{prefix}state,{prefix}activation_id,{prefix}disposition,{prefix}created_at,{prefix}updated_at,{prefix}admitted_at,{prefix}settled_at,{prefix}deferred_reason,{prefix}deferred_at,{prefix}next_recheck_at");
+    let projection = if crate::runtime_db::command_task_creation::has_result_source_column(tx)? {
+        format!("{projection},{prefix}command_creation_id")
+    } else {
+        projection
+    };
     let replacement=format!("SELECT {prefix}result_identity,{prefix}task_id,length(CAST({prefix}payload_json AS BLOB))+length(CAST(json_array({projection}) AS BLOB))");
     let from = if prefix.is_empty() {
         "SELECT payload_json"
@@ -1486,7 +1491,7 @@ pub(crate) fn settle_invalid_only_material_estimate_tx(
     message: &str,
 ) -> Result<TaskResultMaterialEstimate> {
     let (count, bytes): (usize, usize) = tx.query_row(
-        "SELECT COUNT(*),COALESCE(SUM(length(CAST(payload_json AS BLOB))+length(CAST(json_array(result_identity,agent_id,task_id,message_id,work_item_id,rejoin_generation,parent_turn_id,state,activation_id,disposition,created_at,updated_at,admitted_at,settled_at,deferred_reason,deferred_at,next_recheck_at) AS BLOB))+length(CAST(result_identity AS BLOB))+length(CAST(task_id AS BLOB))+256),0) FROM task_result_settlements WHERE agent_id=?1 AND message_id=?2",
+        "SELECT COUNT(*),COALESCE(SUM(length(CAST(payload_json AS BLOB))+length(CAST(json_array(result_identity,agent_id,task_id,message_id,work_item_id,rejoin_generation,parent_turn_id,state,activation_id,disposition,created_at,updated_at,admitted_at,settled_at,deferred_reason,deferred_at,next_recheck_at,command_creation_id) AS BLOB))+length(CAST(result_identity AS BLOB))+length(CAST(task_id AS BLOB))+256),0) FROM task_result_settlements WHERE agent_id=?1 AND message_id=?2",
         params![agent, message], |r| Ok((r.get(0)?, r.get(1)?)),
     )?;
     ensure!(
@@ -1615,7 +1620,7 @@ pub(crate) fn ensure_pending_material_estimate_tx(
     let task:Option<usize>=tx.query_row("SELECT length(CAST(payload_json AS BLOB))+length(CAST(json_array(task_id,owner_agent_id,parent_agent_id,child_agent_id,kind,status,summary,input_target,wait_policy,output_path,result_summary,exit_status,terminal_reentry,revision,created_at,updated_at,completed_at,last_message_id,last_turn_id,causation_id,correlation_id) AS BLOB)) FROM tasks WHERE task_id=?1",[task_id],|r|r.get(0)).optional()?;
     // The actual fence/generation is not decoded yet. A scalar MAX over the
     // finite task/message address covers whichever original first row applies.
-    let result:Option<usize>=tx.query_row("SELECT MAX(length(CAST(payload_json AS BLOB))+length(CAST(json_array(result_identity,agent_id,task_id,message_id,work_item_id,rejoin_generation,parent_turn_id,state,activation_id,disposition,created_at,updated_at,admitted_at,settled_at,deferred_reason,deferred_at,next_recheck_at) AS BLOB))) FROM task_result_settlements WHERE task_id=?1 OR message_id=?2",params![task_id,message_id],|r|r.get(0))?;
+    let result:Option<usize>=tx.query_row("SELECT MAX(length(CAST(payload_json AS BLOB))+length(CAST(json_array(result_identity,agent_id,task_id,message_id,work_item_id,rejoin_generation,parent_turn_id,state,activation_id,disposition,created_at,updated_at,admitted_at,settled_at,deferred_reason,deferred_at,next_recheck_at,command_creation_id) AS BLOB))) FROM task_result_settlements WHERE task_id=?1 OR message_id=?2",params![task_id,message_id],|r|r.get(0))?;
     let bytes = task
         .unwrap_or_default()
         .checked_add(message_id.len())

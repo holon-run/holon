@@ -647,7 +647,7 @@ fn assert_admitted_to(db: &RuntimeDb, record: &TaskResultSettlementRecord, activ
         .unwrap();
     assert_eq!(actual.state, TaskResultSettlementState::CallerAdmitted);
     assert_eq!(actual.activation_id.as_deref(), Some(activation));
-    assert_eq!(actual.parent_turn_id, record.parent_turn_id);
+    assert_eq!(actual.source, record.source);
     assert_eq!(actual.rejoin_generation, record.rejoin_generation);
     assert_eq!(actual.work_item_id, record.work_item_id);
     assert!(actual.admitted_at.is_some());
@@ -1999,7 +1999,14 @@ fn recovery_transfers_three_sources_and_survives_a_second_interruption() {
         assert_admitted_to(&db, record, "recovery-a");
         let task = db.tasks().latest(&record.task_id).unwrap().unwrap();
         assert_eq!(task.work_item_id, record.work_item_id);
-        assert_eq!(task.rejoin_fence().unwrap().parent_turn_id, "live-parent");
+        assert_eq!(
+            task.rejoin_fence()
+                .unwrap()
+                .source
+                .parent_turn_id()
+                .unwrap(),
+            "live-parent"
+        );
     }
     assert!(!recover(&db, "live-activation", "recovery-a", &records));
     interrupted_attachment(&db, "recovery-turn-a", &records, true);

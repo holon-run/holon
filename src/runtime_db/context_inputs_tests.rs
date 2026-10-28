@@ -405,7 +405,9 @@ fn fixture() -> Result<(TempDir, RuntimeDb)> {
             message_id: format!("{agent}-message-0"),
             work_item_id: Some(format!("{agent}-work-0")),
             rejoin_generation: 1,
-            parent_turn_id: format!("{agent}-turn-0"),
+            source: crate::domain::execution_protocol::TaskRejoinSource::ParentTurn {
+                parent_turn_id: format!("{agent}-turn-0"),
+            },
             task_status: "completed".into(),
             state: TaskResultSettlementState::CallerAdmitted,
             activation_id: Some("activation".into()),

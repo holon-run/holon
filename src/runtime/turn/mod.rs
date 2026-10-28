@@ -66,6 +66,7 @@ pub(crate) struct AgentLoopOutcome {
     pub(super) sleep_duration_ms: Option<u64>,
     pub(super) allow_sleep_runnable_work_override: bool,
     pub(super) terminal_kind: TurnTerminalKind,
+    pub(super) provider_recovery_message: Option<MessageEnvelope>,
     pub(super) prepared_work_item_completion:
         Option<Box<crate::runtime::PreparedWorkItemCompletion>>,
     pub(super) prepared_wait_for: Option<Box<crate::runtime::PreparedWaitForSettlement>>,
@@ -76,6 +77,7 @@ pub(crate) struct AgentLoopOutcome {
 pub(crate) struct TurnTerminalTransition {
     pub(super) terminal: TurnTerminalRecord,
     pub(super) turn_record: inputs::BuiltTurnRecord,
+    pub(super) provider_recovery_message: Option<MessageEnvelope>,
     pub(super) prepared_work_item_completion:
         Option<Box<crate::runtime::PreparedWorkItemCompletion>>,
     pub(super) prepared_wait_for: Option<Box<crate::runtime::PreparedWaitForSettlement>>,
@@ -86,11 +88,13 @@ impl TurnTerminalTransition {
     pub(super) fn try_clone(&self) -> Result<Self> {
         self.turn_record.with_material(|| {
             crate::diagnostics::resource_io::admit_cloned_value(&self.terminal)?;
+            crate::diagnostics::resource_io::admit_cloned_value(&self.provider_recovery_message)?;
             crate::diagnostics::resource_io::admit_cloned_value(&self.terminal_tool_executions)
         })?;
         Ok(Self {
             terminal: self.terminal.clone(),
             turn_record: self.turn_record.try_clone()?,
+            provider_recovery_message: self.provider_recovery_message.clone(),
             prepared_work_item_completion: self.prepared_work_item_completion.clone(),
             prepared_wait_for: self.prepared_wait_for.clone(),
             terminal_tool_executions: self.terminal_tool_executions.clone(),
@@ -233,6 +237,7 @@ impl RuntimeHandle {
         state: &crate::types::AgentState,
         message: Option<&MessageEnvelope>,
         prior_replay_terminal: Option<TurnTerminalSummary>,
+        at: chrono::DateTime<chrono::Utc>,
     ) -> Result<TurnRecord> {
         let turn_id = state
             .current_turn_id
@@ -240,6 +245,7 @@ impl RuntimeHandle {
             .ok_or_else(|| anyhow::anyhow!("started turn has no identity"))?;
         let binding = state.current_execution_binding.as_ref();
         let mut record = TurnRecord::new(&state.id, turn_id, state.turn_index);
+        record.created_at = at;
         record.run_id = state.current_run_id.clone();
         record.current_work_item_id = binding
             .map(|binding| binding.work_item_id.clone())
@@ -364,6 +370,7 @@ impl RuntimeHandle {
             terminal,
             prepared_work_item_completion: None,
             prepared_wait_for: None,
+            provider_recovery_message: None,
             terminal_tool_executions: Vec::new(),
         })
     }
@@ -627,6 +634,7 @@ impl RuntimeHandle {
                 terminal: record.clone(),
                 prepared_work_item_completion: None,
                 prepared_wait_for: None,
+                provider_recovery_message: None,
                 terminal_tool_executions: Vec::new(),
             };
             self.commit_terminal_transition(
@@ -704,7 +712,7 @@ impl RuntimeHandle {
             last_assistant_message,
             no_brief_reason: Some(no_brief_reason),
             checkpoint: None,
-            completed_at: chrono::Utc::now(),
+            completed_at: self.now(),
             duration_ms,
         }
     }

@@ -112,8 +112,8 @@ impl RuntimeHandle {
                 continue;
             };
             let metadata = format!(
-                "- result_identity: {}\n  task_id: {}\n  parent_turn_id: {}\n  rejoin_generation: {}\n  captured_owner: {}\n",
-                record.result_identity, record.task_id, record.parent_turn_id,
+                "- result_identity: {}\n  task_id: {}\n  creation_source: {}\n  rejoin_generation: {}\n  captured_owner: {}\n",
+                record.result_identity, record.task_id, serde_json::to_string(&record.source)?,
                 record.rejoin_generation, serde_json::to_string(&record.work_item_id)?,
             );
             let reply_id =

@@ -61,6 +61,9 @@ impl RuntimeMutation {
         command: TaskTransitionCommand,
         execution_protocol: ExecutionProtocolTransition,
         synchronize_execution_protocol: bool,
+        original_command_creation: Option<
+            std::sync::Arc<crate::runtime_db::command_task_creation::OriginalCommandTaskCreation>,
+        >,
     ) -> std::pin::Pin<
         Box<
             impl std::future::Future<
@@ -79,17 +82,21 @@ impl RuntimeMutation {
             let deletion_id = expected_child
                 .as_ref()
                 .map(|_| crate::ids::agent_deletion_id());
+            let mut task_transition = PreparedTaskTransition::new(
+                command,
+                execution_protocol,
+                synchronize_execution_protocol,
+                expected_child,
+                deletion_id,
+            )?;
+            if let Some(creation) = original_command_creation {
+                task_transition = task_transition.with_original_command_creation(creation)?;
+            }
             let prepared = PreparedInputTransition::task(
                 self.input_evidence_scope(),
                 operation_id,
                 Utc::now(),
-                PreparedTaskTransition::new(
-                    command,
-                    execution_protocol,
-                    synchronize_execution_protocol,
-                    expected_child,
-                    deletion_id,
-                )?,
+                task_transition,
             )?;
             let (commit, result) = self.commit_prepared_input_with_result(prepared).await?;
             let InputMutationResult::Task {

@@ -584,7 +584,7 @@ async fn commit_wait_dependency(
     assert_eq!(settlement.task_id, task.id);
     assert_eq!(settlement.work_item_id, task.work_item_id);
     assert_eq!(settlement.rejoin_generation, 1);
-    assert_eq!(settlement.parent_turn_id, parent_turn_id);
+    assert_eq!(settlement.source.parent_turn_id().unwrap(), parent_turn_id);
 }
 
 async fn complete_immediate_wait_dependency(runtime: &RuntimeHandle, claimed: bool) {
@@ -1048,6 +1048,7 @@ fn terminal_settlement_transition(
         turn_record: turn::inputs::BuiltTurnRecord::fixture(turn_record),
         prepared_work_item_completion: None,
         prepared_wait_for: None,
+        provider_recovery_message: None,
         terminal_tool_executions: Vec::new(),
     }
 }
@@ -1383,6 +1384,7 @@ async fn run_atomic_wait_settlement_test(scenario: AtomicWaitScenario) {
         turn_record,
         prepared_work_item_completion: None,
         prepared_wait_for: Some(prepared),
+        provider_recovery_message: None,
         terminal_tool_executions: Vec::new(),
     };
 

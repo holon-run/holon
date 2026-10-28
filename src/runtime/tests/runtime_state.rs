@@ -5255,11 +5255,17 @@ async fn task_result_claim_fixture(
     let rejoin = crate::domain::execution_protocol::RejoinFence {
         obligation_id: task_id.into(),
         generation: 1,
-        parent_turn_id: format!("turn-{task_id}-parent"),
+        source: crate::domain::execution_protocol::TaskRejoinSource::ParentTurn {
+            parent_turn_id: format!("turn-{task_id}-parent"),
+        },
     };
-    persist_completed_task_parent_fixture(&runtime, &rejoin.parent_turn_id, Some(&work_item.id))
-        .await
-        .unwrap();
+    persist_completed_task_parent_fixture(
+        &runtime,
+        rejoin.source.parent_turn_id().unwrap(),
+        Some(&work_item.id),
+    )
+    .await
+    .unwrap();
     let mut terminal_task = TaskRecord {
         id: task_id.into(),
         agent_id: "default".into(),
@@ -5274,7 +5280,7 @@ async fn task_result_claim_fixture(
             "terminal_reentry": false,
             "rejoin_obligation_id": rejoin.obligation_id,
             "rejoin_generation": rejoin.generation,
-            "parent_turn_id": rejoin.parent_turn_id,
+            "parent_turn_id": rejoin.source.parent_turn_id().unwrap(),
         })),
         recovery: None,
     };
@@ -11199,7 +11205,9 @@ async fn exact_task_rejoin_claim_is_atomic_and_restart_safe() {
         Some(crate::domain::execution_protocol::RejoinFence {
             obligation_id: "task-rejoin".into(),
             generation: 1,
-            parent_turn_id: "turn-task-parent".into(),
+            source: crate::domain::execution_protocol::TaskRejoinSource::ParentTurn {
+                parent_turn_id: "turn-task-parent".into(),
+            },
         })
     );
     assert!(matches!(
@@ -21024,7 +21032,7 @@ fn task_rejoin_fence_requires_live_persisted_contract() {
     let fence = tasks::task_rejoin_fence(&task).unwrap();
     assert_eq!(fence.obligation_id, task.id);
     assert_eq!(fence.generation, 1);
-    assert_eq!(fence.parent_turn_id, "turn-parent");
+    assert_eq!(fence.source.parent_turn_id(), Some("turn-parent"));
 
     task.detail.as_mut().unwrap()["rejoin_obligation_id"] = serde_json::json!("task-other");
     assert!(tasks::task_rejoin_fence(&task)

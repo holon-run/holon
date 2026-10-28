@@ -1046,7 +1046,7 @@ impl IdleRead<'_, '_> {
             anyhow::ensure!(
                 original.message_id == record.message_id
                     && original.task_id == record.task_id
-                    && original.parent_turn_id == record.parent_turn_id
+                    && original.source == record.source
                     && original.rejoin_generation == record.rejoin_generation,
                 "idle proposed projection differs from its qualified Result"
             );

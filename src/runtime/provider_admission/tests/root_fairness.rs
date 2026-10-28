@@ -80,7 +80,11 @@ async fn fifth_root_http(restart: bool) {
         if task.status == TaskStatus::Completed {
             break task.parent_message_id.unwrap();
         }
-        assert!(Instant::now() < deadline, "{task:?}");
+        assert!(
+            Instant::now() < deadline,
+            "{task:?}; events={:?}",
+            runtime.storage().read_recent_events(20).unwrap()
+        );
         tokio::time::sleep(StdDuration::from_millis(1)).await;
     };
     let latest = |runtime: &RuntimeHandle| {

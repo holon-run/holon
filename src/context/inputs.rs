@@ -3842,7 +3842,9 @@ mod resident_tests {
                 message_id: message.id.clone(),
                 work_item_id: None,
                 rejoin_generation: 1,
-                parent_turn_id: "parent-turn".into(),
+                source: crate::domain::execution_protocol::TaskRejoinSource::ParentTurn {
+                    parent_turn_id: "parent-turn".into(),
+                },
                 task_status: "completed".into(),
                 state: TaskResultSettlementState::CallerAdmitted,
                 activation_id: Some("activation".into()),

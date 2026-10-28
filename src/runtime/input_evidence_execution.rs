@@ -427,18 +427,17 @@ impl CapturedInputEvidence {
     }
     pub(crate) fn execution_predecessor_candidates(
         &self,
-        source: &str,
+        source: &crate::types::MessageEnvelope,
         turn: &str,
     ) -> Result<Vec<&ExecutionAttempt>> {
         let mut result = Vec::new();
         for observed in self
             .execution
-            .source(source)?
+            .source(&source.id)?
             .attempts
             .values()
             .filter(|x| {
                 !x.pruned
-                    && x.turn_id_hint.as_deref() == Some(turn)
                     && matches!(
                         x.state,
                         ExecutionAttemptState::Settled | ExecutionAttemptState::Interrupted
@@ -446,7 +445,7 @@ impl CapturedInputEvidence {
                     && x.terminal_outcome_id.is_some()
             })
         {
-            let attempt = self.observed_attempt(source, observed)?;
+            let attempt = self.observed_attempt(&source.id, observed)?;
             let evidence = self
                 .lookup(&Key::new(Family::Attempt, &attempt.attempt_id))?
                 .ok_or_else(|| {
@@ -455,16 +454,15 @@ impl CapturedInputEvidence {
                         &attempt.attempt_id,
                     ))
                 })?;
-            if !evidence
-                .attempt_turn_keys
-                .as_ref()
-                .is_some_and(|keys| keys.contains(&Key::new(Family::Turn, turn)))
-            {
-                return Err(
-                    InputEvidenceReadError::NeedsPreparation(Key::new(Family::Turn, turn)).into(),
-                );
+            let turns = evidence.attempt_turn_keys.as_ref().ok_or_else(|| {
+                InputEvidenceReadError::NeedsPreparation(Key::new(
+                    Family::Attempt,
+                    &attempt.attempt_id,
+                ))
+            })?;
+            if turns.contains(&Key::new(Family::Turn, turn)) {
+                result.push(attempt);
             }
-            result.push(attempt);
         }
         Ok(result)
     }

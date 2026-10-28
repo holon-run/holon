@@ -513,6 +513,7 @@ impl read::IdleRead<'_, '_> {
                     "task_result_owner_key",
                     "task_result_rejoin_generation",
                     "task_result_parent_turn_id",
+                    "task_result_command_creation_id",
                     "wait_id",
                 ]
                 .iter()
@@ -546,7 +547,7 @@ impl read::IdleRead<'_, '_> {
                 != Some(&task_result_recovery::recovery_owner_key(&consuming_record))
             || anchor.source_refs.get("task_result_rejoin_generation")
                 != Some(&record.rejoin_generation.to_string())
-            || anchor.source_refs.get("task_result_parent_turn_id") != Some(&record.parent_turn_id)
+            || !record.source.matches_result_source_refs(&anchor.source_refs)
         {
             return Ok(false);
         }

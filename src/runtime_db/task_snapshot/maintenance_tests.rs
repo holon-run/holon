@@ -210,7 +210,7 @@ fn qualified_result_missing_foreign_and_invalid_task_relations_preserve_original
                 .any(|r| r.locator.key.family == TaskFamily::Task));
             assert!(!snapshot.input_roots.contains(&InputEvidenceKey::new(
                 InputEvidenceFamily::Turn,
-                &result.parent_turn_id
+                result.source.parent_turn_id().unwrap()
             )));
             let mut explicit = request();
             explicit

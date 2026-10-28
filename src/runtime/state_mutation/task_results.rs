@@ -32,6 +32,12 @@ impl TaskResultOutcomeRead {
             _ => bail!("TaskResult original return type differs"),
         }
     }
+    pub(in crate::runtime) fn unit(self) -> Result<()> {
+        match self.outcome {
+            TaskResultWriteOutcome::Unit => Ok(()),
+            _ => bail!("TaskResult original return type differs"),
+        }
+    }
     pub(in crate::runtime) fn count(self) -> Result<usize> {
         match self.outcome {
             TaskResultWriteOutcome::Count(value) => Ok(value),

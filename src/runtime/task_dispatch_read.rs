@@ -66,6 +66,7 @@ pub(crate) fn exact_recovery_source_digest(source: &MessageEnvelope) -> Result<S
             "task_result_message_id",
             "task_result_identity",
             "task_result_parent_turn_id",
+            "task_result_command_creation_id",
             "task_result_rejoin_generation",
             "task_result_owner_key",
         ]
@@ -402,8 +403,7 @@ fn result_deliverable(
         && task.effective_work_item_id() == record.work_item_id.as_deref()
         && super::super::task_state_reducer::is_terminal_task_status(&task.status)
         && task.rejoin_fence().is_ok_and(|fence| {
-            fence.generation == record.rejoin_generation
-                && fence.parent_turn_id == record.parent_turn_id
+            fence.generation == record.rejoin_generation && fence.source == record.source
         }))
     {
         return Ok(false);
@@ -576,6 +576,41 @@ pub(in crate::runtime) fn dispatch_plan_material(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn exact_recovery_digest_preserves_independent_creation_source() -> Result<()> {
+        let mut source = MessageEnvelope::new(
+            "default",
+            MessageKind::InternalFollowup,
+            MessageOrigin::System {
+                subsystem: "task_result_recovery".into(),
+            },
+            AuthorityClass::RuntimeInstruction,
+            Priority::Background,
+            MessageBody::Text {
+                text: "recovery".into(),
+            },
+        );
+        source.source_refs.insert(
+            "task_result_command_creation_id".into(),
+            "task-original".into(),
+        );
+        let original = exact_recovery_source_digest(&source)?;
+        source.source_refs.insert(
+            "task_result_command_creation_id".into(),
+            "task-foreign".into(),
+        );
+        assert_ne!(original, exact_recovery_source_digest(&source)?);
+        source.source_refs.insert(
+            "task_result_command_creation_id".into(),
+            "task-original".into(),
+        );
+        source
+            .source_refs
+            .insert("task_result_parent_turn_id".into(), "turn-foreign".into());
+        assert_ne!(original, exact_recovery_source_digest(&source)?);
+        Ok(())
+    }
 
     #[test]
     fn recovery_observation_requires_both_digests_even_for_negative_predicates() {

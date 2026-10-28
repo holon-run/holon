@@ -218,21 +218,23 @@ fn child_agent_task_detail(workspace_mode: ChildAgentWorkspaceMode) -> serde_jso
 const REJOIN_OBLIGATION_ID_DETAIL: &str = "rejoin_obligation_id";
 const REJOIN_GENERATION_DETAIL: &str = "rejoin_generation";
 const PARENT_TURN_ID_DETAIL: &str = "parent_turn_id";
+const COMMAND_CREATION_ID_DETAIL: &str = "command_creation_id";
+const RESULT_EXECUTION_TURN_ID_DETAIL: &str = "result_execution_turn_id";
 
 fn copy_task_rejoin_contract(task: &TaskRecord, detail: &mut serde_json::Value) {
     let Some(target) = detail.as_object_mut() else {
         return;
     };
-    let Some(source) = task.detail.as_ref().and_then(serde_json::Value::as_object) else {
-        return;
-    };
+    let source = task.detail.as_ref().and_then(serde_json::Value::as_object);
     for key in [
         REJOIN_OBLIGATION_ID_DETAIL,
         REJOIN_GENERATION_DETAIL,
         PARENT_TURN_ID_DETAIL,
+        COMMAND_CREATION_ID_DETAIL,
     ] {
-        if let Some(value) = source.get(key) {
-            target.entry(key).or_insert_with(|| value.clone());
+        target.remove(key);
+        if let Some(value) = source.and_then(|source| source.get(key)) {
+            target.insert(key.into(), value.clone());
         }
     }
 }
@@ -248,6 +250,7 @@ pub(super) fn task_rejoin_fence(
 pub(super) fn unbound_task_rejoin_generation(task: &TaskRecord) -> Option<u64> {
     let detail = task.detail.as_ref()?.as_object()?;
     if detail.contains_key(PARENT_TURN_ID_DETAIL)
+        || detail.contains_key(COMMAND_CREATION_ID_DETAIL)
         || detail.get(REJOIN_OBLIGATION_ID_DETAIL)?.as_str()? != task.id
     {
         return None;
@@ -324,24 +327,33 @@ fn task_with_status(
     }
 }
 
+fn task_result_detail(
+    task: &TaskRecord,
+    detail: Option<serde_json::Value>,
+    result_turn_id: Option<&str>,
+) -> serde_json::Value {
+    let mut detail = detail.unwrap_or_else(|| serde_json::json!({}));
+    copy_task_rejoin_contract(task, &mut detail);
+    if let Some(detail) = detail.as_object_mut() {
+        detail.remove(RESULT_EXECUTION_TURN_ID_DETAIL);
+        if let Some(result_turn_id) = result_turn_id {
+            detail.insert(
+                RESULT_EXECUTION_TURN_ID_DETAIL.into(),
+                serde_json::json!(result_turn_id),
+            );
+        }
+    }
+    detail
+}
+
 pub(in crate::runtime) fn task_with_result_message(
     task: &TaskRecord,
     status: TaskStatus,
-    mut detail: Option<serde_json::Value>,
+    detail: Option<serde_json::Value>,
     result_message: &MessageEnvelope,
 ) -> TaskRecord {
-    {
-        let detail = detail.get_or_insert_with(|| serde_json::json!({}));
-        copy_task_rejoin_contract(task, detail);
-        if let (Some(detail), Some(parent_turn_id)) =
-            (detail.as_object_mut(), result_message.turn_id.as_ref())
-        {
-            detail
-                .entry(PARENT_TURN_ID_DETAIL)
-                .or_insert_with(|| serde_json::json!(parent_turn_id));
-        }
-    }
-    let mut terminal_task = task_with_status(task, status, detail);
+    let detail = task_result_detail(task, detail, result_message.turn_id.as_deref());
+    let mut terminal_task = task_with_status(task, status, Some(detail));
     terminal_task.parent_message_id = Some(result_message.id.clone());
     terminal_task
 }
@@ -356,21 +368,12 @@ fn task_with_original_interrupted_result(
     task: &TaskRecord,
     result_message: &MessageEnvelope,
 ) -> TaskRecord {
-    let mut terminal = task_with_result_message(
+    task_with_result_message(
         task,
         TaskStatus::Interrupted,
         task.detail.clone(),
         result_message,
-    );
-    if unbound_task_rejoin_generation(task).is_some() {
-        terminal
-            .detail
-            .as_mut()
-            .and_then(serde_json::Value::as_object_mut)
-            .expect("validated original unbound Task detail")
-            .remove(PARENT_TURN_ID_DETAIL);
-    }
-    terminal
+    )
 }
 
 fn interrupted_task_result_message(
@@ -387,20 +390,22 @@ fn interrupted_task_result_message(
         })
         .and_then(|value| value.as_str())
         .unwrap_or("running");
+    let result_turn_id = crate::ids::turn_id();
+    let detail = task_result_detail(task, task.detail.clone(), Some(&result_turn_id));
     let mut message = MessageEnvelope {
         id: if interrupted_reason == "runtime_restarted" {
             restart_task_result_message_id(&task.id)
         } else {
             crate::ids::message_id()
         },
-        turn_id: Some(crate::ids::turn_id()),
+        turn_id: Some(result_turn_id),
         work_item_id: task.effective_work_item_id().map(ToString::to_string),
         metadata: Some(serde_json::json!({
             "task_id": task.id,
             "task_kind": task.kind,
             "task_status": "interrupted",
             "task_summary": task.summary,
-            "task_detail": task.detail,
+            "task_detail": detail,
             "task_recovery": task.recovery,
             "work_item_id": task.effective_work_item_id(),
             "status_before_restart": status_before,
@@ -452,10 +457,6 @@ pub(super) fn prepare_lifecycle_stop_task_result(
         serde_json::json!("agent_stopped"),
     );
     detail_map.insert("interrupted_at".into(), to_json_value(&prepared_at));
-    let result_turn_id = crate::ids::turn_id();
-    detail_map
-        .entry(PARENT_TURN_ID_DETAIL)
-        .or_insert_with(|| serde_json::json!(result_turn_id));
     let interrupted = TaskRecord {
         status: TaskStatus::Interrupted,
         updated_at: prepared_at,
@@ -465,7 +466,6 @@ pub(super) fn prepare_lifecycle_stop_task_result(
     };
     let mut message = interrupted_task_result_message(&interrupted, "agent_stopped");
     message.created_at = prepared_at;
-    message.turn_id = Some(result_turn_id);
     let mut terminal = task_with_result_message(
         &interrupted,
         TaskStatus::Interrupted,
@@ -5753,12 +5753,13 @@ pub(super) fn task_from_message(message: &MessageEnvelope, agent_id: &str) -> Re
         .or_else(|| Some(message_text(&message.body)));
 
     let mut detail = metadata.and_then(|value| value.get("task_detail")).cloned();
-    if let Some(parent_turn_id) = message.turn_id.as_ref() {
+    if let Some(result_turn_id) = message.turn_id.as_ref() {
         let detail = detail.get_or_insert_with(|| serde_json::json!({}));
         if let Some(detail) = detail.as_object_mut() {
-            detail
-                .entry("parent_turn_id")
-                .or_insert_with(|| serde_json::json!(parent_turn_id));
+            detail.insert(
+                RESULT_EXECUTION_TURN_ID_DETAIL.into(),
+                serde_json::json!(result_turn_id),
+            );
         }
     }
     if message.correlation_id.is_some() || message.causation_id.is_some() {
@@ -5975,7 +5976,8 @@ fn task_failure_artifact(
         source_chain,
         context: Box::new(RuntimeErrorContext {
             message_id: task.parent_message_id.clone(),
-            turn_id: detail_string(&task.detail, "parent_turn_id"),
+            turn_id: detail_string(&task.detail, RESULT_EXECUTION_TURN_ID_DETAIL)
+                .or_else(|| detail_string(&task.detail, PARENT_TURN_ID_DETAIL)),
             work_item_id: task.work_item_id.clone(),
             task_id: Some(task.id.clone()),
             correlation_id: detail_string(&task.detail, "correlation_id"),
@@ -6072,20 +6074,70 @@ mod control_task_result_tests {
     }
 
     #[test]
-    fn legacy_missing_parent_fallback_is_present_before_message_metadata_is_frozen() {
+    fn missing_creation_source_is_not_repaired_from_stop_result_turn() {
         let task = running_task(serde_json::json!({
             "rejoin_obligation_id": "control-task", "rejoin_generation": 1
         }));
         let result = prepare_lifecycle_stop_task_result(&task, task.created_at).unwrap();
-        assert_eq!(
-            result.task.detail.as_ref().unwrap()["parent_turn_id"],
-            result.message.turn_id.as_deref().unwrap()
-        );
+        assert!(result
+            .task
+            .detail
+            .as_ref()
+            .unwrap()
+            .get(PARENT_TURN_ID_DETAIL)
+            .is_none());
         assert_eq!(
             result.message.metadata.as_ref().unwrap()["task_detail"],
             result.task.detail.clone().unwrap()
         );
-        assert_eq!(result.task.rejoin_fence().unwrap().generation, 1);
+        assert!(result.task.rejoin_fence().is_err());
+        assert_eq!(unbound_task_rejoin_generation(&result.task), Some(1));
+    }
+
+    #[test]
+    fn command_creation_source_survives_stop_restart_cancel_and_message_projection() {
+        let mut task = running_task(serde_json::json!({
+            "rejoin_obligation_id": "control-task", "rejoin_generation": 7,
+            "command_creation_id": "control-task", "custom": "preserved"
+        }));
+        task.kind = TaskKind::CommandTask;
+        let source = task.rejoin_fence().unwrap();
+        assert!(unbound_task_rejoin_generation(&task).is_none());
+        let stopped = prepare_lifecycle_stop_task_result(&task, task.updated_at).unwrap();
+        assert_eq!(stopped.task.rejoin_fence().unwrap(), source);
+        assert_eq!(
+            stopped.message.metadata.as_ref().unwrap()["task_detail"],
+            stopped.task.detail.clone().unwrap()
+        );
+        for reason in ["runtime_restarted", "agent_stopped"] {
+            let message = interrupted_task_result_message(&task, reason);
+            let interrupted = task_with_original_interrupted_result(&task, &message);
+            assert_eq!(interrupted.rejoin_fence().unwrap(), source);
+            assert_eq!(
+                message.metadata.as_ref().unwrap()["task_detail"],
+                interrupted.detail.clone().unwrap()
+            );
+            let projected = task_from_message(&message, &task.agent_id).unwrap();
+            assert_eq!(projected.rejoin_fence().unwrap(), source);
+            for status in [TaskStatus::Cancelled, TaskStatus::Interrupted] {
+                let terminal = task_with_result_message(
+                    &task,
+                    status,
+                    Some(serde_json::json!({
+                        "parent_turn_id": "foreign-turn", "command_creation_id": "foreign-command",
+                        "rejoin_obligation_id": "foreign-task", "rejoin_generation": 99
+                    })),
+                    &message,
+                );
+                assert_eq!(terminal.rejoin_fence().unwrap(), source);
+                let detail = terminal.detail.as_ref().unwrap();
+                assert!(detail.get(PARENT_TURN_ID_DETAIL).is_none());
+                assert_eq!(
+                    detail[RESULT_EXECUTION_TURN_ID_DETAIL],
+                    message.turn_id.as_deref().unwrap()
+                );
+            }
+        }
     }
 
     #[test]

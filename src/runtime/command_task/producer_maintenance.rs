@@ -246,7 +246,9 @@ impl OriginalCommandTaskProducer {
                 && task.kind == before.kind
                 && task.created_at == before.created_at
                 && task.work_item_id == before.work_item_id
-                && super::super::task_generation::same_task_rejoin_generation(task, before),
+                && super::super::task_generation::command_terminal_rejoin_matches(
+                    before, task, message,
+                ),
             "Command terminal changed original generation"
         );
         let frozen = Arc::new(FrozenCommandTaskTerminal {
@@ -343,6 +345,26 @@ impl OriginalCommandTaskProducerView<'_> {
         );
         Ok(())
     }
+
+    pub(crate) fn validate_terminal_generation(
+        &self,
+        actual: &TaskRecord,
+        message: Option<&MessageEnvelope>,
+    ) -> Result<()> {
+        let before = self.admitted_task();
+        ensure!(
+            actual.id == before.id
+                && actual.agent_id == before.agent_id
+                && actual.kind == before.kind
+                && actual.created_at == before.created_at
+                && actual.work_item_id == before.work_item_id
+                && super::super::task_generation::command_terminal_rejoin_matches(
+                    before, actual, message,
+                ),
+            "Command terminal crossed original admitted Task generation"
+        );
+        Ok(())
+    }
 }
 
 impl std::fmt::Debug for OriginalCommandTaskProducer {
@@ -372,7 +394,7 @@ impl OriginalCommandTaskProducer {
 }
 impl OriginalCommandTaskProducerView<'_> {
     pub(crate) fn validate_frozen(&self, frozen: &FrozenCommandTaskTerminal) -> Result<()> {
-        self.validate_original_generation(&frozen.task)?;
+        self.validate_terminal_generation(&frozen.task, frozen.message.as_ref())?;
         ensure!(
             frozen.nonce == format!("command-terminal:{}", self.address.lease_id)
                 && frozen.at == frozen.task.updated_at,

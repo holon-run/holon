@@ -381,7 +381,7 @@ pub(crate) fn original_task_generation_matches_tx(
     let created = serde_json::to_value(record.intent.created_at)?;
     let detail = serde_json::to_string(&record.ack_task.detail)?;
     let tuple: Option<(bool,bool)> = tx.query_row(
-        "SELECT COALESCE(owner_agent_id=json_extract(payload_json,'$.agent_id') AND task_id=json_extract(payload_json,'$.id'),0),COALESCE(owner_agent_id=?2 AND json_extract(payload_json,'$.kind')=?3 AND json_extract(payload_json,'$.created_at')=?4 AND json_extract(payload_json,'$.detail.rejoin_obligation_id') IS json_extract(?5,'$.rejoin_obligation_id') AND json_extract(payload_json,'$.detail.rejoin_generation') IS json_extract(?5,'$.rejoin_generation') AND json_extract(payload_json,'$.detail.parent_turn_id') IS json_extract(?5,'$.parent_turn_id'),0) FROM tasks WHERE task_id=?1",
+        "SELECT COALESCE(owner_agent_id=json_extract(payload_json,'$.agent_id') AND task_id=json_extract(payload_json,'$.id'),0),COALESCE(owner_agent_id=?2 AND json_extract(payload_json,'$.kind')=?3 AND json_extract(payload_json,'$.created_at')=?4 AND json_extract(payload_json,'$.detail.rejoin_obligation_id') IS json_extract(?5,'$.rejoin_obligation_id') AND json_extract(payload_json,'$.detail.rejoin_generation') IS json_extract(?5,'$.rejoin_generation') AND json_extract(payload_json,'$.detail.parent_turn_id') IS json_extract(?5,'$.parent_turn_id') AND json_extract(payload_json,'$.detail.command_creation_id') IS json_extract(?5,'$.command_creation_id'),0) FROM tasks WHERE task_id=?1",
         params![record.ack_task.id,record.intent.task.scope.agent_id,kind.as_str().context("Task kind encoding")?,created.as_str().context("Task clock encoding")?,detail], |r|Ok((r.get(0)?,r.get(1)?)),
     ).optional()?;
     match tuple {

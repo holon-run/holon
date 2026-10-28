@@ -152,6 +152,25 @@ fn preflight_predicate_tx(
     )
 }
 
+/// Charge the original reducer's SQL recheck without replacing its source capture.
+pub(in crate::runtime_db) fn prepare_settled_recovery_source_material_tx(
+    tx: &Transaction<'_>,
+    scope: &InputEvidenceScope,
+    source: &MessageEnvelope,
+    request: &TaskDomainLoadRequest,
+    ledger: &crate::runtime::input_evidence_budget::InputEvidenceBudgetLedger,
+    memory_budget: Option<&mut crate::runtime_db::dispatch_memory::DispatchMemoryTransactionBudget>,
+) -> Result<Vec<Arc<crate::runtime::input_evidence_budget::BudgetViewGuard>>> {
+    ensure!(
+        source.agent_id == scope.agent_id,
+        "settled recovery source crosses original Task scope"
+    );
+    let mut material = read_preparation::TaskReadMaterial::new(scope, request, Some(ledger))
+        .with_memory_budget(memory_budget);
+    preflight_predicate_tx(tx, scope, source, None, request, &mut material)?;
+    Ok(material.into_guards())
+}
+
 pub(super) fn observe_tx(
     tx: &Transaction<'_>,
     scope: &InputEvidenceScope,

@@ -219,7 +219,8 @@ pub(crate) struct TaskResultMetadata {
     pub message_id: String,
     pub work_item_id: Option<String>,
     pub rejoin_generation: u64,
-    pub parent_turn_id: String,
+    #[serde(flatten)]
+    pub source: crate::domain::execution_protocol::TaskRejoinSource,
     pub state: TaskResultSettlementState,
     pub activation_id: Option<String>,
     pub activation_open: bool,
@@ -1123,7 +1124,7 @@ impl TaskResultMetadata {
             && self.message_id == x.message_id
             && self.work_item_id == x.work_item_id
             && self.rejoin_generation == x.rejoin_generation
-            && self.parent_turn_id == x.parent_turn_id
+            && self.source == x.source
             && self.state == x.state
             && self.activation_id == x.activation_id
             && self.created_at == x.created_at

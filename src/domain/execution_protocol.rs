@@ -396,7 +396,97 @@ pub struct AdmittedFences {
 pub struct RejoinFence {
     pub obligation_id: String,
     pub generation: u64,
-    pub parent_turn_id: String,
+    #[serde(flatten)]
+    pub source: TaskRejoinSource,
+}
+
+/// Creation provenance is independent of the future result execution.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(untagged)]
+pub enum TaskRejoinSource {
+    ParentTurn { parent_turn_id: String },
+    CommandCreation { command_creation_id: String },
+}
+
+impl<'de> Deserialize<'de> for TaskRejoinSource {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        fn present_identity<'de, D: serde::Deserializer<'de>>(
+            deserializer: D,
+        ) -> Result<Option<String>, D::Error> {
+            String::deserialize(deserializer).map(Some)
+        }
+
+        #[derive(Deserialize)]
+        struct Source {
+            #[serde(default, deserialize_with = "present_identity")]
+            parent_turn_id: Option<String>,
+            #[serde(default, deserialize_with = "present_identity")]
+            command_creation_id: Option<String>,
+        }
+        let source = Source::deserialize(deserializer)?;
+        match (source.parent_turn_id, source.command_creation_id) {
+            (Some(parent_turn_id), None) if !parent_turn_id.is_empty() => {
+                Ok(Self::ParentTurn { parent_turn_id })
+            }
+            (None, Some(command_creation_id)) if !command_creation_id.is_empty() => {
+                Ok(Self::CommandCreation {
+                    command_creation_id,
+                })
+            }
+            _ => Err(serde::de::Error::custom(
+                "rejoin requires exactly one creation source",
+            )),
+        }
+    }
+}
+
+impl TaskRejoinSource {
+    pub fn parent_turn_id(&self) -> Option<&str> {
+        match self {
+            Self::ParentTurn { parent_turn_id } => Some(parent_turn_id),
+            Self::CommandCreation { .. } => None,
+        }
+    }
+
+    pub fn command_creation_id(&self) -> Option<&str> {
+        match self {
+            Self::CommandCreation {
+                command_creation_id,
+            } => Some(command_creation_id),
+            Self::ParentTurn { .. } => None,
+        }
+    }
+
+    pub fn validates_identity(&self, task_id: &str) -> bool {
+        match self {
+            Self::ParentTurn { parent_turn_id } => !parent_turn_id.is_empty(),
+            Self::CommandCreation {
+                command_creation_id,
+            } => !task_id.is_empty() && command_creation_id == task_id,
+        }
+    }
+
+    pub fn result_source_ref(&self) -> (&'static str, &str) {
+        match self {
+            Self::ParentTurn { parent_turn_id } => ("task_result_parent_turn_id", parent_turn_id),
+            Self::CommandCreation {
+                command_creation_id,
+            } => ("task_result_command_creation_id", command_creation_id),
+        }
+    }
+
+    pub fn matches_result_source_refs(
+        &self,
+        refs: &std::collections::BTreeMap<String, String>,
+    ) -> bool {
+        let (key, id) = self.result_source_ref();
+        let other = if self.parent_turn_id().is_some() {
+            "task_result_command_creation_id"
+        } else {
+            "task_result_parent_turn_id"
+        };
+        refs.get(key).is_some_and(|value| value == id) && !refs.contains_key(other)
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -1000,8 +1090,11 @@ fn validate_source_binding(
 fn validate_rejoin_fence(fence: Option<&RejoinFence>) -> Result<(), String> {
     let fence =
         fence.ok_or_else(|| "task or child result requires a live rejoin fence".to_string())?;
-    if fence.obligation_id.is_empty() || fence.parent_turn_id.is_empty() || fence.generation == 0 {
-        return Err("rejoin fence requires identity, parent turn, and generation".into());
+    if fence.obligation_id.is_empty()
+        || !fence.source.validates_identity(&fence.obligation_id)
+        || fence.generation == 0
+    {
+        return Err("rejoin fence requires identity, creation source, and generation".into());
     }
     Ok(())
 }
@@ -1595,6 +1688,68 @@ mod tests {
     use super::*;
 
     #[test]
+    fn task_rejoin_source_preserves_parent_wire_and_command_creation_wire() {
+        for (wire, parent, creation) in [
+            (
+                serde_json::json!({
+                    "obligation_id": "task-a",
+                    "generation": 1,
+                    "parent_turn_id": "turn-parent"
+                }),
+                Some("turn-parent"),
+                None,
+            ),
+            (
+                serde_json::json!({
+                    "obligation_id": "task-a",
+                    "generation": 1,
+                    "command_creation_id": "task-a"
+                }),
+                None,
+                Some("task-a"),
+            ),
+        ] {
+            let fence: RejoinFence = serde_json::from_value(wire.clone()).unwrap();
+            assert_eq!(fence.source.parent_turn_id(), parent);
+            assert_eq!(fence.source.command_creation_id(), creation);
+            assert_eq!(serde_json::to_value(fence).unwrap(), wire);
+        }
+    }
+
+    #[test]
+    fn task_rejoin_source_rejects_null_ambiguous_and_duplicate_fields() {
+        for wire in [
+            r#"{}"#,
+            r#"{"parent_turn_id":null}"#,
+            r#"{"command_creation_id":null}"#,
+            r#"{"parent_turn_id":"turn-parent","command_creation_id":null}"#,
+            r#"{"parent_turn_id":null,"command_creation_id":"task-a"}"#,
+            r#"{"parent_turn_id":null,"command_creation_id":null}"#,
+            r#"{"parent_turn_id":"turn-parent","command_creation_id":"task-a"}"#,
+            r#"{"parent_turn_id":""}"#,
+            r#"{"command_creation_id":""}"#,
+            r#"{"parent_turn_id":42}"#,
+            r#"{"command_creation_id":false}"#,
+            r#"{"parent_turn_id":"turn-parent","parent_turn_id":"turn-parent"}"#,
+            r#"{"command_creation_id":"task-a","command_creation_id":"task-a"}"#,
+            r#"{"result_execution_turn_id":"future-turn"}"#,
+        ] {
+            assert!(
+                serde_json::from_str::<TaskRejoinSource>(wire).is_err(),
+                "{wire}"
+            );
+            let fields = &wire[1..wire.len() - 1];
+            let separator = if fields.is_empty() { "" } else { "," };
+            let flattened =
+                format!(r#"{{"obligation_id":"task-a","generation":1{separator}{fields}}}"#);
+            assert!(
+                serde_json::from_str::<RejoinFence>(&flattened).is_err(),
+                "{flattened}"
+            );
+        }
+    }
+
+    #[test]
     fn context_budget_recheck_requires_exact_pause_changed_condition_and_preserves_source() {
         let mut state = ExecutionProtocolState::empty("agent-a");
         let expected = WorkItemExecutionRecord {
@@ -2175,7 +2330,9 @@ mod tests {
         fences.rejoin = Some(RejoinFence {
             obligation_id: "rejoin-task-1".into(),
             generation: 1,
-            parent_turn_id: "turn-parent".into(),
+            source: crate::domain::execution_protocol::TaskRejoinSource::ParentTurn {
+                parent_turn_id: "turn-parent".into(),
+            },
         });
         assert!(validate_source_binding(&task, &binding, &fences).is_ok());
 
@@ -2183,7 +2340,9 @@ mod tests {
         fences.rejoin = Some(RejoinFence {
             obligation_id: String::new(),
             generation: 1,
-            parent_turn_id: "turn-parent".into(),
+            source: crate::domain::execution_protocol::TaskRejoinSource::ParentTurn {
+                parent_turn_id: "turn-parent".into(),
+            },
         });
         assert!(validate_source_binding(&child, &binding, &fences)
             .unwrap_err()

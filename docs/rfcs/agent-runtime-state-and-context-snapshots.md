@@ -454,6 +454,12 @@ Unknown commits and receipt replay use the existing fresh recovery protocol.
 
 ### Memory-first preparation, commit-before-publication
 
+Provider recovery is a terminal-settlement output, not an independent enqueue
+from the still-active Turn. Its Message, queued source and audit event commit
+with the source Turn terminal under the same owner reservation. Publication
+installs both together; rollback exposes neither. Recovery lineage still
+requires the actual durable source Turn assignment and terminal kind.
+
 The proposed sequence is:
 
 ```mermaid
@@ -838,11 +844,29 @@ relation differs from unavailable or pruned membership. These indexes select
 already qualified Task facts and grant no Input body or mutation authority.
 
 A producer generation preserves the raw rejoin shape as well as the Task's
-original birth. An absent contract, a valid creator-allocated obligation and
-generation without a parent Turn, and a complete bound rejoin are distinct.
+original birth. An absent contract, a creator-allocated partial obligation, a
+Turn-bound rejoin, and an independently admitted Command creation are distinct.
 Explicit null, zero or foreign markers cannot become an unbound contract by
-failing to decode a complete fence. A creator without a parent has no model
-reentry authority; the eventual Result Message's provenance Turn cannot grant it.
+failing to decode a complete fence.
+
+A Command may be created by the authenticated runtime control path without an
+Agent execution Turn. Its original creator must atomically persist positive
+creation evidence bound to the exact owner scope, incarnation, Task birth and
+rejoin generation. This evidence must remain independently verifiable after
+terminal publication, producer acknowledgement and restart; an in-memory seal,
+a missing parent or a coverage/absence flag is not a substitute. Raw Task detail
+cannot manufacture this authority. The original admission and subsequent
+qualified readers and writers must validate the same creation association.
+
+Task creation provenance and Result execution are separate relationships. A
+Turn-bound Task still requires its actual qualified canonical parent Turn;
+missing, pruned or foreign parents remain errors. An independently created
+Command has no parent Turn and instead requires its qualified original creation
+evidence. Neither path may promote a preallocated Result dispatch Turn ID to a
+parent or insert a placeholder Turn. The actual Result execution Turn is created
+only by its normal execution admission. Normal completion, cancellation and
+restart recovery preserve the original creation source and validate it before
+accepting the Result relation; it grants no unrelated Input body membership.
 
 A Running input obtains its original clock from the qualified actual Task and
 its independently accepted canonical Message in the same owner-held capture.
@@ -4036,6 +4060,21 @@ Interrupted terminal and batch activation must match the canonical Interrupted
 predecessor of the open attempt. The attempt's original ingress Turn remains
 unchanged. Unproven hints still grant no body, and batch recovery revalidates the
 same direct predecessor rather than accepting an arbitrary replay ancestor.
+Provider lineage keeps that immutable assignment while selecting its exact
+terminal replay Turn. Its complete source index selects non-pruned terminal
+candidates without filtering by payload Turn hints; only candidates whose
+qualified `attempt_turn_keys` include the actual terminal Turn may become
+captured predecessors. Context and captured resolution use the same-view
+canonical assignment to distinguish initial inputs from interrupted replay,
+retaining source, trigger, input membership, owner, terminal, outcome and
+lineage validation.
+A replay hint alone never supplies that proof. Legacy uncaptured admission
+retains its separate compatibility contract.
+Started Turns use the original Runtime clock sample before candidate publication,
+so Stop and terminal updates do not compare timestamps from different clocks.
+Task-result convergence also preserves the independent terminal-reentry channel
+through its same-view qualified Task relation; an Invalid relation grants no Task
+body, and recovery does not add a separate durable Task point read.
 Loaded Context reads the current Turn's idle batch through a finite qualified
 projection, not an owning copy of the complete Turn. Proven batch absence
 allocates nothing; a present batch admits its actual copy before allocation.
@@ -4255,6 +4294,32 @@ revisions, recovery predicates and the original qualified Input closure must sti
 match before Claim; otherwise the scheduler replans. A preparation-only publication
 generation change is not by itself a canonical change, and this boundary does not
 permit nested owner reservations or a loaded-path storage fallback.
+The atomic Claim retains the correlated Wait expectation that authorized its
+admission; a later Work view cannot replace that fence. Competing owner writes
+must instead trigger OCC and replan. Parked-provider readback uses the source
+from the original committed Input publication, not preparation from a possibly
+unapplied mutable projection.
+Control interruption qualifies the Turn actually retained by the same SQL
+transaction, including timestamp-preserved fields, rather than its proposed
+candidate. Provider candidate reselection publishes its Audit through the
+owner-qualified writer so subsequent Current views retain the exact event ACK.
+Provider recovery settlement consumes its source Queue as Processed and admits
+the recovery message only with the original terminal Turn and provenance; the
+terminal fault points remain inside that same rollback boundary.
+If Control Stop wins before a parked dispatch settles, its acknowledgement
+carries the original dispatch address through the prepared Queue command.
+Proof and parking material must be observed in the caller's shared budget
+before decoding, with that charge retained through the final transaction.
+That transaction revalidates the exact committed Stop and unchanged parking
+before writing the acknowledgement Brief and Audit. It must not rewrite the
+Stop's Queue, Turn, attempt or AgentState, including the State's timestamps.
+An independent read transaction or an arbitrary interrupted Queue is not proof.
+The stopped acknowledgement also preserves the stopped in-memory Queue and
+`pending = 0`; the durable parked source remains suspended until explicit Start.
+It must not restore the source or reconcile State counts as part of that ACK.
+The pause settlement uses the original physical run ID and retained dispatch
+lease, not a recent-Turn scan. A typed pause still settles its acknowledgement
+when Stop has already won; other results retain the ordinary Stop early return.
 Repeated alias reads reuse only the parameterized SQL
 statement on the original connection; each execution still observes the current
 transaction and binds the original agent, incarnation, family and record ID.

@@ -391,7 +391,10 @@ mod tests {
             assert_eq!(result.message.work_item_id.as_deref(), work);
             assert_eq!(pending.work_item_id.as_deref(), work);
             assert_eq!(pending.rejoin_generation, 7);
-            assert_eq!(pending.parent_turn_id, "original-parent-turn");
+            assert_eq!(
+                pending.source.parent_turn_id(),
+                Some("original-parent-turn")
+            );
             assert_eq!(pending.message_id, result.message.id);
             assert_eq!(pending.task_id, frozen.task.id);
             drop(frozen);

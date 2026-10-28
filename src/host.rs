@@ -10334,8 +10334,8 @@ impl RuntimeHost {
             || task.agent_id != parent.agent_id
             || record.task_id != task.id
             || record.work_item_id != task.work_item_id
-            || record.parent_turn_id != turn_id
-            || record.parent_turn_id != fence.parent_turn_id
+            || record.source.parent_turn_id() != Some(turn_id)
+            || record.source != fence.source
             || record.rejoin_generation != fence.generation
             || record.state != TaskResultSettlementState::Settled
             || record.disposition != Some(TaskResultSettlementDisposition::ModelDelivered)
@@ -10548,8 +10548,8 @@ impl RuntimeHost {
             && turn.agent_id == task.agent_id
             && record.task_id == task.id
             && record.work_item_id == task.work_item_id
-            && record.parent_turn_id == fence.parent_turn_id
-            && record.parent_turn_id == turn.turn_id
+            && record.source == fence.source
+            && record.source.parent_turn_id() == Some(turn.turn_id.as_str())
             && record.rejoin_generation == fence.generation
             && record.state == TaskResultSettlementState::Settled
             && record.disposition == Some(TaskResultSettlementDisposition::ModelDelivered)
@@ -11859,7 +11859,9 @@ mod tests {
         let rejoin = RejoinFence {
             obligation_id: task_id.clone(),
             generation: 1,
-            parent_turn_id: format!("parent-{agent_id}"),
+            source: crate::domain::execution_protocol::TaskRejoinSource::ParentTurn {
+                parent_turn_id: format!("parent-{agent_id}"),
+            },
         };
         let task = TaskRecord {
             id: task_id.clone(),
@@ -11875,7 +11877,7 @@ mod tests {
                 "terminal_reentry": false,
                 "rejoin_obligation_id": rejoin.obligation_id,
                 "rejoin_generation": rejoin.generation,
-                "parent_turn_id": rejoin.parent_turn_id,
+                "parent_turn_id": rejoin.source.parent_turn_id().unwrap(),
             })),
             recovery: None,
         };
@@ -16369,7 +16371,12 @@ mod tests {
                 }
             );
             assert_eq!(
-                terminal.rejoin_fence().unwrap().parent_turn_id,
+                terminal
+                    .rejoin_fence()
+                    .unwrap()
+                    .source
+                    .parent_turn_id()
+                    .unwrap(),
                 parent_turn_id
             );
             let messages = parent.storage().read_recent_messages(30).unwrap();
@@ -17361,7 +17368,15 @@ mod tests {
                     .latest(&receipt.task_handle.task_id)
                     .unwrap()
                     .expect("actual invocation Task ACK");
-                assert_eq!(original.rejoin_fence().unwrap().parent_turn_id, parent_turn);
+                assert_eq!(
+                    original
+                        .rejoin_fence()
+                        .unwrap()
+                        .source
+                        .parent_turn_id()
+                        .unwrap(),
+                    parent_turn
+                );
                 tasks.push(receipt.task_handle.task_id);
             }
             assert_eq!(tasks.len(), 10);
@@ -28584,9 +28599,10 @@ mod tests {
             blocked.blocked_by = Some("independent business gate".into());
             match boundary {
                 "stopped" => {
-                    let mut state = storage.read_agent().unwrap().unwrap();
-                    state.status = AgentStatus::Stopped;
-                    storage.write_agent(&state).unwrap();
+                    runtime
+                        .control(crate::types::ControlAction::Stop)
+                        .await
+                        .unwrap();
                 }
                 "deleted" => {
                     let mut identity = host.agent_identity_record(&agent_id).unwrap().unwrap();
@@ -28604,20 +28620,24 @@ mod tests {
             drop(host);
 
             let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
-            let restarted = RuntimeHost::new_with_provider(
-                config,
-                Arc::new(QueuedStartupProvider(calls.clone())),
-            )
-            .unwrap();
-            for _ in 0..2 {
+            for pass in 0..2 {
+                let restarted = RuntimeHost::new_with_provider(
+                    config.clone(),
+                    Arc::new(QueuedStartupProvider(calls.clone())),
+                )
+                .unwrap();
                 restarted
                     .recover_orphaned_queue_claims_at_startup()
                     .await
                     .unwrap();
                 let loaded = restarted.try_get_loaded_runtime(&agent_id).await;
                 if boundary == "blocked" {
-                    let runtime = loaded.expect("queued input must load its active owner");
-                    wait_for_agent_inputs_settled(&runtime).await;
+                    if pass == 0 {
+                        let runtime = loaded.expect("queued input must load its active owner");
+                        wait_for_agent_inputs_settled(&runtime).await;
+                    } else {
+                        assert!(loaded.is_none(), "settled input must not be replayed");
+                    }
                     let preserved = restarted
                         .runtime_db()
                         .work_items()
@@ -28652,8 +28672,8 @@ mod tests {
                         "{boundary}"
                     );
                 }
+                restarted.shutdown().await.unwrap();
             }
-            restarted.shutdown().await.unwrap();
         }
     }
 

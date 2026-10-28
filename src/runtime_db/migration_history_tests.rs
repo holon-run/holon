@@ -18,7 +18,7 @@ fn legacy_prefix(start: i64, count: usize) -> Result<Connection> {
     }
     for migration in MIGRATIONS
         .iter()
-        .filter(|migration| (91..=101).contains(&migration.version))
+        .filter(|migration| (91..=102).contains(&migration.version))
         .take(count)
     {
         connection.execute(
@@ -41,7 +41,7 @@ fn history(connection: &Connection) -> Result<Vec<(i64, String, String)>> {
 #[test]
 fn feature_history_every_prefix_preserves_names_timestamps_and_is_idempotent() -> Result<()> {
     for start in [81, 83, 89] {
-        for count in 0..=11 {
+        for count in 0..=12 {
             let mut connection = legacy_prefix(start, count)?;
             let old = history(&connection)?;
             reconcile_feature_history(&mut connection)?;
@@ -72,12 +72,12 @@ fn feature_history_refuses_mixed_gapped_and_unknown_versions_without_changes() -
             format!("DELETE FROM schema_migrations WHERE version={}", start + 1),
             format!("DELETE FROM schema_migrations WHERE version={start}"),
             format!("DELETE FROM schema_migrations WHERE version<={}", start + 1),
-            format!("INSERT INTO schema_migrations VALUES ({},'unknown','unrecognized')", start + 11),
+            format!("INSERT INTO schema_migrations VALUES ({},'unknown','unrecognized')", start + 12),
             format!("UPDATE schema_migrations SET name='provider_candidate_payment_required' WHERE version={start}"),
             "UPDATE schema_migrations SET name='unknown' WHERE version=81".to_owned(),
             "DELETE FROM schema_migrations WHERE version=81".to_owned(),
         ] {
-            let mut connection = legacy_prefix(start, 11)?;
+            let mut connection = legacy_prefix(start, 12)?;
             connection.execute_batch(&damage)?;
             let before = history(&connection)?;
             assert!(reconcile_feature_history(&mut connection).is_err());
@@ -90,7 +90,7 @@ fn feature_history_refuses_mixed_gapped_and_unknown_versions_without_changes() -
 #[test]
 fn feature_history_sql_failure_rolls_back_the_whole_mapping() -> Result<()> {
     for start in [81, 83, 89] {
-        let mut connection = legacy_prefix(start, 11)?;
+        let mut connection = legacy_prefix(start, 12)?;
         connection.execute_batch(
             "CREATE TRIGGER reject_history BEFORE UPDATE ON schema_migrations
              WHEN OLD.version=89 BEGIN SELECT RAISE(ABORT,'injected history failure'); END;",
@@ -125,7 +125,7 @@ fn feature_history_leaves_fresh_and_published_upstream_history_unchanged() -> Re
 #[test]
 fn feature_history_leaves_current_prefixes_and_published_provider_migrations_unchanged() -> Result<()>
 {
-    for count in 0..=11 {
+    for count in 0..=12 {
         let mut connection = legacy_prefix(91, count)?;
         let before = history(&connection)?;
         reconcile_feature_history(&mut connection)?;
@@ -142,9 +142,9 @@ fn feature_history_refuses_gapped_mixed_and_unknown_current_history_without_chan
         "DELETE FROM schema_migrations WHERE version=96",
         "UPDATE schema_migrations SET name='episode_memory_results' WHERE version=90",
         "UPDATE schema_migrations SET name='unknown' WHERE version=98",
-        "INSERT INTO schema_migrations VALUES (102,'original_current_read_qualification','unknown')",
+        "INSERT INTO schema_migrations VALUES (103,'original_current_read_qualification','unknown')",
     ] {
-        let mut connection = legacy_prefix(91, 11)?;
+        let mut connection = legacy_prefix(91, 12)?;
         connection.execute_batch(damage)?;
         let before = history(&connection)?;
         assert!(reconcile_feature_history(&mut connection).is_err());
@@ -156,7 +156,7 @@ fn feature_history_refuses_gapped_mixed_and_unknown_current_history_without_chan
 #[test]
 fn feature_history_remapped_prefixes_accept_published_catchup_without_changes() -> Result<()> {
     for start in [81, 83, 89] {
-        for count in 0..=11 {
+        for count in 0..=12 {
             let mut connection = legacy_prefix(start, count)?;
             reconcile_feature_history(&mut connection)?;
             for migration in MIGRATIONS
@@ -200,10 +200,11 @@ fn published_and_feature_lineage_versions_and_names_remain_exact() {
         (99, "qualified_scheduling_domain"),
         (100, "original_input_birth_frontier"),
         (101, "original_current_read_qualification"),
+        (102, "original_turnless_command_creation"),
     ];
     let actual: Vec<_> = MIGRATIONS
         .iter()
-        .filter(|migration| (81..=101).contains(&migration.version))
+        .filter(|migration| (81..=102).contains(&migration.version))
         .map(|migration| (migration.version, migration.name))
         .collect();
     assert_eq!(actual.as_slice(), expected.as_slice());

@@ -1,6 +1,6 @@
 use std::collections::BTreeMap;
 
-use anyhow::{bail, Result};
+use anyhow::{bail, ensure, Result};
 use chrono::{DateTime, Duration, Utc};
 use rusqlite::{params, OptionalExtension, Transaction};
 use serde::{Deserialize, Serialize};
@@ -22,6 +22,7 @@ mod local_dispatch;
 pub(crate) use local_dispatch::pause_local_dispatch_rejected_tx;
 pub(crate) mod live_turn;
 mod obligation;
+pub(in crate::runtime_db) use obligation::settled_recovery_source_tx;
 pub(crate) use obligation::{
     classify_obligation_tx, classify_obligation_with_waits_tx, exact_waiter_recovery_wait_tx,
     TaskResultObligation,
@@ -101,7 +102,8 @@ pub(crate) struct TaskResultSettlementRecord {
     pub message_id: String,
     pub work_item_id: Option<String>,
     pub rejoin_generation: u64,
-    pub parent_turn_id: String,
+    #[serde(flatten)]
+    pub source: crate::domain::execution_protocol::TaskRejoinSource,
     pub task_status: String,
     pub state: TaskResultSettlementState,
     pub activation_id: Option<String>,
@@ -182,7 +184,7 @@ impl TaskResultSettlementRecord {
             message_id: message.id.clone(),
             work_item_id,
             rejoin_generation: fence.generation,
-            parent_turn_id: fence.parent_turn_id,
+            source: fence.source,
             task_status,
             state: TaskResultSettlementState::PersistedPending,
             activation_id: None,
@@ -1070,7 +1072,7 @@ pub(crate) fn upsert_pending_tx(
             || existing.task_id != record.task_id
             || existing.work_item_id != record.work_item_id
             || existing.rejoin_generation != record.rejoin_generation
-            || existing.parent_turn_id != record.parent_turn_id
+            || existing.source != record.source
         {
             bail!(
                 "task result settlement identity conflict for message {}",
@@ -1094,14 +1096,30 @@ fn upsert_pending_original_cleanup_tx(
 
 fn insert_pending_tx(tx: &Transaction<'_>, record: &TaskResultSettlementRecord) -> Result<bool> {
     let payload = serde_json::to_string(record)?;
-    let inserted = tx.execute(
+    let has_source = super::command_task_creation::has_result_source_column(tx)?;
+    ensure!(
+        has_source || record.source.parent_turn_id().is_some(),
+        "Command creation Results require the creation-source schema"
+    );
+    let sql = if has_source {
+        "INSERT INTO task_result_settlements (
+           result_identity, agent_id, task_id, message_id, work_item_id,
+           rejoin_generation, parent_turn_id, state, activation_id, disposition,
+           created_at, updated_at, admitted_at, settled_at, deferred_reason, deferred_at, next_recheck_at, payload_json, command_creation_id
+         ) VALUES (
+           ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19
+         )"
+    } else {
+        // Historical migration fixtures retain their original ParentTurn writer.
         "INSERT INTO task_result_settlements (
            result_identity, agent_id, task_id, message_id, work_item_id,
            rejoin_generation, parent_turn_id, state, activation_id, disposition,
            created_at, updated_at, admitted_at, settled_at, deferred_reason, deferred_at, next_recheck_at, payload_json
-         ) VALUES (
-           ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18
-         )",
+         ) SELECT ?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18
+           WHERE ?19 IS NULL"
+    };
+    let inserted = tx.execute(
+        sql,
         params![
             record.result_identity,
             record.agent_id,
@@ -1109,7 +1127,7 @@ fn insert_pending_tx(tx: &Transaction<'_>, record: &TaskResultSettlementRecord) 
             record.message_id,
             record.work_item_id,
             record.rejoin_generation,
-            record.parent_turn_id,
+            record.source.parent_turn_id().unwrap_or(""),
             record.state.as_str(),
             record.activation_id,
             record
@@ -1123,6 +1141,7 @@ fn insert_pending_tx(tx: &Transaction<'_>, record: &TaskResultSettlementRecord) 
             record.deferred_at.map(timestamp),
             record.next_recheck_at.map(timestamp),
             payload,
+            record.source.command_creation_id(),
         ],
     )?;
     Ok(inserted == 1)
@@ -1254,6 +1273,16 @@ fn record_matches_durable_task_tx(
     tx: &Transaction<'_>,
     record: &TaskResultSettlementRecord,
 ) -> Result<bool> {
+    if !super::command_task_creation::current_source_exists_tx(
+        tx,
+        &record.agent_id,
+        &record.task_id,
+        record.rejoin_generation,
+        &record.source,
+        record.work_item_id.as_deref(),
+    )? {
+        return Ok(false);
+    }
     let durable_task = tx
         .query_row(
             "SELECT payload_json FROM tasks WHERE task_id = ?1",
@@ -1283,7 +1312,7 @@ fn record_matches_durable_task_tx(
                 | crate::types::TaskStatus::Interrupted
         )
         && fence.generation == record.rejoin_generation
-        && fence.parent_turn_id == record.parent_turn_id)
+        && fence.source == record.source)
 }
 
 fn settle_invalid_or_stale_tx(

@@ -1561,10 +1561,14 @@ pub(crate) fn pending_task_result_preview(
         ),
     ]);
     if let Some(projection) = record.source_projection.as_ref() {
-        lines.push(format!(
-            "  parent_turn_id: {}",
-            sanitize_inline(&record.parent_turn_id)
-        ));
+        use crate::domain::execution_protocol::TaskRejoinSource;
+        let (source_key, source_id) = match &record.source {
+            TaskRejoinSource::ParentTurn { parent_turn_id } => ("parent_turn_id", parent_turn_id),
+            TaskRejoinSource::CommandCreation {
+                command_creation_id,
+            } => ("command_creation_id", command_creation_id),
+        };
+        lines.push(format!("  {source_key}: {}", sanitize_inline(source_id)));
         lines.push(format!("  rejoin_generation: {}", record.rejoin_generation));
         let source_start = lines.len();
         lines.push(projection.rendered.clone());

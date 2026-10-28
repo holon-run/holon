@@ -28,7 +28,9 @@ fn source_matches(source: &MessageEnvelope, record: &TaskResultSettlementRecord)
         && source.admission_context == Some(AdmissionContext::RuntimeOwned)
         && source.source_refs.get("task_result_message_id") == Some(&record.message_id)
         && source.source_refs.get("task_result_identity") == Some(&record.result_identity)
-        && source.source_refs.get("task_result_parent_turn_id") == Some(&record.parent_turn_id)
+        && record
+            .source
+            .matches_result_source_refs(&source.source_refs)
         && source.source_refs.get("task_result_rejoin_generation")
             == Some(&record.rejoin_generation.to_string())
 }

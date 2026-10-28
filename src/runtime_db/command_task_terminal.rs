@@ -387,7 +387,7 @@ impl<'tx, 'connection, 'command> OriginalCommandTaskInputView<'tx, 'connection, 
             "Command derived Message source differs"
         );
         view.validate_original_generation(proof.task_before(&task.id)?)?;
-        view.validate_original_generation(task)?;
+        view.validate_terminal_generation(task, Some(message))?;
         source.validate_terminal_message(task, message, &intent.terminal_digest)?;
         ensure!(
             super::TaskResultSettlementRecord::pending(task, message, message.created_at)?

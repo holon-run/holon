@@ -131,6 +131,7 @@ async fn task_adapter_freezes_the_held_child_and_returns_its_exact_deletion_ack(
             command,
             Default::default(),
             true,
+            None,
         )
         .await?;
     let deletion = deletion.expect("original Task must return its child deletion ACK");
@@ -197,6 +198,7 @@ async fn task_adapter_known_failure_keeps_the_whole_group_and_recovers_without_b
             command,
             Default::default(),
             true,
+            None,
         )
         .await
         .unwrap_err();

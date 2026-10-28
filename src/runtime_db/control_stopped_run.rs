@@ -11,7 +11,6 @@ impl StoppedDispatchAddress {
     pub(crate) fn turn_id(&self) -> &str {
         &self.turn_id
     }
-    #[cfg(test)]
     pub(crate) fn turn_index(&self) -> u64 {
         self.turn_index
     }

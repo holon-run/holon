@@ -1456,7 +1456,7 @@ impl RootCollector {
         self.optional_ref("turn", record.turn_id.as_deref());
         if let Some(fence) = record.admitted_fences.rejoin.as_ref() {
             self.reference("task", &fence.obligation_id);
-            self.reference("turn", &fence.parent_turn_id);
+            self.optional_ref("turn", fence.source.parent_turn_id());
         }
         match &record.source.identity {
             ExecutionSourceIdentity::QueueMessage { message_id }
@@ -1603,7 +1603,7 @@ fn collect_live_episode_roots_with_schema(
         collector.work_item(record.work_item_id.as_deref());
         collector.reference("task", &record.task_id);
         collector.reference("message", &record.message_id);
-        collector.reference("turn", &record.parent_turn_id);
+        collector.optional_ref("turn", record.source.parent_turn_id());
     }
     for payload in root_payloads(connection, tables, "execution_protocol_attempts", "SELECT payload_json FROM execution_protocol_attempts WHERE agent_id = ?1 AND lifecycle_state != 'settled'", agent_id)? {
         let record: ExecutionAttempt = serde_json::from_str(&payload)?;

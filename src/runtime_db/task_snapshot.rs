@@ -105,6 +105,7 @@ pub(super) use qualification::{
     capture_task_domain_seed_if_ready_tx, capture_task_domain_upgrade_tx,
 };
 pub(crate) use read_preparation::qualified_task_recovery_selectors_tx;
+pub(in crate::runtime_db) use recovery_sources::prepare_settled_recovery_source_material_tx;
 pub(in crate::runtime_db) use result_relation::{
     checkpoint_result_dependency_on, prepare_pending_task_result_dependency_using_material_tx,
     TaskCheckpointDependency,
@@ -177,6 +178,10 @@ pub(crate) struct TaskCurrentSnapshot {
     pub facts: ContextScopeFacts,
     pub resident: ResidentTaskDomain,
     pub input_roots: BTreeSet<InputEvidenceKey>,
+    /// Test observation only. Absence alone cannot prove turnless provenance;
+    /// without an original producer proof every parent remains an Input root.
+    #[cfg(test)]
+    pub turnless_parent_turns: BTreeSet<InputEvidenceKey>,
     pub work_roots: BTreeSet<String>,
 }
 #[derive(Debug)]
@@ -368,7 +373,7 @@ fn upsert_alias(
 fn stored_on(connection: &Connection, agent: &str, key: &TaskKey) -> Result<Option<StoredTask>> {
     let (table, id, owner) = family_table(key.family);
     let material: Option<usize> = connection.query_row(
-        &format!("SELECT length(CAST(payload_json AS BLOB))+length(CAST({} AS BLOB)) FROM {table} WHERE {id}=?1", projection_sql(key.family)),
+        &format!("SELECT length(CAST(payload_json AS BLOB))+length(CAST({} AS BLOB)) FROM {table} WHERE {id}=?1", projection_sql(connection, key.family)?),
         [&key.id], |row| row.get(0),
     ).optional()?;
     bound(1, material.unwrap_or_default(), None)?;
@@ -413,21 +418,21 @@ fn stored_on(connection: &Connection, agent: &str, key: &TaskKey) -> Result<Opti
             ]);
             (
                 CanonicalTaskFact::Task(x),
-                projection_sql(TaskFamily::Task),
+                projection_sql(connection, TaskFamily::Task)?,
                 expected,
             )
         }
         TaskFamily::ResultSettlement => {
             let x: super::task_result_settlement::TaskResultSettlementRecord =
                 serde_json::from_str(&payload)?;
-            let expected = serde_json::json!([
+            let mut expected = serde_json::json!([
                 x.result_identity,
                 x.agent_id,
                 x.task_id,
                 x.message_id,
                 x.work_item_id,
                 x.rejoin_generation,
-                x.parent_turn_id,
+                x.source.parent_turn_id().unwrap_or(""),
                 serde_json::to_value(x.state)?,
                 x.activation_id,
                 serde_json::to_value(x.disposition)?,
@@ -439,9 +444,15 @@ fn stored_on(connection: &Connection, agent: &str, key: &TaskKey) -> Result<Opti
                 x.deferred_at.map(repositories::timestamp),
                 x.next_recheck_at.map(repositories::timestamp)
             ]);
+            if let Some(id) = x.source.command_creation_id() {
+                expected
+                    .as_array_mut()
+                    .context("Result projection is not an array")?
+                    .push(serde_json::json!(id));
+            }
             (
                 CanonicalTaskFact::ResultSettlement(x),
-                projection_sql(TaskFamily::ResultSettlement),
+                projection_sql(connection, TaskFamily::ResultSettlement)?,
                 expected,
             )
         }
@@ -466,11 +477,18 @@ fn stored_on(connection: &Connection, agent: &str, key: &TaskKey) -> Result<Opti
         projection_digest: digest(actual.as_bytes()),
     }))
 }
-fn projection_sql(family: TaskFamily) -> &'static str {
-    match family {
-        TaskFamily::Task => "json_array(task_id,owner_agent_id,parent_agent_id,child_agent_id,kind,status,summary,input_target,wait_policy,output_path,result_summary,exit_status,terminal_reentry,revision,created_at,updated_at,completed_at,last_message_id,last_turn_id,causation_id,correlation_id)",
-        TaskFamily::ResultSettlement => "json_array(result_identity,agent_id,task_id,message_id,work_item_id,rejoin_generation,parent_turn_id,state,activation_id,disposition,created_at,updated_at,admitted_at,settled_at,deferred_reason,deferred_at,next_recheck_at)",
+fn projection_sql(connection: &Connection, family: TaskFamily) -> Result<&'static str> {
+    if family == TaskFamily::ResultSettlement
+        && !super::command_task_creation::has_result_source_column(connection)?
+    {
+        // Migration 96 captures ParentTurn projections before migration 100.
+        // CommandCreation payloads still fail the expected projection here.
+        return Ok("json_array(result_identity,agent_id,task_id,message_id,work_item_id,rejoin_generation,parent_turn_id,state,activation_id,disposition,created_at,updated_at,admitted_at,settled_at,deferred_reason,deferred_at,next_recheck_at)");
     }
+    Ok(match family {
+        TaskFamily::Task => "json_array(task_id,owner_agent_id,parent_agent_id,child_agent_id,kind,status,summary,input_target,wait_policy,output_path,result_summary,exit_status,terminal_reentry,revision,created_at,updated_at,completed_at,last_message_id,last_turn_id,causation_id,correlation_id)",
+        TaskFamily::ResultSettlement => "CASE WHEN command_creation_id IS NULL THEN json_array(result_identity,agent_id,task_id,message_id,work_item_id,rejoin_generation,parent_turn_id,state,activation_id,disposition,created_at,updated_at,admitted_at,settled_at,deferred_reason,deferred_at,next_recheck_at) ELSE json_array(result_identity,agent_id,task_id,message_id,work_item_id,rejoin_generation,parent_turn_id,state,activation_id,disposition,created_at,updated_at,admitted_at,settled_at,deferred_reason,deferred_at,next_recheck_at,command_creation_id) END",
+    })
 }
 fn normalized_projection(raw: &str, family: TaskFamily) -> Result<serde_json::Value> {
     let mut value: serde_json::Value = serde_json::from_str(raw)?;
@@ -510,7 +528,7 @@ pub(in crate::runtime_db) fn checkpoint_material_size_on(
 ) -> Result<Option<usize>> {
     let (table, id, _) = family_table(key.family);
     connection.query_row(
-        &format!("SELECT length(CAST(payload_json AS BLOB))+length(CAST({} AS BLOB)) FROM {table} WHERE {id}=?1", projection_sql(key.family)),
+        &format!("SELECT length(CAST(payload_json AS BLOB))+length(CAST({} AS BLOB)) FROM {table} WHERE {id}=?1", projection_sql(connection, key.family)?),
         [&key.id], |row| row.get(0),
     ).optional().map_err(Into::into)
 }
@@ -524,7 +542,7 @@ fn lengths(
         let (table, id, _) = family_table(key.family);
         let n: Option<usize> = connection
             .query_row(
-                &format!("SELECT length(CAST(payload_json AS BLOB))+length(CAST({} AS BLOB)) FROM {table} WHERE {id}=?1", projection_sql(key.family)),
+                &format!("SELECT length(CAST(payload_json AS BLOB))+length(CAST({} AS BLOB)) FROM {table} WHERE {id}=?1", projection_sql(connection, key.family)?),
                 [&key.id],
                 |r| r.get(0),
             )

@@ -1490,7 +1490,12 @@ impl RuntimeDb {
             // Actual D3 Message ACKs also advance TaskOutput source metadata.
             // Join those exact sources into the single final Task coverage.
             let mut input_facts = result_messages.iter().cloned().map(super::input_evidence_snapshot::CanonicalInputEvidence::Message).collect::<Vec<_>>();
-            input_facts.extend(command.interrupted_turns.iter().cloned().map(super::input_evidence_snapshot::CanonicalInputEvidence::Turn));
+            for turn in &command.interrupted_turns {
+                let actual = super::repositories::committed_turn_record_tx(
+                    tx, &command.key.agent_id, &turn.turn_id,
+                )?.record;
+                input_facts.push(super::input_evidence_snapshot::CanonicalInputEvidence::Turn(actual));
+            }
             let evidence_delta = super::input_evidence_snapshot::register_committed_input_evidence_tx(tx, &input_scope, &input_facts)?;
             super::input_evidence_writes::merge_input_evidence_delta(&mut input_delta,evidence_delta)?;
             let task_facts = task_writes.map(|writes|
@@ -3244,6 +3249,7 @@ pub(crate) use stopped_run_budget::stopped_run_proof_material_tx;
 mod stopped_run;
 pub(crate) use stopped_run::{
     find_committed_control_stop_for_run_tx, prove_committed_control_stop_for_run_tx,
+    CanonicalStoppedRunProof,
 };
 
 impl RuntimeDb {

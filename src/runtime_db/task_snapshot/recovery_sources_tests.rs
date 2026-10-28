@@ -72,6 +72,10 @@ fn recovery_source_coverage_keeps_queue_and_stop_predicates_in_the_captured_view
         assert!(!observed.settled);
         assert!(observed.paused_replays.is_empty());
         before.resident.capture(&load.capture)?;
+        let current = super::super::read_preparation::TaskReadMaterial::new(&scope(), &load, None)
+            .read_current_metadata(tx)?
+            .context("recovery metadata missing")?;
+        assert_eq!(&current, before.resident.coverage());
 
         queue.status = QueueEntryStatus::Processed;
         repositories::upsert_queue_entry_tx(tx, &queue)?;
@@ -183,6 +187,10 @@ fn recovery_source_coverage_produces_paused_epoch_observations_with_the_result()
         assert_eq!(paused.recovery_epoch, 2);
         assert!(!paused.root_is_charged);
         assert!(paused.interrupted_anchor.is_none());
+        let current = super::super::read_preparation::TaskReadMaterial::new(&scope(), &load, None)
+            .read_current_metadata(tx)?
+            .context("paused recovery metadata missing")?;
+        assert_eq!(&current, before.resident.coverage());
         tx.execute(
             "INSERT INTO task_result_recovery_admissions
              (result_identity,recovery_epoch,root_attempt_id,admitted_at)

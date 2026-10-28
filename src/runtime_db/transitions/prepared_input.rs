@@ -16,6 +16,9 @@ use crate::runtime_db::input_mutation_receipts::{
     InputMutationFamily, InputMutationOutcome, InputMutationReceipt, InputMutationResult,
     InputMutationScopeOutcome, PreparedInputMutation,
 };
+use crate::runtime_db::provider_admission::{
+    acknowledge_frozen_stopped_provider_pause_tx, charge_frozen_stopped_provider_pause_tx,
+};
 use crate::runtime_db::repositories;
 pub(in crate::runtime_db) use child_binding::ExistingOriginalChildBindingWriteProof;
 pub(crate) use child_terminal::OriginalChildStatusSelection;
@@ -63,6 +66,9 @@ pub(crate) struct PreparedQueueTransition {
     pub timer_wake_claim: Option<TimerWakeClaim>,
     pub task_result_settlement:
         Option<crate::runtime_db::task_result_settlement::TaskResultActivationSettlement>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) stopped_provider_pause:
+        Option<crate::runtime_db::provider_admission::FrozenStoppedProviderPause>,
 }
 impl PreparedQueueTransition {
     pub(crate) fn new(command: QueueTransitionCommand) -> Self {
@@ -79,7 +85,34 @@ impl PreparedQueueTransition {
             delivery: None,
             timer_wake_claim: None,
             task_result_settlement: None,
+            stopped_provider_pause: None,
         }
+    }
+
+    /// Freeze the original dispatch Stop address that won over a parked
+    /// provider pause. The final queue transaction re-verifies it in the
+    /// same transaction before the frozen ACK may commit.
+    pub(crate) fn with_stopped_provider_pause(
+        mut self,
+        original: &crate::runtime_db::control_transition::ControlStoppedRun<'_>,
+        pause: &crate::runtime_db::provider_admission::ProviderDispatchPause,
+    ) -> Result<Self> {
+        anyhow::ensure!(
+            self.stopped_provider_pause.is_none(),
+            "prepared queue transition already froze a stopped provider pause"
+        );
+        self.stopped_provider_pause = Some(
+            crate::runtime_db::provider_admission::FrozenStoppedProviderPause::freeze(
+                original, pause,
+            )?,
+        );
+        Ok(self)
+    }
+
+    fn is_stopped_provider_pause_ack(&self) -> bool {
+        self.stopped_provider_pause
+            .as_ref()
+            .is_some_and(|frozen| frozen.is_original_ack_shape(self))
     }
 }
 
@@ -131,6 +164,10 @@ pub(crate) struct PreparedTaskTransition {
     original_child_terminal: Option<child_terminal::PreparedOriginalChildTerminal>,
     #[serde(skip_serializing_if = "Option::is_none")]
     original_child_binding: Option<child_binding::PreparedOriginalChildMonitorBinding>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    original_command_creation: Option<
+        std::sync::Arc<crate::runtime_db::command_task_creation::OriginalCommandTaskCreation>,
+    >,
 }
 #[derive(Debug, serde::Serialize)]
 struct PreparedTaskChildDeletion {
@@ -181,7 +218,32 @@ impl PreparedTaskTransition {
             original_command_terminal: None,
             original_child_terminal: None,
             original_child_binding: None,
+            original_command_creation: None,
         })
+    }
+
+    pub(crate) fn with_original_command_creation(
+        mut self,
+        creation: std::sync::Arc<
+            crate::runtime_db::command_task_creation::OriginalCommandTaskCreation,
+        >,
+    ) -> Result<Self> {
+        anyhow::ensure!(
+            serde_json::to_value(&self.command.task)? == serde_json::to_value(creation.task())?
+                && self.command.agent_id == creation.scope().agent_id
+                && self.command.expected_owner_incarnation == creation.scope().identity_incarnation
+                && self.child.is_none()
+                && self.stop_intent.is_none()
+                && self.original_command_terminal.is_none()
+                && self.original_child_terminal.is_none()
+                && self.original_child_binding.is_none()
+                && self.command.task_result_settlement.is_none()
+                && self.command.queue_entry.is_none()
+                && self.command.message_evidence.is_empty(),
+            "Command creation differs from original creator or combines terminal authority"
+        );
+        self.original_command_creation = Some(creation);
+        Ok(self)
     }
 }
 
@@ -301,6 +363,42 @@ pub(crate) struct PreparedInputTransition {
     auto_base_descriptor: Option<PreparedInputMutation>,
 }
 impl PreparedInputTransition {
+    /// Only the original typed Queue ACK can carry this read-only observation.
+    pub(crate) fn stopped_provider_pause_ack(
+        &self,
+    ) -> Option<StoppedProviderPauseAck<'_>> {
+        match self.command.as_ref() {
+            InputTransitionCommand::Queue(queue) => StoppedProviderPauseAck::from_queue(queue),
+            _ => None,
+        }
+    }
+
+    pub(crate) fn with_stopped_provider_pause_memory(
+        mut self,
+        memory: crate::runtime_db::provider_admission::StoppedProviderPauseMemory,
+    ) -> Result<Self> {
+        anyhow::ensure!(
+            self.memory.is_none() && self.ended_memory.is_none(),
+            "stopped ACK cannot carry an ordinary memory command"
+        );
+        let InputTransitionCommand::Queue(queue) = self.command.as_mut() else {
+            anyhow::bail!("stopped memory observation requires its original typed Queue ACK");
+        };
+        anyhow::ensure!(
+            queue.is_stopped_provider_pause_ack(),
+            "stopped memory observation requires its original typed Queue ACK"
+        );
+        queue.stopped_provider_pause.as_mut().expect("typed ACK").with_memory(memory)?;
+        self.descriptor = PreparedInputMutation::new(
+            self.descriptor.family(),
+            self.descriptor.command_nonce().to_owned(),
+            self.descriptor.scopes().to_vec(),
+            canonical_command_digest(self.command.as_ref())?,
+            self.descriptor.prepared_at(),
+        )?;
+        Ok(self)
+    }
+
     /// One original scheduler recovery transaction, with its own replay receipt.
     pub(crate) fn context_budget_stop_recovery(
         scope: InputEvidenceScope,
@@ -718,11 +816,12 @@ impl PreparedInputTransition {
             }
             InputTransitionCommand::Timer(timer) => timer.new_wake().is_some(),
             InputTransitionCommand::Queue(queue) => {
-                queue.command.operation == QueueOperation::Settle
-                    || queue.wait_transition.is_some()
-                    || queue.wait_registration.is_some()
-                    || queue.completion.is_some()
-                    || !queue.extra_wait_conditions.is_empty()
+                !queue.is_stopped_provider_pause_ack()
+                    && (queue.command.operation == QueueOperation::Settle
+                        || queue.wait_transition.is_some()
+                        || queue.wait_registration.is_some()
+                        || queue.completion.is_some()
+                        || !queue.extra_wait_conditions.is_empty())
             }
             _ => false,
         }
@@ -806,7 +905,9 @@ impl PreparedInputTransition {
         let expected = command.agent_state.as_ref()?.expected.as_deref()?;
         let record = match &command.mutation {
             QueueMutation::Upsert(record)
+            | QueueMutation::SettleWithProviderRecovery { record, .. }
             | QueueMutation::CompareAndSet { record, .. }
+            | QueueMutation::ParkProviderDispatch { record, .. }
             | QueueMutation::ConsumeSettledTaskResultRecovery { record, .. } => record,
             QueueMutation::Consume(_) => return None,
         };
@@ -838,6 +939,11 @@ impl PreparedInputTransition {
             return Policy::None;
         }
         match self.command.as_ref() {
+            // Stop owns the producer's terminal state; its Brief/Audit ACK
+            // neither finishes that producer nor creates deferred Memory.
+            InputTransitionCommand::Queue(queue) if queue.is_stopped_provider_pause_ack() => {
+                Policy::None
+            }
             InputTransitionCommand::Terminal(command)
                 if command.turn_record.turn_id == binding.key().actual_dispatch_turn_id =>
             {
@@ -875,6 +981,10 @@ impl PreparedInputTransition {
         memory: crate::runtime_db::dispatch_memory::DispatchMemoryIntent,
     ) -> Result<Self> {
         use crate::runtime_db::dispatch_memory::DispatchMemoryIntent as Memory;
+        anyhow::ensure!(
+            self.stopped_provider_pause_ack().is_none(),
+            "stopped ACK cannot become an ordinary memory command"
+        );
         anyhow::ensure!(
             memory.binding_scope() == self.primary_scope,
             "dispatch memory differs from its original primary scope"
@@ -1597,6 +1707,11 @@ impl PreparedInputTransition {
                         .message_id
                         .as_str(),
                 ));
+                if let QueueMutation::SettleWithProviderRecovery { recovery, .. } =
+                    &queue.command.mutation
+                {
+                    targets.insert(("queue_entries", "message_id", recovery.id.as_str()));
+                }
                 if let Some(admission) = queue
                     .wait_registration
                     .as_ref()
@@ -2120,6 +2235,17 @@ impl RuntimeTransitionRepository<'_> {
             let mut memory_budget=prepared.memory.as_ref().map(|memory|
                 crate::runtime_db::dispatch_memory::DispatchMemoryTransactionBudget::prepare_tx(
                     tx,memory,work_request,memory_ledger)).transpose()?;
+            let recovery_source_material = match prepared.command.as_ref() {
+                InputTransitionCommand::Queue(queue) => match &queue.command.mutation {
+                    QueueMutation::ConsumeSettledTaskResultRecovery { source, .. } => {
+                        crate::runtime_db::task_snapshot::prepare_settled_recovery_source_material_tx(
+                            tx, scope, source, task_request, memory_ledger, memory_budget.as_mut(),
+                        )?
+                    }
+                    _ => Vec::new(),
+                },
+                _ => Vec::new(),
+            };
             if let Some(authorization) = &prepared.ended_memory {
                 let (bytes, records) = authorization.proof_material_tx(tx)?;
                 memory_budget.as_mut().context("ended memory omitted budget")?
@@ -2158,6 +2284,17 @@ impl RuntimeTransitionRepository<'_> {
             } else {
                 task_writes::prepare_task_transaction_tx(tx,prepared,scope,deleting,task_request,memory_ledger,memory_budget.as_mut())?
             };
+            let _creation_material = if let InputTransitionCommand::Task(task) = prepared.command.as_ref() {
+                if let Some(creation) = &task.original_command_creation {
+                    let bytes = creation.original_bytes()?.checked_mul(8)
+                        .context("Command creation material overflow")?;
+                    if let Some(memory) = &mut memory_budget {
+                        memory.additional_material(bytes, 8, 1)?;
+                    }
+                    Some(crate::runtime_db::command_task_terminal::charge_material(
+                        scope, bytes, 8, task_request, memory_ledger)?)
+                } else { None }
+            } else { None };
             if prepared.original_command_terminal().is_some() {
                 let InputTransitionCommand::Task(command)=prepared.command.as_ref() else {unreachable!()};
                 task_transaction.as_mut().context("Command terminal omitted W1 proof")?
@@ -2320,6 +2457,10 @@ impl RuntimeTransitionRepository<'_> {
                 }
                 InputTransitionCommand::Task(task) => {
                     let pending=task_transaction.as_mut().and_then(|tasks|tasks.take_result());
+                    if let Some(creation) = &task.original_command_creation {
+                        anyhow::ensure!(creation.scope() == scope, "Command creation scope changed");
+                        creation.write_tx(tx)?;
+                    }
                     let existing_binding=prepared.original_child_monitor_binding().map(|_|child_binding::existing_write_proof_tx(tx,prepared,task_transaction.as_ref().context("child binding omitted Task proof")?.task_write_proof())).transpose()?;
                     let (mut value, deletion) = repository.commit_task_at_with_task_results_tx(tx, &task.command,
                         &task.execution_protocol, task.synchronize_execution_protocol,
@@ -2378,7 +2519,42 @@ impl RuntimeTransitionRepository<'_> {
                     } else {
                         true
                     };
-                    let value = if apply {
+                    let mut stopped_pause_ack = None;
+                    let stopped_pause_guard = if let Some(frozen) = &queue.stopped_provider_pause {
+                        frozen.require_original_ack_shape_tx(tx, queue)?;
+                        let guard = charge_frozen_stopped_provider_pause_tx(
+                            tx, frozen, scope, task_request, memory_ledger,
+                            memory_budget.as_mut(),
+                        )?;
+                        acknowledge_frozen_stopped_provider_pause_tx(tx, frozen)?;
+                        // The frozen ACK never enters the generic queue writer:
+                        // repeating the Stop-owned terminal Upsert is Idempotent
+                        // there and would drop the frozen Brief/Audit evidence.
+                        // Only that original Brief/Audit commits; the Stop-owned
+                        // Queue, Turn, attempt and AgentState stay untouched.
+                        for brief in &queue.command.brief_evidence {
+                            crate::runtime_db::evidence::insert_brief_evidence_tx(tx, brief)?;
+                        }
+                        stopped_pause_ack = Some(super::finish_transition_tx(
+                            tx,
+                            Some(scope),
+                            true,
+                            &queue.command.agent_id,
+                            &queue.command.audit_events,
+                            &[],
+                            queue.command.fault,
+                            super::PostCommitEffects {
+                                briefs: queue.command.brief_evidence.clone(),
+                                ..Default::default()
+                            },
+                        )?);
+                        Some(guard)
+                    } else {
+                        None
+                    };
+                    let mut value = if let Some(ack) = stopped_pause_ack {
+                        ack
+                    } else if apply {
                         repository.commit_queue_transaction_full_with_task_results_tx(
                         tx,
                         &queue.command,
@@ -2398,6 +2574,9 @@ impl RuntimeTransitionRepository<'_> {
                     } else {
                         TransitionCommit::default()
                     };
+                    if let Some(guard) = stopped_pause_guard {
+                        value.effects.task_material_budget_views.push(guard);
+                    }
                     (value, InputMutationResult::Transition)
                 }
                 InputTransitionCommand::QueueHeadNoProgress {
@@ -2543,6 +2722,7 @@ impl RuntimeTransitionRepository<'_> {
                 scheduling.finish(tx,&mut value,scheduling_request,memory_budget.as_mut())?;
             }
             value.effects.task_material_budget_views.extend(result_receipt_guard);
+            value.effects.task_material_budget_views.extend(recovery_source_material);
             if let (Some(current), Some(native)) = (original_current, native_input.as_mut()) {
                 value.effects.current_read_writes = Some(native.with_input_phase(
                     tx, memory_ledger, memory_budget.as_mut(), |material| current.finish_with_audit_acks(

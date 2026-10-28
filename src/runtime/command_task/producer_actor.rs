@@ -403,6 +403,7 @@ impl RuntimeHandle {
                 command,
                 Default::default(),
                 true,
+                None,
             )
             .await?;
         drop(owner);

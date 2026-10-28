@@ -17,6 +17,9 @@ use crate::{
 };
 use rusqlite::Connection;
 
+#[path = "input_evidence_provider_replay_tests.rs"]
+mod provider_replay_tests;
+
 fn time() -> DateTime<Utc> {
     "2026-10-12T00:00:00Z".parse().unwrap()
 }

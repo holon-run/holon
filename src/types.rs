@@ -3991,15 +3991,37 @@ impl TaskRecord {
             .and_then(serde_json::Value::as_u64)
             .filter(|generation| *generation > 0)
             .ok_or_else(|| "task rejoin contract is missing generation".to_string())?;
-        let parent_turn_id = detail
-            .get("parent_turn_id")
-            .and_then(serde_json::Value::as_str)
-            .filter(|value| !value.is_empty())
-            .ok_or_else(|| "task rejoin contract is missing parent turn identity".to_string())?;
+        use crate::domain::execution_protocol::TaskRejoinSource;
+        let source = match (
+            detail.get("parent_turn_id"),
+            detail.get("command_creation_id"),
+        ) {
+            (Some(parent), None) => TaskRejoinSource::ParentTurn {
+                parent_turn_id: parent
+                    .as_str()
+                    .filter(|id| !id.is_empty())
+                    .ok_or_else(|| {
+                        "task rejoin contract has invalid parent turn identity".to_string()
+                    })?
+                    .to_string(),
+            },
+            (None, Some(creation)) if self.kind == TaskKind::CommandTask => {
+                let id = creation
+                    .as_str()
+                    .filter(|id| *id == self.id)
+                    .ok_or_else(|| {
+                        "task rejoin creation identity does not match Command".to_string()
+                    })?;
+                TaskRejoinSource::CommandCreation {
+                    command_creation_id: id.to_string(),
+                }
+            }
+            _ => return Err("task rejoin contract requires exactly one creation source".into()),
+        };
         Ok(crate::domain::execution_protocol::RejoinFence {
             obligation_id: obligation_id.to_string(),
             generation,
-            parent_turn_id: parent_turn_id.to_string(),
+            source,
         })
     }
 

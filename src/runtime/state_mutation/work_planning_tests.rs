@@ -622,6 +622,7 @@ async fn child_observability_keeps_exact_active_tasks_and_brief_window_without_b
             },
             Default::default(),
             true,
+            None,
         )
         .await?;
     for i in 0..20 {

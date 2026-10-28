@@ -62,7 +62,7 @@ pub(super) fn reconcile_feature_history(connection: &mut Connection) -> Result<(
     let offset = 91 - legacy_start;
     let expected: Vec<_> = MIGRATIONS
         .iter()
-        .filter(|migration| (91..=101).contains(&migration.version))
+        .filter(|migration| (91..=102).contains(&migration.version))
         .collect();
     ensure!(
         records.len() <= expected.len()

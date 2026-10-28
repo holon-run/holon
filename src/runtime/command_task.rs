@@ -1095,6 +1095,23 @@ impl RuntimeHandle {
                 promoted_from_exec_command,
             }),
         };
+        let original_creation = if super::tasks::unbound_task_rejoin_generation(&task).is_some() {
+            Some(std::sync::Arc::new(
+                crate::runtime_db::command_task_creation::OriginalCommandTaskCreation::new(
+                    super::resident_input_evidence::InputEvidenceScope {
+                        agent_id: agent_id.clone(),
+                        identity_incarnation: self.inner.identity_incarnation,
+                    },
+                    task.clone(),
+                )?,
+            ))
+        } else {
+            None
+        };
+        let task = original_creation
+            .as_ref()
+            .map(|creation| creation.task().clone())
+            .unwrap_or(task);
         self.append_audit_event(
             "process_execution_requested",
             serde_json::json!({
@@ -1110,11 +1127,12 @@ impl RuntimeHandle {
                 "promoted_from_exec_command": promoted_from_exec_command,
             }),
         ).await?;
-        self.apply_task_transition(task_state_reducer::TaskTransition::new(
-            &task,
-            "task_created",
-        ))
-        .await?;
+        let transition = task_state_reducer::TaskTransition::new(&task, "task_created");
+        let transition = match original_creation.as_ref() {
+            Some(creation) => transition.with_original_command_creation(creation),
+            None => transition,
+        };
+        self.apply_task_transition(transition).await?;
 
         let mut registration = self.admit_control_task_handle_registration(&task).await?;
         let mut selected_request = super::resident_task::TaskCaptureRequest::current();
@@ -1366,10 +1384,10 @@ impl RuntimeHandle {
         // The result has its own turn; its rejoin fence stays with task creation.
         let result_turn_id = crate::ids::turn_id();
         if let Some(detail) = detail.as_object_mut() {
-            // Turnless callers retain the legacy result-turn fence.
-            detail
-                .entry("parent_turn_id")
-                .or_insert_with(|| serde_json::json!(result_turn_id.clone()));
+            detail.insert(
+                "result_execution_turn_id".into(),
+                serde_json::json!(result_turn_id),
+            );
         }
         let result_text = build_command_task_result_text(
             task_record.summary.as_deref().unwrap_or(&resolved.spec.cmd),
@@ -2284,6 +2302,7 @@ mod tests {
             ContextConfig::default(),
         )
         .unwrap();
+        crate::runtime::tests::support::isolate_test_user_home(&runtime);
         (home, workspace, runtime)
     }
 
@@ -2611,29 +2630,139 @@ mod tests {
             .unwrap()
             .get("parent_turn_id")
             .is_none());
-        let latest = wait_for_latest_task(&runtime, &task.id, TaskStatus::Completed).await;
+        let generation = task.detail.as_ref().unwrap()["rejoin_generation"]
+            .as_u64()
+            .unwrap();
+        let creation_fence = task.rejoin_fence().unwrap();
+        assert_eq!(
+            creation_fence.source,
+            crate::domain::execution_protocol::TaskRejoinSource::CommandCreation {
+                command_creation_id: task.id.clone(),
+            }
+        );
+        assert_eq!(
+            runtime
+                .runtime_db()
+                .connection()
+                .unwrap()
+                .query_row(
+                    "SELECT COUNT(*) FROM command_task_creation_sources
+                 WHERE command_creation_id=?1 AND task_id=?1 AND agent_id=?2
+                   AND identity_incarnation=?3 AND rejoin_generation=?4",
+                    rusqlite::params![
+                        task.id,
+                        task.agent_id,
+                        runtime.inner.identity_incarnation,
+                        generation
+                    ],
+                    |row| row.get::<_, usize>(0),
+                )
+                .unwrap(),
+            1
+        );
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+        let latest = loop {
+            if let Some(latest) = runtime.inner.storage.latest_task_record(&task.id).unwrap() {
+                // SQL completion precedes publication; the original ACK releases the handle.
+                if latest.status == TaskStatus::Completed
+                    && !runtime
+                        .inner
+                        .task_handles
+                        .lock()
+                        .await
+                        .contains_key(&task.id)
+                {
+                    break latest;
+                }
+            }
+            assert!(
+                tokio::time::Instant::now() < deadline,
+                "task {} did not complete terminal publication",
+                task.id
+            );
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        };
+        let captured = runtime.task_status_snapshot(&task.id).await.unwrap();
+        assert_eq!(captured.status, latest.status);
+        assert_eq!(captured.parent_message_id, latest.parent_message_id);
         let result = runtime
             .storage()
             .read_message_by_id(latest.parent_message_id.as_deref().unwrap())
             .unwrap()
             .unwrap();
         let fence = latest.rejoin_fence().unwrap();
+        assert_eq!(fence, creation_fence);
+        assert_eq!(fence.obligation_id, task.id);
+        assert_eq!(fence.generation, generation);
+        assert_eq!(result.task_id.as_deref(), Some(task.id.as_str()));
+        assert_eq!(latest.work_item_id, task.work_item_id);
+        assert_eq!(result.work_item_id, task.work_item_id);
+        assert!(matches!(&result.origin, MessageOrigin::Task { task_id } if task_id == &task.id));
+        assert!(result.turn_id.is_some());
         assert_eq!(
-            Some(fence.parent_turn_id.as_str()),
-            result.turn_id.as_deref()
+            latest.detail.as_ref().unwrap()["result_execution_turn_id"],
+            result.turn_id.as_deref().unwrap()
         );
+        let metadata = result.metadata.as_ref().unwrap();
+        assert_eq!(metadata["task_detail"]["command_creation_id"], task.id);
+        assert!(metadata["task_detail"].get("parent_turn_id").is_none());
+        assert_eq!(
+            metadata["task_detail"]["result_execution_turn_id"],
+            result.turn_id.as_deref().unwrap()
+        );
+        assert_eq!(metadata["task_detail"]["rejoin_generation"], generation);
         let settlement = runtime
             .runtime_db()
             .task_result_settlements()
             .latest_for_message(&result.id)
             .unwrap()
             .unwrap();
-        assert_eq!(settlement.parent_turn_id, fence.parent_turn_id);
+        assert_eq!(settlement.source, fence.source);
+        assert_eq!(settlement.rejoin_generation, generation);
+        assert_eq!(settlement.work_item_id, task.work_item_id);
+        assert_eq!(settlement.message_id, result.id);
         assert_eq!(settlement.task_id, task.id);
         assert_eq!(
             settlement.state,
             crate::runtime_db::task_result_settlement::TaskResultSettlementState::PersistedPending
         );
+    }
+
+    #[tokio::test]
+    async fn bound_command_without_canonical_parent_cannot_mint_creation_source() -> Result<()> {
+        let (_home, _workspace, runtime) = test_runtime();
+        {
+            // Publish the bound-turn posture through the OCC mutation owner so
+            // the published root stays observable to later reservations; the
+            // Turn record itself remains absent, which is the premise under
+            // test. A raw guard persist diverges the published root and trips
+            // the private-candidate capture guard on the next reservation.
+            let mut mutation = runtime.begin_mutation().await?;
+            mutation.state.current_turn_id = Some("missing-original-parent".into());
+            mutation.persist_state(&runtime.inner.storage).await?;
+        }
+        let process = FakeRunningProcess::pending();
+        let resolved = resolved_command(&runtime, &command_spec(false, false)).await;
+        let result = runtime
+            .register_command_task(
+                "Bound Command without canonical parent".into(),
+                resolved,
+                running_command(process, "", ""),
+                AuthorityClass::OperatorInstruction,
+                false,
+                CapturedOutput::default(),
+            )
+            .await;
+        assert!(result.is_err());
+        assert_eq!(
+            runtime.runtime_db().connection()?.query_row(
+                "SELECT COUNT(*) FROM command_task_creation_sources WHERE agent_id='default'",
+                [],
+                |row| row.get::<_, usize>(0),
+            )?,
+            0
+        );
+        Ok(())
     }
 
     #[tokio::test]
@@ -2652,12 +2781,43 @@ mod tests {
 
         for (exit_status, status) in [(0, TaskStatus::Completed), (7, TaskStatus::Failed)] {
             let (_home, workspace, runtime) = test_runtime();
-            let parent_turn_id = "turn-command-creation";
-            {
-                let mut guard = runtime.inner.agent.lock().await;
-                guard.state.current_turn_id = Some(parent_turn_id.into());
-                guard.persist_state(&runtime.inner.storage).unwrap();
-            }
+            let creator_message = MessageEnvelope::new(
+                "default",
+                MessageKind::OperatorPrompt,
+                MessageOrigin::Operator {
+                    actor_id: None,
+                    actor_display_name: None,
+                },
+                AuthorityClass::OperatorInstruction,
+                Priority::Normal,
+                MessageBody::Text {
+                    text: "create bound Command".into(),
+                },
+            );
+            runtime.enqueue(creator_message).await.unwrap();
+            let RunLoopPoll::Message(creator) = SchedulerDecisionExecutor::new(&runtime)
+                .poll()
+                .await
+                .unwrap()
+            else {
+                panic!("Command creator must be actually claimed");
+            };
+            runtime
+                .begin_dispatch_turn(
+                    &creator.message,
+                    None,
+                    None,
+                    creator.dispatch_plan.execution_admission_provenance.clone(),
+                    &creator.dispatch_plan.prior_closure,
+                )
+                .await
+                .unwrap();
+            let parent_turn_id = runtime
+                .agent_state()
+                .await
+                .unwrap()
+                .current_turn_id
+                .unwrap();
             let spec = CommandTaskSpec {
                 cmd: format!(
                     "while [ ! -f command-release ]; do sleep 0.01; done; \
@@ -2686,7 +2846,10 @@ mod tests {
                 .unwrap()
                 .unwrap();
             let creation_fence = created.rejoin_fence().unwrap();
-            assert_eq!(creation_fence.parent_turn_id, parent_turn_id);
+            assert_eq!(
+                creation_fence.source.parent_turn_id().unwrap(),
+                parent_turn_id
+            );
             assert_eq!(creation_fence.obligation_id, created.id);
             assert_eq!(creation_fence.generation, 1);
 
@@ -2701,6 +2864,28 @@ mod tests {
                 )
                 .await
                 .unwrap();
+            crate::runtime::tests::support::finish_claimed_test_run(&runtime).await;
+            let creator_terminal =
+                crate::runtime::tests::support::terminal_transition_from_started_turn(
+                    &runtime,
+                    &creator.message,
+                );
+            runtime
+                .commit_queue_terminal_settlement(
+                    QueueEntryRecord {
+                        message_id: creator.message.id.clone(),
+                        agent_id: creator.message.agent_id.clone(),
+                        priority: creator.message.priority.clone(),
+                        status: QueueEntryStatus::Processed,
+                        created_at: creator.message.created_at,
+                        updated_at: Utc::now(),
+                    },
+                    Vec::new(),
+                    true,
+                    Some(&creator_terminal),
+                )
+                .await
+                .unwrap();
             std::fs::write(workspace.path().join("command-release"), "").unwrap();
             let latest = wait_for_latest_task(&runtime, &created.id, status).await;
             assert_eq!(latest.rejoin_fence().unwrap(), creation_fence);
@@ -2712,12 +2897,15 @@ mod tests {
                 .unwrap();
             assert_eq!(result_message.kind, MessageKind::TaskResult);
             assert!(result_message.turn_id.is_some());
-            assert_ne!(result_message.turn_id.as_deref(), Some(parent_turn_id));
+            assert_ne!(
+                result_message.turn_id.as_deref(),
+                Some(parent_turn_id.as_str())
+            );
             let metadata = result_message.metadata.as_ref().unwrap();
             assert_eq!(metadata["task_id"], created.id);
             assert_eq!(
                 metadata["task_detail"]["parent_turn_id"],
-                creation_fence.parent_turn_id
+                creation_fence.source.parent_turn_id().unwrap()
             );
             assert_eq!(
                 metadata["task_detail"]["rejoin_obligation_id"],
@@ -2735,7 +2923,7 @@ mod tests {
                 .unwrap();
             assert_eq!(settlement.task_id, created.id);
             assert_eq!(settlement.message_id, result_message.id);
-            assert_eq!(settlement.parent_turn_id, creation_fence.parent_turn_id);
+            assert_eq!(settlement.source, creation_fence.source);
             assert_eq!(settlement.rejoin_generation, creation_fence.generation);
             assert_eq!(
                 settlement.state,
@@ -2802,7 +2990,7 @@ mod tests {
                 .unwrap()
                 .unwrap();
             assert_eq!(settled.result_identity, settlement.result_identity);
-            assert_eq!(settled.parent_turn_id, creation_fence.parent_turn_id);
+            assert_eq!(settled.source, creation_fence.source);
             assert_eq!(settled.state, TaskResultSettlementState::Settled);
             assert_eq!(
                 settled.disposition,
@@ -3049,7 +3237,7 @@ mod tests {
             assert_eq!(creation_fence.generation, 1);
             let creation_turn = runtime
                 .storage()
-                .read_turn_by_id(&creation_fence.parent_turn_id)
+                .read_turn_by_id(creation_fence.source.parent_turn_id().unwrap())
                 .unwrap()
                 .unwrap();
             assert!(creation_turn
@@ -3067,7 +3255,7 @@ mod tests {
             assert_eq!(reports.len(), 1);
             assert_eq!(
                 reports[0].turn_id.as_deref(),
-                Some(creation_fence.parent_turn_id.as_str())
+                Some(creation_fence.source.parent_turn_id().unwrap())
             );
             assert!(reports[0].finalizes_assistant_round_id.is_some());
             let tools = runtime.storage().read_recent_tool_executions(10).unwrap();
@@ -3091,7 +3279,7 @@ mod tests {
             assert_eq!(wait.work_item_id.as_deref(), expected_work_item_id);
             assert_eq!(
                 wait.turn_id.as_deref(),
-                Some(creation_fence.parent_turn_id.as_str())
+                Some(creation_fence.source.parent_turn_id().unwrap())
             );
             assert!(wait.wake_sources.iter().any(|source| {
                 matches!(source, WakeSource::TaskResult { task_id: exact } if exact == &task_id)
@@ -3110,7 +3298,7 @@ mod tests {
                 .unwrap();
             assert_eq!(pending.state, TaskResultSettlementState::PersistedPending);
             assert_eq!(pending.task_id, task_id);
-            assert_eq!(pending.parent_turn_id, creation_fence.parent_turn_id);
+            assert_eq!(pending.source, creation_fence.source);
             let triggered = runtime
                 .storage()
                 .latest_wait_conditions()
@@ -3200,7 +3388,7 @@ mod tests {
                 .unwrap();
             assert_eq!(settled.result_identity, pending.result_identity);
             assert_eq!(settled.task_id, task_id);
-            assert_eq!(settled.parent_turn_id, creation_fence.parent_turn_id);
+            assert_eq!(settled.source, creation_fence.source);
             assert_eq!(settled.rejoin_generation, creation_fence.generation);
             assert_eq!(settled.state, TaskResultSettlementState::Settled);
             assert_eq!(
@@ -3229,7 +3417,10 @@ mod tests {
                 .iter()
                 .find(|turn| turn.input_message_ids.contains(result_message_id))
                 .unwrap();
-            assert_ne!(result_turn.turn_id, creation_fence.parent_turn_id);
+            assert_ne!(
+                result_turn.turn_id,
+                creation_fence.source.parent_turn_id().unwrap()
+            );
             assert!(result_turn.terminal.is_some());
             assert!(matches!(
                 SchedulerDecisionExecutor::new(&runtime)

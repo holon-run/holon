@@ -20,6 +20,16 @@ use super::reminders::*;
 use super::tool_summary::*;
 use super::*;
 
+#[test]
+fn started_turn_uses_the_original_runtime_clock_sample() {
+    let mut state = crate::types::AgentState::new("clock-test");
+    state.current_turn_id = Some("started-turn".into());
+    let at = "2024-01-01T00:00:00Z".parse().unwrap();
+    let record = RuntimeHandle::build_started_turn_record(&state, None, None, at).unwrap();
+    assert_eq!(record.created_at, at);
+    assert_eq!(record.turn_id, "started-turn");
+}
+
 fn project_with_inference_time(
     rounds: &[TurnRoundRecord],
     budget: usize,

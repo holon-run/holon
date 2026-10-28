@@ -91,7 +91,7 @@ impl OriginalTaskResultCleanupSource<'_> {
         ensure!(
             original.obligation_id == final_fence.obligation_id
                 && original.generation == final_fence.generation
-                && original.parent_turn_id == final_fence.parent_turn_id,
+                && original.source == final_fence.source,
             "Task cleanup changed original admitted generation"
         );
         ensure!(
@@ -202,7 +202,7 @@ pub(crate) fn prepare_original_task_result_cleanup_tx<'tx, 'connection, 'command
                 && old.message_id == result.message_id
                 && old.work_item_id == result.work_item_id
                 && old.rejoin_generation == result.rejoin_generation
-                && old.parent_turn_id == result.parent_turn_id,
+                && old.source == result.source,
             "Task cleanup existing Result address changed"
         );
     } else {
@@ -326,7 +326,7 @@ impl OriginalTaskResultCleanupProof<'_, '_, '_> {
                 && actual.message_id == self.result.message_id
                 && actual.work_item_id == self.result.work_item_id
                 && actual.rejoin_generation == self.result.rejoin_generation
-                && actual.parent_turn_id == self.result.parent_turn_id,
+                && actual.source == self.result.source,
             "Task cleanup actual Result changed original address"
         );
         Ok(())

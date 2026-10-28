@@ -481,6 +481,7 @@ impl RuntimeHandle {
             turn_record,
             prepared_work_item_completion: outcome.prepared_work_item_completion,
             prepared_wait_for: outcome.prepared_wait_for,
+            provider_recovery_message: outcome.provider_recovery_message,
             terminal_tool_executions: outcome.terminal_tool_executions,
         };
         transition.normalize_brief_settlement()?;

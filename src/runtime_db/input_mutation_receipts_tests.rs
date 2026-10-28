@@ -817,7 +817,9 @@ fn task_result_receipt_rejects_wrong_family_and_foreign_original_result() -> Res
                 message_id: "message-b".into(),
                 work_item_id: None,
                 rejoin_generation: 1,
-                parent_turn_id: "turn-b".into(),
+                source: crate::domain::execution_protocol::TaskRejoinSource::ParentTurn {
+                    parent_turn_id: "turn-b".into(),
+                },
                 task_status: "completed".into(),
                 state: TaskResultSettlementState::PersistedPending,
                 activation_id: None,

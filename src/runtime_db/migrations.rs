@@ -4320,6 +4320,11 @@ CREATE INDEX IF NOT EXISTS idx_episode_memory_results_episode_scope
         name: "original_current_read_qualification",
         sql: super::current_read_writes::SCHEMA,
     },
+    Migration {
+        version: super::command_task_creation::VERSION,
+        name: "original_turnless_command_creation",
+        sql: super::command_task_creation::SCHEMA,
+    },
 ];
 
 pub(crate) fn ensure_migration_table(connection: &Connection) -> Result<()> {
@@ -6582,7 +6587,9 @@ fn migration_task_rejoin_fence(task: &TaskRecord) -> Result<RejoinFence> {
     Ok(RejoinFence {
         obligation_id: obligation_id.to_string(),
         generation,
-        parent_turn_id: parent_turn_id.to_string(),
+        source: execution_protocol::TaskRejoinSource::ParentTurn {
+            parent_turn_id: parent_turn_id.to_string(),
+        },
     })
 }
 

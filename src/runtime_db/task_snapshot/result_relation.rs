@@ -14,7 +14,8 @@ pub(super) const TASK_PREDICATE_SQL: &str = "json_array(task_id,owner_agent_id,s
  json_type(payload_json,'$.detail'),
  json_type(payload_json,'$.detail.rejoin_obligation_id'),json_extract(payload_json,'$.detail.rejoin_obligation_id'),
  json_type(payload_json,'$.detail.rejoin_generation'),substr(payload_json -> '$.detail.rejoin_generation',1),
- json_type(payload_json,'$.detail.parent_turn_id'),json_extract(payload_json,'$.detail.parent_turn_id'))";
+ json_type(payload_json,'$.detail.parent_turn_id'),json_extract(payload_json,'$.detail.parent_turn_id'),
+ json_type(payload_json,'$.detail.command_creation_id'),json_extract(payload_json,'$.detail.command_creation_id'))";
 
 /// The observation's guards survive its caller's preparation. Neither the
 /// observation nor the guards retain a Task body, resident domain or root.
@@ -70,7 +71,7 @@ pub(in crate::runtime_db) fn prepare_pending_task_result_dependency_using_materi
     let seed = binding(tx, scope)?;
     // The existing schema's agent/message uniqueness makes this a finite lookup.
     let row: Option<(usize, usize)> = tx.query_row(
-        "SELECT length(CAST(result_identity AS BLOB)),length(CAST(payload_json AS BLOB))+length(CAST(json_array(result_identity,agent_id,task_id,message_id,work_item_id,rejoin_generation,parent_turn_id,state,activation_id,disposition,created_at,updated_at,admitted_at,settled_at,deferred_reason,deferred_at,next_recheck_at) AS BLOB)) FROM task_result_settlements WHERE agent_id=?1 AND message_id=?2",
+        "SELECT length(CAST(result_identity AS BLOB)),length(CAST(payload_json AS BLOB))+length(CAST(json_array(result_identity,agent_id,task_id,message_id,work_item_id,rejoin_generation,parent_turn_id,state,activation_id,disposition,created_at,updated_at,admitted_at,settled_at,deferred_reason,deferred_at,next_recheck_at,command_creation_id) AS BLOB)) FROM task_result_settlements WHERE agent_id=?1 AND message_id=?2",
         params![scope.agent_id,message_id], |r| Ok((r.get(0)?,r.get(1)?)),
     ).optional()?;
     let Some((key_bytes, bytes)) = row else {
@@ -153,6 +154,16 @@ pub(super) fn observe_task_predicate_tx(
     Option<String>,
     Option<TaskFactLocator>,
 )> {
+    crate::runtime_db::command_task_creation::validate_source_tx(
+        tx,
+        scope,
+        &result.task_id,
+        result.rejoin_generation,
+        &result.source,
+        result.work_item_id.as_deref(),
+        None,
+        |bytes, records| material.charge(bytes, records, 8, false),
+    )?;
     let key = TaskKey::new(TaskFamily::Task, &result.task_id);
     let current = alias(tx, scope, &key)?;
     let fixed = qualification::eligible_digest(tx, seed, &key)?;
@@ -308,7 +319,7 @@ fn evaluate_predicate(
     result: &super::super::task_result_settlement::TaskResultSettlementRecord,
 ) -> Result<(String, i64, bool)> {
     let tuple: Vec<serde_json::Value> = serde_json::from_str(raw)?;
-    ensure!(tuple.len() == 23, "Task predicate tuple shape mismatch");
+    ensure!(tuple.len() == 25, "Task predicate tuple shape mismatch");
     let text = |i: usize| tuple[i].as_str();
     let owner = text(1).context("Task predicate owner is not text")?;
     // The SQL revision is updated_at.timestamp_millis(), including epoch zero
@@ -360,9 +371,22 @@ fn evaluate_predicate(
         && text(18) == Some(result.task_id.as_str())
         && !result.task_id.is_empty()
         && generation == Some(result.rejoin_generation)
-        && text(21) == Some("text")
-        && text(22) == Some(result.parent_turn_id.as_str())
-        && !result.parent_turn_id.is_empty();
+        && match &result.source {
+            crate::domain::execution_protocol::TaskRejoinSource::ParentTurn { parent_turn_id } => {
+                text(21) == Some("text")
+                    && text(22) == Some(parent_turn_id.as_str())
+                    && !parent_turn_id.is_empty()
+                    && text(23).is_none()
+            }
+            crate::domain::execution_protocol::TaskRejoinSource::CommandCreation {
+                command_creation_id,
+            } => {
+                text(21).is_none()
+                    && text(23) == Some("text")
+                    && text(24) == Some(command_creation_id.as_str())
+                    && command_creation_id == &result.task_id
+            }
+        };
     Ok((owner.to_owned(), normalized_revision, matches))
 }
 

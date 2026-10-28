@@ -564,7 +564,9 @@ fn visit_current_dependencies(
                     .get(&task.id)
                     .context("current Task has no complete metadata")?;
                 if let Some(fence) = &metadata.rejoin {
-                    visit(Some(InputEvidenceFamily::Turn), &fence.parent_turn_id)?;
+                    if let Some(parent) = fence.source.parent_turn_id() {
+                        visit(Some(InputEvidenceFamily::Turn), parent)?;
+                    }
                 }
                 if let Some(id) = task.effective_work_item_id() {
                     visit(None, id)?;
@@ -582,7 +584,9 @@ fn visit_current_dependencies(
                     &current.result_dependency(&result.result_identity)?.relation,
                     TaskResultDependencyRelation::QualifiedCurrent { .. }
                 ) {
-                    visit(Some(InputEvidenceFamily::Turn), &result.parent_turn_id)?;
+                    if let Some(parent) = result.source.parent_turn_id() {
+                        visit(Some(InputEvidenceFamily::Turn), parent)?;
+                    }
                     if let Some(id) = &result.work_item_id {
                         visit(None, id)?;
                     }

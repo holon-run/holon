@@ -7,7 +7,7 @@ use crate::{
         {FrozenCommandTaskTerminal, OriginalCommandTaskProducer},
     },
     runtime_db::{command_task_terminal as producer, task_snapshot as tasks},
-    types::TaskStatus,
+    types::{MessageEnvelope, TaskStatus},
 };
 use rusqlite::Transaction;
 use std::sync::{Arc, Weak};
@@ -15,6 +15,7 @@ use std::sync::{Arc, Weak};
 #[derive(Debug, serde::Serialize)]
 pub(super) struct PreparedOriginalCommandTerminal {
     pub(super) intent: producer::OriginalCommandTaskTerminalIntent,
+    original_message: Option<MessageEnvelope>,
     #[serde(skip)]
     authorization: Weak<OriginalCommandTaskProducer>,
     #[serde(skip)]
@@ -136,7 +137,7 @@ impl PreparedInputTransition {
             requested,
             no_op,
         };
-        let extra = serialized_bytes(&(&command, &intent))?
+        let extra = serialized_bytes(&(&command, &intent, &frozen.message))?
             .checked_mul(8)
             .context("Command prepared material overflow")?;
         guards.push(producer::charge_material(
@@ -150,6 +151,7 @@ impl PreparedInputTransition {
             PreparedTaskTransition::new(command, Default::default(), !no_op, None, None)?;
         task.original_command_terminal = Some(PreparedOriginalCommandTerminal {
             intent,
+            original_message: frozen.message.clone(),
             authorization: Arc::downgrade(source),
             guards,
         });
@@ -209,7 +211,7 @@ fn authorize_tx<'tx, 'connection>(
             tasks::prepare_existing_task_maintenance_tx(tx, &command.intent.original.scope, &keys)?;
         let actual = proof.qualified_task_before(&command.intent.original.admitted.key.id)?;
         view.validate_original_generation(actual)?;
-        view.validate_original_generation(&task.command.task)?;
+        view.validate_terminal_generation(&task.command.task, command.original_message.as_ref())?;
         let read = tasks::prepare_task_sql_readback_tx(
             tx,
             &command.intent.original.scope,
@@ -454,7 +456,7 @@ pub(super) fn validate_current_task_proof(
     view.validate_original_generation(
         proof.task_before(&command.intent.original.admitted.key.id)?,
     )?;
-    view.validate_original_generation(&task.command.task)?;
+    view.validate_terminal_generation(&task.command.task, command.original_message.as_ref())?;
     Ok(())
 }
 

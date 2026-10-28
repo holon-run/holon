@@ -50,8 +50,10 @@ impl RuntimeMutation {
             let scheduling = self
                 .prepare_wait_scheduling_read(wake, resource.as_deref())
                 .await?;
-            self.runtime
+            let runtime = self.runtime.clone();
+            runtime
                 .prepare_wait_for_outcome_from_owned_read(
+                    self,
                     agent_id,
                     work_item_id,
                     wake,
@@ -59,7 +61,6 @@ impl RuntimeMutation {
                     reason,
                     recheck_after_ms,
                     condition_id,
-                    &self.candidate.state,
                     scheduling,
                 )
                 .await

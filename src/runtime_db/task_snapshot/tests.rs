@@ -529,8 +529,139 @@ fn fixed_unmaterialized_task_projection_is_frozen_at_original_upgrade() -> Resul
     })
 }
 
+#[test]
+fn unproven_command_parent_turns_remain_strict_roots() -> Result<()> {
+    let (_dir, db) = fresh()?;
+    let fenced = |id: &str, parent: &str| {
+        let mut value = task(id, TaskStatus::Completed);
+        value.detail = Some(serde_json::json!({
+            "rejoin_obligation_id": value.id,
+            "rejoin_generation": 1,
+            "parent_turn_id": parent,
+        }));
+        value
+    };
+    let unproven = fenced("unproven-command", "turn:legacy-turnless-hint");
+    let real = fenced("real-parent-command", "turn:real-parent");
+    let foreign = fenced("foreign-parent-command", "turn:foreign-parent");
+    db.transaction(|tx| {
+        let keys = BTreeSet::from([
+            TaskKey::new(TaskFamily::Task, &unproven.id),
+            TaskKey::new(TaskFamily::Task, &real.id),
+            TaskKey::new(TaskFamily::Task, &foreign.id),
+        ]);
+        let proof = prepare_task_write_tx(tx, &scope(), &keys)?;
+        repositories::upsert_task_tx(tx, &unproven)?;
+        repositories::upsert_task_tx(tx, &real)?;
+        repositories::upsert_task_tx(tx, &foreign)?;
+        let mut parent = crate::types::TurnRecord::new("task-agent", "turn:real-parent", 1);
+        parent.created_at = at();
+        repositories::upsert_turn_record_tx(tx, &parent)?;
+        let mut foreign_parent =
+            crate::types::TurnRecord::new("foreign-agent", "turn:foreign-parent", 1);
+        foreign_parent.created_at = at();
+        repositories::upsert_turn_record_tx(tx, &foreign_parent)?;
+        let state = AgentState::new("task-agent");
+        register_task_writes_tx(tx, &proof, &keys, &state, &request())?;
+        let snapshot =
+            prepare_task_domain_snapshot_tx(tx, &scope(), &request())?.require_current()?;
+        let key = |id: &str| InputEvidenceKey::new(InputEvidenceFamily::Turn, id);
+        assert!(snapshot
+            .input_roots
+            .contains(&key("turn:legacy-turnless-hint")));
+        assert!(snapshot.input_roots.contains(&key("turn:real-parent")));
+        assert!(snapshot.input_roots.contains(&key("turn:foreign-parent")));
+        assert!(snapshot.turnless_parent_turns.is_empty());
+        Ok(())
+    })
+}
+
+#[test]
+fn non_command_missing_parent_turn_remains_strict_root() -> Result<()> {
+    let (_dir, db) = fresh()?;
+    let mut value = task("non-command", TaskStatus::Completed);
+    value.kind = TaskKind::ActorInvocation;
+    value.detail = Some(serde_json::json!({
+        "rejoin_obligation_id": value.id,
+        "rejoin_generation": 1,
+        "parent_turn_id": "turn:missing-non-command-parent",
+    }));
+    db.transaction(|tx| {
+        write_task(tx, &value)?;
+        let snapshot =
+            prepare_task_domain_snapshot_tx(tx, &scope(), &request())?.require_current()?;
+        assert!(snapshot.input_roots.contains(&InputEvidenceKey::new(
+            InputEvidenceFamily::Turn,
+            "turn:missing-non-command-parent",
+        )));
+        assert!(snapshot.turnless_parent_turns.is_empty());
+        Ok(())
+    })
+}
+
+#[test]
+fn qualified_command_result_does_not_prove_turnless_birth() -> Result<()> {
+    let (_dir, db) = fresh()?;
+    db.transaction(|tx| {
+        let mut value = task("bound-command", TaskStatus::Completed);
+        value.detail = Some(serde_json::json!({
+            "rejoin_obligation_id": value.id,
+            "rejoin_generation": 1,
+            "parent_turn_id": "turn:missing-bound-command-parent",
+        }));
+        let mut source = MessageEnvelope::new(
+            "task-agent",
+            MessageKind::TaskResult,
+            MessageOrigin::Task {
+                task_id: value.id.clone(),
+            },
+            AuthorityClass::RuntimeInstruction,
+            Priority::Normal,
+            MessageBody::Text {
+                text: "completed".into(),
+            },
+        );
+        source.id = "bound-command-result".into();
+        source.task_id = Some(value.id.clone());
+        source.turn_id = Some("turn:missing-bound-command-parent".into());
+        source.created_at = at();
+        let (source, _) = append_message_tx(tx, &source)?;
+        value.parent_message_id = Some(source.id.clone());
+        let result = TaskResultSettlementRecord::pending(&value, &source, at())?.unwrap();
+        let keys = BTreeSet::from([
+            TaskKey::new(TaskFamily::Task, &value.id),
+            TaskKey::new(TaskFamily::ResultSettlement, &result.result_identity),
+        ]);
+        let proof = prepare_task_write_tx(tx, &scope(), &keys)?;
+        repositories::upsert_task_tx(tx, &value)?;
+        upsert_pending_tx(tx, &result)?;
+        register_task_writes_tx(
+            tx,
+            &proof,
+            &keys,
+            &AgentState::new("task-agent"),
+            &request(),
+        )?;
+        let snapshot =
+            prepare_task_domain_snapshot_tx(tx, &scope(), &request())?.require_current()?;
+        assert!(matches!(
+            snapshot.resident.coverage().result_dependencies[&result.result_identity].relation,
+            TaskResultDependencyRelation::QualifiedCurrent { .. }
+        ));
+        assert!(snapshot.input_roots.contains(&InputEvidenceKey::new(
+            InputEvidenceFamily::Turn,
+            result.source.parent_turn_id().unwrap(),
+        )));
+        assert!(snapshot.turnless_parent_turns.is_empty());
+        Ok(())
+    })
+}
+
 #[path = "read_preparation_tests.rs"]
 mod read_preparation;
+
+#[path = "command_creation_tests.rs"]
+mod command_creation_tests;
 
 #[path = "recovery_sources_tests.rs"]
 mod recovery_sources_tests;

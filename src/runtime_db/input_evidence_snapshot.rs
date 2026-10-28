@@ -4,7 +4,7 @@
 use super::context_inputs::{ContextDurableRead, ContextScopeFacts, ContextScopeRead};
 use crate::{
     domain::execution_protocol::{
-        ExecutionAttempt, ExecutionOutcomeRecord, WorkItemExecutionRecord,
+        ExecutionAttempt, ExecutionAttemptState, ExecutionOutcomeRecord, WorkItemExecutionRecord,
     },
     runtime::resident_input_evidence::{
         project_tool_record, safe_command_preview, CommittedEvidenceRemoval,
@@ -44,6 +44,9 @@ pub(crate) use task_output::{
 #[path = "input_evidence_attempt_turn.rs"]
 mod attempt_turn;
 use attempt_turn::AttemptTurnProof;
+
+#[path = "input_evidence_provider_replay.rs"]
+mod provider_replay;
 
 #[path = "input_evidence_dispatch_briefs.rs"]
 mod dispatch_briefs;
@@ -1849,21 +1852,45 @@ fn prepare_input_records_tx(
                 let turn = ContextDurableRead::new(tx, &scope.agent_id)
                     .turn_by_id(&turn_id)?
                     .context("provider recovery source Turn missing")?;
+                let assigned = message_turn_keys
+                    .get(&source)
+                    .and_then(|turn| turn.as_deref())
+                    .context("provider recovery source has no actual Turn assignment")?;
+                let source_agent_matches = source_message.agent_id == scope.agent_id;
+                let turn_agent_matches = turn.agent_id == scope.agent_id;
+                let assignment_matches = assigned == turn_id;
+                let replay_matches = turn.replay.as_ref().is_some_and(|replay| {
+                    replay.source_turn_id == assigned
+                        && replay.source_message_id == source
+                        && replay.reason == "interrupted_queue_claim_reentry"
+                });
+                let trigger_matches = turn
+                    .trigger
+                    .as_ref()
+                    .and_then(|trigger| trigger.message_id.as_deref())
+                    == Some(source.as_str());
+                let input_matches = turn.input_message_ids.contains(&source);
+                let actual_terminal = turn.terminal.as_ref().map(|summary| summary.kind);
+                let terminal_matches = actual_terminal == Some(terminal);
                 ensure!(
-                    source_message.agent_id == scope.agent_id
-                        && turn.agent_id == scope.agent_id
-                        && message_turn_keys
-                            .get(&source)
-                            .and_then(|turn| turn.as_deref())
-                            == Some(turn_id.as_str())
-                        && turn
-                            .trigger
-                            .as_ref()
-                            .and_then(|trigger| trigger.message_id.as_deref())
-                            == Some(source.as_str())
-                        && turn.terminal.as_ref().map(|summary| summary.kind) == Some(terminal),
-                    "provider recovery lineage source lacks its actual terminal Turn assignment"
+                    source_agent_matches
+                        && turn_agent_matches
+                        && (assignment_matches || replay_matches)
+                        && trigger_matches
+                        && input_matches
+                        && terminal_matches,
+                    "provider recovery lineage source lacks its actual terminal Turn assignment: \
+                     source_agent_matches={source_agent_matches}, turn_agent_matches={turn_agent_matches}, \
+                     assignment_matches={assignment_matches}, replay_matches={replay_matches}, \
+                     trigger_matches={trigger_matches}, input_matches={input_matches}, \
+                     terminal_matches={terminal_matches}, expected_terminal={terminal:?}, \
+                     actual_terminal={actual_terminal:?}, source_id={source}, \
+                     assigned_turn_id={assigned}, turn_id={turn_id}"
                 );
+                // The immutable assignment selects the complete original-hint
+                // candidate set. Replay authority is checked after its finite
+                // canonical Turn/Attempt closure has qualified below.
+                mandatory_roots.insert(Key::new(Family::Turn, assigned));
                 if let Ok(Some((prior_turn, prior_source, prior_terminal))) =
                     crate::runtime::provider_recovery::continuity_sources(source_message)
                 {
@@ -1921,7 +1948,24 @@ fn prepare_input_records_tx(
                 );
                 execution_coverage.sources = fresh.sources;
                 execution_coverage.source(&source)?;
-                let candidates = execution_coverage.required_body_keys(&mandatory_roots);
+                let mut candidates = execution_coverage.required_body_keys(&mandatory_roots);
+                candidates.extend(
+                    execution_coverage
+                        .source(&source)?
+                        .attempts
+                        .values()
+                        .filter(|attempt| {
+                            !attempt.pruned
+                                && attempt.turn_id_hint == source_message.turn_id
+                                && attempt.terminal_outcome_id.is_some()
+                                && matches!(
+                                    attempt.state,
+                                    ExecutionAttemptState::Settled
+                                        | ExecutionAttemptState::Interrupted
+                                )
+                        })
+                        .map(|attempt| Key::new(Family::Attempt, &attempt.attempt_id)),
+                );
                 for child in candidates {
                     mandatory_roots.insert(child.clone());
                     selected.insert(child.clone());
@@ -1929,6 +1973,15 @@ fn prepare_input_records_tx(
                 }
                 expanded_provider_sources.insert(source);
             }
+        }
+    }
+    for source in &expanded_provider_sources {
+        let (turn, _, _) = &provider_sources[source];
+        let assigned = message_turn_keys[source]
+            .as_deref()
+            .context("provider lineage assignment disappeared")?;
+        if assigned != turn {
+            provider_replay::validate(&records, &execution_coverage, source, turn, assigned)?;
         }
     }
     let (query, query_guards) = query

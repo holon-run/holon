@@ -1393,7 +1393,12 @@ async fn assert_command_and_child_recovery_wakes_drain_pending_results_once() {
                     "owner" => corrupt.work_item_id = Some("foreign-owner".into()),
                     "source" => corrupt.message_id = "foreign-message".into(),
                     "generation" => corrupt.rejoin_generation += 1,
-                    "parent" => corrupt.parent_turn_id = "foreign-turn".into(),
+                    "parent" => {
+                        corrupt.source =
+                            crate::domain::execution_protocol::TaskRejoinSource::ParentTurn {
+                                parent_turn_id: "foreign-turn".into(),
+                            };
+                    }
                     "status" => corrupt.task_status = "running".into(),
                     _ => unreachable!(),
                 }
@@ -1661,7 +1666,7 @@ async fn p1_command_and_child_admitted_anchor_survives_two_runtime_rebuilds() {
                             assert_eq!(recovered.work_item_id, record.work_item_id);
                             assert_eq!(recovered.message_id, record.message_id);
                             assert_eq!(recovered.rejoin_generation, record.rejoin_generation);
-                            assert_eq!(recovered.parent_turn_id, record.parent_turn_id);
+                            assert_eq!(recovered.source, record.source);
                         }
                     }
                     batches.push(records.len());
@@ -2253,6 +2258,7 @@ async fn p1_closed_admitted_reply_recovers_through_fenced_runtime_wake() {
             turn_record,
             prepared_work_item_completion: None,
             prepared_wait_for: None,
+            provider_recovery_message: None,
             terminal_tool_executions: Vec::new(),
         };
         assert!(runtime

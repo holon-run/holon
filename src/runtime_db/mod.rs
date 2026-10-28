@@ -63,6 +63,7 @@ pub use input_evidence_snapshot::maintenance::{
     NeedsOfflineInputMaintenance, OfflineInputMaintenance,
 };
 pub(crate) mod child_task_terminal;
+pub(crate) mod command_task_creation;
 pub(crate) mod command_task_terminal;
 pub(crate) mod scheduling_snapshot;
 pub(crate) mod task_recovery;

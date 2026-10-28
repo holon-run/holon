@@ -641,6 +641,7 @@ async fn automatic_memory_runtime_missing_started_seed_cannot_bypass_as_claim_on
             turn_record: f.runtime.own_produced_turn_record(command.turn_record).await?,
             prepared_work_item_completion: None,
             prepared_wait_for: None,
+            provider_recovery_message: None,
             terminal_tool_executions: Vec::new(),
         };
         let turn_id = state.current_turn_id.as_deref().unwrap();

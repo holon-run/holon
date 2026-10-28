@@ -1133,6 +1133,7 @@ impl RuntimeMutation {
         let entry = match &queue.command.mutation {
             QueueMutation::Consume(entry)
             | QueueMutation::Upsert(entry)
+            | QueueMutation::SettleWithProviderRecovery { record: entry, .. }
             | QueueMutation::CompareAndSet { record: entry, .. }
             | QueueMutation::ParkProviderDispatch { record: entry, .. }
             | QueueMutation::ConsumeSettledTaskResultRecovery { record: entry, .. } => entry,
@@ -1430,6 +1431,17 @@ impl RuntimeMutation {
             load_dispatch_memory_binding_by_turn_tx, load_dispatch_memory_binding_tx,
         };
         let scope = self.input_evidence_scope();
+        if let Some(ack) = prepared.stopped_provider_pause_ack() {
+            let memory = self.runtime.inner.runtime_db.transaction(|tx| {
+                crate::runtime_db::provider_admission::load_stopped_provider_pause_memory_tx(
+                    tx,
+                    &ack,
+                    &scope,
+                    &self.runtime.inner.input_evidence_budget,
+                )
+            })?;
+            return prepared.with_stopped_provider_pause_memory(memory);
+        }
         self.runtime.attach_dispatch_memory_with_binding(prepared, |tx, prepared| {
             if let Some(turn_id) = prepared.actual_memory_terminal_turn_id() {
                 if let Some(source) = prepared

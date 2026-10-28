@@ -182,7 +182,8 @@ pub(super) fn has_resolved_claim_tx(
                        AND json_extract(m.payload_json,'$.admission_context')='runtime_owned'
                        AND json_extract(m.payload_json,'$.source_refs.task_result_message_id')=?6
                        AND json_extract(m.payload_json,'$.source_refs.task_result_identity')=?7
-                       AND json_extract(m.payload_json,'$.source_refs.task_result_parent_turn_id')=?8
+                       AND json_extract(m.payload_json,?10)=?8
+                       AND json_extract(m.payload_json,?11) IS NULL
                        AND json_extract(m.payload_json,'$.source_refs.task_result_rejoin_generation')=?9
                        AND (json_extract(m.payload_json,'$.source_refs.wait_id') IS NULL
                             OR json_extract(m.payload_json,'$.source_refs.wait_id')=c.wait_condition_id))))
@@ -195,8 +196,14 @@ pub(super) fn has_resolved_claim_tx(
             guard.expected.state == TaskResultSettlementState::CallerAdmitted,
             guard.expected.message_id,
             guard.expected.result_identity,
-            guard.expected.parent_turn_id,
+            guard.expected.source.result_source_ref().1,
             guard.expected.rejoin_generation.to_string(),
+            format!("$.source_refs.{}", guard.expected.source.result_source_ref().0),
+            if guard.expected.source.parent_turn_id().is_some() {
+                "$.source_refs.task_result_command_creation_id"
+            } else {
+                "$.source_refs.task_result_parent_turn_id"
+            },
         ],
         |row| row.get(0),
     )

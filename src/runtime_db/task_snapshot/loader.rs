@@ -517,6 +517,14 @@ fn load_selected_with_scope_material(
     for item in stored.values() {
         match &item.fact {
             CanonicalTaskFact::Task(task) => {
+                if task
+                    .detail
+                    .as_ref()
+                    .and_then(|d| d.get("command_creation_id"))
+                    .is_some()
+                {
+                    task.rejoin_fence().map_err(anyhow::Error::msg)?;
+                }
                 coverage
                     .task_metadata
                     .insert(task.id.clone(), TaskMetadata::from_record(task));
@@ -528,10 +536,20 @@ fn load_selected_with_scope_material(
                     input_roots.insert(InputEvidenceKey::new(InputEvidenceFamily::Message, id));
                 }
                 if let Ok(fence) = task.rejoin_fence() {
-                    input_roots.insert(InputEvidenceKey::new(
-                        InputEvidenceFamily::Turn,
-                        fence.parent_turn_id,
-                    ));
+                    crate::runtime_db::command_task_creation::validate_source_tx(
+                        tx,
+                        scope,
+                        &task.id,
+                        fence.generation,
+                        &fence.source,
+                        task.work_item_id.as_deref(),
+                        Some(task),
+                        |bytes, records| material.charge(bytes, records, 8, false),
+                    )?;
+                    if let Some(parent) = fence.source.parent_turn_id() {
+                        input_roots
+                            .insert(InputEvidenceKey::new(InputEvidenceFamily::Turn, parent));
+                    }
                 }
             }
             CanonicalTaskFact::ResultSettlement(result) => {
@@ -573,10 +591,10 @@ fn load_selected_with_scope_material(
                         coverage.result_dependencies[&result.result_identity].relation,
                         TaskResultDependencyRelation::QualifiedCurrent { .. }
                     ) {
-                        input_roots.insert(InputEvidenceKey::new(
-                            InputEvidenceFamily::Turn,
-                            &result.parent_turn_id,
-                        ));
+                        if let Some(parent) = result.source.parent_turn_id() {
+                            input_roots
+                                .insert(InputEvidenceKey::new(InputEvidenceFamily::Turn, parent));
+                        }
                         if let Some(id) = &result.work_item_id {
                             work_roots.insert(id.clone());
                         }
@@ -696,10 +714,13 @@ fn load_selected_with_scope_material(
             facts,
             resident,
             input_roots,
+            #[cfg(test)]
+            turnless_parent_turns: BTreeSet::new(),
             work_roots,
         },
     )))
 }
+
 fn sql_text(value: &str) -> String {
     format!("'{}'", value.replace('\'', "''"))
 }
@@ -850,7 +871,7 @@ fn result_metadata(
         message_id: x.message_id.clone(),
         work_item_id: x.work_item_id.clone(),
         rejoin_generation: x.rejoin_generation,
-        parent_turn_id: x.parent_turn_id.clone(),
+        source: x.source.clone(),
         state: x.state,
         activation_id: x.activation_id.clone(),
         activation_open,

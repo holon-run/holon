@@ -102,7 +102,7 @@ impl LifecycleHarness {
         clock: Arc<crate::runtime::clock::TestClock>,
         provider: Arc<dyn AgentProvider>,
     ) -> RuntimeHandle {
-        RuntimeHandle::new_with_clock(
+        let runtime = RuntimeHandle::new_with_clock(
             "default",
             data_dir.path().to_path_buf(),
             workspace.path().to_path_buf(),
@@ -112,7 +112,9 @@ impl LifecycleHarness {
             context_config(),
             clock,
         )
-        .expect("open lifecycle runtime")
+        .expect("open lifecycle runtime");
+        super::isolate_test_user_home(&runtime);
+        runtime
     }
 
     pub(crate) fn runtime(&self) -> &RuntimeHandle {

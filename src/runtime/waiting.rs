@@ -493,6 +493,7 @@ impl RuntimeHandle {
 
     pub(in crate::runtime) async fn prepare_wait_for_outcome_from_owned_read(
         &self,
+        mutation: &mut super::state_mutation::RuntimeMutation,
         agent_id: &str,
         mut work_item_id: Option<String>,
         wake: WaitForWakeKind,
@@ -500,9 +501,9 @@ impl RuntimeHandle {
         reason: String,
         recheck_after_ms: Option<u64>,
         condition_id: Option<String>,
-        base_state: &AgentState,
         scheduling: Option<super::state_mutation::WaitSchedulingRead>,
     ) -> Result<PrepareWaitForOutcome> {
+        let base_state = mutation.state.clone();
         let runtime_agent_id = base_state.id.as_str();
         if agent_id != runtime_agent_id {
             return Err(anyhow!("wait_for agent mismatch: {}", agent_id));
@@ -534,7 +535,13 @@ impl RuntimeHandle {
             }
             if task_state_reducer::is_terminal_task_status(&task.status) {
                 return self
-                    .prepare_terminal_task_result(task, work_item_id, reason, condition_id)
+                    .prepare_terminal_task_result(
+                        mutation,
+                        task,
+                        work_item_id,
+                        reason,
+                        condition_id,
+                    )
                     .await;
             }
             expected_task = Some(task_expectation(&task));
@@ -844,6 +851,7 @@ impl RuntimeHandle {
 
     async fn prepare_terminal_task_result(
         &self,
+        mutation: &mut super::state_mutation::RuntimeMutation,
         task: TaskRecord,
         waiter_work_item_id: Option<String>,
         reason: String,
@@ -895,18 +903,18 @@ impl RuntimeHandle {
             .with_safe_context("result_message_id", &result_message_id)
         })?;
         use super::resident_task::{TaskCaptureRequest, TaskFamily, TaskKey, TaskReadError};
-        let task_read = self
-            .capture_task_read(&TaskCaptureRequest {
-                include_active: false,
-                include_unsettled: false,
-                terminal_limit: 0,
-                required_keys: std::collections::BTreeSet::from([TaskKey::new(
-                    TaskFamily::Task,
-                    &task.id,
-                )]),
-                recovery_source_ids: Default::default(),
-            })
-            .await?;
+        let request = TaskCaptureRequest {
+            include_active: false,
+            include_unsettled: false,
+            terminal_limit: 0,
+            required_keys: std::collections::BTreeSet::from([TaskKey::new(
+                TaskFamily::Task,
+                &task.id,
+            )]),
+            recovery_source_ids: Default::default(),
+        };
+        mutation.prepare_owner_task_request(&request).await?;
+        let task_read = mutation.capture_task_read(&request)?;
         let result_ids = task_read
             .tasks
             .coverage
@@ -1066,7 +1074,6 @@ impl RuntimeHandle {
             (result_message, existing_entry)
         };
         let result_message_id = result_message.id.clone();
-        let mut mutation = self.begin_mutation().await?;
         let mut work_request = super::work_reads::live_work_request();
         work_request
             .required_trigger_message_ids
@@ -1082,12 +1089,11 @@ impl RuntimeHandle {
         mutation.prepare_owner_work_request(&work_request).await?;
         let work = mutation.capture_work(&work_request)?;
         let (wait_witness, wait_material) = self.capture_task_result_wait_witness(
-            &mutation,
+            mutation,
             &work,
             condition_id.as_deref(),
             &[&source_message_id, &result_message_id],
         )?;
-        drop(mutation);
         let agent_wait_conditions: Vec<_> = wait_witness
             .live_waits
             .iter()

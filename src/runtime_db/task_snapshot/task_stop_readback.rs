@@ -19,7 +19,7 @@ pub(crate) fn prepare_task_sql_readback_tx(
     ledger: &InputEvidenceBudgetLedger,
 ) -> Result<PreparedTaskSqlReadback> {
     let bytes: usize = tx.query_row(
-        &format!("SELECT length(CAST(payload_json AS BLOB))+length(CAST({} AS BLOB)) FROM tasks WHERE task_id=?1", projection_sql(TaskFamily::Task)),
+        &format!("SELECT length(CAST(payload_json AS BLOB))+length(CAST({} AS BLOB)) FROM tasks WHERE task_id=?1", projection_sql(tx, TaskFamily::Task)?),
         [id], |row| row.get(0),
     )?;
     let material = bytes

@@ -1077,7 +1077,10 @@ async fn assert_batchless_ancestor_restart(defect: Option<&str>) {
         .unwrap();
     let original = original_settlement.unwrap();
     assert_eq!(settled.result_identity, original.result_identity);
-    assert_eq!(settled.parent_turn_id, predecessors[1].turn_id);
+    assert_eq!(
+        settled.source.parent_turn_id().unwrap(),
+        predecessors[1].turn_id
+    );
     assert_eq!(settled.work_item_id, original.work_item_id);
     assert_eq!(settled.state, TaskResultSettlementState::Settled);
     assert_eq!(
@@ -1342,7 +1345,10 @@ async fn assert_mixed_operator_live_restart(defect: Option<&str>, repeated: bool
         .unwrap()
         .unwrap();
     assert_eq!(settled.work_item_id, original_settlement.work_item_id);
-    assert_eq!(settled.parent_turn_id, predecessor.turn_id);
+    assert_eq!(
+        settled.source.parent_turn_id().unwrap(),
+        predecessor.turn_id
+    );
     assert_eq!(settled.result_identity, original_settlement.result_identity);
     assert_eq!(settled.state, TaskResultSettlementState::Settled);
     assert_eq!(
@@ -1516,7 +1522,7 @@ async fn assert_restart_reuses_local_round_two(result_kind: Option<TaskKind>) {
             .unwrap()
             .unwrap();
         assert_eq!(settled.work_item_id.as_deref(), Some(receiver.as_str()));
-        assert_eq!(settled.parent_turn_id, current.turn_id);
+        assert_eq!(settled.source.parent_turn_id().unwrap(), current.turn_id);
         assert_eq!(settled.state, TaskResultSettlementState::Settled);
         assert_eq!(
             settled.disposition,
@@ -1864,7 +1870,10 @@ async fn p2_interrupted_restart_recovers_nine_live_results_without_identity_migr
         initial_before.work_item_id.as_deref(),
         Some(receiver.as_str())
     );
-    assert_eq!(initial_before.parent_turn_id, "p2-initial-parent");
+    assert_eq!(
+        initial_before.source.parent_turn_id(),
+        Some("p2-initial-parent")
+    );
     assert_eq!(
         runtime
             .inner
@@ -1900,7 +1909,10 @@ async fn p2_interrupted_restart_recovers_nine_live_results_without_identity_migr
     for settlement in &before {
         assert_eq!(settlement.state, TaskResultSettlementState::CallerAdmitted);
         assert_eq!(settlement.work_item_id.as_deref(), Some(producer.as_str()));
-        assert_eq!(settlement.parent_turn_id, predecessor.turn_id);
+        assert_eq!(
+            settlement.source.parent_turn_id().unwrap(),
+            predecessor.turn_id
+        );
         assert_eq!(settlement.rejoin_generation, 1);
     }
     assert_eq!(
@@ -2074,7 +2086,7 @@ async fn p2_interrupted_restart_recovers_nine_live_results_without_identity_migr
     );
     assert_eq!(initial_after.task_id, initial_before.task_id);
     assert_eq!(initial_after.work_item_id, initial_before.work_item_id);
-    assert_eq!(initial_after.parent_turn_id, initial_before.parent_turn_id);
+    assert_eq!(initial_after.source, initial_before.source);
     assert_eq!(
         initial_after.rejoin_generation,
         initial_before.rejoin_generation
@@ -2096,7 +2108,7 @@ async fn p2_interrupted_restart_recovers_nine_live_results_without_identity_migr
         assert_eq!(settled.result_identity, original.result_identity);
         assert_eq!(settled.task_id, original.task_id);
         assert_eq!(settled.work_item_id, original.work_item_id);
-        assert_eq!(settled.parent_turn_id, original.parent_turn_id);
+        assert_eq!(settled.source, original.source);
         assert_eq!(settled.rejoin_generation, original.rejoin_generation);
         assert_eq!(settled.state, TaskResultSettlementState::Settled);
         assert_eq!(
@@ -2897,7 +2909,7 @@ async fn p2_compaction_keeps_multiple_live_batches_reachable_once() {
             settlement.activation_id.as_deref(),
             Some(batches[0].activation_id.as_str())
         );
-        assert_eq!(settlement.parent_turn_id, turn.turn_id);
+        assert_eq!(settlement.source.parent_turn_id().unwrap(), turn.turn_id);
         assert_eq!(settlement.work_item_id.as_deref(), Some(receiver.as_str()));
         assert_eq!(settlement.state, TaskResultSettlementState::Settled);
         assert_eq!(

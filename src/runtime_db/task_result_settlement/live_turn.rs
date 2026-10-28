@@ -4,7 +4,7 @@ use super::{
     timestamp, update_tx, TaskResultSettlementRecord, TaskResultSettlementRepository,
     TaskResultSettlementState,
 };
-use anyhow::Result;
+use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
 use rusqlite::{params, OptionalExtension, Transaction};
 
@@ -358,12 +358,15 @@ pub(crate) fn recover_live_task_results_tx(
             recovery
                 .activation_turns
                 .values()
-                .any(|turn| turn == &record.parent_turn_id)
+                .any(|turn| Some(turn.as_str()) == record.source.parent_turn_id())
                 && source_is_live_tx(
                     tx,
                     record,
                     agent_id,
-                    &record.parent_turn_id,
+                    record
+                        .source
+                        .parent_turn_id()
+                        .context("same-Turn result has no parent Turn")?,
                     Some(predecessor_activation_id),
                     now,
                     Some(&recovery),
@@ -622,7 +625,7 @@ fn result_source_matches_tx(
         (TaskResultSettlementState::PersistedPending, None)
     };
     if record.agent_id != agent_id
-        || record.parent_turn_id != turn_id
+        || record.source.parent_turn_id() != Some(turn_id)
         || record.created_at > cutoff
         || record.state != expected_state
         || record.activation_id.as_deref() != expected_activation
@@ -651,7 +654,7 @@ fn result_source_matches_tx(
             record.message_id,
             record.work_item_id,
             generation,
-            record.parent_turn_id,
+            record.source.parent_turn_id(),
             expected_state.as_str(),
             expected_activation,
         ],
@@ -679,7 +682,7 @@ fn result_source_matches_tx(
         || message.id != record.message_id
         || expected.result_identity != record.result_identity
         || expected.rejoin_generation != record.rejoin_generation
-        || expected.parent_turn_id != turn_id
+        || expected.source.parent_turn_id() != Some(turn_id)
         || expected.task_status != record.task_status
         || expected.work_item_id != record.work_item_id
         || task.parent_message_id.as_deref() != Some(record.message_id.as_str())
@@ -723,11 +726,14 @@ fn initial_source_is_recoverable_tx(
 ) -> Result<bool> {
     use crate::domain::execution_protocol::ExecutionBinding;
 
+    let Some(parent_turn_id) = record.source.parent_turn_id() else {
+        return Ok(false);
+    };
     if !result_source_matches_tx(
         tx,
         record,
         &current.agent_id,
-        &record.parent_turn_id,
+        parent_turn_id,
         Some(predecessor_activation_id),
         now,
         true,
@@ -776,7 +782,7 @@ fn initial_source_is_recoverable_tx(
             tx,
             &task,
             &message,
-            &record.parent_turn_id,
+            parent_turn_id,
             Some(predecessor_activation_id),
             now,
             Some(recovery),
@@ -1279,7 +1285,9 @@ fn admitted_recovery_snapshot_matches_tx(
     if !super::record_matches_durable_task_tx(tx, &anchor)?
         || anchor.agent_id != record.agent_id
         || source.source_refs.get("task_result_identity") != Some(&anchor.result_identity)
-        || source.source_refs.get("task_result_parent_turn_id") != Some(&anchor.parent_turn_id)
+        || !anchor
+            .source
+            .matches_result_source_refs(&source.source_refs)
         || source.source_refs.get("task_result_rejoin_generation")
             != Some(&anchor.rejoin_generation.to_string())
         || (anchor.result_identity != record.result_identity

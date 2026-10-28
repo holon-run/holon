@@ -83,6 +83,62 @@ fn exhaust(runtime: &RuntimeHandle, record: &TaskResultSettlementRecord) {
 }
 
 #[tokio::test(start_paused = true)]
+async fn paused_diagnostic_preserves_unit_result_through_runtime_write_and_noop() {
+    let harness = LifecycleHarness::new();
+    let runtime = harness.runtime();
+    let record = pending_command_result(
+        runtime,
+        "paused-unit-result",
+        harness.now() - chrono::Duration::seconds(2000),
+    );
+    exhaust(runtime, &record);
+    runtime
+        .publish_paused_task_result_diagnostics("default")
+        .await
+        .unwrap();
+    let marked = runtime
+        .runtime_db()
+        .task_result_settlements()
+        .latest_for_message(&record.message_id)
+        .unwrap()
+        .unwrap();
+    assert_eq!(marked.recovery_diagnostic_at, Some(harness.now()));
+    assert_eq!(marked.state, TaskResultSettlementState::PersistedPending);
+    assert_eq!(marked.recovery_attempts, 5);
+    for epoch in [marked.recovery_epoch, marked.recovery_epoch + 1] {
+        let now = harness.now() + chrono::Duration::seconds(1);
+        runtime
+            .apply_task_result_operation((&record.result_identity, epoch, now), || {
+                crate::runtime_db::transitions::TaskResultOperation::MarkRecoveryDiagnostic {
+                    result_identity: record.result_identity.clone(),
+                    epoch,
+                    now,
+                }
+            })
+            .await
+            .unwrap()
+            .unit()
+            .unwrap();
+    }
+    runtime
+        .publish_paused_task_result_diagnostics("default")
+        .await
+        .unwrap();
+    let unchanged = runtime
+        .runtime_db()
+        .task_result_settlements()
+        .latest_for_message(&record.message_id)
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        unchanged.recovery_diagnostic_at,
+        marked.recovery_diagnostic_at
+    );
+    assert_eq!(unchanged.updated_at, marked.updated_at);
+    assert_eq!(runtime.storage().read_recent_briefs(20).unwrap().len(), 1);
+}
+
+#[tokio::test(start_paused = true)]
 async fn paused_scanner_reports_once_without_queueing_or_exposing_result_content() {
     let harness = LifecycleHarness::new();
     let runtime = harness.runtime();

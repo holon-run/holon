@@ -9,6 +9,8 @@ pub(crate) use audit_event_ack::AuditEventAck;
 mod execution_protocol_fixture_repository;
 pub(crate) mod execution_protocol_repository;
 mod live_input_attachment;
+#[cfg(test)]
+mod provider_queue_tests;
 mod provider_result_handoff;
 mod supervised_invocation;
 mod wait_task_result;
@@ -31,6 +33,7 @@ pub(crate) use prepared_input::{
     PreparedQueueTransition, PreparedSupervisedInvocationAdmission, PreparedTaskTransition,
     PreparedTimerTransition, TimerMutationOutcome,
 };
+pub(crate) use crate::runtime_db::provider_admission::StoppedProviderPauseAck;
 pub(in crate::runtime_db) use prepared_task_result::receipt_budget_with_material_tx as task_status_receipt_budget_with_material_tx;
 pub(crate) use prepared_task_result::{
     receipt_budget_tx as task_result_receipt_budget_tx, PreparedTaskResultTransition,
@@ -138,6 +141,10 @@ impl WorkItemMutation {
 pub(crate) enum QueueMutation {
     Consume(QueueEntryRecord),
     Upsert(QueueEntryRecord),
+    SettleWithProviderRecovery {
+        record: QueueEntryRecord,
+        recovery: Box<MessageEnvelope>,
+    },
     CompareAndSet {
         expected: QueueEntryRecord,
         record: QueueEntryRecord,
@@ -1603,7 +1610,7 @@ fn startup_idle_task_result_is_admitted_tx(
         "SELECT EXISTS(SELECT 1 FROM task_result_settlements
          WHERE agent_id=?1 AND message_id=?2 AND task_id=?3 AND work_item_id=?4
            AND activation_id=?5 AND state='caller_admitted'
-           AND rejoin_generation=?6 AND parent_turn_id=?7
+           AND rejoin_generation=?6 AND parent_turn_id=?7 AND command_creation_id IS ?8
            AND json_extract(payload_json,'$.agent_id') IS agent_id
            AND json_extract(payload_json,'$.message_id') IS message_id
            AND json_extract(payload_json,'$.task_id') IS task_id
@@ -1611,7 +1618,8 @@ fn startup_idle_task_result_is_admitted_tx(
            AND json_extract(payload_json,'$.activation_id') IS activation_id
            AND json_extract(payload_json,'$.state') IS state
            AND json_extract(payload_json,'$.rejoin_generation') IS rejoin_generation
-           AND json_extract(payload_json,'$.parent_turn_id') IS parent_turn_id
+           AND COALESCE(json_extract(payload_json,'$.parent_turn_id'),'') IS parent_turn_id
+           AND json_extract(payload_json,'$.command_creation_id') IS command_creation_id
            AND json_extract(payload_json,'$.result_identity') IS result_identity)",
         params![
             message.agent_id,
@@ -1620,7 +1628,8 @@ fn startup_idle_task_result_is_admitted_tx(
             owner,
             attempt.attempt_id,
             fence.generation,
-            fence.parent_turn_id
+            fence.source.parent_turn_id().unwrap_or(""),
+            fence.source.command_creation_id()
         ],
         |row| row.get(0),
     )?)
@@ -2946,7 +2955,9 @@ impl RuntimeTransitionRepository<'_> {
             let message_id = match &command.mutation {
                 QueueMutation::Consume(record)
                 | QueueMutation::Upsert(record)
+                | QueueMutation::SettleWithProviderRecovery { record, .. }
                 | QueueMutation::CompareAndSet { record, .. }
+                | QueueMutation::ParkProviderDispatch { record, .. }
                 | QueueMutation::ConsumeSettledTaskResultRecovery { record, .. } => {
                     &record.message_id
                 }
@@ -3339,6 +3350,13 @@ impl RuntimeTransitionRepository<'_> {
         }
         validate_queue_operation(command)?;
         validate_queue_mutation_tx(tx, &command.mutation)?;
+        if let QueueMutation::ConsumeSettledTaskResultRecovery { source, .. } = &command.mutation {
+            // Planning is not authority: owner results, waits and the durable
+            // Task generation must still agree in this queue CAS transaction.
+            if !super::task_result_settlement::settled_recovery_source_tx(tx, source)? {
+                return Ok(TransitionCommit::default());
+            }
+        }
         let mut scheduling_write_keys = BTreeSet::new();
         if let Some(timer_wake_claim) = timer_wake_claim {
             let valid = tx.query_row(
@@ -3535,14 +3553,24 @@ impl RuntimeTransitionRepository<'_> {
                         unreachable!("queue operation validation rejects this combination")
                     }
                 },
-                QueueMutation::Upsert(record) => upsert_queue_entry_tx(tx, record)?,
+                QueueMutation::Upsert(record)
+                | QueueMutation::SettleWithProviderRecovery { record, .. } => {
+                    upsert_queue_entry_tx(tx, record)?
+                }
                 QueueMutation::CompareAndSet { expected, record }
+                | QueueMutation::ParkProviderDispatch {
+                    expected, record, ..
+                }
                 | QueueMutation::ConsumeSettledTaskResultRecovery {
                     expected, record, ..
                 } => compare_and_set_queue_entry_tx(tx, expected, record)?,
             }
         };
-        if !matches!(&command.mutation, QueueMutation::Upsert(_)) && !mutation_applied {
+        if !matches!(
+            &command.mutation,
+            QueueMutation::Upsert(_) | QueueMutation::SettleWithProviderRecovery { .. }
+        ) && !mutation_applied
+        {
             return Ok(TransitionCommit {
                 effects: Box::new(PostCommitEffects {
                     audit_events: trigger_wait_and_enqueue
@@ -3587,6 +3615,12 @@ impl RuntimeTransitionRepository<'_> {
             advance_delivery_for_queue_transition_tx(tx, command, execution_protocol_transition)?;
         }
         let agent_state_applied = apply_agent_state_mutation_tx(tx, command.agent_state.as_ref())?;
+        if command.operation == QueueOperation::Settle && command.turn_record.is_some() {
+            inject_fault(
+                command.fault,
+                TransitionFaultPoint::AfterTerminalAgentStateWrite,
+            )?;
+        }
         let execution_protocol_applied = execution_protocol
             .as_ref()
             .is_some_and(|prepared| prepared.has_writes());
@@ -3774,6 +3808,25 @@ impl RuntimeTransitionRepository<'_> {
         }
         if let Some(turn_record) = command.turn_record.as_ref() {
             upsert_turn_record_tx(tx, turn_record)?;
+            if command.operation == QueueOperation::Settle {
+                inject_fault(
+                    command.fault,
+                    TransitionFaultPoint::AfterTerminalTurnRecordWrite,
+                )?;
+            }
+        }
+        if let QueueMutation::SettleWithProviderRecovery { recovery, .. } = &command.mutation {
+            upsert_queue_entry_tx(
+                tx,
+                &QueueEntryRecord {
+                    message_id: recovery.id.clone(),
+                    agent_id: recovery.agent_id.clone(),
+                    priority: recovery.priority.clone(),
+                    status: QueueEntryStatus::Queued,
+                    created_at: recovery.created_at,
+                    updated_at: recovery.created_at,
+                },
+            )?;
         }
         let (execution_protocol, input_evidence_delta) =
             execution_protocol_repository::persist_execution_commands_with_cleanup_input_facts_tx(
@@ -3869,12 +3922,21 @@ impl RuntimeTransitionRepository<'_> {
                     )
                     .chain(match &command.mutation {
                         QueueMutation::ParkProviderDispatch { source, .. } => Some(*source.clone()),
+                        QueueMutation::SettleWithProviderRecovery { recovery, .. } => {
+                            Some(*recovery.clone())
+                        }
                         _ => None,
                     })
                     .collect(),
                 current_queue_write_ids: mutation_applied
                     .then(|| queue_record.message_id.clone())
                     .into_iter()
+                    .chain(match &command.mutation {
+                        QueueMutation::SettleWithProviderRecovery { recovery, .. } => {
+                            Some(recovery.id.clone())
+                        }
+                        _ => None,
+                    })
                     .collect(),
                 removed_queue_message_ids: (!matches!(
                     queue_record.status,
@@ -5701,7 +5763,12 @@ fn validate_queue_mutation_tx(tx: &Transaction<'_>, mutation: &QueueMutation) ->
         );
     }
     match (mutation, existing.as_ref()) {
-        (QueueMutation::Upsert(_) | QueueMutation::ParkProviderDispatch { .. }, Some(existing)) => {
+        (
+            QueueMutation::Upsert(_)
+            | QueueMutation::SettleWithProviderRecovery { .. }
+            | QueueMutation::ParkProviderDispatch { .. },
+            Some(existing),
+        ) => {
             queue_entry_transition(existing, incoming)?;
         }
         (QueueMutation::CompareAndSet { expected, record }, _)
@@ -5722,6 +5789,7 @@ fn queue_mutation_record(mutation: &QueueMutation) -> &QueueEntryRecord {
     match mutation {
         QueueMutation::Consume(record) | QueueMutation::Upsert(record) => record,
         QueueMutation::CompareAndSet { record, .. }
+        | QueueMutation::SettleWithProviderRecovery { record, .. }
         | QueueMutation::ConsumeSettledTaskResultRecovery { record, .. }
         | QueueMutation::ParkProviderDispatch { record, .. } => record,
     }
@@ -5819,6 +5887,38 @@ fn validate_delivery_queue_admission(
 }
 
 fn validate_queue_operation(command: &QueueTransitionCommand) -> Result<()> {
+    if let QueueMutation::SettleWithProviderRecovery { record, recovery } = &command.mutation {
+        let turn = command
+            .turn_record
+            .as_ref()
+            .context("provider recovery requires source Turn settlement")?;
+        let (turn_id, source_id, kind) =
+            crate::runtime::provider_recovery::continuity_sources(recovery)?
+                .context("provider recovery requires continuity provenance")?;
+        anyhow::ensure!(
+            command.operation == QueueOperation::Settle
+                && record.status == QueueEntryStatus::Processed
+                && record.agent_id == command.agent_id
+                && turn.agent_id == command.agent_id
+                && recovery.agent_id == command.agent_id
+                && recovery.id != record.message_id
+                && command
+                    .message_evidence
+                    .iter()
+                    .any(|message| message == recovery.as_ref())
+                && command.message_evidence.iter().all(|message| {
+                    message.id == record.message_id || message == recovery.as_ref()
+                })
+                && source_id == record.message_id
+                && turn_id == turn.turn_id
+                && turn
+                    .terminal
+                    .as_ref()
+                    .is_some_and(|terminal| terminal.kind == kind),
+            "invalid provider recovery settlement"
+        );
+        return Ok(());
+    }
     if let QueueMutation::ParkProviderDispatch {
         record,
         pause,
@@ -8437,7 +8537,9 @@ mod tests {
             message_id: "message-execution".into(),
             work_item_id: Some("work-execution".into()),
             rejoin_generation: 1,
-            parent_turn_id: "turn-parent".into(),
+            source: crate::domain::execution_protocol::TaskRejoinSource::ParentTurn {
+                parent_turn_id: "turn-parent".into(),
+            },
             task_status: "completed".into(),
             state:
                 crate::runtime_db::task_result_settlement::TaskResultSettlementState::CallerAdmitted,
@@ -8473,7 +8575,7 @@ mod tests {
                     record.message_id,
                     record.work_item_id,
                     record.rejoin_generation,
-                    record.parent_turn_id,
+                    record.source.parent_turn_id().unwrap(),
                     "caller_admitted",
                     record.activation_id,
                     record.disposition.map(crate::runtime_db::task_result_settlement::TaskResultSettlementDisposition::as_str),

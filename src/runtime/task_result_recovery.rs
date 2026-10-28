@@ -542,7 +542,7 @@ impl RuntimeHandle {
                     },
                 )
                 .await?
-                .changed()?;
+                .unit()?;
             }
         }
     }
@@ -633,28 +633,34 @@ impl RuntimeHandle {
             }
             // A lifecycle-owned settlement whose result message already exists
             // can only be delivered through its anchor turn, a live exact
-            // waiter, or a work-item wake root. When the anchor turn is
-            // terminal with no open bound attempt and no exact waiter claims
-            // the result, every admission channel is unreachable: converge to
-            // the same terminal disposition as an unavailable owner instead of
-            // rechecking forever. Reply-anchored records keep their distinct
-            // dispositions below.
+            // waiter, a work-item wake root, or its own terminal re-entry
+            // queue root. When the anchor turn is terminal with no open bound
+            // attempt, no exact waiter claims the result, and the durable task
+            // no longer carries terminal re-entry authority, every admission
+            // channel is unreachable: converge to the same terminal
+            // disposition as an unavailable owner instead of rechecking
+            // forever. Reply-anchored records keep their distinct dispositions
+            // below.
             if record.work_item_id.is_none()
                 && exact_continuation.is_none()
-                && !self
-                    .inner
-                    .runtime_db
-                    .task_result_settlements()
-                    .anchor_turn_live(&record.agent_id, &record.parent_turn_id)?
+                && match record.source.parent_turn_id() {
+                    Some(parent_turn_id) => !self
+                        .inner
+                        .runtime_db
+                        .task_result_settlements()
+                        .anchor_turn_live(&record.agent_id, parent_turn_id)?,
+                    None => false,
+                }
                 && crate::wake_contract::agent_message_reply_reference(
                     read.source_message(&record.message_id)?,
                 )
                 .is_none()
+                && !read.terminal_reentry(&record.result_identity)?
             {
                 tracing::debug!(
                     agent_id = %state.id,
                     result_identity = %record.result_identity,
-                    parent_turn_id = %record.parent_turn_id,
+                    parent_turn_id = ?record.source.parent_turn_id(),
                     "converging lifecycle task-result settlement with a terminal anchor turn"
                 );
                 self.apply_task_result_operation(
@@ -787,10 +793,10 @@ impl RuntimeHandle {
                 "task_result_rejoin_generation".into(),
                 record.rejoin_generation.to_string(),
             );
-            message.source_refs.insert(
-                "task_result_parent_turn_id".into(),
-                record.parent_turn_id.clone(),
-            );
+            let (source_key, source_id) = record.source.result_source_ref();
+            message
+                .source_refs
+                .insert(source_key.into(), source_id.into());
             message
                 .source_refs
                 .insert("task_result_message_id".into(), record.message_id.clone());
@@ -858,7 +864,9 @@ mod tests {
             message_id: "message-1".into(),
             work_item_id: Some("work-a".into()),
             rejoin_generation: 1,
-            parent_turn_id: "turn-1".into(),
+            source: crate::domain::execution_protocol::TaskRejoinSource::ParentTurn {
+                parent_turn_id: "turn-1".into(),
+            },
             task_status: "completed".into(),
             state: TaskResultSettlementState::PersistedPending,
             activation_id: None,
@@ -879,7 +887,9 @@ mod tests {
         };
         let owner_key = recovery_owner_key(&record);
         record.rejoin_generation = 2;
-        record.parent_turn_id = "turn-2".into();
+        record.source = crate::domain::execution_protocol::TaskRejoinSource::ParentTurn {
+            parent_turn_id: "turn-2".into(),
+        };
         record.result_identity = "result-2".into();
         assert_eq!(owner_key, recovery_owner_key(&record));
     }

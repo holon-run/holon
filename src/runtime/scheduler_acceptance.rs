@@ -604,6 +604,7 @@ async fn seed_scheduler_waiting_work(
         turn_record: runtime.own_produced_turn_record(turn_record).await?,
         prepared_work_item_completion: None,
         prepared_wait_for: None,
+        provider_recovery_message: None,
         terminal_tool_executions: Vec::new(),
     };
     let task_id = format!("scheduler-restart-task-{agent_id}");
@@ -809,6 +810,7 @@ async fn scheduler_acceptance_terminal_transition(
         turn_record: runtime.own_produced_turn_record(turn_record).await?,
         prepared_work_item_completion: None,
         prepared_wait_for: None,
+        provider_recovery_message: None,
         terminal_tool_executions: Vec::new(),
     })
 }
