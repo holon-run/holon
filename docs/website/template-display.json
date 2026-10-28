@@ -30,6 +30,13 @@
         "summary": "持续维护贡献者体验、社区状况记录、升级处理队列和可审阅的社区健康简报；不代表维护者发言或执行社区管理操作。"
       }
     },
+    "customer-success-steward": {
+      "category": "operations",
+      "zh-CN": {
+        "name": "客户成功管家",
+        "summary": "持续维护客户健康度台账、流失先导信号与续约倒计时资产包；作为柔性初始化模板，不单方面对外联络，不在 CRM 中做破坏性变更。"
+      }
+    },
     "dependency-steward": {
       "category": "engineering",
       "zh-CN": {
