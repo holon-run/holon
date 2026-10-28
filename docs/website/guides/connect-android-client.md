@@ -106,6 +106,7 @@ already submitted to the runtime is unaffected.
 - **Brief-First Summaries:** Prominently highlights completion briefs, active work items, and checklist progress so you can track outcomes without scrolling through full execution traces.
 - **Collapsed Background Activity:** In-progress and queued background messages collapse automatically, keeping the active conversation clean.
 - **Model Selection:** View and override the active model for any agent directly from the mobile interface.
+  Unavailable or unconfigured model options are filtered automatically so only callable candidates appear in the picker.
 - **System Share Sheet Integration:** Share text, links, or documents from other Android apps directly into an agent's input composer.
 - **Durable Outbox & Network Resilience:** Prompts written while offline queue locally in the outbox. The app reconciles delivered messages against the runtime, fences stale sends, and tracks transient failures to avoid duplicate submissions on reconnect.
 - **Identity-Bound In-App Browser:** Local App routes and web links open in an identity-bound browser sheet that maintains authenticated session state without leaking credentials.

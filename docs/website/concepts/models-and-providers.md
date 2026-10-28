@@ -60,6 +60,23 @@ configuration for all tools. Dedicated vision and image-generation selections
 let those operations use suitable routes without replacing the conversation
 model.
 
+## Provider admission, cooldown, and resilience
+
+Holon coordinates provider dispatch through pre-turn admission, persistent
+request budgets, and shared cooldown management:
+
+- **Whole-chain admission and budgets** — Candidate provider chains and token
+  budgets are validated before dispatch begins, preventing partial dispatch
+  storms and unrecoverable budget failures.
+- **Shared cooldowns and same-turn tool continuation** — When an endpoint is
+  temporarily rate-limited or degraded, Holon applies an isolated shared
+  cooldown. Tools scheduled in the current turn keep running so long-running
+  turns can finish active tool calls before waiting or falling back.
+- **Candidate isolation and rate-limit persistence** — Routes returning 402
+  (Payment Required) are persistently isolated from immediate retry loops and
+  re-evaluated only through unified recovery. Quota-less 429 rate limits persist
+  across runtime restarts to avoid repeated threshold collisions.
+
 ## Fast mode
 
 On supported routes, Fast mode requests a faster service tier. It is separate

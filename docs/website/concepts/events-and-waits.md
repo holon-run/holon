@@ -89,6 +89,12 @@ Cancelling an active timer atomically settles any unadmitted waits dependent on
 it with reason `timer_cancelled`, preventing leaked wait registrations while
 leaving the WorkItem explicitly blocked until new action occurs.
 
+In addition to relative delays and fixed millisecond intervals, timers support
+calendar scheduling with standard five-field cron expressions and an IANA
+timezone. A calendar timer evaluates occurrences against the specified local
+calendar, recalculating its next occurrence in UTC after each fire and across
+daemon restarts so daylight-saving transitions remain accurate.
+
 A fallback recheck deadline on a wait serves a different purpose: reconsider
 that specific wait if no matching wake arrives. It is not a substitute for
 an independently managed recurring schedule.

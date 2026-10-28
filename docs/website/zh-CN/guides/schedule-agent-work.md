@@ -102,6 +102,23 @@ Agent 工具调用对应的参数为 `interval_ms`，而非 CLI 的 `every_ms`�
 
 将定时器 ID 与停止条件记录在 WorkItem 中。通知 Agent 当该构建达到终态时主动取消定时器。对于事件驱动的更新，优先采用外部回调；若要在外部等待中设置一次性兜底超时，请使用 `WaitFor(recheck_after_ms=...)`，无需另起定时调度。
 
+### 基于日历规则的调度
+
+若巡检需要按照日历作息而非固定毫秒间隔触发，使用标准五段式 cron 表达式与 IANA 时区：
+
+```bash
+holon timer create --agent builder \
+  --calendar-expression "0 9 * * 1-5" \
+  --timezone "Asia/Tokyo" \
+  --summary "工作日早间代码健康巡检"
+```
+
+对应的 Agent 工具调用：
+
+```json
+{ "calendar_expression": "0 9 * * 1-5", "timezone": "Asia/Tokyo", "summary": "工作日早间代码健康巡检" }
+```
+
 ## 4. 取消并确认
 
 ```bash

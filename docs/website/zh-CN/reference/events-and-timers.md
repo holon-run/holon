@@ -38,16 +38,18 @@ Agent 的运行时上下文会自动注入其默认接入凭据。对于常规�
 
 | 操作 | 操作者 CLI | Agent 工具 |
 |---|---|---|
-| 创建 | `holon timer create --after-ms N [--every-ms N] [--summary TEXT] [--agent ID]` | `CreateTimer(duration_ms, interval_ms?, summary?)` |
+| 创建 | `holon timer create --after-ms N [--every-ms N] [--summary TEXT] [--agent ID]` 或 `holon timer create --calendar-expression "M H * * *" --timezone AREA/LOCATION` | `CreateTimer(duration_ms?, interval_ms?, calendar_expression?, timezone?, summary?)` |
 | 列表 | `holon timer list [--limit N] [--agent ID]` | `ListTimers(limit?)` |
 | 详情 | 见下方 HTTP 路由 | `GetTimer(timer_id)` |
 | 取消 | `holon timer cancel TIMER_ID [--agent ID]` | `CancelTimer(timer_id)` |
 
 系统依然支持旧版的 `holon timer --after-ms N` 创建语法。Agent 工具仅对当前 Agent 生效，不接受指定目标 Agent ID。延迟与周期参数均为正毫秒数。创建定时器不会暂停当前轮次。取消已处于取消状态的定时器是幂等的；已触发完成的单次定时器无法再被取消。
 
+日历定时器接收严格的五段式标准 cron 字段（分、时、日、月、周）与 IANA 时区。表达式根据指定时区求值，而 `next_fire_at` 和持久化时间戳依然保留为 UTC。日历定时器在每次触发后以及系统重启后重新计算下一次匹配时间，不采用固定 UTC 间隔，因此能够准确处理夏令时（DST）切换。`calendar_expression` 与 `timezone` 必须成对提供，且不能与 `duration_ms` 或 `interval_ms` 混用。
+
 | HTTP 路由 | 契约说明 |
 |---|---|
-| `POST /api/control/agents/:id/timers` | 创建定时器，接收 `duration_ms`，可选 `interval_ms`、`summary` 以及控制层 `authority_class` 元数据 |
+| `POST /api/control/agents/:id/timers` | 创建定时器，接收 `duration_ms`/`interval_ms` 或 `calendar_expression`/`timezone`，以及可选 `summary` 与控制层 `authority_class` 元数据 |
 | `GET /api/agents/:id/timers` | 列出近期的定时器记录 |
 | `GET /api/agents/:id/timers/:timer_id` | 读取归属于该 Agent 的定时器详情，不存在时返回 404 |
 | `POST /api/control/agents/:id/timers/:timer_id/cancel` | 取消定时器；支持可选的控制层 `authority_class` 元数据 |
@@ -66,6 +68,7 @@ Agent 的运行时上下文会自动注入其默认接入凭据。对于常规�
 | `status` | `active`、`completed` 或 `cancelled`；旧版 `scheduled` 会被反序列化为 `active` |
 | `summary` | 可选的提醒说明文本 |
 | `next_fire_at`、`last_fired_at` | 下次预计触发时间戳与最近一次已触发时间戳 |
+| `calendar` | 日历定时器的归一化五段表达式与 IANA 时区配置 |
 | `fire_count` | 已记录的触发次数 |
 
 ## WaitFor 契约
