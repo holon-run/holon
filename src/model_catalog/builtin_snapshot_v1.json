@@ -2271,27 +2271,6 @@
       "source": "conservative_builtin"
     },
     {
-      "model_ref": "fireworks/accounts/fireworks/models/glm-5p2",
-      "display_name": "GLM 5.2",
-      "description": "Holon conservative built-in metadata for the Fireworks serverless accounts/fireworks/models/glm-5p2 model.",
-      "context_window_tokens": 1048576,
-      "effective_context_window_percent": 95,
-      "auto_compact_token_limit": null,
-      "default_max_output_tokens": null,
-      "max_output_tokens_upper_limit": null,
-      "default_verbosity": null,
-      "tool_output_truncation_estimated_tokens": 2500,
-      "capabilities": {
-        "agent_turn": true,
-        "parallel_tool_calls": false,
-        "image_input": false,
-        "image_generation": false,
-        "supports_reasoning": true,
-        "interactive_exec": false
-      },
-      "source": "conservative_builtin"
-    },
-    {
       "model_ref": "fireworks/accounts/fireworks/models/gpt-oss-120b",
       "display_name": "GPT-OSS 120B",
       "description": "Holon conservative built-in metadata for the Fireworks serverless accounts/fireworks/models/gpt-oss-120b model.",
@@ -2306,48 +2285,6 @@
         "agent_turn": true,
         "parallel_tool_calls": false,
         "image_input": false,
-        "image_generation": false,
-        "supports_reasoning": true,
-        "interactive_exec": false
-      },
-      "source": "conservative_builtin"
-    },
-    {
-      "model_ref": "fireworks/accounts/fireworks/models/kimi-k2p6",
-      "display_name": "Kimi K2.6",
-      "description": "Holon conservative built-in metadata for the Fireworks serverless accounts/fireworks/models/kimi-k2p6 model.",
-      "context_window_tokens": 262144,
-      "effective_context_window_percent": 95,
-      "auto_compact_token_limit": null,
-      "default_max_output_tokens": null,
-      "max_output_tokens_upper_limit": null,
-      "default_verbosity": null,
-      "tool_output_truncation_estimated_tokens": 2500,
-      "capabilities": {
-        "agent_turn": true,
-        "parallel_tool_calls": false,
-        "image_input": true,
-        "image_generation": false,
-        "supports_reasoning": true,
-        "interactive_exec": false
-      },
-      "source": "conservative_builtin"
-    },
-    {
-      "model_ref": "fireworks/accounts/fireworks/models/kimi-k2p7-code",
-      "display_name": "Kimi K2.7 Code",
-      "description": "Holon conservative built-in metadata for the Fireworks serverless accounts/fireworks/models/kimi-k2p7-code model.",
-      "context_window_tokens": 262144,
-      "effective_context_window_percent": 95,
-      "auto_compact_token_limit": null,
-      "default_max_output_tokens": null,
-      "max_output_tokens_upper_limit": null,
-      "default_verbosity": null,
-      "tool_output_truncation_estimated_tokens": 2500,
-      "capabilities": {
-        "agent_turn": true,
-        "parallel_tool_calls": false,
-        "image_input": true,
         "image_generation": false,
         "supports_reasoning": true,
         "interactive_exec": false
@@ -7454,27 +7391,6 @@
       "source": "conservative_builtin"
     },
     {
-      "model_ref": "volcengine/kimi-k2.7-code",
-      "display_name": "Kimi K2.7 Code",
-      "description": "Holon built-in runtime metadata for the volcengine-coding/kimi-k2.7-code compatible provider model.",
-      "context_window_tokens": 262144,
-      "effective_context_window_percent": 95,
-      "auto_compact_token_limit": null,
-      "default_max_output_tokens": 32768,
-      "max_output_tokens_upper_limit": 32768,
-      "default_verbosity": null,
-      "tool_output_truncation_estimated_tokens": 2500,
-      "capabilities": {
-        "agent_turn": true,
-        "parallel_tool_calls": false,
-        "image_input": true,
-        "image_generation": false,
-        "supports_reasoning": true,
-        "interactive_exec": false
-      },
-      "source": "built_in_catalog"
-    },
-    {
       "model_ref": "volcengine/kimi-k2.8-preview",
       "display_name": "Kimi K2.8 Preview",
       "description": "volcengine coding subscription Kimi K2.8 Preview; exact token limits unconfirmed.",
@@ -9696,37 +9612,7 @@
       }
     },
     {
-      "route_ref": "fireworks@default/accounts/fireworks/models/glm-5p2",
-      "policy": {
-        "display_name": null,
-        "description": null,
-        "effective_context_window_percent": null,
-        "capabilities": {},
-        "reasoning_effort_options": null
-      }
-    },
-    {
       "route_ref": "fireworks@default/accounts/fireworks/models/gpt-oss-120b",
-      "policy": {
-        "display_name": null,
-        "description": null,
-        "effective_context_window_percent": null,
-        "capabilities": {},
-        "reasoning_effort_options": null
-      }
-    },
-    {
-      "route_ref": "fireworks@default/accounts/fireworks/models/kimi-k2p6",
-      "policy": {
-        "display_name": null,
-        "description": null,
-        "effective_context_window_percent": null,
-        "capabilities": {},
-        "reasoning_effort_options": null
-      }
-    },
-    {
-      "route_ref": "fireworks@default/accounts/fireworks/models/kimi-k2p7-code",
       "policy": {
         "display_name": null,
         "description": null,
@@ -14514,16 +14400,6 @@
       }
     },
     {
-      "route_ref": "volcengine@coding/kimi-k2.7-code",
-      "policy": {
-        "display_name": null,
-        "description": null,
-        "effective_context_window_percent": null,
-        "capabilities": {},
-        "reasoning_effort_options": null
-      }
-    },
-    {
       "route_ref": "volcengine@coding/kimi-k2.8-preview",
       "policy": {
         "display_name": null,
@@ -14860,18 +14736,6 @@
         "description": null,
         "effective_context_window_percent": null,
         "capabilities": {},
-        "reasoning_effort_options": null
-      }
-    },
-    {
-      "route_ref": "volcengine@plan/kimi-k2.7-code",
-      "policy": {
-        "display_name": null,
-        "description": null,
-        "effective_context_window_percent": null,
-        "capabilities": {
-          "image_input": false
-        },
         "reasoning_effort_options": null
       }
     },
@@ -15822,10 +15686,6 @@
       "target": "volcengine/glm-latest"
     },
     {
-      "alias": "volcengine-agent/kimi-k2.7-code",
-      "target": "volcengine/kimi-k2.7-code"
-    },
-    {
       "alias": "volcengine-agent/kimi-k2.8-preview",
       "target": "volcengine/kimi-k2.8-preview"
     },
@@ -15886,10 +15746,6 @@
       "target": "volcengine/glm-5.3"
     },
     {
-      "alias": "volcengine-coding/kimi-k2.7-code",
-      "target": "volcengine/kimi-k2.7-code"
-    },
-    {
       "alias": "volcengine-image-openai/doubao-seedream-5.0-lite",
       "target": "volcengine/doubao-seedream-5.0-lite"
     },
@@ -15941,7 +15797,7 @@
     },
     {
       "provider": "fireworks",
-      "model_ref": "fireworks/accounts/fireworks/models/kimi-k2p6"
+      "model_ref": "fireworks/accounts/fireworks/models/minimax-m3"
     },
     {
       "provider": "gemini",
@@ -16115,7 +15971,7 @@
     },
     {
       "provider": "fireworks",
-      "route_ref": "fireworks@default/accounts/fireworks/models/kimi-k2p6"
+      "route_ref": "fireworks@default/accounts/fireworks/models/minimax-m3"
     },
     {
       "provider": "gemini",
@@ -16680,20 +16536,8 @@
       "route_ref": "fireworks@default/accounts/fireworks/models/glm-5p1"
     },
     {
-      "model_ref": "fireworks/accounts/fireworks/models/glm-5p2",
-      "route_ref": "fireworks@default/accounts/fireworks/models/glm-5p2"
-    },
-    {
       "model_ref": "fireworks/accounts/fireworks/models/gpt-oss-120b",
       "route_ref": "fireworks@default/accounts/fireworks/models/gpt-oss-120b"
-    },
-    {
-      "model_ref": "fireworks/accounts/fireworks/models/kimi-k2p6",
-      "route_ref": "fireworks@default/accounts/fireworks/models/kimi-k2p6"
-    },
-    {
-      "model_ref": "fireworks/accounts/fireworks/models/kimi-k2p7-code",
-      "route_ref": "fireworks@default/accounts/fireworks/models/kimi-k2p7-code"
     },
     {
       "model_ref": "fireworks/accounts/fireworks/models/minimax-m2p7",
@@ -17650,10 +17494,6 @@
     {
       "model_ref": "volcengine/glm-latest",
       "route_ref": "volcengine@coding/glm-latest"
-    },
-    {
-      "model_ref": "volcengine/kimi-k2.7-code",
-      "route_ref": "volcengine@coding/kimi-k2.7-code"
     },
     {
       "model_ref": "volcengine/kimi-k2.8-preview",

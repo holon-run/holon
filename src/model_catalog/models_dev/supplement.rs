@@ -382,6 +382,16 @@ pub fn generate(
                     });
                     continue;
                 }
+                // Native limits and effort metadata still need endpoint review.
+                if holon_provider_id == "mistral" && md_model_id == "deepseek-v4-1-flash-1017" {
+                    remaining_previous.remove(&model_ref_string);
+                    deferred.push(DeferredModel {
+                        model_ref: model_ref_string,
+                        reason: DeferredReason::EndpointReviewRequired,
+                        release_date: release_date_key(model).map(str::to_string),
+                    });
+                    continue;
+                }
                 if remaining_previous.remove(&model_ref_string) {
                     // Retained: refresh metadata from the current snapshot but
                     // keep the entry admitted.
@@ -490,11 +500,12 @@ pub fn generate(
     if let Some(previous) = previous {
         for route in &previous.routes {
             if current_model_refs.contains(&route.model_ref())
-                // Both subscriptions retired this exact ID on 2026-08-18.
+                // Both subscriptions retired K2.6 on 2026-08-18 and K2.7 Code
+                // on 2026-10-28.
                 // This does not establish retirement on the ordinary API.
                 && !(route.provider.as_str() == "volcengine"
                     && matches!(route.endpoint.as_str(), "coding" | "plan")
-                    && route.model.as_str() == "kimi-k2.6")
+                    && matches!(route.model.as_str(), "kimi-k2.6" | "kimi-k2.7-code"))
                 && route_keys.insert(route.as_string())
             {
                 routes.push(route.clone());
@@ -866,6 +877,60 @@ mod tests {
             model.model_ref == "openai-codex/gpt-future-test"
                 && model.reason == DeferredReason::EndpointReviewRequired
         }));
+    }
+
+    #[test]
+    fn defers_unreviewed_mistral_metadata_without_excluding_reviewed_peers() {
+        let parsed: ModelsDevSnapshot = serde_json::from_value(serde_json::json!({
+            "mistral": {
+                "id": "mistral",
+                "models": {
+                    "deepseek-v4-1-flash-1017": {
+                        "id": "deepseek-v4-1-flash-1017",
+                        "name": "DeepSeek V4.1 Flash",
+                        "release_date": "2026-10-28",
+                        "modalities": { "input": ["text"], "output": ["text"] }
+                    },
+                    "reviewed-peer": {
+                        "id": "reviewed-peer",
+                        "name": "Reviewed Peer",
+                        "release_date": "2026-10-28",
+                        "modalities": { "input": ["text"], "output": ["text"] }
+                    }
+                }
+            }
+        }))
+        .unwrap();
+        let previous = ModelsDevSupplement {
+            schema_version: SUPPLEMENT_SCHEMA_VERSION,
+            upstream_revision: "previous".into(),
+            adapter_version: "test".into(),
+            models: parsed.providers["mistral"]
+                .models
+                .iter()
+                .map(|(id, model)| {
+                    project_model(&ModelRef::parse(&format!("mistral/{id}")).unwrap(), model)
+                })
+                .collect(),
+            routes: Vec::new(),
+        };
+        for previous in [None, Some(&previous)] {
+            let update =
+                generate(&parsed, previous, &legacy(), "2026-05-05", "rev", "ver").unwrap();
+            assert_eq!(
+                update
+                    .supplement
+                    .models
+                    .iter()
+                    .map(|model| model.model_ref.as_string())
+                    .collect::<Vec<_>>(),
+                ["mistral/reviewed-peer"]
+            );
+            assert!(update.deferred.iter().any(|model| {
+                model.model_ref == "mistral/deepseek-v4-1-flash-1017"
+                    && model.reason == DeferredReason::EndpointReviewRequired
+            }));
+        }
     }
 
     #[test]
@@ -1250,11 +1315,17 @@ mod tests {
 
     #[test]
     fn retired_volcengine_subscription_routes_do_not_retire_the_api_model() {
-        let legacy = legacy();
+        let mut legacy = legacy();
+        // Exercise retained routes independently of legacy model promotion.
+        legacy
+            .entries
+            .remove(&ModelRef::parse("volcengine/kimi-k2.7-code").unwrap());
         let parsed: ModelsDevSnapshot = serde_json::from_str(
             r#"{
             "volcengine":{"id":"volcengine","models":{
                 "kimi-k2.6":{"id":"kimi-k2.6","release_date":"2026-10-01",
+                    "modalities":{"input":["text"],"output":["text"]}},
+                "kimi-k2.7-code":{"id":"kimi-k2.7-code","release_date":"2026-10-01",
                     "modalities":{"input":["text"],"output":["text"]}}
             }}
         }"#,
@@ -1264,25 +1335,34 @@ mod tests {
         previous
             .models
             .push(supplement_metadata("volcengine/kimi-k2.6", "Kimi K2.6"));
-        previous.routes = ["default", "coding", "plan"]
+        previous.models.push(supplement_metadata(
+            "volcengine/kimi-k2.7-code",
+            "Kimi K2.7 Code",
+        ));
+        previous.routes = ["kimi-k2.6", "kimi-k2.7-code"]
             .into_iter()
-            .map(|endpoint| {
-                ModelRouteRef::parse(&format!("volcengine@{endpoint}/kimi-k2.6")).unwrap()
+            .flat_map(|model| {
+                ["default", "coding", "plan"].map(|endpoint| {
+                    ModelRouteRef::parse(&format!("volcengine@{endpoint}/{model}")).unwrap()
+                })
             })
             .collect();
         let update = generate(
             &parsed,
             Some(&previous),
             &legacy,
-            "2026-10-23",
+            "2026-10-29",
             "rev",
             "ver",
         )
         .unwrap();
-        assert_eq!(update.supplement.models.len(), 1);
+        assert_eq!(update.supplement.models.len(), 2);
         assert_eq!(
             update.supplement.routes,
-            [ModelRouteRef::parse("volcengine@default/kimi-k2.6").unwrap()]
+            [
+                ModelRouteRef::parse("volcengine@default/kimi-k2.6").unwrap(),
+                ModelRouteRef::parse("volcengine@default/kimi-k2.7-code").unwrap(),
+            ]
         );
     }
 

@@ -5,6 +5,39 @@ unchanged catalog facts are preserved, not newly certified as vendor hard
 limits. An upstream candidate is evidence to review, not permission to change
 an endpoint, region, subscription entitlement, or runtime output policy.
 
+## Incremental review: 2026-10-29
+
+The new Mistral `deepseek-v4-1-flash-1017` candidate remains in the frozen
+snapshot/artifact, not the admitted supplement. Its
+[native model page](https://docs.mistral.ai/models/deepseek-v4-flash-1017)
+identifies text and function calling, but abbreviated 1M/128k figures do not
+establish exact 1048576/128000 integers or the upstream
+`none`/`low`/`high`/`max` effort values. Defer this single candidate with
+`endpoint_review_required`; preserve all 55 previously admitted supplement
+models. This is incomplete metadata review, not evidence of unavailability.
+
+The [endpoint review](endpoint-review.md#2026-10-29-incremental-review)
+records affirmative, endpoint-scoped retirement evidence, not a family-wide
+ban. Volcengine's Coding and Agent Plan exact `kimi-k2.7-code` IDs ended on
+2026-10-28 at 14:00 UTC+8; ordinary API and other providers remain independent.
+Retained supplement routes must not resurrect either retired subscription ID.
+Existing `kimi-latest` forwarding is uncertain, not proven retired.
+
+Fireworks' public `accounts/fireworks/models/kimi-k2p6`, `kimi-k2p7-code`
+and `glm-5p2` IDs ended serverless service on 2026-09-25, while on-demand
+deployments remain supported. Public catalog retirement is not permission
+to delete user deployment identities, inherit those deployments' limits,
+or retire native Moonshot/GLM and other providers' routes.
+Unknown/contradictory deployment availability and M3 image evidence stay
+unresolved rather than being converted into model-family capability claims.
+
+Current Go discovery lists 30 IDs; eight historical IDs are absent but not
+affirmatively retired. Preserve previously reviewed three-protocol access
+and unknown translated-route fields. BytePlus's 13 historical plan routes
+are retained without claiming all thirteen are newly certified by current
+public documentation. Codex, DeepSeek and other reviewed endpoint fields
+have no newly confirmed capacity change; runtime defaults remain distinct.
+
 ## Incremental review: 2026-10-28
 
 The previous Codex admission gap is now resolved by endpoint-specific evidence:

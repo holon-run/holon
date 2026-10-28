@@ -1944,7 +1944,6 @@ fn reasoning_effort_options(
         | ("fireworks", "accounts/fireworks/models/deepseek-v4-pro") => {
             &["none", "low", "medium", "high", "xhigh", "max"][..]
         }
-        ("fireworks", "accounts/fireworks/models/glm-5p2") => &["none", "high", "max"][..],
         ("fireworks", "accounts/fireworks/models/gpt-oss-120b")
         | ("fireworks", "accounts/fireworks/models/minimax-m2p7") => &["low", "medium", "high"][..],
         ("huggingface", "openai/gpt-oss-120b") => &["low", "medium", "high"][..],
@@ -3095,7 +3094,7 @@ mod tests {
     }
 
     #[test]
-    fn fireworks_catalog_tracks_current_serverless_chat_models() {
+    fn fireworks_catalog_preserves_reviewed_chat_metadata_without_certifying_availability() {
         let catalog = curated_catalog();
         let expected = [
             (
@@ -3109,17 +3108,10 @@ mod tests {
                 false,
             ),
             ("accounts/fireworks/models/glm-5p1", Some(202_752), false),
-            ("accounts/fireworks/models/glm-5p2", Some(1_048_576), false),
             (
                 "accounts/fireworks/models/gpt-oss-120b",
                 Some(131_072),
                 false,
-            ),
-            ("accounts/fireworks/models/kimi-k2p6", Some(262_144), true),
-            (
-                "accounts/fireworks/models/kimi-k2p7-code",
-                Some(262_144),
-                true,
             ),
             (
                 "accounts/fireworks/models/minimax-m2p7",
@@ -5176,9 +5168,14 @@ mod tests {
             );
         }
 
-        for route_ref in ["volcengine@plan/kimi-k2.7-code"] {
+        for route_ref in [
+            "volcengine@coding/kimi-k3.1-pro",
+            "volcengine@plan/kimi-k3.1-pro",
+        ] {
+            let route = ModelRouteRef::parse(route_ref).unwrap();
+            assert!(catalog.get_route(&route).is_some(), "{route_ref}");
             let policy = catalog.resolve_route_policy(
-                &ModelRouteRef::parse(route_ref).unwrap(),
+                &route,
                 &HashMap::new(),
                 &HashMap::new(),
                 None,

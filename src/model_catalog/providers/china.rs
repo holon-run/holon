@@ -69,12 +69,6 @@ fn volcengine_route_definition(
                 "Legacy GLM-5.2 subscription ID forwards to GLM-5.3; not original GLM-5.2 service."
                     .into()
             }),
-            capabilities: ModelCapabilityOverride {
-                // Coding Plan explicitly documents K2.7 images; Agent Plan
-                // eligibility alone is not evidence of the same capability.
-                image_input: (endpoint == "plan" && model == "kimi-k2.7-code").then_some(false),
-                ..ModelCapabilityOverride::default()
-            },
             ..BuiltInModelRoutePolicy::default()
         },
     }
@@ -278,7 +272,6 @@ pub(super) fn route_definitions() -> Vec<BuiltInModelRouteDefinition> {
             ("ark-code-latest", None),
             ("deepseek-v4-pro", None),
             ("deepseek-v4-flash", None),
-            ("kimi-k2.7-code", None),
             ("glm-5.3", None),
             ("glm-5.2", None),
         ]
@@ -615,16 +608,6 @@ pub(super) fn late_entries() -> Vec<BuiltInModelMetadata> {
             8_192,
             true,
             false,
-        ),
-        catalog_model(
-            "volcengine-coding",
-            "kimi-k2.7-code",
-            "Kimi K2.7 Code",
-            262_144,
-            // Volcengine API rejects max_tokens > 32768 for kimi-k2.7-code
-            32_768,
-            true,
-            true,
         ),
         catalog_model(
             "volcengine-coding",
@@ -1699,16 +1682,22 @@ fn subscription_routers_do_not_inherit_underlying_model_capabilities() {
 }
 
 #[test]
-fn volcengine_retired_k26_does_not_remove_compatibility_or_future_retirements() {
+fn volcengine_retired_subscription_ids_preserve_peers_and_future_retirements() {
     for catalog in [
         legacy_builtin_catalog().unwrap(),
         BuiltInModelCatalog::new(),
     ] {
         for endpoint in ["coding", "plan"] {
-            let retired =
-                ModelRouteRef::parse(&format!("volcengine@{endpoint}/kimi-k2.6")).unwrap();
-            assert!(catalog.get_route(&retired).is_none());
-            for model in ["glm-5.2", "kimi-k2.7-code", "minimax-m3"] {
+            for model in ["kimi-k2.6", "kimi-k2.7-code"] {
+                let retired =
+                    ModelRouteRef::parse(&format!("volcengine@{endpoint}/{model}")).unwrap();
+                assert!(
+                    catalog.get_route(&retired).is_none(),
+                    "{}",
+                    retired.as_string()
+                );
+            }
+            for model in ["glm-5.2", "kimi-latest", "minimax-m3"] {
                 let route =
                     ModelRouteRef::parse(&format!("volcengine@{endpoint}/{model}")).unwrap();
                 assert!(catalog.get_route(&route).is_some(), "{}", route.as_string());
@@ -1725,7 +1714,10 @@ fn volcengine_retired_k26_does_not_remove_compatibility_or_future_retirements() 
         }
         for peer in [
             "dashscope@token-plan/kimi-k2.6",
+            "dashscope@token-plan/kimi-k2.7-code",
+            "tencent-tokenhub@default/kimi-k2.7-code",
             "opencode-go@default/kimi-k2.6",
+            "opencode-go@default/kimi-k2.7-code",
         ] {
             assert!(catalog
                 .get_route(&ModelRouteRef::parse(peer).unwrap())
@@ -1802,17 +1794,6 @@ fn reviewed_subscription_capabilities_do_not_leak_between_endpoints() {
             );
             let api = ModelRouteRef::parse(&format!("byteplus@default/{model}")).unwrap();
             assert!(catalog.get_route(&api).is_none());
-        }
-        for (endpoint, image_input) in [("coding", true), ("plan", false)] {
-            let policy = catalog.resolve_route_policy(
-                &ModelRouteRef::parse(&format!("volcengine@{endpoint}/kimi-k2.7-code")).unwrap(),
-                &HashMap::new(),
-                &HashMap::new(),
-                None,
-                &ContextConfig::default(),
-                8_192,
-            );
-            assert_eq!(policy.capabilities.image_input, image_input);
         }
     }
 }
