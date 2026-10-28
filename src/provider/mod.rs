@@ -992,6 +992,20 @@ impl ProviderQuotaIdentity {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ProviderContextBudgetDiagnostics {
     pub estimated_input_tokens: usize,
+    /// Non-image JSON estimate, including tool schemas and image envelopes.
+    #[serde(default)]
+    pub estimated_text_tokens: usize,
+    /// Heuristic admission reserve, not a billing token count.
+    #[serde(default)]
+    pub image_reserve_tokens: usize,
+    #[serde(default)]
+    pub image_count: usize,
+    /// Base64 payload lengths only; excludes data URL prefixes and remote URLs.
+    #[serde(default)]
+    pub inline_image_base64_bytes: usize,
+    /// Length-only estimate without decoding or validating the base64 payloads.
+    #[serde(default)]
+    pub estimated_inline_image_decoded_bytes: usize,
     pub requested_output_tokens: usize,
     pub safety_headroom_tokens: usize,
     pub required_tokens: usize,
@@ -1093,12 +1107,11 @@ pub(crate) use catalog::build_candidate;
 #[cfg(test)]
 pub(crate) use retry::provider_max_attempts;
 pub(crate) use retry::{
-    classify_provider_error, ProviderFailureKind, ProviderTransportError, RetryDisposition,
+    classify_provider_error, provider_transport_error_with_code, ProviderFailureClassification,
+    ProviderFailureKind, ProviderTransportError, RetryDisposition,
     PROVIDER_RECOVERY_BASE_BACKOFF_MS, PROVIDER_RECOVERY_MAX_BACKOFF_MS,
     PROVIDER_RECOVERY_MAX_FALLBACKS,
 };
-#[cfg(test)]
-pub(crate) use retry::{provider_transport_error_with_code, ProviderFailureClassification};
 #[cfg(test)]
 pub(crate) use tool_schema::validate_emitted_tool_schema;
 pub(crate) use tool_schema::{emitted_tool_json_schema, ToolSchemaContract};

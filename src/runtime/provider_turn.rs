@@ -27,16 +27,25 @@
 use crate::{
     prompt::{render_section, EffectivePrompt, PromptSection, PromptStability},
     provider::{
-        AgentProvider, ContinuationScopeId, ConversationMessage, PromptContentBlock,
-        ProviderNativeWebSearchRequest, ProviderPromptCache, ProviderPromptFrame,
-        ProviderTurnRequest,
+        provider_transport_error_with_code, AgentProvider, ContinuationScopeId,
+        ConversationMessage, PromptContentBlock, ProviderFailureClassification,
+        ProviderFailureKind, ProviderNativeWebSearchRequest, ProviderPromptCache,
+        ProviderPromptFrame, ProviderTurnRequest, RetryDisposition,
     },
     system::ExecutionSnapshot,
     tool::ToolSpec,
 };
 use base64::Engine as _;
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use tracing::debug;
+
+// Runtime attachment limits, not vendor-specific limits. Base64 expansion of
+// 20 MiB leaves room for prompt/tool JSON under common 32 MiB request limits.
+const MAX_INLINE_IMAGES: usize = 8;
+const MAX_INLINE_IMAGE_BYTES: u64 = 20 * 1024 * 1024;
+// Content deduplication must not permit unbounded reads of different files.
+const MAX_MARKDOWN_IMAGE_READS: usize = 16;
 
 pub fn build_provider_prompt_frame(effective_prompt: &EffectivePrompt) -> ProviderPromptFrame {
     let (system_blocks, context_blocks) = build_prompt_content_blocks(
@@ -57,7 +66,7 @@ pub fn build_provider_turn_request(
     available_tools: Vec<ToolSpec>,
     native_web_search: Option<ProviderNativeWebSearchRequest>,
     inline_markdown_images: bool,
-) -> ProviderTurnRequest {
+) -> anyhow::Result<ProviderTurnRequest> {
     let (system_blocks, context_blocks) = build_prompt_content_blocks(
         &effective_prompt.system_sections,
         &effective_prompt.context_sections,
@@ -67,10 +76,12 @@ pub fn build_provider_turn_request(
         conversation.extend(markdown_image_messages_from_sections(
             &effective_prompt.context_sections,
             &effective_prompt.execution,
-        ));
+            MAX_INLINE_IMAGES,
+            MAX_INLINE_IMAGE_BYTES,
+        )?);
     }
 
-    ProviderTurnRequest {
+    Ok(ProviderTurnRequest {
         dispatch_guard: None,
         continuation_scope_id: ContinuationScopeId::new(
             effective_prompt.cache_identity.agent_id.clone(),
@@ -85,7 +96,7 @@ pub fn build_provider_turn_request(
         tools: available_tools,
         native_web_search,
         response_format: None,
-    }
+    })
 }
 
 pub fn build_initial_provider_turn_request(
@@ -93,7 +104,7 @@ pub fn build_initial_provider_turn_request(
     effective_prompt: &EffectivePrompt,
     available_tools: Vec<ToolSpec>,
     native_web_search: Option<ProviderNativeWebSearchRequest>,
-) -> ProviderTurnRequest {
+) -> anyhow::Result<ProviderTurnRequest> {
     build_provider_turn_request(
         effective_prompt,
         available_tools,
@@ -167,28 +178,143 @@ fn build_prompt_content_blocks(
 fn markdown_image_messages_from_sections(
     sections: &[PromptSection],
     execution: &ExecutionSnapshot,
-) -> Vec<ConversationMessage> {
-    sections
-        .iter()
-        .flat_map(|section| {
-            let optional_history = matches!(
+    max_images: usize,
+    max_bytes: u64,
+) -> anyhow::Result<Vec<ConversationMessage>> {
+    let mut messages = Vec::new();
+    let mut paths = HashSet::new();
+    let mut hashes = HashSet::new();
+    let mut inline_bytes = 0u64;
+    let mut duplicates = 0usize;
+    let mut omitted_history = 0usize;
+    // Current input reserves capacity first. A history reference to the same
+    // image must not make a current attachment optional.
+    for optional_history in [false, true] {
+        for section in sections.iter().filter(|section| {
+            matches!(
                 section.id.as_str(),
                 "recent_turns" | "relevant_episode_memory" | "current_work_item_process_trace"
-            );
-            markdown_image_messages_from_text(&section.content, execution, optional_history)
-        })
-        .collect()
+            ) == optional_history
+        }) {
+            for image in markdown_image_refs(&section.content) {
+                let Some(path) = resolve_markdown_image_src(image.src, execution) else {
+                    continue;
+                };
+                let canonical = path.canonicalize().unwrap_or_else(|_| path.clone());
+                if paths.contains(&canonical) {
+                    duplicates += 1;
+                    continue;
+                }
+                if paths.len() >= MAX_MARKDOWN_IMAGE_READS {
+                    if optional_history {
+                        omitted_history += 1;
+                        continue;
+                    }
+                    return Err(image_input_error(
+                        "image_scan_budget_exceeded",
+                        format!(
+                            "required markdown images exceed runtime read budget: \
+                             max_paths={MAX_MARKDOWN_IMAGE_READS}; reduce current image references"
+                        ),
+                    ));
+                }
+                paths.insert(canonical);
+                // Do not read further optional payloads after exhaustion.
+                // read_visual_reference also bounds files changed after stat.
+                if optional_history
+                    && (hashes.len() >= max_images
+                        || std::fs::metadata(&path)
+                            .is_ok_and(|meta| meta.len() > max_bytes.saturating_sub(inline_bytes)))
+                {
+                    omitted_history += 1;
+                    continue;
+                }
+                let read_image = match crate::tool::tools::view_image::read_visual_reference(&path)
+                {
+                    Ok(read_image) => read_image,
+                    Err(error) if optional_history => {
+                        debug!(path = %path.display(), %error, "omitting unavailable historical image");
+                        omitted_history += 1;
+                        continue;
+                    }
+                    Err(error) => {
+                        return Err(image_input_error(
+                            "image_input_invalid",
+                            format!("required markdown image cannot be attached: {error}"),
+                        ));
+                    }
+                };
+                if hashes.contains(&read_image.visual_reference.sha256) {
+                    duplicates += 1;
+                    continue;
+                }
+                let next_bytes = inline_bytes.saturating_add(read_image.bytes.len() as u64);
+                if hashes.len() >= max_images || next_bytes > max_bytes {
+                    if optional_history {
+                        omitted_history += 1;
+                        continue;
+                    }
+                    return Err(image_input_error(
+                        "image_budget_exceeded",
+                        format!(
+                            "required markdown images exceed runtime attachment budget: \
+                             image_count={}, decoded_bytes={}, max_images={max_images}, \
+                             max_decoded_bytes={max_bytes}; reduce current image attachments",
+                            hashes.len() + 1,
+                            next_bytes,
+                        ),
+                    ));
+                }
+                inline_bytes = next_bytes;
+                hashes.insert(read_image.visual_reference.sha256);
+                messages.push(ConversationMessage::UserImage {
+                    prompt: if image.alt.trim().is_empty() {
+                        format!("Image from {}", image.src)
+                    } else {
+                        image.alt.trim().to_string()
+                    },
+                    media_type: read_image.visual_reference.mime,
+                    data_base64: base64::engine::general_purpose::STANDARD.encode(read_image.bytes),
+                    optional_history,
+                });
+            }
+        }
+    }
+    debug!(
+        image_count = hashes.len(),
+        decoded_bytes = inline_bytes,
+        duplicates,
+        omitted_history,
+        scanned_paths = paths.len(),
+        max_scanned_paths = MAX_MARKDOWN_IMAGE_READS,
+        max_images,
+        max_bytes,
+        "assembled bounded markdown image attachments"
+    );
+    if omitted_history > 0 {
+        messages.push(ConversationMessage::UserText(format!(
+            "[Holon image attachment budget: omitted {omitted_history} optional historical \
+             image attachment(s) that exceeded the budget or could not be read. \
+             Original references and any existing text/observations remain; omitted \
+             pixels are not available in this request. Attached {} unique image(s), \
+             {inline_bytes} decoded bytes; limits {max_images} images / {max_bytes} bytes.]",
+            hashes.len(),
+        )));
+    }
+    Ok(messages)
 }
 
-fn markdown_image_messages_from_text(
-    text: &str,
-    execution: &ExecutionSnapshot,
-    optional_history: bool,
-) -> Vec<ConversationMessage> {
-    markdown_image_refs(text)
-        .into_iter()
-        .filter_map(|image| markdown_image_message(image, execution, optional_history))
-        .collect()
+fn image_input_error(code: &str, message: String) -> anyhow::Error {
+    provider_transport_error_with_code(
+        ProviderFailureClassification {
+            kind: ProviderFailureKind::ContractError,
+            disposition: RetryDisposition::FailFast,
+        },
+        Some(code),
+        None,
+        None,
+        message,
+    )
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -231,35 +357,6 @@ fn markdown_image_refs(text: &str) -> Vec<MarkdownImageRef<'_>> {
         offset = alt_end + 1;
     }
     refs
-}
-
-fn markdown_image_message(
-    image: MarkdownImageRef<'_>,
-    execution: &ExecutionSnapshot,
-    optional_history: bool,
-) -> Option<ConversationMessage> {
-    let path = resolve_markdown_image_src(image.src, execution)?;
-    match crate::tool::tools::view_image::read_visual_reference(&path) {
-        Ok(read_image) => Some(ConversationMessage::UserImage {
-            prompt: if image.alt.trim().is_empty() {
-                format!("Image from {}", image.src)
-            } else {
-                image.alt.trim().to_string()
-            },
-            media_type: read_image.visual_reference.mime,
-            data_base64: base64::engine::general_purpose::STANDARD.encode(read_image.bytes),
-            optional_history,
-        }),
-        Err(error) => {
-            debug!(
-                image_src = image.src,
-                path = %path.display(),
-                error = %error,
-                "skipping unresolved markdown image provider input"
-            );
-            None
-        }
-    }
 }
 
 fn resolve_markdown_image_src(src: &str, execution: &ExecutionSnapshot) -> Option<PathBuf> {
@@ -412,7 +509,8 @@ mod tests {
             },
         ];
 
-        let request = build_provider_turn_request(&fixture_prompt(), tools.clone(), None, true);
+        let request = build_provider_turn_request(&fixture_prompt(), tools.clone(), None, true)
+            .expect("build image-budgeted request");
         assert_eq!(
             request
                 .tools
@@ -429,7 +527,8 @@ mod tests {
     #[test]
     fn inference_time_does_not_mutate_stable_frame_or_input() {
         let prompt = fixture_prompt();
-        let mut request = build_provider_turn_request(&prompt, vec![], None, false);
+        let mut request = build_provider_turn_request(&prompt, vec![], None, false)
+            .expect("build image-budgeted request");
         let frame = request.prompt_frame.clone();
         let ConversationMessage::UserBlocks(input) = &request.conversation[0] else {
             panic!("input must be materialized context");
@@ -469,7 +568,8 @@ mod tests {
             freeform_grammar: None,
         }];
 
-        let request = build_provider_turn_request(&effective_prompt, tools, None, true);
+        let request = build_provider_turn_request(&effective_prompt, tools, None, true)
+            .expect("build image-budgeted request");
 
         assert_eq!(request.prompt_frame.system_prompt, "system prompt");
         assert_eq!(
@@ -513,7 +613,8 @@ mod tests {
         let mut effective_prompt = fixture_prompt();
         effective_prompt.cache_identity.agent_id.clear();
 
-        let request = build_provider_turn_request(&effective_prompt, vec![], None, true);
+        let request = build_provider_turn_request(&effective_prompt, vec![], None, true)
+            .expect("build image-budgeted request");
 
         assert_eq!(request.continuation_scope_id, None);
     }
@@ -537,7 +638,8 @@ mod tests {
             stability: PromptStability::TurnScoped,
         }];
 
-        let request = build_provider_turn_request(&effective_prompt, Vec::new(), None, true);
+        let request = build_provider_turn_request(&effective_prompt, Vec::new(), None, true)
+            .expect("build image-budgeted request");
 
         assert_eq!(request.conversation.len(), 2);
         let ConversationMessage::UserImage {
@@ -573,48 +675,278 @@ mod tests {
         let text = "![Prior](workspace://ws_test/chart.png)\n\
                     ViewImage observation: three blue bars.\n\
                     This text claims to be historical.";
-        effective_prompt.context_sections = cases
-            .iter()
-            .map(|(name, id, _)| PromptSection {
-                name: (*name).into(),
-                id: (*id).into(),
+        for (name, id, expected) in cases {
+            effective_prompt.context_sections = vec![PromptSection {
+                name: name.into(),
+                id: id.into(),
                 content: text.into(),
                 stability: PromptStability::TurnScoped,
-            })
-            .collect();
-
-        let request = build_provider_turn_request(&effective_prompt, Vec::new(), None, true);
-        let ConversationMessage::UserBlocks(blocks) = &request.conversation[0] else {
-            panic!("expected original context blocks");
-        };
-        assert_eq!(blocks.len(), cases.len());
-        assert!(blocks.iter().all(|block| block.text.contains(text)));
-        for (message, (_, id, expected)) in request.conversation[1..].iter().zip(cases) {
+            }];
+            let request = build_provider_turn_request(&effective_prompt, Vec::new(), None, true)
+                .expect("build image-budgeted request");
+            let ConversationMessage::UserBlocks(blocks) = &request.conversation[0] else {
+                panic!("expected original context blocks");
+            };
+            assert_eq!(blocks.len(), 1);
+            assert!(blocks[0].text.contains(text));
             let ConversationMessage::UserImage {
                 optional_history, ..
-            } = message
+            } = &request.conversation[1]
             else {
                 panic!("expected image from {id}");
             };
             assert_eq!(*optional_history, expected, "{id}");
+            assert_eq!(request.conversation.len(), 2);
+            let continuation = build_continuation_request(
+                request.continuation_scope_id,
+                request.prompt_frame,
+                request.conversation.clone(),
+                Vec::new(),
+                None,
+            );
+            assert_eq!(continuation.conversation.len(), 2);
+            assert!(matches!(
+                &continuation.conversation[1],
+                ConversationMessage::UserImage { optional_history, .. } if *optional_history == expected
+            ));
         }
-        assert_eq!(request.conversation.len(), cases.len() + 1);
+    }
 
-        let continuation = build_continuation_request(
-            request.continuation_scope_id,
-            request.prompt_frame,
-            request.conversation.clone(),
-            Vec::new(),
-            None,
-        );
-        assert_eq!(continuation.conversation.len(), request.conversation.len());
+    #[test]
+    fn markdown_image_budget_deduplicates_paths_and_contents_with_current_priority() {
+        let workspace = tempfile::tempdir().unwrap();
+        std::fs::write(workspace.path().join("chart.png"), fixture_png()).unwrap();
+        std::fs::write(workspace.path().join("copy.png"), fixture_png()).unwrap();
+        let mut prompt = image_budget_prompt(workspace.path());
+        prompt.context_sections = vec![
+            image_section("recent_turns", "![Old](chart.png)\nObservation: blue bars."),
+            image_section(
+                "current_input",
+                &format!(
+                    "Compare ![Current](workspace://ws_test/chart.png), \
+                     ![Alias]({}) and ![Copy](copy.png)",
+                    workspace.path().join("chart.png").display()
+                ),
+            ),
+        ];
+        let request = build_provider_turn_request(&prompt, vec![], None, true).unwrap();
+        assert_eq!(request.conversation.len(), 2);
         assert!(matches!(
-            &continuation.conversation[1],
+            &request.conversation[1],
+            ConversationMessage::UserImage { prompt, optional_history: false, .. } if prompt == "Current"
+        ));
+        let ConversationMessage::UserBlocks(blocks) = &request.conversation[0] else {
+            panic!("original references must remain");
+        };
+        assert!(blocks[0].text.contains("Observation: blue bars."));
+        assert!(blocks[1].text.contains("![Copy](copy.png)"));
+    }
+
+    #[test]
+    fn markdown_image_budget_omits_only_history_and_preserves_observations() {
+        let workspace = tempfile::tempdir().unwrap();
+        let mut prompt = image_budget_prompt(workspace.path());
+        let references = write_distinct_budget_images(workspace.path(), MAX_INLINE_IMAGES + 2);
+        prompt.context_sections = vec![
+            image_section(
+                "recent_turns",
+                &format!(
+                    "{}\nViewImage observation: prior blue bars.",
+                    references[1..].join("\n")
+                ),
+            ),
+            image_section("current_input", &references[0]),
+        ];
+        let request = build_provider_turn_request(&prompt, vec![], None, true).unwrap();
+        assert_eq!(
+            request
+                .conversation
+                .iter()
+                .filter(|m| matches!(m, ConversationMessage::UserImage { .. }))
+                .count(),
+            MAX_INLINE_IMAGES
+        );
+        assert!(matches!(
+            request.conversation[1],
             ConversationMessage::UserImage {
-                optional_history: true,
+                optional_history: false,
                 ..
             }
         ));
+        assert!(matches!(
+            request.conversation.last().unwrap(),
+            ConversationMessage::UserText(text) if text.contains("omitted 2 optional historical")
+                && text.contains("pixels are not available")
+        ));
+        let ConversationMessage::UserBlocks(blocks) = &request.conversation[0] else {
+            panic!("original context must remain");
+        };
+        assert!(blocks[0]
+            .text
+            .contains("ViewImage observation: prior blue bars."));
+        assert!(blocks[1].text.contains(&references[0]));
+    }
+
+    #[test]
+    fn markdown_image_budget_rejects_required_count_overflow_before_provider_dispatch() {
+        let workspace = tempfile::tempdir().unwrap();
+        let mut prompt = image_budget_prompt(workspace.path());
+        let references = write_distinct_budget_images(workspace.path(), MAX_INLINE_IMAGES + 1);
+        prompt.context_sections = vec![image_section("current_input", &references.join("\n"))];
+        let error = build_provider_turn_request(&prompt, vec![], None, true).unwrap_err();
+        let typed = error
+            .downcast_ref::<crate::provider::ProviderTransportError>()
+            .unwrap();
+        assert_eq!(
+            typed.classification.kind,
+            ProviderFailureKind::ContractError
+        );
+        assert_eq!(typed.classification.disposition, RetryDisposition::FailFast);
+        assert_eq!(typed.code.as_deref(), Some("image_budget_exceeded"));
+        assert!(error.to_string().contains("image_count=9"));
+        // A fallback to a text-only model must not attempt local inlining.
+        let text_only = build_provider_turn_request(&prompt, vec![], None, false).unwrap();
+        assert_eq!(text_only.conversation.len(), 1);
+    }
+
+    #[test]
+    fn markdown_image_budget_bounds_duplicate_content_reads() {
+        let workspace = tempfile::tempdir().unwrap();
+        let mut prompt = image_budget_prompt(workspace.path());
+        write_distinct_budget_images(workspace.path(), 1);
+        let mut references = vec!["![image](budget-0.png)".to_string()];
+        for index in 1..=MAX_MARKDOWN_IMAGE_READS {
+            let name = format!("copy-{index}.png");
+            std::fs::copy(
+                workspace.path().join("budget-0.png"),
+                workspace.path().join(&name),
+            )
+            .unwrap();
+            references.push(format!("![image]({name})"));
+        }
+        prompt.context_sections = vec![image_section("current_input", &references.join("\n"))];
+        let error = build_provider_turn_request(&prompt, vec![], None, true).unwrap_err();
+        let typed = error
+            .downcast_ref::<crate::provider::ProviderTransportError>()
+            .unwrap();
+        assert_eq!(typed.code.as_deref(), Some("image_scan_budget_exceeded"));
+        assert_eq!(typed.classification.disposition, RetryDisposition::FailFast);
+
+        prompt.context_sections[0].id = "recent_turns".into();
+        let request = build_provider_turn_request(&prompt, vec![], None, true).unwrap();
+        assert_eq!(
+            request
+                .conversation
+                .iter()
+                .filter(|message| matches!(message, ConversationMessage::UserImage { .. }))
+                .count(),
+            1
+        );
+        assert!(request.conversation.iter().any(|message| matches!(
+            message, ConversationMessage::UserText(note)
+                if note.contains("omitted 1 optional historical")
+        )));
+    }
+
+    #[test]
+    fn markdown_image_budget_decoded_byte_boundary_is_exact() {
+        let workspace = tempfile::tempdir().unwrap();
+        let mut prompt = image_budget_prompt(workspace.path());
+        let references = write_distinct_budget_images(workspace.path(), 2);
+        prompt.context_sections = vec![image_section("current_input", &references.join("\n"))];
+        let bytes: u64 = (0..2)
+            .map(|index| {
+                std::fs::metadata(workspace.path().join(format!("budget-{index}.png")))
+                    .unwrap()
+                    .len()
+            })
+            .sum();
+        let messages = markdown_image_messages_from_sections(
+            &prompt.context_sections,
+            &prompt.execution,
+            2,
+            bytes,
+        )
+        .unwrap();
+        assert_eq!(messages.len(), 2);
+        let error = markdown_image_messages_from_sections(
+            &prompt.context_sections,
+            &prompt.execution,
+            2,
+            bytes - 1,
+        )
+        .unwrap_err();
+        assert!(error
+            .to_string()
+            .contains(&format!("decoded_bytes={bytes}")));
+        assert!(error
+            .to_string()
+            .contains(&format!("max_decoded_bytes={}", bytes - 1)));
+        prompt.context_sections[0].id = "recent_turns".into();
+        let messages = markdown_image_messages_from_sections(
+            &prompt.context_sections,
+            &prompt.execution,
+            2,
+            bytes - 1,
+        )
+        .unwrap();
+        assert!(matches!(messages.as_slice(), [
+            ConversationMessage::UserImage { optional_history: true, .. },
+            ConversationMessage::UserText(note),
+        ] if note.contains("omitted 1 optional historical")));
+    }
+
+    #[test]
+    fn markdown_image_budget_rejects_unreadable_current_image_not_silent_omission() {
+        let workspace = tempfile::tempdir().unwrap();
+        std::fs::write(workspace.path().join("broken.png"), b"not an image").unwrap();
+        let mut prompt = image_budget_prompt(workspace.path());
+        prompt.context_sections = vec![image_section("current_input", "![Required](broken.png)")];
+        let error = build_provider_turn_request(&prompt, vec![], None, true).unwrap_err();
+        assert_eq!(
+            error
+                .downcast_ref::<crate::provider::ProviderTransportError>()
+                .unwrap()
+                .code
+                .as_deref(),
+            Some("image_input_invalid")
+        );
+        prompt.context_sections[0].id = "recent_turns".into();
+        let request = build_provider_turn_request(&prompt, vec![], None, true).unwrap();
+        assert!(
+            matches!(request.conversation.last(), Some(ConversationMessage::UserText(note))
+            if note.contains("omitted 1 optional historical"))
+        );
+    }
+
+    fn image_budget_prompt(workspace: &Path) -> EffectivePrompt {
+        let mut prompt = fixture_prompt();
+        prompt.execution.workspace_id = Some("ws_test".into());
+        prompt.execution.workspace_anchor = workspace.to_path_buf();
+        prompt.execution.execution_root = workspace.to_path_buf();
+        prompt.execution.cwd = workspace.to_path_buf();
+        prompt
+    }
+
+    fn image_section(id: &str, text: &str) -> PromptSection {
+        PromptSection {
+            name: id.into(),
+            id: id.into(),
+            content: text.into(),
+            stability: PromptStability::TurnScoped,
+        }
+    }
+
+    fn write_distinct_budget_images(workspace: &Path, count: usize) -> Vec<String> {
+        (0..count)
+            .map(|index| {
+                let name = format!("budget-{index}.png");
+                image::RgbImage::from_pixel(2, 2, image::Rgb([index as u8, 64, 192]))
+                    .save(workspace.join(&name))
+                    .unwrap();
+                format!("![Image {index}]({name})")
+            })
+            .collect()
     }
 
     #[test]
@@ -633,7 +965,8 @@ mod tests {
             stability: PromptStability::TurnScoped,
         }];
 
-        let request = build_provider_turn_request(&effective_prompt, Vec::new(), None, false);
+        let request = build_provider_turn_request(&effective_prompt, Vec::new(), None, false)
+            .expect("build image-budgeted request");
 
         assert_eq!(request.conversation.len(), 1);
         let ConversationMessage::UserBlocks(blocks) = &request.conversation[0] else {
@@ -672,7 +1005,8 @@ mod tests {
             &effective_prompt,
             Vec::new(),
             None,
-        );
+        )
+        .expect("build image-budgeted request");
         assert_eq!(text_only_request.conversation.len(), 1);
         let ConversationMessage::UserBlocks(blocks) = &text_only_request.conversation[0] else {
             panic!("expected original user blocks");
@@ -688,7 +1022,8 @@ mod tests {
             &effective_prompt,
             Vec::new(),
             None,
-        );
+        )
+        .expect("build image-budgeted request");
         assert!(matches!(
             image_request.conversation.as_slice(),
             [
@@ -717,7 +1052,8 @@ mod tests {
             stability: PromptStability::TurnScoped,
         }];
 
-        let request = build_provider_turn_request(&effective_prompt, Vec::new(), None, true);
+        let request = build_provider_turn_request(&effective_prompt, Vec::new(), None, true)
+            .expect("build image-budgeted request");
 
         assert_eq!(request.conversation.len(), 1);
     }
@@ -910,7 +1246,8 @@ mod tests {
             recent_turns_reprojection: None,
         };
 
-        let request = build_provider_turn_request(&effective_prompt, Vec::new(), None, true);
+        let request = build_provider_turn_request(&effective_prompt, Vec::new(), None, true)
+            .expect("build image-budgeted request");
 
         let system_blocks = request.prompt_frame.system_blocks;
         assert_eq!(system_blocks[0].text, "## identity\nstable system\n\n");

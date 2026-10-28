@@ -215,12 +215,15 @@ fn build_gemini_provider(
     home_dir: &Path,
     route: &ResolvedModelRoute,
 ) -> Result<Arc<dyn AgentProvider>> {
-    Ok(Arc::new(GeminiProvider::from_runtime_config(
-        route.provider_config(),
-        &route.model_ref.model,
-        route.policy.runtime_max_output_tokens,
-        home_dir,
-    )?))
+    Ok(Arc::new(
+        GeminiProvider::from_runtime_config_with_context_window(
+            route.provider_config(),
+            &route.model_ref.model,
+            route.policy.runtime_max_output_tokens,
+            route.policy.context_window_tokens,
+            home_dir,
+        )?,
+    ))
 }
 
 #[cfg(test)]

@@ -390,6 +390,11 @@ fn context_budget_overflow_error(
         reqwest: None,
         context_budget: Some(ProviderContextBudgetDiagnostics {
             estimated_input_tokens: budget.estimated_input_tokens,
+            estimated_text_tokens: budget.estimated_text_tokens,
+            image_reserve_tokens: budget.image_reserve_tokens,
+            image_count: budget.image_count,
+            inline_image_base64_bytes: budget.inline_image_base64_bytes,
+            estimated_inline_image_decoded_bytes: budget.estimated_inline_image_decoded_bytes,
             requested_output_tokens: budget.requested_output_tokens,
             safety_headroom_tokens: budget.safety_headroom_tokens,
             required_tokens,
