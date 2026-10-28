@@ -30,6 +30,96 @@ fn started_turn_uses_the_original_runtime_clock_sample() {
     assert_eq!(record.turn_id, "started-turn");
 }
 
+#[tokio::test]
+async fn provider_and_reducer_terminals_keep_the_runtime_clock_and_durable_terminal() {
+    use crate::runtime::{
+        scheduler_executor::{RunLoopPoll, SchedulerDecisionExecutor},
+        tests::support::LifecycleHarness,
+    };
+
+    for kind in [
+        TurnTerminalKind::DeferredToFallback,
+        TurnTerminalKind::Completed,
+        TurnTerminalKind::Aborted,
+    ] {
+        let harness = LifecycleHarness::new();
+        let runtime = harness.runtime();
+        runtime
+            .enqueue(MessageEnvelope::new(
+                "default",
+                MessageKind::OperatorPrompt,
+                MessageOrigin::Operator {
+                    actor_id: None,
+                    actor_display_name: None,
+                },
+                AuthorityClass::OperatorInstruction,
+                Priority::Normal,
+                MessageBody::Text {
+                    text: "terminal clock regression".into(),
+                },
+            ))
+            .await
+            .unwrap();
+        let RunLoopPoll::Message(scheduled) = SchedulerDecisionExecutor::new(runtime)
+            .poll()
+            .await
+            .unwrap()
+        else {
+            panic!("the terminal clock source must be claimed");
+        };
+        runtime
+            .begin_dispatch_turn(
+                &scheduled.message,
+                None,
+                None,
+                scheduled
+                    .dispatch_plan
+                    .execution_admission_provenance
+                    .clone(),
+                &scheduled.dispatch_plan.prior_closure,
+            )
+            .await
+            .unwrap();
+        harness
+            .clock()
+            .advance(std::time::Duration::from_secs(366 * 24 * 60 * 60));
+        let at = harness.now();
+        let no_brief_reason = match kind {
+            TurnTerminalKind::Completed => Some(TurnNoBriefReason::ToolOnlyWait),
+            TurnTerminalKind::Aborted => Some(TurnNoBriefReason::Aborted),
+            _ => None,
+        };
+        // Provider failures settle with their Brief in the queue transaction.
+        let persist = kind != TurnTerminalKind::DeferredToFallback;
+        let terminal = runtime
+            .persist_turn_terminal_record(kind, None, no_brief_reason, 0, None, persist)
+            .await
+            .unwrap();
+        assert_eq!(terminal.completed_at, at);
+        if persist {
+            let stored = runtime
+                .storage()
+                .read_turn_by_id(&terminal.turn_id)
+                .unwrap()
+                .unwrap();
+            assert_eq!(
+                stored.terminal.as_ref(),
+                Some(&TurnTerminalSummary::from_terminal(&terminal)),
+                "terminal persistence must not silently retain a nonterminal Turn"
+            );
+        }
+        let reducer = runtime
+            .build_reducer_only_terminal_transition("reducer_only/clock_test", false)
+            .await
+            .unwrap();
+        assert_eq!(reducer.terminal.completed_at, at);
+        assert_eq!(
+            reducer.turn_record.terminal.as_ref(),
+            Some(&TurnTerminalSummary::from_terminal(&reducer.terminal))
+        );
+    }
+}
+
 fn project_with_inference_time(
     rounds: &[TurnRoundRecord],
     budget: usize,

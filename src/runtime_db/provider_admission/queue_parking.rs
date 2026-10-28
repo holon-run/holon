@@ -216,7 +216,10 @@ impl FrozenStoppedProviderPause {
     }
 
     pub(crate) fn with_memory(&mut self, memory: StoppedProviderPauseMemory) -> Result<()> {
-        ensure!(self.memory.is_none(), "stopped ACK already froze its memory");
+        ensure!(
+            self.memory.is_none(),
+            "stopped ACK already froze its memory"
+        );
         memory.require_original(self)?;
         self.memory = Some(memory);
         Ok(())
@@ -311,12 +314,19 @@ pub(crate) fn charge_frozen_stopped_provider_pause_tx(
     ledger: &crate::runtime::input_evidence_budget::InputEvidenceBudgetLedger,
     memory_budget: Option<&mut crate::runtime_db::dispatch_memory::DispatchMemoryTransactionBudget>,
 ) -> Result<std::sync::Arc<crate::runtime::input_evidence_budget::BudgetViewGuard>> {
-    frozen.memory.as_ref().context("stopped ACK omitted its memory observation")?
+    frozen
+        .memory
+        .as_ref()
+        .context("stopped ACK omitted its memory observation")?
         .require_budget(scope, ledger)?;
     let (bytes, records) = stopped_provider_pause_material_tx(tx, &frozen.stopped_run())?;
     let (memory_bytes, memory_records) = stopped_pause_memory::frozen_material_tx(tx, frozen)?;
-    let bytes = bytes.checked_add(memory_bytes).context("stopped ACK material overflow")?;
-    let records = records.checked_add(memory_records).context("stopped ACK records overflow")?;
+    let bytes = bytes
+        .checked_add(memory_bytes)
+        .context("stopped ACK material overflow")?;
+    let records = records
+        .checked_add(memory_records)
+        .context("stopped ACK records overflow")?;
     if let Some(memory) = memory_budget {
         memory.additional_material(bytes, records, 1)?;
     }
@@ -332,12 +342,14 @@ pub(crate) fn acknowledge_frozen_stopped_provider_pause_tx(
     frozen: &FrozenStoppedProviderPause,
 ) -> Result<()> {
     let proof = crate::runtime_db::control_transition::find_committed_control_stop_for_run_tx(
-        tx, &frozen.stopped_run(),
+        tx,
+        &frozen.stopped_run(),
     )?
     .context("stopped provider pause proof is missing at the final queue transaction")?;
     proof.require_same_transaction(tx)?;
     ensure!(
-        read_parking(tx, &frozen.agent_id, &frozen.source.id)?.as_ref() == Some(&frozen.pause.parking),
+        read_parking(tx, &frozen.agent_id, &frozen.source.id)?.as_ref()
+            == Some(&frozen.pause.parking),
         "stopped provider pause parking changed before acknowledgement"
     );
     stopped_pause_memory::revalidate_tx(tx, frozen, &proof)

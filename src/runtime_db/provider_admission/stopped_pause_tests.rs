@@ -29,10 +29,9 @@ use crate::{
     types::{
         AgentIdentityRecord, AgentKind, AgentOwnership, AgentProfilePreset, AgentState,
         AgentStatus, AgentVisibility, AuditEvent, AuthorityClass, BriefKind, BriefRecord,
-        ClosureDecision, ClosureOutcome, ControlAction, MessageBody, MessageEnvelope,
-        MessageKind, MessageOrigin, Priority, RuntimePosture,
-        QueueEntryRecord, QueueEntryStatus, TurnOwner, TurnRecord, TurnTriggerSummary,
-        WorkItemExecutionBinding,
+        ClosureDecision, ClosureOutcome, ControlAction, MessageBody, MessageEnvelope, MessageKind,
+        MessageOrigin, Priority, QueueEntryRecord, QueueEntryStatus, RuntimePosture, TurnOwner,
+        TurnRecord, TurnTriggerSummary, WorkItemExecutionBinding,
     },
 };
 
@@ -138,7 +137,10 @@ impl Fixture {
                 .attempts
                 .insert(attempt.attempt_id.clone(), attempt.clone());
             execution_protocol_repository::persist_state_tx(tx, &protocol)?;
-            let mut facts = vec![Fact::Message(source.clone()), Fact::Attempt(attempt.clone())];
+            let mut facts = vec![
+                Fact::Message(source.clone()),
+                Fact::Attempt(attempt.clone()),
+            ];
             state.status = AgentStatus::AwakeRunning;
             state.current_run_id = Some("pause-run".into());
             if started {
@@ -203,8 +205,7 @@ impl Fixture {
 
     fn install_start(&self) -> Result<()> {
         use crate::runtime_db::{
-            context_inputs::ContextDurableRead,
-            dispatch_memory::DispatchMemoryIntent,
+            context_inputs::ContextDurableRead, dispatch_memory::DispatchMemoryIntent,
             transitions::AgentPostureTransitionCommand,
         };
         let scope = InputEvidenceScope {
@@ -213,7 +214,10 @@ impl Fixture {
         };
         let prepared = self.db.transaction(|tx| {
             let read = ContextDurableRead::new(tx, &scope.agent_id);
-            let state = read.scope_facts()?.into_owned_state()?.context("fixture State")?;
+            let state = read
+                .scope_facts()?
+                .into_owned_state()?
+                .context("fixture State")?;
             let turn = read.turn_by_id("pause-turn")?.context("fixture Turn")?;
             PreparedInputTransition::posture(
                 scope.clone(),
@@ -235,7 +239,9 @@ impl Fixture {
                 start: Box::new(self.memory_start()?),
             })
         })?;
-        self.db.transitions_in_scope(&scope).commit_prepared_transition(&prepared)?;
+        self.db
+            .transitions_in_scope(&scope)
+            .commit_prepared_transition(&prepared)?;
         Ok(())
     }
 
@@ -255,9 +261,9 @@ impl Fixture {
             self.ack_transition(&self.stop_committed_queue()?, &self.ack_brief())?,
         )?;
         let ack = prepared.stopped_provider_pause_ack().context("typed ACK")?;
-        let memory = self.db.transaction(|tx| {
-            load_stopped_provider_pause_memory_tx(tx, &ack, &scope, ledger)
-        })?;
+        let memory = self
+            .db
+            .transaction(|tx| load_stopped_provider_pause_memory_tx(tx, &ack, &scope, ledger))?;
         frozen.with_memory(memory)?;
         Ok(frozen)
     }
@@ -410,7 +416,8 @@ impl Fixture {
         };
         let memory = self.db.transaction(|tx| {
             load_stopped_provider_pause_memory_tx(
-                tx, &ack,
+                tx,
+                &ack,
                 &InputEvidenceScope {
                     agent_id: self.source.agent_id.clone(),
                     identity_incarnation: 1,
@@ -888,6 +895,18 @@ fn frozen_stopped_provider_pause_ack_rejects_every_non_original_surface() -> Res
     f.stop()?;
     let record = f.stop_committed_queue()?;
     let (briefs_before, audits_before) = f.evidence_counts()?;
+    let receipt_snapshot = || -> Result<Vec<String>> {
+        let connection = f.db.connection()?;
+        let mut query = connection.prepare(
+            "SELECT json_array(command_nonce, family, phase_version, command_digest,
+                scope_digest, scopes_json, prepared_at, prepared_json, outcome_json,
+                committed_at, result_digest)
+             FROM input_mutation_receipts ORDER BY command_nonce",
+        )?;
+        let rows = query.query_map([], |row| row.get(0))?;
+        Ok(rows.collect::<rusqlite::Result<Vec<String>>>()?)
+    };
+    let receipts_before = receipt_snapshot()?;
     let brief = f.ack_brief();
     let stopped_turn = TurnRecord::new(&f.source.agent_id, "stop-owned-turn", 7);
     let state_rewrite = AgentState::new(&f.source.agent_id);
@@ -976,7 +995,10 @@ fn frozen_stopped_provider_pause_ack_rejects_every_non_original_surface() -> Res
         let prepared = if label == "changed queue value" {
             // Freeze memory against the real ACK before testing the final TX's
             // independent full-value check on another in-memory Queue value.
-            let memory = f.frozen_memory(&f.ledger)?.memory.context("original memory")?;
+            let memory = f
+                .frozen_memory(&f.ledger)?
+                .memory
+                .context("original memory")?;
             PreparedInputTransition::queue(
                 InputEvidenceScope {
                     agent_id: f.source.agent_id.clone(),
@@ -1006,9 +1028,15 @@ fn frozen_stopped_provider_pause_ack_rejects_every_non_original_surface() -> Res
             f.commit_ack(&prepared).is_err(),
             "{label} must not ride the frozen ACK"
         );
+        assert_eq!(
+            receipt_snapshot()?,
+            receipts_before,
+            "{label} must leave every original receipt unchanged"
+        );
     }
     let receipts: i64 = f.db.connection()?.query_row(
-        "SELECT COUNT(*) FROM input_mutation_receipts",
+        "SELECT COUNT(*) FROM input_mutation_receipts
+         WHERE command_nonce GLOB 'stopped-pause-ack-reject-*'",
         [],
         |row| row.get(0),
     )?;

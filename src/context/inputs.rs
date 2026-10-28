@@ -195,6 +195,18 @@ pub(crate) trait ContextInputs {
         self.resolved_brief_text(brief)
             .map(ContextHistoryBriefText::owned)
     }
+    fn recovery_source(
+        &self,
+        message: &MessageEnvelope,
+    ) -> Result<Option<crate::runtime::provider_recovery::ProviderRecoverySource>> {
+        crate::runtime::provider_recovery::resolve_for_context_with_sources(
+            message,
+            || self.execution_protocol_state(&message.agent_id),
+            |id| self.message_by_id(id),
+            |id| self.turn_by_id(id),
+            |id| self.assigned_turn_for_message(id),
+        )
+    }
     fn execution_protocol_state(&self, agent_id: &str) -> Result<Option<ExecutionProtocolState>>;
     fn execution_attempt_by_id(
         &self,
@@ -737,6 +749,13 @@ impl ContextInputs for ResidentContextInputs<'_, '_> {
             PreparedInputEvidence::Attempt(attempt) => Some(attempt.clone()),
             _ => None,
         })
+    }
+    fn recovery_source(
+        &self,
+        message: &MessageEnvelope,
+    ) -> Result<Option<crate::runtime::provider_recovery::ProviderRecoverySource>> {
+        self.check_scope(&message.agent_id)?;
+        crate::runtime::provider_recovery::resolve_for_context_from_captured(self.captured, message)
     }
     fn current_input_projection(
         &self,
@@ -2342,6 +2361,177 @@ mod resident_tests {
             drop(phase);
             assert_eq!(ledger.report()?.observed_bytes, 0);
         }
+        Ok(())
+    }
+
+    #[test]
+    fn resident_execution_attempt_lookup_admits_only_the_selected_activation() -> Result<()> {
+        use crate::{
+            config::StateMemoryLimits,
+            diagnostics::resource_io::{cloned_value_material, ResourceReadMaterial},
+            domain::execution_protocol::*,
+            runtime::input_evidence_budget::InputEvidenceBudgetLedger,
+        };
+        let current = ExecutionAttempt {
+            attempt_id: "current-activation".into(),
+            agent_id: "default".into(),
+            source_message_id: Some("current-message".into()),
+            input_projection: None,
+            source: ExecutionSource {
+                identity: ExecutionSourceIdentity::QueueMessage {
+                    message_id: "current-message".into(),
+                },
+                generation: 1,
+            },
+            binding: ExecutionBinding::AgentLifecycle {
+                agent_id: "default".into(),
+            },
+            provenance: ExecutionProvenance {
+                origin: ExecutionOrigin::Operator,
+                trust: ExecutionTrust::OperatorInstruction,
+                priority: ExecutionPriority::Normal,
+                correlation_id: None,
+                causation_id: None,
+            },
+            admitted_fences: AdmittedFences {
+                source_revision: 1,
+                work_item_source_revision: None,
+                work_item_generation: None,
+                rejoin: None,
+                agent_control_revision: 1,
+                host_registry_revision: 1,
+            },
+            state: ExecutionAttemptState::Open,
+            run_id: Some("current-run".into()),
+            turn_id: Some("current-turn".into()),
+            recovery_of_attempt_id: None,
+            terminal_outcome_id: None,
+            admitted_at: "2026-10-28T00:00:00Z".into(),
+            terminal_at: None,
+        };
+        let mut old = current.clone();
+        old.attempt_id = "retained-activation".into();
+        old.source_message_id = Some("retained-message".into());
+        old.source.identity = ExecutionSourceIdentity::QueueMessage {
+            message_id: "retained-message".into(),
+        };
+        old.input_projection = Some(crate::types::IdleInputBatchItem {
+            message_id: "retained-message".into(),
+            source_ref: "message:retained-message".into(),
+            rendered: "retained recovery material".repeat(16_384),
+        });
+        old.state = ExecutionAttemptState::Interrupted;
+        old.terminal_outcome_id = Some("retained-outcome".into());
+        old.terminal_at = Some(old.admitted_at.clone());
+        let selected = PreparedInputEvidence::Attempt(current.clone());
+        let mut resident = captured(vec![
+            evidence(selected.clone()),
+            evidence(PreparedInputEvidence::Attempt(old.clone())),
+            evidence(PreparedInputEvidence::Outcome(ExecutionOutcomeRecord {
+                outcome_id: "retained-outcome".into(),
+                attempt_id: old.attempt_id.clone(),
+                outcome: ExecutionOutcome::Conversation(ConversationOutcome::Interrupted {
+                    reason: "retained recovery lineage".into(),
+                }),
+                created_at: old.admitted_at,
+            })),
+        ]);
+        resident
+            .unavailable
+            .insert(Key::new(Family::Attempt, "pruned"));
+        // The retained partition is valid; only its unnecessary owning copy fails.
+        assert_invariants(&resident.protocol_state()?).map_err(anyhow::Error::msg)?;
+        let mut connection = rusqlite::Connection::open_in_memory()?;
+        let tx = connection.transaction()?;
+        let durable = ContextDurableRead::new(&tx, "default");
+        let work = empty_work();
+        let state = AgentState::new("default");
+        let inputs = ResidentContextInputs::new(&durable, &resident, &work, &state, &[])?;
+        let ledger = InputEvidenceBudgetLedger::new(StateMemoryLimits::default())?;
+        let phase = ResourceReadMaterial::new(&ledger, &scope())?;
+        let base = phase.finish()?;
+        drop(phase);
+        let (bytes, records) = cloned_value_material(&selected)?;
+        let exact = (base.0 + 8 * bytes as u64, base.1 + 8 * records);
+        for limits in [exact, (exact.0 - 1, exact.1), (exact.0, exact.1 - 1)] {
+            let phase =
+                ResourceReadMaterial::with_test_limits(&ledger, &scope(), limits.0, limits.1)?;
+            {
+                let _active = phase.enter();
+                let result = inputs.execution_attempt_by_id("default", &current.attempt_id);
+                if limits == exact {
+                    assert_eq!(result?, Some(current.clone()));
+                    assert_eq!(phase.finish()?, exact);
+                } else {
+                    assert!(result
+                        .unwrap_err()
+                        .to_string()
+                        .contains("ResourceExhausted"));
+                    assert!(inputs
+                        .execution_attempt_by_id("default", &current.attempt_id)
+                        .is_err());
+                    assert!(phase.finish().is_err());
+                }
+            }
+            drop(phase);
+            assert_eq!(ledger.report()?.observed_bytes, 0);
+        }
+        let phase = ResourceReadMaterial::with_test_limits(&ledger, &scope(), exact.0, exact.1)?;
+        {
+            let _active = phase.enter();
+            assert!(inputs
+                .execution_protocol_state("default")
+                .unwrap_err()
+                .to_string()
+                .contains("ResourceExhausted"));
+        }
+        assert!(phase.finish().is_err());
+        drop(phase);
+        assert_eq!(ledger.report()?.observed_bytes, 0);
+        assert!(inputs
+            .execution_attempt_by_id("default", "pruned")?
+            .is_none());
+        assert!(inputs
+            .execution_attempt_by_id("default", "unprepared")
+            .unwrap_err()
+            .downcast_ref::<InputEvidenceReadError>()
+            .is_some());
+        assert!(inputs
+            .execution_attempt_by_id("other-agent", &current.attempt_id)
+            .is_err());
+        Ok(())
+    }
+
+    #[test]
+    fn resident_non_recovery_source_preserves_exact_material_and_scope() -> Result<()> {
+        use crate::{
+            config::StateMemoryLimits, diagnostics::resource_io::ResourceReadMaterial,
+            runtime::input_evidence_budget::InputEvidenceBudgetLedger,
+        };
+        let resident = captured(Vec::new());
+        let mut connection = rusqlite::Connection::open_in_memory()?;
+        let tx = connection.transaction()?;
+        let durable = ContextDurableRead::new(&tx, "default");
+        let work = empty_work();
+        let state = AgentState::new("default");
+        let inputs = ResidentContextInputs::new(&durable, &resident, &work, &state, &[])?;
+        let ledger = InputEvidenceBudgetLedger::new(StateMemoryLimits::default())?;
+        let phase = ResourceReadMaterial::new(&ledger, &scope())?;
+        let exact = phase.finish()?;
+        drop(phase);
+        let phase = ResourceReadMaterial::with_test_limits(&ledger, &scope(), exact.0, exact.1)?;
+        {
+            let _active = phase.enter();
+            assert!(inputs
+                .recovery_source(&message("ordinary input"))?
+                .is_none());
+            let mut other = message("out-of-scope input");
+            other.agent_id = "other-agent".into();
+            assert!(inputs.recovery_source(&other).is_err());
+            assert_eq!(phase.finish()?, exact);
+        }
+        drop(phase);
+        assert_eq!(ledger.report()?.observed_bytes, 0);
         Ok(())
     }
 

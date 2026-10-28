@@ -364,9 +364,7 @@ pub(crate) struct PreparedInputTransition {
 }
 impl PreparedInputTransition {
     /// Only the original typed Queue ACK can carry this read-only observation.
-    pub(crate) fn stopped_provider_pause_ack(
-        &self,
-    ) -> Option<StoppedProviderPauseAck<'_>> {
+    pub(crate) fn stopped_provider_pause_ack(&self) -> Option<StoppedProviderPauseAck<'_>> {
         match self.command.as_ref() {
             InputTransitionCommand::Queue(queue) => StoppedProviderPauseAck::from_queue(queue),
             _ => None,
@@ -388,7 +386,11 @@ impl PreparedInputTransition {
             queue.is_stopped_provider_pause_ack(),
             "stopped memory observation requires its original typed Queue ACK"
         );
-        queue.stopped_provider_pause.as_mut().expect("typed ACK").with_memory(memory)?;
+        queue
+            .stopped_provider_pause
+            .as_mut()
+            .expect("typed ACK")
+            .with_memory(memory)?;
         self.descriptor = PreparedInputMutation::new(
             self.descriptor.family(),
             self.descriptor.command_nonce().to_owned(),

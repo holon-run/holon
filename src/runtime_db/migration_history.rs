@@ -18,7 +18,9 @@ pub(super) fn reconcile_feature_history(connection: &mut Connection) -> Result<(
     };
     let legacy_start = records
         .iter()
-        .find(|(version, name)| matches!(*version, 81 | 83 | 89) && name == "episode_memory_results")
+        .find(|(version, name)| {
+            matches!(*version, 81 | 83 | 89) && name == "episode_memory_results"
+        })
         .map(|(version, _)| *version);
     let Some(legacy_start) = legacy_start else {
         // Remapped features can precede missing published migrations. Each

@@ -361,7 +361,7 @@ impl RuntimeHandle {
                     reason: no_brief_reason,
                 }),
                 checkpoint: None,
-                completed_at: chrono::Utc::now(),
+                completed_at: self.now(),
                 duration_ms: 0,
             }
         };

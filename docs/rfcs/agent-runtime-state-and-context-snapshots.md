@@ -11,22 +11,23 @@ issue:
 
 ## Migration lineage compatibility
 
-Published upstream migrations through 88 retain their versions and names. The
-pre-integration feature migrations move from 81–91 to 89–99. Before applying
-migrations, an exact contiguous prefix of that old feature lineage is remapped
-atomically, preserving names and application timestamps. Unknown, mixed or
-gapped feature histories fail closed without modifying their ledger. Version
-numbers alone never identify the feature lineage; published upstream names
-must not be mistaken for old feature migrations in the overlapping range.
+Published upstream migrations through 90 retain their versions and names. The
+integrated feature lineage occupies 91–102, including original turnless command
+creation at 102. Before applying migrations, an exact contiguous feature prefix
+starting at the unpublished versions 81, 83 or 89 is remapped atomically,
+preserving names and application timestamps. Unknown, mixed or gapped feature
+histories fail closed without modifying their ledger. Version numbers alone
+never identify the feature lineage; published upstream names must not be
+mistaken for old feature migrations in the overlapping range.
 
 Remapping history does not rerun schema changes or capture canonical history.
-Task's schema cut moves from 88 to 96 and Scheduling's from 89 to 97; their
+Task's schema cut moves from 88 to 98 and Scheduling's from 89 to 99; their
 hooks are selected by migration name and consume the original fixed Episode
 checkpoints. Already captured members and body qualifications remain unchanged.
 
-The migration data regression covers a fresh database, upstream prefixes
-80 through 88, the complete integrated history through 99, and all eleven old
-feature prefixes. It seeds running and completed Tasks with their original rejoin
+The migration data regression covers a fresh database, canonical prefixes
+80 through 102, and each feature prefix through 102 for all three unpublished
+lineage starts. It seeds running and completed Tasks with their original rejoin
 identity, a pending result settlement and queue entry, a repeating Timer and
 pending wake, an external trigger, and a delegation. It compares canonical
 records before and after migration, compares the fixed Task/Input/Scheduling
@@ -3141,6 +3142,10 @@ qualified Current Queue body in the same State/scope cut, with finite read
 material retained through the diagnostic. It does not use an unscoped Queue
 history fallback; the original age threshold and per-message rate limit remain
 unchanged.
+Advisory deduplication projects only matching timestamps from the original
+64-event, agent-scoped window. It does not decode unrelated Audit bodies into
+the diagnostic's finite material allowance; the timestamp comparison preserves
+the event payload's precision and the original strict interval boundary.
 
 Supervised invocation admission freezes both the child's Input scope and the
 parent's original Task and scope. The source binding, parent Task update and
@@ -3628,6 +3633,18 @@ the separate tree, committed roster-snapshot or historical Event/SSE contracts.
 
 #### Independent runtime Audit commands
 
+Execution-local provider cooldown waits live outside the durable State/source
+root. Owner-serialized writers project the slot into public summaries and Audit
+events; terminal/source installation, Run closure and runtime failure clear it
+without mutating durable State. Stop freezes the active wait's cancellation
+observation during owner-reserved planning, derives its payload from the final
+Control candidate, and commits it in the same ACK before installation clears
+the slot. A waiter unwinding after that ACK cannot publish a second end event.
+Restart never reconstructs this slot. Operator
+interjection revisions and dedicated wake notifications derive from newly
+installed source Queue members, not stripped post-commit effects; reinstalling
+the same Queue does not fence the continuation a second time.
+
 Active-runtime Audit helpers use a prepared `Audit` command with its own nonce, scope,
 receipt and original Current address proof. They do not fabricate a State write
 or join a preceding State transaction: an acknowledged State remains committed
@@ -4072,6 +4089,10 @@ A replay hint alone never supplies that proof. Legacy uncaptured admission
 retains its separate compatibility contract.
 Started Turns use the original Runtime clock sample before candidate publication,
 so Stop and terminal updates do not compare timestamps from different clocks.
+Provider failure, completion, and reducer-only terminal records use that same
+Runtime clock, including after delayed recovery advances the injected clock.
+Terminal persistence must retain the terminal summary, not silently leave the
+started Turn nonterminal because a different clock moved backwards.
 Task-result convergence also preserves the independent terminal-reentry channel
 through its same-view qualified Task relation; an Invalid relation grants no Task
 body, and recovery does not add a separate durable Task point read.
@@ -4308,6 +4329,10 @@ the recovery message only with the original terminal Turn and provenance; the
 terminal fault points remain inside that same rollback boundary.
 If Control Stop wins before a parked dispatch settles, its acknowledgement
 carries the original dispatch address through the prepared Queue command.
+Stop clears the selected workspace only when it releases that workspace's
+actual occupancy. A selected workspace without an occupancy remains unchanged,
+including its root, cwd and projection metadata, so the parked dispatch retains
+the source of its resource observation.
 Proof and parking material must be observed in the caller's shared budget
 before decoding, with that charge retained through the final transaction.
 That transaction revalidates the exact committed Stop and unchanged parking
@@ -4324,6 +4349,13 @@ Repeated alias reads reuse only the parameterized SQL
 statement on the original connection; each execution still observes the current
 transaction and binds the original agent, incarnation, family and record ID.
 
+Resident Context recovery source resolution borrows exact qualified
+Attempt/Outcome records and the complete captured predecessor index through the
+typed Context input interface. It must not clone or trim the retained execution
+protocol to answer a single recovery lookup. Durable Context inputs retain the
+same resolver semantics; source scope, actual-Turn assignment, lineage, ambiguity
+and missing-evidence checks remain unchanged.
+
 Canonical qualification and scheduler admission reject different failures.
 Changing a canonical Turn payload outside a qualified writer after projection
 enrollment is `ProjectionChanged`, including owner, activation and input changes;
@@ -4333,3 +4365,9 @@ scheduler's interrupted-source quarantine policy: only the queue head is
 quarantined, with follower, Turn and settlement state preserved and no provider
 call. Regression fixtures must exercise these boundaries separately; an early
 projection rejection must not make the quarantine assertions unreachable.
+
+`PreparedSchedulerRead` retains the qualified Input evidence selected with its
+State/Work/Task domains. Initial dispatch planning and post-Context revalidation
+borrow the corresponding prepared inputs rather than recapturing the entire
+resident coverage. Both retain the original material and failure latch; this
+reuse neither creates a new allowance nor weakens source qualification.

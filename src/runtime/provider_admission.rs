@@ -8,7 +8,7 @@ use sha2::{Digest, Sha256};
 
 use crate::{
     config::{ModelRouteCapability, ModelRouteRef},
-    domain::execution_protocol::ExecutionAttempt,
+    domain::execution_protocol::{ExecutionAttempt, ExecutionProtocolState},
     provider::{
         build_candidate, classify_provider_error, provider_transport_diagnostics,
         ProviderDispatchGuard, ProviderFailureKind, ProviderThrottleKind, ProviderTurnResponse,
@@ -27,7 +27,7 @@ use crate::{
     },
 };
 
-use super::{RuntimeHandle, RuntimeInner};
+use super::{resident_input_evidence::CapturedInputEvidence, RuntimeHandle, RuntimeInner};
 
 // A lease permits controlled takeover after a crashed owner, not exactly-once
 // external IO and not a new wall-clock timeout for a streaming model request.
@@ -1021,6 +1021,7 @@ impl RuntimeHandle {
         state: &crate::types::AgentState,
         message: &MessageEnvelope,
         attempt: &ExecutionAttempt,
+        inputs: &CapturedInputEvidence,
     ) -> Result<ProviderTurnGate> {
         let Some(chain) = self.provider_admission_chain(state)? else {
             return Ok(ProviderTurnGate::Bypass);
@@ -1038,31 +1039,31 @@ impl RuntimeHandle {
         }
         // Canonical admission already resolved source/owner eligibility. Walk
         // that exact predecessor chain, never select a root by current focus.
-        let protocol = self
-            .inner
-            .runtime_db
-            .transitions()
-            .load_execution_protocol_state_if_initialized(&message.agent_id)?;
+        ensure!(
+            inputs.scope.agent_id == message.agent_id && attempt.agent_id == message.agent_id,
+            "provider admission captured scope mismatch"
+        );
+        let protocol = inputs
+            .execution_state_if_initialized()?
+            .unwrap_or_else(|| ExecutionProtocolState::empty(message.agent_id.clone()));
         let mut root = attempt.clone();
         let mut visited = std::collections::BTreeSet::new();
         while let Some(prior) = root.recovery_of_attempt_id.as_ref() {
             ensure!(visited.insert(prior.clone()), "provider root cycle");
             root = protocol
-                .as_ref()
-                .and_then(|state| state.attempts.get(prior))
+                .attempts
+                .get(prior)
                 .context("canonical provider predecessor missing")?
                 .clone();
         }
         let binding = ProviderRecoveryBinding::from_root_attempt(&root, &chain.fingerprint)?;
-        let root_message = self
-            .inner
-            .storage
-            .read_message_by_id(
-                root.source_message_id
-                    .as_deref()
-                    .context("provider root message missing")?,
-            )?
-            .context("persisted provider root input missing")?;
+        let root_message = super::provider_recovery::captured_message(
+            inputs,
+            root.source_message_id
+                .as_deref()
+                .context("provider root message missing")?,
+        )?
+        .context("persisted provider root input missing")?;
         let operator = root_message.authority_class == AuthorityClass::OperatorInstruction
             && matches!(root_message.origin, MessageOrigin::Operator { .. })
             && matches!(
@@ -1110,6 +1111,8 @@ impl RuntimeHandle {
         self.select_provider_turn_candidate(
             message,
             attempt,
+            inputs,
+            &protocol,
             &chain,
             &episode,
             &std::collections::BTreeSet::new(),
@@ -1120,11 +1123,15 @@ impl RuntimeHandle {
         &self,
         message: &MessageEnvelope,
         attempt: &ExecutionAttempt,
+        inputs: &CapturedInputEvidence,
+        protocol: &ExecutionProtocolState,
         chain: &Chain,
         episode: &ProviderRecoveryEpisode,
         excluded: &std::collections::BTreeSet<String>,
     ) -> Result<ProviderTurnGate> {
-        match self.available_provider_turn_candidate(message, attempt, chain, episode, excluded)? {
+        match self.available_provider_turn_candidate(
+            message, attempt, inputs, protocol, chain, episode, excluded,
+        )? {
             ProviderCandidateSelection::Granted(admission) => {
                 self.inner
                     .runtime_db
@@ -1164,6 +1171,8 @@ impl RuntimeHandle {
         &self,
         message: &MessageEnvelope,
         attempt: &ExecutionAttempt,
+        inputs: &CapturedInputEvidence,
+        protocol: &ExecutionProtocolState,
         chain: &Chain,
         episode: &ProviderRecoveryEpisode,
         excluded: &std::collections::BTreeSet<String>,
@@ -1181,8 +1190,7 @@ impl RuntimeHandle {
             .map(|directive| &directive.fallback_model_ref);
         let mut reselection_reason = None;
         if let Some(requested) = requested {
-            super::provider_recovery::resolve_for_context(&self.inner.storage, message)?
-                .context("provider recovery source resolution missing at admission")?;
+            super::provider_recovery::resolve_from_captured(inputs, message, protocol)?;
             if let Some(index) = chain
                 .candidates
                 .iter()
@@ -1326,7 +1334,33 @@ impl RuntimeHandle {
             .active_provider_admission()?
             .context("cooling provider admission missing")?;
         excluded.insert(current.model().as_string());
-        let state = self.inner.agent.lock().await.state.clone();
+        let source_message_id = current
+            .attempt
+            .source_message_id
+            .as_deref()
+            .context("cooling provider source message missing")?;
+        let (state, inputs) = {
+            use super::resident_input_evidence::{InputEvidenceFamily, InputEvidenceKey};
+            let mut mutation = self.begin_mutation().await?;
+            mutation
+                .prepare_owner_inputs(
+                    std::collections::BTreeSet::from([
+                        InputEvidenceKey::new(InputEvidenceFamily::Message, source_message_id),
+                        InputEvidenceKey::new(
+                            InputEvidenceFamily::Attempt,
+                            &current.attempt.attempt_id,
+                        ),
+                    ]),
+                    Default::default(),
+                )
+                .await?;
+            (mutation.state.clone(), mutation.capture_input_evidence()?)
+        };
+        let protocol = inputs
+            .execution_state_if_initialized()?
+            .context("cooling provider execution state missing")?;
+        let message = super::provider_recovery::captured_message(&inputs, source_message_id)?
+            .context("cooling provider source message not persisted")?;
         let chain = self
             .provider_admission_chain(&state)?
             .context("cooling provider chain disappeared")?;
@@ -1340,19 +1374,11 @@ impl RuntimeHandle {
             episode.state == ProviderRecoveryBudgetState::Ready,
             "provider episode changed during candidate replan"
         );
-        let source_message_id = current
-            .attempt
-            .source_message_id
-            .as_deref()
-            .context("cooling provider source message missing")?;
-        let message = self
-            .inner
-            .storage
-            .read_message_by_id(source_message_id)?
-            .context("cooling provider source message not persisted")?;
         match self.available_provider_turn_candidate(
             &message,
             &current.attempt,
+            &inputs,
+            &protocol,
             &chain,
             &episode,
             excluded,

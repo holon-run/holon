@@ -334,20 +334,10 @@ pub(crate) fn append_queue_head_starved_advisory(
     .evidence(format!("queue_len={queue_len}"));
     let event = scheduling_advisory_event(&diagnostic);
     let message_evidence = format!("message_id={message_id}");
-    let duplicate = storage.read_recent_events(64)?.iter().any(|latest| {
-        latest.kind == event.kind
-            && latest
-                .data
-                .get("evidence")
-                .and_then(|evidence| evidence.as_array())
-                .is_some_and(|items| {
-                    items
-                        .iter()
-                        .any(|item| item.as_str() == Some(&message_evidence))
-                })
-            && now.signed_duration_since(latest.created_at)
-                < chrono::Duration::milliseconds(QUEUE_HEAD_STARVED_ADVISORY_INTERVAL_MS)
-    });
+    let duplicate = storage.event_log().has_recent_scheduling_advisory(
+        &message_evidence,
+        now - chrono::Duration::milliseconds(QUEUE_HEAD_STARVED_ADVISORY_INTERVAL_MS),
+    )?;
     if duplicate {
         return Ok(false);
     }

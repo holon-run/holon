@@ -6,6 +6,57 @@ use super::*;
 use crate::runtime::tests::support::{context_config, CountingProvider};
 use tempfile::{tempdir, TempDir};
 
+#[tokio::test]
+async fn source_install_fences_operator_interjection_without_repeating_on_readback() {
+    let harness = crate::runtime::tests::support::LifecycleHarness::new();
+    let runtime = harness.runtime();
+    let before = runtime
+        .inner
+        .operator_interjection_revision
+        .load(Ordering::Acquire);
+    let mut notified = Box::pin(runtime.inner.operator_interjection_notify.notified());
+    notified.as_mut().enable();
+    let message = MessageEnvelope::new(
+        "default",
+        MessageKind::OperatorPrompt,
+        MessageOrigin::Operator {
+            actor_id: Some("control".into()),
+            actor_display_name: None,
+        },
+        AuthorityClass::OperatorInstruction,
+        Priority::Interject,
+        MessageBody::Text {
+            text: "interrupt prepared continuation".into(),
+        },
+    )
+    .with_admission(
+        crate::types::MessageDeliverySurface::HttpControlPrompt,
+        crate::types::AdmissionContext::ControlAuthenticated,
+    );
+    runtime.enqueue(message).await.unwrap();
+    assert_eq!(
+        runtime
+            .inner
+            .operator_interjection_revision
+            .load(Ordering::Acquire),
+        before + 1
+    );
+    tokio::time::timeout(std::time::Duration::from_secs(1), notified)
+        .await
+        .unwrap();
+    {
+        let mut mutation = runtime.begin_mutation().await.unwrap();
+        mutation.install_transient().await.unwrap();
+    }
+    assert_eq!(
+        runtime
+            .inner
+            .operator_interjection_revision
+            .load(Ordering::Acquire),
+        before + 1
+    );
+}
+
 async fn stale_runtime() -> (RuntimeHandle, TempDir, TempDir) {
     let data = tempdir().unwrap();
     let workspace = tempdir().unwrap();

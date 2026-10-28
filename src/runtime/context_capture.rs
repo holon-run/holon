@@ -909,12 +909,8 @@ fn validate_context_execution(
         .activation_id
         .as_ref()
         .ok_or_else(|| anyhow!("context execution has no canonical activation"))?;
-    let protocol = inputs
-        .execution_protocol_state(&state.id)?
-        .ok_or_else(|| anyhow!("context canonical execution missing"))?;
-    let attempt = protocol
-        .attempts
-        .get(activation_id)
+    let attempt = inputs
+        .execution_attempt_by_id(&state.id, activation_id)?
         .ok_or_else(|| anyhow!("context canonical activation missing"))?;
     let owner = match &attempt.binding {
         ExecutionBinding::Conversation { interaction_id } => TurnOwner::Conversation {
@@ -929,8 +925,7 @@ fn validate_context_execution(
         ExecutionBinding::Command => TurnOwner::Command,
     };
     anyhow::ensure!(
-        protocol.agent_id == state.id
-            && attempt.agent_id == state.id
+        attempt.agent_id == state.id
             && attempt.state == ExecutionAttemptState::Open
             && attempt.source_message_id.as_deref() == Some(message.id.as_str())
             && binding.owner.as_ref() == Some(&owner),

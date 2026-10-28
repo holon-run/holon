@@ -24,6 +24,7 @@ mod prepared_task_result;
 mod wait_body_budget_tests;
 #[cfg(test)]
 mod wait_pool_budget_tests;
+pub(crate) use crate::runtime_db::provider_admission::StoppedProviderPauseAck;
 pub(super) use prepared_input::predicted_trigger_wait_tx;
 pub(crate) use prepared_input::worktree_receipt_exists_tx as task_stop_worktree_receipt_exists_tx;
 pub(in crate::runtime_db) use prepared_input::ExistingOriginalChildBindingWriteProof;
@@ -33,7 +34,6 @@ pub(crate) use prepared_input::{
     PreparedQueueTransition, PreparedSupervisedInvocationAdmission, PreparedTaskTransition,
     PreparedTimerTransition, TimerMutationOutcome,
 };
-pub(crate) use crate::runtime_db::provider_admission::StoppedProviderPauseAck;
 pub(in crate::runtime_db) use prepared_task_result::receipt_budget_with_material_tx as task_status_receipt_budget_with_material_tx;
 pub(crate) use prepared_task_result::{
     receipt_budget_tx as task_result_receipt_budget_tx, PreparedTaskResultTransition,

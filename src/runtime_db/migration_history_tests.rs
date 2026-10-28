@@ -123,8 +123,8 @@ fn feature_history_leaves_fresh_and_published_upstream_history_unchanged() -> Re
 }
 
 #[test]
-fn feature_history_leaves_current_prefixes_and_published_provider_migrations_unchanged() -> Result<()>
-{
+fn feature_history_leaves_current_prefixes_and_published_provider_migrations_unchanged(
+) -> Result<()> {
     for count in 0..=12 {
         let mut connection = legacy_prefix(91, count)?;
         let before = history(&connection)?;
@@ -135,7 +135,8 @@ fn feature_history_leaves_current_prefixes_and_published_provider_migrations_unc
 }
 
 #[test]
-fn feature_history_refuses_gapped_mixed_and_unknown_current_history_without_changes() -> Result<()> {
+fn feature_history_refuses_gapped_mixed_and_unknown_current_history_without_changes() -> Result<()>
+{
     for damage in [
         "DELETE FROM schema_migrations WHERE version=85",
         "DELETE FROM schema_migrations WHERE version=91",

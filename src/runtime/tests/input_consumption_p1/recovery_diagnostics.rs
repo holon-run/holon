@@ -67,7 +67,9 @@ async fn unrelated_interrupted_dispatch(runtime: &RuntimeHandle) -> String {
         attempt.state,
         crate::domain::execution_protocol::ExecutionAttemptState::Interrupted
     );
-    assert!(attempt.attempt_id.contains("sentinel-secret?token=credential"));
+    assert!(attempt
+        .attempt_id
+        .contains("sentinel-secret?token=credential"));
     assert_eq!(attempt.turn_id.as_deref(), anchor.turn_id.as_deref());
     assert!(attempt.terminal_outcome_id.is_some());
     attempt.attempt_id.clone()

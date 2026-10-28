@@ -1,7 +1,5 @@
 use super::*;
-use crate::runtime::tests::support::{
-    persist_completed_task_parent_fixture, seed_bound_work_item, LifecycleHarness,
-};
+use crate::runtime::tests::support::{seed_bound_work_item, LifecycleHarness};
 use crate::runtime_db::task_result_settlement::TaskResultSettlementState;
 use crate::runtime_db::{TaskResultSettlementDisposition, TaskResultSettlementRecord};
 use crate::types::{
@@ -33,9 +31,9 @@ async fn result_for_owner(
     status: TaskStatus,
     now: DateTime<Utc>,
 ) -> TaskResultSettlementRecord {
-    persist_completed_task_parent_fixture(runtime, "turn-anchor", work_item_id)
-        .await
-        .unwrap();
+    let mut turn = anchor_turn_record(runtime, "turn-anchor", now);
+    turn.current_work_item_id = work_item_id.map(str::to_owned);
+    commit_anchor_turn(runtime, turn).await;
     let mut signal = MessageEnvelope::new(
         "default",
         MessageKind::TaskResult,
@@ -120,8 +118,20 @@ async fn commit_anchor_turn(runtime: &RuntimeHandle, turn: TurnRecord) {
         .unwrap();
 }
 
+fn anchor_turn_record(runtime: &RuntimeHandle, turn_id: &str, now: DateTime<Utc>) -> TurnRecord {
+    runtime
+        .storage()
+        .read_turn_by_id(turn_id)
+        .unwrap()
+        .unwrap_or_else(|| {
+            let mut turn = TurnRecord::new("default", turn_id, 1);
+            turn.created_at = now;
+            turn
+        })
+}
+
 async fn anchor_turn(runtime: &RuntimeHandle, turn_id: &str, terminal: bool, now: DateTime<Utc>) {
-    let mut turn = TurnRecord::new("default", turn_id, 1);
+    let mut turn = anchor_turn_record(runtime, turn_id, now);
     if terminal {
         turn.terminal = Some(TurnTerminalSummary {
             kind: TurnTerminalKind::Completed,
@@ -180,7 +190,7 @@ async fn bind_open_attempt_to_anchor(
             Ok(())
         })
         .unwrap();
-    let mut turn = TurnRecord::new("default", turn_id, 1);
+    let mut turn = anchor_turn_record(runtime, turn_id, now);
     turn.terminal = Some(TurnTerminalSummary {
         kind: TurnTerminalKind::Completed,
         reason: None,
@@ -374,6 +384,7 @@ async fn raw_pending_rows_do_not_become_original_recovery_facts() {
     let runtime = harness.runtime();
     let now = harness.now() - chrono::Duration::seconds(2000);
     let original = lifecycle_result(&runtime, "original-anchor-task", now).await;
+    anchor_turn(&runtime, "turn-anchor", true, harness.now()).await;
     assert!(!runtime.emit_due_task_result_recovery().await.unwrap());
     assert_eq!(
         latest_record(&runtime, &original.message_id).state,
@@ -425,14 +436,11 @@ async fn raw_pending_rows_do_not_become_original_recovery_facts() {
     // ACK. Neither cleanup nor a recovery wake may silently adopt these rows.
     assert!(!runtime.emit_due_task_result_recovery().await.unwrap());
     assert_eq!(latest_record(&runtime, &raw.message_id), raw);
-    assert!(outstanding_recovery_message_id(
-        &runtime,
-        "default",
-        None,
-        &recovery_owner_key(&raw)
-    )
-    .unwrap()
-    .is_none());
+    assert!(
+        outstanding_recovery_message_id(&runtime, "default", None, &recovery_owner_key(&raw))
+            .unwrap()
+            .is_none()
+    );
 }
 
 #[tokio::test(start_paused = true)]
@@ -453,9 +461,7 @@ async fn reply_anchored_lifecycle_settlement_defers_to_reply_channel() {
             text: "peer reply".into(),
         },
     );
-    persist_completed_task_parent_fixture(&runtime, "turn-anchor", None)
-        .await
-        .unwrap();
+    anchor_turn(&runtime, "turn-anchor", false, now).await;
     let mut mutation = runtime.begin_mutation().await.unwrap();
     let prepared = crate::runtime_db::prepared_input_evidence::PreparedInputEvidence::message(
         mutation.input_evidence_scope(),

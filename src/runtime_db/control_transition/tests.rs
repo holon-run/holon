@@ -569,6 +569,98 @@ fn complete_stop_commits_all_segments_and_exact_original_obligations() {
 }
 
 #[test]
+fn stop_without_occupancy_preserves_the_complete_selected_workspace_and_replay() {
+    let f = Fixture::new();
+    let entry = ActiveWorkspaceEntry {
+        workspace_id: "selected-workspace".into(),
+        workspace_anchor: "/selected".into(),
+        execution_root_id: "selected-root".into(),
+        execution_root: "/selected/worktree".into(),
+        projection_kind: WorkspaceProjectionKind::GitWorktreeRoot,
+        access_mode: WorkspaceAccessMode::ExclusiveWrite,
+        cwd: "/selected/worktree/src".into(),
+        occupancy_id: None,
+        projection_metadata: None,
+    };
+    f.db.transaction(|tx| {
+        let mut state = f.db_state(tx)?;
+        state.active_workspace_entry = Some(entry.clone());
+        upsert_agent_state_tx(tx, &state)
+    })
+    .unwrap();
+    let command = f.command(ControlAction::Stop);
+    let ControlCommit::Applied { receipt, delta } = f.db.commit_control(&command).unwrap() else {
+        panic!("not applied")
+    };
+    assert_eq!(delta.state.status, AgentStatus::Stopped);
+    assert_eq!(delta.state.active_workspace_entry.as_ref(), Some(&entry));
+    assert!(delta.workspace_occupancy.is_none());
+    assert!(receipt.outcome.released_occupancy_id.is_none());
+    let snapshot = f.db.load_control_snapshot(&f.key).unwrap();
+    assert_eq!(snapshot.state.status, AgentStatus::Stopped);
+    assert_eq!(snapshot.state.active_workspace_entry.as_ref(), Some(&entry));
+    assert!(snapshot.workspace_occupancy.is_none());
+    let before = f.fingerprint();
+    let ControlCommit::Replayed { receipt: replay } = f.db.commit_control(&command).unwrap() else {
+        panic!("replayed delta")
+    };
+    assert_eq!(replay, receipt);
+    assert_eq!(f.fingerprint(), before);
+}
+
+#[test]
+fn final_state_audit_is_atomic_with_stop_and_replays_without_another_event() {
+    let f = Fixture::new();
+    f.seed_all();
+    let prepared_at = f.time + chrono::Duration::seconds(10);
+    let command = prepare_control_with_state_audit(f.input(ControlAction::Stop), |state| {
+        assert_eq!(state.status, AgentStatus::Stopped);
+        assert!(state.current_run_id.is_none());
+        let mut payload = crate::types::AgentStateChangedEvent::from_state(state);
+        payload.provider_cooldown_wait_ended = Some(crate::types::ProviderCooldownWaitEnded {
+            outcome: crate::types::ProviderCooldownWaitEndOutcome::Cancelled,
+            turn_id: Some("turn-1".into()),
+            ended_at: prepared_at,
+        });
+        let mut event = AuditEvent::typed(RuntimeEventKind::AgentStateChanged, &payload)?;
+        event.id = "cooldown-ended-by-stop".into();
+        event.created_at = prepared_at;
+        Ok(vec![event])
+    })
+    .unwrap();
+    let before = f.fingerprint();
+    f.db.commit_control(
+        &command
+            .clone()
+            .with_fault(ControlFaultPoint::AfterAuditWrites),
+    )
+    .unwrap_err();
+    assert_eq!(f.fingerprint(), before, "the end event cannot precede ACK");
+    let ControlCommit::Applied { receipt, delta } = f.db.commit_control(&command).unwrap() else {
+        panic!("Stop must be applied");
+    };
+    let events = delta
+        .transition
+        .effects
+        .audit_events
+        .iter()
+        .filter(|event| event.id == "cooldown-ended-by-stop")
+        .collect::<Vec<_>>();
+    assert_eq!(events.len(), 1);
+    assert_eq!(events[0].data["status"], json!("stopped"));
+    assert_eq!(
+        events[0].data["provider_cooldown_wait_ended"]["outcome"],
+        json!("cancelled")
+    );
+    let after = f.fingerprint();
+    let ControlCommit::Replayed { receipt: replay } = f.db.commit_control(&command).unwrap() else {
+        panic!("the original Stop must replay");
+    };
+    assert_eq!(replay, receipt);
+    assert_eq!(f.fingerprint(), after, "replay cannot append another event");
+}
+
+#[test]
 fn each_intermediate_write_rolls_back_the_whole_stop() {
     for fault in [
         ControlFaultPoint::AfterValidation,

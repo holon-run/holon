@@ -264,7 +264,7 @@ async fn gemini_required_images_fail_fast_instead_of_becoming_text_only() {
                 vec![ConversationMessage::UserImage {
                     prompt: prompt.into(),
                     media_type: "image/png".into(),
-                    data_base64: "sensitive-image-data".into(),
+                    data_base64: String::from("sensitive-image-data").into(),
                     optional_history: false,
                 }],
                 Vec::new(),
@@ -295,7 +295,7 @@ async fn gemini_optional_history_remains_explicitly_text_only() {
         vec![ConversationMessage::UserImage {
             prompt: "historical image".into(),
             media_type: "image/png".into(),
-            data_base64: "sensitive-image-data".into(),
+            data_base64: String::from("sensitive-image-data").into(),
             optional_history: true,
         }],
         Vec::new(),

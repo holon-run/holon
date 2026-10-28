@@ -379,6 +379,28 @@ mod tests {
         }
     }
 
+    #[tokio::test]
+    async fn committed_runtime_failure_clears_only_the_transient_wait() {
+        let harness = LifecycleHarness::new();
+        let runtime = harness.runtime();
+        runtime
+            .begin_provider_cooldown_wait(sample_wait(Utc::now() + chrono::Duration::seconds(11)))
+            .await
+            .unwrap();
+        runtime
+            .record_runtime_loop_failure(&anyhow::anyhow!("cooldown failure fixture"))
+            .await;
+        let source = runtime.capture_committed_state().await.unwrap();
+        assert!(source.last_runtime_failure.is_some());
+        assert!(source.provider_cooldown_wait.is_none());
+        assert!(runtime
+            .agent_summary()
+            .await
+            .unwrap()
+            .provider_cooldown_wait
+            .is_none());
+    }
+
     #[test]
     fn cause_summary_converts_sanitized_cooldown_cause() {
         let cause = crate::runtime_db::provider_admission::ProviderCooldownCause {

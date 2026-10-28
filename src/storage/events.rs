@@ -333,6 +333,18 @@ impl RuntimeEventLog {
             .recent(self.agent_id.as_deref(), limit)
     }
 
+    pub(crate) fn has_recent_scheduling_advisory(
+        &self,
+        evidence: &str,
+        since: chrono::DateTime<chrono::Utc>,
+    ) -> Result<bool> {
+        #[cfg(test)]
+        self.flush_writes_for_tests()?;
+        self.runtime_db
+            .audit_events()
+            .has_recent_scheduling_advisory(self.agent_id.as_deref(), evidence, since)
+    }
+
     pub fn latest_seq(&self) -> Result<Option<u64>> {
         #[cfg(test)]
         self.flush_writes_for_tests()?;

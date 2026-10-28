@@ -1,6 +1,6 @@
 use super::*;
 use crate::runtime::{
-    tests::support::{context_config, tempdir, StubProvider},
+    tests::support::{context_config, isolate_test_user_home, tempdir, StubProvider},
     WaitForWakeKind,
 };
 
@@ -16,6 +16,7 @@ fn fixture() -> (tempfile::TempDir, RuntimeHandle) {
         context_config(),
     )
     .unwrap();
+    isolate_test_user_home(&runtime);
     (home, runtime)
 }
 
@@ -392,6 +393,13 @@ async fn scheduler_capture_does_not_spend_retained_input_query_acquisition() -> 
         let prepared = mutation
             .prepare_scheduler_read(None, Default::default(), Default::default(), runtime.now())
             .await?;
+        let captured = crate::runtime::provider_recovery::captured_message(
+            &prepared.inputs,
+            &scheduled.message.id,
+        )?
+        .context("prepared scheduler input missing")?;
+        assert_eq!(captured, scheduled.message);
+        assert_eq!(prepared.inputs.scope, prepared.work.scope);
         assert_eq!(original.finish()?, baseline);
         let guard = prepared.acquisition.guard()?;
         let last = Arc::downgrade(&guard);
@@ -1104,8 +1112,8 @@ async fn scheduler_prepares_current_source_after_positive_episode_recovery_inval
         read.state.current_execution_binding.as_ref(),
         Some(&binding)
     );
-    let inputs = mutation.capture_input_evidence()?;
-    let actual = crate::runtime::provider_recovery::captured_message(&inputs, &source.id)?
+    let inputs = &read.inputs;
+    let actual = crate::runtime::provider_recovery::captured_message(inputs, &source.id)?
         .context("source was not explicitly prepared")?;
     assert_eq!(actual.id, source.id);
     assert!(actual.message_seq.is_some());

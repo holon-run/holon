@@ -71,6 +71,10 @@ mod state_sql_budget_tests;
 mod occupancy_read_budget_tests;
 
 #[cfg(test)]
+#[path = "repositories/advisory_read_tests.rs"]
+mod advisory_read_tests;
+
+#[cfg(test)]
 #[path = "repositories/wait_sql_budget_tests.rs"]
 mod wait_sql_budget_tests;
 
@@ -5654,6 +5658,38 @@ impl AuditEventSink<'_> {
             };
             events.reverse();
             Ok(events)
+        })
+    }
+
+    /// Rate-limit one advisory without decoding unrelated event payloads.
+    pub(crate) fn has_recent_scheduling_advisory(
+        &self,
+        agent_id: Option<&str>,
+        evidence: &str,
+        since: DateTime<Utc>,
+    ) -> Result<bool> {
+        self.db.with_read(|connection| {
+            let mut statement = connection.prepare(
+                "SELECT json_extract(data_json, '$.created_at') FROM (
+                    SELECT kind, created_at, data_json FROM audit_events
+                    WHERE (?1 IS NULL OR agent_id = ?1)
+                    ORDER BY event_seq DESC, created_at DESC LIMIT 64
+                 ) AS recent
+                 WHERE kind = 'scheduling_advisory'
+                   AND json_type(data_json, '$.data.evidence') = 'array'
+                   AND EXISTS (
+                       SELECT 1 FROM json_each(recent.data_json, '$.data.evidence')
+                       WHERE type = 'text' AND value = ?2
+                   )",
+            )?;
+            let mut rows = statement.query(params![agent_id, evidence])?;
+            while let Some(row) = rows.next()? {
+                crate::diagnostics::resource_io::charge_owned_metadata(0, 1)?;
+                if parse_timestamp(borrowed_sql_text(row, 0)?)? > since {
+                    return Ok(true);
+                }
+            }
+            Ok(false)
         })
     }
 

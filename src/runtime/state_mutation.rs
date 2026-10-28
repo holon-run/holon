@@ -3305,6 +3305,13 @@ impl RuntimeHandle {
         )?;
         {
             let mut agent = self.inner.agent.lock().await;
+            let operator_input_changed = facts.queue.shared_messages().any(|message| {
+                super::scheduler::is_operator_interjection_message(message)
+                    && !agent
+                        .queue
+                        .shared_messages()
+                        .any(|previous| previous.id == message.id)
+            });
             if agent.state.active_workspace_entry != facts.state.active_workspace_entry
                 || agent.state.active_skills != facts.state.active_skills
             {
@@ -3312,11 +3319,46 @@ impl RuntimeHandle {
                     super::resource_observation::ResourceInvalidation::WorkspaceChange,
                 )?;
             }
+            {
+                let mut wait = self
+                    .inner
+                    .provider_cooldown_wait
+                    .lock()
+                    .map_err(|_| anyhow!("provider cooldown wait poisoned"))?;
+                let terminal_matches =
+                    facts
+                        .state
+                        .last_turn_terminal
+                        .as_ref()
+                        .is_some_and(|terminal| {
+                            wait.as_ref().is_some_and(|wait| {
+                                wait.turn_id.as_deref() == Some(terminal.turn_id.as_str())
+                            })
+                        });
+                let run_ended =
+                    agent.current_run_abort.is_some() && facts.current_run_abort.is_none();
+                if terminal_matches
+                    || run_ended
+                    || facts.state.last_runtime_failure != agent.state.last_runtime_failure
+                {
+                    *wait = None;
+                }
+            }
+            if operator_input_changed {
+                // Fence prepared continuations at source installation, before
+                // any await. Stripped notification effects cannot carry this.
+                self.inner
+                    .operator_interjection_revision
+                    .fetch_add(1, Ordering::AcqRel);
+            }
             agent.state = facts.state.as_ref().clone();
             agent.last_persisted_state = facts.state.as_ref().clone();
             agent.queue = facts.queue.clone();
             agent._queue_budget_view = Some(queue_budget_view);
             agent.current_run_abort = facts.current_run_abort.clone();
+            if operator_input_changed {
+                self.inner.operator_interjection_notify.notify_waiters();
+            }
             if let Some(abort) = &facts.deferred_abort {
                 if let Ok(mut reason) = abort.handle.reason.lock() {
                     *reason = abort.reason.clone();

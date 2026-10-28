@@ -5,8 +5,8 @@ use anyhow::{anyhow, bail, Result};
 
 use crate::{
     domain::execution_protocol::{
-        ExecutionAttempt, ExecutionAttemptState, ExecutionBinding, ExecutionProtocolState,
-        ExecutionSourceIdentity,
+        ExecutionAttempt, ExecutionAttemptState, ExecutionBinding, ExecutionOutcomeRecord,
+        ExecutionProtocolState, ExecutionSourceIdentity,
     },
     storage::AppStorage,
     types::{
@@ -130,7 +130,7 @@ impl ProviderRecoverySource {
             message.turn_id.as_deref(),
             turn,
             attempt,
-            state,
+            RecoveryExecutionLookup::Protocol(state),
             &mut read_turn,
         )?
         .is_some_and(|initial| self.is_initial_attempt(message, initial)))
@@ -212,7 +212,7 @@ pub(crate) fn resolve_with<'a>(
 ) -> Result<ProviderRecoverySource> {
     resolve_with_source_relation(
         message,
-        state,
+        RecoveryExecutionLookup::Protocol(state),
         read_message,
         read_turn,
         |_, _| Ok(SourceIngressTurn::LegacyHint),
@@ -253,9 +253,76 @@ fn canonical_source_ingress(
     bail!("provider recovery source turn mismatch");
 }
 
+/// Context borrows exact captured allocations instead of materializing the
+/// complete execution partition for the shared lineage validator.
+#[derive(Clone, Copy)]
+enum RecoveryExecutionLookup<'a> {
+    Protocol(&'a ExecutionProtocolState),
+    Captured(&'a super::resident_input_evidence::CapturedInputEvidence),
+}
+
+impl<'a> RecoveryExecutionLookup<'a> {
+    fn agent_id(self) -> &'a str {
+        match self {
+            Self::Protocol(state) => &state.agent_id,
+            Self::Captured(inputs) => &inputs.scope.agent_id,
+        }
+    }
+
+    fn attempt(self, id: &str) -> Result<Option<&'a ExecutionAttempt>> {
+        use super::resident_input_evidence::{
+            InputEvidenceFamily as Family, PreparedInputEvidence,
+        };
+        match self {
+            Self::Protocol(state) => Ok(state.attempts.get(id)),
+            Self::Captured(inputs) => match captured_execution_record(inputs, Family::Attempt, id)?
+            {
+                Some(PreparedInputEvidence::Attempt(attempt)) if attempt.attempt_id == id => {
+                    Ok(Some(attempt))
+                }
+                None => Ok(None),
+                _ => bail!("captured Attempt family or ID differs from its key"),
+            },
+        }
+    }
+
+    fn outcome(self, id: &str) -> Result<Option<&'a ExecutionOutcomeRecord>> {
+        use super::resident_input_evidence::{
+            InputEvidenceFamily as Family, PreparedInputEvidence,
+        };
+        match self {
+            Self::Protocol(state) => Ok(state.outcomes.get(id)),
+            Self::Captured(inputs) => match captured_execution_record(inputs, Family::Outcome, id)?
+            {
+                Some(PreparedInputEvidence::Outcome(outcome)) if outcome.outcome_id == id => {
+                    Ok(Some(outcome))
+                }
+                None => Ok(None),
+                _ => bail!("captured Outcome family or ID differs from its key"),
+            },
+        }
+    }
+}
+
+fn captured_execution_record<'a>(
+    inputs: &'a super::resident_input_evidence::CapturedInputEvidence,
+    family: super::resident_input_evidence::InputEvidenceFamily,
+    id: &str,
+) -> Result<Option<&'a super::resident_input_evidence::PreparedInputEvidence>> {
+    inputs
+        .lookup_borrowed(family, id)?
+        .map(|evidence| {
+            if evidence.locator.scope != inputs.scope {
+                bail!("provider recovery captured execution scope mismatch");
+            }
+            Ok(&evidence.record)
+        })
+        .transpose()
+}
+
 fn resolve_with_source_relation<'a>(
     message: &MessageEnvelope,
-    state: &'a ExecutionProtocolState,
+    state: RecoveryExecutionLookup<'a>,
     mut read_message: impl FnMut(&str) -> Result<Option<MessageEnvelope>>,
     mut read_turn: impl FnMut(&str) -> Result<Option<TurnRecord>>,
     mut read_source_ingress: impl FnMut(&MessageEnvelope, &TurnRecord) -> Result<SourceIngressTurn>,
@@ -282,7 +349,7 @@ fn resolve_with_source_relation<'a>(
             .recovery
             .as_ref()
             .ok_or_else(|| anyhow!("provider recovery directive missing"))?;
-        if state.agent_id != message.agent_id
+        if state.agent_id() != message.agent_id
             || cursor.agent_id != message.agent_id
             || !matches!(
                 directive.source_terminal_kind,
@@ -321,16 +388,17 @@ fn resolve_with_source_relation<'a>(
                 .map(|replay| replay.source_turn_id.as_str()),
         };
         let candidates = predecessor_candidates(&source_message, &source_turn)?;
-        let attempts = candidates.into_iter().filter(|attempt| {
-            attempt.terminal_outcome_id.as_ref().is_some_and(|id| {
-                state
-                    .outcomes
-                    .get(id)
-                    .is_some_and(|outcome| outcome.attempt_id == attempt.attempt_id)
-            })
-        });
         let mut resolved = Vec::new();
-        for attempt in attempts {
+        for attempt in candidates {
+            let Some(outcome_id) = attempt.terminal_outcome_id.as_deref() else {
+                continue;
+            };
+            if !state
+                .outcome(outcome_id)?
+                .is_some_and(|outcome| outcome.attempt_id == attempt.attempt_id)
+            {
+                continue;
+            }
             if let Some(initial) = initial_source_attempt(
                 &source_message,
                 ingress_turn,
@@ -393,8 +461,7 @@ fn resolve_with_source_relation<'a>(
                 .as_ref()
                 .ok_or_else(|| anyhow!("provider recovery predecessor lineage missing"))?;
             let prior = state
-                .attempts
-                .get(prior_id)
+                .attempt(prior_id)?
                 .ok_or_else(|| anyhow!("provider recovery prior attempt missing"))?;
             let prior_selection = super::turn::TurnModelSelection::from_message(&source_message)
                 .map_err(|_| anyhow!("provider recovery prior directive malformed"))?;
@@ -433,7 +500,7 @@ fn initial_source_attempt<'a>(
     ingress_turn: Option<&str>,
     turn: &TurnRecord,
     attempt: &'a ExecutionAttempt,
-    state: &'a ExecutionProtocolState,
+    state: RecoveryExecutionLookup<'a>,
     read_turn: &mut impl FnMut(&str) -> Result<Option<TurnRecord>>,
 ) -> Result<Option<&'a ExecutionAttempt>> {
     // Unstamped recovery hops keep their real predecessor. The caller validates
@@ -460,11 +527,10 @@ fn initial_source_attempt<'a>(
     let Some(replay) = turn.replay.as_ref() else {
         return Ok(None);
     };
-    let Some(prior) = attempt
-        .recovery_of_attempt_id
-        .as_ref()
-        .and_then(|id| state.attempts.get(id))
-    else {
+    let Some(prior_id) = attempt.recovery_of_attempt_id.as_deref() else {
+        return Ok(None);
+    };
+    let Some(prior) = state.attempt(prior_id)? else {
         return Ok(None);
     };
     if replay.source_message_id != message.id
@@ -477,11 +543,17 @@ fn initial_source_attempt<'a>(
         || prior.source != attempt.source
         || prior.binding != attempt.binding
         || prior.provenance != attempt.provenance
-        // Provider hops do not spend the one same-message replay allowance.
-        || prior.recovery_of_attempt_id.as_ref().and_then(|id| state.attempts.get(id))
-            .is_some_and(|ancestor| ancestor.source_message_id == prior.source_message_id)
     {
         return Ok(None);
+    }
+    // Provider hops do not spend the one same-message replay allowance.
+    if let Some(id) = prior.recovery_of_attempt_id.as_deref() {
+        if state
+            .attempt(id)?
+            .is_some_and(|ancestor| ancestor.source_message_id == prior.source_message_id)
+        {
+            return Ok(None);
+        }
     }
     if let Some(interrupted) = read_turn(ingress_turn)? {
         if interrupted.agent_id != turn.agent_id
@@ -510,10 +582,18 @@ pub(crate) fn resolve_from_captured<'a>(
     message: &MessageEnvelope,
     state: &'a ExecutionProtocolState,
 ) -> Result<ProviderRecoverySource> {
+    resolve_captured_with_lookup(inputs, message, RecoveryExecutionLookup::Protocol(state))
+}
+
+fn resolve_captured_with_lookup<'a>(
+    inputs: &'a super::resident_input_evidence::CapturedInputEvidence,
+    message: &MessageEnvelope,
+    state: RecoveryExecutionLookup<'a>,
+) -> Result<ProviderRecoverySource> {
     use super::resident_input_evidence::{
         InputEvidenceFamily as Family, InputEvidenceKey as Key, InputEvidenceReadError,
     };
-    if inputs.scope.agent_id != message.agent_id || state.agent_id != message.agent_id {
+    if inputs.scope.agent_id != message.agent_id || state.agent_id() != message.agent_id {
         bail!("provider recovery captured scope mismatch");
     }
     resolve_with_source_relation(
@@ -530,6 +610,20 @@ pub(crate) fn resolve_from_captured<'a>(
         |source, turn| inputs.execution_predecessor_candidates(source, &turn.turn_id),
         |cursor| inputs.reject_proven_missing_recovery_source(cursor),
     )
+}
+
+pub(crate) fn resolve_for_context_from_captured(
+    inputs: &super::resident_input_evidence::CapturedInputEvidence,
+    message: &MessageEnvelope,
+) -> Result<Option<ProviderRecoverySource>> {
+    if !super::turn::TurnModelSelection::message_has_provider_recovery_provenance(message) {
+        return Ok(None);
+    }
+    if !inputs.execution.initialized {
+        bail!("provider recovery execution state missing");
+    }
+    resolve_captured_with_lookup(inputs, message, RecoveryExecutionLookup::Captured(inputs))
+        .map(Some)
 }
 
 pub(super) fn captured_message(
@@ -610,7 +704,7 @@ pub(crate) fn resolve_for_context_with_sources(
         load_state()?.ok_or_else(|| anyhow!("provider recovery execution state missing"))?;
     resolve_with_source_relation(
         message,
-        &state,
+        RecoveryExecutionLookup::Protocol(&state),
         read_message,
         read_turn,
         |source, turn| {
@@ -649,6 +743,46 @@ mod context_assignment_tests {
             MessageOrigin, Priority, TurnTerminalSummary, TurnTriggerSummary,
         },
     };
+
+    #[test]
+    fn captured_context_ignores_non_recovery_without_execution_preparation() {
+        use crate::runtime::resident_input_evidence::{CapturedInputEvidence, InputEvidenceScope};
+        let inputs = CapturedInputEvidence {
+            query: None,
+            query_acquisition: None,
+            selected_completion_brief_ids: Default::default(),
+            completion_source_observations: Default::default(),
+            recovery_source_absences: Default::default(),
+            execution: Default::default(),
+            scope: InputEvidenceScope {
+                agent_id: "different-agent".into(),
+                identity_incarnation: 1,
+            },
+            budget: None,
+            budget_views: Vec::new(),
+            windows: Vec::new(),
+            records: Vec::new(),
+            unavailable: Default::default(),
+            turn_transcript_keys: Default::default(),
+            message_turn_keys: Default::default(),
+        };
+        let message = MessageEnvelope::new(
+            "default",
+            MessageKind::OperatorPrompt,
+            MessageOrigin::Operator {
+                actor_id: None,
+                actor_display_name: None,
+            },
+            AuthorityClass::OperatorInstruction,
+            Priority::Normal,
+            MessageBody::Text {
+                text: "ordinary input".into(),
+            },
+        );
+        assert!(resolve_for_context_from_captured(&inputs, &message)
+            .unwrap()
+            .is_none());
+    }
 
     #[test]
     fn unstamped_provider_hop_retains_predecessor_but_an_ordinary_root_cannot() {
@@ -713,7 +847,7 @@ mod context_assignment_tests {
                 message.turn_id.as_deref(),
                 &turn,
                 attempt,
-                &state,
+                RecoveryExecutionLookup::Protocol(&state),
                 &mut |_| panic!("an unreplayed input must not read a replay Turn"),
             )
             .unwrap()
@@ -960,8 +1094,49 @@ mod context_assignment_tests {
         let loaded = resolve_from_captured(&captured, &recovery, &captured_protocol).unwrap();
         assert_eq!(loaded.predecessor.attempt_id, "original-provider-attempt");
         assert_eq!(loaded.root_message.turn_id, source.turn_id);
+        let borrowed = resolve_for_context_from_captured(&captured, &recovery)
+            .unwrap()
+            .unwrap();
+        assert_eq!(borrowed.predecessor, loaded.predecessor);
+        assert_eq!(borrowed.predecessors, loaded.predecessors);
+        assert_eq!(borrowed.source_turns, loaded.source_turns);
+        assert_eq!(borrowed.root_message, loaded.root_message);
+        // Exact execution reads retain the original allocations, not a cloned
+        // projection of every Attempt, Outcome and WorkExecution in the capture.
+        let lookup = RecoveryExecutionLookup::Captured(&captured);
+        for evidence in &captured.records {
+            use crate::runtime::resident_input_evidence::PreparedInputEvidence;
+            match &evidence.record {
+                PreparedInputEvidence::Attempt(attempt) => assert!(std::ptr::eq(
+                    lookup.attempt(&attempt.attempt_id).unwrap().unwrap(),
+                    attempt,
+                )),
+                PreparedInputEvidence::Outcome(outcome) => assert!(std::ptr::eq(
+                    lookup.outcome(&outcome.outcome_id).unwrap().unwrap(),
+                    outcome,
+                )),
+                _ => {}
+            }
+        }
 
         let mut incomplete = captured;
+        incomplete.scope.agent_id = "different-agent".into();
+        assert!(resolve_for_context_from_captured(&incomplete, &recovery).is_err());
+        incomplete.scope.agent_id = "default".into();
+        incomplete.execution.initialized = false;
+        assert!(resolve_for_context_from_captured(&incomplete, &recovery).is_err());
+        incomplete.execution.initialized = true;
+        let outcome_index = incomplete
+            .records
+            .iter()
+            .position(|record| {
+                record.locator.key == Key::new(Family::Outcome, "provider-failure-outcome")
+            })
+            .unwrap();
+        let saved_outcome = incomplete.records.remove(outcome_index);
+        let error = resolve_for_context_from_captured(&incomplete, &recovery).unwrap_err();
+        assert!(is_preparation_error(&error), "{error:#}");
+        incomplete.records.push(saved_outcome);
         let attempt_index = incomplete
             .records
             .iter()
@@ -970,22 +1145,27 @@ mod context_assignment_tests {
             })
             .unwrap();
         let actual_turn = Key::new(Family::Turn, &turn.turn_id);
-        assert!(incomplete.records[attempt_index]
-            .attempt_turn_keys
-            .as_mut()
-            .unwrap()
-            .remove(&actual_turn));
+        assert!(
+            std::sync::Arc::make_mut(&mut incomplete.records[attempt_index])
+                .attempt_turn_keys
+                .as_mut()
+                .unwrap()
+                .remove(&actual_turn)
+        );
         assert!(
             resolve_from_captured(&incomplete, &recovery, &captured_protocol).is_err(),
             "an Attempt without its actual Turn proof supplied a predecessor"
         );
-        incomplete.records[attempt_index]
+        assert!(resolve_for_context_from_captured(&incomplete, &recovery).is_err());
+        std::sync::Arc::make_mut(&mut incomplete.records[attempt_index])
             .attempt_turn_keys
             .as_mut()
             .unwrap()
             .insert(actual_turn);
         let saved_sources = std::mem::take(&mut incomplete.execution.sources);
         let error = resolve_from_captured(&incomplete, &recovery, &captured_protocol).unwrap_err();
+        assert!(is_preparation_error(&error), "{error:#}");
+        let error = resolve_for_context_from_captured(&incomplete, &recovery).unwrap_err();
         assert!(is_preparation_error(&error), "{error:#}");
         incomplete.execution.sources = saved_sources;
         let saved_attempt = incomplete
@@ -998,12 +1178,17 @@ mod context_assignment_tests {
             .unwrap();
         let error = resolve_from_captured(&incomplete, &recovery, &captured_protocol).unwrap_err();
         assert!(is_preparation_error(&error), "{error:#}");
+        let error = resolve_for_context_from_captured(&incomplete, &recovery).unwrap_err();
+        assert!(is_preparation_error(&error), "{error:#}");
         incomplete.records.push(saved_attempt);
         std::sync::Arc::make_mut(&mut incomplete.message_turn_keys).remove(&source.id);
         let error = resolve_from_captured(&incomplete, &recovery, &captured_protocol).unwrap_err();
         assert!(is_preparation_error(&error), "{error:#}");
+        let error = resolve_for_context_from_captured(&incomplete, &recovery).unwrap_err();
+        assert!(is_preparation_error(&error), "{error:#}");
         std::sync::Arc::make_mut(&mut incomplete.message_turn_keys).insert(source.id.clone(), None);
         assert!(resolve_from_captured(&incomplete, &recovery, &captured_protocol).is_err());
+        assert!(resolve_for_context_from_captured(&incomplete, &recovery).is_err());
 
         // Admission compatibility is intentionally unchanged in this context slice.
         assert!(resolve(&storage, &recovery, &protocol).is_err());

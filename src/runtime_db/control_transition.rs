@@ -401,7 +401,16 @@ pub(crate) enum ControlError {
 
 /// This reducer owns no SQL/clock/IDs/handles; all nondeterministic input is
 /// frozen once by the admitted runtime operation.
+#[cfg(test)]
 pub(crate) fn prepare_control(input: ControlPlanInput) -> Result<PreparedControl> {
+    prepare_control_with_state_audit(input, |_| Ok(Vec::new()))
+}
+
+/// State observations use the derived candidate and share its original ACK.
+pub(crate) fn prepare_control_with_state_audit(
+    input: ControlPlanInput,
+    prepare_audit: impl FnOnce(&AgentState) -> Result<Vec<AuditEvent>>,
+) -> Result<PreparedControl> {
     validate_key(&input.key)?;
     let ControlPlanInput {
         key,
@@ -448,7 +457,9 @@ pub(crate) fn prepare_control(input: ControlPlanInput) -> Result<PreparedControl
         candidate.current_run_id = None;
         candidate.sleeping_until = None;
         candidate.pending_wake_hint = None;
-        candidate.active_workspace_entry = None;
+        if snapshot.workspace_occupancy.is_some() {
+            candidate.active_workspace_entry = None;
+        }
         candidate.pending = 0;
         if !task_results.is_empty() {
             candidate.last_wake_reason = Some("TaskResult".into());
@@ -843,6 +854,7 @@ pub(crate) fn prepare_control(input: ControlPlanInput) -> Result<PreparedControl
         });
     }
     audit_events.extend(family_events);
+    audit_events.extend(prepare_audit(&candidate)?);
     let audit_ids: BTreeSet<_> = audit_events.iter().map(|event| event.id.as_str()).collect();
     ensure!(
         audit_ids.len() == audit_events.len(),

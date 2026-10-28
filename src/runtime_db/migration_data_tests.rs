@@ -226,11 +226,11 @@ fn enqueue(tx: &Transaction<'_>, message: &MessageEnvelope) -> Result<()> {
 fn migration_data_matrix_preserves_task_input_status_and_scheduling_across_lineages() -> Result<()>
 {
     let mut expected_fixed = None;
-    let cases = (80..=102)
-        .map(|version| (version, None))
-        .chain([81, 83, 89].into_iter().flat_map(|start| {
-            (91..=102).map(move |version| (version, Some(start)))
-        }));
+    let cases = (80..=102).map(|version| (version, None)).chain(
+        [81, 83, 89]
+            .into_iter()
+            .flat_map(|start| (91..=102).map(move |version| (version, Some(start)))),
+    );
     for (prefix, legacy_start) in cases {
         let home = tempfile::tempdir()?;
         let path = home.path().join("runtime.sqlite");
@@ -251,9 +251,8 @@ fn migration_data_matrix_preserves_task_input_status_and_scheduling_across_linea
         for migration in MIGRATIONS.iter().filter(|migration| {
             migration.version > 80
                 && migration.version <= prefix
-                && legacy_start.is_none_or(|start| {
-                    migration.version < start || migration.version >= 91
-                })
+                && legacy_start
+                    .is_none_or(|start| migration.version < start || migration.version >= 91)
         }) {
             apply_migration(&mut connection, migration)?;
         }
@@ -294,7 +293,8 @@ fn migration_data_matrix_preserves_task_input_status_and_scheduling_across_linea
             "main recovery defaults must survive feature qualification"
         );
         for (version, name, timestamp) in old_history {
-            let actual_version = if let Some(start) = legacy_start.filter(|start| version >= *start) {
+            let actual_version = if let Some(start) = legacy_start.filter(|start| version >= *start)
+            {
                 version + (91 - start)
             } else {
                 version

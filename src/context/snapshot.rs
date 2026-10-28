@@ -729,17 +729,9 @@ fn acquire_durable_context_inputs(
             report.read($name, || $read, $count)?
         };
     }
-    let recovery_source = read!(
-        "recovery",
-        crate::runtime::provider_recovery::resolve_for_context_with_sources(
-            current_message,
-            || inputs.execution_protocol_state(&current_message.agent_id),
-            |id| inputs.message_by_id(id),
-            |id| inputs.turn_by_id(id),
-            |id| inputs.assigned_turn_for_message(id)
-        ),
-        |v| usize::from(v.is_some())
-    );
+    let recovery_source = read!("recovery", inputs.recovery_source(current_message), |v| {
+        usize::from(v.is_some())
+    });
     let continuation_anchor_messages =
         if recovery_source.is_some() || super::is_trusted_operator_input(current_message) {
             Vec::new()

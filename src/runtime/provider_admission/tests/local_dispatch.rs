@@ -317,6 +317,11 @@ async fn cooling_dispatch_rejection_scenario(readback_stop: Option<bool>, test_m
             .park_provider_queue(&pause.parking)
             .unwrap();
     }
+    let original_workspace = unapplied_state
+        .active_workspace_entry
+        .clone()
+        .expect("the cooling source must retain its selected workspace");
+    assert!(original_workspace.occupancy_id.is_none());
     let stop_facts = |runtime: &crate::runtime::RuntimeHandle| {
         let turn = runtime.storage().read_recent_turns(1).unwrap().remove(0);
         assert_eq!(turn.turn_id, original_turn.turn_id);
@@ -349,7 +354,15 @@ async fn cooling_dispatch_rejection_scenario(readback_stop: Option<bool>, test_m
         assert_eq!(state.status, crate::types::AgentStatus::Stopped);
         assert_eq!(state.pending, 0);
         assert!(state.current_run_id.is_none());
-        assert_eq!(state.current_turn_id.as_deref(), Some(turn.turn_id.as_str()));
+        assert_eq!(
+            state.active_workspace_entry.as_ref(),
+            Some(&original_workspace),
+            "Stop must not detach a selected workspace without an occupancy"
+        );
+        assert_eq!(
+            state.current_turn_id.as_deref(),
+            Some(turn.turn_id.as_str())
+        );
         (turn, attempt, queue, state)
     };
     let mut original_stop = None;

@@ -114,7 +114,8 @@ pub(crate) fn load_stopped_provider_pause_memory_tx(
     proof.require_same_transaction(tx)?;
     frozen.require_original_ack_shape_tx(tx, ack.queue)?;
     ensure!(
-        read_parking(tx, &frozen.agent_id, &frozen.source.id)?.as_ref() == Some(&frozen.pause.parking),
+        read_parking(tx, &frozen.agent_id, &frozen.source.id)?.as_ref()
+            == Some(&frozen.pause.parking),
         "stopped provider pause parking changed before memory observation"
     );
     if let Some(dispatch) = proof.dispatch() {
@@ -157,7 +158,9 @@ fn dispatch_material_tx(
         |row| Ok((row.get(0)?, row.get(1)?)),
     )?;
     Ok((
-        bytes.checked_mul(4).context("stopped memory material overflow")?,
+        bytes
+            .checked_mul(4)
+            .context("stopped memory material overflow")?,
         records,
     ))
 }
@@ -166,7 +169,10 @@ pub(super) fn frozen_material_tx(
     tx: &Transaction<'_>,
     frozen: &FrozenStoppedProviderPause,
 ) -> Result<(usize, usize)> {
-    let memory = frozen.memory.as_ref().context("stopped ACK omitted its memory observation")?;
+    let memory = frozen
+        .memory
+        .as_ref()
+        .context("stopped ACK omitted its memory observation")?;
     memory.require_original(frozen)?;
     match &memory.observed {
         Observation::ClaimOnly => Ok((0, 0)),
@@ -198,10 +204,17 @@ fn observe_tx(
                UNION ALL SELECT 1 FROM dispatch_memory_legacy_dispatches c
                WHERE c.agent_id=?1 AND c.identity_incarnation=?2 AND c.source_message_id=?3
                  AND NOT EXISTS(SELECT 1 FROM turn_records t WHERE t.turn_id=c.turn_id))",
-            params![frozen.agent_id, frozen.identity_incarnation, frozen.source.id],
+            params![
+                frozen.agent_id,
+                frozen.identity_incarnation,
+                frozen.source.id
+            ],
             |row| row.get(0),
         )?;
-        ensure!(!orphaned, "claim-only stopped ACK has an orphaned memory address");
+        ensure!(
+            !orphaned,
+            "claim-only stopped ACK has an orphaned memory address"
+        );
         return Ok(Observation::ClaimOnly);
     };
     let scope = InputEvidenceScope {
@@ -220,9 +233,8 @@ fn observe_tx(
     proof.matches_memory_dispatch(&key, &invocation)?;
     // The canonical Stop proof already validated this exact Turn's original
     // run/source. This reader never uses the stopped current State's None run.
-    let binding = dispatch_memory::load_dispatch_memory_binding_by_turn_tx(
-        tx, &scope, dispatch.turn_id(),
-    )?;
+    let binding =
+        dispatch_memory::load_dispatch_memory_binding_by_turn_tx(tx, &scope, dispatch.turn_id())?;
     if let Some(binding) = &binding {
         proof.matches_memory_dispatch(binding.key(), binding.invocation())?;
     }
@@ -249,7 +261,10 @@ pub(super) fn revalidate_tx(
     frozen: &FrozenStoppedProviderPause,
     proof: &CanonicalStoppedRunProof<'_>,
 ) -> Result<()> {
-    let memory = frozen.memory.as_ref().context("stopped ACK omitted its memory observation")?;
+    let memory = frozen
+        .memory
+        .as_ref()
+        .context("stopped ACK omitted its memory observation")?;
     memory.require_original(frozen)?;
     ensure!(
         memory.observed == observe_tx(tx, frozen, proof)?,

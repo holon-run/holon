@@ -192,19 +192,46 @@ impl RuntimeHandle {
             Vec::new()
         };
         let cancellation_targets = frozen.iter().map(|frozen| frozen.target.clone()).collect();
-        let command = control_transition::prepare_control(ControlPlanInput {
-            key,
-            invocation,
-            snapshot,
-            prepared_at,
-            task_results,
-            healthy_running,
-            protected_control_attempt,
-            protected_control_run_id,
-            cancellation_targets,
-            audit_events,
-            index_changes: Vec::new(),
-        })?;
+        let cooldown_wait = if is_stop {
+            self.inner
+                .provider_cooldown_wait
+                .lock()
+                .map_err(|_| anyhow!("provider cooldown wait poisoned"))?
+                .clone()
+        } else {
+            None
+        };
+        let command = control_transition::prepare_control_with_state_audit(
+            ControlPlanInput {
+                key,
+                invocation,
+                snapshot,
+                prepared_at,
+                task_results,
+                healthy_running,
+                protected_control_attempt,
+                protected_control_run_id,
+                cancellation_targets,
+                audit_events,
+                index_changes: Vec::new(),
+            },
+            |state| {
+                let Some(wait) = cooldown_wait else {
+                    return Ok(Vec::new());
+                };
+                let mut event = AgentStateChangedEvent::from_state(state);
+                event.provider_cooldown_wait_ended =
+                    Some(crate::types::ProviderCooldownWaitEnded {
+                        outcome: crate::types::ProviderCooldownWaitEndOutcome::Cancelled,
+                        turn_id: wait.turn_id,
+                        ended_at: prepared_at,
+                    });
+                Ok(vec![AuditEvent::typed(
+                    RuntimeEventKind::AgentStateChanged,
+                    &event,
+                )?])
+            },
+        )?;
         Ok(PreparedRuntimeControl {
             command,
             cancellation: PreparedControlCancellation::new(frozen),

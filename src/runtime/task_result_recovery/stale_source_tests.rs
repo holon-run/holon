@@ -371,7 +371,11 @@ async fn replace_terminal_task_fixture(runtime: &RuntimeHandle, task: &TaskRecor
     use crate::runtime_db::task_snapshot::{
         prepare_existing_task_maintenance_tx, register_existing_task_maintenance_tx,
     };
-    let scope = runtime.begin_mutation().await.unwrap().input_evidence_scope();
+    let scope = runtime
+        .begin_mutation()
+        .await
+        .unwrap()
+        .input_evidence_scope();
     let keys = std::collections::BTreeSet::from([TaskKey::new(TaskFamily::Task, &task.id)]);
     // The public repository forbids terminal rewrites. Model a newer durable
     // generation/owner in this temporary DB, keeping its existing qualification
@@ -537,12 +541,45 @@ async fn settled_recovery_does_not_complete_or_admit_its_work_item_owner() {
     );
 }
 
+async fn persist_independent_wait_fixture(
+    runtime: &RuntimeHandle,
+    wait: &crate::types::WaitConditionRecord,
+) {
+    let mut mutation = runtime.begin_mutation().await.unwrap();
+    mutation
+        .commit_wait_transition(
+            crate::ids::audit_event_id(),
+            crate::runtime_db::transitions::WaitTransitionCommand {
+                agent_id: wait.agent_id.clone(),
+                work_items: Vec::new(),
+                expected_wait_conditions: Vec::new(),
+                wait_conditions: vec![wait.clone()],
+                timer_wake: None,
+                task_result_admission: None,
+                agent_state: None,
+                audit_events: Vec::new(),
+                index_changes: Vec::new(),
+                notify_scheduler: false,
+                fault: None,
+            },
+            Default::default(),
+            None,
+        )
+        .await
+        .unwrap();
+}
+
 #[tokio::test(start_paused = true)]
 async fn settled_recovery_retains_independent_wait_reconciliation_and_generation_fences() {
     use crate::types::{WaitConditionKind, WaitConditionRecord, WaitConditionStatus, WakeSource};
     let harness = LifecycleHarness::new();
     let runtime = harness.runtime();
     let (_, recovery_id) = settled_recovery(&harness).await;
+    // The independent wait must reference an originally qualified Work body.
+    let waiter_owner = runtime
+        .create_work_item("independent waiter owner".into(), None, None, Vec::new())
+        .await
+        .unwrap();
     let source = runtime
         .storage()
         .read_message_by_id(&recovery_id)
@@ -552,7 +589,7 @@ async fn settled_recovery_retains_independent_wait_reconciliation_and_generation
     let mut wait = WaitConditionRecord {
         id: "independent-wait".into(),
         agent_id: "default".into(),
-        work_item_id: Some("another-waiter-owner".into()),
+        work_item_id: Some(waiter_owner.id),
         status: WaitConditionStatus::Active,
         kind: WaitConditionKind::Task,
         source: None,
@@ -571,11 +608,7 @@ async fn settled_recovery_retains_independent_wait_reconciliation_and_generation
         trigger_message_id: None,
         triggered_at: None,
     };
-    runtime
-        .runtime_db()
-        .wait_conditions()
-        .upsert(&wait)
-        .unwrap();
+    persist_independent_wait_fixture(runtime, &wait).await;
     assert!(!runtime
         .runtime_db()
         .task_result_settlements()
@@ -593,11 +626,7 @@ async fn settled_recovery_retains_independent_wait_reconciliation_and_generation
     harness.assert_unchanged(&before);
     wait.status = WaitConditionStatus::Cancelled;
     wait.cancelled_at = Some(harness.now());
-    runtime
-        .runtime_db()
-        .wait_conditions()
-        .upsert(&wait)
-        .unwrap();
+    persist_independent_wait_fixture(runtime, &wait).await;
     assert!(runtime
         .runtime_db()
         .task_result_settlements()

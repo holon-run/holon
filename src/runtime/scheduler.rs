@@ -195,9 +195,7 @@ mod diagnostics;
 mod projection;
 mod semantic_selection;
 
-pub(crate) use diagnostics::{
-    append_deferred_activation_advisory, append_ambiguous_wait_advisory,
-};
+pub(crate) use diagnostics::append_deferred_activation_advisory;
 #[cfg(test)]
 pub(crate) use diagnostics::append_scheduling_advisories;
 pub(crate) use diagnostics::scheduling_advisories_for_facts;

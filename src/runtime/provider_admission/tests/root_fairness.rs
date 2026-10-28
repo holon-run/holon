@@ -155,7 +155,14 @@ async fn fifth_root_http(restart: bool) {
                 &scheduled.scheduler_decision,
             ))
             .await
-            .unwrap();
+            .unwrap_or_else(|error| {
+                panic!(
+                    "context dispatch failed: {error:#}; message={}, root={root}, \
+                     attempts={}, fresh={fresh_scanner}, fifth={fifth_source:?}, \
+                     provider={provider}, recent_dispatches={dispatches:#?}",
+                    message.id, record.recovery_attempts,
+                )
+            });
             let dispatch = format!(
                 "message={}, root={root}, attempts={}, fresh={fresh_scanner}, fifth={fifth_source:?}, \
                  calls={calls_before:?}->{:?}, now={}, provider={provider}, \

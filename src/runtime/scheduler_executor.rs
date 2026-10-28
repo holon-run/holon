@@ -620,9 +620,6 @@ impl<'a> SchedulerDecisionExecutor<'a> {
                     .active_workspace_entry
                     .as_ref()
                     .and_then(|entry| entry.occupancy_id.clone());
-                if occupancy_to_release.is_none() {
-                    guard.state.active_workspace_entry = None;
-                }
                 guard.defer_abort_current_run("agent_stopped");
                 scheduler::apply_stop_projection(&mut guard.state);
             }
@@ -1059,17 +1056,14 @@ impl<'a> SchedulerDecisionExecutor<'a> {
                 planning_now,
             )
             .await?;
-        let inputs = planning_guard
-            .as_ref()
-            .expect("planning reservation")
-            .capture_input_evidence()?;
+        let inputs = &read.inputs;
         if read.state.as_ref() != &candidate.prior_state
-            || super::provider_recovery::captured_message(&inputs, &candidate.message.id)?.as_ref()
+            || super::provider_recovery::captured_message(inputs, &candidate.message.id)?.as_ref()
                 != Some(&candidate.message)
         {
             return Ok(PrepareMessageOutcome::Replan);
         }
-        require_interrupted_source_allocations(&inputs, &persisted_message.id)?;
+        require_interrupted_source_allocations(inputs, &persisted_message.id)?;
         let projection = &read.projection;
         let prior_closure = RuntimeHandle::closure_decision_from_projection(
             &read.state,
@@ -1081,7 +1075,7 @@ impl<'a> SchedulerDecisionExecutor<'a> {
             &persisted_message,
             prior_closure,
             &read.state,
-            &inputs,
+            inputs,
             &read.work,
             &read.tasks,
         )?;
@@ -1099,7 +1093,7 @@ impl<'a> SchedulerDecisionExecutor<'a> {
             &persisted_message,
             &dispatch_plan,
             continuation_decision.model_reentry,
-            &inputs,
+            inputs,
             &read.work,
             &read.work_queue,
             &read.tasks,
@@ -1242,6 +1236,7 @@ impl<'a> SchedulerDecisionExecutor<'a> {
                 &candidate.prior_state,
                 &persisted_message,
                 &attempt,
+                inputs,
             )? {
                 super::provider_admission::ProviderTurnGate::Bypass => {}
                 super::provider_admission::ProviderTurnGate::Granted(admission) => {
@@ -1426,7 +1421,7 @@ impl<'a> SchedulerDecisionExecutor<'a> {
                     planning_now,
                 )
                 .await?;
-            let refreshed_inputs = guard.capture_input_evidence()?;
+            let refreshed_inputs = &refreshed.inputs;
             // Preparation can publish a larger cut without changing canonical
             // facts. Compare the original decision and its qualified inputs,
             // not the process-local publication generation.
@@ -1724,7 +1719,10 @@ impl<'a> SchedulerDecisionExecutor<'a> {
                 };
                 guard
                     .queue
-                    .pop_selected(&candidate.message.id, candidate.wait_obligation)
+                    .pop_selected(
+                        &candidate.message.id,
+                        candidate.wait_obligation || !candidate.provider_parked.is_empty(),
+                    )
                     .expect("selected queue message was just checked");
                 guard.current_run_abort = Some(CurrentRunAbortHandle {
                     run_id: run_id.clone(),
@@ -5133,7 +5131,10 @@ mod tests {
                     .await
                     .unwrap()
             };
-            let select = |messages: &[MessageEnvelope], waits: &[String], parked: &[String]| {
+            let select_from = |captured: &super::super::state_mutation::PreparedSchedulerRead,
+                               messages: &[MessageEnvelope],
+                               waits: &[String],
+                               parked: &[String]| {
                 let mut queue = crate::queue::RuntimeQueue::default();
                 for message in messages {
                     queue.push(message.clone());
@@ -5143,13 +5144,16 @@ mod tests {
                         &queue,
                         &waits.iter().cloned().collect(),
                         &parked.iter().cloned().collect(),
-                        Some(&recovery),
+                        Some(captured),
                     )
                     .unwrap()
                     .0
                     .unwrap()
                     .id
                     .clone()
+            };
+            let select = |messages: &[MessageEnvelope], waits: &[String], parked: &[String]| {
+                select_from(&recovery, messages, waits, parked)
             };
             let pair = [retry.clone(), source.clone()];
             assert_eq!(select(&pair, &[], &[]), source.id);
@@ -5235,16 +5239,42 @@ mod tests {
                 "a terminal task cannot replace its captured generation"
             );
             if restart {
+                let at = runtime.now();
                 runtime
-                    .runtime_db()
-                    .task_result_settlements()
-                    .settle_owner_unavailable(
-                        &result_id,
-                        crate::runtime_db::TaskResultSettlementDisposition::InvalidOrStale,
-                        runtime.now(),
-                    )
+                    .apply_task_result_operation((&result_id, at), || {
+                        crate::runtime_db::transitions::TaskResultOperation::SettleOwnerUnavailable {
+                            message_id: result_id.clone(),
+                            disposition:
+                                crate::runtime_db::TaskResultSettlementDisposition::InvalidOrStale,
+                            at,
+                        }
+                    })
+                    .await
+                    .unwrap()
+                    .changed()
                     .unwrap();
-                assert_eq!(select(&pair, &[], &[]), retry.id, "settled source");
+                let settled = {
+                    let mut guard = runtime.begin_mutation().await.unwrap();
+                    guard
+                        .prepare_scheduler_read(
+                            Some(&source),
+                            Default::default(),
+                            std::collections::BTreeSet::from([source.id.clone()]),
+                            runtime.now(),
+                        )
+                        .await
+                        .unwrap()
+                };
+                assert_eq!(
+                    select(&pair, &[], &[]),
+                    source.id,
+                    "a captured read remains frozen across the canonical settlement"
+                );
+                assert_eq!(
+                    select_from(&settled, &pair, &[], &[]),
+                    retry.id,
+                    "settled source"
+                );
             }
         }
     }
@@ -5822,6 +5852,68 @@ mod tests {
             wait_obligation: false,
             provider_parked: Default::default(),
         }
+    }
+
+    #[tokio::test]
+    async fn provider_parking_claims_the_selected_non_head_message() {
+        use crate::runtime::tests::support::LifecycleHarness;
+
+        let harness = LifecycleHarness::new();
+        let runtime = harness.runtime();
+        let parked = runtime.enqueue(operator_prompt("parked")).await.unwrap();
+        let selected = runtime.enqueue(operator_prompt("selected")).await.unwrap();
+        let executor = SchedulerDecisionExecutor::new(runtime);
+        let mut claimed = None;
+        // Context preparation can replan; retain the same bound as poll_inner.
+        for _ in 0..super::super::ENQUEUE_AGENT_STATE_MAX_ATTEMPTS {
+            // The resident envelope includes the committed message_seq.
+            let mut candidate = {
+                let guard = runtime.inner.agent.lock().await;
+                QueueCandidate {
+                    message: guard
+                        .queue
+                        .peek_next_matching(|message| message.id == selected.id)
+                        .cloned()
+                        .expect("selected queued test message"),
+                    prior_state: guard.state.clone(),
+                    wait_obligation: false,
+                    provider_parked: Default::default(),
+                }
+            };
+            candidate.provider_parked.insert(parked.id.clone());
+            match executor.prepare_message(candidate).await.unwrap() {
+                PrepareMessageOutcome::Poll(RunLoopPoll::Message(message)) => {
+                    claimed = Some(message);
+                    break;
+                }
+                PrepareMessageOutcome::Replan => {}
+                PrepareMessageOutcome::Poll(poll) => {
+                    panic!("selected non-head claim returned {}", poll.outcome_name());
+                }
+                PrepareMessageOutcome::ProviderParked => {
+                    panic!("selected non-head message was unexpectedly provider parked");
+                }
+                PrepareMessageOutcome::DeferredUntilRunnable => {
+                    panic!("selected non-head message was unexpectedly deferred");
+                }
+            }
+        }
+        let claimed = claimed.expect("the selected non-head message must be claimed");
+        assert_eq!(claimed.message.id, selected.id);
+        let guard = runtime.inner.agent.lock().await;
+        assert_eq!(guard.queue.len(), 1);
+        assert_eq!(guard.queue.peek().unwrap().id, parked.id);
+        assert_eq!(guard.state.pending, 1);
+        assert_eq!(
+            runtime
+                .runtime_db()
+                .queue_entries()
+                .latest(&selected.id)
+                .unwrap()
+                .unwrap()
+                .status,
+            QueueEntryStatus::Dequeued,
+        );
     }
 
     #[tokio::test]

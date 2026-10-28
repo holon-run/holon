@@ -654,6 +654,18 @@ async fn queue_head_starvation_uses_qualified_queue_age_and_rate_limit() -> Resu
     let entry = runtime
         .with_idle_read(None, &material, |read| read.queue(&message.id))?
         .context("qualified Queue missing")?;
+    runtime.inner.storage.append_event(&AuditEvent::legacy(
+        "scheduling_advisory",
+        serde_json::json!({
+            "kind": "unrelated_advisory",
+            "evidence": ["message_id=another-head"],
+            "details": vec![false; 65_537],
+        }),
+    ))?;
+    let full_history = self::material(runtime)?;
+    assert!(full_history
+        .read(|| runtime.inner.storage.read_recent_events(64))
+        .is_err());
     let executor = crate::runtime::scheduler_executor::SchedulerDecisionExecutor::new(runtime);
     let count = || -> Result<usize> {
         Ok(runtime

@@ -32,6 +32,7 @@ pub(crate) struct PreparedSchedulerRead {
     pub projection: SchedulerProjection,
     pub work_queue: WorkQueueReadModel,
     pub work: CapturedWork,
+    pub inputs: super::super::resident_input_evidence::CapturedInputEvidence,
     pub scheduling: super::super::resident_scheduling::CapturedScheduling,
     pub tasks: super::super::resident_task::CapturedTasks,
     /// Original consumed-reply/owner predicate, acquired under this reservation.
@@ -831,6 +832,7 @@ pub(crate) fn derive_scheduler_read(
         projection,
         work_queue,
         work,
+        inputs,
         scheduling,
         tasks,
         recovered_replies: BTreeSet::new(),

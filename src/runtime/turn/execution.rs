@@ -473,7 +473,7 @@ impl RuntimeHandle {
                 last_assistant_message,
                 no_brief_reason,
                 checkpoint,
-                completed_at: chrono::Utc::now(),
+                completed_at: self.now(),
                 duration_ms,
             }
         };
@@ -1254,7 +1254,8 @@ impl RuntimeHandle {
         if round <= 1 {
             return Ok(false);
         }
-        let guard = self.inner.agent.lock().await;
+        let guard = self.begin_mutation().await?;
+        let inputs = guard.capture_input_evidence()?;
         while let Some(message) = guard.queue.peek_next_matching(|message| {
             scheduler::is_operator_interjection_message(message) && !observed.contains(&message.id)
         }) {
@@ -1262,6 +1263,7 @@ impl RuntimeHandle {
             if matches!(
                 self.operator_interjection_plan(
                     &guard.state.id,
+                    &inputs,
                     &guard.state,
                     message,
                     round,
@@ -2442,15 +2444,6 @@ pub(super) struct TurnExecution<'a> {
     pub(super) trace_context: Option<crate::observability::TraceContext>,
 }
 
-#[inline(never)]
-fn boxed_provider_round<F>(prepare: impl FnOnce() -> F) -> std::pin::Pin<Box<F>>
-where
-    F: std::future::Future<Output = Result<ProviderRoundResult>> + Send,
-{
-    // Construct outside the polling frame that must remain live in callbacks.
-    Box::pin(prepare())
-}
-
 impl<'a> TurnExecution<'a> {
     #[inline(never)]
     pub(super) fn run(
@@ -2824,11 +2817,20 @@ impl<'a> TurnExecution<'a> {
                             runtime.reconfigure_provider_for_turn(Some(&model)).await?;
                             (provider, available_tools, _, native_web_search, _) = runtime
                                 .provider_tool_selection_for_turn(Some(&model)).await?;
-                            turn_model_state = {
-                                let guard = runtime.inner.agent.lock().await;
-                                runtime.model_state_for_turn(&guard.state, Some(&model))
+                            turn_model = {
+                                let material = runtime.context_resource_material()?;
+                                let state = runtime.capture_committed_state().await?;
+                                let config = runtime.inner.config_snapshot.load();
+                                let scope = crate::runtime::resident_input_evidence::InputEvidenceScope {
+                                    agent_id: agent_id.to_owned(),
+                                    identity_incarnation: runtime.inner.identity_incarnation,
+                                };
+                                crate::runtime::prepare_agent_model_state_for_turn(
+                                    &config.model_catalog, &config.base_context_config,
+                                    &state, Some(&model), &scope, &material,
+                                )?
                             };
-                            context_config = runtime.current_context_config().await;
+                            let context_config = runtime.current_context_config().await;
                             projection_budget = effective_prompt.history_reprojection_budget(
                                 context_config.turn_projection_budget(),
                             );
@@ -3287,11 +3289,20 @@ impl<'a> TurnExecution<'a> {
                             runtime.reconfigure_provider_for_turn(Some(&model)).await?;
                             (provider, available_tools, _, native_web_search, _) = runtime
                                 .provider_tool_selection_for_turn(Some(&model)).await?;
-                            turn_model_state = {
-                                let guard = runtime.inner.agent.lock().await;
-                                runtime.model_state_for_turn(&guard.state, Some(&model))
+                            turn_model = {
+                                let material = runtime.context_resource_material()?;
+                                let state = runtime.capture_committed_state().await?;
+                                let config = runtime.inner.config_snapshot.load();
+                                let scope = crate::runtime::resident_input_evidence::InputEvidenceScope {
+                                    agent_id: agent_id.to_owned(),
+                                    identity_incarnation: runtime.inner.identity_incarnation,
+                                };
+                                crate::runtime::prepare_agent_model_state_for_turn(
+                                    &config.model_catalog, &config.base_context_config,
+                                    &state, Some(&model), &scope, &material,
+                                )?
                             };
-                            context_config = runtime.current_context_config().await;
+                            let context_config = runtime.current_context_config().await;
                             projection_budget = effective_prompt.history_reprojection_budget(
                                 context_config.turn_projection_budget(),
                             );
@@ -3934,7 +3945,7 @@ impl<'a> TurnExecution<'a> {
                                 &checkpoint_state,
                                 turn_index,
                             ),
-                            completed_at: Utc::now(),
+                            completed_at: runtime.now(),
                             duration_ms: turn_started_at.elapsed().as_millis() as u64,
                         };
                         return Ok(AgentLoopOutcome {
@@ -4243,7 +4254,7 @@ impl<'a> TurnExecution<'a> {
                         last_assistant_message: Some(final_text.clone()),
                         no_brief_reason: None,
                         checkpoint: terminal_checkpoint_from_state(&checkpoint_state, turn_index),
-                        completed_at: Utc::now(),
+                        completed_at: runtime.now(),
                         duration_ms: turn_started_at.elapsed().as_millis() as u64,
                     };
                     return Ok(AgentLoopOutcome {
