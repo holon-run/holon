@@ -1,0 +1,37 @@
+[[skills]]
+kind = "github"
+repo = "holon-run/holon"
+path = "skills/ghx"
+
+[[skills]]
+kind = "github"
+repo = "holon-run/sview"
+path = "skills/sview"
+
+[[skills]]
+kind = "github"
+repo = "holon-run/agentinbox"
+path = "skills/agentinbox"
+
+[[skills]]
+kind = "github"
+repo = "holon-run/holon"
+path = "skills/xlsx"
+
+[[skills]]
+kind = "github"
+repo = "mbfinotti/revops-skills"
+path = "skills/customer-health-score"
+ref = "12fd9f5537bbc6c23bff6222bc774685245a110b"
+
+[[skills]]
+kind = "github"
+repo = "mbfinotti/revops-skills"
+path = "skills/customer-churn-signals"
+ref = "12fd9f5537bbc6c23bff6222bc774685245a110b"
+
+[[skills]]
+kind = "github"
+repo = "CSPulse/customer-success-skills"
+path = "skills/renewal-risk"
+ref = "0e8727739bba6102d13ac064ec9d0ef30fbe983f"

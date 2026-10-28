@@ -124,6 +124,14 @@ human decisions, and recheck results visible. It does not send outreach, write
 CRM changes, change pricing, or make renewal or legal commitments without
 explicit approval of the exact proposal.
 
+## Customer success
+
+`customer-success-steward` maintains an authorized customer account book,
+adoption metrics, churn risk indicators, and renewal countdown packs. As a
+flexible starter template, it surfaces actionable retention intelligence and
+drafts reviewable communications without sending unilateral outbound messages
+or making destructive CRM edits.
+
 ## Finance operations
 
 `finance-ops-steward` maintains an authorized invoice tracking queue, expense
