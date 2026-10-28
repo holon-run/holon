@@ -37,6 +37,7 @@ pub(crate) use live_turn::{
 };
 pub(crate) use recovery_budget::{charge_recovery_admission_tx, TASK_RESULT_RECOVERY_LIMIT};
 pub(in crate::runtime_db) use recovery_observation::observe_recovery_source_tx;
+pub(in crate::runtime_db) use recovery_observation::paused_replay_root_is_charged_tx;
 
 mod writes;
 pub(crate) use writes::*;

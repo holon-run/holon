@@ -4371,3 +4371,11 @@ State/Work/Task domains. Initial dispatch planning and post-Context revalidation
 borrow the corresponding prepared inputs rather than recapturing the entire
 resident coverage. Both retain the original material and failure latch; this
 reuse neither creates a new allowance nor weakens source qualification.
+
+Task recovery predicate material follows the same short-circuit boundaries as
+the original observer. A source without a selected Result reads its durable
+Message but does not expand into unrelated open Attempts, waits or Turns.
+Paused replay anchor preflight and observation share the exact
+Result/current-epoch/source-root admission predicate; an uncharged root does
+not read that replay history. Charged roots retain the original body, node and
+byte accounting, including exact foreign references read before rejection.

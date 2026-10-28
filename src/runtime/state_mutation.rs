@@ -2934,67 +2934,76 @@ impl RuntimeHandle {
         );
         self.join_retiring_resources_inner(true).await
     }
-    async fn join_retiring_resources_inner(
+    fn join_retiring_resources_inner(
         &self,
         observe_exit: bool,
-    ) -> Result<Option<super::control_cancellation::RetiredProducerExit>> {
-        self.inner.control_cancellations.cancel_local_producers();
-        let joined = self.drain_original_owned_mutation_tasks().await;
-        let reconciled = self.reconcile_retiring_original_scope().await;
-        joined.and(reconciled)?;
-        // Accepted registration workers may have reached their original lease
-        // after the first snapshot; local closing also fences later attachment.
-        self.inner.control_cancellations.cancel_local_producers();
-        let original_producers = if observe_exit {
-            Some(
-                self.inner
-                    .control_cancellations
-                    .capture_retiring_producers(
-                        &super::resident_input_evidence::InputEvidenceScope {
-                            agent_id: self.inner.mutation_owner.agent_id().to_owned(),
-                            identity_incarnation: self.inner.identity_incarnation,
-                        },
-                        self.inner.mutation_owner.owner_epoch(),
-                        &self.inner.input_evidence_budget,
-                    )?,
-            )
-        } else {
-            None
-        };
-        self.inner
-            .control_cancellations
-            .drain_for_original_runtime(self, true)
-            .await?;
-        let mut draining = self.inner.owned_task_drain.lock().await;
-        loop {
-            draining.extend(std::mem::take(
-                &mut *self
-                    .inner
-                    .owned_task_handles
-                    .lock()
-                    .expect("owned tasks poisoned"),
-            ));
-            let Some(task) = draining.last_mut() else {
-                break;
+    ) -> std::pin::Pin<
+        Box<
+            dyn std::future::Future<
+                    Output = Result<Option<super::control_cancellation::RetiredProducerExit>>,
+                > + Send
+                + '_,
+        >,
+    > {
+        Box::pin(async move {
+            self.inner.control_cancellations.cancel_local_producers();
+            let joined = self.drain_original_owned_mutation_tasks().await;
+            let reconciled = self.reconcile_retiring_original_scope().await;
+            joined.and(reconciled)?;
+            // Accepted registration workers may have reached their original lease
+            // after the first snapshot; local closing also fences later attachment.
+            self.inner.control_cancellations.cancel_local_producers();
+            let original_producers = if observe_exit {
+                Some(
+                    self.inner
+                        .control_cancellations
+                        .capture_retiring_producers(
+                            &super::resident_input_evidence::InputEvidenceScope {
+                                agent_id: self.inner.mutation_owner.agent_id().to_owned(),
+                                identity_incarnation: self.inner.identity_incarnation,
+                            },
+                            self.inner.mutation_owner.owner_epoch(),
+                            &self.inner.input_evidence_budget,
+                        )?,
+                )
+            } else {
+                None
             };
-            // These are cancellable sleep/discovery observers. Resource-owning
-            // Task/Command/Timer monitors are joined by the registry above.
-            task.abort();
-            let result = task.await;
-            draining.pop();
-            if let Err(error) = result {
-                if !error.is_cancelled() {
-                    return Err(error.into());
+            self.inner
+                .control_cancellations
+                .drain_for_original_runtime(self, true)
+                .await?;
+            let mut draining = self.inner.owned_task_drain.lock().await;
+            loop {
+                draining.extend(std::mem::take(
+                    &mut *self
+                        .inner
+                        .owned_task_handles
+                        .lock()
+                        .expect("owned tasks poisoned"),
+                ));
+                let Some(task) = draining.last_mut() else {
+                    break;
+                };
+                // These are cancellable sleep/discovery observers. Resource-owning
+                // Task/Command/Timer monitors are joined by the registry above.
+                task.abort();
+                let result = task.await;
+                draining.pop();
+                if let Err(error) = result {
+                    if !error.is_cancelled() {
+                        return Err(error.into());
+                    }
                 }
             }
-        }
-        match original_producers {
-            Some(snapshot) if self.inner.execution_admission.is_closed_and_quiescent() => {
-                snapshot.finish(&self.inner.control_cancellations)
+            match original_producers {
+                Some(snapshot) if self.inner.execution_admission.is_closed_and_quiescent() => {
+                    snapshot.finish(&self.inner.control_cancellations)
+                }
+                Some(_) => Ok(None),
+                None => Ok(None),
             }
-            Some(_) => Ok(None),
-            None => Ok(None),
-        }
+        })
     }
 
     pub(crate) fn original_process_registry_id(&self) -> uuid::Uuid {

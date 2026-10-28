@@ -17,6 +17,30 @@ fn selection(id: &str, after: u64) -> InputQuerySelection {
 }
 
 #[test]
+fn lease_id_exhaustion_never_wraps_or_leaks_budget() -> Result<()> {
+    let registry = InputQueryRegistry::default();
+    let ledger = InputEvidenceBudgetLedger::new(Default::default())?;
+    registry.0.next.store(u64::MAX - 1, Ordering::Relaxed);
+    let last = registry.register(&scope(), 7, &selection("last", 3), &ledger, LIMITS)?;
+    assert_eq!(last.0.id, u64::MAX - 1);
+    let retained = ledger.report()?.observed_bytes;
+    for _ in 0..2 {
+        let error = registry
+            .register(&scope(), 7, &selection("overflow", 9), &ledger, LIMITS)
+            .err()
+            .context("exhausted lease ID must be rejected")?;
+        assert!(error.to_string().contains("Input query lease ID exhausted"));
+        assert_eq!(registry.0.next.load(Ordering::Relaxed), u64::MAX);
+        assert_eq!(registry.0.slots.lock().unwrap().len(), 1);
+        assert_eq!(ledger.report()?.observed_bytes, retained);
+    }
+    drop(last);
+    assert!(registry.0.slots.lock().unwrap().is_empty());
+    assert_eq!(ledger.report()?.observed_bytes, 0);
+    Ok(())
+}
+
+#[test]
 fn frozen_roles_keep_only_exact_live_owner_union_until_original_tx_finishes() -> Result<()> {
     let registry = InputQueryRegistry::default();
     let ledger = InputEvidenceBudgetLedger::new(Default::default())?;

@@ -60,6 +60,37 @@ mod tests {
     }
 
     #[test]
+    fn lease_id_exhaustion_never_wraps_or_leaks_budget() -> Result<()> {
+        let registry = TaskQueryRegistry::default();
+        let ledger = ledger()?;
+        registry.0.next.store(u64::MAX - 1, Ordering::Relaxed);
+        let last = registry.register(&scope(), 7, output(&["last"]), &ledger, 4096, 1024 * 1024)?;
+        assert_eq!(last.0.id, u64::MAX - 1);
+        let retained = ledger.report()?.observed_bytes;
+        for _ in 0..2 {
+            let error = registry
+                .register(
+                    &scope(),
+                    7,
+                    output(&["overflow"]),
+                    &ledger,
+                    4096,
+                    1024 * 1024,
+                )
+                .err()
+                .context("exhausted lease ID must be rejected")?;
+            assert!(error.to_string().contains("Task query lease ID exhausted"));
+            assert_eq!(registry.0.next.load(Ordering::Relaxed), u64::MAX);
+            assert_eq!(registry.0.slots.lock().unwrap().len(), 1);
+            assert_eq!(ledger.report()?.observed_bytes, retained);
+        }
+        drop(last);
+        assert!(registry.0.slots.lock().unwrap().is_empty());
+        assert_eq!(ledger.report()?.observed_bytes, 0);
+        Ok(())
+    }
+
+    #[test]
     fn snapshot_keeps_only_exact_live_owner_roles_until_original_use_finishes() -> Result<()> {
         let registry = TaskQueryRegistry::default();
         let ledger = ledger()?;
@@ -445,11 +476,18 @@ impl TaskQueryRegistry {
             .map_err(|_| anyhow::anyhow!("Task query registry poisoned"))?;
         slots.retain(|_, value| value.lease.strong_count() > 0);
         let budget = account(ledger, scope, bytes, count, record_limit, byte_limit)?;
-        let id = self
-            .0
-            .next
-            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |n| n.checked_add(1))
-            .map_err(|_| anyhow::anyhow!("Task query lease ID exhausted"))?;
+        let mut id = self.0.next.load(Ordering::Relaxed);
+        loop {
+            let next = id.checked_add(1).context("Task query lease ID exhausted")?;
+            match self
+                .0
+                .next
+                .compare_exchange_weak(id, next, Ordering::Relaxed, Ordering::Relaxed)
+            {
+                Ok(_) => break,
+                Err(current) => id = current,
+            }
+        }
         let mut selection = TaskQuerySelection {
             required_keys: spec.required_keys.iter().cloned().collect(),
             output_task_ids: spec

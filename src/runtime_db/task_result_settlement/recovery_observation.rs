@@ -5,6 +5,20 @@ use crate::runtime::task_reads::{
     TaskRecoveryReplayObservation, TaskRecoverySourceObservation,
 };
 
+pub(in crate::runtime_db) fn paused_replay_root_is_charged_tx(
+    tx: &Transaction<'_>,
+    source: &MessageEnvelope,
+    record: &TaskResultSettlementRecord,
+) -> Result<bool> {
+    let root = format!("activation:message:{}", source.id);
+    Ok(tx.query_row(
+        "SELECT EXISTS(SELECT 1 FROM task_result_recovery_admissions
+         WHERE result_identity=?1 AND recovery_epoch=?2 AND root_attempt_id=?3)",
+        params![record.result_identity, record.recovery_epoch, root],
+        |row| row.get(0),
+    )?)
+}
+
 pub(in crate::runtime_db) fn observe_recovery_source_tx(
     tx: &Transaction<'_>,
     source: &MessageEnvelope,
@@ -44,13 +58,7 @@ pub(in crate::runtime_db) fn observe_recovery_source_tx(
             record.agent_id == source.agent_id,
             "recovery observation crosses Task owner"
         );
-        let root = format!("activation:message:{}", source.id);
-        let root_is_charged = tx.query_row(
-            "SELECT EXISTS(SELECT 1 FROM task_result_recovery_admissions
-             WHERE result_identity=?1 AND recovery_epoch=?2 AND root_attempt_id=?3)",
-            params![record.result_identity, record.recovery_epoch, root],
-            |row| row.get(0),
-        )?;
+        let root_is_charged = paused_replay_root_is_charged_tx(tx, source, record)?;
         let interrupted_anchor = if root_is_charged {
             live_turn::interrupted_admitted_result_anchor_tx(
                 tx,

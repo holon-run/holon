@@ -2,7 +2,9 @@
 use super::*;
 use crate::{
     runtime::task_reads::TaskRecoverySourceObservation,
-    runtime_db::task_result_settlement::{observe_recovery_source_tx, TaskResultSettlementRecord},
+    runtime_db::task_result_settlement::{
+        observe_recovery_source_tx, paused_replay_root_is_charged_tx, TaskResultSettlementRecord,
+    },
     types::MessageEnvelope,
 };
 
@@ -21,7 +23,8 @@ selected_tasks AS (
  SELECT * FROM tasks WHERE task_id IN (SELECT task_id FROM selected)
 ),
 claiming_waits AS (
- SELECT * FROM wait_conditions waits WHERE agent_id=?1 AND (
+ SELECT * FROM wait_conditions waits WHERE agent_id=?1
+ AND EXISTS(SELECT 1 FROM selected) AND (
    (json_extract(payload_json,'$.kind')='task'
      AND status IN ('active','triggered','resolved') AND EXISTS(
      SELECT 1 FROM json_each(waits.payload_json,'$.wake_sources') wake
@@ -45,7 +48,8 @@ base_message_ids(id) AS (
    FROM messages m WHERE m.message_id IN (SELECT message_id FROM selected)
 ),
 related_turns AS (
- SELECT * FROM turn_records turns WHERE agent_id=?1 AND (
+ SELECT * FROM turn_records turns WHERE agent_id=?1
+ AND EXISTS(SELECT 1 FROM selected) AND (
    turn_id IN (SELECT parent_turn_id FROM selected)
    OR turn_id IN (SELECT json_extract(payload_json,'$.turn_id') FROM deliveries)
    OR trigger_message_id IN (SELECT id FROM base_message_ids)
@@ -54,7 +58,8 @@ related_turns AS (
 ),
 attempts AS (
  SELECT * FROM execution_protocol_attempts
- WHERE agent_id=?1 AND (lifecycle_state='open' OR attempt_id IN
+ WHERE agent_id=?1 AND EXISTS(SELECT 1 FROM selected)
+ AND (lifecycle_state='open' OR attempt_id IN
    (SELECT activation_id FROM selected)
    OR attempt_id IN (SELECT json_extract(payload_json,'$.activation_id') FROM deliveries)
    OR attempt_id IN (
@@ -81,6 +86,7 @@ message_ids(id) AS (
      SELECT json_extract(payload_json,'$.source.identity.wait_id') FROM attempts)
  UNION SELECT json_extract(m.payload_json,'$.metadata.task_detail.message_id')
    FROM messages m JOIN message_ids ids ON m.message_id=ids.id WHERE m.agent_id=?1
+   AND EXISTS(SELECT 1 FROM selected)
 ),
 bodies(payload_json) AS (
  SELECT payload_json FROM selected
@@ -89,12 +95,14 @@ bodies(payload_json) AS (
  UNION ALL SELECT payload_json FROM messages
    WHERE message_id IN (SELECT id FROM message_ids)
  UNION ALL SELECT payload_json FROM queue_entries
-   WHERE message_id IN (SELECT id FROM message_ids)
+   WHERE message_id IN (SELECT id FROM message_ids) AND EXISTS(SELECT 1 FROM selected)
  UNION ALL SELECT payload_json FROM wait_conditions WHERE agent_id=?1
+   AND EXISTS(SELECT 1 FROM selected)
  UNION ALL SELECT payload_json FROM work_items WHERE agent_id=?1
    AND work_item_id IN (SELECT json_extract(payload_json,'$.work_item_id') FROM claiming_waits)
  UNION ALL SELECT payload_json FROM deliveries
- UNION ALL SELECT payload_json FROM turn_records turns WHERE agent_id=?1 AND (
+ UNION ALL SELECT payload_json FROM turn_records turns WHERE agent_id=?1
+ AND EXISTS(SELECT 1 FROM selected) AND (
    turn_id IN (SELECT turn_id FROM related_turns)
    OR turn_id IN (SELECT json_extract(payload_json,'$.turn_id') FROM attempts)
    OR trigger_message_id IN (SELECT id FROM message_ids)
@@ -144,11 +152,41 @@ fn preflight_predicate_tx(
         parameters,
         |row| row.get(0),
     )?;
-    material.charge_ids(
-        nodes
-            .checked_mul(64)
-            .context("recovery predicate nodes overflow")?,
-        nodes,
+    material
+        .charge_ids(
+            nodes
+                .checked_mul(64)
+                .context("recovery predicate nodes overflow")?,
+            nodes,
+        )
+        .with_context(|| {
+            format!(
+                "Task recovery predicate source={} kind={:?} origin={:?} identity={identity:?} \
+             bodies={count} bytes={bytes} nodes={nodes}",
+                source.id, source.kind, source.origin,
+            )
+        })
+}
+
+fn preflight_paused_replay_tx(
+    tx: &Transaction<'_>,
+    scope: &InputEvidenceScope,
+    source: &MessageEnvelope,
+    record: &TaskResultSettlementRecord,
+    request: &TaskDomainLoadRequest,
+    material: &mut read_preparation::TaskReadMaterial<'_>,
+) -> Result<()> {
+    // The observer does not load an anchor until this exact root/epoch is charged.
+    if !paused_replay_root_is_charged_tx(tx, source, record)? {
+        return Ok(());
+    }
+    preflight_predicate_tx(
+        tx,
+        scope,
+        source,
+        Some(&record.result_identity),
+        request,
+        material,
     )
 }
 
@@ -254,14 +292,7 @@ pub(super) fn observe_tx(
         if source.source_refs.contains_key("task_result_message_id") || !paused.is_empty() {
             preflight_predicate_tx(tx, scope, &source, None, request, material)?;
             for record in &paused {
-                preflight_predicate_tx(
-                    tx,
-                    scope,
-                    &source,
-                    Some(&record.result_identity),
-                    request,
-                    material,
-                )?;
+                preflight_paused_replay_tx(tx, scope, &source, record, request, material)?;
             }
         }
         let observation = observe_recovery_source_tx(tx, &source, &paused, now)?;

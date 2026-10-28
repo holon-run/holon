@@ -158,11 +158,20 @@ impl InputQueryRegistry {
             .map_err(|_| anyhow::anyhow!("Input query registry poisoned"))?;
         slots.retain(|_, slot| slot.lease.strong_count() > 0);
         let budget = account(scope, ledger, bytes, count, limits)?;
-        let id = self
-            .0
-            .next
-            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |n| n.checked_add(1))
-            .map_err(|_| anyhow::anyhow!("Input query lease ID exhausted"))?;
+        let mut id = self.0.next.load(Ordering::Relaxed);
+        loop {
+            let next = id
+                .checked_add(1)
+                .context("Input query lease ID exhausted")?;
+            match self
+                .0
+                .next
+                .compare_exchange_weak(id, next, Ordering::Relaxed, Ordering::Relaxed)
+            {
+                Ok(_) => break,
+                Err(current) => id = current,
+            }
+        }
         let lease = Arc::new(LeaseInner {
             id,
             scope: scope.clone(),

@@ -157,7 +157,7 @@ async fn fifth_root_http(restart: bool) {
             .await
             .unwrap_or_else(|error| {
                 panic!(
-                    "context dispatch failed: {error:#}; message={}, root={root}, \
+                    "context dispatch failed: {error:?}; message={}, root={root}, \
                      attempts={}, fresh={fresh_scanner}, fifth={fifth_source:?}, \
                      provider={provider}, recent_dispatches={dispatches:#?}",
                     message.id, record.recovery_attempts,
@@ -299,11 +299,24 @@ async fn fifth_root_http(restart: bool) {
         .load_execution_protocol_state_if_initialized("default")
         .unwrap()
         .unwrap();
+    let attempt = &protocol.attempts[delivered.activation_id.as_ref().unwrap()];
+    let source_id = attempt.source_message_id.as_ref().unwrap();
+    assert!(completed[0].input_message_ids.contains(source_id));
+    // Attempt.turn_id is only a replay hint; actual consumption owns this assignment.
+    let assignment = runtime
+        .runtime_db()
+        .with_read(|connection| {
+            Ok(connection.query_row(
+                "SELECT agent_id,turn_id FROM conversation_input_assignments WHERE message_id=?1",
+                [source_id],
+                |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
+            )?)
+        })
+        .unwrap();
     assert_eq!(
-        protocol.attempts[delivered.activation_id.as_ref().unwrap()]
-            .turn_id
-            .as_deref(),
-        Some(completed[0].turn_id.as_str())
+        assignment,
+        ("default".to_owned(), completed[0].turn_id.clone()),
+        "the delivered Attempt source must belong to the successful canonical Turn"
     );
     assert_eq!(
         completed[0].current_work_item_id.as_deref(),
