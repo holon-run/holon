@@ -46,20 +46,45 @@ struct DispatchLimit(AtomicUsize);
 
 impl ProviderDispatchGuard for DispatchLimit {
     fn before_dispatch(&self) -> Result<()> {
-        self.0
-            .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |count| {
-                (count < REQUEST_LIMIT).then_some(count + 1)
-            })
-            .map_err(|_| {
-                anyhow::anyhow!("live image HTTP request limit reached; no more dispatches")
-            })?;
-        Ok(())
+        let mut count = self.0.load(Ordering::SeqCst);
+        loop {
+            ensure!(
+                count < REQUEST_LIMIT,
+                "live image HTTP request limit reached; no more dispatches"
+            );
+            match self
+                .0
+                .compare_exchange(count, count + 1, Ordering::SeqCst, Ordering::SeqCst)
+            {
+                Ok(_) => return Ok(()),
+                Err(actual) => count = actual,
+            }
+        }
     }
 
     fn allows_auxiliary_dispatch(&self) -> Result<bool> {
         // Server-side compaction is outside this small visual-content probe.
         Ok(false)
     }
+}
+
+#[test]
+fn dispatch_limit_is_atomic_and_stays_at_the_limit() {
+    let guard = DispatchLimit::default();
+    let admitted = std::thread::scope(|scope| {
+        let handles: Vec<_> = (0..16)
+            .map(|_| scope.spawn(|| guard.before_dispatch().is_ok()))
+            .collect();
+        handles
+            .into_iter()
+            .map(|handle| usize::from(handle.join().unwrap()))
+            .sum::<usize>()
+    });
+    assert_eq!(admitted, REQUEST_LIMIT);
+    assert_eq!(guard.0.load(Ordering::SeqCst), REQUEST_LIMIT);
+    assert!(guard.before_dispatch().is_err());
+    assert_eq!(guard.0.load(Ordering::SeqCst), REQUEST_LIMIT);
+    assert!(!guard.allows_auxiliary_dispatch().unwrap());
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]

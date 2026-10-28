@@ -652,7 +652,7 @@ mod tests {
     fn borrowed_json_count_matches_text_estimator_including_escaping() {
         for body in [
             json!(null),
-            json!([true, false, 3.1415, -100, {}, []]),
+            json!([true, false, 12.75, -100, {}, []]),
             json!({"text": "\"\\\n\r\t\u{0000}\u{0008}\u{000c}\u{001f}中文🙂"}),
             json!({"messages": [{"role": "user", "content": [
                 {"type": "text", "text": "normal input"}
