@@ -1,12 +1,11 @@
 use anyhow::{Context, Result};
 use async_trait::async_trait;
-use base64::{engine::general_purpose::STANDARD as BASE64_STANDARD, Engine as _};
 use chrono::Utc;
 use reqwest::{header::HeaderMap, Client, Response};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use std::{
-    collections::{BTreeMap, HashMap, HashSet},
+    collections::{HashMap, HashSet},
     path::{Path, PathBuf},
     sync::{Arc, Mutex, MutexGuard},
     time::Duration,
@@ -40,7 +39,6 @@ use crate::{
         ProviderStablePrefixDiagnostics, ProviderTransportDiagnostics, ProviderTransportTimeline,
         ProviderTurnRequest, ProviderTurnResponse, ToolSchemaContract,
     },
-    token_estimate::estimate_json_tokens,
 };
 
 use super::super::budget::effective_output_tokens;
@@ -94,7 +92,10 @@ pub(crate) use chat::{
     classify_openai_chat_completion_error, parse_chat_completion_response,
     send_chat_completion_stream_request,
 };
-use chat::{plan_chat_completion_request, send_chat_completion_request};
+use chat::{plan_chat_completion_request, send_chat_completion_request_with_material};
+#[cfg(test)]
+#[path = "image_turn_material_tests.rs"]
+mod image_turn_material_tests;
 #[cfg(test)]
 use continuation::{incremental_diagnostics, OpenAiProviderWindow};
 use continuation::{
@@ -115,7 +116,8 @@ use responses::{
 use responses::{
     maybe_compact_openai_provider_window, maybe_compact_openai_request_plan,
     plan_openai_responses_request, retry_openai_responses_with_lossless_replay,
-    send_openai_responses_request, send_openai_responses_streaming_request,
+    send_openai_responses_request, send_openai_responses_request_with_material,
+    send_openai_responses_streaming_request, send_openai_responses_streaming_request_with_material,
     update_openai_continuation,
 };
 
@@ -313,10 +315,11 @@ async fn send_openai_responses_for_contract(
     provider: &str,
     model_ref: &str,
     dispatch_guard: Option<&dyn ProviderDispatchGuard>,
+    material: &crate::provider::ProviderRequestMaterial,
 ) -> Result<ParsedOpenAiResponse> {
     let parsed = match contract {
         OpenAiResponsesTransportContract::StandardJson => {
-            send_openai_responses_request(
+            send_openai_responses_request_with_material(
                 client,
                 url,
                 body,
@@ -326,21 +329,23 @@ async fn send_openai_responses_for_contract(
                 provider,
                 model_ref,
                 dispatch_guard,
+                material,
             )
             .await
         }
         OpenAiResponsesTransportContract::CodexStreaming
         | OpenAiResponsesTransportContract::DeepSeekStreaming => {
-            send_openai_responses_streaming_request(
+            send_openai_responses_streaming_request_with_material(
                 client,
                 url,
-                body,
+                &body,
                 headers,
                 trace,
                 agent_id,
                 provider,
                 model_ref,
                 dispatch_guard,
+                material,
             )
             .await
         }
@@ -568,106 +573,64 @@ impl AgentProvider for OpenAiProvider {
     }
 
     async fn complete_turn(&self, request: ProviderTurnRequest) -> Result<ProviderTurnResponse> {
-        let mut body = build_openai_responses_request(
-            &self.model,
-            self.max_output_tokens,
-            &request,
-            self.endpoint_contract.transport,
-            ToolSchemaContract::Relaxed,
-            self.reasoning_effort.as_deref(),
-            None,
-        )?;
-        apply_service_tier(&mut body, self.service_tier, false);
-        let effective_output = effective_output_tokens(
-            self.context_window_tokens,
-            self.max_output_tokens,
-            &body,
-            &["max_output_tokens"],
-        );
-        if body.get("max_output_tokens").is_some() {
-            body["max_output_tokens"] = Value::from(effective_output);
-        }
-        let mut plan = plan_openai_responses_request(
-            body,
-            &request,
-            &self.continuation,
-            self.endpoint_contract.continuation
-                != OpenAiResponsesContinuationContract::FullHistoryOnly,
-            self.endpoint_contract.continuation,
-        )?;
-        let mut sent_diagnostics = plan.diagnostics.clone();
-        let model_ref = format!(
-            "{}@{}/{}",
-            self.route_provider, self.route_endpoint, self.model
-        );
-        sent_diagnostics.provider_id = Some(self.route_provider.clone());
-        sent_diagnostics.provider_model_ref = Some(model_ref.clone());
-        sent_diagnostics.provider_transport = Some("openai_responses".into());
-        sent_diagnostics.endpoint_dialect = Some(self.route_endpoint.clone());
-        sent_diagnostics.streaming = Some(
-            self.endpoint_contract.transport != OpenAiResponsesTransportContract::StandardJson,
-        );
-        sent_diagnostics.reasoning_effort = self.reasoning_effort.clone();
-        let plan_scope = plan.scope.clone();
-        let plan_request_shape = plan.request_shape.clone();
-        let mut headers = self.resolve_auth_headers().await?;
-        let trace = ProviderHttpTrace::from_env(self.trace_home_dir.clone());
-        if self.endpoint_contract.remote_compaction
-            == OpenAiResponsesRemoteCompactionContract::Supported
-        {
-            if let Some(remote_compaction) = maybe_compact_openai_request_plan(
-                &self.continuation,
-                &mut plan,
-                self.compaction_policy,
-                &self.client,
-                openai_responses_compact_url(&self.base_url),
-                headers.clone(),
-                trace.as_ref(),
-                request_agent_id(&request),
-                &self.route_provider,
-                &model_ref,
-                request.dispatch_guard.as_deref(),
-            )
-            .await?
-            {
-                sent_diagnostics.openai_remote_compaction = Some(remote_compaction);
-                sent_diagnostics.request_lowering_mode =
-                    plan.diagnostics.request_lowering_mode.clone();
-            }
-        }
-        sent_diagnostics.stable_prefix = Some(openai_stable_prefix_diagnostics(
-            &plan.body,
-            &plan.request_shape.wire_shape,
-            &plan.provider_input,
-            &sent_diagnostics,
-        ));
-        let mut final_provider_input = plan.provider_input.clone();
-        let mut final_replay_loss_reason = plan.replay_loss_reason.clone();
-        let parsed = match send_openai_responses_for_contract(
-            self.endpoint_contract.transport,
-            &self.client,
-            openai_responses_url(&self.base_url),
-            plan.body.clone(),
-            headers.clone(),
-            trace.as_ref(),
-            request_agent_id(&request),
-            &self.route_provider,
-            &model_ref,
-            request.dispatch_guard.as_deref(),
-        )
-        .await
-        {
-            Ok(parsed) => parsed,
-            Err(error) => {
-                let retried = if let Some(refreshed_headers) =
-                    self.refresh_auth_headers_after_failure(&error).await?
+        let material = request.material.clone();
+        material.validate_images(&request.conversation)?;
+        material
+            .complete_turn(async {
+                let mut body = build_openai_responses_request(
+                    &self.model,
+                    self.max_output_tokens,
+                    &request,
+                    self.endpoint_contract.transport,
+                    ToolSchemaContract::Relaxed,
+                    self.reasoning_effort.as_deref(),
+                    None,
+                )?;
+                apply_service_tier(&mut body, self.service_tier, false);
+                let effective_output = effective_output_tokens(
+                    self.context_window_tokens,
+                    self.max_output_tokens,
+                    &body,
+                    &["max_output_tokens"],
+                );
+                if body.get("max_output_tokens").is_some() {
+                    body["max_output_tokens"] = Value::from(effective_output);
+                }
+                let mut plan = plan_openai_responses_request(
+                    body,
+                    &request,
+                    &self.continuation,
+                    self.endpoint_contract.continuation
+                        != OpenAiResponsesContinuationContract::FullHistoryOnly,
+                    self.endpoint_contract.continuation,
+                )?;
+                let mut sent_diagnostics = plan.diagnostics.clone();
+                let model_ref = format!(
+                    "{}@{}/{}",
+                    self.route_provider, self.route_endpoint, self.model
+                );
+                sent_diagnostics.provider_id = Some(self.route_provider.clone());
+                sent_diagnostics.provider_model_ref = Some(model_ref.clone());
+                sent_diagnostics.provider_transport = Some("openai_responses".into());
+                sent_diagnostics.endpoint_dialect = Some(self.route_endpoint.clone());
+                sent_diagnostics.streaming = Some(
+                    self.endpoint_contract.transport
+                        != OpenAiResponsesTransportContract::StandardJson,
+                );
+                sent_diagnostics.reasoning_effort = self.reasoning_effort.clone();
+                let plan_scope = plan.scope.clone();
+                let plan_request_shape = material.cloned(&plan.request_shape)?;
+                let mut headers = self.resolve_auth_headers().await?;
+                let trace = ProviderHttpTrace::from_env(self.trace_home_dir.clone());
+                if self.endpoint_contract.remote_compaction
+                    == OpenAiResponsesRemoteCompactionContract::Supported
                 {
-                    headers = refreshed_headers;
-                    send_openai_responses_for_contract(
-                        self.endpoint_contract.transport,
+                    if let Some(remote_compaction) = maybe_compact_openai_request_plan(
+                        &self.continuation,
+                        &mut plan,
+                        self.compaction_policy,
                         &self.client,
-                        openai_responses_url(&self.base_url),
-                        plan.body.clone(),
+                        openai_responses_compact_url(&self.base_url),
                         headers.clone(),
                         trace.as_ref(),
                         request_agent_id(&request),
@@ -675,34 +638,93 @@ impl AgentProvider for OpenAiProvider {
                         &model_ref,
                         request.dispatch_guard.as_deref(),
                     )
-                    .await
-                } else {
-                    Err(error)
-                };
-                match retried {
-                    Ok(parsed) => parsed,
-                    Err(error)
-                        if self.endpoint_contract.transport
-                            == OpenAiResponsesTransportContract::StandardJson =>
+                    .await?
                     {
-                        match retry_openai_responses_with_lossless_replay(
-                            &self.client,
-                            openai_responses_url(&self.base_url),
-                            &plan,
-                            headers.clone(),
-                            trace.as_ref(),
-                            request_agent_id(&request),
-                            error,
-                            &mut sent_diagnostics,
-                            &mut final_provider_input,
-                            &mut final_replay_loss_reason,
-                            &self.route_provider,
-                            &model_ref,
-                            request.dispatch_guard.as_deref(),
-                        )
-                        .await
+                        sent_diagnostics.openai_remote_compaction = Some(remote_compaction);
+                        sent_diagnostics.request_lowering_mode =
+                            plan.diagnostics.request_lowering_mode.clone();
+                    }
+                }
+                sent_diagnostics.stable_prefix = Some(openai_stable_prefix_diagnostics(
+                    &plan.body,
+                    &plan.request_shape.wire_shape,
+                    &plan.provider_input,
+                    &sent_diagnostics,
+                ));
+                let mut final_provider_input = material.cloned(&plan.provider_input)?;
+                let mut final_replay_loss_reason = plan.replay_loss_reason.clone();
+                let parsed = match send_openai_responses_for_contract(
+                    self.endpoint_contract.transport,
+                    &self.client,
+                    openai_responses_url(&self.base_url),
+                    material.cloned(&plan.body)?,
+                    headers.clone(),
+                    trace.as_ref(),
+                    request_agent_id(&request),
+                    &self.route_provider,
+                    &model_ref,
+                    request.dispatch_guard.as_deref(),
+                    &material,
+                )
+                .await
+                {
+                    Ok(parsed) => parsed,
+                    Err(error) => {
+                        let retried = if let Some(refreshed_headers) =
+                            self.refresh_auth_headers_after_failure(&error).await?
                         {
+                            headers = refreshed_headers;
+                            send_openai_responses_for_contract(
+                                self.endpoint_contract.transport,
+                                &self.client,
+                                openai_responses_url(&self.base_url),
+                                material.cloned(&plan.body)?,
+                                headers.clone(),
+                                trace.as_ref(),
+                                request_agent_id(&request),
+                                &self.route_provider,
+                                &model_ref,
+                                request.dispatch_guard.as_deref(),
+                                &material,
+                            )
+                            .await
+                        } else {
+                            Err(error)
+                        };
+                        match retried {
                             Ok(parsed) => parsed,
+                            Err(error)
+                                if self.endpoint_contract.transport
+                                    == OpenAiResponsesTransportContract::StandardJson =>
+                            {
+                                match retry_openai_responses_with_lossless_replay(
+                                    &self.client,
+                                    openai_responses_url(&self.base_url),
+                                    &plan,
+                                    headers.clone(),
+                                    trace.as_ref(),
+                                    request_agent_id(&request),
+                                    error,
+                                    &mut sent_diagnostics,
+                                    &mut final_provider_input,
+                                    &mut final_replay_loss_reason,
+                                    &self.route_provider,
+                                    &model_ref,
+                                    request.dispatch_guard.as_deref(),
+                                )
+                                .await
+                                {
+                                    Ok(parsed) => parsed,
+                                    Err(error) => {
+                                        invalidate_openai_continuation_after_failure(
+                                            &self.continuation,
+                                            plan.scope.as_ref(),
+                                            &error,
+                                        );
+                                        return Err(error);
+                                    }
+                                }
+                            }
                             Err(error) => {
                                 invalidate_openai_continuation_after_failure(
                                     &self.continuation,
@@ -713,112 +735,116 @@ impl AgentProvider for OpenAiProvider {
                             }
                         }
                     }
-                    Err(error) => {
-                        invalidate_openai_continuation_after_failure(
+                };
+                update_openai_continuation(
+                    &self.continuation,
+                    plan_scope.clone(),
+                    material.cloned(&plan_request_shape)?,
+                    plan.append_match_input,
+                    final_provider_input,
+                    final_replay_loss_reason,
+                    &parsed,
+                    &material,
+                )?;
+                if self.endpoint_contract.remote_compaction
+                    == OpenAiResponsesRemoteCompactionContract::Supported
+                    && sent_diagnostics.openai_remote_compaction.is_none()
+                {
+                    sent_diagnostics.openai_remote_compaction =
+                        maybe_compact_openai_provider_window(
                             &self.continuation,
-                            plan.scope.as_ref(),
-                            &error,
-                        );
-                        return Err(error);
-                    }
+                            plan_scope.as_ref(),
+                            &plan_request_shape,
+                            self.compaction_policy,
+                            &self.client,
+                            openai_responses_compact_url(&self.base_url),
+                            headers,
+                            trace.as_ref(),
+                            request_agent_id(&request),
+                            &self.route_provider,
+                            &model_ref,
+                            request.dispatch_guard.as_deref(),
+                        )
+                        .await
+                        .or_else(|error| {
+                            // Optional IO must not discard an already usable response.
+                            if error.is::<super::http::DispatchGuardRejected>() {
+                                Ok(None)
+                            } else {
+                                Err(error)
+                            }
+                        })?;
                 }
-            }
-        };
-        update_openai_continuation(
-            &self.continuation,
-            plan_scope.clone(),
-            plan_request_shape.clone(),
-            plan.append_match_input,
-            final_provider_input,
-            final_replay_loss_reason,
-            &parsed,
-        );
-        if self.endpoint_contract.remote_compaction
-            == OpenAiResponsesRemoteCompactionContract::Supported
-            && sent_diagnostics.openai_remote_compaction.is_none()
-        {
-            sent_diagnostics.openai_remote_compaction = maybe_compact_openai_provider_window(
-                &self.continuation,
-                plan_scope.as_ref(),
-                &plan_request_shape,
-                self.compaction_policy,
-                &self.client,
-                openai_responses_compact_url(&self.base_url),
-                headers,
-                trace.as_ref(),
-                request_agent_id(&request),
-                &self.route_provider,
-                &model_ref,
-                request.dispatch_guard.as_deref(),
-            )
+                if self.service_tier.is_some() || parsed.served_service_tier.is_some() {
+                    let controls = sent_diagnostics
+                        .openai_request_controls
+                        .get_or_insert_with(Default::default);
+                    controls.service_tier = self.service_tier.map(|tier| match tier {
+                        crate::config::ServiceTier::Default => "default".into(),
+                        crate::config::ServiceTier::Fast => "priority".into(),
+                    });
+                    controls.served_service_tier = parsed.served_service_tier.clone();
+                }
+                sent_diagnostics.transport_timeline = parsed.transport_timeline.clone();
+                Ok(parsed.response.with_request_diagnostics(sent_diagnostics))
+            })
             .await
-            .or_else(|error| {
-                // Optional IO must not discard an already usable response.
-                if error.is::<super::http::DispatchGuardRejected>() {
-                    Ok(None)
-                } else {
-                    Err(error)
-                }
-            })?;
-        }
-        if self.service_tier.is_some() || parsed.served_service_tier.is_some() {
-            let controls = sent_diagnostics
-                .openai_request_controls
-                .get_or_insert_with(Default::default);
-            controls.service_tier = self.service_tier.map(|tier| match tier {
-                crate::config::ServiceTier::Default => "default".into(),
-                crate::config::ServiceTier::Fast => "priority".into(),
-            });
-            controls.served_service_tier = parsed.served_service_tier.clone();
-        }
-        sent_diagnostics.transport_timeline = parsed.transport_timeline.clone();
-        Ok(parsed.response.with_request_diagnostics(sent_diagnostics))
     }
 
     async fn generate_image(
         &self,
         request: ProviderGenerateImageRequest,
     ) -> Result<ProviderGenerateImageResponse> {
-        let dialect = openai_images_dialect(&self.route_provider, &self.base_url);
-        let body = build_images_request(dialect, &self.model, &request)?;
-        let mut headers = self.resolve_auth_headers().await?;
-        let trace = ProviderHttpTrace::from_env(self.trace_home_dir.clone());
-        let images = match send_openai_images_request(
-            &self.client,
-            openai_images_generations_url(&self.base_url),
-            body.clone(),
-            headers.clone(),
-            &self.provider_id,
-            trace.as_ref(),
-            None,
-        )
-        .await
-        {
-            Ok(images) => images,
-            Err(error) => {
-                let Some(refreshed_headers) =
-                    self.refresh_auth_headers_after_failure(&error).await?
-                else {
-                    return Err(error);
-                };
-                headers = refreshed_headers;
-                send_openai_images_request(
+        let material = request.material.clone();
+        material
+            .complete_image(async {
+                let dialect = openai_images_dialect(&self.route_provider, &self.base_url);
+                let body = build_images_request(dialect, &self.model, &request)?;
+                let mut headers = self.resolve_auth_headers().await?;
+                let trace = ProviderHttpTrace::from_env(self.trace_home_dir.clone());
+                let images = match send_openai_images_request(
                     &self.client,
                     openai_images_generations_url(&self.base_url),
-                    body,
-                    headers,
+                    &body,
+                    headers.clone(),
                     &self.provider_id,
                     trace.as_ref(),
                     None,
+                    &request.material,
                 )
-                .await?
-            }
-        };
-        Ok(ProviderGenerateImageResponse {
-            provider: self.provider_id.clone(),
-            model: self.model.clone(),
-            images,
-        })
+                .await
+                {
+                    Ok(images) => images,
+                    Err(error) => {
+                        let Some(refreshed_headers) =
+                            self.refresh_auth_headers_after_failure(&error).await?
+                        else {
+                            return Err(error);
+                        };
+                        headers = refreshed_headers;
+                        send_openai_images_request(
+                            &self.client,
+                            openai_images_generations_url(&self.base_url),
+                            &body,
+                            headers,
+                            &self.provider_id,
+                            trace.as_ref(),
+                            None,
+                            &request.material,
+                        )
+                        .await?
+                    }
+                };
+                request
+                    .material
+                    .admit_value(&(&self.provider_id, &self.model))?;
+                Ok(ProviderGenerateImageResponse {
+                    provider: self.provider_id.clone(),
+                    model: self.model.clone(),
+                    images,
+                })
+            })
+            .await
     }
 
     #[cfg(test)]
@@ -917,6 +943,9 @@ impl AgentProvider for OpenAiCodexProvider {
     }
 
     async fn complete_turn(&self, request: ProviderTurnRequest) -> Result<ProviderTurnResponse> {
+        let material = request.material.clone();
+        material.validate_images(&request.conversation)?;
+        material.complete_turn(async {
         let model_ref = format!("{}/{}", self.provider_id, self.model);
         let credential = self
             .resolve_fresh_credential()
@@ -971,7 +1000,7 @@ impl AgentProvider for OpenAiCodexProvider {
         )?;
         let mut sent_diagnostics = plan.diagnostics.clone();
         let plan_scope = plan.scope.clone();
-        let plan_request_shape = plan.request_shape.clone();
+        let plan_request_shape = material.cloned(&plan.request_shape)?;
         let mut credential = credential;
         let mut quota_identity =
             ProviderQuotaIdentity::exact("codex-account", &credential.account_id)
@@ -1008,16 +1037,17 @@ impl AgentProvider for OpenAiCodexProvider {
             &plan.provider_input,
             &sent_diagnostics,
         ));
-        let parsed = match send_openai_responses_streaming_request(
+        let parsed = match send_openai_responses_streaming_request_with_material(
             &self.client,
             openai_codex_responses_url(&self.base_url),
-            plan.body.clone(),
+            &plan.body,
             headers.clone(),
             trace.as_ref(),
             request_agent_id(&request),
             "openai-codex",
             &model_ref,
             request.dispatch_guard.as_deref(),
+            &material,
         )
         .await
         {
@@ -1051,16 +1081,17 @@ impl AgentProvider for OpenAiCodexProvider {
                             plan_scope.as_ref(),
                         );
                         headers.extend(openai_codex_routing_hint(&self.model, self.service_tier));
-                        match send_openai_responses_streaming_request(
+                        match send_openai_responses_streaming_request_with_material(
                             &self.client,
                             openai_codex_responses_url(&self.base_url),
-                            plan.body.clone(),
+                            &plan.body,
                             headers.clone(),
                             trace.as_ref(),
                             request_agent_id(&request),
                             "openai-codex",
                             &model_ref,
                             request.dispatch_guard.as_deref(),
+                            &material,
                         )
                         .await
                         {
@@ -1095,7 +1126,8 @@ impl AgentProvider for OpenAiCodexProvider {
             plan.provider_input,
             plan.replay_loss_reason,
             &parsed,
-        );
+            &material,
+        )?;
         if sent_diagnostics.openai_remote_compaction.is_none() {
             sent_diagnostics.openai_remote_compaction = maybe_compact_openai_provider_window(
                 &self.continuation,
@@ -1132,12 +1164,15 @@ impl AgentProvider for OpenAiCodexProvider {
         }
         sent_diagnostics.transport_timeline = parsed.transport_timeline.clone();
         Ok(parsed.response.with_request_diagnostics(sent_diagnostics))
+        }).await
     }
 
     async fn generate_image(
         &self,
         request: ProviderGenerateImageRequest,
     ) -> Result<ProviderGenerateImageResponse> {
+        let material = request.material.clone();
+        material.complete_image(async {
         let model_ref = format!("{}/{}", self.provider_id, self.model);
         let credential = self
             .resolve_fresh_credential()
@@ -1161,6 +1196,12 @@ impl AgentProvider for OpenAiCodexProvider {
             }
         }
 
+        request.material.admit_value(&(&self.model, &request))?;
+        request.material.read(|| {
+            Ok(crate::diagnostics::resource_io::charge_owned_metadata(
+                512, 32,
+            )?)
+        })?;
         let body = build_openai_codex_image_generation_request(&self.model, &request);
         let trace = ProviderHttpTrace::from_env(self.trace_home_dir.clone());
         let mut credential = credential;
@@ -1168,10 +1209,11 @@ impl AgentProvider for OpenAiCodexProvider {
         let images = match send_openai_codex_image_generation_request(
             &self.client,
             openai_codex_responses_url(&self.base_url),
-            body.clone(),
+            &body,
             headers.clone(),
             trace.as_ref(),
             None,
+            &request.material,
         )
         .await
         {
@@ -1195,10 +1237,11 @@ impl AgentProvider for OpenAiCodexProvider {
                         send_openai_codex_image_generation_request(
                             &self.client,
                             openai_codex_responses_url(&self.base_url),
-                            body,
+                            &body,
                             headers,
                             trace.as_ref(),
                             None,
+                            &request.material,
                         )
                         .await?
                     } else {
@@ -1210,11 +1253,15 @@ impl AgentProvider for OpenAiCodexProvider {
             }
         };
 
+        request
+            .material
+            .admit_value(&(&self.provider_id, &self.model))?;
         Ok(ProviderGenerateImageResponse {
             provider: self.provider_id.clone(),
             model: self.model.clone(),
             images,
         })
+        }).await
     }
 
     #[cfg(test)]
@@ -1292,111 +1339,128 @@ impl AgentProvider for OpenAiChatCompletionsProvider {
     }
 
     async fn complete_turn(&self, request: ProviderTurnRequest) -> Result<ProviderTurnResponse> {
-        // Build Chat Completions request
-        let mut full_body = build_chat_completion_request(
-            &self.model,
-            self.max_output_tokens,
-            &request,
-            ToolSchemaContract::Relaxed,
-            false, // Streaming infrastructure exists but is not currently enabled; requests are non-streaming
-            self.reasoning_effort.as_deref(),
-            self.max_output_tokens_parameter,
-        )?;
-        apply_service_tier(&mut full_body, self.service_tier, false);
-        let (mut body, plan) =
-            plan_chat_completion_request(full_body, &request, &self.continuation)?;
-        let effective_output = effective_output_tokens(
-            self.context_window_tokens,
-            self.max_output_tokens,
-            &body,
-            &[self.max_output_tokens_parameter],
-        );
-        if body.get(self.max_output_tokens_parameter).is_some() {
-            body[self.max_output_tokens_parameter] = Value::from(effective_output);
-        }
-        let mut sent_diagnostics = plan.diagnostics.clone();
-        sent_diagnostics.reasoning_effort = self.reasoning_effort.clone();
-        let headers = self
-            .api_key
-            .as_ref()
-            .map(|api_key| vec![("authorization", format!("Bearer {api_key}"))])
-            .unwrap_or_default();
-        let trace = ProviderHttpTrace::from_env(self.trace_home_dir.clone());
-
-        // Send to /v1/chat/completions endpoint
-        let parsed = match send_chat_completion_request(
-            &self.client,
-            chat_completions_url(&self.base_url),
-            body,
-            headers,
-            trace.as_ref(),
-            request_agent_id(&request),
-            request.dispatch_guard.as_deref(),
-        )
-        .await
-        {
-            Ok(parsed) => parsed,
-            Err(error) => {
-                invalidate_openai_continuation_after_failure(
-                    &self.continuation,
-                    plan.scope.as_ref(),
-                    &error,
+        let material = request.material.clone();
+        material.validate_images(&request.conversation)?;
+        material
+            .complete_turn(async {
+                // Build Chat Completions request
+                let mut full_body = build_chat_completion_request(
+                    &self.model,
+                    self.max_output_tokens,
+                    &request,
+                    ToolSchemaContract::Relaxed,
+                    false, // Streaming infrastructure exists but is not currently enabled; requests are non-streaming
+                    self.reasoning_effort.as_deref(),
+                    self.max_output_tokens_parameter,
+                )?;
+                apply_service_tier(&mut full_body, self.service_tier, false);
+                let (mut body, plan) =
+                    plan_chat_completion_request(full_body, &request, &self.continuation)?;
+                let effective_output = effective_output_tokens(
+                    self.context_window_tokens,
+                    self.max_output_tokens,
+                    &body,
+                    &[self.max_output_tokens_parameter],
                 );
-                return Err(error);
-            }
-        };
+                if body.get(self.max_output_tokens_parameter).is_some() {
+                    body[self.max_output_tokens_parameter] = Value::from(effective_output);
+                }
+                let mut sent_diagnostics = plan.diagnostics.clone();
+                sent_diagnostics.reasoning_effort = self.reasoning_effort.clone();
+                let headers = self
+                    .api_key
+                    .as_ref()
+                    .map(|api_key| vec![("authorization", format!("Bearer {api_key}"))])
+                    .unwrap_or_default();
+                let trace = ProviderHttpTrace::from_env(self.trace_home_dir.clone());
 
-        update_openai_continuation(
-            &self.continuation,
-            plan.scope,
-            plan.request_shape,
-            plan.append_match_input,
-            plan.provider_input,
-            plan.replay_loss_reason,
-            &parsed,
-        );
+                // Send to /v1/chat/completions endpoint
+                let parsed = match send_chat_completion_request_with_material(
+                    &self.client,
+                    chat_completions_url(&self.base_url),
+                    body,
+                    headers,
+                    trace.as_ref(),
+                    request_agent_id(&request),
+                    request.dispatch_guard.as_deref(),
+                    &material,
+                )
+                .await
+                {
+                    Ok(parsed) => parsed,
+                    Err(error) => {
+                        invalidate_openai_continuation_after_failure(
+                            &self.continuation,
+                            plan.scope.as_ref(),
+                            &error,
+                        );
+                        return Err(error);
+                    }
+                };
 
-        if self.service_tier.is_some() || parsed.served_service_tier.is_some() {
-            let controls = sent_diagnostics
-                .openai_request_controls
-                .get_or_insert_with(Default::default);
-            controls.service_tier = self.service_tier.map(|tier| match tier {
-                crate::config::ServiceTier::Default => "default".into(),
-                crate::config::ServiceTier::Fast => "priority".into(),
-            });
-            controls.served_service_tier = parsed.served_service_tier.clone();
-        }
-        sent_diagnostics.transport_timeline = parsed.transport_timeline.clone();
-        Ok(parsed.response.with_request_diagnostics(sent_diagnostics))
+                update_openai_continuation(
+                    &self.continuation,
+                    plan.scope,
+                    plan.request_shape,
+                    plan.append_match_input,
+                    plan.provider_input,
+                    plan.replay_loss_reason,
+                    &parsed,
+                    &material,
+                )?;
+
+                if self.service_tier.is_some() || parsed.served_service_tier.is_some() {
+                    let controls = sent_diagnostics
+                        .openai_request_controls
+                        .get_or_insert_with(Default::default);
+                    controls.service_tier = self.service_tier.map(|tier| match tier {
+                        crate::config::ServiceTier::Default => "default".into(),
+                        crate::config::ServiceTier::Fast => "priority".into(),
+                    });
+                    controls.served_service_tier = parsed.served_service_tier.clone();
+                }
+                sent_diagnostics.transport_timeline = parsed.transport_timeline.clone();
+                Ok(parsed.response.with_request_diagnostics(sent_diagnostics))
+            })
+            .await
     }
 
     async fn generate_image(
         &self,
         request: ProviderGenerateImageRequest,
     ) -> Result<ProviderGenerateImageResponse> {
-        let dialect = openai_images_dialect(&self.route_provider, &self.base_url);
-        let body = build_images_request(dialect, &self.model, &request)?;
-        let headers = self
-            .api_key
-            .as_ref()
-            .map(|api_key| vec![("authorization", format!("Bearer {api_key}"))])
-            .unwrap_or_default();
-        let trace = ProviderHttpTrace::from_env(self.trace_home_dir.clone());
-        let images = send_openai_images_request(
-            &self.client,
-            openai_images_generations_url(&self.base_url),
-            body,
-            headers,
-            &self.provider_id,
-            trace.as_ref(),
-            None,
-        )
-        .await?;
-        Ok(ProviderGenerateImageResponse {
-            provider: self.provider_id.clone(),
-            model: self.model.clone(),
-            images,
-        })
+        let material = request.material.clone();
+        material
+            .complete_image(async {
+                let dialect = openai_images_dialect(&self.route_provider, &self.base_url);
+                let body = build_images_request(dialect, &self.model, &request)?;
+                let headers = self
+                    .api_key
+                    .as_ref()
+                    .map(|api_key| vec![("authorization", format!("Bearer {api_key}"))])
+                    .unwrap_or_default();
+                let trace = ProviderHttpTrace::from_env(self.trace_home_dir.clone());
+                let images = send_openai_images_request(
+                    &self.client,
+                    openai_images_generations_url(&self.base_url),
+                    &body,
+                    headers,
+                    &self.provider_id,
+                    trace.as_ref(),
+                    None,
+                    &request.material,
+                )
+                .await?;
+                request
+                    .material
+                    .admit_value(&(&self.provider_id, &self.model))?;
+                Ok(ProviderGenerateImageResponse {
+                    provider: self.provider_id.clone(),
+                    model: self.model.clone(),
+                    images,
+                })
+            })
+            .await
     }
 
     #[cfg(test)]

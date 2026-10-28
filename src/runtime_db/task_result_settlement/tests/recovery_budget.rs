@@ -36,6 +36,104 @@ fn exhaust(db: &RuntimeDb, record: &TaskResultSettlementRecord) -> DateTime<Utc>
 }
 
 #[test]
+fn finite_recovery_diagnostic_preserves_namespace_epoch_cas_and_idempotence() -> Result<()> {
+    let (_dir, db) = runtime_db();
+    let mut record = pending_record(0);
+    record.recovery_paused_at = Some(record.updated_at);
+    insert(&db, &record);
+    let now = record.updated_at + Duration::seconds(1);
+    let limits = TaskResultWriteLimits::default();
+    for (agent, epoch) in [("other-agent", 0), ("agent-a", 1)] {
+        let ack = db.transaction(|tx| {
+            select_mark_recovery_diagnostic_tx(
+                tx,
+                agent,
+                &record.result_identity,
+                epoch,
+                now,
+                limits,
+            )?
+            .materialize(limits)?
+            .execute()
+        })?;
+        assert_eq!(ack.outcome, TaskResultWriteOutcome::Unit);
+        assert!(ack.actual_result_ids.is_empty());
+        assert!(latest(&db, &record).recovery_diagnostic_at.is_none());
+    }
+    db.transaction(|tx| {
+        let prepared = select_mark_recovery_diagnostic_tx(
+            tx,
+            "agent-a",
+            &record.result_identity,
+            0,
+            now,
+            limits,
+        )?
+        .materialize(limits)?;
+        let mut changed = latest_for_message_tx(tx, &record.message_id)?.unwrap();
+        changed.recovery_epoch = 1;
+        update_tx(tx, &changed)?;
+        assert!(prepared.execute().is_err());
+        Ok(())
+    })?;
+    assert!(latest(&db, &record).recovery_diagnostic_at.is_none());
+    for (at, expected) in [(now, true), (now + Duration::seconds(1), false)] {
+        let ack = db.transaction(|tx| {
+            select_mark_recovery_diagnostic_tx(
+                tx,
+                "agent-a",
+                &record.result_identity,
+                1,
+                at,
+                limits,
+            )?
+            .materialize(limits)?
+            .execute()
+        })?;
+        assert_eq!(ack.outcome, TaskResultWriteOutcome::Unit);
+        assert_eq!(
+            ack.actual_result_ids,
+            if expected {
+                std::collections::BTreeSet::from([record.result_identity.clone()])
+            } else {
+                Default::default()
+            }
+        );
+        assert_eq!(latest(&db, &record).recovery_diagnostic_at, Some(now));
+    }
+    let unpaused = pending_record(1);
+    insert(&db, &unpaused);
+    db.transaction(|tx| {
+        let ack = select_mark_recovery_diagnostic_tx(
+            tx,
+            "agent-a",
+            &unpaused.result_identity,
+            0,
+            now,
+            limits,
+        )?
+        .materialize(limits)?
+        .execute()?;
+        assert!(ack.actual_result_ids.is_empty());
+        assert!(select_mark_recovery_diagnostic_tx(
+            tx,
+            "agent-a",
+            &record.result_identity,
+            1,
+            now,
+            TaskResultWriteLimits {
+                record_limit: 1,
+                byte_limit: 1,
+            },
+        )
+        .is_err());
+        Ok(())
+    })?;
+    assert!(latest(&db, &unpaused).recovery_diagnostic_at.is_none());
+    Ok(())
+}
+
+#[test]
 fn recovery_budget_counts_roots_not_probes_or_fallback_hops() {
     let (_dir, db) = runtime_db();
     let record = pending_record(0);

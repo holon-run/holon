@@ -1,5 +1,5 @@
 pub(crate) use std::{
-    collections::{BTreeMap, VecDeque},
+    collections::BTreeMap,
     path::{Component, PathBuf},
     sync::{
         atomic::{AtomicUsize, Ordering},
@@ -88,13 +88,12 @@ pub(crate) use crate::{
     system::{ExecutionScopeKind, HostLocalBoundary},
     types::{
         AdmissionContext, AgentRegistryStatus, AgentState, AuditEvent, AuthorityClass, BriefRecord,
-        CallbackDeliveryPayload, CallbackDeliveryResult, ControlAction,
-        ExternalTriggerStateSnapshot, MessageBody, MessageDeliverySurface, MessageEnvelope,
-        MessageKind, MessageOrigin, OperatorTransportBinding, OperatorTransportBindingStatus,
-        OperatorTransportCapabilities, OperatorTransportDeliveryAuth,
-        OperatorTransportDeliveryAuthKind, Priority, TaskStatus, TaskStatusSnapshot,
-        TaskStopResult, TodoItem, TranscriptEntry, TurnTerminalRecord, WorkItemPlanStatus,
-        WorkItemRecord, WorkItemState,
+        CallbackDeliveryPayload, CallbackDeliveryResult, ControlAction, MessageBody,
+        MessageDeliverySurface, MessageEnvelope, MessageKind, MessageOrigin,
+        OperatorTransportBinding, OperatorTransportBindingStatus, OperatorTransportCapabilities,
+        OperatorTransportDeliveryAuth, OperatorTransportDeliveryAuthKind, Priority, TaskStatus,
+        TaskStatusSnapshot, TaskStopResult, TodoItem, TranscriptEntry, TurnTerminalRecord,
+        WorkItemPlanStatus, WorkItemRecord, WorkItemState,
     },
 };
 mod agents;
@@ -3483,6 +3482,35 @@ mod tests {
         drain.await;
         assert!(caller.await.unwrap().is_err());
         tcp.close_projection_reads().await;
+    }
+
+    #[tokio::test]
+    async fn operator_state_route_serializes_owned_projection_without_changing_the_wire() {
+        let (_home, host, runtime) =
+            crate::runtime::tests::support::host_backed_test_runtime().await;
+        let timer = runtime
+            .schedule_timer(3_600_000, None, Some("State wire".into()))
+            .await
+            .unwrap();
+        let id = runtime.instance_agent_id();
+        let app = router(AppState::for_tcp(host.clone()));
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri(format!("/api/agents/{id}/state"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let bytes = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let wire: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(wire["agent"]["agent"]["id"], id);
+        assert!(wire["tasks"].is_array() && wire["waits"].is_array());
+        assert_eq!(wire["timers"][0]["id"], timer.id);
+        assert!(wire.get("material").is_none());
+        host.shutdown().await.unwrap();
     }
 
     #[tokio::test]

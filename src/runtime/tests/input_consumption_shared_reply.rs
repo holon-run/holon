@@ -41,6 +41,17 @@ async fn p1_shared_reply_exact_wait_is_reserved_before_same_owner_overflow() {
         tasks.push(waiter(runtime, Some(&receiver), &format!("exact-overflow-{index}")).await);
     }
     let promised = tasks.last().unwrap();
+    let wait_source = start_without_provider(runtime).await;
+    assert_eq!(
+        runtime
+            .agent_state()
+            .await
+            .unwrap()
+            .current_execution_binding
+            .as_ref()
+            .and_then(|binding| binding.work_item_id.as_ref()),
+        Some(&receiver)
+    );
     let outcome = runtime
         .register_wait_for_outcome(
             "default",
@@ -55,12 +66,11 @@ async fn p1_shared_reply_exact_wait_is_reserved_before_same_owner_overflow() {
     let WaitForRegistrationOutcome::Registered { registration } = outcome else {
         panic!("running task must register an exact waiter");
     };
-    let receiver_record = runtime.latest_work_item(&receiver).await.unwrap().unwrap();
-    seed_waiting_work_execution(
-        runtime.storage(),
-        &receiver_record,
-        &registration.condition.id,
+    assert_eq!(
+        registration.condition.work_item_id.as_ref(),
+        Some(&receiver)
     );
+    settle_registered_wait_source(runtime, &wait_source).await;
     let original = reply(
         runtime,
         Some(&receiver),
@@ -209,17 +219,30 @@ async fn p1_shared_reply_exact_cross_owner_wait_only_admits_its_promised_identit
     let captured_owner = owner(runtime, "captured task owner").await;
     let outsider = owner(runtime, "unrelated task owner").await;
     runtime.pick_work_item(receiver.clone()).await.unwrap();
-    let mut blocked = runtime
-        .runtime_db()
-        .work_items()
-        .latest(&captured_owner)
-        .unwrap()
+    runtime
+        .update_work_item_fields(
+            captured_owner.clone(),
+            None,
+            None,
+            None,
+            None,
+            Some(Some("independent business gate".into())),
+        )
+        .await
         .unwrap();
-    blocked.blocked_by = Some("independent business gate".into());
-    blocked.revision += 1;
-    runtime.storage().append_work_item(&blocked).unwrap();
     let promised = waiter(runtime, Some(&captured_owner), "promised-cross-owner").await;
     let sibling = waiter(runtime, Some(&outsider), "unpromised-sibling").await;
+    let wait_source = start_without_provider(runtime).await;
+    assert_eq!(
+        runtime
+            .agent_state()
+            .await
+            .unwrap()
+            .current_execution_binding
+            .as_ref()
+            .and_then(|binding| binding.work_item_id.as_ref()),
+        Some(&receiver)
+    );
     let outcome = runtime
         .register_wait_for_outcome(
             "default",
@@ -234,12 +257,11 @@ async fn p1_shared_reply_exact_cross_owner_wait_only_admits_its_promised_identit
     let WaitForRegistrationOutcome::Registered { registration } = outcome else {
         panic!("running task must register an exact waiter");
     };
-    let receiver_record = runtime.latest_work_item(&receiver).await.unwrap().unwrap();
-    seed_waiting_work_execution(
-        runtime.storage(),
-        &receiver_record,
-        &registration.condition.id,
+    assert_eq!(
+        registration.condition.work_item_id.as_ref(),
+        Some(&receiver)
     );
+    settle_registered_wait_source(runtime, &wait_source).await;
     let original = reply(
         runtime,
         Some(&receiver),
@@ -450,8 +472,10 @@ async fn p1_shared_reply_oversize_and_ordinary_inputs_share_identity_and_byte_li
 #[async_trait]
 impl AgentProvider for SharedReplyProvider {
     async fn complete_turn(&self, request: ProviderTurnRequest) -> Result<ProviderTurnResponse> {
+        let material = request.material.clone();
         self.requests.lock().await.push(request);
         Ok(ProviderTurnResponse {
+            material,
             blocks: vec![ModelBlock::Text {
                 text: "shared reply handled".into(),
             }],
@@ -577,7 +601,8 @@ async fn reply_with_authority(
 }
 
 async fn waiter(runtime: &RuntimeHandle, owner: Option<&str>, id: &str) -> TaskRecord {
-    waiter_in_turn(runtime, owner, id, "shared-reply-parent", None).await
+    let parent_turn = format!("shared-reply-parent-{}", owner.unwrap_or("agent-lifecycle"));
+    waiter_in_turn(runtime, owner, id, &parent_turn, None).await
 }
 
 async fn waiter_in_turn(
@@ -587,6 +612,16 @@ async fn waiter_in_turn(
     parent_turn: &str,
     request: Option<(String, i64)>,
 ) -> TaskRecord {
+    if runtime
+        .storage()
+        .read_turn_by_id(parent_turn)
+        .unwrap()
+        .is_none()
+    {
+        persist_completed_task_parent_fixture(runtime, parent_turn, owner)
+            .await
+            .unwrap();
+    }
     let mut task = TaskRecord {
         id: id.into(),
         agent_id: "default".into(),
@@ -653,6 +688,10 @@ async fn finish(runtime: &RuntimeHandle, task: &TaskRecord, reply: &MessageEnvel
 }
 
 async fn command_result(runtime: &RuntimeHandle, owner: &str, id: &str) -> String {
+    let parent_turn_id = format!("shared-reply-command-parent-{id}");
+    persist_completed_task_parent_fixture(runtime, &parent_turn_id, Some(owner))
+        .await
+        .unwrap();
     let mut message = MessageEnvelope::new(
         "default",
         MessageKind::TaskResult,
@@ -686,7 +725,7 @@ async fn command_result(runtime: &RuntimeHandle, owner: &str, id: &str) -> Strin
         detail: Some(serde_json::json!({
             "rejoin_obligation_id": id,
             "rejoin_generation": 1,
-            "parent_turn_id": "shared-reply-command-parent",
+            "parent_turn_id": parent_turn_id,
             "terminal_reentry": true,
         })),
         recovery: None,
@@ -701,7 +740,7 @@ async fn command_result(runtime: &RuntimeHandle, owner: &str, id: &str) -> Strin
 #[tokio::test(start_paused = true)]
 async fn p1_shared_reply_restart_replays_admitted_identities_before_fresh_sources() {
     let provider = Arc::new(SharedReplyProvider::default());
-    let mut harness = LifecycleHarness::with_provider(provider.clone());
+    let harness = LifecycleHarness::with_provider(provider.clone());
     let work = owner(harness.runtime(), "interrupted shared reply").await;
     harness
         .runtime()
@@ -772,14 +811,15 @@ async fn p1_shared_reply_restart_replays_admitted_identities_before_fresh_source
         "late fresh content",
     )
     .await;
-    harness.restart();
-    harness
-        .runtime()
-        .recover_scheduler_bootstrap_claims()
-        .await
-        .unwrap();
-    let interrupted_turn = harness
-        .runtime()
+    let (home, workspace, runtime) = harness.into_startup_fixture_parts();
+    let (runtime, _) = super::runtime_state::recover_quiescent_startup_fixture(
+        runtime,
+        home.path(),
+        workspace.path(),
+    )
+    .await;
+    runtime.recover_scheduler_bootstrap_claims().await.unwrap();
+    let interrupted_turn = runtime
         .storage()
         .read_turn_by_id(&original_turn.turn_id)
         .unwrap()
@@ -788,8 +828,7 @@ async fn p1_shared_reply_restart_replays_admitted_identities_before_fresh_source
         interrupted_turn.terminal.as_ref().unwrap().kind,
         TurnTerminalKind::Interrupted
     );
-    let execution = harness
-        .runtime()
+    let execution = runtime
         .runtime_db()
         .transitions()
         .load_execution_protocol_state_if_initialized("default")
@@ -799,15 +838,14 @@ async fn p1_shared_reply_restart_replays_admitted_identities_before_fresh_source
         execution.attempts[original_activation].state,
         crate::domain::execution_protocol::ExecutionAttemptState::Interrupted
     );
-    let batch = process_next(harness.runtime())
+    let batch = process_next(&runtime)
         .await
         .expect("interrupted source must resume");
     assert_eq!(batch.identities, previous);
     assert_eq!(batch.input_ids, original_turn.input_message_ids);
     assert!(!batch.input_ids.contains(&late.id));
     assert_eq!(
-        harness
-            .runtime()
+        runtime
             .runtime_db()
             .queue_entries()
             .latest(&late.id)
@@ -1040,9 +1078,13 @@ async fn p1_shared_reply_recovery_scope_requires_durable_source_binding_and_cons
     forged.id = "missing-recovery-ledger-source".into();
     let mut unbound = binding.clone();
     unbound.source_message_id = forged.id.clone();
-    assert!(!runtime
+    let error = runtime
         .idle_reply_recovery_source_valid(&forged, &unbound)
-        .unwrap());
+        .expect_err("unproven absence must not become an eligible recovery source");
+    assert!(matches!(
+        error.downcast_ref::<crate::runtime_db::input_evidence_snapshot::InputEvidenceSnapshotError>(),
+        Some(crate::runtime_db::input_evidence_snapshot::InputEvidenceSnapshotError::NeedsPreparation(_))
+    ));
     unbound = binding.clone();
     unbound.work_item_id = Some(foreign.clone());
     unbound.owner = Some(TurnOwner::WorkItem {
@@ -1091,35 +1133,39 @@ async fn p1_shared_reply_recovery_scope_requires_durable_source_binding_and_cons
         .admit_idle_task_results(&anchor, 24 * 1024)
         .await
         .unwrap());
-    assert_eq!(
-        repository
-            .settle_activation(
-                "default",
-                binding.activation_id.as_deref().unwrap(),
-                TaskResultSettlementDisposition::ModelDelivered,
-                runtime.now(),
-            )
-            .unwrap(),
-        2
-    );
+    let admitted = repository
+        .admitted_for_activation("default", binding.activation_id.as_deref().unwrap())
+        .unwrap();
+    assert_eq!(admitted.len(), 2);
+    assert!(admitted
+        .iter()
+        .any(|record| record.result_identity == selector.result_identity));
+    assert!(admitted
+        .iter()
+        .all(|record| record.work_item_id == selector.work_item_id));
+    // Settle through the original qualified writer while leaving the wake
+    // in flight: settled source identities must still prove this owner wake.
+    for record in &admitted {
+        assert!(runtime
+            .apply_task_result_operation(&record.message_id, || {
+                crate::runtime_db::transitions::TaskResultOperation::SettleOwnerUnavailable {
+                    message_id: record.message_id.clone(),
+                    disposition: TaskResultSettlementDisposition::ModelDelivered,
+                    at: runtime.now(),
+                }
+            })
+            .await
+            .unwrap()
+            .changed()
+            .unwrap());
+    }
     assert!(
         runtime
             .idle_reply_recovery_source_valid(&anchor, &binding)
             .unwrap(),
         "a settled selector does not invalidate the owner wake's source proof"
     );
-    let mut terminal_queue = runtime
-        .runtime_db()
-        .queue_entries()
-        .latest(&anchor.id)
-        .unwrap()
-        .unwrap();
-    terminal_queue.status = QueueEntryStatus::Processed;
-    runtime
-        .runtime_db()
-        .queue_entries()
-        .upsert(&terminal_queue)
-        .unwrap();
+    settle_registered_wait_source(runtime, &anchor).await;
     assert!(!runtime
         .idle_reply_recovery_source_valid(&anchor, &binding)
         .unwrap());
@@ -1335,7 +1381,28 @@ async fn p1_shared_reply_source_rehoming_requires_interrupted_predecessor() {
 }
 
 async fn start_without_provider(runtime: &RuntimeHandle) -> MessageEnvelope {
+    let mut seeded = false;
     for _ in 0..72 {
+        // Only seed an execution when no real source remains. A synthetic
+        // operator prompt must not preempt an existing recovery wake or reply.
+        if !seeded && runtime.inner.agent.lock().await.queue.is_empty() {
+            let mut message = MessageEnvelope::new(
+                "default",
+                MessageKind::OperatorPrompt,
+                MessageOrigin::Operator {
+                    actor_id: None,
+                    actor_display_name: None,
+                },
+                AuthorityClass::OperatorInstruction,
+                Priority::Normal,
+                MessageBody::Text {
+                    text: "start the shared reply waiter".into(),
+                },
+            );
+            message.work_item_id = runtime.agent_state().await.unwrap().current_work_item_id;
+            runtime.enqueue(message).await.unwrap();
+            seeded = true;
+        }
         let poll = scheduler_executor::SchedulerDecisionExecutor::new(runtime)
             .poll()
             .await
@@ -1371,20 +1438,58 @@ async fn start_without_provider(runtime: &RuntimeHandle) -> MessageEnvelope {
             continue;
         }
         runtime
-            .begin_interactive_turn_with_provenance(
-                Some(&scheduled.message),
+            .begin_dispatch_turn(
+                &scheduled.message,
                 None,
                 None,
                 scheduled.dispatch_plan.execution_admission_provenance,
+                &scheduled.dispatch_plan.prior_closure,
             )
             .await
             .unwrap();
         runtime
             .record_incoming_transcript_entry(&scheduled.message)
+            .await
             .unwrap();
         return scheduled.message;
     }
     panic!("shared reply must receive a canonical source execution");
+}
+
+async fn settle_registered_wait_source(runtime: &RuntimeHandle, source: &MessageEnvelope) {
+    finish_claimed_test_run(runtime).await;
+    let terminal = terminal_transition_from_started_turn(runtime, source);
+    assert!(
+        runtime
+            .commit_queue_terminal_settlement(
+                QueueEntryRecord {
+                    message_id: source.id.clone(),
+                    agent_id: source.agent_id.clone(),
+                    priority: source.priority.clone(),
+                    status: QueueEntryStatus::Processed,
+                    created_at: source.created_at,
+                    // Scheduler claims use wall time, not the lifecycle harness clock.
+                    updated_at: Utc::now(),
+                },
+                Vec::new(),
+                true,
+                Some(&terminal),
+            )
+            .await
+            .unwrap(),
+        "the source terminal settlement must be applied"
+    );
+    assert_eq!(
+        runtime
+            .runtime_db()
+            .queue_entries()
+            .latest(&source.id)
+            .unwrap()
+            .unwrap()
+            .status,
+        QueueEntryStatus::Processed,
+        "the source terminal settlement must close its original queue entry"
+    );
 }
 
 #[derive(Debug)]
@@ -1564,7 +1669,26 @@ async fn p1_shared_reply_waiter_matrix_drains_by_identity_with_restart() {
         }
         assert!(
             all_settled(harness.runtime(), &sources),
-            "{count}: {batches:?}"
+            "{count}: {batches:?}; settlements: {:?}",
+            sources
+                .iter()
+                .map(|id| {
+                    let record = harness
+                        .runtime()
+                        .runtime_db()
+                        .task_result_settlements()
+                        .latest_for_message(id)
+                        .unwrap()
+                        .unwrap();
+                    (
+                        record.task_id,
+                        record.state,
+                        record.disposition,
+                        record.activation_id,
+                        record.deferred_reason,
+                    )
+                })
+                .collect::<Vec<_>>()
         );
         assert_eq!(unique.len(), count, "{count}: {batches:?}");
         assert_eq!(
@@ -1689,7 +1813,12 @@ impl LiveSharedReplyProvider {
                 task.rejoin_fence().unwrap()
             );
             assert_eq!(
-                persisted.rejoin_fence().unwrap().parent_turn_id,
+                persisted
+                    .rejoin_fence()
+                    .unwrap()
+                    .source
+                    .parent_turn_id()
+                    .unwrap(),
                 turn.turn_id
             );
             let settlement = runtime
@@ -1697,7 +1826,7 @@ impl LiveSharedReplyProvider {
                 .task_result_settlements()
                 .latest_for_message(&source)?
                 .expect("live waiter must have a pending settlement");
-            assert_eq!(settlement.parent_turn_id, turn.turn_id);
+            assert_eq!(settlement.source.parent_turn_id().unwrap(), turn.turn_id);
             assert_eq!(
                 settlement.state,
                 TaskResultSettlementState::PersistedPending
@@ -1747,6 +1876,7 @@ async fn live_shared_reply_fixture(
 #[async_trait]
 impl AgentProvider for LiveSharedReplyProvider {
     async fn complete_turn(&self, request: ProviderTurnRequest) -> Result<ProviderTurnResponse> {
+        let material = request.material.clone();
         let round = {
             let mut requests = self.requests.lock().await;
             requests.push(request);
@@ -1772,6 +1902,7 @@ impl AgentProvider for LiveSharedReplyProvider {
             }]
         };
         Ok(ProviderTurnResponse {
+            material,
             blocks,
             stop_reason: None,
             input_tokens: 10,
@@ -1945,7 +2076,7 @@ async fn p2_shared_reply_live_cap_overflow_recovers_each_waiter_identity() {
     );
     for record in &records {
         assert_eq!(record.work_item_id.as_deref(), Some(work.as_str()));
-        assert_eq!(record.parent_turn_id, turn_id);
+        assert_eq!(record.source.parent_turn_id().unwrap(), turn_id);
         if attached.contains(&record.result_identity) {
             assert_eq!(record.state, TaskResultSettlementState::Settled);
             assert_eq!(
@@ -2120,8 +2251,14 @@ async fn p2_shared_reply_cross_parent_exact_wait_does_not_release_foreign_siblin
     let recovery_turn = runtime.storage().read_recent_turns(1).unwrap().remove(0);
     assert!(recovery_turn.terminal.is_some());
     assert!(recovery_turn.input_message_ids.contains(&original.id));
-    assert_ne!(promised_record.parent_turn_id, recovery_turn.turn_id);
-    assert_ne!(sibling_record.parent_turn_id, recovery_turn.turn_id);
+    assert_ne!(
+        promised_record.source.parent_turn_id().unwrap(),
+        recovery_turn.turn_id
+    );
+    assert_ne!(
+        sibling_record.source.parent_turn_id().unwrap(),
+        recovery_turn.turn_id
+    );
     assert_eq!(
         runtime
             .runtime_db()

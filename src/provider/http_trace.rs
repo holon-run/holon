@@ -11,7 +11,13 @@ use std::{
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
+use super::ProviderRequestMaterial;
+use crate::diagnostics::resource_io;
 use crate::utf8::IncrementalUtf8LossyDecoder;
+
+#[cfg(test)]
+#[path = "http_trace_material_tests.rs"]
+mod material_tests;
 
 static PROVIDER_HTTP_TRACE_SEQ: AtomicU64 = AtomicU64::new(1);
 
@@ -53,6 +59,7 @@ pub(crate) struct ProviderHttpTrace {
 #[derive(Clone, Debug)]
 pub(crate) struct ProviderHttpTraceRequest {
     inner: Arc<Mutex<ProviderHttpTraceRequestState>>,
+    material: ProviderRequestMaterial,
 }
 
 #[derive(Debug)]
@@ -75,6 +82,38 @@ struct ProviderHttpTraceRequestState {
 }
 
 impl ProviderHttpTrace {
+    pub(crate) fn begin_request_with_material(
+        &self,
+        agent_id: Option<&str>,
+        provider: &str,
+        model_ref: Option<&str>,
+        url: &str,
+        endpoint_kind: &str,
+        headers: &[(&str, String)],
+        body: &Value,
+        material: &ProviderRequestMaterial,
+    ) -> anyhow::Result<Option<ProviderHttpTraceRequest>> {
+        material.read(|| {
+            resource_io::admit_cloned_value(body)?;
+            resource_io::admit_cloned_value(&headers)?;
+            resource_io::admit_cloned_value(&(agent_id, provider, model_ref, url, endpoint_kind))?;
+            resource_io::charge_owned_metadata(2048, 16)?;
+            let request = self.begin_request(
+                agent_id,
+                provider,
+                model_ref,
+                url,
+                endpoint_kind,
+                headers,
+                body,
+            );
+            Ok(request.map(|mut request| {
+                request.material = material.clone();
+                request
+            }))
+        })
+    }
+
     #[cfg(test)]
     pub(crate) fn failure_only_for_tests(home_dir: impl Into<PathBuf>) -> Self {
         Self {
@@ -123,6 +162,7 @@ impl ProviderHttpTrace {
             .unwrap_or_else(|| "unknown-agent".into());
         let sequence = PROVIDER_HTTP_TRACE_SEQ.fetch_add(1, Ordering::Relaxed);
         let request = ProviderHttpTraceRequest {
+            material: Default::default(),
             inner: Arc::new(Mutex::new(ProviderHttpTraceRequestState {
                 home_dir: self.home_dir.clone(),
                 mode: self.mode,
@@ -191,6 +231,32 @@ impl ProviderHttpTraceRequest {
         status: reqwest::StatusCode,
         headers: &reqwest::header::HeaderMap,
     ) {
+        if self
+            .material
+            .read(|| {
+                let bytes = headers.iter().try_fold(0u64, |sum, (name, value)| {
+                    sum.checked_add(u64::try_from(name.as_str().len())?)
+                        .and_then(|n| n.checked_add(value.len() as u64))
+                        .ok_or_else(|| anyhow::anyhow!("trace headers size overflow"))
+                })?;
+                resource_io::charge_owned_payload(bytes)?;
+                resource_io::charge_owned_metadata(
+                    u64::try_from(headers.len())?
+                        .checked_mul(512)
+                        .and_then(|n| n.checked_add(1024))
+                        .ok_or_else(|| anyhow::anyhow!("trace headers size overflow"))?,
+                    headers
+                        .len()
+                        .checked_mul(8)
+                        .and_then(|n| n.checked_add(8))
+                        .ok_or_else(|| anyhow::anyhow!("trace headers record overflow"))?,
+                )?;
+                Ok(())
+            })
+            .is_err()
+        {
+            return;
+        }
         let Ok(mut guard) = self.inner.lock() else {
             return;
         };
@@ -209,26 +275,47 @@ impl ProviderHttpTraceRequest {
     }
 
     pub(crate) fn write_response_body(&self, body: &str) {
-        let Ok(mut guard) = self.inner.lock() else {
-            return;
-        };
-        let elapsed = guard.started_at.elapsed();
-        guard.body_read_completed_at = Some(elapsed);
-        guard.completed_body_bytes = Some(body.len());
-        guard.last_progress_at = Some(elapsed);
-        // A complete decoded body does not establish when its first byte arrived.
-        write_event(
-            &mut guard,
-            json!({
-                "type": "response_body",
-                "created_at_ms": current_time_millis(),
-                "bytes": body.len(),
-                "body": body,
-            }),
-        );
+        let _ = self.material.read(|| {
+            resource_io::admit_cloned_value(&body)?;
+            resource_io::charge_owned_metadata(1024, 8)?;
+            let Ok(mut guard) = self.inner.lock() else {
+                return Ok(());
+            };
+            let elapsed = guard.started_at.elapsed();
+            guard.body_read_completed_at = Some(elapsed);
+            guard.completed_body_bytes = Some(body.len());
+            guard.last_progress_at = Some(elapsed);
+            // A complete decoded body does not establish when its first byte arrived.
+            write_event(
+                &mut guard,
+                json!({
+                    "type": "response_body",
+                    "created_at_ms": current_time_millis(),
+                    "bytes": body.len(),
+                    "body": body,
+                }),
+            );
+            Ok(())
+        });
     }
 
     pub(crate) fn write_stream_chunk(&self, chunk: &[u8]) {
+        if self
+            .material
+            .read(|| {
+                resource_io::charge_owned_payload(
+                    u64::try_from(chunk.len())?
+                        .checked_mul(6)
+                        .and_then(|n| n.checked_add(24))
+                        .ok_or_else(|| anyhow::anyhow!("trace text size overflow"))?,
+                )?;
+                resource_io::charge_owned_metadata(1024, 8)?;
+                Ok(())
+            })
+            .is_err()
+        {
+            return;
+        }
         let Ok(mut guard) = self.inner.lock() else {
             return;
         };
@@ -253,6 +340,17 @@ impl ProviderHttpTraceRequest {
     }
 
     pub(crate) fn write_stream_terminal(&self, body: &Value) {
+        if self
+            .material
+            .read(|| {
+                resource_io::admit_cloned_value(body)?;
+                resource_io::charge_owned_metadata(1024, 8)?;
+                Ok(())
+            })
+            .is_err()
+        {
+            return;
+        }
         let Ok(mut guard) = self.inner.lock() else {
             return;
         };
@@ -268,6 +366,12 @@ impl ProviderHttpTraceRequest {
     }
 
     pub(crate) fn diagnostics(&self, status: Option<u16>) -> Option<ProviderHttpTraceDiagnostics> {
+        self.material
+            .read(|| {
+                resource_io::charge_owned_metadata(4096, 8)?;
+                Ok(())
+            })
+            .ok()?;
         let mut guard = self.inner.lock().ok()?;
         let elapsed = guard.started_at.elapsed();
         let phase = if guard.body_read_completed_at.is_some() {
@@ -371,20 +475,19 @@ fn ensure_trace_file(state: &mut ProviderHttpTraceRequestState) -> Option<PathBu
 fn write_trace_events(path: &Path, events: &VecDeque<Value>) -> io::Result<()> {
     let mut file = File::create(path)?;
     for event in events {
-        let line = serde_json::to_string(event).map_err(io::Error::other)?;
-        writeln!(file, "{line}")?;
+        serde_json::to_writer(&mut file, event).map_err(io::Error::other)?;
+        writeln!(file)?;
     }
     Ok(())
 }
 
 fn append_trace_event(path: &Path, event: &Value) {
-    let Ok(line) = serde_json::to_string(event) else {
-        return;
-    };
     let Ok(mut file) = OpenOptions::new().create(true).append(true).open(path) else {
         return;
     };
-    let _ = writeln!(file, "{line}");
+    if serde_json::to_writer(&mut file, event).is_ok() {
+        let _ = writeln!(file);
+    }
 }
 
 pub(crate) fn sanitize_trace_path_segment(value: &str) -> String {

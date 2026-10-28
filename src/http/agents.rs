@@ -612,18 +612,22 @@ pub async fn list_agent_entries(
             deadline,
             budget,
             move |context| async move {
+                let projection_started = std::time::Instant::now();
+                let agents = host
+                    .list_agent_entries_for_parent(query.parent.as_deref())
+                    .await
+                    .map_err(error_response)
+                    .map_err(ProjectionFailure::from)?;
+                crate::diagnostics::record_projection_agents_list(projection_started.elapsed());
                 context
                     .blocking(move |scope| {
                         let db = host.runtime_db().with_read_scope(scope);
-                        let projection_started = std::time::Instant::now();
-                        let agents = host
-                            .list_agent_entries_for_parent_scoped(query.parent.as_deref(), &db)
+                        db.check_read_scope()
                             .map_err(error_response)
                             .map_err(ProjectionFailure::from)?;
-                        crate::diagnostics::record_projection_agents_list(
-                            projection_started.elapsed(),
-                        );
-                        let bytes = serialize_json("/agents/list", &agents)
+                        let bytes = agents
+                            .into_json_bytes()
+                            .map_err(error_response)
                             .map_err(ProjectionFailure::from)?;
                         db.check_read_scope()
                             .map_err(error_response)

@@ -8,10 +8,13 @@ mod checkpoint;
 mod completion;
 mod context_management;
 mod execution;
+pub(super) mod inputs;
 mod projection;
 mod reminders;
 mod tool_summary;
 
+#[cfg(test)]
+mod resident_wait_tests;
 #[cfg(test)]
 mod tests;
 
@@ -34,6 +37,25 @@ pub(crate) use projection::build_round_estimated_tokens;
 #[allow(unused_imports)]
 pub(crate) use projection::estimate_tool_specs_tokens;
 
+pub(super) fn context_history_preparation(
+    agent_id: &str,
+    model: &ModelRouteRef,
+) -> crate::context::ContextHistoryPreparation {
+    let selector = context_management::configured_history_selector(agent_id, model);
+    let window = context_management::configured_work_item_scoped_window_messages();
+    crate::context::ContextHistoryPreparation {
+        selector,
+        work_item_scoped_window: (selector
+            == crate::projection_eval::HistorySelector::WorkItemScoped)
+            .then_some(window.limit),
+        window_source: if selector == crate::projection_eval::HistorySelector::WorkItemScoped {
+            window.source.as_str()
+        } else {
+            "context_config"
+        },
+    }
+}
+
 pub(crate) struct AgentLoopOutcome {
     pub(super) final_text: String,
     pub(super) final_citations: Vec<Citation>,
@@ -44,16 +66,18 @@ pub(crate) struct AgentLoopOutcome {
     pub(super) sleep_duration_ms: Option<u64>,
     pub(super) allow_sleep_runnable_work_override: bool,
     pub(super) terminal_kind: TurnTerminalKind,
+    pub(super) provider_recovery_message: Option<MessageEnvelope>,
     pub(super) prepared_work_item_completion:
         Option<Box<crate::runtime::PreparedWorkItemCompletion>>,
     pub(super) prepared_wait_for: Option<Box<crate::runtime::PreparedWaitForSettlement>>,
     pub(super) terminal_tool_executions: Vec<crate::types::ToolExecutionRecord>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub(crate) struct TurnTerminalTransition {
     pub(super) terminal: TurnTerminalRecord,
-    pub(super) turn_record: TurnRecord,
+    pub(super) turn_record: inputs::BuiltTurnRecord,
+    pub(super) provider_recovery_message: Option<MessageEnvelope>,
     pub(super) prepared_work_item_completion:
         Option<Box<crate::runtime::PreparedWorkItemCompletion>>,
     pub(super) prepared_wait_for: Option<Box<crate::runtime::PreparedWaitForSettlement>>,
@@ -61,11 +85,27 @@ pub(crate) struct TurnTerminalTransition {
 }
 
 impl TurnTerminalTransition {
-    pub(super) fn normalize_brief_settlement(&mut self) {
+    pub(super) fn try_clone(&self) -> Result<Self> {
+        self.turn_record.with_material(|| {
+            crate::diagnostics::resource_io::admit_cloned_value(&self.terminal)?;
+            crate::diagnostics::resource_io::admit_cloned_value(&self.provider_recovery_message)?;
+            crate::diagnostics::resource_io::admit_cloned_value(&self.terminal_tool_executions)
+        })?;
+        Ok(Self {
+            terminal: self.terminal.clone(),
+            turn_record: self.turn_record.try_clone()?,
+            provider_recovery_message: self.provider_recovery_message.clone(),
+            prepared_work_item_completion: self.prepared_work_item_completion.clone(),
+            prepared_wait_for: self.prepared_wait_for.clone(),
+            terminal_tool_executions: self.terminal_tool_executions.clone(),
+        })
+    }
+
+    pub(super) fn normalize_brief_settlement(&mut self) -> Result<()> {
         if !self.turn_record.produced_brief_ids.is_empty() {
             self.terminal.no_brief_reason = None;
         }
-        self.turn_record.terminal = Some(TurnTerminalSummary::from_terminal(&self.terminal));
+        self.turn_record.set_terminal(&self.terminal)
     }
 }
 
@@ -191,18 +231,21 @@ fn render_operator_interjection_text(message: &MessageEnvelope) -> String {
 }
 
 impl RuntimeHandle {
-    pub(super) fn commit_started_turn(
-        &self,
-        expected: &crate::types::AgentState,
+    /// Construct the exact Turn candidate before entering the compound writer.
+    /// Replay terminal evidence is frozen by the caller from its prepared view.
+    pub(super) fn build_started_turn_record(
         state: &crate::types::AgentState,
         message: Option<&MessageEnvelope>,
-    ) -> Result<crate::types::AgentState> {
+        prior_replay_terminal: Option<TurnTerminalSummary>,
+        at: chrono::DateTime<chrono::Utc>,
+    ) -> Result<TurnRecord> {
         let turn_id = state
             .current_turn_id
             .as_deref()
             .ok_or_else(|| anyhow::anyhow!("started turn has no identity"))?;
         let binding = state.current_execution_binding.as_ref();
         let mut record = TurnRecord::new(&state.id, turn_id, state.turn_index);
+        record.created_at = at;
         record.run_id = state.current_run_id.clone();
         record.current_work_item_id = binding
             .map(|binding| binding.work_item_id.clone())
@@ -241,40 +284,54 @@ impl RuntimeHandle {
                     source_message_id: message.id.clone(),
                     source_turn_id: source_turn_id.to_owned(),
                     reason: "interrupted_queue_claim_reentry".into(),
-                    prior_terminal: self
-                        .inner
-                        .storage
-                        .read_turn_by_id(source_turn_id)?
-                        .and_then(|turn| turn.terminal),
+                    prior_terminal: prior_replay_terminal,
                 });
             }
         }
-        // Publish the canonical identity before provider work starts. The read
-        // model must not wait for the terminal record to assign this input.
-        self.inner.storage.store().start_turn(
-            expected,
-            state,
-            &record,
-            self.inner.identity_incarnation,
-        )
+        Ok(record)
     }
 
-    pub(super) async fn begin_reducer_only_turn(&self, message: &MessageEnvelope) -> Result<()> {
+    pub(super) async fn begin_reducer_only_turn(
+        &self,
+        message: &MessageEnvelope,
+        dispatch_prior_closure: Option<&crate::types::ClosureDecision>,
+    ) -> Result<(String, u64)> {
         let (operator_binding_id, operator_reply_route_id) =
             Self::operator_transport_from_message(message);
-        self.begin_interactive_turn_with_provenance(
-            Some(message),
-            operator_binding_id.as_deref(),
-            operator_reply_route_id.as_deref(),
-            None,
-        )
-        .await
+        if let Some(prior_closure) = dispatch_prior_closure {
+            self.begin_dispatch_turn(
+                message,
+                operator_binding_id.as_deref(),
+                operator_reply_route_id.as_deref(),
+                None,
+                prior_closure,
+            )
+            .await
+        } else {
+            self.begin_interactive_turn_with_provenance(
+                Some(message),
+                operator_binding_id.as_deref(),
+                operator_reply_route_id.as_deref(),
+                None,
+            )
+            .await
+        }
     }
 
     pub(super) async fn build_reducer_only_terminal_transition(
         &self,
         reason: impl Into<String>,
         produced_brief: bool,
+    ) -> Result<TurnTerminalTransition> {
+        self.build_reducer_only_terminal_for_dispatch(reason, produced_brief, None)
+            .await
+    }
+
+    pub(super) async fn build_reducer_only_terminal_for_dispatch(
+        &self,
+        reason: impl Into<String>,
+        produced_brief: bool,
+        dispatch: Option<&(String, u64)>,
     ) -> Result<TurnTerminalTransition> {
         let reason = reason.into();
         let no_brief_reason = reason
@@ -283,15 +340,20 @@ impl RuntimeHandle {
             .to_string();
         let terminal = {
             let guard = self.inner.agent.lock().await;
-            let turn_id = guard
-                .state
-                .current_turn_id
-                .clone()
-                .filter(|turn_id| !turn_id.trim().is_empty())
-                .unwrap_or_else(crate::ids::turn_id);
+            let (turn_id, turn_index) = dispatch.cloned().unwrap_or_else(|| {
+                (
+                    guard
+                        .state
+                        .current_turn_id
+                        .clone()
+                        .filter(|turn_id| !turn_id.trim().is_empty())
+                        .unwrap_or_else(crate::ids::turn_id),
+                    guard.state.turn_index,
+                )
+            });
             TurnTerminalRecord {
                 turn_id,
-                turn_index: guard.state.turn_index,
+                turn_index,
                 kind: TurnTerminalKind::Completed,
                 reason: Some(reason.clone()),
                 last_assistant_message: None,
@@ -299,7 +361,7 @@ impl RuntimeHandle {
                     reason: no_brief_reason,
                 }),
                 checkpoint: None,
-                completed_at: chrono::Utc::now(),
+                completed_at: self.now(),
                 duration_ms: 0,
             }
         };
@@ -308,6 +370,7 @@ impl RuntimeHandle {
             terminal,
             prepared_work_item_completion: None,
             prepared_wait_for: None,
+            provider_recovery_message: None,
             terminal_tool_executions: Vec::new(),
         })
     }
@@ -315,141 +378,191 @@ impl RuntimeHandle {
     pub(super) async fn build_turn_record(
         &self,
         terminal: &TurnTerminalRecord,
-    ) -> Result<TurnRecord> {
-        let (agent_id, run_id, current_work_item_id, owner) = {
-            let guard = self.inner.agent.lock().await;
-            let current_work_item_id = guard
-                .state
-                .current_execution_binding
-                .as_ref()
-                .map(|binding| binding.work_item_id.clone())
-                .unwrap_or_else(|| {
-                    guard
-                        .state
-                        .current_turn_work_item_id
-                        .clone()
-                        .or_else(|| guard.state.current_work_item_id.clone())
-                });
-            let owner = guard
-                .state
-                .current_execution_binding
-                .as_ref()
-                .and_then(|binding| binding.owner.clone())
-                .or_else(|| {
-                    current_work_item_id.as_ref().map(|work_item_id| {
-                        crate::types::TurnOwner::WorkItem {
-                            work_item_id: work_item_id.clone(),
-                        }
-                    })
-                })
-                .unwrap_or_else(|| crate::types::TurnOwner::AgentLifecycle {
-                    agent_id: guard.state.id.clone(),
-                });
-            (
-                guard.state.id.clone(),
-                guard.state.current_run_id.clone(),
-                current_work_item_id,
-                owner,
-            )
-        };
+    ) -> Result<inputs::BuiltTurnRecord> {
         let turn_id = terminal.turn_id.trim();
         if turn_id.is_empty() {
             return Err(anyhow::anyhow!(
                 "cannot build turn record for terminal without turn_id"
             ));
         }
+        let read = self.prepare_turn_record_read(turn_id).await?;
+        Self::build_turn_record_from_inputs(read, terminal)
+    }
 
-        let source_message_id = {
-            let guard = self.inner.agent.lock().await;
-            guard
-                .state
-                .current_execution_binding
-                .as_ref()
-                .map(|binding| binding.source_message_id.clone())
-        };
-        let input_messages = self
-            .inner
-            .storage
-            .read_messages_for_turn(turn_id, source_message_id.as_deref())?;
-        let briefs = self.inner.storage.read_briefs_for_turn(turn_id)?;
-        let tools = self.inner.storage.read_tool_executions_for_turn(turn_id)?;
-        let wait_conditions = self.inner.storage.read_wait_conditions_for_turn(turn_id)?;
-
-        let mut record = if let Some(existing) = self.inner.storage.read_turn_by_id(turn_id)? {
-            // Admission identity remains fixed even when execution changes focus.
-            existing
-        } else {
-            let mut record = TurnRecord::new(agent_id, turn_id, terminal.turn_index);
-            record.run_id = run_id;
-            record.current_work_item_id = current_work_item_id;
-            record.owner = Some(owner);
-            record.trigger = input_messages
-                .first()
-                .map(|message| TurnTriggerSummary::from_message(message));
-            record
-        };
-        // Interjections are attached at admission without rewriting immutable messages.
-        // Preserve those durable identities when assembling the terminal record.
-        for message in &input_messages {
-            if !record.input_message_ids.contains(&message.id) {
-                record.input_message_ids.push(message.id.clone());
-            }
-        }
-        record.tool_execution_ids = tools
-            .iter()
-            .filter(|tool| turn_optional_id_matches(tool.turn_id.as_deref(), turn_id))
-            .map(|tool| tool.id.clone())
-            .collect();
-        record.produced_brief_ids = briefs
-            .iter()
-            .filter(|brief| turn_optional_id_matches(brief.turn_id.as_deref(), turn_id))
-            .map(|brief| brief.id.clone())
-            .collect();
-        record.completed_work_item_ids = briefs
-            .iter()
-            .filter(|brief| {
-                brief.kind == BriefKind::Result
-                    && turn_optional_id_matches(brief.turn_id.as_deref(), turn_id)
-            })
-            .filter_map(|brief| brief.work_item_id.clone())
-            .collect::<std::collections::BTreeSet<_>>()
-            .into_iter()
-            .collect();
-        record.waiting_condition_ids = wait_conditions
-            .iter()
-            .filter(|condition| turn_optional_id_matches(condition.turn_id.as_deref(), turn_id))
-            .map(|condition| condition.id.clone())
-            .collect();
-        record.terminal = Some(TurnTerminalSummary::from_terminal(terminal));
-        record.replay = record.replay.or_else(|| {
-            source_message_id
-                .as_deref()
-                .and_then(|source_message_id| {
-                    input_messages
-                        .iter()
-                        .find(|message| message.id == source_message_id)
-                })
-                .and_then(|message| {
-                    let source_turn_id = message.turn_id.as_deref()?.trim();
-                    (!source_turn_id.is_empty() && source_turn_id != turn_id).then(|| {
-                        let prior_terminal = self
-                            .inner
-                            .storage
-                            .read_turn_by_id(source_turn_id)
-                            .ok()
-                            .flatten()
-                            .and_then(|turn| turn.terminal);
-                        crate::types::TurnReplayProvenance {
-                            source_message_id: message.id.clone(),
-                            source_turn_id: source_turn_id.to_string(),
-                            reason: "interrupted_queue_claim_reentry".into(),
-                            prior_terminal,
-                        }
+    fn build_turn_record_from_inputs(
+        read: inputs::TurnRecordInputs,
+        terminal: &TurnTerminalRecord,
+    ) -> Result<inputs::BuiltTurnRecord> {
+        let turn_id = terminal.turn_id.trim();
+        let material = read.material.clone();
+        let record = material.read(|| {
+            // StartedTurn's named owner preparation guarantees the complete
+            // all-status Wait relation. This assembler never hydrates a miss.
+            let (
+                agent_id,
+                run_id,
+                current_work_item_id,
+                owner,
+                source_message_id,
+                waiting_condition_ids,
+            ) = {
+                let state = read.work.state.as_ref();
+                crate::diagnostics::resource_io::admit_cloned_value(&(
+                    &state.id,
+                    &state.current_run_id,
+                    &state.current_execution_binding,
+                    &state.current_turn_work_item_id,
+                    &state.current_work_item_id,
+                ))?;
+                let current_work_item_id = state
+                    .current_execution_binding
+                    .as_ref()
+                    .map(|binding| binding.work_item_id.clone())
+                    .unwrap_or_else(|| {
+                        state
+                            .current_turn_work_item_id
+                            .clone()
+                            .or_else(|| state.current_work_item_id.clone())
+                    });
+                let owner = state
+                    .current_execution_binding
+                    .as_ref()
+                    .and_then(|binding| binding.owner.clone())
+                    .or_else(|| {
+                        current_work_item_id.as_ref().map(|work_item_id| {
+                            crate::types::TurnOwner::WorkItem {
+                                work_item_id: work_item_id.clone(),
+                            }
+                        })
                     })
-                })
-        });
+                    .unwrap_or_else(|| crate::types::TurnOwner::AgentLifecycle {
+                        agent_id: state.id.clone(),
+                    });
+                let source_message_id = state
+                    .current_execution_binding
+                    .as_ref()
+                    .map(|binding| binding.source_message_id.clone());
+                let waiting_condition_ids = read
+                    .work
+                    .work
+                    .waits_for_turn(turn_id)?
+                    .into_iter()
+                    .map(|condition| {
+                        crate::diagnostics::resource_io::admit_cloned_value(&condition.id)?;
+                        Ok(condition.id.clone())
+                    })
+                    .collect::<Result<Vec<_>>>()?;
+                (
+                    state.id.clone(),
+                    state.current_run_id.clone(),
+                    current_work_item_id,
+                    owner,
+                    source_message_id,
+                    waiting_condition_ids,
+                )
+            };
+            let input_messages = read.messages()?;
+            let briefs = read.briefs()?;
+            let tools = read.tools()?;
 
-        Ok(record)
+            let mut record = if let Some(existing) = read.turn(turn_id)? {
+                // Admission identity remains fixed even when execution changes focus.
+                crate::diagnostics::resource_io::admit_cloned_value(existing)?;
+                existing.clone()
+            } else {
+                let mut record = TurnRecord::new(agent_id, turn_id, terminal.turn_index);
+                record.run_id = run_id;
+                record.current_work_item_id = current_work_item_id;
+                record.owner = Some(owner);
+                if let Some(message) = input_messages.first() {
+                    crate::diagnostics::resource_io::admit_cloned_value(&(
+                        &message.id,
+                        &message.kind,
+                        &message.origin,
+                        &message.priority,
+                        &message.task_id,
+                    ))?;
+                }
+                record.trigger = input_messages
+                    .first()
+                    .map(|message| TurnTriggerSummary::from_message(message));
+                record
+            };
+            // Interjections are attached at admission without rewriting immutable messages.
+            // Preserve those durable identities when assembling the terminal record.
+            for message in &input_messages {
+                if !record.input_message_ids.contains(&message.id) {
+                    crate::diagnostics::resource_io::admit_cloned_value(&message.id)?;
+                    record.input_message_ids.push(message.id.clone());
+                }
+            }
+            record.tool_execution_ids = tools
+                .iter()
+                .filter(|tool| turn_optional_id_matches(tool.turn_id.as_deref(), turn_id))
+                .map(|tool| {
+                    crate::diagnostics::resource_io::admit_cloned_value(&tool.id)?;
+                    Ok(tool.id.clone())
+                })
+                .collect::<Result<_>>()?;
+            record.produced_brief_ids = briefs
+                .iter()
+                .filter(|brief| turn_optional_id_matches(brief.turn_id.as_deref(), turn_id))
+                .map(|brief| {
+                    crate::diagnostics::resource_io::admit_cloned_value(&brief.id)?;
+                    Ok(brief.id.clone())
+                })
+                .collect::<Result<_>>()?;
+            record.completed_work_item_ids = briefs
+                .iter()
+                .filter(|brief| {
+                    brief.kind == BriefKind::Result
+                        && turn_optional_id_matches(brief.turn_id.as_deref(), turn_id)
+                })
+                .filter_map(|brief| brief.work_item_id.as_ref())
+                .map(|id| {
+                    crate::diagnostics::resource_io::admit_cloned_value(id)?;
+                    Ok(id.clone())
+                })
+                .collect::<Result<_>>()?;
+            record.completed_work_item_ids.sort_unstable();
+            record.completed_work_item_ids.dedup();
+            record.waiting_condition_ids = waiting_condition_ids;
+            crate::diagnostics::resource_io::admit_cloned_value(terminal)?;
+            record.terminal = Some(TurnTerminalSummary::from_terminal(terminal));
+            if record.replay.is_none() {
+                let replay_source = source_message_id
+                    .as_deref()
+                    .and_then(|source_message_id| {
+                        input_messages
+                            .iter()
+                            .find(|message| message.id == source_message_id)
+                    })
+                    .and_then(|message| {
+                        let source_turn_id = message.turn_id.as_deref()?.trim();
+                        (!source_turn_id.is_empty() && source_turn_id != turn_id)
+                            .then_some((*message, source_turn_id))
+                    });
+                if let Some((message, source_turn_id)) = replay_source {
+                    let prior_terminal = read
+                        .turn(source_turn_id)?
+                        .and_then(|turn| turn.terminal.as_ref());
+                    crate::diagnostics::resource_io::admit_cloned_value(&(
+                        &message.id,
+                        source_turn_id,
+                        prior_terminal,
+                    ))?;
+                    record.replay = Some(crate::types::TurnReplayProvenance {
+                        source_message_id: message.id.clone(),
+                        source_turn_id: source_turn_id.to_string(),
+                        reason: "interrupted_queue_claim_reentry".into(),
+                        prior_terminal: prior_terminal.cloned(),
+                    });
+                }
+            }
+
+            Ok(record)
+        })?;
+        read.own(record)
     }
 
     #[cfg(test)]
@@ -521,6 +634,7 @@ impl RuntimeHandle {
                 terminal: record.clone(),
                 prepared_work_item_completion: None,
                 prepared_wait_for: None,
+                provider_recovery_message: None,
                 terminal_tool_executions: Vec::new(),
             };
             self.commit_terminal_transition(
@@ -598,7 +712,7 @@ impl RuntimeHandle {
             last_assistant_message,
             no_brief_reason: Some(no_brief_reason),
             checkpoint: None,
-            completed_at: chrono::Utc::now(),
+            completed_at: self.now(),
             duration_ms,
         }
     }

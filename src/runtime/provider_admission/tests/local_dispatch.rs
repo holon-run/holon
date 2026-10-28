@@ -90,6 +90,11 @@ fn provider_pause_occ_retry_rebuilds_stopped_report() {
 }
 
 #[test]
+fn provider_pause_rejects_changed_original_run_before_acknowledgement() {
+    run_local_dispatch_scenario(12);
+}
+
+#[test]
 fn provider_pause_committed_source_precedes_concurrent_enqueue() {
     run_local_dispatch_scenario(11);
 }
@@ -116,6 +121,7 @@ fn run_local_dispatch_scenario(scenario: u8) {
                         9 => cooling_dispatch_rejection_scenario(None, 3).await,
                         10 => cooling_dispatch_rejection_scenario(None, 4).await,
                         11 => cooling_dispatch_rejection_scenario(None, 5).await,
+                        12 => cooling_dispatch_rejection_scenario(None, 6).await,
                         _ => unreachable!(),
                     }
                 });
@@ -153,6 +159,7 @@ async fn cooling_dispatch_rejection_scenario(readback_stop: Option<bool>, test_m
     else {
         panic!("healthy input must be admitted");
     };
+    let original_run_id = scheduled.running_state.current_run_id.as_deref().unwrap();
     let admission = scheduled.dispatch_plan.provider_admission.as_ref().unwrap();
     let episode_key = admission.episode_key.clone();
     let attempt_id = admission.attempt.attempt_id.clone();
@@ -193,6 +200,17 @@ async fn cooling_dispatch_rejection_scenario(readback_stop: Option<bool>, test_m
             .expect("cooling must reject before HTTP")
     ));
     let unapplied_state = runtime.inner.agent.lock().await.state.clone();
+    let original_turn = runtime.storage().read_recent_turns(1).unwrap().remove(0);
+    assert_eq!(
+        original_turn.run_id.as_deref(),
+        Some(original_run_id),
+        "the actual dispatch Turn must retain its admitted Run"
+    );
+    assert_eq!(
+        unapplied_state.current_turn_id.as_deref(),
+        Some(original_turn.turn_id.as_str())
+    );
+    assert!(original_turn.input_message_ids.contains(&input.id));
     if test_mode == 1 {
         use crate::runtime_db::transitions::TransitionFaultPoint;
         let error = result.as_ref().unwrap_err();
@@ -225,7 +243,13 @@ async fn cooling_dispatch_rejection_scenario(readback_stop: Option<bool>, test_m
             runtime.inject_next_transition_fault(fault);
             assert!(
                 runtime
-                    .settle_provider_dispatch_pause(&scheduled.message, error, pause, 0,)
+                    .settle_provider_dispatch_pause(
+                        &scheduled.message,
+                        original_run_id,
+                        error,
+                        pause,
+                        0,
+                    )
                     .await
                     .is_err(),
                 "{fault:?}"
@@ -274,14 +298,14 @@ async fn cooling_dispatch_rejection_scenario(readback_stop: Option<bool>, test_m
             .clear_provider_queue_parking("default", &input.id)
             .unwrap();
         assert!(runtime
-            .settle_provider_dispatch_pause(&scheduled.message, error, pause, 0,)
+            .settle_provider_dispatch_pause(&scheduled.message, original_run_id, error, pause, 0,)
             .await
             .is_err());
         let mut changed = pause.parking.clone();
         changed.not_before += Duration::seconds(1);
         runtime.runtime_db().park_provider_queue(&changed).unwrap();
         assert!(runtime
-            .settle_provider_dispatch_pause(&scheduled.message, error, pause, 0,)
+            .settle_provider_dispatch_pause(&scheduled.message, original_run_id, error, pause, 0,)
             .await
             .is_err());
         assert_eq!(
@@ -293,11 +317,81 @@ async fn cooling_dispatch_rejection_scenario(readback_stop: Option<bool>, test_m
             .park_provider_queue(&pause.parking)
             .unwrap();
     }
-    if test_mode == 2 {
+    let original_workspace = unapplied_state
+        .active_workspace_entry
+        .clone()
+        .expect("the cooling source must retain its selected workspace");
+    assert!(original_workspace.occupancy_id.is_none());
+    let stop_facts = |runtime: &crate::runtime::RuntimeHandle| {
+        let turn = runtime.storage().read_recent_turns(1).unwrap().remove(0);
+        assert_eq!(turn.turn_id, original_turn.turn_id);
+        assert_eq!(turn.run_id, original_turn.run_id);
+        assert_eq!(turn.input_message_ids, original_turn.input_message_ids);
+        assert_eq!(
+            turn.terminal.as_ref().unwrap().reason.as_deref(),
+            Some("agent_stopped")
+        );
+        let execution = runtime
+            .runtime_db()
+            .transitions()
+            .load_execution_protocol_state_if_initialized("default")
+            .unwrap()
+            .unwrap();
+        let attempt = execution.attempts.get(&attempt_id).unwrap().clone();
+        assert_eq!(attempt.state, ExecutionAttemptState::Interrupted);
+        let queue = runtime
+            .runtime_db()
+            .queue_entries()
+            .latest(&input.id)
+            .unwrap()
+            .unwrap();
+        let state = runtime
+            .runtime_db()
+            .agent_states()
+            .latest_for_incarnation("default", runtime.inner.identity_incarnation)
+            .unwrap()
+            .unwrap();
+        assert_eq!(state.status, crate::types::AgentStatus::Stopped);
+        assert_eq!(state.pending, 0);
+        assert!(state.current_run_id.is_none());
+        assert_eq!(
+            state.active_workspace_entry.as_ref(),
+            Some(&original_workspace),
+            "Stop must not detach a selected workspace without an occupancy"
+        );
+        assert_eq!(
+            state.current_turn_id.as_deref(),
+            Some(turn.turn_id.as_str())
+        );
+        (turn, attempt, queue, state)
+    };
+    let mut original_stop = None;
+    if matches!(test_mode, 2 | 6) {
         runtime
             .control(crate::types::ControlAction::Stop)
             .await
             .unwrap();
+        original_stop = Some(stop_facts(&runtime));
+    }
+    if test_mode == 6 {
+        let before_events = runtime.storage().read_recent_events(256).unwrap();
+        let error = result.as_ref().unwrap_err();
+        let pause = dispatch_pause(error).unwrap();
+        assert!(runtime
+            .settle_provider_dispatch_pause(
+                &scheduled.message,
+                &format!("{original_run_id}:changed"),
+                error,
+                pause,
+                0,
+            )
+            .await
+            .is_err());
+        assert_eq!(&stop_facts(&runtime), original_stop.as_ref().unwrap());
+        assert_eq!(
+            runtime.storage().read_recent_events(256).unwrap(),
+            before_events
+        );
     }
     if test_mode == 3 {
         let checkpoint = Arc::new(crate::runtime::TransitionTestCheckpoint::default());
@@ -310,7 +404,12 @@ async fn cooling_dispatch_rejection_scenario(readback_stop: Option<bool>, test_m
             let runtime = runtime.clone();
             tokio::spawn(async move {
                 runtime
-                    .settle_processed_message(scheduled.message, result, started)
+                    .finish_scheduled_message_processing(
+                        &scheduled.message,
+                        scheduled.running_state.current_run_id.as_deref().unwrap(),
+                        started,
+                        result,
+                    )
                     .await
             })
         };
@@ -320,7 +419,10 @@ async fn cooling_dispatch_rejection_scenario(readback_stop: Option<bool>, test_m
         )
         .await
         .unwrap();
-        let projection_locked = runtime.inner.agent.try_lock().is_err();
+        let projection_locked = matches!(
+            runtime.inner.mutation_owner.try_reserve(),
+            Err(crate::runtime::mutation_owner::MutationOwnerError::Busy)
+        );
         let mut later = operator();
         later.work_item_id = Some(work.id.clone());
         let enqueue = {
@@ -367,38 +469,36 @@ async fn cooling_dispatch_rejection_scenario(readback_stop: Option<bool>, test_m
         );
         assert!(
             projection_locked,
-            "state and source must share one agent lock"
+            "state and source must share one Owner reservation"
         );
         assert_eq!(server.calls.load(Ordering::SeqCst), 0);
         return;
     }
     if test_mode == 5 {
-        // Hold unrelated post-commit projection work after the durable pause.
-        let cache = runtime.inner.projection_cache.lock().await;
+        // Hold unrelated notifications after the original mutation installed.
+        let checkpoint = Arc::new(crate::runtime::TransitionTestCheckpoint::default());
+        *runtime
+            .inner
+            .transition_notifications_checkpoint
+            .lock()
+            .unwrap() = Some(checkpoint.clone());
         let settling = {
             let runtime = runtime.clone();
             tokio::spawn(async move {
                 runtime
-                    .settle_processed_message(scheduled.message, result, started)
+                    .finish_scheduled_message_processing(
+                        &scheduled.message,
+                        scheduled.running_state.current_run_id.as_deref().unwrap(),
+                        started,
+                        result,
+                    )
                     .await
             })
         };
-        tokio::time::timeout(std::time::Duration::from_secs(5), async {
-            loop {
-                if runtime
-                    .runtime_db()
-                    .queue_entries()
-                    .latest(&input.id)
-                    .unwrap()
-                    .is_some_and(|entry| {
-                        entry.status == crate::types::QueueEntryStatus::Interrupted
-                    })
-                {
-                    break;
-                }
-                tokio::task::yield_now().await;
-            }
-        })
+        tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            checkpoint.reached.notified(),
+        )
         .await
         .unwrap();
         let mut later = operator();
@@ -423,7 +523,7 @@ async fn cooling_dispatch_rejection_scenario(readback_stop: Option<bool>, test_m
         })
         .await
         .unwrap();
-        drop(cache);
+        checkpoint.release.notify_one();
         tokio::time::timeout(std::time::Duration::from_secs(5), settling)
             .await
             .unwrap()
@@ -465,7 +565,12 @@ async fn cooling_dispatch_rejection_scenario(readback_stop: Option<bool>, test_m
             let runtime = runtime.clone();
             tokio::spawn(async move {
                 runtime
-                    .settle_processed_message(scheduled.message, result, started)
+                    .finish_scheduled_message_processing(
+                        &scheduled.message,
+                        scheduled.running_state.current_run_id.as_deref().unwrap(),
+                        started,
+                        result,
+                    )
                     .await
             })
         };
@@ -484,6 +589,7 @@ async fn cooling_dispatch_rejection_scenario(readback_stop: Option<bool>, test_m
             .control(crate::types::ControlAction::Stop)
             .await
             .unwrap();
+        original_stop = Some(stop_facts(&runtime));
         checkpoint.release.notify_one();
         tokio::time::timeout(std::time::Duration::from_secs(5), settling)
             .await
@@ -492,7 +598,12 @@ async fn cooling_dispatch_rejection_scenario(readback_stop: Option<bool>, test_m
             .unwrap();
     } else {
         runtime
-            .settle_processed_message(scheduled.message, result, started)
+            .finish_scheduled_message_processing(
+                &scheduled.message,
+                scheduled.running_state.current_run_id.as_deref().unwrap(),
+                started,
+                result,
+            )
             .await
             .unwrap();
     }
@@ -508,7 +619,20 @@ async fn cooling_dispatch_rejection_scenario(readback_stop: Option<bool>, test_m
         paused.last_runtime_failure.is_none(),
         "a committed availability pause must not project a terminal failure"
     );
-    assert_eq!(paused.pending, 1);
+    let stopped = matches!(test_mode, 2 | 4 | 6);
+    if stopped {
+        let original_state = &original_stop.as_ref().unwrap().3;
+        assert_eq!(&paused, original_state);
+        let guard = runtime.inner.agent.lock().await;
+        assert_eq!(&guard.state, original_state);
+        assert_eq!(&guard.last_persisted_state, original_state);
+        assert!(guard
+            .queue
+            .peek_next_matching(|queued| queued.id == input.id)
+            .is_none());
+    } else {
+        assert_eq!(paused.pending, 1);
+    }
     let turn = runtime.storage().read_recent_turns(1).unwrap().remove(0);
     assert!(turn.runtime_failure.is_none());
     assert_eq!(
@@ -524,7 +648,6 @@ async fn cooling_dispatch_rejection_scenario(readback_stop: Option<bool>, test_m
     assert_eq!(pause.data["message_id"], input.id);
     assert_eq!(pause.data["attempt_id"], attempt_id);
     assert_eq!(pause.data["not_before"], deadline.to_rfc3339());
-    let stopped = matches!(test_mode, 2 | 4);
     let disposition = if stopped {
         "suspended_by_control"
     } else {
@@ -540,15 +663,24 @@ async fn cooling_dispatch_rejection_scenario(readback_stop: Option<bool>, test_m
         })
         .unwrap();
     assert_eq!(settled.data["recovery_disposition"], disposition);
-    let pause_brief = turn
-        .produced_brief_ids
-        .iter()
-        .filter_map(|id| runtime.storage().read_brief_by_id(id).unwrap())
-        .find(|brief| brief.kind == crate::types::BriefKind::Ack)
+    let pause_brief = runtime
+        .storage()
+        .read_brief_by_id(
+            pause.data["brief_id"]
+                .as_str()
+                .expect("pause audit must identify its acknowledgement"),
+        )
+        .unwrap()
         .expect("the committed pause must have a non-terminal acknowledgement");
     assert_eq!(pause_brief.kind, crate::types::BriefKind::Ack);
     assert!(pause_brief.text.contains(&deadline.to_rfc3339()));
+    if !stopped {
+        assert!(turn.produced_brief_ids.contains(&pause_brief.id));
+    }
     if stopped {
+        let original_stop = original_stop.expect("stopped pause must retain its original Stop");
+        assert!(!turn.produced_brief_ids.contains(&pause_brief.id));
+        assert_eq!(stop_facts(&runtime), original_stop);
         assert!(pause_brief.text.contains("explicit Start is required"));
         assert!(!pause_brief.text.starts_with("Waiting"));
         assert!(!pause_brief.text.contains("will be retried"));
@@ -577,6 +709,16 @@ async fn cooling_dispatch_rejection_scenario(readback_stop: Option<bool>, test_m
             restored.agent_state().await.unwrap().status,
             crate::types::AgentStatus::Stopped
         );
+        assert_eq!(stop_facts(&restored), original_stop);
+        assert_eq!(restored.agent_state().await.unwrap(), original_stop.3);
+        assert_eq!(
+            restored
+                .storage()
+                .read_brief_by_id(&pause_brief.id)
+                .unwrap()
+                .unwrap(),
+            pause_brief
+        );
         return;
     }
     assert!(pause_brief
@@ -595,14 +737,17 @@ async fn cooling_dispatch_rejection_scenario(readback_stop: Option<bool>, test_m
         let mut durable = runtime.agent_state().await.unwrap();
         let terminal = durable.last_turn_terminal.clone().unwrap();
         let transition = crate::runtime::turn::TurnTerminalTransition {
-            turn_record: runtime
-                .storage()
-                .read_turn_by_id(&terminal.turn_id)
-                .unwrap()
-                .unwrap(),
+            turn_record: crate::runtime::turn::inputs::BuiltTurnRecord::fixture(
+                runtime
+                    .storage()
+                    .read_turn_by_id(&terminal.turn_id)
+                    .unwrap()
+                    .unwrap(),
+            ),
             terminal,
             prepared_work_item_completion: None,
             prepared_wait_for: None,
+            provider_recovery_message: None,
             terminal_tool_executions: Vec::new(),
         };
         assert_eq!(
@@ -620,7 +765,11 @@ async fn cooling_dispatch_rejection_scenario(readback_stop: Option<bool>, test_m
         );
         if stop {
             durable.status = crate::types::AgentStatus::Stopped;
-            runtime.storage().write_agent(&durable).unwrap();
+            runtime
+                .runtime_db()
+                .agent_states()
+                .upsert_for_fixture(&durable)
+                .unwrap();
         }
         {
             // The writer committed, but its in-memory effects never ran.
@@ -918,7 +1067,7 @@ async fn storage_dispatch_rejection_scenario() {
     request.dispatch_guard = Some(Arc::new(BusyGuard));
     let error = provider.complete_turn(request).await.unwrap_err();
     assert!(crate::provider::is_dispatch_guard_rejected(&error));
-    let error = runtime.local_provider_dispatch_error(error);
+    let error = runtime.local_provider_dispatch_error(error).await;
     let descriptor = describe_runtime_error(&error);
     assert_eq!(descriptor.domain, RuntimeErrorDomain::Storage);
     assert_eq!(descriptor.code, "runtime_db_busy");
@@ -1043,7 +1192,12 @@ async fn local_dispatch_rejection_scenario(with_timeline: bool) {
     assert_eq!(failure.safe_context, expected.safe_context);
     assert_eq!(failure.recovery_hint, expected.recovery_hint);
     runtime
-        .settle_processed_message(scheduled.message, result, processing_started)
+        .finish_scheduled_message_processing(
+            &scheduled.message,
+            scheduled.running_state.current_run_id.as_deref().unwrap(),
+            processing_started,
+            result,
+        )
         .await
         .unwrap();
 

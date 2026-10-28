@@ -1,6 +1,64 @@
 use super::super::*;
 use super::support::*;
 
+// These recovery cases model canonical rows from before the fixed D3 cutover.
+// Current-schema raw inserts deliberately cannot acquire legacy eligibility.
+fn seed_legacy_timer_backlog(
+    data_dir: &std::path::Path,
+    timers: &[TimerRecord],
+    messages: &[MessageEnvelope],
+) {
+    use crate::runtime_db::{
+        evidence::{append_message_tx, upsert_agent_identity_tx, upsert_agent_state_tx},
+        migrations::{apply_migration, ensure_migration_table, MIGRATIONS},
+        repositories::{upsert_queue_entry_tx, upsert_timer_tx},
+    };
+    let path = data_dir.join(".holon/state/runtime.sqlite");
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    let mut connection = rusqlite::Connection::open(path).unwrap();
+    ensure_migration_table(&connection).unwrap();
+    for migration in MIGRATIONS
+        .iter()
+        .filter(|migration| migration.version <= 81)
+    {
+        apply_migration(&mut connection, migration).unwrap();
+    }
+    let tx = connection.transaction().unwrap();
+    let identity = crate::types::AgentIdentityRecord::new(
+        "default",
+        crate::types::AgentKind::Default,
+        crate::types::AgentVisibility::Public,
+        crate::types::AgentOwnership::SelfOwned,
+        crate::types::AgentProfilePreset::PublicNamed,
+        None,
+        None,
+    );
+    upsert_agent_identity_tx(&tx, &identity).unwrap();
+    let mut state = AgentState::new("default");
+    state.pending = messages.len();
+    state.total_message_count = messages.len();
+    upsert_agent_state_tx(&tx, &state).unwrap();
+    for timer in timers {
+        upsert_timer_tx(&tx, timer).unwrap();
+    }
+    for message in messages {
+        let message = append_message_tx(&tx, message).unwrap().0;
+        upsert_queue_entry_tx(
+            &tx,
+            &QueueEntryRecord {
+                message_id: message.id.clone(),
+                agent_id: message.agent_id.clone(),
+                priority: message.priority,
+                status: QueueEntryStatus::Queued,
+                created_at: message.created_at,
+                updated_at: message.created_at,
+            },
+        )
+        .unwrap();
+    }
+    tx.commit().unwrap();
+}
+
 // Keep the test task runnable so paused Tokio cannot jump to the old deadline.
 async fn yield_timer_loop() {
     for _ in 0..20 {
@@ -591,7 +649,7 @@ async fn cancelled_timer_wait_write_failure_rolls_back_every_domain() {
         .to_string()
         .contains("injected wait cancellation failure"));
     assert_eq!(
-        runtime.latest_timer(&timer.id).await.unwrap().unwrap(),
+        *runtime.latest_timer(&timer.id).await.unwrap().unwrap(),
         timer
     );
     assert_eq!(
@@ -717,15 +775,10 @@ async fn assert_timer_fire_count(
     expected: u64,
 ) -> TimerRecord {
     for _ in 0..100 {
-        let timer = runtime
-            .recent_timers(100)
-            .await
-            .unwrap()
-            .into_iter()
-            .find(|timer| timer.id == timer_id)
-            .unwrap();
+        let timers = runtime.recent_timers(100).await.unwrap();
+        let timer = timers.iter().find(|timer| timer.id == timer_id).unwrap();
         if timer.fire_count == expected {
-            return timer;
+            return (**timer).clone();
         }
         tokio::task::yield_now().await;
     }
@@ -956,9 +1009,9 @@ async fn runtime_fires_overdue_timer_after_restart() {
     let workspace = tempdir().unwrap();
     let clock = controlled_clock();
     let now = clock.now();
-    let storage = AppStorage::new_for_test(dir.path()).unwrap();
-    storage
-        .append_timer(&TimerRecord {
+    seed_legacy_timer_backlog(
+        dir.path(),
+        &[TimerRecord {
             id: "timer-recover".into(),
             agent_id: "default".into(),
             created_at: now - chrono::Duration::milliseconds(10),
@@ -971,8 +1024,9 @@ async fn runtime_fires_overdue_timer_after_restart() {
             last_fired_at: None,
             fire_count: 0,
             calendar: None,
-        })
-        .unwrap();
+        }],
+        &[],
+    );
 
     let runtime = RuntimeHandle::new_with_clock(
         "default",
@@ -994,11 +1048,9 @@ async fn runtime_fires_overdue_timer_after_restart() {
     )
     .await;
 
-    let timer = runtime
-        .recent_timers(10)
-        .await
-        .unwrap()
-        .into_iter()
+    let timers = runtime.recent_timers(10).await.unwrap();
+    let timer = timers
+        .iter()
         .find(|timer| timer.id == "timer-recover" && timer.fire_count == 1)
         .unwrap();
     assert_eq!(timer.status, TimerStatus::Completed);
@@ -1011,9 +1063,9 @@ async fn runtime_recovers_active_timer_without_next_fire_at() {
     let workspace = tempdir().unwrap();
     let clock = controlled_clock();
     let now = clock.now();
-    let storage = AppStorage::new_for_test(dir.path()).unwrap();
-    storage
-        .append_timer(&TimerRecord {
+    seed_legacy_timer_backlog(
+        dir.path(),
+        &[TimerRecord {
             id: "timer-missing-next-fire".into(),
             agent_id: "default".into(),
             created_at: now - chrono::Duration::milliseconds(20),
@@ -1026,8 +1078,9 @@ async fn runtime_recovers_active_timer_without_next_fire_at() {
             last_fired_at: None,
             fire_count: 0,
             calendar: None,
-        })
-        .unwrap();
+        }],
+        &[],
+    );
 
     let runtime = RuntimeHandle::new_with_clock(
         "default",
@@ -1049,11 +1102,9 @@ async fn runtime_recovers_active_timer_without_next_fire_at() {
     )
     .await;
 
-    let timer = runtime
-        .recent_timers(10)
-        .await
-        .unwrap()
-        .into_iter()
+    let timers = runtime.recent_timers(10).await.unwrap();
+    let timer = timers
+        .iter()
         .find(|timer| timer.id == "timer-missing-next-fire" && timer.fire_count == 1)
         .unwrap();
     assert_eq!(timer.status, TimerStatus::Completed);
@@ -1066,10 +1117,10 @@ async fn runtime_recovers_overdue_repeating_timer_on_original_schedule() {
     let workspace = tempdir().unwrap();
     let clock = controlled_clock();
     let now = clock.now();
-    let storage = AppStorage::new_for_test(dir.path()).unwrap();
     let scheduled_fire_at = now - chrono::Duration::seconds(5);
-    storage
-        .append_timer(&TimerRecord {
+    seed_legacy_timer_backlog(
+        dir.path(),
+        &[TimerRecord {
             id: "timer-recover-repeat".into(),
             agent_id: "default".into(),
             created_at: scheduled_fire_at - chrono::Duration::seconds(1),
@@ -1082,8 +1133,9 @@ async fn runtime_recovers_overdue_repeating_timer_on_original_schedule() {
             last_fired_at: None,
             fire_count: 0,
             calendar: None,
-        })
-        .unwrap();
+        }],
+        &[],
+    );
 
     let runtime = RuntimeHandle::new_with_clock(
         "default",
@@ -1114,11 +1166,9 @@ async fn runtime_recovers_overdue_repeating_timer_on_original_schedule() {
     )
     .await;
 
-    let timer = runtime
-        .recent_timers(10)
-        .await
-        .unwrap()
-        .into_iter()
+    let timers = runtime.recent_timers(10).await.unwrap();
+    let timer = timers
+        .iter()
         .find(|timer| timer.id == "timer-recover-repeat" && timer.fire_count == 1)
         .unwrap();
     assert_eq!(timer.status, TimerStatus::Active);
@@ -1295,13 +1345,8 @@ async fn timer_fire_fault_rolls_back_the_wait_and_wake_transaction() {
     );
     let error = runtime.fire_timer_record(&mut timer).await.unwrap_err();
     assert_injected_transition_fault(&error);
-    let persisted = runtime
-        .recent_timers(10)
-        .await
-        .unwrap()
-        .into_iter()
-        .find(|record| record.id == timer.id)
-        .unwrap();
+    let timers = runtime.recent_timers(10).await.unwrap();
+    let persisted = timers.iter().find(|record| record.id == timer.id).unwrap();
     assert_eq!(persisted.status, TimerStatus::Active);
     assert_eq!(persisted.fire_count, 0);
     assert!(runtime
@@ -1367,13 +1412,8 @@ async fn repeating_timer_coalesces_to_one_pending_wake() {
         runtime.fire_timer_record(&mut timer).await.unwrap();
     }
 
-    let persisted = runtime
-        .recent_timers(10)
-        .await
-        .unwrap()
-        .into_iter()
-        .find(|record| record.id == timer.id)
-        .unwrap();
+    let timers = runtime.recent_timers(10).await.unwrap();
+    let persisted = timers.iter().find(|record| record.id == timer.id).unwrap();
     assert_eq!(persisted.fire_count, 25);
     let messages = runtime
         .storage()
@@ -1452,11 +1492,9 @@ async fn cancelling_timer_drops_pending_wake_and_stale_fire_cannot_revive_it() {
     assert_eq!(runtime.agent_state().await.unwrap().pending, 0);
 
     runtime.fire_timer_record(&mut stale_timer).await.unwrap();
-    let persisted = runtime
-        .recent_timers(10)
-        .await
-        .unwrap()
-        .into_iter()
+    let timers = runtime.recent_timers(10).await.unwrap();
+    let persisted = timers
+        .iter()
         .find(|record| record.id == stale_timer.id)
         .unwrap();
     assert_eq!(persisted.status, TimerStatus::Cancelled);
@@ -1483,6 +1521,10 @@ async fn completed_one_shot_wait_binds_existing_pending_wake() {
         clock,
     )
     .unwrap();
+    // Timer wake settlement must not depend on the host user's skill catalogue.
+    let mut config = (*runtime.inner.config_snapshot.load_full()).clone();
+    config.user_home_dir = None;
+    runtime.inner.config_snapshot.store(Arc::new(config));
     let work = runtime
         .create_work_item("late timer wait".into(), None, None, Vec::new())
         .await
@@ -1507,13 +1549,28 @@ async fn completed_one_shot_wait_binds_existing_pending_wake() {
     bind_autonomous_work_queue_tick(&mut work_message, &work, "continue_active");
     work_message.turn_id = Some("turn-late-one-shot-wait".into());
     let work_message = runtime.enqueue(work_message).await.unwrap();
-    assert!(matches!(
+    let scheduler_executor::RunLoopPoll::Message(scheduled) =
         scheduler_executor::SchedulerDecisionExecutor::new(&runtime)
             .poll()
             .await
-            .unwrap(),
-        scheduler_executor::RunLoopPoll::Message(_)
-    ));
+            .unwrap()
+    else {
+        panic!("initial timer Work dispatch must be claimed");
+    };
+    assert_eq!(scheduled.message.id, work_message.id);
+    runtime
+        .begin_dispatch_turn(
+            &scheduled.message,
+            None,
+            None,
+            scheduled
+                .dispatch_plan
+                .execution_admission_provenance
+                .clone(),
+            &scheduled.dispatch_plan.prior_closure,
+        )
+        .await
+        .unwrap();
 
     let mut timer = runtime
         .schedule_timer(10_000, None, Some("one shot".into()))
@@ -1548,8 +1605,8 @@ async fn completed_one_shot_wait_binds_existing_pending_wake() {
         Some(wake.message_id.as_str())
     );
 
-    finish_claimed_test_run(&runtime).await;
-    let terminal = terminal_transition(&work_message, Some(&work.id));
+    let mut terminal = terminal_transition(&work_message, Some(&work.id));
+    terminal.turn_record = runtime.build_turn_record(&terminal.terminal).await.unwrap();
     runtime
         .commit_queue_terminal_settlement(
             QueueEntryRecord {
@@ -1566,6 +1623,8 @@ async fn completed_one_shot_wait_binds_existing_pending_wake() {
         )
         .await
         .unwrap();
+    finish_claimed_test_run(&runtime).await;
+    drop(scheduled);
     let runtime_task = tokio::spawn(runtime.clone().run());
     wait_for_audit_events(
         &runtime,
@@ -1606,7 +1665,6 @@ async fn recovery_normalizes_legacy_timer_backlog_idempotently() {
     let workspace = tempdir().unwrap();
     let clock = controlled_clock();
     let now = clock.now();
-    let storage = AppStorage::new_for_test(dir.path()).unwrap();
     let active_timer = TimerRecord {
         id: "legacy-active-timer".into(),
         agent_id: "default".into(),
@@ -1628,9 +1686,8 @@ async fn recovery_normalizes_legacy_timer_backlog_idempotently() {
         summary: Some("legacy cancelled".into()),
         ..active_timer.clone()
     };
-    storage.append_timer(&active_timer).unwrap();
-    storage.append_timer(&cancelled_timer).unwrap();
 
+    let mut messages = Vec::new();
     let mut active_message_ids = Vec::new();
     let mut cancelled_message_ids = Vec::new();
     for (timer, ids) in [
@@ -1657,20 +1714,16 @@ async fn recovery_normalizes_legacy_timer_backlog_idempotently() {
                     AdmissionContext::RuntimeOwned,
                 )
             };
-            storage.append_message(&message).unwrap();
-            storage
-                .append_queue_entry(&QueueEntryRecord {
-                    message_id: message.id.clone(),
-                    agent_id: "default".into(),
-                    priority: Priority::Next,
-                    status: QueueEntryStatus::Queued,
-                    created_at: message.created_at,
-                    updated_at: message.created_at,
-                })
-                .unwrap();
-            ids.push(message.id);
+            ids.push(message.id.clone());
+            messages.push(message);
         }
     }
+
+    seed_legacy_timer_backlog(
+        dir.path(),
+        &[active_timer.clone(), cancelled_timer.clone()],
+        &messages,
+    );
 
     let make_runtime = || {
         RuntimeHandle::new_with_clock(
@@ -1759,7 +1812,6 @@ async fn recovery_reactivates_incorporated_wake_for_restored_timer_message() {
     let workspace = tempdir().unwrap();
     let clock = controlled_clock();
     let now = clock.now();
-    let storage = AppStorage::new_for_test(dir.path()).unwrap();
     let timer = TimerRecord {
         id: "timer-restored".into(),
         agent_id: "default".into(),
@@ -1774,7 +1826,6 @@ async fn recovery_reactivates_incorporated_wake_for_restored_timer_message() {
         fire_count: 1,
         calendar: None,
     };
-    storage.append_timer(&timer).unwrap();
     let message = MessageEnvelope {
         metadata: Some(serde_json::json!({ "timer_id": timer.id })),
         ..MessageEnvelope::new(
@@ -1794,17 +1845,7 @@ async fn recovery_reactivates_incorporated_wake_for_restored_timer_message() {
             AdmissionContext::RuntimeOwned,
         )
     };
-    storage.append_message(&message).unwrap();
-    storage
-        .append_queue_entry(&QueueEntryRecord {
-            message_id: message.id.clone(),
-            agent_id: "default".into(),
-            priority: Priority::Next,
-            status: QueueEntryStatus::Queued,
-            created_at: message.created_at,
-            updated_at: message.created_at,
-        })
-        .unwrap();
+    seed_legacy_timer_backlog(dir.path(), &[timer.clone()], &[message.clone()]);
 
     let make_runtime = || {
         RuntimeHandle::new_with_clock(
@@ -1831,20 +1872,81 @@ async fn recovery_reactivates_incorporated_wake_for_restored_timer_message() {
         .unwrap();
     assert_eq!(wake.message_id, message.id);
 
-    // A claim incorporates the wake; a daemon restart then restores the claimed
-    // message to the queue while the wake row for the same (timer, message)
-    // pair is still stored.
-    runtime
+    // Use the actual Queue claim/whole ACK; a raw Wake status update cannot
+    // stand in for its scheduling alias and original pending disposition.
+    let scheduler_executor::RunLoopPoll::Message(scheduled) =
+        scheduler_executor::SchedulerDecisionExecutor::new(&runtime)
+            .poll()
+            .await
+            .unwrap()
+    else {
+        panic!("original Timer source must be claimed")
+    };
+    assert_eq!(scheduled.message.id, message.id);
+    assert!(runtime
         .inner
         .runtime_db
-        .connection()
+        .timers()
+        .pending_wake(&timer.id)
         .unwrap()
-        .execute(
-            "UPDATE timer_wakes SET status = 'incorporated', incorporated_at = ?2
-             WHERE timer_id = ?1 AND message_id = ?3",
-            rusqlite::params![timer.id, now.to_rfc3339(), message.id],
+        .is_none());
+    assert_eq!(
+        runtime
+            .inner
+            .runtime_db
+            .connection()
+            .unwrap()
+            .query_row(
+                "SELECT status FROM timer_wakes WHERE timer_id=?1 AND message_id=?2",
+                rusqlite::params![timer.id, message.id],
+                |row| row.get::<_, String>(0),
+            )
+            .unwrap(),
+        "incorporated"
+    );
+    drop(scheduled);
+    // End the original instance before the exclusive pre-activation actor.
+    // The scoped actor updates the actual Attempt/Outcome and its D3 source
+    // projection together; the old cfg-only unscoped repair cannot do that.
+    let db = runtime.inner.runtime_db.clone();
+    let ledger = runtime.inner.input_evidence_budget.clone();
+    runtime
+        .retire_instance_locally("fixture_daemon_restart")
+        .await;
+    runtime.join_retiring_resources().await.unwrap();
+    drop(runtime);
+    let repaired = {
+        let path = dir.path().join(".holon/state/runtime-maintenance.lock");
+        let lease = crate::runtime_db::RuntimeDbLock::try_lock(&path).unwrap();
+        let handoff = tokio::sync::Mutex::new(());
+        let held = handoff.try_lock().unwrap();
+        let capability = crate::runtime_db::input_evidence_snapshot::legacy_recovery::ExclusiveStartupInputRecovery::for_pre_activation_host(
+            &db, &lease, &path, &held,
+        ).unwrap();
+        let scopes = db
+            .startup_input_recovery_scopes(&["default".into()])
+            .unwrap();
+        db.recover_interrupted_runtime_state_at_startup_with_tasks_in_scopes(
+            &scopes,
+            &capability,
+            &ledger,
         )
-        .unwrap();
+        .unwrap()
+    };
+    assert!(repaired
+        .report
+        .recovered_queue_agent_ids
+        .iter()
+        .any(|id| id == "default"));
+    assert_eq!(repaired.report.interrupted_execution_attempts, 1);
+    assert_eq!(
+        db.queue_entries()
+            .latest(&message.id)
+            .unwrap()
+            .unwrap()
+            .status,
+        QueueEntryStatus::Interrupted
+    );
 
     // Recovery must be idempotent instead of failing the whole bootstrap with a
     // timer_wakes primary-key conflict.

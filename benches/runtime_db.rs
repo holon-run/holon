@@ -159,7 +159,7 @@ fn run_benchmarks(samples: usize, filter: &[String]) -> Result<Vec<BenchmarkResu
     let runtime_db = RuntimeDb::open_and_migrate(&projection_db, &projection_lock)?;
     let storage = AppStorage::new_for_agent(&projection_root, AGENT_ID, runtime_db)?;
     let agent = AgentState::new(AGENT_ID);
-    storage.write_agent(&agent)?;
+    storage.write_agent_for_fixture(&agent)?;
     for index in 0..100 {
         storage.append_event(&AuditEvent::legacy(
             format!("benchmark_event_{index}"),

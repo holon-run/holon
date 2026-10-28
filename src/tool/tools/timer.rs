@@ -49,10 +49,10 @@ pub(crate) struct TimerIdArgs {
 }
 
 #[derive(Debug, Serialize, JsonSchema)]
-pub(crate) struct ListTimersResult {
+pub(crate) struct ListTimersResult<Timer = TimerRecord> {
     pub(crate) returned: usize,
     pub(crate) limit: usize,
-    pub(crate) timers: Vec<TimerRecord>,
+    pub(crate) timers: Vec<Timer>,
 }
 
 pub(crate) fn create_definition() -> Result<BuiltinToolDefinition> {
@@ -153,7 +153,8 @@ pub(crate) async fn list(
 ) -> Result<crate::tool::ToolResult> {
     let args: ListTimersArgs = parse_tool_args(LIST_NAME, input)?;
     let limit = args.limit.unwrap_or(DEFAULT_LIMIT).clamp(1, MAX_LIMIT);
-    let timers = runtime.recent_timers(limit).await?;
+    let read = runtime.acquire_scheduling_records_read(limit).await?;
+    let timers = read.timers;
     serialize_success(
         LIST_NAME,
         &ListTimersResult {
@@ -167,13 +168,9 @@ pub(crate) async fn list(
 pub(crate) async fn get(runtime: &RuntimeHandle, input: &Value) -> Result<crate::tool::ToolResult> {
     let args: TimerIdArgs = parse_tool_args(GET_NAME, input)?;
     let timer_id = validate_non_empty(args.timer_id, GET_NAME, "timer_id")?;
-    let agent_id = runtime.agent_state().await?.id;
-    let timer = runtime
-        .latest_timer(&timer_id)
-        .await?
-        .filter(|timer| timer.agent_id == agent_id)
-        .ok_or_else(|| timer_not_found(&timer_id))?;
-    serialize_success(GET_NAME, &timer)
+    let read = runtime.acquire_timer_record_read(&timer_id).await?;
+    let timer = read.record()?.ok_or_else(|| timer_not_found(&timer_id))?;
+    serialize_success(GET_NAME, timer)
 }
 
 pub(crate) async fn cancel(

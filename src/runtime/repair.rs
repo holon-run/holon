@@ -123,12 +123,14 @@ impl RuntimeHandle {
                     )
                 };
                 if !request.dry_run {
-                    let commit = self.inner.runtime_db.transitions().commit_wait(
-                        &crate::runtime_db::transitions::WaitTransitionCommand {
-                            task_result_admission: None,
-                            agent_id: agent_id.clone(),
-                            work_items: Vec::new(),
-                            expected_wait_conditions: vec![
+                    let commit = {
+                        let mut mutation = self.begin_mutation().await?;
+                        mutation
+                            .commit_wait_transition(crate::ids::audit_event_id(),crate::runtime_db::transitions::WaitTransitionCommand {
+                                            task_result_admission: None,
+                                            agent_id: agent_id.clone(),
+                                            work_items: Vec::new(),
+                                            expected_wait_conditions: vec![
                                 crate::runtime_db::transitions::WaitConditionExpectation {
                                     id: current.id.clone(),
                                     agent_id: current.agent_id.clone(),
@@ -136,23 +138,24 @@ impl RuntimeHandle {
                                     updated_at: current.updated_at,
                                 },
                             ],
-                            wait_conditions: vec![cancelled],
-                            timer_wake: None,
-                            agent_state: None,
-                            audit_events: vec![AuditEvent::legacy(
-                                "scheduler_wait_repaired",
-                                serde_json::json!({
-                                    "agent_id": agent_id,
-                                    "wait_id": wait_id,
-                                    "action": "cancel",
-                                    "reason": reason,
-                                }),
-                            )],
-                            index_changes: Vec::new(),
-                            notify_scheduler: true,
-                            fault: self.take_transition_fault(),
-                        },
-                    )?;
+                                            wait_conditions: vec![cancelled],
+                                            timer_wake: None,
+                                            agent_state: None,
+                                            audit_events: vec![AuditEvent::legacy(
+                                                "scheduler_wait_repaired",
+                                                serde_json::json!({
+                                                    "agent_id": agent_id,
+                                                    "wait_id": wait_id,
+                                                    "action": "cancel",
+                                                    "reason": reason,
+                                                }),
+                                            )],
+                                            index_changes: Vec::new(),
+                                            notify_scheduler: true,
+                                            fault: self.take_transition_fault(),
+                                        },crate::runtime_db::transitions::ExecutionProtocolTransition::default(),None)
+                            .await
+                    }?;
                     self.apply_transition_commit(commit).await;
                 }
                 Ok(SchedulerRepairResult {
@@ -209,8 +212,18 @@ impl RuntimeHandle {
                     )
                 };
                 if !request.dry_run {
-                    let commit = self.inner.runtime_db.transitions().commit_queue(
-                        &crate::runtime_db::transitions::QueueTransitionCommand {
+                    let commit = {
+                        let mut mutation = self.begin_mutation().await?;
+                        mutation
+                            .queue
+                            .pop_next_matching(|message| message.id == message_id);
+                        mutation.state.pending = mutation.queue.len();
+                        let agent_state = crate::runtime_db::transitions::AgentStateMutation {
+                            expected: Some(Box::new(mutation.last_persisted_state.clone())),
+                            record: Box::new(mutation.state.clone()),
+                        };
+                        mutation
+                            .commit_prepared_queue(crate::ids::audit_event_id(), crate::runtime_db::transitions::PreparedQueueTransition::new(Clone::clone(&crate::runtime_db::transitions::QueueTransitionCommand {
                             agent_id: agent_id.clone(),
                             operation: crate::runtime_db::transitions::QueueOperation::RepairDrop,
                             mutation:
@@ -219,7 +232,7 @@ impl RuntimeHandle {
                                     record: dropped,
                                 },
                             scheduler_claim_work_item: None,
-                            agent_state: None,
+                            agent_state: Some(agent_state),
                             message_evidence: Vec::new(),
                             transcript_entries: Vec::new(),
                             turn_record: None,
@@ -235,8 +248,9 @@ impl RuntimeHandle {
                             notify_scheduler: true,
                             fault: self.take_transition_fault(),
                             brief_evidence: Vec::new(),
-                        },
-                    )?;
+                        })))
+                            .await
+                    }?;
                     self.apply_transition_commit(commit).await;
                 }
                 Ok(SchedulerRepairResult {

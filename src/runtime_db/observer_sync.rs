@@ -27,6 +27,22 @@ pub(crate) const CONVERSATION_READ_VERIFIED: &str = "conversation_read_verified"
 pub(crate) const ROSTER_SNAPSHOT_VERIFIED: &str = "roster_snapshot_verified";
 pub(crate) const PROJECTION_SNAPSHOT_VERIFIED: &str = "projection_snapshot_verified";
 pub(crate) const EVENT_PROJECTION_EFFECT_VERIFIER_VERSION: i64 = 1;
+const AGENT_ROSTER_IDENTITIES_SQL: &str = "SELECT i.agent_id,
+            i.payload_json,
+            COALESCE(sequences.last_value, 0),
+            COALESCE(watermarks.oldest_retained_seq, 0)
+     FROM agent_identities i
+     LEFT JOIN runtime_sequences sequences
+       ON sequences.domain = 'audit_event'
+      AND sequences.scope_key = 'agent:' || i.agent_id
+     LEFT JOIN audit_event_retention_watermarks watermarks
+       ON watermarks.scope_key = 'agent:' || i.agent_id
+     WHERE i.status = 'active' AND i.visibility = 'public'
+     ORDER BY i.agent_id";
+const AGENT_ROSTER_STATES_SQL: &str = "SELECT s.agent_id, s.payload_json
+     FROM agent_states s
+     JOIN agent_identities i ON i.agent_id = s.agent_id
+     WHERE i.status = 'active' AND i.visibility = 'public'";
 pub(crate) const AGENT_ROSTER_LATEST_BRIEFS_SQL: &str =
     "SELECT b.agent_id, b.evidence_id, b.created_event_seq, b.created_at, b.preview
      FROM agent_identities i
@@ -51,12 +67,37 @@ pub(crate) const PUBLIC_SCOPE_ENTITLEMENT: &str = "public";
 /// `runtime_id`, `event_log_epoch`, and `visibility_policy_generation`
 /// come from the same view as every per-Agent row, so a response built
 /// from this struct never mixes facts from different commits.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug)]
 pub struct AgentRosterSnapshotRows {
     pub runtime_id: String,
     pub event_log_epoch: String,
     pub visibility_policy_generation: u64,
     pub rows: Vec<AgentRosterRow>,
+    // Release the original caller phase after its owned fields.
+    pub(crate) _material:
+        Option<std::sync::Arc<crate::runtime::input_evidence_budget::BudgetViewGuard>>,
+}
+
+impl Clone for AgentRosterSnapshotRows {
+    fn clone(&self) -> Self {
+        let material = self._material.as_ref().map(|guard| guard.fork_owned());
+        Self {
+            runtime_id: self.runtime_id.clone(),
+            event_log_epoch: self.event_log_epoch.clone(),
+            visibility_policy_generation: self.visibility_policy_generation,
+            rows: self.rows.clone(),
+            _material: material,
+        }
+    }
+}
+
+impl PartialEq for AgentRosterSnapshotRows {
+    fn eq(&self, other: &Self) -> bool {
+        self.runtime_id == other.runtime_id
+            && self.event_log_epoch == other.event_log_epoch
+            && self.visibility_policy_generation == other.visibility_policy_generation
+            && self.rows == other.rows
+    }
 }
 
 /// One roster member's anchors from the shared read view: the serialized
@@ -91,7 +132,7 @@ pub struct AgentRosterLatestBriefRow {
 /// built from this struct never mixes facts from different commits.
 /// Runtime identity metadata is read by the caller inside the same
 /// transaction and returned alongside.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug)]
 pub struct AgentProjectionSnapshotRows {
     pub runtime_id: String,
     pub event_log_epoch: String,
@@ -99,6 +140,31 @@ pub struct AgentProjectionSnapshotRows {
     /// `None` when the Agent is not an active public member: unknown,
     /// private, or deleted identities are indistinguishable by design.
     pub row: Option<AgentProjectionSnapshotRow>,
+    // Release the original caller phase after its owned fields.
+    pub(crate) _material:
+        Option<std::sync::Arc<crate::runtime::input_evidence_budget::BudgetViewGuard>>,
+}
+
+impl Clone for AgentProjectionSnapshotRows {
+    fn clone(&self) -> Self {
+        let material = self._material.as_ref().map(|guard| guard.fork_owned());
+        Self {
+            runtime_id: self.runtime_id.clone(),
+            event_log_epoch: self.event_log_epoch.clone(),
+            visibility_policy_generation: self.visibility_policy_generation,
+            row: self.row.clone(),
+            _material: material,
+        }
+    }
+}
+
+impl PartialEq for AgentProjectionSnapshotRows {
+    fn eq(&self, other: &Self) -> bool {
+        self.runtime_id == other.runtime_id
+            && self.event_log_epoch == other.event_log_epoch
+            && self.visibility_policy_generation == other.visibility_policy_generation
+            && self.row == other.row
+    }
 }
 
 /// Per-Agent projection anchor row. `event_head_seq` doubles as the
@@ -174,7 +240,7 @@ pub struct ObserverSyncFoundationVerification {
 struct EventProjectionEffectProof {
     verified: bool,
     verification_version: i64,
-    event_log_epoch: Option<String>,
+    event_log_epoch_matches: bool,
     event_generation: i64,
     verified_event_generation: i64,
 }
@@ -207,9 +273,9 @@ pub(crate) fn verify_observer_sync_foundations(connection: &mut Connection) -> R
         .parse()
         .context("invalid visibility policy generation")?;
 
-    // The derived public (unauthenticated) scope must be deterministic for
-    // this installation identity; the roster snapshot serves it verbatim.
-    let public_scope = crate::ids::visibility_scope_id(
+    // Compare the public scope's fixed encoding without allocating Strings.
+    // The roster snapshot still serves the same encoded scope verbatim.
+    let public_scope = crate::ids::visibility_scope_id_bytes(
         &runtime_id,
         PUBLIC_SCOPE_PRINCIPAL,
         PUBLIC_SCOPE_ENTITLEMENT,
@@ -218,7 +284,7 @@ pub(crate) fn verify_observer_sync_foundations(connection: &mut Connection) -> R
     let runtime_identity_stable = !runtime_id.is_empty()
         && !event_log_epoch.is_empty()
         && public_scope
-            == crate::ids::visibility_scope_id(
+            == crate::ids::visibility_scope_id_bytes(
                 &runtime_id,
                 PUBLIC_SCOPE_PRINCIPAL,
                 PUBLIC_SCOPE_ENTITLEMENT,
@@ -229,11 +295,15 @@ pub(crate) fn verify_observer_sync_foundations(connection: &mut Connection) -> R
     // the reservation invariant cannot be verified against a missing source,
     // so the capability stays off instead of failing the open.
     let required_sources = ["agent_identities", "agent_states", "agent_deletion_jobs"];
-    let missing_sources: Vec<&str> = required_sources
-        .iter()
-        .copied()
-        .filter(|table| !table_exists(connection, table).unwrap_or(false))
-        .collect();
+    let mut missing_sources = [""; 3];
+    let mut missing_source_count = 0;
+    for table in required_sources {
+        if !table_exists(connection, table).unwrap_or(false) {
+            missing_sources[missing_source_count] = table;
+            missing_source_count += 1;
+        }
+    }
+    let missing_sources = &missing_sources[..missing_source_count];
 
     let (missing_reservations, active_reservations_without_registry, tombstone_state_drift) =
         if missing_sources.is_empty() {
@@ -294,24 +364,29 @@ pub(crate) fn verify_observer_sync_foundations(connection: &mut Connection) -> R
         && completed_deletion_with_available_registry == 0
         && enforcement_probe_passed;
 
-    let now = chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
-    let identity_detail = serde_json::json!({
-        "runtime_id": runtime_id,
-        "event_log_epoch": event_log_epoch,
-        "visibility_policy_generation": policy_generation,
-        "public_scope_id_fingerprint": &public_scope[..public_scope.len().min(16)],
-    })
-    .to_string();
-    let reserved_detail = serde_json::json!({
-        "missing_source_tables": missing_sources,
-        "missing_reservations": missing_reservations,
-        "active_reservations_without_registry": active_reservations_without_registry,
-        "tombstone_state_drift": tombstone_state_drift,
-        "agent_state_identity_mismatch": agent_state_identity_mismatch,
-        "completed_deletion_with_available_registry": completed_deletion_with_available_registry,
-        "enforcement_probe": if enforcement_probe_passed { "passed" } else { "failed" },
-    })
-    .to_string();
+    let now = observer_verification_timestamp(chrono::Utc::now())?;
+    let identity_detail =
+        verification_success_detail(&VerificationSuccessDetail::RuntimeIdentity {
+            event_log_epoch: &event_log_epoch,
+            public_scope_id_fingerprint: std::str::from_utf8(&public_scope[..16])
+                .expect("visibility scope encoding is ASCII"),
+            runtime_id: &runtime_id,
+            visibility_policy_generation: policy_generation,
+        })?;
+    let reserved_detail =
+        verification_success_detail(&VerificationSuccessDetail::IdentityReservations {
+            active_reservations_without_registry,
+            agent_state_identity_mismatch,
+            completed_deletion_with_available_registry,
+            enforcement_probe: if enforcement_probe_passed {
+                "passed"
+            } else {
+                "failed"
+            },
+            missing_reservations,
+            missing_source_tables: missing_sources,
+            tombstone_state_drift,
+        })?;
     persist_verification(
         connection,
         RUNTIME_IDENTITY_STABLE,
@@ -332,17 +407,14 @@ pub(crate) fn verify_observer_sync_foundations(connection: &mut Connection) -> R
         {
             let inventory = verify_event_projection_effect_inventory(&transaction);
             let inventory_detail = match &inventory {
-                Ok(complete) => serde_json::json!({
-                    "source": "full_inventory",
-                    "registry_kinds": crate::runtime_event::ALL_RUNTIME_EVENT_KINDS.len(),
-                    "complete": complete,
-                })
-                .to_string(),
-                Err(error) => serde_json::json!({
-                    "source": "full_inventory",
-                    "error": format!("{error:#}"),
-                })
-                .to_string(),
+                Ok(complete) => {
+                    verification_success_detail(&VerificationSuccessDetail::Inventory {
+                        complete: *complete,
+                        registry_kinds: crate::runtime_event::ALL_RUNTIME_EVENT_KINDS.len(),
+                        source: "full_inventory",
+                    })?
+                }
+                Err(error) => verification_error_detail(error, Some("full_inventory"))?,
             };
             persist_event_projection_effect_verification(
                 &transaction,
@@ -356,13 +428,12 @@ pub(crate) fn verify_observer_sync_foundations(connection: &mut Connection) -> R
     }
     let linkage = verify_brief_atomic_linkage(connection);
     let linkage_detail = match &linkage {
-        Ok(verified) => serde_json::json!({
-            "unmatched_linkages": 0,
-            "shared_sequences": 0,
-            "verified": verified,
-        })
-        .to_string(),
-        Err(error) => serde_json::json!({ "error": format!("{error:#}") }).to_string(),
+        Ok(verified) => verification_success_detail(&VerificationSuccessDetail::BriefLinkage {
+            shared_sequences: 0,
+            unmatched_linkages: 0,
+            verified: *verified,
+        })?,
+        Err(error) => verification_error_detail(error, None)?,
     };
     persist_verification(
         connection,
@@ -373,8 +444,10 @@ pub(crate) fn verify_observer_sync_foundations(connection: &mut Connection) -> R
     )?;
     let roster = verify_roster_snapshot_view(connection);
     let roster_detail = match &roster {
-        Ok(verified) => serde_json::json!({ "verified": verified }).to_string(),
-        Err(error) => serde_json::json!({ "error": format!("{error:#}") }).to_string(),
+        Ok(verified) => verification_success_detail(&VerificationSuccessDetail::Roster {
+            verified: *verified,
+        })?,
+        Err(error) => verification_error_detail(error, None)?,
     };
     persist_verification(
         connection,
@@ -385,12 +458,11 @@ pub(crate) fn verify_observer_sync_foundations(connection: &mut Connection) -> R
     )?;
     let projection = verify_projection_snapshot_view(connection);
     let projection_detail = match &projection {
-        Ok(verified) => serde_json::json!({
-            "verified": verified,
-            "boundary_rule": "event_head_seq",
-        })
-        .to_string(),
-        Err(error) => serde_json::json!({ "error": format!("{error:#}") }).to_string(),
+        Ok(verified) => verification_success_detail(&VerificationSuccessDetail::Projection {
+            boundary_rule: "event_head_seq",
+            verified: *verified,
+        })?,
+        Err(error) => verification_error_detail(error, None)?,
     };
     persist_verification(
         connection,
@@ -401,14 +473,13 @@ pub(crate) fn verify_observer_sync_foundations(connection: &mut Connection) -> R
     )?;
     let conversation = verify_conversation_read_view(connection);
     let conversation_detail = match &conversation {
-        Ok(verified) => serde_json::json!({
-            "verified": verified,
-            "boundary_rule": "deferred_read_transaction_event_head",
-            "cursor_key": "durable_runtime_metadata",
-            "legacy_unattributed_briefs": "existing_briefs_surface",
-        })
-        .to_string(),
-        Err(error) => serde_json::json!({ "error": format!("{error:#}") }).to_string(),
+        Ok(verified) => verification_success_detail(&VerificationSuccessDetail::Conversation {
+            boundary_rule: "deferred_read_transaction_event_head",
+            cursor_key: "durable_runtime_metadata",
+            legacy_unattributed_briefs: "existing_briefs_surface",
+            verified: *verified,
+        })?,
+        Err(error) => verification_error_detail(error, None)?,
     };
     persist_verification(
         connection,
@@ -419,6 +490,84 @@ pub(crate) fn verify_observer_sync_foundations(connection: &mut Connection) -> R
     )?;
     Ok(())
 }
+
+// Field order preserves the former JSON map's sorted wire representation.
+#[derive(serde::Serialize)]
+#[serde(untagged)]
+enum VerificationSuccessDetail<'a> {
+    RuntimeIdentity {
+        event_log_epoch: &'a str,
+        public_scope_id_fingerprint: &'a str,
+        runtime_id: &'a str,
+        visibility_policy_generation: u64,
+    },
+    IdentityReservations {
+        active_reservations_without_registry: u64,
+        agent_state_identity_mismatch: u64,
+        completed_deletion_with_available_registry: u64,
+        enforcement_probe: &'a str,
+        missing_reservations: u64,
+        missing_source_tables: &'a [&'a str],
+        tombstone_state_drift: u64,
+    },
+    Inventory {
+        complete: bool,
+        registry_kinds: usize,
+        source: &'a str,
+    },
+    BriefLinkage {
+        shared_sequences: u64,
+        unmatched_linkages: u64,
+        verified: bool,
+    },
+    Roster {
+        verified: bool,
+    },
+    Projection {
+        boundary_rule: &'a str,
+        verified: bool,
+    },
+    Conversation {
+        boundary_rule: &'a str,
+        cursor_key: &'a str,
+        legacy_unattributed_briefs: &'a str,
+        verified: bool,
+    },
+}
+
+fn verification_success_detail(detail: &impl serde::Serialize) -> Result<String> {
+    crate::diagnostics::resource_io::admit_serialized_value(detail)?;
+    Ok(serde_json::to_string(detail)?)
+}
+
+#[cfg(test)]
+#[path = "observer_sync/verification_success_budget_tests.rs"]
+mod verification_success_budget_tests;
+
+fn verification_error_detail(error: &anyhow::Error, source: Option<&str>) -> Result<String> {
+    struct ErrorText<'a>(&'a anyhow::Error);
+    impl serde::Serialize for ErrorText<'_> {
+        fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+            serializer.collect_str(&format_args!("{:#}", self.0))
+        }
+    }
+    #[derive(serde::Serialize)]
+    struct Detail<'a> {
+        error: ErrorText<'a>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        source: Option<&'a str>,
+    }
+    let detail = Detail {
+        error: ErrorText(error),
+        source,
+    };
+    crate::diagnostics::resource_io::admit_serialized_value(&detail)?;
+    Ok(serde_json::to_string(&detail)?)
+}
+
+#[cfg(test)]
+#[path = "observer_sync/verification_error_budget_tests.rs"]
+mod verification_error_budget_tests;
 
 fn verify_conversation_read_view(connection: &Connection) -> Result<bool> {
     for table in [
@@ -546,15 +695,26 @@ fn verify_projection_snapshot_view(connection: &Connection) -> Result<bool> {
             return Ok(false);
         }
     }
-    let snapshot = collect_agent_roster_rows(connection)?;
-    for roster_row in &snapshot.rows {
-        let rows = collect_agent_projection_anchors(connection, &roster_row.agent_id)?;
+    // Keep metadata and roster SQL-shape validation even without members.
+    // Only borrow IDs; do not copy the other roster anchors.
+    read_metadata(connection, "runtime_id")?;
+    read_metadata(connection, "event_log_epoch")?;
+    read_metadata(connection, "visibility_policy_generation")?
+        .parse::<u64>()
+        .context("invalid visibility policy generation")?;
+    let mut members = connection.prepare(AGENT_ROSTER_IDENTITIES_SQL)?;
+    drop(connection.prepare(AGENT_ROSTER_LATEST_BRIEFS_SQL)?);
+    drop(connection.prepare(AGENT_ROSTER_STATES_SQL)?);
+    let mut members = members.query([])?;
+    while let Some(member) = members.next()? {
+        let agent_id = member.get_ref(0)?.as_str()?;
+        let rows = collect_agent_projection_anchors(connection, agent_id)?;
         let Some(row) = rows.row else {
             // Membership cannot change between the two collects on one
             // connection; treat absence as a failed verification.
             anyhow::bail!(
                 "projection snapshot member {} disappeared inside one read view",
-                roster_row.agent_id
+                agent_id
             );
         };
         serde_json::from_str::<AgentIdentityRecord>(&row.identity_json).with_context(|| {
@@ -601,6 +761,18 @@ fn verify_projection_snapshot_view(connection: &Connection) -> Result<bool> {
     Ok(true)
 }
 
+#[cfg(test)]
+#[path = "observer_sync/projection_members_tests.rs"]
+mod projection_members_tests;
+
+#[cfg(test)]
+#[path = "observer_sync/projection_scalar_tests.rs"]
+mod projection_scalar_tests;
+
+#[cfg(test)]
+#[path = "observer_sync/roster_material_tests.rs"]
+mod roster_material_tests;
+
 pub(crate) fn parse_work_item_state(value: &str) -> Result<crate::types::WorkItemState> {
     serde_json::from_value(serde_json::Value::String(value.to_string()))
         .map_err(|error| anyhow::anyhow!("invalid work item state {value}: {error}"))
@@ -623,6 +795,7 @@ fn collect_agent_projection_anchors(
     connection: &Connection,
     agent_id: &str,
 ) -> Result<AgentProjectionSnapshotRows> {
+    let material = crate::diagnostics::resource_io::ResourceReadMaterial::active_guard()?;
     let runtime_id = read_metadata(connection, "runtime_id")?;
     let event_log_epoch = read_metadata(connection, "event_log_epoch")?;
     let visibility_policy_generation: u64 =
@@ -637,7 +810,7 @@ fn collect_agent_projection_anchors(
              FROM agent_identities i
              WHERE i.agent_id = ?1 AND i.status = 'active' AND i.visibility = 'public'",
             [agent_id],
-            |row| Ok((row.get::<_, String>(0)?, row.get::<_, Option<String>>(1)?)),
+            |row| Ok((projection_text(row, 0)?, projection_optional_text(row, 1)?)),
         )
         .optional()?;
     let Some((identity_json, agent_state_json)) = membership else {
@@ -646,6 +819,7 @@ fn collect_agent_projection_anchors(
             event_log_epoch,
             visibility_policy_generation,
             row: None,
+            _material: material,
         });
     };
     let canonical_relations = canonical_relations_from_connection(connection, agent_id)?
@@ -698,7 +872,7 @@ fn collect_agent_projection_anchors(
             "SELECT evidence_id FROM messages WHERE agent_id = ?1
              ORDER BY created_at DESC, evidence_id DESC LIMIT 1",
             [agent_id],
-            |row| row.get(0),
+            |row| projection_text(row, 0),
         )
         .optional()?;
     let latest_transcript_entry_id: Option<String> = connection
@@ -706,7 +880,7 @@ fn collect_agent_projection_anchors(
             "SELECT evidence_id FROM transcript_entries WHERE agent_id = ?1
              ORDER BY created_at DESC, evidence_id DESC LIMIT 1",
             [agent_id],
-            |row| row.get(0),
+            |row| projection_text(row, 0),
         )
         .optional()?;
     let latest_brief = {
@@ -714,15 +888,19 @@ fn collect_agent_projection_anchors(
         connection
             .query_row(AGENT_LATEST_BRIEF_SQL, [agent_id], |row| {
                 Ok(AgentRosterLatestBriefRow {
-                    brief_id: row.get(0)?,
+                    brief_id: projection_text(row, 0)?,
                     created_event_seq: row.get(1)?,
-                    created_at: row.get(2)?,
-                    preview: row.get(3)?,
+                    created_at: projection_text(row, 2)?,
+                    preview: projection_optional_text(row, 3)?,
                 })
             })
             .optional()?
     };
 
+    crate::diagnostics::resource_io::charge_owned_metadata(
+        agent_id.len().saturating_add(std::mem::size_of::<String>()) as u64,
+        1,
+    )?;
     Ok(AgentProjectionSnapshotRows {
         runtime_id,
         event_log_epoch,
@@ -739,16 +917,43 @@ fn collect_agent_projection_anchors(
             latest_transcript_entry_id,
             latest_brief,
         }),
+        _material: material,
     })
+}
+
+fn projection_text(row: &rusqlite::Row<'_>, column: usize) -> rusqlite::Result<String> {
+    let value = row.get_ref(column)?;
+    let text = value.as_str().map_err(|error| {
+        rusqlite::Error::FromSqlConversionFailure(column, value.data_type(), Box::new(error))
+    })?;
+    crate::diagnostics::resource_io::charge_owned_metadata(
+        text.len().saturating_add(std::mem::size_of::<String>()) as u64,
+        1,
+    )
+    .map_err(|error| {
+        rusqlite::Error::FromSqlConversionFailure(column, value.data_type(), Box::new(error))
+    })?;
+    Ok(text.to_owned())
+}
+
+fn projection_optional_text(
+    row: &rusqlite::Row<'_>,
+    column: usize,
+) -> rusqlite::Result<Option<String>> {
+    if row.get_ref(column)? == rusqlite::types::ValueRef::Null {
+        Ok(None)
+    } else {
+        projection_text(row, column).map(Some)
+    }
 }
 
 fn work_item_anchor_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<AgentProjectionWorkItemRow> {
     Ok(AgentProjectionWorkItemRow {
-        work_item_id: row.get(0)?,
-        state: row.get(1)?,
-        plan_status: row.get(2)?,
+        work_item_id: projection_text(row, 0)?,
+        state: projection_text(row, 1)?,
+        plan_status: projection_optional_text(row, 2)?,
         revision: row.get(3)?,
-        updated_at: row.get(4)?,
+        updated_at: projection_text(row, 4)?,
     })
 }
 
@@ -763,6 +968,7 @@ fn chrono_datetime(value: &str) -> Result<chrono::DateTime<chrono::Utc>> {
 /// decides the transaction boundary; the snapshot read path wraps this in
 /// one deferred read transaction, and verification calls it directly.
 fn collect_agent_roster_rows(connection: &Connection) -> Result<AgentRosterSnapshotRows> {
+    let material = crate::diagnostics::resource_io::ResourceReadMaterial::active_guard()?;
     let runtime_id = read_metadata(connection, "runtime_id")?;
     let event_log_epoch = read_metadata(connection, "event_log_epoch")?;
     let visibility_policy_generation: u64 =
@@ -772,30 +978,23 @@ fn collect_agent_roster_rows(connection: &Connection) -> Result<AgentRosterSnaps
 
     let mut identities = Vec::new();
     {
-        let mut statement = connection.prepare(
-            "SELECT i.agent_id,
-                    i.payload_json,
-                    COALESCE(sequences.last_value, 0),
-                    COALESCE(watermarks.oldest_retained_seq, 0)
-             FROM agent_identities i
-             LEFT JOIN runtime_sequences sequences
-               ON sequences.domain = 'audit_event'
-              AND sequences.scope_key = 'agent:' || i.agent_id
-             LEFT JOIN audit_event_retention_watermarks watermarks
-               ON watermarks.scope_key = 'agent:' || i.agent_id
-             WHERE i.status = 'active' AND i.visibility = 'public'
-             ORDER BY i.agent_id",
-        )?;
+        let mut statement = connection.prepare(AGENT_ROSTER_IDENTITIES_SQL)?;
         let rows = statement.query_map([], |row| {
             Ok((
-                row.get::<_, String>(0)?,
-                row.get::<_, String>(1)?,
+                projection_text(row, 0)?,
+                projection_text(row, 1)?,
                 row.get::<_, i64>(2)?,
                 row.get::<_, i64>(3)?,
             ))
         })?;
         for row in rows {
-            identities.push(row?);
+            let member = row?;
+            crate::diagnostics::resource_io::charge_owned_metadata(
+                std::mem::size_of::<(String, String, i64, i64)>() as u64,
+                1,
+            )?;
+            identities.try_reserve(1)?;
+            identities.push(member);
         }
     }
 
@@ -808,15 +1007,20 @@ fn collect_agent_roster_rows(connection: &Connection) -> Result<AgentRosterSnaps
         let mut statement = connection.prepare(AGENT_ROSTER_LATEST_BRIEFS_SQL)?;
         let rows = statement.query_map([], |row| {
             Ok((
-                row.get::<_, String>(0)?,
-                row.get::<_, String>(1)?,
+                projection_text(row, 0)?,
+                projection_text(row, 1)?,
                 row.get::<_, Option<i64>>(2)?,
-                row.get::<_, String>(3)?,
-                row.get::<_, Option<String>>(4)?,
+                projection_text(row, 3)?,
+                projection_optional_text(row, 4)?,
             ))
         })?;
         for row in rows {
             let (agent_id, brief_id, created_event_seq, created_at, preview) = row?;
+            crate::diagnostics::resource_io::charge_owned_metadata(
+                std::mem::size_of::<(String, AgentRosterLatestBriefRow)>() as u64,
+                1,
+            )?;
+            latest_briefs.try_reserve(1)?;
             latest_briefs.insert(
                 agent_id,
                 AgentRosterLatestBriefRow {
@@ -831,17 +1035,17 @@ fn collect_agent_roster_rows(connection: &Connection) -> Result<AgentRosterSnaps
 
     let mut agent_states: HashMap<String, String> = HashMap::new();
     {
-        let mut statement = connection.prepare(
-            "SELECT s.agent_id, s.payload_json
-             FROM agent_states s
-             JOIN agent_identities i ON i.agent_id = s.agent_id
-             WHERE i.status = 'active' AND i.visibility = 'public'",
-        )?;
+        let mut statement = connection.prepare(AGENT_ROSTER_STATES_SQL)?;
         let rows = statement.query_map([], |row| {
-            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+            Ok((projection_text(row, 0)?, projection_text(row, 1)?))
         })?;
         for row in rows {
             let (agent_id, payload) = row?;
+            crate::diagnostics::resource_io::charge_owned_metadata(
+                (std::mem::size_of::<String>() * 2) as u64,
+                1,
+            )?;
+            agent_states.try_reserve(1)?;
             agent_states.insert(agent_id, payload);
         }
     }
@@ -849,24 +1053,29 @@ fn collect_agent_roster_rows(connection: &Connection) -> Result<AgentRosterSnaps
     let to_seq = |value: i64| -> Result<u64> {
         u64::try_from(value).context("stored audit event sequence is negative")
     };
-    let rows = identities
-        .into_iter()
-        .map(|(agent_id, identity_json, head, oldest)| {
-            Ok(AgentRosterRow {
-                event_head_seq: to_seq(head)?,
-                oldest_retained_seq: to_seq(oldest)?,
-                latest_brief: latest_briefs.remove(&agent_id),
-                agent_state_json: agent_states.remove(&agent_id),
-                agent_id,
-                identity_json,
-            })
-        })
-        .collect::<Result<Vec<_>>>()?;
+    let mut rows = Vec::new();
+    for (agent_id, identity_json, head, oldest) in identities {
+        let row = AgentRosterRow {
+            event_head_seq: to_seq(head)?,
+            oldest_retained_seq: to_seq(oldest)?,
+            latest_brief: latest_briefs.remove(&agent_id),
+            agent_state_json: agent_states.remove(&agent_id),
+            agent_id,
+            identity_json,
+        };
+        crate::diagnostics::resource_io::charge_owned_metadata(
+            std::mem::size_of::<AgentRosterRow>() as u64,
+            1,
+        )?;
+        rows.try_reserve(1)?;
+        rows.push(row);
+    }
     Ok(AgentRosterSnapshotRows {
         runtime_id,
         event_log_epoch,
         visibility_policy_generation,
         rows,
+        _material: material,
     })
 }
 
@@ -1009,27 +1218,23 @@ fn verify_event_projection_effect_inventory(connection: &Connection) -> Result<b
                   COALESCE(json_extract(data_json, '$.payload_schema_version'), 0),
                   COALESCE(json_extract(data_json, '$.contract_version'), 1)",
     )?;
-    let rows = statement.query_map([], |row| {
-        Ok((
-            row.get::<_, String>(0)?,
-            row.get::<_, String>(1)?,
-            row.get::<_, i64>(2)?,
-            row.get::<_, i64>(3)?,
-            row.get::<_, i64>(4)?,
-        ))
-    })?;
+    let mut rows = statement.query([])?;
     let mut unclassified = Vec::new();
-    for row in rows {
-        let (kind, payload_schema, payload_schema_version, contract_version, count) = row?;
+    while let Some(row) = rows.next()? {
+        let kind = row.get_ref(0)?.as_str()?;
+        let payload_schema = row.get_ref(1)?.as_str()?;
+        let payload_schema_version = row.get::<_, i64>(2)?;
+        let contract_version = row.get::<_, i64>(3)?;
+        let count = row.get::<_, i64>(4)?;
         let classification = match (
             u32::try_from(contract_version),
             u32::try_from(payload_schema_version),
         ) {
             (Ok(contract_version), Ok(payload_schema_version)) => {
                 crate::runtime_event::classify_projection_effect(
-                    &kind,
+                    kind,
                     contract_version,
-                    &payload_schema,
+                    payload_schema,
                     payload_schema_version,
                 )
             }
@@ -1040,10 +1245,10 @@ fn verify_event_projection_effect_inventory(connection: &Connection) -> Result<b
         if let crate::runtime_event::ProjectionEffectClassification::Unsupported(reason) =
             classification
         {
-            unclassified.push(format!(
+            unclassified.push(inventory_diagnostic(format_args!(
                 "{kind}@{payload_schema}v{payload_schema_version}/cv{contract_version}\
                  /reason={reason:?}/count={count}"
-            ));
+            ))?);
         }
     }
     if unclassified.is_empty() {
@@ -1051,34 +1256,78 @@ fn verify_event_projection_effect_inventory(connection: &Connection) -> Result<b
     }
     // Logged, not failed: the capability degrades, startup does not.
     tracing::warn!(
-        unclassified = %unclassified.join(", "),
+        unclassified = %InventoryDiagnostics(&unclassified),
         "audit events outside the projection-effect inventory"
     );
     Ok(false)
 }
 
+fn inventory_diagnostic(arguments: std::fmt::Arguments<'_>) -> Result<String> {
+    struct Bytes(usize);
+    impl std::fmt::Write for Bytes {
+        fn write_str(&mut self, value: &str) -> std::fmt::Result {
+            self.0 = self.0.saturating_add(value.len());
+            Ok(())
+        }
+    }
+    let mut bytes = Bytes(0);
+    std::fmt::write(&mut bytes, arguments)?;
+    // Admit the formatted String and its destination list slot together.
+    crate::diagnostics::resource_io::charge_owned_metadata(
+        bytes.0.saturating_add(2 * std::mem::size_of::<String>()) as u64,
+        2,
+    )?;
+    Ok(std::fmt::format(arguments))
+}
+
+struct InventoryDiagnostics<'a>(&'a [String]);
+
+impl std::fmt::Display for InventoryDiagnostics<'_> {
+    fn fmt(&self, output: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        for (index, diagnostic) in self.0.iter().enumerate() {
+            if index != 0 {
+                output.write_str(", ")?;
+            }
+            output.write_str(diagnostic)?;
+        }
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+#[path = "observer_sync/inventory_budget_tests.rs"]
+mod inventory_budget_tests;
+
 fn event_projection_effect_proof(
     connection: &Connection,
+    event_log_epoch: &str,
 ) -> Result<Option<EventProjectionEffectProof>> {
-    connection
-        .query_row(
-            "SELECT verified, verification_version, event_log_epoch,
+    let mut statement = connection.prepare(
+        "SELECT verified, verification_version, event_log_epoch,
                     event_generation, verified_event_generation
              FROM observer_sync_capability_verifications
              WHERE capability = ?1",
-            [EVENT_PROJECTION_EFFECT_COMPLETE],
-            |row| {
-                Ok(EventProjectionEffectProof {
-                    verified: row.get::<_, i64>(0)? != 0,
-                    verification_version: row.get(1)?,
-                    event_log_epoch: row.get(2)?,
-                    event_generation: row.get(3)?,
-                    verified_event_generation: row.get(4)?,
-                })
-            },
-        )
-        .optional()
-        .map_err(Into::into)
+    )?;
+    let proof = statement
+        .query([EVENT_PROJECTION_EFFECT_COMPLETE])?
+        .next()?
+        .map(|row| {
+            let verified = row.get::<_, i64>(0)? != 0;
+            let verification_version = row.get(1)?;
+            let epoch_matches = match row.get_ref(2)? {
+                rusqlite::types::ValueRef::Null => false,
+                value => value.as_str()? == event_log_epoch,
+            };
+            Ok(EventProjectionEffectProof {
+                verified,
+                verification_version,
+                event_log_epoch_matches: epoch_matches,
+                event_generation: row.get(3)?,
+                verified_event_generation: row.get(4)?,
+            })
+        })
+        .transpose();
+    proof
 }
 
 fn reusable_event_projection_effect_verification(
@@ -1086,15 +1335,29 @@ fn reusable_event_projection_effect_verification(
     event_log_epoch: &str,
 ) -> Result<Option<bool>> {
     Ok(
-        event_projection_effect_proof(connection)?.and_then(|proof| {
+        event_projection_effect_proof(connection, event_log_epoch)?.and_then(|proof| {
             (proof.verification_version == EVENT_PROJECTION_EFFECT_VERIFIER_VERSION
-                && proof.event_log_epoch.as_deref() == Some(event_log_epoch)
+                && proof.event_log_epoch_matches
                 && proof.event_generation >= 0
                 && proof.event_generation == proof.verified_event_generation)
                 .then_some(proof.verified)
         }),
     )
 }
+
+fn current_event_projection_effect_verification(connection: &Connection) -> Result<Option<bool>> {
+    let mut statement =
+        connection.prepare("SELECT value FROM runtime_metadata WHERE key = 'event_log_epoch'")?;
+    let mut rows = statement.query([])?;
+    let row = rows
+        .next()?
+        .ok_or_else(|| anyhow::anyhow!("runtime metadata key event_log_epoch is missing"))?;
+    reusable_event_projection_effect_verification(connection, row.get_ref(0)?.as_str()?)
+}
+
+#[cfg(test)]
+#[path = "observer_sync/foundation_epoch_tests.rs"]
+mod foundation_epoch_tests;
 
 fn persist_event_projection_effect_verification(
     connection: &Connection,
@@ -1140,11 +1403,11 @@ pub(crate) fn record_appended_event_projection_effect(
     if !table_exists(connection, "observer_sync_capability_verifications")? {
         return Ok(());
     }
-    let Some(proof) = event_projection_effect_proof(connection)? else {
+    let Some(proof) = event_projection_effect_proof(connection, &event.event_log_epoch)? else {
         return Ok(());
     };
     if proof.verification_version != EVENT_PROJECTION_EFFECT_VERIFIER_VERSION
-        || proof.event_log_epoch.as_deref() != Some(event.event_log_epoch.as_str())
+        || !proof.event_log_epoch_matches
         || proof.event_generation <= 0
         || proof.verified_event_generation != proof.event_generation - 1
     {
@@ -1157,7 +1420,7 @@ pub(crate) fn record_appended_event_projection_effect(
         &event.payload_schema,
         event.payload_schema_version,
     );
-    let now = chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
+    let now = observer_verification_timestamp(chrono::Utc::now())?;
     let updated = match classification {
         crate::runtime_event::ProjectionEffectClassification::Exact(_)
         | crate::runtime_event::ProjectionEffectClassification::ConservativeLegacy(_) => connection
@@ -1180,13 +1443,30 @@ pub(crate) fn record_appended_event_projection_effect(
                 ],
             )?,
         crate::runtime_event::ProjectionEffectClassification::Unsupported(reason) => {
-            let detail = serde_json::json!({
-                "source": "trusted_append",
-                "complete": false,
-                "kind": event.kind,
-                "reason": format!("{reason:?}"),
-            })
-            .to_string();
+            #[derive(serde::Serialize)]
+            struct Detail<'a> {
+                complete: bool,
+                kind: &'a str,
+                reason: &'static str,
+                source: &'static str,
+            }
+            use crate::runtime_event::UnsupportedProjectionEvent;
+            let reason = match reason {
+                UnsupportedProjectionEvent::UnknownTypedKind => "UnknownTypedKind",
+                UnsupportedProjectionEvent::PayloadSchemaMismatch => "PayloadSchemaMismatch",
+                UnsupportedProjectionEvent::FuturePayloadSchemaVersion => {
+                    "FuturePayloadSchemaVersion"
+                }
+                UnsupportedProjectionEvent::InvalidMetadata => "InvalidMetadata",
+            };
+            let detail = Detail {
+                complete: false,
+                kind: &event.kind,
+                reason,
+                source: "trusted_append",
+            };
+            crate::diagnostics::resource_io::admit_serialized_value(&detail)?;
+            let detail = serde_json::to_string(&detail)?;
             connection.execute(
                 "UPDATE observer_sync_capability_verifications
                  SET verified = 0,
@@ -1221,6 +1501,31 @@ pub(crate) fn record_appended_event_projection_effect(
     Ok(())
 }
 
+fn observer_verification_timestamp(now: chrono::DateTime<chrono::Utc>) -> Result<String> {
+    let year = chrono::Datelike::year(&now);
+    let year_bytes = if (0..=9999).contains(&year) {
+        4
+    } else {
+        (year.unsigned_abs().ilog10() as usize + 1).max(4) + 1
+    };
+    // UTC RFC3339 milliseconds: year plus "-MM-DDTHH:MM:SS.sssZ".
+    crate::diagnostics::resource_io::charge_owned_metadata(
+        (year_bytes + 20 + std::mem::size_of::<String>()) as u64,
+        1,
+    )?;
+    Ok(now.to_rfc3339_opts(chrono::SecondsFormat::Millis, true))
+}
+
+#[cfg(test)]
+#[path = "observer_sync/append_budget_tests.rs"]
+mod append_budget_tests;
+
+#[cfg(test)]
+mod foundation_timestamp_budget_tests;
+
+#[cfg(test)]
+mod foundation_probe_budget_tests;
+
 /// Proves the creation guard is wired into the registry write path: an
 /// Active identity write for a retired reservation must be rejected, while
 /// re-asserting the tombstone stays legal. Runs inside a transaction that is
@@ -1228,11 +1533,15 @@ pub(crate) fn record_appended_event_projection_effect(
 fn probe_reservation_enforcement(connection: &mut Connection) -> Result<bool> {
     let transaction = connection.transaction()?;
     let probe_id = "__observer_sync_reservation_probe__";
-    let now = chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
+    let now = observer_verification_timestamp(chrono::Utc::now())?;
     transaction.execute(
         "INSERT INTO agent_identity_reservations (agent_id, reservation_state, reserved_at, retired_at, source)
          VALUES (?1, 'retired', ?2, NULL, 'verification_probe')",
         rusqlite::params![probe_id, now],
+    )?;
+    crate::diagnostics::resource_io::charge_owned_metadata(
+        (probe_id.len() + std::mem::size_of::<String>()) as u64,
+        1,
     )?;
     let mut probe = AgentIdentityRecord::new(
         probe_id,
@@ -1243,35 +1552,42 @@ fn probe_reservation_enforcement(connection: &mut Connection) -> Result<bool> {
         None,
         None,
     );
-    let rejected_availability_write = upsert_agent_identity_tx(&transaction, &probe).is_err();
+    let availability_write = upsert_agent_identity_tx(&transaction, &probe);
+    crate::diagnostics::resource_io::check_active_budget()?;
+    let rejected_availability_write = availability_write.is_err();
     probe.status = AgentRegistryStatus::Deleted;
-    let accepted_tombstone_write = upsert_agent_identity_tx(&transaction, &probe).is_ok();
+    let tombstone_write = upsert_agent_identity_tx(&transaction, &probe);
+    crate::diagnostics::resource_io::check_active_budget()?;
+    let accepted_tombstone_write = tombstone_write.is_ok();
     transaction.rollback()?;
     Ok(rejected_availability_write && accepted_tombstone_write)
 }
 
 fn count_agent_state_identity_mismatches(connection: &Connection) -> Result<u64> {
     let mut statement = connection.prepare("SELECT agent_id, payload_json FROM agent_states")?;
-    let rows = statement.query_map([], |row| {
-        Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
-    })?;
+    let mut rows = statement.query([])?;
     let mut mismatches = 0u64;
-    for row in rows {
-        let (row_agent_id, payload_json) = row?;
-        let payload_agent_id = serde_json::from_str::<serde_json::Value>(&payload_json)
-            .ok()
-            .and_then(|payload| {
-                payload
-                    .get("id")
-                    .and_then(serde_json::Value::as_str)
-                    .map(str::to_string)
-            });
-        if payload_agent_id.as_deref() != Some(row_agent_id.as_str()) {
+    while let Some(row) = rows.next()? {
+        let row_agent_id = row.get_ref(0)?.as_str()?;
+        let payload_json = row.get_ref(1)?.as_str()?;
+        crate::diagnostics::resource_io::admit_json_payload(payload_json)?;
+        let payload = serde_json::from_str::<serde_json::Value>(payload_json).ok();
+        let payload_agent_id = payload
+            .as_ref()
+            .and_then(|payload| payload.get("id"))
+            .and_then(serde_json::Value::as_str);
+        if payload_agent_id != Some(row_agent_id) {
             mismatches += 1;
         }
     }
     Ok(mismatches)
 }
+
+#[cfg(test)]
+mod state_identity_budget_tests;
+
+#[cfg(test)]
+mod registry_verdict_budget_tests;
 
 fn table_exists(connection: &Connection, table: &str) -> Result<bool> {
     let count: i64 = connection.query_row(
@@ -1293,15 +1609,24 @@ fn verification_tables_exist(connection: &Connection) -> Result<bool> {
 }
 
 fn read_metadata(connection: &Connection, key: &str) -> Result<String> {
-    connection
-        .query_row(
-            "SELECT value FROM runtime_metadata WHERE key = ?1",
-            [key],
-            |row| row.get(0),
-        )
-        .optional()?
-        .ok_or_else(|| anyhow::anyhow!("runtime metadata key {key} is missing"))
+    let mut statement = connection.prepare("SELECT value FROM runtime_metadata WHERE key = ?1")?;
+    let mut rows = statement.query([key])?;
+    let row = rows
+        .next()?
+        .ok_or_else(|| anyhow::anyhow!("runtime metadata key {key} is missing"))?;
+    let value = row.get_ref(0)?.as_str()?;
+    crate::diagnostics::resource_io::charge_owned_metadata(
+        value.len().saturating_add(std::mem::size_of::<String>()) as u64,
+        1,
+    )?;
+    Ok(value.to_owned())
 }
+
+#[cfg(test)]
+mod foundation_metadata_budget_tests;
+
+#[cfg(test)]
+mod foundation_scope_tests;
 
 fn count_rows(connection: &Connection, sql: &str) -> Result<u64> {
     let count: i64 = connection.query_row(sql, [], |row| row.get(0))?;
@@ -1425,18 +1750,16 @@ impl crate::runtime_db::RuntimeDb {
                     }
                 }
             };
-            let event_projection_effect_complete = read_metadata(connection, "event_log_epoch")
-                .and_then(|event_log_epoch| {
-                    reusable_event_projection_effect_verification(connection, &event_log_epoch)
-                })
-                .unwrap_or_else(|error| {
-                    tracing::debug!(
-                        %error,
-                        "failed to load observer sync event projection verification proof"
-                    );
-                    None
-                })
-                .unwrap_or(false);
+            let event_projection_effect_complete =
+                current_event_projection_effect_verification(connection)
+                    .unwrap_or_else(|error| {
+                        tracing::debug!(
+                            %error,
+                            "failed to load observer sync event projection verification proof"
+                        );
+                        None
+                    })
+                    .unwrap_or(false);
             Ok(ObserverSyncFoundationVerification {
                 runtime_identity_stable: verified(RUNTIME_IDENTITY_STABLE),
                 agent_identity_reserved: verified(AGENT_IDENTITY_RESERVED),
@@ -1493,29 +1816,48 @@ impl crate::runtime_db::RuntimeDb {
         &self,
         agent_id: Option<&str>,
     ) -> Result<AgentEventRecoveryWindow> {
-        self.with_read(|connection| {
-            let scope_key = crate::runtime_db::evidence::audit_event_sequence_scope(agent_id);
-            let (epoch, oldest, head): (String, i64, i64) = connection.query_row(
-                "SELECT
-                   (SELECT value FROM runtime_metadata WHERE key = 'event_log_epoch'),
-                   COALESCE((
-                     SELECT oldest_retained_seq FROM audit_event_retention_watermarks
-                     WHERE scope_key = ?1
-                   ), 0),
-                   COALESCE((
-                     SELECT last_value FROM runtime_sequences
-                     WHERE domain = 'audit_event' AND scope_key = ?1
-                   ), 0)",
-                [scope_key],
-                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
-            )?;
-            Ok(AgentEventRecoveryWindow {
-                event_log_epoch: epoch,
-                oldest_retained_seq: u64::try_from(oldest)
-                    .context("stored audit retention watermark is negative")?,
-                event_head_seq: u64::try_from(head)
-                    .context("stored audit event sequence is negative")?,
-            })
-        })
+        self.with_read(|connection| agent_event_recovery_window_on(connection, agent_id))
     }
+}
+
+pub(crate) fn agent_event_recovery_window_on(
+    connection: &Connection,
+    agent_id: Option<&str>,
+) -> Result<AgentEventRecoveryWindow> {
+    crate::diagnostics::resource_io::charge_owned_metadata(
+        u64::try_from(agent_id.map_or(4, |id| id.len().saturating_add(6)))?,
+        1,
+    )?;
+    let scope_key = crate::runtime_db::evidence::audit_event_sequence_scope(agent_id);
+    let mut statement = connection.prepare(
+        "SELECT
+               (SELECT value FROM runtime_metadata WHERE key = 'event_log_epoch'),
+               COALESCE((
+                 SELECT oldest_retained_seq FROM audit_event_retention_watermarks
+                 WHERE scope_key = ?1
+               ), 0),
+               COALESCE((
+                 SELECT last_value FROM runtime_sequences
+                 WHERE domain = 'audit_event' AND scope_key = ?1
+               ), 0)",
+    )?;
+    let mut rows = statement.query([scope_key])?;
+    let row = rows.next()?.context("event recovery metadata is absent")?;
+    let epoch = row.get_ref(0)?.as_str()?;
+    let oldest: i64 = row.get(1)?;
+    let head: i64 = row.get(2)?;
+    crate::diagnostics::resource_io::charge_owned_metadata(
+        u64::try_from(
+            epoch
+                .len()
+                .saturating_add(std::mem::size_of::<AgentEventRecoveryWindow>()),
+        )?,
+        1,
+    )?;
+    Ok(AgentEventRecoveryWindow {
+        event_log_epoch: epoch.to_owned(),
+        oldest_retained_seq: u64::try_from(oldest)
+            .context("stored audit retention watermark is negative")?,
+        event_head_seq: u64::try_from(head).context("stored audit event sequence is negative")?,
+    })
 }

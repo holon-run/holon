@@ -986,7 +986,7 @@ fn protection_loss_rejects_inflight_result_and_all_future_read_closures() -> Res
 async fn list_sync_and_async_share_committed_fact_contract() -> Result<()> {
     let (_directory, db) = fixture(1)?;
     db.agent_states()
-        .upsert(&crate::types::AgentState::new("pool-agent"))?;
+        .upsert_for_fixture(&crate::types::AgentState::new("pool-agent"))?;
     let ids = vec!["pool-agent".to_owned(), "absent-agent".to_owned()];
     let synchronous = db.agent_list_posture_rows(&ids)?;
     let asynchronous = db.agent_list_posture_rows_async(ids).await?;

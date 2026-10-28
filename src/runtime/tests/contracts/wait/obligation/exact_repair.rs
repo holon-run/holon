@@ -37,6 +37,7 @@ impl AgentProvider for RepairProvider {
                 .join("\n"),
         );
         Ok(ProviderTurnResponse {
+            material: request.material,
             blocks: vec![ModelBlock::Text {
                 text: "done".into(),
             }],

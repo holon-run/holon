@@ -1,6 +1,71 @@
 use super::*;
 use crate::runtime::clock::TestClock;
+use crate::runtime::resident_input_evidence::{
+    InputEvidenceFamily as Family, InputEvidenceKey as Key, InputEvidenceReadError,
+};
 use crate::runtime_db::provider_admission::ProviderAdmissionReservation;
+
+#[tokio::test]
+async fn provider_admission_requires_captured_original_root_before_budget_mutation() {
+    let (_home, runtime) = runtime();
+    let message = runtime.enqueue(operator()).await.unwrap();
+    let RunLoopPoll::Message(scheduled) = SchedulerDecisionExecutor::new(&runtime)
+        .poll()
+        .await
+        .unwrap()
+    else {
+        panic!("initial root must be admitted");
+    };
+    let admission = scheduled.dispatch_plan.provider_admission.unwrap();
+    let attempt = admission.attempt.clone();
+    let before = admission.episode().unwrap();
+    drop(admission);
+    let (state, mut inputs) = {
+        let mut mutation = runtime.begin_mutation().await.unwrap();
+        mutation
+            .prepare_owner_inputs(
+                std::collections::BTreeSet::from([
+                    Key::new(Family::Message, &message.id),
+                    Key::new(Family::Attempt, &attempt.attempt_id),
+                ]),
+                Default::default(),
+            )
+            .await
+            .unwrap();
+        (
+            mutation.state.clone(),
+            mutation.capture_input_evidence().unwrap(),
+        )
+    };
+    assert!(
+        crate::runtime::provider_recovery::captured_message(&inputs, &message.id)
+            .unwrap()
+            .is_some()
+    );
+    inputs.records.retain(|record| {
+        record.locator.key.family != Family::Message || record.locator.key.id != message.id
+    });
+    let error = runtime
+        .prepare_provider_turn_admission(&state, &message, &attempt, &inputs)
+        .err()
+        .expect("admission must not fall back to the persisted raw body");
+    assert!(matches!(
+        error.downcast_ref::<InputEvidenceReadError>(),
+        Some(InputEvidenceReadError::NeedsPreparation(key))
+            if key.family == Family::Message && key.id == message.id
+    ));
+    let after = runtime
+        .runtime_db()
+        .provider_recovery_episode(before.key())
+        .unwrap()
+        .unwrap();
+    assert_eq!(after.kind, before.kind);
+    assert_eq!(after.state, before.state);
+    assert_eq!(after.request_count, before.request_count);
+    assert_eq!(after.total_requests, before.total_requests);
+    assert_eq!(after.candidate_cursor, before.candidate_cursor);
+    assert_eq!(after.not_before, before.not_before);
+}
 
 #[tokio::test]
 async fn pending_fallback_probe_does_not_wrap_to_failed_primary_after_restart() {
@@ -119,8 +184,31 @@ async fn probe_frontier(primary_recovers: bool) {
                 > 0
         );
     }
+    let inputs = {
+        let mut mutation = runtime.begin_mutation().await.unwrap();
+        mutation
+            .prepare_owner_inputs(
+                std::collections::BTreeSet::from([
+                    Key::new(Family::Message, &message.id),
+                    Key::new(Family::Attempt, &attempt.attempt_id),
+                ]),
+                Default::default(),
+            )
+            .await
+            .unwrap();
+        mutation.capture_input_evidence().unwrap()
+    };
+    let protocol = inputs.execution_state_if_initialized().unwrap().unwrap();
     let selected = runtime
-        .select_provider_turn_candidate(&message, &attempt, &chain, &episode, &Default::default())
+        .select_provider_turn_candidate(
+            &message,
+            &attempt,
+            &inputs,
+            &protocol,
+            &chain,
+            &episode,
+            &Default::default(),
+        )
         .unwrap();
     if primary_recovers {
         let ProviderTurnGate::Granted(admission) = selected else {
@@ -141,7 +229,15 @@ async fn probe_frontier(primary_recovers: bool) {
             .unwrap()
             .unwrap();
         let ProviderTurnGate::Granted(admission) = runtime
-            .select_provider_turn_candidate(&message, &attempt, &chain, &due, &Default::default())
+            .select_provider_turn_candidate(
+                &message,
+                &attempt,
+                &inputs,
+                &protocol,
+                &chain,
+                &due,
+                &Default::default(),
+            )
             .unwrap()
         else {
             panic!("B must be selected at its unchanged deadline");

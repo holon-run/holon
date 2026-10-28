@@ -235,10 +235,30 @@ pub async fn subagent_task_updates_parent_state_and_child_summary_during_lifecyc
 }
 
 pub async fn parent_continues_processing_while_private_child_runs() -> Result<()> {
-    let provider = Arc::new(
-        RecordingPromptProvider::new(&["child result", "parent handled"])
-            .with_first_delay(Duration::from_millis(500)),
-    );
+    struct HeldChildProvider {
+        recording: RecordingPromptProvider,
+        first: std::sync::atomic::AtomicBool,
+        release: tokio::sync::Notify,
+    }
+    #[async_trait]
+    impl AgentProvider for HeldChildProvider {
+        async fn complete_turn(
+            &self,
+            request: ProviderTurnRequest,
+        ) -> Result<ProviderTurnResponse> {
+            let first = self.first.swap(false, std::sync::atomic::Ordering::AcqRel);
+            let response = self.recording.complete_turn(request).await?;
+            if first {
+                self.release.notified().await;
+            }
+            Ok(response)
+        }
+    }
+    let provider = Arc::new(HeldChildProvider {
+        recording: RecordingPromptProvider::new(&["child result", "parent handled"]),
+        first: std::sync::atomic::AtomicBool::new(true),
+        release: tokio::sync::Notify::new(),
+    });
     let host = RuntimeHost::new_with_provider(test_config(), provider.clone())?;
     let runtime = host.default_runtime().await?;
 
@@ -251,6 +271,19 @@ pub async fn parent_continues_processing_while_private_child_runs() -> Result<()
         )
         .await?;
 
+    let started = wait_until_async_for(Duration::from_secs(2), || {
+        let provider = provider.clone();
+        async move { Ok(!provider.recording.captured_requests().await.is_empty()) }
+    })
+    .await;
+    if let Err(error) = started {
+        return Err(error.context(format!(
+            "child did not reach provider; data_dir={:?}; task={:?}; parent={:?}",
+            runtime.storage().data_dir(),
+            runtime.task_status_snapshot(&task.id).await,
+            runtime.agent_summary().await,
+        )));
+    }
     runtime
         .enqueue(MessageEnvelope::new(
             "default",
@@ -267,12 +300,12 @@ pub async fn parent_continues_processing_while_private_child_runs() -> Result<()
         ))
         .await?;
 
-    wait_until_async_for(Duration::from_secs(2), || {
+    let overlap = wait_until_async_for(Duration::from_secs(2), || {
         let provider = provider.clone();
         let runtime = runtime.clone();
         let task_id = task.id.clone();
         async move {
-            let requests = provider.captured_requests().await;
+            let requests = provider.recording.captured_requests().await;
             let saw_parent_turn = requests.iter().any(|request| {
                 request
                     .prompt_text
@@ -289,7 +322,9 @@ pub async fn parent_continues_processing_while_private_child_runs() -> Result<()
             Ok(saw_parent_turn && child_still_active)
         }
     })
-    .await?;
+    .await;
+    provider.release.notify_one();
+    overlap?;
 
     Ok(())
 }
@@ -491,6 +526,14 @@ pub async fn subagent_task_failure_propagates_failed_output_to_parent() -> Resul
 pub async fn multiple_subagent_tasks_do_not_cross_contaminate_outputs() -> Result<()> {
     let host = RuntimeHost::new_with_provider(test_config(), Arc::new(DelegatedBoundaryProvider))?;
     let runtime = host.default_runtime().await?;
+    // Stabilize the parent's initial catalogue before the two concurrent children.
+    // Inventory conflict/failure behavior is covered separately.
+    runtime
+        .preview_prompt(
+            "Prepare the parent before concurrent child output isolation.".into(),
+            AuthorityClass::OperatorInstruction,
+        )
+        .await?;
 
     let alpha = runtime
         .schedule_child_agent_task(

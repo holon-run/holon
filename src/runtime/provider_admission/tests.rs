@@ -139,6 +139,7 @@ fn open_runtime_with_context(
     )
     .unwrap();
     let mut snapshot = (*runtime.inner.config_snapshot.load_full()).clone();
+    snapshot.user_home_dir = None;
     snapshot.model_catalog = RuntimeModelCatalog::from_config(&config);
     snapshot.provider_reconfig = Some(ProviderReconfigurator { config });
     runtime.inner.config_snapshot.store(Arc::new(snapshot));
@@ -163,6 +164,39 @@ fn operator() -> MessageEnvelope {
         MessageDeliverySurface::CliPrompt,
         AdmissionContext::LocalProcess,
     )
+}
+
+async fn persist_protocol_for_fixture(
+    runtime: &RuntimeHandle,
+    protocol: &crate::domain::execution_protocol::ExecutionProtocolState,
+) -> Result<()> {
+    let db = runtime.inner.runtime_db.clone();
+    let protocol = protocol.clone();
+    runtime
+        .commit_input_evidence(crate::ids::audit_event_id(), move |scope| {
+            db.transaction(|tx| {
+                crate::runtime_db::transitions::execution_protocol_repository::persist_state_tx(
+                    tx, &protocol,
+                )?;
+                let facts = protocol
+            .work_items
+            .iter()
+            .map(|(id, record)| {
+                crate::runtime_db::input_evidence_snapshot::CanonicalInputEvidence::WorkExecution {
+                    work_item_id: id.clone(),
+                    record: record.clone(),
+                }
+            })
+            .collect::<Vec<_>>();
+                crate::runtime_db::input_evidence_writes::acknowledge_input_evidence_tx(
+                    tx,
+                    scope,
+                    (),
+                    &facts,
+                )
+            })
+        })
+        .await
 }
 
 fn cool_quota(runtime: &RuntimeHandle, candidate: &Candidate) {
@@ -412,14 +446,8 @@ async fn external_wait_dispatch_with_claim_race(race: Option<&'static str>) {
             },
         },
     );
-    runtime
-        .inner
-        .runtime_db
-        .transaction(|tx| {
-            crate::runtime_db::transitions::execution_protocol_repository::persist_state_tx(
-                tx, &protocol,
-            )
-        })
+    persist_protocol_for_fixture(&runtime, &protocol)
+        .await
         .unwrap();
     runtime
         .deliver_callback(
@@ -438,80 +466,137 @@ async fn external_wait_dispatch_with_claim_race(race: Option<&'static str>) {
         let observed = observed.clone();
         let work_id = work.id.clone();
         let wait_id = wait.condition.id.clone();
-        *runtime.inner.claim_snapshot_before_commit.lock().unwrap() =
-            Some(Box::new(move |runtime, admission| {
-                let admission = admission.expect("gate must precede the claim snapshot race");
-                assert_eq!(admission.episode()?.total_requests, 0);
-                assert!(admission
-                    .state
-                    .lock()
-                    .unwrap()
-                    .lease
-                    .as_ref()
-                    .unwrap()
-                    .is_probe());
-                *observed.lock().unwrap() = Some((
-                    Arc::downgrade(admission),
-                    admission.attempt.attempt_id.clone(),
-                    admission.episode_key.clone(),
-                ));
-                match race {
-                    "agent_state" => {
-                        let mut state = runtime
-                            .inner
-                            .runtime_db
-                            .agent_states()
-                            .latest("default")?
-                            .expect("agent state");
-                        state.last_wake_reason = Some("concurrent snapshot update".into());
-                        runtime.inner.runtime_db.agent_states().upsert(&state)?;
+        *runtime.inner.claim_snapshot_before_commit.lock().unwrap() = Some(Box::new(
+            move |runtime, admission| {
+                Box::pin(async move {
+                    let admission = admission.expect("gate must precede the claim snapshot race");
+                    assert_eq!(admission.episode()?.total_requests, 0);
+                    assert!(admission
+                        .state
+                        .lock()
+                        .unwrap()
+                        .lease
+                        .as_ref()
+                        .unwrap()
+                        .is_probe());
+                    *observed.lock().unwrap() = Some((
+                        Arc::downgrade(&admission),
+                        admission.attempt.attempt_id.clone(),
+                        admission.episode_key.clone(),
+                    ));
+                    match race {
+                        "agent_state" => {
+                            let mut mutation = runtime.begin_mutation().await?;
+                            mutation.state.last_wake_reason =
+                                Some("concurrent snapshot update".into());
+                            mutation.persist_state(&runtime.inner.storage).await?;
+                        }
+                        "wait" => {
+                            use crate::{
+                                runtime::resident_work::{WorkFamily, WorkKey},
+                                runtime_db::{
+                                    transitions::{PostCommitEffects, TransitionCommit},
+                                    work_snapshot::{
+                                        prepare_work_write_tx, register_work_writes_tx,
+                                    },
+                                },
+                            };
+
+                            let expected_payload: String =
+                                runtime.inner.runtime_db.connection()?.query_row(
+                                    "SELECT payload_json FROM wait_conditions \
+                                     WHERE wait_condition_id=?1 AND agent_id='default' \
+                                     AND status='triggered'",
+                                    [&wait_id],
+                                    |row| row.get(0),
+                                )?;
+                            // The SQL reader rounds timestamps to milliseconds; preserve the
+                            // original payload bytes and all non-fence facts for this CAS.
+                            let mut condition: crate::types::WaitConditionRecord =
+                                serde_json::from_str(&expected_payload)?;
+                            assert_eq!(
+                                condition.status,
+                                crate::types::WaitConditionStatus::Triggered
+                            );
+                            let expected_updated_at = condition.updated_at;
+                            condition.updated_at += Duration::seconds(1);
+                            let keys = std::collections::BTreeSet::from([WorkKey::new(
+                                WorkFamily::Wait,
+                                &condition.id,
+                            )]);
+                            let mut mutation = runtime.begin_mutation().await?;
+                            let request = mutation.owner_work_load_request()?;
+                            mutation
+                                .prepare_owner_work_request(&request.capture)
+                                .await?;
+                            let final_state = mutation.state.clone();
+                            // Fixture-only original writer: move the OCC fence, not the wake
+                            // or the production Triggered -> Triggered transition contract.
+                            mutation
+                                .commit_transition(crate::ids::audit_event_id(), |scope| {
+                                    runtime.inner.runtime_db.transaction(|tx| {
+                                        let proof = prepare_work_write_tx(tx, scope, &keys)?;
+                                        anyhow::ensure!(
+                                            tx.execute(
+                                                "UPDATE wait_conditions SET updated_at=?1, payload_json=?2 \
+                                                 WHERE wait_condition_id=?3 AND agent_id=?4 \
+                                                 AND status='triggered' AND updated_at=?5 AND payload_json=?6",
+                                                rusqlite::params![
+                                                    crate::runtime_db::migrations::timestamp(condition.updated_at),
+                                                    serde_json::to_string(&condition)?,
+                                                    condition.id,
+                                                    condition.agent_id,
+                                                    crate::runtime_db::migrations::timestamp(expected_updated_at),
+                                                    expected_payload,
+                                                ],
+                                            )? == 1,
+                                            "fixture's original triggered wait snapshot changed"
+                                        );
+                                        let facts = register_work_writes_tx(
+                                            tx,
+                                            &proof,
+                                            &keys,
+                                            &Default::default(),
+                                            &final_state,
+                                            &request,
+                                        )?;
+                                        Ok(TransitionCommit {
+                                            applied: true,
+                                            effects: Box::new(PostCommitEffects {
+                                                work_delta: Some(facts.delta),
+                                                work_delta_requires_prepared_domain: true,
+                                                ..Default::default()
+                                            }),
+                                            ..Default::default()
+                                        })
+                                    })
+                                })
+                                .await?;
+                        }
+                        "work_item" => {
+                            let work = runtime
+                                .inner
+                                .runtime_db
+                                .work_items()
+                                .latest(&work_id)?
+                                .expect("wait owner");
+                            runtime
+                                .update_work_item_fields(
+                                    work_id,
+                                    Some(format!("{} with concurrent update", work.objective)),
+                                    None,
+                                    None,
+                                    None,
+                                    None,
+                                )
+                                .await?;
+                        }
+                        _ => unreachable!(),
                     }
-                    "wait" => {
-                        let mut condition = runtime
-                            .inner
-                            .runtime_db
-                            .wait_conditions()
-                            .latest_for_agent("default")?
-                            .into_iter()
-                            .find(|condition| condition.id == wait_id)
-                            .expect("triggered wait");
-                        condition.updated_at += Duration::seconds(1);
-                        // Move only the OCC snapshot fence, preserving the same wake.
-                        runtime.inner.runtime_db.transaction(|tx| {
-                            tx.execute(
-                                "UPDATE wait_conditions SET updated_at = ?1, payload_json = ?2
-                                 WHERE wait_condition_id = ?3",
-                                rusqlite::params![
-                                    crate::runtime_db::repositories::timestamp(
-                                        condition.updated_at
-                                    ),
-                                    serde_json::to_string(&condition)?,
-                                    condition.id,
-                                ],
-                            )?;
-                            Ok(())
-                        })?;
-                    }
-                    "work_item" => {
-                        let mut work = runtime
-                            .inner
-                            .runtime_db
-                            .work_items()
-                            .latest(&work_id)?
-                            .expect("wait owner");
-                        let revision = work.revision;
-                        work.revision += 1;
-                        work.objective.push_str(" with concurrent update");
-                        runtime
-                            .inner
-                            .runtime_db
-                            .work_items()
-                            .update_expected(&work, revision)?;
-                    }
-                    _ => unreachable!(),
-                }
-                Ok(())
-            }));
+                    Ok(())
+                })
+            },
+        ));
     }
     let RunLoopPoll::Message(scheduled) = SchedulerDecisionExecutor::new(&runtime)
         .poll()
@@ -743,7 +828,10 @@ async fn continuation_dispatch_scenario(
     let mut result_message_id = None;
     let registration = match kind {
         ContinuationDispatch::TaskResult => {
-            runtime.storage().append_task(&task).unwrap();
+            runtime
+                .persist_task_transition(&task, "task_created")
+                .await
+                .unwrap();
             None
         }
         ContinuationDispatch::Timer | ContinuationDispatch::TimerWait => {
@@ -788,6 +876,24 @@ async fn continuation_dispatch_scenario(
         clock.advance(std::time::Duration::from_secs(60));
         runtime.fire_timer_record(&mut timer).await.unwrap();
     } else {
+        let mut parent_turn = crate::types::TurnRecord::new("default", "turn-captured-task", 1);
+        parent_turn.owner = Some(crate::types::TurnOwner::WorkItem {
+            work_item_id: captured.id.clone(),
+        });
+        parent_turn.current_work_item_id = Some(captured.id.clone());
+        let mut mutation = runtime.begin_mutation().await.unwrap();
+        let prepared = crate::runtime_db::prepared_input_evidence::PreparedInputEvidence::turn(
+            mutation.input_evidence_scope(),
+            crate::ids::audit_event_id(),
+            runtime.now(),
+            parent_turn,
+        )
+        .unwrap();
+        mutation
+            .commit_prepared_evidence(prepared, None)
+            .await
+            .unwrap();
+        drop(mutation);
         task.status = TaskStatus::Completed;
         task.detail = Some(serde_json::json!({
             "rejoin_obligation_id": task_id,
@@ -812,6 +918,13 @@ async fn continuation_dispatch_scenario(
         );
         result.task_id = Some(task_id.into());
         result.work_item_id = Some(captured.id.clone());
+        result.metadata = Some(serde_json::json!({
+            "task_id": task.id,
+            "task_kind": task.kind,
+            "task_status": task.status,
+            "task_summary": task.summary,
+            "task_detail": task.detail,
+        }));
         result_message_id = Some(result.id.clone());
         task.parent_message_id = Some(result.id.clone());
         runtime
@@ -860,14 +973,8 @@ async fn continuation_dispatch_scenario(
                 },
             },
         );
-        runtime
-            .inner
-            .runtime_db
-            .transaction(|tx| {
-                crate::runtime_db::transitions::execution_protocol_repository::persist_state_tx(
-                    tx, &protocol,
-                )
-            })
+        persist_protocol_for_fixture(&runtime, &protocol)
+            .await
             .unwrap();
     }
 
@@ -955,7 +1062,12 @@ async fn continuation_dispatch_scenario(
         assert!(is_parked_dispatch_rejection(result.as_ref().unwrap_err()));
         let source_id = message.id.clone();
         runtime
-            .settle_processed_message(message, result, processing_started)
+            .finish_scheduled_message_processing(
+                &message,
+                scheduled.running_state.current_run_id.as_deref().unwrap(),
+                processing_started,
+                result,
+            )
             .await
             .unwrap();
         assert_eq!(server.calls.load(Ordering::SeqCst), 0, "{kind:?}");
@@ -1037,7 +1149,12 @@ async fn continuation_dispatch_scenario(
         assert_eq!(failure.code, "provider_dispatch_rejected");
         assert!(!failure.retryable);
         runtime
-            .settle_processed_message(message, result, processing_started)
+            .finish_scheduled_message_processing(
+                &message,
+                scheduled.running_state.current_run_id.as_deref().unwrap(),
+                processing_started,
+                result,
+            )
             .await
             .unwrap();
         let protocol = runtime
@@ -1168,7 +1285,12 @@ async fn continuation_dispatch_scenario(
                     .expect("cooling must stop before HTTP")
             ));
             runtime
-                .settle_processed_message(recovery_message.clone(), result, started)
+                .finish_scheduled_message_processing(
+                    &recovery_message,
+                    recovery.running_state.current_run_id.as_deref().unwrap(),
+                    started,
+                    result,
+                )
                 .await
                 .unwrap();
             assert_eq!(
@@ -1286,7 +1408,12 @@ async fn continuation_dispatch_scenario(
             );
             assert_eq!(server.calls.load(Ordering::SeqCst), 2);
             runtime
-                .settle_processed_message(replay.message, result, std::time::Instant::now())
+                .finish_scheduled_message_processing(
+                    &replay.message,
+                    replay.running_state.current_run_id.as_deref().unwrap(),
+                    std::time::Instant::now(),
+                    result,
+                )
                 .await
                 .unwrap();
             assert_wait_generation(replay_generation + 1);
@@ -1325,14 +1452,8 @@ async fn continuation_dispatch_scenario(
                     },
                 },
             };
-            runtime
-                .inner
-                .runtime_db
-                .transaction(|tx| {
-                    crate::runtime_db::transitions::execution_protocol_repository::persist_state_tx(
-                        tx, &protocol,
-                    )
-                })
+            persist_protocol_for_fixture(&runtime, &protocol)
+                .await
                 .unwrap();
         }
         if matches!(
@@ -1349,11 +1470,60 @@ async fn continuation_dispatch_scenario(
                     | ContinuationDispatchFault::HttpFailureSecondHop
                     | ContinuationDispatchFault::HttpFailureInterruptedReplay
             );
+            let pending_recovery_message = runtime
+                .inner
+                .agent
+                .lock()
+                .await
+                .queue
+                .peek_next_matching(
+                    crate::runtime::turn::TurnModelSelection::message_has_provider_recovery_provenance,
+                )
+                .cloned();
             assert_eq!(
                 process_next_model_input(&runtime).await,
                 should_recover,
-                "recovery must follow the current exact continuation authority ({fault:?}); events={:?}",
-                runtime.storage().read_recent_events(10).unwrap()
+                "recovery must follow the current exact continuation authority ({fault:?}); events={:?}; recovery_diagnostics={}",
+                runtime.storage().read_recent_events(10).unwrap(),
+                {
+                    let protocol = runtime
+                        .inner
+                        .runtime_db
+                        .transitions()
+                        .load_execution_protocol_state_if_initialized("default");
+                    let latest_work = runtime
+                        .latest_work_item(&waiter.id)
+                        .await
+                        .map(|work| work.map(|work| (work.revision, work.blocked_by_wait_id)));
+                    let recovery = match (&protocol, &pending_recovery_message) {
+                        (Ok(Some(protocol)), Some(message)) => Some(
+                            crate::runtime::provider_recovery::resolve(
+                                runtime.storage(),
+                                message,
+                                protocol,
+                            )
+                            .map(|source| {
+                                let wait_id = source.exact_wait_id().map(str::to_owned);
+                                (
+                                    source.predecessor.attempt_id,
+                                    source.predecessor.admitted_fences,
+                                    wait_id,
+                                )
+                            })
+                            .map_err(|error| format!("{error:#}")),
+                        ),
+                        _ => None,
+                    };
+                    format!(
+                        "canonical_work={:?}; latest_work_revision_wait={latest_work:?}; recovery_message={:?}; resolve_predecessor_fences_wait={recovery:?}",
+                        protocol.as_ref().map(|protocol| {
+                            protocol
+                                .as_ref()
+                                .and_then(|protocol| protocol.work_items.get(&waiter.id))
+                        }),
+                        pending_recovery_message.as_ref().map(|message| &message.id),
+                    )
+                }
             );
             assert_eq!(
                 server.calls.load(Ordering::SeqCst),
@@ -1580,6 +1750,7 @@ async fn healthy_responses_do_not_apply_a_global_three_request_limit() {
         admission.before_dispatch().unwrap();
         admission
             .after_response(&Ok(ProviderTurnResponse {
+                material: Default::default(),
                 blocks: vec![ModelBlock::Text {
                     text: "usable".into(),
                 }],
@@ -1678,6 +1849,7 @@ async fn scarce_operator_probe_skips_auxiliary_until_usable_model_response() {
     assert_eq!(admission.episode().unwrap().total_requests, 0);
     admission.before_dispatch().unwrap();
     let response = ProviderTurnResponse {
+        material: Default::default(),
         blocks: vec![ModelBlock::Text {
             text: "usable".into(),
         }],
@@ -2046,7 +2218,45 @@ async fn process_next_model_input(runtime: &RuntimeHandle) -> bool {
         &scheduled.scheduler_decision,
     ))
     .await
-    .unwrap();
+    .unwrap_or_else(|error| {
+        let source_turn = message.source_refs.get("source_turn_id").map(|turn_id| {
+            runtime
+                .storage()
+                .read_turn_by_id(turn_id)
+                .map(|turn| turn.map(|turn| (turn.turn_id, turn.trigger, turn.terminal)))
+        });
+        let source_turn_message_ids =
+            message.source_refs.get("source_turn_id").map(|turn_id| {
+                runtime
+                    .storage()
+                    .read_messages_for_turn(turn_id, None)
+                    .map(|messages| {
+                        messages
+                            .into_iter()
+                            .take(8)
+                            .map(|message| message.id)
+                            .collect::<Vec<_>>()
+                    })
+            });
+        let recent_turn_message_map = runtime.storage().read_recent_turns(8).map(|turns| {
+            turns
+                .into_iter()
+                .map(|turn| {
+                    (
+                        turn.turn_id,
+                        turn.trigger.and_then(|trigger| trigger.message_id),
+                        turn.terminal.map(|terminal| terminal.kind),
+                    )
+                })
+                .collect::<Vec<_>>()
+        });
+        panic!(
+            "model input processing failed: {error:#}; message={}; source_refs={:?}; continuity_sources={:?}; source_turn_trigger_terminal={source_turn:?}; source_turn_message_ids={source_turn_message_ids:?}; recent_turn_message_map={recent_turn_message_map:?}",
+            message.id,
+            message.source_refs,
+            crate::runtime::provider_recovery::continuity_sources(&message),
+        );
+    });
     assert!(runtime
         .commit_queue_terminal_settlement(
             crate::types::QueueEntryRecord {

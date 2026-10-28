@@ -231,7 +231,8 @@ async fn wait_snapshot_keeps_submillisecond_precision_and_rejects_stale_payloads
                 .as_ref()
                 .unwrap()
                 .obligation
-                .wait_conditions,
+                .wait_witness
+                .live_waits,
             vec![wait.clone()],
         );
         if concurrent_mutation {

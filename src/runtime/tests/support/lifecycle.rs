@@ -102,7 +102,7 @@ impl LifecycleHarness {
         clock: Arc<crate::runtime::clock::TestClock>,
         provider: Arc<dyn AgentProvider>,
     ) -> RuntimeHandle {
-        RuntimeHandle::new_with_clock(
+        let runtime = RuntimeHandle::new_with_clock(
             "default",
             data_dir.path().to_path_buf(),
             workspace.path().to_path_buf(),
@@ -112,7 +112,9 @@ impl LifecycleHarness {
             context_config(),
             clock,
         )
-        .expect("open lifecycle runtime")
+        .expect("open lifecycle runtime");
+        super::isolate_test_user_home(&runtime);
+        runtime
     }
 
     pub(crate) fn runtime(&self) -> &RuntimeHandle {
@@ -132,8 +134,18 @@ impl LifecycleHarness {
         );
     }
 
+    // Startup recovery needs to drop the original runtime before minting the
+    // Host's exclusive preactivation capability. Ordinary restart stays intact.
+    pub(crate) fn into_startup_fixture_parts(self) -> (TempDir, TempDir, RuntimeHandle) {
+        (self.data_dir, self.workspace, self.runtime)
+    }
+
     pub(crate) fn now(&self) -> chrono::DateTime<Utc> {
         self.runtime.now()
+    }
+
+    pub(crate) fn clock(&self) -> Arc<crate::runtime::clock::TestClock> {
+        self.clock.clone()
     }
 
     pub(crate) async fn advance(&self, duration: std::time::Duration) {
@@ -197,6 +209,26 @@ impl LifecycleHarness {
 
     pub(crate) fn assert_unchanged(&self, before: &DurableLifecycleSnapshot) {
         assert_eq!(&self.snapshot(), before);
+    }
+
+    pub(crate) fn assert_post_commit_result<T: std::fmt::Debug>(
+        &self,
+        result: Result<T>,
+        fault: crate::runtime_db::transitions::TransitionFaultPoint,
+        expected_effect: &str,
+    ) -> Option<T> {
+        if fault == crate::runtime_db::transitions::TransitionFaultPoint::BeforeCacheUpdate {
+            assert!(result
+                .unwrap_err()
+                .to_string()
+                .contains("publication requires reconciliation"));
+            assert!(self.runtime.inner.mutation_owner.capture().is_err());
+            None
+        } else {
+            let value = result.unwrap();
+            self.assert_post_commit_warning(expected_effect);
+            Some(value)
+        }
     }
 
     pub(crate) fn assert_post_commit_warning(&self, expected_effect: &str) {

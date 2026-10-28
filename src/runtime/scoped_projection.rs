@@ -3,165 +3,129 @@
 use super::*;
 use crate::diagnostics::attribution;
 use crate::runtime_db::RuntimeDb;
-use crate::types::{ChildAgentObservabilitySnapshot, ExternalTriggerRecord, TimerRecord};
 use tokio::runtime::Handle;
 
 impl RuntimeHandle {
-    pub(crate) fn agent_state_scoped(&self, db: &RuntimeDb, handle: &Handle) -> Result<AgentState> {
-        let lock_wait = attribution::AGENT_LOCK.start();
-        let guard = handle.block_on(db.wait_for_memory_lock(self.inner.agent.lock()))?;
-        drop(lock_wait);
-        let clone_timer = attribution::AGENT_CLONE.start();
-        let agent = guard.state.clone();
-        drop(guard);
-        drop(clone_timer);
-        db.check_read_scope()?;
-        Ok(agent)
-    }
-
-    pub(crate) fn lightweight_agent_state_projection_scoped(
+    fn with_scoped_ready_root<T>(
         &self,
         db: &RuntimeDb,
         handle: &Handle,
-    ) -> Result<LightweightAgentStateProjection> {
-        let storage = self.inner.storage.read_only_with_db(db.clone())?;
-        let agent = self.agent_state_scoped(db, handle)?;
-        let work_queue = storage.work_queue_read_model()?;
-        let posture_timer = attribution::POSTURE.start();
-        let scheduling_posture =
-            storage.agent_posture_projection_with_work_queue(&agent, &work_queue)?;
-        drop(posture_timer);
-        let closure_timer = attribution::CLOSURE.start();
-        let closure = Self::closure_decision_with_storage_at(
-            &storage,
-            &agent,
-            None,
-            work_queue.clone(),
-            self.now(),
-        )?;
-        drop(closure_timer);
+        read: impl FnOnce(&resident_state::AgentSnapshot) -> Result<T>,
+    ) -> Result<T> {
+        let _reservations = handle.block_on(db.wait_for_memory_lock(
+            mutation_owner::MutationOwner::reserve_all(vec![self.inner.mutation_owner.clone()]),
+        ))??;
+        // Pending recovery and preparation debt remain explicit. Never run an
+        // unscoped SQL/preparation future through the cancellable lock waiter.
+        let root = self
+            .inner
+            .mutation_owner
+            .capture()?
+            .context("scoped read needs a Ready publication")?;
+        anyhow::ensure!(
+            root.state.id == self.inner.mutation_owner.agent_id()
+                && root.token.identity_incarnation == self.inner.identity_incarnation,
+            "scoped read publication scope differs"
+        );
+        let result = read(&root)?;
+        db.check_read_scope()?;
+        Ok(result)
+    }
+
+    pub(crate) fn operator_state_read_projection_scoped(
+        &self,
+        task_limit: usize,
+        timer_limit: usize,
+        db: &RuntimeDb,
+        handle: &Handle,
+    ) -> Result<crate::host::AgentStateReadProjection> {
+        db.check_read_scope()?;
+        anyhow::ensure!(
+            timer_limit <= resident_scheduling::SCHEDULING_HISTORY_WINDOW,
+            resident_scheduling::SchedulingReadError::NeedsHistory
+        );
+        let mut projection = self.with_scoped_ready_root(db, handle, |root| {
+            self.operator_state_from_root(root, task_limit, timer_limit)
+        })?;
+        // Release the parent reservation before taking any child owner.
         let children_timer = attribution::CHILDREN.start();
-        let active_children = match &self.inner.host_bridge {
-            Some(bridge) => bridge.child_summaries_scoped(&agent.id, db, handle)?,
+        projection.agent.active_children = match &self.inner.host_bridge {
+            Some(bridge) => {
+                bridge.child_summaries_scoped(&projection.agent.agent.id, db, handle)?
+            }
             None => Vec::new(),
         };
         drop(children_timer);
-        let identity_timer = attribution::IDENTITY.start();
-        let identity = match &self.inner.host_bridge {
-            Some(bridge) => bridge
-                .identity_for_agent_scoped(&agent.id, db)?
-                .map(|identity| {
-                    AgentIdentityView::from_record(&identity, &self.inner.default_agent_id)
+        projection
+            .material
+            .retain_children(&projection.agent.active_children)?;
+        db.check_read_scope()?;
+        Ok(projection)
+    }
+
+    pub(crate) fn child_agent_summary_observation_scoped(
+        &self,
+        db: &RuntimeDb,
+        handle: &Handle,
+    ) -> Result<lifecycle::ChildAgentSummaryObservation> {
+        self.with_scoped_ready_root(db, handle, |root| {
+            let read = self.capture_operator_scheduler_from_root(root, self.now())?;
+            let material = read.acquisition.clone();
+            material.read(|| {
+                let active_task_count = task_reads::active_task_count(&read.tasks)?;
+                anyhow::ensure!(
+                    active_task_count == read.projection.active_tasks.len(),
+                    "scoped child Task metadata differs from selected active facts"
+                );
+                let closure = Self::closure_decision_from_projection(
+                    &read.state,
+                    &read.projection,
+                    None,
+                    &read.acquisition,
+                )?;
+                let metadata_bytes = std::mem::size_of::<Vec<&TaskRecord>>()
+                    .checked_add(
+                        active_task_count
+                            .checked_mul(std::mem::size_of::<&TaskRecord>())
+                            .context("scoped child Task reference slots overflow")?,
+                    )
+                    .context("scoped child Task metadata overflow")?;
+                crate::diagnostics::resource_io::charge_owned_metadata(
+                    u64::try_from(metadata_bytes)?,
+                    active_task_count,
+                )?;
+                let _references = self.inner.input_evidence_budget.register_owned_bytes(
+                    &read.tasks.scope,
+                    input_evidence_budget::InputMemoryCategory::Pins,
+                    input_evidence_budget::OwnedBytesEstimate {
+                        payload_bytes: 0,
+                        metadata_estimate_bytes: u64::try_from(metadata_bytes)?,
+                    },
+                )?;
+                let active_tasks = read.projection.active_tasks.iter().collect::<Vec<_>>();
+                let briefs =
+                    read.observability_briefs
+                        .iter()
+                        .filter_map(|record| match &record.record {
+                            resident_input_evidence::PreparedInputEvidence::Brief(brief) => {
+                                Some(brief)
+                            }
+                            _ => None,
+                        });
+                let observability = lifecycle::build_child_agent_observability_with_active_tasks(
+                    &read.state,
+                    closure.waiting_reason,
+                    &active_tasks,
+                    briefs,
+                )?;
+                Ok(lifecycle::ChildAgentSummaryObservation {
+                    state: read.state.clone(),
+                    active_task_count,
+                    observability,
+                    acquisition: material.clone(),
                 })
-                .unwrap_or_else(|| self.fallback_identity_view(&agent.id)),
-            None => self.fallback_identity_view(&agent.id),
-        };
-        drop(identity_timer);
-        let tasks_timer = attribution::ACTIVE_TASKS.start();
-        let active_task_count = storage.active_task_count_for_agent(&agent.id)?;
-        drop(tasks_timer);
-        db.check_read_scope()?;
-        Ok(LightweightAgentStateProjection {
-            identity,
-            active_task_count,
-            lifecycle: crate::types::AgentLifecycleHint::from_status(
-                &agent.id,
-                agent.status.clone(),
-            ),
-            model: self.model_state_for(&agent),
-            agent,
-            scheduling_posture,
-            closure,
-            active_children,
-            work_queue,
+            })
         })
-    }
-
-    pub(crate) fn active_tasks_scoped(
-        &self,
-        limit: usize,
-        db: &RuntimeDb,
-        handle: &Handle,
-    ) -> Result<Vec<TaskRecord>> {
-        crate::diagnostics::record_runtime_projection_cache_read();
-        let cache = handle.block_on(db.wait_for_memory_lock(self.inner.projection_cache.lock()))?;
-        let tasks = cache.active_tasks(limit);
-        drop(cache);
-        db.check_read_scope()?;
-        Ok(tasks)
-    }
-
-    pub(crate) fn recent_timers_scoped(
-        &self,
-        limit: usize,
-        db: &RuntimeDb,
-        handle: &Handle,
-    ) -> Result<Vec<TimerRecord>> {
-        crate::diagnostics::record_runtime_projection_cache_read();
-        let cache = handle.block_on(db.wait_for_memory_lock(self.inner.projection_cache.lock()))?;
-        let timers = cache.recent_timers(limit);
-        drop(cache);
-        db.check_read_scope()?;
-        Ok(timers)
-    }
-
-    pub(crate) fn latest_external_triggers_scoped(
-        &self,
-        db: &RuntimeDb,
-        handle: &Handle,
-    ) -> Result<Vec<ExternalTriggerRecord>> {
-        crate::diagnostics::record_runtime_projection_cache_read();
-        let cached = {
-            let cache =
-                handle.block_on(db.wait_for_memory_lock(self.inner.projection_cache.lock()))?;
-            cache.latest_external_triggers()
-        };
-        db.check_read_scope()?;
-        if !cached.is_empty() {
-            return Ok(cached);
-        }
-        let agent_id = self.agent_state_scoped(db, handle)?.id;
-        let mut records = db.external_triggers().latest_for_agent(&agent_id)?;
-        if !records.is_empty() {
-            let mut cache =
-                handle.block_on(db.wait_for_memory_lock(self.inner.projection_cache.lock()))?;
-            for record in &records {
-                cache.upsert_external_trigger(record.clone());
-            }
-        }
-        records.sort_by(|left, right| right.created_at.cmp(&left.created_at));
-        db.check_read_scope()?;
-        Ok(records)
-    }
-
-    pub(crate) fn child_agent_observability_scoped(
-        &self,
-        db: &RuntimeDb,
-        handle: &Handle,
-    ) -> Result<ChildAgentObservabilitySnapshot> {
-        let storage = self.inner.storage.read_only_with_db(db.clone())?;
-        let agent = self.agent_state_scoped(db, handle)?;
-        let closure_timer = attribution::CHILD_CLOSURE.start();
-        let work_queue = storage.work_queue_prompt_projection()?;
-        let closure =
-            Self::closure_decision_with_storage_at(&storage, &agent, None, work_queue, self.now())?;
-        drop(closure_timer);
-        let tasks_timer = attribution::CHILD_TASK_READ.start();
-        let tasks = db.tasks().active_for_agent(&agent.id, usize::MAX)?;
-        drop(tasks_timer);
-        let briefs_timer = attribution::CHILD_BRIEFS.start();
-        let briefs = storage.read_recent_briefs(16)?;
-        drop(briefs_timer);
-        let assemble_timer = attribution::CHILD_ASSEMBLE.start();
-        let result = lifecycle::build_child_agent_observability(
-            &agent,
-            closure.waiting_reason,
-            &tasks,
-            &briefs,
-        );
-        drop(assemble_timer);
-        db.check_read_scope()?;
-        Ok(result)
     }
 }
 
@@ -169,8 +133,9 @@ impl RuntimeHandle {
 mod tests {
     use super::*;
     use crate::host::AgentStateReadProjection;
-    use crate::runtime::tests::support::host_backed_test_runtime;
+    use crate::runtime::tests::support::{host_backed_test_runtime, LifecycleHarness};
     use crate::runtime_db::{RuntimeDbReadScope, RuntimeDbRetryableError};
+    use crate::types::{ExternalTriggerRecord, TimerRecord};
     use std::time::{Duration, Instant};
 
     fn projection_value(projection: &AgentStateReadProjection) -> serde_json::Value {
@@ -209,6 +174,8 @@ mod tests {
         host: &crate::host::RuntimeHost,
         agent_id: &str,
     ) -> Result<AgentStateReadProjection> {
+        let runtime = host.try_get_loaded_runtime(agent_id).await.unwrap();
+        drop(runtime.operator_state_read_projection(10, 10).await?);
         let db = host.runtime_db().with_read_scope(RuntimeDbReadScope::new(
             Instant::now() + Duration::from_secs(30),
         ));
@@ -253,10 +220,11 @@ mod tests {
         let parent_id = parent.agent_id().await.unwrap();
         let identity = child_identity("payload-isolation-child", &parent_id);
         host.append_agent_identity(&identity).unwrap();
-        let _child = host.get_or_create_agent(&identity.agent_id).await.unwrap();
+        let child = host.get_or_create_agent(&identity.agent_id).await.unwrap();
+        drop(child.operator_state_read_projection(10, 10).await.unwrap());
 
-        // Corrupt only synthetic rows that the child's active-owner query must
-        // never decode. This fails through the parent projection on latest_all.
+        // A loaded child uses its prepared publication, not synthetic SQL
+        // history belonging to terminal tasks or a different owner.
         for (owner, status) in [
             (identity.agent_id.as_str(), "completed"),
             (identity.agent_id.as_str(), "failed"),
@@ -288,14 +256,11 @@ mod tests {
     }
 
     #[tokio::test(flavor = "current_thread")]
-    async fn scoped_parent_child_summary_preserves_active_owner_and_nonblocking_task_semantics() {
+    async fn scoped_cold_child_summary_preserves_active_owner_and_nonblocking_task_semantics() {
         let (_home, host, parent) = host_backed_test_runtime().await;
         let parent_id = parent.agent_id().await.unwrap();
         let mut children = Vec::new();
-        for (id, loaded) in [
-            ("active-loaded-child", true),
-            ("active-unloaded-child", false),
-        ] {
+        for id in ["active-unloaded-child", "other-active-unloaded-child"] {
             let identity = child_identity(id, &parent_id);
             host.append_agent_identity(&identity).unwrap();
             let mut state = AgentState::new(id);
@@ -312,17 +277,10 @@ mod tests {
                 completed_at: Utc::now(),
                 duration_ms: 1,
             });
-            host.runtime_db().agent_states().upsert(&state).unwrap();
-            if loaded {
-                let runtime = host.get_or_create_agent(id).await.unwrap();
-                runtime.inner.agent.lock().await.state = state;
-                runtime
-                    .inner
-                    .projection_cache
-                    .lock()
-                    .await
-                    .upsert_task(child_task("cache-only-child-task", id, "cancelling", false));
-            }
+            host.runtime_db()
+                .agent_states()
+                .upsert_for_fixture(&state)
+                .unwrap();
             for index in 0..17 {
                 let brief: crate::types::BriefRecord = serde_json::from_value(serde_json::json!({
                     "id": format!("{id}-brief-{index}"), "agent_id": id,
@@ -398,10 +356,9 @@ mod tests {
                     Some("brief-15")
                 );
             }
-            let loaded = host.get_or_create_agent(children[0]).await.unwrap();
-            let ordinary = loaded.child_agent_observability().await.unwrap();
-            assert_eq!(projection.agent.active_children[0].observability, ordinary);
-            assert!(host.try_get_loaded_runtime(children[1]).await.is_none());
+            for id in &children {
+                assert!(host.try_get_loaded_runtime(id).await.is_none());
+            }
             if active {
                 for id in &children {
                     let mut task = host
@@ -458,27 +415,31 @@ mod tests {
     }
 
     #[tokio::test(flavor = "current_thread")]
-    async fn scoped_loaded_projection_preserves_memory_cache_children_and_trigger_miss() {
+    async fn scoped_loaded_projection_uses_resident_cut_not_unpublished_memory_or_sql() {
         let (_home, host, runtime) = host_backed_test_runtime().await;
+        runtime.await_initial_resources().await;
+        let refresh = runtime.hold_resource_refresh_for_test().await.unwrap();
         let agent_id = runtime.agent_id().await.unwrap();
+        drop(
+            runtime
+                .operator_state_read_projection(10, 10)
+                .await
+                .unwrap(),
+        );
         runtime.inner.agent.lock().await.state.pending = 123;
         let task: TaskRecord = serde_json::from_value(serde_json::json!({
-            "id": "cache-only-task", "agent_id": agent_id,
+            "id": "sql-only-task", "agent_id": agent_id,
             "kind": "command_task", "status": "running",
             "created_at": Utc::now(), "updated_at": Utc::now(),
         }))
         .unwrap();
         let timer: TimerRecord = serde_json::from_value(serde_json::json!({
-            "id": "cache-only-timer", "agent_id": agent_id,
+            "id": "sql-only-timer", "agent_id": agent_id,
             "created_at": Utc::now(), "duration_ms": 1000, "repeat": false,
         }))
         .unwrap();
-        {
-            let mut cache = runtime.inner.projection_cache.lock().await;
-            cache.upsert_task(task);
-            cache.upsert_timer(timer);
-            cache.external_triggers.clear();
-        }
+        runtime.inner.storage.append_task(&task).unwrap();
+        runtime.inner.storage.append_timer(&timer).unwrap();
         let trigger: ExternalTriggerRecord = serde_json::from_value(serde_json::json!({
             "external_trigger_id": "scoped-trigger", "target_agent_id": agent_id,
             "scope": "agent", "delivery_mode": "wake_hint", "token_hash": "test-only",
@@ -501,6 +462,9 @@ mod tests {
         );
         host.append_agent_identity(&child).unwrap();
         let child = host.get_or_create_agent(&child.agent_id).await.unwrap();
+        child.await_initial_resources().await;
+        let child_refresh = child.hold_resource_refresh_for_test().await.unwrap();
+        drop(child.operator_state_read_projection(10, 10).await.unwrap());
         child.inner.agent.lock().await.state.current_work_item_id =
             Some("memory-only-child-work".into());
         child
@@ -513,6 +477,7 @@ mod tests {
             .current_working_memory
             .current_work_item_id = Some("memory-only-child-work".into());
 
+        let root = runtime.inner.mutation_owner.capture().unwrap().unwrap();
         let scoped_db = host.runtime_db().with_read_scope(RuntimeDbReadScope::new(
             Instant::now() + Duration::from_secs(30),
         ));
@@ -525,40 +490,165 @@ mod tests {
         .await
         .unwrap()
         .unwrap();
-        assert_eq!(scoped.agent.agent.pending, 123);
-        assert_eq!(scoped.tasks[0].id, "cache-only-task");
-        assert_eq!(scoped.timers[0].id, "cache-only-timer");
-        assert_eq!(scoped.external_triggers, vec![trigger]);
+        assert!(Arc::ptr_eq(
+            &root,
+            &runtime.inner.mutation_owner.capture().unwrap().unwrap()
+        ));
+        assert_ne!(scoped.agent.agent.pending, 123);
+        assert!(scoped.tasks.iter().all(|task| task.id != "sql-only-task"));
+        assert!(scoped
+            .timers
+            .iter()
+            .all(|timer| timer.id != "sql-only-timer"));
+        assert!(scoped
+            .external_triggers
+            .iter()
+            .all(|record| record.external_trigger_id != trigger.external_trigger_id));
         assert_eq!(
             scoped.agent.active_children[0]
                 .observability
                 .current_work_item_id
                 .as_deref(),
-            Some("memory-only-child-work"),
+            None,
         );
         let ordinary = host
             .operator_agent_state_projection(&agent_id, 10, 10)
             .await
             .unwrap();
         assert_eq!(projection_value(&scoped), projection_value(&ordinary));
+        drop((refresh, child_refresh));
         host.shutdown().await.unwrap();
     }
 
     #[tokio::test(flavor = "current_thread")]
-    async fn scoped_loaded_memory_locks_cancel_or_expire_and_allow_healthy_retry() {
+    async fn scoped_loaded_reads_reject_unprepared_current_without_preparation() {
+        let harness = LifecycleHarness::new();
+        let runtime = harness.runtime();
+        runtime.await_initial_resources().await;
+        let _refresh = runtime.hold_resource_refresh_for_test().await.unwrap();
+        drop(
+            runtime
+                .operator_state_read_projection(10, 10)
+                .await
+                .unwrap(),
+        );
+        let root = runtime.inner.mutation_owner.capture().unwrap().unwrap();
+        let mut reservation = runtime.inner.mutation_owner.reserve().await.unwrap();
+        reservation
+            .begin("scoped-unprepared-current".into())
+            .unwrap();
+        reservation
+            .committed_prepared_with_scheduling_domains(
+                root.state.clone(),
+                root.episodes.clone(),
+                root.input_evidence.clone(),
+                root.work.clone(),
+                root.tasks.clone(),
+                root.scheduling.clone(),
+            )
+            .unwrap();
+        let unprepared = reservation.publish(root.state.clone()).unwrap();
+        drop(reservation);
+        assert!(unprepared.current.is_none());
+
+        for operation in 0..2 {
+            let db = runtime
+                .runtime_db()
+                .with_read_scope(RuntimeDbReadScope::new(
+                    Instant::now() + Duration::from_secs(30),
+                ));
+            let reader = runtime.clone();
+            let handle = Handle::current();
+            let error = tokio::task::spawn_blocking(move || match operation {
+                0 => reader
+                    .operator_state_read_projection_scoped(10, 10, &db, &handle)
+                    .map(|_| ()),
+                _ => reader
+                    .child_agent_summary_observation_scoped(&db, &handle)
+                    .map(|_| ()),
+            })
+            .await
+            .unwrap()
+            .unwrap_err();
+            assert!(
+                error
+                    .to_string()
+                    .contains("Current scheduler metadata needs preparation"),
+                "{error:#}"
+            );
+            assert!(Arc::ptr_eq(
+                &unprepared,
+                &runtime.inner.mutation_owner.capture().unwrap().unwrap()
+            ));
+        }
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn scoped_loaded_reads_preserve_pending_reconcile_fence() {
+        let harness = LifecycleHarness::new();
+        let runtime = harness.runtime();
+        runtime.await_initial_resources().await;
+        let _refresh = runtime.hold_resource_refresh_for_test().await.unwrap();
+        drop(
+            runtime
+                .operator_state_read_projection(10, 10)
+                .await
+                .unwrap(),
+        );
+        let key = {
+            let mut reservation = runtime.inner.mutation_owner.reserve().await.unwrap();
+            reservation
+                .begin("scoped-pending-reconcile".into())
+                .unwrap()
+        };
+
+        for operation in 0..2 {
+            let db = runtime
+                .runtime_db()
+                .with_read_scope(RuntimeDbReadScope::new(
+                    Instant::now() + Duration::from_secs(30),
+                ));
+            let reader = runtime.clone();
+            let handle = Handle::current();
+            let error = tokio::task::spawn_blocking(move || match operation {
+                0 => reader
+                    .operator_state_read_projection_scoped(10, 10, &db, &handle)
+                    .map(|_| ()),
+                _ => reader
+                    .child_agent_summary_observation_scoped(&db, &handle)
+                    .map(|_| ()),
+            })
+            .await
+            .unwrap()
+            .unwrap_err();
+            assert!(
+                matches!(
+                    error.downcast_ref::<mutation_owner::MutationOwnerError>(),
+                    Some(mutation_owner::MutationOwnerError::NeedsReconcile(actual))
+                        if actual == &key
+                ),
+                "{error:#}"
+            );
+            assert!(matches!(
+                runtime.inner.mutation_owner.capture(),
+                Err(mutation_owner::MutationOwnerError::NeedsReconcile(actual))
+                    if actual == key
+            ));
+        }
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn scoped_loaded_owner_wait_cancels_or_expires_and_allows_healthy_retry() {
         let (_home, host, runtime) = host_backed_test_runtime().await;
-        for operation in 0..4 {
+        drop(
+            runtime
+                .operator_state_read_projection(10, 10)
+                .await
+                .unwrap(),
+        );
+        for operation in 0..2 {
             for expired in [false, true] {
-                let agent_guard = if operation == 0 {
-                    Some(runtime.inner.agent.lock().await)
-                } else {
-                    None
-                };
-                let cache_guard = if operation != 0 {
-                    Some(runtime.inner.projection_cache.lock().await)
-                } else {
-                    None
-                };
+                let reservation = runtime.inner.mutation_owner.reserve().await.unwrap();
                 let scope = RuntimeDbReadScope::new(
                     Instant::now()
                         + if expired {
@@ -574,11 +664,11 @@ mod tests {
                 let worker = tokio::task::spawn_blocking(move || {
                     let _ = started.send(());
                     match operation {
-                        0 => reader.agent_state_scoped(&db, &handle).map(|_| ()),
-                        1 => reader.active_tasks_scoped(10, &db, &handle).map(|_| ()),
-                        2 => reader.recent_timers_scoped(10, &db, &handle).map(|_| ()),
+                        0 => reader
+                            .operator_state_read_projection_scoped(10, 10, &db, &handle)
+                            .map(|_| ()),
                         _ => reader
-                            .latest_external_triggers_scoped(&db, &handle)
+                            .child_agent_summary_observation_scoped(&db, &handle)
                             .map(|_| ()),
                     }
                 });
@@ -592,8 +682,7 @@ mod tests {
                     .unwrap()
                     .unwrap_err();
                 assert!(error.is::<RuntimeDbRetryableError>(), "{error:#}");
-                drop(cache_guard);
-                drop(agent_guard);
+                drop(reservation);
             }
         }
         let db = host.runtime_db().with_read_scope(RuntimeDbReadScope::new(
@@ -602,10 +691,8 @@ mod tests {
         let reader = runtime.clone();
         let handle = Handle::current();
         tokio::task::spawn_blocking(move || {
-            reader.agent_state_scoped(&db, &handle)?;
-            reader.active_tasks_scoped(10, &db, &handle)?;
-            reader.recent_timers_scoped(10, &db, &handle)?;
-            reader.latest_external_triggers_scoped(&db, &handle)?;
+            reader.operator_state_read_projection_scoped(10, 10, &db, &handle)?;
+            reader.child_agent_summary_observation_scoped(&db, &handle)?;
             Ok::<(), anyhow::Error>(())
         })
         .await

@@ -630,19 +630,33 @@ impl AgentMessageDeliveryRepository<'_> {
         &self,
         message_id: &str,
     ) -> Result<Option<AgentMessageDeliveryRecord>> {
-        self.db.with_read(|connection| {
-            connection
-                .query_row(
-                    "SELECT payload_json
-                     FROM agent_message_deliveries
-                     WHERE message_id = ?1",
-                    [message_id],
-                    |row| row.get::<_, String>(0),
-                )
-                .optional()?
-                .map(|payload| decode_delivery(&payload))
-                .transpose()
-        })
+        self.db
+            .with_read(|connection| Self::latest_for_message_on(connection, message_id))
+    }
+
+    pub(crate) fn latest_for_message_preparation(
+        &self,
+        message_id: &str,
+    ) -> Result<Option<AgentMessageDeliveryRecord>> {
+        self.db
+            .read_for_preparation(|tx| Self::latest_for_message_on(tx, message_id))
+    }
+
+    fn latest_for_message_on(
+        connection: &rusqlite::Connection,
+        message_id: &str,
+    ) -> Result<Option<AgentMessageDeliveryRecord>> {
+        connection
+            .query_row(
+                "SELECT payload_json
+                 FROM agent_message_deliveries
+                 WHERE message_id = ?1",
+                [message_id],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()?
+            .map(|payload| decode_delivery(&payload))
+            .transpose()
     }
 
     pub fn receipt(&self, delivery_id: &str) -> Result<Option<AgentMessageDeliveryReceipt>> {
@@ -1359,7 +1373,7 @@ mod tests {
         ))?;
         let mut state = AgentState::new("target-agent");
         state.status = status;
-        db.agent_states().upsert(&state)
+        db.agent_states().upsert_for_fixture(&state)
     }
 
     fn caller() -> AgentMessageCallerContext {
@@ -1486,7 +1500,7 @@ mod tests {
             work_item_id: None,
             claimed_work_revision: None,
         });
-        db.agent_states().upsert(&state)
+        db.agent_states().upsert_for_fixture(&state)
     }
 
     fn seed_reply_turn(
@@ -1523,7 +1537,8 @@ mod tests {
             None,
             None,
         ))?;
-        db.agent_states().upsert(&AgentState::new("caller-agent"))?;
+        db.agent_states()
+            .upsert_for_fixture(&AgentState::new("caller-agent"))?;
         let mut inputs = Vec::new();
         for (index, sender) in senders.iter().enumerate() {
             let mut message = MessageEnvelope::new(
@@ -2222,7 +2237,7 @@ mod tests {
                 "stop" => {
                     let mut state = db.agent_states().latest("caller-agent")?.unwrap();
                     state.status = AgentStatus::Stopped;
-                    db.agent_states().upsert(&state)?;
+                    db.agent_states().upsert_for_fixture(&state)?;
                 }
                 "identity" => {
                     let mut identity = db.agent_identities().latest("caller-agent")?.unwrap();
@@ -2235,7 +2250,7 @@ mod tests {
                         Some(TurnOwner::WorkItem {
                             work_item_id: "other-work".into(),
                         });
-                    db.agent_states().upsert(&state)?;
+                    db.agent_states().upsert_for_fixture(&state)?;
                 }
                 "source" => {
                     inputs[0].routing_context.as_mut().unwrap().correlation_id =
@@ -2874,7 +2889,7 @@ mod tests {
         let id = inputs[0].id.clone();
         let mut state = db.agent_states().latest("caller-agent")?.unwrap();
         state.pending += 1;
-        db.agent_states().upsert(&state)?;
+        db.agent_states().upsert_for_fixture(&state)?;
         assert!(prepare_reply(&db, "sender-a", Some(&id), false, "after-persist").is_ok());
         Ok(())
     }
@@ -3240,6 +3255,14 @@ mod tests {
         assert_eq!(prepared.message.turn_id, None);
         assert_eq!(prepared.message.task_id, None);
         assert_eq!(prepared.message.work_item_id, None);
+        assert!(db
+            .queue_entries()
+            .latest_for_preparation(&prepared.message.id)?
+            .is_none());
+        assert!(db
+            .agent_message_deliveries()
+            .latest_for_message_preparation(&prepared.message.id)?
+            .is_none());
         let first = db
             .transitions()
             .commit_delivery_admission(&admission_command(&prepared), &prepared.record)?;
@@ -3256,6 +3279,23 @@ mod tests {
         assert_eq!(replay.delivery_id, first.delivery_id);
         assert!(replay.idempotent_replay);
         assert_eq!(db.queue_entries().latest_all()?.len(), 1);
+        assert_eq!(
+            serde_json::to_value(
+                db.queue_entries()
+                    .latest_for_preparation(&prepared.message.id)?
+            )?,
+            serde_json::to_value(db.queue_entries().latest(&prepared.message.id)?)?
+        );
+        assert_eq!(
+            serde_json::to_value(
+                db.agent_message_deliveries()
+                    .latest_for_message_preparation(&prepared.message.id)?
+            )?,
+            serde_json::to_value(
+                db.agent_message_deliveries()
+                    .latest_for_message(&prepared.message.id)?
+            )?
+        );
 
         let stored = db
             .agent_message_deliveries()
@@ -3500,7 +3540,7 @@ mod tests {
             .latest("target-agent")?
             .context("missing target state")?;
         state.status = AgentStatus::AwakeIdle;
-        db.agent_states().upsert(&state)?;
+        db.agent_states().upsert_for_fixture(&state)?;
         let retry = prepare("retry-key", "retry me")?;
         let accepted = db
             .transitions()

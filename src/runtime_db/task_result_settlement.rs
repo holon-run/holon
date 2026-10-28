@@ -1,6 +1,6 @@
 use std::collections::BTreeMap;
 
-use anyhow::{bail, Result};
+use anyhow::{bail, ensure, Result};
 use chrono::{DateTime, Duration, Utc};
 use rusqlite::{params, OptionalExtension, Transaction};
 use serde::{Deserialize, Serialize};
@@ -17,25 +17,34 @@ pub(crate) const TASK_RESULT_SETTLEMENT_ADMISSION_LIMIT: usize = 8;
 // InterruptedReplaySourceInvalid for queue-head containment, and startup
 // repair reuses its strict attached-turn matcher.
 mod exact_waiter;
+pub(crate) use exact_waiter::candidate_tx as exact_waiter_recovery_candidate_tx;
 mod local_dispatch;
 pub(crate) use local_dispatch::pause_local_dispatch_rejected_tx;
 pub(crate) mod live_turn;
 mod obligation;
+pub(in crate::runtime_db) use obligation::settled_recovery_source_tx;
 pub(crate) use obligation::{
-    classify_obligation_tx, exact_waiter_recovery_wait_tx, settled_recovery_source_tx,
+    classify_obligation_tx, classify_obligation_with_waits_tx, exact_waiter_recovery_wait_tx,
     TaskResultObligation,
 };
 mod provider_handoff;
 pub(crate) use provider_handoff::transfer_provider_admitted_tx;
-mod recovery_budget;
+pub(crate) mod recovery_budget;
+mod recovery_observation;
 pub(crate) use live_turn::{
-    admit_live_task_results_tx, canonical_live_turn_id_tx, recover_live_task_results_tx,
-    recovery_turn_for_activation_tx,
+    admit_live_task_results_tx, canonical_live_turn_id_tx, interrupted_admitted_result_anchor_tx,
+    recover_live_task_results_tx, recovery_turn_for_activation_tx, same_turn_candidates_tx,
 };
 pub(crate) use recovery_budget::{charge_recovery_admission_tx, TASK_RESULT_RECOVERY_LIMIT};
+pub(in crate::runtime_db) use recovery_observation::observe_recovery_source_tx;
+pub(in crate::runtime_db) use recovery_observation::paused_replay_root_is_charged_tx;
 
+mod writes;
+pub(crate) use writes::*;
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod writes_tests;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -66,7 +75,7 @@ pub(crate) enum TaskResultSettlementDisposition {
     InterruptedReplaySourceFinal,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize)]
 pub(crate) struct TaskResultActivationSettlement {
     pub activation_id: String,
     pub disposition: TaskResultSettlementDisposition,
@@ -94,7 +103,8 @@ pub(crate) struct TaskResultSettlementRecord {
     pub message_id: String,
     pub work_item_id: Option<String>,
     pub rejoin_generation: u64,
-    pub parent_turn_id: String,
+    #[serde(flatten)]
+    pub source: crate::domain::execution_protocol::TaskRejoinSource,
     pub task_status: String,
     pub state: TaskResultSettlementState,
     pub activation_id: Option<String>,
@@ -175,7 +185,7 @@ impl TaskResultSettlementRecord {
             message_id: message.id.clone(),
             work_item_id,
             rejoin_generation: fence.generation,
-            parent_turn_id: fence.parent_turn_id,
+            source: fence.source,
             task_status,
             state: TaskResultSettlementState::PersistedPending,
             activation_id: None,
@@ -210,26 +220,17 @@ impl RuntimeDb {
 }
 
 impl TaskResultSettlementRepository<'_> {
+    #[cfg(test)]
     pub(crate) fn ensure_pending(
         &self,
         task: &TaskRecord,
         message: &MessageEnvelope,
         now: DateTime<Utc>,
     ) -> Result<Option<TaskResultSettlementRecord>> {
-        let Some(durable_task) = self.db.tasks().latest(&task.id)? else {
-            return Ok(None);
-        };
-        let Some(record) = TaskResultSettlementRecord::pending(&durable_task, message, now)? else {
-            return Ok(None);
-        };
         self.db.transaction(|tx| {
-            if existing_for_task_generation_tx(tx, &record.task_id, record.rejoin_generation)?
-                .is_some_and(|existing| existing.message_id != record.message_id)
-            {
-                return Ok(None);
-            }
-            upsert_pending_tx(tx, &record)?;
-            latest_for_message_tx(tx, &record.message_id)
+            prepare_ensure_pending_tx(tx, &task.id, message, now, TaskResultWriteLimits::default())?
+                .execute()?
+                .into_record()
         })
     }
 
@@ -284,6 +285,7 @@ impl TaskResultSettlementRepository<'_> {
         )
     }
 
+    #[cfg(test)]
     pub(crate) fn admit_unsettled_snapshot_with_projections(
         &self,
         agent_id: &str,
@@ -404,6 +406,7 @@ impl TaskResultSettlementRepository<'_> {
         Ok(())
     }
 
+    #[cfg(test)]
     pub(crate) fn reply_message_candidates(
         &self,
         agent_id: &str,
@@ -430,6 +433,7 @@ impl TaskResultSettlementRepository<'_> {
         })
     }
 
+    #[cfg(test)]
     pub(crate) fn reply_source_is_recoverable(
         &self,
         record: &TaskResultSettlementRecord,
@@ -445,54 +449,17 @@ impl TaskResultSettlementRepository<'_> {
         self.reply_source_is_consumed_for_owner(record)
     }
 
+    #[cfg(test)]
     pub(crate) fn non_reply_source_matches_owner(
         &self,
         record: &TaskResultSettlementRecord,
     ) -> Result<bool> {
-        self.db.transaction(|tx| {
-            if !record_matches_durable_task_tx(tx, record)? {
-                return Ok(false);
-            }
-            let payload: Option<String> = tx
-                .query_row(
-                    "SELECT payload_json FROM messages WHERE message_id = ?1",
-                    [&record.message_id],
-                    |row| row.get(0),
-                )
-                .optional()?;
-            let Some(payload) = payload else {
-                return Ok(false);
-            };
-            let message: MessageEnvelope = serde_json::from_str(&payload)?;
-            let task_payload: String = tx.query_row(
-                "SELECT payload_json FROM tasks WHERE task_id = ?1",
-                [&record.task_id],
-                |row| row.get(0),
-            )?;
-            let task: TaskRecord = serde_json::from_str(&task_payload)?;
-            Ok(matches!(
-                task.kind,
-                crate::types::TaskKind::CommandTask | crate::types::TaskKind::ChildAgentTask
-            ) && serde_json::to_value(&task.status)?.as_str()
-                == Some(record.task_status.as_str())
-                && task.parent_message_id.as_deref() == Some(record.message_id.as_str())
-                && message.kind == crate::types::MessageKind::TaskResult
-                && message.agent_id == record.agent_id
-                && message.work_item_id == record.work_item_id
-                && message.task_id.as_deref() == Some(record.task_id.as_str())
-                && matches!(
-                    &message.origin,
-                    crate::types::MessageOrigin::Task { task_id } if task_id == &record.task_id
-                )
-                && message.authority_class == crate::types::AuthorityClass::RuntimeInstruction
-                && message.delivery_surface
-                    == Some(crate::types::MessageDeliverySurface::TaskRejoin)
-                && message.admission_context == Some(crate::types::AdmissionContext::RuntimeOwned)
-                && crate::wake_contract::agent_message_reply_reference(&message).is_none())
-        })
+        self.db
+            .transaction(|tx| non_reply_source_matches_owner_tx(tx, record))
     }
 
     /// An owner wake may outlive its selector, but never its consumption grant.
+    #[cfg(test)]
     pub(crate) fn reply_source_is_consumed_for_owner(
         &self,
         record: &TaskResultSettlementRecord,
@@ -513,110 +480,8 @@ impl TaskResultSettlementRepository<'_> {
         record: &TaskResultSettlementRecord,
         require_owner_grant: bool,
     ) -> Result<bool> {
-        self.db.transaction(|tx| {
-            if !record_matches_durable_task_tx(tx, record)? {
-                return Ok(false);
-            }
-            let Some(payload) = tx
-                .query_row(
-                    "SELECT payload_json FROM messages WHERE message_id = ?1",
-                    [&record.message_id],
-                    |row| row.get::<_, String>(0),
-                )
-                .optional()?
-            else {
-                return Ok(false);
-            };
-            let message: MessageEnvelope = serde_json::from_str(&payload)?;
-            let Some(reply_id) = crate::wake_contract::agent_message_reply_reference(&message)
-            else {
-                return Ok(false);
-            };
-            let Some(payload) = tx
-                .query_row(
-                    "SELECT payload_json FROM messages WHERE message_id = ?1",
-                    [reply_id],
-                    |row| row.get::<_, String>(0),
-                )
-                .optional()?
-            else {
-                return Ok(false);
-            };
-            let reply: MessageEnvelope = serde_json::from_str(&payload)?;
-            if message.agent_id != record.agent_id
-                || message.work_item_id != record.work_item_id
-                || message.task_id.as_deref() != Some(record.task_id.as_str())
-                || reply.agent_id != record.agent_id
-                || !crate::wake_contract::is_agent_message(&reply)
-                || !reply.routing_context.as_ref().is_some_and(|route| {
-                    route.message_id == reply.id && route.recipient_agent_id == record.agent_id
-                })
-            {
-                return Ok(false);
-            }
-            let payload: String = tx.query_row(
-                "SELECT payload_json FROM tasks WHERE task_id = ?1",
-                [&record.task_id],
-                |row| row.get(0),
-            )?;
-            let task: TaskRecord = serde_json::from_str(&payload)?;
-            let detail = task.detail.as_ref();
-            let delivery_id = reply
-                .metadata
-                .as_ref()
-                .and_then(|metadata| metadata.get("agent_message_delivery"))
-                .and_then(|delivery| delivery.get("delivery_id"))
-                .and_then(serde_json::Value::as_str);
-            if task.kind != crate::types::TaskKind::AgentMessageWait
-                || detail
-                    .and_then(|detail| detail.get("message_id"))
-                    .and_then(serde_json::Value::as_str)
-                    != Some(reply_id)
-                || detail
-                    .and_then(|detail| detail.get("reply_content_source"))
-                    .and_then(serde_json::Value::as_str)
-                    != Some("original_message")
-                || delivery_id.is_none_or(str::is_empty)
-                || detail
-                    .and_then(|detail| detail.get("response_delivery_id"))
-                    .and_then(serde_json::Value::as_str)
-                    != delivery_id
-            {
-                return Ok(false);
-            }
-            let Some(payload) = tx
-                .query_row(
-                    "SELECT payload_json FROM agent_message_deliveries
-                     WHERE delivery_id = ?1 AND message_id = ?2",
-                    params![delivery_id, reply_id],
-                    |row| row.get::<_, String>(0),
-                )
-                .optional()?
-            else {
-                return Ok(false);
-            };
-            let delivery: crate::types::AgentMessageDeliveryRecord =
-                serde_json::from_str(&payload)?;
-            if delivery.target_agent_id != record.agent_id
-                || delivery.routing_context != reply.routing_context
-                || delivery.outcome != crate::types::AgentMessageDeliveryOutcome::Accepted
-                || delivery.state != crate::types::AgentMessageDeliveryState::Consumed
-            {
-                return Ok(false);
-            }
-            // The original queue source owns the first delivery. Its terminal
-            // consumption permits recovery of this independently fenced waiter.
-            if require_owner_grant {
-                live_turn::consumed_reply_owner_matches_tx(tx, &task, reply_id, &delivery)
-            } else {
-                live_turn::reply_source_queue_is_consumed_tx(
-                    tx,
-                    &record.agent_id,
-                    reply_id,
-                    &delivery,
-                )
-            }
-        })
+        self.db
+            .transaction(|tx| reply_source_consumption_matches_tx(tx, record, require_owner_grant))
     }
 
     /// The caller reserves rendered bytes and every waiter identity before this
@@ -642,6 +507,7 @@ impl TaskResultSettlementRepository<'_> {
         )
     }
 
+    #[cfg(test)]
     pub(crate) fn admit_reply_message_snapshot_with_projections(
         &self,
         agent_id: &str,
@@ -821,6 +687,7 @@ impl TaskResultSettlementRepository<'_> {
         self.admit_message_with_projection(agent_id, message_id, activation_id, None, now)
     }
 
+    #[cfg(test)]
     pub(crate) fn admit_message_with_projection(
         &self,
         agent_id: &str,
@@ -895,6 +762,7 @@ impl TaskResultSettlementRepository<'_> {
             .transaction(|tx| settle_activation_tx(tx, agent_id, activation_id, disposition, now))
     }
 
+    #[cfg(test)]
     pub(crate) fn settle_owner_unavailable(
         &self,
         message_id: &str,
@@ -902,34 +770,19 @@ impl TaskResultSettlementRepository<'_> {
         now: DateTime<Utc>,
     ) -> Result<bool> {
         self.db.transaction(|tx| {
-            let Some(mut record) = latest_for_message_tx(tx, message_id)? else {
-                return Ok(false);
-            };
-            if record.state == TaskResultSettlementState::Settled {
-                return Ok(false);
-            }
-            record.state = TaskResultSettlementState::Settled;
-            record.disposition = Some(disposition);
-            record.settled_at = Some(now);
-            record.next_recheck_at = None;
-            record.updated_at = now;
-            update_tx(tx, &record)?;
-            Ok(true)
+            prepare_settle_owner_unavailable_tx(
+                tx,
+                message_id,
+                disposition,
+                now,
+                TaskResultWriteLimits::default(),
+            )?
+            .execute()?
+            .into_changed()
         })
     }
 
-    pub(crate) fn settle_reply_consumed_elsewhere(
-        &self,
-        message_id: &str,
-        now: DateTime<Utc>,
-    ) -> Result<bool> {
-        self.settle_owner_unavailable(
-            message_id,
-            TaskResultSettlementDisposition::ReplyConsumedElsewhere,
-            now,
-        )
-    }
-
+    #[cfg(test)]
     pub(crate) fn mark_deferred(
         &self,
         message_id: &str,
@@ -962,6 +815,7 @@ impl TaskResultSettlementRepository<'_> {
         })
     }
 
+    #[cfg(test)]
     pub(crate) fn wake_deferred_for_owner(
         &self,
         agent_id: &str,
@@ -1005,6 +859,7 @@ impl TaskResultSettlementRepository<'_> {
         })
     }
 
+    #[cfg(test)]
     pub(crate) fn due_deferred(
         &self,
         agent_id: &str,
@@ -1096,6 +951,7 @@ impl TaskResultSettlementRepository<'_> {
         })
     }
 
+    #[cfg(test)]
     pub(crate) fn unsettled_for_owner(
         &self,
         agent_id: &str,
@@ -1142,6 +998,7 @@ impl TaskResultSettlementRepository<'_> {
         })
     }
 
+    #[cfg(test)]
     pub(crate) fn next_recheck_at(&self, agent_id: &str) -> Result<Option<DateTime<Utc>>> {
         self.db.with_read(|connection| {
             let value = connection.query_row(
@@ -1175,6 +1032,28 @@ impl TaskResultSettlementRepository<'_> {
         })
     }
 
+    /// Canonical inspection for an unloaded agent, not a loaded Task read.
+    pub(crate) fn diagnostic_for_agent_message(
+        &self,
+        agent_id: &str,
+        message_id: &str,
+    ) -> Result<Option<TaskResultSettlementRecord>> {
+        self.db.with_read(|connection| {
+            connection
+                .query_row(
+                    "SELECT payload_json FROM task_result_settlements
+                     WHERE agent_id = ?1 AND message_id = ?2",
+                    params![agent_id, message_id],
+                    |row| row.get::<_, String>(0),
+                )
+                .optional()?
+                .map(|payload| serde_json::from_str(&payload))
+                .transpose()
+                .map_err(Into::into)
+        })
+    }
+
+    #[cfg(test)]
     pub(crate) fn latest_for_message(
         &self,
         message_id: &str,
@@ -1194,7 +1073,7 @@ pub(crate) fn upsert_pending_tx(
             || existing.task_id != record.task_id
             || existing.work_item_id != record.work_item_id
             || existing.rejoin_generation != record.rejoin_generation
-            || existing.parent_turn_id != record.parent_turn_id
+            || existing.source != record.source
         {
             bail!(
                 "task result settlement identity conflict for message {}",
@@ -1204,15 +1083,44 @@ pub(crate) fn upsert_pending_tx(
         return Ok(false);
     }
     super::reclamation::ensure_work_admission_tx(tx, &record.agent_id)?;
+    insert_pending_tx(tx, record)
+}
+/// The original cleanup capability grants qualification, not business admission.
+fn upsert_pending_original_cleanup_tx(
+    tx: &Transaction<'_>,
+    record: &TaskResultSettlementRecord,
+    proof: &super::task_snapshot::OriginalTaskResultCleanupProof<'_, '_, '_>,
+) -> Result<bool> {
+    proof.validate_pending_insert_tx(tx, record)?;
+    upsert_pending_tx(tx, record)
+}
+
+fn insert_pending_tx(tx: &Transaction<'_>, record: &TaskResultSettlementRecord) -> Result<bool> {
     let payload = serde_json::to_string(record)?;
-    let inserted = tx.execute(
+    let has_source = super::command_task_creation::has_result_source_column(tx)?;
+    ensure!(
+        has_source || record.source.parent_turn_id().is_some(),
+        "Command creation Results require the creation-source schema"
+    );
+    let sql = if has_source {
+        "INSERT INTO task_result_settlements (
+           result_identity, agent_id, task_id, message_id, work_item_id,
+           rejoin_generation, parent_turn_id, state, activation_id, disposition,
+           created_at, updated_at, admitted_at, settled_at, deferred_reason, deferred_at, next_recheck_at, payload_json, command_creation_id
+         ) VALUES (
+           ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19
+         )"
+    } else {
+        // Historical migration fixtures retain their original ParentTurn writer.
         "INSERT INTO task_result_settlements (
            result_identity, agent_id, task_id, message_id, work_item_id,
            rejoin_generation, parent_turn_id, state, activation_id, disposition,
            created_at, updated_at, admitted_at, settled_at, deferred_reason, deferred_at, next_recheck_at, payload_json
-         ) VALUES (
-           ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18
-         )",
+         ) SELECT ?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18
+           WHERE ?19 IS NULL"
+    };
+    let inserted = tx.execute(
+        sql,
         params![
             record.result_identity,
             record.agent_id,
@@ -1220,7 +1128,7 @@ pub(crate) fn upsert_pending_tx(
             record.message_id,
             record.work_item_id,
             record.rejoin_generation,
-            record.parent_turn_id,
+            record.source.parent_turn_id().unwrap_or(""),
             record.state.as_str(),
             record.activation_id,
             record
@@ -1234,6 +1142,7 @@ pub(crate) fn upsert_pending_tx(
             record.deferred_at.map(timestamp),
             record.next_recheck_at.map(timestamp),
             payload,
+            record.source.command_creation_id(),
         ],
     )?;
     Ok(inserted == 1)
@@ -1252,8 +1161,8 @@ fn validate_projection_tx(
     }
     let payload: Option<String> = tx
         .query_row(
-            "SELECT payload_json FROM messages WHERE message_id = ?1",
-            [message_id],
+            "SELECT payload_json FROM messages WHERE message_id = ?1 AND agent_id = ?2",
+            params![message_id, agent_id],
             |row| row.get(0),
         )
         .optional()?;
@@ -1302,9 +1211,9 @@ fn set_admission_projections_tx(
     Ok(())
 }
 
-fn update_tx(tx: &Transaction<'_>, record: &TaskResultSettlementRecord) -> Result<()> {
+fn update_tx(tx: &Transaction<'_>, record: &TaskResultSettlementRecord) -> Result<bool> {
     let payload = serde_json::to_string(record)?;
-    tx.execute(
+    let affected = tx.execute(
         "UPDATE task_result_settlements
          SET state = ?2, activation_id = ?3, disposition = ?4, updated_at = ?5,
              admitted_at = ?6, settled_at = ?7, deferred_reason = ?8,
@@ -1335,16 +1244,16 @@ fn update_tx(tx: &Transaction<'_>, record: &TaskResultSettlementRecord) -> Resul
             record.recovery_diagnostic_at.map(timestamp),
         ],
     )?;
-    Ok(())
+    Ok(affected == 1)
 }
 
 /// Narrowed UPDATE for the deferred-recheck hot path. The recovery loop
 /// rewrites the same due rows every recheck interval; a full-column UPDATE
 /// touches `state`/`activation_id` and churns every index referencing them
 /// even though those values never change on deferral.
-fn defer_update_tx(tx: &Transaction<'_>, record: &TaskResultSettlementRecord) -> Result<()> {
+fn defer_update_tx(tx: &Transaction<'_>, record: &TaskResultSettlementRecord) -> Result<bool> {
     let payload = serde_json::to_string(record)?;
-    tx.execute(
+    let affected = tx.execute(
         "UPDATE task_result_settlements
          SET deferred_reason = ?2, deferred_at = ?3, next_recheck_at = ?4,
              updated_at = ?5, payload_json = ?6
@@ -1358,13 +1267,23 @@ fn defer_update_tx(tx: &Transaction<'_>, record: &TaskResultSettlementRecord) ->
             payload,
         ],
     )?;
-    Ok(())
+    Ok(affected == 1)
 }
 
 fn record_matches_durable_task_tx(
     tx: &Transaction<'_>,
     record: &TaskResultSettlementRecord,
 ) -> Result<bool> {
+    if !super::command_task_creation::current_source_exists_tx(
+        tx,
+        &record.agent_id,
+        &record.task_id,
+        record.rejoin_generation,
+        &record.source,
+        record.work_item_id.as_deref(),
+    )? {
+        return Ok(false);
+    }
     let durable_task = tx
         .query_row(
             "SELECT payload_json FROM tasks WHERE task_id = ?1",
@@ -1394,14 +1313,14 @@ fn record_matches_durable_task_tx(
                 | crate::types::TaskStatus::Interrupted
         )
         && fence.generation == record.rejoin_generation
-        && fence.parent_turn_id == record.parent_turn_id)
+        && fence.source == record.source)
 }
 
 fn settle_invalid_or_stale_tx(
     tx: &Transaction<'_>,
     record: &mut TaskResultSettlementRecord,
     now: DateTime<Utc>,
-) -> Result<()> {
+) -> Result<bool> {
     record.state = TaskResultSettlementState::Settled;
     record.disposition = Some(TaskResultSettlementDisposition::InvalidOrStale);
     record.settled_at = Some(now);
@@ -1410,33 +1329,13 @@ fn settle_invalid_or_stale_tx(
     update_tx(tx, record)
 }
 
-fn existing_for_task_generation_tx(
-    tx: &Transaction<'_>,
-    task_id: &str,
-    rejoin_generation: u64,
-) -> Result<Option<TaskResultSettlementRecord>> {
-    tx.query_row(
-        "SELECT payload_json
-         FROM task_result_settlements
-         WHERE task_id = ?1 AND rejoin_generation = ?2
-         ORDER BY created_at ASC, result_identity ASC
-         LIMIT 1",
-        params![task_id, rejoin_generation],
-        |row| row.get::<_, String>(0),
-    )
-    .optional()?
-    .map(|payload| serde_json::from_str(&payload))
-    .transpose()
-    .map_err(Into::into)
-}
-
-enum RecoverySnapshotScope {
+pub(crate) enum RecoverySnapshotScope {
     NormalInput,
     RecoveryRoot(String),
     Invalid,
 }
 
-fn recovery_snapshot_scope_tx(
+pub(crate) fn recovery_snapshot_scope_tx(
     tx: &Transaction<'_>,
     agent_id: &str,
     activation_id: &str,
@@ -1495,6 +1394,7 @@ fn recovery_snapshot_scope_tx(
 impl TaskResultSettlementRepository<'_> {
     /// Ineligible recovery roots must not reserve snapshot slots or bytes.
     /// Normal authorized input can still deliver a paused result.
+    #[cfg(test)]
     pub(crate) fn recovery_snapshot_candidates_for_owner(
         &self,
         agent_id: &str,
@@ -1504,15 +1404,18 @@ impl TaskResultSettlementRepository<'_> {
         limit: usize,
     ) -> Result<Vec<TaskResultSettlementRecord>> {
         self.db.transaction(|tx| {
-            let RecoverySnapshotScope::RecoveryRoot(root) =
-                recovery_snapshot_scope_tx(tx, agent_id, activation_id)?
-            else {
-                return Ok(Vec::new());
-            };
-            recovery_budget::candidates_for_owner_tx(tx, agent_id, work_item_id, &root, now, limit)
+            recovery_snapshot_candidates_for_owner_tx(
+                tx,
+                agent_id,
+                work_item_id,
+                activation_id,
+                now,
+                limit,
+            )
         })
     }
 
+    #[cfg(test)]
     pub(crate) fn filter_recovery_snapshot_candidates(
         &self,
         agent_id: &str,
@@ -1521,30 +1424,7 @@ impl TaskResultSettlementRepository<'_> {
         now: DateTime<Utc>,
     ) -> Result<Vec<TaskResultSettlementRecord>> {
         self.db.transaction(|tx| {
-            let root = match recovery_snapshot_scope_tx(tx, agent_id, activation_id)? {
-                RecoverySnapshotScope::NormalInput => {
-                    return Ok(records
-                        .iter()
-                        .filter(|record| record.recovery_paused_at.is_none())
-                        .cloned()
-                        .collect())
-                }
-                RecoverySnapshotScope::Invalid => return Ok(Vec::new()),
-                RecoverySnapshotScope::RecoveryRoot(root) => root,
-            };
-            let mut eligible = Vec::with_capacity(records.len());
-            for record in records {
-                let Some(current) = latest_for_message_tx(tx, &record.message_id)? else {
-                    continue;
-                };
-                if current.agent_id == agent_id
-                    && current.result_identity == record.result_identity
-                    && recovery_budget::recovery_admission_eligible_tx(tx, &current, &root, now)?
-                {
-                    eligible.push(current);
-                }
-            }
-            Ok(eligible)
+            filter_recovery_snapshot_candidates_tx(tx, agent_id, activation_id, records, now)
         })
     }
 }
@@ -1576,29 +1456,43 @@ fn interrupted_predecessor_owns_record_tx(
     activation_id: &str,
     source_message_id: &str,
 ) -> Result<bool> {
-    use crate::domain::execution_protocol::ExecutionAttemptState;
-    let Some(current) = reply_admission_attempt_tx(tx, &record.agent_id, activation_id)? else {
-        return Ok(false);
-    };
-    let Some(prior_id) = record.activation_id.as_deref() else {
-        return Ok(false);
-    };
-    if current.agent_id != record.agent_id
-        || current.state != ExecutionAttemptState::Open
-        || current.recovery_of_attempt_id.as_deref() != Some(prior_id)
-        || current.source_message_id.as_deref() != Some(source_message_id)
-    {
-        return Ok(false);
-    }
-    let Some(prior) = reply_admission_attempt_tx(tx, &record.agent_id, prior_id)? else {
-        return Ok(false);
-    };
-    // The consuming owner is inherited, not replaced by the captured task
-    // owner: a canonical exact waiter may intentionally be a different owner.
-    Ok(prior.state == ExecutionAttemptState::Interrupted
-        && prior.agent_id == current.agent_id
-        && prior.source_message_id == current.source_message_id
-        && prior.binding == current.binding)
+    interrupted_predecessor_matches_tx(tx, record, activation_id, Some(source_message_id))
+}
+
+fn interrupted_predecessor_matches_tx(
+    tx: &Transaction<'_>,
+    record: &TaskResultSettlementRecord,
+    activation_id: &str,
+    source_message_id: Option<&str>,
+) -> Result<bool> {
+    // Only the canonical interrupted predecessor grants reclaim, never a closed attempt.
+    Ok(tx.query_row(
+        "SELECT EXISTS(
+           SELECT 1 FROM execution_protocol_attempts current
+           JOIN execution_protocol_attempts prior
+             ON prior.agent_id=current.agent_id AND prior.attempt_id=?3
+           WHERE current.agent_id=?1 AND current.attempt_id=?2
+             AND current.lifecycle_state='open' AND prior.lifecycle_state='interrupted'
+             AND current.recovery_of_attempt_id=prior.attempt_id
+             AND json_extract(current.payload_json,'$.agent_id')=?1
+             AND json_extract(prior.payload_json,'$.agent_id')=?1
+             AND json_extract(current.payload_json,'$.state')='open'
+             AND json_extract(prior.payload_json,'$.state')='interrupted'
+             AND json_extract(current.payload_json,'$.recovery_of_attempt_id')=prior.attempt_id
+             AND (?4 IS NULL OR json_extract(current.payload_json,'$.source_message_id')=?4)
+             AND json_extract(prior.payload_json,'$.source_message_id')
+                   IS json_extract(current.payload_json,'$.source_message_id')
+             AND json_extract(prior.payload_json,'$.binding')
+                   =json_extract(current.payload_json,'$.binding')
+         )",
+        params![
+            record.agent_id,
+            activation_id,
+            record.activation_id,
+            source_message_id
+        ],
+        |row| row.get(0),
+    )?)
 }
 
 fn reply_admission_attempt_tx(
@@ -1606,17 +1500,70 @@ fn reply_admission_attempt_tx(
     agent_id: &str,
     activation_id: &str,
 ) -> Result<Option<crate::domain::execution_protocol::ExecutionAttempt>> {
-    tx.query_row(
+    let mut query = tx.prepare(
         "SELECT payload_json FROM execution_protocol_attempts
          WHERE agent_id = ?1 AND attempt_id = ?2",
-        params![agent_id, activation_id],
-        |row| row.get::<_, String>(0),
-    )
-    .optional()?
-    .map(|payload| serde_json::from_str(&payload).map_err(Into::into))
-    .transpose()
+    )?;
+    let mut rows = query.query(params![agent_id, activation_id])?;
+    let Some(row) = rows.next()? else {
+        return Ok(None);
+    };
+    let payload = row.get_ref(0)?.as_str()?;
+    crate::diagnostics::resource_io::admit_json_payload(payload)?;
+    serde_json::from_str(payload).map(Some).map_err(Into::into)
 }
 
+fn reply_admission_policy_tx(
+    tx: &Transaction<'_>,
+    agent: &str,
+    owner: Option<&str>,
+    activation: &str,
+) -> Result<(bool, bool)> {
+    // Scalar predicate only: no unbounded Attempt/Message material in a writer.
+    let policy = tx
+        .query_row(
+            "SELECT
+           a.lifecycle_state='open'
+           AND json_extract(a.payload_json,'$.agent_id')=?1
+           AND json_extract(a.payload_json,'$.state')='open'
+           AND (
+             (json_extract(a.payload_json,'$.binding.kind')='work_item'
+               AND json_extract(a.payload_json,'$.binding.work_item_id') IS ?3)
+             OR (json_extract(a.payload_json,'$.binding.kind')='agent_lifecycle'
+               AND json_extract(a.payload_json,'$.binding.agent_id')=?1 AND ?3 IS NULL)
+           )
+           AND EXISTS(SELECT 1 FROM turn_records t
+             WHERE t.agent_id=?1 AND t.current_work_item_id IS ?3 AND t.terminal_kind IS NULL
+               AND t.trigger_message_id=json_extract(a.payload_json,'$.source_message_id')
+               AND EXISTS(SELECT 1 FROM json_each(t.payload_json,'$.input_message_ids') input
+                 WHERE input.value=t.trigger_message_id)),
+           COALESCE(json_extract(m.payload_json,'$.kind')='internal_followup'
+             AND json_extract(m.payload_json,'$.delivery_surface')='runtime_system'
+             AND json_extract(m.payload_json,'$.admission_context')='runtime_owned'
+             AND json_type(m.payload_json,'$.routing_context')='object'
+             AND json_type(m.payload_json,'$.metadata.agent_message_delivery') IS NOT NULL,0)
+         FROM execution_protocol_attempts a
+         LEFT JOIN messages m ON m.message_id=json_extract(a.payload_json,'$.source_message_id')
+         WHERE a.agent_id=?1 AND a.attempt_id=?2",
+            params![agent, activation, owner],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .optional()?;
+    Ok(policy.unwrap_or((true, false)))
+}
+
+fn records_tx(
+    tx: &Transaction<'_>,
+    sql: &str,
+    params: impl rusqlite::Params,
+) -> Result<Vec<TaskResultSettlementRecord>> {
+    let mut statement = tx.prepare(sql)?;
+    let rows = statement.query_map(params, |row| row.get::<_, String>(0))?;
+    rows.map(|row| serde_json::from_str(&row?).map_err(Into::into))
+        .collect()
+}
+
+#[cfg(test)]
 fn reply_message_candidates_tx(
     tx: &Transaction<'_>,
     agent_id: &str,
@@ -1675,6 +1622,7 @@ fn reply_message_candidates_tx(
     Ok(eligible)
 }
 
+#[cfg(test)]
 fn unsettled_for_owner_tx(
     tx: &Transaction<'_>,
     agent_id: &str,
@@ -1743,41 +1691,19 @@ pub(crate) fn settle_activation_tx(
     disposition: TaskResultSettlementDisposition,
     now: DateTime<Utc>,
 ) -> Result<usize> {
-    let mut records = admitted_for_activation_tx(tx, agent_id, activation_id)?;
-    for record in &mut records {
-        record.state = TaskResultSettlementState::Settled;
-        record.disposition = Some(disposition);
-        record.settled_at = Some(now);
-        record.updated_at = now;
-        update_tx(tx, record)?;
-    }
-    Ok(records.len())
+    prepare_settle_activation_tx(
+        tx,
+        agent_id,
+        activation_id,
+        disposition,
+        now,
+        TaskResultWriteLimits::default(),
+    )?
+    .execute()?
+    .into_count()
 }
 
-fn records_tx<P>(
-    tx: &Transaction<'_>,
-    sql: &str,
-    params: P,
-) -> Result<Vec<TaskResultSettlementRecord>>
-where
-    P: rusqlite::Params,
-{
-    let mut statement = tx.prepare(sql)?;
-    let rows = statement.query_map(params, |row| row.get::<_, String>(0))?;
-    rows.map(|row| {
-        let payload = row?;
-        serde_json::from_str(&payload).map_err(|error| {
-            rusqlite::Error::FromSqlConversionFailure(
-                0,
-                rusqlite::types::Type::Text,
-                Box::new(error),
-            )
-        })
-    })
-    .collect::<std::result::Result<Vec<_>, _>>()
-    .map_err(Into::into)
-}
-
+#[cfg(test)]
 fn latest_for_message_connection(
     connection: &rusqlite::Connection,
     message_id: &str,
@@ -1995,6 +1921,7 @@ mod projection_tests {
             "missing",
             "durable_id",
             "agent_id",
+            "sql_agent_id",
             "content_version",
             "origin",
             "routing_context",
@@ -2042,6 +1969,16 @@ mod projection_tests {
                     })
                     .unwrap();
                 }
+                "sql_agent_id" => {
+                    db.transaction(|tx| {
+                        tx.execute(
+                            "UPDATE messages SET agent_id = 'unrelated' WHERE message_id = ?1",
+                            [&record.message_id],
+                        )?;
+                        Ok(())
+                    })
+                    .unwrap();
+                }
                 field => {
                     let field = if field == "durable_id" {
                         "$.id"
@@ -2073,6 +2010,55 @@ mod projection_tests {
             );
             assert_eq!(latest(&db, &record.message_id), record, "{invalid_case}");
         }
+    }
+
+    #[test]
+    fn projection_original_lengths_are_checked_before_body_decode() {
+        let (_dir, db) = runtime_db();
+        let record = pending_result(&db, 0, None);
+        let item = projection(&db, &record.message_id);
+        let projections = BTreeMap::from([(record.message_id.clone(), item.clone())]);
+        db.transaction(|tx| {
+            tx.execute(
+                "UPDATE messages SET payload_json = ?2 WHERE message_id = ?1",
+                params![record.message_id, "not-json".repeat(32 * 1024)],
+            )?;
+            let limits = TaskResultWriteLimits {
+                record_limit: 64,
+                byte_limit: 64 * 1024,
+            };
+            for supplied in [
+                ResultAdmissionProjections::Message {
+                    message_id: &record.message_id,
+                    projection: &item,
+                },
+                ResultAdmissionProjections::Snapshot(&projections),
+            ] {
+                let selection = select_admit_message_tx(
+                    tx,
+                    "agent-a",
+                    &record.message_id,
+                    "projection-activation",
+                    Utc::now(),
+                    limits,
+                )?;
+                let error = match selection.with_admission_projections(Some(supplied), limits) {
+                    Ok(_) => {
+                        panic!("oversized original must fail before decoding its invalid JSON")
+                    }
+                    Err(error) => error,
+                };
+                assert!(
+                    error
+                        .downcast_ref::<TaskResultFootprintExhausted>()
+                        .is_some(),
+                    "{error:#}"
+                );
+            }
+            Ok(())
+        })
+        .unwrap();
+        assert_eq!(latest(&db, &record.message_id), record);
     }
 
     #[test]
@@ -2351,5 +2337,254 @@ mod projection_tests {
             projections.get(&reply.id).cloned()
         );
         assert_eq!(latest(&db, &record.message_id), admitted[0]);
+    }
+}
+
+pub(crate) fn context_admitted_settlements_on(
+    connection: &rusqlite::Connection,
+    agent_id: &str,
+    activation_id: &str,
+) -> Result<Vec<TaskResultSettlementRecord>> {
+    let mut statement = connection.prepare(
+        "SELECT payload_json
+         FROM task_result_settlements
+         WHERE agent_id = ?1 AND activation_id = ?2 AND state = 'caller_admitted'
+         ORDER BY created_at ASC, result_identity ASC",
+    )?;
+    let rows = statement.query_map(params![agent_id, activation_id], |row| {
+        row.get::<_, String>(0)
+    })?;
+    rows.map(|row| {
+        let payload = row?;
+        serde_json::from_str(&payload).map_err(|error| {
+            rusqlite::Error::FromSqlConversionFailure(
+                0,
+                rusqlite::types::Type::Text,
+                Box::new(error),
+            )
+        })
+    })
+    .collect::<std::result::Result<Vec<_>, _>>()
+    .map_err(Into::into)
+}
+
+pub(crate) fn non_reply_source_matches_owner_tx(
+    tx: &Transaction<'_>,
+    record: &TaskResultSettlementRecord,
+) -> Result<bool> {
+    if !record_matches_durable_task_tx(tx, record)? {
+        return Ok(false);
+    }
+    let payload: Option<String> = tx
+        .query_row(
+            "SELECT payload_json FROM messages WHERE message_id = ?1",
+            [&record.message_id],
+            |row| row.get(0),
+        )
+        .optional()?;
+    let Some(payload) = payload else {
+        return Ok(false);
+    };
+    let message: MessageEnvelope = serde_json::from_str(&payload)?;
+    let task_payload: String = tx.query_row(
+        "SELECT payload_json FROM tasks WHERE task_id = ?1",
+        [&record.task_id],
+        |row| row.get(0),
+    )?;
+    let task: TaskRecord = serde_json::from_str(&task_payload)?;
+    Ok(matches!(
+        task.kind,
+        crate::types::TaskKind::CommandTask | crate::types::TaskKind::ChildAgentTask
+    ) && serde_json::to_value(&task.status)?.as_str() == Some(record.task_status.as_str())
+        && task.parent_message_id.as_deref() == Some(record.message_id.as_str())
+        && message.kind == crate::types::MessageKind::TaskResult
+        && message.agent_id == record.agent_id
+        && message.work_item_id == record.work_item_id
+        && message.task_id.as_deref() == Some(record.task_id.as_str())
+        && matches!(
+            &message.origin,
+            crate::types::MessageOrigin::Task { task_id } if task_id == &record.task_id
+        )
+        && message.authority_class == crate::types::AuthorityClass::RuntimeInstruction
+        && message.delivery_surface == Some(crate::types::MessageDeliverySurface::TaskRejoin)
+        && message.admission_context == Some(crate::types::AdmissionContext::RuntimeOwned)
+        && crate::wake_contract::agent_message_reply_reference(&message).is_none())
+}
+
+pub(crate) fn reply_source_is_consumed_for_owner_tx(
+    tx: &Transaction<'_>,
+    record: &TaskResultSettlementRecord,
+) -> Result<bool> {
+    reply_source_consumption_matches_tx(tx, record, true)
+}
+
+pub(crate) fn reply_source_is_consumed_tx(
+    tx: &Transaction<'_>,
+    record: &TaskResultSettlementRecord,
+) -> Result<bool> {
+    reply_source_consumption_matches_tx(tx, record, false)
+}
+
+pub(crate) fn reply_source_is_recoverable_tx(
+    tx: &Transaction<'_>,
+    record: &TaskResultSettlementRecord,
+) -> Result<bool> {
+    if record.state == TaskResultSettlementState::Settled {
+        return Ok(false);
+    }
+    if live_turn::closed_admitted_reply_owner_tx(tx, record)?.is_some() {
+        return Ok(true);
+    }
+    reply_source_is_consumed_for_owner_tx(tx, record)
+}
+
+pub(crate) fn recovery_snapshot_candidates_for_owner_tx(
+    tx: &Transaction<'_>,
+    agent_id: &str,
+    work_item_id: Option<&str>,
+    activation_id: &str,
+    now: DateTime<Utc>,
+    limit: usize,
+) -> Result<Vec<TaskResultSettlementRecord>> {
+    let RecoverySnapshotScope::RecoveryRoot(root) =
+        recovery_snapshot_scope_tx(tx, agent_id, activation_id)?
+    else {
+        return Ok(Vec::new());
+    };
+    recovery_budget::candidates_for_owner_tx(tx, agent_id, work_item_id, &root, now, limit)
+}
+
+pub(crate) fn filter_recovery_snapshot_candidates_tx(
+    tx: &Transaction<'_>,
+    agent_id: &str,
+    activation_id: &str,
+    records: &[TaskResultSettlementRecord],
+    now: DateTime<Utc>,
+) -> Result<Vec<TaskResultSettlementRecord>> {
+    let root = match recovery_snapshot_scope_tx(tx, agent_id, activation_id)? {
+        RecoverySnapshotScope::NormalInput => {
+            return Ok(records
+                .iter()
+                .filter(|record| record.recovery_paused_at.is_none())
+                .cloned()
+                .collect())
+        }
+        RecoverySnapshotScope::Invalid => return Ok(Vec::new()),
+        RecoverySnapshotScope::RecoveryRoot(root) => root,
+    };
+    let mut eligible = Vec::with_capacity(records.len());
+    for record in records {
+        let Some(current) = latest_for_message_tx(tx, &record.message_id)? else {
+            continue;
+        };
+        if current.agent_id == agent_id
+            && current.result_identity == record.result_identity
+            && recovery_budget::recovery_admission_eligible_tx(tx, &current, &root, now)?
+        {
+            eligible.push(current);
+        }
+    }
+    Ok(eligible)
+}
+
+fn reply_source_consumption_matches_tx(
+    tx: &Transaction<'_>,
+    record: &TaskResultSettlementRecord,
+    require_owner_grant: bool,
+) -> Result<bool> {
+    if !record_matches_durable_task_tx(tx, record)? {
+        return Ok(false);
+    }
+    let Some(payload) = tx
+        .query_row(
+            "SELECT payload_json FROM messages WHERE message_id = ?1",
+            [&record.message_id],
+            |row| row.get::<_, String>(0),
+        )
+        .optional()?
+    else {
+        return Ok(false);
+    };
+    let message: MessageEnvelope = serde_json::from_str(&payload)?;
+    let Some(reply_id) = crate::wake_contract::agent_message_reply_reference(&message) else {
+        return Ok(false);
+    };
+    let Some(payload) = tx
+        .query_row(
+            "SELECT payload_json FROM messages WHERE message_id = ?1",
+            [reply_id],
+            |row| row.get::<_, String>(0),
+        )
+        .optional()?
+    else {
+        return Ok(false);
+    };
+    let reply: MessageEnvelope = serde_json::from_str(&payload)?;
+    if message.agent_id != record.agent_id
+        || message.work_item_id != record.work_item_id
+        || message.task_id.as_deref() != Some(record.task_id.as_str())
+        || reply.agent_id != record.agent_id
+        || !crate::wake_contract::is_agent_message(&reply)
+        || !reply.routing_context.as_ref().is_some_and(|route| {
+            route.message_id == reply.id && route.recipient_agent_id == record.agent_id
+        })
+    {
+        return Ok(false);
+    }
+    let payload: String = tx.query_row(
+        "SELECT payload_json FROM tasks WHERE task_id = ?1",
+        [&record.task_id],
+        |row| row.get(0),
+    )?;
+    let task: TaskRecord = serde_json::from_str(&payload)?;
+    let detail = task.detail.as_ref();
+    let delivery_id = reply
+        .metadata
+        .as_ref()
+        .and_then(|metadata| metadata.get("agent_message_delivery"))
+        .and_then(|delivery| delivery.get("delivery_id"))
+        .and_then(serde_json::Value::as_str);
+    if task.kind != crate::types::TaskKind::AgentMessageWait
+        || detail
+            .and_then(|detail| detail.get("message_id"))
+            .and_then(serde_json::Value::as_str)
+            != Some(reply_id)
+        || detail
+            .and_then(|detail| detail.get("reply_content_source"))
+            .and_then(serde_json::Value::as_str)
+            != Some("original_message")
+        || delivery_id.is_none_or(str::is_empty)
+        || detail
+            .and_then(|detail| detail.get("response_delivery_id"))
+            .and_then(serde_json::Value::as_str)
+            != delivery_id
+    {
+        return Ok(false);
+    }
+    let Some(payload) = tx
+        .query_row(
+            "SELECT payload_json FROM agent_message_deliveries
+             WHERE delivery_id = ?1 AND message_id = ?2",
+            params![delivery_id, reply_id],
+            |row| row.get::<_, String>(0),
+        )
+        .optional()?
+    else {
+        return Ok(false);
+    };
+    let delivery: crate::types::AgentMessageDeliveryRecord = serde_json::from_str(&payload)?;
+    if delivery.target_agent_id != record.agent_id
+        || delivery.routing_context != reply.routing_context
+        || delivery.outcome != crate::types::AgentMessageDeliveryOutcome::Accepted
+        || delivery.state != crate::types::AgentMessageDeliveryState::Consumed
+    {
+        return Ok(false);
+    }
+    // The original queue source owns the first delivery. Its terminal
+    // consumption permits recovery of this independently fenced waiter.
+    if require_owner_grant {
+        live_turn::consumed_reply_owner_matches_tx(tx, &task, reply_id, &delivery)
+    } else {
+        live_turn::reply_source_queue_is_consumed_tx(tx, &record.agent_id, reply_id, &delivery)
     }
 }

@@ -7,6 +7,106 @@ use crate::types::{
     WakeSource, WorkItemPlanStatus, WorkItemRecord, WorkItemSchedulingState, WorkItemState,
 };
 
+// Direct execution tests still use a committed, qualified canonical source.
+// Keeping the source out of the queue avoids manufacturing an unclaimed run.
+async fn persist_runtime_test_source(
+    runtime: &RuntimeHandle,
+    message: MessageEnvelope,
+) -> MessageEnvelope {
+    let mut mutation = runtime.begin_mutation().await.unwrap();
+    let prepared = crate::runtime_db::prepared_input_evidence::PreparedInputEvidence::message(
+        mutation.input_evidence_scope(),
+        crate::ids::audit_event_id(),
+        message.created_at,
+        message.clone(),
+        Vec::new(),
+    )
+    .unwrap();
+    mutation
+        .commit_prepared_evidence(prepared, None)
+        .await
+        .unwrap();
+    runtime
+        .storage()
+        .read_message_by_id(&message.id)
+        .unwrap()
+        .unwrap()
+}
+
+// Consume the old runtime before asking a real never-activated Host to recover.
+// A cleared transient abort handle is not a durable Run/producer-ended proof.
+pub(crate) async fn recover_quiescent_startup_fixture(
+    runtime: RuntimeHandle,
+    home: &std::path::Path,
+    workspace: &std::path::Path,
+) -> (
+    RuntimeHandle,
+    crate::runtime_db::transitions::StartupRuntimeRecoveryReport,
+) {
+    if let Some(run) = runtime.inner.agent.lock().await.current_run_abort.as_ref() {
+        assert!(
+            runtime
+                .inner
+                .control_cancellations
+                .run_for(&run.run_id)
+                .expect("claimed fixture run retains its original producer lease")
+                .is_complete(),
+            "startup fixture cannot recover a live original producer"
+        );
+    }
+    let clock = runtime.inner.clock.clone();
+    let provider = runtime.inner.base_provider.clone();
+    let context = runtime.inner.context_config.read().await.clone();
+    let agent_id = runtime.agent_id().await.unwrap();
+    drop(runtime);
+
+    let report =
+        recover_quiescent_startup_report_fixture(home, workspace, provider.clone(), &agent_id)
+            .await;
+
+    let runtime = RuntimeHandle::new_with_clock(
+        &agent_id,
+        home.to_path_buf(),
+        workspace.to_path_buf(),
+        "http://127.0.0.1:7878".into(),
+        provider,
+        "default".into(),
+        context,
+        clock,
+    )
+    .unwrap();
+    (runtime, report)
+}
+
+// A corrupted qualified Task can be quarantined by the cold actor while a
+// normal Runtime bootstrap must still reject its changed canonical locator.
+async fn recover_quiescent_startup_report_fixture(
+    home: &std::path::Path,
+    workspace: &std::path::Path,
+    provider: Arc<dyn AgentProvider>,
+    agent_id: &str,
+) -> crate::runtime_db::transitions::StartupRuntimeRecoveryReport {
+    let host_home = tempdir().unwrap();
+    std::fs::write(
+        host_home.path().join("config.json"),
+        r#"{"model":{"default":"openai/gpt-5.4"}}"#,
+    )
+    .unwrap();
+    let mut config = AppConfig::load_with_home(Some(host_home.path().to_path_buf())).unwrap();
+    config.default_agent_id = agent_id.into();
+    config.data_dir = home.join(".holon");
+    config.workspace_dir = workspace.to_path_buf();
+    config.user_home_dir = Some(host_home.path().to_path_buf());
+    let host = RuntimeHost::new_with_provider(config, provider).unwrap();
+    let report = host
+        .recover_startup_dispatch_memory_for_fixture()
+        .await
+        .unwrap();
+    drop(host);
+
+    report
+}
+
 struct BlockingProvider {
     started: Arc<tokio::sync::Notify>,
 }
@@ -65,13 +165,29 @@ async fn open_external_wake_claim_fixture() -> OpenExternalWakeClaimFixture {
         bind_autonomous_work_queue_tick(&mut wait_message, &work_item, "continue_active");
         wait_message.turn_id = Some("turn-external-wait-recovery".into());
         let wait_message = runtime.enqueue(wait_message).await.unwrap();
-        assert!(matches!(
+        let scheduler_executor::RunLoopPoll::Message(scheduled) =
             scheduler_executor::SchedulerDecisionExecutor::new(runtime)
                 .poll()
                 .await
-                .unwrap(),
-            scheduler_executor::RunLoopPoll::Message(_)
-        ));
+                .unwrap()
+        else {
+            panic!("fixture source must be claimed");
+        };
+        assert_eq!(scheduled.message.id, wait_message.id);
+        runtime
+            .begin_dispatch_turn(
+                &scheduled.message,
+                None,
+                None,
+                scheduled
+                    .dispatch_plan
+                    .execution_admission_provenance
+                    .clone(),
+                &scheduled.dispatch_plan.prior_closure,
+            )
+            .await
+            .unwrap();
+        let wait_message = scheduled.message.clone();
         let wait = runtime
             .register_wait_for(
                 "default",
@@ -85,7 +201,7 @@ async fn open_external_wake_claim_fixture() -> OpenExternalWakeClaimFixture {
             .unwrap();
         let wait_id = wait.condition.id;
         finish_claimed_test_run(runtime).await;
-        let terminal = terminal_transition(&wait_message, Some(&work_item.id));
+        let terminal = terminal_transition_from_started_turn(runtime, &wait_message);
         runtime
             .commit_queue_terminal_settlement(
                 QueueEntryRecord {
@@ -362,7 +478,7 @@ async fn startup_recovery_preserves_retained_external_wait_before_bootstrap() {
 
 #[tokio::test]
 async fn startup_recovery_without_work_item_or_retained_claim_admits_operator_interject() {
-    let mut harness = LifecycleHarness::new();
+    let harness = LifecycleHarness::new();
     let attempt_id = {
         let runtime = harness.runtime();
         let message = runtime
@@ -393,14 +509,11 @@ async fn startup_recovery_without_work_item_or_retained_claim_admits_operator_in
             .unwrap();
         scheduler_executor::canonical_activation_id(&message.id)
     };
-    harness.restart();
-    let runtime = harness.runtime();
-    let report = runtime
-        .inner
-        .runtime_db
-        .recover_interrupted_runtime_state_at_startup()
-        .unwrap();
+    let (dir, workspace, runtime) = harness.into_startup_fixture_parts();
+    let (runtime, report) =
+        recover_quiescent_startup_fixture(runtime, dir.path(), workspace.path()).await;
     assert_eq!(report.interrupted_execution_attempts, 1);
+    let runtime = &runtime;
     let execution = runtime
         .inner
         .runtime_db
@@ -465,6 +578,7 @@ async fn startup_recovery_retained_task_result_obeys_exact_rejoin_wait_and_revis
             }
             "cancelled" => cancelled_wait_task_result_claim_fixture(&task_id).await,
             "missing" => missing_wait_task_result_claim_fixture(&task_id).await,
+            "bounded" => repeated_task_result_claim_fixture(&task_id).await,
             _ => stale_task_result_claim_fixture(&task_id).await,
         };
         if case.starts_with("blocked-") {
@@ -480,6 +594,26 @@ async fn startup_recovery_retained_task_result_obeys_exact_rejoin_wait_and_revis
                 .unwrap()
                 .unwrap();
             if case == "wrong-owner" {
+                // Keep the foreign-owner fence distinct from unknown legacy
+                // namespace recovery. This cold identity has no State or inputs.
+                fixture
+                    .runtime
+                    .inner
+                    .runtime_db
+                    .agent_identities()
+                    .create_with_relations(
+                        &crate::types::AgentIdentityRecord::new(
+                            "another-owner",
+                            AgentKind::Named,
+                            AgentVisibility::Public,
+                            AgentOwnership::SelfOwned,
+                            AgentProfilePreset::PublicNamed,
+                            None,
+                            None,
+                        ),
+                        &Default::default(),
+                    )
+                    .unwrap();
                 task.agent_id = "another-owner".into();
             } else {
                 task.detail.as_mut().unwrap()["rejoin_generation"] = serde_json::json!(2);
@@ -530,50 +664,145 @@ async fn startup_recovery_retained_task_result_obeys_exact_rejoin_wait_and_revis
                 })
                 .unwrap();
         }
-        if case == "bounded" {
-            let mut state = fixture
+        let waits_before = fixture.runtime.storage().latest_wait_conditions().unwrap();
+        finish_claimed_test_run(&fixture.runtime).await;
+        if matches!(case, "wrong-owner" | "wrong-rejoin") {
+            // The post-qualification raw corruption must not become a Ready
+            // runtime. Inspect the actual cold ACK before testing that boundary.
+            let db = fixture.runtime.inner.runtime_db.clone();
+            let storage = fixture.runtime.storage().clone();
+            let provider = fixture.runtime.inner.base_provider.clone();
+            let clock = fixture.runtime.inner.clock.clone();
+            let context = fixture.runtime.inner.context_config.read().await.clone();
+            assert!(fixture
                 .runtime
                 .inner
-                .runtime_db
+                .agent
+                .lock()
+                .await
+                .current_run_abort
+                .is_none());
+            drop(fixture.runtime);
+            let report = recover_quiescent_startup_report_fixture(
+                fixture._dir.path(),
+                fixture._workspace.path(),
+                provider.clone(),
+                "default",
+            )
+            .await;
+            assert_eq!(report.interrupted_execution_attempts, 1, "{case}");
+            let state = db
                 .transitions()
                 .load_execution_protocol_state_if_initialized("default")
                 .unwrap()
                 .unwrap();
-            state
-                .attempts
-                .get_mut(&fixture.attempt_id)
+            assert!(state.open_attempt().is_none(), "{case}");
+            assert_eq!(
+                state.attempts[&fixture.attempt_id].state,
+                ExecutionAttemptState::Interrupted,
+                "{case}"
+            );
+            let queue = db
+                .queue_entries()
+                .latest(&fixture.result.id)
                 .unwrap()
-                .recovery_of_attempt_id = Some("attempt:already-replayed".into());
-            fixture
-                .runtime
-                .inner
-                .runtime_db
-                .transaction(|tx| crate::runtime_db::transitions::persist_state_tx(tx, &state))
                 .unwrap();
+            assert_eq!(queue.status, expected_status, "{case}");
+            // With no Dequeued inventory, the original bootstrap-claim loop has
+            // no candidate and cannot perform another recovery transition.
+            assert_eq!(
+                db.queue_entries()
+                    .recent(Some("default"), usize::MAX)
+                    .unwrap()
+                    .iter()
+                    .filter(|entry| entry.status == QueueEntryStatus::Dequeued)
+                    .count(),
+                0,
+                "{case}"
+            );
+            assert_eq!(
+                storage.latest_wait_conditions().unwrap(),
+                waits_before,
+                "{case}"
+            );
+
+            let error = match RuntimeHandle::new_with_clock(
+                "default",
+                fixture._dir.path().to_path_buf(),
+                fixture._workspace.path().to_path_buf(),
+                "http://127.0.0.1:7878".into(),
+                provider.clone(),
+                "default".into(),
+                context,
+                clock,
+            ) {
+                Err(error) => error,
+                Ok(_) => panic!("{case}: corrupted qualified Task became a Ready runtime"),
+            };
+            use crate::{
+                runtime::resident_task::{TaskFamily, TaskKey},
+                runtime_db::task_snapshot::TaskSnapshotError,
+            };
+            let key = TaskKey::new(TaskFamily::Task, &task_id);
+            match (case, error.downcast_ref::<TaskSnapshotError>()) {
+                ("wrong-owner", Some(TaskSnapshotError::ForeignRecord(actual)))
+                | ("wrong-rejoin", Some(TaskSnapshotError::CanonicalChanged(actual))) => {
+                    assert_eq!(actual, &key, "{case}");
+                }
+                _ => panic!("{case}: unexpected bootstrap failure: {error:#}"),
+            }
+            assert_eq!(
+                db.queue_entries().latest(&fixture.result.id).unwrap(),
+                Some(queue.clone()),
+                "{case}"
+            );
+            assert_eq!(
+                storage.latest_wait_conditions().unwrap(),
+                waits_before,
+                "{case}"
+            );
+
+            // The second exclusive Host actor needs no fake intermediate Runtime.
+            let second = recover_quiescent_startup_report_fixture(
+                fixture._dir.path(),
+                fixture._workspace.path(),
+                provider,
+                "default",
+            )
+            .await;
+            assert_eq!(
+                second,
+                crate::runtime_db::transitions::StartupRuntimeRecoveryReport::default(),
+                "{case}"
+            );
+            assert_eq!(
+                db.queue_entries().latest(&fixture.result.id).unwrap(),
+                Some(queue),
+                "{case}"
+            );
+            assert_eq!(
+                storage.latest_wait_conditions().unwrap(),
+                waits_before,
+                "{case}"
+            );
+            assert_eq!(
+                db.transitions()
+                    .load_execution_protocol_state_if_initialized("default")
+                    .unwrap()
+                    .unwrap(),
+                state,
+                "{case}"
+            );
+            continue;
         }
-        let waits_before = fixture.runtime.storage().latest_wait_conditions().unwrap();
-        finish_claimed_test_run(&fixture.runtime).await;
-        let report = fixture
-            .runtime
-            .inner
-            .runtime_db
-            .recover_interrupted_runtime_state_at_startup()
-            .unwrap();
-        assert_eq!(report.interrupted_execution_attempts, 1, "{case}");
-        // Production performs the startup transaction before loading runtime queues.
-        fixture.runtime = RuntimeHandle::new(
-            "default",
-            fixture._dir.path().to_path_buf(),
-            fixture._workspace.path().to_path_buf(),
-            "http://127.0.0.1:7878".into(),
-            Arc::new(CountingProvider {
-                calls: Mutex::new(0),
-                reply: "unused",
-            }),
-            "default".into(),
-            context_config(),
+        let (runtime, report) = recover_quiescent_startup_fixture(
+            fixture.runtime,
+            fixture._dir.path(),
+            fixture._workspace.path(),
         )
-        .unwrap();
+        .await;
+        fixture.runtime = runtime;
+        assert_eq!(report.interrupted_execution_attempts, 1, "{case}");
         assert_eq!(
             fixture
                 .runtime
@@ -642,13 +871,15 @@ async fn startup_recovery_retained_task_result_obeys_exact_rejoin_wait_and_revis
             waits_before,
             "{case}"
         );
+        let (runtime, report) = recover_quiescent_startup_fixture(
+            fixture.runtime,
+            fixture._dir.path(),
+            fixture._workspace.path(),
+        )
+        .await;
+        fixture.runtime = runtime;
         assert_eq!(
-            fixture
-                .runtime
-                .inner
-                .runtime_db
-                .recover_interrupted_runtime_state_at_startup()
-                .unwrap(),
+            report,
             crate::runtime_db::transitions::StartupRuntimeRecoveryReport::default(),
             "{case}"
         );
@@ -685,29 +916,36 @@ async fn startup_recovery_retained_task_result_obeys_exact_rejoin_wait_and_revis
 
 #[tokio::test]
 async fn startup_recovery_preserves_operator_claim_while_interrupting_its_active_turn() {
-    let mut harness = LifecycleHarness::new();
+    let harness = LifecycleHarness::new();
     let (message_id, attempt_id, source, binding) = {
         let runtime = harness.runtime();
         let mut message = trusted_operator_prompt(None, "retained operator input");
         message.turn_id = Some("turn-startup-retained-operator".into());
         let message = runtime.enqueue(message).await.unwrap();
-        assert!(matches!(
-            scheduler_executor::SchedulerDecisionExecutor::new(runtime)
+        let scheduler_executor::RunLoopPoll::Message(scheduled) =
+            scheduler_executor::SchedulerDecisionExecutor::new(&runtime)
                 .poll()
                 .await
-                .unwrap(),
-            scheduler_executor::RunLoopPoll::Message(_)
-        ));
-        finish_claimed_test_run(runtime).await;
-        let mut turn =
-            crate::types::TurnRecord::new("default", message.turn_id.as_ref().unwrap(), 1);
-        turn.trigger = Some(crate::types::TurnTriggerSummary::from_message(&message));
+                .unwrap()
+        else {
+            panic!("original operator source must be claimed");
+        };
+        assert_eq!(scheduled.message.id, message.id);
         runtime
-            .inner
-            .runtime_db
-            .turn_records()
-            .upsert(&turn)
+            .begin_dispatch_turn(
+                &scheduled.message,
+                None,
+                None,
+                scheduled
+                    .dispatch_plan
+                    .execution_admission_provenance
+                    .clone(),
+                &scheduled.dispatch_plan.prior_closure,
+            )
+            .await
             .unwrap();
+        drop(scheduled);
+        finish_claimed_test_run(&runtime).await;
         let state = runtime
             .inner
             .runtime_db
@@ -727,17 +965,11 @@ async fn startup_recovery_preserves_operator_claim_while_interrupting_its_active
             attempt.binding.clone(),
         )
     };
-    harness.restart();
-    let runtime = harness.runtime();
-    let report = runtime
-        .inner
-        .runtime_db
-        .recover_interrupted_runtime_state_at_startup()
-        .unwrap();
+    let (dir, workspace, runtime) = harness.into_startup_fixture_parts();
+    let (runtime, report) =
+        recover_quiescent_startup_fixture(runtime, dir.path(), workspace.path()).await;
     assert_eq!(report.interrupted_execution_attempts, 1);
     assert_eq!(report.interrupted_turns, 1);
-    harness.restart();
-    let runtime = harness.runtime();
     assert_eq!(
         runtime
             .inner
@@ -754,7 +986,7 @@ async fn startup_recovery_preserves_operator_claim_while_interrupting_its_active
         0
     );
     let scheduler_executor::RunLoopPoll::Message(scheduled) =
-        scheduler_executor::SchedulerDecisionExecutor::new(runtime)
+        scheduler_executor::SchedulerDecisionExecutor::new(&runtime)
             .poll()
             .await
             .unwrap()
@@ -780,16 +1012,11 @@ async fn startup_recovery_preserves_operator_claim_while_interrupting_its_active
     );
     assert_eq!(recovery.source, source);
     assert_eq!(recovery.binding, binding);
-    finish_claimed_test_run(runtime).await;
-    assert_eq!(
-        runtime
-            .inner
-            .runtime_db
-            .recover_interrupted_runtime_state_at_startup()
-            .unwrap()
-            .interrupted_execution_attempts,
-        1
-    );
+    drop(scheduled);
+    finish_claimed_test_run(&runtime).await;
+    let (runtime, report) =
+        recover_quiescent_startup_fixture(runtime, dir.path(), workspace.path()).await;
+    assert_eq!(report.interrupted_execution_attempts, 1);
     assert_eq!(
         runtime
             .inner
@@ -802,6 +1029,29 @@ async fn startup_recovery_preserves_operator_claim_while_interrupting_its_active
         QueueEntryStatus::Quarantined,
         "ordinary operator input replay must remain bounded across restarts"
     );
+}
+
+fn apply_offline_scheduler_recovery_fixture(
+    storage: &AppStorage,
+    runtime_db: &RuntimeDb,
+    agent_id: &str,
+    report: &SchedulerRecoveryReport,
+    policy: SchedulerRecoveryBackupPolicy,
+    fault: Option<crate::runtime_db::transitions::TransitionFaultPoint>,
+) -> Result<(usize, Option<std::path::PathBuf>)> {
+    let path = runtime_db.path().with_file_name("runtime-maintenance.lock");
+    let lease = crate::runtime_db::RuntimeDbLock::try_lock(&path)?;
+    let authority =
+        crate::runtime_db::OfflineInputMaintenance::for_database(runtime_db, &lease, &path)?;
+    apply_scheduler_recovery_plan_with_options(
+        storage,
+        runtime_db,
+        agent_id,
+        report,
+        policy,
+        fault,
+        Some(&authority),
+    )
 }
 
 #[tokio::test]
@@ -833,12 +1083,13 @@ async fn scheduler_recovery_routes_external_wake_claim_through_generic_interrupt
     ));
 
     assert_eq!(
-        apply_scheduler_recovery_plan_with_backup_policy(
+        apply_offline_scheduler_recovery_fixture(
             &runtime.inner.storage,
             &runtime.inner.runtime_db,
             "default",
             &report,
             SchedulerRecoveryBackupPolicy::SkipApproved,
+            None,
         )
         .unwrap(),
         (1, None)
@@ -885,12 +1136,13 @@ async fn scheduler_recovery_routes_external_wake_claim_through_generic_interrupt
         .iter()
         .all(|candidate| candidate.activation_id != fixture.attempt_id));
     assert_eq!(
-        apply_scheduler_recovery_plan_with_backup_policy(
+        apply_offline_scheduler_recovery_fixture(
             &runtime.inner.storage,
             &runtime.inner.runtime_db,
             "default",
             &recovered,
             SchedulerRecoveryBackupPolicy::SkipApproved,
+            None,
         )
         .unwrap(),
         (0, None)
@@ -980,23 +1232,25 @@ async fn scheduler_recovery_apply_quarantines_cancelled_task_result_claim_atomic
     assert_eq!(candidate.reason, "task_result_wait_cancelled");
 
     assert_eq!(
-        apply_scheduler_recovery_plan_with_backup_policy(
+        apply_offline_scheduler_recovery_fixture(
             &fixture.runtime.inner.storage,
             &fixture.runtime.inner.runtime_db,
             "default",
             &report,
             SchedulerRecoveryBackupPolicy::SkipApproved,
+            None,
         )
         .unwrap(),
         (1, None)
     );
     assert_eq!(
-        apply_scheduler_recovery_plan_with_backup_policy(
+        apply_offline_scheduler_recovery_fixture(
             &fixture.runtime.inner.storage,
             &fixture.runtime.inner.runtime_db,
             "default",
             &report,
             SchedulerRecoveryBackupPolicy::SkipApproved,
+            None,
         )
         .unwrap(),
         (0, None)
@@ -1031,12 +1285,13 @@ async fn scheduler_recovery_quarantines_task_result_claim_with_missing_wait() {
     assert_eq!(candidate.recovery_decision, "interrupt_and_quarantine");
 
     assert_eq!(
-        apply_scheduler_recovery_plan_with_backup_policy(
+        apply_offline_scheduler_recovery_fixture(
             &fixture.runtime.inner.storage,
             &fixture.runtime.inner.runtime_db,
             "default",
             &report,
             SchedulerRecoveryBackupPolicy::SkipApproved,
+            None,
         )
         .unwrap(),
         (1, None)
@@ -1116,6 +1371,7 @@ impl AgentProvider for CanonicalCompletionProvider {
             }]
         };
         Ok(ProviderTurnResponse {
+            material: Default::default(),
             blocks,
             stop_reason: None,
             input_tokens: 10,
@@ -1177,6 +1433,7 @@ impl AgentProvider for SourceBoundRecoveryProvider {
                 .await;
         }
         Ok(ProviderTurnResponse {
+            material: Default::default(),
             blocks: vec![ModelBlock::Text {
                 text: "Recovered the source task.".into(),
             }],
@@ -1209,7 +1466,17 @@ async fn execute_queued_recovery(runtime: &RuntimeHandle) -> MessageEnvelope {
     execute_source_bound_round(runtime, true).await
 }
 
-async fn execute_source_bound_round(runtime: &RuntimeHandle, recovery: bool) -> MessageEnvelope {
+fn execute_source_bound_round(
+    runtime: &RuntimeHandle,
+    recovery: bool,
+) -> std::pin::Pin<Box<impl std::future::Future<Output = MessageEnvelope> + Send + '_>> {
+    Box::pin(execute_source_bound_round_inner(runtime, recovery))
+}
+
+async fn execute_source_bound_round_inner(
+    runtime: &RuntimeHandle,
+    recovery: bool,
+) -> MessageEnvelope {
     let queued = runtime
         .inner
         .agent
@@ -1254,38 +1521,63 @@ async fn execute_source_bound_round(runtime: &RuntimeHandle, recovery: bool) -> 
             )
         );
     }
-    let terminal = runtime
-        .process_interactive_message_deferred_with_cleanup(
-            &scheduled.message,
-            scheduled.dispatch_plan.continuation_resolution.as_ref(),
-            scheduled
-                .dispatch_plan
-                .execution_admission_provenance
-                .clone(),
-            LoopControlOptions {
-                max_tool_rounds: None,
-            },
-            None,
-        )
-        .await
-        .unwrap();
-    runtime
-        .commit_queue_terminal_settlement(
-            QueueEntryRecord {
-                message_id: scheduled.message.id.clone(),
-                agent_id: scheduled.message.agent_id.clone(),
-                priority: scheduled.message.priority.clone(),
-                status: QueueEntryStatus::Processed,
-                created_at: scheduled.message.created_at,
-                updated_at: Utc::now(),
-            },
-            Vec::new(),
-            true,
-            Some(&terminal),
-        )
-        .await
-        .unwrap();
-    scheduled.message
+    let processing_runtime = runtime.clone();
+    tokio::spawn(async move {
+        // Move the whole ScheduledMessage, including its completion guard.
+        let scheduled = scheduled;
+        let original_run = scheduled
+            .running_state
+            .current_run_id
+            .as_deref()
+            .expect("actual source-bound claim owns its original run");
+        let processing_started = std::time::Instant::now();
+        let terminal = processing_runtime
+            .process_interactive_dispatch_with_cleanup(
+                &scheduled.message,
+                scheduled.dispatch_plan.continuation_resolution.as_ref(),
+                scheduled
+                    .dispatch_plan
+                    .execution_admission_provenance
+                    .clone(),
+                LoopControlOptions {
+                    max_tool_rounds: None,
+                },
+                None,
+                Some(&scheduled.dispatch_plan.prior_closure),
+            )
+            .await
+            .unwrap();
+        processing_runtime
+            .finish_scheduled_message_processing(
+                &scheduled.message,
+                original_run,
+                processing_started,
+                Ok(terminal),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            processing_runtime
+                .runtime_db()
+                .queue_entries()
+                .latest(&scheduled.message.id)
+                .unwrap()
+                .unwrap()
+                .status,
+            QueueEntryStatus::Processed,
+        );
+        assert!(processing_runtime
+            .inner
+            .agent
+            .lock()
+            .await
+            .current_run_abort
+            .is_none());
+        drop(scheduled.run_completion);
+        scheduled.message
+    })
+    .await
+    .unwrap()
 }
 
 async fn execute_source_bound_input(runtime: &RuntimeHandle, root: &MessageEnvelope) {
@@ -1751,12 +2043,11 @@ async fn provider_recovery_pinned_root_minimum_fails_closed_before_provider_requ
         .unwrap_err()
         .to_string()
         .contains("pinned_minimum_over_budget"));
-    runtime
-        .inner
-        .context_config
-        .write()
-        .await
+    let mut replacement = runtime.inner.config_snapshot.load_full().as_ref().clone();
+    replacement
+        .base_context_config
         .prompt_budget_estimated_tokens = minimum - 1;
+    runtime.inner.config_snapshot.store(Arc::new(replacement));
     let error = runtime
         .process_interactive_message_deferred_with_cleanup(
             &scheduled.message,
@@ -1825,7 +2116,12 @@ async fn execute_admitted_context_budget_failure(runtime: &RuntimeHandle) {
         .unwrap_err()
         .is::<crate::context::ContextPlanningError>());
     runtime
-        .settle_processed_message(scheduled.message, result, started)
+        .finish_scheduled_message_processing(
+            &scheduled.message,
+            scheduled.running_state.current_run_id.as_deref().unwrap(),
+            started,
+            result,
+        )
         .await
         .unwrap();
 }
@@ -2128,7 +2424,7 @@ async fn provider_recovery_source_validation_rejects_invalid_partitions_owners_t
         )
         .await
         .unwrap();
-    let recovery = provider_recovery_message(&runtime, &work.id);
+    let recovery = provider_recovery_message(&runtime, &work.id).await;
     let state = runtime
         .inner
         .runtime_db
@@ -2259,7 +2555,7 @@ async fn provider_recovery_wrong_owner_is_rejected_with_visible_failure_and_no_f
         .unwrap();
     runtime.pick_work_item(focus.id.clone()).await.unwrap();
     let before = runtime.latest_work_item(&focus.id).await.unwrap().unwrap();
-    let mut recovery = provider_recovery_message(&runtime, &source.id);
+    let mut recovery = provider_recovery_message(&runtime, &source.id).await;
     recovery.work_item_id = Some(focus.id.clone());
     let recovery = runtime.enqueue(recovery).await.unwrap();
     let before_queue = runtime
@@ -2399,135 +2695,216 @@ fn trusted_operator_prompt(work_item_id: Option<&str>, text: &str) -> MessageEnv
     message
 }
 
-fn provider_recovery_message(runtime: &RuntimeHandle, work_item_id: &str) -> MessageEnvelope {
+async fn provider_recovery_message(runtime: &RuntimeHandle, work_item_id: &str) -> MessageEnvelope {
     use crate::domain::execution_protocol::{
         AdmitExecution, AdmittedFences, ExecutionAttempt, ExecutionAttemptState, ExecutionBinding,
         ExecutionOrigin, ExecutionOutcome, ExecutionOutcomeRecord, ExecutionPriority,
         ExecutionProvenance, ExecutionSource, ExecutionSourceIdentity, ExecutionTrust,
         SettleExecution,
     };
+    use crate::runtime_db::{
+        evidence::{append_message_tx, upsert_agent_state_tx},
+        input_evidence_snapshot::{
+            register_committed_input_evidence_tx, CanonicalInputEvidence as Fact,
+        },
+        repositories::{committed_turn_record_tx, upsert_turn_record_tx},
+        transitions::{
+            authority_fences_tx, execution_protocol_repository, AgentStateMutation,
+            PostCommitEffects, TransitionCommit,
+        },
+    };
 
     let mut source = trusted_operator_prompt(Some(work_item_id), "source provider failure");
     source.turn_id = Some("turn-provider-failure".into());
-    source.message_seq = Some(1);
-    runtime.storage().append_message(&source).unwrap();
-    let mut source_turn = TurnRecord::new("default", "turn-provider-failure", 1);
-    source_turn.owner = Some(crate::types::TurnOwner::WorkItem {
-        work_item_id: work_item_id.into(),
-    });
-    source_turn.current_work_item_id = Some(work_item_id.into());
-    source_turn.trigger = Some(crate::types::TurnTriggerSummary::from_message(&source));
-    source_turn.input_message_ids = vec![source.id.clone()];
-    source_turn.terminal = Some(crate::types::TurnTerminalSummary {
-        kind: TurnTerminalKind::DeferredToFallback,
-        reason: None,
-        no_brief_reason: None,
-        completed_at: Utc::now(),
-        duration_ms: 1,
-    });
-    runtime.storage().append_turn(&source_turn).unwrap();
-
-    let mut state = runtime
-        .inner
-        .runtime_db
-        .transitions()
-        .load_execution_protocol_state_if_initialized("default")
-        .unwrap()
-        .unwrap_or_else(|| {
-            crate::domain::execution_protocol::ExecutionProtocolState::empty("default")
-        });
-    // Model a prior bound failure while preserving current wait authority.
-    let retained_work = state.work_items.get(work_item_id).cloned();
-    let source_work = retained_work.clone().unwrap_or_else(|| {
-        crate::domain::execution_protocol::WorkItemExecutionRecord {
-            source_revision: 1,
-            state: crate::domain::execution_protocol::WorkItemExecutionState::Runnable {
-                generation: 1,
-                recovery_ref: None,
-            },
-        }
-    });
-    let source_generation = source_work.generation();
-    let source_revision = source_work.source_revision;
-    state.work_items.insert(
-        work_item_id.into(),
-        crate::domain::execution_protocol::WorkItemExecutionRecord {
-            source_revision,
-            state: crate::domain::execution_protocol::WorkItemExecutionState::Runnable {
-                generation: source_generation,
-                recovery_ref: None,
-            },
-        },
-    );
-    let source_attempt_id = format!("attempt-provider-failure:{}", source.id);
-    let admitted = crate::domain::execution_protocol::admit_execution(
-        &state,
-        &AdmitExecution {
-            attempt: ExecutionAttempt {
-                input_projection: None,
-                attempt_id: source_attempt_id.clone(),
-                agent_id: "default".into(),
-                source_message_id: Some(source.id.clone()),
-                source: ExecutionSource {
-                    identity: ExecutionSourceIdentity::QueueMessage {
-                        message_id: source.id.clone(),
+    let mut mutation = runtime.begin_mutation().await.unwrap();
+    let expected_state = mutation.state.clone();
+    let mut committed_source = None;
+    mutation
+        .commit_transition(crate::ids::audit_event_id(), |scope| {
+            runtime.inner.runtime_db.transaction(|tx| {
+                let source = append_message_tx(tx, &source)?.0;
+                let source_sequence = source.message_seq.expect("committed source sequence");
+                let fences = authority_fences_tx(tx, &source.agent_id)?;
+                let previous =
+                    execution_protocol_repository::load_state_unchecked_tx(tx, &source.agent_id)?;
+                let mut execution = previous.clone();
+                // Model the historical failure without releasing today's wait,
+                // pause, or blocker on the same WorkItem generation.
+                let retained_work = execution.work_items.get(work_item_id).cloned();
+                let source_work = retained_work.clone().unwrap_or_else(|| {
+                    crate::domain::execution_protocol::WorkItemExecutionRecord {
+                        source_revision: 1,
+                        state:
+                            crate::domain::execution_protocol::WorkItemExecutionState::Runnable {
+                                generation: 1,
+                                recovery_ref: None,
+                            },
+                    }
+                });
+                let source_generation = source_work.generation();
+                let source_revision = source_work.source_revision;
+                execution.work_items.insert(
+                    work_item_id.into(),
+                    crate::domain::execution_protocol::WorkItemExecutionRecord {
+                        source_revision,
+                        state:
+                            crate::domain::execution_protocol::WorkItemExecutionState::Runnable {
+                                generation: source_generation,
+                                recovery_ref: None,
+                            },
                     },
-                    generation: 1,
-                },
-                binding: ExecutionBinding::WorkItem {
+                );
+                let source_attempt_id = format!("attempt-provider-failure:{}", source.id);
+                let source_outcome_id = format!("outcome-provider-failure:{}", source.id);
+                let admitted = crate::domain::execution_protocol::admit_execution(
+                    &execution,
+                    &AdmitExecution {
+                        attempt: ExecutionAttempt {
+                            input_projection: None,
+                            attempt_id: source_attempt_id.clone(),
+                            agent_id: source.agent_id.clone(),
+                            source_message_id: Some(source.id.clone()),
+                            source: ExecutionSource {
+                                identity: ExecutionSourceIdentity::QueueMessage {
+                                    message_id: source.id.clone(),
+                                },
+                                generation: source_sequence,
+                            },
+                            binding: ExecutionBinding::WorkItem {
+                                work_item_id: work_item_id.into(),
+                            },
+                            provenance: ExecutionProvenance {
+                                origin: ExecutionOrigin::Operator,
+                                trust: ExecutionTrust::OperatorInstruction,
+                                priority: ExecutionPriority::Normal,
+                                correlation_id: None,
+                                causation_id: None,
+                            },
+                            admitted_fences: AdmittedFences {
+                                source_revision: source_sequence,
+                                work_item_source_revision: Some(source_revision),
+                                work_item_generation: Some(source_generation),
+                                rejoin: None,
+                                agent_control_revision: fences.agent_control_revision,
+                                host_registry_revision: fences.host_registry_revision,
+                            },
+                            state: ExecutionAttemptState::Open,
+                            run_id: Some("run-provider-failure".into()),
+                            turn_id: source.turn_id.clone(),
+                            recovery_of_attempt_id: None,
+                            terminal_outcome_id: None,
+                            admitted_at: Utc::now().to_rfc3339(),
+                            terminal_at: None,
+                        },
+                    },
+                )
+                .map_err(anyhow::Error::msg)?;
+                let mut settled = crate::domain::execution_protocol::settle_execution(
+                    &admitted.state,
+                    &SettleExecution {
+                        outcome: ExecutionOutcomeRecord {
+                            outcome_id: source_outcome_id.clone(),
+                            attempt_id: source_attempt_id.clone(),
+                            outcome: ExecutionOutcome::WorkItem(
+                                crate::domain::execution_protocol::WorkItemOutcome::Continue,
+                            ),
+                            created_at: Utc::now().to_rfc3339(),
+                        },
+                    },
+                )
+                .map_err(anyhow::Error::msg)?;
+                if let Some(retained_work) = retained_work {
+                    settled
+                        .state
+                        .work_items
+                        .insert(work_item_id.into(), retained_work);
+                }
+                execution_protocol_repository::persist_repaired_state_tx(
+                    tx,
+                    &previous,
+                    &settled.state,
+                )?;
+                let execution = execution_protocol_repository::load_state_tx(tx, &source.agent_id)?;
+
+                let payload: String = tx.query_row(
+                    "SELECT payload_json FROM agent_states WHERE agent_id = ?1",
+                    [&source.agent_id],
+                    |row| row.get(0),
+                )?;
+                let mut state: AgentState = serde_json::from_str(&payload)?;
+                anyhow::ensure!(
+                    state == expected_state,
+                    "provider recovery fixture State changed outside its owner"
+                );
+                state.turn_index = state.turn_index.checked_add(1).expect("fixture turn index");
+                let message_count: i64 = tx.query_row(
+                    "SELECT COUNT(*) FROM messages WHERE agent_id = ?1",
+                    [&source.agent_id],
+                    |row| row.get(0),
+                )?;
+                state.total_message_count = usize::try_from(message_count)?;
+                upsert_agent_state_tx(tx, &state)?;
+                let payload: String = tx.query_row(
+                    "SELECT payload_json FROM agent_states WHERE agent_id = ?1",
+                    [&source.agent_id],
+                    |row| row.get(0),
+                )?;
+                let state: AgentState = serde_json::from_str(&payload)?;
+                let mut source_turn = TurnRecord::new(
+                    source.agent_id.clone(),
+                    "turn-provider-failure",
+                    state.turn_index,
+                );
+                source_turn.run_id = Some("run-provider-failure".into());
+                source_turn.owner = Some(crate::types::TurnOwner::WorkItem {
                     work_item_id: work_item_id.into(),
-                },
-                provenance: ExecutionProvenance {
-                    origin: ExecutionOrigin::Operator,
-                    trust: ExecutionTrust::OperatorInstruction,
-                    priority: ExecutionPriority::Interject,
-                    correlation_id: None,
-                    causation_id: None,
-                },
-                admitted_fences: AdmittedFences {
-                    source_revision: 1,
-                    work_item_source_revision: Some(source_revision),
-                    work_item_generation: Some(source_generation),
-                    rejoin: None,
-                    agent_control_revision: 1,
-                    host_registry_revision: 1,
-                },
-                state: ExecutionAttemptState::Open,
-                run_id: None,
-                turn_id: source.turn_id.clone(),
-                recovery_of_attempt_id: None,
-                terminal_outcome_id: None,
-                admitted_at: Utc::now().to_rfc3339(),
-                terminal_at: None,
-            },
-        },
-    )
-    .unwrap();
-    let mut settled = crate::domain::execution_protocol::settle_execution(
-        &admitted.state,
-        &SettleExecution {
-            outcome: ExecutionOutcomeRecord {
-                outcome_id: format!("outcome-provider-failure:{}", source.id),
-                attempt_id: source_attempt_id,
-                outcome: ExecutionOutcome::WorkItem(
-                    crate::domain::execution_protocol::WorkItemOutcome::Continue,
-                ),
-                created_at: Utc::now().to_rfc3339(),
-            },
-        },
-    )
-    .unwrap();
-    if let Some(retained_work) = retained_work {
-        settled
-            .state
-            .work_items
-            .insert(work_item_id.into(), retained_work);
-    }
-    runtime
-        .inner
-        .runtime_db
-        .transaction(|tx| crate::runtime_db::transitions::persist_state_tx(tx, &settled.state))
+                });
+                source_turn.current_work_item_id = Some(work_item_id.into());
+                source_turn.trigger = Some(crate::types::TurnTriggerSummary::from_message(&source));
+                source_turn.input_message_ids = vec![source.id.clone()];
+                source_turn.terminal = Some(crate::types::TurnTerminalSummary {
+                    kind: TurnTerminalKind::DeferredToFallback,
+                    reason: None,
+                    no_brief_reason: None,
+                    completed_at: Utc::now(),
+                    duration_ms: 1,
+                });
+                upsert_turn_record_tx(tx, &source_turn)?;
+                let source_turn =
+                    committed_turn_record_tx(tx, &source.agent_id, &source_turn.turn_id)?.record;
+                let facts = vec![
+                    Fact::Message(source.clone()),
+                    Fact::Turn(source_turn.clone()),
+                    Fact::Attempt(execution.attempts[&source_attempt_id].clone()),
+                    Fact::Outcome(execution.outcomes[&source_outcome_id].clone()),
+                    Fact::WorkExecution {
+                        work_item_id: work_item_id.into(),
+                        record: execution.work_items[work_item_id].clone(),
+                    },
+                ];
+                let input_evidence_delta = register_committed_input_evidence_tx(tx, scope, &facts)?;
+                committed_source = Some(source.clone());
+                Ok(TransitionCommit {
+                    applied: true,
+                    effects: Box::new(PostCommitEffects {
+                        agent_state: Some(AgentStateMutation {
+                            expected: Some(Box::new(expected_state.clone())),
+                            record: Box::new(state),
+                        }),
+                        input_evidence_delta,
+                        messages: vec![source],
+                        turns: vec![source_turn],
+                        execution_protocol: Some(execution),
+                        ..Default::default()
+                    }),
+                    ..Default::default()
+                })
+            })
+        })
+        .await
         .unwrap();
+    drop(mutation);
+    let source = committed_source.expect("provider source committed and published");
 
     let mut message = MessageEnvelope::new(
         "default",
@@ -2584,7 +2961,11 @@ fn append_default_host_identity(runtime: &RuntimeHandle) {
 async fn begin_canonical_operator_turn(
     runtime: &RuntimeHandle,
     text: &str,
-) -> (MessageEnvelope, String) {
+) -> (
+    MessageEnvelope,
+    String,
+    scheduler_executor::ScheduledMessage,
+) {
     let message = runtime
         .enqueue(trusted_operator_prompt(None, text))
         .await
@@ -2597,11 +2978,20 @@ async fn begin_canonical_operator_turn(
         panic!("operator prompt should be claimed");
     };
     runtime
-        .begin_interactive_turn(Some(&scheduled.message), None, None)
+        .begin_dispatch_turn(
+            &scheduled.message,
+            None,
+            None,
+            scheduled
+                .dispatch_plan
+                .execution_admission_provenance
+                .clone(),
+            &scheduled.dispatch_plan.prior_closure,
+        )
         .await
         .unwrap();
     let activation_id = scheduler_executor::canonical_activation_id(&message.id);
-    (message, activation_id)
+    (message, activation_id, scheduled)
 }
 
 #[tokio::test]
@@ -2647,12 +3037,37 @@ async fn canonical_agent_lifecycle_binding_does_not_inherit_replay_or_message_wo
     let source_turn_id = "turn-interrupted-agent-lifecycle";
     let mut source_turn = TurnRecord::new("default", source_turn_id, 1);
     source_turn.current_work_item_id = Some(work_item.id.clone());
-    runtime.storage().append_turn(&source_turn).unwrap();
     message
         .source_refs
         .insert("replay_source_turn_id".into(), source_turn_id.into());
+    let message = persist_runtime_test_source(&runtime, message).await;
+    source_turn.owner = Some(crate::types::TurnOwner::WorkItem {
+        work_item_id: work_item.id.clone(),
+    });
+    source_turn.trigger = Some(crate::types::TurnTriggerSummary::from_message(&message));
+    source_turn.input_message_ids = vec![message.id.clone()];
+    source_turn.terminal = Some(crate::types::TurnTerminalSummary {
+        kind: TurnTerminalKind::Interrupted,
+        reason: Some("fixture previous lifecycle".into()),
+        no_brief_reason: None,
+        completed_at: Utc::now(),
+        duration_ms: 1,
+    });
+    publish_turn_fixture(&runtime, &source_turn).await;
+    let fences = runtime
+        .inner
+        .runtime_db
+        .transitions()
+        .load_execution_authority_fences("default")
+        .unwrap();
     let activation_id = scheduler_executor::canonical_activation_id(&message.id);
-    let state = crate::domain::execution_protocol::ExecutionProtocolState::empty("default");
+    let state = runtime
+        .inner
+        .runtime_db
+        .transitions()
+        .load_execution_protocol_state_if_initialized("default")
+        .unwrap()
+        .unwrap();
     let admitted = crate::domain::execution_protocol::admit_execution(
         &state,
         &crate::domain::execution_protocol::AdmitExecution {
@@ -2666,7 +3081,7 @@ async fn canonical_agent_lifecycle_binding_does_not_inherit_replay_or_message_wo
                         crate::domain::execution_protocol::ExecutionSourceIdentity::QueueMessage {
                             message_id: message.id.clone(),
                         },
-                    generation: 1,
+                    generation: message.message_seq.unwrap(),
                 },
                 binding: crate::domain::execution_protocol::ExecutionBinding::AgentLifecycle {
                     agent_id: "default".into(),
@@ -2679,12 +3094,12 @@ async fn canonical_agent_lifecycle_binding_does_not_inherit_replay_or_message_wo
                     causation_id: None,
                 },
                 admitted_fences: crate::domain::execution_protocol::AdmittedFences {
-                    source_revision: 1,
+                    source_revision: message.message_seq.unwrap(),
                     work_item_source_revision: None,
                     work_item_generation: None,
                     rejoin: None,
-                    agent_control_revision: 1,
-                    host_registry_revision: 1,
+                    agent_control_revision: fences.agent_control_revision,
+                    host_registry_revision: fences.host_registry_revision,
                 },
                 state: crate::domain::execution_protocol::ExecutionAttemptState::Open,
                 run_id: None,
@@ -2697,11 +3112,7 @@ async fn canonical_agent_lifecycle_binding_does_not_inherit_replay_or_message_wo
         },
     )
     .unwrap();
-    runtime
-        .inner
-        .runtime_db
-        .transaction(|tx| crate::runtime_db::transitions::persist_state_tx(tx, &admitted.state))
-        .unwrap();
+    publish_execution_fixture(&runtime, &admitted.state).await;
 
     runtime
         .begin_interactive_turn_with_provenance(
@@ -2751,6 +3162,7 @@ async fn legacy_compat_provenance_cannot_start_a_new_turn() {
     )
     .unwrap();
     let message = trusted_operator_prompt(None, "historical provenance must not execute");
+    let message = persist_runtime_test_source(&runtime, message).await;
 
     let error = runtime
         .begin_interactive_turn_with_provenance(
@@ -2833,26 +3245,28 @@ async fn canonical_turn_binding_preserves_the_admitted_work_item_revision() {
         .work_item_source_revision
         .expect("work item attempt should carry an admitted revision");
 
-    let latest = runtime.latest_work_item(&work.id).await.unwrap().unwrap();
     runtime
-        .storage()
-        .append_work_item(&WorkItemRecord {
-            revision: latest.revision + 1,
-            objective: "durable write after admission".into(),
-            updated_at: Utc::now(),
-            ..latest
-        })
+        .update_work_item_fields(
+            work.id.clone(),
+            Some("durable write after admission".into()),
+            None,
+            None,
+            None,
+            None,
+        )
+        .await
         .unwrap();
 
     runtime
-        .begin_interactive_turn_with_provenance(
-            Some(&scheduled.message),
+        .begin_dispatch_turn(
+            &scheduled.message,
             None,
             None,
             scheduled
                 .dispatch_plan
                 .execution_admission_provenance
                 .clone(),
+            &scheduled.dispatch_plan.prior_closure,
         )
         .await
         .unwrap();
@@ -2928,35 +3342,38 @@ fn task_result_message(task_id: &str) -> MessageEnvelope {
     )
 }
 
-fn append_completed_rejoin_task(
+async fn append_completed_rejoin_task(
     runtime: &RuntimeHandle,
     task_id: &str,
     work_item_id: &str,
     parent_turn_id: &str,
 ) {
     runtime
-        .storage()
-        .append_task(&TaskRecord {
-            id: task_id.into(),
-            agent_id: "default".into(),
-            kind: TaskKind::CommandTask,
-            status: TaskStatus::Completed,
-            created_at: Utc::now(),
-            updated_at: Utc::now(),
-            parent_message_id: None,
-            work_item_id: Some(work_item_id.into()),
-            summary: Some(format!("{task_id} completed")),
-            detail: Some(serde_json::json!({
-                "rejoin_obligation_id": task_id,
-                "rejoin_generation": 1,
-                "parent_turn_id": parent_turn_id,
-            })),
-            recovery: None,
-        })
+        .persist_task_transition(
+            &TaskRecord {
+                id: task_id.into(),
+                agent_id: "default".into(),
+                kind: TaskKind::CommandTask,
+                status: TaskStatus::Completed,
+                created_at: Utc::now(),
+                updated_at: Utc::now(),
+                parent_message_id: None,
+                work_item_id: Some(work_item_id.into()),
+                summary: Some(format!("{task_id} completed")),
+                detail: Some(serde_json::json!({
+                    "rejoin_obligation_id": task_id,
+                    "rejoin_generation": 1,
+                    "parent_turn_id": parent_turn_id,
+                })),
+                recovery: None,
+            },
+            "completed_rejoin_fixture",
+        )
+        .await
         .unwrap();
 }
 
-fn append_completed_rejoin_task_for_message(
+async fn append_completed_rejoin_task_for_message(
     runtime: &RuntimeHandle,
     task_id: &str,
     work_item_id: &str,
@@ -2964,47 +3381,53 @@ fn append_completed_rejoin_task_for_message(
     parent_message_id: &str,
 ) {
     runtime
-        .storage()
-        .append_task(&TaskRecord {
-            id: task_id.into(),
-            agent_id: "default".into(),
-            kind: TaskKind::CommandTask,
-            status: TaskStatus::Completed,
-            created_at: Utc::now(),
-            updated_at: Utc::now(),
-            parent_message_id: Some(parent_message_id.into()),
-            work_item_id: Some(work_item_id.into()),
-            summary: Some(format!("{task_id} completed")),
-            detail: Some(serde_json::json!({
-                "rejoin_obligation_id": task_id,
-                "rejoin_generation": 1,
-                "parent_turn_id": parent_turn_id,
-            })),
-            recovery: None,
-        })
+        .persist_task_transition(
+            &TaskRecord {
+                id: task_id.into(),
+                agent_id: "default".into(),
+                kind: TaskKind::CommandTask,
+                status: TaskStatus::Completed,
+                created_at: Utc::now(),
+                updated_at: Utc::now(),
+                parent_message_id: Some(parent_message_id.into()),
+                work_item_id: Some(work_item_id.into()),
+                summary: Some(format!("{task_id} completed")),
+                detail: Some(serde_json::json!({
+                    "rejoin_obligation_id": task_id,
+                    "rejoin_generation": 1,
+                    "parent_turn_id": parent_turn_id,
+                })),
+                recovery: None,
+            },
+            "completed_rejoin_message_fixture",
+        )
+        .await
         .unwrap();
 }
 
-fn append_running_rejoin_task(runtime: &RuntimeHandle, task_id: &str, work_item_id: &str) {
+async fn append_running_rejoin_task(runtime: &RuntimeHandle, task_id: &str, work_item_id: &str) {
     runtime
-        .storage()
-        .append_task(&TaskRecord {
-            id: task_id.into(),
-            agent_id: "default".into(),
-            kind: TaskKind::CommandTask,
-            status: TaskStatus::Running,
-            created_at: Utc::now(),
-            updated_at: Utc::now(),
-            parent_message_id: None,
-            work_item_id: Some(work_item_id.into()),
-            summary: Some(format!("{task_id} running")),
-            detail: None,
-            recovery: None,
-        })
+        .persist_task_transition(
+            &TaskRecord {
+                id: task_id.into(),
+                agent_id: "default".into(),
+                kind: TaskKind::CommandTask,
+                status: TaskStatus::Running,
+                created_at: Utc::now(),
+                updated_at: Utc::now(),
+                parent_message_id: None,
+                work_item_id: Some(work_item_id.into()),
+                summary: Some(format!("{task_id} running")),
+                detail: None,
+                recovery: None,
+            },
+            "running_rejoin_fixture",
+        )
+        .await
         .unwrap();
 }
 
-fn persist_waiting_work_execution(
+async fn persist_waiting_work_execution(
     runtime: &RuntimeHandle,
     work_item: &WorkItemRecord,
     wait_id: &str,
@@ -3020,10 +3443,11 @@ fn persist_waiting_work_execution(
                 wait_id: wait_id.into(),
             },
         },
-    );
+    )
+    .await;
 }
 
-fn persist_work_execution(
+async fn persist_work_execution(
     runtime: &RuntimeHandle,
     work_item: &WorkItemRecord,
     source_revision: u64,
@@ -3045,14 +3469,128 @@ fn persist_work_execution(
             state,
         },
     );
-    runtime
-        .inner
-        .runtime_db
-        .transaction(|tx| crate::runtime_db::transitions::persist_state_tx(tx, &execution))
+    publish_execution_fixture(runtime, &execution).await;
+}
+
+// Fixture writes acknowledge the same original transaction to the resident
+// owner; direct SQL alone cannot stand in for a published protocol transition.
+async fn publish_execution_fixture(
+    runtime: &RuntimeHandle,
+    execution: &crate::domain::execution_protocol::ExecutionProtocolState,
+) {
+    use crate::runtime_db::{
+        input_evidence_snapshot::{
+            register_committed_input_evidence_tx, CanonicalInputEvidence as Fact,
+        },
+        transitions::{PostCommitEffects, TransitionCommit},
+    };
+    let mut mutation = runtime.begin_mutation().await.unwrap();
+    mutation
+        .commit_transition(crate::ids::audit_event_id(), |scope| {
+            runtime.inner.runtime_db.transaction(|tx| {
+                crate::runtime_db::transitions::persist_state_tx(tx, execution)?;
+                let mut facts = execution
+                    .attempts
+                    .values()
+                    .cloned()
+                    .map(Fact::Attempt)
+                    .collect::<Vec<_>>();
+                facts.extend(execution.outcomes.values().cloned().map(Fact::Outcome));
+                facts.extend(
+                    execution
+                        .work_items
+                        .iter()
+                        .map(|(id, record)| Fact::WorkExecution {
+                            work_item_id: id.clone(),
+                            record: record.clone(),
+                        }),
+                );
+                let input_evidence_delta = register_committed_input_evidence_tx(tx, scope, &facts)?;
+                Ok(TransitionCommit {
+                    applied: true,
+                    effects: Box::new(PostCommitEffects {
+                        input_evidence_delta,
+                        execution_protocol: Some(execution.clone()),
+                        ..Default::default()
+                    }),
+                    ..Default::default()
+                })
+            })
+        })
+        .await
         .unwrap();
 }
 
-fn persist_execution_transition_only(
+async fn publish_turn_fixture(runtime: &RuntimeHandle, turn: &TurnRecord) {
+    use crate::runtime_db::{
+        evidence::upsert_agent_state_tx,
+        input_evidence_snapshot::{
+            register_committed_input_evidence_tx, validate_existing_input_evidence_tx,
+            CanonicalInputEvidence as Fact,
+        },
+        repositories::{committed_turn_record_tx, upsert_turn_record_tx},
+        transitions::{AgentStateMutation, PostCommitEffects, TransitionCommit},
+    };
+    let mut mutation = runtime.begin_mutation().await.unwrap();
+    let expected = mutation.state.clone();
+    mutation
+        .commit_transition(crate::ids::audit_event_id(), |scope| {
+            runtime.inner.runtime_db.transaction(|tx| {
+                validate_existing_input_evidence_tx(
+                    tx,
+                    scope,
+                    &crate::runtime::resident_input_evidence::InputEvidenceKey::new(
+                        crate::runtime::resident_input_evidence::InputEvidenceFamily::Turn,
+                        &turn.turn_id,
+                    ),
+                )?;
+                upsert_turn_record_tx(tx, turn)?;
+                let actual = committed_turn_record_tx(tx, &turn.agent_id, &turn.turn_id)?.record;
+                let payload: String = tx.query_row(
+                    "SELECT payload_json FROM agent_states WHERE agent_id=?1",
+                    [&turn.agent_id],
+                    |r| r.get(0),
+                )?;
+                let mut state: AgentState = serde_json::from_str(&payload)?;
+                anyhow::ensure!(
+                    state == expected,
+                    "Turn fixture State changed outside original owner"
+                );
+                state.turn_index = state.turn_index.max(actual.turn_index);
+                let agent_state = if state != expected {
+                    upsert_agent_state_tx(tx, &state)?;
+                    let payload: String = tx.query_row(
+                        "SELECT payload_json FROM agent_states WHERE agent_id=?1",
+                        [&turn.agent_id],
+                        |r| r.get(0),
+                    )?;
+                    let state: AgentState = serde_json::from_str(&payload)?;
+                    Some(AgentStateMutation {
+                        expected: Some(Box::new(expected.clone())),
+                        record: Box::new(state),
+                    })
+                } else {
+                    None
+                };
+                let input_evidence_delta =
+                    register_committed_input_evidence_tx(tx, scope, &[Fact::Turn(actual.clone())])?;
+                Ok(TransitionCommit {
+                    applied: true,
+                    effects: Box::new(PostCommitEffects {
+                        agent_state,
+                        input_evidence_delta,
+                        turns: vec![actual],
+                        ..Default::default()
+                    }),
+                    ..Default::default()
+                })
+            })
+        })
+        .await
+        .unwrap();
+}
+
+async fn persist_execution_transition_only(
     runtime: &RuntimeHandle,
     transition: crate::runtime_db::transitions::ExecutionProtocolTransition,
 ) {
@@ -3124,15 +3662,11 @@ fn persist_execution_transition_only(
         .expect("test execution transition should be valid")
         .state;
     }
-    runtime
-        .inner
-        .runtime_db
-        .transaction(|tx| crate::runtime_db::transitions::persist_state_tx(tx, &state))
-        .unwrap();
+    publish_execution_fixture(runtime, &state).await;
 }
 
-#[test]
-fn append_state_changed_events_emits_single_lightweight_agent_event() {
+#[tokio::test]
+async fn append_state_changed_events_emits_single_lightweight_agent_event() {
     let dir = tempdir().unwrap();
     let workspace = tempdir().unwrap();
     let runtime = RuntimeHandle::new(
@@ -3151,7 +3685,7 @@ fn append_state_changed_events_emits_single_lightweight_agent_event() {
     state.pending = 2;
     state.working_memory.archived_episode_count = 4;
 
-    runtime.append_state_changed_events(&state).unwrap();
+    runtime.append_state_changed_events(&state).await.unwrap();
 
     let events = runtime.storage().read_recent_events(20).unwrap();
     let state_events = events
@@ -3187,7 +3721,7 @@ async fn model_override_defers_reasoning_effort_validation_for_unresolved_route(
     {
         let mut guard = runtime.inner.agent.lock().await;
         guard.state.current_run_id = Some("run-1".into());
-        runtime.storage().write_agent(&guard.state).unwrap();
+        guard.persist_state(&runtime.inner.storage).unwrap();
     }
     let model_override = crate::config::ModelRouteRef::parse("unconfigured@default/model").unwrap();
 
@@ -3206,82 +3740,6 @@ async fn model_override_defers_reasoning_effort_validation_for_unresolved_route(
     assert_eq!(
         state.model_override_reasoning_effort.as_deref(),
         Some("arbitrary")
-    );
-}
-
-#[test]
-fn runtime_projection_cache_rebuilds_current_agent_active_task_projection() {
-    let now = Utc::now();
-    let tasks = vec![
-        TaskRecord {
-            id: "task-old".into(),
-            agent_id: "default".into(),
-            kind: TaskKind::CommandTask,
-            status: TaskStatus::Running,
-            created_at: now - chrono::Duration::seconds(10),
-            updated_at: now - chrono::Duration::seconds(10),
-            parent_message_id: None,
-            work_item_id: None,
-            summary: None,
-            detail: None,
-            recovery: None,
-        },
-        TaskRecord {
-            id: "task-done".into(),
-            agent_id: "default".into(),
-            kind: TaskKind::CommandTask,
-            status: TaskStatus::Completed,
-            created_at: now - chrono::Duration::seconds(5),
-            updated_at: now,
-            parent_message_id: None,
-            work_item_id: None,
-            summary: None,
-            detail: None,
-            recovery: None,
-        },
-        TaskRecord {
-            id: "task-other-agent".into(),
-            agent_id: "other".into(),
-            kind: TaskKind::CommandTask,
-            status: TaskStatus::Running,
-            created_at: now - chrono::Duration::seconds(4),
-            updated_at: now + chrono::Duration::seconds(4),
-            parent_message_id: None,
-            work_item_id: None,
-            summary: None,
-            detail: None,
-            recovery: None,
-        },
-        TaskRecord {
-            id: "task-new".into(),
-            agent_id: "default".into(),
-            kind: TaskKind::CommandTask,
-            status: TaskStatus::Queued,
-            created_at: now - chrono::Duration::seconds(2),
-            updated_at: now + chrono::Duration::seconds(2),
-            parent_message_id: None,
-            work_item_id: None,
-            summary: None,
-            detail: None,
-            recovery: None,
-        },
-    ];
-
-    let cache = AgentRuntimeProjectionCache::rebuild(
-        "default".into(),
-        tasks,
-        Vec::new(),
-        Vec::new(),
-        Vec::new(),
-    );
-
-    let active_tasks = cache.active_tasks(10);
-    assert_eq!(
-        active_tasks
-            .iter()
-            .map(|task| task.id.as_str())
-            .collect::<Vec<_>>(),
-        vec!["task-new", "task-old"]
     );
 }
 
@@ -3308,6 +3766,7 @@ impl AgentProvider for GatedSuccessProvider {
         self.started.notify_one();
         self.release.notified().await;
         Ok(ProviderTurnResponse {
+            material: Default::default(),
             blocks: vec![ModelBlock::Text {
                 text: "terminal settlement result".into(),
             }],
@@ -3334,6 +3793,7 @@ impl AgentProvider for OperatorInterjectionProbeProvider {
             self.first_tool_round.notify_one();
             tokio::time::sleep(std::time::Duration::from_millis(100)).await;
             Ok(ProviderTurnResponse {
+                material: Default::default(),
                 blocks: vec![ModelBlock::ToolUse {
                     id: "sleep".into(),
                     name: "Sleep".into(),
@@ -3353,6 +3813,7 @@ impl AgentProvider for OperatorInterjectionProbeProvider {
             })
         } else {
             Ok(ProviderTurnResponse {
+                material: Default::default(),
                 blocks: vec![ModelBlock::Text {
                     text: "interjection handled".into(),
                 }],
@@ -3384,6 +3845,7 @@ impl AgentProvider for TerminalWaitInterjectionProvider {
 
         match call {
             1 => Ok(ProviderTurnResponse {
+                material: Default::default(),
                 blocks: vec![ModelBlock::ToolUse {
                     id: "terminal-wait".into(),
                     name: "WaitFor".into(),
@@ -3404,6 +3866,7 @@ impl AgentProvider for TerminalWaitInterjectionProvider {
                 request_diagnostics: None,
             }),
             2 => Ok(ProviderTurnResponse {
+                material: Default::default(),
                 blocks: vec![ModelBlock::Text {
                     text: "queued operator input handled".into(),
                 }],
@@ -3532,6 +3995,8 @@ async fn non_model_reentry_external_events_do_not_run_interactive_turn() {
         Priority::Normal,
         MessageBody::Text { text: "".into() },
     );
+
+    let message = persist_runtime_test_source(&runtime, message).await;
 
     runtime
         .process_message(message, closure_decision(ClosureOutcome::Completed, None))
@@ -3746,10 +4211,10 @@ async fn interrupted_message_replay_creates_new_turn_without_current_focus_drift
         .await
         .unwrap();
     {
-        let mut guard = runtime.inner.agent.lock().await;
+        let mut guard = runtime.begin_mutation().await.unwrap();
         guard.state.current_work_item_id = Some(current_work_item.id.clone());
         guard.state.current_turn_work_item_id = Some(current_work_item.id);
-        guard.persist_state(&runtime.inner.storage).unwrap();
+        guard.persist_state(&runtime.inner.storage).await.unwrap();
     }
 
     let poll = scheduler_executor::SchedulerDecisionExecutor::new(&runtime)
@@ -3764,7 +4229,16 @@ async fn interrupted_message_replay_creates_new_turn_without_current_focus_drift
         Some(&source_turn_id)
     );
     runtime
-        .begin_interactive_turn(Some(&scheduled.message), None, None)
+        .begin_dispatch_turn(
+            &scheduled.message,
+            None,
+            None,
+            scheduled
+                .dispatch_plan
+                .execution_admission_provenance
+                .clone(),
+            &scheduled.dispatch_plan.prior_closure,
+        )
         .await
         .unwrap();
     let state = runtime.agent_state().await.unwrap();
@@ -3772,18 +4246,24 @@ async fn interrupted_message_replay_creates_new_turn_without_current_focus_drift
     assert_ne!(replay_turn_id, source_turn_id);
     assert_eq!(state.current_turn_work_item_id, None);
 
+    let mut replay_message = scheduled.message.clone();
+    replay_message.turn_id = Some(replay_turn_id.clone());
+    let terminal = terminal_transition_from_started_turn(&runtime, &replay_message);
+    finish_claimed_test_run(&runtime).await;
     runtime
-        .persist_turn_record(&TurnTerminalRecord {
-            turn_id: replay_turn_id.clone(),
-            turn_index: state.turn_index,
-            kind: TurnTerminalKind::Completed,
-            reason: None,
-            last_assistant_message: None,
-            no_brief_reason: None,
-            checkpoint: None,
-            completed_at: Utc::now(),
-            duration_ms: 1,
-        })
+        .commit_queue_terminal_settlement(
+            QueueEntryRecord {
+                message_id: message.id.clone(),
+                agent_id: message.agent_id.clone(),
+                priority: message.priority,
+                status: QueueEntryStatus::Processed,
+                created_at: message.created_at,
+                updated_at: Utc::now(),
+            },
+            Vec::new(),
+            true,
+            Some(&terminal),
+        )
         .await
         .unwrap();
 
@@ -3808,23 +4288,6 @@ async fn interrupted_message_replay_creates_new_turn_without_current_focus_drift
         })
     );
 
-    finish_claimed_test_run(&runtime).await;
-    runtime
-        .commit_queue_terminal_settlement(
-            QueueEntryRecord {
-                message_id: message.id.clone(),
-                agent_id: message.agent_id.clone(),
-                priority: message.priority,
-                status: QueueEntryStatus::Processed,
-                created_at: message.created_at,
-                updated_at: Utc::now(),
-            },
-            Vec::new(),
-            true,
-            None,
-        )
-        .await
-        .unwrap();
     assert_eq!(
         runtime
             .inner
@@ -3911,11 +4374,7 @@ async fn canonical_work_item_wait_keeps_other_runnable_work_schedulable() {
             },
         },
     );
-    runtime
-        .inner
-        .runtime_db
-        .transaction(|tx| crate::runtime_db::transitions::persist_state_tx(tx, &execution))
-        .unwrap();
+    publish_execution_fixture(&runtime, &execution).await;
 
     assert!(runtime.maybe_emit_pending_system_tick(None).await.unwrap());
     let tick = runtime
@@ -4007,7 +4466,8 @@ async fn late_terminal_task_result_for_completed_work_item_settles_without_model
         "task-late-child-result",
         &work_item.id,
         "turn-parent-completed",
-    );
+    )
+    .await;
     runtime
         .complete_work_item(work_item.id.clone(), Vec::new())
         .await
@@ -4029,21 +4489,52 @@ async fn late_terminal_task_result_for_completed_work_item_settles_without_model
     );
     parent_brief.turn_index = Some(parent_turn.turn_index);
     parent_brief.turn_id = Some(parent_turn.turn_id.clone());
-    runtime.storage().append_brief(&parent_brief).unwrap();
+    let mut mutation = runtime.begin_mutation().await.unwrap();
+    let prepared =
+        crate::runtime_db::prepared_input_evidence::PreparedInputEvidence::brief_created(
+            mutation.input_evidence_scope(),
+            crate::ids::audit_event_id(),
+            parent_brief.created_at,
+            parent_brief.clone(),
+            AuditEvent::legacy(
+                "brief_created",
+                serde_json::json!({"brief_id": parent_brief.id}),
+            ),
+            Vec::new(),
+        )
+        .unwrap();
+    mutation
+        .commit_prepared_evidence(prepared, None)
+        .await
+        .unwrap();
+    drop(mutation);
     parent_turn.produced_brief_ids.push(parent_brief.id);
-    runtime.storage().append_turn(&parent_turn).unwrap();
+    publish_turn_fixture(&runtime, &parent_turn).await;
     let mut result = task_result_message("task-late-child-result").with_admission(
         MessageDeliverySurface::TaskRejoin,
         AdmissionContext::RuntimeOwned,
     );
-    result.turn_id = Some(parent_turn.turn_id.clone());
+    // This is a new late result. The Task's parent_turn_id proves the already
+    // delivered report; the result has no prior input assignment to that Turn.
+    assert!(result.turn_id.is_none());
+    let completed_task = runtime
+        .storage()
+        .latest_task_record("task-late-child-result")
+        .unwrap()
+        .unwrap();
     result.metadata = Some(serde_json::json!({
-        "task_id": "task-late-child-result",
-        "task_kind": "child_agent_task",
+        "task_id": completed_task.id,
+        "task_kind": completed_task.kind,
         "task_status": "completed",
         "task_result_id": "result-late-child",
         "work_item_id": work_item.id,
+        "task_detail": completed_task.detail,
     }));
+    assert_eq!(
+        tasks::task_from_message(&result, "default").unwrap().detail,
+        completed_task.detail,
+        "the frozen result must carry its actual parent/rejoin evidence"
+    );
     let result = runtime.enqueue(result).await.unwrap();
     let mut runner = tokio::spawn(runtime.clone().run());
     let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(2);
@@ -4571,196 +5062,26 @@ async fn lifecycle_delivery_reentry_rejects_an_invalid_canonical_predecessor() {
 #[tokio::test]
 async fn bootstrap_recovery_replays_task_result_claim_after_canonical_revision_sync() {
     use crate::domain::execution_protocol::{
-        AdmittedFences, ExecutionAttempt, ExecutionAttemptState, ExecutionBinding, ExecutionOrigin,
-        ExecutionPriority, ExecutionProtocolState, ExecutionProvenance, ExecutionSource,
-        ExecutionSourceIdentity, ExecutionTrust, WorkItemExecutionRecord, WorkItemExecutionState,
+        ExecutionAttemptState, ExecutionSourceIdentity, WorkItemExecutionState,
     };
-
-    let dir = tempdir().unwrap();
-    let workspace = tempdir().unwrap();
-    let runtime = RuntimeHandle::new(
-        "default",
-        dir.path().to_path_buf(),
-        workspace.path().to_path_buf(),
-        "http://127.0.0.1:7878".into(),
-        Arc::new(CountingProvider {
-            calls: Mutex::new(0),
-            reply: "unused",
-        }),
-        "default".into(),
-        context_config(),
-    )
-    .unwrap();
-    let work_item = runtime
-        .create_work_item(
-            "recover stale TaskResult claim".into(),
-            Some(WorkItemPlanStatus::Ready),
-            None,
-            Vec::new(),
-        )
-        .await
-        .unwrap();
-    append_running_rejoin_task(&runtime, "task-stale-bootstrap", &work_item.id);
-    let registration = runtime
-        .register_wait_for(
-            "default",
-            Some(work_item.id.clone()),
-            WaitForWakeKind::TaskResult,
-            Some("task-stale-bootstrap".into()),
-            "waiting for stale bootstrap task".into(),
-            None,
-        )
-        .await
-        .unwrap();
-    let waiting_work = runtime
-        .latest_work_item(&work_item.id)
-        .await
-        .unwrap()
-        .expect("waiting WorkItem");
-    let stale_revision = waiting_work.revision;
-    let rejoin = crate::domain::execution_protocol::RejoinFence {
-        obligation_id: "task-stale-bootstrap".into(),
-        generation: 1,
-        parent_turn_id: "turn-stale-bootstrap-parent".into(),
-    };
-    let mut terminal_task = TaskRecord {
-        id: "task-stale-bootstrap".into(),
-        agent_id: "default".into(),
-        kind: TaskKind::CommandTask,
-        status: TaskStatus::Completed,
-        created_at: Utc::now(),
-        updated_at: Utc::now(),
-        parent_message_id: None,
-        work_item_id: Some(work_item.id.clone()),
-        summary: Some("task-stale-bootstrap completed".into()),
-        detail: Some(serde_json::json!({
-            "terminal_reentry": false,
-            "rejoin_obligation_id": rejoin.obligation_id,
-            "rejoin_generation": rejoin.generation,
-            "parent_turn_id": rejoin.parent_turn_id,
-        })),
-        recovery: None,
-    };
-    let mut result = task_result_message("task-stale-bootstrap").with_admission(
-        MessageDeliverySurface::TaskRejoin,
-        AdmissionContext::RuntimeOwned,
-    );
-    result.task_id = Some("task-stale-bootstrap".into());
-    result.work_item_id = Some(work_item.id.clone());
-    result.turn_id = Some("turn-stale-bootstrap-result".into());
-    terminal_task.parent_message_id = Some(result.id.clone());
-    assert!(!terminal_task.terminal_reentry());
-    runtime
-        .commit_terminal_task_result(&terminal_task, "task_completed", &result)
-        .await
-        .unwrap();
-    assert!(matches!(
-        scheduler_executor::SchedulerDecisionExecutor::new(&runtime)
-            .poll()
-            .await
-            .unwrap(),
-        scheduler_executor::RunLoopPoll::Message(_)
-    ));
-    let result = runtime
-        .storage()
-        .read_message_by_id(&result.id)
-        .unwrap()
-        .expect("persisted TaskResult");
+    let fixture = stale_task_result_claim_fixture("task-stale-bootstrap").await;
+    let runtime = &fixture.runtime;
+    let result = fixture.result.clone();
+    let attempt_id = fixture.attempt_id.clone();
     let current_work = runtime
-        .latest_work_item(&work_item.id)
+        .latest_work_item(&fixture.work_item_id)
         .await
         .unwrap()
-        .expect("resolved WorkItem");
-    assert!(current_work.revision > stale_revision);
-    assert_eq!(
-        registration.condition.id,
-        runtime
-            .storage()
-            .latest_wait_conditions()
-            .unwrap()
-            .into_iter()
-            .find(|wait| wait.trigger_message_id() == Some(result.id.as_str()))
-            .expect("resolved exact task wait")
-            .id
-    );
-
-    let authority = runtime
-        .inner
-        .runtime_db
-        .transitions()
-        .load_execution_authority_fences("default")
         .unwrap();
-    let attempt_id = scheduler_executor::canonical_activation_id(&result.id);
-    let mut stale = ExecutionProtocolState::empty("default");
-    stale.work_items.insert(
-        work_item.id.clone(),
-        WorkItemExecutionRecord {
-            source_revision: current_work.revision,
-            state: WorkItemExecutionState::InFlight {
-                generation: stale_revision,
-                attempt_id: attempt_id.clone(),
-            },
-        },
-    );
-    stale.attempts.insert(
-        attempt_id.clone(),
-        ExecutionAttempt {
-            input_projection: None,
-            attempt_id: attempt_id.clone(),
-            agent_id: "default".into(),
-            source_message_id: Some(result.id.clone()),
-            source: ExecutionSource {
-                identity: ExecutionSourceIdentity::TaskResult {
-                    task_id: "task-stale-bootstrap".into(),
-                    result_message_id: result.id.clone(),
-                },
-                generation: result.message_seq.expect("persisted message sequence"),
-            },
-            binding: ExecutionBinding::WorkItem {
-                work_item_id: work_item.id.clone(),
-            },
-            provenance: ExecutionProvenance {
-                origin: ExecutionOrigin::Task,
-                trust: ExecutionTrust::RuntimeInstruction,
-                priority: ExecutionPriority::Normal,
-                correlation_id: None,
-                causation_id: None,
-            },
-            admitted_fences: AdmittedFences {
-                source_revision: result.message_seq.unwrap(),
-                work_item_source_revision: Some(stale_revision),
-                work_item_generation: Some(stale_revision),
-                rejoin: Some(rejoin),
-                agent_control_revision: authority.agent_control_revision,
-                host_registry_revision: authority.host_registry_revision,
-            },
-            state: ExecutionAttemptState::Open,
-            run_id: None,
-            turn_id: result.turn_id.clone(),
-            recovery_of_attempt_id: None,
-            terminal_outcome_id: None,
-            admitted_at: Utc::now().to_rfc3339(),
-            terminal_at: None,
-        },
-    );
-    runtime
-        .inner
-        .runtime_db
-        .transaction(|tx| crate::runtime_db::transitions::persist_state_tx(tx, &stale))
-        .unwrap();
-    runtime
-        .inner
-        .runtime_db
-        .queue_entries()
-        .upsert(&QueueEntryRecord {
-            message_id: result.id.clone(),
-            agent_id: "default".into(),
-            priority: result.priority.clone(),
-            status: QueueEntryStatus::Dequeued,
-            created_at: result.created_at,
-            updated_at: Utc::now(),
-        })
-        .unwrap();
+    let work_item = current_work.clone();
+    let wait_condition_id = runtime
+        .storage()
+        .latest_wait_conditions()
+        .unwrap()
+        .into_iter()
+        .find(|wait| wait.trigger_message_id() == Some(result.id.as_str()))
+        .expect("resolved exact task wait")
+        .id;
 
     assert_eq!(
         runtime.recover_scheduler_bootstrap_claims().await.unwrap(),
@@ -4788,7 +5109,7 @@ async fn bootstrap_recovery_replays_task_result_claim_after_canonical_revision_s
     assert!(matches!(
         &recovered.work_items[&work_item.id].state,
         WorkItemExecutionState::Waiting { wait, .. }
-            if wait.wait_id == registration.condition.id
+            if wait.wait_id == wait_condition_id
     ));
 
     let poll = scheduler_executor::SchedulerDecisionExecutor::new(&runtime)
@@ -4855,11 +5176,11 @@ struct StaleTaskResultClaimFixture {
 }
 
 async fn stale_task_result_claim_fixture(task_id: &str) -> StaleTaskResultClaimFixture {
-    task_result_claim_fixture(task_id, false).await
+    task_result_claim_fixture(task_id, false, true).await
 }
 
 async fn cancelled_wait_task_result_claim_fixture(task_id: &str) -> StaleTaskResultClaimFixture {
-    task_result_claim_fixture(task_id, true).await
+    task_result_claim_fixture(task_id, true, true).await
 }
 
 async fn missing_wait_task_result_claim_fixture(task_id: &str) -> StaleTaskResultClaimFixture {
@@ -4893,13 +5214,8 @@ async fn missing_wait_task_result_claim_fixture(task_id: &str) -> StaleTaskResul
 async fn task_result_claim_fixture(
     task_id: &str,
     cancel_wait_before_result: bool,
+    advance_after_claim: bool,
 ) -> StaleTaskResultClaimFixture {
-    use crate::domain::execution_protocol::{
-        AdmittedFences, ExecutionAttempt, ExecutionAttemptState, ExecutionBinding, ExecutionOrigin,
-        ExecutionPriority, ExecutionProtocolState, ExecutionProvenance, ExecutionSource,
-        ExecutionSourceIdentity, ExecutionTrust, WorkItemExecutionRecord, WorkItemExecutionState,
-    };
-
     let dir = tempdir().unwrap();
     let workspace = tempdir().unwrap();
     let runtime = RuntimeHandle::new(
@@ -4924,7 +5240,7 @@ async fn task_result_claim_fixture(
         )
         .await
         .unwrap();
-    append_running_rejoin_task(&runtime, task_id, &work_item.id);
+    append_running_rejoin_task(&runtime, task_id, &work_item.id).await;
     runtime
         .register_wait_for(
             "default",
@@ -4936,17 +5252,20 @@ async fn task_result_claim_fixture(
         )
         .await
         .unwrap();
-    let stale_revision = runtime
-        .latest_work_item(&work_item.id)
-        .await
-        .unwrap()
-        .expect("waiting WorkItem")
-        .revision;
     let rejoin = crate::domain::execution_protocol::RejoinFence {
         obligation_id: task_id.into(),
         generation: 1,
-        parent_turn_id: format!("turn-{task_id}-parent"),
+        source: crate::domain::execution_protocol::TaskRejoinSource::ParentTurn {
+            parent_turn_id: format!("turn-{task_id}-parent"),
+        },
     };
+    persist_completed_task_parent_fixture(
+        &runtime,
+        rejoin.source.parent_turn_id().unwrap(),
+        Some(&work_item.id),
+    )
+    .await
+    .unwrap();
     let mut terminal_task = TaskRecord {
         id: task_id.into(),
         agent_id: "default".into(),
@@ -4961,7 +5280,7 @@ async fn task_result_claim_fixture(
             "terminal_reentry": false,
             "rejoin_obligation_id": rejoin.obligation_id,
             "rejoin_generation": rejoin.generation,
-            "parent_turn_id": rejoin.parent_turn_id,
+            "parent_turn_id": rejoin.source.parent_turn_id().unwrap(),
         })),
         recovery: None,
     };
@@ -4973,31 +5292,15 @@ async fn task_result_claim_fixture(
     result.work_item_id = Some(work_item.id.clone());
     result.turn_id = Some(format!("turn-{task_id}-result"));
     terminal_task.parent_message_id = Some(result.id.clone());
-    if cancel_wait_before_result {
-        let mut wait = runtime
-            .storage()
-            .latest_wait_conditions()
-            .unwrap()
-            .into_iter()
-            .find(|condition| {
-                condition.wake_sources.iter().any(|source| {
-                    matches!(source, WakeSource::TaskResult { task_id: source_task_id } if source_task_id == task_id)
-                })
-                    && condition.work_item_id.as_deref() == Some(work_item.id.as_str())
-            })
-            .expect("active TaskResult wait");
-        wait.status = WaitConditionStatus::Cancelled;
-        wait.updated_at = Utc::now();
-        wait.cancelled_at = Some(wait.updated_at);
-        wait.trigger_message_id = Some(result.id.clone());
-        runtime
-            .inner
-            .runtime_db
-            .wait_conditions()
-            .upsert(&wait)
-            .unwrap();
-    }
     assert!(!terminal_task.terminal_reentry());
+    result.metadata = Some(serde_json::json!({
+        "task_id": terminal_task.id,
+        "task_kind": terminal_task.kind,
+        "task_status": terminal_task.status,
+        "task_summary": terminal_task.summary,
+        "task_detail": terminal_task.detail,
+        "work_item_id": terminal_task.work_item_id,
+    }));
     runtime
         .commit_terminal_task_result(&terminal_task, "task_completed", &result)
         .await
@@ -5014,89 +5317,76 @@ async fn task_result_claim_fixture(
         .read_message_by_id(&result.id)
         .unwrap()
         .expect("persisted TaskResult");
+    let attempt_id = scheduler_executor::canonical_activation_id(&result.id);
+    let execution = runtime
+        .inner
+        .runtime_db
+        .transitions()
+        .load_execution_protocol_state_if_initialized("default")
+        .unwrap()
+        .expect("canonical TaskResult claim");
+    let attempt = &execution.attempts[&attempt_id];
+    let admitted_revision = runtime
+        .latest_work_item(&work_item.id)
+        .await
+        .unwrap()
+        .unwrap()
+        .revision;
+    assert_eq!(
+        attempt.source_message_id.as_deref(),
+        Some(result.id.as_str())
+    );
+    assert_eq!(
+        attempt.admitted_fences.work_item_source_revision,
+        Some(admitted_revision)
+    );
+    if advance_after_claim {
+        runtime
+            .update_work_item_fields(
+                work_item.id.clone(),
+                Some(format!("updated after canonical claim {task_id}")),
+                None,
+                None,
+                None,
+                None,
+            )
+            .await
+            .unwrap();
+    }
     let current_revision = runtime
         .latest_work_item(&work_item.id)
         .await
         .unwrap()
-        .expect("resolved WorkItem")
+        .unwrap()
         .revision;
-    let authority = runtime
-        .inner
-        .runtime_db
-        .transitions()
-        .load_execution_authority_fences("default")
-        .unwrap();
-    let attempt_id = scheduler_executor::canonical_activation_id(&result.id);
-    let mut stale = ExecutionProtocolState::empty("default");
-    stale.work_items.insert(
-        work_item.id.clone(),
-        WorkItemExecutionRecord {
-            source_revision: current_revision,
-            state: WorkItemExecutionState::InFlight {
-                generation: stale_revision,
-                attempt_id: attempt_id.clone(),
-            },
-        },
-    );
-    stale.attempts.insert(
-        attempt_id.clone(),
-        ExecutionAttempt {
-            input_projection: None,
-            attempt_id: attempt_id.clone(),
-            agent_id: "default".into(),
-            source_message_id: Some(result.id.clone()),
-            source: ExecutionSource {
-                identity: ExecutionSourceIdentity::TaskResult {
-                    task_id: task_id.into(),
-                    result_message_id: result.id.clone(),
-                },
-                generation: result.message_seq.expect("persisted message sequence"),
-            },
-            binding: ExecutionBinding::WorkItem {
-                work_item_id: work_item.id.clone(),
-            },
-            provenance: ExecutionProvenance {
-                origin: ExecutionOrigin::Task,
-                trust: ExecutionTrust::RuntimeInstruction,
-                priority: ExecutionPriority::Normal,
-                correlation_id: None,
-                causation_id: None,
-            },
-            admitted_fences: AdmittedFences {
-                source_revision: result.message_seq.unwrap(),
-                work_item_source_revision: Some(stale_revision),
-                work_item_generation: Some(stale_revision),
-                rejoin: Some(rejoin),
-                agent_control_revision: authority.agent_control_revision,
-                host_registry_revision: authority.host_registry_revision,
-            },
-            state: ExecutionAttemptState::Open,
-            run_id: None,
-            turn_id: result.turn_id.clone(),
-            recovery_of_attempt_id: None,
-            terminal_outcome_id: None,
-            admitted_at: Utc::now().to_rfc3339(),
-            terminal_at: None,
-        },
-    );
-    runtime
-        .inner
-        .runtime_db
-        .transaction(|tx| crate::runtime_db::transitions::persist_state_tx(tx, &stale))
-        .unwrap();
-    runtime
-        .inner
-        .runtime_db
-        .queue_entries()
-        .upsert(&QueueEntryRecord {
-            message_id: result.id.clone(),
-            agent_id: "default".into(),
-            priority: result.priority.clone(),
-            status: QueueEntryStatus::Dequeued,
-            created_at: result.created_at,
-            updated_at: Utc::now(),
-        })
-        .unwrap();
+    assert_eq!(current_revision > admitted_revision, advance_after_claim);
+
+    if cancel_wait_before_result {
+        // Cancel after the real claim; immutable admission facts remain original.
+        let mut wait = runtime
+            .storage()
+            .latest_wait_conditions()
+            .unwrap()
+            .into_iter()
+            .find(|condition| {
+                condition.wake_sources.iter().any(|source| {
+                    matches!(source, WakeSource::TaskResult { task_id: source_task_id } if source_task_id == task_id)
+                })
+                    && condition.work_item_id.as_deref() == Some(work_item.id.as_str())
+            })
+            .expect("active TaskResult wait");
+        wait.status = WaitConditionStatus::Cancelled;
+        wait.updated_at = Utc::now();
+        wait.cancelled_at = Some(wait.updated_at);
+        wait.trigger_message_id = Some(result.id.clone());
+        // Deliberate contradictory historical terminal wait, injected only
+        // after a lawful canonical claim. Production must not allow this transition.
+        runtime.inner.runtime_db.transaction(|tx| {
+            tx.execute("UPDATE wait_conditions SET status='cancelled', updated_at=?1, cancelled_at=?1, trigger_message_id=?2, payload_json=?3 WHERE wait_condition_id=?4",
+                rusqlite::params![crate::runtime_db::migrations::timestamp(wait.updated_at), result.id, serde_json::to_string(&wait)?, wait.id])?;
+            Ok(())
+        }).unwrap();
+    }
 
     StaleTaskResultClaimFixture {
         _dir: dir,
@@ -5110,37 +5400,47 @@ async fn task_result_claim_fixture(
 }
 
 async fn unadvanced_task_result_claim_fixture(task_id: &str) -> StaleTaskResultClaimFixture {
-    use crate::domain::execution_protocol::WorkItemExecutionState;
+    task_result_claim_fixture(task_id, false, false).await
+}
 
-    let fixture = stale_task_result_claim_fixture(task_id).await;
-    let mut state = fixture
+async fn repeated_task_result_claim_fixture(task_id: &str) -> StaleTaskResultClaimFixture {
+    let mut fixture = stale_task_result_claim_fixture(task_id).await;
+    let predecessor = fixture.attempt_id.clone();
+    assert_eq!(
+        fixture
+            .runtime
+            .recover_scheduler_bootstrap_claims()
+            .await
+            .unwrap(),
+        1
+    );
+    let scheduler_executor::RunLoopPoll::Message(scheduled) =
+        scheduler_executor::SchedulerDecisionExecutor::new(&fixture.runtime)
+            .poll()
+            .await
+            .unwrap()
+    else {
+        panic!("recovered TaskResult should be claimed once more");
+    };
+    assert_eq!(scheduled.message.id, fixture.result.id);
+    let execution = fixture
         .runtime
         .inner
         .runtime_db
         .transitions()
         .load_execution_protocol_state_if_initialized("default")
         .unwrap()
-        .expect("TaskResult fixture execution partition");
-    let attempt = state
-        .attempts
-        .get_mut(&fixture.attempt_id)
-        .expect("TaskResult fixture attempt");
-    attempt.admitted_fences.work_item_source_revision = Some(fixture.current_revision);
-    attempt.admitted_fences.work_item_generation = Some(fixture.current_revision);
-    state
-        .work_items
-        .get_mut(&fixture.work_item_id)
-        .expect("TaskResult fixture WorkItem")
-        .state = WorkItemExecutionState::InFlight {
-        generation: fixture.current_revision,
-        attempt_id: fixture.attempt_id.clone(),
-    };
-    fixture
-        .runtime
-        .inner
-        .runtime_db
-        .transaction(|tx| crate::runtime_db::transitions::persist_state_tx(tx, &state))
         .unwrap();
+    let replay = execution.open_attempt().expect("exact replay attempt");
+    assert_eq!(
+        replay.source_message_id.as_deref(),
+        Some(fixture.result.id.as_str())
+    );
+    assert_eq!(
+        replay.recovery_of_attempt_id.as_deref(),
+        Some(predecessor.as_str())
+    );
+    fixture.attempt_id = replay.attempt_id.clone();
     fixture
 }
 
@@ -5154,27 +5454,70 @@ fn isolated_task_result_claim_report(runtime: &RuntimeHandle) -> SchedulerRecove
 }
 
 async fn add_claim_fixture_business_blocker(fixture: &StaleTaskResultClaimFixture) {
+    use crate::runtime::resident_work::{WorkCaptureRequest, WorkFamily, WorkKey};
+    use crate::runtime_db::{
+        transitions::{PostCommitEffects, TransitionCommit},
+        work_snapshot::{prepare_work_write_tx, register_work_writes_tx, WorkDomainLoadRequest},
+    };
+
     // Model a blocker already present at the admitted revision; the attempt,
     // queue, task/rejoin and resolved wait retain their original exact fences.
+    // The original owner acknowledges this fixture's actual Work write.
     let mut work = fixture
         .runtime
         .latest_work_item(&fixture.work_item_id)
         .await
         .unwrap()
         .unwrap();
+    let mut mutation = fixture.runtime.begin_mutation().await.unwrap();
     work.blocked_by = Some("Waiting for business approval.".into());
     work.blocked_by_wait_id = None;
-    fixture
-        .runtime
-        .inner
-        .runtime_db
-        .transaction(|tx| {
-            tx.execute(
-                "UPDATE work_items SET payload_json = ?1 WHERE work_item_id = ?2",
-                rusqlite::params![serde_json::to_string(&work)?, work.id],
-            )?;
-            Ok(())
+    let keys = std::collections::BTreeSet::from([WorkKey::new(WorkFamily::Work, &work.id)]);
+    let (_, record_limit, byte_limit) = mutation.context_input_evidence_policy().unwrap();
+    let request = WorkDomainLoadRequest {
+        capture: WorkCaptureRequest::current(),
+        record_limit,
+        byte_limit,
+    };
+    let final_state = mutation.state.clone();
+    mutation
+        .commit_transition(crate::ids::audit_event_id(), |scope| {
+            fixture.runtime.inner.runtime_db.transaction(|tx| {
+                let proof = prepare_work_write_tx(tx, scope, &keys)?;
+                anyhow::ensure!(
+                    tx.execute(
+                        "UPDATE work_items SET blocked_by=?1, payload_json=?2 \
+                         WHERE agent_id=?3 AND work_item_id=?4 AND revision=?5",
+                        rusqlite::params![
+                            work.blocked_by,
+                            serde_json::to_string(&work)?,
+                            work.agent_id,
+                            work.id,
+                            work.revision,
+                        ],
+                    )? == 1,
+                    "fixture's original admitted Work revision changed"
+                );
+                let facts = register_work_writes_tx(
+                    tx,
+                    &proof,
+                    &keys,
+                    &Default::default(),
+                    &final_state,
+                    &request,
+                )?;
+                Ok(TransitionCommit {
+                    applied: true,
+                    effects: Box::new(PostCommitEffects {
+                        work_delta: Some(facts.delta),
+                        work_delta_requires_prepared_domain: true,
+                        ..Default::default()
+                    }),
+                    ..Default::default()
+                })
+            })
         })
+        .await
         .unwrap();
 }
 
@@ -5369,26 +5712,7 @@ async fn bootstrap_recovers_unadvanced_task_result_claim_but_diagnostic_apply_do
 async fn bootstrap_quarantines_repeated_task_result_claim_recovery() {
     use crate::domain::execution_protocol::ExecutionAttemptState;
 
-    let fixture = stale_task_result_claim_fixture("task-bootstrap-bounded-recovery").await;
-    let mut state = fixture
-        .runtime
-        .inner
-        .runtime_db
-        .transitions()
-        .load_execution_protocol_state_if_initialized("default")
-        .unwrap()
-        .expect("TaskResult fixture execution partition");
-    state
-        .attempts
-        .get_mut(&fixture.attempt_id)
-        .expect("TaskResult fixture attempt")
-        .recovery_of_attempt_id = Some("attempt:prior-recovery".into());
-    fixture
-        .runtime
-        .inner
-        .runtime_db
-        .transaction(|tx| crate::runtime_db::transitions::persist_state_tx(tx, &state))
-        .unwrap();
+    let fixture = repeated_task_result_claim_fixture("task-bootstrap-bounded-recovery").await;
 
     assert_eq!(
         fixture
@@ -5486,12 +5810,13 @@ async fn scheduler_recovery_task_result_claim_is_atomic_fenced_and_idempotent() 
     assert!(candidate.expected_queue_entry.is_some());
 
     assert_eq!(
-        apply_scheduler_recovery_plan_with_backup_policy(
+        apply_offline_scheduler_recovery_fixture(
             &fixture.runtime.inner.storage,
             &fixture.runtime.inner.runtime_db,
             "default",
             &report,
             SchedulerRecoveryBackupPolicy::SkipApproved,
+            None,
         )
         .unwrap(),
         (1, None)
@@ -5529,12 +5854,13 @@ async fn scheduler_recovery_task_result_claim_is_atomic_fenced_and_idempotent() 
         QueueEntryStatus::Queued
     );
     assert_eq!(
-        apply_scheduler_recovery_plan_with_backup_policy(
+        apply_offline_scheduler_recovery_fixture(
             &fixture.runtime.inner.storage,
             &fixture.runtime.inner.runtime_db,
             "default",
             &report,
             SchedulerRecoveryBackupPolicy::SkipApproved,
+            None,
         )
         .unwrap(),
         (0, None)
@@ -5566,12 +5892,13 @@ async fn scheduler_recovery_task_result_claim_is_atomic_fenced_and_idempotent() 
         .queue_entries()
         .upsert(&changed_entry)
         .unwrap();
-    let error = apply_scheduler_recovery_plan_with_backup_policy(
+    let error = apply_offline_scheduler_recovery_fixture(
         &fence_fixture.runtime.inner.storage,
         &fence_fixture.runtime.inner.runtime_db,
         "default",
         &fence_report,
         SchedulerRecoveryBackupPolicy::SkipApproved,
+        None,
     )
     .unwrap_err();
     assert!(error.to_string().contains("queue fence changed"));
@@ -5616,12 +5943,13 @@ async fn scheduler_recovery_task_result_claim_is_atomic_fenced_and_idempotent() 
         .latest(&fault_fixture.result.id)
         .unwrap()
         .unwrap();
-    let error = apply_scheduler_recovery_plan_with_task_result_fault(
+    let error = apply_offline_scheduler_recovery_fixture(
         &fault_fixture.runtime.inner.storage,
         &fault_fixture.runtime.inner.runtime_db,
         "default",
         &fault_report,
-        TransitionFaultPoint::AfterCanonicalWrites,
+        SchedulerRecoveryBackupPolicy::SkipApproved,
+        Some(TransitionFaultPoint::AfterCanonicalWrites),
     )
     .unwrap_err();
     assert!(error
@@ -5655,26 +5983,7 @@ async fn scheduler_recovery_task_result_claim_is_atomic_fenced_and_idempotent() 
 async fn scheduler_recovery_quarantines_repeated_task_result_claim() {
     use crate::domain::execution_protocol::ExecutionAttemptState;
 
-    let fixture = stale_task_result_claim_fixture("task-debug-bounded-recovery").await;
-    let mut state = fixture
-        .runtime
-        .inner
-        .runtime_db
-        .transitions()
-        .load_execution_protocol_state_if_initialized("default")
-        .unwrap()
-        .expect("TaskResult fixture execution partition");
-    state
-        .attempts
-        .get_mut(&fixture.attempt_id)
-        .expect("TaskResult fixture attempt")
-        .recovery_of_attempt_id = Some("attempt:prior-recovery".into());
-    fixture
-        .runtime
-        .inner
-        .runtime_db
-        .transaction(|tx| crate::runtime_db::transitions::persist_state_tx(tx, &state))
-        .unwrap();
+    let fixture = repeated_task_result_claim_fixture("task-debug-bounded-recovery").await;
 
     let report = isolated_task_result_claim_report(&fixture.runtime);
     let [candidate] = report.task_result_claim_recoveries.as_slice() else {
@@ -5691,12 +6000,13 @@ async fn scheduler_recovery_quarantines_repeated_task_result_claim() {
     );
 
     assert_eq!(
-        apply_scheduler_recovery_plan_with_backup_policy(
+        apply_offline_scheduler_recovery_fixture(
             &fixture.runtime.inner.storage,
             &fixture.runtime.inner.runtime_db,
             "default",
             &report,
             SchedulerRecoveryBackupPolicy::SkipApproved,
+            None,
         )
         .unwrap(),
         (1, None)
@@ -5827,6 +6137,179 @@ async fn bootstrap_recovery_uses_execution_attempt() {
     );
 }
 
+// Legacy split writes are valid only at the original cutover. Reproduce the
+// old canonical claim/terminal in a real v81 DB before any qualification exists.
+fn legacy_terminal_claim_fixture(
+    runtime: RuntimeHandle,
+    work: &WorkItemRecord,
+    message: &MessageEnvelope,
+    workspace: &std::path::Path,
+) -> (tempfile::TempDir, RuntimeHandle) {
+    use crate::runtime_db::{
+        evidence::{append_message_tx, upsert_agent_identity_tx, upsert_agent_state_tx},
+        migrations::{apply_migration, ensure_migration_table, MIGRATIONS},
+        repositories::{timestamp, upsert_queue_entry_tx, upsert_turn_record_tx},
+    };
+    let actual_work = runtime
+        .inner
+        .runtime_db
+        .work_items()
+        .latest(&work.id)
+        .unwrap()
+        .unwrap();
+    assert_eq!(actual_work.agent_id, message.agent_id);
+    let work = &actual_work;
+    let identity = runtime
+        .inner
+        .runtime_db
+        .agent_identities()
+        .latest("default")
+        .unwrap()
+        .unwrap();
+    let mut state = runtime
+        .inner
+        .runtime_db
+        .agent_states()
+        .latest("default")
+        .unwrap()
+        .unwrap();
+    let control_revision: i64 = runtime
+        .inner
+        .runtime_db
+        .connection()
+        .unwrap()
+        .query_row(
+            "SELECT control_revision FROM agent_states WHERE agent_id='default'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    let execution = runtime
+        .inner
+        .runtime_db
+        .transitions()
+        .load_execution_protocol_state_if_initialized("default")
+        .unwrap()
+        .unwrap();
+    let attempt = &execution.attempts[&scheduler_executor::canonical_activation_id(&message.id)];
+    assert_eq!(
+        attempt.state,
+        crate::domain::execution_protocol::ExecutionAttemptState::Open
+    );
+    assert_eq!(
+        attempt.admitted_fences.work_item_source_revision,
+        Some(work.revision)
+    );
+    let queue = runtime
+        .inner
+        .runtime_db
+        .queue_entries()
+        .latest(&message.id)
+        .unwrap()
+        .unwrap();
+    assert_eq!(queue.status, QueueEntryStatus::Dequeued);
+    let mut terminal = terminal_transition(message, Some(&work.id));
+    terminal.turn_record.run_id = state.current_run_id.clone();
+    state.turn_index = terminal.turn_record.turn_index;
+    state.current_turn_id = Some(terminal.turn_record.turn_id.clone());
+    state.current_turn_work_item_id = Some(work.id.clone());
+    state.current_execution_binding = Some(crate::types::WorkItemExecutionBinding {
+        activation_id: Some(scheduler_executor::canonical_activation_id(&message.id)),
+        admission_provenance: None,
+        source_message_id: message.id.clone(),
+        turn_id: terminal.turn_record.turn_id.clone(),
+        owner: Some(terminal.turn_record.effective_owner()),
+        work_item_id: Some(work.id.clone()),
+        claimed_work_revision: Some(work.revision),
+    });
+    let plan_bytes = work.plan_artifact.as_ref().map(|_| {
+        std::fs::read(crate::work_item_plan::plan_path(
+            &runtime.agent_home(),
+            &work.id,
+        ))
+        .expect("original legacy fixture plan must exist")
+    });
+    let clock = runtime.inner.clock.clone();
+    let provider = runtime.inner.base_provider.clone();
+    drop(runtime);
+
+    let dir = tempdir().unwrap();
+    if let Some(bytes) = &plan_bytes {
+        let plan = crate::work_item_plan::plan_path(dir.path(), &work.id);
+        std::fs::create_dir_all(plan.parent().unwrap()).unwrap();
+        std::fs::write(&plan, bytes).unwrap();
+        assert_eq!(std::fs::read(plan).unwrap(), *bytes);
+    }
+    let path = dir.path().join(".holon/state/runtime.sqlite");
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    let mut connection = rusqlite::Connection::open(&path).unwrap();
+    ensure_migration_table(&connection).unwrap();
+    for migration in MIGRATIONS
+        .iter()
+        .filter(|migration| migration.version <= 81)
+    {
+        apply_migration(&mut connection, migration).unwrap();
+    }
+    let tx = connection.transaction().unwrap();
+    upsert_agent_identity_tx(&tx, &identity).unwrap();
+    // v81 has no later normalized blocker/recheck columns.
+    tx.execute(
+        "INSERT INTO work_items (work_item_id,agent_id,state,objective,plan_status,
+         revision,current_focus,created_at,updated_at,completed_at,plan_artifact_path,
+         last_turn_id,payload_json) VALUES (?1,?2,'open',?3,?4,?5,0,?6,?7,NULL,NULL,NULL,?8)",
+        rusqlite::params![
+            work.id,
+            work.agent_id,
+            work.objective,
+            crate::runtime_db::repositories::enum_string(&work.plan_status).unwrap(),
+            work.revision,
+            timestamp(work.created_at),
+            timestamp(work.updated_at),
+            serde_json::to_string(work).unwrap()
+        ],
+    )
+    .unwrap();
+    let actual_source = append_message_tx(&tx, message).unwrap().0;
+    assert_eq!(
+        actual_source, *message,
+        "original canonical source/sequence must survive"
+    );
+    upsert_turn_record_tx(&tx, &terminal.turn_record).unwrap();
+    upsert_agent_state_tx(&tx, &state).unwrap();
+    tx.execute(
+        "UPDATE agent_states SET control_revision=?1 WHERE agent_id='default'",
+        [control_revision],
+    )
+    .unwrap();
+    upsert_queue_entry_tx(&tx, &queue).unwrap();
+    crate::runtime_db::transitions::persist_state_tx(&tx, &execution).unwrap();
+    tx.commit().unwrap();
+    drop(connection);
+
+    let runtime = RuntimeHandle::new_with_clock(
+        "default",
+        dir.path().to_path_buf(),
+        workspace.to_path_buf(),
+        "http://127.0.0.1:7878".into(),
+        provider,
+        "default".into(),
+        context_config(),
+        clock,
+    )
+    .unwrap();
+    let (legacy, checkpoints): (usize,usize) = runtime.inner.runtime_db.connection().unwrap().query_row(
+        "SELECT (SELECT count(*) FROM dispatch_memory_legacy_dispatches WHERE agent_id='default' AND turn_id=?1),
+                (SELECT count(*) FROM dispatch_memory_checkpoints WHERE agent_id='default')",
+        [&terminal.turn_record.turn_id], |row| Ok((row.get(0)?,row.get(1)?)),
+    ).unwrap();
+    assert_eq!(
+        (legacy, checkpoints),
+        (1, 0),
+        "fixed cutover proves LegacyNoMemory; no new Start is invented"
+    );
+    (dir, runtime)
+}
+
 #[tokio::test]
 async fn bootstrap_recovery_settles_dequeued_activation_from_terminal_turn() {
     let dir = tempdir().unwrap();
@@ -5872,13 +6355,15 @@ async fn bootstrap_recovery_settles_dequeued_activation_from_terminal_turn() {
         .poll()
         .await
         .unwrap();
-    assert!(matches!(poll, scheduler_executor::RunLoopPoll::Message(_)));
+    let scheduler_executor::RunLoopPoll::Message(scheduled) = poll else {
+        panic!("fixture source must be claimed");
+    };
+    assert_eq!(scheduled.message.id, message.id);
+    let message = scheduled.message.clone();
+    drop(scheduled);
     finish_claimed_test_run(&runtime).await;
-    let terminal = terminal_transition(&message, Some(&work_item.id));
-    runtime
-        .storage()
-        .append_turn(&terminal.turn_record)
-        .unwrap();
+    let (_legacy, runtime) =
+        legacy_terminal_claim_fixture(runtime, &work_item, &message, workspace.path());
 
     assert_eq!(
         runtime.recover_scheduler_bootstrap_claims().await.unwrap(),
@@ -5924,8 +6409,8 @@ async fn bootstrap_recovery_settles_dequeued_activation_from_terminal_turn() {
 
 #[tokio::test]
 async fn bootstrap_restart_reconciles_dequeued_queue_after_unified_settlement() {
-    let mut harness = LifecycleHarness::new();
-    let (message_id, activation_id, settled_execution) = {
+    let harness = LifecycleHarness::new();
+    let (work_item, message) = {
         let runtime = harness.runtime();
         let work_item = runtime
             .create_work_item(
@@ -5951,19 +6436,31 @@ async fn bootstrap_restart_reconciles_dequeued_queue_after_unified_settlement() 
         bind_autonomous_work_queue_tick(&mut message, &work_item, "queued_available");
         message.turn_id = Some("turn-bootstrap-split-restart".into());
         let message = runtime.enqueue(message).await.unwrap();
-        assert!(matches!(
+        let scheduler_executor::RunLoopPoll::Message(scheduled) =
             scheduler_executor::SchedulerDecisionExecutor::new(runtime)
                 .poll()
                 .await
-                .unwrap(),
-            scheduler_executor::RunLoopPoll::Message(_)
-        ));
+                .unwrap()
+        else {
+            panic!("fixture source must be claimed");
+        };
+        assert_eq!(scheduled.message.id, message.id);
+        let message = scheduled.message.clone();
+        drop(scheduled);
         finish_claimed_test_run(runtime).await;
-        let terminal = terminal_transition(&message, Some(&work_item.id));
-        runtime
+        (work_item, message)
+    };
+    let (original_home, workspace, original_runtime) = harness.into_startup_fixture_parts();
+    let (_legacy, runtime) =
+        legacy_terminal_claim_fixture(original_runtime, &work_item, &message, workspace.path());
+    drop(original_home);
+    let (message_id, activation_id, settled_execution) = {
+        let terminal = runtime
             .storage()
-            .append_turn(&terminal.turn_record)
+            .read_turn_by_id(message.turn_id.as_deref().unwrap())
+            .unwrap()
             .unwrap();
+        assert!(terminal.terminal.is_some());
         let activation_id = scheduler_executor::canonical_activation_id(&message.id);
         let mut processed = runtime
             .inner
@@ -5981,10 +6478,10 @@ async fn bootstrap_restart_reconciles_dequeued_queue_after_unified_settlement() 
             &runtime.inner.storage,
             &runtime.inner.runtime_db,
             &processed,
-            Some(&terminal.turn_record),
+            Some(&terminal),
         )
         .unwrap();
-        persist_execution_transition_only(runtime, execution_transition);
+        persist_execution_transition_only(&runtime, execution_transition).await;
         let settled_execution = runtime
             .inner
             .runtime_db
@@ -6011,8 +6508,20 @@ async fn bootstrap_restart_reconciles_dequeued_queue_after_unified_settlement() 
         (message.id, activation_id, settled_execution)
     };
 
-    harness.restart();
-    let runtime = harness.runtime();
+    let clock = runtime.inner.clock.clone();
+    let provider = runtime.inner.base_provider.clone();
+    drop(runtime);
+    let runtime = RuntimeHandle::new_with_clock(
+        "default",
+        _legacy.path().to_path_buf(),
+        workspace.path().to_path_buf(),
+        "http://127.0.0.1:7878".into(),
+        provider,
+        "default".into(),
+        context_config(),
+        clock,
+    )
+    .unwrap();
     assert_eq!(
         runtime.recover_scheduler_bootstrap_claims().await.unwrap(),
         1
@@ -6129,11 +6638,23 @@ async fn bootstrap_recovery_settles_completed_work_item_from_bound_terminal_evid
         .poll()
         .await
         .unwrap();
-    assert!(matches!(poll, scheduler_executor::RunLoopPoll::Message(_)));
+    let scheduler_executor::RunLoopPoll::Message(scheduled) = poll else {
+        panic!("fixture source must be claimed");
+    };
+    assert_eq!(scheduled.message.id, message.id);
     let activation_id = scheduler_executor::canonical_activation_id(&message.id);
 
     runtime
-        .begin_interactive_turn(Some(&message), None, None)
+        .begin_dispatch_turn(
+            &scheduled.message,
+            None,
+            None,
+            scheduled
+                .dispatch_plan
+                .execution_admission_provenance
+                .clone(),
+            &scheduled.dispatch_plan.prior_closure,
+        )
         .await
         .unwrap();
     runtime
@@ -6156,10 +6677,7 @@ async fn bootstrap_recovery_settles_completed_work_item_from_bound_terminal_evid
         .expect("completed work item has bound result brief");
     finish_claimed_test_run(&runtime).await;
     let terminal = terminal_transition_from_started_turn(&runtime, &message);
-    runtime
-        .storage()
-        .append_turn(&terminal.turn_record)
-        .unwrap();
+    publish_turn_fixture(&runtime, &terminal.turn_record).await;
 
     assert_eq!(
         runtime.recover_scheduler_bootstrap_claims().await.unwrap(),
@@ -6250,15 +6768,20 @@ async fn bootstrap_recovery_fault_rolls_back_queue_canonical_and_audit() {
                 .poll()
                 .await
                 .unwrap();
-            assert!(matches!(poll, scheduler_executor::RunLoopPoll::Message(_)));
+            let scheduler_executor::RunLoopPoll::Message(scheduled) = poll else {
+                panic!("fixture source must be claimed");
+            };
+            assert_eq!(scheduled.message.id, message.id);
+            let message = scheduled.message.clone();
+            drop(scheduled);
             finish_claimed_test_run(&runtime).await;
-            if terminal_evidence {
-                let terminal = terminal_transition(&message, Some(&work_item.id));
-                runtime
-                    .storage()
-                    .append_turn(&terminal.turn_record)
-                    .unwrap();
-            }
+            let (_legacy, runtime) = if terminal_evidence {
+                let (legacy, runtime) =
+                    legacy_terminal_claim_fixture(runtime, &work_item, &message, workspace.path());
+                (Some(legacy), runtime)
+            } else {
+                (None, runtime)
+            };
             let claimed = runtime
                 .inner
                 .runtime_db
@@ -6348,6 +6871,174 @@ async fn bootstrap_recovery_fault_rolls_back_queue_canonical_and_audit() {
     }
 }
 
+// These protocol settlement tests exercise an actual claimed dispatch. The
+// returned projection changes only the local hint used to load its real Turn.
+fn start_protocol_settlement_fixture<'a>(
+    runtime: &'a RuntimeHandle,
+    scheduled: &'a scheduler_executor::ScheduledMessage,
+) -> std::pin::Pin<Box<impl std::future::Future<Output = MessageEnvelope> + Send + 'a>> {
+    Box::pin(async move {
+        let (turn_id, _) = runtime
+            .begin_dispatch_turn(
+                &scheduled.message,
+                None,
+                None,
+                scheduled
+                    .dispatch_plan
+                    .execution_admission_provenance
+                    .clone(),
+                &scheduled.dispatch_plan.prior_closure,
+            )
+            .await
+            .unwrap();
+        let mut source = scheduled.message.clone();
+        source.turn_id = Some(turn_id);
+        source
+    })
+}
+
+// Preserve intentional Work/execution divergence while acknowledging the
+// exact metadata or continuation write to this owner's qualified Work root.
+fn publish_settlement_work_fixture<'a>(
+    runtime: &'a RuntimeHandle,
+    work: Option<&'a WorkItemRecord>,
+    frame: Option<&'a crate::types::WorkItemContinuationFrame>,
+) -> std::pin::Pin<Box<impl std::future::Future<Output = ()> + Send + 'a>> {
+    Box::pin(async move {
+        use crate::{
+            runtime::resident_work::{WorkCaptureRequest, WorkFamily, WorkKey},
+            runtime_db::{
+                repositories::{update_expected_work_item_tx, upsert_work_item_continuation_tx},
+                transitions::{PostCommitEffects, TransitionCommit},
+                work_snapshot::{self, WorkDomainLoadRequest},
+            },
+        };
+        let mut mutation = runtime.begin_mutation().await.unwrap();
+        let state = mutation.state.clone();
+        let (_, record_limit, byte_limit) = mutation.context_input_evidence_policy().unwrap();
+        let request = WorkDomainLoadRequest {
+            capture: WorkCaptureRequest::current(),
+            record_limit,
+            byte_limit,
+        };
+        let keys = work
+            .into_iter()
+            .map(|work| WorkKey::new(WorkFamily::Work, &work.id))
+            .chain(
+                frame
+                    .into_iter()
+                    .map(|frame| WorkKey::new(WorkFamily::Frame, &frame.id)),
+            )
+            .collect();
+        mutation
+            .commit_transition(crate::ids::audit_event_id(), |scope| {
+                runtime.inner.runtime_db.transaction(|tx| {
+                    let proof = work_snapshot::prepare_work_write_tx(tx, scope, &keys)?;
+                    if let Some(work) = work {
+                        update_expected_work_item_tx(tx, work, work.revision - 1)?;
+                    }
+                    if let Some(frame) = frame {
+                        upsert_work_item_continuation_tx(tx, frame)?;
+                    }
+                    let facts = work_snapshot::register_work_writes_tx(
+                        tx,
+                        &proof,
+                        &keys,
+                        &Default::default(),
+                        &state,
+                        &request,
+                    )?;
+                    Ok(TransitionCommit {
+                        applied: true,
+                        effects: Box::new(PostCommitEffects {
+                            work_delta: Some(facts.delta),
+                            ..Default::default()
+                        }),
+                        ..Default::default()
+                    })
+                })
+            })
+            .await
+            .unwrap();
+    })
+}
+
+// A resolved Wait and optional resumed Work are one original owner write.
+// Preserve intentional execution-protocol divergence for authority tests.
+fn publish_resolved_task_wait_fixture<'a>(
+    runtime: &'a RuntimeHandle,
+    wait: &'a WaitConditionRecord,
+    work: Option<&'a WorkItemRecord>,
+) -> std::pin::Pin<Box<impl std::future::Future<Output = ()> + Send + 'a>> {
+    Box::pin(async move {
+        use crate::{
+            runtime::resident_work::{WorkCaptureRequest, WorkFamily, WorkKey},
+            runtime_db::{
+                repositories::{
+                    update_expected_work_item_tx, upsert_wait_condition_with_writes_tx,
+                },
+                transitions::{PostCommitEffects, TransitionCommit},
+                work_snapshot::{self, WorkDomainLoadRequest},
+            },
+        };
+        assert_eq!(wait.status, WaitConditionStatus::Resolved);
+        let mut mutation = runtime.begin_mutation().await.unwrap();
+        let state = mutation.state.clone();
+        let (_, record_limit, byte_limit) = mutation.context_input_evidence_policy().unwrap();
+        let request = WorkDomainLoadRequest {
+            capture: WorkCaptureRequest::current(),
+            record_limit,
+            byte_limit,
+        };
+        let mut keys = std::collections::BTreeSet::from([WorkKey::new(WorkFamily::Wait, &wait.id)]);
+        keys.extend(
+            work.into_iter()
+                .map(|work| WorkKey::new(WorkFamily::Work, &work.id)),
+        );
+        mutation
+            .commit_transition(crate::ids::audit_event_id(), |scope| {
+                runtime.inner.runtime_db.transaction(|tx| {
+                    let proof = work_snapshot::prepare_work_write_tx(tx, scope, &keys)?;
+                    let writes = upsert_wait_condition_with_writes_tx(tx, wait)?;
+                    anyhow::ensure!(
+                        writes.primary_applied,
+                        "fixture must resolve its original Wait"
+                    );
+                    let mut actual_keys = writes
+                        .wait_ids
+                        .into_iter()
+                        .map(|id| WorkKey::new(WorkFamily::Wait, id))
+                        .collect::<std::collections::BTreeSet<_>>();
+                    if let Some(work) = work {
+                        anyhow::ensure!(
+                            update_expected_work_item_tx(tx, work, work.revision - 1)?,
+                            "fixture must resume its original Work revision"
+                        );
+                        actual_keys.insert(WorkKey::new(WorkFamily::Work, &work.id));
+                    }
+                    let facts = work_snapshot::register_work_writes_tx(
+                        tx,
+                        &proof,
+                        &actual_keys,
+                        &Default::default(),
+                        &state,
+                        &request,
+                    )?;
+                    Ok(TransitionCommit {
+                        applied: true,
+                        effects: Box::new(PostCommitEffects {
+                            work_delta: Some(facts.delta),
+                            ..Default::default()
+                        }),
+                        ..Default::default()
+                    })
+                })
+            })
+            .await
+            .unwrap();
+    })
+}
+
 #[tokio::test]
 async fn production_protocol_claim_and_settlement_release_the_canonical_slot() {
     let dir = tempdir().unwrap();
@@ -6393,7 +7084,10 @@ async fn production_protocol_claim_and_settlement_release_the_canonical_slot() {
         .poll()
         .await
         .unwrap();
-    assert!(matches!(poll, scheduler_executor::RunLoopPoll::Message(_)));
+    let scheduler_executor::RunLoopPoll::Message(scheduled) = poll else {
+        panic!("fixture source must be claimed");
+    };
+    let terminal_source = start_protocol_settlement_fixture(&runtime, &scheduled).await;
 
     let activation_id = scheduler_executor::canonical_activation_id(&message.id);
     let claimed = runtime
@@ -6416,7 +7110,7 @@ async fn production_protocol_claim_and_settlement_release_the_canonical_slot() {
     ));
 
     finish_claimed_test_run(&runtime).await;
-    let terminal = terminal_transition(&message, Some(&work_item.id));
+    let terminal = terminal_transition_from_started_turn(&runtime, &terminal_source);
     runtime
         .commit_queue_terminal_settlement(
             QueueEntryRecord {
@@ -6561,23 +7255,23 @@ async fn production_settlement_ignores_foreign_turn_read_model_yield_divergence(
     bind_autonomous_work_queue_tick(&mut message, &owner, "queued_available");
     message.turn_id = Some("turn-canonical-read-model-divergence".into());
     let message = runtime.enqueue(message).await.unwrap();
-    assert!(matches!(
+    let scheduler_executor::RunLoopPoll::Message(scheduled) =
         scheduler_executor::SchedulerDecisionExecutor::new(&runtime)
             .poll()
             .await
-            .unwrap(),
-        scheduler_executor::RunLoopPoll::Message(_)
-    ));
+            .unwrap()
+    else {
+        panic!("fixture source must be claimed");
+    };
+    let terminal_source = start_protocol_settlement_fixture(&runtime, &scheduled).await;
 
-    runtime
-        .storage()
-        .append_work_item_continuation(&crate::types::WorkItemContinuationFrame::new_on_completed(
-            "default",
-            owner.id.clone(),
-            target.id,
-            Some("turn-foreign-continuation".into()),
-        ))
-        .unwrap();
+    let frame = crate::types::WorkItemContinuationFrame::new_on_completed(
+        "default",
+        owner.id.clone(),
+        target.id,
+        Some("turn-foreign-continuation".into()),
+    );
+    publish_settlement_work_fixture(&runtime, None, Some(&frame)).await;
     let projection = runtime.storage().work_queue_prompt_projection().unwrap();
     assert_eq!(
         projection
@@ -6589,7 +7283,7 @@ async fn production_settlement_ignores_foreign_turn_read_model_yield_divergence(
     );
 
     finish_claimed_test_run(&runtime).await;
-    let terminal = terminal_transition(&message, Some(&owner.id));
+    let terminal = terminal_transition_from_started_turn(&runtime, &terminal_source);
     runtime
         .commit_queue_terminal_settlement(
             QueueEntryRecord {
@@ -6668,25 +7362,25 @@ async fn production_settlement_yields_to_exact_matching_revision_continuation() 
     bind_autonomous_work_queue_tick(&mut message, &owner, "queued_available");
     message.turn_id = Some("turn-canonical-exact-yield".into());
     let message = runtime.enqueue(message).await.unwrap();
-    assert!(matches!(
+    let scheduler_executor::RunLoopPoll::Message(scheduled) =
         scheduler_executor::SchedulerDecisionExecutor::new(&runtime)
             .poll()
             .await
-            .unwrap(),
-        scheduler_executor::RunLoopPoll::Message(_)
-    ));
+            .unwrap()
+    else {
+        panic!("fixture source must be claimed");
+    };
+    let terminal_source = start_protocol_settlement_fixture(&runtime, &scheduled).await;
 
-    runtime
-        .storage()
-        .append_work_item_continuation(&crate::types::WorkItemContinuationFrame::new_on_completed(
-            "default",
-            owner.id.clone(),
-            target.id.clone(),
-            message.turn_id.clone(),
-        ))
-        .unwrap();
+    let frame = crate::types::WorkItemContinuationFrame::new_on_completed(
+        "default",
+        owner.id.clone(),
+        target.id.clone(),
+        terminal_source.turn_id.clone(),
+    );
+    publish_settlement_work_fixture(&runtime, None, Some(&frame)).await;
     finish_claimed_test_run(&runtime).await;
-    let terminal = terminal_transition(&message, Some(&owner.id));
+    let terminal = terminal_transition_from_started_turn(&runtime, &terminal_source);
     runtime
         .commit_queue_terminal_settlement(
             QueueEntryRecord {
@@ -6774,31 +7468,31 @@ async fn production_settlement_interrupts_yield_to_stale_execution_revision() {
     bind_autonomous_work_queue_tick(&mut message, &owner, "queued_available");
     message.turn_id = Some("turn-canonical-stale-yield".into());
     let message = runtime.enqueue(message).await.unwrap();
-    assert!(matches!(
+    let scheduler_executor::RunLoopPoll::Message(scheduled) =
         scheduler_executor::SchedulerDecisionExecutor::new(&runtime)
             .poll()
             .await
-            .unwrap(),
-        scheduler_executor::RunLoopPoll::Message(_)
-    ));
+            .unwrap()
+    else {
+        panic!("fixture source must be claimed");
+    };
+    let terminal_source = start_protocol_settlement_fixture(&runtime, &scheduled).await;
 
     let mut stale_target = target.clone();
     stale_target.revision += 1;
     stale_target.objective = "metadata advanced without canonical execution".into();
     stale_target.updated_at = Utc::now();
-    runtime.storage().append_work_item(&stale_target).unwrap();
-    runtime
-        .storage()
-        .append_work_item_continuation(&crate::types::WorkItemContinuationFrame::new_on_completed(
-            "default",
-            owner.id.clone(),
-            target.id,
-            message.turn_id.clone(),
-        ))
-        .unwrap();
+    publish_settlement_work_fixture(&runtime, Some(&stale_target), None).await;
+    let frame = crate::types::WorkItemContinuationFrame::new_on_completed(
+        "default",
+        owner.id.clone(),
+        target.id,
+        terminal_source.turn_id.clone(),
+    );
+    publish_settlement_work_fixture(&runtime, None, Some(&frame)).await;
 
     finish_claimed_test_run(&runtime).await;
-    let terminal = terminal_transition(&message, Some(&owner.id));
+    let terminal = terminal_transition_from_started_turn(&runtime, &terminal_source);
     runtime
         .commit_queue_terminal_settlement(
             QueueEntryRecord {
@@ -6877,13 +7571,15 @@ async fn production_settlement_accepts_authoritative_revision_advance_while_in_f
     bind_autonomous_work_queue_tick(&mut message, &owner, "queued_available");
     message.turn_id = Some("turn-canonical-revision-advance".into());
     let message = runtime.enqueue(message).await.unwrap();
-    assert!(matches!(
+    let scheduler_executor::RunLoopPoll::Message(scheduled) =
         scheduler_executor::SchedulerDecisionExecutor::new(&runtime)
             .poll()
             .await
-            .unwrap(),
-        scheduler_executor::RunLoopPoll::Message(_)
-    ));
+            .unwrap()
+    else {
+        panic!("fixture source must be claimed");
+    };
+    let terminal_source = start_protocol_settlement_fixture(&runtime, &scheduled).await;
 
     let updated = runtime
         .update_work_item_fields(
@@ -6922,7 +7618,7 @@ async fn production_settlement_accepts_authoritative_revision_advance_while_in_f
     ));
 
     finish_claimed_test_run(&runtime).await;
-    let terminal = terminal_transition(&message, Some(&owner.id));
+    let terminal = terminal_transition_from_started_turn(&runtime, &terminal_source);
     runtime
         .commit_queue_terminal_settlement(
             QueueEntryRecord {
@@ -6963,8 +7659,7 @@ async fn production_settlement_accepts_authoritative_revision_advance_while_in_f
 #[tokio::test]
 async fn context_budget_stop_keeps_admitted_revision_and_recheck_obeys_durable_waits() {
     use crate::domain::execution_protocol::{
-        ContextBudgetStop, ExecutionProtocolCommand, RecheckContextBudgetStop,
-        WorkItemExecutionState,
+        ContextBudgetStop, RecheckContextBudgetStop, WorkItemExecutionState,
     };
     use crate::runtime_db::transitions::execution_protocol_repository::ExecutionProtocolRecoveryCommitOutcome;
     let dir = tempdir().unwrap();
@@ -7081,19 +7776,19 @@ async fn context_budget_stop_keeps_admitted_revision_and_recheck_obeys_durable_w
     );
     let mut wait = task_wait_condition_for_work_item("context-recheck-wait", &owner.id);
     runtime.storage().append_wait_condition(&wait).unwrap();
-    let command =
-        ExecutionProtocolCommand::RecheckContextBudgetStop(Box::new(RecheckContextBudgetStop {
-            command_id: "context-budget-concurrent-source-recheck".into(),
-            work_item_id: owner.id.clone(),
-            expected: expected.clone(),
-            configured_estimated_tokens: configured_budget,
-        }));
+    let command = RecheckContextBudgetStop {
+        command_id: "context-budget-concurrent-source-recheck".into(),
+        work_item_id: owner.id.clone(),
+        expected: expected.clone(),
+        configured_estimated_tokens: configured_budget,
+    };
     assert!(matches!(
         runtime
-            .inner
-            .runtime_db
-            .transitions()
-            .commit_execution_protocol_recovery_plan("default", &[command.clone()], &[],)
+            .begin_mutation()
+            .await
+            .unwrap()
+            .commit_context_budget_stop_recovery(command.clone(), vec![])
+            .await
             .unwrap(),
         ExecutionProtocolRecoveryCommitOutcome::Rejected { .. }
     ));
@@ -7102,20 +7797,22 @@ async fn context_budget_stop_keeps_admitted_revision_and_recheck_obeys_durable_w
     runtime.storage().append_wait_condition(&wait).unwrap();
     assert!(matches!(
         runtime
-            .inner
-            .runtime_db
-            .transitions()
-            .commit_execution_protocol_recovery_plan("default", &[command.clone()], &[],)
+            .begin_mutation()
+            .await
+            .unwrap()
+            .commit_context_budget_stop_recovery(command.clone(), vec![])
+            .await
             .unwrap(),
         ExecutionProtocolRecoveryCommitOutcome::Applied(true)
     ));
     // Repeated delivery reads back the same command result, not a second generation.
     assert!(matches!(
         runtime
-            .inner
-            .runtime_db
-            .transitions()
-            .commit_execution_protocol_recovery_plan("default", &[command], &[],)
+            .begin_mutation()
+            .await
+            .unwrap()
+            .commit_context_budget_stop_recovery(command, vec![])
+            .await
             .unwrap(),
         ExecutionProtocolRecoveryCommitOutcome::Applied(false)
     ));
@@ -7176,22 +7873,24 @@ async fn production_settlement_interrupts_stale_owner_execution_revision() {
     bind_autonomous_work_queue_tick(&mut message, &owner, "queued_available");
     message.turn_id = Some("turn-canonical-stale-owner".into());
     let message = runtime.enqueue(message).await.unwrap();
-    assert!(matches!(
+    let scheduler_executor::RunLoopPoll::Message(scheduled) =
         scheduler_executor::SchedulerDecisionExecutor::new(&runtime)
             .poll()
             .await
-            .unwrap(),
-        scheduler_executor::RunLoopPoll::Message(_)
-    ));
+            .unwrap()
+    else {
+        panic!("fixture source must be claimed");
+    };
+    let terminal_source = start_protocol_settlement_fixture(&runtime, &scheduled).await;
 
     let mut stale_owner = owner.clone();
     stale_owner.revision += 1;
     stale_owner.objective = "metadata advanced beyond admitted execution".into();
     stale_owner.updated_at = Utc::now();
-    runtime.storage().append_work_item(&stale_owner).unwrap();
+    publish_settlement_work_fixture(&runtime, Some(&stale_owner), None).await;
 
     finish_claimed_test_run(&runtime).await;
-    let terminal = terminal_transition(&message, Some(&owner.id));
+    let terminal = terminal_transition_from_started_turn(&runtime, &terminal_source);
     runtime
         .commit_queue_terminal_settlement(
             QueueEntryRecord {
@@ -7247,6 +7946,7 @@ async fn production_protocol_wait_settlement_creates_rejoinable_wait_generation(
         context_config(),
     )
     .unwrap();
+    let (_births, current_session) = runtime.begin_task_birth_session().await.unwrap();
     let work_item = runtime
         .create_work_item("canonical wait settlement".into(), None, None, Vec::new())
         .await
@@ -7270,15 +7970,17 @@ async fn production_protocol_wait_settlement_creates_rejoinable_wait_generation(
     bind_autonomous_work_queue_tick(&mut message, &work_item, "queued_available");
     message.turn_id = Some("turn-canonical-wait-settlement".into());
     let message = runtime.enqueue(message).await.unwrap();
-    assert!(matches!(
+    let scheduler_executor::RunLoopPoll::Message(scheduled) =
         scheduler_executor::SchedulerDecisionExecutor::new(&runtime)
             .poll()
             .await
-            .unwrap(),
-        scheduler_executor::RunLoopPoll::Message(_)
-    ));
+            .unwrap()
+    else {
+        panic!("fixture source must be claimed");
+    };
+    let terminal_source = start_protocol_settlement_fixture(&runtime, &scheduled).await;
 
-    append_running_rejoin_task(&runtime, "task-rejoin", &work_item.id);
+    append_running_rejoin_task(&runtime, "task-rejoin", &work_item.id).await;
     let registration = runtime
         .register_wait_for(
             "default",
@@ -7291,7 +7993,7 @@ async fn production_protocol_wait_settlement_creates_rejoinable_wait_generation(
         .await
         .unwrap();
     finish_claimed_test_run(&runtime).await;
-    let terminal = terminal_transition(&message, Some(&work_item.id));
+    let terminal = terminal_transition_from_started_turn(&runtime, &terminal_source);
     runtime
         .commit_queue_terminal_settlement(
             QueueEntryRecord {
@@ -7308,6 +8010,12 @@ async fn production_protocol_wait_settlement_creates_rejoinable_wait_generation(
         )
         .await
         .unwrap();
+    drop(scheduled);
+    let current = runtime.capture_run_once(&current_session).unwrap();
+    assert!(current.events().any(|event| event.kind == "turn_terminal"));
+    assert!(current
+        .events()
+        .any(|event| event.kind == "episode_memory_finalized"));
 
     let first_attempt_id = scheduler_executor::canonical_activation_id(&message.id);
     let settled = runtime
@@ -7339,7 +8047,8 @@ async fn production_protocol_wait_settlement_creates_rejoinable_wait_generation(
         "task-rejoin",
         &work_item.id,
         "turn-canonical-wait-settlement",
-    );
+    )
+    .await;
     let mut rejoin = task_result_message("task-rejoin").with_admission(
         MessageDeliverySurface::TaskRejoin,
         AdmissionContext::RuntimeOwned,
@@ -7354,13 +8063,17 @@ async fn production_protocol_wait_settlement_creates_rejoinable_wait_generation(
     }));
     rejoin.turn_id = Some("turn-canonical-task-rejoin".into());
     let rejoin = runtime.enqueue(rejoin).await.unwrap();
-    assert!(matches!(
+    let scheduler_executor::RunLoopPoll::Message(rejoin_scheduled) =
         scheduler_executor::SchedulerDecisionExecutor::new(&runtime)
             .poll()
             .await
-            .unwrap(),
-        scheduler_executor::RunLoopPoll::Message(_)
-    ));
+            .unwrap()
+    else {
+        panic!("task rejoin source must be claimed");
+    };
+    assert_eq!(rejoin_scheduled.message.id, rejoin.id);
+    let rejoin_terminal_source =
+        start_protocol_settlement_fixture(&runtime, &rejoin_scheduled).await;
     let rejoin_attempt_id = scheduler_executor::canonical_activation_id(&rejoin.id);
     let rejoined = runtime
         .inner
@@ -7406,7 +8119,7 @@ async fn production_protocol_wait_settlement_creates_rejoinable_wait_generation(
         .await
         .unwrap();
     finish_claimed_test_run(&runtime).await;
-    let rejoin_terminal = terminal_transition(&rejoin, Some(&work_item.id));
+    let rejoin_terminal = terminal_transition_from_started_turn(&runtime, &rejoin_terminal_source);
     runtime
         .commit_queue_terminal_settlement(
             QueueEntryRecord {
@@ -7423,6 +8136,7 @@ async fn production_protocol_wait_settlement_creates_rejoinable_wait_generation(
         )
         .await
         .unwrap();
+    drop(rejoin_scheduled);
 
     let settled_rejoin = runtime
         .inner
@@ -7494,15 +8208,26 @@ async fn lifecycle_settlement_adopts_wait_without_work_item_turn_binding() {
     let mut message = trusted_operator_prompt(None, "create and wait on a WorkItem");
     message.turn_id = Some("turn-lifecycle-adopt-wait".into());
     let message = runtime.enqueue(message).await.unwrap();
-    assert!(matches!(
-        scheduler_executor::SchedulerDecisionExecutor::new(&runtime)
-            .poll()
-            .await
-            .unwrap(),
-        scheduler_executor::RunLoopPoll::Message(_)
-    ));
+    let scheduled = match scheduler_executor::SchedulerDecisionExecutor::new(&runtime)
+        .poll()
+        .await
+        .unwrap()
+    {
+        scheduler_executor::RunLoopPoll::Message(scheduled) => scheduled,
+        _ => panic!("fixture source must be claimed"),
+    };
+    assert_eq!(scheduled.message.id, message.id);
     runtime
-        .begin_interactive_turn(Some(&message), None, None)
+        .begin_dispatch_turn(
+            &scheduled.message,
+            None,
+            None,
+            scheduled
+                .dispatch_plan
+                .execution_admission_provenance
+                .clone(),
+            &scheduled.dispatch_plan.prior_closure,
+        )
         .await
         .unwrap();
     runtime.pick_work_item(work_item.id.clone()).await.unwrap();
@@ -7613,15 +8338,26 @@ async fn terminal_task_wait_handoffs_conversation_to_work_item_wait() {
     let mut message = trusted_operator_prompt(None, "wait for an already completed task");
     message.turn_id = Some("turn-terminal-task-handoff".into());
     let message = runtime.enqueue(message).await.unwrap();
-    assert!(matches!(
-        scheduler_executor::SchedulerDecisionExecutor::new(&runtime)
-            .poll()
-            .await
-            .unwrap(),
-        scheduler_executor::RunLoopPoll::Message(_)
-    ));
+    let scheduled = match scheduler_executor::SchedulerDecisionExecutor::new(&runtime)
+        .poll()
+        .await
+        .unwrap()
+    {
+        scheduler_executor::RunLoopPoll::Message(scheduled) => scheduled,
+        _ => panic!("fixture source must be claimed"),
+    };
+    assert_eq!(scheduled.message.id, message.id);
     runtime
-        .begin_interactive_turn(Some(&message), None, None)
+        .begin_dispatch_turn(
+            &scheduled.message,
+            None,
+            None,
+            scheduled
+                .dispatch_plan
+                .execution_admission_provenance
+                .clone(),
+            &scheduled.dispatch_plan.prior_closure,
+        )
         .await
         .unwrap();
     let work_item = runtime
@@ -7723,53 +8459,124 @@ async fn terminal_task_wait_handoffs_conversation_to_work_item_wait() {
 
 #[tokio::test]
 async fn late_task_result_wait_with_independent_blocker_keeps_exact_model_reentry() {
-    Box::pin(task_result_wait_preserves_business_blocker(
-        true, false, false,
-    ))
-    .await;
+    task_result_wait_preserves_business_blocker(true, false, false).await;
 }
 
 #[tokio::test]
 async fn task_result_wait_with_independent_blocker_keeps_exact_model_reentry() {
-    Box::pin(task_result_wait_preserves_business_blocker(
-        false, false, false,
-    ))
-    .await;
+    task_result_wait_preserves_business_blocker(false, false, false).await;
 }
 
 #[tokio::test]
 async fn late_task_result_wait_with_independent_blocker_survives_restart() {
-    Box::pin(task_result_wait_preserves_business_blocker(
-        true, true, false,
-    ))
-    .await;
+    task_result_wait_preserves_business_blocker(true, true, false).await;
 }
 
 #[tokio::test]
 async fn task_result_wait_with_independent_blocker_survives_restart() {
-    Box::pin(task_result_wait_preserves_business_blocker(
-        false, true, false,
-    ))
-    .await;
+    task_result_wait_preserves_business_blocker(false, true, false).await;
 }
 
 #[tokio::test]
 async fn late_task_result_wait_with_explicit_blocker_keeps_exact_model_reentry() {
-    Box::pin(task_result_wait_preserves_business_blocker(
-        true, false, true,
-    ))
-    .await;
+    task_result_wait_preserves_business_blocker(true, false, true).await;
 }
 
 #[tokio::test]
 async fn task_result_wait_with_explicit_blocker_keeps_exact_model_reentry() {
-    Box::pin(task_result_wait_preserves_business_blocker(
-        false, false, true,
-    ))
-    .await;
+    task_result_wait_preserves_business_blocker(false, false, true).await;
 }
 
-async fn task_result_wait_preserves_business_blocker(
+// Each fixture conversation ends through the same Queue/Turn settlement as
+// production before the next claim; its physical guard stays live through ACK.
+fn finish_started_blocker_fixture_dispatch<'a>(
+    runtime: &'a RuntimeHandle,
+    scheduled: &'a scheduler_executor::ScheduledMessage,
+) -> std::pin::Pin<Box<impl std::future::Future<Output = ()> + Send + 'a>> {
+    Box::pin(async move {
+        let terminal = terminal_transition_from_started_turn(runtime, &scheduled.message);
+        let original_run = scheduled
+            .running_state
+            .current_run_id
+            .as_deref()
+            .expect("actual claim owns its original run");
+        runtime
+            .finish_scheduled_message_processing(
+                &scheduled.message,
+                original_run,
+                std::time::Instant::now(),
+                Ok(terminal),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            runtime
+                .runtime_db()
+                .queue_entries()
+                .latest(&scheduled.message.id)
+                .unwrap()
+                .unwrap()
+                .status,
+            QueueEntryStatus::Processed,
+        );
+        assert!(runtime.inner.agent.lock().await.current_run_abort.is_none());
+    })
+}
+
+// The real runner owns the entire claim on its processing task until Queue ACK.
+fn spawn_started_blocker_fixture_processing(
+    runtime: &RuntimeHandle,
+    scheduled: scheduler_executor::ScheduledMessage,
+) -> tokio::task::JoinHandle<()> {
+    let runtime = runtime.clone();
+    tokio::spawn(async move {
+        let scheduler_executor::ScheduledMessage {
+            message,
+            running_state,
+            dispatch_plan,
+            scheduler_decision,
+            run_completion,
+            _reply_owner_budget,
+        } = scheduled;
+        let original_run = running_state
+            .current_run_id
+            .as_deref()
+            .expect("actual task result claim owns its original run");
+        let processing_started = std::time::Instant::now();
+        let transition = runtime
+            .process_message_with_plan_deferred(message.clone(), dispatch_plan, &scheduler_decision)
+            .await;
+        assert!(
+            transition.is_ok(),
+            "blocker fixture processing failed: {:?}",
+            transition.as_ref().err()
+        );
+        runtime
+            .finish_scheduled_message_processing(
+                &message,
+                original_run,
+                processing_started,
+                transition,
+            )
+            .await
+            .unwrap();
+        drop(run_completion);
+    })
+}
+
+fn task_result_wait_preserves_business_blocker(
+    completed_before_wait: bool,
+    restart: bool,
+    explicit_blocker: bool,
+) -> std::pin::Pin<Box<impl std::future::Future<Output = ()> + Send>> {
+    Box::pin(task_result_wait_preserves_business_blocker_inner(
+        completed_before_wait,
+        restart,
+        explicit_blocker,
+    ))
+}
+
+async fn task_result_wait_preserves_business_blocker_inner(
     completed_before_wait: bool,
     restart: bool,
     explicit_blocker: bool,
@@ -7793,22 +8600,37 @@ async fn task_result_wait_preserves_business_blocker(
 
     // First conversation turn: the agent opens its WorkItem and registers an
     // independent external blocker wait on it (#3463 pre-state).
-    if !explicit_blocker {
+    let first_scheduled = if !explicit_blocker {
         let first = runtime
             .enqueue(trusted_operator_prompt(None, "open the work item"))
             .await
             .unwrap();
-        assert!(matches!(
-            Box::pin(scheduler_executor::SchedulerDecisionExecutor::new(&runtime).poll())
-                .await
-                .unwrap(),
-            scheduler_executor::RunLoopPoll::Message(_)
-        ));
+        let first_scheduled = match scheduler_executor::SchedulerDecisionExecutor::new(&runtime)
+            .poll()
+            .await
+            .unwrap()
+        {
+            scheduler_executor::RunLoopPoll::Message(scheduled) => scheduled,
+            _ => panic!("blocker fixture source must be claimed"),
+        };
+        assert_eq!(first_scheduled.message.id, first.id);
         runtime
-            .begin_interactive_turn(Some(&first), None, None)
+            .begin_dispatch_turn(
+                &first_scheduled.message,
+                None,
+                None,
+                first_scheduled
+                    .dispatch_plan
+                    .execution_admission_provenance
+                    .clone(),
+                &first_scheduled.dispatch_plan.prior_closure,
+            )
             .await
             .unwrap();
-    }
+        Some(first_scheduled)
+    } else {
+        None
+    };
     let work_item = runtime
         .create_work_item("blocked PR follow-up".into(), None, None, Vec::new())
         .await
@@ -7851,20 +8673,36 @@ async fn task_result_wait_preserves_business_blocker(
         assert_eq!(externally_blocked.blocked_by_wait_id, None);
     }
 
+    if let Some(first_scheduled) = first_scheduled {
+        finish_started_blocker_fixture_dispatch(&runtime, &first_scheduled).await;
+    }
+
     // Second conversation turn while the WorkItem stays externally blocked:
     // the task already reached terminal before the late WaitFor (#3463).
     let second = runtime
         .enqueue(trusted_operator_prompt(None, "check the finished task"))
         .await
         .unwrap();
-    assert!(matches!(
-        Box::pin(scheduler_executor::SchedulerDecisionExecutor::new(&runtime).poll())
-            .await
-            .unwrap(),
-        scheduler_executor::RunLoopPoll::Message(_)
-    ));
+    let second_scheduled = match scheduler_executor::SchedulerDecisionExecutor::new(&runtime)
+        .poll()
+        .await
+        .unwrap()
+    {
+        scheduler_executor::RunLoopPoll::Message(scheduled) => scheduled,
+        _ => panic!("blocker fixture source must be claimed"),
+    };
+    assert_eq!(second_scheduled.message.id, second.id);
     runtime
-        .begin_interactive_turn(Some(&second), None, None)
+        .begin_dispatch_turn(
+            &second_scheduled.message,
+            None,
+            None,
+            second_scheduled
+                .dispatch_plan
+                .execution_admission_provenance
+                .clone(),
+            &second_scheduled.dispatch_plan.prior_closure,
+        )
         .await
         .unwrap();
 
@@ -7875,7 +8713,7 @@ async fn task_result_wait_preserves_business_blocker(
     result.task_id = Some("task-late-blocked".into());
     result.work_item_id = Some(work_item.id.clone());
     result.turn_id = Some("turn-late-blocked-result".into());
-    let terminal_task = TaskRecord {
+    let mut terminal_task = TaskRecord {
         id: "task-late-blocked".into(),
         agent_id: "default".into(),
         kind: TaskKind::CommandTask,
@@ -7892,13 +8730,24 @@ async fn task_result_wait_preserves_business_blocker(
         })),
         recovery: None,
     };
+    result.metadata = Some(serde_json::json!({
+        "task_id": terminal_task.id,
+        "task_kind": terminal_task.kind,
+        "task_status": terminal_task.status,
+        "task_summary": terminal_task.summary,
+        "task_detail": terminal_task.detail,
+        "work_item_id": terminal_task.work_item_id,
+    }));
+    persist_completed_task_parent_fixture(&runtime, "turn-late-blocked", Some(&work_item.id))
+        .await
+        .unwrap();
     if completed_before_wait {
         runtime
             .commit_terminal_task_result(&terminal_task, "task_completed", &result)
             .await
             .unwrap();
     } else {
-        append_running_rejoin_task(&runtime, &terminal_task.id, &work_item.id);
+        append_running_rejoin_task(&runtime, &terminal_task.id, &work_item.id).await;
     }
 
     let registration = runtime
@@ -7925,6 +8774,16 @@ async fn task_result_wait_preserves_business_blocker(
         }
         WaitForRegistrationOutcome::Registered { registration } => {
             assert!(!completed_before_wait);
+            let selected = runtime
+                .capture_current_task_record(&terminal_task.id)
+                .unwrap();
+            let running = selected
+                .record()
+                .expect("registered Task must remain canonical");
+            assert_eq!(running.status, TaskStatus::Running);
+            terminal_task.created_at = running.created_at;
+            terminal_task.updated_at = runtime.now().max(running.updated_at);
+            drop(selected);
             runtime
                 .commit_terminal_task_result(&terminal_task, "task_completed", &result)
                 .await
@@ -7933,6 +8792,9 @@ async fn task_result_wait_preserves_business_blocker(
         }
         _ => panic!("task wait must register or queue the exact completed result"),
     };
+
+    finish_started_blocker_fixture_dispatch(&runtime, &second_scheduled).await;
+    drop(second_scheduled);
 
     let runtime = if restart {
         drop(runtime);
@@ -7983,30 +8845,39 @@ async fn task_result_wait_preserves_business_blocker(
     };
     assert_eq!(scheduled.message.id, result.id);
     assert!(scheduled.scheduler_decision.model_reentry);
-    let scheduled_message = scheduled.message;
-    let scheduled_transition = Box::pin(runtime.process_message_with_plan_deferred(
-        scheduled_message.clone(),
-        scheduled.dispatch_plan,
-        &scheduled.scheduler_decision,
-    ))
+    // The processing task owns the entire Scheduled claim through original
+    // Queue ACK and matching transient run release, as the real runner does.
+    let processing_runtime = runtime.clone();
+    tokio::spawn(async move {
+        let scheduler_executor::ScheduledMessage {
+            message,
+            running_state,
+            dispatch_plan,
+            scheduler_decision,
+            run_completion,
+            _reply_owner_budget,
+        } = scheduled;
+        let original_run = running_state
+            .current_run_id
+            .as_deref()
+            .expect("actual task result claim owns its original run");
+        let processing_started = std::time::Instant::now();
+        let transition = processing_runtime
+            .process_message_with_plan_deferred(message.clone(), dispatch_plan, &scheduler_decision)
+            .await;
+        processing_runtime
+            .finish_scheduled_message_processing(
+                &message,
+                original_run,
+                processing_started,
+                transition,
+            )
+            .await
+            .unwrap();
+        drop(run_completion);
+    })
     .await
     .unwrap();
-    runtime
-        .commit_queue_terminal_settlement(
-            QueueEntryRecord {
-                message_id: scheduled_message.id,
-                agent_id: scheduled_message.agent_id,
-                priority: scheduled_message.priority,
-                status: QueueEntryStatus::Processed,
-                created_at: scheduled_message.created_at,
-                updated_at: Utc::now(),
-            },
-            Vec::new(),
-            true,
-            Some(&scheduled_transition),
-        )
-        .await
-        .unwrap();
 
     let settlement = runtime
         .inner
@@ -8159,6 +9030,15 @@ async fn task_result_wait_preserves_business_blocker(
 // display-text equality.
 #[tokio::test]
 async fn late_task_result_wait_with_same_text_independent_blocker_keeps_blocker() {
+    late_task_result_wait_with_same_text_independent_blocker_keeps_blocker_fixture().await;
+}
+
+fn late_task_result_wait_with_same_text_independent_blocker_keeps_blocker_fixture(
+) -> std::pin::Pin<Box<impl std::future::Future<Output = ()> + Send>> {
+    Box::pin(late_task_result_wait_with_same_text_independent_blocker_keeps_blocker_inner())
+}
+
+async fn late_task_result_wait_with_same_text_independent_blocker_keeps_blocker_inner() {
     let dir = tempdir().unwrap();
     let workspace = tempdir().unwrap();
     let provider = Arc::new(CountingProvider {
@@ -8183,15 +9063,26 @@ async fn late_task_result_wait_with_same_text_independent_blocker_keeps_blocker(
         .enqueue(trusted_operator_prompt(None, "open the work item"))
         .await
         .unwrap();
-    assert!(matches!(
-        scheduler_executor::SchedulerDecisionExecutor::new(&runtime)
-            .poll()
-            .await
-            .unwrap(),
-        scheduler_executor::RunLoopPoll::Message(_)
-    ));
+    let first_scheduled = match scheduler_executor::SchedulerDecisionExecutor::new(&runtime)
+        .poll()
+        .await
+        .unwrap()
+    {
+        scheduler_executor::RunLoopPoll::Message(scheduled) => scheduled,
+        _ => panic!("blocker fixture source must be claimed"),
+    };
+    assert_eq!(first_scheduled.message.id, first.id);
     runtime
-        .begin_interactive_turn(Some(&first), None, None)
+        .begin_dispatch_turn(
+            &first_scheduled.message,
+            None,
+            None,
+            first_scheduled
+                .dispatch_plan
+                .execution_admission_provenance
+                .clone(),
+            &first_scheduled.dispatch_plan.prior_closure,
+        )
         .await
         .unwrap();
     let work_item = runtime
@@ -8228,19 +9119,33 @@ async fn late_task_result_wait_with_same_text_independent_blocker_keeps_blocker(
     // Second conversation turn while the WorkItem stays blocked on the
     // same-text external dependency: the task already reached terminal
     // before the late WaitFor (#3463).
+    finish_started_blocker_fixture_dispatch(&runtime, &first_scheduled).await;
+    drop(first_scheduled);
+
     let second = runtime
         .enqueue(trusted_operator_prompt(None, "check the finished task"))
         .await
         .unwrap();
-    assert!(matches!(
-        scheduler_executor::SchedulerDecisionExecutor::new(&runtime)
-            .poll()
-            .await
-            .unwrap(),
-        scheduler_executor::RunLoopPoll::Message(_)
-    ));
+    let second_scheduled = match scheduler_executor::SchedulerDecisionExecutor::new(&runtime)
+        .poll()
+        .await
+        .unwrap()
+    {
+        scheduler_executor::RunLoopPoll::Message(scheduled) => scheduled,
+        _ => panic!("blocker fixture source must be claimed"),
+    };
+    assert_eq!(second_scheduled.message.id, second.id);
     runtime
-        .begin_interactive_turn(Some(&second), None, None)
+        .begin_dispatch_turn(
+            &second_scheduled.message,
+            None,
+            None,
+            second_scheduled
+                .dispatch_plan
+                .execution_admission_provenance
+                .clone(),
+            &second_scheduled.dispatch_plan.prior_closure,
+        )
         .await
         .unwrap();
 
@@ -8268,6 +9173,14 @@ async fn late_task_result_wait_with_same_text_independent_blocker_keeps_blocker(
         })),
         recovery: None,
     };
+    result.metadata = Some(serde_json::json!({
+        "task_id": terminal_task.id,
+        "task_kind": terminal_task.kind,
+        "task_status": terminal_task.status,
+        "task_summary": terminal_task.summary,
+        "task_detail": terminal_task.detail,
+        "work_item_id": terminal_task.work_item_id,
+    }));
     runtime
         .commit_terminal_task_result(&terminal_task, "task_completed", &result)
         .await
@@ -8326,6 +9239,9 @@ async fn late_task_result_wait_with_same_text_independent_blocker_keeps_blocker(
     ));
 
     // A same-text business blocker does not revoke the exact wait continuation.
+    finish_started_blocker_fixture_dispatch(&runtime, &second_scheduled).await;
+    drop(second_scheduled);
+
     let poll = scheduler_executor::SchedulerDecisionExecutor::new(&runtime)
         .poll()
         .await
@@ -8335,29 +9251,7 @@ async fn late_task_result_wait_with_same_text_independent_blocker_keeps_blocker(
     };
     assert_eq!(scheduled.message.id, result.id);
     assert!(scheduled.scheduler_decision.model_reentry);
-    let scheduled_message = scheduled.message;
-    let scheduled_transition = runtime
-        .process_message_with_plan_deferred(
-            scheduled_message.clone(),
-            scheduled.dispatch_plan,
-            &scheduled.scheduler_decision,
-        )
-        .await
-        .unwrap();
-    runtime
-        .commit_queue_terminal_settlement(
-            QueueEntryRecord {
-                message_id: scheduled_message.id,
-                agent_id: scheduled_message.agent_id,
-                priority: scheduled_message.priority,
-                status: QueueEntryStatus::Processed,
-                created_at: scheduled_message.created_at,
-                updated_at: Utc::now(),
-            },
-            Vec::new(),
-            true,
-            Some(&scheduled_transition),
-        )
+    spawn_started_blocker_fixture_processing(&runtime, scheduled)
         .await
         .unwrap();
 
@@ -8437,6 +9331,15 @@ async fn late_task_result_wait_with_same_text_independent_blocker_keeps_blocker(
 // wait, so the settlement of the exact task result can still clear it.
 #[tokio::test]
 async fn late_task_result_wait_replacing_task_wait_takes_over_derived_blocker() {
+    late_task_result_wait_replacing_task_wait_takes_over_derived_blocker_fixture().await;
+}
+
+fn late_task_result_wait_replacing_task_wait_takes_over_derived_blocker_fixture(
+) -> std::pin::Pin<Box<impl std::future::Future<Output = ()> + Send>> {
+    Box::pin(late_task_result_wait_replacing_task_wait_takes_over_derived_blocker_inner())
+}
+
+async fn late_task_result_wait_replacing_task_wait_takes_over_derived_blocker_inner() {
     let dir = tempdir().unwrap();
     let workspace = tempdir().unwrap();
     let provider = Arc::new(CountingProvider {
@@ -8460,22 +9363,33 @@ async fn late_task_result_wait_replacing_task_wait_takes_over_derived_blocker() 
         .enqueue(trusted_operator_prompt(None, "open the work item"))
         .await
         .unwrap();
-    assert!(matches!(
-        scheduler_executor::SchedulerDecisionExecutor::new(&runtime)
-            .poll()
-            .await
-            .unwrap(),
-        scheduler_executor::RunLoopPoll::Message(_)
-    ));
+    let first_scheduled = match scheduler_executor::SchedulerDecisionExecutor::new(&runtime)
+        .poll()
+        .await
+        .unwrap()
+    {
+        scheduler_executor::RunLoopPoll::Message(scheduled) => scheduled,
+        _ => panic!("blocker fixture source must be claimed"),
+    };
+    assert_eq!(first_scheduled.message.id, first.id);
     runtime
-        .begin_interactive_turn(Some(&first), None, None)
+        .begin_dispatch_turn(
+            &first_scheduled.message,
+            None,
+            None,
+            first_scheduled
+                .dispatch_plan
+                .execution_admission_provenance
+                .clone(),
+            &first_scheduled.dispatch_plan.prior_closure,
+        )
         .await
         .unwrap();
     let work_item = runtime
         .create_work_item("blocked on running task".into(), None, None, Vec::new())
         .await
         .unwrap();
-    append_running_rejoin_task(&runtime, "task-replace-origin", &work_item.id);
+    append_running_rejoin_task(&runtime, "task-replace-origin", &work_item.id).await;
     let origin_registration = runtime
         .register_wait_for(
             "default",
@@ -8504,6 +9418,9 @@ async fn late_task_result_wait_replacing_task_wait_takes_over_derived_blocker() 
 
     // Second conversation turn: a different task is already terminal when the
     // late WaitFor replaces the running-task wait.
+    finish_started_blocker_fixture_dispatch(&runtime, &first_scheduled).await;
+    drop(first_scheduled);
+
     let second = runtime
         .enqueue(trusted_operator_prompt(
             None,
@@ -8511,15 +9428,26 @@ async fn late_task_result_wait_replacing_task_wait_takes_over_derived_blocker() 
         ))
         .await
         .unwrap();
-    assert!(matches!(
-        scheduler_executor::SchedulerDecisionExecutor::new(&runtime)
-            .poll()
-            .await
-            .unwrap(),
-        scheduler_executor::RunLoopPoll::Message(_)
-    ));
+    let second_scheduled = match scheduler_executor::SchedulerDecisionExecutor::new(&runtime)
+        .poll()
+        .await
+        .unwrap()
+    {
+        scheduler_executor::RunLoopPoll::Message(scheduled) => scheduled,
+        _ => panic!("blocker fixture source must be claimed"),
+    };
+    assert_eq!(second_scheduled.message.id, second.id);
     runtime
-        .begin_interactive_turn(Some(&second), None, None)
+        .begin_dispatch_turn(
+            &second_scheduled.message,
+            None,
+            None,
+            second_scheduled
+                .dispatch_plan
+                .execution_admission_provenance
+                .clone(),
+            &second_scheduled.dispatch_plan.prior_closure,
+        )
         .await
         .unwrap();
 
@@ -8547,6 +9475,14 @@ async fn late_task_result_wait_replacing_task_wait_takes_over_derived_blocker() 
         })),
         recovery: None,
     };
+    result.metadata = Some(serde_json::json!({
+        "task_id": terminal_task.id,
+        "task_kind": terminal_task.kind,
+        "task_status": terminal_task.status,
+        "task_summary": terminal_task.summary,
+        "task_detail": terminal_task.detail,
+        "work_item_id": terminal_task.work_item_id,
+    }));
     runtime
         .commit_terminal_task_result(&terminal_task, "task_completed", &result)
         .await
@@ -8591,6 +9527,9 @@ async fn late_task_result_wait_replacing_task_wait_takes_over_derived_blocker() 
 
     // The exact wake takes the canonical path: the blocker is not
     // independent of the task wait.
+    finish_started_blocker_fixture_dispatch(&runtime, &second_scheduled).await;
+    drop(second_scheduled);
+
     let poll = scheduler_executor::SchedulerDecisionExecutor::new(&runtime)
         .poll()
         .await
@@ -8600,29 +9539,7 @@ async fn late_task_result_wait_replacing_task_wait_takes_over_derived_blocker() 
     };
     assert_eq!(scheduled.message.id, result.id);
     assert!(scheduled.scheduler_decision.model_reentry);
-    let scheduled_message = scheduled.message;
-    let scheduled_transition = runtime
-        .process_message_with_plan_deferred(
-            scheduled_message.clone(),
-            scheduled.dispatch_plan,
-            &scheduled.scheduler_decision,
-        )
-        .await
-        .unwrap();
-    runtime
-        .commit_queue_terminal_settlement(
-            QueueEntryRecord {
-                message_id: scheduled_message.id,
-                agent_id: scheduled_message.agent_id,
-                priority: scheduled_message.priority,
-                status: QueueEntryStatus::Processed,
-                created_at: scheduled_message.created_at,
-                updated_at: Utc::now(),
-            },
-            Vec::new(),
-            true,
-            Some(&scheduled_transition),
-        )
+    spawn_started_blocker_fixture_processing(&runtime, scheduled)
         .await
         .unwrap();
 
@@ -8676,13 +9593,15 @@ async fn lifecycle_wait_handoff_to_work_item_wait_is_atomic_idempotent_and_resta
     let mut message = trusted_operator_prompt(None, "create a WorkItem and wait for its task");
     message.turn_id = Some("turn-lifecycle-wait-handoff".into());
     let message = runtime.enqueue(message).await.unwrap();
-    assert!(matches!(
-        scheduler_executor::SchedulerDecisionExecutor::new(&runtime)
-            .poll()
-            .await
-            .unwrap(),
-        scheduler_executor::RunLoopPoll::Message(_)
-    ));
+    let scheduled = match scheduler_executor::SchedulerDecisionExecutor::new(&runtime)
+        .poll()
+        .await
+        .unwrap()
+    {
+        scheduler_executor::RunLoopPoll::Message(scheduled) => scheduled,
+        _ => panic!("fixture source must be claimed"),
+    };
+    assert_eq!(scheduled.message.id, message.id);
     let activation_id = scheduler_executor::canonical_activation_id(&message.id);
     let admitted = runtime
         .inner
@@ -8711,7 +9630,16 @@ async fn lifecycle_wait_handoff_to_work_item_wait_is_atomic_idempotent_and_resta
     ));
 
     runtime
-        .begin_interactive_turn(Some(&message), None, None)
+        .begin_dispatch_turn(
+            &scheduled.message,
+            None,
+            None,
+            scheduled
+                .dispatch_plan
+                .execution_admission_provenance
+                .clone(),
+            &scheduled.dispatch_plan.prior_closure,
+        )
         .await
         .unwrap();
     let work_item = runtime
@@ -8724,7 +9652,7 @@ async fn lifecycle_wait_handoff_to_work_item_wait_is_atomic_idempotent_and_resta
         .await
         .unwrap();
     runtime.pick_work_item(work_item.id.clone()).await.unwrap();
-    append_running_rejoin_task(&runtime, "task-lifecycle-handoff", &work_item.id);
+    append_running_rejoin_task(&runtime, "task-lifecycle-handoff", &work_item.id).await;
     let work_wait = runtime
         .register_wait_for(
             "default",
@@ -8943,7 +9871,7 @@ async fn exact_task_rejoin_uses_canonical_wait_when_work_item_revision_advanced(
         .await
         .unwrap();
     runtime.pick_work_item(work_item.id.clone()).await.unwrap();
-    append_running_rejoin_task(&runtime, "task-stale-legacy-rejoin", &work_item.id);
+    append_running_rejoin_task(&runtime, "task-stale-legacy-rejoin", &work_item.id).await;
     let registration = runtime
         .register_wait_for(
             "default",
@@ -8974,11 +9902,7 @@ async fn exact_task_rejoin_uses_canonical_wait_when_work_item_revision_advanced(
             },
         },
     );
-    runtime
-        .inner
-        .runtime_db
-        .transaction(|tx| crate::runtime_db::transitions::persist_state_tx(tx, &execution))
-        .unwrap();
+    publish_execution_fixture(&runtime, &execution).await;
 
     let terminal_task = TaskRecord {
         id: "task-stale-legacy-rejoin".into(),
@@ -9114,7 +10038,7 @@ async fn sibling_task_result_is_preserved_without_consuming_current_wait() {
         .await
         .unwrap();
     runtime.pick_work_item(work_item.id.clone()).await.unwrap();
-    append_running_rejoin_task(&runtime, "task-current-rejoin", &work_item.id);
+    append_running_rejoin_task(&runtime, "task-current-rejoin", &work_item.id).await;
     let registration = runtime
         .register_wait_for(
             "default",
@@ -9145,11 +10069,7 @@ async fn sibling_task_result_is_preserved_without_consuming_current_wait() {
             },
         },
     );
-    runtime
-        .inner
-        .runtime_db
-        .transaction(|tx| crate::runtime_db::transitions::persist_state_tx(tx, &execution))
-        .unwrap();
+    publish_execution_fixture(&runtime, &execution).await;
     let mut stale = task_result_message("task-stale-rejoin").with_admission(
         MessageDeliverySurface::TaskRejoin,
         AdmissionContext::RuntimeOwned,
@@ -9182,14 +10102,16 @@ async fn sibling_task_result_is_preserved_without_consuming_current_wait() {
         &work_item.id,
         "turn-stale-rejoin-parent",
         &stale.id,
-    );
+    )
+    .await;
     append_completed_rejoin_task_for_message(
         &runtime,
         "task-current-rejoin",
         &work_item.id,
         "turn-current-rejoin-parent",
         &valid.id,
-    );
+    )
+    .await;
     let stale = runtime.enqueue(stale).await.unwrap();
     let valid_message = valid;
 
@@ -9389,13 +10311,21 @@ async fn interrupted_activation_releases_admitted_task_result_to_next_scheduler_
             "task_result_id": task_result.id,
             "work_item_id": work_item.id,
         }));
+        persist_completed_task_parent_fixture(
+            runtime,
+            "turn-interrupted-admission-parent",
+            Some(&work_item.id),
+        )
+        .await
+        .unwrap();
         append_completed_rejoin_task_for_message(
             runtime,
             "task-interrupted-admission",
             &work_item.id,
             "turn-interrupted-admission-parent",
             &task_result.id,
-        );
+        )
+        .await;
         let mut task = runtime
             .task_record("task-interrupted-admission")
             .await
@@ -9427,14 +10357,23 @@ async fn interrupted_activation_releases_admitted_task_result_to_next_scheduler_
         );
         // Crash at the source reducer's admission boundary, not at the
         // scheduler claim: claiming alone no longer admits owner results.
-        let admitted = repository
-            .admit_message(
-                "default",
-                &task_result.id,
-                &first_activation_id,
-                runtime.now(),
-            )
+        let admitted = runtime
+            .begin_mutation()
+            .await
             .unwrap()
+            .commit_task_result_operation(
+                crate::runtime_db::transitions::TaskResultOperation::AdmitMessage {
+                    message_id: task_result.id.clone(),
+                    activation_id: first_activation_id.clone(),
+                    projection: None,
+                    at: runtime.now(),
+                },
+            )
+            .await
+            .unwrap()
+            .record()
+            .unwrap()
+            .clone()
             .expect("admitted task result settlement");
         assert_eq!(
             admitted.state,
@@ -9487,16 +10426,22 @@ async fn interrupted_activation_releases_admitted_task_result_to_next_scheduler_
         panic!("recovery must have a canonical activation");
     };
     let rebound = runtime
-        .inner
-        .runtime_db
-        .task_result_settlements()
-        .admit_message(
-            "default",
-            &pending_message_id,
-            second_activation_id,
-            runtime.now(),
-        )
+        .begin_mutation()
+        .await
         .unwrap()
+        .commit_task_result_operation(
+            crate::runtime_db::transitions::TaskResultOperation::AdmitMessage {
+                message_id: pending_message_id.clone(),
+                activation_id: second_activation_id.clone(),
+                projection: None,
+                at: runtime.now(),
+            },
+        )
+        .await
+        .unwrap()
+        .record()
+        .unwrap()
+        .clone()
         .expect("rebound task result settlement");
     assert_eq!(
         rebound.state,
@@ -9584,10 +10529,154 @@ async fn interrupted_activation_releases_admitted_task_result_to_next_scheduler_
     assert!(!runtime.emit_due_task_result_recovery().await.unwrap());
 }
 
-#[tokio::test]
-async fn task_rejoin_with_closed_owner_is_settled_without_reentry() {
+fn legacy_task_rejoin_missing_execution_work_fixture(
+    task_id: &str,
+    parent_turn_id: &str,
+) -> (
+    tempfile::TempDir,
+    tempfile::TempDir,
+    RuntimeHandle,
+    WorkItemRecord,
+    MessageEnvelope,
+) {
+    use crate::runtime_db::{
+        evidence::{upsert_agent_identity_tx, upsert_agent_state_tx},
+        migrations::{apply_migration, ensure_migration_table, MIGRATIONS},
+        repositories::{enum_string, timestamp, upsert_task_tx},
+    };
     let dir = tempdir().unwrap();
     let workspace = tempdir().unwrap();
+    let path = dir.path().join(".holon/state/runtime.sqlite");
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    let mut connection = rusqlite::Connection::open(&path).unwrap();
+    ensure_migration_table(&connection).unwrap();
+    for migration in MIGRATIONS
+        .iter()
+        .filter(|migration| migration.version <= 81)
+    {
+        apply_migration(&mut connection, migration).unwrap();
+    }
+    let mut work = WorkItemRecord::new(
+        "default",
+        "pre-cutover exact task owner",
+        WorkItemState::Open,
+    );
+    work.plan_status = WorkItemPlanStatus::Ready;
+    let mut result = task_result_message(task_id).with_admission(
+        MessageDeliverySurface::TaskRejoin,
+        AdmissionContext::RuntimeOwned,
+    );
+    result.work_item_id = Some(work.id.clone());
+    let mut wait = task_wait_condition_for_work_item(task_id, &work.id);
+    // The v81 normalized columns and the importer use millisecond precision.
+    // Freeze the original payload at that precision before its first write.
+    wait.created_at =
+        chrono::DateTime::<Utc>::from_timestamp_millis(wait.created_at.timestamp_millis()).unwrap();
+    wait.updated_at = wait.created_at;
+    work.blocked_by = Some(wait.waiting_for.clone());
+    work.blocked_by_wait_id = Some(wait.id.clone());
+    let task = TaskRecord {
+        id: task_id.into(),
+        agent_id: "default".into(),
+        kind: TaskKind::CommandTask,
+        status: TaskStatus::Completed,
+        created_at: Utc::now(),
+        updated_at: Utc::now(),
+        parent_message_id: Some(result.id.clone()),
+        work_item_id: Some(work.id.clone()),
+        summary: Some(format!("{task_id} completed")),
+        detail: Some(serde_json::json!({"rejoin_obligation_id": task_id,
+            "rejoin_generation": 1, "parent_turn_id": parent_turn_id})),
+        recovery: None,
+    };
+    result.metadata = Some(serde_json::json!({
+        "task_id": task.id,
+        "task_kind": task.kind,
+        "task_status": "completed",
+        "task_result_id": format!("result-{task_id}"),
+        "work_item_id": work.id,
+        "task_detail": task.detail,
+    }));
+    result.normalize_admission_fields();
+    assert_eq!(result.task_id.as_deref(), Some(task_id));
+    assert_eq!(
+        tasks::task_from_message(&result, "default").unwrap().detail,
+        task.detail,
+        "the first canonical result must retain the original Task/rejoin evidence"
+    );
+    let tx = connection.transaction().unwrap();
+    let identity = crate::types::AgentIdentityRecord::new(
+        "default",
+        crate::types::AgentKind::Named,
+        crate::types::AgentVisibility::Public,
+        crate::types::AgentOwnership::SelfOwned,
+        crate::types::AgentProfilePreset::PublicNamed,
+        None,
+        None,
+    );
+    upsert_agent_identity_tx(&tx, &identity).unwrap();
+    // Use the actual v81 columns; current helpers also write the later
+    // normalized blocker/recheck columns. The original payload is upgraded.
+    tx.execute(
+        "INSERT INTO work_items (work_item_id, agent_id, state, objective,
+         plan_status, revision, current_focus, created_at, updated_at,
+         completed_at, plan_artifact_path, last_turn_id, payload_json)
+         VALUES (?1, ?2, ?3, ?4, 'ready', ?5, 0, ?6, ?7, NULL, NULL, NULL, ?8)",
+        rusqlite::params![
+            work.id,
+            work.agent_id,
+            "open",
+            work.objective,
+            work.revision as i64,
+            timestamp(work.created_at),
+            timestamp(work.updated_at),
+            serde_json::to_string(&work).unwrap(),
+        ],
+    )
+    .unwrap();
+    let mut state = AgentState::new("default");
+    state.current_work_item_id = Some(work.id.clone());
+    upsert_agent_state_tx(&tx, &state).unwrap();
+    upsert_task_tx(&tx, &task).unwrap();
+    // v81 stores wake sources/continuation only in the original payload.
+    tx.execute(
+        "INSERT INTO wait_conditions (
+         wait_condition_id, agent_id, work_item_id, status, kind, source,
+         subject_ref, waiting_for, created_at, updated_at, expires_at,
+         resolved_at, cancelled_at, last_turn_id, trigger_message_id,
+         triggered_at, payload_json)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11,
+         ?12, ?13, ?14, ?15, ?16, ?17)",
+        rusqlite::params![
+            wait.id,
+            wait.agent_id,
+            wait.work_item_id,
+            enum_string(&wait.status).unwrap(),
+            enum_string(&wait.kind).unwrap(),
+            wait.source,
+            wait.subject_ref,
+            wait.waiting_for,
+            timestamp(wait.created_at),
+            timestamp(wait.updated_at),
+            wait.expires_at.map(timestamp),
+            wait.resolved_at.map(timestamp),
+            wait.cancelled_at.map(timestamp),
+            wait.turn_id,
+            wait.trigger_message_id,
+            wait.triggered_at.map(timestamp),
+            serde_json::to_string(&wait).unwrap(),
+        ],
+    )
+    .unwrap();
+    // The old owner/obligation predates cutover; this result arrives after
+    // upgrade through the real enqueue writer, which freezes its source once.
+    crate::runtime_db::transitions::persist_state_tx(
+        &tx,
+        &crate::domain::execution_protocol::ExecutionProtocolState::empty("default"),
+    )
+    .unwrap();
+    tx.commit().unwrap();
+    drop(connection);
     let runtime = RuntimeHandle::new(
         "default",
         dir.path().to_path_buf(),
@@ -9601,102 +10690,208 @@ async fn task_rejoin_with_closed_owner_is_settled_without_reentry() {
         context_config(),
     )
     .unwrap();
-    let work_item = runtime
-        .create_work_item(
-            "pre-cutover task result owner".into(),
-            Some(WorkItemPlanStatus::Ready),
-            None,
-            Vec::new(),
-        )
-        .await
-        .unwrap();
-    runtime.pick_work_item(work_item.id.clone()).await.unwrap();
-    append_running_rejoin_task(&runtime, "task-pre-cutover", &work_item.id);
-    let registration = runtime
-        .register_wait_for(
-            "default",
-            Some(work_item.id.clone()),
-            WaitForWakeKind::TaskResult,
-            Some("task-pre-cutover".into()),
-            "legacy task wait".into(),
-            None,
-        )
-        .await
-        .unwrap();
-    let _waiting_work = runtime
-        .latest_work_item(&work_item.id)
-        .await
-        .unwrap()
-        .expect("waiting WorkItem");
-    let mut stale = task_result_message("task-pre-cutover").with_admission(
-        MessageDeliverySurface::TaskRejoin,
-        AdmissionContext::RuntimeOwned,
-    );
-    stale.work_item_id = Some(work_item.id.clone());
-    stale.metadata = Some(serde_json::json!({
-        "task_id": "task-pre-cutover",
-        "task_kind": "command_task",
-        "task_status": "completed",
-        "task_result_id": "result-pre-cutover",
-        "work_item_id": work_item.id,
-    }));
-    stale.turn_id = Some("turn-pre-cutover".into());
-    let running = runtime
-        .storage()
-        .latest_task_record("task-pre-cutover")
-        .unwrap()
-        .expect("running task");
-    let terminal = TaskRecord {
-        status: TaskStatus::Completed,
-        updated_at: Utc::now(),
-        parent_message_id: Some(stale.id.clone()),
-        detail: Some(serde_json::json!({
-            "rejoin_obligation_id": "task-pre-cutover",
-            "rejoin_generation": 1,
-            "parent_turn_id": "turn-pre-cutover-parent",
-        })),
-        ..running
-    };
-    runtime
-        .persist_task_transition_with_message(&terminal, "task_status_updated", &stale)
-        .await
-        .unwrap();
-    let mut legacy_resolved = registration.condition.clone();
-    legacy_resolved.status = WaitConditionStatus::Resolved;
-    legacy_resolved.trigger_message_id = Some(stale.id.clone());
-    legacy_resolved.resolved_at = Some(Utc::now());
-    legacy_resolved.updated_at = Utc::now();
-    runtime
-        .storage()
-        .append_wait_condition(&legacy_resolved)
-        .unwrap();
-    let completing = runtime
-        .complete_work_item(work_item.id.clone(), Vec::new())
-        .await
-        .unwrap();
-    assert_eq!(completing.state, WorkItemState::Completing);
     assert!(runtime
-        .storage()
-        .latest_wait_conditions()
-        .unwrap()
-        .into_iter()
-        .any(|condition| {
-            condition.id == registration.condition.id
-                && condition.status == WaitConditionStatus::Resolved
-        }));
-    runtime
         .inner
         .runtime_db
-        .transaction(|tx| {
-            tx.execute(
-                "DELETE FROM execution_protocol_work_items
-                 WHERE agent_id = ?1 AND work_item_id = ?2",
-                ["default", work_item.id.as_str()],
-            )?;
-            Ok(())
-        })
-        .unwrap();
+        .transitions()
+        .load_execution_protocol_state_if_initialized("default")
+        .unwrap()
+        .unwrap()
+        .work_items
+        .get(&work.id)
+        .is_none());
+    assert!(runtime
+        .inner
+        .runtime_db
+        .queue_entries()
+        .latest_all()
+        .unwrap()
+        .is_empty());
+    assert!(runtime
+        .storage()
+        .read_message_by_id(&result.id)
+        .unwrap()
+        .is_none());
+    assert!(runtime
+        .inner
+        .runtime_db
+        .task_result_settlements()
+        .latest_for_message(&result.id)
+        .unwrap()
+        .is_none());
+    assert!(runtime
+        .storage()
+        .read_recent_turns(usize::MAX)
+        .unwrap()
+        .is_empty());
+    assert_eq!(
+        runtime
+            .inner
+            .runtime_db
+            .agent_states()
+            .latest("default")
+            .unwrap()
+            .unwrap()
+            .total_message_count,
+        0
+    );
+    (dir, workspace, runtime, work, result)
+}
 
+fn closed_owner_with_persisted_task_result_fixture() -> std::pin::Pin<
+    Box<
+        impl std::future::Future<
+                Output = (
+                    tempfile::TempDir,
+                    tempfile::TempDir,
+                    RuntimeHandle,
+                    MessageEnvelope,
+                ),
+            > + Send,
+    >,
+> {
+    Box::pin(async {
+        let dir = tempdir().unwrap();
+        let workspace = tempdir().unwrap();
+        let runtime = RuntimeHandle::new(
+            "default",
+            dir.path().to_path_buf(),
+            workspace.path().to_path_buf(),
+            "http://127.0.0.1:7878".into(),
+            Arc::new(CountingProvider {
+                calls: Mutex::new(0),
+                reply: "unused",
+            }),
+            "default".into(),
+            context_config(),
+        )
+        .unwrap();
+        let work = runtime
+            .create_work_item(
+                "pre-cutover task result owner".into(),
+                Some(WorkItemPlanStatus::Ready),
+                None,
+                Vec::new(),
+            )
+            .await
+            .unwrap();
+        runtime.pick_work_item(work.id.clone()).await.unwrap();
+        append_running_rejoin_task(&runtime, "task-pre-cutover", &work.id).await;
+        let registration = runtime
+            .register_wait_for(
+                "default",
+                Some(work.id.clone()),
+                WaitForWakeKind::TaskResult,
+                Some("task-pre-cutover".into()),
+                "legacy task wait".into(),
+                None,
+            )
+            .await
+            .unwrap();
+        let running = runtime
+            .storage()
+            .latest_task_record("task-pre-cutover")
+            .unwrap()
+            .unwrap();
+        let mut result = task_result_message("task-pre-cutover").with_admission(
+            MessageDeliverySurface::TaskRejoin,
+            AdmissionContext::RuntimeOwned,
+        );
+        result.work_item_id = Some(work.id.clone());
+        result.turn_id = Some("turn-pre-cutover".into());
+        let terminal = TaskRecord {
+            status: TaskStatus::Completed,
+            updated_at: Utc::now(),
+            parent_message_id: Some(result.id.clone()),
+            detail: Some(serde_json::json!({
+                "rejoin_obligation_id": "task-pre-cutover",
+                "rejoin_generation": 1,
+                "parent_turn_id": "turn-pre-cutover-parent",
+            })),
+            ..running
+        };
+        result.metadata = Some(serde_json::json!({
+            "task_id": terminal.id,
+            "task_kind": terminal.kind,
+            "task_status": "completed",
+            "task_result_id": "result-pre-cutover",
+            "work_item_id": work.id,
+            "task_detail": terminal.detail,
+        }));
+        result.normalize_admission_fields();
+        runtime
+            .persist_task_transition_with_message(&terminal, "task_status_updated", &result)
+            .await
+            .unwrap();
+        let mut resolved = registration.condition;
+        resolved.status = WaitConditionStatus::Resolved;
+        resolved.trigger_message_id = Some(result.id.clone());
+        resolved.updated_at = Utc::now();
+        resolved.resolved_at = Some(resolved.updated_at);
+        publish_resolved_task_wait_fixture(&runtime, &resolved, None).await;
+        let execution_before_completion = runtime
+            .inner
+            .runtime_db
+            .transitions()
+            .load_execution_protocol_state_if_initialized("default")
+            .unwrap()
+            .unwrap()
+            .work_items[&work.id]
+            .clone();
+        let completing = runtime
+            .complete_work_item(work.id.clone(), vec![])
+            .await
+            .unwrap();
+        assert_eq!(completing.state, WorkItemState::Completing);
+        assert_eq!(
+            runtime.storage().latest_work_item(&work.id).unwrap(),
+            Some(completing)
+        );
+        let execution = runtime
+            .inner
+            .runtime_db
+            .transitions()
+            .load_execution_protocol_state_if_initialized("default")
+            .unwrap()
+            .unwrap();
+        assert_eq!(execution.work_items[&work.id], execution_before_completion);
+        assert!(runtime
+            .storage()
+            .latest_wait_conditions()
+            .unwrap()
+            .iter()
+            .any(|wait| {
+                wait.id == resolved.id && wait.status == WaitConditionStatus::Resolved
+            }));
+        let actual = runtime
+            .storage()
+            .read_message_by_id(&result.id)
+            .unwrap()
+            .unwrap();
+        assert!(actual.message_seq.is_some());
+        assert_eq!(actual.metadata, result.metadata);
+        assert!(runtime
+            .inner
+            .runtime_db
+            .queue_entries()
+            .latest(&result.id)
+            .unwrap()
+            .is_none());
+        assert!(runtime
+            .storage()
+            .read_turn_by_id("turn-pre-cutover")
+            .unwrap()
+            .is_none());
+        // This case preserves the real current producer's persisted-result →
+        // later enqueue path; only the separate open-owner case is legacy.
+        (dir, workspace, runtime, result)
+    })
+}
+
+#[tokio::test]
+async fn task_rejoin_with_closed_owner_is_settled_without_reentry() {
+    let (_dir, _workspace, runtime, stale) =
+        closed_owner_with_persisted_task_result_fixture().await;
     let stale = runtime.enqueue(stale).await.unwrap();
     let valid = runtime
         .enqueue(trusted_operator_prompt(
@@ -9778,79 +10973,11 @@ async fn task_rejoin_with_closed_owner_is_settled_without_reentry() {
 
 #[tokio::test]
 async fn task_rejoin_missing_from_execution_partition_is_preserved_without_reentry() {
-    let dir = tempdir().unwrap();
-    let workspace = tempdir().unwrap();
-    let runtime = RuntimeHandle::new(
-        "default",
-        dir.path().to_path_buf(),
-        workspace.path().to_path_buf(),
-        "http://127.0.0.1:7878".into(),
-        Arc::new(CountingProvider {
-            calls: Mutex::new(0),
-            reply: "unused",
-        }),
-        "default".into(),
-        context_config(),
-    )
-    .unwrap();
-    let work_item = runtime
-        .create_work_item(
-            "pre-cutover exact task wait".into(),
-            Some(WorkItemPlanStatus::Ready),
-            None,
-            Vec::new(),
-        )
-        .await
-        .unwrap();
-    runtime.pick_work_item(work_item.id.clone()).await.unwrap();
-    append_running_rejoin_task(&runtime, "task-pre-cutover-current", &work_item.id);
-    let _registration = runtime
-        .register_wait_for(
-            "default",
-            Some(work_item.id.clone()),
-            WaitForWakeKind::TaskResult,
-            Some("task-pre-cutover-current".into()),
-            "current exact task wait".into(),
-            None,
-        )
-        .await
-        .unwrap();
-    let _waiting_work = runtime
-        .latest_work_item(&work_item.id)
-        .await
-        .unwrap()
-        .expect("waiting WorkItem");
-    runtime
-        .inner
-        .runtime_db
-        .transaction(|tx| {
-            tx.execute(
-                "DELETE FROM execution_protocol_work_items
-                 WHERE agent_id = ?1 AND work_item_id = ?2",
-                ["default", work_item.id.as_str()],
-            )?;
-            Ok(())
-        })
-        .unwrap();
-    append_completed_rejoin_task(
-        &runtime,
-        "task-pre-cutover-current",
-        &work_item.id,
-        "turn-pre-cutover-current-parent",
-    );
-
-    let mut result = task_result_message("task-pre-cutover-current").with_admission(
-        MessageDeliverySurface::TaskRejoin,
-        AdmissionContext::RuntimeOwned,
-    );
-    result.work_item_id = Some(work_item.id.clone());
-    result.metadata = Some(serde_json::json!({
-        "task_id": "task-pre-cutover-current",
-        "task_kind": "command_task",
-        "task_status": "completed",
-        "task_result_id": "result-pre-cutover-current",
-        "work_item_id": work_item.id,
-    }));
+    let (_dir, _workspace, runtime, _work_item, result) =
+        legacy_task_rejoin_missing_execution_work_fixture(
+            "task-pre-cutover-current",
+            "turn-pre-cutover-current-parent",
+        );
     let result = runtime.enqueue(result).await.unwrap();
 
     let poll = scheduler_executor::SchedulerDecisionExecutor::new(&runtime)
@@ -9942,7 +11069,7 @@ async fn exact_task_rejoin_claim_is_atomic_and_restart_safe() {
         .await
         .unwrap();
     runtime.pick_work_item(work_item.id.clone()).await.unwrap();
-    append_running_rejoin_task(&runtime, "task-rejoin", &work_item.id);
+    append_running_rejoin_task(&runtime, "task-rejoin", &work_item.id).await;
     let registration = runtime
         .register_wait_for(
             "default",
@@ -9959,8 +11086,8 @@ async fn exact_task_rejoin_claim_is_atomic_and_restart_safe() {
         .await
         .unwrap()
         .unwrap();
-    persist_waiting_work_execution(&runtime, &work_item, &registration.condition.id);
-    append_completed_rejoin_task(&runtime, "task-rejoin", &work_item.id, "turn-task-parent");
+    persist_waiting_work_execution(&runtime, &work_item, &registration.condition.id).await;
+    append_completed_rejoin_task(&runtime, "task-rejoin", &work_item.id, "turn-task-parent").await;
     assert_eq!(
         runtime
             .storage()
@@ -9992,14 +11119,21 @@ async fn exact_task_rejoin_claim_is_atomic_and_restart_safe() {
         .unwrap()
         .expect("waiting execution authority");
 
-    runtime.inject_next_transition_fault(
+    runtime.inject_next_claim_transition_fault(
         crate::runtime_db::transitions::TransitionFaultPoint::AfterCanonicalWrites,
     );
     let error = match scheduler_executor::SchedulerDecisionExecutor::new(&runtime)
         .poll()
         .await
     {
-        Ok(_) => panic!("expected task rejoin claim fault"),
+        Ok(_) => panic!(
+            "expected task rejoin claim fault: {:?}",
+            runtime
+                .runtime_db()
+                .audit_events()
+                .recent(Some("default"), 6)
+                .unwrap()
+        ),
         Err(error) => error,
     };
     assert_injected_transition_fault(&error);
@@ -10071,7 +11205,9 @@ async fn exact_task_rejoin_claim_is_atomic_and_restart_safe() {
         Some(crate::domain::execution_protocol::RejoinFence {
             obligation_id: "task-rejoin".into(),
             generation: 1,
-            parent_turn_id: "turn-task-parent".into(),
+            source: crate::domain::execution_protocol::TaskRejoinSource::ParentTurn {
+                parent_turn_id: "turn-task-parent".into(),
+            },
         })
     );
     assert!(matches!(
@@ -10147,20 +11283,23 @@ async fn terminal_task_result_without_work_item_is_canonical_reducer_only() {
     )
     .unwrap();
     runtime
-        .storage()
-        .append_task(&TaskRecord {
-            id: "task-without-work-item".into(),
-            agent_id: "default".into(),
-            kind: TaskKind::CommandTask,
-            status: TaskStatus::Completed,
-            created_at: Utc::now(),
-            updated_at: Utc::now(),
-            parent_message_id: None,
-            work_item_id: None,
-            summary: Some("task completed".into()),
-            detail: None,
-            recovery: None,
-        })
+        .persist_task_transition(
+            &TaskRecord {
+                id: "task-without-work-item".into(),
+                agent_id: "default".into(),
+                kind: TaskKind::CommandTask,
+                status: TaskStatus::Completed,
+                created_at: Utc::now(),
+                updated_at: Utc::now(),
+                parent_message_id: None,
+                work_item_id: None,
+                summary: Some("task completed".into()),
+                detail: None,
+                recovery: None,
+            },
+            "runtime_state_task_fixture",
+        )
+        .await
         .unwrap();
 
     let mut message = task_result_message("task-without-work-item").with_admission(
@@ -10308,7 +11447,10 @@ async fn agent_scope_terminal_result_persists_obligation_without_consuming_unrel
                 })),
                 recovery: None,
             };
-            runtime.storage().append_task(&task).unwrap();
+            runtime
+                .persist_task_transition(&task, "agent_scope_task_fixture")
+                .await
+                .unwrap();
             let resource = match wake {
                 WaitForWakeKind::Timer => Some(
                     runtime
@@ -10399,20 +11541,23 @@ async fn terminal_task_result_resumes_exact_agent_lifecycle_task_wait() {
     )
     .unwrap();
     runtime
-        .storage()
-        .append_task(&TaskRecord {
-            id: "task-lifecycle-wait".into(),
-            agent_id: "default".into(),
-            kind: TaskKind::CommandTask,
-            status: TaskStatus::Running,
-            created_at: Utc::now(),
-            updated_at: Utc::now(),
-            parent_message_id: None,
-            work_item_id: None,
-            summary: Some("task lifecycle wait".into()),
-            detail: None,
-            recovery: None,
-        })
+        .persist_task_transition(
+            &TaskRecord {
+                id: "task-lifecycle-wait".into(),
+                agent_id: "default".into(),
+                kind: TaskKind::CommandTask,
+                status: TaskStatus::Running,
+                created_at: Utc::now(),
+                updated_at: Utc::now(),
+                parent_message_id: None,
+                work_item_id: None,
+                summary: Some("task lifecycle wait".into()),
+                detail: None,
+                recovery: None,
+            },
+            "runtime_state_task_fixture",
+        )
+        .await
         .unwrap();
     let registration = runtime
         .register_wait_for(
@@ -10514,20 +11659,23 @@ async fn exact_agent_lifecycle_task_wait_runs_one_model_continuation() {
     )
     .unwrap();
     runtime
-        .storage()
-        .append_task(&TaskRecord {
-            id: "task-lifecycle-model-reentry".into(),
-            agent_id: "default".into(),
-            kind: TaskKind::CommandTask,
-            status: TaskStatus::Running,
-            created_at: Utc::now(),
-            updated_at: Utc::now(),
-            parent_message_id: None,
-            work_item_id: None,
-            summary: Some("task lifecycle model reentry".into()),
-            detail: None,
-            recovery: None,
-        })
+        .persist_task_transition(
+            &TaskRecord {
+                id: "task-lifecycle-model-reentry".into(),
+                agent_id: "default".into(),
+                kind: TaskKind::CommandTask,
+                status: TaskStatus::Running,
+                created_at: Utc::now(),
+                updated_at: Utc::now(),
+                parent_message_id: None,
+                work_item_id: None,
+                summary: Some("task lifecycle model reentry".into()),
+                detail: None,
+                recovery: None,
+            },
+            "runtime_state_task_fixture",
+        )
+        .await
         .unwrap();
     runtime
         .register_wait_for(
@@ -10758,11 +11906,7 @@ async fn authoritative_explicit_operator_binding_ignores_unrelated_waits() {
             },
         );
     }
-    runtime
-        .inner
-        .runtime_db
-        .transaction(|tx| crate::runtime_db::transitions::persist_state_tx(tx, &execution))
-        .unwrap();
+    publish_execution_fixture(&runtime, &execution).await;
     let message = runtime
         .enqueue(trusted_operator_prompt(
             Some(&target.id),
@@ -10781,14 +11925,15 @@ async fn authoritative_explicit_operator_binding_ignores_unrelated_waits() {
     assert_eq!(scheduled.message.id, message.id);
     assert!(scheduled.scheduler_decision.model_reentry);
     runtime
-        .begin_interactive_turn_with_provenance(
-            Some(&scheduled.message),
+        .begin_dispatch_turn(
+            &scheduled.message,
             None,
             None,
             scheduled
                 .dispatch_plan
                 .execution_admission_provenance
                 .clone(),
+            &scheduled.dispatch_plan.prior_closure,
         )
         .await
         .unwrap();
@@ -11004,14 +12149,15 @@ async fn trusted_operator_conversation_owner_flows_from_admission_to_terminal_tu
     };
 
     runtime
-        .begin_interactive_turn_with_provenance(
-            Some(&scheduled.message),
+        .begin_dispatch_turn(
+            &scheduled.message,
             None,
             None,
             scheduled
                 .dispatch_plan
                 .execution_admission_provenance
                 .clone(),
+            &scheduled.dispatch_plan.prior_closure,
         )
         .await
         .unwrap();
@@ -11361,9 +12507,45 @@ async fn authoritative_completion_resumes_parent_canonically_and_writes_terminal
         })
         .expect("child pick should create a continuation frame");
     drop(seed_runtime);
-    let provider = Arc::new(CanonicalCompletionProvider {
-        work_item_id: child.id.clone(),
-        calls: Arc::new(Mutex::new(0)),
+    #[derive(Clone)]
+    struct CompletionThenParentCrash {
+        completion: Arc<CanonicalCompletionProvider>,
+        parent_id: String,
+        parent_started: Arc<tokio::sync::Notify>,
+    }
+    #[async_trait]
+    impl AgentProvider for CompletionThenParentCrash {
+        async fn complete_turn(
+            &self,
+            request: ProviderTurnRequest,
+        ) -> Result<ProviderTurnResponse> {
+            if request.prompt_frame.context_blocks.iter().any(|block| {
+                block.text.starts_with("## current_work_item\n")
+                    && block
+                        .text
+                        .lines()
+                        .any(|line| line == format!("- Id: {}", self.parent_id))
+            }) {
+                self.parent_started.notify_one();
+                return std::future::pending().await;
+            }
+            self.completion.complete_turn(request).await
+        }
+        fn select_model_lineage(
+            &self,
+            _: &crate::config::ModelRouteRef,
+        ) -> Option<Arc<dyn AgentProvider>> {
+            Some(Arc::new(self.clone()))
+        }
+    }
+    let parent_started = Arc::new(tokio::sync::Notify::new());
+    let provider = Arc::new(CompletionThenParentCrash {
+        completion: Arc::new(CanonicalCompletionProvider {
+            work_item_id: child.id.clone(),
+            calls: Arc::new(Mutex::new(0)),
+        }),
+        parent_id: parent.id.clone(),
+        parent_started: parent_started.clone(),
     });
     let runtime = RuntimeHandle::new(
         "default",
@@ -11431,6 +12613,27 @@ async fn authoritative_completion_resumes_parent_canonically_and_writes_terminal
             result.expect("canonical child completion should settle");
         }
     }
+    tokio::time::timeout(std::time::Duration::from_secs(5), parent_started.notified())
+        .await
+        .expect("parent must have an actual unfinished dispatch before the process crash");
+    let interrupted_parent_turn = runtime
+        .agent_state()
+        .await
+        .unwrap()
+        .current_turn_id
+        .unwrap();
+    let checkpoint: String = runtime
+        .inner
+        .runtime_db
+        .connection()
+        .unwrap()
+        .query_row(
+            "SELECT state FROM dispatch_memory_checkpoints WHERE agent_id='default' AND turn_id=?1",
+            [&interrupted_parent_turn],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(checkpoint, "started");
     runner.abort();
     let _ = runner.await;
 
@@ -11543,28 +12746,46 @@ async fn authoritative_completion_resumes_parent_canonically_and_writes_terminal
         started: reentry_started.clone(),
         observed_work_items: Mutex::new(Vec::new()),
     });
-    let restarted = RuntimeHandle::new(
-        "default",
-        dir.path().to_path_buf(),
-        workspace.path().to_path_buf(),
-        "http://127.0.0.1:7878".into(),
-        reentry_provider.clone(),
-        "default".into(),
-        context_config(),
+    // A process restart needs the real Host's exclusive preactivation actor.
+    // The low-level standalone constructor has no lifetime maintenance lease.
+    let home = tempdir().unwrap();
+    std::fs::write(
+        home.path().join("config.json"),
+        r#"{"model":{"default":"openai/gpt-5.4"}}"#,
     )
     .unwrap();
-    let mut restarted_runner = tokio::spawn(restarted.clone().run());
-    tokio::select! {
-        result = &mut restarted_runner => {
-            panic!("restarted runtime exited before parent model re-entry: {result:?}");
-        }
-        result = tokio::time::timeout(
-            std::time::Duration::from_secs(5),
-            reentry_started.notified(),
-        ) => {
-            result.expect("restarted parent should re-enter the provider");
-        }
-    }
+    let mut config =
+        crate::config::AppConfig::load_with_home(Some(home.path().to_path_buf())).unwrap();
+    // Reopen the original canonical database; do not copy or discard its Turn,
+    // Start checkpoint, queue provenance or completed child evidence.
+    config.data_dir = dir.path().join(".holon");
+    config.workspace_dir = workspace.path().to_path_buf();
+    config.user_home_dir = Some(home.path().to_path_buf());
+    let host = RuntimeHost::new_with_provider(config, reentry_provider.clone()).unwrap();
+    host.recover_orphaned_queue_claims_at_startup()
+        .await
+        .unwrap();
+    let restarted = host.default_runtime().await.unwrap();
+    tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        reentry_started.notified(),
+    )
+    .await
+    .expect("restarted parent should re-enter the provider");
+    let checkpoint: String = host
+        .runtime_db()
+        .connection()
+        .unwrap()
+        .query_row(
+            "SELECT state FROM dispatch_memory_checkpoints WHERE agent_id='default' AND turn_id=?1",
+            [&interrupted_parent_turn],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(
+        checkpoint, "done",
+        "exclusive startup must finish original memory before a new dispatch"
+    );
     let observed_work_items = reentry_provider.observed_work_items.lock().await;
     assert_eq!(observed_work_items.len(), 1);
     assert!(observed_work_items[0].contains(&format!("- Id: {}", parent.id)));
@@ -11625,8 +12846,7 @@ async fn authoritative_completion_resumes_parent_canonically_and_writes_terminal
             "restart and parent re-entry must preserve exactly-once {kind}"
         );
     }
-    restarted_runner.abort();
-    let _ = restarted_runner.await;
+    host.shutdown().await.unwrap();
 }
 
 #[tokio::test]
@@ -11694,7 +12914,7 @@ async fn authoritative_completion_cancels_active_child_wait_and_resumes_parent()
         .await
         .unwrap()
         .expect("waiting child");
-    persist_waiting_work_execution(&seed_runtime, &waiting_child, &registration.condition.id);
+    persist_waiting_work_execution(&seed_runtime, &waiting_child, &registration.condition.id).await;
     drop(seed_runtime);
 
     let completion_provider = Arc::new(CanonicalCompletionProvider {
@@ -11712,7 +12932,7 @@ async fn authoritative_completion_cancels_active_child_wait_and_resumes_parent()
     )
     .unwrap();
     let recovery = runtime
-        .enqueue(provider_recovery_message(&runtime, &child.id))
+        .enqueue(provider_recovery_message(&runtime, &child.id).await)
         .await
         .unwrap();
     let activation_id = scheduler_executor::canonical_activation_id(&recovery.id);
@@ -11876,11 +13096,16 @@ async fn terminal_settlement_fault_rolls_back_all_facts_and_retry_is_idempotent(
         bind_autonomous_work_queue_tick(&mut message, &work_item, "queued_available");
         message.turn_id = Some(format!("turn-terminal-fault-{fault:?}"));
         let message = runtime.enqueue(message).await.unwrap();
-        let poll = scheduler_executor::SchedulerDecisionExecutor::new(&runtime)
-            .poll()
-            .await
-            .unwrap();
-        assert!(matches!(poll, scheduler_executor::RunLoopPoll::Message(_)));
+        let scheduler_executor::RunLoopPoll::Message(scheduled) =
+            scheduler_executor::SchedulerDecisionExecutor::new(&runtime)
+                .poll()
+                .await
+                .unwrap()
+        else {
+            panic!("terminal fault fixture source must be claimed");
+        };
+        assert_eq!(scheduled.message.id, message.id);
+        let message = start_protocol_settlement_fixture(&runtime, &scheduled).await;
         let claimed = runtime
             .inner
             .runtime_db
@@ -11898,7 +13123,12 @@ async fn terminal_settlement_fault_rolls_back_all_facts_and_retry_is_idempotent(
             created_at: message.created_at,
             updated_at: Utc::now(),
         };
-        let transition = terminal_transition(&message, Some(&work_item.id));
+        let transition = terminal_transition_from_started_turn(&runtime, &message);
+        let started_turn = runtime
+            .storage()
+            .read_turn_by_id(&transition.terminal.turn_id)
+            .unwrap()
+            .unwrap();
         runtime.inject_next_transition_fault(fault);
 
         let error = runtime
@@ -11941,12 +13171,13 @@ async fn terminal_settlement_fault_rolls_back_all_facts_and_retry_is_idempotent(
             .unwrap()
             .last_turn_terminal
             .is_none());
-        assert!(runtime
-            .storage()
-            .read_recent_turns(16)
-            .unwrap()
-            .iter()
-            .all(|turn| turn.turn_id != transition.terminal.turn_id));
+        assert_eq!(
+            runtime
+                .storage()
+                .read_turn_by_id(&transition.terminal.turn_id)
+                .unwrap(),
+            Some(started_turn.clone())
+        );
         assert!(runtime
             .storage()
             .read_recent_events(64)
@@ -12062,7 +13293,24 @@ async fn standalone_terminal_transition_fault_rolls_back_and_restart_replays_exa
             },
         );
         message.turn_id = Some(format!("turn-standalone-terminal-{fault:?}"));
-        let transition = terminal_transition(&message, None);
+        let message = runtime.enqueue(message).await.unwrap();
+        let scheduler_executor::RunLoopPoll::Message(scheduled) =
+            scheduler_executor::SchedulerDecisionExecutor::new(&runtime)
+                .poll()
+                .await
+                .unwrap()
+        else {
+            panic!("standalone terminal fixture source must be claimed");
+        };
+        assert_eq!(scheduled.message.id, message.id);
+        let message = start_protocol_settlement_fixture(&runtime, &scheduled).await;
+        finish_claimed_test_run(&runtime).await;
+        let transition = terminal_transition_from_started_turn(&runtime, &message);
+        let started_turn = runtime
+            .storage()
+            .read_turn_by_id(&transition.terminal.turn_id)
+            .unwrap()
+            .unwrap();
         runtime.inject_next_transition_fault(fault);
 
         let error = runtime
@@ -12079,12 +13327,13 @@ async fn standalone_terminal_transition_fault_rolls_back_and_restart_replays_exa
             .unwrap()
             .last_turn_terminal
             .is_none());
-        assert!(runtime
-            .storage()
-            .read_recent_turns(16)
-            .unwrap()
-            .iter()
-            .all(|turn| turn.turn_id != transition.terminal.turn_id));
+        assert_eq!(
+            runtime
+                .storage()
+                .read_turn_by_id(&transition.terminal.turn_id)
+                .unwrap(),
+            Some(started_turn.clone())
+        );
         assert!(runtime
             .storage()
             .read_recent_events(64)
@@ -12094,6 +13343,7 @@ async fn standalone_terminal_transition_fault_rolls_back_and_restart_replays_exa
                 !(matches!(event.kind.as_str(), "turn_terminal" | "turn_record")
                     && event.data["turn_id"] == transition.terminal.turn_id)
             }));
+        drop(scheduled);
         drop(runtime);
 
         let restarted = RuntimeHandle::new(
@@ -12188,16 +13438,44 @@ async fn standalone_terminal_transition_survives_post_commit_effect_faults() {
             },
         );
         message.turn_id = Some(format!("turn-standalone-post-commit-{fault:?}"));
-        let transition = terminal_transition(&message, None);
+        let message = runtime.enqueue(message).await.unwrap();
+        let scheduler_executor::RunLoopPoll::Message(scheduled) =
+            scheduler_executor::SchedulerDecisionExecutor::new(&runtime)
+                .poll()
+                .await
+                .unwrap()
+        else {
+            panic!("standalone terminal fixture source must be claimed");
+        };
+        assert_eq!(scheduled.message.id, message.id);
+        let message = start_protocol_settlement_fixture(&runtime, &scheduled).await;
+        finish_claimed_test_run(&runtime).await;
+        let transition = terminal_transition_from_started_turn(&runtime, &message);
         runtime.inject_next_transition_fault(fault);
 
-        runtime
-            .persist_terminal_transition(&transition)
-            .await
-            .unwrap();
-        let warnings = runtime.take_transition_warnings();
-        assert_eq!(warnings.len(), 1);
-        assert_eq!(warnings[0].effect, expected_effect);
+        let result = runtime.persist_terminal_transition(&transition).await;
+        if fault == TransitionFaultPoint::BeforeCacheUpdate {
+            assert!(result.is_err());
+            assert!(runtime.inner.mutation_owner.capture().is_err());
+            let durable = runtime.storage().read_agent().unwrap().unwrap();
+            assert_eq!(
+                durable.last_turn_terminal,
+                Some(transition.terminal.clone())
+            );
+            let turns = runtime.storage().read_recent_turns(16).unwrap();
+            let events = runtime.storage().read_recent_events(64).unwrap();
+            let mutation = runtime.begin_mutation().await.unwrap();
+            assert_eq!(mutation.state, durable);
+            drop(mutation);
+            assert_eq!(runtime.storage().read_recent_turns(16).unwrap(), turns);
+            assert_eq!(runtime.storage().read_recent_events(64).unwrap(), events);
+            assert!(runtime.take_transition_warnings().is_empty());
+        } else {
+            result.unwrap();
+            let warnings = runtime.take_transition_warnings();
+            assert_eq!(warnings.len(), 1);
+            assert_eq!(warnings[0].effect, expected_effect);
+        }
         assert_eq!(
             runtime
                 .inner
@@ -12254,16 +13532,31 @@ async fn standalone_aborted_terminal_commits_terminal_and_abort_audits_atomicall
             context_config(),
         )
         .unwrap();
-        let turn_id = {
-            let mut guard = runtime.inner.agent.lock().await;
-            guard.state.current_turn_id = Some(format!("turn-aborted-terminal-{fault:?}"));
-            guard.persist_state(&runtime.inner.storage).unwrap();
-            guard.state.current_turn_id.clone().unwrap()
+        let mut message = trusted_operator_prompt(None, "abort terminal fault fixture");
+        message.turn_id = Some(format!("turn-aborted-terminal-{fault:?}"));
+        let message = runtime.enqueue(message).await.unwrap();
+        let scheduler_executor::RunLoopPoll::Message(scheduled) =
+            scheduler_executor::SchedulerDecisionExecutor::new(&runtime)
+                .poll()
+                .await
+                .unwrap()
+        else {
+            panic!("aborted terminal fixture source must be claimed");
         };
+        assert_eq!(scheduled.message.id, message.id);
+        let message = start_protocol_settlement_fixture(&runtime, &scheduled).await;
+        let turn_id = message.turn_id.unwrap();
+        let started_turn = runtime
+            .storage()
+            .read_turn_by_id(&turn_id)
+            .unwrap()
+            .unwrap();
+        let run_id = started_turn.run_id.as_deref().unwrap();
+        finish_claimed_test_run(&runtime).await;
         runtime.inject_next_transition_fault(fault);
 
         let error = runtime
-            .persist_turn_aborted_record("run-aborted", "operator_aborted", None, 1, true)
+            .persist_turn_aborted_record(run_id, "operator_aborted", None, 1, true)
             .await
             .unwrap_err();
         assert_injected_transition_fault(&error);
@@ -12276,12 +13569,10 @@ async fn standalone_aborted_terminal_commits_terminal_and_abort_audits_atomicall
             .unwrap()
             .last_turn_terminal
             .is_none());
-        assert!(runtime
-            .storage()
-            .read_recent_turns(16)
-            .unwrap()
-            .iter()
-            .all(|turn| turn.turn_id != turn_id));
+        assert_eq!(
+            runtime.storage().read_turn_by_id(&turn_id).unwrap(),
+            Some(started_turn)
+        );
         assert!(runtime
             .storage()
             .read_recent_events(64)
@@ -12338,16 +13629,21 @@ async fn terminal_settlement_survives_post_commit_effect_faults() {
         bind_autonomous_work_queue_tick(&mut message, &work_item, "queued_available");
         message.turn_id = Some(format!("turn-terminal-post-commit-{fault:?}"));
         let message = runtime.enqueue(message).await.unwrap();
-        let poll = scheduler_executor::SchedulerDecisionExecutor::new(&runtime)
-            .poll()
-            .await
-            .unwrap();
-        assert!(matches!(poll, scheduler_executor::RunLoopPoll::Message(_)));
+        let scheduler_executor::RunLoopPoll::Message(scheduled) =
+            scheduler_executor::SchedulerDecisionExecutor::new(&runtime)
+                .poll()
+                .await
+                .unwrap()
+        else {
+            panic!("terminal fault fixture source must be claimed");
+        };
+        assert_eq!(scheduled.message.id, message.id);
+        let message = start_protocol_settlement_fixture(&runtime, &scheduled).await;
         finish_claimed_test_run(&runtime).await;
 
-        let transition = terminal_transition(&message, Some(&work_item.id));
+        let transition = terminal_transition_from_started_turn(&runtime, &message);
         runtime.inject_next_transition_fault(fault);
-        assert!(runtime
+        let result = runtime
             .commit_queue_terminal_settlement(
                 QueueEntryRecord {
                     message_id: message.id.clone(),
@@ -12361,11 +13657,44 @@ async fn terminal_settlement_survives_post_commit_effect_faults() {
                 true,
                 Some(&transition),
             )
-            .await
-            .unwrap());
-        let warnings = runtime.take_transition_warnings();
-        assert_eq!(warnings.len(), 1);
-        assert_eq!(warnings[0].effect, expected_effect);
+            .await;
+        if fault == TransitionFaultPoint::BeforeCacheUpdate {
+            assert!(result.is_err());
+            assert!(runtime.inner.mutation_owner.capture().is_err());
+            let durable = runtime.storage().read_agent().unwrap().unwrap();
+            assert_eq!(
+                durable.last_turn_terminal,
+                Some(transition.terminal.clone())
+            );
+            let turns = runtime.storage().read_recent_turns(16).unwrap();
+            let events = runtime.storage().read_recent_events(64).unwrap();
+            let execution = runtime
+                .inner
+                .runtime_db
+                .transitions()
+                .load_execution_protocol_state_if_initialized("default")
+                .unwrap();
+            let mutation = runtime.begin_mutation().await.unwrap();
+            assert_eq!(mutation.state, durable);
+            drop(mutation);
+            assert_eq!(runtime.storage().read_recent_turns(16).unwrap(), turns);
+            assert_eq!(runtime.storage().read_recent_events(64).unwrap(), events);
+            assert_eq!(
+                runtime
+                    .inner
+                    .runtime_db
+                    .transitions()
+                    .load_execution_protocol_state_if_initialized("default")
+                    .unwrap(),
+                execution
+            );
+            assert!(runtime.take_transition_warnings().is_empty());
+        } else {
+            assert!(result.unwrap());
+            let warnings = runtime.take_transition_warnings();
+            assert_eq!(warnings.len(), 1);
+            assert_eq!(warnings[0].effect, expected_effect);
+        }
 
         let execution = runtime
             .inner
@@ -12466,7 +13795,7 @@ async fn runtime_failure_terminal_fault_retries_confirmed_rollback_and_commits_f
         .load_execution_protocol_state_if_initialized("default")
         .unwrap()
         .unwrap();
-    runtime.inject_next_transition_fault(
+    runtime.inject_next_terminal_transition_fault(
         crate::runtime_db::transitions::TransitionFaultPoint::AfterAuditWrites,
     );
     release.notify_one();
@@ -12584,7 +13913,16 @@ async fn terminal_settlement_readback_rejects_terminal_queue_and_turn_with_open_
             panic!("operator prompt should be claimed");
         };
         runtime
-            .begin_interactive_turn(Some(&scheduled.message), None, None)
+            .begin_dispatch_turn(
+                &scheduled.message,
+                None,
+                None,
+                scheduled
+                    .dispatch_plan
+                    .execution_admission_provenance
+                    .clone(),
+                &scheduled.dispatch_plan.prior_closure,
+            )
             .await
             .unwrap();
         finish_claimed_test_run(&runtime).await;
@@ -12691,7 +14029,16 @@ async fn terminal_settlement_materialization_failure_is_fenced_and_aborted() {
         panic!("operator prompt should be claimed");
     };
     runtime
-        .begin_interactive_turn(Some(&scheduled.message), None, None)
+        .begin_dispatch_turn(
+            &scheduled.message,
+            None,
+            None,
+            scheduled
+                .dispatch_plan
+                .execution_admission_provenance
+                .clone(),
+            &scheduled.dispatch_plan.prior_closure,
+        )
         .await
         .unwrap();
     let binding = runtime
@@ -12823,7 +14170,7 @@ async fn successful_turn_terminal_fault_is_fenced_and_aborted_without_losing_ear
     tokio::time::timeout(std::time::Duration::from_secs(2), started.notified())
         .await
         .expect("provider should start");
-    runtime.inject_next_transition_fault(
+    runtime.inject_next_terminal_transition_fault(
         crate::runtime_db::transitions::TransitionFaultPoint::AfterAuditWrites,
     );
     release.notify_one();
@@ -12937,7 +14284,7 @@ async fn interrupted_terminal_fault_retries_confirmed_rollback_and_closes_claim(
         .unwrap()
         .current_run_id
         .expect("active run id");
-    runtime.inject_next_transition_fault(
+    runtime.inject_next_terminal_transition_fault(
         crate::runtime_db::transitions::TransitionFaultPoint::AfterAuditWrites,
     );
     runtime
@@ -13064,7 +14411,10 @@ async fn completed_production_settlement_uses_exact_bound_result_brief() {
         .poll()
         .await
         .unwrap();
-    assert!(matches!(poll, scheduler_executor::RunLoopPoll::Message(_)));
+    let scheduler_executor::RunLoopPoll::Message(scheduled) = poll else {
+        panic!("fixture source must be claimed");
+    };
+    assert_eq!(scheduled.message.id, message.id);
     let activation_id = scheduler_executor::canonical_activation_id(&message.id);
     let execution = runtime
         .inner
@@ -13084,7 +14434,16 @@ async fn completed_production_settlement_uses_exact_bound_result_brief() {
     );
 
     runtime
-        .begin_interactive_turn(Some(&message), None, None)
+        .begin_dispatch_turn(
+            &scheduled.message,
+            None,
+            None,
+            scheduled
+                .dispatch_plan
+                .execution_admission_provenance
+                .clone(),
+            &scheduled.dispatch_plan.prior_closure,
+        )
         .await
         .unwrap();
     let completed = runtime
@@ -13238,14 +14597,30 @@ async fn completed_wait_resume_settlement_accepts_exact_reconciliation_revision(
     bind_autonomous_work_queue_tick(&mut wait_message, &work_item, "queued_available");
     wait_message.turn_id = Some("turn-wait-before-completion".into());
     let wait_message = runtime.enqueue(wait_message).await.unwrap();
-    assert!(matches!(
-        scheduler_executor::SchedulerDecisionExecutor::new(&runtime)
-            .poll()
-            .await
-            .unwrap(),
-        scheduler_executor::RunLoopPoll::Message(_)
-    ));
-    append_running_rejoin_task(&runtime, "task-complete-after-wait", &work_item.id);
+    let scheduled = match scheduler_executor::SchedulerDecisionExecutor::new(&runtime)
+        .poll()
+        .await
+        .unwrap()
+    {
+        scheduler_executor::RunLoopPoll::Message(scheduled) => scheduled,
+        _ => panic!("fixture source must be claimed"),
+    };
+    assert_eq!(scheduled.message.id, wait_message.id);
+    let wait_message = scheduled.message.clone();
+    runtime
+        .begin_dispatch_turn(
+            &scheduled.message,
+            None,
+            None,
+            scheduled
+                .dispatch_plan
+                .execution_admission_provenance
+                .clone(),
+            &scheduled.dispatch_plan.prior_closure,
+        )
+        .await
+        .unwrap();
+    append_running_rejoin_task(&runtime, "task-complete-after-wait", &work_item.id).await;
     let registration = runtime
         .register_wait_for(
             "default",
@@ -13258,7 +14633,7 @@ async fn completed_wait_resume_settlement_accepts_exact_reconciliation_revision(
         .await
         .unwrap();
     finish_claimed_test_run(&runtime).await;
-    let wait_terminal = terminal_transition(&wait_message, Some(&work_item.id));
+    let wait_terminal = terminal_transition_from_started_turn(&runtime, &wait_message);
     runtime
         .commit_queue_terminal_settlement(
             QueueEntryRecord {
@@ -13275,13 +14650,15 @@ async fn completed_wait_resume_settlement_accepts_exact_reconciliation_revision(
         )
         .await
         .unwrap();
+    drop(scheduled);
 
     append_completed_rejoin_task(
         &runtime,
         "task-complete-after-wait",
         &work_item.id,
         "turn-wait-before-completion",
-    );
+    )
+    .await;
     let mut resume = task_result_message("task-complete-after-wait").with_admission(
         MessageDeliverySurface::TaskRejoin,
         AdmissionContext::RuntimeOwned,
@@ -13304,6 +14681,7 @@ async fn completed_wait_resume_settlement_accepts_exact_reconciliation_revision(
         panic!("completed task result should be claimed");
     };
     assert_eq!(scheduled.message.id, resume.id);
+    let resume = scheduled.message.clone();
     let activation_id = scheduler_executor::canonical_activation_id(&resume.id);
     let claimed = runtime
         .inner
@@ -13340,14 +14718,15 @@ async fn completed_wait_resume_settlement_accepts_exact_reconciliation_revision(
         .await
         .unwrap();
     runtime
-        .begin_interactive_turn_with_provenance(
-            Some(&resume),
+        .begin_dispatch_turn(
+            &resume,
             None,
             None,
             scheduled
                 .dispatch_plan
                 .execution_admission_provenance
                 .clone(),
+            &scheduled.dispatch_plan.prior_closure,
         )
         .await
         .unwrap();
@@ -13419,6 +14798,12 @@ async fn completed_wait_resume_settlement_accepts_exact_reconciliation_revision(
 
 #[tokio::test]
 async fn completed_production_settlement_interrupts_mismatched_completion_execution() {
+    use crate::runtime::resident_work::{WorkCaptureRequest, WorkFamily, WorkKey};
+    use crate::runtime_db::{
+        transitions::{PostCommitEffects, TransitionCommit},
+        work_snapshot::{prepare_work_write_tx, register_work_writes_tx, WorkDomainLoadRequest},
+    };
+
     let dir = tempdir().unwrap();
     let workspace = tempdir().unwrap();
     let runtime = RuntimeHandle::new(
@@ -13467,9 +14852,21 @@ async fn completed_production_settlement_interrupts_mismatched_completion_execut
         .poll()
         .await
         .unwrap();
-    assert!(matches!(poll, scheduler_executor::RunLoopPoll::Message(_)));
+    let scheduler_executor::RunLoopPoll::Message(scheduled) = poll else {
+        panic!("fixture source must be claimed");
+    };
+    assert_eq!(scheduled.message.id, message.id);
     runtime
-        .begin_interactive_turn(Some(&message), None, None)
+        .begin_dispatch_turn(
+            &scheduled.message,
+            None,
+            None,
+            scheduled
+                .dispatch_plan
+                .execution_admission_provenance
+                .clone(),
+            &scheduled.dispatch_plan.prior_closure,
+        )
         .await
         .unwrap();
     runtime
@@ -13495,25 +14892,51 @@ async fn completed_production_settlement_interrupts_mismatched_completion_execut
         .as_mut()
         .expect("completion intent")
         .source_activation_id = Some("activation:message:foreign-execution".into());
-    let commit = runtime
-        .inner
-        .runtime_db
-        .transitions()
-        .commit_work_item(&crate::runtime_db::transitions::WorkItemTransitionCommand {
-            agent_id: mismatched.agent_id.clone(),
-            mutation: crate::runtime_db::transitions::WorkItemMutation::Update {
-                record: mismatched,
-                expected_revision: completed.revision,
-            },
-            agent_state: None,
-            brief_evidence: Vec::new(),
-            audit_events: Vec::new(),
-            index_changes: Vec::new(),
-            notify_scheduler: false,
-            fault: None,
+    let mut owner = runtime.begin_mutation().await.unwrap();
+    let keys = std::collections::BTreeSet::from([WorkKey::new(WorkFamily::Work, &mismatched.id)]);
+    let (_, record_limit, byte_limit) = owner.context_input_evidence_policy().unwrap();
+    let request = WorkDomainLoadRequest {
+        capture: WorkCaptureRequest::current(),
+        record_limit,
+        byte_limit,
+    };
+    let final_state = owner.state.clone();
+    // Preserve the intentional completion-source mismatch until the original
+    // terminal reducer sees it, while acknowledging the fixture's Work write.
+    owner
+        .commit_transition(crate::ids::audit_event_id(), |scope| {
+            runtime.inner.runtime_db.transaction(|tx| {
+                let proof = prepare_work_write_tx(tx, scope, &keys)?;
+                anyhow::ensure!(
+                    crate::runtime_db::repositories::update_expected_work_item_tx(
+                        tx,
+                        &mismatched,
+                        completed.revision,
+                    )?,
+                    "fixture's original completion revision changed"
+                );
+                let facts = register_work_writes_tx(
+                    tx,
+                    &proof,
+                    &keys,
+                    &Default::default(),
+                    &final_state,
+                    &request,
+                )?;
+                Ok(TransitionCommit {
+                    applied: true,
+                    effects: Box::new(PostCommitEffects {
+                        work_delta: Some(facts.delta),
+                        work_delta_requires_prepared_domain: true,
+                        ..Default::default()
+                    }),
+                    ..Default::default()
+                })
+            })
         })
+        .await
         .unwrap();
-    runtime.apply_transition_commit(commit).await;
+    drop(owner);
 
     finish_claimed_test_run(&runtime).await;
     let terminal = terminal_transition_from_started_turn(&runtime, &message);
@@ -13623,9 +15046,21 @@ async fn completed_production_settlement_interrupts_without_result_report() {
         .poll()
         .await
         .unwrap();
-    assert!(matches!(poll, scheduler_executor::RunLoopPoll::Message(_)));
+    let scheduler_executor::RunLoopPoll::Message(scheduled) = poll else {
+        panic!("fixture source must be claimed");
+    };
+    assert_eq!(scheduled.message.id, message.id);
     runtime
-        .begin_interactive_turn(Some(&message), None, None)
+        .begin_dispatch_turn(
+            &scheduled.message,
+            None,
+            None,
+            scheduled
+                .dispatch_plan
+                .execution_admission_provenance
+                .clone(),
+            &scheduled.dispatch_plan.prior_closure,
+        )
         .await
         .unwrap();
     runtime
@@ -13719,7 +15154,10 @@ async fn production_protocol_settlement_fault_rolls_back_queue_and_protocol_fact
             .poll()
             .await
             .unwrap();
-        assert!(matches!(poll, scheduler_executor::RunLoopPoll::Message(_)));
+        let scheduler_executor::RunLoopPoll::Message(scheduled) = poll else {
+            panic!("fixture source must be claimed");
+        };
+        let terminal_source = start_protocol_settlement_fixture(&runtime, &scheduled).await;
 
         let claimed_execution = runtime
             .inner
@@ -13729,7 +15167,7 @@ async fn production_protocol_settlement_fault_rolls_back_queue_and_protocol_fact
             .unwrap()
             .expect("claim should initialize the execution partition");
         finish_claimed_test_run(&runtime).await;
-        let terminal = terminal_transition(&message, Some(&work_item.id));
+        let terminal = terminal_transition_from_started_turn(&runtime, &terminal_source);
         runtime.inject_next_transition_fault(fault);
 
         let error = runtime
@@ -14126,7 +15564,7 @@ async fn run_loop_idle_sleep_rechecks_queue_before_transition() {
             },
         ));
         guard.state.pending = guard.queue.len();
-        runtime.storage().write_agent(&guard.state).unwrap();
+        guard.persist_state(&runtime.inner.storage).unwrap();
     }
 
     let transition = scheduler_executor::SchedulerDecisionExecutor::new(&runtime)
@@ -14167,7 +15605,7 @@ async fn run_loop_idle_sleep_refreshes_sleeping_until_when_already_asleep() {
         let mut guard = runtime.inner.agent.lock().await;
         guard.state.status = AgentStatus::Asleep;
         guard.state.sleeping_until = Some(previous_deadline);
-        runtime.storage().write_agent(&guard.state).unwrap();
+        guard.persist_state(&runtime.inner.storage).unwrap();
     }
 
     let transition = scheduler_executor::SchedulerDecisionExecutor::new(&runtime)
@@ -14213,7 +15651,7 @@ async fn already_asleep_lifecycle_sleep_refresh_skips_posture_and_state_changed_
         let mut guard = runtime.inner.agent.lock().await;
         guard.state.status = AgentStatus::Asleep;
         guard.state.sleeping_until = Some(previous_deadline);
-        runtime.storage().write_agent(&guard.state).unwrap();
+        guard.persist_state(&runtime.inner.storage).unwrap();
     }
 
     runtime.transition_to_sleep(Some(5_000)).await.unwrap();
@@ -14253,7 +15691,7 @@ async fn awake_lifecycle_sleep_records_posture_and_state_changed_audits() {
     {
         let mut guard = runtime.inner.agent.lock().await;
         guard.state.status = AgentStatus::AwakeIdle;
-        runtime.storage().write_agent(&guard.state).unwrap();
+        guard.persist_state(&runtime.inner.storage).unwrap();
     }
 
     runtime.transition_to_sleep(Some(60_000)).await.unwrap();
@@ -14295,7 +15733,7 @@ async fn run_loop_idle_sleep_preserves_existing_timed_sleep_when_no_recheck() {
         let mut guard = runtime.inner.agent.lock().await;
         guard.state.status = AgentStatus::Asleep;
         guard.state.sleeping_until = Some(existing_deadline);
-        runtime.storage().write_agent(&guard.state).unwrap();
+        guard.persist_state(&runtime.inner.storage).unwrap();
     }
 
     let transition = scheduler_executor::SchedulerDecisionExecutor::new(&runtime)
@@ -14334,10 +15772,10 @@ async fn explicit_sleep_transition_records_scheduler_owned_posture_decision() {
     )
     .unwrap();
     {
-        let mut guard = runtime.inner.agent.lock().await;
+        let mut guard = runtime.begin_mutation().await.unwrap();
         guard.state.status = AgentStatus::AwakeRunning;
         guard.state.current_run_id = Some("run-1".into());
-        runtime.storage().write_agent(&guard.state).unwrap();
+        guard.persist_state(&runtime.inner.storage).await.unwrap();
     }
 
     runtime.transition_to_sleep(None).await.unwrap();
@@ -14375,11 +15813,11 @@ async fn indefinite_sleep_with_current_runnable_work_item_emits_continuation_tic
     .unwrap();
     let work_item_id = seed_bound_work_item(&runtime, WorkItemState::Open, None, None).await;
     {
-        let mut guard = runtime.inner.agent.lock().await;
+        let mut guard = runtime.begin_mutation().await.unwrap();
         guard.state.status = AgentStatus::AwakeRunning;
         guard.state.current_run_id = Some("run-1".into());
         guard.state.current_work_item_id = Some(work_item_id.clone());
-        guard.persist_state(&runtime.inner.storage).unwrap();
+        guard.persist_state(&runtime.inner.storage).await.unwrap();
     }
 
     runtime.transition_to_sleep(None).await.unwrap();
@@ -14441,11 +15879,11 @@ async fn lifecycle_sleep_work_queue_override_preserves_active_run() {
     .unwrap();
     let work_item_id = seed_bound_work_item(&runtime, WorkItemState::Open, None, None).await;
     {
-        let mut guard = runtime.inner.agent.lock().await;
+        let mut guard = runtime.begin_mutation().await.unwrap();
         guard.state.status = AgentStatus::AwakeRunning;
         guard.state.current_run_id = Some("run-authoritative-fence".into());
         guard.state.current_work_item_id = Some(work_item_id.clone());
-        guard.persist_state(&runtime.inner.storage).unwrap();
+        guard.persist_state(&runtime.inner.storage).await.unwrap();
     }
     runtime.transition_to_sleep(None).await.unwrap();
 
@@ -14494,10 +15932,10 @@ async fn indefinite_sleep_with_queued_runnable_work_item_emits_selection_tick() 
         .await
         .unwrap();
     {
-        let mut guard = runtime.inner.agent.lock().await;
+        let mut guard = runtime.begin_mutation().await.unwrap();
         guard.state.status = AgentStatus::AwakeRunning;
         guard.state.current_run_id = Some("run-1".into());
-        guard.persist_state(&runtime.inner.storage).unwrap();
+        guard.persist_state(&runtime.inner.storage).await.unwrap();
     }
 
     runtime.transition_to_sleep(None).await.unwrap();
@@ -14560,7 +15998,8 @@ async fn idle_tick_ignores_read_model_runnable_when_execution_is_paused() {
             generation: work_item.revision.max(1),
             reason: "canonical pause".into(),
         },
-    );
+    )
+    .await;
     {
         let mut guard = runtime.inner.agent.lock().await;
         guard.state.status = AgentStatus::AwakeIdle;
@@ -14614,7 +16053,8 @@ async fn restart_sleep_ignores_read_model_runnable_when_execution_is_paused() {
             generation: work_item.revision.max(1),
             reason: "canonical pause survives restart".into(),
         },
-    );
+    )
+    .await;
     drop(runtime);
 
     let reopened = RuntimeHandle::new(
@@ -14630,12 +16070,14 @@ async fn restart_sleep_ignores_read_model_runnable_when_execution_is_paused() {
         context_config(),
     )
     .unwrap();
-    {
-        let mut guard = reopened.inner.agent.lock().await;
-        guard.state.status = AgentStatus::AwakeRunning;
-        guard.state.current_run_id = Some("run-after-restart".into());
-        guard.persist_state(&reopened.inner.storage).unwrap();
-    }
+    reopened
+        .update_agent_state(|state| {
+            state.status = AgentStatus::AwakeRunning;
+            state.current_run_id = Some("run-after-restart".into());
+            Ok(())
+        })
+        .await
+        .unwrap();
 
     reopened.transition_to_sleep(None).await.unwrap();
 
@@ -14679,7 +16121,8 @@ async fn idle_tick_ignores_runnable_execution_with_stale_source_revision() {
             generation: work_item.revision.max(1),
             recovery_ref: None,
         },
-    );
+    )
+    .await;
     {
         let mut guard = runtime.inner.agent.lock().await;
         guard.state.status = AgentStatus::AwakeIdle;
@@ -14724,17 +16167,41 @@ async fn indefinite_sleep_with_waiting_operator_or_task_work_item_can_sleep() {
                 .await
                 .unwrap();
         } else {
-            runtime
-                .storage()
-                .append_wait_condition(&task_wait_condition_for_work_item("task-wait", &work.id))
-                .unwrap();
+            let commit = {
+                let mut mutation = runtime.begin_mutation().await.unwrap();
+                mutation
+                    .commit_wait_transition(
+                        crate::ids::audit_event_id(),
+                        crate::runtime_db::transitions::WaitTransitionCommand {
+                            agent_id: "default".into(),
+                            work_items: Vec::new(),
+                            expected_wait_conditions: Vec::new(),
+                            wait_conditions: vec![task_wait_condition_for_work_item(
+                                "task-wait",
+                                &work.id,
+                            )],
+                            timer_wake: None,
+                            task_result_admission: None,
+                            agent_state: None,
+                            audit_events: Vec::new(),
+                            index_changes: Vec::new(),
+                            notify_scheduler: false,
+                            fault: None,
+                        },
+                        Default::default(),
+                        None,
+                    )
+                    .await
+                    .unwrap()
+            };
+            runtime.apply_transition_commit(commit).await;
         }
         {
-            let mut guard = runtime.inner.agent.lock().await;
+            let mut guard = runtime.begin_mutation().await.unwrap();
             guard.state.status = AgentStatus::AwakeRunning;
             guard.state.current_run_id = Some("run-1".into());
             guard.state.current_work_item_id = Some(work.id.clone());
-            runtime.storage().write_agent(&guard.state).unwrap();
+            guard.persist_state(&runtime.inner.storage).await.unwrap();
         }
 
         runtime.transition_to_sleep(None).await.unwrap();
@@ -14782,10 +16249,10 @@ async fn wait_for_task_result_marks_work_item_waiting_and_allows_sleep() {
         guard.state.status = AgentStatus::AwakeRunning;
         guard.state.current_run_id = Some("run-1".into());
         guard.state.current_work_item_id = Some(work.id.clone());
-        runtime.storage().write_agent(&guard.state).unwrap();
+        guard.persist_state(&runtime.inner.storage).unwrap();
     }
 
-    append_running_rejoin_task(&runtime, "task-1", &work.id);
+    append_running_rejoin_task(&runtime, "task-1", &work.id).await;
     runtime
         .register_wait_for(
             "default",
@@ -14914,7 +16381,7 @@ async fn prepared_task_wait_rejects_task_completion_race_without_registering_wai
         .await
         .unwrap();
     runtime.pick_work_item(work_item.id.clone()).await.unwrap();
-    append_running_rejoin_task(&runtime, "task-wait-race", &work_item.id);
+    append_running_rejoin_task(&runtime, "task-wait-race", &work_item.id).await;
 
     let prepared = match runtime
         .prepare_wait_for_outcome(
@@ -15063,7 +16530,7 @@ async fn canonical_task_result_claim_resolves_wait_and_clears_matching_blocker()
         .create_work_item("wait for task".into(), None, None, Vec::new())
         .await
         .unwrap();
-    append_running_rejoin_task(&runtime, "task-1", &work.id);
+    append_running_rejoin_task(&runtime, "task-1", &work.id).await;
     let registration = runtime
         .register_wait_for(
             "default",
@@ -15076,7 +16543,7 @@ async fn canonical_task_result_claim_resolves_wait_and_clears_matching_blocker()
         .await
         .unwrap();
     let work = runtime.latest_work_item(&work.id).await.unwrap().unwrap();
-    persist_waiting_work_execution(&runtime, &work, &registration.condition.id);
+    persist_waiting_work_execution(&runtime, &work, &registration.condition.id).await;
 
     let mut message = task_result_message("task-1").with_admission(
         MessageDeliverySurface::TaskRejoin,
@@ -15116,8 +16583,12 @@ async fn canonical_task_result_claim_resolves_wait_and_clears_matching_blocker()
         .find(|condition| condition.work_item_id.as_deref() == Some(work.id.as_str()))
         .expect("triggered task wait");
     assert_eq!(triggered.status, WaitConditionStatus::Triggered);
+    let observed_work = runtime
+        .capture_work_read(&crate::runtime::work_reads::live_work_request())
+        .await
+        .unwrap();
     let planned_wait_resolution = runtime
-        .wait_resolution_transition_for_message(&message)
+        .wait_resolution_transition_for_message(&message, &observed_work.work)
         .unwrap()
         .expect("triggered task wait should plan claim-time resolution");
     assert!(
@@ -15175,7 +16646,7 @@ async fn resolved_task_result_uses_canonical_wait() {
         .create_work_item("resume resolved task wait".into(), None, None, Vec::new())
         .await
         .unwrap();
-    append_running_rejoin_task(&runtime, "task-unified-wait", &work.id);
+    append_running_rejoin_task(&runtime, "task-unified-wait", &work.id).await;
     let registration = runtime
         .register_wait_for(
             "default",
@@ -15208,14 +16679,13 @@ async fn resolved_task_result_uses_canonical_wait() {
     resolved.updated_at = now;
     resolved.resolved_at = Some(now);
     resolved.trigger_message_id = Some(result.id.clone());
-    runtime.storage().append_wait_condition(&resolved).unwrap();
     let resumed = WorkItemRecord {
         revision: waiting.revision + 1,
         blocked_by: None,
         updated_at: now,
         ..waiting
     };
-    runtime.storage().append_work_item(&resumed).unwrap();
+    publish_resolved_task_wait_fixture(&runtime, &resolved, Some(&resumed)).await;
 
     let generation = resumed.revision - 1;
     let mut execution = crate::domain::execution_protocol::ExecutionProtocolState::empty("default");
@@ -15231,18 +16701,15 @@ async fn resolved_task_result_uses_canonical_wait() {
             },
         },
     );
-    runtime
-        .inner
-        .runtime_db
-        .transaction(|tx| crate::runtime_db::transitions::persist_state_tx(tx, &execution))
-        .unwrap();
+    publish_execution_fixture(&runtime, &execution).await;
 
     append_completed_rejoin_task(
         &runtime,
         "task-unified-wait",
         &resumed.id,
         "turn-unified-wait",
-    );
+    )
+    .await;
     assert!(!runtime
         .storage()
         .latest_task_record("task-unified-wait")
@@ -15519,7 +16986,7 @@ async fn control_stop_clears_autonomous_sleep_and_wake_posture() {
             causation_id: None,
             created_at: Utc::now(),
         });
-        runtime.storage().write_agent(&guard.state).unwrap();
+        guard.persist_state(&runtime.inner.storage).unwrap();
     }
 
     runtime
@@ -15667,7 +17134,7 @@ async fn sleep_wake_task_ignores_stale_sleeping_until() {
     {
         let mut guard = runtime.inner.agent.lock().await;
         guard.state.sleeping_until = Some(clock.now() + chrono::Duration::seconds(60));
-        runtime.storage().write_agent(&guard.state).unwrap();
+        guard.persist_state(&runtime.inner.storage).unwrap();
     }
     advance_lifecycle_time(&clock, std::time::Duration::from_millis(25)).await;
 
@@ -15705,7 +17172,10 @@ async fn enqueue_retries_stale_agent_state_from_safe_persisted_baseline() {
 
     let mut concurrent_state = runtime.storage().read_agent().unwrap().unwrap();
     concurrent_state.total_input_tokens = 41;
-    runtime.storage().write_agent(&concurrent_state).unwrap();
+    runtime
+        .storage()
+        .write_agent_for_fixture(&concurrent_state)
+        .unwrap();
 
     let message = MessageEnvelope::new(
         "default",
@@ -15778,7 +17248,10 @@ async fn enqueue_stale_agent_state_fails_closed_when_local_state_is_dirty() {
 
     let mut concurrent_state = runtime.storage().read_agent().unwrap().unwrap();
     concurrent_state.total_input_tokens = 17;
-    runtime.storage().write_agent(&concurrent_state).unwrap();
+    runtime
+        .storage()
+        .write_agent_for_fixture(&concurrent_state)
+        .unwrap();
     {
         let mut guard = runtime.inner.agent.lock().await;
         guard.state.last_wake_reason = Some("unpersisted-local-change".into());
@@ -15858,7 +17331,10 @@ async fn enqueue_stale_agent_state_fails_closed_when_pending_diverges_from_queue
 
     let mut concurrent_state = runtime.storage().read_agent().unwrap().unwrap();
     concurrent_state.pending = 1;
-    runtime.storage().write_agent(&concurrent_state).unwrap();
+    runtime
+        .storage()
+        .write_agent_for_fixture(&concurrent_state)
+        .unwrap();
 
     let message = MessageEnvelope::new(
         "default",
@@ -16268,10 +17744,10 @@ async fn provider_recovery_claims_waiting_work_item_without_clearing_wait() {
             .map(|item| item.scheduling_state),
         Some(WorkItemSchedulingState::WaitingExternal)
     );
-    persist_waiting_work_execution(&runtime, &waiting_work_item, &registration.condition.id);
+    persist_waiting_work_execution(&runtime, &waiting_work_item, &registration.condition.id).await;
 
     let recovery = runtime
-        .enqueue(provider_recovery_message(&runtime, &work_item.id))
+        .enqueue(provider_recovery_message(&runtime, &work_item.id).await)
         .await
         .unwrap();
     let poll = scheduler_executor::SchedulerDecisionExecutor::new(&runtime)
@@ -16282,6 +17758,7 @@ async fn provider_recovery_claims_waiting_work_item_without_clearing_wait() {
         panic!("trusted provider recovery should claim the waiting WorkItem");
     };
     assert_eq!(scheduled.message.id, recovery.id);
+    let terminal_source = start_protocol_settlement_fixture(&runtime, &scheduled).await;
 
     let activation_id = scheduler_executor::canonical_activation_id(&recovery.id);
     let execution = runtime
@@ -16333,7 +17810,7 @@ async fn provider_recovery_claims_waiting_work_item_without_clearing_wait() {
     );
 
     finish_claimed_test_run(&runtime).await;
-    let terminal = terminal_transition(&recovery, Some(&work_item.id));
+    let terminal = terminal_transition_from_started_turn(&runtime, &terminal_source);
     runtime
         .commit_queue_terminal_settlement(
             QueueEntryRecord {
@@ -16421,10 +17898,10 @@ async fn provider_recovery_claims_execution_waiting_projection_drift() {
             .map(|item| item.scheduling_state),
         Some(WorkItemSchedulingState::Runnable)
     );
-    persist_waiting_work_execution(&runtime, &work_item, "wait-stale-projection");
+    persist_waiting_work_execution(&runtime, &work_item, "wait-stale-projection").await;
 
     let recovery = runtime
-        .enqueue(provider_recovery_message(&runtime, &work_item.id))
+        .enqueue(provider_recovery_message(&runtime, &work_item.id).await)
         .await
         .unwrap();
     let poll = scheduler_executor::SchedulerDecisionExecutor::new(&runtime)
@@ -16491,9 +17968,9 @@ async fn malformed_provider_recovery_cannot_claim_waiting_work_item() {
         .await
         .unwrap()
         .unwrap();
-    persist_waiting_work_execution(&runtime, &waiting_work_item, &registration.condition.id);
+    persist_waiting_work_execution(&runtime, &waiting_work_item, &registration.condition.id).await;
 
-    let mut malformed = provider_recovery_message(&runtime, &work_item.id);
+    let mut malformed = provider_recovery_message(&runtime, &work_item.id).await;
     malformed.metadata = None;
     let malformed = runtime.enqueue(malformed).await.unwrap();
     assert!(matches!(
@@ -16581,9 +18058,9 @@ async fn provider_recovery_rejects_missing_durable_source() {
         .await
         .unwrap()
         .unwrap();
-    persist_waiting_work_execution(&runtime, &waiting_work_item, &registration.condition.id);
+    persist_waiting_work_execution(&runtime, &waiting_work_item, &registration.condition.id).await;
 
-    let mut forged = provider_recovery_message(&runtime, &work_item.id);
+    let mut forged = provider_recovery_message(&runtime, &work_item.id).await;
     forged.causation_id = Some("message-missing-provider-failure".into());
     forged.source_refs.insert(
         "source_message_id".into(),
@@ -16654,19 +18131,22 @@ async fn triggered_wait_survives_provider_recovery_settlement_and_resumes() {
         .await
         .unwrap()
         .unwrap();
-    persist_waiting_work_execution(&runtime, &waiting_work_item, &registration.condition.id);
+    persist_waiting_work_execution(&runtime, &waiting_work_item, &registration.condition.id).await;
 
     let recovery = runtime
-        .enqueue(provider_recovery_message(&runtime, &work_item.id))
+        .enqueue(provider_recovery_message(&runtime, &work_item.id).await)
         .await
         .unwrap();
-    assert!(matches!(
+    let scheduler_executor::RunLoopPoll::Message(recovery_scheduled) =
         scheduler_executor::SchedulerDecisionExecutor::new(&runtime)
             .poll()
             .await
-            .unwrap(),
-        scheduler_executor::RunLoopPoll::Message(_)
-    ));
+            .unwrap()
+    else {
+        panic!("provider recovery source must be claimed");
+    };
+    assert_eq!(recovery_scheduled.message.id, recovery.id);
+    let terminal_source = start_protocol_settlement_fixture(&runtime, &recovery_scheduled).await;
     let wake = runtime
         .enqueue(trusted_operator_prompt(
             Some(&work_item.id),
@@ -16686,7 +18166,7 @@ async fn triggered_wait_survives_provider_recovery_settlement_and_resumes() {
     );
 
     finish_claimed_test_run(&runtime).await;
-    let terminal = terminal_transition(&recovery, Some(&work_item.id));
+    let terminal = terminal_transition_from_started_turn(&runtime, &terminal_source);
     runtime
         .commit_queue_terminal_settlement(
             QueueEntryRecord {
@@ -16703,6 +18183,7 @@ async fn triggered_wait_survives_provider_recovery_settlement_and_resumes() {
         )
         .await
         .unwrap();
+    drop(recovery_scheduled);
     let settled = runtime
         .inner
         .runtime_db
@@ -16784,10 +18265,10 @@ async fn provider_recovery_cannot_claim_blocked_work_item() {
             .map(|item| item.scheduling_state),
         Some(WorkItemSchedulingState::Blocked)
     );
-    persist_waiting_work_execution(&runtime, &blocked, "wait-blocked-boundary");
+    persist_waiting_work_execution(&runtime, &blocked, "wait-blocked-boundary").await;
 
     let recovery = runtime
-        .enqueue(provider_recovery_message(&runtime, &work_item.id))
+        .enqueue(provider_recovery_message(&runtime, &work_item.id).await)
         .await
         .unwrap();
     assert!(matches!(
@@ -16847,14 +18328,10 @@ async fn provider_recovery_cannot_claim_paused_execution() {
             },
         },
     );
-    runtime
-        .inner
-        .runtime_db
-        .transaction(|tx| crate::runtime_db::transitions::persist_state_tx(tx, &execution))
-        .unwrap();
+    publish_execution_fixture(&runtime, &execution).await;
 
     let recovery = runtime
-        .enqueue(provider_recovery_message(&runtime, &work_item.id))
+        .enqueue(provider_recovery_message(&runtime, &work_item.id).await)
         .await
         .unwrap();
     assert!(matches!(
@@ -17415,11 +18892,7 @@ async fn canonical_stale_correlated_wait_is_dropped_without_blocking_next_messag
             },
         },
     );
-    runtime
-        .inner
-        .runtime_db
-        .transaction(|tx| crate::runtime_db::transitions::persist_state_tx(tx, &execution))
-        .unwrap();
+    publish_execution_fixture(&runtime, &execution).await;
 
     let correlated_message = |text: &str, wait_id: &str, generation: u64, priority: Priority| {
         let mut message = MessageEnvelope::new(
@@ -17552,11 +19025,7 @@ async fn scheduler_recovery_reconciles_stale_continuation_yield_without_legacy_p
         )]),
         outcomes: Default::default(),
     };
-    runtime
-        .inner
-        .runtime_db
-        .transaction(|tx| crate::runtime_db::transitions::persist_state_tx(tx, &execution))
-        .unwrap();
+    publish_execution_fixture(&runtime, &execution).await;
 
     let report =
         scheduler_recovery_report(&runtime.inner.storage, &runtime.inner.runtime_db, "default")
@@ -17577,12 +19046,13 @@ async fn scheduler_recovery_reconciles_stale_continuation_yield_without_legacy_p
         Some(stale.id.as_str())
     );
 
-    let (changed, backup) = apply_scheduler_recovery_plan_with_backup_policy(
+    let (changed, backup) = apply_offline_scheduler_recovery_fixture(
         &runtime.inner.storage,
         &runtime.inner.runtime_db,
         "default",
         &report,
         SchedulerRecoveryBackupPolicy::SkipApproved,
+        None,
     )
     .unwrap();
     assert_eq!(changed, 1);
@@ -18610,7 +20080,7 @@ async fn terminal_wait_leaves_late_interjection_for_next_activation() {
         )
         .await
         .unwrap();
-    append_running_rejoin_task(&runtime, "task-terminal-wait", &work_item.id);
+    append_running_rejoin_task(&runtime, "task-terminal-wait", &work_item.id).await;
     let registration = runtime
         .register_wait_for(
             "default",
@@ -18627,7 +20097,7 @@ async fn terminal_wait_leaves_late_interjection_for_next_activation() {
         .await
         .unwrap()
         .unwrap();
-    persist_waiting_work_execution(&runtime, &work_item, &registration.condition.id);
+    persist_waiting_work_execution(&runtime, &work_item, &registration.condition.id).await;
 
     let mut task_result = MessageEnvelope::new(
         "default",
@@ -18817,7 +20287,16 @@ async fn operator_interjection_preserves_unified_lifecycle_attempt() {
         panic!("lifecycle operator prompt should be claimed");
     };
     runtime
-        .begin_interactive_turn(Some(&scheduled.message), None, None)
+        .begin_dispatch_turn(
+            &scheduled.message,
+            None,
+            None,
+            scheduled
+                .dispatch_plan
+                .execution_admission_provenance
+                .clone(),
+            &scheduled.dispatch_plan.prior_closure,
+        )
         .await
         .unwrap();
     let execution_before = runtime
@@ -19147,7 +20626,7 @@ async fn operator_interjection_distinguishes_closed_attempt_from_source_mismatch
     )
     .unwrap();
     append_default_host_identity(&closed_runtime);
-    let (_message, activation_id) =
+    let (_message, activation_id, _closed_scheduled) =
         begin_canonical_operator_turn(&closed_runtime, "start closed-attempt turn").await;
     let execution = closed_runtime
         .inner
@@ -19170,11 +20649,7 @@ async fn operator_interjection_distinguishes_closed_attempt_from_source_mismatch
         },
     )
     .unwrap();
-    closed_runtime
-        .inner
-        .runtime_db
-        .transaction(|tx| crate::runtime_db::transitions::persist_state_tx(tx, &settled.state))
-        .unwrap();
+    publish_execution_fixture(&closed_runtime, &settled.state).await;
     let mut interjection = trusted_operator_prompt(None, "closed attempt input");
     interjection.priority = Priority::Interject;
     let interjection = closed_runtime.enqueue(interjection).await.unwrap();
@@ -19213,25 +20688,25 @@ async fn operator_interjection_distinguishes_closed_attempt_from_source_mismatch
     )
     .unwrap();
     append_default_host_identity(&mismatch_runtime);
-    let (_message, activation_id) =
+    let (_message, _activation_id, _mismatch_scheduled) =
         begin_canonical_operator_turn(&mismatch_runtime, "start source-mismatch turn").await;
-    let mut execution = mismatch_runtime
-        .inner
-        .runtime_db
-        .transitions()
-        .load_execution_protocol_state_if_initialized("default")
-        .unwrap()
+    let unrelated = mismatch_runtime
+        .enqueue(trusted_operator_prompt(None, "different source"))
+        .await
         .unwrap();
-    execution
-        .attempts
-        .get_mut(&activation_id)
-        .unwrap()
-        .source_message_id = Some("different-source-message".into());
-    mismatch_runtime
-        .inner
-        .runtime_db
-        .transaction(|tx| crate::runtime_db::transitions::persist_state_tx(tx, &execution))
-        .unwrap();
+    {
+        let mut mutation = mismatch_runtime.begin_mutation().await.unwrap();
+        mutation
+            .state
+            .current_execution_binding
+            .as_mut()
+            .unwrap()
+            .source_message_id = unrelated.id;
+        mutation
+            .persist_state(&mismatch_runtime.inner.storage)
+            .await
+            .unwrap();
+    }
     let mut interjection = trusted_operator_prompt(None, "source mismatch input");
     interjection.priority = Priority::Interject;
     let interjection = mismatch_runtime.enqueue(interjection).await.unwrap();
@@ -19286,7 +20761,16 @@ async fn operator_interjection_rejects_canonical_activation_without_provenance()
     };
     assert_eq!(scheduled.message.id, message.id);
     runtime
-        .begin_interactive_turn(Some(&scheduled.message), None, None)
+        .begin_dispatch_turn(
+            &scheduled.message,
+            None,
+            None,
+            scheduled
+                .dispatch_plan
+                .execution_admission_provenance
+                .clone(),
+            &scheduled.dispatch_plan.prior_closure,
+        )
         .await
         .unwrap();
     {
@@ -19494,6 +20978,7 @@ async fn task_status_routes_only_through_task_state_reduction() {
         "task_detail": { "wait_policy": "blocking" },
     }));
 
+    let message = persist_runtime_test_source(&runtime, message).await;
     runtime
         .process_message(message, closure_decision(ClosureOutcome::Completed, None))
         .await
@@ -19547,7 +21032,7 @@ fn task_rejoin_fence_requires_live_persisted_contract() {
     let fence = tasks::task_rejoin_fence(&task).unwrap();
     assert_eq!(fence.obligation_id, task.id);
     assert_eq!(fence.generation, 1);
-    assert_eq!(fence.parent_turn_id, "turn-parent");
+    assert_eq!(fence.source.parent_turn_id(), Some("turn-parent"));
 
     task.detail.as_mut().unwrap()["rejoin_obligation_id"] = serde_json::json!("task-other");
     assert!(tasks::task_rejoin_fence(&task)
@@ -19575,20 +21060,23 @@ async fn unbound_task_result_reduces_without_model_reentry() {
     )
     .unwrap();
     runtime
-        .storage()
-        .append_task(&TaskRecord {
-            id: "task-1".into(),
-            agent_id: "default".into(),
-            kind: TaskKind::ChildAgentTask,
-            status: TaskStatus::Running,
-            created_at: Utc::now(),
-            updated_at: Utc::now(),
-            parent_message_id: None,
-            work_item_id: None,
-            summary: Some("task running".into()),
-            detail: Some(serde_json::json!({ "wait_policy": "blocking" })),
-            recovery: None,
-        })
+        .persist_task_transition(
+            &TaskRecord {
+                id: "task-1".into(),
+                agent_id: "default".into(),
+                kind: TaskKind::ChildAgentTask,
+                status: TaskStatus::Running,
+                created_at: Utc::now(),
+                updated_at: Utc::now(),
+                parent_message_id: None,
+                work_item_id: None,
+                summary: Some("task running".into()),
+                detail: Some(serde_json::json!({ "wait_policy": "blocking" })),
+                recovery: None,
+            },
+            "runtime_state_task_fixture",
+        )
+        .await
         .unwrap();
     let message = MessageEnvelope::new(
         "default",
@@ -19601,6 +21089,10 @@ async fn unbound_task_result_reduces_without_model_reentry() {
         MessageBody::Text {
             text: "task completed".into(),
         },
+    )
+    .with_admission(
+        MessageDeliverySurface::TaskRejoin,
+        AdmissionContext::RuntimeOwned,
     );
     let mut message = message;
     message.task_id = Some("task-1".into());
@@ -19678,7 +21170,7 @@ async fn task_result_records_wait_reconciliation_and_resolves_task_wait_conditio
         .create_work_item("task wait".into(), None, None, Vec::new())
         .await
         .unwrap();
-    append_running_rejoin_task(&runtime, "task-1", &work_item.id);
+    append_running_rejoin_task(&runtime, "task-1", &work_item.id).await;
     let registration = runtime
         .register_wait_for(
             "default",
@@ -19695,7 +21187,7 @@ async fn task_result_records_wait_reconciliation_and_resolves_task_wait_conditio
         .await
         .unwrap()
         .unwrap();
-    persist_waiting_work_execution(&runtime, &work_item, &registration.condition.id);
+    persist_waiting_work_execution(&runtime, &work_item, &registration.condition.id).await;
     let wait_id = registration.condition.id.clone();
 
     let mut message = MessageEnvelope::new(
@@ -19926,50 +21418,38 @@ async fn same_turn_message_does_not_reconcile_wait_condition() {
         context_config(),
     )
     .unwrap();
-    let now = Utc::now();
-    let mut work_item = WorkItemRecord::new("default", "operator wait work", WorkItemState::Open);
-    work_item.id = "work-op-wait".into();
-    runtime.storage().append_work_item(&work_item).unwrap();
-    // Register an operator-input wait condition that was created during turn "turn-seed".
-    let wait = WaitConditionRecord {
-        id: "wait-op-same-turn".into(),
-        agent_id: "default".into(),
-        work_item_id: Some("work-op-wait".into()),
-        status: WaitConditionStatus::Active,
-        kind: WaitConditionKind::Operator,
-        source: None,
-        subject_ref: None,
-        waiting_for: "operator resume".into(),
-        wake_sources: vec![WakeSource::OperatorInput],
-        continuation: None,
-        created_at: now,
-        updated_at: now,
-        expires_at: None,
-        resolved_at: None,
-        cancelled_at: None,
-        turn_id: Some("turn-seed".into()),
-        trigger_message_id: None,
-        triggered_at: None,
-    };
-    runtime.storage().append_wait_condition(&wait).unwrap();
-    persist_waiting_work_execution(&runtime, &work_item, &wait.id);
-
-    // Process an operator message that belongs to the SAME turn that created the
-    // wait condition.  It must NOT reconcile the wait.
-    let mut seed_message = MessageEnvelope::new(
-        "default",
-        MessageKind::OperatorPrompt,
-        MessageOrigin::Operator {
-            actor_id: Some("operator-1".into()),
-            actor_display_name: None,
-        },
-        AuthorityClass::OperatorInstruction,
-        Priority::Interject,
-        MessageBody::Text {
-            text: "seed prompt".into(),
-        },
-    );
+    let work_item = runtime
+        .create_work_item("operator wait work".into(), None, None, Vec::new())
+        .await
+        .unwrap();
+    let mut seed_message = trusted_operator_prompt(Some(&work_item.id), "seed prompt");
+    seed_message.priority = Priority::Interject;
     seed_message.turn_id = Some("turn-seed".into());
+    let seed_message = runtime.enqueue(seed_message).await.unwrap();
+    let scheduler_executor::RunLoopPoll::Message(seed_scheduled) =
+        scheduler_executor::SchedulerDecisionExecutor::new(&runtime)
+            .poll()
+            .await
+            .unwrap()
+    else {
+        panic!("same-turn wait source must be claimed");
+    };
+    assert_eq!(seed_scheduled.message.id, seed_message.id);
+    let seed_message = start_protocol_settlement_fixture(&runtime, &seed_scheduled).await;
+    let registration = runtime
+        .register_wait_for(
+            "default",
+            Some(work_item.id.clone()),
+            WaitForWakeKind::OperatorInput,
+            None,
+            "operator resume".into(),
+            None,
+        )
+        .await
+        .unwrap();
+    assert_eq!(registration.condition.turn_id, seed_message.turn_id);
+
+    // The actual source belongs to the turn that registered this wait.
     runtime
         .record_wait_reconciliation_signals(&seed_message)
         .await
@@ -19985,9 +21465,29 @@ async fn same_turn_message_does_not_reconcile_wait_condition() {
         "same-turn message must not reconcile the wait"
     );
 
+    finish_claimed_test_run(&runtime).await;
+    let terminal = terminal_transition_from_started_turn(&runtime, &seed_message);
+    runtime
+        .commit_queue_terminal_settlement(
+            QueueEntryRecord {
+                message_id: seed_message.id.clone(),
+                agent_id: seed_message.agent_id.clone(),
+                priority: seed_message.priority.clone(),
+                status: QueueEntryStatus::Processed,
+                created_at: seed_message.created_at,
+                updated_at: Utc::now(),
+            },
+            Vec::new(),
+            true,
+            Some(&terminal),
+        )
+        .await
+        .unwrap();
+    drop(seed_scheduled);
+
     // A later operator message with a DIFFERENT turn_id must first consume the
     // canonical wait, then reconcile the legacy wait projection.
-    let mut resume_message = trusted_operator_prompt(Some("work-op-wait"), "resume prompt");
+    let mut resume_message = trusted_operator_prompt(Some(&work_item.id), "resume prompt");
     resume_message.priority = Priority::Interject;
     resume_message.turn_id = Some("turn-resume".into());
     let resume_message = runtime.enqueue(resume_message).await.unwrap();
@@ -20033,26 +21533,31 @@ async fn task_result_persists_reduced_state_when_agent_status_is_not_mutable() {
     )
     .unwrap();
     runtime
-        .storage()
-        .append_task(&TaskRecord {
-            id: "task-1".into(),
-            agent_id: "default".into(),
-            kind: TaskKind::ChildAgentTask,
-            status: TaskStatus::Running,
-            created_at: Utc::now(),
-            updated_at: Utc::now(),
-            parent_message_id: None,
-            work_item_id: None,
-            summary: Some("task running".into()),
-            detail: Some(serde_json::json!({ "wait_policy": "blocking" })),
-            recovery: None,
-        })
+        .persist_task_transition(
+            &TaskRecord {
+                id: "task-1".into(),
+                agent_id: "default".into(),
+                kind: TaskKind::ChildAgentTask,
+                status: TaskStatus::Running,
+                created_at: Utc::now(),
+                updated_at: Utc::now(),
+                parent_message_id: None,
+                work_item_id: None,
+                summary: Some("task running".into()),
+                detail: Some(serde_json::json!({ "wait_policy": "blocking" })),
+                recovery: None,
+            },
+            "runtime_state_task_fixture",
+        )
+        .await
         .unwrap();
-    {
-        let mut guard = runtime.inner.agent.lock().await;
-        guard.state.status = AgentStatus::Stopped;
-        guard.persist_state(&runtime.inner.storage).unwrap();
-    }
+    runtime
+        .update_agent_state(|state| {
+            state.status = AgentStatus::Stopped;
+            Ok(())
+        })
+        .await
+        .unwrap();
 
     let mut message = MessageEnvelope::new(
         "default",
@@ -20065,6 +21570,10 @@ async fn task_result_persists_reduced_state_when_agent_status_is_not_mutable() {
         MessageBody::Text {
             text: "task completed".into(),
         },
+    )
+    .with_admission(
+        MessageDeliverySurface::TaskRejoin,
+        AdmissionContext::RuntimeOwned,
     );
     message.task_id = Some("task-1".into());
     message.metadata = Some(serde_json::json!({
@@ -20074,6 +21583,9 @@ async fn task_result_persists_reduced_state_when_agent_status_is_not_mutable() {
         "task_summary": "task completed",
         "task_detail": { "wait_policy": "blocking" },
     }));
+
+    message.normalize_admission_fields();
+    let message = persist_runtime_test_source(&runtime, message).await;
 
     runtime
         .process_message(message, closure_decision(ClosureOutcome::Completed, None))
@@ -20120,6 +21632,8 @@ async fn unknown_control_action_fails_without_mutating_runtime_state() {
             text: "bogus".into(),
         },
     );
+    let message = persist_runtime_test_source(&runtime, message).await;
+
     let error = runtime
         .process_message(message, closure_decision(ClosureOutcome::Completed, None))
         .await
@@ -20146,11 +21660,13 @@ async fn final_status_rewrite_preserves_stopped_and_asleep_states() {
             context_config(),
         )
         .unwrap();
-        {
-            let mut guard = runtime.inner.agent.lock().await;
-            guard.state.status = status.clone();
-            guard.persist_state(&runtime.inner.storage).unwrap();
-        }
+        runtime
+            .update_agent_state(|state| {
+                state.status = status.clone();
+                Ok(())
+            })
+            .await
+            .unwrap();
 
         let message = MessageEnvelope::new(
             "default",
@@ -20164,6 +21680,8 @@ async fn final_status_rewrite_preserves_stopped_and_asleep_states() {
             MessageBody::Text { text: "".into() },
         );
 
+        let message = persist_runtime_test_source(&runtime, message).await;
+
         runtime
             .process_message(message, closure_decision(ClosureOutcome::Completed, None))
             .await
@@ -20173,8 +21691,8 @@ async fn final_status_rewrite_preserves_stopped_and_asleep_states() {
     }
 }
 
-#[test]
-fn incoming_transcript_entries_preserve_delivery_surface_and_correlation_metadata() {
+#[tokio::test]
+async fn incoming_transcript_entries_preserve_delivery_surface_and_correlation_metadata() {
     let dir = tempdir().unwrap();
     let workspace = tempdir().unwrap();
     let runtime = RuntimeHandle::new(
@@ -20208,7 +21726,10 @@ fn incoming_transcript_entries_preserve_delivery_surface_and_correlation_metadat
     message.correlation_id = Some("corr-1".into());
     message.causation_id = Some("cause-1".into());
 
-    runtime.record_incoming_transcript_entry(&message).unwrap();
+    runtime
+        .record_incoming_transcript_entry(&message)
+        .await
+        .unwrap();
 
     let transcript = runtime.storage().read_recent_transcript(10).unwrap();
     let entry = transcript.last().expect("incoming transcript entry");
@@ -20371,10 +21892,20 @@ async fn reading_discovered_skill_marks_it_active_and_promotes_on_success() {
     )
     .unwrap();
 
-    runtime
-        .begin_interactive_turn_for_test(None, None)
+    let source = runtime
+        .enqueue(trusted_operator_prompt(None, "use the demo skill"))
         .await
         .unwrap();
+    let scheduler_executor::RunLoopPoll::Message(scheduled) =
+        scheduler_executor::SchedulerDecisionExecutor::new(&runtime)
+            .poll()
+            .await
+            .unwrap()
+    else {
+        panic!("skill read source must be claimed");
+    };
+    assert_eq!(scheduled.message.id, source.id);
+    start_protocol_settlement_fixture(&runtime, &scheduled).await;
     let prompt = runtime
         .preview_prompt(
             "use the demo skill".to_string(),
@@ -20382,17 +21913,23 @@ async fn reading_discovered_skill_marks_it_active_and_promotes_on_success() {
         )
         .await
         .unwrap();
-    let outcome = runtime
-        .run_agent_loop(
-            "default",
-            AuthorityClass::OperatorInstruction,
-            prompt,
-            LoopControlOptions {
-                max_tool_rounds: None,
-            },
-        )
-        .await
-        .unwrap();
+    let processing_runtime = runtime.clone();
+    let outcome = tokio::spawn(async move {
+        processing_runtime
+            .run_agent_loop_with_fixture_dispatch(
+                "default",
+                AuthorityClass::OperatorInstruction,
+                prompt,
+                LoopControlOptions {
+                    max_tool_rounds: None,
+                },
+                Some(scheduled),
+            )
+            .await
+    })
+    .await
+    .unwrap()
+    .unwrap();
     runtime.promote_turn_active_skills().await.unwrap();
 
     assert_eq!(outcome.terminal_kind, TurnTerminalKind::Completed);
@@ -20525,64 +22062,107 @@ async fn batch_skipped_skill_command_does_not_mark_skill_active() {
     assert!(!events.iter().any(|event| event.kind == "skill_activated"));
 }
 
-async fn run_skill_activation_probe(
+fn run_skill_activation_probe(
     provider: Arc<dyn AgentProvider>,
     include_script: bool,
-) -> (TempDir, TempDir, RuntimeHandle) {
-    let dir = tempdir().unwrap();
-    let workspace = tempdir().unwrap();
-    let skill_dir = workspace.path().join(".agents/skills/demo");
-    std::fs::create_dir_all(&skill_dir).unwrap();
-    std::fs::write(
-        skill_dir.join("SKILL.md"),
-        "---\nname: demo\ndescription: demo skill\n---\nFollow the demo workflow.",
-    )
-    .unwrap();
-    if include_script {
-        std::fs::create_dir_all(skill_dir.join("scripts")).unwrap();
-        std::fs::write(skill_dir.join("scripts/run.sh"), "printf script-ran\n").unwrap();
-    }
-
-    let runtime = RuntimeHandle::new(
-        "default",
-        dir.path().to_path_buf(),
-        workspace.path().to_path_buf(),
-        "http://127.0.0.1:7878".into(),
-        provider,
-        "default".into(),
-        ContextConfig {
-            prompt_budget_estimated_tokens: 65536,
-            compaction_keep_recent_estimated_tokens: 4096,
-            ..context_config()
-        },
-    )
-    .unwrap();
-
-    runtime
-        .begin_interactive_turn_for_test(None, None)
-        .await
-        .unwrap();
-    let prompt = runtime
-        .preview_prompt(
-            "use the demo skill".to_string(),
-            AuthorityClass::OperatorInstruction,
+) -> std::pin::Pin<Box<impl std::future::Future<Output = (TempDir, TempDir, RuntimeHandle)> + Send>>
+{
+    Box::pin(async move {
+        let dir = tempdir().unwrap();
+        let workspace = tempdir().unwrap();
+        let skill_dir = workspace.path().join(".agents/skills/demo");
+        std::fs::create_dir_all(&skill_dir).unwrap();
+        std::fs::write(
+            skill_dir.join("SKILL.md"),
+            "---\nname: demo\ndescription: demo skill\n---\nFollow the demo workflow.",
         )
-        .await
         .unwrap();
-    let outcome = runtime
-        .run_agent_loop(
+        if include_script {
+            std::fs::create_dir_all(skill_dir.join("scripts")).unwrap();
+            std::fs::write(skill_dir.join("scripts/run.sh"), "printf script-ran\n").unwrap();
+        }
+
+        let runtime = RuntimeHandle::new(
             "default",
-            AuthorityClass::OperatorInstruction,
-            prompt,
-            LoopControlOptions {
-                max_tool_rounds: None,
+            dir.path().to_path_buf(),
+            workspace.path().to_path_buf(),
+            "http://127.0.0.1:7878".into(),
+            provider,
+            "default".into(),
+            ContextConfig {
+                prompt_budget_estimated_tokens: 65536,
+                compaction_keep_recent_estimated_tokens: 4096,
+                ..context_config()
             },
         )
-        .await
         .unwrap();
-    runtime.promote_turn_active_skills().await.unwrap();
-    assert_eq!(outcome.terminal_kind, TurnTerminalKind::Completed);
-    (dir, workspace, runtime)
+
+        let source = runtime
+            .enqueue(MessageEnvelope::new(
+                "default",
+                MessageKind::OperatorPrompt,
+                MessageOrigin::Operator {
+                    actor_id: None,
+                    actor_display_name: None,
+                },
+                AuthorityClass::OperatorInstruction,
+                Priority::Normal,
+                MessageBody::Text {
+                    text: "use the demo skill".into(),
+                },
+            ))
+            .await
+            .unwrap();
+        let scheduler_executor::RunLoopPoll::Message(scheduled) =
+            scheduler_executor::SchedulerDecisionExecutor::new(&runtime)
+                .poll()
+                .await
+                .unwrap()
+        else {
+            panic!("skill activation source must be claimed");
+        };
+        assert_eq!(scheduled.message.id, source.id);
+        runtime
+            .begin_dispatch_turn(
+                &scheduled.message,
+                None,
+                None,
+                scheduled
+                    .dispatch_plan
+                    .execution_admission_provenance
+                    .clone(),
+                &scheduled.dispatch_plan.prior_closure,
+            )
+            .await
+            .unwrap();
+        let prompt = runtime
+            .preview_prompt(
+                "use the demo skill".to_string(),
+                AuthorityClass::OperatorInstruction,
+            )
+            .await
+            .unwrap();
+        let processing_runtime = runtime.clone();
+        let outcome = tokio::spawn(async move {
+            processing_runtime
+                .run_agent_loop_with_fixture_dispatch(
+                    "default",
+                    AuthorityClass::OperatorInstruction,
+                    prompt,
+                    LoopControlOptions {
+                        max_tool_rounds: None,
+                    },
+                    Some(scheduled),
+                )
+                .await
+        })
+        .await
+        .unwrap()
+        .unwrap();
+        runtime.promote_turn_active_skills().await.unwrap();
+        assert_eq!(outcome.terminal_kind, TurnTerminalKind::Completed);
+        (dir, workspace, runtime)
+    })
 }
 
 fn skill_activation_event(runtime: &RuntimeHandle, skill_id: &str) -> AuditEvent {
@@ -20731,7 +22311,7 @@ fn wake_hint_preserved_when_replaced_during_critical_window() {
         causation_id: None,
         created_at: Utc::now(),
     });
-    storage.write_agent(&agent).unwrap();
+    storage.write_agent_for_fixture(&agent).unwrap();
 
     let runtime = RuntimeHandle::new(
         agent_id,
@@ -20797,7 +22377,7 @@ fn wake_hint_preserved_when_replaced_during_critical_window() {
             causation_id: None,
             created_at: Utc::now(),
         });
-        runtime.inner.storage.write_agent(&guard.state).unwrap();
+        guard.persist_state(&runtime.inner.storage).unwrap();
         drop(guard);
     });
 
@@ -20910,9 +22490,18 @@ async fn register_wait_for_agent_scoped_resolves_prior_triggered_wait() {
         )
         .await
         .unwrap();
-    let mut triggered = first.condition.clone();
-    triggered.mark_triggered("message:triggered-before-replacement", Utc::now());
-    runtime.storage().append_wait_condition(&triggered).unwrap();
+    let mut trigger = trusted_operator_prompt(None, "trigger the first agent wait");
+    trigger.id = "message:triggered-before-replacement".into();
+    let trigger = runtime.enqueue(trigger).await.unwrap();
+    let triggered = runtime
+        .storage()
+        .latest_wait_conditions()
+        .unwrap()
+        .into_iter()
+        .find(|condition| condition.id == first.condition.id)
+        .unwrap();
+    assert_eq!(triggered.status, WaitConditionStatus::Triggered);
+    assert_eq!(triggered.trigger_message_id(), Some(trigger.id.as_str()));
 
     let second = runtime
         .register_wait_for(
@@ -21115,35 +22704,40 @@ async fn scheduler_repair_only_drops_wake_only_queue_entries_with_occ() {
         },
     );
     wake_message.normalize_admission_fields();
-    let queued_at = Utc::now();
-    let entry = QueueEntryRecord {
-        message_id: wake_message.id.clone(),
-        agent_id: "default".into(),
-        priority: Priority::Next,
-        status: QueueEntryStatus::Queued,
-        created_at: queued_at,
-        updated_at: queued_at,
-    };
-    runtime
+    let queued = runtime.enqueue(wake_message).await.unwrap();
+    let entry = runtime
         .inner
         .runtime_db
-        .transitions()
-        .commit_queue(&crate::runtime_db::transitions::QueueTransitionCommand {
-            agent_id: "default".into(),
-            operation: crate::runtime_db::transitions::QueueOperation::Admit,
-            mutation: crate::runtime_db::transitions::QueueMutation::Upsert(entry.clone()),
-            scheduler_claim_work_item: None,
-            agent_state: None,
-            message_evidence: vec![wake_message],
-            transcript_entries: Vec::new(),
-            turn_record: None,
-            audit_events: Vec::new(),
-            notify_scheduler: false,
-            fault: None,
-            brief_evidence: Vec::new(),
-        })
+        .queue_entries()
+        .latest(&queued.id)
+        .unwrap()
         .unwrap();
 
+    runtime.inject_next_transition_fault(TransitionFaultPoint::BeforeCommit);
+    assert!(runtime
+        .apply_scheduler_repair(crate::runtime::SchedulerRepairRequest {
+            dry_run: false,
+            reason: "injected rollback".into(),
+            operation: crate::runtime::SchedulerRepairOperation::DropWakeOnlyQueueEntry {
+                message_id: entry.message_id.clone(),
+                expected_status: entry.status.clone(),
+                expected_updated_at: entry.updated_at,
+            },
+        })
+        .await
+        .is_err());
+    assert_eq!(runtime.agent_state().await.unwrap().pending, 1);
+    assert_eq!(runtime.inner.agent.lock().await.queue.len(), 1);
+    assert_eq!(
+        runtime
+            .runtime_db()
+            .agent_states()
+            .latest("default")
+            .unwrap()
+            .unwrap()
+            .pending,
+        1
+    );
     let result = runtime
         .apply_scheduler_repair(crate::runtime::SchedulerRepairRequest {
             dry_run: false,
@@ -21157,6 +22751,18 @@ async fn scheduler_repair_only_drops_wake_only_queue_entries_with_occ() {
         .await
         .unwrap();
     assert_eq!(result.operation, "drop_wake_only_queue_entry");
+    assert_eq!(runtime.agent_state().await.unwrap().pending, 0);
+    assert!(runtime.inner.agent.lock().await.queue.is_empty());
+    assert_eq!(
+        runtime
+            .runtime_db()
+            .agent_states()
+            .latest("default")
+            .unwrap()
+            .unwrap()
+            .pending,
+        0
+    );
     assert!(result
         .backup_path
         .as_ref()
@@ -21232,7 +22838,7 @@ async fn stop_agent_revokes_active_external_triggers() {
 }
 
 #[tokio::test]
-async fn post_commit_cache_fault_preserves_durable_transition_and_returns_warning() {
+async fn post_commit_install_failure_fences_but_notification_failures_warn() {
     let dir = tempdir().unwrap();
     let workspace = tempdir().unwrap();
     let runtime = RuntimeHandle::new(
@@ -21264,32 +22870,43 @@ async fn post_commit_cache_fault_preserves_durable_transition_and_returns_warnin
     {
         let mut record = WorkItemRecord::new("default", "post-commit fault", WorkItemState::Open);
         record.id = format!("work-post-commit-fault-{index}");
-        let commit = runtime
-            .inner
-            .runtime_db
-            .transitions()
-            .commit_work_item(&crate::runtime_db::transitions::WorkItemTransitionCommand {
-                agent_id: "default".into(),
-                mutation: crate::runtime_db::transitions::WorkItemMutation::Insert {
-                    record: record.clone(),
+        let mut mutation = runtime.begin_mutation().await.unwrap();
+        let result = mutation
+            .commit_work_transition(
+                crate::ids::audit_event_id(),
+                crate::runtime_db::transitions::WorkItemTransitionCommand {
+                    agent_id: "default".into(),
+                    mutation: crate::runtime_db::transitions::WorkItemMutation::Insert {
+                        record: record.clone(),
+                    },
+                    agent_state: None,
+                    brief_evidence: Vec::new(),
+                    audit_events: vec![AuditEvent::legacy(
+                        "post_commit_fault_test",
+                        serde_json::json!({}),
+                    )],
+                    index_changes: Vec::new(),
+                    notify_scheduler: true,
+                    fault: Some(fault),
                 },
-                agent_state: None,
-                brief_evidence: Vec::new(),
-                audit_events: vec![AuditEvent::legacy(
-                    "post_commit_fault_test",
-                    serde_json::json!({}),
-                )],
-                index_changes: Vec::new(),
-                notify_scheduler: true,
-                fault: Some(fault),
-            })
-            .unwrap();
-
-        let applied = runtime.apply_transition_commit(commit).await;
-
-        assert!(applied.applied);
-        assert_eq!(applied.warnings.len(), 1);
-        assert_eq!(applied.warnings[0].effect, expected_effect);
+                Default::default(),
+                false,
+            )
+            .await;
+        drop(mutation);
+        if fault == TransitionFaultPoint::BeforeCacheUpdate {
+            assert!(result
+                .unwrap_err()
+                .to_string()
+                .contains("publication requires reconciliation"));
+            assert!(runtime.inner.mutation_owner.capture().is_err());
+            runtime.reconcile_posture_observation().await.unwrap();
+        } else {
+            let applied = runtime.apply_transition_commit(result.unwrap()).await;
+            assert!(applied.applied);
+            assert_eq!(applied.warnings.len(), 1);
+            assert_eq!(applied.warnings[0].effect, expected_effect);
+        }
         assert_eq!(
             runtime
                 .inner
@@ -21299,21 +22916,29 @@ async fn post_commit_cache_fault_preserves_durable_transition_and_returns_warnin
                 .unwrap(),
             Some(record.clone())
         );
+        let root = runtime.inner.mutation_owner.capture().unwrap().unwrap();
+        let captured = root
+            .work
+            .as_ref()
+            .unwrap()
+            .capture(&super::super::resident_work::WorkCaptureRequest::current())
+            .unwrap();
         assert_eq!(
-            runtime
-                .inner
-                .projection_cache
-                .lock()
-                .await
-                .work_items
-                .contains_key(&record.id),
-            fault != crate::runtime_db::transitions::TransitionFaultPoint::BeforeCacheUpdate
+            captured
+                .lookup(&super::super::resident_work::WorkKey::new(
+                    super::super::resident_work::WorkFamily::Work,
+                    &record.id,
+                ))
+                .unwrap()
+                .unwrap()
+                .record,
+            super::super::resident_work::CanonicalWorkRecord::Work(record)
         );
     }
 }
 
 #[tokio::test]
-async fn post_commit_agent_state_projection_rebases_onto_newer_memory() {
+async fn late_notification_does_not_rebase_or_persist_agent_state() {
     let dir = tempdir().unwrap();
     let workspace = tempdir().unwrap();
     let runtime = RuntimeHandle::new(
@@ -21369,6 +22994,13 @@ async fn post_commit_agent_state_projection_rebases_onto_newer_memory() {
         guard.persist_state(&runtime.inner.storage).unwrap();
     }
 
+    let durable_before = runtime
+        .inner
+        .runtime_db
+        .agent_states()
+        .latest("default")
+        .unwrap();
+    let events_before = runtime.storage().read_recent_events(usize::MAX).unwrap();
     let result = runtime.apply_transition_commit(commit).await;
 
     assert!(result.warnings.is_empty(), "{:?}", result.warnings);
@@ -21381,7 +23013,20 @@ async fn post_commit_agent_state_projection_rebases_onto_newer_memory() {
             .as_deref(),
         Some("newer-memory-state")
     );
-    assert_eq!(runtime.agent_state().await.unwrap().pending, 1);
+    assert_eq!(runtime.agent_state().await.unwrap().pending, 0);
+    assert_eq!(
+        runtime
+            .inner
+            .runtime_db
+            .agent_states()
+            .latest("default")
+            .unwrap(),
+        durable_before
+    );
+    assert_eq!(
+        runtime.storage().read_recent_events(usize::MAX).unwrap(),
+        events_before
+    );
     assert_eq!(
         runtime
             .agent_state()
@@ -21389,7 +23034,7 @@ async fn post_commit_agent_state_projection_rebases_onto_newer_memory() {
             .unwrap()
             .current_work_item_id
             .as_deref(),
-        Some(work_item.id.as_str())
+        None
     );
     assert_eq!(
         runtime
@@ -21615,4 +23260,973 @@ async fn service_tier_override_survives_reload_but_not_fallback_or_model_switch(
         .await
         .is_err());
     assert_eq!(runtime.agent_state().await.unwrap().model_override, None);
+}
+
+// D5/Q1 compatibility: the original v81 Message and its imported assignment
+// predate this new claim. Keep that evidence intact through the new dispatch.
+fn d5_sealed_legacy_result_before_sqlite_upgrade_fixture(
+    task_id: &str,
+    parent_turn_id: &str,
+    closed: bool,
+    with_hint: bool,
+) -> (
+    tempfile::TempDir,
+    tempfile::TempDir,
+    RuntimeHandle,
+    WorkItemRecord,
+    MessageEnvelope,
+) {
+    use crate::runtime_db::{
+        evidence::{append_message_tx, upsert_agent_identity_tx, upsert_agent_state_tx},
+        migrations::{apply_migration, ensure_migration_table, MIGRATIONS},
+        repositories::{enum_string, timestamp, upsert_task_tx, upsert_turn_record_tx},
+        task_result_settlement::{upsert_pending_tx, TaskResultSettlementRecord},
+    };
+    let dir = tempdir().unwrap();
+    let workspace = tempdir().unwrap();
+    let path = dir.path().join(".holon/state/runtime.sqlite");
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    let mut connection = rusqlite::Connection::open(&path).unwrap();
+    ensure_migration_table(&connection).unwrap();
+    for migration in MIGRATIONS
+        .iter()
+        .filter(|migration| migration.version <= 81)
+    {
+        apply_migration(&mut connection, migration).unwrap();
+    }
+    let mut work = WorkItemRecord::new(
+        "default",
+        "pre-cutover exact task owner",
+        if closed {
+            WorkItemState::Completing
+        } else {
+            WorkItemState::Open
+        },
+    );
+    work.plan_status = WorkItemPlanStatus::Ready;
+    work.plan_artifact = Some(
+        crate::work_item_plan::ensure_plan_artifact(
+            dir.path(),
+            &work,
+            Some("# Original v81 task owner\nKeep the exact task result pending.\n"),
+        )
+        .unwrap(),
+    );
+    let mut parent_source = MessageEnvelope::new(
+        "default",
+        MessageKind::OperatorPrompt,
+        MessageOrigin::Operator {
+            actor_id: None,
+            actor_display_name: None,
+        },
+        AuthorityClass::OperatorInstruction,
+        Priority::Normal,
+        MessageBody::Text {
+            text: "run the original task and preserve its exact wait".into(),
+        },
+    );
+    parent_source.id = format!("message-d5-parent-{task_id}");
+    parent_source.turn_id = Some(parent_turn_id.into());
+    parent_source.work_item_id = Some(work.id.clone());
+    let mut result = task_result_message(task_id).with_admission(
+        MessageDeliverySurface::TaskRejoin,
+        AdmissionContext::RuntimeOwned,
+    );
+    result.work_item_id = Some(work.id.clone());
+    result.turn_id = with_hint.then(|| format!("turn-d5-existing-{task_id}"));
+    let mut wait = task_wait_condition_for_work_item(task_id, &work.id);
+    // The v81 normalized columns and the importer use millisecond precision.
+    // Freeze the original payload at that precision before its first write.
+    wait.created_at =
+        chrono::DateTime::<Utc>::from_timestamp_millis(wait.created_at.timestamp_millis()).unwrap();
+    wait.updated_at = wait.created_at;
+    wait.turn_id = Some(parent_turn_id.into());
+    if closed {
+        wait.status = WaitConditionStatus::Resolved;
+        wait.trigger_message_id = Some(result.id.clone());
+        wait.resolved_at = Some(wait.updated_at);
+    } else {
+        work.blocked_by = Some(wait.waiting_for.clone());
+        work.blocked_by_wait_id = Some(wait.id.clone());
+    }
+    let task = TaskRecord {
+        id: task_id.into(),
+        agent_id: "default".into(),
+        kind: TaskKind::CommandTask,
+        status: TaskStatus::Completed,
+        created_at: Utc::now(),
+        updated_at: Utc::now(),
+        parent_message_id: Some(result.id.clone()),
+        work_item_id: Some(work.id.clone()),
+        summary: Some(format!("{task_id} completed")),
+        detail: Some(serde_json::json!({"rejoin_obligation_id": task_id,
+            "rejoin_generation": 1, "parent_turn_id": parent_turn_id})),
+        recovery: None,
+    };
+    result.metadata = Some(serde_json::json!({
+        "task_id": task.id,
+        "task_kind": task.kind,
+        "task_status": "completed",
+        "task_result_id": format!("result-{task_id}"),
+        "work_item_id": work.id,
+        "task_detail": task.detail,
+    }));
+    result.normalize_admission_fields();
+    assert_eq!(result.task_id.as_deref(), Some(task_id));
+    assert_eq!(
+        tasks::task_from_message(&result, "default").unwrap().detail,
+        task.detail,
+        "the first canonical result must retain the original Task/rejoin evidence"
+    );
+    let tx = connection.transaction().unwrap();
+    let identity = crate::types::AgentIdentityRecord::new(
+        "default",
+        crate::types::AgentKind::Named,
+        crate::types::AgentVisibility::Public,
+        crate::types::AgentOwnership::SelfOwned,
+        crate::types::AgentProfilePreset::PublicNamed,
+        None,
+        None,
+    );
+    upsert_agent_identity_tx(&tx, &identity).unwrap();
+    // Use the actual v81 columns; current helpers also write the later
+    // normalized blocker/recheck columns. The original payload is upgraded.
+    tx.execute(
+        "INSERT INTO work_items (work_item_id, agent_id, state, objective,
+         plan_status, revision, current_focus, created_at, updated_at,
+         completed_at, plan_artifact_path, last_turn_id, payload_json)
+         VALUES (?1, ?2, ?3, ?4, 'ready', ?5, 0, ?6, ?7, NULL, ?8, NULL, ?9)",
+        rusqlite::params![
+            work.id,
+            work.agent_id,
+            if closed { "completing" } else { "open" },
+            work.objective,
+            work.revision as i64,
+            timestamp(work.created_at),
+            timestamp(work.updated_at),
+            work.plan_artifact
+                .as_ref()
+                .map(|artifact| artifact.path.display().to_string()),
+            serde_json::to_string(&work).unwrap(),
+        ],
+    )
+    .unwrap();
+    let mut state = AgentState::new("default");
+    state.current_work_item_id = (!closed).then(|| work.id.clone());
+    state.turn_index = 1;
+    state.total_message_count = 2;
+    upsert_agent_state_tx(&tx, &state).unwrap();
+    upsert_task_tx(&tx, &task).unwrap();
+    // v81 stores wake sources/continuation only in the original payload.
+    tx.execute(
+        "INSERT INTO wait_conditions (
+         wait_condition_id, agent_id, work_item_id, status, kind, source,
+         subject_ref, waiting_for, created_at, updated_at, expires_at,
+         resolved_at, cancelled_at, last_turn_id, trigger_message_id,
+         triggered_at, payload_json)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11,
+         ?12, ?13, ?14, ?15, ?16, ?17)",
+        rusqlite::params![
+            wait.id,
+            wait.agent_id,
+            wait.work_item_id,
+            enum_string(&wait.status).unwrap(),
+            enum_string(&wait.kind).unwrap(),
+            wait.source,
+            wait.subject_ref,
+            wait.waiting_for,
+            timestamp(wait.created_at),
+            timestamp(wait.updated_at),
+            wait.expires_at.map(timestamp),
+            wait.resolved_at.map(timestamp),
+            wait.cancelled_at.map(timestamp),
+            wait.turn_id,
+            wait.trigger_message_id,
+            wait.triggered_at.map(timestamp),
+            serde_json::to_string(&wait).unwrap(),
+        ],
+    )
+    .unwrap();
+    let parent_source = append_message_tx(&tx, &parent_source).unwrap().0;
+    let mut parent = TurnRecord::new("default", parent_turn_id, 1);
+    parent.created_at = parent_source.created_at;
+    parent.run_id = Some(format!("run-d5-parent-{task_id}"));
+    parent.current_work_item_id = Some(work.id.clone());
+    parent.owner = Some(crate::types::TurnOwner::WorkItem {
+        work_item_id: work.id.clone(),
+    });
+    parent.trigger = Some(crate::types::TurnTriggerSummary::from_message(
+        &parent_source,
+    ));
+    parent.input_message_ids = vec![parent_source.id.clone()];
+    parent.waiting_condition_ids = vec![wait.id.clone()];
+    parent.terminal = Some(crate::types::TurnTerminalSummary {
+        kind: TurnTerminalKind::Completed,
+        reason: Some("original task was started and yielded to its durable wait".into()),
+        no_brief_reason: Some(crate::types::TurnNoBriefReason::ReducerOnly {
+            reason: "original_task_wait".into(),
+        }),
+        completed_at: parent_source.created_at,
+        duration_ms: 0,
+    });
+    upsert_turn_record_tx(&tx, &parent).unwrap();
+    let result = append_message_tx(&tx, &result).unwrap().0;
+    // Automatic JSON/JSONL import is retired. Upgrade an already sealed SQLite
+    // observation, without inventing a run, owner, terminal, or attempt.
+    let mut observed = TurnRecord::new(
+        "default",
+        result
+            .turn_id
+            .clone()
+            .unwrap_or_else(|| format!("legacy-turn-{}", result.message_seq.unwrap())),
+        if with_hint {
+            0
+        } else {
+            result.message_seq.unwrap()
+        },
+    );
+    observed.created_at = result.created_at;
+    observed.trigger = Some(crate::types::TurnTriggerSummary::from_message(&result));
+    observed.input_message_ids = vec![result.id.clone()];
+    observed.current_work_item_id = result.work_item_id.clone();
+    upsert_turn_record_tx(&tx, &observed).unwrap();
+    let settlement = TaskResultSettlementRecord::pending(&task, &result, Utc::now())
+        .unwrap()
+        .unwrap();
+    upsert_pending_tx(&tx, &settlement).unwrap();
+    crate::runtime_db::transitions::persist_state_tx(
+        &tx,
+        &crate::domain::execution_protocol::ExecutionProtocolState::empty("default"),
+    )
+    .unwrap();
+    tx.commit().unwrap();
+    assert_eq!(parent_source.message_seq, Some(1));
+    assert_eq!(result.message_seq, Some(2));
+    assert_eq!(
+        connection
+            .query_row(
+                "SELECT COUNT(*) FROM pragma_table_info('work_items') WHERE name='blocked_by'",
+                [],
+                |row| row.get::<_, i64>(0),
+            )
+            .unwrap(),
+        0,
+        "seed must really use the v81 Work projection"
+    );
+    assert_eq!(
+        connection
+            .query_row(
+                "SELECT COUNT(*) FROM turn_records WHERE turn_id != ?1",
+                [parent_turn_id],
+                |row| row.get::<_, i64>(0),
+            )
+            .unwrap(),
+        1,
+        "SQLite already contains the sealed result observation, not an actual dispatch"
+    );
+    drop(connection);
+    let runtime = RuntimeHandle::new(
+        "default",
+        dir.path().to_path_buf(),
+        workspace.path().to_path_buf(),
+        "http://127.0.0.1:7878".into(),
+        Arc::new(CountingProvider {
+            calls: Mutex::new(0),
+            reply: "unused",
+        }),
+        "default".into(),
+        context_config(),
+    )
+    .unwrap();
+    let restored_parent = runtime
+        .runtime_db()
+        .turn_records()
+        .by_id(Some("default"), parent_turn_id)
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        restored_parent, parent,
+        "SQLite upgrade retains the actual parent Turn unchanged"
+    );
+    assert!(runtime
+        .inner
+        .runtime_db
+        .transitions()
+        .load_execution_protocol_state_if_initialized("default")
+        .unwrap()
+        .unwrap()
+        .work_items
+        .get(&work.id)
+        .is_none());
+    assert!(runtime
+        .inner
+        .runtime_db
+        .queue_entries()
+        .latest_all()
+        .unwrap()
+        .is_empty());
+    (dir, workspace, runtime, work, result)
+}
+
+fn d5_assigned_turn(runtime: &RuntimeHandle, message: &MessageEnvelope) -> TurnRecord {
+    let connection = runtime.inner.runtime_db.connection().unwrap();
+    let turn_id: String = connection.query_row(
+        "SELECT turn_id FROM conversation_input_assignments WHERE agent_id = ?1 AND message_id = ?2",
+        rusqlite::params![message.agent_id, message.id],
+        |row| row.get(0),
+    ).unwrap();
+    runtime
+        .inner
+        .runtime_db
+        .turn_records()
+        .by_id(Some(&message.agent_id), &turn_id)
+        .unwrap()
+        .unwrap()
+}
+
+#[tokio::test]
+async fn d5_sealed_legacy_assignment_is_not_started_attempt_evidence() {
+    for with_hint in [false, true] {
+        let (_dir, _workspace, runtime, _work, result) =
+            d5_sealed_legacy_result_before_sqlite_upgrade_fixture(
+                "task-d5-import-observation",
+                "turn-d5-original-parent",
+                false,
+                with_hint,
+            );
+        let derived = d5_assigned_turn(&runtime, &result);
+        assert!(derived.input_message_ids.contains(&result.id));
+        assert!(derived.run_id.is_none());
+        assert!(derived.terminal.is_none());
+        assert!(derived.owner.is_none());
+        if with_hint {
+            assert_eq!(Some(derived.turn_id.as_str()), result.turn_id.as_deref());
+            assert_eq!(derived.turn_index, 0);
+        } else {
+            assert_eq!(
+                derived.turn_id,
+                format!("legacy-turn-{}", result.message_seq.unwrap())
+            );
+        }
+        let execution = runtime
+            .inner
+            .runtime_db
+            .transitions()
+            .load_execution_protocol_state_if_initialized("default")
+            .unwrap()
+            .unwrap();
+        assert!(
+            execution.attempts.is_empty(),
+            "import assignment must not invent an execution attempt"
+        );
+        assert_eq!(
+            runtime
+                .agent_state()
+                .await
+                .unwrap()
+                .current_execution_binding,
+            None
+        );
+        assert!(runtime
+            .inner
+            .runtime_db
+            .queue_entries()
+            .latest_all()
+            .unwrap()
+            .is_empty());
+        assert!(runtime
+            .inner
+            .runtime_db
+            .storage_domain_is_complete("turn_records", "db")
+            .unwrap());
+    }
+}
+
+#[inline(never)]
+fn d5_assert_existing_legacy_result_new_dispatch(
+    closed: bool,
+    with_hint: bool,
+) -> std::pin::Pin<Box<impl std::future::Future<Output = ()> + Send>> {
+    Box::pin(d5_assert_existing_legacy_result_new_dispatch_inner(
+        closed, with_hint,
+    ))
+}
+
+async fn d5_assert_existing_legacy_result_new_dispatch_inner(closed: bool, with_hint: bool) {
+    let (_dir, _workspace, runtime, _work, result) =
+        d5_sealed_legacy_result_before_sqlite_upgrade_fixture(
+            "task-d5-original-result",
+            "turn-d5-original-parent",
+            closed,
+            with_hint,
+        );
+    let original_turn = d5_assigned_turn(&runtime, &result);
+    let original_payload: String = runtime
+        .inner
+        .runtime_db
+        .connection()
+        .unwrap()
+        .query_row(
+            "SELECT payload_json FROM turn_records WHERE turn_id=?1",
+            [&original_turn.turn_id],
+            |row| row.get(0),
+        )
+        .unwrap();
+    let original_assignment: (String, i64, String) = runtime.runtime_db().connection().unwrap().query_row(
+        "SELECT turn_id,revision,assigned_at FROM conversation_input_assignments WHERE agent_id=?1 AND message_id=?2",
+        rusqlite::params![result.agent_id, result.id], |row| Ok((row.get(0)?,row.get(1)?,row.get(2)?)),
+    ).unwrap();
+    let original_index = runtime.agent_state().await.unwrap().turn_index;
+    let result = runtime.enqueue(result).await.unwrap();
+    let poll = scheduler_executor::SchedulerDecisionExecutor::new(&runtime)
+        .poll()
+        .await
+        .unwrap();
+    let scheduler_executor::RunLoopPoll::Message(scheduled) = poll else {
+        panic!("existing legacy result requires the original reducer-only settlement");
+    };
+    assert_eq!(scheduled.message.id, result.id);
+    assert!(!scheduled.scheduler_decision.model_reentry);
+    assert!(scheduled
+        .dispatch_plan
+        .execution_admission_provenance
+        .is_none());
+    assert!(scheduled.running_state.current_execution_binding.is_none());
+    assert!(scheduled.running_state.current_turn_id.is_none());
+    assert_eq!(
+        runtime
+            .runtime_db()
+            .queue_entries()
+            .latest(&result.id)
+            .unwrap()
+            .unwrap()
+            .status,
+        QueueEntryStatus::Dequeued
+    );
+    let processing_runtime = runtime.clone();
+    let (new_turn_id, new_turn_index, original_run) = tokio::spawn(async move {
+        // Retain the original physical completion guard through common Finish.
+        let scheduled = scheduled;
+        let original_run = scheduled
+            .running_state
+            .current_run_id
+            .clone()
+            .expect("actual reducer claim owns an original run");
+        let processing_started = std::time::Instant::now();
+        let terminal = processing_runtime
+            .process_message_with_plan_deferred(
+                scheduled.message.clone(),
+                scheduled.dispatch_plan,
+                &scheduled.scheduler_decision,
+            )
+            .await
+            .expect("new dispatch must not overwrite its imported assignment Turn");
+        let new_turn_id = terminal.turn_record.turn_id.clone();
+        let new_turn_index = terminal.turn_record.turn_index;
+        assert_eq!(
+            terminal.turn_record.run_id.as_deref(),
+            Some(original_run.as_str())
+        );
+        assert!(terminal
+            .turn_record
+            .input_message_ids
+            .contains(&scheduled.message.id));
+        let key = crate::runtime_db::episode_memory::EpisodeMemoryKey {
+            agent_id: scheduled.message.agent_id.clone(),
+            identity_incarnation: processing_runtime.inner.identity_incarnation,
+            actual_dispatch_turn_id: new_turn_id.clone(),
+        };
+        let invocation = crate::runtime_db::episode_memory::EpisodeMemoryInvocation {
+            message_id: scheduled.message.id.clone(),
+            turn_index: new_turn_index,
+        };
+        let memory = processing_runtime
+            .runtime_db()
+            .transaction(|tx| {
+                crate::runtime_db::dispatch_memory::load_dispatch_memory_tx(tx, &key, &invocation)
+            })
+            .unwrap()
+            .expect("actual claim must install its own new Start memory checkpoint");
+        assert!(matches!(
+            memory,
+            crate::runtime_db::dispatch_memory::DispatchMemoryRecord::Started { .. }
+                | crate::runtime_db::dispatch_memory::DispatchMemoryRecord::Pending { .. }
+        ));
+        processing_runtime
+            .finish_scheduled_message_processing(
+                &scheduled.message,
+                &original_run,
+                processing_started,
+                Ok(terminal),
+            )
+            .await
+            .unwrap();
+        let memory = processing_runtime
+            .runtime_db()
+            .transaction(|tx| {
+                crate::runtime_db::dispatch_memory::load_dispatch_memory_tx(tx, &key, &invocation)
+            })
+            .unwrap()
+            .expect("original whole Finish must retain its durable disposition");
+        assert!(matches!(
+            memory,
+            crate::runtime_db::dispatch_memory::DispatchMemoryRecord::Done { .. }
+        ));
+        assert!(processing_runtime
+            .inner
+            .agent
+            .lock()
+            .await
+            .current_run_abort
+            .is_none());
+        drop(scheduled.run_completion);
+        (new_turn_id, new_turn_index, original_run)
+    })
+    .await
+    .unwrap();
+    assert_eq!(new_turn_index, original_index + 1);
+    assert_ne!(new_turn_id, original_turn.turn_id);
+    let current_turn = runtime
+        .runtime_db()
+        .turn_records()
+        .by_id(Some("default"), &new_turn_id)
+        .unwrap()
+        .unwrap();
+    assert_eq!(current_turn.run_id.as_deref(), Some(original_run.as_str()));
+    assert!(current_turn.terminal.is_some());
+    assert_eq!(
+        d5_assigned_turn(&runtime, &result).turn_id,
+        original_turn.turn_id
+    );
+    let retained_assignment: (String, i64, String) = runtime.runtime_db().connection().unwrap().query_row(
+        "SELECT turn_id,revision,assigned_at FROM conversation_input_assignments WHERE agent_id=?1 AND message_id=?2",
+        rusqlite::params![result.agent_id, result.id], |row| Ok((row.get(0)?,row.get(1)?,row.get(2)?)),
+    ).unwrap();
+    assert_eq!(retained_assignment, original_assignment);
+    let retained_payload: String = runtime
+        .inner
+        .runtime_db
+        .connection()
+        .unwrap()
+        .query_row(
+            "SELECT payload_json FROM turn_records WHERE turn_id=?1",
+            [&original_turn.turn_id],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(
+        retained_payload, original_payload,
+        "old Turn bytes and original conversation assignment are immutable evidence"
+    );
+    let settlement = runtime
+        .inner
+        .runtime_db
+        .task_result_settlements()
+        .latest_for_message(&result.id)
+        .unwrap()
+        .unwrap();
+    use crate::runtime_db::task_result_settlement::{
+        TaskResultSettlementDisposition, TaskResultSettlementState,
+    };
+    if closed {
+        assert_eq!(settlement.state, TaskResultSettlementState::Settled);
+        assert_eq!(
+            settlement.disposition,
+            Some(TaskResultSettlementDisposition::OwnerClosed)
+        );
+    } else {
+        assert_eq!(
+            settlement.state,
+            TaskResultSettlementState::PersistedPending
+        );
+        assert_eq!(settlement.activation_id, None);
+    }
+    assert_eq!(
+        runtime
+            .inner
+            .runtime_db
+            .queue_entries()
+            .latest_all()
+            .unwrap()
+            .into_iter()
+            .find(|entry| entry.message_id == result.id)
+            .unwrap()
+            .status,
+        QueueEntryStatus::Processed
+    );
+    assert!(!runtime
+        .storage()
+        .read_recent_events(usize::MAX)
+        .unwrap()
+        .iter()
+        .any(|event| {
+            event.kind == "scheduler_authority_input_rejected"
+                && event.data["message_id"] == result.id
+        }));
+}
+
+#[tokio::test]
+async fn d5_existing_legacy_hinted_result_closed_owner_gets_new_actual_turn() {
+    d5_assert_existing_legacy_result_new_dispatch(true, true).await;
+}
+#[tokio::test]
+async fn d5_existing_legacy_unhinted_result_closed_owner_gets_new_actual_turn() {
+    d5_assert_existing_legacy_result_new_dispatch(true, false).await;
+}
+#[tokio::test]
+async fn d5_existing_legacy_hinted_result_missing_execution_owner_keeps_pending() {
+    d5_assert_existing_legacy_result_new_dispatch(false, true).await;
+}
+#[tokio::test]
+async fn d5_existing_legacy_unhinted_result_missing_execution_owner_keeps_pending() {
+    d5_assert_existing_legacy_result_new_dispatch(false, false).await;
+}
+
+#[derive(Clone, Copy)]
+enum D5BeginRetryCase {
+    Canonical,
+    Reducer,
+    KnownPublicationFailure,
+    MissingStart,
+    PhysicallyCompleted,
+    LegacyCompletedBeforeStart,
+    CorruptOriginalReceipt,
+    OversizeOriginalReceipt,
+}
+
+fn d5_q1_start_observation(
+    runtime: &RuntimeHandle,
+    turn: &str,
+    source: &str,
+) -> (String, String, String, usize, usize, usize) {
+    use rusqlite::OptionalExtension;
+    let db = runtime.runtime_db().connection().unwrap();
+    (
+        db.query_row("SELECT payload_json FROM agent_states WHERE agent_id='default'", [], |r|r.get(0)).unwrap(),
+        db.query_row("SELECT payload_json FROM dispatch_memory_checkpoints WHERE agent_id='default' AND turn_id=?1", [turn], |r|r.get(0)).optional().unwrap().unwrap_or_default(),
+        db.query_row("SELECT payload_json FROM queue_entries WHERE message_id=?1", [source], |r|r.get(0)).unwrap(),
+        db.query_row("SELECT COUNT(*) FROM turn_records", [], |r|r.get(0)).unwrap(),
+        db.query_row("SELECT COUNT(*) FROM input_mutation_receipts", [], |r|r.get(0)).unwrap(),
+        runtime.storage().read_recent_events(100).unwrap().iter().filter(|event|event.kind=="turn_started").count(),
+    )
+}
+
+#[inline(never)]
+fn d5_q1_retry_case(
+    case: D5BeginRetryCase,
+) -> std::pin::Pin<Box<impl std::future::Future<Output = ()> + Send>> {
+    Box::pin(async move {
+        let (_dir, _workspace, runtime, source) = if matches!(
+            case,
+            D5BeginRetryCase::Reducer | D5BeginRetryCase::LegacyCompletedBeforeStart
+        ) {
+            let (dir, workspace, runtime, _work, result) =
+                d5_sealed_legacy_result_before_sqlite_upgrade_fixture(
+                    "task-d5-retry-result",
+                    "turn-d5-retry-parent",
+                    true,
+                    true,
+                );
+            (dir, workspace, runtime, result)
+        } else {
+            let dir = tempdir().unwrap();
+            let workspace = tempdir().unwrap();
+            let runtime = RuntimeHandle::new(
+                "default",
+                dir.path().to_path_buf(),
+                workspace.path().to_path_buf(),
+                "http://127.0.0.1:7878".into(),
+                Arc::new(StubProvider::new("unused")),
+                "default".into(),
+                context_config(),
+            )
+            .unwrap();
+            let source = MessageEnvelope::new(
+                "default",
+                MessageKind::OperatorPrompt,
+                MessageOrigin::Operator {
+                    actor_id: None,
+                    actor_display_name: None,
+                },
+                AuthorityClass::OperatorInstruction,
+                Priority::Normal,
+                MessageBody::Text {
+                    text: "Q1 same dispatch retry".into(),
+                },
+            );
+            (dir, workspace, runtime, source)
+        };
+        runtime.enqueue(source).await.unwrap();
+        let scheduler_executor::RunLoopPoll::Message(scheduled) =
+            scheduler_executor::SchedulerDecisionExecutor::new(&runtime)
+                .poll()
+                .await
+                .unwrap()
+        else {
+            panic!("Q1 retry fixture needs an actual scheduled claim")
+        };
+        if matches!(
+            case,
+            D5BeginRetryCase::Reducer | D5BeginRetryCase::LegacyCompletedBeforeStart
+        ) {
+            assert!(scheduled
+                .dispatch_plan
+                .execution_admission_provenance
+                .is_none());
+        } else {
+            assert!(matches!(
+                scheduled.dispatch_plan.execution_admission_provenance,
+                Some(ExecutionAdmissionProvenance::Canonical { .. })
+            ));
+        }
+        let processing_runtime = runtime.clone();
+        tokio::spawn(d5_q1_retry_processing(processing_runtime, scheduled, case))
+            .await
+            .unwrap();
+    })
+}
+
+#[inline(never)]
+fn d5_q1_retry_processing(
+    processing_runtime: RuntimeHandle,
+    scheduled: scheduler_executor::ScheduledMessage,
+    case: D5BeginRetryCase,
+) -> std::pin::Pin<Box<impl std::future::Future<Output = ()> + Send>> {
+    Box::pin(async move {
+        let started = std::time::Instant::now();
+        if matches!(case, D5BeginRetryCase::LegacyCompletedBeforeStart) {
+            let historical = d5_assigned_turn(&processing_runtime, &scheduled.message);
+            let before = d5_q1_start_observation(
+                &processing_runtime,
+                &historical.turn_id,
+                &scheduled.message.id,
+            );
+            drop(scheduled.run_completion);
+            let rejected = processing_runtime
+                .begin_dispatch_turn(
+                    &scheduled.message,
+                    None,
+                    None,
+                    scheduled
+                        .dispatch_plan
+                        .execution_admission_provenance
+                        .clone(),
+                    &scheduled.dispatch_plan.prior_closure,
+                )
+                .await;
+            assert!(
+                rejected.is_err(),
+                "a historical assignment cannot recreate a completed producer"
+            );
+            assert_eq!(
+                d5_q1_start_observation(
+                    &processing_runtime,
+                    &historical.turn_id,
+                    &scheduled.message.id
+                ),
+                before
+            );
+            return;
+        }
+        if matches!(case, D5BeginRetryCase::KnownPublicationFailure) {
+            processing_runtime
+                .inject_next_transition_fault(TransitionFaultPoint::BeforeCacheUpdate);
+        }
+        let first = processing_runtime
+            .begin_dispatch_turn(
+                &scheduled.message,
+                None,
+                None,
+                scheduled
+                    .dispatch_plan
+                    .execution_admission_provenance
+                    .clone(),
+                &scheduled.dispatch_plan.prior_closure,
+            )
+            .await;
+        let (turn, index) = if matches!(case, D5BeginRetryCase::KnownPublicationFailure) {
+            assert!(first
+                .unwrap_err()
+                .to_string()
+                .contains("publication requires reconciliation"));
+            assert!(processing_runtime.inner.mutation_owner.capture().is_err());
+            // SQL ACK already owns this exact Turn/Start. Recover its current root.
+            let (turn,index):(String,u64)=processing_runtime.runtime_db().connection().unwrap().query_row(
+                    "SELECT json_extract(payload_json,'$.current_turn_id'),turn_index FROM agent_states WHERE agent_id='default'",[],|r|Ok((r.get(0)?,r.get(1)?))).unwrap();
+            processing_runtime
+                .reconcile_posture_observation()
+                .await
+                .unwrap();
+            (turn, index)
+        } else {
+            first.unwrap()
+        };
+        if matches!(case, D5BeginRetryCase::Reducer) {
+            let state = processing_runtime.agent_state().await.unwrap();
+            let binding = state.current_execution_binding.as_ref().unwrap();
+            let actual = processing_runtime
+                .runtime_db()
+                .turn_records()
+                .by_id(Some("default"), &turn)
+                .unwrap()
+                .unwrap();
+            assert!(
+                binding.owner.is_none(),
+                "reducer binding has no canonical owner"
+            );
+            assert_eq!(actual.current_work_item_id, binding.work_item_id);
+            assert_eq!(
+                actual.owner,
+                binding
+                    .work_item_id
+                    .as_ref()
+                    .map(|id| crate::types::TurnOwner::WorkItem {
+                        work_item_id: id.clone()
+                    }),
+                "the original StartedTurn derives its exact reducer Work owner"
+            );
+        }
+        if matches!(
+            case,
+            D5BeginRetryCase::CorruptOriginalReceipt | D5BeginRetryCase::OversizeOriginalReceipt
+        ) {
+            let limits = processing_runtime.inner.input_evidence_budget.limits();
+            let bytes = (limits.history_per_agent_bytes + limits.pending_per_agent_bytes) / 8 + 1;
+            processing_runtime.runtime_db().transaction(|tx| {
+                let sql = if matches!(case,D5BeginRetryCase::CorruptOriginalReceipt) {
+                    "UPDATE input_mutation_receipts SET outcome_json=json_set(outcome_json,'$.applied',json('false')) WHERE command_nonce=(SELECT json_extract(payload_json,'$.original_start.command_nonce') FROM dispatch_memory_checkpoints WHERE agent_id='default' AND turn_id=?1)"
+                } else {
+                    "UPDATE input_mutation_receipts SET outcome_json=CAST(zeroblob(?2) AS TEXT) WHERE command_nonce=(SELECT json_extract(payload_json,'$.original_start.command_nonce') FROM dispatch_memory_checkpoints WHERE agent_id='default' AND turn_id=?1)"
+                };
+                let changed = if matches!(case,D5BeginRetryCase::CorruptOriginalReceipt) {
+                    tx.execute(sql,[&turn])?
+                } else {tx.execute(sql,rusqlite::params![turn,bytes])?};
+                assert_eq!(changed,1);
+                Ok(())
+            }).unwrap();
+        }
+        let mut run_completion = Some(scheduled.run_completion);
+        if matches!(case, D5BeginRetryCase::MissingStart) {
+            processing_runtime.runtime_db().transaction(|tx| {
+                    assert_eq!(tx.execute("DELETE FROM dispatch_memory_checkpoints WHERE agent_id='default' AND turn_id=?1",[&turn])?,1);
+                    Ok(())
+                }).unwrap();
+        }
+        if matches!(case, D5BeginRetryCase::PhysicallyCompleted) {
+            // A real completion guard ending cannot be recreated from its address.
+            drop(run_completion.take());
+        }
+        let before = d5_q1_start_observation(&processing_runtime, &turn, &scheduled.message.id);
+        let retry = processing_runtime
+            .begin_dispatch_turn(
+                &scheduled.message,
+                None,
+                None,
+                scheduled
+                    .dispatch_plan
+                    .execution_admission_provenance
+                    .clone(),
+                &scheduled.dispatch_plan.prior_closure,
+            )
+            .await;
+        if matches!(
+            case,
+            D5BeginRetryCase::MissingStart
+                | D5BeginRetryCase::PhysicallyCompleted
+                | D5BeginRetryCase::CorruptOriginalReceipt
+                | D5BeginRetryCase::OversizeOriginalReceipt
+        ) {
+            assert!(
+                retry.is_err(),
+                "missing original Start / ended lease must not mint another Turn"
+            );
+            if matches!(case, D5BeginRetryCase::CorruptOriginalReceipt) {
+                assert!(matches!(
+                    retry
+                        .as_ref()
+                        .unwrap_err()
+                        .downcast_ref::<crate::runtime_db::input_mutation_receipts::ReceiptError>(),
+                    Some(
+                        crate::runtime_db::input_mutation_receipts::ReceiptError::CorruptReceipt(_)
+                    )
+                ));
+            }
+            if matches!(case, D5BeginRetryCase::OversizeOriginalReceipt) {
+                assert!(matches!(retry.as_ref().unwrap_err().downcast_ref::<crate::runtime_db::dispatch_memory::DispatchMemoryError>(),
+                    Some(crate::runtime_db::dispatch_memory::DispatchMemoryError::ResourceExhausted)),
+                    "oversize malformed outcome must fail before String/JSON decode");
+            }
+            assert_eq!(
+                d5_q1_start_observation(&processing_runtime, &turn, &scheduled.message.id),
+                before
+            );
+            drop(run_completion);
+            return;
+        }
+        assert_eq!(retry.unwrap(), (turn.clone(), index));
+        assert_eq!(d5_q1_start_observation(&processing_runtime,&turn,&scheduled.message.id),before,
+                "same dispatch retry must preserve State, queue, Start, receipts and turn_started count");
+        let state = processing_runtime.agent_state().await.unwrap();
+        assert_eq!(
+            state.current_execution_binding.as_ref().unwrap().turn_id,
+            turn
+        );
+        assert_eq!(state.current_run_id, scheduled.running_state.current_run_id);
+        let terminal = processing_runtime
+            .build_reducer_only_terminal_transition("q1_retry_fixture", false)
+            .await
+            .unwrap();
+        processing_runtime
+            .finish_scheduled_message_processing(
+                &scheduled.message,
+                scheduled.running_state.current_run_id.as_deref().unwrap(),
+                started,
+                Ok(terminal),
+            )
+            .await
+            .unwrap();
+        assert!(processing_runtime
+            .inner
+            .agent
+            .lock()
+            .await
+            .current_run_abort
+            .is_none());
+        drop(run_completion);
+    })
+}
+
+#[tokio::test]
+async fn d5_same_canonical_dispatch_begin_reuses_original_start() {
+    d5_q1_retry_case(D5BeginRetryCase::Canonical).await;
+}
+#[tokio::test]
+async fn d5_same_reducer_dispatch_begin_reuses_original_start() {
+    d5_q1_retry_case(D5BeginRetryCase::Reducer).await;
+}
+#[tokio::test]
+async fn d5_begin_retry_after_known_publication_failure_keeps_original_turn() {
+    d5_q1_retry_case(D5BeginRetryCase::KnownPublicationFailure).await;
+}
+#[tokio::test]
+async fn d5_begin_retry_without_original_start_cannot_refreeze() {
+    d5_q1_retry_case(D5BeginRetryCase::MissingStart).await;
+}
+#[tokio::test]
+async fn d5_begin_retry_after_physical_completion_cannot_recreate_lease() {
+    d5_q1_retry_case(D5BeginRetryCase::PhysicallyCompleted).await;
+}
+
+#[tokio::test]
+async fn d5_legacy_assignment_cannot_start_after_original_physical_completion() {
+    d5_q1_retry_case(D5BeginRetryCase::LegacyCompletedBeforeStart).await;
+}
+
+#[tokio::test]
+async fn d5_begin_retry_validates_original_whole_start_outcome_checksum() {
+    d5_q1_retry_case(D5BeginRetryCase::CorruptOriginalReceipt).await;
+}
+#[tokio::test]
+async fn d5_begin_retry_counts_all_receipt_fields_before_decode() {
+    d5_q1_retry_case(D5BeginRetryCase::OversizeOriginalReceipt).await;
 }

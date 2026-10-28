@@ -24,17 +24,27 @@ use crate::{
         AuthorityClass, CommandCostDiagnostics, CommandTaskOutputCaptureSnapshot,
         CommandTaskOutputFailureCode, CommandTaskOutputPolicy, CommandTaskSpec,
         CommandTaskStatusSnapshot, ExecCommandDuplicatePolicy, ExecCommandOutcome,
-        ExecCommandResult, ExternalTriggerScope, ExternalTriggerStatus, MessageBody,
-        MessageEnvelope, MessageKind, MessageOrigin, Priority, TaskHandle, TaskKind, TaskRecord,
-        TaskRecoverySpec, TaskStatus, ToolArtifactRef, HOLON_CALLER_AGENT_ID_ENV,
-        HOLON_CALLER_AUTHORITY_CLASS_ENV, HOLON_CALLER_SOURCE_ACTIVATION_ID_ENV,
-        HOLON_CALLER_SOURCE_TASK_ID_ENV, HOLON_CALLER_SOURCE_TURN_ID_ENV,
-        HOLON_CALLER_SOURCE_WORK_ITEM_ID_ENV,
+        ExecCommandResult, MessageBody, MessageEnvelope, MessageKind, MessageOrigin, Priority,
+        TaskHandle, TaskKind, TaskRecord, TaskRecoverySpec, TaskStatus, ToolArtifactRef,
+        HOLON_CALLER_AGENT_ID_ENV, HOLON_CALLER_AUTHORITY_CLASS_ENV,
+        HOLON_CALLER_SOURCE_ACTIVATION_ID_ENV, HOLON_CALLER_SOURCE_TASK_ID_ENV,
+        HOLON_CALLER_SOURCE_TURN_ID_ENV, HOLON_CALLER_SOURCE_WORK_ITEM_ID_ENV,
     },
     utf8::IncrementalUtf8LossyDecoder,
 };
 
 use super::{task_state_reducer, RuntimeHandle};
+
+#[path = "command_process_exit.rs"]
+mod process_exit;
+mod producer_actor;
+mod producer_maintenance;
+pub(super) use process_exit::OriginalCommandProcessExit;
+pub(crate) use producer_actor::{execute_original_command_terminal, OriginalCommandTerminalRead};
+pub(crate) use producer_maintenance::{FrozenCommandTaskTerminal, OriginalCommandTaskProducer};
+#[path = "managed_process.rs"]
+mod managed_process;
+pub(super) use managed_process::OriginalManagedProcess;
 
 const OUTPUT_CHANNEL_CAPACITY: usize = 64;
 const INPUT_CHANNEL_CAPACITY: usize = 16;
@@ -50,14 +60,26 @@ const PROCESS_STATUS_POLL_INTERVAL: Duration = Duration::from_millis(25);
 const COLLECT_OUTPUT_DRAIN_TIMEOUT: Duration = Duration::from_millis(100);
 
 pub(super) enum ManagedTaskHandle {
-    Async(JoinHandle<()>),
+    Async(super::control_cancellation::SharedControlTaskHandle),
     Command(CommandTaskHandle),
 }
 
 pub(super) struct CommandTaskHandle {
-    pub(super) cancel_tx: Option<oneshot::Sender<()>>,
-    pub(super) force_stop_tx: Option<oneshot::Sender<()>>,
+    pub(super) cancel_tx: Option<super::control_cancellation::SharedControlSignal>,
+    pub(super) force_stop_tx: Option<super::control_cancellation::SharedControlSignal>,
     pub(super) input_tx: mpsc::Sender<CommandTaskInputRequest>,
+    pub(super) control_lease: Option<std::sync::Arc<super::control_cancellation::ControlJoinLease>>,
+}
+
+impl ManagedTaskHandle {
+    pub(super) fn control_lease(
+        &self,
+    ) -> Option<std::sync::Arc<super::control_cancellation::ControlJoinLease>> {
+        match self {
+            Self::Async(handle) => Some(handle.lease()),
+            Self::Command(handle) => handle.control_lease.clone(),
+        }
+    }
 }
 
 pub(super) struct CommandTaskInputRequest {
@@ -73,13 +95,23 @@ pub(super) struct ResolvedCommandTask {
     execution: ExecutionSnapshot,
     env: Vec<(String, String)>,
     output_policy: CommandTaskOutputPolicy,
+    _trigger_material: Option<std::sync::Arc<super::input_evidence_budget::BudgetViewGuard>>,
 }
 
 pub(super) struct RunningCommand {
     process: Box<dyn RunningProcess>,
+    process_responsibility: Option<std::sync::Arc<OriginalManagedProcess>>,
     output_rx: mpsc::Receiver<OutputChunk>,
     reader_handles: Vec<JoinHandle<()>>,
     trace: Option<RunningCommandTrace>,
+}
+
+impl RunningCommand {
+    fn record_process_exit(&self) {
+        if let Some(original) = &self.process_responsibility {
+            original.record_successful_exit();
+        }
+    }
 }
 
 struct RunningCommandTrace {
@@ -157,6 +189,7 @@ struct CommandTaskMatch {
     status: crate::types::TaskStatus,
     summary: Option<String>,
     command: Option<CommandTaskStatusSnapshot>,
+    _owned_budget: std::sync::Arc<super::input_evidence_budget::BudgetViewGuard>,
 }
 
 impl CapturedOutput {
@@ -627,6 +660,7 @@ impl RuntimeHandle {
                         .await
                         .context("failed to query command status")?
                     {
+                        running.record_process_exit();
                         let process_completed_at = chrono::Utc::now();
                         collect_remaining_output(&mut running, &mut captured).await;
                         record_command_trace(
@@ -658,6 +692,7 @@ impl RuntimeHandle {
                             .await
                             .context("failed to query command status")?
                         {
+                            running.record_process_exit();
                             let process_completed_at = chrono::Utc::now();
                             collect_remaining_output(&mut running, &mut captured).await;
                             record_command_trace(
@@ -765,6 +800,7 @@ impl RuntimeHandle {
                         .await
                         .context("failed to query command status")?
                     {
+                        running.record_process_exit();
                         let process_completed_at = chrono::Utc::now();
                         collect_remaining_output(&mut running, &mut captured).await;
                         record_command_trace(
@@ -838,8 +874,10 @@ impl RuntimeHandle {
         spec: &CommandTaskSpec,
         workdir: &PathBuf,
     ) -> Result<Option<CommandTaskMatch>> {
-        let mut entries = self.managed_tasks().latest_task_list_entries().await?;
-        let found = entries
+        let mut read = self.managed_tasks().latest_task_list_entries().await?;
+        let owned_budget = read._owned_budget.clone();
+        let found = read
+            .entries
             .drain(..)
             .find(|entry| {
                 entry.kind == TaskKind::CommandTask.as_str()
@@ -853,6 +891,7 @@ impl RuntimeHandle {
                 status: entry.status,
                 summary: entry.summary,
                 command: entry.command,
+                _owned_budget: owned_budget,
             });
         Ok(found)
     }
@@ -922,7 +961,7 @@ impl RuntimeHandle {
                 self.agent_home().to_string_lossy().into_owned(),
             ),
         ];
-        let state = self.agent_state().await?;
+        let (state, trigger) = self.capture_command_trigger_read(&agent_id).await?;
         if let Some(binding) = state.current_execution_binding.as_ref() {
             env.push((HOLON_CALLER_AGENT_ID_ENV.to_string(), agent_id.clone()));
             env.push((
@@ -956,7 +995,7 @@ impl RuntimeHandle {
                 ));
             }
         }
-        if let Some(trigger_url) = self.command_external_trigger_url(&agent_id).await? {
+        if let Some(trigger_url) = trigger.url {
             env.push(("HOLON_EXTERNAL_TRIGGER_URL".to_string(), trigger_url));
         }
 
@@ -967,36 +1006,54 @@ impl RuntimeHandle {
             execution: execution_snapshot,
             env,
             output_policy: self.inner.config_snapshot.load().command_task_output_policy,
+            _trigger_material: trigger.material,
         })
     }
 
-    async fn command_external_trigger_url(&self, agent_id: &str) -> Result<Option<String>> {
-        Ok(self
-            .latest_external_triggers()
-            .await?
-            .into_iter()
-            .find_map(|trigger| {
-                (trigger.target_agent_id == agent_id
-                    && trigger.scope == ExternalTriggerScope::Agent
-                    && trigger.status == ExternalTriggerStatus::Active)
-                    .then_some(())
-                    .and_then(|_| {
-                        trigger.token.as_ref().map(|token| {
-                            crate::callbacks::build_callback_url(
-                                &self.inner.callback_base_url,
-                                &trigger.delivery_mode,
-                                token,
-                            )
-                        })
-                    })
-            }))
+    // RunningCommand already owns a spawned OS process. Transfer it to a tracked
+    // worker synchronously, before the API caller can drop its first await.
+    fn register_command_task(
+        &self,
+        summary: String,
+        resolved: ResolvedCommandTask,
+        running: RunningCommand,
+        authority_class: AuthorityClass,
+        promoted_from_exec_command: bool,
+        initial_capture: CapturedOutput,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<TaskRecord>> + Send>> {
+        let (send, receive) = oneshot::channel();
+        let runtime = self.clone();
+        let worker = tokio::spawn(async move {
+            let mut original_process = Some(running);
+            let result = runtime
+                .register_command_task_inner(
+                    summary,
+                    resolved,
+                    &mut original_process,
+                    authority_class,
+                    promoted_from_exec_command,
+                    initial_capture,
+                )
+                .await;
+            if let Some(running) = original_process {
+                runtime.retain_rejected_running_command(running);
+            }
+            let _ = send.send(result);
+            Ok(())
+        });
+        self.inner.control_cancellations.track_completion(worker);
+        Box::pin(async move {
+            receive
+                .await
+                .map_err(|_| anyhow!("command registration worker ended without an outcome"))?
+        })
     }
 
-    async fn register_command_task(
+    async fn register_command_task_inner(
         &self,
         summary: String,
         mut resolved: ResolvedCommandTask,
-        running: RunningCommand,
+        original_process: &mut Option<RunningCommand>,
         authority_class: AuthorityClass,
         promoted_from_exec_command: bool,
         mut initial_capture: CapturedOutput,
@@ -1038,6 +1095,23 @@ impl RuntimeHandle {
                 promoted_from_exec_command,
             }),
         };
+        let original_creation = if super::tasks::unbound_task_rejoin_generation(&task).is_some() {
+            Some(std::sync::Arc::new(
+                crate::runtime_db::command_task_creation::OriginalCommandTaskCreation::new(
+                    super::resident_input_evidence::InputEvidenceScope {
+                        agent_id: agent_id.clone(),
+                        identity_incarnation: self.inner.identity_incarnation,
+                    },
+                    task.clone(),
+                )?,
+            ))
+        } else {
+            None
+        };
+        let task = original_creation
+            .as_ref()
+            .map(|creation| creation.task().clone())
+            .unwrap_or(task);
         self.append_audit_event(
             "process_execution_requested",
             serde_json::json!({
@@ -1052,28 +1126,80 @@ impl RuntimeHandle {
                 "workdir": resolved.workdir.clone(),
                 "promoted_from_exec_command": promoted_from_exec_command,
             }),
-        )?;
-        self.apply_task_transition(task_state_reducer::TaskTransition::new(
-            &task,
-            "task_created",
-        ))
-        .await?;
+        ).await?;
+        let transition = task_state_reducer::TaskTransition::new(&task, "task_created");
+        let transition = match original_creation.as_ref() {
+            Some(creation) => transition.with_original_command_creation(creation),
+            None => transition,
+        };
+        self.apply_task_transition(transition).await?;
 
+        let mut registration = self.admit_control_task_handle_registration(&task).await?;
+        let mut selected_request = super::resident_task::TaskCaptureRequest::current();
+        selected_request
+            .required_keys
+            .insert(super::resident_task::TaskKey::new(
+                super::resident_task::TaskFamily::Task,
+                &task.id,
+            ));
+        registration
+            .prepare_owner_task_request(&selected_request)
+            .await?;
+        let selected = registration.capture_tasks(&selected_request)?;
+        let qualified = selected
+            .lookup(&super::resident_task::TaskKey::new(
+                super::resident_task::TaskFamily::Task,
+                &task.id,
+            ))?
+            .context("Command registration lacks its qualified original Task")?;
         let (cancel_tx, cancel_rx) = oneshot::channel();
         let (force_stop_tx, force_stop_rx) = oneshot::channel();
-        self.inner.task_handles.lock().await.insert(
+        let cancel_tx = super::control_cancellation::SharedControlSignal::new(cancel_tx);
+        let force_stop_tx = super::control_cancellation::SharedControlSignal::new(force_stop_tx);
+        let control_lease = self.inner.control_cancellations.command(
+            &task,
+            cancel_tx.clone(),
+            force_stop_tx.clone(),
+        );
+        let producer = match OriginalCommandTaskProducer::admitted(
+            &registration,
+            qualified,
+            &task,
+            &control_lease,
+            self.inner.mutation_owner.owner_epoch(),
+            &self.inner.input_evidence_budget,
+        ) {
+            Ok(source) => source,
+            Err(error) => {
+                self.inner
+                    .control_cancellations
+                    .abandon_unattached_command(&control_lease)?;
+                return Err(error);
+            }
+        };
+        control_lease.install_original_command(producer.clone())?;
+        let runner_material = producer.runner_material()?;
+        // Hold map lock until the monitor JoinHandle is attached.
+        let mut registered_handles = self.inner.task_handles.lock().await;
+        registered_handles.insert(
             task.id.clone(),
             ManagedTaskHandle::Command(CommandTaskHandle {
                 cancel_tx: Some(cancel_tx),
                 force_stop_tx: Some(force_stop_tx),
                 input_tx,
+                control_lease: Some(control_lease.clone()),
             }),
         );
         let runtime = self.clone();
         let task_record = task.clone();
         let task_record_for_error = task.clone();
         let resolved_for_error = resolved.clone();
+        let control_lease_for_monitor = control_lease.clone();
+        let running = original_process
+            .take()
+            .expect("original command process transferred twice");
         let monitor = tokio::spawn(async move {
+            let _runner_material = runner_material;
             if let Err(err) = runtime
                 .run_command_task(
                     task_record,
@@ -1084,21 +1210,23 @@ impl RuntimeHandle {
                     input_rx,
                     promoted_from_exec_command,
                     initial_capture,
+                    &control_lease_for_monitor,
+                    &producer,
                 )
                 .await
             {
                 let _ = runtime
-                    .inner
-                    .storage
-                    .append_event(&crate::types::AuditEvent::legacy(
+                    .append_original_audit_event(crate::types::AuditEvent::legacy(
                         "command_task_runner_failed",
                         serde_json::json!({
                             "task_id": task_id,
                             "error": err.to_string(),
                         }),
-                    ));
-                let _ = runtime
+                    ))
+                    .await;
+                if let Err(terminal_error) = runtime
                     .persist_command_task_terminal_state(
+                        &producer,
                         &task_record_for_error,
                         TaskStatus::Failed,
                         command_task_detail(
@@ -1112,18 +1240,39 @@ impl RuntimeHandle {
                         None,
                         None,
                     )
-                    .await;
-                runtime
-                    .inner
-                    .task_handles
-                    .lock()
                     .await
-                    .remove(&task_record_for_error.id);
+                {
+                    tracing::error!(task_id=%task_record_for_error.id,error=%terminal_error,
+                        "original Command terminal responsibility retained for reconciliation");
+                }
             }
         });
-        self.track_owned_task(monitor);
+        control_lease.attach(monitor);
+        drop(registered_handles);
 
         Ok(task)
+    }
+
+    fn retain_rejected_running_command(&self, mut running: RunningCommand) {
+        let runtime = self.clone();
+        let handle = tokio::spawn(async move {
+            let _responsible_runtime = runtime;
+            let stopped = running.process.stop(StopSignal::Force).await;
+            let waited = running.process.wait().await;
+            if waited.is_ok() {
+                running.record_process_exit();
+            }
+            for reader in &running.reader_handles {
+                reader.abort();
+            }
+            for reader in running.reader_handles {
+                let _ = reader.await;
+            }
+            stopped?;
+            waited?;
+            Ok(())
+        });
+        self.inner.control_cancellations.track_completion(handle);
     }
 
     async fn run_command_task(
@@ -1136,9 +1285,11 @@ impl RuntimeHandle {
         mut input_rx: mpsc::Receiver<CommandTaskInputRequest>,
         promoted_from_exec_command: bool,
         initial_capture: CapturedOutput,
+        control_lease: &std::sync::Arc<super::control_cancellation::ControlJoinLease>,
+        producer: &std::sync::Arc<OriginalCommandTaskProducer>,
     ) -> Result<()> {
         let mut captured = initial_capture;
-        let mut terminal = match self
+        let terminal = match self
             .run_command_task_inner(
                 &task_record,
                 &resolved,
@@ -1148,6 +1299,8 @@ impl RuntimeHandle {
                 &mut input_rx,
                 promoted_from_exec_command,
                 &mut captured,
+                control_lease,
+                producer,
             )
             .await
         {
@@ -1185,7 +1338,15 @@ impl RuntimeHandle {
             }
             Err(err) => {
                 let _ = running.process.stop(StopSignal::Graceful).await;
-                let _ = running.process.wait().await;
+                if let Ok(status) = running.process.wait().await {
+                    running.record_process_exit();
+                    self.observe_original_command_process_exit(
+                        &task_record,
+                        control_lease,
+                        &status,
+                        running.process.as_ref(),
+                    );
+                }
                 let process_completed_at = chrono::Utc::now();
                 collect_remaining_output(&mut running, &mut captured).await;
                 record_command_trace(
@@ -1204,14 +1365,6 @@ impl RuntimeHandle {
                 }
             }
         };
-        if terminal.status == TaskStatus::Cancelled {
-            if let Some(latest_task) = self.inner.storage.latest_task_record(&task_record.id)? {
-                terminal.cancel_requested |=
-                    command_task_detail_flag(latest_task.detail.as_ref(), "cancel_requested");
-                terminal.force_stop_requested |=
-                    command_task_detail_flag(latest_task.detail.as_ref(), "force_stop_requested");
-            }
-        }
         let status_label = task_status_label(&terminal.status);
         let mut detail = command_task_detail(
             &resolved,
@@ -1231,10 +1384,10 @@ impl RuntimeHandle {
         // The result has its own turn; its rejoin fence stays with task creation.
         let result_turn_id = crate::ids::turn_id();
         if let Some(detail) = detail.as_object_mut() {
-            // Turnless callers retain the legacy result-turn fence.
-            detail
-                .entry("parent_turn_id")
-                .or_insert_with(|| serde_json::json!(result_turn_id.clone()));
+            detail.insert(
+                "result_execution_turn_id".into(),
+                serde_json::json!(result_turn_id),
+            );
         }
         let result_text = build_command_task_result_text(
             task_record.summary.as_deref().unwrap_or(&resolved.spec.cmd),
@@ -1246,6 +1399,8 @@ impl RuntimeHandle {
         );
         let result_message = MessageEnvelope {
             turn_id: Some(result_turn_id),
+            task_id: Some(task_record.id.clone()),
+            work_item_id: task_record.work_item_id.clone(),
             metadata: Some({
                 serde_json::json!({
                     "task_id": task_record.id,
@@ -1273,6 +1428,7 @@ impl RuntimeHandle {
             )
         };
         self.persist_command_task_terminal_state(
+            producer,
             &task_record,
             terminal.status.clone(),
             detail.clone(),
@@ -1281,8 +1437,34 @@ impl RuntimeHandle {
         )
         .await?;
 
-        self.inner.task_handles.lock().await.remove(&task_record.id);
         Ok(())
+    }
+
+    fn observe_original_command_process_exit(
+        &self,
+        task: &TaskRecord,
+        lease: &super::control_cancellation::ControlJoinLease,
+        status: &RunningProcessExitStatus,
+        process: &dyn RunningProcess,
+    ) {
+        let scope = super::resident_input_evidence::InputEvidenceScope {
+            agent_id: task.agent_id.clone(),
+            identity_incarnation: self.inner.identity_incarnation,
+        };
+        let observed = OriginalCommandProcessExit::from_successful_process_exit(
+            &scope,
+            task,
+            lease,
+            status,
+            process,
+            &self.inner.input_evidence_budget,
+        )
+        .and_then(|fact| lease.record_original_command_process_exit(fact));
+        if let Err(error) = observed {
+            // Missing proof retains the worktree; it must not change the already
+            // observed Command's canonical terminal/result business outcome.
+            tracing::warn!(task_id=%task.id,error=%error,"original Command exit proof unavailable");
+        }
     }
 
     async fn run_command_task_inner(
@@ -1295,6 +1477,8 @@ impl RuntimeHandle {
         input_rx: &mut mpsc::Receiver<CommandTaskInputRequest>,
         promoted_from_exec_command: bool,
         captured: &mut CapturedOutput,
+        control_lease: &std::sync::Arc<super::control_cancellation::ControlJoinLease>,
+        producer: &std::sync::Arc<OriginalCommandTaskProducer>,
     ) -> Result<CommandTaskRunOutcome> {
         let system = self.system();
         let mut output_failure = None;
@@ -1329,48 +1513,31 @@ impl RuntimeHandle {
             captured.fail(failure);
             let _ = running.process.stop(StopSignal::Graceful).await;
         }
-        let latest_status = self
-            .inner
-            .storage
-            .latest_task_record(&task_record.id)?
-            .map(|task| task.status);
-        if !matches!(
-            latest_status,
-            Some(TaskStatus::Cancelling)
-                | Some(TaskStatus::Completed)
-                | Some(TaskStatus::Failed)
-                | Some(TaskStatus::Cancelled)
-                | Some(TaskStatus::Interrupted)
-        ) {
-            let running_task = TaskRecord {
-                id: task_record.id.clone(),
-                agent_id: task_record.agent_id.clone(),
-                kind: task_record.kind.clone(),
-                status: TaskStatus::Running,
-                created_at: task_record.created_at,
-                updated_at: chrono::Utc::now(),
-                parent_message_id: None,
-                work_item_id: task_record.work_item_id.clone(),
-                summary: task_record.summary.clone(),
-                detail: Some(self.task_detail_preserving_rejoin_contract(
-                    task_record,
-                    command_task_detail(
-                        resolved,
-                        promoted_from_exec_command,
-                        captured,
-                        None,
-                        None,
-                        false,
-                    ),
-                )),
-                recovery: task_record.recovery.clone(),
-            };
-            self.apply_task_transition(task_state_reducer::TaskTransition::new(
-                &running_task,
-                "task_status_updated",
-            ))
+        let running_task = TaskRecord {
+            id: task_record.id.clone(),
+            agent_id: task_record.agent_id.clone(),
+            kind: task_record.kind.clone(),
+            status: TaskStatus::Running,
+            created_at: task_record.created_at,
+            updated_at: chrono::Utc::now(),
+            parent_message_id: None,
+            work_item_id: task_record.work_item_id.clone(),
+            summary: task_record.summary.clone(),
+            detail: Some(self.task_detail_preserving_rejoin_contract(
+                task_record,
+                command_task_detail(
+                    resolved,
+                    promoted_from_exec_command,
+                    captured,
+                    None,
+                    None,
+                    false,
+                ),
+            )),
+            recovery: task_record.recovery.clone(),
+        };
+        self.prepare_original_command_running(producer, &running_task)
             .await?;
-        }
 
         let mut cancelled = false;
         let mut cancellation_requested = false;
@@ -1435,6 +1602,8 @@ impl RuntimeHandle {
                         .await
                         .context("failed to query command status")?
                     {
+                        running.record_process_exit();
+                        self.observe_original_command_process_exit(task_record,control_lease,&status,running.process.as_ref());
                         exit_status = status;
                         process_completed_at = chrono::Utc::now();
                         break;
@@ -1500,6 +1669,7 @@ impl RuntimeHandle {
 
     async fn persist_command_task_terminal_state(
         &self,
+        producer: &std::sync::Arc<OriginalCommandTaskProducer>,
         task_record: &TaskRecord,
         status: TaskStatus,
         detail: serde_json::Value,
@@ -1507,16 +1677,9 @@ impl RuntimeHandle {
         message_evidence: Option<&MessageEnvelope>,
     ) -> Result<()> {
         let (cancel_requested, force_stop_requested) = if status == TaskStatus::Cancelled {
-            let latest_detail = self
-                .inner
-                .storage
-                .latest_task_record(&task_record.id)?
-                .and_then(|task| task.detail);
             (
-                command_task_detail_flag(Some(&detail), "cancel_requested")
-                    || command_task_detail_flag(latest_detail.as_ref(), "cancel_requested"),
-                command_task_detail_flag(Some(&detail), "force_stop_requested")
-                    || command_task_detail_flag(latest_detail.as_ref(), "force_stop_requested"),
+                command_task_detail_flag(Some(&detail), "cancel_requested"),
+                command_task_detail_flag(Some(&detail), "force_stop_requested"),
             )
         } else {
             (false, false)
@@ -1541,20 +1704,8 @@ impl RuntimeHandle {
             detail: Some(self.task_detail_preserving_rejoin_contract(task_record, detail)),
             recovery: task_record.recovery.clone(),
         };
-        if let Some(message_evidence) = message_evidence {
-            self.commit_terminal_task_result(
-                &fallback,
-                "command_task_terminal_persisted",
-                message_evidence,
-            )
+        self.commit_original_command_terminal(producer, &fallback, message_evidence)
             .await?;
-        } else {
-            self.apply_task_transition_silent(task_state_reducer::TaskTransition::new(
-                &fallback,
-                "command_task_terminal_persisted",
-            ))
-            .await?;
-        }
         Ok(())
     }
 
@@ -1673,7 +1824,22 @@ impl RuntimeHandle {
         let execution = self
             .effective_execution(ExecutionScopeKind::CommandTask)
             .await?;
-        let mut process = system
+        // Register before spawn can suspend. Cancellation never becomes an
+        // absence proof for a process whose handle was not returned.
+        let process_scope = super::resident_input_evidence::InputEvidenceScope {
+            agent_id: self.inner.mutation_owner.agent_id().to_owned(),
+            identity_incarnation: self.inner.identity_incarnation,
+        };
+        let process_responsibility = OriginalManagedProcess::before_spawn(
+            &process_scope,
+            &self.inner.input_evidence_budget,
+        )?;
+        process_responsibility.record_resource_start(self.inner.resources.gate.clone())?;
+        self.inner.control_cancellations.retain_managed_process(
+            process_responsibility.clone(),
+            &self.inner.input_evidence_budget,
+        )?;
+        let spawned = system
             .spawn(
                 &execution,
                 ProcessRequest {
@@ -1695,8 +1861,8 @@ impl RuntimeHandle {
                     purpose: ProcessPurpose::CommandTask,
                 },
             )
-            .await
-            .map_err(|error| {
+            .await;
+        let mut process = spawned.map_err(|error| {
                 ToolError::new("command_spawn_failed", "failed to start command process")
                     .with_details(json!({
                         "cmd": resolved.spec.cmd.clone(),
@@ -1709,6 +1875,7 @@ impl RuntimeHandle {
                     )
                     .with_retryable(false)
             })?;
+        process_responsibility.attach_original_handle(process.as_ref())?;
         let stdout = process
             .take_stdout()
             .ok_or_else(|| anyhow!("failed to capture command stdout"))?;
@@ -1721,6 +1888,7 @@ impl RuntimeHandle {
 
         Ok(RunningCommand {
             process,
+            process_responsibility: Some(process_responsibility),
             output_rx: rx,
             reader_handles,
             trace: trace_context.map(|parent| RunningCommandTrace {
@@ -2035,13 +2203,11 @@ mod tests {
         context::ContextConfig,
         provider::StubProvider,
         system::{process::ProcessOutput, RunningProcess, RunningProcessExitStatus, StopSignal},
-        types::{
-            CallbackDeliveryMode, ExternalTriggerRecord, ExternalTriggerScope,
-            ExternalTriggerStatus,
-        },
+        types::CallbackDeliveryMode,
     };
 
     use super::*;
+    include!("command_task/producer_tests.rs");
 
     #[derive(Clone)]
     struct FakeRunningProcess {
@@ -2136,6 +2302,7 @@ mod tests {
             ContextConfig::default(),
         )
         .unwrap();
+        crate::runtime::tests::support::isolate_test_user_home(&runtime);
         (home, workspace, runtime)
     }
 
@@ -2182,6 +2349,7 @@ mod tests {
 
         RunningCommand {
             process: Box::new(process),
+            process_responsibility: None,
             output_rx: rx,
             reader_handles: Vec::new(),
             trace: None,
@@ -2351,6 +2519,38 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn cancelled_registration_receiver_keeps_rejected_original_process_cleanup_owned() {
+        let (_home, _workspace, runtime) = test_runtime();
+        let spec = command_spec(false, false);
+        let resolved = resolved_command(&runtime, &spec).await;
+        let process = FakeRunningProcess::pending();
+        let stop_signals = process.stop_signals.clone();
+        let mut mutation = runtime.begin_mutation().await.unwrap();
+        mutation.state.status = crate::types::AgentStatus::Stopped;
+        mutation
+            .persist_state(&runtime.inner.storage)
+            .await
+            .unwrap();
+        // The factory owns/registers the worker before its returned future is
+        // ever polled. Owner remains held so registration cannot beat Stop.
+        let receiver = runtime.register_command_task(
+            "rejected original process".into(),
+            resolved,
+            running_command(process, "", ""),
+            AuthorityClass::OperatorInstruction,
+            false,
+            CapturedOutput::default(),
+        );
+        drop(receiver);
+        tokio::task::yield_now().await;
+        assert!(stop_signals.lock().await.is_empty());
+        drop(mutation);
+        runtime.inner.control_cancellations.drain().await.unwrap();
+        assert_eq!(*stop_signals.lock().await, vec![StopSignal::Force]);
+        assert!(runtime.inner.task_handles.lock().await.is_empty());
+    }
+
+    #[tokio::test]
     async fn command_output_preserves_utf8_across_the_4096_byte_read_boundary() {
         for stream in [OutputStream::Stdout, OutputStream::Stderr] {
             let mut bytes = vec![b'a'; 4095];
@@ -2430,29 +2630,139 @@ mod tests {
             .unwrap()
             .get("parent_turn_id")
             .is_none());
-        let latest = wait_for_latest_task(&runtime, &task.id, TaskStatus::Completed).await;
+        let generation = task.detail.as_ref().unwrap()["rejoin_generation"]
+            .as_u64()
+            .unwrap();
+        let creation_fence = task.rejoin_fence().unwrap();
+        assert_eq!(
+            creation_fence.source,
+            crate::domain::execution_protocol::TaskRejoinSource::CommandCreation {
+                command_creation_id: task.id.clone(),
+            }
+        );
+        assert_eq!(
+            runtime
+                .runtime_db()
+                .connection()
+                .unwrap()
+                .query_row(
+                    "SELECT COUNT(*) FROM command_task_creation_sources
+                 WHERE command_creation_id=?1 AND task_id=?1 AND agent_id=?2
+                   AND identity_incarnation=?3 AND rejoin_generation=?4",
+                    rusqlite::params![
+                        task.id,
+                        task.agent_id,
+                        runtime.inner.identity_incarnation,
+                        generation
+                    ],
+                    |row| row.get::<_, usize>(0),
+                )
+                .unwrap(),
+            1
+        );
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+        let latest = loop {
+            if let Some(latest) = runtime.inner.storage.latest_task_record(&task.id).unwrap() {
+                // SQL completion precedes publication; the original ACK releases the handle.
+                if latest.status == TaskStatus::Completed
+                    && !runtime
+                        .inner
+                        .task_handles
+                        .lock()
+                        .await
+                        .contains_key(&task.id)
+                {
+                    break latest;
+                }
+            }
+            assert!(
+                tokio::time::Instant::now() < deadline,
+                "task {} did not complete terminal publication",
+                task.id
+            );
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        };
+        let captured = runtime.task_status_snapshot(&task.id).await.unwrap();
+        assert_eq!(captured.status, latest.status);
+        assert_eq!(captured.parent_message_id, latest.parent_message_id);
         let result = runtime
             .storage()
             .read_message_by_id(latest.parent_message_id.as_deref().unwrap())
             .unwrap()
             .unwrap();
         let fence = latest.rejoin_fence().unwrap();
+        assert_eq!(fence, creation_fence);
+        assert_eq!(fence.obligation_id, task.id);
+        assert_eq!(fence.generation, generation);
+        assert_eq!(result.task_id.as_deref(), Some(task.id.as_str()));
+        assert_eq!(latest.work_item_id, task.work_item_id);
+        assert_eq!(result.work_item_id, task.work_item_id);
+        assert!(matches!(&result.origin, MessageOrigin::Task { task_id } if task_id == &task.id));
+        assert!(result.turn_id.is_some());
         assert_eq!(
-            Some(fence.parent_turn_id.as_str()),
-            result.turn_id.as_deref()
+            latest.detail.as_ref().unwrap()["result_execution_turn_id"],
+            result.turn_id.as_deref().unwrap()
         );
+        let metadata = result.metadata.as_ref().unwrap();
+        assert_eq!(metadata["task_detail"]["command_creation_id"], task.id);
+        assert!(metadata["task_detail"].get("parent_turn_id").is_none());
+        assert_eq!(
+            metadata["task_detail"]["result_execution_turn_id"],
+            result.turn_id.as_deref().unwrap()
+        );
+        assert_eq!(metadata["task_detail"]["rejoin_generation"], generation);
         let settlement = runtime
             .runtime_db()
             .task_result_settlements()
             .latest_for_message(&result.id)
             .unwrap()
             .unwrap();
-        assert_eq!(settlement.parent_turn_id, fence.parent_turn_id);
+        assert_eq!(settlement.source, fence.source);
+        assert_eq!(settlement.rejoin_generation, generation);
+        assert_eq!(settlement.work_item_id, task.work_item_id);
+        assert_eq!(settlement.message_id, result.id);
         assert_eq!(settlement.task_id, task.id);
         assert_eq!(
             settlement.state,
             crate::runtime_db::task_result_settlement::TaskResultSettlementState::PersistedPending
         );
+    }
+
+    #[tokio::test]
+    async fn bound_command_without_canonical_parent_cannot_mint_creation_source() -> Result<()> {
+        let (_home, _workspace, runtime) = test_runtime();
+        {
+            // Publish the bound-turn posture through the OCC mutation owner so
+            // the published root stays observable to later reservations; the
+            // Turn record itself remains absent, which is the premise under
+            // test. A raw guard persist diverges the published root and trips
+            // the private-candidate capture guard on the next reservation.
+            let mut mutation = runtime.begin_mutation().await?;
+            mutation.state.current_turn_id = Some("missing-original-parent".into());
+            mutation.persist_state(&runtime.inner.storage).await?;
+        }
+        let process = FakeRunningProcess::pending();
+        let resolved = resolved_command(&runtime, &command_spec(false, false)).await;
+        let result = runtime
+            .register_command_task(
+                "Bound Command without canonical parent".into(),
+                resolved,
+                running_command(process, "", ""),
+                AuthorityClass::OperatorInstruction,
+                false,
+                CapturedOutput::default(),
+            )
+            .await;
+        assert!(result.is_err());
+        assert_eq!(
+            runtime.runtime_db().connection()?.query_row(
+                "SELECT COUNT(*) FROM command_task_creation_sources WHERE agent_id='default'",
+                [],
+                |row| row.get::<_, usize>(0),
+            )?,
+            0
+        );
+        Ok(())
     }
 
     #[tokio::test]
@@ -2471,12 +2781,43 @@ mod tests {
 
         for (exit_status, status) in [(0, TaskStatus::Completed), (7, TaskStatus::Failed)] {
             let (_home, workspace, runtime) = test_runtime();
-            let parent_turn_id = "turn-command-creation";
-            {
-                let mut guard = runtime.inner.agent.lock().await;
-                guard.state.current_turn_id = Some(parent_turn_id.into());
-                guard.persist_state(&runtime.inner.storage).unwrap();
-            }
+            let creator_message = MessageEnvelope::new(
+                "default",
+                MessageKind::OperatorPrompt,
+                MessageOrigin::Operator {
+                    actor_id: None,
+                    actor_display_name: None,
+                },
+                AuthorityClass::OperatorInstruction,
+                Priority::Normal,
+                MessageBody::Text {
+                    text: "create bound Command".into(),
+                },
+            );
+            runtime.enqueue(creator_message).await.unwrap();
+            let RunLoopPoll::Message(creator) = SchedulerDecisionExecutor::new(&runtime)
+                .poll()
+                .await
+                .unwrap()
+            else {
+                panic!("Command creator must be actually claimed");
+            };
+            runtime
+                .begin_dispatch_turn(
+                    &creator.message,
+                    None,
+                    None,
+                    creator.dispatch_plan.execution_admission_provenance.clone(),
+                    &creator.dispatch_plan.prior_closure,
+                )
+                .await
+                .unwrap();
+            let parent_turn_id = runtime
+                .agent_state()
+                .await
+                .unwrap()
+                .current_turn_id
+                .unwrap();
             let spec = CommandTaskSpec {
                 cmd: format!(
                     "while [ ! -f command-release ]; do sleep 0.01; done; \
@@ -2505,7 +2846,10 @@ mod tests {
                 .unwrap()
                 .unwrap();
             let creation_fence = created.rejoin_fence().unwrap();
-            assert_eq!(creation_fence.parent_turn_id, parent_turn_id);
+            assert_eq!(
+                creation_fence.source.parent_turn_id().unwrap(),
+                parent_turn_id
+            );
             assert_eq!(creation_fence.obligation_id, created.id);
             assert_eq!(creation_fence.generation, 1);
 
@@ -2520,6 +2864,28 @@ mod tests {
                 )
                 .await
                 .unwrap();
+            crate::runtime::tests::support::finish_claimed_test_run(&runtime).await;
+            let creator_terminal =
+                crate::runtime::tests::support::terminal_transition_from_started_turn(
+                    &runtime,
+                    &creator.message,
+                );
+            runtime
+                .commit_queue_terminal_settlement(
+                    QueueEntryRecord {
+                        message_id: creator.message.id.clone(),
+                        agent_id: creator.message.agent_id.clone(),
+                        priority: creator.message.priority.clone(),
+                        status: QueueEntryStatus::Processed,
+                        created_at: creator.message.created_at,
+                        updated_at: Utc::now(),
+                    },
+                    Vec::new(),
+                    true,
+                    Some(&creator_terminal),
+                )
+                .await
+                .unwrap();
             std::fs::write(workspace.path().join("command-release"), "").unwrap();
             let latest = wait_for_latest_task(&runtime, &created.id, status).await;
             assert_eq!(latest.rejoin_fence().unwrap(), creation_fence);
@@ -2531,12 +2897,15 @@ mod tests {
                 .unwrap();
             assert_eq!(result_message.kind, MessageKind::TaskResult);
             assert!(result_message.turn_id.is_some());
-            assert_ne!(result_message.turn_id.as_deref(), Some(parent_turn_id));
+            assert_ne!(
+                result_message.turn_id.as_deref(),
+                Some(parent_turn_id.as_str())
+            );
             let metadata = result_message.metadata.as_ref().unwrap();
             assert_eq!(metadata["task_id"], created.id);
             assert_eq!(
                 metadata["task_detail"]["parent_turn_id"],
-                creation_fence.parent_turn_id
+                creation_fence.source.parent_turn_id().unwrap()
             );
             assert_eq!(
                 metadata["task_detail"]["rejoin_obligation_id"],
@@ -2554,7 +2923,7 @@ mod tests {
                 .unwrap();
             assert_eq!(settlement.task_id, created.id);
             assert_eq!(settlement.message_id, result_message.id);
-            assert_eq!(settlement.parent_turn_id, creation_fence.parent_turn_id);
+            assert_eq!(settlement.source, creation_fence.source);
             assert_eq!(settlement.rejoin_generation, creation_fence.generation);
             assert_eq!(
                 settlement.state,
@@ -2621,7 +2990,7 @@ mod tests {
                 .unwrap()
                 .unwrap();
             assert_eq!(settled.result_identity, settlement.result_identity);
-            assert_eq!(settled.parent_turn_id, creation_fence.parent_turn_id);
+            assert_eq!(settled.source, creation_fence.source);
             assert_eq!(settled.state, TaskResultSettlementState::Settled);
             assert_eq!(
                 settled.disposition,
@@ -2750,6 +3119,7 @@ mod tests {
                     _ => panic!("command exact wait must reenter the provider only once"),
                 };
                 Ok(ProviderTurnResponse {
+                    material: Default::default(),
                     blocks,
                     stop_reason: None,
                     input_tokens: 10,
@@ -2867,7 +3237,7 @@ mod tests {
             assert_eq!(creation_fence.generation, 1);
             let creation_turn = runtime
                 .storage()
-                .read_turn_by_id(&creation_fence.parent_turn_id)
+                .read_turn_by_id(creation_fence.source.parent_turn_id().unwrap())
                 .unwrap()
                 .unwrap();
             assert!(creation_turn
@@ -2885,7 +3255,7 @@ mod tests {
             assert_eq!(reports.len(), 1);
             assert_eq!(
                 reports[0].turn_id.as_deref(),
-                Some(creation_fence.parent_turn_id.as_str())
+                Some(creation_fence.source.parent_turn_id().unwrap())
             );
             assert!(reports[0].finalizes_assistant_round_id.is_some());
             let tools = runtime.storage().read_recent_tool_executions(10).unwrap();
@@ -2909,7 +3279,7 @@ mod tests {
             assert_eq!(wait.work_item_id.as_deref(), expected_work_item_id);
             assert_eq!(
                 wait.turn_id.as_deref(),
-                Some(creation_fence.parent_turn_id.as_str())
+                Some(creation_fence.source.parent_turn_id().unwrap())
             );
             assert!(wait.wake_sources.iter().any(|source| {
                 matches!(source, WakeSource::TaskResult { task_id: exact } if exact == &task_id)
@@ -2928,7 +3298,7 @@ mod tests {
                 .unwrap();
             assert_eq!(pending.state, TaskResultSettlementState::PersistedPending);
             assert_eq!(pending.task_id, task_id);
-            assert_eq!(pending.parent_turn_id, creation_fence.parent_turn_id);
+            assert_eq!(pending.source, creation_fence.source);
             let triggered = runtime
                 .storage()
                 .latest_wait_conditions()
@@ -3018,7 +3388,7 @@ mod tests {
                 .unwrap();
             assert_eq!(settled.result_identity, pending.result_identity);
             assert_eq!(settled.task_id, task_id);
-            assert_eq!(settled.parent_turn_id, creation_fence.parent_turn_id);
+            assert_eq!(settled.source, creation_fence.source);
             assert_eq!(settled.rejoin_generation, creation_fence.generation);
             assert_eq!(settled.state, TaskResultSettlementState::Settled);
             assert_eq!(
@@ -3047,7 +3417,10 @@ mod tests {
                 .iter()
                 .find(|turn| turn.input_message_ids.contains(result_message_id))
                 .unwrap();
-            assert_ne!(result_turn.turn_id, creation_fence.parent_turn_id);
+            assert_ne!(
+                result_turn.turn_id,
+                creation_fence.source.parent_turn_id().unwrap()
+            );
             assert!(result_turn.terminal.is_some());
             assert!(matches!(
                 SchedulerDecisionExecutor::new(&runtime)
@@ -3378,6 +3751,13 @@ mod tests {
         let path = latest.detail.as_ref().unwrap()["output_path"]
             .as_str()
             .unwrap();
+        let available = runtime.task_output(&task.id, false, 0).await.unwrap();
+        let artifact = available.task.output_artifact.expect("available artifact");
+        assert_eq!(available.task.artifacts[artifact].path, path);
+        assert_eq!(
+            available.task.failure_artifact.unwrap().metadata["output_path"],
+            path
+        );
         tokio::fs::remove_file(path).await.unwrap();
 
         let output = runtime.task_output(&task.id, false, 0).await.unwrap();
@@ -3439,23 +3819,9 @@ mod tests {
             .await
             .unwrap();
         runtime.pick_work_item(work.id.clone()).await.unwrap();
-        runtime
-            .inner
-            .runtime_db
-            .external_triggers()
-            .upsert(&ExternalTriggerRecord {
-                external_trigger_id: "legacy-work-item-trigger".into(),
-                target_agent_id: "default".into(),
-                scope: ExternalTriggerScope::Agent,
-                delivery_mode: CallbackDeliveryMode::WakeHint,
-                token: Some("token".into()),
-                token_hash: "token-hash".into(),
-                status: ExternalTriggerStatus::Active,
-                created_at: Utc::now(),
-                revoked_at: None,
-                last_delivered_at: None,
-                delivery_count: 0,
-            })
+        let capability = runtime
+            .default_external_trigger(CallbackDeliveryMode::WakeHint)
+            .await
             .unwrap();
 
         let spec = command_spec(false, false);
@@ -3464,7 +3830,7 @@ mod tests {
 
         assert_eq!(
             env.get("HOLON_EXTERNAL_TRIGGER_URL").map(String::as_str),
-            Some("http://127.0.0.1:7878/api/callbacks/wake/token")
+            Some(capability.trigger_url.as_str())
         );
     }
 
@@ -3747,5 +4113,55 @@ mod tests {
             workspace.path(),
             "workdir should not fall back to workspace root"
         );
+    }
+
+    #[tokio::test]
+    async fn command_trigger_projection_uses_prepared_root_and_retains_url_material() {
+        let (_home, _workspace, runtime) = test_runtime();
+        let capability = runtime
+            .default_external_trigger(CallbackDeliveryMode::EnqueueMessage)
+            .await
+            .unwrap();
+        let before = runtime
+            .inner
+            .input_evidence_budget
+            .report()
+            .unwrap()
+            .observed_bytes;
+        runtime.runtime_db().transaction(|tx| {
+            tx.execute_batch("ALTER TABLE external_triggers RENAME TO command_trigger_forbidden; ALTER TABLE timers RENAME TO command_timers_forbidden; ALTER TABLE timer_wakes RENAME TO command_wakes_forbidden")?;
+            Ok(())
+        }).unwrap();
+        let resolved = resolved_command(&runtime, &command_spec(false, false)).await;
+        assert_eq!(
+            resolved_env(&resolved).get("HOLON_EXTERNAL_TRIGGER_URL"),
+            Some(&capability.trigger_url)
+        );
+        let guard = std::sync::Arc::downgrade(resolved._trigger_material.as_ref().unwrap());
+        assert!(
+            runtime
+                .inner
+                .input_evidence_budget
+                .report()
+                .unwrap()
+                .observed_bytes
+                > before
+        );
+        assert!(guard.upgrade().is_some());
+        drop(resolved);
+        assert!(guard.upgrade().is_none());
+        assert_eq!(
+            runtime
+                .inner
+                .input_evidence_budget
+                .report()
+                .unwrap()
+                .observed_bytes,
+            before
+        );
+        runtime.runtime_db().transaction(|tx| {
+            tx.execute_batch("ALTER TABLE command_wakes_forbidden RENAME TO timer_wakes; ALTER TABLE command_timers_forbidden RENAME TO timers; ALTER TABLE command_trigger_forbidden RENAME TO external_triggers")?;
+            Ok(())
+        }).unwrap();
     }
 }

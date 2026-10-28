@@ -163,7 +163,8 @@ pub(in super::super) fn plan_openai_responses_request(
     let full_input = body
         .get("input")
         .and_then(Value::as_array)
-        .cloned()
+        .map(|items| request.material.cloned(items))
+        .transpose()?
         .ok_or_else(|| {
             invalid_response_error(
                 "OpenAI request did not contain input array",
@@ -171,12 +172,18 @@ pub(in super::super) fn plan_openai_responses_request(
             )
         })?;
     let full_input_items = full_input.len();
+    request
+        .material
+        .read(|| crate::diagnostics::resource_io::admit_cloned_value(&full_input))?;
     let append_match_input = openai_append_match_input_items(&full_input);
+    admit_openai_request_shape(&body, request, &["input", "previous_response_id"])?;
     let request_shape = request_shape_without_input(&body, request);
+    request.material.admit_value(&request_shape)?;
     let scope = continuation_scope(request);
     let request_controls = Some(openai_request_controls_diagnostics(&body));
     let Some(scope_ref) = scope.as_ref() else {
         return Ok(OpenAiRequestPlan {
+            material: request.material.clone(),
             body,
             fallback_replay: None,
             scope,
@@ -202,6 +209,7 @@ pub(in super::super) fn plan_openai_responses_request(
         .cloned();
     let Some(previous) = previous else {
         return Ok(OpenAiRequestPlan {
+            material: request.material.clone(),
             body,
             fallback_replay: None,
             scope,
@@ -245,27 +253,28 @@ pub(in super::super) fn plan_openai_responses_request(
                 .server_side_context_may_be_lost = Some(true);
         }
         return Ok(OpenAiRequestPlan {
+            material: request.material.clone(),
             body,
             fallback_replay: None,
             scope,
             append_match_input,
             provider_input: full_input,
-            replay_loss_reason: previous.replay_loss_reason,
+            replay_loss_reason: request.material.cloned(&previous.replay_loss_reason)?,
             request_shape,
             diagnostics,
         });
     }
 
-    let expected_prefix = previous.append_match_items.clone();
-    let mismatch = openai_continuation_mismatch_diagnostics(
-        &expected_prefix,
-        &append_match_input,
-        &request_shape,
-    );
+    let expected_prefix = &previous.append_match_items;
     if expected_prefix.is_empty()
         || append_match_input.len() <= expected_prefix.len()
         || !append_match_input.starts_with(&expected_prefix)
     {
+        let mismatch = openai_continuation_mismatch_diagnostics(
+            expected_prefix,
+            &append_match_input,
+            &request_shape,
+        );
         let mut diagnostics = incremental_diagnostics(
             "full_request",
             "conversation_not_strict_append_only",
@@ -284,37 +293,42 @@ pub(in super::super) fn plan_openai_responses_request(
                 .server_side_context_may_be_lost = Some(true);
         }
         return Ok(OpenAiRequestPlan {
+            material: request.material.clone(),
             body,
             fallback_replay: None,
             scope,
             append_match_input,
             provider_input: full_input,
-            replay_loss_reason: previous.replay_loss_reason,
+            replay_loss_reason: request.material.cloned(&previous.replay_loss_reason)?,
             request_shape,
             diagnostics,
         });
     }
 
-    let incremental_input = full_input[expected_prefix.len()..].to_vec();
+    let incremental_input = request
+        .material
+        .cloned_slice(&full_input[expected_prefix.len()..])?;
+    let incremental_input_items = incremental_input.len();
     let response_id = allow_previous_response_id
-        .then(|| previous.response_id.clone())
+        .then(|| request.material.cloned(&previous.response_id))
+        .transpose()?
         .flatten();
     let has_response_id = response_id.is_some();
     let replay_is_compacted = previous.latest_compaction_index.is_some();
     let mut fallback_replay = None;
     let provider_input = if let Some(response_id) = response_id {
-        let mut replay_input = previous.items.clone();
-        replay_input.extend(incremental_input.clone());
+        let mut replay_input = request.material.cloned(&previous.items)?;
+        replay_input.extend(request.material.cloned(&incremental_input)?);
         if previous.replay_loss_reason.is_none() {
-            let mut replay_body = body.clone();
-            replay_body["input"] = Value::Array(replay_input.clone());
+            let mut replay_body = request.material.cloned(&body)?;
+            replay_body["input"] = Value::Array(request.material.cloned(&replay_input)?);
             replay_body
                 .as_object_mut()
                 .expect("OpenAI Responses request body should be an object")
                 .remove("previous_response_id");
             fallback_replay = Some((replay_body, replay_input));
         }
-        body["input"] = Value::Array(incremental_input.clone());
+        body["input"] = Value::Array(request.material.cloned(&incremental_input)?);
         body["previous_response_id"] = Value::String(response_id);
         if continuation_contract
             == OpenAiResponsesContinuationContract::StoreResponsesAndOmitInstructionsWithPreviousResponseId
@@ -323,21 +337,22 @@ pub(in super::super) fn plan_openai_responses_request(
                 .expect("OpenAI Responses request body should be an object")
                 .remove("instructions");
         }
-        incremental_input.clone()
+        incremental_input
     } else {
-        let mut provider_input = previous.items.clone();
-        provider_input.extend(incremental_input.clone());
-        body["input"] = Value::Array(provider_input.clone());
+        let mut provider_input = request.material.cloned(&previous.items)?;
+        provider_input.extend(incremental_input);
+        body["input"] = Value::Array(request.material.cloned(&provider_input)?);
         provider_input
     };
     let request_shape_hash = request_shape_hash(&request_shape);
     Ok(OpenAiRequestPlan {
+        material: request.material.clone(),
         body,
         fallback_replay,
         scope,
         append_match_input,
         provider_input,
-        replay_loss_reason: previous.replay_loss_reason.clone(),
+        replay_loss_reason: request.material.cloned(&previous.replay_loss_reason)?,
         request_shape,
         diagnostics: ProviderRequestDiagnostics {
             request_lowering_mode: openai_append_match_lowering_mode(
@@ -361,7 +376,7 @@ pub(in super::super) fn plan_openai_responses_request(
                 server_side_context_may_be_lost: (!has_response_id
                     && previous.replay_loss_reason.is_some())
                 .then_some(true),
-                incremental_input_items: Some(incremental_input.len()),
+                incremental_input_items: Some(incremental_input_items),
                 full_input_items: Some(full_input_items),
                 expected_prefix_items: Some(expected_prefix.len()),
                 first_mismatch_index: None,
@@ -441,7 +456,7 @@ fn build_openai_input_for_contract(
                     { "type": "input_text", "text": prompt },
                     {
                         "type": "input_image",
-                        "image_url": format!("data:{media_type};base64,{data_base64}"),
+                        "image_url": data_base64.data_url(media_type)?,
                     },
                 ],
             })),

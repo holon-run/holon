@@ -119,7 +119,7 @@ impl RuntimeHandle {
                 }
             }
             update_tool_result_block_content(index, tool_results, &tool_result_envelopes[index])?;
-            self.inner.storage.append_event(&AuditEvent::legacy(
+            self.append_original_audit_event(AuditEvent::legacy(
                 "work_item_completion_report_candidate_promoted",
                 serde_json::json!({
                     "agent_id": agent_id,
@@ -129,7 +129,8 @@ impl RuntimeHandle {
                     "brief_id": promotion.brief_id.clone(),
                     "text_preview": truncate_preview(report_text, ROUND_TEXT_PREVIEW_LIMIT),
                 }),
-            ))?;
+            ))
+            .await?;
             promotions.push(promotion);
         }
         Ok(promotions)

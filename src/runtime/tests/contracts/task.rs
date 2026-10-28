@@ -76,23 +76,36 @@ async fn task_post_commit_fault_recovers_active_projection_after_restart() {
         };
         harness.arm_fault(fault);
 
-        harness
+        let result = harness
             .runtime()
             .persist_task_transition(&task, "task_post_commit_contract")
+            .await;
+        harness.assert_post_commit_result(result, fault, expected_effect);
+        let before_recovery = harness.snapshot();
+        assert_eq!(before_recovery.tasks, vec![task.clone()]);
+        if fault == crate::runtime_db::transitions::TransitionFaultPoint::BeforeCacheUpdate {
+            let error = harness
+                .runtime()
+                .active_tasks(usize::MAX)
+                .await
+                .unwrap_err();
+            assert!(matches!(
+                error.downcast_ref::<crate::runtime::mutation_owner::MutationOwnerError>(),
+                Some(crate::runtime::mutation_owner::MutationOwnerError::NeedsReconcile(_))
+            ));
+            drop(harness.runtime().begin_mutation().await.unwrap());
+            assert_eq!(harness.snapshot(), before_recovery);
+        }
+        assert!(harness
+            .runtime()
+            .active_tasks(usize::MAX)
             .await
-            .unwrap();
-
-        harness.assert_post_commit_warning(expected_effect);
+            .unwrap()
+            .iter()
+            .any(|record| record.id == task.id));
         assert_eq!(
             harness.runtime().task_record(&task.id).await.unwrap(),
             Some(task.clone())
-        );
-        let cached_before_restart = harness.runtime().active_tasks(usize::MAX).await.unwrap();
-        assert_eq!(
-            cached_before_restart
-                .iter()
-                .any(|record| record.id == task.id),
-            fault != crate::runtime_db::transitions::TransitionFaultPoint::BeforeCacheUpdate
         );
         let committed = harness.snapshot();
 
@@ -202,52 +215,58 @@ async fn task_restart_interrupts_inflight_task_once() {
     let now = harness.now();
     harness
         .runtime()
-        .storage()
-        .append_task(&TaskRecord {
-            id: "task-restart-contract".into(),
-            agent_id: "default".into(),
-            kind: TaskKind::CommandTask,
-            status: TaskStatus::Running,
-            created_at: now - chrono::Duration::seconds(1),
-            updated_at: now - chrono::Duration::seconds(1),
-            parent_message_id: None,
-            work_item_id: Some("work-restart-a".into()),
-            summary: Some("recoverable command".into()),
-            detail: None,
-            recovery: Some(TaskRecoverySpec::CommandTask {
-                summary: "recoverable command".into(),
-                spec: crate::types::CommandTaskSpec {
-                    cmd: "sleep 5".into(),
-                    workdir: None,
-                    shell: None,
-                    login: true,
-                    tty: false,
-                    yield_time_ms: 10,
-                    max_output_tokens: None,
-                    accepts_input: false,
-                    terminal_reentry: false,
-                },
-                authority_class: AuthorityClass::OperatorInstruction,
-                promoted_from_exec_command: false,
-            }),
-        })
+        .persist_task_transition(
+            &TaskRecord {
+                id: "task-restart-contract".into(),
+                agent_id: "default".into(),
+                kind: TaskKind::CommandTask,
+                status: TaskStatus::Running,
+                created_at: now - chrono::Duration::seconds(1),
+                updated_at: now - chrono::Duration::seconds(1),
+                parent_message_id: None,
+                work_item_id: Some("work-restart-a".into()),
+                summary: Some("recoverable command".into()),
+                detail: None,
+                recovery: Some(TaskRecoverySpec::CommandTask {
+                    summary: "recoverable command".into(),
+                    spec: crate::types::CommandTaskSpec {
+                        cmd: "sleep 5".into(),
+                        workdir: None,
+                        shell: None,
+                        login: true,
+                        tty: false,
+                        yield_time_ms: 10,
+                        max_output_tokens: None,
+                        accepts_input: false,
+                        terminal_reentry: false,
+                    },
+                    authority_class: AuthorityClass::OperatorInstruction,
+                    promoted_from_exec_command: false,
+                }),
+            },
+            "restart_original_task_fixture",
+        )
+        .await
         .unwrap();
     harness
         .runtime()
-        .storage()
-        .append_task(&TaskRecord {
-            id: "task-restart-contract-b".into(),
-            agent_id: "default".into(),
-            kind: TaskKind::CommandTask,
-            status: TaskStatus::Running,
-            created_at: now,
-            updated_at: now,
-            parent_message_id: None,
-            work_item_id: Some("work-restart-b".into()),
-            summary: Some("second recoverable command".into()),
-            detail: None,
-            recovery: None,
-        })
+        .persist_task_transition(
+            &TaskRecord {
+                id: "task-restart-contract-b".into(),
+                agent_id: "default".into(),
+                kind: TaskKind::CommandTask,
+                status: TaskStatus::Running,
+                created_at: now,
+                updated_at: now,
+                parent_message_id: None,
+                work_item_id: Some("work-restart-b".into()),
+                summary: Some("second recoverable command".into()),
+                detail: None,
+                recovery: None,
+            },
+            "restart_original_task_fixture",
+        )
+        .await
         .unwrap();
 
     harness.restart();

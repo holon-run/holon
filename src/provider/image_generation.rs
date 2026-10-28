@@ -611,6 +611,7 @@ mod tests {
 
     fn quota_test_request() -> ProviderGenerateImageRequest {
         ProviderGenerateImageRequest {
+            material: Default::default(),
             prompt: "test".into(),
             size: None,
             aspect_ratio: None,

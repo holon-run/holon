@@ -30,7 +30,7 @@ async fn canonical_turn_start_uses_retained_history_high_water() {
         .unwrap();
     assert_eq!(runtime.agent_state().await.unwrap().turn_index, 0);
     runtime
-        .begin_interactive_turn_for_test(None, None)
+        .begin_interactive_turn(None, None, None)
         .await
         .unwrap();
     let state = runtime.agent_state().await.unwrap();
@@ -80,7 +80,7 @@ async fn canonical_turn_start_failure_keeps_memory_and_state_unchanged() {
         })
         .unwrap();
     assert!(runtime
-        .begin_interactive_turn_for_test(Some("uncommitted-binding"), None)
+        .begin_interactive_turn(None, Some("uncommitted-binding"), None)
         .await
         .is_err());
     assert_eq!(runtime.agent_state().await.unwrap(), before);
@@ -252,6 +252,39 @@ async fn canonical_turn_start_rejects_non_open_attempts_including_retry() {
     }
 }
 
+fn assert_original_turn_audit_notifications(
+    runtime: &RuntimeHandle,
+    rx: &mut tokio::sync::broadcast::Receiver<crate::storage::PublishedAuditEvent>,
+    expected: &[&str],
+) {
+    let scope = resident_input_evidence::InputEvidenceScope {
+        agent_id: "default".into(),
+        identity_incarnation: runtime.inner.identity_incarnation,
+    };
+    let mut actual = Vec::new();
+    let mut last_seq = 0;
+    loop {
+        let published = match rx.try_recv() {
+            Ok(published) => published,
+            Err(tokio::sync::broadcast::error::TryRecvError::Empty) => break,
+            Err(error) => panic!("turn Audit channel: {error}"),
+        };
+        if !expected.contains(&published.event.kind.as_str()) {
+            continue;
+        }
+        let original = published.qualified.as_ref().expect("raw turn Audit");
+        original
+            .validate(&scope, &runtime.inner.input_evidence_budget)
+            .unwrap();
+        assert!(std::ptr::eq(original.event(), &*published.event));
+        assert_eq!(published.agent_id.as_deref(), Some("default"));
+        assert!(published.event.event_seq > last_seq);
+        last_seq = published.event.event_seq;
+        actual.push(published.event.kind.clone());
+    }
+    assert_eq!(actual, expected);
+}
+
 struct PickThenExecProvider {
     calls: Mutex<usize>,
     target_work_item_id: String,
@@ -277,8 +310,14 @@ impl AgentProvider for ImmediateWaitContinuationProvider {
                     .iter()
                     .any(|tool| tool.name == "CreateWorkItem"));
                 assert!(!request.tools.iter().any(|tool| tool.name == "WaitFor"));
-                complete_immediate_wait_dependency(runtime, false).await;
+                let dependency_runtime = runtime.clone();
+                tokio::spawn(async move {
+                    complete_immediate_wait_dependency(&dependency_runtime, false).await;
+                })
+                .await
+                .unwrap();
                 return Ok(ProviderTurnResponse {
+                    material: Default::default(),
                     blocks: vec![ModelBlock::Text {
                         text: "Obsolete waiting report.".into(),
                     }],
@@ -371,6 +410,7 @@ impl AgentProvider for ImmediateWaitContinuationProvider {
             ),
         };
         Ok(ProviderTurnResponse {
+            material: Default::default(),
             blocks,
             stop_reason: None,
             input_tokens: 10,
@@ -412,6 +452,46 @@ async fn run_immediate_wait_continuation(delivery: &'static str, claimed: bool, 
         },
     )
     .unwrap();
+    // Claim the original provider invocation before seeding the dependency's
+    // independent queue obligation; the scheduler must not consume that result.
+    let source = runtime
+        .enqueue(MessageEnvelope::new(
+            "default",
+            MessageKind::OperatorPrompt,
+            MessageOrigin::Operator {
+                actor_id: None,
+                actor_display_name: None,
+            },
+            AuthorityClass::OperatorInstruction,
+            Priority::Normal,
+            MessageBody::Text {
+                text: "continue after immediate wait".into(),
+            },
+        ))
+        .await
+        .unwrap();
+    let scheduler_executor::RunLoopPoll::Message(scheduled) =
+        scheduler_executor::SchedulerDecisionExecutor::new(&runtime)
+            .poll()
+            .await
+            .unwrap()
+    else {
+        panic!("immediate wait source must be claimed");
+    };
+    assert_eq!(scheduled.message.id, source.id);
+    runtime
+        .begin_dispatch_turn(
+            &scheduled.message,
+            None,
+            None,
+            scheduled
+                .dispatch_plan
+                .execution_admission_provenance
+                .clone(),
+            &scheduled.dispatch_plan.prior_closure,
+        )
+        .await
+        .unwrap();
     let task_id = "task-immediate-continuation";
     mark_blocking_task(&runtime, task_id).await;
     if pending {
@@ -423,18 +503,30 @@ async fn run_immediate_wait_continuation(delivery: &'static str, claimed: bool, 
         .storage()
         .latest_wait_conditions_for_agent("default")
         .unwrap();
-    let queue_before = runtime.storage().read_recent_queue_entries(100).unwrap();
-    let outcome = runtime
-        .run_agent_loop(
-            "default",
-            AuthorityClass::OperatorInstruction,
-            test_effective_prompt(),
-            LoopControlOptions {
-                max_tool_rounds: None,
-            },
-        )
-        .await
-        .unwrap();
+    let dependency_queue = |queue: Vec<QueueEntryRecord>| {
+        queue
+            .into_iter()
+            .filter(|entry| entry.message_id != source.id)
+            .collect::<Vec<_>>()
+    };
+    let queue_before = dependency_queue(runtime.storage().read_recent_queue_entries(100).unwrap());
+    let processing_runtime = runtime.clone();
+    let outcome = tokio::spawn(async move {
+        processing_runtime
+            .run_agent_loop_with_fixture_dispatch(
+                "default",
+                AuthorityClass::OperatorInstruction,
+                test_effective_prompt(),
+                LoopControlOptions {
+                    max_tool_rounds: None,
+                },
+                Some(scheduled),
+            )
+            .await
+    })
+    .await
+    .unwrap()
+    .unwrap();
     assert_eq!(*provider.calls.lock().await, if pending { 4 } else { 3 });
     assert!(outcome.prepared_wait_for.is_none());
     assert_eq!(outcome.final_text, "Continued in the same turn.");
@@ -447,14 +539,13 @@ async fn run_immediate_wait_continuation(delivery: &'static str, claimed: bool, 
     );
     if !pending {
         assert_eq!(
-            runtime.storage().read_recent_queue_entries(100).unwrap(),
+            dependency_queue(runtime.storage().read_recent_queue_entries(100).unwrap()),
             queue_before
         );
     }
     let tools = runtime.storage().read_recent_tool_executions(10).unwrap();
     assert_eq!(tools.len(), 2);
-    // This fixture invokes one loop directly, without a persisted turn record.
-    // Both tools must finish before that invocation returns its final text.
+    // Both tools finish in the original actual dispatch before its terminal ACK.
     assert!(tools
         .iter()
         .all(|tool| tool.status == ToolExecutionStatus::Success));
@@ -493,7 +584,7 @@ async fn commit_wait_dependency(
     assert_eq!(settlement.task_id, task.id);
     assert_eq!(settlement.work_item_id, task.work_item_id);
     assert_eq!(settlement.rejoin_generation, 1);
-    assert_eq!(settlement.parent_turn_id, parent_turn_id);
+    assert_eq!(settlement.source.parent_turn_id().unwrap(), parent_turn_id);
 }
 
 async fn complete_immediate_wait_dependency(runtime: &RuntimeHandle, claimed: bool) {
@@ -634,13 +725,44 @@ async fn turn_record_uses_exact_turn_evidence_beyond_recent_window() {
         },
     );
     message.turn_id = Some(turn_id.into());
-    runtime.storage().append_message(&message).unwrap();
+    let message = runtime.enqueue(message).await.unwrap();
+    let scheduler_executor::RunLoopPoll::Message(scheduled) =
+        scheduler_executor::SchedulerDecisionExecutor::new(&runtime)
+            .poll()
+            .await
+            .unwrap()
+    else {
+        panic!("exact evidence source was not claimed");
+    };
+    assert_eq!(scheduled.message.id, message.id);
+    runtime
+        .begin_dispatch_turn(
+            &scheduled.message,
+            None,
+            None,
+            scheduled
+                .dispatch_plan
+                .execution_admission_provenance
+                .clone(),
+            &scheduled.dispatch_plan.prior_closure,
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        runtime
+            .agent_state()
+            .await
+            .unwrap()
+            .current_turn_id
+            .as_deref(),
+        Some(turn_id)
+    );
 
     let mut target_brief =
         BriefRecord::new("default", BriefKind::Result, "target brief", None, None);
     target_brief.id = "brief-exact-target".into();
     target_brief.turn_id = Some(turn_id.into());
-    runtime.storage().append_brief(&target_brief).unwrap();
+    runtime.persist_brief(&target_brief).await.unwrap();
 
     let target_tool = ToolExecutionRecord {
         id: "tool-exact-target".into(),
@@ -660,8 +782,8 @@ async fn turn_record_uses_exact_turn_evidence_beyond_recent_window() {
         invocation_surface: None,
     };
     runtime
-        .storage()
-        .append_tool_execution(&target_tool)
+        .persist_tool_execution_evidence(&target_tool)
+        .await
         .unwrap();
 
     let now = Utc::now();
@@ -685,10 +807,30 @@ async fn turn_record_uses_exact_turn_evidence_beyond_recent_window() {
         trigger_message_id: None,
         triggered_at: None,
     };
-    runtime
-        .storage()
-        .append_wait_condition(&target_wait)
-        .unwrap();
+    {
+        let mut mutation = runtime.begin_mutation().await.unwrap();
+        mutation
+            .commit_wait_transition(
+                crate::ids::audit_event_id(),
+                crate::runtime_db::transitions::WaitTransitionCommand {
+                    agent_id: "default".into(),
+                    work_items: Vec::new(),
+                    expected_wait_conditions: Vec::new(),
+                    wait_conditions: vec![target_wait.clone()],
+                    timer_wake: None,
+                    task_result_admission: None,
+                    agent_state: None,
+                    audit_events: Vec::new(),
+                    index_changes: Vec::new(),
+                    notify_scheduler: false,
+                    fault: None,
+                },
+                Default::default(),
+                None,
+            )
+            .await
+            .unwrap();
+    }
 
     runtime
         .inner
@@ -730,7 +872,7 @@ async fn turn_record_uses_exact_turn_evidence_beyond_recent_window() {
                     id: format!("wait-noise-{index}"),
                     agent_id: "default".into(),
                     work_item_id: None,
-                    status: WaitConditionStatus::Active,
+                    status: WaitConditionStatus::Cancelled,
                     kind: WaitConditionKind::External,
                     source: Some("WaitFor".into()),
                     subject_ref: None,
@@ -741,7 +883,7 @@ async fn turn_record_uses_exact_turn_evidence_beyond_recent_window() {
                     updated_at: noise.created_at,
                     expires_at: None,
                     resolved_at: None,
-                    cancelled_at: None,
+                    cancelled_at: Some(noise.created_at),
                     turn_id: Some(noise_turn_id),
                     trigger_message_id: None,
                     triggered_at: None,
@@ -751,6 +893,23 @@ async fn turn_record_uses_exact_turn_evidence_beyond_recent_window() {
             Ok(())
         })
         .unwrap();
+
+    // Only the actual Turn relation is explicitly prepared. Unrelated raw
+    // historical artifacts remain outside the qualified resident domain.
+    let mut request = resident_work::WorkCaptureRequest::current();
+    request.include_live = false;
+    request.nonopen_limit = 0;
+    request.required_turn_ids.insert(turn_id.into());
+    let mut mutation = runtime.begin_mutation().await.unwrap();
+    mutation.prepare_owner_work_request(&request).await.unwrap();
+    let selected = mutation.capture_work(&request).unwrap();
+    assert_eq!(selected.records.len(), 1);
+    assert_eq!(
+        selected.waits_for_turn(turn_id).unwrap()[0].id,
+        target_wait.id
+    );
+    drop(selected);
+    drop(mutation);
 
     let terminal = TurnTerminalRecord {
         turn_id: turn_id.into(),
@@ -769,6 +928,7 @@ async fn turn_record_uses_exact_turn_evidence_beyond_recent_window() {
     assert_eq!(record.produced_brief_ids, vec![target_brief.id]);
     assert_eq!(record.tool_execution_ids, vec![target_tool.id]);
     assert_eq!(record.waiting_condition_ids, vec![target_wait.id]);
+    drop(scheduled);
 }
 
 #[tokio::test]
@@ -885,15 +1045,16 @@ fn terminal_settlement_transition(
     turn_record.terminal = Some(crate::types::TurnTerminalSummary::from_terminal(&terminal));
     turn::TurnTerminalTransition {
         terminal,
-        turn_record,
+        turn_record: turn::inputs::BuiltTurnRecord::fixture(turn_record),
         prepared_work_item_completion: None,
         prepared_wait_for: None,
+        provider_recovery_message: None,
         terminal_tool_executions: Vec::new(),
     }
 }
 
-#[test]
-fn terminal_settlement_accepts_exactly_one_brief_or_typed_no_brief_reason() {
+#[tokio::test]
+async fn terminal_settlement_accepts_exactly_one_brief_or_typed_no_brief_reason() {
     let dir = tempdir().unwrap();
     let workspace = tempdir().unwrap();
     let runtime = RuntimeHandle::new(
@@ -933,12 +1094,13 @@ fn terminal_settlement_accepts_exactly_one_brief_or_typed_no_brief_reason() {
     ] {
         runtime
             .validate_terminal_brief_settlement(&transition)
+            .await
             .unwrap();
     }
 }
 
-#[test]
-fn terminal_settlement_rejects_missing_or_ambiguous_settlement_with_diagnostic() {
+#[tokio::test]
+async fn terminal_settlement_rejects_missing_or_ambiguous_settlement_with_diagnostic() {
     let dir = tempdir().unwrap();
     let workspace = tempdir().unwrap();
     let runtime = RuntimeHandle::new(
@@ -969,6 +1131,7 @@ fn terminal_settlement_rejects_missing_or_ambiguous_settlement_with_diagnostic()
     ] {
         let error = runtime
             .validate_terminal_brief_settlement(&transition)
+            .await
             .unwrap_err();
         assert!(error
             .to_string()
@@ -1055,15 +1218,26 @@ async fn run_atomic_wait_settlement_test(scenario: AtomicWaitScenario) {
         AdmissionContext::ControlAuthenticated,
     );
     let message = runtime.enqueue(message).await.unwrap();
-    assert!(matches!(
-        scheduler_executor::SchedulerDecisionExecutor::new(&runtime)
-            .poll()
-            .await
-            .unwrap(),
-        scheduler_executor::RunLoopPoll::Message(_)
-    ));
+    let scheduled = match scheduler_executor::SchedulerDecisionExecutor::new(&runtime)
+        .poll()
+        .await
+        .unwrap()
+    {
+        scheduler_executor::RunLoopPoll::Message(scheduled) => scheduled,
+        _ => panic!("atomic wait source must be claimed"),
+    };
+    assert_eq!(scheduled.message.id, message.id);
     runtime
-        .begin_interactive_turn(Some(&message), None, None)
+        .begin_dispatch_turn(
+            &scheduled.message,
+            None,
+            None,
+            scheduled
+                .dispatch_plan
+                .execution_admission_provenance
+                .clone(),
+            &scheduled.dispatch_plan.prior_closure,
+        )
         .await
         .unwrap();
 
@@ -1210,6 +1384,7 @@ async fn run_atomic_wait_settlement_test(scenario: AtomicWaitScenario) {
         turn_record,
         prepared_work_item_completion: None,
         prepared_wait_for: Some(prepared),
+        provider_recovery_message: None,
         terminal_tool_executions: Vec::new(),
     };
 
@@ -1411,6 +1586,7 @@ async fn run_atomic_wait_settlement_test(scenario: AtomicWaitScenario) {
 impl AgentProvider for StablePrefixDiagnosticsProvider {
     async fn complete_turn(&self, _request: ProviderTurnRequest) -> Result<ProviderTurnResponse> {
         Ok(ProviderTurnResponse {
+            material: Default::default(),
             blocks: vec![ModelBlock::Text {
                 text: "done".into(),
             }],
@@ -1483,21 +1659,44 @@ async fn terminal_pick_ends_turn_before_later_tools_or_provider_rounds() {
         .await
         .unwrap();
     runtime.pick_work_item(caller.id.clone()).await.unwrap();
-    {
-        let mut guard = runtime.inner.agent.lock().await;
-        guard.state.current_turn_id = Some("turn-terminal-pick".into());
-        guard.state.current_turn_work_item_id = Some(caller.id.clone());
-        guard.state.current_execution_binding = Some(crate::types::WorkItemExecutionBinding {
-            activation_id: Some("activation-terminal-pick".into()),
-            admission_provenance: None,
-            source_message_id: "message-terminal-pick".into(),
-            turn_id: "turn-terminal-pick".into(),
-            owner: None,
-            work_item_id: Some(caller.id.clone()),
-            claimed_work_revision: Some(caller.revision),
-        });
-        guard.persist_state(&runtime.inner.storage).unwrap();
-    }
+    let mut source = MessageEnvelope::new(
+        "default",
+        MessageKind::OperatorPrompt,
+        MessageOrigin::Operator {
+            actor_id: None,
+            actor_display_name: None,
+        },
+        AuthorityClass::OperatorInstruction,
+        Priority::Normal,
+        MessageBody::Text {
+            text: "pick the next work item".into(),
+        },
+    );
+    source.work_item_id = Some(caller.id.clone());
+    source.turn_id = Some("turn-terminal-pick".into());
+    let source = runtime.enqueue(source).await.unwrap();
+    let scheduler_executor::RunLoopPoll::Message(scheduled) =
+        scheduler_executor::SchedulerDecisionExecutor::new(&runtime)
+            .poll()
+            .await
+            .unwrap()
+    else {
+        panic!("terminal pick source must be claimed");
+    };
+    assert_eq!(scheduled.message.id, source.id);
+    runtime
+        .begin_dispatch_turn(
+            &scheduled.message,
+            None,
+            None,
+            scheduled
+                .dispatch_plan
+                .execution_admission_provenance
+                .clone(),
+            &scheduled.dispatch_plan.prior_closure,
+        )
+        .await
+        .unwrap();
     let provider = Arc::new(PickThenExecProvider {
         calls: Mutex::new(0),
         target_work_item_id: target.id.clone(),
@@ -1505,13 +1704,14 @@ async fn terminal_pick_ends_turn_before_later_tools_or_provider_rounds() {
     *runtime.inner.provider.write().await = provider.clone();
 
     let outcome = runtime
-        .run_agent_loop(
+        .run_agent_loop_with_fixture_dispatch(
             "default",
             AuthorityClass::OperatorInstruction,
             test_effective_prompt(),
             LoopControlOptions {
                 max_tool_rounds: None,
             },
+            Some(scheduled),
         )
         .await
         .unwrap();
@@ -1546,6 +1746,7 @@ impl AgentProvider for PickThenExecProvider {
             panic!("terminal PickWorkItem should end the turn");
         }
         Ok(ProviderTurnResponse {
+            material: Default::default(),
             blocks: vec![
                 ModelBlock::ToolUse {
                     id: "pick-target".into(),
@@ -1593,6 +1794,9 @@ async fn runtime_recovers_from_max_token_truncation() {
         context_config(),
     )
     .unwrap();
+    let bus = crate::storage::EventBus::new(128);
+    runtime.storage().enable_event_bus(bus.clone()).unwrap();
+    let mut notifications = bus.subscribe();
 
     let outcome = runtime
         .run_agent_loop(
@@ -1620,6 +1824,11 @@ async fn runtime_recovers_from_max_token_truncation() {
                 title: Some("Second".into()),
             },
         ]
+    );
+    assert_original_turn_audit_notifications(
+        &runtime,
+        &mut notifications,
+        &["max_output_tokens_recovery"],
     );
 }
 
@@ -1689,6 +1898,9 @@ async fn runtime_records_text_only_round_observations() {
         context_config(),
     )
     .unwrap();
+    let bus = crate::storage::EventBus::new(128);
+    runtime.storage().enable_event_bus(bus.clone()).unwrap();
+    let mut notifications = bus.subscribe();
 
     let outcome = runtime
         .run_agent_loop(
@@ -1743,6 +1955,69 @@ async fn runtime_records_text_only_round_observations() {
         .as_str()
         .unwrap()
         .contains("runtime split"));
+    assert_original_turn_audit_notifications(
+        &runtime,
+        &mut notifications,
+        &[
+            "lineage_selected",
+            "provider_round_completed",
+            "assistant_round_recorded",
+            "text_only_round_observed",
+        ],
+    );
+}
+
+#[tokio::test]
+async fn independent_audit_provider_round_failure_keeps_prior_state_ack() -> Result<()> {
+    let dir = tempdir()?;
+    let workspace = tempdir()?;
+    let runtime = RuntimeHandle::new(
+        "default",
+        dir.path().to_path_buf(),
+        workspace.path().to_path_buf(),
+        "http://127.0.0.1:7878".into(),
+        Arc::new(StubProvider::new(
+            "The round must not pass the rejected Audit.",
+        )),
+        "default".into(),
+        context_config(),
+    )?;
+    runtime.await_initial_resources().await;
+    let _refresh = runtime.hold_resource_refresh_for_test().await?;
+    let bus = crate::storage::EventBus::new(128);
+    runtime.storage().enable_event_bus(bus.clone())?;
+    let mut notifications = bus.subscribe();
+    runtime.runtime_db().transaction(|tx| {
+        tx.execute_batch(
+            "CREATE TRIGGER reject_provider_round_audit BEFORE INSERT ON audit_events
+             WHEN NEW.kind = 'provider_round_completed'
+             BEGIN SELECT RAISE(ABORT,'provider round Audit rejected'); END;",
+        )?;
+        Ok(())
+    })?;
+    let error = runtime
+        .run_agent_loop(
+            "default",
+            AuthorityClass::OperatorInstruction,
+            test_effective_prompt(),
+            LoopControlOptions {
+                max_tool_rounds: None,
+            },
+        )
+        .await
+        .err()
+        .expect("provider Audit rejection");
+    assert!(format!("{error:#}").contains("provider round Audit rejected"));
+    let root = runtime.inner.mutation_owner.capture()?.unwrap();
+    assert_eq!(root.state.total_model_rounds, 1);
+    assert_eq!(runtime.agent_state().await?, *root.state);
+    let events = runtime.storage().read_recent_events(128)?;
+    assert!(!events.iter().any(|event| matches!(
+        event.kind.as_str(),
+        "provider_round_completed" | "assistant_round_recorded" | "text_only_round_observed"
+    )));
+    assert_original_turn_audit_notifications(&runtime, &mut notifications, &["lineage_selected"]);
+    Ok(())
 }
 
 #[tokio::test]
@@ -2156,12 +2431,12 @@ async fn run_wait_for_final_report_test_with_compaction(
     )
     .unwrap();
     runtime
-        .inner
-        .agent
-        .lock()
+        .update_agent_state(|state| {
+            state.active_workspace_entry = None;
+            Ok(())
+        })
         .await
-        .state
-        .active_workspace_entry = None;
+        .unwrap();
     *provider.report_runtime.lock().await = Some(runtime.clone());
     if scenario == WaitForFinalReportScenario::SettlementErrorRecovery {
         let timer = runtime
@@ -2601,6 +2876,7 @@ impl AgentProvider for PickThenSilentOperatorWaitProvider {
                 .clone()
                 .expect("target work item id must be set before the turn");
             return Ok(ProviderTurnResponse {
+                material: Default::default(),
                 blocks: vec![
                     ModelBlock::Text {
                         text: "Focusing the WorkItem before waiting.".into(),
@@ -2637,6 +2913,7 @@ impl AgentProvider for PickThenSilentOperatorWaitProvider {
             });
         }
         Ok(ProviderTurnResponse {
+            material: Default::default(),
             blocks: vec![ModelBlock::Text {
                 text: "Waiting for the operator decision.".into(),
             }],
@@ -2855,6 +3132,9 @@ async fn disallowed_tool_call_is_auditable_and_continuation_stays_valid() {
         continuation_ready_context_config(&workspace, 1_000),
     )
     .unwrap();
+    let bus = crate::storage::EventBus::new(128);
+    runtime.storage().enable_event_bus(bus.clone()).unwrap();
+    let mut notifications = bus.subscribe();
 
     let outcome = runtime
         .run_agent_loop(
@@ -2941,6 +3221,11 @@ async fn disallowed_tool_call_is_auditable_and_continuation_stays_valid() {
     assert_eq!(
         refs[0].get("is_error").and_then(|v| v.as_bool()),
         Some(true)
+    );
+    assert_original_turn_audit_notifications(
+        &runtime,
+        &mut notifications,
+        &["tool_execution_failed"],
     );
 }
 
@@ -3497,6 +3782,292 @@ async fn turn_local_compaction_fails_fast_when_baseline_exceeds_budget() {
     );
 }
 
+// History fixtures use the original owner and transaction, including actual
+// source sequence, canonical assignment, State projection and input publication.
+fn publish_committed_history_fixture<'a>(
+    runtime: &'a RuntimeHandle,
+    turn_id: &'a str,
+    index: u64,
+    owner: Option<&'a str>,
+    text: String,
+) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send + 'a>> {
+    Box::pin(async move {
+        use crate::runtime::resident_input_evidence::{
+            InputEvidenceFamily as Family, InputEvidenceKey as Key,
+        };
+        use crate::runtime_db::{
+            evidence::{append_message_tx, upsert_agent_state_tx},
+            input_evidence_snapshot::{
+                register_committed_input_evidence_tx, validate_existing_input_evidence_tx,
+                CanonicalInputEvidence as Fact,
+            },
+            repositories::{committed_turn_record_tx, upsert_turn_record_tx},
+            transitions::{AgentStateMutation, PostCommitEffects, TransitionCommit},
+        };
+        let mut message = MessageEnvelope::new(
+            "default",
+            MessageKind::OperatorPrompt,
+            MessageOrigin::Operator {
+                actor_id: None,
+                actor_display_name: None,
+            },
+            AuthorityClass::OperatorInstruction,
+            Priority::Normal,
+            MessageBody::Text { text },
+        );
+        message.turn_id = Some(turn_id.into());
+        message.work_item_id = owner.map(str::to_string);
+        let mut mutation = runtime.begin_mutation().await.unwrap();
+        let expected = mutation.state.clone();
+        let committed = mutation
+            .commit_transition(crate::ids::audit_event_id(), |scope| {
+                runtime.inner.runtime_db.transaction(|tx| {
+                    validate_existing_input_evidence_tx(
+                        tx,
+                        scope,
+                        &Key::new(Family::Message, &message.id),
+                    )?;
+                    validate_existing_input_evidence_tx(
+                        tx,
+                        scope,
+                        &Key::new(Family::Turn, turn_id),
+                    )?;
+                    let actual_message = append_message_tx(tx, &message)?.0;
+                    let mut turn = TurnRecord::new("default", turn_id, index);
+                    turn.owner = owner.map(|id| crate::types::TurnOwner::WorkItem {
+                        work_item_id: id.into(),
+                    });
+                    turn.current_work_item_id = owner.map(str::to_string);
+                    turn.input_message_ids = vec![actual_message.id.clone()];
+                    turn.trigger = Some(crate::types::TurnTriggerSummary::from_message(
+                        &actual_message,
+                    ));
+                    upsert_turn_record_tx(tx, &turn)?;
+                    let actual_turn =
+                        committed_turn_record_tx(tx, &turn.agent_id, &turn.turn_id)?.record;
+                    let payload: String = tx.query_row(
+                        "SELECT payload_json FROM agent_states WHERE agent_id=?1",
+                        [&turn.agent_id],
+                        |row| row.get(0),
+                    )?;
+                    let mut state: AgentState = serde_json::from_str(&payload)?;
+                    anyhow::ensure!(
+                        state == expected,
+                        "history fixture State changed outside original owner"
+                    );
+                    state.turn_index = state.turn_index.max(actual_turn.turn_index);
+                    let message_count: i64 = tx.query_row(
+                        "SELECT COUNT(*) FROM messages WHERE agent_id=?1",
+                        [&turn.agent_id],
+                        |row| row.get(0),
+                    )?;
+                    state.total_message_count = usize::try_from(message_count)?;
+                    upsert_agent_state_tx(tx, &state)?;
+                    let payload: String = tx.query_row(
+                        "SELECT payload_json FROM agent_states WHERE agent_id=?1",
+                        [&turn.agent_id],
+                        |row| row.get(0),
+                    )?;
+                    let actual_state: AgentState = serde_json::from_str(&payload)?;
+                    let input_evidence_delta = register_committed_input_evidence_tx(
+                        tx,
+                        scope,
+                        &[
+                            Fact::Message(actual_message.clone()),
+                            Fact::Turn(actual_turn.clone()),
+                        ],
+                    )?;
+                    Ok(TransitionCommit {
+                        applied: true,
+                        effects: Box::new(PostCommitEffects {
+                            agent_state: Some(AgentStateMutation {
+                                expected: Some(Box::new(expected.clone())),
+                                record: Box::new(actual_state),
+                            }),
+                            input_evidence_delta,
+                            messages: vec![actual_message],
+                            turns: vec![actual_turn],
+                            ..Default::default()
+                        }),
+                        ..Default::default()
+                    })
+                })
+            })
+            .await
+            .unwrap();
+        drop(mutation);
+        runtime.apply_transition_commit(committed).await;
+    })
+}
+
+#[tokio::test]
+async fn prepared_scoped_prompt_and_budget_retry_survive_storage_removal() {
+    let dir = tempdir().unwrap();
+    let workspace = tempdir().unwrap();
+    let runtime = RuntimeHandle::new(
+        "default",
+        dir.path().to_path_buf(),
+        workspace.path().to_path_buf(),
+        "http://127.0.0.1:7878".into(),
+        Arc::new(StubProvider::new("done")),
+        "default".into(),
+        ContextConfig {
+            recent_messages: 1,
+            prompt_budget_estimated_tokens: 128_000,
+            turn_projection_budget_ratio: 1.0,
+            turn_projection_min_budget: 0,
+            turn_projection_max_budget: 64_000,
+            ..context_config()
+        },
+    )
+    .unwrap();
+    let work_item = runtime
+        .create_work_item(
+            "keep owner history through retries".into(),
+            Some(crate::types::WorkItemPlanStatus::Ready),
+            None,
+            Vec::new(),
+        )
+        .await
+        .unwrap();
+    runtime.pick_work_item(work_item.id.clone()).await.unwrap();
+    publish_committed_history_fixture(
+        &runtime,
+        "turn-owner-snapshot",
+        1,
+        Some(&work_item.id),
+        format!("OWNER_SNAPSHOT_INPUT {}", "owner-evidence ".repeat(1000)),
+    )
+    .await;
+    publish_committed_history_fixture(
+        &runtime,
+        "turn-unrelated-snapshot",
+        2,
+        Some("work-unrelated"),
+        "UNRELATED_RECENT_INPUT".into(),
+    )
+    .await;
+    // Scoped history requires the actual execution owner, not only UI focus.
+    // Keep the real current source out of both prepared history windows.
+    let mut source = MessageEnvelope::new(
+        "default",
+        MessageKind::OperatorPrompt,
+        MessageOrigin::Operator {
+            actor_id: Some("control".into()),
+            actor_display_name: None,
+        },
+        AuthorityClass::OperatorInstruction,
+        Priority::Normal,
+        MessageBody::Text {
+            text: "continue the owner task".into(),
+        },
+    )
+    .with_admission(
+        MessageDeliverySurface::HttpControlPrompt,
+        AdmissionContext::ControlAuthenticated,
+    );
+    source.work_item_id = Some(work_item.id.clone());
+    let source = runtime.enqueue(source).await.unwrap();
+    let scheduled = match scheduler_executor::SchedulerDecisionExecutor::new(&runtime)
+        .poll()
+        .await
+        .unwrap()
+    {
+        scheduler_executor::RunLoopPoll::Message(scheduled) => scheduled,
+        _ => panic!("scoped history source must be claimed"),
+    };
+    assert_eq!(scheduled.message.id, source.id);
+    assert!(scheduled.scheduler_decision.model_reentry);
+    runtime
+        .begin_dispatch_turn(
+            &scheduled.message,
+            None,
+            None,
+            scheduled
+                .dispatch_plan
+                .execution_admission_provenance
+                .clone(),
+            &scheduled.dispatch_plan.prior_closure,
+        )
+        .await
+        .unwrap();
+    // This direct capture bypasses the operator dispatcher's preparation phase.
+    runtime.ensure_context_resources().await.unwrap();
+    let original = runtime
+        .build_loaded_context_prompt(&scheduled.message, None, None, true)
+        .await
+        .unwrap();
+    assert!(matches!(
+        &original.projection_owner,
+        crate::projection_eval::ProjectionOwner::WorkItem { work_item_id }
+            if work_item_id == &work_item.id
+    ));
+    assert!(
+        original.context_sections.iter().any(|section| {
+            section.name == "current_work_item" && section.content.contains(&work_item.id)
+        }),
+        "prepared prompt must display its actual execution WorkItem"
+    );
+    let prepared = original.clone();
+    let window = prepared.history_policy().work_item_scoped_window.unwrap();
+    let prepared_id = prepared.context_snapshot_id();
+    assert_eq!(prepared_id, original.context_snapshot_id());
+    publish_committed_history_fixture(
+        &runtime,
+        "turn-late-snapshot",
+        4,
+        Some(&work_item.id),
+        "LATE_STORAGE_INPUT".into(),
+    )
+    .await;
+    drop(runtime);
+    drop(dir);
+    drop(workspace);
+
+    let outcome = prepared
+        .reproject_for_history_selector(
+            64_000,
+            &[],
+            crate::projection_eval::HistorySelector::WorkItemScoped,
+            window,
+        )
+        .unwrap();
+    let prompt = match outcome {
+        crate::prompt::HistoryReprojectionOutcome::Adopted {
+            prompt,
+            turns_loaded,
+        }
+        | crate::prompt::HistoryReprojectionOutcome::IdenticalRenderNoop {
+            prompt,
+            turns_loaded,
+        } => {
+            assert_eq!(turns_loaded, 1);
+            prompt
+        }
+        other => panic!("prepared owner history should render: {other:?}"),
+    };
+    let history = |prompt: &crate::prompt::EffectivePrompt| {
+        prompt
+            .context_sections
+            .iter()
+            .find(|section| section.name == "recent_turns")
+            .unwrap()
+            .content
+            .clone()
+    };
+    assert_eq!(prompt.context_snapshot_id(), prepared_id);
+    assert!(history(&prompt).contains("OWNER_SNAPSHOT_INPUT"));
+    assert!(!history(&prompt).contains("UNRELATED_RECENT_INPUT"));
+    assert!(!history(&prompt).contains("LATE_STORAGE_INPUT"));
+    let reduced = prompt
+        .reproject_recent_turns(1_000, &[])
+        .expect("fixture must contain reducible owner history");
+    assert_eq!(reduced.context_snapshot_id(), prepared_id);
+    assert!(history(&reduced).contains("turn-owner-snapshot"));
+    assert!(!history(&reduced).contains("UNRELATED_RECENT_INPUT"));
+    assert!(!history(&reduced).contains("LATE_STORAGE_INPUT"));
+}
+
 #[tokio::test]
 async fn turn_local_continuation_recovers_by_reprojecting_recent_turns() {
     let dir = tempdir().unwrap();
@@ -3525,33 +4096,17 @@ async fn turn_local_continuation_recovers_by_reprojecting_recent_turns() {
     .unwrap();
 
     let (_, available_tools, _, _, _) = runtime.provider_tool_selection().await.unwrap();
-    let mut historical_message = MessageEnvelope::new(
-        "default",
-        MessageKind::OperatorPrompt,
-        MessageOrigin::Operator {
-            actor_id: None,
-            actor_display_name: None,
-        },
-        AuthorityClass::OperatorInstruction,
-        Priority::Normal,
-        MessageBody::Text {
-            text: format!(
-                "historical context {}",
-                "large-history-token ".repeat(12_000)
-            ),
-        },
-    );
-    historical_message.turn_id = Some("turn-large-history".into());
-    runtime
-        .storage()
-        .append_message(&historical_message)
-        .unwrap();
-    let mut historical_turn = TurnRecord::new("default", "turn-large-history", 1);
-    historical_turn.input_message_ids = vec![historical_message.id.clone()];
-    historical_turn.trigger = Some(crate::types::TurnTriggerSummary::from_message(
-        &historical_message,
-    ));
-    runtime.storage().append_turn(&historical_turn).unwrap();
+    publish_committed_history_fixture(
+        &runtime,
+        "turn-large-history",
+        1,
+        None,
+        format!(
+            "historical context {}",
+            "large-history-token ".repeat(12_000)
+        ),
+    )
+    .await;
 
     let prompt = runtime
         .preview_prompt(
@@ -3561,7 +4116,7 @@ async fn turn_local_continuation_recovers_by_reprojecting_recent_turns() {
         .await
         .unwrap();
     let reduced_prompt = prompt
-        .reproject_recent_turns(runtime.storage(), 0, &available_tools)
+        .reproject_recent_turns(0, &available_tools)
         .expect("fixture must contain removable recent turns");
     let baseline_tokens = |prompt: &crate::prompt::EffectivePrompt| {
         let frame = super::super::provider_turn::build_provider_prompt_frame(prompt);
@@ -3857,31 +4412,14 @@ async fn context_length_exceeded_turn_recovers_once_with_recent_turns() {
     // inside the window with ~1/8-budget margins against description drift.
     let historical_repeats =
         public_tools_prompt_budget_estimated_tokens() * 7 / 8 * 4 / "historical context".len();
-    let historical_message = MessageEnvelope::new(
-        "default",
-        MessageKind::OperatorPrompt,
-        MessageOrigin::Operator {
-            actor_id: None,
-            actor_display_name: None,
-        },
-        AuthorityClass::OperatorInstruction,
-        Priority::Normal,
-        MessageBody::Text {
-            text: "historical context".repeat(historical_repeats),
-        },
-    );
-    let mut historical_turn = TurnRecord::new("default", "turn-context-recovery-history", 1);
-    let mut historical_message = historical_message;
-    historical_message.turn_id = Some(historical_turn.turn_id.clone());
-    historical_turn.input_message_ids = vec![historical_message.id.clone()];
-    historical_turn.trigger = Some(crate::types::TurnTriggerSummary::from_message(
-        &historical_message,
-    ));
-    runtime
-        .storage()
-        .append_message(&historical_message)
-        .unwrap();
-    runtime.storage().append_turn(&historical_turn).unwrap();
+    publish_committed_history_fixture(
+        &runtime,
+        "turn-context-recovery-history",
+        1,
+        None,
+        "historical context".repeat(historical_repeats),
+    )
+    .await;
 
     let message = MessageEnvelope::new(
         "default",
@@ -4428,7 +4966,7 @@ async fn parked_quota_work_item_probes_after_deadline_and_resolves_on_success() 
         .unwrap();
     runtime.pick_work_item(work.id.clone()).await.unwrap();
     {
-        let mut guard = runtime.inner.agent.lock().await;
+        let mut guard = runtime.begin_mutation().await.unwrap();
         guard.state.current_execution_binding = Some(crate::types::WorkItemExecutionBinding {
             activation_id: Some("activation-quota-probe".into()),
             admission_provenance: None,
@@ -4438,7 +4976,7 @@ async fn parked_quota_work_item_probes_after_deadline_and_resolves_on_success() 
             work_item_id: Some(work.id.clone()),
             claimed_work_revision: Some(work.revision),
         });
-        guard.persist_state(&runtime.inner.storage).unwrap();
+        guard.persist_state(&runtime.inner.storage).await.unwrap();
     }
     let error = crate::provider::provider_turn_error(
         "all configured providers failed for this turn: default: retries_exhausted (rate_limited)",
@@ -4494,9 +5032,9 @@ async fn parked_quota_work_item_probes_after_deadline_and_resolves_on_success() 
         }
     }
     {
-        let mut guard = runtime.inner.agent.lock().await;
+        let mut guard = runtime.begin_mutation().await.unwrap();
         guard.state.current_execution_binding = None;
-        guard.persist_state(&runtime.inner.storage).unwrap();
+        guard.persist_state(&runtime.inner.storage).await.unwrap();
     }
 
     let blocked = runtime
@@ -4636,6 +5174,26 @@ async fn assert_successful_same_owner_turn_supersedes_queued_provider_recovery(
     }));
     let recovery = runtime.enqueue(recovery).await.unwrap();
 
+    let mut preserved = Vec::new();
+    for kind in [MessageKind::OperatorPrompt, MessageKind::InternalFollowup] {
+        let mut message = MessageEnvelope::new(
+            "default",
+            kind,
+            MessageOrigin::Operator {
+                actor_id: None,
+                actor_display_name: None,
+            },
+            AuthorityClass::OperatorInstruction,
+            Priority::Normal,
+            MessageBody::Text {
+                text: "not runtime recovery".into(),
+            },
+        );
+        message.work_item_id = recovery.work_item_id.clone();
+        message.metadata = recovery.metadata.clone();
+        preserved.push(runtime.enqueue(message).await.unwrap().id);
+    }
+
     superseding.turn_id = Some("turn-success".into());
     let mut transition = terminal_transition(&superseding, Some("work-1"));
     transition.terminal.turn_index = 2;
@@ -4659,6 +5217,27 @@ async fn assert_successful_same_owner_turn_supersedes_queued_provider_recovery(
         .find(|entry| entry.message_id == recovery.id)
         .expect("recovery queue entry");
     assert_eq!(queue_entry.status, QueueEntryStatus::Dropped);
+    for id in preserved {
+        assert_eq!(
+            runtime
+                .inner
+                .runtime_db
+                .queue_entries()
+                .latest(&id)
+                .unwrap()
+                .unwrap()
+                .status,
+            QueueEntryStatus::Queued
+        );
+        assert!(runtime
+            .inner
+            .agent
+            .lock()
+            .await
+            .queue
+            .peek_next_matching(|message| message.id == id)
+            .is_some());
+    }
     assert!(runtime
         .inner
         .agent
@@ -4806,6 +5385,13 @@ async fn concurrent_view_image_selection_discovers_ollama_vision_once_from_cold_
                     }
                     Err(error) => panic!("Ollama test server accept failed: {error}"),
                 };
+                stream.set_nonblocking(false).unwrap();
+                stream
+                    .set_read_timeout(Some(std::time::Duration::from_secs(5)))
+                    .unwrap();
+                stream
+                    .set_write_timeout(Some(std::time::Duration::from_secs(5)))
+                    .unwrap();
                 let mut request = [0_u8; 4096];
                 let read = stream.read(&mut request).unwrap();
                 let request = String::from_utf8_lossy(&request[..read]);
@@ -5204,6 +5790,46 @@ async fn runtime_records_turn_latency_phase_events_for_provider_and_tool() {
     assert!(terminal.data["duration_ms"].as_u64().is_some());
 }
 
+async fn run_failure_artifact_provider_fixture(
+    runtime: &RuntimeHandle,
+    message: &MessageEnvelope,
+) -> Result<turn::AgentLoopOutcome> {
+    let scheduler_executor::RunLoopPoll::Message(scheduled) =
+        scheduler_executor::SchedulerDecisionExecutor::new(runtime)
+            .poll()
+            .await?
+    else {
+        anyhow::bail!("failure artifact source was not claimed");
+    };
+    anyhow::ensure!(
+        scheduled.message.id == message.id,
+        "wrong failure artifact source"
+    );
+    runtime
+        .begin_dispatch_turn(
+            &scheduled.message,
+            None,
+            None,
+            scheduled
+                .dispatch_plan
+                .execution_admission_provenance
+                .clone(),
+            &scheduled.dispatch_plan.prior_closure,
+        )
+        .await?;
+    runtime
+        .run_agent_loop_with_fixture_dispatch(
+            "default",
+            AuthorityClass::OperatorInstruction,
+            test_effective_prompt(),
+            LoopControlOptions {
+                max_tool_rounds: None,
+            },
+            Some(scheduled),
+        )
+        .await
+}
+
 #[tokio::test]
 async fn runtime_failure_artifacts_preserve_provider_attempt_timeline() {
     let dir = tempdir().unwrap();
@@ -5232,16 +5858,12 @@ async fn runtime_failure_artifacts_preserve_provider_attempt_timeline() {
             text: "trigger provider failure".into(),
         },
     );
-    let error = runtime
-        .current_provider()
-        .await
-        .complete_turn(ProviderTurnRequest::plain(
-            "system",
-            vec![ConversationMessage::UserText("prompt".into())],
-            Vec::new(),
-        ))
-        .await
-        .unwrap_err();
+    // Failure briefs reference an ingress-accepted message, never a raw value.
+    let message = runtime.enqueue(message).await.unwrap();
+    let error = match run_failure_artifact_provider_fixture(&runtime, &message).await {
+        Ok(_) => panic!("provider must fail"),
+        Err(error) => error,
+    };
     runtime
         .persist_runtime_failure_artifacts(&message, &error)
         .await
@@ -5328,17 +5950,9 @@ async fn runtime_failure_artifacts_append_turn_record_after_failure_brief() {
             text: "trigger runtime failure".into(),
         },
     );
-    let error = match runtime
-        .run_agent_loop(
-            "default",
-            AuthorityClass::OperatorInstruction,
-            test_effective_prompt(),
-            LoopControlOptions {
-                max_tool_rounds: None,
-            },
-        )
-        .await
-    {
+    // Failure briefs reference an ingress-accepted message, never a raw value.
+    let message = runtime.enqueue(message).await.unwrap();
+    let error = match run_failure_artifact_provider_fixture(&runtime, &message).await {
         Ok(_) => panic!("provider failure should abort the turn"),
         Err(error) => error,
     };
@@ -5412,25 +6026,18 @@ async fn runtime_failure_artifacts_create_terminal_turn_record_when_missing() {
             text: "trigger runtime failure".into(),
         },
     );
-    let error = match runtime
-        .run_agent_loop(
-            "default",
-            AuthorityClass::OperatorInstruction,
-            test_effective_prompt(),
-            LoopControlOptions {
-                max_tool_rounds: None,
-            },
-        )
-        .await
-    {
+    // Failure briefs reference an ingress-accepted message, never a raw value.
+    let message = runtime.enqueue(message).await.unwrap();
+    let error = match run_failure_artifact_provider_fixture(&runtime, &message).await {
         Ok(_) => panic!("provider failure should abort the turn"),
         Err(error) => error,
     };
     {
-        let mut guard = runtime.inner.agent.lock().await;
+        // Simulate the missing terminal summary as an acknowledged State
+        // mutation, so the next assembler sees the same published owner view.
+        let mut guard = runtime.begin_mutation().await.unwrap();
         guard.state.last_turn_terminal = None;
-        runtime.storage().write_agent(&guard.state).unwrap();
-        guard.last_persisted_state = guard.state.clone();
+        guard.persist_state(&runtime.inner.storage).await.unwrap();
     }
 
     runtime

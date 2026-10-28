@@ -361,6 +361,64 @@ fn interrupted_result_selection_requires_its_own_canonical_snapshot() {
     }
 }
 
+#[test]
+fn paused_recovery_observation_keeps_the_canonical_interrupted_anchor() -> Result<()> {
+    let (_dir, db) = runtime_db();
+    let record = live_result(&db, 0, TaskKind::CommandTask, "live-parent", None);
+    prepare_recovery(&db, &[record.clone()], false);
+    let mut turn = interrupted_turn("live-parent", &[record.clone()], false);
+    turn.idle_input_batch = Some(crate::types::IdleInputBatchRecord {
+        anchor_message_id: "live-anchor".into(),
+        activation_id: Some("live-activation".into()),
+        sender_agent_id: "agent-a".into(),
+        cutoff: record.created_at - Duration::nanoseconds(1),
+        max_items: 8,
+        max_bytes: 24 * 1024,
+        rendered_bytes: 0,
+        items: vec![crate::types::IdleInputBatchItem {
+            message_id: "live-anchor".into(),
+            source_ref: "message:live-anchor".into(),
+            rendered: String::new(),
+        }],
+    });
+    rewrite_turn(&db, &turn);
+    queue(&db, "live-anchor", QueueEntryStatus::Interrupted);
+    let mut source = MessageEnvelope::new(
+        "agent-a",
+        MessageKind::InternalFollowup,
+        MessageOrigin::System {
+            subsystem: "task_result_recovery".into(),
+        },
+        AuthorityClass::RuntimeInstruction,
+        Priority::Next,
+        MessageBody::Text {
+            text: "replay interrupted result".into(),
+        },
+    );
+    source.id = "live-anchor".into();
+    db.transaction(|tx| {
+        let mut paused = latest_for_message_tx(tx, &record.message_id)?.unwrap();
+        paused.recovery_paused_at = Some(Utc::now());
+        update_tx(tx, &paused)?;
+        tx.execute(
+            "INSERT INTO task_result_recovery_admissions
+             (result_identity,recovery_epoch,root_attempt_id,admitted_at)
+             VALUES(?1,?2,'activation:message:live-anchor',?3)",
+            params![
+                paused.result_identity,
+                paused.recovery_epoch,
+                timestamp(Utc::now())
+            ],
+        )?;
+        let observed = observe_recovery_source_tx(tx, &source, &[&paused], Utc::now())?;
+        let replay = &observed.paused_replays[&paused.result_identity];
+        assert!(replay.root_is_charged);
+        assert_eq!(replay.interrupted_anchor.as_deref(), Some("live-anchor"));
+        assert_eq!(latest_for_message_tx(tx, &record.message_id)?, Some(paused));
+        Ok(())
+    })
+}
+
 fn assert_pending(db: &RuntimeDb, record: &TaskResultSettlementRecord) {
     let actual = db
         .task_result_settlements()
@@ -589,7 +647,7 @@ fn assert_admitted_to(db: &RuntimeDb, record: &TaskResultSettlementRecord, activ
         .unwrap();
     assert_eq!(actual.state, TaskResultSettlementState::CallerAdmitted);
     assert_eq!(actual.activation_id.as_deref(), Some(activation));
-    assert_eq!(actual.parent_turn_id, record.parent_turn_id);
+    assert_eq!(actual.source, record.source);
     assert_eq!(actual.rejoin_generation, record.rejoin_generation);
     assert_eq!(actual.work_item_id, record.work_item_id);
     assert!(actual.admitted_at.is_some());
@@ -1941,7 +1999,14 @@ fn recovery_transfers_three_sources_and_survives_a_second_interruption() {
         assert_admitted_to(&db, record, "recovery-a");
         let task = db.tasks().latest(&record.task_id).unwrap().unwrap();
         assert_eq!(task.work_item_id, record.work_item_id);
-        assert_eq!(task.rejoin_fence().unwrap().parent_turn_id, "live-parent");
+        assert_eq!(
+            task.rejoin_fence()
+                .unwrap()
+                .source
+                .parent_turn_id()
+                .unwrap(),
+            "live-parent"
+        );
     }
     assert!(!recover(&db, "live-activation", "recovery-a", &records));
     interrupted_attachment(&db, "recovery-turn-a", &records, true);

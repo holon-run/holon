@@ -336,18 +336,21 @@ async fn agent_summary(
             .local_agent_lightweight_projection(&agent_id)
             .await
             .map_err(agent_access_error)?;
-        return traced_json(
+        let response = traced_json(
             route,
             started_at,
             crate::http_dto::SlimAgentDto::from(&projection),
         );
+        drop(projection);
+        return response;
     }
     let agent = state
         .host
         .local_agent_summary(&agent_id)
         .await
         .map_err(agent_access_error)?;
-    traced_json(route, started_at, agent)
+    let bytes = agent.into_json_bytes().map_err(error_response)?;
+    Ok(traced_json_bytes(route, started_at, bytes))
 }
 
 pub async fn state_default(State(state): State<Arc<AppState>>, headers: HeaderMap) -> AxumResponse {
@@ -408,87 +411,104 @@ fn build_agent_state_projection(
         )
         .map_err(agent_access_error)
         .map_err(ProjectionFailure::from)?;
-    let waits = projection
-        .waits
-        .into_iter()
-        .map(crate::http_dto::SlimWaitDto::from)
-        .collect();
-    let source = projection.source;
-    let tasks = projection
-        .tasks
-        .into_iter()
-        .map(crate::http_dto::SlimTaskDto::from)
-        .collect();
-    let timers = projection.timers;
-    let external_triggers = projection
-        .external_triggers
-        .into_iter()
-        .map(ExternalTriggerStateSnapshot::from)
-        .collect();
-    let projection = projection.agent;
-    let work_items_started = std::time::Instant::now();
-    let work_items = projection
-        .work_queue
-        .items
-        .into_iter()
-        .take(STATE_BOOTSTRAP_WORK_ITEM_LIMIT)
-        .map(slim_state_work_item_dto)
-        .collect::<Vec<_>>();
-    crate::diagnostics::record_projection_state_work_items(work_items_started.elapsed());
     let workspace_started = std::time::Instant::now();
-    let workspace = state_workspace_snapshot(&projection.agent, db)?;
+    let workspace = state_workspace_snapshot(&projection.agent.agent, db)?;
     crate::diagnostics::record_projection_state_workspace(workspace_started.elapsed());
-    let mut agent_dto = crate::http_dto::SlimAgentDto {
-        identity: projection.identity,
-        agent: (&projection.agent).into(),
-        scheduling_posture: projection.scheduling_posture,
-        active_task_count: projection.active_task_count,
-        lifecycle: projection.lifecycle,
-        model: (&projection.model).into(),
-        closure: (&projection.closure).into(),
-        active_children: projection.active_children.iter().map(Into::into).collect(),
-    };
-    agent_dto.agent.last_turn_terminal = projection
-        .agent
-        .last_turn_terminal
-        .clone()
-        .map(slim_state_turn_terminal_record);
-    agent_dto.agent.last_runtime_failure = projection
-        .agent
-        .last_runtime_failure
-        .clone()
-        .map(slim_state_runtime_failure);
-    let session = crate::http_dto::StateSessionSnapshotDto {
-        current_run_id: projection.agent.current_run_id.clone(),
-        pending_count: projection.agent.pending,
-        last_turn: projection
-            .agent
-            .last_turn_terminal
-            .clone()
-            .map(slim_state_turn_terminal_record),
-    };
-    tracing::debug!(
-        agent_id,
-        state_projection_source = source.as_str(),
-        "serializing public agent state projection"
-    );
+    let material = projection.material;
+    let snapshot = material
+        .acquisition
+        .read(|| {
+            // These DTO fields clone from selected values; admit before conversion.
+            crate::diagnostics::resource_io::admit_cloned_value(&(
+                &projection.agent.agent,
+                &projection.agent.model,
+                &projection.agent.closure,
+                &projection.agent.active_children,
+                &projection.agent.agent.last_turn_terminal,
+                &projection.agent.agent.last_turn_terminal,
+                &projection.agent.agent.last_runtime_failure,
+            ))?;
+            let waits = projection
+                .waits
+                .into_iter()
+                .map(crate::http_dto::SlimWaitDto::from)
+                .collect();
+            let source = projection.source;
+            let tasks = projection
+                .tasks
+                .into_iter()
+                .map(crate::http_dto::SlimTaskDto::from)
+                .collect();
+            let timers = projection.timers;
+            let external_triggers = projection
+                .external_triggers
+                .iter()
+                .map(crate::runtime::ExternalTriggerRecordLoan::state_snapshot)
+                .collect::<Result<Vec<_>>>()?;
+            let projection = projection.agent;
+            let work_items_started = std::time::Instant::now();
+            let work_items = projection
+                .work_queue
+                .items
+                .into_iter()
+                .take(STATE_BOOTSTRAP_WORK_ITEM_LIMIT)
+                .map(slim_state_work_item_dto)
+                .collect::<Vec<_>>();
+            crate::diagnostics::record_projection_state_work_items(work_items_started.elapsed());
+            let mut agent_dto = crate::http_dto::SlimAgentDto {
+                identity: projection.identity,
+                agent: (&projection.agent).into(),
+                scheduling_posture: projection.scheduling_posture,
+                active_task_count: projection.active_task_count,
+                lifecycle: projection.lifecycle,
+                model: (&projection.model).into(),
+                closure: (&projection.closure).into(),
+                active_children: projection.active_children.iter().map(Into::into).collect(),
+            };
+            agent_dto.agent.last_turn_terminal = projection
+                .agent
+                .last_turn_terminal
+                .clone()
+                .map(slim_state_turn_terminal_record);
+            agent_dto.agent.last_runtime_failure = projection
+                .agent
+                .last_runtime_failure
+                .clone()
+                .map(slim_state_runtime_failure);
+            let session = crate::http_dto::StateSessionSnapshotDto {
+                current_run_id: projection.agent.current_run_id.clone(),
+                pending_count: projection.agent.pending,
+                last_turn: projection
+                    .agent
+                    .last_turn_terminal
+                    .clone()
+                    .map(slim_state_turn_terminal_record),
+            };
+            tracing::debug!(
+                agent_id,
+                state_projection_source = source.as_str(),
+                "serializing public agent state projection"
+            );
+            Ok(crate::http_dto::AgentStateSnapshotDto {
+                agent: agent_dto,
+                session,
+                tasks,
+                waits,
+                timers,
+                work_items,
+                external_triggers,
+                workspace,
+            })
+        })
+        .map_err(|error| ProjectionFailure::from(error_response(error)))?;
     db.check_read_scope()
         .map_err(error_response)
         .map_err(ProjectionFailure::from)?;
-    let bytes = serialize_json(
-        "/agents/{agent_id}/state",
-        &crate::http_dto::AgentStateSnapshotDto {
-            agent: agent_dto,
-            session,
-            tasks,
-            waits,
-            timers,
-            work_items,
-            external_triggers,
-            workspace,
-        },
-    )
-    .map_err(ProjectionFailure::from)?;
+    let serialization_started = std::time::Instant::now();
+    let bytes = material
+        .into_json_bytes(&snapshot)
+        .map_err(|error| ProjectionFailure::from(error_response(error)))?;
+    crate::diagnostics::record_projection_state_serialization(serialization_started.elapsed());
     db.check_read_scope()
         .map_err(error_response)
         .map_err(ProjectionFailure::from)?;

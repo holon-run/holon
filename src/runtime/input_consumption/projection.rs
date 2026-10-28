@@ -10,7 +10,47 @@ use crate::{
 };
 
 use super::{message_text, BATCH_HEADER, INPUT_BATCH_BYTES};
+use crate::diagnostics::resource_io;
 use crate::runtime::RuntimeHandle;
+
+/// The source body is qualified by the current finite IdleRead cut.
+pub(in crate::runtime) fn qualified_item_after(
+    read: &super::read::IdleRead<'_, '_>,
+    message: &MessageEnvelope,
+    token_limit: usize,
+    byte_limit: usize,
+    preceding: &str,
+) -> Result<Option<IdleInputBatchItem>> {
+    read.with_message(&message.id, |original| {
+        if !same_source(original, message) {
+            return Ok(None);
+        }
+        charge_projection(message)?;
+        project_item_after(message, token_limit, byte_limit, preceding)
+    })
+    .map(Option::flatten)
+}
+
+fn same_source(original: &MessageEnvelope, message: &MessageEnvelope) -> bool {
+    original.agent_id == message.agent_id
+        && original.body == message.body
+        && original.origin == message.origin
+        && original.authority_class == message.authority_class
+        && original.routing_context == message.routing_context
+        && original.source_refs == message.source_refs
+        && original.work_item_id == message.work_item_id
+        && original.task_id == message.task_id
+}
+
+fn charge_projection(message: &MessageEnvelope) -> Result<()> {
+    let bytes = crate::runtime::input_evidence_budget::serialized_bytes(message)?
+        .checked_mul(16)
+        .and_then(|bytes| bytes.checked_add(8192))
+        .ok_or_else(|| anyhow::anyhow!("input projection material overflow"))?;
+    resource_io::charge_owned_payload(bytes)?;
+    resource_io::charge_owned_metadata(8192, 128)?;
+    Ok(())
+}
 
 #[derive(Clone, Copy)]
 pub(crate) struct InputBudget {
@@ -42,6 +82,7 @@ impl InputBudget {
     }
 }
 
+#[cfg(test)]
 pub(crate) fn admitted_item(
     storage: &AppStorage,
     agent_id: &str,
@@ -73,25 +114,24 @@ impl RuntimeHandle {
             .prompt_budget_estimated_tokens
             .checked_sub(crate::prompt::time::RUNTIME_TIME_RESERVED_TOKENS)
             .ok_or_else(|| anyhow::anyhow!("context budget cannot reserve runtime time"))?;
-        let workspace = self.workspace_view_from_state(state)?;
-        let execution = self.execution_snapshot_for_view(
-            state.execution_profile.clone(),
-            &workspace,
-            &state.attached_workspaces,
-        );
-        let identity = self.agent_identity_view().await?;
-        let skills = self.skills_runtime_view_for_state(state, &identity).await?;
-        let tokens = crate::context::input_admission_tokens(
-            &self.inner.storage,
-            state,
-            &execution,
-            &skills,
-            message,
-            continuation,
-            &config,
-            self.agent_home().as_path(),
-            None,
-        )?;
+        // The scheduler may supply a pre-Claim binding. It selects the budget
+        // owner only; loaded acquisition always captures the real publication.
+        let work_item_id = state
+            .current_execution_binding
+            .as_ref()
+            .map_or(state.current_work_item_id.as_deref(), |binding| {
+                binding.work_item_id.as_deref()
+            });
+        let tokens = self
+            .prepare_input_admission_tokens(
+                message,
+                continuation,
+                crate::context::ContextAdmissionPlan {
+                    work_item_id,
+                    token_budget: config.prompt_budget_estimated_tokens,
+                },
+            )
+            .await?;
         persisted_item_after(
             &self.inner.storage,
             message,
@@ -102,6 +142,7 @@ impl RuntimeHandle {
     }
 }
 
+#[cfg(test)]
 pub(in crate::runtime) fn persisted_item(
     storage: &AppStorage,
     message: &MessageEnvelope,
@@ -284,6 +325,7 @@ pub(crate) fn validate_projection(
 }
 
 /// Fit linked sources together without losing instruction bodies or metadata.
+#[cfg(test)]
 pub(in crate::runtime) fn persisted_group(
     storage: &AppStorage,
     messages: &[MessageEnvelope],
@@ -296,6 +338,40 @@ pub(in crate::runtime) fn persisted_group(
         };
         full.push(item);
     }
+    fit_group(&messages.iter().collect::<Vec<_>>(), full, fits)
+}
+
+pub(in crate::runtime) fn qualified_group(
+    read: &super::read::IdleRead<'_, '_>,
+    messages: &[super::read::QualifiedMessageRead],
+    fits: impl Fn(&[IdleInputBatchItem]) -> Result<bool>,
+) -> Result<Option<Vec<IdleInputBatchItem>>> {
+    let mut full = Vec::new();
+    for message in messages {
+        let Some(item) = qualified_item_after(read, message, usize::MAX, usize::MAX, "")? else {
+            return Ok(None);
+        };
+        full.push(item);
+    }
+    resource_io::charge_owned_metadata(
+        (messages.len() * std::mem::size_of::<&MessageEnvelope>()) as u64,
+        messages.len(),
+    )?;
+    fit_group(
+        &messages
+            .iter()
+            .map(|message| &**message)
+            .collect::<Vec<_>>(),
+        full,
+        fits,
+    )
+}
+
+fn fit_group(
+    messages: &[&MessageEnvelope],
+    full: Vec<IdleInputBatchItem>,
+    fits: impl Fn(&[IdleInputBatchItem]) -> Result<bool>,
+) -> Result<Option<Vec<IdleInputBatchItem>>> {
     if fits(&full)? {
         return Ok(Some(full));
     }

@@ -76,25 +76,33 @@ pub(crate) fn plan_chat_completion_request(
     let body_messages = full_body
         .get("messages")
         .and_then(|messages| messages.as_array())
-        .cloned()
+        .map(|items| request.material.cloned(items))
+        .transpose()?
         .unwrap_or_default();
 
     // Calculate continuation scope
     let scope = continuation_scope(request);
     let full_messages = body_messages;
     let full_message_count = full_messages.len();
+    super::super::continuation::admit_openai_request_shape(
+        &full_body,
+        request,
+        &["messages", "prompt_cache_key"],
+    )?;
     let request_shape = request_shape_for_chat_completion(&full_body, request);
+    request.material.admit_value(&request_shape)?;
 
     // Check for continuation opportunity
     let Some(scope_ref) = scope.as_ref() else {
         // No continuation scope - send full request
         return Ok((
-            full_body.clone(),
+            request.material.cloned(&full_body)?,
             OpenAiRequestPlan {
+                material: request.material.clone(),
                 body: full_body,
                 fallback_replay: None,
                 scope,
-                append_match_input: full_messages.clone(),
+                append_match_input: request.material.cloned(&full_messages)?,
                 provider_input: full_messages,
                 replay_loss_reason: None,
                 request_shape,
@@ -120,12 +128,13 @@ pub(crate) fn plan_chat_completion_request(
     let Some(previous) = previous else {
         // No previous state - send full request
         return Ok((
-            full_body.clone(),
+            request.material.cloned(&full_body)?,
             OpenAiRequestPlan {
+                material: request.material.clone(),
                 body: full_body,
                 fallback_replay: None,
                 scope,
-                append_match_input: full_messages.clone(),
+                append_match_input: request.material.cloned(&full_messages)?,
                 provider_input: full_messages,
                 replay_loss_reason: None,
                 request_shape,
@@ -148,14 +157,15 @@ pub(crate) fn plan_chat_completion_request(
         // Request changed - send full request
         let request_shape_hash = request_shape_hash(&request_shape);
         return Ok((
-            full_body.clone(),
+            request.material.cloned(&full_body)?,
             OpenAiRequestPlan {
+                material: request.material.clone(),
                 body: full_body,
                 fallback_replay: None,
                 scope,
-                append_match_input: full_messages.clone(),
+                append_match_input: request.material.cloned(&full_messages)?,
                 provider_input: full_messages,
-                replay_loss_reason: previous.replay_loss_reason,
+                replay_loss_reason: request.material.cloned(&previous.replay_loss_reason)?,
                 request_shape,
                 diagnostics: incremental_diagnostics(
                     "full_request",
@@ -181,14 +191,15 @@ pub(crate) fn plan_chat_completion_request(
     // continuation would be unreliable here. Send the full request instead.
     let request_shape_hash = request_shape_hash(&request_shape);
     return Ok((
-        full_body.clone(),
+        request.material.cloned(&full_body)?,
         OpenAiRequestPlan {
+            material: request.material.clone(),
             body: full_body,
             fallback_replay: None,
             scope,
-            append_match_input: full_messages.clone(),
+            append_match_input: request.material.cloned(&full_messages)?,
             provider_input: full_messages,
-            replay_loss_reason: previous.replay_loss_reason,
+            replay_loss_reason: request.material.cloned(&previous.replay_loss_reason)?,
             request_shape,
             diagnostics: incremental_diagnostics(
                 "full_request",
@@ -211,11 +222,18 @@ fn request_shape_for_chat_completion(
     body: &Value,
     request: &ProviderTurnRequest,
 ) -> OpenAiRequestShape {
-    let mut wire_shape = body.clone();
-    if let Some(object) = wire_shape.as_object_mut() {
-        object.remove("messages");
-        object.remove("prompt_cache_key");
-    }
+    let wire_shape = body.as_object().map_or_else(
+        || body.clone(),
+        |object| {
+            Value::Object(
+                object
+                    .iter()
+                    .filter(|(key, _)| !matches!(key.as_str(), "messages" | "prompt_cache_key"))
+                    .map(|(key, value)| (key.clone(), value.clone()))
+                    .collect(),
+            )
+        },
+    );
     OpenAiRequestShape {
         wire_shape,
         prompt_frame: request.prompt_frame.clone(),
@@ -270,7 +288,7 @@ pub(crate) fn build_chat_completion_messages(
                         {
                             "type": "image_url",
                             "image_url": {
-                                "url": format!("data:{media_type};base64,{data_base64}"),
+                                "url": data_base64.data_url(media_type)?,
                             },
                         },
                     ],

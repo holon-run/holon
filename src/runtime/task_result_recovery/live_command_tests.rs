@@ -111,10 +111,7 @@ async fn completed_command_with_delivery(
     let record = latest(runtime, &result.id);
     assert_eq!(record.state, TaskResultSettlementState::PersistedPending);
     assert_eq!(record.recovery_attempts, 0);
-    assert_eq!(
-        record.parent_turn_id,
-        task.rejoin_fence().unwrap().parent_turn_id
-    );
+    assert_eq!(record.source, task.rejoin_fence().unwrap().source);
     assert_eq!(record.task_id, created.id);
     if !keep_original_delivery {
         // Lose only the original queue delivery. No turn has admitted its content.

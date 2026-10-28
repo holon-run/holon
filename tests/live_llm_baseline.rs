@@ -237,6 +237,7 @@ async fn live_llm_baseline_anthropic_prompt_cache_hit() -> Result<()> {
     let first = provider
         .complete_turn(ProviderTurnRequest {
             dispatch_guard: None,
+            material: Default::default(),
             continuation_scope_id: None,
             prompt_frame: frame.clone(),
             conversation: vec![ConversationMessage::UserText(
@@ -251,6 +252,7 @@ async fn live_llm_baseline_anthropic_prompt_cache_hit() -> Result<()> {
     let second = provider
         .complete_turn(ProviderTurnRequest {
             dispatch_guard: None,
+            material: Default::default(),
             continuation_scope_id: None,
             prompt_frame: frame,
             conversation: vec![ConversationMessage::UserText(

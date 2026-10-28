@@ -80,6 +80,59 @@ pub async fn control_prompt_requires_configured_token_on_loopback_auto() -> Resu
     Ok(())
 }
 
+async fn assert_creation_audit(
+    host: &RuntimeHost,
+    base: &str,
+    created: &serde_json::Value,
+    loaded: bool,
+) -> Result<()> {
+    let agent_id = created["identity"]["agent_id"].as_str().unwrap();
+    assert_eq!(host.has_runtime_entry_for_fixture(agent_id).await, loaded);
+    let response = Client::new()
+        .get(format!(
+            "{base}/api/agents/{agent_id}/events?limit=512&order=asc"
+        ))
+        .send()
+        .await?;
+    let status = response.status();
+    let page: serde_json::Value = response.json().await?;
+    assert_eq!(status, reqwest::StatusCode::OK, "{page}");
+    let events = page["events"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|event| event["type"] == "agent_created")
+        .collect::<Vec<_>>();
+    assert_eq!(events.len(), 1, "{page}");
+    assert_eq!(events[0]["payload"]["target_agent_id"], agent_id);
+    assert_eq!(
+        events[0]["payload"]["receipt_id"],
+        created["receipt"]["receipt_id"]
+    );
+    assert_eq!(
+        events[0]["payload"]["bootstrap"],
+        created["receipt"]["bootstrap"]
+    );
+    assert_eq!(host.has_runtime_entry_for_fixture(agent_id).await, loaded);
+    Ok(())
+}
+
+pub async fn control_agent_create_qualifies_loaded_creation_audit() -> Result<()> {
+    let host = RuntimeHost::new_with_provider(test_config(), Arc::new(StubProvider::new("ok")))?;
+    let (base, server) = spawn_server_for_host(host.clone()).await?;
+    let response = Client::new()
+        .post(format!("{base}/api/control/agents/audited/create"))
+        .json(&serde_json::json!({}))
+        .send()
+        .await?;
+    assert_eq!(response.status(), reqwest::StatusCode::OK);
+    let created: serde_json::Value = response.json().await?;
+    assert_eq!(created["receipt"]["stage"], "bootstrapped");
+    assert_creation_audit(&host, &base, &created, true).await?;
+    server.abort();
+    Ok(())
+}
+
 pub async fn control_agent_create_returns_degraded_receipt_and_repairs() -> Result<()> {
     let host = RuntimeHost::new_with_provider(test_config(), Arc::new(StubProvider::new("ok")))?;
     let (base, server) = spawn_server_for_host(host.clone()).await?;
@@ -124,6 +177,7 @@ pub async fn control_agent_create_returns_degraded_receipt_and_repairs() -> Resu
         .expect("provisioning receipt carries a job id")
         .to_string();
     assert_eq!(created["identity"]["agent_id"], "repair-me");
+    assert_creation_audit(&host, &base, &created, false).await?;
 
     // The template does not exist yet: the background reconcile finishes with
     // a degraded bootstrap instead of tying the create request to the install.
@@ -161,7 +215,6 @@ pub async fn control_agent_create_returns_degraded_receipt_and_repairs() -> Resu
         repair_job["result"]["bootstrap"]["status"],
         serde_json::to_value(AgentBootstrapStatus::Ready)?
     );
-
     let detail: serde_json::Value = client
         .get(format!("{base}/api/control/agents/repair-me/detail"))
         .send()
@@ -174,6 +227,7 @@ pub async fn control_agent_create_returns_degraded_receipt_and_repairs() -> Resu
         serde_json::to_value(AgentBootstrapStatus::Ready)?
     );
     assert_eq!(detail["identity"]["agent_id"], "repair-me");
+    assert_creation_audit(&host, &base, &created, true).await?;
 
     server.abort();
     Ok(())
@@ -533,7 +587,7 @@ pub async fn control_agent_reincarnation_clears_history_and_resets_turn_sequence
     old_state.total_output_tokens = 5678;
     old_state.total_model_rounds = 22;
     old_state.last_brief_at = Some(chrono::Utc::now());
-    storage.write_agent(&old_state)?;
+    storage.write_agent_for_fixture(&old_state)?;
     host.get_or_create_agent(agent_id).await?;
     host.spawn_daemon_deletion_coordinator();
     let (base, server) = spawn_server_for_host(host.clone()).await?;
@@ -1447,8 +1501,34 @@ pub async fn agent_briefs_batch_get_returns_found_missing_and_scoped_briefs() ->
     Ok(())
 }
 
+fn cold_route_fixture_host() -> Result<RuntimeHost> {
+    let config = test_config();
+    let db = holon::runtime_db::RuntimeDb::open_and_migrate(
+        config.runtime_db_path(),
+        config.runtime_db_lock_path(),
+    )?;
+    let agent_id = config.default_agent_id.clone();
+    let identity = holon::types::AgentIdentityRecord::new(
+        &agent_id,
+        holon::types::AgentKind::Default,
+        holon::types::AgentVisibility::Public,
+        holon::types::AgentOwnership::SelfOwned,
+        holon::types::AgentProfilePreset::PublicNamed,
+        None,
+        None,
+    );
+    db.agent_identities().upsert(&identity)?;
+    let mut state = AgentState::new(&agent_id);
+    state.status = AgentStatus::Asleep;
+    db.agent_states()
+        .initialize_cold_for_fixture(&state, identity.incarnation)?;
+    drop(db);
+    RuntimeHost::new_with_provider(config, Arc::new(StubProvider::new("ok")))
+}
+
 pub async fn unloaded_agent_state_route_uses_storage_without_starting_runtime() -> Result<()> {
-    let (host, base, server) = spawn_server().await?;
+    let host = cold_route_fixture_host()?;
+    let (base, server) = spawn_server_for_host(host.clone()).await?;
     let agent_id = host.config().default_agent_id.clone();
     let agent_state_path = host
         .config()
@@ -1456,10 +1536,7 @@ pub async fn unloaded_agent_state_route_uses_storage_without_starting_runtime() 
         .join("agents")
         .join(&agent_id)
         .join(".holon/state/agent.json");
-    let mut state = AgentState::new(&agent_id);
-    state.status = AgentStatus::Asleep;
-    host.runtime_db().agent_states().upsert(&state)?;
-
+    assert!(!host.has_runtime_entry_for_fixture(&agent_id).await);
     assert!(!agent_state_path.exists());
 
     let response = reqwest::Client::new()
@@ -1470,6 +1547,7 @@ pub async fn unloaded_agent_state_route_uses_storage_without_starting_runtime() 
     let payload: serde_json::Value = response.json().await?;
 
     assert_eq!(payload["agent"]["agent"]["status"], "asleep");
+    assert!(!host.has_runtime_entry_for_fixture(&agent_id).await);
     assert!(
         !agent_state_path.exists(),
         "GET /state must not initialize agent storage or start a runtime"
@@ -1480,7 +1558,8 @@ pub async fn unloaded_agent_state_route_uses_storage_without_starting_runtime() 
 }
 
 pub async fn unloaded_agent_detail_route_uses_storage_without_starting_runtime() -> Result<()> {
-    let (host, base, server) = spawn_server().await?;
+    let host = cold_route_fixture_host()?;
+    let (base, server) = spawn_server_for_host(host.clone()).await?;
     let agent_id = host.config().default_agent_id.clone();
     let agent_state_path = host
         .config()
@@ -1488,10 +1567,7 @@ pub async fn unloaded_agent_detail_route_uses_storage_without_starting_runtime()
         .join("agents")
         .join(&agent_id)
         .join(".holon/state/agent.json");
-    let mut state = AgentState::new(&agent_id);
-    state.status = AgentStatus::Asleep;
-    host.runtime_db().agent_states().upsert(&state)?;
-
+    assert!(!host.has_runtime_entry_for_fixture(&agent_id).await);
     assert!(!agent_state_path.exists());
 
     let response = reqwest::Client::new()
@@ -1502,6 +1578,7 @@ pub async fn unloaded_agent_detail_route_uses_storage_without_starting_runtime()
     let payload: serde_json::Value = response.json().await?;
 
     assert_eq!(payload["agent"]["status"], "asleep");
+    assert!(!host.has_runtime_entry_for_fixture(&agent_id).await);
     assert!(
         !agent_state_path.exists(),
         "GET /agents/{{agent_id}} must not initialize agent storage or start a runtime"
@@ -1616,6 +1693,34 @@ pub async fn agent_state_route_includes_bootstrap_projection_fields_when_present
     let mut config = test_config();
     let (host, base, server) = spawn_server_with_config(config.clone()).await?;
     let runtime = host.default_runtime().await?;
+    // Create non-runnable through the runtime writer; create-then-pause can race the scheduler.
+    let work_item = runtime
+        .create_work_item(
+            "bootstrap active work".into(),
+            Some(holon::types::WorkItemPlanStatus::NeedsInput),
+            None,
+            vec![TodoItem {
+                text: "expand /state".into(),
+                state: TodoItemState::InProgress,
+            }],
+        )
+        .await?;
+    let work_item = runtime
+        .update_work_item_fields(
+            work_item.id,
+            None,
+            Some(holon::types::WorkItemPlanStatus::Draft),
+            None,
+            None,
+            Some(Some("shape /state".into())),
+        )
+        .await?;
+    runtime.pick_work_item(work_item.id.clone()).await?;
+    assert_eq!(
+        runtime.agent_state().await?.current_work_item_id.as_deref(),
+        Some(work_item.id.as_str())
+    );
+    assert_eq!(work_item.blocked_by.as_deref(), Some("shape /state"));
     config.http_addr = base.trim_start_matches("http://").to_string();
     let local_client = LocalClient::new(config)?;
     let client = reqwest::Client::new();
@@ -1627,27 +1732,6 @@ pub async fn agent_state_route_includes_bootstrap_projection_fields_when_present
         .await?;
     wait_until(|| Ok(runtime.storage().read_recent_briefs(1)?.first().is_some())).await?;
 
-    let work_item = test_work_item(
-        &runtime,
-        "bootstrap active work",
-        WorkItemState::Open,
-        true,
-        Some("shape /state"),
-    )
-    .await?;
-    runtime
-        .update_work_item_fields(
-            work_item.id.clone(),
-            None,
-            None,
-            None,
-            Some(vec![TodoItem {
-                text: "expand /state".into(),
-                state: TodoItemState::InProgress,
-            }]),
-            None,
-        )
-        .await?;
     runtime
         .schedule_timer(5_000, None, Some("state timer".into()))
         .await?;
