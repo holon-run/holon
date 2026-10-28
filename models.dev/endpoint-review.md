@@ -9,6 +9,115 @@ reviewed routes unless there is affirmative removal evidence. New routes require
 their own endpoint evidence; missing capability flags are conservative omissions,
 not proof that a model lacks the feature.
 
+## 2026-10-29 incremental review
+
+This cycle starts from main `20f5e26c`. Public evidence was sampled on
+October 28 UTC (October 29 in Beijing). The frozen upstream revision is
+`4adab25c2649c5b5dcc43e983d4891125163d558cbbc5db00664facf5629bdc3`.
+The generic artifact has three additions, twelve removals, and eleven changed
+records. Artifact membership is not endpoint eligibility or native retirement.
+In particular, OpenRouter's removed `gpt-5.2-chat` still appears in its public
+listing; preserve that distinction.
+
+The new `mistral/deepseek-v4-1-flash-1017` draft is not admitted this cycle.
+Its [official native model page](https://docs.mistral.ai/models/deepseek-v4-flash-1017)
+confirms the precise API ID, text and function calling, but does not resolve
+the exact upstream limits or effort enum. Keep it as a snapshot/artifact
+candidate with `endpoint_review_required`, including if an unreviewed local
+refresh had already drafted it. Preserve all 55 baseline supplement models
+and existing Mistral routes; no unsupported or retirement claim is made.
+
+### Affirmative endpoint retirement evidence
+
+- Volcengine's separate [Coding Plan notice](https://ark.volcengine.com/region:cn-beijing/docs/coding-plan-personal-model-deprecation.md)
+  and [Agent Plan notice](https://ark.volcengine.com/region:cn-beijing/docs/agent-plan-personal-model-deprecation-announcement.md)
+  ended exact `kimi-k2.7-code` service on **2026-10-28 14:00 UTC+8**.
+  Remove only `volcengine@coding/kimi-k2.7-code` and
+  `volcengine@plan/kimi-k2.7-code`, including their retained-supplement path.
+  Ordinary API and other providers are independent. Preserve `kimi-latest`:
+  its documented old target is stale, not affirmative alias retirement.
+  `minimax-m3` has not reached its November 2 final cutoff.
+- Fireworks' [K2.6](https://fireworks.ai/models/fireworks/kimi-k2p6),
+  [K2.7 Code](https://fireworks.ai/models/fireworks/kimi-k2p7-code), and
+  [GLM 5.2](https://fireworks.ai/models/fireworks/glm-5p2) cards explicitly
+  ended **serverless only** on **2026-09-25**; on-demand continues.
+  The affected public IDs are `accounts/fireworks/models/kimi-k2p6`,
+  `accounts/fireworks/models/kimi-k2p7-code`, and
+  `accounts/fireworks/models/glm-5p2` at `fireworks@default`.
+  Do not infer native Moonshot/GLM retirement, revoke user deployment IDs,
+  or copy these models' capacities onto custom deployments.
+  The retired K2.6 ID was also the built-in provider preference. Prefer the
+  existing MiniMax M3 entry, whose current official index explicitly supports
+  serverless, rather than falling through to a deployment-only model.
+  M3 metadata is unchanged; this is a built-in fallback change, not a rewrite
+  of user defaults or account configuration.
+
+### Independent registered-endpoint rechecks
+
+The two evidence groups cover 30 registered endpoints, including
+`byteplus@default` with zero static effective routes. The following are
+preservation decisions, not guarantees for every account or region.
+
+| Endpoints | Current evidence and retained boundary |
+| --- | --- |
+| `dashscope@default`, `@token-plan`, `@coding-plan`, `@coding-plan-intl` | Separate Messages and domestic/international plan documents reviewed. No new confirmed field changes. Historical list omissions do not retire routes; quotas are not token capacities. |
+| `volcengine@default`, `@coding`, `@plan` | Exact subscription retirement above. Ordinary API EOS filtering and K3.1 `low/high/max` remain; API/plan IDs and capacity conflicts stay separate. |
+| `tencent-tokenhub@default`, `@messages`, `@responses` | Each protocol's current schema and eligibility reviewed independently; existing output, reasoning, vision and cache boundaries retained. |
+| `qianfan@default` | Current model/schema evidence preserves existing precise IDs; output-limit conflicts remain unresolved, not enlarged. |
+| `bigmodel@default`, `zai@default` | Domestic and international Messages/DevPack evidence independently checked; GLM 5.3 text versus Flash vision, separate keys, and unknown limits retained. No new plan endpoint inferred. |
+| `xiaomi@default`, `@token-plan` | Current Responses and plan evidence reviewed separately. Existing multimodal/output facts remain; historical ultraspeed plan eligibility is not recertified or inferred from ordinary API. |
+| `minimax@default`, `minimax-cn@default`, `minimax@m-plan`, `minimax-cn@m-plan` | Four independent Messages/plan boundaries. International M2.5/M2.7 existing-user access lasts to November 18; plan forwarding aliases are not native-service retirement. Recommended output is not a service default. |
+| `moonshot@default` | International K3/K3.1 facts unchanged. K2 new-user restriction on October 31 is not immediate retirement for existing users; planned end-of-December retirement has no precise cutoff yet. |
+| `byteplus@default`, `@coding` | Ordinary Singapore API and plan checked separately. Thirteen historical plan routes retained, but current public docs defer to the console/region and do not recertify all thirteen IDs. Missing public IDs are not affirmative EOS. |
+| `stepfun@default`, `@plan` | Existing four models and plan router retained. Router text-only limits and unknown exact capacities stay isolated; no new Messages registration inferred. |
+| `opencode-go@default`, `@messages`, `@responses` | Current public discovery lists 30 IDs, all already covered. Eight historical IDs missing from discovery are not proven retired. Preserve prior translated routes, native preferred routes, conservative capabilities, and session-header requirements. No real session tested. |
+| `kilocode@default` | All five exact static context/output-ceiling/image facts match the public gateway JSON; output request parameters do not establish service defaults. |
+| `together@default` | Existing M3 reasoning correction retained. Dedicated deployment specifications are not serverless capacities; the alternate example hostname does not retire the registered host. |
+| `fireworks@default` | The three dated serverless retirements above are affirmative. Other index/card deployment flags, Qwen availability and M3 vision remain unresolved; absence or a contradictory flag is not a provider-wide ban. Rune does not generate text and is not an agent-turn addition. |
+
+The current [Go public listing](https://opencode.ai/inference/go/v1/models)
+omits eight retained IDs: `cat-jam-free`, `deepseek-v4-flash`, `glm-5.1`,
+`kimi-k2.6`, `longcat-2.5-preview-free`, `minimax-m3.1-flash-free`,
+`space-bunny`, and `step-5-preview-free`. All 30 currently listed IDs already
+have the reviewed protocol coverage. Zen's separate October 26 retirement
+notice is not evidence to remove a Go route.
+
+BytePlus's current [plan overview](https://docs.byteplus.com/en/docs/modelark/coding-plan-personal-plan-overview)
+does not independently recertify six historical exact IDs:
+`bytedance-seed-code`, `dola-seed-2.0-code`, `dola-seed-2.0-lite`,
+`dola-seed-2.0-pro`, `glm-5.1`, and `kimi-k2.5`. Keep these as explicit
+evidence gaps, not newly certified routes or proven retirements. Do not
+borrow ordinary API or mainland China capacities.
+
+Codex's pinned catalog remains byte-identical to the previous cycle
+(`126a0ee92ed2c5e73cd8a8f7e37563e8527552d7`); do not add new API-to-Codex
+routes without endpoint evidence. DeepSeek Pricing/Responses preserve the
+old-name forwarding boundary, reviewed Responses ceilings and native-unit
+isolation. The separate [coverage-enumeration issue #3788](https://github.com/holon-run/holon/issues/3788)
+remains unresolved: a field-gate pass must not be described as proof that all
+compatible routes are enumerated.
+
+Final review removed only the five retired routes from the metadata baseline.
+All 661 surviving raw/effective/provenance/status projections remain unchanged,
+as do the 55 supplement models and their 16 explicit routes. Other provider
+defaults and surviving model preferences are unchanged; Fireworks alone moves
+its built-in preference from retired K2.6 to the existing MiniMax M3 entry.
+
+Local verification passed: pinned refresh, catalog validation, 661-route
+coverage gate, retirement and cross-endpoint regressions, and the exact Mistral
+new/retained/peer admission tests. The final serial run passed 173 catalog
+tests (one ignored), 33 discovery tests, 19 models.dev integration tests,
+17 route-cache tests and 54 Responses tests, followed by formatting,
+warning-free `cargo check --locked --all-targets`, and `git diff --check`.
+The exact reasoning-contract regression also passed: the replacement Coding
+and Plan K3.1 Pro routes preserve route-existence, reasoning and empty-effort
+assertions; M3 retains its reviewed low/medium/high effort enum.
+
+Independent frozen-artifact review and the subsequent test-only recheck found
+no confirmed P1/P2 blockers. No live account/session or paid-inference
+acceptance was performed. These local gates do not resolve the compatible-route
+enumeration gap tracked in #3788.
+
 ## 2026-10-28 incremental review
 
 This cycle starts from main `6a848009`; public endpoint evidence was checked

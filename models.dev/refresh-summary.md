@@ -1,7 +1,7 @@
 # models.dev refresh summary
 
 - Supplement models: 55 (drafted this run: 0, retained: 55, removed: 0)
-- Deferred candidates: 191 (not auto-drafted; see below)
+- Deferred candidates: 188 (not auto-drafted; see below)
 - Mapped providers without auto-supplement (aggregators etc.): 9
 
 ## Auto-drafted supplement models
@@ -50,11 +50,11 @@
 - `dashscope/qwen3-vl-235b-a22b` — ReleaseOutsideWindow (release 2025-04)
 - `dashscope/qwen3-vl-30b-a3b` — ReleaseOutsideWindow (release 2025-04)
 - `dashscope/qwen3-vl-plus` — ReleaseOutsideWindow (release 2025-09-23)
-- … and 151 more (see `holon models-dev audit`)
+- … and 148 more (see `holon models-dev audit`)
 
 ## Route metadata review (offline)
 
-Routes: 666; unknown context: 233; unknown output ceiling: 269.
+Routes: 661; unknown context: 233; unknown output ceiling: 266.
 Runtime output policy is not output capacity. Existing builtin fields are not automatically overwritten.
 
 | Route | Upstream source | Fields requiring review |
@@ -151,10 +151,7 @@ Runtime output policy is not output capacity. Existing builtin fields are not au
 | `fireworks@default/accounts/fireworks/models/deepseek-v4-flash` | Known | Unknown | fireworks@default/accounts/fireworks/models/deepseek-v4-flash: Missing capacity is retained as unknown. No exact endpoint upstream capacity evidence is associated; generic API, other region, plan, or protocol limits are not borrowed. Existing known fields and local output policy are preserved, not newly vendor-verified. |
 | `fireworks@default/accounts/fireworks/models/deepseek-v4-pro` | Known | Unknown | fireworks@default/accounts/fireworks/models/deepseek-v4-pro: Missing capacity is retained as unknown. No exact endpoint upstream capacity evidence is associated; generic API, other region, plan, or protocol limits are not borrowed. Existing known fields and local output policy are preserved, not newly vendor-verified. |
 | `fireworks@default/accounts/fireworks/models/glm-5p1` | Known | Unknown | fireworks@default/accounts/fireworks/models/glm-5p1: Missing capacity is retained as unknown. No exact endpoint upstream capacity evidence is associated; generic API, other region, plan, or protocol limits are not borrowed. Existing known fields and local output policy are preserved, not newly vendor-verified. |
-| `fireworks@default/accounts/fireworks/models/glm-5p2` | Known | Unknown | fireworks@default/accounts/fireworks/models/glm-5p2: Missing capacity is retained as unknown. No exact endpoint upstream capacity evidence is associated; generic API, other region, plan, or protocol limits are not borrowed. Existing known fields and local output policy are preserved, not newly vendor-verified. |
 | `fireworks@default/accounts/fireworks/models/gpt-oss-120b` | Known | Unknown | fireworks@default/accounts/fireworks/models/gpt-oss-120b: Missing capacity is retained as unknown. Exact upstream candidate(s) fireworks-ai/accounts/fireworks/models/gpt-oss-120b require endpoint-specific review; no automatic backfill. Existing known fields and local output policy are preserved, not newly vendor-verified. |
-| `fireworks@default/accounts/fireworks/models/kimi-k2p6` | Known | Unknown | fireworks@default/accounts/fireworks/models/kimi-k2p6: Missing capacity is retained as unknown. No exact endpoint upstream capacity evidence is associated; generic API, other region, plan, or protocol limits are not borrowed. Existing known fields and local output policy are preserved, not newly vendor-verified. |
-| `fireworks@default/accounts/fireworks/models/kimi-k2p7-code` | Known | Unknown | fireworks@default/accounts/fireworks/models/kimi-k2p7-code: Missing capacity is retained as unknown. No exact endpoint upstream capacity evidence is associated; generic API, other region, plan, or protocol limits are not borrowed. Existing known fields and local output policy are preserved, not newly vendor-verified. |
 | `fireworks@default/accounts/fireworks/models/minimax-m2p7` | Known | Unknown | fireworks@default/accounts/fireworks/models/minimax-m2p7: Missing capacity is retained as unknown. No exact endpoint upstream capacity evidence is associated; generic API, other region, plan, or protocol limits are not borrowed. Existing known fields and local output policy are preserved, not newly vendor-verified. |
 | `fireworks@default/accounts/fireworks/models/nemotron-3-ultra-nvfp4` | Known | Unknown | fireworks@default/accounts/fireworks/models/nemotron-3-ultra-nvfp4: Missing capacity is retained as unknown. Exact upstream candidate(s) fireworks-ai/accounts/fireworks/models/nemotron-3-ultra-nvfp4 require endpoint-specific review; no automatic backfill. Existing known fields and local output policy are preserved, not newly vendor-verified. |
 | `fireworks@default/accounts/fireworks/models/qwen3p6-plus` | Unknown | Unknown | fireworks@default/accounts/fireworks/models/qwen3p6-plus: Missing capacity is retained as unknown. No exact endpoint upstream capacity evidence is associated; generic API, other region, plan, or protocol limits are not borrowed. Existing known fields and local output policy are preserved, not newly vendor-verified. |
@@ -431,8 +428,8 @@ Runtime output policy is not output capacity. Existing builtin fields are not au
 - `stepfun@plan`: 5 checked-in routes; not proof of live subscription support.
 - `tencent-tokenhub@messages`: 49 checked-in routes; not proof of live subscription support.
 - `tencent-tokenhub@responses`: 32 checked-in routes; not proof of live subscription support.
-- `volcengine@coding`: 25 checked-in routes; not proof of live subscription support.
-- `volcengine@plan`: 33 checked-in routes; not proof of live subscription support.
+- `volcengine@coding`: 24 checked-in routes; not proof of live subscription support.
+- `volcengine@plan`: 32 checked-in routes; not proof of live subscription support.
 - `xiaomi@token-plan`: 3 checked-in routes; not proof of live subscription support.
 
 Unassociated plan/Codex provider nodes (not automatically supported):

@@ -495,20 +495,18 @@ pub(super) fn early_entries() -> Vec<BuiltInModelMetadata> {
                 ProviderEndpointId::parse("responses").expect("valid built-in endpoint"),
             ),
         },
-        fireworks_model(
-            "accounts/fireworks/models/kimi-k2p6",
-            "Kimi K2.6",
-            Some(262_144),
-            true,
-            true,
-        ),
-        fireworks_model(
-            "accounts/fireworks/models/kimi-k2p7-code",
-            "Kimi K2.7 Code",
-            Some(262_144),
-            true,
-            true,
-        ),
+        // The former preferred K2.6 serverless ID retired on 2026-09-25.
+        // Prefer a confirmed serverless model, not a deployment-only successor.
+        BuiltInModelMetadata {
+            max_output_tokens_upper_limit: Some(512_000),
+            ..fireworks_model(
+                "accounts/fireworks/models/minimax-m3",
+                "MiniMax M3",
+                Some(512_000),
+                true,
+                true,
+            )
+        },
         fireworks_model(
             "accounts/fireworks/models/deepseek-v4-flash",
             "DeepSeek V4 Flash",
@@ -531,13 +529,6 @@ pub(super) fn early_entries() -> Vec<BuiltInModelMetadata> {
             false,
         ),
         fireworks_model(
-            "accounts/fireworks/models/glm-5p2",
-            "GLM 5.2",
-            Some(1_048_576),
-            true,
-            false,
-        ),
-        fireworks_model(
             "accounts/fireworks/models/gpt-oss-120b",
             "GPT-OSS 120B",
             Some(131_072),
@@ -551,16 +542,6 @@ pub(super) fn early_entries() -> Vec<BuiltInModelMetadata> {
             true,
             false,
         ),
-        BuiltInModelMetadata {
-            max_output_tokens_upper_limit: Some(512_000),
-            ..fireworks_model(
-                "accounts/fireworks/models/minimax-m3",
-                "MiniMax M3",
-                Some(512_000),
-                true,
-                true,
-            )
-        },
         fireworks_model(
             "accounts/fireworks/models/nemotron-3-ultra-nvfp4",
             "Nemotron 3 Ultra NVFP4",
@@ -1093,6 +1074,59 @@ pub(super) fn late_entries() -> Vec<BuiltInModelMetadata> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn fireworks_retired_serverless_ids_preserve_custom_deployments_and_peers() {
+        for catalog in [
+            legacy_builtin_catalog().unwrap(),
+            BuiltInModelCatalog::new(),
+        ] {
+            assert_eq!(
+                catalog
+                    .preferred_route_for_provider(&provider_id("fireworks"))
+                    .unwrap()
+                    .as_string(),
+                "fireworks@default/accounts/fireworks/models/minimax-m3"
+            );
+            for model in ["kimi-k2p6", "kimi-k2p7-code", "glm-5p2"] {
+                let route = ModelRouteRef::parse(&format!(
+                    "fireworks@default/accounts/fireworks/models/{model}"
+                ))
+                .unwrap();
+                assert!(catalog.get_route(&route).is_none(), "{}", route.as_string());
+            }
+            for route in [
+                "fireworks@default/accounts/fireworks/models/minimax-m3",
+                "fireworks@default/accounts/fireworks/models/deepseek-v4-flash",
+                "tencent-tokenhub@default/kimi-k2.7-code",
+                "dashscope@token-plan/glm-5.2",
+            ] {
+                assert!(
+                    catalog
+                        .get_route(&ModelRouteRef::parse(route).unwrap())
+                        .is_some(),
+                    "{route}"
+                );
+            }
+            let deployment = ModelRouteRef::parse(
+                "fireworks@default/accounts/example/deployments/reviewed-kimi",
+            )
+            .unwrap();
+            let policy = catalog.resolve_route_policy(
+                &deployment,
+                &HashMap::new(),
+                &HashMap::new(),
+                Some(&ModelRuntimeOverride {
+                    prompt_budget_estimated_tokens: Some(64_000),
+                    ..ModelRuntimeOverride::default()
+                }),
+                &ContextConfig::default(),
+                8_192,
+            );
+            assert_eq!(policy.source, ModelMetadataSource::UnknownFallback);
+            assert_eq!(policy.prompt_budget_estimated_tokens, 64_000);
+        }
+    }
 
     #[test]
     fn together_minimax_m3_supports_reasoning_without_inventing_limits_or_effort() {
