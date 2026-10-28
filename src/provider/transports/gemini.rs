@@ -10,16 +10,19 @@ use crate::{
     config::ProviderRuntimeConfig,
     provider::{
         http_trace::ProviderHttpTrace, AgentProvider, ConversationMessage, ModelBlock,
-        ModelToolCallKind, ProviderBlockData, ProviderCacheUsage, ProviderPromptCapability,
-        ProviderRequestDiagnostics, ProviderTransportTimeline, ProviderTurnRequest,
-        ProviderTurnResponse,
+        ModelToolCallKind, ProviderBlockData, ProviderCacheUsage, ProviderContextBudgetDiagnostics,
+        ProviderPromptCapability, ProviderRequestDiagnostics, ProviderTransportDiagnostics,
+        ProviderTransportTimeline, ProviderTurnRequest, ProviderTurnResponse,
     },
 };
 
 use super::{build_http_client, response_body_timeout, send_provider_request, RequestDeadline};
+use crate::provider::budget::{effective_output_tokens, estimate_context_budget, ContextBudget};
 use crate::provider::retry::{
     classify_reqwest_transport_error_with_trace, classify_status_error_with_trace,
-    invalid_response_error, parse_retry_after, timeout_transport_error_with_trace,
+    invalid_response_error, parse_retry_after, provider_transport_error_with_code,
+    sanitize_transport_url, timeout_transport_error_with_trace, ProviderFailureClassification,
+    ProviderFailureKind, RetryDisposition,
 };
 
 #[derive(Clone)]
@@ -30,6 +33,7 @@ pub struct GeminiProvider {
     quota_identity: Option<crate::provider::ProviderQuotaIdentity>,
     model: String,
     max_output_tokens: u32,
+    context_window_tokens: Option<usize>,
     trace_home_dir: PathBuf,
 }
 
@@ -111,6 +115,22 @@ impl GeminiProvider {
         max_output_tokens: u32,
         trace_home_dir: &Path,
     ) -> Result<Self> {
+        Self::from_runtime_config_with_context_window(
+            provider_config,
+            model,
+            max_output_tokens,
+            None,
+            trace_home_dir,
+        )
+    }
+
+    pub fn from_runtime_config_with_context_window(
+        provider_config: &ProviderRuntimeConfig,
+        model: &str,
+        max_output_tokens: u32,
+        context_window_tokens: Option<usize>,
+        trace_home_dir: &Path,
+    ) -> Result<Self> {
         let client = build_http_client()?;
         let api_key = provider_config
             .credential
@@ -134,6 +154,7 @@ impl GeminiProvider {
             ),
             model: model.to_string(),
             max_output_tokens,
+            context_window_tokens,
             trace_home_dir: trace_home_dir.to_path_buf(),
         })
     }
@@ -146,6 +167,29 @@ impl AgentProvider for GeminiProvider {
     }
 
     async fn complete_turn(&self, request: ProviderTurnRequest) -> Result<ProviderTurnResponse> {
+        let model_ref = format!("gemini/{}", self.model);
+        let url = format!(
+            "{}/models/{}:generateContent",
+            self.base_url,
+            utf8_percent_encode(&self.model, NON_ALPHANUMERIC)
+        );
+        if request.conversation.iter().any(|message| {
+            matches!(
+                message,
+                ConversationMessage::UserImage {
+                    optional_history: false,
+                    ..
+                }
+            )
+        }) {
+            return Err(gemini_preflight_error(
+                &model_ref,
+                &url,
+                "image_input_unsupported",
+                "Gemini image lowering is unavailable; required image input cannot be omitted",
+                None,
+            ));
+        }
         let request_body = GenerateContentRequest {
             system_instruction: build_system_instruction(&request),
             contents: build_gemini_contents(&request),
@@ -154,13 +198,31 @@ impl AgentProvider for GeminiProvider {
                 max_output_tokens: self.max_output_tokens,
             },
         };
-        let request_payload = serde_json::to_value(&request_body)?;
-        let model_ref = format!("gemini/{}", self.model);
-        let url = format!(
-            "{}/models/{}:generateContent",
-            self.base_url,
-            utf8_percent_encode(&self.model, NON_ALPHANUMERIC)
+        let mut request_payload = serde_json::to_value(&request_body)?;
+        let output_fields = &["generationConfig.maxOutputTokens"];
+        let effective_output = effective_output_tokens(
+            self.context_window_tokens,
+            self.max_output_tokens,
+            &request_payload,
+            output_fields,
         );
+        request_payload["generationConfig"]["maxOutputTokens"] = Value::from(effective_output);
+        if let Some(budget) = estimate_context_budget(
+            self.context_window_tokens,
+            effective_output,
+            &request_payload,
+            output_fields,
+        )
+        .filter(|budget| budget.overflow_tokens() > 0)
+        {
+            return Err(gemini_preflight_error(
+                &model_ref,
+                &url,
+                "context_length_exceeded",
+                "Gemini request exceeds the estimated context budget; reduce prompt/context or requested output tokens, or increase the provider context window",
+                Some(budget),
+            ));
+        }
         let headers = vec![
             ("content-type", "application/json".to_string()),
             ("x-goog-api-key", "[redacted]".to_string()),
@@ -187,7 +249,7 @@ impl AgentProvider for GeminiProvider {
             .post(&url)
             .header("content-type", "application/json")
             .header("x-goog-api-key", &self.api_key)
-            .json(&request_body);
+            .json(&request_payload);
         let response = send_provider_request(
             request_builder,
             "Gemini request failed",
@@ -277,6 +339,53 @@ impl AgentProvider for GeminiProvider {
     fn prompt_capabilities(&self) -> Vec<ProviderPromptCapability> {
         vec![ProviderPromptCapability::FullRequestOnly]
     }
+}
+
+fn gemini_preflight_error(
+    model_ref: &str,
+    url: &str,
+    code: &str,
+    message: &str,
+    budget: Option<ContextBudget>,
+) -> anyhow::Error {
+    let diagnostics = ProviderTransportDiagnostics {
+        stage: "request_preflight".to_string(),
+        streaming: Some(false),
+        provider: Some("gemini".to_string()),
+        model_ref: Some(model_ref.to_string()),
+        url: Some(sanitize_transport_url(url)),
+        status: None,
+        reqwest: None,
+        context_budget: budget.map(|budget| ProviderContextBudgetDiagnostics {
+            estimated_input_tokens: budget.estimated_input_tokens,
+            estimated_text_tokens: budget.estimated_text_tokens,
+            image_reserve_tokens: budget.image_reserve_tokens,
+            image_count: budget.image_count,
+            inline_image_base64_bytes: budget.inline_image_base64_bytes,
+            estimated_inline_image_decoded_bytes: budget.estimated_inline_image_decoded_bytes,
+            requested_output_tokens: budget.requested_output_tokens,
+            safety_headroom_tokens: budget.safety_headroom_tokens,
+            required_tokens: budget.required_tokens(),
+            context_window_tokens: budget.context_window_tokens,
+            overflow_tokens: budget.overflow_tokens(),
+            suggestion: "reduce prompt/context or requested output tokens, or increase the provider context window".to_string(),
+        }),
+        http_trace: None,
+        quota_identity: None,
+        retry_after_not_before: None,
+        throttle: None,
+        source_chain: Vec::new(),
+    };
+    provider_transport_error_with_code(
+        ProviderFailureClassification {
+            kind: ProviderFailureKind::ContractError,
+            disposition: RetryDisposition::FailFast,
+        },
+        Some(code),
+        None,
+        Some(diagnostics),
+        message.to_string(),
+    )
 }
 
 fn build_system_instruction(request: &ProviderTurnRequest) -> GeminiContent {

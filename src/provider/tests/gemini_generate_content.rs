@@ -5,10 +5,27 @@ use std::sync::{Arc, Mutex};
 use super::support::*;
 use super::*;
 use crate::config::ProviderId;
+use crate::provider::{
+    budget::estimate_context_budget,
+    provider_error_code, provider_transport_diagnostics,
+    retry::{classify_provider_error, ProviderFailureKind, RetryDisposition},
+};
 use axum::{routing::post, Json, Router};
 use serde_json::{json, Value};
 
 async fn capture_gemini_request(request: ProviderTurnRequest) -> (Value, ProviderTurnResponse) {
+    let (body, response) = gemini_request_with_budget(request, None, 8192).await;
+    (
+        body.expect("server should capture request body"),
+        response.unwrap(),
+    )
+}
+
+async fn gemini_request_with_budget(
+    request: ProviderTurnRequest,
+    context_window_tokens: Option<usize>,
+    max_output_tokens: u32,
+) -> (Option<Value>, anyhow::Result<ProviderTurnResponse>) {
     let captured_body = Arc::new(Mutex::new(None::<Value>));
     let captured_body_for_server = captured_body.clone();
     let base_url =
@@ -40,18 +57,19 @@ async fn capture_gemini_request(request: ProviderTurnRequest) -> (Value, Provide
         .unwrap();
     provider_config.base_url = base_url;
     provider_config.credential = Some("gemini-key".into());
-    let provider = GeminiProvider::from_runtime_config(
+    let provider = GeminiProvider::from_runtime_config_with_context_window(
         provider_config,
         "gemini-3-pro",
-        fixture.config.runtime_max_output_tokens,
+        max_output_tokens,
+        context_window_tokens,
         &fixture.config.home_dir,
     )
     .unwrap();
 
-    let response = provider.complete_turn(request).await.unwrap();
+    let response = provider.complete_turn(request).await;
 
     let body = captured_body.lock().unwrap().clone();
-    (body.expect("server should capture request body"), response)
+    (body, response)
 }
 
 fn text_occurrences(value: &Value, expected: &str) -> usize {
@@ -147,4 +165,144 @@ async fn gemini_request_falls_back_to_rendered_system_without_structured_blocks(
     );
     assert_eq!(text_occurrences(&body, "fallback system"), 1);
     assert_eq!(text_occurrences(&body, "current input"), 1);
+}
+
+#[tokio::test]
+async fn gemini_output_is_clamped_on_the_wire_to_the_remaining_context() {
+    let request = ProviderTurnRequest::plain(
+        &"x".repeat(24_000),
+        vec![ConversationMessage::UserText("continue".into())],
+        Vec::new(),
+    );
+    let (body, response) = gemini_request_with_budget(request, Some(16_384), 8192).await;
+    response.unwrap();
+    let body = body.unwrap();
+    let effective = body["generationConfig"]["maxOutputTokens"]
+        .as_u64()
+        .unwrap() as u32;
+    assert!(effective > 1);
+    assert!(effective < 8192);
+    let budget = estimate_context_budget(
+        Some(16_384),
+        effective,
+        &body,
+        &["generationConfig.maxOutputTokens"],
+    )
+    .unwrap();
+    assert_eq!(budget.overflow_tokens(), 0);
+}
+
+#[tokio::test]
+async fn gemini_unknown_context_preserves_the_configured_output_limit() {
+    let (body, response) = gemini_request_with_budget(
+        ProviderTurnRequest::plain("short", Vec::new(), Vec::new()),
+        None,
+        65_536,
+    )
+    .await;
+    response.unwrap();
+    assert_eq!(body.unwrap()["generationConfig"]["maxOutputTokens"], 65_536);
+}
+
+#[tokio::test]
+async fn gemini_context_preflight_counts_system_text_and_tool_json_before_http() {
+    for large_tool in [false, true] {
+        let system = if large_tool {
+            "short".to_string()
+        } else {
+            "x".repeat(40_000)
+        };
+        let request = ProviderTurnRequest::plain(
+            &system,
+            vec![ConversationMessage::UserText("continue".into())],
+            if large_tool {
+                vec![crate::tool::ToolSpec {
+                    name: "Example".into(),
+                    description: "tool".into(),
+                    input_schema: json!({
+                        "type": "object",
+                        "properties": {"text": {"type": "string", "description": "x".repeat(40_000)}}
+                    }),
+                    freeform_grammar: None,
+                }]
+            } else {
+                Vec::new()
+            },
+        );
+        let (body, response) = gemini_request_with_budget(request, Some(8192), 8192).await;
+        let error = response.expect_err("oversized final payload must not be sent");
+        assert!(body.is_none());
+        assert_eq!(provider_error_code(&error), Some("context_length_exceeded"));
+        let classification = classify_provider_error(&error);
+        assert_eq!(classification.kind, ProviderFailureKind::ContractError);
+        assert_eq!(classification.disposition, RetryDisposition::FailFast);
+        let diagnostics = provider_transport_diagnostics(&error).unwrap();
+        assert_eq!(diagnostics.stage, "request_preflight");
+        assert_eq!(diagnostics.provider.as_deref(), Some("gemini"));
+        let budget = diagnostics.context_budget.as_ref().unwrap();
+        assert!(budget.estimated_input_tokens > 10_000);
+        assert_eq!(budget.estimated_text_tokens, budget.estimated_input_tokens);
+        assert_eq!(budget.image_reserve_tokens, 0);
+        assert_eq!(budget.image_count, 0);
+        assert_eq!(budget.inline_image_base64_bytes, 0);
+        assert_eq!(budget.estimated_inline_image_decoded_bytes, 0);
+        assert_eq!(budget.requested_output_tokens, 1);
+        assert_eq!(budget.context_window_tokens, 8192);
+        assert!(budget.overflow_tokens > 0);
+        assert!(!serde_json::to_string(diagnostics)
+            .unwrap()
+            .contains("gemini-key"));
+    }
+}
+
+#[tokio::test]
+async fn gemini_required_images_fail_fast_instead_of_becoming_text_only() {
+    for prompt in ["inspect this", ""] {
+        let (body, response) = gemini_request_with_budget(
+            ProviderTurnRequest::plain(
+                "system",
+                vec![ConversationMessage::UserImage {
+                    prompt: prompt.into(),
+                    media_type: "image/png".into(),
+                    data_base64: "sensitive-image-data".into(),
+                    optional_history: false,
+                }],
+                Vec::new(),
+            ),
+            None,
+            8192,
+        )
+        .await;
+        let error = response.expect_err("required images cannot be silently discarded");
+        assert!(body.is_none());
+        assert_eq!(provider_error_code(&error), Some("image_input_unsupported"));
+        assert_eq!(
+            classify_provider_error(&error).disposition,
+            RetryDisposition::FailFast
+        );
+        assert_eq!(
+            provider_transport_diagnostics(&error).unwrap().stage,
+            "request_preflight"
+        );
+        assert!(!error.to_string().contains("sensitive-image-data"));
+    }
+}
+
+#[tokio::test]
+async fn gemini_optional_history_remains_explicitly_text_only() {
+    let (body, _) = capture_gemini_request(ProviderTurnRequest::plain(
+        "system",
+        vec![ConversationMessage::UserImage {
+            prompt: "historical image".into(),
+            media_type: "image/png".into(),
+            data_base64: "sensitive-image-data".into(),
+            optional_history: true,
+        }],
+        Vec::new(),
+    ))
+    .await;
+    let serialized = body.to_string();
+    assert!(serialized.contains("image input omitted"));
+    assert!(!serialized.contains("sensitive-image-data"));
+    assert!(!serialized.contains("inlineData"));
 }

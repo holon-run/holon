@@ -1423,6 +1423,11 @@ async fn anthropic_context_budget_overflow_fails_before_http_send() {
         .as_ref()
         .expect("overflow should include context budget diagnostics");
     assert!(budget.estimated_input_tokens > 8_000);
+    assert_eq!(budget.estimated_text_tokens, budget.estimated_input_tokens);
+    assert_eq!(budget.image_reserve_tokens, 0);
+    assert_eq!(budget.image_count, 0);
+    assert_eq!(budget.inline_image_base64_bytes, 0);
+    assert_eq!(budget.estimated_inline_image_decoded_bytes, 0);
     assert_eq!(budget.requested_output_tokens, 1);
     assert_eq!(budget.context_window_tokens, 8_192);
     assert!(budget.overflow_tokens > 0);
@@ -1436,7 +1441,7 @@ async fn anthropic_context_budget_overflow_fails_before_http_send() {
 
 async fn history_image_preflight(
     optional_history: bool,
-    image_chars: usize,
+    context_window_tokens: usize,
     context: &str,
     cache_strategy: Option<AnthropicCacheStrategy>,
 ) -> (anyhow::Result<ProviderTurnResponse>, Vec<Value>) {
@@ -1478,7 +1483,8 @@ async fn history_image_preflight(
         config,
         "qwen3.8:latest",
         8192,
-        Some(8192),
+        // Admission pressure comes from image reserves/context, not base64 length.
+        Some(context_window_tokens),
         &fixture.config.home_dir,
         false,
     )
@@ -1490,7 +1496,7 @@ async fn history_image_preflight(
             ConversationMessage::UserImage {
                 prompt: "historical image".into(),
                 media_type: "image/png".into(),
-                data_base64: "A".repeat(image_chars),
+                data_base64: "A".repeat(40_000),
                 optional_history,
             },
             ConversationMessage::UserImage {
@@ -1518,7 +1524,7 @@ async fn history_image_preflight(
 async fn anthropic_optional_history_image_overflow_preserves_observation_and_current_image() {
     let context = "Reference: ![prior](workspace://ws_test/prior.png)\n\
         ViewImage observation: the prior chart has three blue bars.";
-    let (result, bodies) = history_image_preflight(true, 40_000, context, None).await;
+    let (result, bodies) = history_image_preflight(true, 6_144, context, None).await;
     result.expect("optional historical images should not cause a context rejection");
     assert_eq!(bodies.len(), 1, "only the checked, reduced request is sent");
     let messages = bodies[0]["messages"].to_string();
@@ -1538,23 +1544,50 @@ async fn anthropic_optional_history_image_overflow_preserves_observation_and_cur
 #[tokio::test]
 async fn anthropic_required_image_overflow_still_fails_before_http_send() {
     let (result, bodies) =
-        history_image_preflight(false, 40_000, "Inspect both images.", None).await;
+        history_image_preflight(false, 6_144, "Inspect both images.", None).await;
     let error = result.expect_err("required images must not be silently omitted");
     assert_eq!(provider_error_code(&error), Some("context_length_exceeded"));
     assert!(bodies.is_empty());
+    let diagnostics = provider_transport_diagnostics(&error).unwrap();
+    let budget = diagnostics.context_budget.as_ref().unwrap();
+    assert_eq!(budget.image_count, 2);
+    assert_eq!(budget.image_reserve_tokens, 3_136);
+    assert_eq!(budget.inline_image_base64_bytes, 40_012);
+    assert_eq!(budget.estimated_inline_image_decoded_bytes, 30_007);
+    assert_eq!(
+        budget.estimated_input_tokens,
+        budget.estimated_text_tokens + budget.image_reserve_tokens
+    );
+    let serialized = serde_json::to_string(diagnostics).unwrap();
+    assert!(!serialized.contains(&"A".repeat(100)));
+    assert!(!serialized.contains("Y3VycmVudA=="));
+    assert!(!serialized.contains("Inspect both images."));
 }
 
 #[tokio::test]
 async fn anthropic_optional_history_image_omission_rechecks_text_budget() {
-    let (result, bodies) = history_image_preflight(true, 40_000, &"text ".repeat(8000), None).await;
+    let (result, bodies) = history_image_preflight(true, 12_288, &"text ".repeat(8000), None).await;
     let error = result.expect_err("removing images must not bypass the text budget");
     assert_eq!(provider_error_code(&error), Some("context_length_exceeded"));
     assert!(bodies.is_empty());
+    let diagnostics = provider_transport_diagnostics(&error).unwrap();
+    let budget = diagnostics.context_budget.as_ref().unwrap();
+    assert!(
+        budget.estimated_text_tokens + budget.safety_headroom_tokens > budget.context_window_tokens,
+        "text must still exceed the window after optional images are omitted"
+    );
+    assert_eq!(
+        budget.image_count, 1,
+        "diagnostics describe the final payload"
+    );
+    assert_eq!(budget.image_reserve_tokens, 1_568);
+    assert_eq!(budget.inline_image_base64_bytes, 12);
+    assert_eq!(budget.estimated_inline_image_decoded_bytes, 7);
 }
 
 #[tokio::test]
 async fn anthropic_optional_history_image_under_budget_is_unchanged() {
-    let (result, bodies) = history_image_preflight(true, 32, "Original reference.", None).await;
+    let (result, bodies) = history_image_preflight(true, 32_768, "Original reference.", None).await;
     result.unwrap();
     assert_eq!(bodies.len(), 1);
     let messages = bodies[0]["messages"].to_string();
@@ -1565,7 +1598,7 @@ async fn anthropic_optional_history_image_under_budget_is_unchanged() {
 #[tokio::test]
 async fn anthropic_optional_history_image_omission_does_not_claim_an_observation() {
     let (result, bodies) =
-        history_image_preflight(true, 40_000, "Only an old reference.", None).await;
+        history_image_preflight(true, 6_144, "Only an old reference.", None).await;
     result.unwrap();
     let messages = bodies[0]["messages"].to_string();
     assert!(messages.contains("Only an old reference."));
@@ -1579,7 +1612,7 @@ async fn anthropic_optional_history_image_omission_preserves_time_cache_boundary
         AnthropicCacheStrategy::ClaudeCodePromptCache,
     ] {
         let (result, bodies) =
-            history_image_preflight(true, 40_000, "Prior reference.", Some(strategy)).await;
+            history_image_preflight(true, 6_144, "Prior reference.", Some(strategy)).await;
         result.unwrap();
         assert_eq!(bodies.len(), 1);
         let blocks: Vec<_> = bodies[0]["messages"]

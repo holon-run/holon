@@ -10,6 +10,7 @@ use crate::provider::{
     ConversationMessage, ModelBlock, PromptContentBlock, ProviderAttemptTimeline,
     ProviderPromptFrame, ToolResultBlock,
 };
+use crate::token_estimate::estimate_image_tokens;
 use crate::tool::{
     spec::{ToolResultEnvelope, ToolResultStatus},
     ToolSpec,
@@ -287,7 +288,7 @@ pub(super) fn estimate_projection_tokens(
                 prompt,
                 data_base64,
                 ..
-            } => estimate_text_tokens(prompt).saturating_add(data_base64.len() / 4),
+            } => estimate_text_tokens(prompt).saturating_add(estimate_image_tokens(data_base64)),
             ConversationMessage::AssistantBlocks(blocks) => blocks
                 .iter()
                 .map(estimate_model_block_tokens)
@@ -1310,7 +1311,9 @@ pub(super) fn build_turn_local_projection_with_time(
                     prompt,
                     data_base64,
                     ..
-                } => estimate_text_tokens(prompt).saturating_add(data_base64.len() / 4),
+                } => {
+                    estimate_text_tokens(prompt).saturating_add(estimate_image_tokens(data_base64))
+                }
             })
             .sum::<usize>();
         let include_checkpoint = exact_tail
@@ -1451,6 +1454,55 @@ pub(super) fn build_turn_local_projection_with_time(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn projection_image_reserve_is_independent_of_base64_length() {
+        let image = |bytes| ConversationMessage::UserImage {
+            prompt: "look".into(),
+            media_type: "image/png".into(),
+            data_base64: "x".repeat(bytes),
+            optional_history: false,
+        };
+        let frame = prompt_frame();
+        let small = estimate_projection_tokens(&frame, &[image(4)]);
+        assert_eq!(small, estimate_projection_tokens(&frame, &[image(100_000)]));
+        assert_eq!(
+            small,
+            estimate_prompt_frame_tokens(&frame)
+                + estimate_text_tokens("look")
+                + estimate_image_tokens("xxxx")
+        );
+        assert_eq!(
+            estimate_projection_tokens(&frame, &[image(4), image(4)]),
+            small + estimate_text_tokens("look") + estimate_image_tokens("xxxx")
+        );
+    }
+
+    #[test]
+    fn projection_uses_image_dimensions_when_available() {
+        use base64::{engine::general_purpose::STANDARD, Engine};
+        use image::{DynamicImage, ImageFormat};
+        use std::io::Cursor;
+
+        let mut bytes = Cursor::new(Vec::new());
+        DynamicImage::new_rgb8(200, 200)
+            .write_to(&mut bytes, ImageFormat::Png)
+            .unwrap();
+        let data_base64 = STANDARD.encode(bytes.into_inner());
+        let image_tokens = estimate_image_tokens(&data_base64);
+        assert_eq!(image_tokens, 64);
+        let frame = prompt_frame();
+        let image = ConversationMessage::UserImage {
+            prompt: "look".into(),
+            media_type: "image/png".into(),
+            data_base64,
+            optional_history: true,
+        };
+        assert_eq!(
+            estimate_projection_tokens(&frame, &[image]),
+            estimate_prompt_frame_tokens(&frame) + estimate_text_tokens("look") + image_tokens
+        );
+    }
 
     fn round(text: &str, follow_ups: &[&str]) -> TurnRoundRecord {
         let assistant_blocks = vec![ModelBlock::Text { text: text.into() }];

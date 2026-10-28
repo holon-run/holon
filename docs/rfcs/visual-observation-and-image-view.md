@@ -654,6 +654,59 @@ unchanged.
 
 ## Limits
 
+### Aggregate Markdown attachment budget
+
+Runtime Markdown inlining admits at most **8 unique images / 20 MiB of
+pre-base64 image file bytes per initial request**. These are conservative Holon
+attachment limits, not claims about any provider's context, image-count, or
+billing limits. Existing per-file validation (20 MiB / 50 MP) still applies.
+Base64 expansion, prompt/tool JSON, transport limits, and context preflight are
+separate concerns; fitting this attachment budget does not guarantee upstream
+admission.
+
+Required current/unknown-section images reserve capacity before optional
+historical images, regardless of section order. Canonical paths avoid repeated
+reads of the same file; validated content hashes deduplicate copies under
+different paths. A duplicate historical reference cannot turn a current image
+into an optional attachment. Original Markdown, labels, and existing
+observations stay in the context.
+
+The runtime omits optional historical attachments that do not fit, with an
+explicit model-visible notice that their pixels are unavailable. It does not
+silently discard a required attachment: unreadable/invalid required images or
+required images exceeding the aggregate budget produce a typed fail-fast
+contract error before dispatch. Budget errors include image count, decoded
+bytes, and limits, never image payloads. Debug assembly diagnostics also record
+deduplication and omission counts.
+
+At most **16 distinct local paths** are considered for reads, including files
+later eliminated by content deduplication. The existing per-file byte cap also
+bounds each read. Required references exceeding this scan budget fail before
+dispatch; optional historical references are omitted with the same notice.
+Deduplication therefore cannot authorize unbounded file reads or hashing.
+
+### Multimodal context estimates
+
+Transport preflight counts text and tool JSON without cloning or serializing
+base64 payloads for estimation. Only actual wire image-content slots exclude
+their encoded payload; image-looking text or tool arguments remain text.
+Each attached image instead receives a non-billing admission estimate selected
+from the final wire model, detail, and available dimensions. Inline dimensions
+are probed from at most 64 KiB of decoded header bytes, without decoding pixels
+or fetching remote URLs. Known native model families use approximate patch/tile
+rules; unknown compatible models and missing dimensions use bounded heuristic
+fallbacks rather than a universal worst-case reserve. These estimates are not
+exact visual token counts, billing estimates, or universal vendor limits.
+Provider diagnostics distinguish text estimates, image count, decoded bytes,
+and image reserves. Runtime history projection uses the shared size-sensitive,
+provider-neutral heuristic when the eventual wire model is not known.
+
+Gemini receives the resolved context window and performs the same bounded
+text/tool preflight. Its transport still does not support image input: an
+explicit required image fails with `image_input_unsupported` before HTTP;
+optional historical images retain explicit text-only degradation. This is not
+Gemini visual support or visual acceptance.
+
 ### Optional historical attachments at request preflight
 
 Markdown originals attached from the runtime-owned `recent_turns`,
@@ -675,9 +728,9 @@ it does not claim that an earlier observation exists or substitutes for a new
 inspection of image details. The model can explicitly request `ViewImage` when
 needed. This path neither calls `ViewImage` nor switches providers automatically.
 
-This downgrade does not change the existing byte-based token estimate, establish
-request-wide image/byte limits or deduplication, or promise model-specific visual
-token accounting. The limits proposed below are separate from this downgrade.
+This downgrade alone does not establish aggregate limits or deduplication;
+those are enforced separately during attachment assembly above. It does not
+promise model-specific visual token accounting.
 
 ### Proposed image-processing limits
 

@@ -2577,7 +2577,7 @@ impl TurnExecution<'_> {
                         &effective_prompt,
                         available_tools.clone(),
                         native_web_search.clone(),
-                    );
+                    )?;
                     append_inference_time(&mut request.conversation, &inference_time);
                     crate::diagnostics::record_provider_request_build(
                         request_build_started.elapsed(),
