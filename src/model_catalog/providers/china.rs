@@ -347,7 +347,6 @@ const REVIEWED_QIANFAN_CHAT_MODELS: &[(&str, u32, bool, bool)] = &[
     ("deepseek-v4-pro-0813", 393_216, true, false),
     ("deepseek-v4-pro", 393_216, true, false),
     ("deepseek-v4-flash-0731", 393_216, true, false),
-    ("ernie-5.0-thinking-latest", 65_536, true, true),
     // Listing and output ceiling alone do not confirm optional capabilities.
     ("ernie-5.0-thinking-exp", 65_536, false, false),
     ("glm-5.3-flash", 131_072, false, false),
@@ -362,34 +361,7 @@ const REVIEWED_QIANFAN_CHAT_MODELS: &[(&str, u32, bool, bool)] = &[
 
 pub(super) fn early_entries() -> Vec<BuiltInModelMetadata> {
     let mut entries = vec![
-        catalog_model(
-            "qianfan",
-            "deepseek-v3.2",
-            "DEEPSEEK V3.2",
-            131_072,
-            32_768,
-            false,
-            false,
-        ),
-        catalog_model(
-            "qianfan",
-            "deepseek-v3.2-think",
-            "DEEPSEEK V3.2 Think",
-            163_840,
-            65_536,
-            true,
-            false,
-        ),
-        reviewed_qianfan_model("ernie-5.0", "ERNIE 5.0", 65_536, true, true),
-        reviewed_qianfan_model(
-            "ernie-5.0-thinking-preview",
-            "ERNIE 5.0 Thinking Preview",
-            65_536,
-            true,
-            true,
-        ),
         reviewed_qianfan_model("ernie-5.1", "ERNIE 5.1", 65_536, false, false),
-        reviewed_qianfan_model("ernie-x1.1", "ERNIE X1.1", 65_536, true, false),
         catalog_model(
             "dashscope",
             "qwen3.7-plus",
@@ -1412,7 +1384,7 @@ pub(super) fn late_entries() -> Vec<BuiltInModelMetadata> {
             display_name: name.into(),
             description: format!(
                 "Volcengine native Responses API {name}; abbreviated token limits \
-                 remain unknown; K3.1 output limits conflict across official pages."
+                 remain unknown; K3.1 output defaults conflict across official pages."
             ),
             // Only K3.1 has an exact numeric context specification. A "k"
             // abbreviation is not evidence of an exact integer token limit.
@@ -1420,7 +1392,7 @@ pub(super) fn late_entries() -> Vec<BuiltInModelMetadata> {
             effective_context_window_percent: DEFAULT_EFFECTIVE_CONTEXT_WINDOW_PERCENT,
             auto_compact_token_limit: None,
             default_max_output_tokens: None,
-            max_output_tokens_upper_limit: None,
+            max_output_tokens_upper_limit: (model == "kimi-k3-1-pro").then_some(1_048_576),
             default_verbosity: None,
             tool_output_truncation_estimated_tokens: Some(
                 DEFAULT_TOOL_OUTPUT_TRUNCATION_ESTIMATED_TOKENS,
@@ -1520,7 +1492,10 @@ fn volcengine_native_responses_ids_keep_protocol_and_unknown_limits_scoped() {
         );
         assert_eq!(metadata.auto_compact_token_limit, None);
         assert_eq!(metadata.default_max_output_tokens, None);
-        assert_eq!(metadata.max_output_tokens_upper_limit, None);
+        assert_eq!(
+            metadata.max_output_tokens_upper_limit,
+            (model == "kimi-k3-1-pro").then_some(1_048_576)
+        );
         assert!(metadata.capabilities.supports_reasoning);
         assert!(metadata.capabilities.image_input);
         let efforts: &[&str] = if model.starts_with("doubao-") {
@@ -1824,6 +1799,33 @@ fn reviewed_kimi_k31_subscription_metadata_does_not_inherit_k3_tier_or_api_limit
 }
 
 #[test]
+fn retired_qianfan_ids_do_not_leave_legacy_routes_or_defaults() {
+    let catalog = BuiltInModelCatalog::from_legacy_definitions();
+    assert_eq!(
+        catalog.preferred_route_for_provider(&provider_id("qianfan")),
+        Some(ModelRouteRef::parse("qianfan@default/deepseek-v4.1-flash-1017").unwrap())
+    );
+    for id in [
+        "ernie-5.0",
+        "ernie-5.0-thinking-latest",
+        "ernie-5.0-thinking-preview",
+        "ernie-x1.1",
+        "deepseek-v3.2",
+        "deepseek-v3.2-think",
+    ] {
+        let model = ModelRef::new(provider_id("qianfan"), id);
+        assert!(catalog.get(&model).is_none(), "{id}");
+        let route = ModelRouteRef::parse(&format!("qianfan@default/{id}")).unwrap();
+        assert!(catalog.get_route(&route).is_none(), "{id}");
+    }
+    for id in ["ernie-5.1", "ernie-5.0-thinking-exp"] {
+        assert!(catalog
+            .get_route(&ModelRouteRef::parse(&format!("qianfan@default/{id}")).unwrap())
+            .is_some());
+    }
+}
+
+#[test]
 fn qianfan_reviewed_chat_ids_keep_context_and_output_defaults_unknown() {
     let entries = early_entries();
     let catalog = BuiltInModelCatalog::from_legacy_definitions();
@@ -1838,10 +1840,7 @@ fn qianfan_reviewed_chat_ids_keep_context_and_output_defaults_unknown() {
             ],
             393_216,
         ),
-        (
-            &["ernie-5.0-thinking-latest", "ernie-5.0-thinking-exp"],
-            65_536,
-        ),
+        (&["ernie-5.0-thinking-exp"], 65_536),
         (&["glm-5.3-flash", "glm-5.3", "glm-5.2", "glm-5.1"], 131_072),
         (
             &[
@@ -1853,7 +1852,7 @@ fn qianfan_reviewed_chat_ids_keep_context_and_output_defaults_unknown() {
             65_536,
         ),
     ];
-    assert_eq!(REVIEWED_QIANFAN_CHAT_MODELS.len(), 15);
+    assert_eq!(REVIEWED_QIANFAN_CHAT_MODELS.len(), 14);
     for &(ids, ceiling) in groups {
         for id in ids {
             let model_ref = ModelRef::new(provider_id("qianfan"), *id);
@@ -1899,12 +1898,7 @@ fn qianfan_reviewed_chat_ids_keep_context_and_output_defaults_unknown() {
 fn qianfan_ernie_abbreviated_context_does_not_keep_conflicting_exact_limits() {
     let entries = early_entries();
     let catalog = BuiltInModelCatalog::from_legacy_definitions();
-    for id in [
-        "ernie-5.0",
-        "ernie-5.0-thinking-preview",
-        "ernie-5.1",
-        "ernie-x1.1",
-    ] {
+    for id in ["ernie-5.1"] {
         let model_ref = ModelRef::new(provider_id("qianfan"), id);
         let metadata = entries
             .iter()
@@ -1914,18 +1908,11 @@ fn qianfan_ernie_abbreviated_context_does_not_keep_conflicting_exact_limits() {
         assert_eq!(metadata.auto_compact_token_limit, None, "{id}");
         assert_eq!(metadata.default_max_output_tokens, None, "{id}");
         assert_eq!(metadata.max_output_tokens_upper_limit, Some(65_536), "{id}");
-        if id == "ernie-5.0" {
-            assert!(metadata.capabilities.supports_reasoning);
-        }
         let route = ModelRouteRef::new(
             model_ref.provider,
             ProviderEndpointId::default_endpoint(),
             model_ref.model,
         );
-        assert!(catalog.get_route(&route).is_some(), "{id}");
-    }
-    for id in ["ernie-x1.1", "deepseek-v3.2", "deepseek-v3.2-think"] {
-        let route = ModelRouteRef::parse(&format!("qianfan@default/{id}")).unwrap();
         assert!(catalog.get_route(&route).is_some(), "{id}");
     }
 }

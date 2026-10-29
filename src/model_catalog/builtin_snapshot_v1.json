@@ -4488,48 +4488,6 @@
       "source": "conservative_builtin"
     },
     {
-      "model_ref": "qianfan/deepseek-v3.2",
-      "display_name": "DEEPSEEK V3.2",
-      "description": "Holon built-in runtime metadata for the qianfan/deepseek-v3.2 compatible provider model.",
-      "context_window_tokens": 131072,
-      "effective_context_window_percent": 95,
-      "auto_compact_token_limit": null,
-      "default_max_output_tokens": 32768,
-      "max_output_tokens_upper_limit": 32768,
-      "default_verbosity": null,
-      "tool_output_truncation_estimated_tokens": 2500,
-      "capabilities": {
-        "agent_turn": true,
-        "parallel_tool_calls": false,
-        "image_input": false,
-        "image_generation": false,
-        "supports_reasoning": false,
-        "interactive_exec": false
-      },
-      "source": "built_in_catalog"
-    },
-    {
-      "model_ref": "qianfan/deepseek-v3.2-think",
-      "display_name": "DEEPSEEK V3.2 Think",
-      "description": "Holon built-in runtime metadata for the qianfan/deepseek-v3.2-think compatible provider model.",
-      "context_window_tokens": 163840,
-      "effective_context_window_percent": 95,
-      "auto_compact_token_limit": null,
-      "default_max_output_tokens": 65536,
-      "max_output_tokens_upper_limit": 65536,
-      "default_verbosity": null,
-      "tool_output_truncation_estimated_tokens": 2500,
-      "capabilities": {
-        "agent_turn": true,
-        "parallel_tool_calls": false,
-        "image_input": false,
-        "image_generation": false,
-        "supports_reasoning": true,
-        "interactive_exec": false
-      },
-      "source": "built_in_catalog"
-    },
-    {
       "model_ref": "qianfan/deepseek-v4-flash-0731",
       "display_name": "deepseek-v4-flash-0731",
       "description": "Qianfan Chat deepseek-v4-flash-0731; exact context and output default unconfirmed.",
@@ -4635,27 +4593,6 @@
       "source": "conservative_builtin"
     },
     {
-      "model_ref": "qianfan/ernie-5.0",
-      "display_name": "ERNIE 5.0",
-      "description": "Qianfan Chat ERNIE 5.0; exact context and output default unconfirmed.",
-      "context_window_tokens": null,
-      "effective_context_window_percent": 95,
-      "auto_compact_token_limit": null,
-      "default_max_output_tokens": null,
-      "max_output_tokens_upper_limit": 65536,
-      "default_verbosity": null,
-      "tool_output_truncation_estimated_tokens": 2500,
-      "capabilities": {
-        "agent_turn": true,
-        "parallel_tool_calls": false,
-        "image_input": true,
-        "image_generation": false,
-        "supports_reasoning": true,
-        "interactive_exec": false
-      },
-      "source": "conservative_builtin"
-    },
-    {
       "model_ref": "qianfan/ernie-5.0-thinking-exp",
       "display_name": "ernie-5.0-thinking-exp",
       "description": "Qianfan Chat ernie-5.0-thinking-exp; exact context and output default unconfirmed.",
@@ -4677,48 +4614,6 @@
       "source": "conservative_builtin"
     },
     {
-      "model_ref": "qianfan/ernie-5.0-thinking-latest",
-      "display_name": "ernie-5.0-thinking-latest",
-      "description": "Qianfan Chat ernie-5.0-thinking-latest; exact context and output default unconfirmed.",
-      "context_window_tokens": null,
-      "effective_context_window_percent": 95,
-      "auto_compact_token_limit": null,
-      "default_max_output_tokens": null,
-      "max_output_tokens_upper_limit": 65536,
-      "default_verbosity": null,
-      "tool_output_truncation_estimated_tokens": 2500,
-      "capabilities": {
-        "agent_turn": true,
-        "parallel_tool_calls": false,
-        "image_input": true,
-        "image_generation": false,
-        "supports_reasoning": true,
-        "interactive_exec": false
-      },
-      "source": "conservative_builtin"
-    },
-    {
-      "model_ref": "qianfan/ernie-5.0-thinking-preview",
-      "display_name": "ERNIE 5.0 Thinking Preview",
-      "description": "Qianfan Chat ERNIE 5.0 Thinking Preview; exact context and output default unconfirmed.",
-      "context_window_tokens": null,
-      "effective_context_window_percent": 95,
-      "auto_compact_token_limit": null,
-      "default_max_output_tokens": null,
-      "max_output_tokens_upper_limit": 65536,
-      "default_verbosity": null,
-      "tool_output_truncation_estimated_tokens": 2500,
-      "capabilities": {
-        "agent_turn": true,
-        "parallel_tool_calls": false,
-        "image_input": true,
-        "image_generation": false,
-        "supports_reasoning": true,
-        "interactive_exec": false
-      },
-      "source": "conservative_builtin"
-    },
-    {
       "model_ref": "qianfan/ernie-5.1",
       "display_name": "ERNIE 5.1",
       "description": "Qianfan Chat ERNIE 5.1; exact context and output default unconfirmed.",
@@ -4735,27 +4630,6 @@
         "image_input": false,
         "image_generation": false,
         "supports_reasoning": false,
-        "interactive_exec": false
-      },
-      "source": "conservative_builtin"
-    },
-    {
-      "model_ref": "qianfan/ernie-x1.1",
-      "display_name": "ERNIE X1.1",
-      "description": "Qianfan Chat ERNIE X1.1; exact context and output default unconfirmed.",
-      "context_window_tokens": null,
-      "effective_context_window_percent": 95,
-      "auto_compact_token_limit": null,
-      "default_max_output_tokens": null,
-      "max_output_tokens_upper_limit": 65536,
-      "default_verbosity": null,
-      "tool_output_truncation_estimated_tokens": 2500,
-      "capabilities": {
-        "agent_turn": true,
-        "parallel_tool_calls": false,
-        "image_input": false,
-        "image_generation": false,
-        "supports_reasoning": true,
         "interactive_exec": false
       },
       "source": "conservative_builtin"
@@ -6901,7 +6775,7 @@
     {
       "model_ref": "volcengine/deepseek-v4-1-flash-260910",
       "display_name": "DeepSeek V4.1 Flash 260910",
-      "description": "Volcengine native Responses API DeepSeek V4.1 Flash 260910; abbreviated token limits remain unknown; K3.1 output limits conflict across official pages.",
+      "description": "Volcengine native Responses API DeepSeek V4.1 Flash 260910; abbreviated token limits remain unknown; K3.1 output defaults conflict across official pages.",
       "context_window_tokens": null,
       "effective_context_window_percent": 95,
       "auto_compact_token_limit": null,
@@ -6928,7 +6802,7 @@
     {
       "model_ref": "volcengine/deepseek-v4-1-flash-261017",
       "display_name": "DeepSeek V4.1 Flash 261017",
-      "description": "Volcengine native Responses API DeepSeek V4.1 Flash 261017; abbreviated token limits remain unknown; K3.1 output limits conflict across official pages.",
+      "description": "Volcengine native Responses API DeepSeek V4.1 Flash 261017; abbreviated token limits remain unknown; K3.1 output defaults conflict across official pages.",
       "context_window_tokens": null,
       "effective_context_window_percent": 95,
       "auto_compact_token_limit": null,
@@ -6955,7 +6829,7 @@
     {
       "model_ref": "volcengine/deepseek-v4-1-flash-economy-261017",
       "display_name": "DeepSeek V4.1 Flash Economy 261017",
-      "description": "Volcengine native Responses API DeepSeek V4.1 Flash Economy 261017; abbreviated token limits remain unknown; K3.1 output limits conflict across official pages.",
+      "description": "Volcengine native Responses API DeepSeek V4.1 Flash Economy 261017; abbreviated token limits remain unknown; K3.1 output defaults conflict across official pages.",
       "context_window_tokens": null,
       "effective_context_window_percent": 95,
       "auto_compact_token_limit": null,
@@ -7150,7 +7024,7 @@
     {
       "model_ref": "volcengine/doubao-seed-2-1-lite-260915",
       "display_name": "Doubao Seed 2.1 Lite 260915",
-      "description": "Volcengine native Responses API Doubao Seed 2.1 Lite 260915; abbreviated token limits remain unknown; K3.1 output limits conflict across official pages.",
+      "description": "Volcengine native Responses API Doubao Seed 2.1 Lite 260915; abbreviated token limits remain unknown; K3.1 output defaults conflict across official pages.",
       "context_window_tokens": null,
       "effective_context_window_percent": 95,
       "auto_compact_token_limit": null,
@@ -7177,7 +7051,7 @@
     {
       "model_ref": "volcengine/doubao-seed-2-1-pro-260915",
       "display_name": "Doubao Seed 2.1 Pro 260915",
-      "description": "Volcengine native Responses API Doubao Seed 2.1 Pro 260915; abbreviated token limits remain unknown; K3.1 output limits conflict across official pages.",
+      "description": "Volcengine native Responses API Doubao Seed 2.1 Pro 260915; abbreviated token limits remain unknown; K3.1 output defaults conflict across official pages.",
       "context_window_tokens": null,
       "effective_context_window_percent": 95,
       "auto_compact_token_limit": null,
@@ -7435,12 +7309,12 @@
     {
       "model_ref": "volcengine/kimi-k3-1-pro",
       "display_name": "Kimi K3.1 Pro",
-      "description": "Volcengine native Responses API Kimi K3.1 Pro; abbreviated token limits remain unknown; K3.1 output limits conflict across official pages.",
+      "description": "Volcengine native Responses API Kimi K3.1 Pro; abbreviated token limits remain unknown; K3.1 output defaults conflict across official pages.",
       "context_window_tokens": 1048576,
       "effective_context_window_percent": 95,
       "auto_compact_token_limit": null,
       "default_max_output_tokens": null,
-      "max_output_tokens_upper_limit": null,
+      "max_output_tokens_upper_limit": 1048576,
       "default_verbosity": null,
       "tool_output_truncation_estimated_tokens": 2500,
       "capabilities": {
@@ -12136,26 +12010,6 @@
       }
     },
     {
-      "route_ref": "qianfan@default/deepseek-v3.2",
-      "policy": {
-        "display_name": null,
-        "description": null,
-        "effective_context_window_percent": null,
-        "capabilities": {},
-        "reasoning_effort_options": null
-      }
-    },
-    {
-      "route_ref": "qianfan@default/deepseek-v3.2-think",
-      "policy": {
-        "display_name": null,
-        "description": null,
-        "effective_context_window_percent": null,
-        "capabilities": {},
-        "reasoning_effort_options": null
-      }
-    },
-    {
       "route_ref": "qianfan@default/deepseek-v4-flash-0731",
       "policy": {
         "display_name": null,
@@ -12206,16 +12060,6 @@
       }
     },
     {
-      "route_ref": "qianfan@default/ernie-5.0",
-      "policy": {
-        "display_name": null,
-        "description": null,
-        "effective_context_window_percent": null,
-        "capabilities": {},
-        "reasoning_effort_options": null
-      }
-    },
-    {
       "route_ref": "qianfan@default/ernie-5.0-thinking-exp",
       "policy": {
         "display_name": null,
@@ -12226,37 +12070,7 @@
       }
     },
     {
-      "route_ref": "qianfan@default/ernie-5.0-thinking-latest",
-      "policy": {
-        "display_name": null,
-        "description": null,
-        "effective_context_window_percent": null,
-        "capabilities": {},
-        "reasoning_effort_options": null
-      }
-    },
-    {
-      "route_ref": "qianfan@default/ernie-5.0-thinking-preview",
-      "policy": {
-        "display_name": null,
-        "description": null,
-        "effective_context_window_percent": null,
-        "capabilities": {},
-        "reasoning_effort_options": null
-      }
-    },
-    {
       "route_ref": "qianfan@default/ernie-5.1",
-      "policy": {
-        "display_name": null,
-        "description": null,
-        "effective_context_window_percent": null,
-        "capabilities": {},
-        "reasoning_effort_options": null
-      }
-    },
-    {
-      "route_ref": "qianfan@default/ernie-x1.1",
       "policy": {
         "display_name": null,
         "description": null,
@@ -15861,7 +15675,7 @@
     },
     {
       "provider": "qianfan",
-      "model_ref": "qianfan/deepseek-v3.2"
+      "model_ref": "qianfan/deepseek-v4.1-flash-1017"
     },
     {
       "provider": "stepfun",
@@ -16035,7 +15849,7 @@
     },
     {
       "provider": "qianfan",
-      "route_ref": "qianfan@default/deepseek-v3.2"
+      "route_ref": "qianfan@default/deepseek-v4.1-flash-1017"
     },
     {
       "provider": "stepfun",
@@ -16952,14 +16766,6 @@
       "route_ref": "openrouter@default/auto"
     },
     {
-      "model_ref": "qianfan/deepseek-v3.2",
-      "route_ref": "qianfan@default/deepseek-v3.2"
-    },
-    {
-      "model_ref": "qianfan/deepseek-v3.2-think",
-      "route_ref": "qianfan@default/deepseek-v3.2-think"
-    },
-    {
       "model_ref": "qianfan/deepseek-v4-flash-0731",
       "route_ref": "qianfan@default/deepseek-v4-flash-0731"
     },
@@ -16980,28 +16786,12 @@
       "route_ref": "qianfan@default/deepseek-v4.1-flash-1017"
     },
     {
-      "model_ref": "qianfan/ernie-5.0",
-      "route_ref": "qianfan@default/ernie-5.0"
-    },
-    {
       "model_ref": "qianfan/ernie-5.0-thinking-exp",
       "route_ref": "qianfan@default/ernie-5.0-thinking-exp"
     },
     {
-      "model_ref": "qianfan/ernie-5.0-thinking-latest",
-      "route_ref": "qianfan@default/ernie-5.0-thinking-latest"
-    },
-    {
-      "model_ref": "qianfan/ernie-5.0-thinking-preview",
-      "route_ref": "qianfan@default/ernie-5.0-thinking-preview"
-    },
-    {
       "model_ref": "qianfan/ernie-5.1",
       "route_ref": "qianfan@default/ernie-5.1"
-    },
-    {
-      "model_ref": "qianfan/ernie-x1.1",
-      "route_ref": "qianfan@default/ernie-x1.1"
     },
     {
       "model_ref": "qianfan/glm-5.1",

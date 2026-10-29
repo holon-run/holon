@@ -3894,19 +3894,13 @@ mod tests {
         assert_eq!(
             model_ids,
             vec![
-                "deepseek-v3.2",
-                "deepseek-v3.2-think",
                 "deepseek-v4-flash-0731",
                 "deepseek-v4-pro",
                 "deepseek-v4-pro-0813",
                 "deepseek-v4.1-flash",
                 "deepseek-v4.1-flash-1017",
-                "ernie-5.0",
                 "ernie-5.0-thinking-exp",
-                "ernie-5.0-thinking-latest",
-                "ernie-5.0-thinking-preview",
                 "ernie-5.1",
-                "ernie-x1.1",
                 "glm-5.1",
                 "glm-5.2",
                 "glm-5.3",
@@ -3918,14 +3912,7 @@ mod tests {
             ]
         );
 
-        let expected = [
-            ("deepseek-v3.2", Some(131_072), 32_768, false, false),
-            ("deepseek-v3.2-think", Some(163_840), 65_536, true, false),
-            ("ernie-5.0", None, 65_536, true, true),
-            ("ernie-5.0-thinking-preview", None, 65_536, true, true),
-            ("ernie-5.1", None, 65_536, false, false),
-            ("ernie-x1.1", None, 65_536, true, false),
-        ];
+        let expected = [("ernie-5.1", None, 65_536, false, false)];
         for (model, context_window, max_output, reasoning, image_input) in expected {
             let metadata = catalog
                 .get(&ModelRef::parse(&format!("qianfan/{model}")).unwrap())
