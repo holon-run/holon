@@ -156,6 +156,14 @@ material claims linked to evidence and defaults to draft-only work: it does not
 publish, send outreach, access marketing accounts, spend budget, or change live
 systems without explicit operator approval.
 
+## App Store optimization
+
+`aso-steward` maintains keyword baseline rankings, search trend expansion
+pipelines, store-compliant metadata rewrites, and release comparison packs across
+the Apple App Store and Google Play. As a flexible starter template, it surfaces
+organic search opportunities and prepares reviewable metadata updates and Fastlane
+deliverables without unilateral store publishing or live metadata releases.
+
 ## Community health
 
 `community-steward` maintains contributor onboarding, community evidence,
