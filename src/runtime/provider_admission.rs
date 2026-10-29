@@ -45,6 +45,7 @@ struct Candidate {
     connection: ProviderAdmissionScope,
     request: ProviderAdmissionScope,
     payment: ProviderAdmissionScope,
+    contract: ProviderAdmissionScope,
 }
 
 struct Chain {
@@ -266,6 +267,11 @@ struct RequestState {
     dispatch: Option<ProviderRecoveryDispatch>,
     unknown_dispatch: bool,
     dispatched: bool,
+    /// The in-flight dispatch's contract rejection is adapter-correctable
+    /// in-turn (a prepared lossless replay or an auxiliary probe the adapter
+    /// can skip); it is not candidate fatal. Consumed by the next
+    /// `after_request` settlement.
+    adapter_correctable_dispatch: bool,
     side_effect_boundary: bool,
 }
 
@@ -396,6 +402,12 @@ impl Drop for ProviderTurnAdmission {
 }
 
 impl ProviderDispatchGuard for ProviderTurnAdmission {
+    fn declare_adapter_correctable_dispatch(&self) {
+        if let Ok(mut state) = self.state.lock() {
+            state.adapter_correctable_dispatch = true;
+        }
+    }
+
     fn before_dispatch(&self) -> Result<()> {
         let now = self.clock.now();
         let mut state = self
@@ -488,6 +500,8 @@ impl ProviderDispatchGuard for ProviderTurnAdmission {
         let Some(dispatch) = state.dispatch.take() else {
             return Ok(()); // Local construction or the final guard rejected IO.
         };
+        let adapter_correctable_dispatch = state.adapter_correctable_dispatch;
+        state.adapter_correctable_dispatch = false;
         let lease = state
             .lease
             .take()
@@ -552,6 +566,21 @@ impl ProviderDispatchGuard for ProviderTurnAdmission {
                         &self.candidate.payment,
                         ProviderCooldownPolicy::PaymentRequired,
                     )),
+                    ProviderFailureKind::AuthError => Some((
+                        &self.candidate.rate_limit,
+                        ProviderCooldownPolicy::Credential,
+                    )),
+                    ProviderFailureKind::ContractError if adapter_correctable_dispatch => {
+                        // The adapter corrects this rejection in-turn: a
+                        // lossless replay without the rejected continuation
+                        // form, or skipping a rejected auxiliary probe. So
+                        // consuming the candidate would block the corrected
+                        // same-turn send.
+                        None
+                    }
+                    ProviderFailureKind::ContractError => {
+                        Some((&self.candidate.contract, ProviderCooldownPolicy::Contract))
+                    }
                     _ => None,
                 };
                 if let Some((scope, policy)) = failure {
@@ -572,6 +601,8 @@ impl ProviderDispatchGuard for ProviderTurnAdmission {
                             ProviderFailureKind::RateLimited => "rate_limited",
                             ProviderFailureKind::ServerError => "server_error",
                             ProviderFailureKind::PaymentRequired => "payment_required",
+                            ProviderFailureKind::AuthError => "auth_error",
+                            ProviderFailureKind::ContractError => "contract_error",
                             _ => "unknown",
                         }
                         .into(),
@@ -596,6 +627,12 @@ impl ProviderDispatchGuard for ProviderTurnAdmission {
                         }
                         ProviderCooldownPolicy::PaymentRequired => {
                             ProviderRecoveryRequestOutcome::PaymentRequired(scope)
+                        }
+                        ProviderCooldownPolicy::Credential => {
+                            ProviderRecoveryRequestOutcome::AuthFailure(scope)
+                        }
+                        ProviderCooldownPolicy::Contract => {
+                            ProviderRecoveryRequestOutcome::ContractFailure(scope)
                         }
                         _ => ProviderRecoveryRequestOutcome::RateLimited(scope),
                     }
@@ -844,8 +881,18 @@ impl RuntimeHandle {
                 route.route_ref.as_string(),
                 quota.as_ref().map(ProviderAdmissionScope::key)
             ))?;
+            let contract = ProviderAdmissionScope::candidate(&format!(
+                "{path}:{}:{:?}:contract",
+                route.route_ref.as_string(),
+                quota.as_ref().map(ProviderAdmissionScope::key)
+            ))?;
             let mut scopes: Vec<_> = quota.iter().cloned().collect();
-            scopes.extend([connection.clone(), request.clone(), payment.clone()]);
+            scopes.extend([
+                connection.clone(),
+                request.clone(),
+                payment.clone(),
+                contract.clone(),
+            ]);
             let rate_limit = match quota.as_ref() {
                 Some(scope) => scope.clone(),
                 None => {
@@ -865,6 +912,7 @@ impl RuntimeHandle {
                 connection,
                 request,
                 payment,
+                contract,
             });
         }
         ensure!(
@@ -1160,6 +1208,7 @@ impl RuntimeHandle {
                                 dispatch: None,
                                 unknown_dispatch: false,
                                 dispatched: false,
+                                adapter_correctable_dispatch: false,
                                 side_effect_boundary: episode.side_effect_boundary,
                             }),
                             input_fence: Mutex::new(None),

@@ -44,6 +44,7 @@ fn supplemental_throttle_scope_preserves_legacy_chain_fingerprint() {
                 candidate.connection.clone(),
                 candidate.request.clone(),
                 candidate.payment.clone(),
+                candidate.contract.clone(),
                 candidate.rate_limit.clone(),
             ]
         );

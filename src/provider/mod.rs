@@ -76,6 +76,13 @@ impl ContinuationScopeId {
 pub trait ProviderDispatchGuard: Send + Sync + std::fmt::Debug {
     fn before_dispatch(&self) -> anyhow::Result<()>;
 
+    /// Declare that the next dispatch's contract rejection is
+    /// adapter-correctable in-turn: the adapter either replays the same
+    /// inference without the rejected continuation form or skips the rejected
+    /// auxiliary probe. Such a rejection must not cool down or consume the
+    /// candidate: the corrected send still targets the same candidate.
+    fn declare_adapter_correctable_dispatch(&self) {}
+
     /// Settle a complete HTTP result before an adapter retries or compacts.
     /// `None` is a successful auxiliary response, not a usable model response.
     fn after_request(

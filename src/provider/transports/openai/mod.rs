@@ -643,6 +643,19 @@ impl AgentProvider for OpenAiProvider {
         ));
         let mut final_provider_input = plan.provider_input.clone();
         let mut final_replay_loss_reason = plan.replay_loss_reason.clone();
+        // A continuation-form dispatch with a prepared lossless replay is not
+        // candidate-fatal on contract rejection: the adapter corrects the
+        // form and resends the same inference in this turn. Tell the guard
+        // before the send so the rejection cannot cool down or consume the
+        // candidate ahead of that replay.
+        if self.endpoint_contract.transport == OpenAiResponsesTransportContract::StandardJson
+            && plan.body.get("previous_response_id").is_some()
+            && plan.fallback_replay.is_some()
+        {
+            if let Some(guard) = request.dispatch_guard.as_deref() {
+                guard.declare_adapter_correctable_dispatch();
+            }
+        }
         let parsed = match send_openai_responses_for_contract(
             self.endpoint_contract.transport,
             &self.client,

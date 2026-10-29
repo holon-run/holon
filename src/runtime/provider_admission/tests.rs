@@ -1734,6 +1734,11 @@ fn real_http_operator_lossless_replay_settles_rejected_continuation() {
 }
 
 #[test]
+fn real_http_unsupported_compact_endpoint_keeps_candidate_usable() {
+    run_guarded_openai_scenario(GuardedOpenAiCase::CompactUnsupported);
+}
+
+#[test]
 fn real_http_pre_compact_failure_keeps_typed_transport_error_and_charge() {
     run_guarded_openai_scenario(GuardedOpenAiCase::PreCompactFailure);
 }
@@ -1746,6 +1751,7 @@ fn real_http_post_compact_admission_race_preserves_usable_model_response() {
 #[derive(Clone, Copy)]
 enum GuardedOpenAiCase {
     Compact,
+    CompactUnsupported,
     Replay,
     PreCompactFailure,
     PostCompactRace,
@@ -1779,6 +1785,7 @@ async fn guarded_openai_scenario(case: GuardedOpenAiCase) {
     let compact = !matches!(case, GuardedOpenAiCase::Replay);
     let pre_failure = matches!(case, GuardedOpenAiCase::PreCompactFailure);
     let race = matches!(case, GuardedOpenAiCase::PostCompactRace);
+    let unsupported_compact = matches!(case, GuardedOpenAiCase::CompactUnsupported);
     type ConcurrentFailure = (
         RuntimeDb,
         ProviderAdmissionLease,
@@ -1799,6 +1806,9 @@ async fn guarded_openai_scenario(case: GuardedOpenAiCase) {
                     compacted.fetch_add(1, Ordering::SeqCst);
                     if pre_failure {
                         return (StatusCode::SERVICE_UNAVAILABLE, "planned compact outage").into_response();
+                    }
+                    if unsupported_compact {
+                        return (StatusCode::NOT_FOUND, "compact endpoint absent").into_response();
                     }
                     return Json(serde_json::json!({
                         "output": [{"type": "compaction_summary", "encrypted_content": "opaque"}]
@@ -1947,6 +1957,15 @@ async fn guarded_openai_scenario(case: GuardedOpenAiCase) {
         assert_eq!(compactions.load(Ordering::SeqCst), 0);
         assert_eq!(rejected.load(Ordering::SeqCst), 1);
         assert_eq!(sends.load(Ordering::SeqCst), 3);
+    }
+    if unsupported_compact {
+        // The 404 compact probe is adapter-correctable: no cooldown may
+        // remain on the candidate scopes after the turn.
+        assert!(runtime
+            .runtime_db()
+            .provider_admission_blocked(&admission.candidate.scopes, runtime.now())
+            .unwrap()
+            .is_none());
     }
     let episode = admission.episode().unwrap();
     assert_eq!(episode.total_requests, sends.load(Ordering::SeqCst) as i64);

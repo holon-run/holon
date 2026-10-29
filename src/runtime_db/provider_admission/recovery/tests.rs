@@ -4,6 +4,7 @@ use crate::domain::execution_protocol::{
     ExecutionSourceIdentity, ExecutionTrust,
 };
 
+mod auth_contract;
 mod payment_required;
 
 fn now() -> DateTime<Utc> {
