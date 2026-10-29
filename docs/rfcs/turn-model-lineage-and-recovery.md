@@ -383,7 +383,15 @@ and recovery-root failures from availability/budget refusals.
 
 Only typed `ScopeCooling` permits the runtime-level local replan above.
 Execution, owner, cancellation, storage, unknown admission, episode and budget
-refusals remain fail closed. A candidate cooldown alone does not park the
+refusals remain fail closed. Candidate selection distinguishes normal
+unavailability from replan errors: only a normal no-healthy-candidate result may
+enter the same-turn wait below. Replan validation, storage or audit failures
+terminate with their actual source chain, even if the active admission was
+already replaced; they must not fall back to waiting on the old admission.
+The latest typed dispatch denial wins over older diagnostic causes, including
+anyhow typed context; a foreign error's source is considered only when no such
+typed context exists. An older cooldown never overrides a newer safety refusal.
+A candidate cooldown alone does not park the
 entire source; exhausted chain selection persists one absolute parking deadline,
 subject to the recovery episode floor. Diagnostics distinguish an unsent local
 candidate rejection, an actual HTTP attempt, and final chain parking.

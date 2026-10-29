@@ -56,6 +56,362 @@ fn latest_cooling_denial_survives_context_without_adopting_an_older_deadline() {
     assert_eq!(scope_cooling_deadline(&error), Some(not_before));
 }
 
+#[derive(Debug, thiserror::Error)]
+#[error("foreign dispatch wrapper")]
+struct ForeignDenial(#[source] DispatchDeferred);
+
+#[test]
+fn foreign_source_cooldown_is_visible_but_latest_typed_denial_wins() {
+    let not_before = Utc::now() + Duration::seconds(600);
+    let error = anyhow::Error::new(ForeignDenial(DispatchDeferred(
+        LocalDispatchDenial::ScopeCooling { not_before },
+        None,
+    )))
+    .context("ordinary context");
+    assert_eq!(scope_cooling_deadline(&error), Some(not_before));
+    assert!(dispatch_pause(&error).is_none(), "no transport marker");
+    assert!(local_dispatch_rejection_user_summary(&error).is_none());
+    let input_changed = anyhow::Error::new(ForeignDenial(DispatchDeferred(
+        LocalDispatchDenial::InputChanged,
+        None,
+    )));
+    assert!(is_continuation_input_changed(&input_changed));
+    assert!(scope_cooling_deadline(
+        &error.context(DispatchDeferred(LocalDispatchDenial::EpisodeChanged, None))
+    )
+    .is_none());
+}
+
+#[derive(Clone, Copy, Debug)]
+enum ReplanCase {
+    Chain,
+    Episode,
+    SourceMissing,
+    StorageRead,
+    AuditAfterReplacement,
+    AllCooling,
+}
+
+#[test]
+fn cooling_replan_failures_preserve_causes_without_waiting_or_dispatch() {
+    run_cooling_replan_cases(vec![
+        ReplanCase::Chain,
+        ReplanCase::Episode,
+        ReplanCase::SourceMissing,
+        ReplanCase::StorageRead,
+        ReplanCase::AuditAfterReplacement,
+    ]);
+}
+
+#[test]
+fn reselectable_plain_continuation_waits_when_all_candidates_are_cooling() {
+    run_cooling_replan_cases(vec![ReplanCase::AllCooling]);
+}
+
+fn run_cooling_replan_cases(cases: Vec<ReplanCase>) {
+    std::thread::Builder::new()
+        .stack_size(8 * 1024 * 1024)
+        .spawn(move || {
+            tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .unwrap()
+                .block_on(async {
+                    for case in cases {
+                        cooling_replan_case(case).await;
+                    }
+                });
+        })
+        .unwrap()
+        .join()
+        .unwrap();
+}
+
+async fn cooling_replan_case(case: ReplanCase) {
+    let server = OutageServer::start(false).await;
+    let home = tempfile::tempdir().unwrap();
+    let config = config_with_urls(home.path(), [&server.url, &server.url]);
+    let provider = build_provider_from_config(&config).unwrap();
+    let clock = Arc::new(WaitClock {
+        wall: TestClock::new(Utc::now()),
+        sleeps: AtomicUsize::new(0),
+        wake: tokio::sync::Notify::new(),
+    });
+    let runtime = open_runtime_with_clock(home.path(), config, clock.clone());
+    runtime.enqueue(operator()).await.unwrap();
+    let RunLoopPoll::Message(scheduled) = SchedulerDecisionExecutor::new(&runtime)
+        .poll()
+        .await
+        .unwrap()
+    else {
+        panic!("initial input must be admitted");
+    };
+    let admission = scheduled.dispatch_plan.provider_admission.unwrap();
+    let _active = runtime
+        .activate_provider_admission(Some(admission.clone()))
+        .unwrap();
+    // A retained continuation has crossed a side-effect boundary, so a local
+    // rejection must not turn into first-round source parking.
+    admission.mark_side_effect_boundary(true).unwrap();
+    let lease = admission.state.lock().unwrap().lease.take().unwrap();
+    runtime
+        .runtime_db()
+        .record_provider_admission_failure(
+            &lease,
+            &admission.candidate.connection,
+            ProviderCooldownPolicy::Transport,
+            clock.now(),
+            Some(clock.now() + Duration::seconds(600)),
+            "concurrent/request",
+        )
+        .unwrap();
+    let mut request = ProviderTurnRequest::plain("continuation", Vec::new(), Vec::new());
+    request.dispatch_guard = Some(admission.clone());
+    let error = provider.complete_turn(request.clone()).await.unwrap_err();
+    assert!(crate::provider::is_dispatch_guard_rejected(&error));
+    let cooling_until = scope_cooling_deadline(&error).unwrap();
+    assert!(dispatch_pause(&error).is_none());
+    let before = admission.episode().unwrap().total_requests;
+    let expected = match case {
+        ReplanCase::AllCooling => {
+            use crate::runtime_db::provider_admission::ProviderAdmissionReservation;
+
+            for denial in [
+                LocalDispatchDenial::InputChanged,
+                LocalDispatchDenial::EpisodeChanged,
+            ] {
+                let latest = provider
+                    .complete_turn(request.clone())
+                    .await
+                    .unwrap_err()
+                    .context(DispatchDeferred(denial, None));
+                assert!(crate::provider::is_dispatch_guard_rejected(&latest));
+                assert!(scope_cooling_deadline(&latest).is_none());
+                assert!(dispatch_pause(&latest).is_none());
+                assert_eq!(
+                    is_continuation_input_changed(&latest),
+                    matches!(denial, LocalDispatchDenial::InputChanged)
+                );
+                let described = runtime.local_provider_dispatch_error(latest);
+                let descriptor = crate::runtime_error::describe_runtime_error(&described);
+                assert_eq!(descriptor.code, "provider_dispatch_rejected");
+                assert_eq!(
+                    descriptor.safe_context.get("predicate"),
+                    Some(&denial.to_string())
+                );
+                let summary = local_dispatch_rejection_user_summary(&described).unwrap();
+                assert!(summary.contains("local safety check"), "{summary}");
+                assert!(!summary.contains("cooling down"), "{summary}");
+            }
+            let state = runtime.inner.agent.lock().await.state.clone();
+            let chain = runtime.provider_admission_chain(&state).unwrap().unwrap();
+            let fallback = &chain.candidates[1];
+            let ProviderAdmissionReservation::Granted(lease) = runtime
+                .runtime_db()
+                .reserve_provider_admission(&fallback.scopes, clock.now(), PROBE_LEASE)
+                .unwrap()
+            else {
+                panic!("healthy fallback reservation");
+            };
+            runtime
+                .runtime_db()
+                .record_provider_admission_failure(
+                    &lease,
+                    &fallback.connection,
+                    ProviderCooldownPolicy::Transport,
+                    clock.now(),
+                    Some(clock.now() + Duration::seconds(600)),
+                    "concurrent/request",
+                )
+                .unwrap();
+            let mut excluded = Default::default();
+            let mut observed = Default::default();
+            {
+                let waiting =
+                    runtime.continue_cooling_provider(error, &mut excluded, true, 1, &mut observed);
+                tokio::pin!(waiting);
+                tokio::select! {
+                    result = &mut waiting => panic!("plain continuation must wait: {}", result.is_ok()),
+                    _ = async {
+                        while clock.sleeps.load(Ordering::SeqCst) == 0 {
+                            tokio::task::yield_now().await;
+                        }
+                    } => {}
+                    _ = tokio::time::sleep(std::time::Duration::from_secs(2)) => panic!("wait not entered"),
+                }
+                assert_eq!(server.calls.load(Ordering::SeqCst), 0);
+                assert_eq!(admission.episode().unwrap().total_requests, before);
+                let wait = runtime
+                    .agent_summary()
+                    .await
+                    .unwrap()
+                    .provider_cooldown_wait
+                    .unwrap();
+                assert!(wait.not_before >= cooling_until);
+                assert_eq!(
+                    wait.not_before,
+                    runtime
+                        .runtime_db()
+                        .provider_admission_blocked(&admission.candidate.scopes, clock.now(),)
+                        .unwrap()
+                        .unwrap()
+                        .not_before,
+                );
+                assert!(wait.not_before >= clock.now() + Duration::seconds(600));
+                clock.wall.advance(
+                    (wait.not_before - clock.now()).to_std().unwrap()
+                        - std::time::Duration::from_secs(1),
+                );
+                clock.wake.notify_one();
+                tokio::select! {
+                    _ = &mut waiting => panic!("cannot resume before the shared deadline"),
+                    _ = tokio::time::sleep(std::time::Duration::from_millis(10)) => {}
+                }
+                assert_eq!(server.calls.load(Ordering::SeqCst), 0);
+                assert_eq!(admission.episode().unwrap().total_requests, before);
+                clock.wall.advance(std::time::Duration::from_secs(1));
+                clock.wake.notify_one();
+                assert!(matches!(
+                    tokio::time::timeout(std::time::Duration::from_secs(2), &mut waiting)
+                        .await
+                        .unwrap()
+                        .unwrap(),
+                    CoolingContinuation::RetrySame,
+                ));
+            }
+            assert!(
+                excluded.contains(&admission.model().as_string()),
+                "real replan ran"
+            );
+            assert!(Arc::ptr_eq(
+                &admission,
+                &runtime.active_provider_admission().unwrap().unwrap()
+            ));
+            assert_eq!(admission.episode().unwrap().total_requests, before);
+            assert!(runtime
+                .agent_summary()
+                .await
+                .unwrap()
+                .provider_cooldown_wait
+                .is_none());
+            assert!(runtime
+                .runtime_db()
+                .provider_queue_parking("default", &scheduled.message.id)
+                .unwrap()
+                .is_none());
+            server.healthy.store(true, Ordering::SeqCst);
+            provider.complete_turn(request).await.unwrap();
+            assert_eq!(server.calls.load(Ordering::SeqCst), 1);
+            assert_eq!(admission.episode().unwrap().total_requests, before + 1);
+            return;
+        }
+        ReplanCase::Chain => {
+            runtime.inner.agent.lock().await.state.model_override =
+                Some(ModelRouteRef::parse("anthropic@default/claude-sonnet-4-6").unwrap());
+            "provider chain changed during candidate replan"
+        }
+        ReplanCase::Episode => {
+            runtime.runtime_db().transaction(|tx| {
+                tx.execute(
+                    "UPDATE provider_recovery_episodes SET state = 'resolved' WHERE episode_key = ?1",
+                    [&admission.episode_key],
+                )?;
+                Ok(())
+            }).unwrap();
+            "provider episode changed during candidate replan"
+        }
+        ReplanCase::SourceMissing => {
+            runtime
+                .runtime_db()
+                .transaction(|tx| {
+                    tx.execute(
+                        "DELETE FROM messages WHERE evidence_id = ?1",
+                        [&scheduled.message.id],
+                    )?;
+                    Ok(())
+                })
+                .unwrap();
+            "cooling provider source message not persisted"
+        }
+        ReplanCase::StorageRead => {
+            runtime
+                .runtime_db()
+                .transaction(|tx| {
+                    tx.execute(
+                        "UPDATE messages SET payload_json = '{}' WHERE evidence_id = ?1",
+                        [&scheduled.message.id],
+                    )?;
+                    Ok(())
+                })
+                .unwrap();
+            "missing field"
+        }
+        ReplanCase::AuditAfterReplacement => {
+            runtime
+                .runtime_db()
+                .transaction(|tx| {
+                    tx.execute_batch(
+                        "CREATE TRIGGER reject_candidate_reselection
+                     BEFORE INSERT ON audit_events
+                     WHEN NEW.kind = 'provider_candidate_reselected'
+                     BEGIN SELECT RAISE(FAIL, 'injected candidate audit failure'); END;",
+                    )?;
+                    Ok(())
+                })
+                .unwrap();
+            "injected candidate audit failure"
+        }
+    };
+    let result = tokio::time::timeout(
+        std::time::Duration::from_secs(2),
+        runtime.continue_cooling_provider(
+            error,
+            &mut Default::default(),
+            true,
+            1,
+            &mut Default::default(),
+        ),
+    )
+    .await
+    .expect("real replan faults must fail closed, not enter a cooldown wait");
+    let error = match result {
+        Err(error) => error,
+        Ok(_) => panic!("replan fault unexpectedly authorized a continuation: {case:?}"),
+    };
+    let chain = format!("{error:#}");
+    assert!(chain.contains(expected), "{case:?}: {chain}");
+    assert!(
+        chain.contains("scope cooldown candidate replan failed"),
+        "{chain}"
+    );
+    assert!(
+        !chain.contains("only a typed scope cooldown can wait"),
+        "{chain}"
+    );
+    assert!(error.chain().count() > 1, "{chain}");
+    assert!(scope_cooling_deadline(&error).is_none());
+    assert_eq!(clock.sleeps.load(Ordering::SeqCst), 0);
+    assert_eq!(server.calls.load(Ordering::SeqCst), 0);
+    assert_eq!(admission.episode().unwrap().total_requests, before);
+    assert!(runtime
+        .agent_summary()
+        .await
+        .unwrap()
+        .provider_cooldown_wait
+        .is_none());
+    assert!(runtime
+        .runtime_db()
+        .provider_queue_parking("default", &scheduled.message.id)
+        .unwrap()
+        .is_none());
+    let replacement = runtime.active_provider_admission().unwrap().unwrap();
+    assert_eq!(
+        !Arc::ptr_eq(&admission, &replacement),
+        matches!(case, ReplanCase::AuditAfterReplacement),
+        "audit failure happens after replacing the active admission"
+    );
+}
+
 impl Clock for WaitClock {
     fn now(&self) -> DateTime<Utc> {
         self.wall.now()
