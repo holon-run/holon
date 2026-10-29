@@ -17,6 +17,7 @@ fn report() -> CoverageReport {
     )
     .unwrap();
     report.routes.truncate(1);
+    report.required_routes = vec![report.routes[0].route_ref.clone()];
     report
 }
 
@@ -214,4 +215,153 @@ fn models_dev_coverage_associations_need_registered_reviewed_endpoints() {
     )
     .unwrap_err()
     .contains("unregistered"));
+}
+
+#[test]
+fn models_dev_coverage_reviewed_compatibility_routes_are_complete_and_endpoint_scoped() {
+    use holon::config::ModelRouteRef;
+
+    let snapshot = parse_snapshot(
+        r#"{
+        "deepseek":{"id":"deepseek","models":{
+            "deepseek-flash":{"id":"deepseek-flash","limit":{"context":1048576,"output":393216}}
+        }},
+        "alibaba-token-plan-cn":{"id":"alibaba-token-plan-cn","models":{
+            "deepseek-flash":{"id":"deepseek-flash","limit":{"context":111,"output":11}}
+        }}
+    }"#,
+    )
+    .unwrap();
+    let catalog = BuiltInModelCatalog::new();
+    let before = catalog.clone();
+    let associations = endpoint_associations().unwrap();
+    let report = generate_coverage(&snapshot, &catalog, &associations).unwrap();
+    for association in &associations {
+        for model in &association.supported_models {
+            let expected = format!("{}/{model}", association.route_registration);
+            assert_eq!(
+                report
+                    .routes
+                    .iter()
+                    .filter(|r| r.route_ref.as_string() == expected)
+                    .count(),
+                1,
+                "{expected}"
+            );
+        }
+    }
+    for (endpoint, efforts) in [
+        ("default", vec!["low", "high", "max"]),
+        (
+            "responses",
+            vec!["none", "minimal", "low", "medium", "high", "xhigh", "max"],
+        ),
+    ] {
+        let route = ModelRouteRef::parse(&format!("deepseek@{endpoint}/deepseek-flash")).unwrap();
+        let row = report.routes.iter().find(|r| r.route_ref == route).unwrap();
+        assert_eq!(row.upstream_candidates.len(), 1);
+        let candidate = &row.upstream_candidates[0];
+        assert_eq!(candidate.models_dev_ref, "deepseek/deepseek-flash");
+        assert_eq!(candidate.context_window_tokens, Some(1_048_576));
+        assert_eq!(candidate.max_output_tokens, Some(393_216));
+        assert_eq!(
+            candidate.differences,
+            ["context_window_tokens", "max_output_tokens_upper_limit"]
+        );
+        assert_eq!(row.effective.context_window_tokens, Some(1_000_000));
+        assert_eq!(row.effective.max_output_tokens_upper_limit, Some(384_000));
+        assert_eq!(row.effective.reasoning_effort_options, efforts);
+        // Both protocols now document image input; retain each endpoint's own
+        // resolver result, not capabilities copied from an upstream candidate.
+        assert!(row.effective.capabilities.image_input);
+        if endpoint == "default" {
+            assert!(row.raw_route.is_null());
+            assert!(catalog.get_route(&route).is_none());
+        }
+    }
+    assert_eq!(catalog, before);
+    assert_eq!(
+        catalog
+            .preferred_route_for_model(
+                &ModelRouteRef::parse("deepseek@default/deepseek-flash")
+                    .unwrap()
+                    .model_ref()
+            )
+            .unwrap()
+            .as_string(),
+        "deepseek@responses/deepseek-flash"
+    );
+    // A Responses registration is not evidence for arbitrary default routes.
+    assert!(!report
+        .routes
+        .iter()
+        .any(|r| r.route_ref.as_string() == "dashscope@default/deepseek-v4.1-flash-1017"));
+}
+
+#[test]
+fn models_dev_coverage_missing_required_route_fails_even_with_matching_baseline() {
+    let mut report = generate_coverage(
+        &parse_snapshot("{}").unwrap(),
+        &BuiltInModelCatalog::new(),
+        &endpoint_associations().unwrap(),
+    )
+    .unwrap();
+    let reviewed = baseline(&report);
+    assert!(check_coverage(&report, &reviewed).is_empty());
+    report
+        .routes
+        .retain(|r| r.route_ref.as_string() != "deepseek@default/deepseek-flash");
+    let matching_but_incomplete = baseline(&report);
+    assert!(check_coverage(&report, &matching_but_incomplete)
+        .iter()
+        .any(|e| e == "deepseek@default/deepseek-flash: required route missing from coverage"));
+    report.routes.push(report.routes[0].clone());
+    assert!(check_coverage(&report, &matching_but_incomplete)
+        .iter()
+        .any(|e| e.contains("duplicate coverage route")));
+}
+
+#[test]
+fn models_dev_coverage_supported_models_require_exact_existing_models() {
+    let snapshot = parse_snapshot("{}").unwrap();
+    let catalog = BuiltInModelCatalog::new();
+    let mut associations = endpoint_associations().unwrap();
+    let native = associations
+        .iter_mut()
+        .find(|a| a.route_registration == "deepseek@default")
+        .unwrap();
+    native
+        .supported_models
+        .push("deepseek-flash-preview".into());
+    assert!(generate_coverage(&snapshot, &catalog, &associations)
+        .unwrap_err()
+        .contains("unsupported association model"));
+    associations
+        .iter_mut()
+        .find(|a| a.route_registration == "deepseek@default")
+        .unwrap()
+        .supported_models = vec!["deepseek-flash".into(), "deepseek-flash".into()];
+    assert!(generate_coverage(&snapshot, &catalog, &associations)
+        .unwrap_err()
+        .contains("duplicate supported model"));
+}
+
+#[test]
+fn models_dev_coverage_missing_reviewed_upstream_is_explicit() {
+    let report = generate_coverage(
+        &parse_snapshot("{}").unwrap(),
+        &BuiltInModelCatalog::new(),
+        &endpoint_associations().unwrap(),
+    )
+    .unwrap();
+    let row = report
+        .routes
+        .iter()
+        .find(|r| r.route_ref.as_string() == "deepseek@default/deepseek-flash")
+        .unwrap();
+    assert_eq!(
+        row.missing_reasons["upstream:deepseek"],
+        "reviewed_endpoint_upstream_model_missing"
+    );
+    assert!(row.upstream_candidates.is_empty());
 }

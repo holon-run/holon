@@ -7,6 +7,28 @@ an endpoint, region, subscription entitlement, or runtime output policy.
 
 ## Incremental review: 2026-10-29
 
+### Native DeepSeek compatibility coverage (#3788)
+
+Independently reviewed the native Messages and Responses endpoints using the
+[Anthropic compatibility reference](https://api-docs.deepseek.com/guides/anthropic_api/),
+[Responses reference](https://api-docs.deepseek.com/guides/responses_api/), and
+[pricing/model table](https://api-docs.deepseek.com/quick_start/pricing/).
+Both endpoints support the current `deepseek-flash` ID and the retained
+`deepseek-v4-flash` / `deepseek-v4-pro` IDs. The frozen native models.dev node
+provides 1,048,576 context and 393,216 output candidates; the existing reviewed
+1,000,000 / 384,000 runtime ceilings remain conservative and unchanged.
+These differences remain visible rather than being silently copied or waived.
+
+The unpinned `deepseek@default/deepseek-flash` compatibility route is now
+enumerated explicitly by a reviewed association, while Responses remains
+preferred. Its capacity and capability sources remain model-level; no pinned
+route or new runtime behavior is manufactured for this audit. The current
+Messages reference explicitly supports image content (base64, URL, and file),
+so this review does not assert that Messages is text-only. Reasoning effort
+options still resolve separately for Messages and Responses. Native evidence
+does not establish Token Plan or reseller entitlement, limits, or capabilities.
+No paid inference was run.
+
 The new Mistral `deepseek-v4-1-flash-1017` candidate remains in the frozen
 snapshot/artifact, not the admitted supplement. Its
 [native model page](https://docs.mistral.ai/models/deepseek-v4-flash-1017)

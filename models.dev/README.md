@@ -16,7 +16,9 @@ artifact generated from it.
 - `refresh-summary.md` — human-readable summary of the latest refresh:
   drafted, retained, removed, and deferred models.
 - `endpoint-mappings.json` — reviewed, exact-endpoint/region associations for
-  upstream plan catalogs. These are audit inputs, not runtime registrations.
+  native and plan catalogs. Optional `supported_models` allowlists also enumerate
+  supported compatibility routes without pinned metadata. These are audit
+  inputs, not runtime registrations or capability overrides.
 - `metadata-review.json` — accepted route facts and documented capacity
   unknowns. Catalog changes must review the corresponding baseline changes.
 

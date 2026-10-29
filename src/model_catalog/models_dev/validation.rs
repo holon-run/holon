@@ -152,6 +152,10 @@ impl ValidationEngine {
         Self { routes }
     }
 
+    pub(super) fn contains_route(&self, route_registration: &str) -> bool {
+        self.routes.contains_key(route_registration)
+    }
+
     /// Validates a manifest, optionally cross-referencing a `models.dev` snapshot.
     pub fn validate(
         &self,
