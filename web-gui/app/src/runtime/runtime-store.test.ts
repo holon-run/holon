@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import type { ConversationStateView } from "@holon/conversation-sdk";
+import type { ConversationStateView, ConversationSummaryResponse } from "@holon/conversation-sdk";
 
 import {
   agentBriefPatchFromEvents,
@@ -9,6 +9,7 @@ import {
   backfillRetryDelayMs,
   isSessionCacheContextCurrent,
   mergeBootstrapAgentState,
+  mergeAgentDetailIntoSession,
   mergeTimelineEventPage,
   modelCatalogCacheKey,
   observerSyncDiagnostics,
@@ -451,6 +452,80 @@ describe("refreshAgentDetail last-known-good", () => {
     } finally {
       useRuntimeStore.setState(previous, true);
     }
+  });
+});
+
+describe("conversation-backed agent detail", () => {
+  function conversation(overrides: Partial<ConversationSummaryResponse> = {}): ConversationSummaryResponse {
+    return {
+      schema_version: 1, query_version: 1, runtime_id: "runtime-a",
+      event_log_epoch: "epoch-a", visibility_scope_id: "scope-a",
+      snapshot_through_seq: 23, event_head_seq: 23, oldest_retained_seq: 5,
+      snapshot_cursor: "checkpoint-23" as ConversationSummaryResponse["snapshot_cursor"],
+      turns: [], active_turns: [], pending_inputs: [],
+      next_before_cursor: null, has_more: false,
+      ...overrides,
+    };
+  }
+
+  function merge(snapshot: ConversationSummaryResponse | undefined, current = sessionState()) {
+    const state = useRuntimeStore.getState();
+    return mergeAgentDetailIntoSession({
+      ...state,
+      bootstrap: { ...state.bootstrap, agents: [agentSummary({ lastBrief: "Roster preview" })] },
+      sessionsByAgentId: { "agent-a": current },
+    }, "agent-a", {
+      agent: agentSummary(), source: "http", timeline: [], conversation: snapshot,
+    }).sessionsByAgentId!["agent-a"]!;
+  }
+
+  it("hydrates epoch and sequence boundaries without raw event reduction", () => {
+    const result = merge(conversation());
+    expect(result.eventLogEpoch).toBe("epoch-a");
+    expect(result.newestSeq).toBe(23);
+    expect(result.oldestSeq).toBe(5);
+    expect(result.eventSeqs).toEqual([]);
+    expect(result.contentStatus).toBe("confirmed-empty");
+    expect(result.syncStatus).toBe("idle");
+    expect(result.detail?.agent.lastBrief).toBe("Roster preview");
+  });
+
+  it("does not infer emptiness from an unfilled history window", () => {
+    expect(merge(conversation({ has_more: true })).contentStatus).toBe("available");
+    expect(merge(conversation({
+      coverage: { has_older: false, has_newer: true, reaches_oldest: true, reaches_latest: false },
+    })).contentStatus).toBe("available");
+  });
+
+  it("retires confirmed local prompts and keeps unconfirmed echoes", () => {
+    const current = sessionState({
+      pendingOperatorPrompts: ["confirmed", "unconfirmed"].map((messageId) => ({
+        clientId: messageId, messageId, text: messageId, createdAt: new Date().toISOString(),
+      })),
+    });
+    const result = merge(conversation({
+      pending_inputs: [{ message_id: "confirmed", revision: 1, state: "queued", preview: "Sent" }],
+    }), current);
+    expect(result.contentStatus).toBe("available");
+    expect(result.pendingOperatorPrompts.map((entry) => entry.messageId)).toEqual(["unconfirmed"]);
+  });
+
+  it("preserves content and boundaries when the optional snapshot is unavailable", () => {
+    const result = merge(undefined, sessionState({
+      contentStatus: "available", eventLogEpoch: "epoch-a", newestSeq: 50, oldestSeq: 5,
+    }));
+    expect(result.contentStatus).toBe("available");
+    expect(result.newestSeq).toBe(50);
+    expect(result.oldestSeq).toBe(5);
+  });
+
+  it("resets old epoch boundaries but never rewinds the same epoch head", () => {
+    expect(merge(conversation(), sessionState({
+      eventLogEpoch: "old-epoch", newestSeq: 100, oldestSeq: 99,
+    })).newestSeq).toBe(23);
+    expect(merge(conversation(), sessionState({
+      eventLogEpoch: "epoch-a", newestSeq: 100,
+    })).newestSeq).toBe(100);
   });
 });
 

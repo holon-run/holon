@@ -3050,9 +3050,7 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => {
           return;
         }
         clearAgentDetailRetry(agentId);
-        span.end(detail.error ? "error" : "ok", {
-          eventCount: detail.events?.length ?? 0,
-        });
+        span.end(detail.error ? "error" : "ok");
       } catch (error) {
         if (
           !isCurrentClientRequest(request) ||
@@ -4589,19 +4587,16 @@ function updateAgentModelInState(
   };
 }
 
-function mergeAgentDetailIntoSession(
+export function mergeAgentDetailIntoSession(
   state: RuntimeStoreState,
   agentId: string,
   detail: AgentDetail,
 ): Partial<RuntimeStoreState> {
-  const epochSession = sessionForEventLogEpoch(
+  const conversation = detail.conversation;
+  const current = sessionForEventLogEpoch(
     state.sessionsByAgentId[agentId] ?? emptyAgentSession(),
-    detail.eventLogEpoch,
+    conversation?.event_log_epoch,
   );
-  const pageEvents = detail.events ?? [];
-  const current = hasEventIdentityConflict(epochSession, pageEvents)
-    ? resetSessionForEventConflict(epochSession, detail.eventLogEpoch)
-    : epochSession;
   if (detail.error && current.detail) {
     // The client returns a disconnected placeholder (error set) when the
     // detail fetch fails. With a last-known-good detail on hand, keep
@@ -4619,34 +4614,33 @@ function mergeAgentDetailIntoSession(
       },
     };
   }
-  const liveDetailIsNewer = (current.newestSeq ?? 0) > Math.max(detail.eventCursorSeq ?? 0, detail.newestEventSeq ?? 0);
-  const agent = liveDetailIsNewer && current.detail ? mergeNewerLiveAgentState(detail.agent, current.detail.agent) : detail.agent;
+  const liveDetailIsNewer = (current.newestSeq ?? 0) > (conversation?.event_head_seq ?? 0);
+  const freshAgent = liveDetailIsNewer && current.detail ? mergeNewerLiveAgentState(detail.agent, current.detail.agent) : detail.agent;
+  // Discovery owns the brief preview; detail no longer hydrates raw brief events.
+  const rosterAgent = state.bootstrap.agents.find((entry) => entry.id === agentId);
+  const agent = {
+    ...freshAgent,
+    lastBrief: rosterAgent?.lastBrief ?? current.detail?.agent.lastBrief ?? freshAgent.lastBrief,
+  };
   const detailBase: AgentDetail = {
     ...detail,
     agent,
     timeline: current.detail?.timeline ?? detail.timeline,
     hasOlderEvents: undefined,
   };
-  let projected = applyProjectionAction(current, {
-    type: "events_received",
-    events: pageEvents,
-    eventLogEpoch: detail.eventLogEpoch,
-  }, "debug", detailBase);
-  if (detail.transcriptEntriesById) {
-    projected = applyProjectionAction(projected, {
-      type: "transcripts_hydrated",
-      entries: Object.values(detail.transcriptEntriesById),
-      missingIds: [],
-    }, "debug", projected.detail);
-  }
-  if (detail.briefRecordsById) {
-    projected = applyProjectionAction(projected, {
-      type: "briefs_hydrated",
-      recordsById: detail.briefRecordsById,
-      missingIds: [],
-    }, "debug", projected.detail);
-  }
-  const newestSeq = Math.max(detail.newestEventSeq ?? 0, projected.newestSeq ?? 0);
+  const newestSeq = Math.max(conversation?.event_head_seq ?? 0, current.newestSeq ?? 0);
+  const hasContent = conversation && (
+    conversation.turns.length > 0 ||
+    conversation.active_turns.length > 0 ||
+    conversation.pending_inputs.length > 0 ||
+    (conversation.coverage?.has_older ?? conversation.has_more) ||
+    conversation.coverage?.has_newer
+  );
+  const confirmedMessages = new Set([
+    ...(conversation?.pending_inputs.map((input) => input.message_id) ?? []),
+    ...(conversation ? [...conversation.turns, ...conversation.active_turns]
+      .flatMap((turn) => turn.inputs.map((input) => input.message_id)) : []),
+  ]);
 
   return {
     bootstrap:
@@ -4656,21 +4650,21 @@ function mergeAgentDetailIntoSession(
     sessionsByAgentId: {
       ...state.sessionsByAgentId,
       [agentId]: {
-        ...projected,
+        ...current,
+        detail: detailBase,
         loading: false,
         liveStatus: detail.error ? "error" : current.liveStatus,
-        contentStatus: detail.error
-          ? projected.eventSeqs.length
-            ? "available"
-            : "unknown"
-          : projected.eventSeqs.length
-            ? "available"
-            : "confirmed-empty",
+        contentStatus: conversation
+          ? hasContent ? "available" : "confirmed-empty"
+          : current.contentStatus,
         syncStatus: detail.error ? "error" : "idle",
         lastValidatedAt: detail.error ? current.lastValidatedAt : Date.now(),
         detailValidatedAt: detail.error ? current.detailValidatedAt : Date.now(),
         newestSeq: newestSeq || undefined,
-        oldestSeq: detail.oldestEventSeq ?? projected.oldestSeq,
+        oldestSeq: conversation?.oldest_retained_seq ?? current.oldestSeq,
+        pendingOperatorPrompts: conversation
+          ? retainPendingOperatorPrompts(current.pendingOperatorPrompts, confirmedMessages, Date.now()) ?? current.pendingOperatorPrompts
+          : current.pendingOperatorPrompts,
         error: detail.error,
       },
     },

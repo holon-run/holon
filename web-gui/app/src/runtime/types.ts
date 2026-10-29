@@ -1,4 +1,5 @@
 import type { SessionEventEnvelope } from "./session-events";
+import type { ConversationSummaryResponse } from "@holon/conversation-sdk";
 import type { components } from "./generated/openapi";
 
 export type ProviderCooldownWait = NonNullable<
@@ -1014,6 +1015,7 @@ export interface AgentDetail {
   timeline: AgentTimelineItem[];
   source: "http" | "fixture";
   error?: string;
+  conversation?: ConversationSummaryResponse;
   eventLogEpoch?: string;
   events?: SessionEventEnvelope[];
   eventCursorSeq?: number;
