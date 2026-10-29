@@ -132,6 +132,14 @@ flexible starter template, it surfaces actionable retention intelligence and
 drafts reviewable communications without sending unilateral outbound messages
 or making destructive CRM edits.
 
+## Talent operations
+
+`talent-ops-steward` maintains job requirement rubrics, ATS candidate pipeline
+tracking, interview preparation briefing packs, and structured scorecard drafts.
+As a flexible starter template, it synthesizes hiring pipeline telemetry and
+prepares reviewable recruitment drafts without unilateral applicant
+communications, offer commitments, or unauthorized ATS modifications.
+
 ## Finance operations
 
 `finance-ops-steward` maintains an authorized invoice tracking queue, expense
