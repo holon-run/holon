@@ -8,6 +8,8 @@ import {
   buildVisionConfigUpdates,
   filterFallbackSuggestions,
   isDecisionCatalogRoute,
+  isImageGenerationSelectableModel,
+  isVisionSelectableModel,
   providerCredentialReady,
   reorderModelFallbacks,
   runtimeReloadMessage,
@@ -179,6 +181,53 @@ describe("buildImageGenerationConfigUpdates", () => {
 
   it("unsets image generation default when left empty for auto-selection", () => {
     expect(buildImageGenerationConfigUpdates("   ")).toEqual([{ key: "image_generation.default", unset: true }]);
+  });
+});
+
+function mediaModel(overrides: Partial<RuntimeModelOption>): RuntimeModelOption {
+  return {
+    model: "anthropic/claude-fable-5",
+    routeRef: "anthropic@default/claude-fable-5",
+    provider: "anthropic",
+    providerFamily: "anthropic",
+    endpoint: "default",
+    routeProvider: "anthropic",
+    displayName: "Claude Fable 5",
+    available: true,
+    supportsImageInput: true,
+    supportsImageGeneration: false,
+    supportsReasoningEffort: false,
+    reasoningEffortOptions: [],
+    ...overrides,
+  };
+}
+
+describe("isVisionSelectableModel", () => {
+  it("prefers the runtime media selectability flag over raw capability bits", () => {
+    expect(isVisionSelectableModel(mediaModel({ viewImageSelectable: true }))).toBe(true);
+    expect(isVisionSelectableModel(mediaModel({ viewImageSelectable: false }))).toBe(false);
+  });
+
+  it("falls back to availability plus the capability bit when media data is absent", () => {
+    expect(isVisionSelectableModel(mediaModel({ available: true, supportsImageInput: true }))).toBe(true);
+    expect(isVisionSelectableModel(mediaModel({ available: false, supportsImageInput: true }))).toBe(false);
+    expect(isVisionSelectableModel(mediaModel({ available: true, supportsImageInput: false }))).toBe(false);
+  });
+});
+
+describe("isImageGenerationSelectableModel", () => {
+  it("prefers the runtime media selectability flag over raw capability bits", () => {
+    expect(isImageGenerationSelectableModel(mediaModel({ generateImageSelectable: true }))).toBe(true);
+    expect(isImageGenerationSelectableModel(mediaModel({ generateImageSelectable: false }))).toBe(false);
+  });
+
+  it("falls back to availability plus the capability bit when media data is absent", () => {
+    expect(
+      isImageGenerationSelectableModel(mediaModel({ supportsImageGeneration: true, available: true })),
+    ).toBe(true);
+    expect(
+      isImageGenerationSelectableModel(mediaModel({ supportsImageGeneration: true, available: false })),
+    ).toBe(false);
   });
 });
 

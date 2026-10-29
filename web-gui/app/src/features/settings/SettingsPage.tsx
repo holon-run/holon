@@ -110,6 +110,25 @@ export function buildImageGenerationConfigUpdates(imageGenDefault: string): Arra
   return [trimmed ? { key: "image_generation.default", value: trimmed } : { key: "image_generation.default", unset: true }];
 }
 
+/**
+ * Vision default candidates must be selectable for the ViewImage operation,
+ * not merely catalogued as image-capable: the runtime media projection
+ * (`media.view_image.call_selectable`) folds capability, transport, provider
+ * and credential readiness into one flag. Fall back to availability plus the
+ * raw capability bit when the runtime did not send media data.
+ */
+export function isVisionSelectableModel(model: RuntimeModelOption): boolean {
+  return model.viewImageSelectable ?? (model.available && model.supportsImageInput);
+}
+
+/**
+ * Image generation default candidates follow the same rule through
+ * `media.generate_image.call_selectable`.
+ */
+export function isImageGenerationSelectableModel(model: RuntimeModelOption): boolean {
+  return model.generateImageSelectable ?? (model.available && model.supportsImageGeneration);
+}
+
 export function buildDecisionConfigUpdates(
   enabled: boolean,
   model: string,
@@ -411,8 +430,8 @@ export function SettingsPage({
   const [deviceLoginProviderId, setDeviceLoginProviderId] = useState<string | null>(null);
   const decisionModelIsCatalogRoute = isDecisionCatalogRoute(decisionModel, decisionModels);
   const availableModels = useMemo(() => modelCatalog.options.filter((model) => model.available), [modelCatalog.options]);
-  const visionModels = useMemo(() => modelCatalog.options.filter((model) => model.available && model.supportsImageInput), [modelCatalog.options]);
-  const imageGenModels = useMemo(() => modelCatalog.options.filter((model) => model.available && model.supportsImageGeneration), [modelCatalog.options]);
+  const visionModels = useMemo(() => modelCatalog.options.filter(isVisionSelectableModel), [modelCatalog.options]);
+  const imageGenModels = useMemo(() => modelCatalog.options.filter(isImageGenerationSelectableModel), [modelCatalog.options]);
   const fallbackSuggestions = useMemo(
     () => filterFallbackSuggestions(availableModels, fallbackInput, modelFallbacks),
     [availableModels, fallbackInput, modelFallbacks],
@@ -1200,7 +1219,7 @@ export function SettingsPage({
                   void saveVisionConfig();
                 }}
               >
-                <ModelSelect label={t("settings.visionDefaultModel")} options={modelCatalog.options.filter((model) => model.supportsImageInput)} value={visionDefault} onChange={setVisionDefault} allowEmpty />
+                <ModelSelect label={t("settings.visionDefaultModel")} options={visionModels} value={visionDefault} onChange={setVisionDefault} allowEmpty />
                 <p className="settings-hint">
                   {t("settings.visionAutoDiscoverHint")}
                 </p>
@@ -1240,7 +1259,7 @@ export function SettingsPage({
                   void saveImageGenConfig();
                 }}
               >
-                <ModelSelect label={t("settings.imageGenDefaultModel")} options={modelCatalog.options.filter((model) => model.supportsImageGeneration)} value={imageGenDefault} onChange={setImageGenDefault} allowEmpty />
+                <ModelSelect label={t("settings.imageGenDefaultModel")} options={imageGenModels} value={imageGenDefault} onChange={setImageGenDefault} allowEmpty />
                 <p className="settings-hint">
                   {t("settings.imageGenAutoDiscoverHint")}
                 </p>

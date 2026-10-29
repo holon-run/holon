@@ -405,6 +405,14 @@ export interface RuntimeModelOption {
   decisionProtocol?: "jev" | "open_ai_compatible";
   supportsImageInput: boolean;
   supportsImageGeneration: boolean;
+  /**
+   * Operation-level selectability from the runtime media projection
+   * (`media.view_image.call_selectable`): capability + transport +
+   * provider/credential readiness in one flag. Undefined when the runtime
+   * did not send media data.
+   */
+  viewImageSelectable?: boolean;
+  generateImageSelectable?: boolean;
   supportsReasoningEffort: boolean;
   reasoningEffortOptions: string[];
   serviceTierOptions?: string[];

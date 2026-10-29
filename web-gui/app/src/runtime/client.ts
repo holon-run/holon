@@ -369,6 +369,10 @@ interface ModelAvailabilityDto {
       supports_reasoning?: boolean;
     };
   };
+  media?: {
+    view_image?: { call_selectable?: boolean };
+    generate_image?: { call_selectable?: boolean };
+  };
 }
 
 interface AgentModelStateDto {
@@ -3007,6 +3011,8 @@ export function projectModelOptions(response: RuntimeModelsDto): RuntimeModelOpt
       decisionProtocol: entry.policy?.decision_protocol ?? existing?.decisionProtocol,
       supportsImageInput: entry.policy?.capabilities?.image_input ?? existing?.supportsImageInput ?? false,
       supportsImageGeneration: entry.policy?.capabilities?.image_generation ?? existing?.supportsImageGeneration ?? false,
+      viewImageSelectable: entry.media?.view_image?.call_selectable ?? existing?.viewImageSelectable,
+      generateImageSelectable: entry.media?.generate_image?.call_selectable ?? existing?.generateImageSelectable,
       serviceTierOptions: serviceTierOptions(entry),
       supportsReasoningEffort: supportsReasoningEffort(entry) || (existing?.supportsReasoningEffort ?? false),
       reasoningEffortOptions: reasoningEffortOptions(entry).length

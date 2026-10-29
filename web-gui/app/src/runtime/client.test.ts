@@ -105,6 +105,37 @@ describe("projectModelOptions", () => {
       }),
     ]);
   });
+  it("projects media operation selectability from model availability", () => {
+    const options = projectModelOptions({
+      model_availability: [
+        {
+          model: "anthropic/claude-fable-5",
+          provider: "anthropic",
+          provider_family: "anthropic",
+          endpoint: "default",
+          available: true,
+          policy: { capabilities: { image_input: true } },
+          media: {
+            view_image: { call_selectable: true },
+            generate_image: { call_selectable: false },
+          },
+        },
+        {
+          model: "kilocode/aion-2.0",
+          provider: "kilocode",
+          provider_family: "kilocode",
+          endpoint: "default",
+          available: false,
+          policy: { capabilities: { image_input: true } },
+        },
+      ],
+    });
+
+    expect(options.find((option) => option.model === "anthropic/claude-fable-5")).toEqual(
+      expect.objectContaining({ viewImageSelectable: true, generateImageSelectable: false }),
+    );
+    expect(options.find((option) => option.model === "kilocode/aion-2.0")?.viewImageSelectable).toBeUndefined();
+  });
   it("detects reasoning effort support from runtime available model capabilities", () => {
     const options = projectModelOptions({
       available_models: [
