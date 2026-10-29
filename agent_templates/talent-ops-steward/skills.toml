@@ -1,0 +1,42 @@
+[[skills]]
+kind = "github"
+repo = "holon-run/holon"
+path = "skills/ghx"
+
+[[skills]]
+kind = "github"
+repo = "holon-run/sview"
+path = "skills/sview"
+
+[[skills]]
+kind = "github"
+repo = "holon-run/agentinbox"
+path = "skills/agentinbox"
+
+[[skills]]
+kind = "github"
+repo = "holon-run/holon"
+path = "skills/xlsx"
+
+[[skills]]
+kind = "github"
+repo = "holon-run/holon"
+path = "skills/pdf"
+
+[[skills]]
+kind = "github"
+repo = "anthropics/knowledge-work-plugins"
+path = "human-resources/skills/recruiting-pipeline"
+ref = "2574e29377c7173d0cecffef29a6ecbd7f8ccb5d"
+
+[[skills]]
+kind = "github"
+repo = "anthropics/knowledge-work-plugins"
+path = "human-resources/skills/interview-prep"
+ref = "2574e29377c7173d0cecffef29a6ecbd7f8ccb5d"
+
+[[skills]]
+kind = "github"
+repo = "TerminalSkills/skills"
+path = "skills/applicant-screening"
+ref = "3bfbf7f76459d89422eddc0e5f572ad0e6c393c9"
