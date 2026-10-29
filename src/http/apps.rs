@@ -180,7 +180,12 @@ async fn app_events(
         })
         .transpose()?;
     let buffered = if after_seq.is_some() {
-        storage.read_recent_events(256).map_err(error_response)?
+        storage
+            .read_block("http.apps.events", move |storage| {
+                Ok(storage.read_recent_events(256)?)
+            })
+            .await
+            .map_err(error_response)?
     } else {
         Vec::new()
     };

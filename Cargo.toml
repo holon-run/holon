@@ -59,7 +59,7 @@ image = { version = "0.25.9", default-features = false, features = ["png", "jpeg
 rpassword = "7.3"
 r2d2 = "0.8.10"
 rust-embed = "8.11"
-rusqlite = { version = "0.31", features = ["bundled", "hooks"] }
+rusqlite = { version = "0.31", features = ["bundled", "hooks", "trace"] }
 pulldown-cmark = "0.13"
 portable-pty = "0.9"
 percent-encoding = "2.3"

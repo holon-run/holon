@@ -14,7 +14,7 @@ use tokio::sync::Semaphore;
 use crate::diagnostics::attribution;
 
 use super::write_queue::RuntimeDbWriterState;
-use super::{RuntimeDbProtectionError, RuntimeDbReadScope, RuntimeDbRetryableError};
+use super::{read_block, RuntimeDbProtectionError, RuntimeDbReadScope, RuntimeDbRetryableError};
 
 const DEFAULT_CAPACITY: u32 = 4;
 const DEFAULT_BUDGET: Duration = Duration::from_millis(250);
@@ -180,9 +180,15 @@ impl RuntimeDbReaderPool {
 
     fn acquisition_deadline(&self) -> Instant {
         let deadline = Instant::now() + self.shared.budget;
-        self.scope
+        self.effective_scope()
             .as_ref()
             .map_or(deadline, |scope| deadline.min(scope.deadline()))
+    }
+
+    /// Explicitly scoped handles win over the deadline of the enclosing
+    /// blocking read block (`RuntimeDb::read_block`).
+    fn effective_scope(&self) -> Option<RuntimeDbReadScope> {
+        self.scope.clone().or_else(read_block::current_scope)
     }
 
     fn check_scope(&self, scope: &Option<RuntimeDbReadScope>) -> Result<()> {
@@ -194,12 +200,12 @@ impl RuntimeDbReaderPool {
 
     pub(crate) fn check_read_scope(&self) -> Result<()> {
         self.shared.control.ensure_protected()?;
-        self.check_scope(&self.scope)
+        self.check_scope(&self.effective_scope())
     }
 
     /// Cheap assembly checkpoint; callers must fully check entry and success.
     pub(crate) fn check_read_cancellation(&self) -> Result<()> {
-        if let Err(error) = self.check_scope(&self.scope) {
+        if let Err(error) = self.check_scope(&self.effective_scope()) {
             self.shared.control.ensure_protected()?;
             return Err(error);
         }
@@ -228,12 +234,23 @@ impl RuntimeDbReaderPool {
         acquired.ok_or_else(|| anyhow!("scoped memory lock interrupted"))
     }
 
+    #[cfg(test)]
+    pub(crate) fn with_read<T>(&self, f: impl FnOnce(&mut Connection) -> Result<T>) -> Result<T> {
+        self.with_read_at(read_block::ReadOrigin::UNKNOWN, f)
+    }
+
     /// Only owned results may escape. Callers must not change connection hooks,
     /// authorizers or other connection-local configuration through the Rust API.
-    pub(crate) fn with_read<T>(&self, f: impl FnOnce(&mut Connection) -> Result<T>) -> Result<T> {
+    pub(crate) fn with_read_at<T>(
+        &self,
+        origin: read_block::ReadOrigin,
+        f: impl FnOnce(&mut Connection) -> Result<T>,
+    ) -> Result<T> {
+        let scope = self.effective_scope();
         self.read_until(
             self.acquisition_deadline(),
-            self.scope.as_ref().map(RuntimeDbReadScope::child),
+            scope.as_ref().map(RuntimeDbReadScope::child),
+            origin,
             f,
         )
     }
@@ -242,8 +259,10 @@ impl RuntimeDbReaderPool {
         &self,
         deadline: Instant,
         scope: Option<RuntimeDbReadScope>,
+        origin: read_block::ReadOrigin,
         f: impl FnOnce(&mut Connection) -> Result<T>,
     ) -> Result<T> {
+        let started = Instant::now();
         let checkout = attribution::READER_CHECKOUT.start();
         let control = &self.shared.control;
         control.ensure_protected()?;
@@ -283,6 +302,7 @@ impl RuntimeDbReaderPool {
                 })
         })?;
         drop(checkout);
+        let checkout_elapsed = started.elapsed();
         // Declare the timer first so the lease is returned before it stops.
         let _held = attribution::READER_LEASE.start();
         let mut lease = ReadLease {
@@ -300,11 +320,14 @@ impl RuntimeDbReaderPool {
                 .expect("live reader")
                 .progress_handler(1000, Some(move || scope.is_cancelled()));
         }
+        let operation_started = Instant::now();
         let result = {
             // The closure includes row decoding and transactions, not only SQL.
             let _operation = attribution::READER_OPERATION.start();
+            let _origin = read_block::ReadContextGuard::enter_origin(origin);
             f(lease.connection.connection.as_mut().expect("live reader"))
         };
+        read_block::record_read_block(origin, checkout_elapsed, operation_started.elapsed());
         // Cleanup SQL must not inherit the operation's expired/cancelled hook.
         lease.clear_progress_handler();
         if result.as_ref().err().is_some_and(is_broken_error) {
@@ -327,8 +350,9 @@ impl RuntimeDbReaderPool {
         result
     }
 
-    pub(crate) async fn with_read_async<T: Send + 'static>(
+    pub(crate) async fn with_read_async_at<T: Send + 'static>(
         &self,
+        origin: read_block::ReadOrigin,
         f: impl FnOnce(&mut Connection) -> Result<T> + Send + 'static,
     ) -> Result<T> {
         let admission = attribution::READER_ADMISSION.start();
@@ -383,7 +407,7 @@ impl RuntimeDbReaderPool {
             {
                 bail!("runtime db read cancelled before execution");
             }
-            reader.read_until(deadline, task_scope, f)
+            reader.read_until(deadline, task_scope, origin, f)
         });
         let _cancel = CancelQueuedRead {
             state: Arc::clone(&state),
@@ -584,7 +608,10 @@ impl ManageConnection for ReaderManager {
             control.ensure_protected()?;
             #[cfg(test)]
             control.test_hook(ReaderTestEvent::BeforeOpen)?;
-            let connection = control.writer.open_connection()?;
+            let mut connection = control.writer.open_connection()?;
+            // Slow statement reporting is a reader concern: every runtime DB
+            // read runs on a pooled reader connection.
+            read_block::install_statement_profile(&mut connection)?;
             control
                 .stats
                 .connections_opened
@@ -883,10 +910,15 @@ mod tests {
         let calls = AtomicU64::new(0);
         for _ in 0..3 {
             let error = pool
-                .read_until(Instant::now() + Duration::from_millis(30), None, |_| {
-                    calls.fetch_add(1, Ordering::Relaxed);
-                    Ok(())
-                })
+                .read_until(
+                    Instant::now() + Duration::from_millis(30),
+                    None,
+                    read_block::ReadOrigin::UNKNOWN,
+                    |_| {
+                        calls.fetch_add(1, Ordering::Relaxed);
+                        Ok(())
+                    },
+                )
                 .unwrap_err();
             assert!(error.downcast_ref::<RuntimeDbRetryableError>().is_some());
         }
@@ -914,6 +946,7 @@ mod tests {
             pool.read_until(
                 Instant::now() + Duration::from_secs(4),
                 None,
+                read_block::ReadOrigin::UNKNOWN,
                 |connection| {
                     calls.fetch_add(1, Ordering::Relaxed);
                     Ok(connection.query_row("SELECT 1", [], |row| row.get::<_, i64>(0))?)
@@ -1053,6 +1086,7 @@ mod tests {
             .read_until(
                 Instant::now() + Duration::from_millis(100),
                 None,
+                read_block::ReadOrigin::UNKNOWN,
                 |_| Ok(())
             )
             .is_err());

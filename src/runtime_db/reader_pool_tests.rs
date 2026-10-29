@@ -302,6 +302,23 @@ fn scoped_checks_reject_expired_entry_and_cancelled_success_but_not_writers() ->
     Ok(())
 }
 
+// The off-worker read bridge owns a thread-local read deadline; nested pooled
+// reads must inherit it and unscoped caller reads must not.
+#[tokio::test]
+async fn blocking_read_block_deadline_cancels_nested_reads_only() -> Result<()> {
+    let (_directory, db) = fixture(1)?;
+    let read_db = db.clone();
+    let error = db
+        .read_block("test.expired", Duration::from_millis(0), move || {
+            read_db.with_read(|_| Ok(()))
+        })
+        .await
+        .unwrap_err();
+    assert!(error.is::<RuntimeDbRetryableError>(), "{error:#}");
+    assert_eq!(read_one(&db)?, 1);
+    Ok(())
+}
+
 #[tokio::test]
 async fn dropping_scoped_read_interrupts_sql_without_cancelling_parent() -> Result<()> {
     let (_directory, db) = fixture(1)?;

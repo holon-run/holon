@@ -25,6 +25,7 @@ pub mod evidence;
 mod legacy_scheduler_wire;
 pub mod migrations;
 pub mod provider_admission;
+pub(crate) mod read_block;
 mod read_scope;
 mod reader_pool;
 #[cfg(test)]
@@ -665,15 +666,40 @@ impl RuntimeDb {
     }
 
     /// Call only at a synchronous/blocking boundary; never nest reader checkouts.
+    #[track_caller]
     pub(crate) fn with_read<T>(&self, f: impl FnOnce(&mut Connection) -> Result<T>) -> Result<T> {
-        self.readers.with_read(f)
+        self.readers.with_read_at(
+            read_block::ReadOrigin::from_location(std::panic::Location::caller()),
+            f,
+        )
+    }
+
+    /// Polling HTTP handlers must read through this instead of calling a
+    /// synchronous storage read on an async worker. The block runs on the
+    /// blocking pool under one absolute read deadline; SQL execution is
+    /// cancelled at the deadline through the scoped-read progress hook.
+    pub(crate) async fn read_block<T, F>(
+        &self,
+        label: &'static str,
+        budget: Duration,
+        read: F,
+    ) -> Result<T>
+    where
+        T: Send + 'static,
+        F: FnOnce() -> Result<T> + Send + 'static,
+    {
+        read_block::run_blocking(label, budget, read).await
     }
 
     pub(crate) async fn with_read_async<T: Send + 'static>(
         &self,
         f: impl FnOnce(&mut Connection) -> Result<T> + Send + 'static,
     ) -> Result<T> {
-        self.readers.with_read_async(f).await
+        // `#[track_caller]` is a no-op on async functions, so async reads carry
+        // no call site; slow blocks still report elapsed time and SQL text.
+        self.readers
+            .with_read_async_at(read_block::ReadOrigin::UNKNOWN, f)
+            .await
     }
 
     #[cfg(test)]

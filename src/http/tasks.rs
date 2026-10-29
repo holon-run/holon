@@ -32,12 +32,18 @@ pub async fn tasks(
         .host
         .operator_agent_read_storage(&agent_id)
         .map_err(agent_access_error)?;
-    let tasks = match query.status.unwrap_or(TaskListStatus::Active) {
-        TaskListStatus::Active => storage.latest_active_task_records(query.limit.unwrap_or(50)),
-        TaskListStatus::Terminal => storage
-            .latest_terminal_task_records_for_agent(&agent_id, query.limit.unwrap_or(20).min(20)),
-    }
-    .map_err(error_response)?;
+    let status = query.status.unwrap_or(TaskListStatus::Active);
+    let limit = query.limit;
+    let tasks = storage
+        .read_block("http.tasks.list", move |storage| {
+            Ok(match status {
+                TaskListStatus::Active => storage.latest_active_task_records(limit.unwrap_or(50)),
+                TaskListStatus::Terminal => storage
+                    .latest_terminal_task_records_for_agent(&agent_id, limit.unwrap_or(20).min(20)),
+            }?)
+        })
+        .await
+        .map_err(error_response)?;
     Ok(Json(
         tasks
             .into_iter()
@@ -56,10 +62,17 @@ pub async fn task_status(
         .host
         .operator_agent_read_storage(&agent_id)
         .map_err(agent_access_error)?;
+    let read_task_id = task_id.clone();
+    let read_agent_id = agent_id.clone();
     let Some(task) = storage
-        .latest_task_record(&task_id)
+        .read_block("http.tasks.status", move |storage| {
+            let task = storage
+                .latest_task_record(&read_task_id)?
+                .filter(|task| task.agent_id == read_agent_id);
+            Ok(task)
+        })
+        .await
         .map_err(error_response)?
-        .filter(|task| task.agent_id == agent_id)
     else {
         return Err(task_not_found_response(&task_id));
     };
@@ -90,10 +103,15 @@ pub async fn task_output(
         .host
         .operator_agent_read_storage(&agent_id)
         .map_err(agent_access_error)?;
+    let read_task_id = task_id.clone();
+    let read_agent_id = agent_id.clone();
     if !storage
-        .latest_task_record(&task_id)
+        .read_block("http.tasks.output", move |storage| {
+            Ok(storage.latest_task_record(&read_task_id)?)
+        })
+        .await
         .map_err(error_response)?
-        .is_some_and(|task| task.agent_id == agent_id)
+        .is_some_and(|task| task.agent_id == read_agent_id)
     {
         return Err(task_not_found_response(&task_id));
     }
@@ -135,10 +153,15 @@ pub async fn tool_execution(
         .host
         .operator_agent_read_storage(&agent_id)
         .map_err(agent_access_error)?;
+    let read_tool_execution_id = tool_execution_id.clone();
+    let read_agent_id = agent_id.clone();
     let Some(record) = storage
-        .read_tool_execution_by_id(&tool_execution_id)
+        .read_block("http.tasks.tool_execution", move |storage| {
+            Ok(storage.read_tool_execution_by_id(&read_tool_execution_id)?)
+        })
+        .await
         .map_err(error_response)?
-        .filter(|record| record.agent_id == agent_id)
+        .filter(|record| record.agent_id == read_agent_id)
     else {
         return Err(not_found(format!(
             "tool execution {tool_execution_id} not found"
@@ -157,10 +180,15 @@ pub async fn tool_execution_artifact(
         .host
         .operator_agent_read_storage(&agent_id)
         .map_err(agent_access_error)?;
+    let read_tool_execution_id = tool_execution_id.clone();
+    let read_agent_id = agent_id.clone();
     let Some(record) = storage
-        .read_tool_execution_by_id(&tool_execution_id)
+        .read_block("http.tasks.tool_execution_artifact", move |storage| {
+            Ok(storage.read_tool_execution_by_id(&read_tool_execution_id)?)
+        })
+        .await
         .map_err(error_response)?
-        .filter(|record| record.agent_id == agent_id)
+        .filter(|record| record.agent_id == read_agent_id)
     else {
         return Err(not_found(format!(
             "tool execution {tool_execution_id} not found"
@@ -609,12 +637,16 @@ pub async fn work_items(
         .host
         .operator_agent_read_storage(&agent_id)
         .map_err(agent_access_error)?;
+    let limit = query.limit.unwrap_or(50);
     let work_items = storage
-        .work_queue_read_model()
+        .read_block("http.tasks.work_items", move |storage| {
+            Ok(storage.work_queue_read_model()?)
+        })
+        .await
         .map_err(error_response)?
         .items
         .into_iter()
-        .take(query.limit.unwrap_or(50))
+        .take(limit)
         .collect::<Vec<_>>();
     Ok(Json(work_items))
 }
@@ -629,12 +661,17 @@ pub async fn work_item(
         .host
         .operator_agent_read_storage(&agent_id)
         .map_err(agent_access_error)?;
+    let read_work_item_id = work_item_id.clone();
+    let read_agent_id = agent_id.clone();
     let Some(work_item) = storage
-        .work_queue_read_model()
+        .read_block("http.tasks.work_item", move |storage| {
+            Ok(storage.work_queue_read_model()?)
+        })
+        .await
         .map_err(error_response)?
         .items
         .into_iter()
-        .find(|item| item.id == work_item_id && item.agent_id == agent_id)
+        .find(|item| item.id == read_work_item_id && item.agent_id == read_agent_id)
     else {
         return Err(error_response(
             RuntimeError::not_found(
@@ -659,11 +696,14 @@ pub async fn timers(
         .host
         .operator_agent_read_storage(&agent_id)
         .map_err(agent_access_error)?;
-    Ok(Json(
-        storage
-            .read_recent_timers(query.limit.unwrap_or(50))
-            .map_err(error_response)?,
-    ))
+    let limit = query.limit.unwrap_or(50);
+    let timers = storage
+        .read_block("http.tasks.timers", move |storage| {
+            Ok(storage.read_recent_timers(limit)?)
+        })
+        .await
+        .map_err(error_response)?;
+    Ok(Json(timers))
 }
 
 pub async fn timer(
@@ -676,10 +716,15 @@ pub async fn timer(
         .host
         .operator_agent_read_storage(&agent_id)
         .map_err(agent_access_error)?;
+    let read_timer_id = timer_id.clone();
+    let read_agent_id = agent_id.clone();
     let Some(timer) = storage
-        .latest_timer_record(&timer_id)
+        .read_block("http.tasks.timer", move |storage| {
+            Ok(storage.latest_timer_record(&read_timer_id)?)
+        })
+        .await
         .map_err(error_response)?
-        .filter(|timer| timer.agent_id == agent_id)
+        .filter(|timer| timer.agent_id == read_agent_id)
     else {
         return Err(error_response(
             RuntimeError::not_found("timer_not_found", format!("timer {timer_id} not found"))

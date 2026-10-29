@@ -1,6 +1,7 @@
 use std::{
     path::{Path, PathBuf},
     sync::{Arc, Mutex},
+    time::Duration,
 };
 
 use anyhow::{Context, Result};
@@ -30,6 +31,9 @@ const RUNTIME_STATE_DIR: &str = "state";
 const RUNTIME_LEDGER_DIR: &str = "ledger";
 const RUNTIME_CACHE_DIR: &str = "cache";
 const SHARED_INDEXES_DIR: &str = "indexes";
+/// One HTTP read block may not hold a reader connection longer than a
+/// projection build budget; slower SQL is cancelled as a retryable error.
+const HTTP_READ_BLOCK_BUDGET: Duration = Duration::from_secs(10);
 
 mod activity;
 mod events;
@@ -303,6 +307,23 @@ impl AppStorage {
 
     pub(crate) fn runtime_db(&self) -> Result<Option<RuntimeDb>> {
         Ok(Some(self.runtime_db.clone()))
+    }
+
+    /// Runs polled HTTP storage reads on the runtime DB blocking pool instead
+    /// of an async worker thread, under one read deadline.
+    ///
+    /// A slow SQLite read then costs one request instead of a tokio worker;
+    /// SQL execution is cancelled at the deadline and surfaces as the existing
+    /// retryable runtime-db error.
+    pub(crate) async fn read_block<T, F>(&self, label: &'static str, read: F) -> Result<T>
+    where
+        T: Send + 'static,
+        F: FnOnce(AppStorage) -> Result<T> + Send + 'static,
+    {
+        let storage = self.clone();
+        self.runtime_db
+            .read_block(label, HTTP_READ_BLOCK_BUDGET, move || read(storage))
+            .await
     }
 
     pub fn read_models(&self) -> RuntimeReadModels {

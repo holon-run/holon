@@ -16,35 +16,44 @@ pub async fn events(
         .host
         .operator_agent_read_storage(&agent_id)
         .map_err(agent_access_error)?;
-    let emit_projection_effect = projection_effect_emission_enabled(&state);
-    let cursor_seq = storage.latest_event_seq().map_err(error_response)?;
-    let event_log_epoch = storage.event_log_epoch().map_err(error_response)?;
     let max_level = query.max_level;
-    let event_kind = query.event_kind.as_deref();
-    let filter_context = match max_level {
-        Some(_) => Some(event_filter_context(&storage).map_err(error_response)?),
-        None => None,
-    };
-    let page = storage
-        .read_event_page_matching(
-            query.before_seq,
-            query.after_seq,
-            limit,
-            order.into(),
-            |event| {
-                let level_matches = match (max_level, filter_context.as_ref()) {
-                    (Some(level), Some(filter_context)) => is_operator_event_in_display_mode(
-                        &event.kind,
-                        &event.data,
-                        &event_fallback_summary(event),
-                        filter_context,
-                        level,
-                    ),
-                    _ => true,
-                };
-                level_matches && event_kind.is_none_or(|kind| event.kind == kind)
-            },
-        )
+    let event_kind = query.event_kind.clone();
+    let before_seq = query.before_seq;
+    let after_seq = query.after_seq;
+    // Polling clients keep several of these in flight; a slow page read must
+    // cost one request instead of pinning a tokio worker.
+    let read_state = Arc::clone(&state);
+    let (emit_projection_effect, cursor_seq, event_log_epoch, page) = storage
+        .read_block("http.events.page", move |storage| {
+            let emit_projection_effect = projection_effect_emission_enabled(&read_state);
+            let cursor_seq = storage.latest_event_seq()?;
+            let event_log_epoch = storage.event_log_epoch()?;
+            let filter_context = match max_level {
+                Some(_) => Some(event_filter_context(&storage)?),
+                None => None,
+            };
+            let page = storage.read_event_page_matching(
+                before_seq,
+                after_seq,
+                limit,
+                order.into(),
+                |event| {
+                    let level_matches = match (max_level, filter_context.as_ref()) {
+                        (Some(level), Some(filter_context)) => is_operator_event_in_display_mode(
+                            &event.kind,
+                            &event.data,
+                            &event_fallback_summary(event),
+                            filter_context,
+                            level,
+                        ),
+                        _ => true,
+                    };
+                    level_matches && event_kind.as_deref().is_none_or(|kind| event.kind == kind)
+                },
+            )?;
+            Ok((emit_projection_effect, cursor_seq, event_log_epoch, page))
+        })
+        .await
         .map_err(error_response)?;
     let oldest_seq = oldest_seq(&page.events, order);
     let newest_seq = newest_seq(&page.events, order);
@@ -87,8 +96,12 @@ pub async fn message(
         .host
         .operator_agent_read_storage(&agent_id)
         .map_err(agent_access_error)?;
+    let read_message_id = message_id.clone();
     let Some(message) = storage
-        .read_message_by_id(&message_id)
+        .read_block("http.events.message", move |storage| {
+            Ok(storage.read_message_by_id(&read_message_id)?)
+        })
+        .await
         .map_err(error_response)?
     else {
         return Err(not_found(format!("message {message_id} not found")));
@@ -110,17 +123,20 @@ pub async fn messages_batch_get(
         .host
         .operator_agent_read_storage(&agent_id)
         .map_err(agent_access_error)?;
-    let mut messages = Vec::new();
-    let mut missing_message_ids = Vec::new();
-    for message_id in request.message_ids {
-        match storage
-            .read_message_by_id(&message_id)
-            .map_err(error_response)?
-        {
-            Some(message) if message.agent_id == agent_id => messages.push(message),
-            _ => missing_message_ids.push(message_id),
-        }
-    }
+    let (messages, missing_message_ids) = storage
+        .read_block("http.events.messages_batch", move |storage| {
+            let mut messages = Vec::new();
+            let mut missing_message_ids = Vec::new();
+            for message_id in request.message_ids {
+                match storage.read_message_by_id(&message_id)? {
+                    Some(message) if message.agent_id == agent_id => messages.push(message),
+                    _ => missing_message_ids.push(message_id),
+                }
+            }
+            Ok((messages, missing_message_ids))
+        })
+        .await
+        .map_err(error_response)?;
     Ok(Json(BatchGetMessagesResponse {
         messages,
         missing_message_ids,
@@ -144,17 +160,27 @@ pub async fn events_stream(
         .operator_agent_read_storage(&agent_id)
         .map_err(agent_access_error)?;
     let mut live_rx = state.host.subscribe_events();
-    let event_log_epoch = storage.event_log_epoch().map_err(error_response)?;
-    // Capability advertisement is captured once at stream open and applies
-    // to every event in the stream: the underlying verification only
-    // changes on migration/restart, and a lagging stream is closed instead
-    // of being resumed with different emission semantics mid-stream.
-    let emit_projection_effect = projection_effect_emission_enabled(&state);
-    let recovery_window = storage
-        .agent_event_recovery_window()
-        .map_err(error_response)?;
-    let events = storage
-        .read_recent_events(event_window_limit.saturating_add(1))
+    let replay_limit = event_window_limit.saturating_add(1);
+    let read_state = Arc::clone(&state);
+    let (event_log_epoch, emit_projection_effect, recovery_window, events) = storage
+        .read_block("http.events.stream", move |storage| {
+            let event_log_epoch = storage.event_log_epoch()?;
+            // Capability advertisement is captured once at stream open and
+            // applies to every event in the stream: the underlying
+            // verification only changes on migration/restart, and a lagging
+            // stream is closed instead of being resumed with different
+            // emission semantics mid-stream.
+            let emit_projection_effect = projection_effect_emission_enabled(&read_state);
+            let recovery_window = storage.agent_event_recovery_window()?;
+            let events = storage.read_recent_events(replay_limit)?;
+            Ok((
+                event_log_epoch,
+                emit_projection_effect,
+                recovery_window,
+                events,
+            ))
+        })
+        .await
         .map_err(error_response)?;
     let buffered = initial_buffered_events(&events, after_seq, &recovery_window)?;
     let (tx, out_rx) = tokio::sync::mpsc::channel::<Result<Event, std::convert::Infallible>>(32);

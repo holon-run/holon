@@ -1336,8 +1336,12 @@ pub async fn briefs(
         .host
         .operator_agent_read_storage(&agent_id)
         .map_err(agent_access_error)?;
+    let limit = query.limit.unwrap_or(20);
     let briefs = storage
-        .read_recent_briefs(query.limit.unwrap_or(20))
+        .read_block("http.state.briefs", move |storage| {
+            Ok(storage.read_recent_briefs(limit)?)
+        })
+        .await
         .map_err(error_response)?;
     Ok(Json(briefs))
 }
@@ -1399,11 +1403,16 @@ pub async fn briefs_batch_get(
             }
             brief_ids
         });
+    let read_agent_id = agent_id.clone();
+    let read_brief_ids = brief_ids.clone();
     let briefs_by_id = storage
-        .read_briefs_by_ids(&brief_ids)
+        .read_block("http.state.briefs_batch", move |storage| {
+            Ok(storage.read_briefs_by_ids(&read_brief_ids)?)
+        })
+        .await
         .map_err(error_response)?
         .into_iter()
-        .filter(|brief| brief.agent_id == agent_id)
+        .filter(|brief| brief.agent_id == read_agent_id)
         .map(|brief| (brief.id.clone(), brief))
         .collect::<std::collections::HashMap<_, _>>();
     let mut briefs = Vec::new();
@@ -1450,8 +1459,12 @@ pub async fn transcript(
         .host
         .operator_agent_read_storage(&agent_id)
         .map_err(agent_access_error)?;
+    let limit = query.limit.unwrap_or(50);
     let transcript = storage
-        .read_recent_transcript(query.limit.unwrap_or(50))
+        .read_block("http.state.transcript", move |storage| {
+            Ok(storage.read_recent_transcript(limit)?)
+        })
+        .await
         .map_err(error_response)?;
     Ok(Json(transcript))
 }
@@ -1487,17 +1500,20 @@ pub async fn transcript_batch_get(
         .host
         .operator_agent_read_storage(&agent_id)
         .map_err(agent_access_error)?;
-    let mut entries = Vec::new();
-    let mut missing_entry_ids = Vec::new();
-    for entry_id in request.entry_ids {
-        match storage
-            .read_transcript_entry_by_id(&entry_id)
-            .map_err(error_response)?
-        {
-            Some(entry) if entry.agent_id == agent_id => entries.push(entry),
-            _ => missing_entry_ids.push(entry_id),
-        }
-    }
+    let (entries, missing_entry_ids) = storage
+        .read_block("http.state.transcript_batch", move |storage| {
+            let mut entries = Vec::new();
+            let mut missing_entry_ids = Vec::new();
+            for entry_id in request.entry_ids {
+                match storage.read_transcript_entry_by_id(&entry_id)? {
+                    Some(entry) if entry.agent_id == agent_id => entries.push(entry),
+                    _ => missing_entry_ids.push(entry_id),
+                }
+            }
+            Ok((entries, missing_entry_ids))
+        })
+        .await
+        .map_err(error_response)?;
     Ok(Json(BatchGetTranscriptEntriesResponse {
         entries,
         missing_entry_ids,
