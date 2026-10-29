@@ -83,6 +83,12 @@ pub trait ProviderDispatchGuard: Send + Sync + std::fmt::Debug {
     /// candidate: the corrected send still targets the same candidate.
     fn declare_adapter_correctable_dispatch(&self) {}
 
+    /// Declare that the next dispatch's auth rejection is adapter-correctable
+    /// in-turn: the adapter refreshes the credential and resends the same
+    /// inference. Such a rejection must not cool down or consume the
+    /// candidate: the corrected send still targets the same candidate.
+    fn declare_auth_refreshable_dispatch(&self) {}
+
     /// Settle a complete HTTP result before an adapter retries or compacts.
     /// `None` is a successful auxiliary response, not a usable model response.
     fn after_request(

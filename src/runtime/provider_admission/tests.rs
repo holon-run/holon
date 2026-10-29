@@ -1723,6 +1723,58 @@ async fn unknown_http_attempts_and_a_denied_retry_never_refill_the_budget() {
     assert_ne!(episode.state, ProviderRecoveryBudgetState::Resolved);
 }
 
+#[tokio::test]
+async fn declared_auth_refresh_settles_auth_rejection_without_candidate_consumption() {
+    use crate::provider::{
+        provider_transport_error_with_code, ProviderFailureClassification, ProviderFailureKind,
+        RetryDisposition,
+    };
+    let (_home, runtime) = runtime();
+    runtime.enqueue(operator()).await.unwrap();
+    let RunLoopPoll::Message(scheduled) = SchedulerDecisionExecutor::new(&runtime)
+        .poll()
+        .await
+        .unwrap()
+    else {
+        panic!("healthy input")
+    };
+    let admission = scheduled.dispatch_plan.provider_admission.unwrap();
+    let auth_rejection = || {
+        provider_transport_error_with_code(
+            ProviderFailureClassification {
+                kind: ProviderFailureKind::AuthError,
+                disposition: RetryDisposition::FailFast,
+            },
+            None,
+            Some(401),
+            None,
+            "expired bearer token",
+        )
+    };
+    admission.declare_auth_refreshable_dispatch();
+    admission.before_dispatch().unwrap();
+    admission.after_request(Err(&auth_rejection())).unwrap();
+    // The refreshed resend stays dispatchable in this turn: no cooldown and
+    // the episode resolved instead of consuming the candidate.
+    assert!(runtime
+        .runtime_db()
+        .provider_admission_blocked(&admission.candidate.scopes, runtime.now())
+        .unwrap()
+        .is_none());
+    assert_eq!(
+        admission.episode().unwrap().state,
+        ProviderRecoveryBudgetState::Resolved
+    );
+    admission.before_dispatch().unwrap();
+    admission.after_request(Err(&auth_rejection())).unwrap();
+    // Without the declaration the same rejection is candidate fatal again.
+    assert!(runtime
+        .runtime_db()
+        .provider_admission_blocked(&admission.candidate.scopes, runtime.now())
+        .unwrap()
+        .is_some());
+}
+
 #[test]
 fn real_http_operator_compaction_settles_model_before_auxiliary_request() {
     run_guarded_openai_scenario(GuardedOpenAiCase::Compact);

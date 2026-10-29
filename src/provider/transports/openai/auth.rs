@@ -135,6 +135,13 @@ impl OpenAiBearerAuth {
         Ok(refreshed.credential)
     }
 
+    /// Whether a failed authenticated dispatch can be corrected in-turn by
+    /// forcing an OAuth credential refresh and resending: mirrors the
+    /// `None` branch of `refresh_authorization_header`.
+    pub(super) fn can_refresh_auth_headers(&self) -> bool {
+        self.credential_profile.is_some()
+    }
+
     pub(crate) async fn refresh_authorization_header(&self) -> Result<Option<String>> {
         if self.credential_profile.is_none() {
             return Ok(None);
