@@ -1,4 +1,5 @@
 import { agentDetailFixtures } from "./fixtures";
+import type { ConversationSummaryResponse } from "@holon/conversation-sdk";
 import type { components } from "./generated/openapi";
 import { briefIdForPayload, transcriptEntryIdForPayload } from "./session-reducer";
 import type {
@@ -133,7 +134,6 @@ function disconnectedAgentDetail(agentId: string, error: string): AgentDetail {
     },
     source: "fixture",
     timeline: [],
-    events: [],
     error,
   };
 }
@@ -143,36 +143,26 @@ async function fetchAgentDetail(
   fetchImpl: typeof fetch,
   headers: Record<string, string>,
   agentId: string,
-  displayLevel: DisplayLevel,
 ): Promise<AgentDetail> {
   const encodedAgentId = encodeURIComponent(agentId);
-  const [state, events, workItems] = await Promise.all([
+  const [state, conversation, workItems] = await Promise.all([
     getJson<AgentStateDto>(fetchImpl, baseUrl, `/agents/${encodedAgentId}/state`, { headers, timeoutMs: PROJECTION_READ_TIMEOUT_MS }),
-    fetchAgentEvents(baseUrl, fetchImpl, headers, agentId, { limit: 80, order: "desc", displayLevel }).catch(emptyEventPage),
+    getJson<ConversationSummaryResponse>(fetchImpl, baseUrl, `/agents/${encodedAgentId}/conversation?limit=50`, { headers, timeoutMs: PROJECTION_READ_TIMEOUT_MS }).catch(() => undefined),
     // Return undefined on failure so projectAgent falls back to state.work_items.
     // Returning [] would shadow the state endpoint's work_items (empty array is not nullish).
     fetchAgentWorkItems(baseUrl, fetchImpl, headers, agentId, { limit: 50 }).catch(() => undefined),
   ]);
-  const transcriptEntriesById = await fetchTranscriptEntriesForEvents(baseUrl, fetchImpl, headers, agentId, events.events ?? []);
-  const briefRecordsById = await fetchBriefRecordsForEvents(baseUrl, fetchImpl, headers, agentId, events.events ?? []);
   const agent = projectAgent(
     { identity: state.agent?.identity ?? { agent_id: agentId } },
     state,
-    newestBriefFromEvents(events.events ?? [], briefRecordsById),
+    undefined,
     workItems,
   );
   return {
     agent,
     source: "http",
     timeline: [],
-    eventLogEpoch: events.event_log_epoch,
-    events: events.events ?? [],
-    briefRecordsById,
-    transcriptEntriesById,
-    eventCursorSeq: events.cursor_seq ?? undefined,
-    newestEventSeq: events.newest_seq ?? undefined,
-    oldestEventSeq: events.oldest_seq ?? undefined,
-    hasOlderEvents: events.has_older,
+    conversation,
   };
 }
 
@@ -1002,13 +992,13 @@ export function createRuntimeClient(options: RuntimeClientOptions = {}) {
         return null;
       }
     },
-    async getAgentDetail(agentId: string, displayLevel: DisplayLevel = "info"): Promise<AgentDetail> {
+    async getAgentDetail(agentId: string, _displayLevel: DisplayLevel = "info"): Promise<AgentDetail> {
       if (!baseUrl) {
         return disconnectedAgentDetail(agentId, "Holon API base URL is not configured.");
       }
 
       try {
-        return await fetchAgentDetail(baseUrl, fetchImpl, requestHeaders, agentId, displayLevel);
+        return await fetchAgentDetail(baseUrl, fetchImpl, requestHeaders, agentId);
       } catch (error) {
         if (isProjectionBusyError(error)) throw error;
         const message = error instanceof Error ? error.message : String(error);
@@ -2952,25 +2942,6 @@ function projectTasks(tasks: (NonNullable<AgentStateDto["tasks"]>[number] & { ta
       updatedAt: task.updated_at,
       target: task.target,
     }));
-}
-
-function newestBriefFromEvents(
-  events: EventEnvelopeDto[],
-  briefRecordsById: Record<string, RuntimeBriefRecord> = {},
-): BriefRecordDto | undefined {
-  return events
-    .filter((event) => event.type === "brief_created")
-    .map((event) => {
-      const payload = event.payload && typeof event.payload === "object" ? (event.payload as Record<string, unknown>) : {};
-      const briefId = briefIdForPayload(payload);
-      const text = (briefId ? briefRecordsById[briefId]?.text : undefined) ??
-        (typeof payload.text === "string" ? payload.text : undefined);
-      const createdAt = typeof payload.created_at === "string" ? payload.created_at : event.ts;
-      const kind = typeof payload.kind === "string" ? payload.kind : undefined;
-      return { id: event.id, created_at: createdAt, text, kind };
-    })
-    .filter((brief) => brief.text)
-    .sort((left, right) => sortableTime(right.created_at) - sortableTime(left.created_at))[0];
 }
 
 function sortableTime(value: string | undefined): number {

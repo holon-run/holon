@@ -12,11 +12,6 @@ import {
   REQUIRED_OBSERVER_SYNC_CAPABILITIES,
 } from "./client";
 import type { components } from "./generated/openapi";
-import {
-  createSessionProjectionState,
-  deriveSessionTimeline,
-  reduceSessionProjection,
-} from "./session-projection";
 
 function agentStateFixture(agentId: string): components["schemas"]["AgentStateSnapshotDto"] {
   return {
@@ -1778,103 +1773,51 @@ describe("createRuntimeClient", () => {
     expect(seen).toEqual(["http://example.test:7878/api/agents/agent%2Fone/work-items/work%2Fdetail"]);
   });
 
-  it("hydrates persisted brief text even when the associated transcript is available", async () => {
+  it("loads agent detail through state, conversation and work items only", async () => {
     const seen: string[] = [];
-    const fetchImpl = async (input: RequestInfo | URL) => {
-      const url = String(input);
-      seen.push(url);
-      if (url.endsWith("/agents/list")) {
-        return Response.json([{ identity: { agent_id: "agent-one" } }]);
-      }
-      if (url.endsWith("/agents/agent-one/state")) {
-        return Response.json(agentStateFixture("agent-one"));
-      }
-      if (url.includes("/agents/agent-one/events?")) {
-        return Response.json({
-          events: [
-            {
-              id: "brief-event",
-              agent_id: "agent-one",
-              event_seq: 23,
-              ts: "2026-07-10T00:00:00Z",
-              type: "brief_created",
-              payload: {
-                brief_id: "brief-123",
-                kind: "result",
-                finalizes_assistant_round_id: "round-123",
-              },
-            },
-          ],
-          has_older: false,
-        }, {
-          headers: { "x-holon-event-contract-version": "3" },
-        });
-      }
-      if (url.endsWith("/agents/agent-one/work-items?limit=50")) {
-        return Response.json([]);
-      }
-      if (url.endsWith("/agents/agent-one/transcript:batchGet")) {
-        return Response.json({
-          entries: [
-            {
-              id: "round-123",
-              data: {
-                blocks: [
-                  { type: "thinking", text: "Internal reasoning must not be visible." },
-                  { type: "text", text: "Transcript final text." },
-                ],
-              },
-            },
-          ],
-          missing_entry_ids: [],
-        });
-      }
-      if (url.endsWith("/agents/agent-one/briefs:batchGet")) {
-        return Response.json({
-          briefs: [{
-            id: "brief-123",
-            text: "Canonical persisted brief.",
-            kind: "result",
-            created_at: "2026-07-10T00:00:00Z",
-          }],
-          missing_brief_ids: [],
-        });
-      }
-      return new Response("not found", { status: 404 });
+    const conversation = {
+      event_log_epoch: "epoch-a", event_head_seq: 23, oldest_retained_seq: 1,
+      turns: [], active_turns: [], pending_inputs: [], has_more: false,
     };
-
     const client = createRuntimeClient({
       mode: "remote",
       baseUrl: "http://example.test:7878",
-      fetchImpl: fetchImpl as typeof fetch,
+      fetchImpl: (async (input: RequestInfo | URL) => {
+        const url = String(input);
+        seen.push(url);
+        if (url.endsWith("/state")) return Response.json(agentStateFixture("agent-one"));
+        if (url.endsWith("/conversation?limit=50")) return Response.json(conversation);
+        if (url.endsWith("/work-items?limit=50")) return Response.json([]);
+        throw new Error(`Unexpected request: ${url}`);
+      }) as typeof fetch,
     });
-
     const detail = await client.getAgentDetail("agent-one");
-    let projection = reduceSessionProjection(createSessionProjectionState(), {
-      type: "events_received",
-      events: detail.events ?? [],
-      eventLogEpoch: detail.eventLogEpoch,
-    });
-    projection = reduceSessionProjection(projection, {
-      type: "transcripts_hydrated",
-      entries: Object.values(detail.transcriptEntriesById ?? {}),
-      missingIds: [],
-    });
-    projection = reduceSessionProjection(projection, {
-      type: "briefs_hydrated",
-      recordsById: detail.briefRecordsById ?? {},
-      missingIds: [],
-    });
+    expect(detail.source).toBe("http");
+    expect(detail.conversation).toEqual(conversation);
+    expect(detail).not.toHaveProperty("events");
+    expect(detail).not.toHaveProperty("briefRecordsById");
+    expect(detail).not.toHaveProperty("transcriptEntriesById");
+    expect(seen.sort()).toEqual([
+      "http://example.test:7878/api/agents/agent-one/conversation?limit=50",
+      "http://example.test:7878/api/agents/agent-one/state",
+      "http://example.test:7878/api/agents/agent-one/work-items?limit=50",
+    ]);
+  });
 
-    expect(detail.agent.lastBrief).toBe("Canonical persisted brief.");
-    expect(detail.timeline).toEqual([]);
-    expect(deriveSessionTimeline(projection)[0]).toEqual(
-      expect.objectContaining({
-        id: "assistant_round:round-123",
-        body: "Canonical persisted brief.",
-      }),
-    );
-    expect(seen).toContain("http://example.test:7878/api/agents/agent-one/briefs:batchGet");
+  it("keeps state detail available when conversation cannot be fetched", async () => {
+    const client = createRuntimeClient({
+      mode: "remote", baseUrl: "http://example.test:7878",
+      fetchImpl: (async (input: RequestInfo | URL) => {
+        const url = String(input);
+        if (url.endsWith("/state")) return Response.json(agentStateFixture("agent-one"));
+        if (url.endsWith("/work-items?limit=50")) return Response.json([]);
+        return new Response("unavailable", { status: 503 });
+      }) as typeof fetch,
+    });
+    const detail = await client.getAgentDetail("agent-one");
+    expect(detail.source).toBe("http");
+    expect(detail.error).toBeUndefined();
+    expect(detail.conversation).toBeUndefined();
   });
 });
 

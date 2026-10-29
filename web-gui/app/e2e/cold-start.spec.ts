@@ -9,6 +9,38 @@ interface DiagnosticsSnapshot {
   agentIds: string[];
 }
 
+test("manual agent detail refresh uses conversation without raw events or hydration", async ({ page, context }, info) => {
+  await context.addCookies([{
+    name: "holon_e2e_session", value: sessionFor(info, "detail-conversation"), domain: "127.0.0.1", path: "/",
+  }]);
+  await page.goto("/agents/bootstrap-agent/conversation");
+  const refresh = page.getByRole("button", { name: "Refresh agent detail", exact: true });
+  await expect(refresh).toBeEnabled();
+  const requests: string[] = [];
+  page.on("request", (request) => {
+    const url = new URL(request.url());
+    if (url.pathname.startsWith("/api/agents/bootstrap-agent/")) {
+      requests.push(url.pathname + url.search);
+    }
+  });
+  const stateResponse = page.waitForResponse((response) =>
+    new URL(response.url()).pathname === "/api/agents/bootstrap-agent/state",
+  );
+  const summaryResponse = page.waitForResponse((response) =>
+    new URL(response.url()).pathname === "/api/agents/bootstrap-agent/conversation",
+  );
+  await refresh.click();
+  expect((await stateResponse).ok()).toBe(true);
+  expect((await summaryResponse).ok()).toBe(true);
+  await expect(refresh).toBeEnabled();
+  expect(requests).toContain("/api/agents/bootstrap-agent/conversation?limit=50");
+  // The E2E bridge still starts the legacy catch-up machine (next slice).
+  // Its background requests must not be confused with the detail's 80-event page.
+  expect(requests.filter((path) =>
+    path.startsWith("/api/agents/bootstrap-agent/events?") && new URLSearchParams(path.split("?")[1]).get("limit") === "80",
+  )).toEqual([]);
+});
+
 for (const failure of [404, 503, "network"] as const) {
   test(`subject lookup ${failure} is visible and automatically recovers before bootstrap`, async ({ page, context }, info) => {
     await context.addCookies([{
