@@ -8,6 +8,34 @@
     "evidence": [
       "https://help.aliyun.com/zh/model-studio/token-plan-personal-overview",
       "models.dev/snapshot.json#/alibaba-token-plan-cn",
+      "src/config/models.rs"
+    ]
+  },
+  {
+    "models_dev_id": "deepseek",
+    "route_registration": "deepseek@default",
+    "supported_models": ["deepseek-flash", "deepseek-v4-flash", "deepseek-v4-pro"],
+    "region": "Native DeepSeek API; Anthropic Messages compatibility, not reseller or Token Plan",
+    "owner": "holon-model-provider",
+    "reviewed_at": "2026-10-29",
+    "evidence": [
+      "https://api-docs.deepseek.com/guides/anthropic_api/",
+      "https://api-docs.deepseek.com/quick_start/pricing/",
+      "models.dev/snapshot.json#/deepseek",
+      "src/provider/registry/providers.rs"
+    ]
+  },
+  {
+    "models_dev_id": "deepseek",
+    "route_registration": "deepseek@responses",
+    "supported_models": ["deepseek-flash", "deepseek-v4-flash", "deepseek-v4-pro"],
+    "region": "Native DeepSeek API; Responses endpoint, not Messages or Token Plan",
+    "owner": "holon-model-provider",
+    "reviewed_at": "2026-10-29",
+    "evidence": [
+      "https://api-docs.deepseek.com/guides/responses_api/",
+      "https://api-docs.deepseek.com/quick_start/pricing/",
+      "models.dev/snapshot.json#/deepseek",
       "src/provider/registry/providers.rs"
     ]
   }

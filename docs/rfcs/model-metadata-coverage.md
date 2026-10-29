@@ -19,11 +19,22 @@ field-level resolver. Aliases retain their canonical identity. Raw model and
 route fields, effective facts, field origins, and upstream candidates remain
 separate. Runtime output policy is not an assertion of output capacity.
 
+Reviewed endpoint associations may declare `supported_models`: an exact
+compatibility allowlist, not a rule generating default routes for every model.
+These routes are enumerated independently of pinned or preferred routes and
+must reference registered endpoints and existing canonical models. They do
+not create runtime registrations or change preferred routes. The report retains
+`required_routes`; the check rejects missing or duplicate coverage rows even
+when the supplied review baseline agrees with an incomplete report.
+
 Generic provider mappings apply to the default endpoint only. Reviewed
 endpoint associations connect plan/region-specific upstream providers to exact
 registered endpoints. Multiple upstream sources remain separate candidates;
 they never overwrite each other or automatically populate the runtime catalog.
 Unassociated plan providers remain visible as review work.
+An association with `supported_models` compares only those exact IDs. Missing
+upstream models are explicit review evidence, never an invitation to borrow
+another endpoint's limits or capabilities.
 
 ## Review gate
 

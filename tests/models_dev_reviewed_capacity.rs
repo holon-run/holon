@@ -1,7 +1,10 @@
 use holon::{
     config::{ModelRef, ModelRouteRef},
     model_catalog::{
-        models_dev::{coverage::generate_coverage, parse_snapshot},
+        models_dev::{
+            coverage::{endpoint_associations, generate_coverage},
+            parse_snapshot,
+        },
         BuiltInModelCatalog,
     },
 };
@@ -9,7 +12,12 @@ use holon::{
 #[test]
 fn models_dev_reviewed_capacity_fills_exact_routes_without_changing_output_policy() {
     let catalog = BuiltInModelCatalog::new();
-    let report = generate_coverage(&parse_snapshot("{}").unwrap(), &catalog, &[]).unwrap();
+    let report = generate_coverage(
+        &parse_snapshot("{}").unwrap(),
+        &catalog,
+        &endpoint_associations().unwrap(),
+    )
+    .unwrap();
     for (route, context, output) in [
         ("dashscope@default/qwen-plus-latest", 1_000_000, 32_768),
         ("dashscope@default/qwen-flash-2025-07-28", 1_000_000, 32_768),
@@ -49,6 +57,7 @@ fn models_dev_reviewed_capacity_fills_exact_routes_without_changing_output_polic
             384_000,
         ),
         ("deepseek@responses/deepseek-flash", 1_000_000, 384_000),
+        ("deepseek@default/deepseek-flash", 1_000_000, 384_000),
         ("openai@default/gpt-5.4", 272_000, 128_000),
         ("openai@default/gpt-5.4-mini", 128_000, 128_000),
     ] {
@@ -79,6 +88,8 @@ fn models_dev_reviewed_capacity_fills_exact_routes_without_changing_output_polic
     assert_eq!(dynamic.effective.context_window_tokens, None);
     assert_eq!(dynamic.effective.max_output_tokens_upper_limit, None);
 
+    // Coverage includes the reviewed compatibility route without manufacturing
+    // pinned runtime metadata or changing the preferred Responses endpoint.
     assert!(catalog
         .get_route(&ModelRouteRef::parse("deepseek@default/deepseek-flash").unwrap())
         .is_none());

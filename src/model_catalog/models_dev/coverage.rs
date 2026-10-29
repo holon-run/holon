@@ -17,6 +17,9 @@ use super::{ModelsDevSnapshot, ProviderMapping};
 pub struct EndpointAssociation {
     pub models_dev_id: String,
     pub route_registration: String,
+    /// Exact reviewed compatibility routes, including those without pinned metadata.
+    #[serde(default)]
+    pub supported_models: Vec<String>,
     pub region: String,
     pub owner: String,
     pub reviewed_at: String,
@@ -71,6 +74,7 @@ pub struct CoverageRow {
 pub struct CoverageReport {
     pub schema_version: u32,
     pub scope: String,
+    pub required_routes: Vec<ModelRouteRef>,
     pub routes: Vec<CoverageRow>,
     pub unassociated_plan_providers: Vec<String>,
 }
@@ -172,9 +176,7 @@ pub fn generate_coverage(
             );
         }
     }
-    routes.sort_by_key(ModelRouteRef::as_string);
-    routes.dedup();
-    let registered = crate::provider::provider_definitions();
+    let registered = super::validation::ValidationEngine::new();
     let mut seen_associations = BTreeSet::new();
     for association in associations {
         if !seen_associations.insert((&association.models_dev_id, &association.route_registration))
@@ -184,9 +186,7 @@ pub fn generate_coverage(
                 association.models_dev_id
             ));
         }
-        if !registered.iter().any(|d| {
-            association.route_registration == format!("{}@{}", d.route_provider, d.route_endpoint)
-        }) {
+        if !registered.contains_route(&association.route_registration) {
             return Err(format!(
                 "unregistered endpoint association: {}",
                 association.route_registration
@@ -203,7 +203,32 @@ pub fn generate_coverage(
                 association.models_dev_id
             ));
         }
+        let mut seen_models = BTreeSet::new();
+        for model in &association.supported_models {
+            if !seen_models.insert(model) {
+                return Err(format!(
+                    "duplicate supported model: {}/{model}",
+                    association.route_registration
+                ));
+            }
+            let route =
+                ModelRouteRef::parse(&format!("{}/{model}", association.route_registration))
+                    .map_err(|e| e.to_string())?;
+            if route.model != *model
+                || catalog.get(&route.model_ref()).is_none()
+                || catalog.canonicalize_model_ref(&route.model_ref()) != route.model_ref()
+            {
+                return Err(format!(
+                    "unsupported association model: {}",
+                    route.as_string()
+                ));
+            }
+            routes.push(route);
+        }
     }
+    routes.sort_by_key(ModelRouteRef::as_string);
+    routes.dedup();
+    let required_routes = routes.clone();
     let mappings = ProviderMapping::default_mappings();
     let overrides = HashMap::new();
     let discovered = HashMap::new();
@@ -250,17 +275,31 @@ pub fn generate_coverage(
                     .filter(|a| {
                         a.route_registration
                             == format!("{}@{}", route.provider.as_str(), route.endpoint.as_str())
+                            && (a.supported_models.is_empty()
+                                || a.supported_models.contains(&route.model))
                     })
                     .map(|a| a.models_dev_id.as_str()),
             )
             .collect::<BTreeSet<_>>();
         let mut upstream_candidates = Vec::new();
+        let mut missing_reasons = BTreeMap::new();
         for source in sources {
             let Some(upstream) = snapshot
                 .providers
                 .get(source)
                 .and_then(|p| p.models.get(&route.model))
             else {
+                if associations.iter().any(|a| {
+                    a.models_dev_id == source
+                        && a.route_registration
+                            == format!("{}@{}", route.provider.as_str(), route.endpoint.as_str())
+                        && a.supported_models.contains(&route.model)
+                }) {
+                    missing_reasons.insert(
+                        format!("upstream:{source}"),
+                        "reviewed_endpoint_upstream_model_missing".to_string(),
+                    );
+                }
                 continue;
             };
             let context = upstream.limit.as_ref().and_then(|l| l.context);
@@ -288,7 +327,6 @@ pub fn generate_coverage(
             .collect::<BTreeSet<_>>()
             .into_iter()
             .collect();
-        let mut missing_reasons = BTreeMap::new();
         for (field, missing, upstream_present) in [
             (
                 "context_window_tokens",
@@ -361,6 +399,7 @@ pub fn generate_coverage(
     Ok(CoverageReport {
         schema_version: 1,
         scope: "checked_in_catalog_without_local_config_or_discovery".to_string(),
+        required_routes,
         routes: rows,
         unassociated_plan_providers,
     })
@@ -387,6 +426,23 @@ pub fn annotate_reviews(report: &mut CoverageReport, baseline: &CoverageBaseline
 
 pub fn check_coverage(report: &CoverageReport, baseline: &CoverageBaseline) -> Vec<String> {
     let mut errors = Vec::new();
+    let mut present = BTreeSet::new();
+    for row in &report.routes {
+        if !present.insert(row.route_ref.as_string()) {
+            errors.push(format!(
+                "duplicate coverage route: {}",
+                row.route_ref.as_string()
+            ));
+        }
+    }
+    for required in &report.required_routes {
+        if !present.contains(&required.as_string()) {
+            errors.push(format!(
+                "{}: required route missing from coverage",
+                required.as_string()
+            ));
+        }
+    }
     if baseline.schema_version != 1 {
         errors.push("unsupported metadata review schema".to_string());
     }
@@ -536,4 +592,48 @@ pub fn render_coverage_summary(report: &CoverageReport) -> String {
         summary.push_str(&format!("- `{id}`\n"));
     }
     summary
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{config::ModelRef, model_catalog::models_dev::parse_snapshot};
+
+    #[test]
+    fn models_dev_coverage_native_upstream_values_expose_missing_runtime_fields() {
+        let mut catalog = BuiltInModelCatalog::new();
+        let model = catalog
+            .entries
+            .get_mut(&ModelRef::parse("deepseek/deepseek-flash").unwrap())
+            .unwrap();
+        model.context_window_tokens = None;
+        model.max_output_tokens_upper_limit = None;
+        let snapshot = parse_snapshot(
+            r#"{
+            "deepseek":{"id":"deepseek","models":{
+                "deepseek-flash":{"id":"deepseek-flash","limit":{"context":1048576,"output":393216}}
+            }}
+        }"#,
+        )
+        .unwrap();
+        let report =
+            generate_coverage(&snapshot, &catalog, &endpoint_associations().unwrap()).unwrap();
+        for endpoint in ["default", "responses"] {
+            let row = report
+                .routes
+                .iter()
+                .find(|r| r.route_ref.as_string() == format!("deepseek@{endpoint}/deepseek-flash"))
+                .unwrap();
+            for field in ["context_window_tokens", "max_output_tokens_upper_limit"] {
+                assert_eq!(
+                    row.missing_reasons[field],
+                    "upstream_has_value_runtime_missing_review_required"
+                );
+                assert!(row.upstream_candidates[0]
+                    .differences
+                    .iter()
+                    .any(|d| d == field));
+            }
+        }
+    }
 }
