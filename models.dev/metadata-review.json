@@ -28696,148 +28696,6 @@
       }
     },
     {
-      "route_ref": "qianfan@default/deepseek-v3.2",
-      "facts": {
-        "context_window_tokens": 131072,
-        "default_max_output_tokens": 32768,
-        "max_output_tokens_upper_limit": 32768,
-        "prompt_budget_estimated_tokens": 124518,
-        "runtime_max_output_tokens": 32768,
-        "capabilities": {
-          "agent_turn": true,
-          "parallel_tool_calls": false,
-          "image_input": false,
-          "image_generation": false,
-          "supports_reasoning": false,
-          "interactive_exec": false
-        },
-        "agent_turn": true,
-        "decision_capable": false,
-        "reasoning_effort_options": []
-      },
-      "inputs": {
-        "model": {
-          "auto_compact_token_limit": null,
-          "capabilities": {
-            "agent_turn": true,
-            "image_generation": false,
-            "image_input": false,
-            "interactive_exec": false,
-            "parallel_tool_calls": false,
-            "supports_reasoning": false
-          },
-          "context_window_tokens": 131072,
-          "default_max_output_tokens": 32768,
-          "default_verbosity": null,
-          "effective_context_window_percent": 95,
-          "max_output_tokens_upper_limit": 32768,
-          "tool_output_truncation_estimated_tokens": 2500
-        },
-        "route": {
-          "capabilities": {},
-          "effective_context_window_percent": null,
-          "reasoning_effort_options": null
-        },
-        "evidence": {
-          "fields": {
-            "display_name": "model_builtin",
-            "description": "model_builtin",
-            "context_window_tokens": "model_builtin",
-            "effective_context_window_percent": "model_builtin",
-            "auto_compact_token_limit": "derived",
-            "prompt_budget_estimated_tokens": "derived",
-            "compaction_trigger_estimated_tokens": "derived",
-            "compaction_keep_recent_estimated_tokens": "derived",
-            "runtime_max_output_tokens": "model_builtin",
-            "verbosity": "derived",
-            "tool_output_truncation_estimated_tokens": "model_builtin",
-            "max_output_tokens_upper_limit": "model_builtin",
-            "agent_turn": "model_builtin",
-            "parallel_tool_calls": "model_builtin",
-            "image_input": "model_builtin",
-            "image_generation": "model_builtin",
-            "supports_reasoning": "model_builtin",
-            "interactive_exec": "model_builtin",
-            "reasoning_effort_options": "derived"
-          }
-        }
-      },
-      "context_status": "known",
-      "output_status": "known",
-      "review": null
-    },
-    {
-      "route_ref": "qianfan@default/deepseek-v3.2-think",
-      "facts": {
-        "context_window_tokens": 163840,
-        "default_max_output_tokens": 65536,
-        "max_output_tokens_upper_limit": 65536,
-        "prompt_budget_estimated_tokens": 155648,
-        "runtime_max_output_tokens": 65536,
-        "capabilities": {
-          "agent_turn": true,
-          "parallel_tool_calls": false,
-          "image_input": false,
-          "image_generation": false,
-          "supports_reasoning": true,
-          "interactive_exec": false
-        },
-        "agent_turn": true,
-        "decision_capable": false,
-        "reasoning_effort_options": []
-      },
-      "inputs": {
-        "model": {
-          "auto_compact_token_limit": null,
-          "capabilities": {
-            "agent_turn": true,
-            "image_generation": false,
-            "image_input": false,
-            "interactive_exec": false,
-            "parallel_tool_calls": false,
-            "supports_reasoning": true
-          },
-          "context_window_tokens": 163840,
-          "default_max_output_tokens": 65536,
-          "default_verbosity": null,
-          "effective_context_window_percent": 95,
-          "max_output_tokens_upper_limit": 65536,
-          "tool_output_truncation_estimated_tokens": 2500
-        },
-        "route": {
-          "capabilities": {},
-          "effective_context_window_percent": null,
-          "reasoning_effort_options": null
-        },
-        "evidence": {
-          "fields": {
-            "display_name": "model_builtin",
-            "description": "model_builtin",
-            "context_window_tokens": "model_builtin",
-            "effective_context_window_percent": "model_builtin",
-            "auto_compact_token_limit": "derived",
-            "prompt_budget_estimated_tokens": "derived",
-            "compaction_trigger_estimated_tokens": "derived",
-            "compaction_keep_recent_estimated_tokens": "derived",
-            "runtime_max_output_tokens": "model_builtin",
-            "verbosity": "derived",
-            "tool_output_truncation_estimated_tokens": "model_builtin",
-            "max_output_tokens_upper_limit": "model_builtin",
-            "agent_turn": "model_builtin",
-            "parallel_tool_calls": "model_builtin",
-            "image_input": "model_builtin",
-            "image_generation": "model_builtin",
-            "supports_reasoning": "model_builtin",
-            "interactive_exec": "model_builtin",
-            "reasoning_effort_options": "derived"
-          }
-        }
-      },
-      "context_status": "known",
-      "output_status": "known",
-      "review": null
-    },
-    {
       "route_ref": "qianfan@default/deepseek-v4-flash-0731",
       "facts": {
         "context_window_tokens": null,
@@ -29238,86 +29096,6 @@
       }
     },
     {
-      "route_ref": "qianfan@default/ernie-5.0",
-      "facts": {
-        "context_window_tokens": null,
-        "default_max_output_tokens": null,
-        "max_output_tokens_upper_limit": 65536,
-        "prompt_budget_estimated_tokens": 128000,
-        "runtime_max_output_tokens": 8192,
-        "capabilities": {
-          "agent_turn": true,
-          "parallel_tool_calls": false,
-          "image_input": true,
-          "image_generation": false,
-          "supports_reasoning": true,
-          "interactive_exec": false
-        },
-        "agent_turn": true,
-        "decision_capable": false,
-        "reasoning_effort_options": []
-      },
-      "inputs": {
-        "model": {
-          "auto_compact_token_limit": null,
-          "capabilities": {
-            "agent_turn": true,
-            "image_generation": false,
-            "image_input": true,
-            "interactive_exec": false,
-            "parallel_tool_calls": false,
-            "supports_reasoning": true
-          },
-          "context_window_tokens": null,
-          "default_max_output_tokens": null,
-          "default_verbosity": null,
-          "effective_context_window_percent": 95,
-          "max_output_tokens_upper_limit": 65536,
-          "tool_output_truncation_estimated_tokens": 2500
-        },
-        "route": {
-          "capabilities": {},
-          "effective_context_window_percent": null,
-          "reasoning_effort_options": null
-        },
-        "evidence": {
-          "fields": {
-            "display_name": "model_builtin",
-            "description": "model_builtin",
-            "context_window_tokens": "derived",
-            "effective_context_window_percent": "model_builtin",
-            "auto_compact_token_limit": "derived",
-            "prompt_budget_estimated_tokens": "runtime_default",
-            "compaction_trigger_estimated_tokens": "derived",
-            "compaction_keep_recent_estimated_tokens": "derived",
-            "runtime_max_output_tokens": "runtime_default",
-            "verbosity": "derived",
-            "tool_output_truncation_estimated_tokens": "model_builtin",
-            "max_output_tokens_upper_limit": "model_builtin",
-            "agent_turn": "model_builtin",
-            "parallel_tool_calls": "model_builtin",
-            "image_input": "model_builtin",
-            "image_generation": "model_builtin",
-            "supports_reasoning": "model_builtin",
-            "interactive_exec": "model_builtin",
-            "reasoning_effort_options": "derived"
-          }
-        }
-      },
-      "context_status": "unknown",
-      "output_status": "known",
-      "review": {
-        "owner": "holon-model-provider",
-        "reviewed_at": "2026-10-26",
-        "reason": "Exact same-endpoint context/output integers remain unconfirmed; known Chat fields, intrinsic capabilities, and runtime budgets do not certify unknown protocol-specific capacities. ERNIE context shorthand contradicts prior integers and is not converted.",
-        "recheck": "Recheck the exact endpoint/model integer limits when its official schema or model table changes.",
-        "evidence": [
-          "models.dev/endpoint-review.md",
-          "models.dev/metadata-evidence.md"
-        ]
-      }
-    },
-    {
       "route_ref": "qianfan@default/ernie-5.0-thinking-exp",
       "facts": {
         "context_window_tokens": null,
@@ -29398,166 +29176,6 @@
       }
     },
     {
-      "route_ref": "qianfan@default/ernie-5.0-thinking-latest",
-      "facts": {
-        "context_window_tokens": null,
-        "default_max_output_tokens": null,
-        "max_output_tokens_upper_limit": 65536,
-        "prompt_budget_estimated_tokens": 128000,
-        "runtime_max_output_tokens": 8192,
-        "capabilities": {
-          "agent_turn": true,
-          "parallel_tool_calls": false,
-          "image_input": true,
-          "image_generation": false,
-          "supports_reasoning": true,
-          "interactive_exec": false
-        },
-        "agent_turn": true,
-        "decision_capable": false,
-        "reasoning_effort_options": []
-      },
-      "inputs": {
-        "model": {
-          "auto_compact_token_limit": null,
-          "capabilities": {
-            "agent_turn": true,
-            "image_generation": false,
-            "image_input": true,
-            "interactive_exec": false,
-            "parallel_tool_calls": false,
-            "supports_reasoning": true
-          },
-          "context_window_tokens": null,
-          "default_max_output_tokens": null,
-          "default_verbosity": null,
-          "effective_context_window_percent": 95,
-          "max_output_tokens_upper_limit": 65536,
-          "tool_output_truncation_estimated_tokens": 2500
-        },
-        "route": {
-          "capabilities": {},
-          "effective_context_window_percent": null,
-          "reasoning_effort_options": null
-        },
-        "evidence": {
-          "fields": {
-            "display_name": "model_builtin",
-            "description": "model_builtin",
-            "context_window_tokens": "derived",
-            "effective_context_window_percent": "model_builtin",
-            "auto_compact_token_limit": "derived",
-            "prompt_budget_estimated_tokens": "runtime_default",
-            "compaction_trigger_estimated_tokens": "derived",
-            "compaction_keep_recent_estimated_tokens": "derived",
-            "runtime_max_output_tokens": "runtime_default",
-            "verbosity": "derived",
-            "tool_output_truncation_estimated_tokens": "model_builtin",
-            "max_output_tokens_upper_limit": "model_builtin",
-            "agent_turn": "model_builtin",
-            "parallel_tool_calls": "model_builtin",
-            "image_input": "model_builtin",
-            "image_generation": "model_builtin",
-            "supports_reasoning": "model_builtin",
-            "interactive_exec": "model_builtin",
-            "reasoning_effort_options": "derived"
-          }
-        }
-      },
-      "context_status": "unknown",
-      "output_status": "known",
-      "review": {
-        "owner": "holon-model-provider",
-        "reviewed_at": "2026-10-26",
-        "reason": "Exact same-endpoint context/output integers remain unconfirmed; known Chat fields, intrinsic capabilities, and runtime budgets do not certify unknown protocol-specific capacities. ERNIE context shorthand contradicts prior integers and is not converted.",
-        "recheck": "Recheck the exact endpoint/model integer limits when its official schema or model table changes.",
-        "evidence": [
-          "models.dev/endpoint-review.md",
-          "models.dev/metadata-evidence.md"
-        ]
-      }
-    },
-    {
-      "route_ref": "qianfan@default/ernie-5.0-thinking-preview",
-      "facts": {
-        "context_window_tokens": null,
-        "default_max_output_tokens": null,
-        "max_output_tokens_upper_limit": 65536,
-        "prompt_budget_estimated_tokens": 128000,
-        "runtime_max_output_tokens": 8192,
-        "capabilities": {
-          "agent_turn": true,
-          "parallel_tool_calls": false,
-          "image_input": true,
-          "image_generation": false,
-          "supports_reasoning": true,
-          "interactive_exec": false
-        },
-        "agent_turn": true,
-        "decision_capable": false,
-        "reasoning_effort_options": []
-      },
-      "inputs": {
-        "model": {
-          "auto_compact_token_limit": null,
-          "capabilities": {
-            "agent_turn": true,
-            "image_generation": false,
-            "image_input": true,
-            "interactive_exec": false,
-            "parallel_tool_calls": false,
-            "supports_reasoning": true
-          },
-          "context_window_tokens": null,
-          "default_max_output_tokens": null,
-          "default_verbosity": null,
-          "effective_context_window_percent": 95,
-          "max_output_tokens_upper_limit": 65536,
-          "tool_output_truncation_estimated_tokens": 2500
-        },
-        "route": {
-          "capabilities": {},
-          "effective_context_window_percent": null,
-          "reasoning_effort_options": null
-        },
-        "evidence": {
-          "fields": {
-            "display_name": "model_builtin",
-            "description": "model_builtin",
-            "context_window_tokens": "derived",
-            "effective_context_window_percent": "model_builtin",
-            "auto_compact_token_limit": "derived",
-            "prompt_budget_estimated_tokens": "runtime_default",
-            "compaction_trigger_estimated_tokens": "derived",
-            "compaction_keep_recent_estimated_tokens": "derived",
-            "runtime_max_output_tokens": "runtime_default",
-            "verbosity": "derived",
-            "tool_output_truncation_estimated_tokens": "model_builtin",
-            "max_output_tokens_upper_limit": "model_builtin",
-            "agent_turn": "model_builtin",
-            "parallel_tool_calls": "model_builtin",
-            "image_input": "model_builtin",
-            "image_generation": "model_builtin",
-            "supports_reasoning": "model_builtin",
-            "interactive_exec": "model_builtin",
-            "reasoning_effort_options": "derived"
-          }
-        }
-      },
-      "context_status": "unknown",
-      "output_status": "known",
-      "review": {
-        "owner": "holon-model-provider",
-        "reviewed_at": "2026-10-26",
-        "reason": "Exact same-endpoint context/output integers remain unconfirmed; known Chat fields, intrinsic capabilities, and runtime budgets do not certify unknown protocol-specific capacities. ERNIE context shorthand contradicts prior integers and is not converted.",
-        "recheck": "Recheck the exact endpoint/model integer limits when its official schema or model table changes.",
-        "evidence": [
-          "models.dev/endpoint-review.md",
-          "models.dev/metadata-evidence.md"
-        ]
-      }
-    },
-    {
       "route_ref": "qianfan@default/ernie-5.1",
       "facts": {
         "context_window_tokens": null,
@@ -29587,86 +29205,6 @@
             "interactive_exec": false,
             "parallel_tool_calls": false,
             "supports_reasoning": false
-          },
-          "context_window_tokens": null,
-          "default_max_output_tokens": null,
-          "default_verbosity": null,
-          "effective_context_window_percent": 95,
-          "max_output_tokens_upper_limit": 65536,
-          "tool_output_truncation_estimated_tokens": 2500
-        },
-        "route": {
-          "capabilities": {},
-          "effective_context_window_percent": null,
-          "reasoning_effort_options": null
-        },
-        "evidence": {
-          "fields": {
-            "display_name": "model_builtin",
-            "description": "model_builtin",
-            "context_window_tokens": "derived",
-            "effective_context_window_percent": "model_builtin",
-            "auto_compact_token_limit": "derived",
-            "prompt_budget_estimated_tokens": "runtime_default",
-            "compaction_trigger_estimated_tokens": "derived",
-            "compaction_keep_recent_estimated_tokens": "derived",
-            "runtime_max_output_tokens": "runtime_default",
-            "verbosity": "derived",
-            "tool_output_truncation_estimated_tokens": "model_builtin",
-            "max_output_tokens_upper_limit": "model_builtin",
-            "agent_turn": "model_builtin",
-            "parallel_tool_calls": "model_builtin",
-            "image_input": "model_builtin",
-            "image_generation": "model_builtin",
-            "supports_reasoning": "model_builtin",
-            "interactive_exec": "model_builtin",
-            "reasoning_effort_options": "derived"
-          }
-        }
-      },
-      "context_status": "unknown",
-      "output_status": "known",
-      "review": {
-        "owner": "holon-model-provider",
-        "reviewed_at": "2026-10-26",
-        "reason": "Exact same-endpoint context/output integers remain unconfirmed; known Chat fields, intrinsic capabilities, and runtime budgets do not certify unknown protocol-specific capacities. ERNIE context shorthand contradicts prior integers and is not converted.",
-        "recheck": "Recheck the exact endpoint/model integer limits when its official schema or model table changes.",
-        "evidence": [
-          "models.dev/endpoint-review.md",
-          "models.dev/metadata-evidence.md"
-        ]
-      }
-    },
-    {
-      "route_ref": "qianfan@default/ernie-x1.1",
-      "facts": {
-        "context_window_tokens": null,
-        "default_max_output_tokens": null,
-        "max_output_tokens_upper_limit": 65536,
-        "prompt_budget_estimated_tokens": 128000,
-        "runtime_max_output_tokens": 8192,
-        "capabilities": {
-          "agent_turn": true,
-          "parallel_tool_calls": false,
-          "image_input": false,
-          "image_generation": false,
-          "supports_reasoning": true,
-          "interactive_exec": false
-        },
-        "agent_turn": true,
-        "decision_capable": false,
-        "reasoning_effort_options": []
-      },
-      "inputs": {
-        "model": {
-          "auto_compact_token_limit": null,
-          "capabilities": {
-            "agent_turn": true,
-            "image_generation": false,
-            "image_input": false,
-            "interactive_exec": false,
-            "parallel_tool_calls": false,
-            "supports_reasoning": true
           },
           "context_window_tokens": null,
           "default_max_output_tokens": null,
@@ -47674,7 +47212,7 @@
       "facts": {
         "context_window_tokens": 1048576,
         "default_max_output_tokens": null,
-        "max_output_tokens_upper_limit": null,
+        "max_output_tokens_upper_limit": 1048576,
         "prompt_budget_estimated_tokens": 996147,
         "runtime_max_output_tokens": 8192,
         "capabilities": {
@@ -47708,7 +47246,7 @@
           "default_max_output_tokens": null,
           "default_verbosity": null,
           "effective_context_window_percent": 95,
-          "max_output_tokens_upper_limit": null,
+          "max_output_tokens_upper_limit": 1048576,
           "reasoning_effort_options": [
             "low",
             "high",
@@ -47734,7 +47272,7 @@
             "runtime_max_output_tokens": "runtime_default",
             "verbosity": "derived",
             "tool_output_truncation_estimated_tokens": "model_builtin",
-            "max_output_tokens_upper_limit": "derived",
+            "max_output_tokens_upper_limit": "model_builtin",
             "agent_turn": "model_builtin",
             "parallel_tool_calls": "model_builtin",
             "image_input": "model_builtin",
@@ -47746,12 +47284,12 @@
         }
       },
       "context_status": "known",
-      "output_status": "unknown",
+      "output_status": "known",
       "review": {
         "owner": "holon-model-provider",
-        "reviewed_at": "2026-10-27",
-        "reason": "Native Responses qualification, reasoning/image support and distinct effort levels were independently confirmed. Abbreviated token limits do not certify integer capacities; K3.1 output specifications conflict. Responses cache mechanisms do not establish Anthropic cache_control.",
-        "recheck": "Recheck exact native model/schema integers and resolve K3.1 output conflicts.",
+        "reviewed_at": "2026-10-30",
+        "reason": "The ordinary model list and K3.1 card now agree on the exact 1048576 output ceiling. Preserve the conflicting default as unknown; no input limit, subscription capacity or runtime output policy is inferred.",
+        "recheck": "Resolve the 4k versus 131072 output-default conflict; independently verify exact subscription limits without copying the ordinary API.",
         "evidence": [
           "models.dev/endpoint-review.md",
           "models.dev/metadata-evidence.md"

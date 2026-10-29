@@ -1242,6 +1242,53 @@ mod tests {
     }
 
     #[test]
+    fn retired_qianfan_ids_are_not_drafted_or_retained() {
+        // Qianfan has no upstream mapping or supplement admission. Do not
+        // broaden either to filter IDs already excluded by that boundary.
+        let ids = [
+            "ernie-5.0",
+            "ernie-5.0-thinking-latest",
+            "ernie-5.0-thinking-preview",
+            "ernie-x1.1",
+            "deepseek-v3.2",
+            "deepseek-v3.2-think",
+        ];
+        let mut parsed: ModelsDevSnapshot =
+            serde_json::from_str(r#"{"qianfan":{"id":"qianfan","models":{}}}"#).unwrap();
+        let mut previous = ModelsDevSupplement::empty();
+        for id in ids {
+            parsed.providers.get_mut("qianfan").unwrap().models.insert(
+                id.into(),
+                serde_json::from_value(serde_json::json!({
+                    "id": id, "release_date": "2026-10-29",
+                    "modalities": {"input": ["text"], "output": ["text"]}
+                }))
+                .unwrap(),
+            );
+            previous
+                .models
+                .push(supplement_metadata(&format!("qianfan/{id}"), id));
+            previous
+                .routes
+                .push(ModelRouteRef::parse(&format!("qianfan@default/{id}")).unwrap());
+        }
+        for previous in [None, Some(&previous)] {
+            let update =
+                generate(&parsed, previous, &legacy(), "2026-10-29", "rev", "ver").unwrap();
+            assert!(update.supplement.models.is_empty());
+            assert!(update.supplement.routes.is_empty());
+            if previous.is_some() {
+                for id in ids {
+                    assert!(update.removed.iter().any(|removed| {
+                        removed.model_ref == format!("qianfan/{id}")
+                            && removed.reason == RemovalReason::MissingUpstream
+                    }));
+                }
+            }
+        }
+    }
+
+    #[test]
     fn retired_volcengine_api_ids_are_not_drafted_or_retained() {
         let legacy = legacy();
         let ids = [

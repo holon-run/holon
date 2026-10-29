@@ -9,6 +9,115 @@ reviewed routes unless there is affirmative removal evidence. New routes require
 their own endpoint evidence; missing capability flags are conservative omissions,
 not proof that a model lacks the feature.
 
+## 2026-10-30 incremental review
+
+This cycle starts from main `330d105b`. Public evidence was sampled on
+October 29 UTC (October 30 in Beijing). The frozen upstream revision is
+`94aeb98e4f87dfa5df3cdfdee97b54647e697cc40564693badeae1a8c876075c`.
+The initial refresh, validation and 662-route metadata gate passed. The
+55 supplement models and 16 explicitly reviewed non-default routes did not
+change. Final post-change verification is recorded below.
+
+### Confirmed endpoint changes
+
+- Qianfan's independent [retirement table](https://cloud.baidu.com/doc/qianfan/s/zmh4stou3)
+  explicitly ends V1 and V2 access, including the registered V2 Chat URL.
+  Exact `ernie-5.0`, `ernie-5.0-thinking-latest` and
+  `ernie-5.0-thinking-preview` retired on **2026-10-29**; `ernie-x1.1`,
+  `deepseek-v3.2` and `deepseek-v3.2-think` retired on **2026-09-29**.
+  Both dates have passed in the service's Beijing timezone. Remove only
+  those six IDs. `ernie-5.0-thinking-exp` is not explicitly named: preserve
+  it without claiming new eligibility. Qianfan has no upstream mapping or
+  supplement admission; keep that existing exclusion and test that previous
+  supplement entries cannot revive these IDs. Removing the retired leading
+  entries naturally selects the existing `deepseek-v4.1-flash-1017` under
+  the unchanged default-candidate gate, not a user-config edit. `ernie-5.1`
+  remains registered but has neither confirmed context nor candidate
+  capabilities; do not invent either to force its selection.
+- Volcengine's [ordinary model list](https://ark.volcengine.com/region:cn-beijing/docs/model-list.md)
+  now agrees with the [K3.1 model card](https://ark.volcengine.com/models/kimi-k3-1-pro.md)
+  on the maximum output. Add **1,048,576** only to
+  `volcengine@default/kimi-k3-1-pro`. The model list still states a 4k
+  default while the card states 131,072: leave the output default unknown.
+  Keep the existing exact context, vision and native low/high/max efforts.
+  Coding/Agent Plan pages use abbreviated 1024k output figures, not
+  independently confirmed exact integers; do not copy the ordinary ceiling
+  into `kimi-k3.1-pro` subscription routes.
+
+### Preserved boundaries
+
+Native DeepSeek's [Responses reference](https://api-docs.deepseek.com/guides/responses_api/)
+confirms Flash `input_image` support. The registration and regression already
+cover it; this is not a new implementation change. Preserve the reviewed
+1,000,000 / 384,000 native ceilings and protocol-specific effort support.
+The official Codex model metadata is byte-identical to the preceding cycle;
+no login route or limit is inferred from generic OpenAI availability.
+Mistral's single `deepseek-v4-1-flash-1017` candidate remains gated pending
+endpoint-specific exact limit and effort evidence.
+
+The four changed OpenRouter artifact records match the separately sampled
+public listing: DeepSeek V3.1 output 147,456; V4 Pro output 393,216; V4.1 Flash
+output 943,718; Nemotron 3 Super context 1,048,576 / output 262,144. These are
+audit projections, not automatic builtin updates or proof of an output
+default. The artifact also drops Solar Pro 3 and Venice Inkling; upstream
+membership changes do not establish native retirement or remove static
+routes. Artifact aliases, routes and preferred mappings are unchanged.
+
+### Second endpoint group
+
+Independently checked all 15 registered endpoints: MiniMax international
+and China ordinary/M Plan, international Moonshot, BytePlus ordinary/Coding,
+StepFun ordinary/Plan, all three Go protocols, Kilo, Together and Fireworks.
+The ordinary BytePlus endpoint still has no static routes. No new
+implementable route deletion or exact capacity change was confirmed.
+
+- Go's [public listing](https://opencode.ai/inference/go/v1/models) fell
+  from 30 to 28 IDs; `mimo-v2.5` and `mimo-v2.5-pro` disappeared while the
+  [subscription documentation](https://opencode.ai/v2/docs/console/go/)
+  still lists them. All 28 current IDs are covered by each protocol.
+  Static Chat/Messages/Responses counts remain 38/34/30 (42 unique IDs);
+  listing absences are 10/6/2 respectively, or 14 unique historical IDs
+  across the protocols. Absence and conflicting sources do not prove EOS.
+- Fireworks' [Qwen3.8-specific Chat section](https://docs.fireworks.ai/api-reference/post-chatcompletions.md)
+  confirms the two models' effort controls. The two model IDs and
+  `accounts/fireworks/routers/qwen-max-latest` exist only in raw upstream,
+  not in the builtin/effective catalog: no static effort field was fixed.
+  The [large model](https://fireworks.ai/models/fireworks/qwen3p8-2p4t-a95b)
+  is on-demand-only; [Max](https://fireworks.ai/models/fireworks/qwen3p8-max)
+  has public serverless eligibility but lacks an independently confirmed
+  exact context limit. Model-specific controls do not certify the router.
+- BytePlus's decoded SSR [Coding table](https://docs.byteplus.com/en/docs/modelark/coding-plan-personal-plan-overview)
+  includes display-name counterparts of all 13 historical entries; that
+  does not newly certify six unresolved exact wire IDs or account access.
+  Its [retirement table](https://docs.byteplus.com/en/docs/modelark/coding-plan-personal-model-deprecation)
+  has a `09.23` date without a year and conflicts with the support table.
+  Preserve that uncertainty rather than guessing a deadline or deleting.
+- MiniMax international existing-user access through November 18,
+  Moonshot's October 31 new-user restriction and BytePlus's November 11
+  ordinary batch are not all-user retirements effective in this cycle.
+  Kilo's five exact fields, Together's serverless/dedicated boundary and
+  StepFun's independent Plan router retain their previous reviewed values.
+
+### Final verification
+
+- Regenerated the builtin snapshot, reran the pinned refresh and validation,
+  and verified snapshot/source consistency.
+- The 656-route metadata gate passes. Exact review permits only six Qianfan
+  retirements and the ordinary K3.1 output ceiling; the other 655 surviving
+  field projections, all supplement entries and other preferred mappings
+  are unchanged. Qianfan's existing eligible Flash route is the sole
+  preferred-model/route replacement.
+- Final locked tests pass: catalog 193 passed / 1 ignored; adapter 11,
+  coverage 11, reviewed capacity 1, route cache 17 and Responses 77 passed
+  (310 passed / 1 ignored total). Two stale Qianfan test assertions were
+  corrected without changing the frozen catalog or field-review artifacts.
+- `cargo fmt --all -- --check`, warning-free locked all-targets checking
+  (`RUSTFLAGS="-D warnings" cargo check --all-targets --locked`) and
+  `git diff --check` pass.
+- Independent final review found no unresolved confirmed P1/P2 defects.
+  Offline verification does not certify live account, region, subscription
+  or session eligibility; no paid inference or deployment was performed.
+
 ## 2026-10-29 incremental review
 
 This cycle starts from main `20f5e26c`. Public evidence was sampled on

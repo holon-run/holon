@@ -54,7 +54,7 @@
 
 ## Route metadata review (offline)
 
-Routes: 661; unknown context: 233; unknown output ceiling: 266.
+Routes: 656; unknown context: 229; unknown output ceiling: 265.
 Runtime output policy is not output capacity. Existing builtin fields are not automatically overwritten.
 
 | Route | Upstream source | Fields requiring review |
@@ -80,8 +80,12 @@ Runtime output policy is not output capacity. Existing builtin fields are not au
 | `dashscope@token-plan/kimi-k2.7-code` | `alibaba-token-plan-cn/kimi-k2.7-code` | max_output_tokens_upper_limit |
 | `dashscope@token-plan/qwen3.7-max` | `alibaba-token-plan-cn/qwen3.7-max` | max_output_tokens_upper_limit |
 | `dashscope@token-plan/qwen3.8-max-preview` | `alibaba-token-plan-cn/qwen3.8-max-preview` | max_output_tokens_upper_limit |
+| `deepseek@default/deepseek-flash` | `deepseek/deepseek-flash` | context_window_tokens, max_output_tokens_upper_limit |
 | `deepseek@default/deepseek-v4-flash` | `deepseek/deepseek-v4-flash` | context_window_tokens, max_output_tokens_upper_limit |
 | `deepseek@default/deepseek-v4-pro` | `deepseek/deepseek-v4-pro` | context_window_tokens, max_output_tokens_upper_limit |
+| `deepseek@responses/deepseek-flash` | `deepseek/deepseek-flash` | context_window_tokens, max_output_tokens_upper_limit |
+| `deepseek@responses/deepseek-v4-flash` | `deepseek/deepseek-v4-flash` | context_window_tokens, max_output_tokens_upper_limit |
+| `deepseek@responses/deepseek-v4-pro` | `deepseek/deepseek-v4-pro` | context_window_tokens, max_output_tokens_upper_limit |
 | `fireworks@default/accounts/fireworks/models/gpt-oss-120b` | `fireworks-ai/accounts/fireworks/models/gpt-oss-120b` | max_output_tokens_upper_limit |
 | `fireworks@default/accounts/fireworks/models/nemotron-3-ultra-nvfp4` | `fireworks-ai/accounts/fireworks/models/nemotron-3-ultra-nvfp4` | max_output_tokens_upper_limit |
 | `huggingface@default/openai/gpt-oss-120b` | `huggingface/openai/gpt-oss-120b` | max_output_tokens_upper_limit |
@@ -245,12 +249,8 @@ Runtime output policy is not output capacity. Existing builtin fields are not au
 | `qianfan@default/deepseek-v4-pro-0813` | Unknown | Known | Exact same-endpoint context/output integers remain unconfirmed; known Chat fields, intrinsic capabilities, and runtime budgets do not certify unknown protocol-specific capacities. ERNIE context shorthand contradicts prior integers and is not converted. |
 | `qianfan@default/deepseek-v4.1-flash` | Unknown | Known | Exact same-endpoint context/output integers remain unconfirmed; known Chat fields, intrinsic capabilities, and runtime budgets do not certify unknown protocol-specific capacities. ERNIE context shorthand contradicts prior integers and is not converted. |
 | `qianfan@default/deepseek-v4.1-flash-1017` | Unknown | Known | Exact same-endpoint context/output integers remain unconfirmed; known Chat fields, intrinsic capabilities, and runtime budgets do not certify unknown protocol-specific capacities. ERNIE context shorthand contradicts prior integers and is not converted. |
-| `qianfan@default/ernie-5.0` | Unknown | Known | Exact same-endpoint context/output integers remain unconfirmed; known Chat fields, intrinsic capabilities, and runtime budgets do not certify unknown protocol-specific capacities. ERNIE context shorthand contradicts prior integers and is not converted. |
 | `qianfan@default/ernie-5.0-thinking-exp` | Unknown | Known | Exact same-endpoint context/output integers remain unconfirmed; known Chat fields, intrinsic capabilities, and runtime budgets do not certify unknown protocol-specific capacities. ERNIE context shorthand contradicts prior integers and is not converted. |
-| `qianfan@default/ernie-5.0-thinking-latest` | Unknown | Known | Exact same-endpoint context/output integers remain unconfirmed; known Chat fields, intrinsic capabilities, and runtime budgets do not certify unknown protocol-specific capacities. ERNIE context shorthand contradicts prior integers and is not converted. |
-| `qianfan@default/ernie-5.0-thinking-preview` | Unknown | Known | Exact same-endpoint context/output integers remain unconfirmed; known Chat fields, intrinsic capabilities, and runtime budgets do not certify unknown protocol-specific capacities. ERNIE context shorthand contradicts prior integers and is not converted. |
 | `qianfan@default/ernie-5.1` | Unknown | Known | Exact same-endpoint context/output integers remain unconfirmed; known Chat fields, intrinsic capabilities, and runtime budgets do not certify unknown protocol-specific capacities. ERNIE context shorthand contradicts prior integers and is not converted. |
-| `qianfan@default/ernie-x1.1` | Unknown | Known | Exact same-endpoint context/output integers remain unconfirmed; known Chat fields, intrinsic capabilities, and runtime budgets do not certify unknown protocol-specific capacities. ERNIE context shorthand contradicts prior integers and is not converted. |
 | `qianfan@default/glm-5.1` | Unknown | Known | Exact same-endpoint context/output integers remain unconfirmed; known Chat fields, intrinsic capabilities, and runtime budgets do not certify unknown protocol-specific capacities. ERNIE context shorthand contradicts prior integers and is not converted. |
 | `qianfan@default/glm-5.2` | Unknown | Known | Exact same-endpoint context/output integers remain unconfirmed; known Chat fields, intrinsic capabilities, and runtime budgets do not certify unknown protocol-specific capacities. ERNIE context shorthand contradicts prior integers and is not converted. |
 | `qianfan@default/glm-5.3` | Unknown | Known | Exact same-endpoint context/output integers remain unconfirmed; known Chat fields, intrinsic capabilities, and runtime budgets do not certify unknown protocol-specific capacities. ERNIE context shorthand contradicts prior integers and is not converted. |
@@ -392,7 +392,6 @@ Runtime output policy is not output capacity. Existing builtin fields are not au
 | `volcengine@default/doubao-seed-2-1-lite-260915` | Unknown | Unknown | Native Responses qualification, reasoning/image support and distinct effort levels were independently confirmed. Abbreviated token limits do not certify integer capacities; K3.1 output specifications conflict. Responses cache mechanisms do not establish Anthropic cache_control. |
 | `volcengine@default/doubao-seed-2-1-pro-260915` | Unknown | Unknown | Native Responses qualification, reasoning/image support and distinct effort levels were independently confirmed. Abbreviated token limits do not certify integer capacities; K3.1 output specifications conflict. Responses cache mechanisms do not establish Anthropic cache_control. |
 | `volcengine@default/doubao-seedream-5.0-lite` | NotApplicable | NotApplicable | volcengine@default/doubao-seedream-5.0-lite: Images API route; text token context/output ceilings are not the image generation capacity. Existing executable policy is retained, not a capacity assertion. |
-| `volcengine@default/kimi-k3-1-pro` | Known | Unknown | Native Responses qualification, reasoning/image support and distinct effort levels were independently confirmed. Abbreviated token limits do not certify integer capacities; K3.1 output specifications conflict. Responses cache mechanisms do not establish Anthropic cache_control. |
 | `volcengine@plan/deepseek-latest` | Dynamic | Dynamic | volcengine@plan/deepseek-latest: Provider-selected backing model may change; no reviewed fixed token ceiling for this exact selector. Existing known fields remain unchanged; internal prompt/output budgets are local policy only. |
 | `volcengine@plan/deepseek-v4.1-flash` | Unknown | Unknown | volcengine@plan/deepseek-v4.1-flash: Missing capacity is retained as unknown. No exact endpoint upstream capacity evidence is associated; generic API, other region, plan, or protocol limits are not borrowed. Existing known fields and local output policy are preserved, not newly vendor-verified. |
 | `volcengine@plan/deepseek-v4.1-flash-economy` | Unknown | Unknown | volcengine@plan/deepseek-v4.1-flash-economy: Missing capacity is retained as unknown. No exact endpoint upstream capacity evidence is associated; generic API, other region, plan, or protocol limits are not borrowed. Existing known fields and local output policy are preserved, not newly vendor-verified. |

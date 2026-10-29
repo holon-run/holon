@@ -5,6 +5,34 @@ unchanged catalog facts are preserved, not newly certified as vendor hard
 limits. An upstream candidate is evidence to review, not permission to change
 an endpoint, region, subscription entitlement, or runtime output policy.
 
+## Incremental review: 2026-10-30
+
+The [endpoint review](endpoint-review.md#2026-10-30-incremental-review)
+records six affirmative Qianfan retirements and one exact ordinary Volcengine
+capacity change. The [K3.1 card](https://ark.volcengine.com/models/kimi-k3-1-pro.md)
+specifies a 1,048,576 output ceiling; the
+[ordinary model list](https://ark.volcengine.com/region:cn-beijing/docs/model-list.md)
+now agrees on the maximum, resolving the earlier conflict. Set only that
+route's ceiling, not its default, max input, runtime output policy or the
+independent subscription limits. The 4k versus 131,072 default conflict
+remains unresolved.
+
+The [Qianfan retirement table](https://cloud.baidu.com/doc/qianfan/s/zmh4stou3)
+names the six removed IDs and applies to the registered V2 Chat service.
+Do not infer retirement of the unlisted experimental ERNIE ID or other
+providers' identically named DeepSeek offerings. Existing unmodified facts
+remain preserved, not newly certified. Native DeepSeek image support and
+Codex metadata already match the current evidence; Mistral's single pending
+candidate still lacks complete endpoint-specific exact metadata.
+
+The second endpoint group also rechecked Fireworks' model-specific
+[Qwen3.8 effort controls](https://docs.fireworks.ai/api-reference/post-chatcompletions.md).
+Both models and the Qwen router are raw-only candidates, not static routes.
+Confirmed model controls do not establish router binding, precise capacity
+or general serverless eligibility. Go's conflicting listing/documentation
+and BytePlus's display-name versus exact wire-ID evidence remain unresolved;
+neither changes static capacity fields or proves a retirement.
+
 ## Incremental review: 2026-10-29
 
 ### Native DeepSeek compatibility coverage (#3788)

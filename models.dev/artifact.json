@@ -1,12 +1,12 @@
 {
   "schema_version": 1,
-  "revision": "models-dev-4adab25c2649c5b5dcc43e983d4891125163d558cbbc5db00664facf5629bdc3",
+  "revision": "models-dev-94aeb98e4f87dfa5df3cdfdee97b54647e697cc40564693badeae1a8c876075c",
   "upstream": {
     "source": "models.dev",
-    "revision": "4adab25c2649c5b5dcc43e983d4891125163d558cbbc5db00664facf5629bdc3",
-    "fetched_at": "2026-10-28T21:10:03.305159910+00:00",
-    "content_sha256": "4adab25c2649c5b5dcc43e983d4891125163d558cbbc5db00664facf5629bdc3",
-    "adapter_version": "0.55.0 (20f5e26c-dirty)"
+    "revision": "94aeb98e4f87dfa5df3cdfdee97b54647e697cc40564693badeae1a8c876075c",
+    "fetched_at": "2026-10-29T21:01:30.434818824+00:00",
+    "content_sha256": "94aeb98e4f87dfa5df3cdfdee97b54647e697cc40564693badeae1a8c876075c",
+    "adapter_version": "0.55.0 (330d105b-dirty)"
   },
   "models": [
     {
@@ -12096,8 +12096,8 @@
       "context_window_tokens": 163840,
       "effective_context_window_percent": 95,
       "auto_compact_token_limit": 155648,
-      "default_max_output_tokens": 32768,
-      "max_output_tokens_upper_limit": 32768,
+      "default_max_output_tokens": 147456,
+      "max_output_tokens_upper_limit": 147456,
       "default_verbosity": null,
       "tool_output_truncation_estimated_tokens": 2500,
       "capabilities": {
@@ -12281,8 +12281,8 @@
       "context_window_tokens": 1048576,
       "effective_context_window_percent": 95,
       "auto_compact_token_limit": 996147,
-      "default_max_output_tokens": 384000,
-      "max_output_tokens_upper_limit": 384000,
+      "default_max_output_tokens": 393216,
+      "max_output_tokens_upper_limit": 393216,
       "default_verbosity": null,
       "tool_output_truncation_estimated_tokens": 2500,
       "capabilities": {
@@ -12334,8 +12334,8 @@
       "context_window_tokens": 1048576,
       "effective_context_window_percent": 95,
       "auto_compact_token_limit": 996147,
-      "default_max_output_tokens": 131072,
-      "max_output_tokens_upper_limit": 131072,
+      "default_max_output_tokens": 943718,
+      "max_output_tokens_upper_limit": 943718,
       "default_verbosity": null,
       "tool_output_truncation_estimated_tokens": 2500,
       "capabilities": {
@@ -15011,11 +15011,11 @@
       "model_ref": "openrouter/nvidia/nemotron-3-super-120b-a12b",
       "display_name": "Nemotron 3 Super 120B A12B",
       "description": "Nemotron middle tier for collaborative agents and high-volume reasoning workloads",
-      "context_window_tokens": 262144,
+      "context_window_tokens": 1048576,
       "effective_context_window_percent": 95,
-      "auto_compact_token_limit": 249036,
-      "default_max_output_tokens": 235929,
-      "max_output_tokens_upper_limit": 235929,
+      "auto_compact_token_limit": 996147,
+      "default_max_output_tokens": 262144,
+      "max_output_tokens_upper_limit": 262144,
       "default_verbosity": null,
       "tool_output_truncation_estimated_tokens": 2500,
       "capabilities": {
@@ -18793,34 +18793,6 @@
       "source": "remote_discovered"
     },
     {
-      "model_ref": "openrouter/upstage/solar-pro-3",
-      "display_name": "Solar Pro 3",
-      "description": "Flagship model for demanding analysis, coding, and production agent workflows",
-      "context_window_tokens": 131072,
-      "effective_context_window_percent": 95,
-      "auto_compact_token_limit": 124518,
-      "default_max_output_tokens": 117964,
-      "max_output_tokens_upper_limit": 117964,
-      "default_verbosity": null,
-      "tool_output_truncation_estimated_tokens": 2500,
-      "capabilities": {
-        "agent_turn": true,
-        "parallel_tool_calls": false,
-        "image_input": false,
-        "image_generation": false,
-        "supports_reasoning": true,
-        "interactive_exec": false
-      },
-      "reasoning_effort_options": [
-        "none",
-        "minimal",
-        "low",
-        "medium",
-        "high"
-      ],
-      "source": "remote_discovered"
-    },
-    {
       "model_ref": "openrouter/upstage/solar-pro4",
       "display_name": "Solar Pro 4",
       "description": "Flagship model for demanding analysis, coding, and production agent workflows",
@@ -22271,33 +22243,6 @@
       "reasoning_effort_options": [
         "none",
         "low",
-        "high"
-      ],
-      "source": "remote_discovered"
-    },
-    {
-      "model_ref": "venice/inkling",
-      "display_name": "Inkling",
-      "description": "Multimodal reasoning model for visual analysis, planning, and tool use",
-      "context_window_tokens": 524288,
-      "effective_context_window_percent": 95,
-      "auto_compact_token_limit": 498073,
-      "default_max_output_tokens": 65536,
-      "max_output_tokens_upper_limit": 65536,
-      "default_verbosity": null,
-      "tool_output_truncation_estimated_tokens": 2500,
-      "capabilities": {
-        "agent_turn": true,
-        "parallel_tool_calls": false,
-        "image_input": true,
-        "image_generation": false,
-        "supports_reasoning": true,
-        "interactive_exec": false
-      },
-      "reasoning_effort_options": [
-        "none",
-        "low",
-        "medium",
         "high"
       ],
       "source": "remote_discovered"
