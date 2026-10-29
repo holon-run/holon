@@ -156,6 +156,20 @@ material claims linked to evidence and defaults to draft-only work: it does not
 publish, send outreach, access marketing accounts, spend budget, or change live
 systems without explicit operator approval.
 
+## Website search and AI-answer visibility
+
+`search-visibility-steward` maintains a shared query/page ledger with separate
+organic-search and AI-answer citation baselines, evidence-linked page opportunities,
+content/repair briefs, and implementation/retest records. It starts from supplied
+search exports, approved public pages, and authorized answer samples; private
+accounts, paid monitoring, and automated platform sampling are not prerequisites.
+Brand mentions are not citations, failed samples are not zero-citation answers,
+and API/search-tool results are not consumer-UI measurements. Missing inputs stay
+unmeasured. It defaults to local evidence and drafts, not site edits, publication,
+or crawler-policy changes; approval is not proof of implementation. Marketing
+positioning, product/documentation facts, and app-store operations retain their
+own owners.
+
 ## App Store optimization
 
 `aso-steward` maintains keyword baseline rankings, search trend expansion
