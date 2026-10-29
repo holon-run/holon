@@ -1351,6 +1351,31 @@ mod tests {
 
     use super::*;
 
+    fn append_completed_work_item(storage: &AppStorage, work: &mut WorkItemRecord) {
+        use crate::types::{
+            CompletionReportRequirement, CompletionReportState, WorkItemCompletionIntent,
+        };
+
+        let mut brief =
+            BriefRecord::new(&work.agent_id, BriefKind::Result, "completed", None, None);
+        brief.work_item_id = Some(work.id.clone());
+        storage.append_brief(&brief).unwrap();
+        work.result_brief_id = Some(brief.id.clone());
+        work.completion_intent = Some(WorkItemCompletionIntent {
+            work_item_id: work.id.clone(),
+            source_activation_id: None,
+            source_message_id: None,
+            source_turn_id: None,
+            expected_work_revision: work.revision - 1,
+            report_requirement: CompletionReportRequirement::Required,
+            report_state: CompletionReportState::Bound,
+            result_brief_id: Some(brief.id),
+            created_at: work.updated_at,
+            updated_at: work.updated_at,
+        });
+        storage.append_work_item(work).unwrap();
+    }
+
     fn wait_until(mut condition: impl FnMut() -> bool, label: &str) {
         let started_at = std::time::Instant::now();
         loop {
@@ -3604,7 +3629,7 @@ mod tests {
         work.blocked_by = None;
         work.revision += 1;
         work.updated_at = now + chrono::Duration::seconds(1);
-        storage.append_work_item(&work).unwrap();
+        append_completed_work_item(&storage, &mut work);
 
         let active_for_agent = storage.active_wait_conditions_for_agent("default").unwrap();
         assert_eq!(
@@ -3773,7 +3798,7 @@ mod tests {
         work.state = WorkItemState::Completed;
         work.blocked_by = None;
         work.revision += 1;
-        storage.append_work_item(&work).unwrap();
+        append_completed_work_item(&storage, &mut work);
 
         // The filtered path hides the wait, but the raw path must still find it.
         assert!(storage

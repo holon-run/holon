@@ -94,6 +94,11 @@ fn provider_pause_committed_source_precedes_concurrent_enqueue() {
     run_local_dispatch_scenario(11);
 }
 
+#[test]
+fn operator_claim_revision_race_replans_provider_guard_before_dispatch() {
+    run_local_dispatch_scenario(12);
+}
+
 fn run_local_dispatch_scenario(scenario: u8) {
     let thread = std::thread::Builder::new()
         .stack_size(8 * 1024 * 1024)
@@ -116,6 +121,7 @@ fn run_local_dispatch_scenario(scenario: u8) {
                         9 => cooling_dispatch_rejection_scenario(None, 3).await,
                         10 => cooling_dispatch_rejection_scenario(None, 4).await,
                         11 => cooling_dispatch_rejection_scenario(None, 5).await,
+                        12 => operator_claim_revision_race_scenario().await,
                         _ => unreachable!(),
                     }
                 });
@@ -124,6 +130,112 @@ fn run_local_dispatch_scenario(scenario: u8) {
     if let Err(panic) = thread.join() {
         std::panic::resume_unwind(panic);
     }
+}
+
+async fn operator_claim_revision_race_scenario() {
+    let server = OutageServer::start(false).await;
+    server.healthy.store(true, Ordering::SeqCst);
+    let home = tempfile::tempdir().unwrap();
+    let config = config_with_urls(home.path(), [&server.url, &server.url]);
+    let clock = Arc::new(crate::runtime::clock::TestClock::new(Utc::now()));
+    let runtime = open_runtime_with_clock(home.path(), config, clock);
+    let work = runtime
+        .create_work_item(
+            "operator claim revision race".into(),
+            Some(crate::types::WorkItemPlanStatus::Ready),
+            None,
+            Vec::new(),
+        )
+        .await
+        .unwrap();
+    let mut input = operator();
+    input.work_item_id = Some(work.id.clone());
+    runtime.enqueue(input.clone()).await.unwrap();
+    let old_admission = Arc::new(std::sync::Mutex::new(None));
+    let captured_admission = old_admission.clone();
+    let work_id = work.id.clone();
+    *runtime.inner.claim_snapshot_before_commit.lock().unwrap() =
+        Some(Box::new(move |runtime, admission| {
+            let admission = admission.expect("provider guard must precede the claim");
+            *captured_admission.lock().unwrap() = Some(Arc::downgrade(admission));
+            let mut updated = runtime.runtime_db().work_items().latest(&work_id)?.unwrap();
+            let expected_revision = updated.revision;
+            assert_eq!(
+                admission.attempt.admitted_fences.work_item_source_revision,
+                Some(expected_revision)
+            );
+            updated.revision += 1;
+            updated.objective = "legitimate concurrent writer".into();
+            assert!(runtime
+                .runtime_db()
+                .work_items()
+                .update_expected(&updated, expected_revision)?);
+            Ok(())
+        }));
+    let RunLoopPoll::Message(scheduled) = SchedulerDecisionExecutor::new(&runtime)
+        .poll()
+        .await
+        .unwrap()
+    else {
+        panic!("operator input must be replanned, not consumed by a stale guard");
+    };
+    assert_eq!(scheduled.message.id, input.id);
+    assert!(old_admission
+        .lock()
+        .unwrap()
+        .as_ref()
+        .unwrap()
+        .upgrade()
+        .is_none());
+    let durable = runtime
+        .runtime_db()
+        .work_items()
+        .latest(&work.id)
+        .unwrap()
+        .unwrap();
+    assert_eq!(durable.objective, "legitimate concurrent writer");
+    assert_eq!(
+        scheduled
+            .dispatch_plan
+            .provider_admission
+            .as_ref()
+            .unwrap()
+            .attempt
+            .admitted_fences
+            .work_item_source_revision,
+        Some(durable.revision)
+    );
+    assert_eq!(server.calls.load(Ordering::SeqCst), 0);
+    let started = std::time::Instant::now();
+    let result = runtime
+        .process_message_with_plan_deferred(
+            scheduled.message.clone(),
+            scheduled.dispatch_plan,
+            &scheduled.scheduler_decision,
+        )
+        .await;
+    assert!(result.is_ok(), "{result:?}");
+    runtime
+        .settle_processed_message(scheduled.message, result, started)
+        .await
+        .unwrap();
+    assert_eq!(server.calls.load(Ordering::SeqCst), 1);
+    let execution = runtime
+        .runtime_db()
+        .transitions()
+        .load_execution_protocol_state_if_initialized("default")
+        .unwrap()
+        .unwrap();
+    assert!(!matches!(
+        execution.work_items[&work.id].state,
+        WorkItemExecutionState::NeedsRepair { .. }
+    ));
+    assert!(!runtime
+        .storage()
+        .read_recent_events(256)
+        .unwrap()
+        .iter()
+        .any(|event| event.kind == "provider_dispatch_rejected"));
 }
 
 async fn cooling_dispatch_rejection_scenario(readback_stop: Option<bool>, test_mode: u8) {
@@ -1061,6 +1173,41 @@ async fn local_dispatch_rejection_scenario(with_timeline: bool) {
     assert_ne!(
         protocol.attempts[&attempt_id].state,
         ExecutionAttemptState::Open
+    );
+    let inspection = runtime.inspect_scheduler_repair().await.unwrap();
+    let assessment = inspection
+        .work_items
+        .iter()
+        .find(|assessment| assessment.work_item_id == work.id)
+        .expect("NeedsRepair must have an explicit repair assessment");
+    assert_eq!(
+        assessment.original_attempt_id.as_deref(),
+        Some(attempt_id.as_str())
+    );
+    assert_eq!(assessment.message_id.as_deref(), Some(input.id.as_str()));
+    assert!(!assessment.original_source_restorable);
+    assert!(assessment
+        .refusal_reasons
+        .iter()
+        .any(|reason| reason == "original_exact_wait_not_triggered"));
+    assert!(assessment
+        .refusal_reasons
+        .iter()
+        .any(|reason| { reason == "revision_only_gap_and_zero_side_effects_not_proven" }));
+    assert_eq!(
+        assessment.next_action,
+        "trusted_new_continuation_required_do_not_replay_original"
+    );
+    assert_eq!(
+        runtime
+            .inner
+            .runtime_db
+            .transitions()
+            .load_execution_protocol_state_if_initialized("default")
+            .unwrap()
+            .unwrap(),
+        protocol,
+        "repair inspection must not unlock a lane or rewrite its original source"
     );
     let episode = runtime
         .inner

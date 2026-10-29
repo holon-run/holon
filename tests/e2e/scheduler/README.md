@@ -11,6 +11,28 @@ and runner functions live in the shared Docker E2E infrastructure:
 
 ## Scenario Matrix
 
+### Opt-in timer admission recovery
+
+`scheduler-timer-admission-recovery` is a standalone, stub-only acceptance
+case; it is deliberately absent from `scheduler-required`. Run it with
+`python3 scripts/docker-e2e.py --image <candidate-image> --skip-build --case scheduler-timer-admission-recovery`.
+The deterministic provider drives a real daemon through its production
+admission path: one WorkItem, one 30-second repeating timer, two exact
+`WaitFor(timer)` continuations, two business-todo updates, timer cancellation,
+and WorkItem completion. The harness gracefully stops/restarts the daemon
+only after the first wait is committed. A stopped, read-only database snapshot
+requires zero timer fires, proving both business dispatches happen after restart.
+It polls state barriers rather than sleeping for an estimated dispatch time.
+
+`timer-admission-oracle.json` links each distinct wait and owned timer message
+to its settled canonical attempt, source/generation/admitted fences, consumed
+timer wake, actual provider request evidence, and deterministic stub phase.
+The intermediate snapshot requires the old wait resolved and a different new
+wait active, with only the first todo completed. Final acceptance requires
+both todos and the WorkItem completed, the repeating timer cancelled, and
+zero extra stub requests. Timer fire counts alone never satisfy acceptance;
+SQL snapshots are read-only and do not create business progress.
+
 Cases tagged `e2e-tier-1` in `manifest.json` map to the Tier-1 core
 scheduling scenarios. Existing cases cover additional Tier-1 scenarios
 implicitly.

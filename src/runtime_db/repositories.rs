@@ -124,8 +124,7 @@ impl WorkItemRepository<'_> {
     }
 
     pub fn update_expected(&self, record: &WorkItemRecord, expected_revision: u64) -> Result<bool> {
-        self.db
-            .transaction(|tx| update_expected_work_item_tx(tx, record, expected_revision))
+        self.update_expected_with_index_changes(record, expected_revision, &[])
     }
 
     pub fn update_expected_with_index_changes(
@@ -134,13 +133,31 @@ impl WorkItemRepository<'_> {
         expected_revision: u64,
         changes: &[RuntimeIndexChange],
     ) -> Result<bool> {
-        self.db.transaction(|tx| {
-            let updated = update_expected_work_item_tx(tx, record, expected_revision)?;
-            if updated {
-                insert_runtime_index_changes_tx(tx, changes)?;
-            }
-            Ok(updated)
-        })
+        // Public record writers must preserve canonical execution authority too.
+        // The raw transaction helper is only for composed transitions.
+        use crate::runtime_db::transitions::{
+            ExecutionProtocolTransition, WorkItemMutation, WorkItemTransitionCommand,
+        };
+        Ok(self
+            .db
+            .transitions()
+            .commit_work_item_with_execution_protocol(
+                &WorkItemTransitionCommand {
+                    agent_id: record.agent_id.clone(),
+                    mutation: WorkItemMutation::Update {
+                        record: record.clone(),
+                        expected_revision,
+                    },
+                    agent_state: None,
+                    brief_evidence: Vec::new(),
+                    audit_events: Vec::new(),
+                    index_changes: changes.to_vec(),
+                    notify_scheduler: false,
+                    fault: None,
+                },
+                &ExecutionProtocolTransition::default(),
+            )?
+            .applied)
     }
 
     pub fn latest(&self, work_item_id: &str) -> Result<Option<WorkItemRecord>> {
@@ -3287,10 +3304,26 @@ impl TimerRepository<'_> {
             };
 
             let mut result = TimerWakeRecoveryResult::default();
-            let mut wakes_by_timer = pending_wakes
-                .into_iter()
-                .map(|(timer_id, message_id, fire_count)| (timer_id, (message_id, fire_count)))
-                .collect::<BTreeMap<_, _>>();
+            let mut wakes_by_timer = BTreeMap::new();
+            for (timer_id, message_id, fire_count) in pending_wakes {
+                let entry = tx
+                    .query_row(
+                        "SELECT payload_json FROM queue_entries
+                         WHERE agent_id = ?1 AND message_id = ?2",
+                        params![agent_id, message_id],
+                        |row| row.get::<_, String>(0),
+                    )
+                    .optional()?
+                    .map(|payload| decode_queue_entry_payload(&payload))
+                    .transpose()?;
+                if let Some(entry) = entry {
+                    if retire_terminal_timer_wake_tx(tx, &entry, recovered_at)? {
+                        result.invalidated_wakes += 1;
+                        continue;
+                    }
+                }
+                wakes_by_timer.insert(timer_id, (message_id, fire_count));
+            }
             let mut messages_by_timer =
                 BTreeMap::<String, Vec<(QueueEntryRecord, MessageEnvelope)>>::new();
             for (entry, message) in live_messages {
@@ -3309,6 +3342,21 @@ impl TimerRepository<'_> {
                     matches!(timer.status, TimerStatus::Active | TimerStatus::Completed)
                 });
                 let existing_wake = wakes_by_timer.remove(&timer_id);
+                let mut first_recoverable = None;
+                if timer_accepts_wake && existing_wake.is_none() {
+                    for (index, (_, message)) in messages.iter().enumerate() {
+                        let cancelled = tx.query_row(
+                            "SELECT EXISTS(SELECT 1 FROM timer_wakes
+                             WHERE timer_id = ?1 AND message_id = ?2 AND status = 'cancelled')",
+                            params![timer_id, message.id],
+                            |row| row.get::<_, bool>(0),
+                        )?;
+                        if !cancelled {
+                            first_recoverable = Some(index);
+                            break;
+                        }
+                    }
+                }
                 let keep_index = if timer_accepts_wake {
                     existing_wake
                         .as_ref()
@@ -3317,13 +3365,17 @@ impl TimerRepository<'_> {
                                 .iter()
                                 .position(|(_, message)| message.id == *message_id)
                         })
-                        .or(Some(0))
+                        .or(first_recoverable)
                 } else {
                     None
                 };
 
                 for (index, (mut entry, _)) in messages.iter().cloned().enumerate() {
                     if Some(index) == keep_index {
+                        continue;
+                    }
+                    if timer_message_has_unsettled_consumption_tx(tx, agent_id, &entry.message_id)?
+                    {
                         continue;
                     }
                     entry.status = QueueEntryStatus::Dropped;
@@ -3342,14 +3394,6 @@ impl TimerRepository<'_> {
                             result.retained_wakes += 1;
                             continue;
                         }
-                        if existing_wake.is_some() {
-                            result.invalidated_wakes += tx.execute(
-                                "UPDATE timer_wakes
-                                 SET status = 'cancelled', updated_at = ?2, cancelled_at = ?2
-                                 WHERE timer_id = ?1 AND status = 'pending'",
-                                params![timer_id, timestamp(recovered_at)],
-                            )?;
-                        }
                         let fire_count = message
                             .metadata
                             .as_ref()
@@ -3366,7 +3410,7 @@ impl TimerRepository<'_> {
                             "UPDATE timer_wakes
                              SET status = 'pending', fire_count = ?3, updated_at = ?4,
                                  incorporated_at = NULL, cancelled_at = NULL
-                             WHERE timer_id = ?1 AND message_id = ?2 AND status != 'pending'",
+                             WHERE timer_id = ?1 AND message_id = ?2 AND status = 'incorporated'",
                             params![timer_id, message.id, fire_count as i64, now],
                         )?;
                         if reactivated > 0 {
@@ -3383,26 +3427,23 @@ impl TimerRepository<'_> {
                         result.created_wakes += 1;
                     }
                     None => {
-                        if existing_wake.is_some() {
-                            result.invalidated_wakes += tx.execute(
-                                "UPDATE timer_wakes
-                                 SET status = 'cancelled', updated_at = ?2, cancelled_at = ?2
-                                 WHERE timer_id = ?1 AND status = 'pending'",
-                                params![timer_id, timestamp(recovered_at)],
+                        if let Some((message_id, fire_count)) = existing_wake {
+                            let retained = tx.query_row(
+                                "SELECT EXISTS(SELECT 1 FROM timer_wakes
+                                 WHERE timer_id = ?1 AND message_id = ?2
+                                   AND fire_count = ?3 AND status = 'pending')",
+                                params![timer_id, message_id, fire_count],
+                                |row| row.get::<_, bool>(0),
                             )?;
+                            result.retained_wakes += usize::from(retained);
+                            result.invalidated_wakes += usize::from(!retained);
                         }
                     }
                 }
             }
 
-            for (timer_id, _) in wakes_by_timer {
-                result.invalidated_wakes += tx.execute(
-                    "UPDATE timer_wakes
-                     SET status = 'cancelled', updated_at = ?2, cancelled_at = ?2
-                     WHERE timer_id = ?1 AND status = 'pending'",
-                    params![timer_id, timestamp(recovered_at)],
-                )?;
-            }
+            // Absence from the queued/interrupted scan is not proof of terminality.
+            result.retained_wakes += wakes_by_timer.len();
             let cancelled_timers = {
                 let mut statement = tx.prepare(
                     "SELECT t.payload_json FROM timers t
@@ -6053,6 +6094,128 @@ fn cancel_stale_unresolved_wait_owner_rows_tx(
     Ok(())
 }
 
+fn timer_message_has_unsettled_consumption_tx(
+    tx: &Transaction<'_>,
+    agent_id: &str,
+    message_id: &str,
+) -> Result<bool> {
+    // A triggered wait alone is not consumption. Its admitted attempt/turn is
+    // the responsibility fence; dropping an unadmitted tick must not resolve
+    // the wait or remove its independent business blocker.
+    tx.query_row(
+        "SELECT
+           EXISTS(SELECT 1 FROM provider_queue_parking
+             WHERE agent_id = ?1 AND message_id = ?2)
+           OR EXISTS(
+             SELECT 1 FROM execution_protocol_attempts a
+             WHERE a.agent_id = ?1
+               AND a.lifecycle_state IN ('open', 'interrupted', 'protocol_violation')
+               AND (json_extract(a.payload_json, '$.source_message_id') = ?2
+                 OR json_extract(a.source_identity_json, '$.message_id') = ?2
+                 OR json_extract(a.source_identity_json, '$.trigger_message_id') = ?2
+                 OR EXISTS(
+                   SELECT 1 FROM wait_conditions w
+                   WHERE w.agent_id = a.agent_id AND w.trigger_message_id = ?2
+                     AND w.wait_condition_id =
+                       json_extract(a.source_identity_json, '$.wait_id'))))
+           OR EXISTS(
+             SELECT 1 FROM turn_records t
+             WHERE t.agent_id = ?1
+               AND (t.terminal_kind IS NULL OR t.terminal_kind = 'interrupted')
+               AND (t.trigger_message_id = ?2
+                 OR EXISTS(SELECT 1 FROM json_each(t.payload_json, '$.input_message_ids')
+                   WHERE value = ?2)
+                 OR EXISTS(SELECT 1 FROM json_each(t.payload_json, '$.idle_input_batch.items')
+                   WHERE json_extract(value, '$.message_id') = ?2)
+                 OR EXISTS(
+                   SELECT 1 FROM json_each(t.payload_json, '$.live_input_batches') b,
+                     json_each(b.value, '$.items') i
+                   WHERE json_extract(i.value, '$.message_id') = ?2)))",
+        params![agent_id, message_id],
+        |row| row.get(0),
+    )
+    .map_err(Into::into)
+}
+
+pub(crate) fn retire_terminal_timer_wake_tx(
+    tx: &Transaction<'_>,
+    entry: &QueueEntryRecord,
+    retired_at: DateTime<Utc>,
+) -> Result<bool> {
+    if !is_terminal_queue_entry_status(&entry.status) {
+        return Ok(false);
+    }
+    let wake = tx
+        .query_row(
+            "SELECT w.timer_id, w.fire_count, m.payload_json
+             FROM timer_wakes w
+             JOIN timers t ON t.timer_id = w.timer_id
+             JOIN messages m ON m.message_id = w.message_id
+             JOIN queue_entries q ON q.message_id = w.message_id
+             WHERE w.message_id = ?1 AND w.status = 'pending'
+               AND t.agent_id = ?2 AND m.agent_id = ?2 AND q.agent_id = ?2
+               AND q.payload_json = ?3 AND q.status = ?4",
+            params![
+                entry.message_id,
+                entry.agent_id,
+                serde_json::to_string(entry)?,
+                enum_string(&entry.status)?
+            ],
+            |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, i64>(1)?,
+                    row.get::<_, String>(2)?,
+                ))
+            },
+        )
+        .optional()?;
+    let Some((timer_id, fire_count, message_payload)) = wake else {
+        return Ok(false);
+    };
+    let message = decode_message_payload(&message_payload)?;
+    if message.id != entry.message_id
+        || message.agent_id != entry.agent_id
+        || !matches!(&message.origin, MessageOrigin::Timer { timer_id: id } if id == &timer_id)
+        || message
+            .metadata
+            .as_ref()
+            .and_then(|metadata| metadata.get("timer_fire_count"))
+            .is_some_and(|count| count.as_u64() != Some(fire_count as u64))
+        || timer_message_has_unsettled_consumption_tx(tx, &entry.agent_id, &entry.message_id)?
+    {
+        return Ok(false);
+    }
+    let changed = tx.execute(
+        "UPDATE timer_wakes
+         SET status = 'cancelled', updated_at = MAX(updated_at, ?4), cancelled_at = ?4
+         WHERE timer_id = ?1 AND message_id = ?2 AND fire_count = ?3 AND status = 'pending'",
+        params![
+            timer_id,
+            entry.message_id,
+            fire_count,
+            timestamp(retired_at.max(entry.updated_at))
+        ],
+    )?;
+    if changed == 1 {
+        append_audit_event_tx(
+            tx,
+            Some(&entry.agent_id),
+            &AuditEvent::legacy(
+                "timer_wake_terminal_retired",
+                serde_json::json!({
+                    "timer_id": timer_id,
+                    "message_id": entry.message_id,
+                    "fire_count": fire_count,
+                    "queue_status": entry.status,
+                    "reason": "terminal_source_without_unsettled_consumption",
+                }),
+            ),
+        )?;
+    }
+    Ok(changed == 1)
+}
+
 pub(crate) fn upsert_queue_entry_tx(
     tx: &Transaction<'_>,
     record: &QueueEntryRecord,
@@ -6105,6 +6268,7 @@ pub(crate) fn upsert_queue_entry_tx(
         ],
     )?;
     if changed == 1 {
+        retire_terminal_timer_wake_tx(tx, record, record.updated_at)?;
         let assigned_turn_id = assigned_turn_id_tx(tx, &record.agent_id, &record.message_id)?;
         let _ = bump_source_revision_tx(
             tx,
@@ -6172,6 +6336,7 @@ pub(crate) fn compare_and_set_queue_entry_tx(
         ],
     )?;
     if changed == 1 {
+        retire_terminal_timer_wake_tx(tx, record, record.updated_at)?;
         let assigned_turn_id = assigned_turn_id_tx(tx, &record.agent_id, &record.message_id)?;
         let _ = bump_source_revision_tx(
             tx,

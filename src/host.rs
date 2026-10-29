@@ -3111,6 +3111,12 @@ impl RuntimeHost {
             }
         }
         Ok(SchedulerRepairInspection {
+            work_items: crate::runtime::work_item_repair_assessments(
+                &storage,
+                self.runtime_db(),
+                agent_id,
+            )
+            .map_err(PublicAgentError::Runtime)?,
             agent_id: agent_id.to_string(),
             active_waits,
             wake_only_queue_entries,

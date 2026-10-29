@@ -108,7 +108,7 @@ pub(super) fn validate_execution_commands_tx(
             validate_register_work_item(tx, agent_id, command, work_item_mutations)?;
         }
         if let ExecutionProtocolCommand::AdvanceWorkItemSourceRevision(command) = command {
-            validate_work_item_source_revision_advance(command, work_item_mutations)?;
+            validate_work_item_source_revision_advance(tx, agent_id, command, work_item_mutations)?;
         }
         if let ExecutionProtocolCommand::RecoverInterruptedTaskResultClaim(command) = command {
             validate_recover_interrupted_task_result_claim(tx, agent_id, command)?;
@@ -160,6 +160,118 @@ pub(super) fn validate_execution_commands_tx(
         initialized_partition,
         results,
     }))
+}
+
+pub(super) fn validate_model_queue_claim_tx(
+    tx: &Transaction<'_>,
+    agent_id: &str,
+    message_id: &str,
+    prepared: Option<&PreparedExecutionProtocolCommands>,
+    mutations: &[WorkItemMutation],
+) -> Result<()> {
+    let Some(prepared) = prepared else {
+        return Ok(());
+    };
+    // Reducer-only claims may admit and settle in the same transaction.
+    let Some(attempt) = prepared.state.open_attempt().filter(|attempt| {
+        attempt.source_message_id.as_deref() == Some(message_id)
+            && prepared.results.iter().any(|result| {
+                result.command_kind == "admit_execution"
+                    && result.command_identity == attempt.attempt_id
+            })
+    }) else {
+        return Ok(());
+    };
+    // A bootstrap can already include this transaction's final owner revision;
+    // only a persisted partition is evidence of the pre-claim snapshot.
+    let initial_work_items = if prepared.initialized_partition {
+        BTreeMap::new()
+    } else {
+        load_state_tx(tx, agent_id)?.work_items
+    };
+    validate_work_item_admission_snapshot_tx(
+        tx,
+        agent_id,
+        &initial_work_items,
+        &prepared.state,
+        attempt,
+        mutations,
+    )
+}
+
+fn validate_work_item_admission_snapshot_tx(
+    tx: &Transaction<'_>,
+    agent_id: &str,
+    initial_work_items: &BTreeMap<String, execution_protocol::WorkItemExecutionRecord>,
+    final_state: &ExecutionProtocolState,
+    attempt: &ExecutionAttempt,
+    mutations: &[WorkItemMutation],
+) -> Result<()> {
+    let execution_protocol::ExecutionBinding::WorkItem { work_item_id } = &attempt.binding else {
+        return Ok(());
+    };
+    let durable = tx
+        .query_row(
+            "SELECT payload_json FROM work_items WHERE work_item_id = ?1",
+            [work_item_id],
+            |row| row.get::<_, String>(0),
+        )
+        .optional()?
+        .map(|payload| serde_json::from_str::<crate::types::WorkItemRecord>(&payload))
+        .transpose()?;
+    // Existing drift in either direction is not evidence of a legal writer.
+    // Only this transaction's validated mutations may advance the snapshot.
+    if let Some(initial) = initial_work_items.get(work_item_id) {
+        if let Some(durable_record) = durable.as_ref() {
+            if initial.source_revision != durable_record.revision {
+                bail!(
+                    "WorkItem admission requires an aligned initial snapshot: \
+                     work_item={work_item_id}, source={}, durable={}",
+                    initial.source_revision,
+                    durable_record.revision
+                );
+            }
+        }
+    }
+    let final_work_item = mutations
+        .iter()
+        .rev()
+        .map(WorkItemMutation::record)
+        .find(|record| record.id == *work_item_id)
+        .or(durable.as_ref())
+        .ok_or_else(|| anyhow!("WorkItem admission requires a durable owner"))?;
+    if final_work_item.id != *work_item_id
+        || final_work_item.agent_id != agent_id
+        || final_work_item.state != crate::types::WorkItemState::Open
+        || attempt.agent_id != agent_id
+    {
+        bail!("WorkItem admission requires its open transaction owner");
+    }
+    let execution = final_state
+        .work_items
+        .get(work_item_id)
+        .ok_or_else(|| anyhow!("WorkItem admission requires canonical owner authority"))?;
+    if final_work_item.revision == 0
+        || execution.source_revision != final_work_item.revision
+        || attempt.admitted_fences.work_item_source_revision != Some(final_work_item.revision)
+    {
+        bail!(
+            "WorkItem admission final revision mismatch: work_item={work_item_id}, \
+             durable={}, source={}, admitted={:?}",
+            final_work_item.revision,
+            execution.source_revision,
+            attempt.admitted_fences.work_item_source_revision
+        );
+    }
+    if !matches!(
+        &execution.state,
+        WorkItemExecutionState::InFlight { generation, attempt_id }
+            if attempt_id == &attempt.attempt_id
+                && Some(*generation) == attempt.admitted_fences.work_item_generation
+    ) {
+        bail!("WorkItem admission does not own its final execution generation");
+    }
+    Ok(())
 }
 
 pub(super) fn synchronize_work_item_revisions_tx(
@@ -254,6 +366,18 @@ pub(super) fn synchronize_work_item_revisions_tx(
             }
             continue;
         };
+        let durable_revision: u64 = tx.query_row(
+            "SELECT revision FROM work_items WHERE work_item_id = ?1 AND agent_id = ?2",
+            [&record.id, agent_id],
+            |row| row.get(0),
+        )?;
+        if authoritative.source_revision != durable_revision {
+            bail!(
+                "WorkItem execution source revision {} does not match durable revision {}",
+                authoritative.source_revision,
+                durable_revision
+            );
+        }
         if authoritative.source_revision == record.revision {
             continue;
         }
@@ -652,23 +776,49 @@ fn validate_register_work_item(
 }
 
 fn validate_work_item_source_revision_advance(
+    tx: &Transaction<'_>,
+    agent_id: &str,
     command: &execution_protocol::AdvanceWorkItemSourceRevision,
     mutations: &[WorkItemMutation],
 ) -> Result<()> {
-    let Some(record) = mutations.iter().find_map(|mutation| match mutation {
-        WorkItemMutation::Update { record, .. }
-            if record.id == command.work_item_id && record.revision == command.source_revision =>
+    let atomic_record = mutations.iter().find_map(|mutation| match mutation {
+        WorkItemMutation::Update {
+            record,
+            expected_revision,
+        } if record.id == command.work_item_id
+            && record.agent_id == agent_id
+            && *expected_revision == command.expected_source_revision
+            && record.revision == command.source_revision =>
         {
             Some(record)
         }
         _ => None,
-    }) else {
-        bail!("WorkItem source revision advance requires an atomic WorkItem update");
-    };
-    if record.agent_id.is_empty() {
-        bail!("WorkItem source revision advance does not match its atomic WorkItem update");
+    });
+    let durable = tx
+        .query_row(
+            "SELECT payload_json FROM work_items WHERE work_item_id = ?1 AND agent_id = ?2",
+            [command.work_item_id.as_str(), agent_id],
+            |row| row.get::<_, String>(0),
+        )
+        .optional()?
+        .map(|payload| serde_json::from_str::<crate::types::WorkItemRecord>(&payload))
+        .transpose()?;
+    if atomic_record.is_some()
+        && durable
+            .as_ref()
+            .is_some_and(|record| record.revision == command.expected_source_revision)
+    {
+        return Ok(());
     }
-    Ok(())
+    bail!(
+        "WorkItem source revision advance requires an atomic WorkItem update: \
+         work_item={}, expected={}, next={}, durable={:?}, atomic_update={}",
+        command.work_item_id,
+        command.expected_source_revision,
+        command.source_revision,
+        durable.as_ref().map(|record| record.revision),
+        atomic_record.is_some()
+    )
 }
 
 fn validate_set_work_item_readiness(
@@ -1554,6 +1704,276 @@ mod tests {
         );
         identity.status = AgentRegistryStatus::Active;
         db.agent_identities().upsert(&identity)?;
+        Ok(())
+    }
+
+    fn work_item_claim_fixture(
+        db: &RuntimeDb,
+        revision: u64,
+    ) -> Result<(
+        crate::types::WorkItemRecord,
+        ExecutionProtocolState,
+        ExecutionAttempt,
+    )> {
+        use crate::domain::execution_protocol::*;
+
+        let agent_id = "agent-model-claim";
+        setup_agent(db, agent_id)?;
+        let work = crate::types::WorkItemRecord::new(
+            agent_id,
+            "claim snapshot",
+            crate::types::WorkItemState::Open,
+        );
+        assert!(db.work_items().insert_new(&work)?);
+        let mut state = ExecutionProtocolState::empty(agent_id);
+        state.work_items.insert(
+            work.id.clone(),
+            WorkItemExecutionRecord {
+                source_revision: revision,
+                state: WorkItemExecutionState::Runnable {
+                    generation: 1,
+                    recovery_ref: None,
+                },
+            },
+        );
+        let fences = db.transitions().load_execution_authority_fences(agent_id)?;
+        let attempt = ExecutionAttempt {
+            attempt_id: "attempt-model-claim".into(),
+            agent_id: agent_id.into(),
+            source_message_id: Some("message-model-claim".into()),
+            input_projection: None,
+            source: ExecutionSource {
+                identity: ExecutionSourceIdentity::QueueMessage {
+                    message_id: "message-model-claim".into(),
+                },
+                generation: 1,
+            },
+            binding: ExecutionBinding::WorkItem {
+                work_item_id: work.id.clone(),
+            },
+            provenance: ExecutionProvenance {
+                origin: ExecutionOrigin::Operator,
+                trust: ExecutionTrust::OperatorInstruction,
+                priority: ExecutionPriority::Normal,
+                correlation_id: None,
+                causation_id: None,
+            },
+            admitted_fences: AdmittedFences {
+                source_revision: 1,
+                work_item_source_revision: Some(revision),
+                work_item_generation: Some(1),
+                rejoin: None,
+                agent_control_revision: fences.agent_control_revision,
+                host_registry_revision: fences.host_registry_revision,
+            },
+            state: ExecutionAttemptState::Open,
+            run_id: None,
+            turn_id: None,
+            recovery_of_attempt_id: None,
+            terminal_outcome_id: None,
+            admitted_at: Utc::now().to_rfc3339(),
+            terminal_at: None,
+        };
+        Ok((work, state, attempt))
+    }
+
+    #[test]
+    fn source_revision_advance_requires_same_transaction_revision_chain() -> Result<()> {
+        for case in [
+            "valid",
+            "no_mutation",
+            "wrong_base",
+            "wrong_owner",
+            "already_durable",
+        ] {
+            let home = tempdir()?;
+            let db = RuntimeDb::open_and_migrate(
+                home.path().join("state/runtime.sqlite"),
+                home.path().join("state/runtime.lock"),
+            )?;
+            let (work, _, _) = work_item_claim_fixture(&db, 1)?;
+            let mut updated = work.clone();
+            updated.revision += 1;
+            if case == "already_durable" {
+                assert!(db.work_items().update_expected(&updated, work.revision)?);
+            }
+            if case == "wrong_owner" {
+                updated.agent_id = "other-agent".into();
+            }
+            let mutations = if case == "no_mutation" {
+                Vec::new()
+            } else {
+                vec![WorkItemMutation::Update {
+                    record: updated,
+                    expected_revision: if case == "wrong_base" {
+                        0
+                    } else {
+                        work.revision
+                    },
+                }]
+            };
+            let advance = execution_protocol::AdvanceWorkItemSourceRevision {
+                command_id: "test-advance".into(),
+                work_item_id: work.id.clone(),
+                expected_source_revision: work.revision,
+                source_revision: work.revision + 1,
+            };
+            let result = db.transaction(|tx| {
+                validate_work_item_source_revision_advance(tx, &work.agent_id, &advance, &mutations)
+            });
+            assert_eq!(result.is_ok(), case == "valid", "{case}: {result:?}");
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn model_queue_claim_allows_same_transaction_admit_and_settle() -> Result<()> {
+        use crate::domain::execution_protocol::*;
+
+        for initialized in [false, true] {
+            for outcome in [
+                WorkItemOutcome::Continue,
+                WorkItemOutcome::Wait {
+                    wait: WaitReference {
+                        wait_id: "wait-model-claim".into(),
+                    },
+                },
+                WorkItemOutcome::Complete {
+                    completion: "completed without model dispatch".into(),
+                },
+                WorkItemOutcome::NeedsRepair {
+                    repair_id: "repair-model-claim".into(),
+                },
+            ] {
+                let home = tempdir()?;
+                let db = RuntimeDb::open_and_migrate(
+                    home.path().join("state/runtime.sqlite"),
+                    home.path().join("state/runtime.lock"),
+                )?;
+                let (work, bootstrap, attempt) = work_item_claim_fixture(&db, 1)?;
+                if initialized {
+                    db.transaction(|tx| persist_state_tx(tx, &bootstrap))?;
+                }
+                let commands = [
+                    ExecutionProtocolCommand::Admit(Box::new(AdmitExecution {
+                        attempt: attempt.clone(),
+                    })),
+                    ExecutionProtocolCommand::Settle(SettleExecution {
+                        outcome: ExecutionOutcomeRecord {
+                            outcome_id: "outcome-model-claim".into(),
+                            attempt_id: attempt.attempt_id.clone(),
+                            outcome: ExecutionOutcome::WorkItem(outcome),
+                            created_at: Utc::now().to_rfc3339(),
+                        },
+                    }),
+                ];
+                db.transaction(|tx| {
+                    let prepared = validate_execution_commands_tx(
+                        tx,
+                        &work.agent_id,
+                        Some(&bootstrap),
+                        &commands,
+                        &[],
+                        &[],
+                        &[],
+                    )?;
+                    validate_model_queue_claim_tx(
+                        tx,
+                        &work.agent_id,
+                        attempt.source_message_id.as_deref().unwrap(),
+                        prepared.as_ref(),
+                        &[],
+                    )?;
+                    persist_execution_commands_tx(tx, prepared)
+                })?;
+                let state = db
+                    .transitions()
+                    .load_execution_protocol_state_if_initialized(&work.agent_id)?
+                    .unwrap();
+                assert_eq!(
+                    state.attempts[&attempt.attempt_id].state,
+                    ExecutionAttemptState::Settled
+                );
+                assert!(state.open_attempt().is_none());
+                assert!(!matches!(
+                    state.work_items[&work.id].state,
+                    WorkItemExecutionState::InFlight { .. }
+                ));
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn model_queue_claim_bootstrap_validates_final_mutation_revision() -> Result<()> {
+        use crate::domain::execution_protocol::*;
+
+        for admitted_revision in [1, 2, 3] {
+            let home = tempdir()?;
+            let db = RuntimeDb::open_and_migrate(
+                home.path().join("state/runtime.sqlite"),
+                home.path().join("state/runtime.lock"),
+            )?;
+            let (work, bootstrap, attempt) = work_item_claim_fixture(&db, admitted_revision)?;
+            let mut updated = work.clone();
+            updated.revision = 2;
+            let mutations = [WorkItemMutation::Update {
+                record: updated.clone(),
+                expected_revision: work.revision,
+            }];
+            let commands = [ExecutionProtocolCommand::Admit(Box::new(AdmitExecution {
+                attempt: attempt.clone(),
+            }))];
+            let result = db.transaction(|tx| {
+                let prepared = validate_execution_commands_tx(
+                    tx,
+                    &work.agent_id,
+                    Some(&bootstrap),
+                    &commands,
+                    &mutations,
+                    &[],
+                    &[],
+                )?;
+                validate_model_queue_claim_tx(
+                    tx,
+                    &work.agent_id,
+                    attempt.source_message_id.as_deref().unwrap(),
+                    prepared.as_ref(),
+                    &mutations,
+                )?;
+                assert!(
+                    crate::runtime_db::repositories::update_expected_work_item_tx(
+                        tx,
+                        &updated,
+                        work.revision,
+                    )?
+                );
+                persist_execution_commands_tx(tx, prepared)
+            });
+            if admitted_revision == updated.revision {
+                result?;
+                let state = db
+                    .transitions()
+                    .load_execution_protocol_state_if_initialized(&work.agent_id)?
+                    .unwrap();
+                assert_eq!(state.work_items[&work.id].source_revision, updated.revision);
+                assert_eq!(
+                    db.work_items().latest(&work.id)?.unwrap().revision,
+                    updated.revision,
+                );
+                assert!(state.open_attempt().is_some());
+            } else {
+                assert!(result
+                    .unwrap_err()
+                    .to_string()
+                    .contains("final revision mismatch"));
+                assert!(db
+                    .transitions()
+                    .load_execution_protocol_state_if_initialized(&work.agent_id)?
+                    .is_none());
+                assert_eq!(db.work_items().latest(&work.id)?.unwrap(), work);
+            }
+        }
         Ok(())
     }
 
