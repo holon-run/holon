@@ -52,6 +52,10 @@ Use [Reference](../reference/) for complete command syntax and schemas.
   Choose a child or peer, hand off committed revisions for review, verify results, and clean up owned children.
   <!-- mdorigin:index kind=article -->
 
+- [Build an AI Agent ecosystem researcher for multi-repo research](./build-agent-ecosystem-researcher.md)
+  Reuse the Research Steward template and multi-workspace mechanism. Learn the autonomous knowledge base design, auto-clone workspace attach, concise task prompts, and mobile link sharing workflows.
+  <!-- mdorigin:index kind=article -->
+
 - [Run a GitHub task with holon solve](./run-github-task.md)
   Scope an issue, review, or PR fix; run it once; then verify its artifacts and GitHub side effects.
   <!-- mdorigin:index kind=article -->
