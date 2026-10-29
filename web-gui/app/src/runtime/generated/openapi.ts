@@ -7326,6 +7326,27 @@ export interface components {
                 /** Format: date-time */
                 updated_at: string;
             }[];
+            work_items: {
+                /** Format: uint64 */
+                admitted_revision?: number | null;
+                /** Format: uint64 */
+                durable_revision?: number | null;
+                /** Format: uint64 */
+                generation: number;
+                message_id?: string | null;
+                next_action: string;
+                original_attempt_id?: string | null;
+                original_source_restorable: boolean;
+                queue_status?: (("queued" | "dequeued" | "processed" | "interjected" | "aborted" | "dropped" | "quarantined") | "interrupted") | null;
+                refusal_reasons: string[];
+                repair_id: string;
+                /** Format: uint64 */
+                source_revision: number;
+                wait_id?: string | null;
+                /** @enum {string|null} */
+                wait_status?: "active" | "triggered" | "resolved" | "cancelled" | "expired" | null;
+                work_item_id: string;
+            }[];
         };
         /** SchedulerRepairRequest */
         SchedulerRepairRequest: {
