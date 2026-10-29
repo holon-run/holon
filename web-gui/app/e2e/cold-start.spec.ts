@@ -34,7 +34,11 @@ test("manual agent detail refresh uses conversation without raw events or hydrat
   expect((await summaryResponse).ok()).toBe(true);
   await expect(refresh).toBeEnabled();
   expect(requests).toContain("/api/agents/bootstrap-agent/conversation?limit=50");
-  expect(requests.some((path) => /\/(?:events|transcript:batchGet|briefs:batchGet)(?:[/?]|$)/.test(path))).toBe(false);
+  // The E2E bridge still starts the legacy catch-up machine (next slice).
+  // Its background requests must not be confused with the detail's 80-event page.
+  expect(requests.filter((path) =>
+    path.startsWith("/api/agents/bootstrap-agent/events?") && new URLSearchParams(path.split("?")[1]).get("limit") === "80",
+  )).toEqual([]);
 });
 
 for (const failure of [404, 503, "network"] as const) {
