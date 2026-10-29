@@ -267,10 +267,11 @@ struct RequestState {
     dispatch: Option<ProviderRecoveryDispatch>,
     unknown_dispatch: bool,
     dispatched: bool,
-    /// The in-flight dispatch is a continuation form with a prepared lossless
-    /// replay; its contract rejection is adapter-correctable, not candidate
-    /// fatal. Consumed by the next `after_request` settlement.
-    lossless_replay_dispatch: bool,
+    /// The in-flight dispatch's contract rejection is adapter-correctable
+    /// in-turn (a prepared lossless replay or an auxiliary probe the adapter
+    /// can skip); it is not candidate fatal. Consumed by the next
+    /// `after_request` settlement.
+    adapter_correctable_dispatch: bool,
     side_effect_boundary: bool,
 }
 
@@ -401,9 +402,9 @@ impl Drop for ProviderTurnAdmission {
 }
 
 impl ProviderDispatchGuard for ProviderTurnAdmission {
-    fn declare_lossless_replay_dispatch(&self) {
+    fn declare_adapter_correctable_dispatch(&self) {
         if let Ok(mut state) = self.state.lock() {
-            state.lossless_replay_dispatch = true;
+            state.adapter_correctable_dispatch = true;
         }
     }
 
@@ -499,8 +500,8 @@ impl ProviderDispatchGuard for ProviderTurnAdmission {
         let Some(dispatch) = state.dispatch.take() else {
             return Ok(()); // Local construction or the final guard rejected IO.
         };
-        let lossless_replay_dispatch = state.lossless_replay_dispatch;
-        state.lossless_replay_dispatch = false;
+        let adapter_correctable_dispatch = state.adapter_correctable_dispatch;
+        state.adapter_correctable_dispatch = false;
         let lease = state
             .lease
             .take()
@@ -569,10 +570,12 @@ impl ProviderDispatchGuard for ProviderTurnAdmission {
                         &self.candidate.rate_limit,
                         ProviderCooldownPolicy::Credential,
                     )),
-                    ProviderFailureKind::ContractError if lossless_replay_dispatch => {
-                        // The adapter is about to replay this inference without
-                        // the rejected continuation form; consuming the
-                        // candidate here would block that same-turn replay.
+                    ProviderFailureKind::ContractError if adapter_correctable_dispatch => {
+                        // The adapter corrects this rejection in-turn: a
+                        // lossless replay without the rejected continuation
+                        // form, or skipping a rejected auxiliary probe. So
+                        // consuming the candidate would block the corrected
+                        // same-turn send.
                         None
                     }
                     ProviderFailureKind::ContractError => {
@@ -1205,7 +1208,7 @@ impl RuntimeHandle {
                                 dispatch: None,
                                 unknown_dispatch: false,
                                 dispatched: false,
-                                lossless_replay_dispatch: false,
+                                adapter_correctable_dispatch: false,
                                 side_effect_boundary: episode.side_effect_boundary,
                             }),
                             input_fence: Mutex::new(None),

@@ -653,7 +653,7 @@ impl AgentProvider for OpenAiProvider {
             && plan.fallback_replay.is_some()
         {
             if let Some(guard) = request.dispatch_guard.as_deref() {
-                guard.declare_lossless_replay_dispatch();
+                guard.declare_adapter_correctable_dispatch();
             }
         }
         let parsed = match send_openai_responses_for_contract(

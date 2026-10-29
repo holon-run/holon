@@ -867,6 +867,14 @@ pub(in super::super) async fn send_openai_compact_request(
             request = request.header(name, value);
         }
 
+        // The compact probe is auxiliary: callers treat its contract
+        // rejections (unsupported endpoint, non-persisted item ids) as
+        // graceful skip signals, so they must not cool down or consume the
+        // candidate ahead of the main inference dispatch.
+        if let Some(guard) = dispatch_guard {
+            guard.declare_adapter_correctable_dispatch();
+        }
+
         let response = send_openai_request(
             request.json(&body),
             "OpenAI compact request failed",
