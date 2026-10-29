@@ -210,7 +210,7 @@ async fn live_image_budget_recognizes_current_and_repeated_history() -> Result<(
             &requested_route,
             ModelRouteCapability::VisionObservation,
         )
-        .context("explicit route is unavailable or lacks effective image_input; Gemini is not a visual acceptance route")?;
+        .context("explicit route is unavailable or lacks effective image_input")?;
     ensure!(
         route.capabilities.agent_turn && route.capabilities.image_input,
         "explicit route must support both agent turns and image_input"

@@ -49,6 +49,7 @@ runtime_async_tests!(
     live_task_result_consumption_continues_after_late_wait_for,
     turn_execution_boundary_persists_queue_transcript_and_briefs,
     message_processing_creates_briefs_and_sleeps,
+    settled_turn_retains_terminal_turn_identity,
     terminal_brief_uses_last_assistant_message_without_terminal_delivery_round,
     sleep_only_completion_keeps_last_assistant_message_from_previous_round,
     sleep_only_completion_preserves_brief_after_max_output_recovery,

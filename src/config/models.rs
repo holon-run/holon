@@ -1617,7 +1617,7 @@ mod tests {
         for _ in 0..2 {
             let capabilities = ResolvedModelCapabilities::resolve(
                 &mut policy,
-                ProviderTransportKind::GeminiGenerateContent,
+                ProviderTransportKind::AiEvaluationModel,
             );
             assert!(!capabilities.image_input);
             assert!(!capabilities.image_output);
@@ -1659,7 +1659,7 @@ mod tests {
     }
 
     #[test]
-    fn gemini_transport_does_not_advertise_unimplemented_vision_or_reasoning_controls() {
+    fn gemini_transport_supports_vision_without_unimplemented_reasoning_controls() {
         let catalog = crate::model_catalog::BuiltInModelCatalog::new();
         let mut policy = catalog.resolve_policy(
             &ModelRef::parse("gemini/gemini-3.5-flash").unwrap(),
@@ -1678,9 +1678,9 @@ mod tests {
             &mut policy,
             ProviderTransportKind::GeminiGenerateContent,
         );
-        assert!(!capabilities.transport.image_input);
-        assert!(!capabilities.image_input);
-        assert!(!capabilities.supports(ModelRouteCapability::VisionObservation));
+        assert!(capabilities.transport.image_input);
+        assert!(capabilities.image_input);
+        assert!(capabilities.supports(ModelRouteCapability::VisionObservation));
         assert!(capabilities
             .endpoint
             .accepted_parameters

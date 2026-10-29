@@ -2212,6 +2212,52 @@ mod view_image_route_tests {
             }
         }
 
+        async fn new_gemini(label: &str) -> Self {
+            let calls = Arc::new(AtomicUsize::new(0));
+            let models = Arc::new(StdMutex::new(Vec::new()));
+            let observed_calls = calls.clone();
+            let observed_models = models.clone();
+            let label = label.to_string();
+            let app = Router::new().route(
+                "/v1/models/{model_action}",
+                post(move |axum::extract::Path(model_action): axum::extract::Path<String>,
+                           Json(request): Json<Value>| {
+                    let calls = observed_calls.clone();
+                    let models = observed_models.clone();
+                    let label = label.clone();
+                    async move {
+                        calls.fetch_add(1, Ordering::SeqCst);
+                        models.lock().unwrap().push(
+                            model_action.strip_suffix(":generateContent").unwrap().to_string(),
+                        );
+                        let parts = request["contents"][0]["parts"].as_array().unwrap();
+                        assert!(parts.iter().any(|part| {
+                            part["inlineData"]["mimeType"] == "image/png"
+                                && part["inlineData"]["data"].as_str().is_some_and(|data| !data.is_empty())
+                        }));
+                        Json(json!({
+                            "candidates": [{"content": {"role": "model", "parts": [{
+                                "text": json!({
+                                    "type": "visual_observation", "schema": "visual_observation.v1",
+                                    "summary": label, "uncertainties": [],
+                                }).to_string()
+                            }]}, "finishReason": "STOP"}],
+                            "usageMetadata": {"promptTokenCount": 10, "candidatesTokenCount": 10},
+                        }))
+                    }
+                }),
+            );
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let url = format!("http://{}/v1", listener.local_addr().unwrap());
+            let task = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+            Self {
+                url,
+                calls,
+                models,
+                task,
+            }
+        }
+
         fn count(&self) -> usize {
             self.calls.load(Ordering::SeqCst)
         }
@@ -2292,6 +2338,43 @@ mod view_image_route_tests {
         )
         .await?;
         Ok(serde_json::from_value(result.envelope.result.unwrap())?)
+    }
+
+    #[tokio::test]
+    async fn view_image_native_gemini_observation_and_cache_follow_selected_route() {
+        let server = VisionServer::new_gemini("native Gemini sample").await;
+        let (home, _host, runtime) = vision_runtime(&server).await;
+        update_snapshot(&runtime, |snapshot| {
+            let endpoint = &mut snapshot.model_catalog.provider_endpoints[0].runtime_config;
+            endpoint.transport = ProviderTransportKind::GeminiGenerateContent;
+            endpoint.credential = Some("gemini-test-key".into());
+        });
+        let first = observe(&runtime, &home, Some("ollama/vision-a"))
+            .await
+            .unwrap();
+        assert_eq!(first.observation.summary, "native Gemini sample");
+        assert!(!first.cache_hit);
+        let cached = observe(&runtime, &home, Some("ollama/vision-a"))
+            .await
+            .unwrap();
+        assert!(cached.cache_hit);
+        assert_eq!(server.count(), 1);
+        let automatic = observe(&runtime, &home, None).await.unwrap();
+        assert!(automatic.cache_hit);
+        let other_route = observe(&runtime, &home, Some("ollama/vision-b"))
+            .await
+            .unwrap();
+        assert!(!other_route.cache_hit);
+        assert_eq!(server.count(), 2);
+        assert_eq!(*server.models.lock().unwrap(), ["vision-a", "vision-b"]);
+        let error = observe(&runtime, &home, Some("ollama/text-only"))
+            .await
+            .unwrap_err();
+        assert_eq!(
+            ToolError::from_anyhow(&error).kind,
+            "media_capability_mismatch"
+        );
+        assert_eq!(server.count(), 2);
     }
 
     #[tokio::test]
@@ -2486,7 +2569,7 @@ mod view_image_route_tests {
         update_snapshot(&runtime, |snapshot| {
             snapshot.model_catalog.provider_endpoints[0]
                 .runtime_config
-                .transport = ProviderTransportKind::GeminiGenerateContent;
+                .transport = ProviderTransportKind::AiEvaluationModel;
         });
         let error = observe(&runtime, &home, Some("ollama/vision-a"))
             .await

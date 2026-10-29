@@ -20,7 +20,8 @@ selection diagnostics. If no configured model supports image input, the tool
 returns a `vision_adapter_unavailable` error with the evaluated candidates.
 
 When the selected vision model is served by a provider whose transport supports
-image observation generation (OpenAI-compatible APIs or Anthropic Messages),
+image observation generation (OpenAI-compatible APIs, Anthropic Messages, or
+Gemini GenerateContent),
 `ViewImage` sends the image and prompt to that model and returns a generated
 `visual_observation` alongside the durable image metadata and selection
 diagnostics. If the selected model or provider cannot be used for image

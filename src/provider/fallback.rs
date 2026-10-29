@@ -7,19 +7,20 @@ use tracing::warn;
 use super::{
     aggregate_attempt_token_usage,
     catalog::ProviderCandidate,
-    provider_error_token_usage, provider_transport_diagnostics, provider_turn_error,
+    provider_error_token_usage, provider_transport_diagnostics, provider_transport_error_with_code,
+    provider_turn_error,
     quota::ProviderQuotaCoordinator,
     retry::{
         classify_provider_error, format_provider_failure, provider_error_retry_after,
         provider_fallback_disposition, provider_max_attempts, provider_retry_delay,
-        provider_retry_jitter_seed, ProviderRetryDelay, RetryDisposition,
-        PROVIDER_RATE_LIMIT_MAX_RETRIES,
+        provider_retry_jitter_seed, ProviderFailureClassification, ProviderFailureKind,
+        ProviderRetryDelay, RetryDisposition, PROVIDER_RATE_LIMIT_MAX_RETRIES,
     },
     transports::is_dispatch_guard_rejected,
-    AgentProvider, PromptContentBlock, ProviderAttemptOutcome, ProviderAttemptRecord,
-    ProviderAttemptTimeline, ProviderBuiltinWebSearchCapability, ProviderContextManagementPolicy,
-    ProviderGenerateImageRequest, ProviderGenerateImageResponse, ProviderNativeWebSearchRequest,
-    ProviderTurnRequest, ProviderTurnResponse,
+    AgentProvider, ConversationMessage, PromptContentBlock, ProviderAttemptOutcome,
+    ProviderAttemptRecord, ProviderAttemptTimeline, ProviderBuiltinWebSearchCapability,
+    ProviderContextManagementPolicy, ProviderGenerateImageRequest, ProviderGenerateImageResponse,
+    ProviderNativeWebSearchRequest, ProviderTurnRequest, ProviderTurnResponse,
 };
 use crate::config::ModelRouteRef;
 use crate::prompt::PromptStability;
@@ -334,6 +335,33 @@ mod tests {
 
     #[derive(Clone)]
     struct ImageProvider;
+
+    struct ConversationRecorder {
+        conversations: Arc<Mutex<Vec<Vec<ConversationMessage>>>>,
+    }
+
+    #[async_trait]
+    impl AgentProvider for ConversationRecorder {
+        async fn complete_turn(
+            &self,
+            request: ProviderTurnRequest,
+        ) -> Result<ProviderTurnResponse> {
+            self.conversations
+                .lock()
+                .await
+                .push(request.conversation.clone());
+            Ok(ProviderTurnResponse {
+                blocks: vec![ModelBlock::Text { text: "ok".into() }],
+                stop_reason: None,
+                input_tokens: 0,
+                output_tokens: 0,
+                cache_usage: None,
+                provider_message_id: None,
+                provider_request_id: None,
+                request_diagnostics: None,
+            })
+        }
+    }
 
     #[async_trait]
     impl AgentProvider for PolicyProvider {
@@ -1070,6 +1098,127 @@ mod tests {
         assert_eq!(reversed.resolved_image_input_support(), Some(true));
     }
 
+    fn image_candidate(
+        model_ref: &str,
+        resolved_image_input: bool,
+        conversations: Arc<Mutex<Vec<Vec<ConversationMessage>>>>,
+    ) -> ProviderCandidate {
+        ProviderCandidate {
+            model_ref: model_ref.into(),
+            provider_name: "openai".into(),
+            resolved_image_input,
+            provider: Arc::new(ConversationRecorder { conversations }),
+        }
+    }
+
+    fn user_image_message(optional_history: bool) -> ConversationMessage {
+        ConversationMessage::UserImage {
+            prompt: "workspace screenshot".into(),
+            media_type: "image/png".into(),
+            data_base64: "aGVsbG8=".into(),
+            optional_history,
+        }
+    }
+
+    #[tokio::test]
+    async fn required_image_fails_fast_for_route_without_image_input() {
+        let conversations = Arc::new(Mutex::new(Vec::new()));
+        let provider = FallbackProvider {
+            candidates: vec![image_candidate(
+                "openai/text-only",
+                false,
+                conversations.clone(),
+            )],
+        };
+
+        let error = provider
+            .complete_turn_with_diagnostics(ProviderTurnRequest::plain(
+                "base",
+                vec![user_image_message(false)],
+                Vec::new(),
+            ))
+            .await
+            .expect_err("required image must not reach a route without image input");
+
+        assert_eq!(
+            crate::provider::provider_error_code(&error),
+            Some("image_input_unsupported")
+        );
+        assert!(conversations.lock().await.is_empty());
+        let timeline = crate::provider::provider_attempt_timeline(&error).expect("timeline");
+        assert_eq!(timeline.attempts.len(), 1);
+        assert_eq!(
+            timeline.attempts[0].outcome,
+            crate::provider::ProviderAttemptOutcome::FailFastAborted
+        );
+        assert_eq!(
+            timeline.attempts[0].failure_kind.as_deref(),
+            Some("contract_error")
+        );
+    }
+
+    #[tokio::test]
+    async fn optional_history_image_degrades_to_text_only_for_route_without_image_input() {
+        let conversations = Arc::new(Mutex::new(Vec::new()));
+        let provider = FallbackProvider {
+            candidates: vec![image_candidate(
+                "openai/text-only",
+                false,
+                conversations.clone(),
+            )],
+        };
+
+        provider
+            .complete_turn_with_diagnostics(ProviderTurnRequest::plain(
+                "base",
+                vec![user_image_message(true)],
+                Vec::new(),
+            ))
+            .await
+            .expect("optional historical image must degrade instead of failing");
+
+        let recorded = conversations.lock().await;
+        assert_eq!(recorded.len(), 1);
+        assert!(!recorded[0]
+            .iter()
+            .any(|message| matches!(message, ConversationMessage::UserImage { .. })));
+        assert!(recorded[0].iter().any(|message| matches!(
+            message,
+            ConversationMessage::UserText(text) if text.contains("does not support image input")
+        )));
+    }
+
+    #[tokio::test]
+    async fn route_with_image_input_keeps_native_image_attachments() {
+        let conversations = Arc::new(Mutex::new(Vec::new()));
+        let provider = FallbackProvider {
+            candidates: vec![image_candidate(
+                "openai/vision",
+                true,
+                conversations.clone(),
+            )],
+        };
+
+        provider
+            .complete_turn_with_diagnostics(ProviderTurnRequest::plain(
+                "base",
+                vec![user_image_message(false)],
+                Vec::new(),
+            ))
+            .await
+            .expect("image-capable route must keep the attachment");
+
+        let recorded = conversations.lock().await;
+        assert_eq!(recorded.len(), 1);
+        assert_eq!(
+            recorded[0]
+                .iter()
+                .filter(|message| matches!(message, ConversationMessage::UserImage { .. }))
+                .count(),
+            1
+        );
+    }
+
     #[tokio::test]
     async fn generate_image_uses_current_turn_candidate() {
         let provider = FallbackProvider {
@@ -1279,6 +1428,48 @@ impl AgentProvider for FallbackProvider {
                 source,
             ));
         };
+        let candidate_request = match lower_request_for_candidate(&request, candidate) {
+            Ok(lowered) => lowered,
+            Err(error) => {
+                let source = error.context("provider image input admission failed");
+                return Err(provider_turn_error(
+                    source.to_string(),
+                    ProviderAttemptTimeline {
+                        aggregated_token_usage: None,
+                        attempts: vec![ProviderAttemptRecord {
+                            provider: candidate.provider_name.clone(),
+                            model_ref: candidate.model_ref.clone(),
+                            attempt: 1,
+                            max_attempts: provider_max_attempts(),
+                            started_at: None,
+                            completed_at: None,
+                            duration_ms: None,
+                            failure_kind: Some(
+                                ProviderFailureKind::ContractError.as_str().to_string(),
+                            ),
+                            disposition: Some(RetryDisposition::FailFast.as_str().to_string()),
+                            outcome: ProviderAttemptOutcome::FailFastAborted,
+                            advanced_to_fallback: pending_fallback_model_ref.is_some(),
+                            backoff_ms: None,
+                            backoff_source: None,
+                            token_usage: None,
+                            cache_usage: None,
+                            provider_message_id: None,
+                            provider_request_id: None,
+                            provider_http_trace_id: None,
+                            transport_diagnostics: None,
+                            transport_timeline: None,
+                        }],
+                        requested_model_ref,
+                        active_model_ref: None,
+                        winning_model_ref: None,
+                        pending_fallback_model_ref,
+                        pending_fallback_disposition: None,
+                    },
+                    source,
+                ));
+            }
+        };
         let max_attempts = provider_max_attempts();
         let last_error;
         let pending_fallback_disposition;
@@ -1286,8 +1477,11 @@ impl AgentProvider for FallbackProvider {
         let mut rate_limit_retries = 0;
         let mut shared_account_retry = false;
         loop {
-            let attempt_request =
-                request_for_model_attempt(&request, &requested_model_ref, &candidate.model_ref);
+            let attempt_request = request_for_model_attempt(
+                &candidate_request,
+                &requested_model_ref,
+                &candidate.model_ref,
+            );
             let attempt_started_at = Utc::now();
             let attempt_started = std::time::Instant::now();
             let quota_identity = candidate.provider.quota_identity();
@@ -1673,6 +1867,68 @@ fn runtime_model_hint(requested_model_ref: &str, active_model_ref: &str) -> Stri
             "Runtime: active_model={active_model_display} requested_model={requested_model_display}"
         )
     }
+}
+
+/// Image admission stays a resolved-route capability decision.
+///
+/// A candidate whose resolved route has no image input cannot serve a
+/// required image, so the request fails fast before dispatch instead of
+/// dropping the attachment or letting the upstream API reject it. Optional
+/// historical attachments degrade to an explicit text-only note.
+fn lower_request_for_candidate(
+    request: &ProviderTurnRequest,
+    candidate: &ProviderCandidate,
+) -> Result<ProviderTurnRequest> {
+    if candidate.resolved_image_input {
+        return Ok(request.clone());
+    }
+    let mut lowered = request.clone();
+    let mut dropped_history_images = 0usize;
+    lowered.conversation.retain(|message| match message {
+        ConversationMessage::UserImage {
+            optional_history, ..
+        } => {
+            if *optional_history {
+                dropped_history_images += 1;
+                false
+            } else {
+                true
+            }
+        }
+        _ => true,
+    });
+    if lowered
+        .conversation
+        .iter()
+        .any(|message| matches!(message, ConversationMessage::UserImage { .. }))
+    {
+        return Err(image_input_unsupported_error(&candidate.model_ref));
+    }
+    if dropped_history_images > 0 {
+        lowered
+            .conversation
+            .push(ConversationMessage::UserText(format!(
+                "[Holon image attachment: omitted {dropped_history_images} optional historical \
+                 image attachment(s) because the active model route does not support image input.]"
+            )));
+    }
+    Ok(lowered)
+}
+
+fn image_input_unsupported_error(model_ref: &str) -> anyhow::Error {
+    provider_transport_error_with_code(
+        ProviderFailureClassification {
+            kind: ProviderFailureKind::ContractError,
+            disposition: RetryDisposition::FailFast,
+        },
+        Some("image_input_unsupported"),
+        None,
+        None,
+        format!(
+            "active model route does not support image input; required image input cannot be \
+             omitted: model_ref={model_ref}"
+        ),
+    )
 }
 
 fn compact_model_route_display(model_ref: &str) -> String {
