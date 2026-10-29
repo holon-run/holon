@@ -72,19 +72,29 @@ pub(super) enum CoolingContinuation {
     Interject,
 }
 
+enum CoolingReplanOutcome {
+    Reselect(ModelRouteRef),
+    Wait,
+}
+
 #[derive(Debug, thiserror::Error)]
 #[error("provider admission deferred before dispatch: {0}")]
 struct DispatchDeferred(LocalDispatchDenial, Option<Box<ProviderDispatchPause>>);
+
+fn dispatch_denial(error: &anyhow::Error) -> Option<&DispatchDeferred> {
+    // Anyhow typed context carries the latest denial but is not a source node.
+    error.downcast_ref::<DispatchDeferred>().or_else(|| {
+        error
+            .chain()
+            .find_map(|source| source.downcast_ref::<DispatchDeferred>())
+    })
+}
 
 pub(super) fn dispatch_pause(error: &anyhow::Error) -> Option<&ProviderDispatchPause> {
     if !crate::provider::is_dispatch_guard_rejected(error) {
         return None;
     }
-    error
-        .chain()
-        .find_map(|source| source.downcast_ref::<DispatchDeferred>())?
-        .1
-        .as_deref()
+    dispatch_denial(error)?.1.as_deref()
 }
 
 /// User-facing summary for a confirmed local dispatch admission rejection.
@@ -98,10 +108,7 @@ pub(super) fn local_dispatch_rejection_user_summary(error: &anyhow::Error) -> Op
     if descriptor.code != "provider_dispatch_rejected" {
         return None;
     }
-    let denial = error
-        .chain()
-        .find_map(|source| source.downcast_ref::<DispatchDeferred>())
-        .map(|deferred| deferred.0);
+    let denial = dispatch_denial(error).map(|deferred| deferred.0);
     let base = match denial {
         Some(LocalDispatchDenial::ScopeCooling { .. }) => {
             "The model channel is cooling down. This send was blocked."
@@ -219,9 +226,10 @@ pub(super) fn is_parked_dispatch_rejection(error: &anyhow::Error) -> bool {
     dispatch_pause(error).is_some()
 }
 
+/// Inspect the denial only; callers must separately require a dispatch guard rejection.
 pub(super) fn is_continuation_input_changed(error: &anyhow::Error) -> bool {
     matches!(
-        error.downcast_ref::<DispatchDeferred>(),
+        dispatch_denial(error),
         Some(DispatchDeferred(LocalDispatchDenial::InputChanged, _))
     )
 }
@@ -726,11 +734,7 @@ impl RuntimeHandle {
         if !crate::provider::is_dispatch_guard_rejected(&error) {
             return error;
         }
-        let Some(denial) = error
-            .chain()
-            .find_map(|source| source.downcast_ref::<DispatchDeferred>())
-            .map(|error| error.0)
-        else {
+        let Some(denial) = dispatch_denial(&error).map(|error| error.0) else {
             // The transport marker also covers storage/infrastructure failures.
             // Keep their domain, code and retryability rather than inventing a denial.
             return error;
@@ -1186,20 +1190,12 @@ impl RuntimeHandle {
     }
 
     /// Replan an unsent candidate cooldown, never execution or budget fences.
-    pub(super) async fn reselect_cooling_provider(
+    async fn reselect_cooling_provider(
         &self,
-        error: anyhow::Error,
+        current: &Arc<ProviderTurnAdmission>,
+        cooling_until: DateTime<Utc>,
         excluded: &mut std::collections::BTreeSet<String>,
-    ) -> Result<ModelRouteRef> {
-        if !crate::provider::is_dispatch_guard_rejected(&error) {
-            return Err(error);
-        }
-        let Some(cooling_until) = scope_cooling_deadline(&error) else {
-            return Err(error);
-        };
-        let current = self
-            .active_provider_admission()?
-            .context("cooling provider admission missing")?;
+    ) -> Result<CoolingReplanOutcome> {
         excluded.insert(current.model().as_string());
         let state = self.inner.agent.lock().await.state.clone();
         let chain = self
@@ -1257,7 +1253,7 @@ impl RuntimeHandle {
                 ensure!(
                     active
                         .as_ref()
-                        .is_some_and(|active| Arc::ptr_eq(active, &current)),
+                        .is_some_and(|active| Arc::ptr_eq(active, current)),
                     "provider admission changed during candidate replan"
                 );
                 *active = Some(next);
@@ -1272,11 +1268,11 @@ impl RuntimeHandle {
                         "cooling_until": cooling_until,
                     }),
                 ))?;
-                Ok(model)
+                Ok(CoolingReplanOutcome::Reselect(model))
             }
             // A continuation has already crossed its source replay boundary.
             // Exhausted candidate selection must not mutate it into source parking.
-            ProviderCandidateSelection::Cooling { .. } => Err(error),
+            ProviderCandidateSelection::Cooling { .. } => Ok(CoolingReplanOutcome::Wait),
         }
     }
 
@@ -1289,12 +1285,13 @@ impl RuntimeHandle {
         round: usize,
         observed_interjections: &mut std::collections::BTreeSet<String>,
     ) -> Result<CoolingContinuation> {
-        if !crate::provider::is_dispatch_guard_rejected(&error)
-            || dispatch_pause(&error).is_some()
-            || scope_cooling_deadline(&error).is_none()
+        if !crate::provider::is_dispatch_guard_rejected(&error) || dispatch_pause(&error).is_some()
         {
             return Err(error);
         }
+        let Some(cooling_until) = scope_cooling_deadline(&error) else {
+            return Err(error);
+        };
         let current = self
             .active_provider_admission()?
             .context("cooling provider admission missing")?;
@@ -1307,27 +1304,29 @@ impl RuntimeHandle {
                 return Err(error);
             }
         }
-        let error = if may_reselect {
-            match self.reselect_cooling_provider(error, excluded).await {
-                Ok(model) => return Ok(CoolingContinuation::Reselect(model)),
-                Err(error) => error,
+        if may_reselect {
+            match self
+                .reselect_cooling_provider(&current, cooling_until, excluded)
+                .await
+                .context("scope cooldown candidate replan failed")?
+            {
+                CoolingReplanOutcome::Reselect(model) => {
+                    return Ok(CoolingContinuation::Reselect(model));
+                }
+                CoolingReplanOutcome::Wait => {}
             }
-        } else {
-            error
-        };
-        self.wait_for_cooling_provider(&current, &error, round, observed_interjections)
+        }
+        self.wait_for_cooling_provider(&current, cooling_until, round, observed_interjections)
             .await
     }
 
     async fn wait_for_cooling_provider(
         &self,
         current: &Arc<ProviderTurnAdmission>,
-        error: &anyhow::Error,
+        original_deadline: DateTime<Utc>,
         round: usize,
         observed_interjections: &mut std::collections::BTreeSet<String>,
     ) -> Result<CoolingContinuation> {
-        let original_deadline =
-            scope_cooling_deadline(error).context("only a typed scope cooldown can wait")?;
         let episode = current.episode()?;
         let abort = self.current_run_abort_token().await;
         // Expired/repeated denials still yield rather than spin at zero time.
@@ -1520,12 +1519,10 @@ impl RuntimeHandle {
 }
 
 fn scope_cooling_deadline(error: &anyhow::Error) -> Option<DateTime<Utc>> {
-    error
-        .downcast_ref::<DispatchDeferred>()
-        .and_then(|denial| match denial.0 {
-            LocalDispatchDenial::ScopeCooling { not_before } => Some(not_before),
-            _ => None,
-        })
+    dispatch_denial(error).and_then(|denial| match denial.0 {
+        LocalDispatchDenial::ScopeCooling { not_before } => Some(not_before),
+        _ => None,
+    })
 }
 
 #[cfg(test)]
