@@ -91,7 +91,7 @@ async function openAgent(page: Page, agentId: string): Promise<void> {
   await expect(page).toHaveURL(new RegExp(`/agents/${agentId}/conversation`));
 }
 
-test("reconnect applies the authoritative roster before cached event catch-up", async ({
+test("refresh applies the authoritative roster and replays ledger recovery", async ({
   page,
   request,
 }, testInfo) => {
@@ -100,14 +100,10 @@ test("reconnect applies the authoritative roster before cached event catch-up", 
   await page.goto("/");
   await expect.poll(async () => page.evaluate(() => window.__HOLON_E2E__?.snapshot()))
     .toMatchObject({
-      globalStreamStatus: "streaming",
       discovery: { mode: "authoritative", freshness: "fresh" },
       agentIds: ["bootstrap-agent"],
     });
 
-  const beforeDisconnect = await request.get(controlPath(session, "/__e2e__/state"))
-    .then((response) => response.json());
-  await request.post(controlPath(session, "/__e2e__/disconnect-streams"));
   await configure(request, session, {
     visibleAgentIds: ["bootstrap-agent", "offline-agent"],
     ledgerEnabledAgentIds: ["offline-agent"],
@@ -116,9 +112,12 @@ test("reconnect applies the authoritative roster before cached event catch-up", 
     },
   });
 
+  // Without the dormant global event stream, roster changes surface through
+  // the next explicit dashboard refresh (#3808 slice 2); the durable ledger
+  // still replays its HTTP recovery path from that snapshot.
+  await page.getByRole("button", { name: "Refresh", exact: true }).click();
   await expect.poll(async () => page.evaluate(() => window.__HOLON_E2E__?.snapshot()))
     .toMatchObject({
-      globalStreamStatus: "streaming",
       discovery: { mode: "authoritative", freshness: "fresh" },
       agentIds: ["bootstrap-agent", "offline-agent"],
     });
@@ -126,18 +125,13 @@ test("reconnect applies the authoritative roster before cached event catch-up", 
     ingestedThroughSeq: 1,
     projectionReadyThroughSeq: 1,
   });
-  await expect.poll(async () => request.get(controlPath(session, "/__e2e__/state"))
-    .then((response) => response.json())
-    .then((state) => state.streamGeneration))
-    .toBeGreaterThan(beforeDisconnect.streamGeneration);
 
-  await request.post(controlPath(session, "/__e2e__/disconnect-streams"));
   await configure(request, session, {
     visibleAgentIds: ["offline-agent"],
   });
+  await page.getByRole("button", { name: "Refresh", exact: true }).click();
   await expect.poll(async () => page.evaluate(() => window.__HOLON_E2E__?.snapshot()))
     .toMatchObject({
-      globalStreamStatus: "streaming",
       discovery: { mode: "authoritative", freshness: "fresh" },
       agentIds: ["offline-agent"],
     });

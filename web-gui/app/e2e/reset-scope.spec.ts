@@ -129,14 +129,11 @@ async function briefFetchCount(
   ).length;
 }
 
-async function globalStreamCount(
-  request: APIRequestContext,
-  session: string,
-): Promise<number> {
-  const response = await request.get(controlPath(session, "/__e2e__/state"));
-  expect(response.ok()).toBe(true);
-  const body = await response.json() as { globalStreamCount: number };
-  return body.globalStreamCount;
+async function refreshRoster(page: Page): Promise<void> {
+  // The ledger learns new recovery windows through HTTP discovery, not the
+  // retired global SSE. Leave the conversation so its read gate stays closed.
+  await page.getByRole("button", { name: "Dashboard", exact: true }).first().click();
+  await page.getByRole("button", { name: "Refresh", exact: true }).click();
 }
 
 async function hydrationAttemptCount(page: Page, agentId: string): Promise<number | null> {
@@ -230,12 +227,12 @@ test("retention reset is truncated until acknowledgement opens a new exact gener
   await page.reload();
   await request.post(controlPath(session, "/__e2e__/reset-conversation"), { data: { agentId, reason: "retention_expired" } });
   await unavailableSummary;
-  await request.post(controlPath(session, "/__e2e__/disconnect-streams"));
+  await refreshRoster(page);
 
   // Hold the read-marker gate closed while the retention reset lands: the
   // conversation read model is unavailable (503), so the gate cannot confirm
   // a ready conversation view and the marker never auto-advances past the
-  // truncation. The ledger itself ingests from the global event stream and
+  // truncation. The ledger itself recovers from the HTTP roster window and
   // still records the truncated generation for the manual acknowledgement.
   await expect
     .poll(() => ledger(page, agentId), { timeout: 15_000 })
@@ -287,7 +284,7 @@ test("retention reset preserves truncated certainty until the server cursor adva
     oldestRetainedSeqByAgentId: { [agentId]: 7 },
     snapshotThroughSeqByAgentId: { [agentId]: 8 },
   });
-  await request.post(controlPath(session, "/__e2e__/disconnect-streams"));
+  await refreshRoster(page);
 
   // No local acknowledgement UI exists in the server-backed contract; the
   // cursor remains below the retention boundary until a later read advances it.
@@ -338,7 +335,7 @@ test("event log epoch replacement clears the old projection and read partition",
       ],
     },
   });
-  await request.post(controlPath(session, "/__e2e__/disconnect-streams"));
+  await refreshRoster(page);
 
   await expect.poll(() => ledger(page, agentId)).toMatchObject({
     eventLogEpoch: "epoch-after",
@@ -390,7 +387,7 @@ test("visibility scope rotation clears the old auth-scoped partition", async ({
       [agentId]: [envelope(agentId, 1), envelope(agentId, 2), envelope(agentId, 3)],
     },
   });
-  await request.post(controlPath(session, "/__e2e__/disconnect-streams"));
+  await refreshRoster(page);
 
   await expect.poll(() => ledger(page, agentId)).toMatchObject({
     visibilityScopeId: "scope-after",
@@ -559,12 +556,12 @@ test("divergence repair, sync error, and degraded handle recovery preserve exact
       },
     });
   });
-  await expect.poll(() => globalStreamCount(request, session)).toBeGreaterThan(0);
   const degradedEvent = envelope(degradedAgentId, 3);
   const failedWrite = await request.post(controlPath(session, "/__e2e__/append-event"), {
     data: { envelope: degradedEvent },
   });
   expect(failedWrite.ok()).toBe(true);
+  await refreshRoster(page);
   await expect.poll(() => page.evaluate(
     () => Reflect.get(window, "__HOLON_E2E_LEDGER_ABORTED_WRITES__"),
   )).toBeGreaterThan(0);
@@ -594,6 +591,7 @@ test("divergence repair, sync error, and degraded handle recovery preserve exact
     data: { envelope: degradedEvent },
   });
   expect(recoveredWrite.ok()).toBe(true);
+  await refreshRoster(page);
   await expect.poll(() => ledger(page, degradedAgentId)).toMatchObject({
     durability: "exact",
     ingestionState: "idle",

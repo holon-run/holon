@@ -42,7 +42,7 @@ async function ledger(page: Page, agentId: string): Promise<LedgerSnapshot | nul
   );
 }
 
-test("same database restart reconnects, catches up, preserves epoch, and deduplicates events", async ({
+test("same database restart recovers, catches up, preserves epoch, and deduplicates events", async ({
   daemonFactory,
   page,
 }) => {
@@ -53,7 +53,6 @@ test("same database restart reconnects, catches up, preserves epoch, and dedupli
   await expect.poll(async () => page.evaluate(() => window.__HOLON_E2E__?.snapshot()))
     .toMatchObject({
       bootstrapLoading: false,
-      globalStreamStatus: "streaming",
       discovery: { mode: "authoritative", freshness: "fresh" },
     });
 
@@ -64,41 +63,20 @@ test("same database restart reconnects, catches up, preserves epoch, and dedupli
   expect(before?.eventLogEpoch).toBeTruthy();
 
   await daemon.stop();
-  await expect.poll(async () => page.evaluate(() => window.__HOLON_E2E__?.snapshot().globalStreamStatus))
-    .toBe("reconnecting");
-
-  let releaseReconnect!: () => void;
-  const reconnectBlocked = new Promise<void>((resolve) => {
-    releaseReconnect = resolve;
-  });
-  let observeReconnect!: () => void;
-  const reconnectObserved = new Promise<void>((resolve) => {
-    observeReconnect = resolve;
-  });
-  let finishReconnect!: () => void;
-  const reconnectFinished = new Promise<void>((resolve) => {
-    finishReconnect = resolve;
-  });
-  let blockNextReconnect = true;
-  await page.route("**/api/events/stream**", async (route) => {
-    if (blockNextReconnect) {
-      blockNextReconnect = false;
-      observeReconnect();
-      await reconnectBlocked;
-    }
-    await route.continue();
-    finishReconnect();
-  });
 
   await daemon.start();
-  await reconnectObserved;
   await daemon.enqueue("during restart");
-  releaseReconnect();
-  await reconnectFinished;
-  await page.unroute("**/api/events/stream**");
 
-  await expect.poll(async () => page.evaluate(() => window.__HOLON_E2E__?.snapshot().globalStreamStatus))
-    .toBe("streaming");
+  // The dormant global event stream is gone (#3808 slice 2): after a daemon
+  // restart the durable ledger catches up through the HTTP recovery path
+  // driven by the roster snapshot, exercised here by reloading the app.
+  await page.reload();
+
+  await expect.poll(async () => page.evaluate(() => window.__HOLON_E2E__?.snapshot()))
+    .toMatchObject({
+      bootstrapLoading: false,
+      discovery: { mode: "authoritative", freshness: "fresh" },
+    });
   await expect.poll(async () => {
     const value = await ledger(page, daemon.agentId);
     return value?.ingestedThroughSeq ?? 0;

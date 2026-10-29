@@ -110,6 +110,7 @@ test("composer swaps the send button for a turn-scoped stop while a run is activ
   await appendEvent(request, session, envelope(agentId, 1, "message_processing_started", {
     run_id: "run-e2e-1",
   }));
+  await page.getByRole("button", { name: "Refresh agent detail", exact: true }).click();
   await expect(stopButton).toBeVisible();
   await expect(sendButton).toHaveCount(0);
 
@@ -138,6 +139,7 @@ test("composer swaps the send button for a turn-scoped stop while a run is activ
   // The turn ends: the composer returns to the send button even though the
   // draft stays empty.
   await appendEvent(request, session, envelope(agentId, 2, "turn_terminal", {}));
+  await page.getByRole("button", { name: "Refresh agent detail", exact: true }).click();
   await expect(sendButton).toBeVisible();
   await expect(stopButton).toHaveCount(0);
 });
@@ -164,6 +166,7 @@ test("stop-turn conflicts converge without surfacing an error", async ({
   await appendEvent(request, session, envelope(agentId, 1, "message_processing_started", {
     run_id: "run-e2e-2",
   }));
+  await page.getByRole("button", { name: "Refresh agent detail", exact: true }).click();
   const stopButton = page.locator("form.composer").getByRole("button", { name: "Stop this turn", exact: true });
   await expect(stopButton).toBeVisible();
 

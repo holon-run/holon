@@ -61,6 +61,22 @@ epoch resets, authorization changes, and hydration failure explicit.
 
 ## Status And Implementation Boundary
 
+### Web GUI transport update (#3808, 2026-10-29)
+
+The Web GUI no longer opens the dormant global or per-Agent SSE transports.
+It also removes the coordinator's in-memory per-Agent events catch-up.
+Agent detail and conversation history use conversation snapshots and cursors;
+roster discovery remains an authoritative HTTP snapshot cycle, refreshed on
+bootstrap, explicit refresh, local membership changes, and resume.
+Transient roster failures retain bounded retries and `Retry-After`; roster
+HTTP 401 is the live authorization-rejection signal.
+
+The browser event ledger still independently replays HTTP event pages from
+roster recovery hints. Its diagnostic bridge and the server events APIs remain
+unchanged in this slice; complete ledger retirement is a separate follow-up.
+The SSE reconnect steps below describe the earlier design, not the current
+Web GUI transport.
+
 This RFC replaces the previous design in this file. The previous design
 proposed an observer-scoped sync token, `observer_change_seq`, Agent
 incarnations, a separate `delivery_seq`, a delivery metadata API, and

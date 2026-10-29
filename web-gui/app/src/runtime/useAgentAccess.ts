@@ -16,7 +16,9 @@ export function useAgentAccess(agentId: string | undefined, expectedIncarnation?
   const connection = useRuntimeStore((state) => state.bootstrap.connection);
   const user = useRuntimeStore((state) => state.currentUser);
   const userLoaded = useRuntimeStore((state) => state.currentUserLoaded);
-  const authRejected = useRuntimeStore((state) => state.discovery?.freshness === "unauthorized" || state.globalStreamStatus === "unauthorized");
+  // Roster HTTP 401 is the live auth-rejection signal (#3808 slice 2); the
+  // dormant global stream status no longer exists.
+  const authRejected = useRuntimeStore((state) => state.discovery?.freshness === "unauthorized");
   const config = getRuntimeConnectionConfig();
   const client = useMemo(() => createRuntimeClient(config), [connection.mode, connection.baseUrl, config.token]);
   const contextKey = JSON.stringify([connection.mode, connection.baseUrl, config.token, userLoaded, connection.authRequired, authRejected, user?.authMethod, user?.userId]);

@@ -4,7 +4,6 @@ import { sessionFor } from "./test-session";
 interface DiagnosticsSnapshot {
   bootstrapLoading: boolean;
   bootstrapError?: string;
-  globalStreamStatus: string;
   discovery: { mode: string; freshness: string };
   agentIds: string[];
 }
@@ -81,7 +80,6 @@ test("cold start bootstraps and applies a live roster event", async ({ page, req
   await expect.poll(async () => page.evaluate(() => window.__HOLON_E2E__?.snapshot()))
     .toMatchObject({
       bootstrapLoading: false,
-      globalStreamStatus: "streaming",
       discovery: { mode: "authoritative", freshness: "fresh" },
       agentIds: ["bootstrap-agent"],
     } satisfies Partial<DiagnosticsSnapshot>);
@@ -92,12 +90,16 @@ test("cold start bootstraps and applies a live roster event", async ({ page, req
     "GET /api/handshake",
     "GET /api/agents/list",
     "GET /api/agents/snapshot",
-    "GET /api/events/stream",
   ]));
+  expect(initialRequests.requests.filter((entry: string) => entry === "GET /api/events/stream")).toHaveLength(0);
   expect(initialRequests.requests.indexOf("GET /api/handshake"))
     .toBeLessThan(initialRequests.requests.indexOf("GET /api/agents/list"));
 
   await request.post(controlPath("/__e2e__/emit-agent"));
+
+  // Without the dormant global event stream, roster changes surface through
+  // the next explicit dashboard refresh (#3808 slice 2).
+  await page.getByRole("button", { name: "Refresh", exact: true }).click();
 
   await expect(page.getByText("2 agents · all clear", { exact: true })).toBeVisible();
   await expect.poll(async () => page.evaluate(() => window.__HOLON_E2E__?.snapshot().agentIds))
@@ -110,23 +112,16 @@ test("cold start bootstraps and applies a live roster event", async ({ page, req
   }).toEqual(expect.arrayContaining([
     "GET /api/agents/snapshot",
     "GET /api/agents/e2e-agent/projection-snapshot",
-    "GET /api/agents/e2e-agent/events?after_seq=1&limit=100&order=asc",
-    "GET /api/agents/e2e-agent/events?limit=100&order=desc",
   ]));
 
   const finalRequests = await request.get(controlPath("/__e2e__/requests"))
     .then((response) => response.json());
   expect(finalRequests.requests.filter((entry: string) => entry === "GET /api/agents/snapshot")).toHaveLength(2);
-  expect(finalRequests.requests.filter((entry: string) => entry === "GET /api/events/stream")).toHaveLength(1);
+  expect(finalRequests.requests.filter((entry: string) => entry === "GET /api/events/stream")).toHaveLength(0);
   expect(finalRequests.requests.filter(
     (entry: string) => entry === "GET /api/agents/e2e-agent/projection-snapshot",
   )).toHaveLength(1);
-  expect(finalRequests.requests.filter(
-    (entry: string) => entry === "GET /api/agents/e2e-agent/events?after_seq=1&limit=100&order=asc",
-  )).toHaveLength(1);
-  expect(finalRequests.requests.filter(
-    (entry: string) => entry === "GET /api/agents/e2e-agent/events?limit=100&order=desc",
-  )).toHaveLength(1);
+  expect(finalRequests.requests.filter((entry: string) => entry.includes("/events"))).toHaveLength(0);
 
   // Opening an agent speaks the conversation read-model contract: one
   // capability handshake, one summary snapshot, one live conversation

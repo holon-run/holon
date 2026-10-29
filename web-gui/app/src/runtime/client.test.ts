@@ -1431,6 +1431,58 @@ describe("createRuntimeClient", () => {
   });
 
   it.each([
+    { version: null },
+    { version: "2" },
+    { version: "invalid" },
+  ])("rejects unsupported HTTP event-page contract version $version", async ({ version }) => {
+    const headers = new Headers();
+    if (version != null) headers.set("x-holon-event-contract-version", version);
+    const fetchImpl = vi.fn(async () => Response.json({ events: [] }, { headers }));
+    const client = createRuntimeClient({
+      mode: "remote",
+      baseUrl: "http://example.test:7878",
+      fetchImpl: fetchImpl as typeof fetch,
+    });
+
+    await expect(client.getAgentEvents("agent-one"))
+      .rejects.toThrow(`unsupported event page contract version: ${version ?? "missing"}`);
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+  });
+
+  it("preserves HTTP event metadata and filters invalid envelopes without event hydration", async () => {
+    const event = {
+      id: "event-741",
+      agent_id: "agent-one",
+      event_seq: 741,
+      event_log_epoch: "epoch-a",
+      ts: "2026-06-22T00:00:00Z",
+      type: "brief_created",
+      payload: { brief_id: "brief-741", transcript_entry_id: "entry-741" },
+      payload_schema: "holon.brief_created",
+      payload_schema_version: 1,
+      projection_effect: "display_invalidation",
+      provenance: { source_ref: "brief:brief-741" },
+    };
+    const fetchImpl = vi.fn(async () => Response.json({
+      events: [null, { ...event, event_seq: "741" }, event],
+      has_older: false,
+    }, { headers: { "x-holon-event-contract-version": "3" } }));
+    const client = createRuntimeClient({
+      mode: "remote",
+      baseUrl: "http://example.test:7878",
+      fetchImpl: fetchImpl as typeof fetch,
+    });
+
+    await expect(client.getAgentEvents("agent-one", { beforeSeq: 742, order: "desc" }))
+      .resolves.toMatchObject({ events: [event] });
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+    expect(fetchImpl).toHaveBeenCalledWith(
+      "http://example.test:7878/api/agents/agent-one/events?before_seq=742&order=desc",
+      expect.objectContaining({ cache: "no-store" }),
+    );
+  });
+
+  it.each([
     { status: 410, code: "agent_deleted" },
     { status: 503, code: "runtime_db_busy" },
   ])("preserves event-page $status errors while bypassing old cached responses", async ({ status, code }) => {

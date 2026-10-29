@@ -163,7 +163,9 @@ describe("authenticated reload-time agent presentation", () => {
     let reject!: (error: Error) => void;
     mocks.user.mockReturnValue(new Promise((_, no) => { reject = no; }));
     void refresh();
-    useRuntimeStore.setState({ globalStreamStatus: "unauthorized" });
+    useRuntimeStore.setState({
+      discovery: { mode: "authoritative", freshness: "unauthorized", unauthorizedReason: "test 401", retryAttempt: 0 },
+    });
     reject(new TypeError("Failed to fetch"));
     await pending;
     await vi.advanceTimersByTimeAsync(30_000);
@@ -249,7 +251,7 @@ describe("authenticated reload-time agent presentation", () => {
     expect(useRuntimeStore.getState().agentRosterSource).toBe("cache");
   });
 
-  it.each(["bootstrap", "roster", "stream"])("revokes presentation immediately on %s auth rejection", async (path) => {
+  it.each(["bootstrap", "roster"])("revokes presentation immediately on %s auth rejection", async (path) => {
     void refresh();
     await vi.waitFor(() => expect(useRuntimeStore.getState().agentRosterSource).toBe("cache"));
     if (path === "bootstrap") {
@@ -257,10 +259,8 @@ describe("authenticated reload-time agent presentation", () => {
         ...online(), connection: { mode: "local", source: "fixture", summary: "Sign in", authRequired: true },
       });
       await pending;
-    } else if (path === "roster") {
-      useRuntimeStore.setState({ discovery: { ...useRuntimeStore.getState().discovery, freshness: "unauthorized" } });
     } else {
-      useRuntimeStore.setState({ globalStreamStatus: "unauthorized" });
+      useRuntimeStore.setState({ discovery: { ...useRuntimeStore.getState().discovery, freshness: "unauthorized" } });
     }
     expect(useRuntimeStore.getState().bootstrap.agents).toEqual([]);
     expect(useRuntimeStore.getState().currentUser).toBeUndefined();
@@ -272,7 +272,9 @@ describe("authenticated reload-time agent presentation", () => {
     mocks.read.mockReturnValue(cache.promise);
     void refresh();
     await vi.waitFor(() => expect(mocks.read).toHaveBeenCalled());
-    useRuntimeStore.setState({ globalStreamStatus: "unauthorized" });
+    useRuntimeStore.setState({
+      discovery: { mode: "authoritative", freshness: "unauthorized", unauthorizedReason: "test 401", retryAttempt: 0 },
+    });
     cache.resolve([agent]);
     await Promise.resolve();
     expect(useRuntimeStore.getState().bootstrap.agents).toEqual([]);

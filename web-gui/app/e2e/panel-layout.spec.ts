@@ -234,6 +234,7 @@ test("work item details prioritize results and keep technical fields and plan na
     payload: { work_item: { id: work.id, objective: work.objective, state: work.state, revision: work.revision }, work_item_id: work.id },
   } } });
   await page.reload();
+  await page.getByRole("button", { name: "Refresh agent detail", exact: true }).click();
   const panel = page.locator(".side-panel");
   const shell = page.locator(".app-shell");
   await expect(shell).toBeVisible();

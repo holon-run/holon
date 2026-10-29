@@ -5,7 +5,6 @@ import type { ConversationStateView, ConversationSummaryResponse } from "@holon/
 import {
   agentBriefPatchFromEvents,
   agentDetailErrorKind,
-  applyStreamEvents,
   backfillRetryDelayMs,
   isSessionCacheContextCurrent,
   mergeBootstrapAgentState,
@@ -20,7 +19,6 @@ import {
   runWithConcurrencyLimit,
   retryPendingReadMarker,
   skillDetailCacheKey,
-  streamEventFromBackfill,
   useRuntimeStore,
   writeStoredRuntimeConnectionConfig,
 } from "./runtime-store";
@@ -1036,27 +1034,6 @@ describe("agent snapshot merging", () => {
     expect(mergeBootstrapAgentState(agentSummary(), cached).providerCooldownWait).toBeUndefined();
   });
 
-  it("refreshes queryable cooldown state for each state-change event", () => {
-    const previous = useRuntimeStore.getState();
-    const refreshAgentState = vi.fn().mockResolvedValue(undefined);
-    useRuntimeStore.setState({ sessionsByAgentId: {}, refreshAgentState });
-    try {
-      for (const eventSeq of [1, 2, 3]) {
-        applyStreamEvents(useRuntimeStore.setState, "cooldown-agent", [{
-          id: `cooldown-event-${eventSeq}`, event_seq: eventSeq,
-          event_log_epoch: "epoch-cooldown", type: "agent_state_changed",
-          payload: eventSeq === 3
-            ? { provider_cooldown_wait_ended: { outcome: "cancelled" } }
-            : { provider_cooldown_wait: { not_before: `2026-10-27T11:0${eventSeq}:00Z` } },
-        }]);
-      }
-      expect(refreshAgentState).toHaveBeenCalledTimes(3);
-      expect(refreshAgentState).toHaveBeenLastCalledWith("cooldown-agent");
-    } finally {
-      useRuntimeStore.setState(previous, true);
-    }
-  });
-
   it("lets a fresh bootstrap snapshot clear cached running state and counts", () => {
     const cached = agentSummary({
       lifecycle: "awake-running",
@@ -1289,33 +1266,6 @@ describe("timeline events state", () => {
       eventLogEpoch: "epoch-b",
       eventSeqs: [1],
       eventsBySeq: { 1: { id: "event-1-new" } },
-    });
-  });
-});
-
-describe("runtime event epoch", () => {
-  it("preserves typed contract metadata when rebuilding gap backfill events", () => {
-    const event = streamEventFromBackfill(
-      {
-        id: "evt-1",
-        event_seq: 7,
-        event_log_epoch: "",
-        ts: "2026-07-16T00:00:00Z",
-        agent_id: "page-agent",
-        type: "brief_created",
-        payload_schema: "holon.runtime_event.brief_created",
-        payload_schema_version: 1,
-        payload: { brief_id: "brief-1" },
-      },
-      "subscribed-agent",
-      "epoch-1",
-    );
-
-    expect(event).toMatchObject({
-      event_log_epoch: "epoch-1",
-      agent_id: "subscribed-agent",
-      payload_schema: "holon.runtime_event.brief_created",
-      payload_schema_version: 1,
     });
   });
 });
@@ -1793,7 +1743,6 @@ describe("brief projection and hydration", () => {
   afterEach(() => {
     useRuntimeStore.setState({
       sessionsByAgentId: {},
-      globalStreamStatus: "idle",
       selectedAgentId: "",
     });
     vi.unstubAllGlobals();
@@ -2150,7 +2099,9 @@ describe("refreshAgentSkillCatalog bounded retry", () => {
 
   async function connectStreaming() {
     await useRuntimeStore.getState().setRuntimeConnection({ mode: "local" });
-    useRuntimeStore.setState({ globalStreamStatus: "streaming" });
+    useRuntimeStore.setState({
+      discovery: { mode: "authoritative", freshness: "fresh", retryAttempt: 0 },
+    });
   }
 
   it("stores an error placeholder so the fetch effect terminates, then retries with bounded backoff", async () => {
@@ -2186,7 +2137,7 @@ describe("refreshAgentSkillCatalog bounded retry", () => {
     const { fetchMock, calls } = skillsFetchMock(() => new Response("server error", { status: 500 }));
     vi.stubGlobal("fetch", fetchMock);
     await connectStreaming();
-    useRuntimeStore.setState({ globalStreamStatus: "reconnecting" });
+    useRuntimeStore.setState({ discovery: { mode: "authoritative", freshness: "stale", staleReason: "test", retryAttempt: 1 } });
 
     await useRuntimeStore.getState().refreshAgentSkillCatalog("agent-a");
     expect(calls()).toBe(1);
@@ -2195,7 +2146,7 @@ describe("refreshAgentSkillCatalog bounded retry", () => {
     // Paused while disconnected: no additional fetches at all.
     expect(calls()).toBe(1);
 
-    useRuntimeStore.setState({ globalStreamStatus: "streaming" });
+    useRuntimeStore.setState({ discovery: { mode: "authoritative", freshness: "fresh", retryAttempt: 0 } });
     await vi.advanceTimersByTimeAsync(120_000);
     // Resumed, and still bounded to three retries.
     expect(calls()).toBe(4);
