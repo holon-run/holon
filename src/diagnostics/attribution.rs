@@ -107,6 +107,7 @@ stages! {
     INDEX_PENDING_COUNT => "index.outbox.pending_count_query",
     INDEX_PENDING_OLDEST => "index.outbox.pending_oldest_query",
     CAPABILITY_PREFLIGHT => "http.projection.capability_preflight",
+    PREFLIGHT_ADMISSION_WAIT => "http.projection.preflight_admission_wait",
     PROJECTION_GATE => "http.projection.gate_decision",
     PROJECTION_FOLLOWER => "http.projection.follower_wait",
     PROJECTION_BUILD => "http.projection.leader_build",

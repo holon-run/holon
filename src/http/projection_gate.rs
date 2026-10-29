@@ -1,5 +1,5 @@
 use std::{
-    collections::HashMap,
+    collections::{HashMap, VecDeque},
     future::Future,
     sync::{Arc, Mutex},
 };
@@ -141,6 +141,8 @@ struct GateState {
     preflights: HashMap<u64, RuntimeDbReadScope>,
     next_waiter: u64,
     next_preflight: u64,
+    preflight_waiters: VecDeque<preflight::PreflightWaiter>,
+    next_preflight_waiter: u64,
     closed: bool,
 }
 

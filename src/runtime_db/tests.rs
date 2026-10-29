@@ -7160,14 +7160,18 @@ CREATE TABLE working_memory_deltas (
         drop(caller);
         let attempted = Arc::new(std::sync::atomic::AtomicBool::new(false));
         let observed = Arc::clone(&attempted);
-        let failure = gate
-            .preflight(deadline, move |_| {
-                observed.store(true, Ordering::SeqCst);
-                Ok(())
-            })
-            .await
-            .unwrap_err();
-        assert_eq!(failure.error_code(), Some("projection_preflight_saturated"));
+        let mut queued = Box::pin(gate.preflight::<(), _>(deadline, move |_| {
+            observed.store(true, Ordering::SeqCst);
+            Ok(())
+        }));
+        poll_fn(|cx| {
+            assert!(queued.as_mut().poll(cx).is_pending());
+            Poll::Ready(())
+        })
+        .await;
+        // The uncancellable writer keeps the only worker slot, so the second
+        // caller queues in bounded admission instead of running its SQL.
+        // Staying pending (rather than rejected) is the queued admission.
         assert!(!attempted.load(Ordering::SeqCst));
         let mut drain = Box::pin(gate.close_and_drain());
         poll_fn(|cx| {
@@ -7178,6 +7182,13 @@ CREATE TABLE working_memory_deltas (
         writer.rollback()?;
         tokio::time::timeout(Duration::from_secs(5), drain).await?;
         // Cancellation may reject the final scoped read, but cannot undo the heal.
+        // Close also failed the queued caller before it ever reached its SQL.
+        let failure = tokio::time::timeout(Duration::from_secs(5), queued)
+            .await
+            .unwrap()
+            .unwrap_err();
+        assert_eq!(failure.error_code(), Some("projection_leader_cancelled"));
+        assert!(!attempted.load(Ordering::SeqCst));
         assert!(db.observer_sync_foundations()?.agent_identity_reserved);
         Ok(())
     }

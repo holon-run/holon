@@ -1139,6 +1139,66 @@ mod tests {
         }
 
         #[tokio::test]
+        async fn concurrent_snapshots_share_one_gate_and_queue_admission() {
+            let (_home, host) = roster_test_host().await;
+            let mut state = AppState::for_tcp(host.clone());
+            state.projection_gate =
+                Arc::new(crate::http::ProjectionGate::new(1, Duration::from_secs(60)));
+            let app = crate::http::router(state.clone());
+            let send = |uri: &'static str| {
+                let app = app.clone();
+                async move {
+                    let response = app
+                        .oneshot(
+                            Request::builder()
+                                .method("GET")
+                                .uri(uri)
+                                .body(Body::empty())
+                                .unwrap(),
+                        )
+                        .await
+                        .unwrap();
+                    let status = response.status();
+                    let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+                    let value = serde_json::from_slice(&body).unwrap_or(serde_json::Value::Null);
+                    (status, value)
+                }
+            };
+            // Warm both routes so the burst also covers cache-hit preflights.
+            let (status, _) = send("/api/agents/snapshot").await;
+            assert_eq!(status, StatusCode::OK);
+            let (status, _) = send("/api/agents/web/projection-snapshot").await;
+            assert_eq!(status, StatusCode::OK);
+
+            // Short controlled overlap on one shared Router, AppState and
+            // gate: within the queue bound and the route budget every caller
+            // must succeed.
+            let mut set = tokio::task::JoinSet::new();
+            for uri in [
+                "/api/agents/snapshot",
+                "/api/agents/snapshot",
+                "/api/agents/snapshot",
+                "/api/agents/snapshot",
+                "/api/agents/web/projection-snapshot",
+                "/api/agents/web/projection-snapshot",
+                "/api/agents/web/projection-snapshot",
+                "/api/agents/web/projection-snapshot",
+            ] {
+                set.spawn(send(uri));
+            }
+            let mut served = 0usize;
+            while let Some(joined) = set.join_next().await {
+                let (status, body) = joined.expect("request task must finish");
+                assert_eq!(status, StatusCode::OK, "snapshot burst body: {body}");
+                served += 1;
+            }
+            assert_eq!(served, 8);
+            // No queue-full rejection occurred: a rejection would have been a
+            // 503 with projection_preflight_saturated, failing the asserts.
+            state.projection_gate.close_and_drain().await;
+        }
+
+        #[tokio::test]
         async fn roster_snapshot_agent_count_limit_is_all_or_nothing() {
             let (_home, host) = roster_test_host().await;
             let mut state = AppState::for_tcp(host);
