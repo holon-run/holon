@@ -298,18 +298,22 @@ cooldown parks at the earliest cooldown deadline instead of creating empty
 model turns, and lineage fallback accounting includes these failure kinds so
 an exhausted chain terminates explicitly instead of deferring forever.
 
-Adapter-internal correctable dispatches share one exception: the dispatch
-declares before dispatch that its contract rejection will be corrected
-in-turn, and such a rejection is settled as a non-candidate-fatal outcome.
-Two forms exist today. A continuation-form dispatch with a prepared lossless
-replay re-sends the same inference on the same candidate, so the rejection
-must not cool down or consume it ahead of that replay. An auxiliary
-remote-compaction probe is skipped gracefully when its endpoint answers
-404/405/410/501 or rejects non-persisted item ids, so its rejection must not
-cool down or consume the candidate ahead of the main inference dispatch that
-follows in the same turn. Auth failures never take this exception: replaying
-without a continuation reference cannot fix a dead credential, so the futile
-re-send stays fenced.
+Adapter-internal correctable dispatches share one exception family: the
+dispatch declares before dispatch which rejection the adapter will correct
+in-turn, and that rejection is settled as a non-candidate-fatal outcome.
+Three forms exist today. A continuation-form dispatch with a prepared
+lossless replay re-sends the same inference on the same candidate, so its
+contract rejection must not cool down or consume it ahead of that replay.
+An auxiliary remote-compaction probe is skipped gracefully when its
+endpoint answers 404/405/410/501 or rejects non-persisted item ids, so its
+rejection must not cool down or consume the candidate ahead of the main
+inference dispatch that follows in the same turn. An authenticated dispatch
+backed by a refreshable OAuth credential profile forces a token refresh and
+re-sends the same inference, so its auth rejection must not cool down or
+consume the candidate ahead of that resend; the forced refresh happens at
+most once per send, keeping the path bounded. Auth failures without a
+refreshable credential stay fenced: re-sending with a static, dead
+credential cannot fix anything.
 
 An unavailable scope moves from cooling to a leased probe, not directly to
 healthy when its deadline passes. One database transaction reserves every

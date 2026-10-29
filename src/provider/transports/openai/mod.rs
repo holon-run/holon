@@ -656,6 +656,16 @@ impl AgentProvider for OpenAiProvider {
                 guard.declare_adapter_correctable_dispatch();
             }
         }
+        // An authenticated dispatch backed by a refreshable credential
+        // profile is not candidate-fatal on auth rejection: the adapter
+        // forces a token refresh and resends the same inference in this
+        // turn. Tell the guard before the send so the rejection cannot cool
+        // down or consume the candidate ahead of that resend.
+        if self.auth.can_refresh_auth_headers() {
+            if let Some(guard) = request.dispatch_guard.as_deref() {
+                guard.declare_auth_refreshable_dispatch();
+            }
+        }
         let parsed = match send_openai_responses_for_contract(
             self.endpoint_contract.transport,
             &self.client,

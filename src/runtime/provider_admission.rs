@@ -272,6 +272,10 @@ struct RequestState {
     /// can skip); it is not candidate fatal. Consumed by the next
     /// `after_request` settlement.
     adapter_correctable_dispatch: bool,
+    /// The in-flight dispatch's auth rejection is adapter-correctable
+    /// in-turn (a prepared credential refresh and resend); it is not
+    /// candidate fatal. Consumed by the next `after_request` settlement.
+    auth_refreshable_dispatch: bool,
     side_effect_boundary: bool,
 }
 
@@ -408,6 +412,12 @@ impl ProviderDispatchGuard for ProviderTurnAdmission {
         }
     }
 
+    fn declare_auth_refreshable_dispatch(&self) {
+        if let Ok(mut state) = self.state.lock() {
+            state.auth_refreshable_dispatch = true;
+        }
+    }
+
     fn before_dispatch(&self) -> Result<()> {
         let now = self.clock.now();
         let mut state = self
@@ -502,6 +512,8 @@ impl ProviderDispatchGuard for ProviderTurnAdmission {
         };
         let adapter_correctable_dispatch = state.adapter_correctable_dispatch;
         state.adapter_correctable_dispatch = false;
+        let auth_refreshable_dispatch = state.auth_refreshable_dispatch;
+        state.auth_refreshable_dispatch = false;
         let lease = state
             .lease
             .take()
@@ -566,6 +578,12 @@ impl ProviderDispatchGuard for ProviderTurnAdmission {
                         &self.candidate.payment,
                         ProviderCooldownPolicy::PaymentRequired,
                     )),
+                    ProviderFailureKind::AuthError if auth_refreshable_dispatch => {
+                        // The adapter refreshes the credential and resends
+                        // this inference in-turn: consuming the candidate
+                        // would block the corrected same-turn send.
+                        None
+                    }
                     ProviderFailureKind::AuthError => Some((
                         &self.candidate.rate_limit,
                         ProviderCooldownPolicy::Credential,
@@ -1209,6 +1227,7 @@ impl RuntimeHandle {
                                 unknown_dispatch: false,
                                 dispatched: false,
                                 adapter_correctable_dispatch: false,
+                                auth_refreshable_dispatch: false,
                                 side_effect_boundary: episode.side_effect_boundary,
                             }),
                             input_fence: Mutex::new(None),
