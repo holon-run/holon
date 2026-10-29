@@ -55,7 +55,7 @@ order: 30
   <!-- mdorigin:index kind=article -->
 
 - [搭建 AI Agent 生态研究员：跨多开源项目的持续深度调研](./build-agent-ecosystem-researcher.md)
-  复用 Research Steward 模板与多 Workspace 挂载机制，打造一个持续跟踪开源生态、保持代码库纯净并沉淀证据资产库的研究 Agent。
+  复用 Research Steward 模板与多 Workspace 机制。深入剖析 Agent 自动维护知识库的底层原理，展示让 Agent 自动克隆挂载仓库、精简指令交互，以及移动端随手转发链接的异步调研工作流。
   <!-- mdorigin:index kind=article -->
 
 - [使用 holon solve 处理 GitHub 任务](./run-github-task.md)

@@ -45,11 +45,11 @@ Use [Reference](../reference/) for complete command syntax and schemas.
   <!-- mdorigin:index kind=article -->
 
 - [Run a long-lived task](./run-long-lived-task.md)
-  Track one objective across sessions, wait for dependencies, and verify its completion report.
+  Keep an agent working after closing your terminal, wait for dependencies, and retrieve the same task result across sessions.
   <!-- mdorigin:index kind=article -->
 
 - [Delegate work to another agent](./delegate-work.md)
-  Choose a child or peer, follow its reply, verify the result, and clean up owned children.
+  Choose a child or peer, hand off committed revisions for review, verify results, and clean up owned children.
   <!-- mdorigin:index kind=article -->
 
 - [Run a GitHub task with holon solve](./run-github-task.md)
@@ -61,7 +61,7 @@ Use [Reference](../reference/) for complete command syntax and schemas.
   <!-- mdorigin:index kind=article -->
 
 - [Schedule agent work](./schedule-agent-work.md)
-  Create a one-off or recurring timer, verify the resulting work, and cancel the schedule.
+  Schedule an authorized read-only check, verify the resulting work, and cancel the timer.
   <!-- mdorigin:index kind=article -->
 
 - [Automate Holon over HTTP](./automate-over-http.md)
@@ -81,7 +81,7 @@ Use [Reference](../reference/) for complete command syntax and schemas.
   <!-- mdorigin:index kind=article -->
 
 - [Connect to a remote Holon runtime](./connect-remote-runtime.md)
-  Reach a runtime running on another machine and verify the connection.
+  Reach a runtime from another computer or mobile phone and retrieve task results.
   <!-- mdorigin:index kind=article -->
 
 - [Use the Web GUI](./use-web-gui.md)
@@ -89,7 +89,7 @@ Use [Reference](../reference/) for complete command syntax and schemas.
   <!-- mdorigin:index kind=article -->
 
 - [Configure OIDC authentication](./configure-oidc-authentication.md)
-  Set up OpenID Connect single sign-on, configure session policies, and audit user prompts.
+  Set up OpenID Connect single sign-on, attribute prompts in shared team runtimes, tune session policies, and audit user activity.
   <!-- mdorigin:index kind=article -->
 
 - [Connect with the Android client](./connect-android-client.md)

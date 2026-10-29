@@ -1,6 +1,6 @@
 ---
 title: 搭建 AI Agent 生态研究员：跨多开源项目的持续深度调研
-summary: 结合 Web GUI 与 CLI 操作，复用 Research Steward 模板与多 Workspace 机制。深入剖析 Agent 自动维护知识库的底层原理，并介绍移动端随手转发链接、异步生成调研报告的日常交互。
+summary: 复用 Research Steward 模板与多 Workspace 机制。深入剖析 Agent 自动维护知识库的底层原理，展示让 Agent 自动克隆挂载仓库、精简指令交互，以及移动端随手转发链接的异步调研工作流。
 order: 85
 ---
 
@@ -15,9 +15,10 @@ order: 85
 本指南演示如何利用 Holon 的 **Research Steward（研究管家）模板** 理念以及 **多工作区挂载（Multi-Workspace Attach）机制**，搭建一个名为 `ecosystem-researcher` 的长效技术调研 Agent。
 
 在这个体系中：
-- **双模操作**：创建 Agent、挂载工作区等配置，既可通过直观的 **Web GUI** 在浏览器中点选完成，也可通过 **CLI 命令行** 快速执行；
-- **全自动维护**：日常使用时你无需手动建立目录或编写配置文件，Agent 会全自动维护其私有知识库，本文将详细拆解其**背后的结构化设计原理**；
-- **日常随手交互**：支持在手机端或桌面端直接向 Agent 转发开源项目链接或文档，由 Agent 在后台异步完成深度调研并推送简报。
+- **模板开箱即用**：从研究模板创建的 Agent 默认装配了调研所需技能，无需繁琐的手动配置；
+- **全自动维护与挂载**：无需提前手动克隆仓库，直接让 Agent 自动克隆并挂载工作区；日常使用无需手动建目录或写配置，Agent 全自动维护私有知识库，本文将剖析其**背后的结构化沉淀原理**；
+- **极简指令交互**：代码定位准则、事实推论区分与产物归档路径已内置在长效契约中，日常发任务只需一两句自然表达；
+- **日常随手交互**：在手机端或桌面端直接向 Agent 转发开源项目链接或文档，由 Agent 在后台异步完成深度调研，点击产物链接即可阅读。
 
 ## 核心心智模型
 
@@ -34,89 +35,68 @@ order: 85
 
 3. **Agent 专属 Home 与外部代码工作区解耦**：
    - **`agent_home`**：Agent 的独立私有空间，用于保存该 Agent 的长期知识库、调研登记表（`registry.yaml`）、生态分类法（`taxonomy.md`）和历史产物；
-   - **挂载外部 Workspace**：将多个外部开源代码仓库作为只读工作区挂载进来。Agent 可以平滑切换执行根进行跨项目源码审查，而不会把任何研究过程产物写入外部代码库，保持仓库绝对纯净。
+   - **挂载外部 Workspace**：将多个外部开源代码仓库作为工作区挂载进来。Agent 可以平滑切换执行根进行跨项目源码审查，而不会把任何研究过程产物写入外部代码库，保持被观察项目绝对纯净。
 
 4. **多端触达与异步任务机制**：
    依托 Holon 的持久化守护进程与 WorkItem 机制，调研任务支持真正的异步执行。你在移动端随手分享一个 GitHub 链接，便可关闭屏幕离开；Agent 在后台持续抓取、分析、比对，完成后自动呈递交付简报。
 
 ## 前置条件
 
-- 本地已安装并启动 Holon 守护进程（默认启用内嵌 Web GUI，可通过浏览器访问 `http://localhost:8080`；终端中 `holon` CLI 亦可用）。
-- 本地磁盘已克隆或准备好若干需要被观察的开源项目仓库（例如本文示例中的两个项目）：
-  - `/home/user/src/github.com/org/project-a`
-  - `/home/user/src/github.com/org/project-b`
-  *(若仅做网络调研或文档对比，可直接使用后续介绍的链接转发模式)*。
+- 本地已安装并启动 Holon 守护进程（Web GUI 默认在 `http://localhost:8080`，终端 `holon` CLI 亦可用）。
+- **无需提前在本地克隆代码仓库**：你可以直接将 GitHub 仓库地址发给 Agent，由 Agent 自行完成克隆并添加为工作区；若本地已有项目目录，也可直接指定路径。
 
 ## 操作步骤
 
-### 1. 从研究模板创建 Agent 并配置专业技能
+### 1. 从研究模板创建 Agent
 
-Holon 提供了面向深度调研场景的 Agent 模板 `research-steward`，预置了严谨的证据收集契约。你可以选择使用 **Web GUI** 或 **CLI 命令行** 完成创建。
+Holon 提供了面向深度调研场景的 Agent 模板 `research-steward`，预置了严谨的证据收集契约。
+
+> **默认携带技能说明**：
+> `research-steward` 模板在创建时已默认包含技术调研所需的技能集（如 `ghx` 用于获取 GitHub 数据与源码检索、`sview` 用于结构化只读代码审查、`writing-clearly-and-concisely` 保证简报精炼严谨等）。**创建完成后即可直接使用，无需再单独配置或手动启用这些技能**。
 
 #### 方式 A：通过 Web GUI 操作
 
 1. **打开 Web GUI**：在浏览器中访问 Holon Web GUI（例如 `http://localhost:8080`）。
-2. **从模板创建 Agent**：
+2. **创建 Agent**：
    - 在左侧导航栏点击 **Templates**（`/templates`）；
-   - 在模板列表中找到 `research-steward`（如未安装，可点击 **Install Template** 输入对应源进行安装）；
+   - 在模板列表中找到 `research-steward`；
    - 点击 **Create Agent** 按钮，在弹出表单中输入：
      - **Agent ID**：`ecosystem-researcher`
      - **名称**：`生态调研员`
    - 点击确认创建。
-3. **启用调研必备的 Skill**：
-   - 前往导航栏的 **Skills**（`/skills`）页面；
-   - 找到并为 `ecosystem-researcher` 开启以下专业技能：
-     - `ghx`：用于精准读取 GitHub 仓库的 Release、Issue、PR 与提交历史；
-     - `sview`：提供结构化、只读的文件审查与切片浏览能力；
-     - `citation-verifier`：核验引文真实性与来源对应关系；
-     - `writing-clearly-and-concisely`：保证研究简报风格清晰、精炼，避免大模型套话。
 
 #### 方式 B：通过 CLI 终端操作
 
-在终端中依次运行以下命令：
+在终端中运行一行命令完成创建：
 
-1. **创建研究 Agent 实例**：
+```bash
+holon agent create ecosystem-researcher --template research-steward --name "生态调研员"
+```
 
-   ```bash
-   holon agent create ecosystem-researcher --template research-steward --name "生态调研员"
-   ```
+创建完成后，该 Agent 根目录下的 `AGENTS.md`（位于 `~/.holon/agents/ecosystem-researcher/AGENTS.md`）已完整载入长效角色契约与证据准则。
 
-2. **按需启用调研必备的 Skill**：
+### 2. 添加多个开源项目工作区（Workspaces）
 
-   ```bash
-   holon skills enable ghx --agent ecosystem-researcher
-   holon skills enable sview --agent ecosystem-researcher
-   holon skills enable citation-verifier --agent ecosystem-researcher
-   holon skills enable writing-clearly-and-concisely --agent ecosystem-researcher
-   ```
+若需让 Agent 深入分析本地源码，可通过多工作区机制将目标项目连接进来。
 
-无论通过 GUI 还是 CLI 创建，该 Agent 根目录下的 `AGENTS.md`（位于 `~/.holon/agents/ecosystem-researcher/AGENTS.md`）均已写入长效角色契约。
+#### 方式 A：直接在对话中让 Agent 自动克隆并挂载（推荐）
 
-### 2. 挂载多个开源项目工作区（Multi-Workspace Attach）
+目前 Web GUI 尚未提供独立的 Attach Workspace 图形按钮，最简便直接的做法是在对话框中直接告诉 Agent：
 
-若需让 Agent 深入本地源码进行 AST 级架构拆解，可通过工作区挂载将其与外部项目连接起来。
+> “帮我把 https://github.com/org/project-a 和 https://github.com/org/project-b 克隆到本地，并添加为你的工作区。”
 
-#### 方式 A：通过 Web GUI 操作
+Agent 收到后会自动在本地拉取仓库，并通过 Holon 内置的工作区工具自动完成挂载。
 
-1. 在 Web GUI 左侧选择 `ecosystem-researcher`，进入该 Agent 的详情视图；
-2. 点击 **Settings** 或 **Workspaces** 面板，点击 **Attach Workspace**；
-3. 分别选择或输入本地已克隆的开源项目绝对路径（如 `/home/user/src/github.com/org/project-a` 与 `/home/user/src/github.com/org/project-b`），点击挂载；
-4. 挂载完成后，可在工作区列表中清晰看到这两个关联仓库，而 Agent 的主执行根依然稳妥保持在其私有的 `agent_home`。
+#### 方式 B：通过 CLI 挂载本地已有目录
 
-#### 方式 B：通过 CLI 终端操作
+如果本地已有克隆好的代码仓库，也可以在终端中直接挂载：
 
-1. **将多个外部开源项目挂载至该 Agent**：
+```bash
+holon workspace attach --agent ecosystem-researcher /path/to/project-a
+holon workspace attach --agent ecosystem-researcher /path/to/project-b
+```
 
-   ```bash
-   # 挂载项目 A
-   holon workspace attach --agent ecosystem-researcher /home/user/src/github.com/org/project-a
-
-   # 挂载项目 B
-   holon workspace attach --agent ecosystem-researcher /home/user/src/github.com/org/project-b
-   ```
-
-2. **验证 Agent 的工作区挂载状态**：
-
+验证挂载状态：
    ```bash
    holon agent get ecosystem-researcher
    ```
@@ -186,33 +166,25 @@ objects:
 
 ### 4. 发起一次跨项目的深度架构对比任务
 
-通过 Web GUI 对话框或 CLI / TUI 向 Agent 发送横向调研任务：
+向 Agent 下发任务非常简单，**不需要在每次发送时重复写大段格式与证据约束**，因为这些规则已经固化在 Agent 的 `AGENTS.md` 中：
 
-**任务指令示例（直接发送给 Agent）**：
+**任务指令示例（直接在对话框中发送）**：
 
-> “请对已挂载的 project-a 与 project-b 进行一次横向技术调研：
-> 1. 分别审查两者在 Agent 进程调度与上下文中断恢复机制上的实现；
-> 2. 给出关键代码位置（包括 commit 与行号范围）；
-> 3. 比较两者在长任务持久化设计上的优缺点；
-> 4. 将对比结果沉淀到 `work/agent-ecosystem/matrices/task-resumption.md`，并更新两项目的 `architecture.md`。”
+> “调研一下 project-a 与 project-b 在进程调度与中断恢复机制上的实现差异，做个对比。”
 
 **Agent 收到指令后的自动化闭环**：
-1. **自动切换执行根**：Agent 调用 `SwitchWorkspace` 将执行上下文临时切换到 `project-a`，利用只读工具（`sview` 或 `rg`）分析代码，摘录确凿的行号与提交 SHA；
-2. **交叉审查对照组**：Agent 再次切换到 `project-b`，审查其对应的调度抽象与恢复逻辑；
-3. **自动写回私有知识库**：分析完毕后，Agent 切回 `agent_home`，将比对结论自动写入 `matrices/task-resumption.md`，并同步丰富单项目的 `architecture.md`；
-4. **呈递精简交付简报**：在对话界面中返回结论概要与引证清单，包含清晰的事实与架构推论区分。
+1. **自动切换执行根深入源码**：Agent 调用 `SwitchWorkspace` 临时切换到 `project-a` 与 `project-b`，利用 `sview` 等只读工具检索关键抽象，记录代码行号范围与 Commit SHA；
+2. **自主沉淀比对矩阵**：根据契约，Agent 分析完成后切回 `agent_home`，将结论写入 `work/agent-ecosystem/matrices/task-resumption.md`，并同步更新单项目的 `architecture.md`；
+3. **呈递精简交付简报**：在对话中返回结构化摘要与结论，并附带产物链接。
 
 ### 5. 验证调研产物与隔离效果
 
 1. **查看调研成果**：
-   - **Web GUI 方式**：在 Web GUI 的对话结果中直接查看 Agent 回复的精炼简报；点击关联产物链接或在左侧文件浏览器中打开 `work/agent-ecosystem/matrices/task-resumption.md` 阅读完整报告；
-   - **CLI 方式**：运行命令查看生成的内容：
-     ```bash
-     cat ~/.holon/agents/ecosystem-researcher/work/agent-ecosystem/matrices/task-resumption.md
-     ```
+   任务完成后，Agent 会在对话中输出结论摘要。
+   - **直接阅读完整报告**：点击简报中的**关联产物链接**，或者在 Web GUI 左侧文件浏览器中打开 `work/agent-ecosystem/matrices/task-resumption.md` 即可查阅完整比对矩阵。
 
 2. **核验外部代码库绝对纯净**：
-   检查挂载的被测项目 Git 状态：
+   Agent 产生的所有文件、分析笔记和矩阵全部安全保存在其私有的 `agent_home` 中。被观察项目的 Git 状态依然保持绝对纯净：
    ```bash
    git -C /home/user/src/github.com/org/project-a status
    git -C /home/user/src/github.com/org/project-b status
