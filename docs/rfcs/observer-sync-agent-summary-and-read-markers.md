@@ -71,11 +71,38 @@ bootstrap, explicit refresh, local membership changes, and resume.
 Transient roster failures retain bounded retries and `Retry-After`; roster
 HTTP 401 is the live authorization-rejection signal.
 
-The browser event ledger still independently replays HTTP event pages from
-roster recovery hints. Its diagnostic bridge and the server events APIs remain
-unchanged in this slice; complete ledger retirement is a separate follow-up.
-The SSE reconnect steps below describe the earlier design, not the current
-Web GUI transport.
+Slice 3 retires the browser event ledger, its restart scan, roster recovery
+hints, hydration pipeline, and raw Timeline Events panel. The Web GUI has no
+event-page or event-stream client. The server's canonical events APIs remain
+unchanged. Conversation snapshots and Brief caches retain their independent
+IndexedDB offline lifecycle; legacy session cleanup must not clear them.
+The retired ledger database is no longer opened or used as a readiness source.
+
+Brief read-marker advancement now requires the selected, visible, uncovered
+conversation to be ready, outside browsing/source navigation, and at or beyond
+the server read-state head. Its runtime, visibility scope, and epoch must match
+fresh roster discovery and the server read-state identity. Only that observed
+head is acknowledged, never an unrendered newer head. Catch-up retries follow
+the displayed conversation's `through_seq`, not a raw-event ingestion cursor.
+The existing cross-tab channel still only requests server revalidation.
+This acknowledges the displayed conversation scope/head, not successful lazy
+Brief-body hydration: loading or failed Brief text does not block it. Unlike
+the retired ledger's full hydration gate, it does not prove that the canonical
+Brief text has been presented.
+
+E2E diagnostic ledger methods remain compatibility tombstones: status explicitly
+reports `retired` / `unavailable`, snapshots return null, and partitions are
+empty. They never reopen the old database or claim successful ingestion.
+Conversation diagnostics expose the actual selected scope's status, epoch,
+through-sequence and item identities. The current persistent web observer uses
+network/DOM/runtime-trace evidence and does not require the old ledger methods.
+Production builds exclude the E2E bridge and raw events endpoint strings;
+browser acceptance also rejects raw events requests on the wire. CI runs the
+DOM/network scenario against static production assets without the bridge,
+covering bootstrap, selection, refresh, reconnect, and epoch rotation.
+
+The browser-ledger storage and SSE recovery steps below describe the earlier
+design, not the current Web GUI implementation.
 
 This RFC replaces the previous design in this file. The previous design
 proposed an observer-scoped sync token, `observer_change_seq`, Agent

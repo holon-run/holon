@@ -13,6 +13,23 @@ describe("panel preferences", () => {
     expect(stored).not.toContain("private message");
     expect(readPanelPreferences().view).toEqual({ kind: "agent_overview", agentId: "a" });
   });
+  it("restores a retired timeline events panel as the agent overview without retaining raw data", () => {
+    let stored = JSON.stringify({
+      open: true,
+      mode: "expanded",
+      view: { kind: "timeline_events", agentId: "a", events: [{ payload: "private message" }] },
+    });
+    vi.stubGlobal("localStorage", { getItem: () => stored, setItem: (_key: string, value: string) => { stored = value; } });
+    const preferences = readPanelPreferences();
+    expect(preferences).toEqual({
+      open: true,
+      mode: "expanded",
+      view: { kind: "agent_overview", agentId: "a" },
+    });
+    writePanelPreferences(preferences);
+    expect(stored).not.toContain("timeline_events");
+    expect(stored).not.toContain("private message");
+  });
   it("falls back safely when storage is blocked or corrupt", () => {
     vi.stubGlobal("localStorage", { getItem: () => "broken", setItem: () => { throw new Error("blocked"); } });
     expect(readPanelPreferences()).toEqual({ open: false, mode: "normal" });

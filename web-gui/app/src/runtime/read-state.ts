@@ -16,15 +16,12 @@ export interface ConversationReadContext {
   conversationReady: boolean;
 }
 
-export interface LedgerReadMarkerGateInput extends ConversationReadContext {
+export interface ConversationReadMarkerGateInput extends ConversationReadContext {
   conversationVisible?: boolean;
   discoveryFresh: boolean;
-  readiness: {
-    readyThroughSeq: number;
-    ingestedThroughSeq: number;
-    observedHeadSeq?: number;
-    blockedByEventSeq?: number;
-  } | null;
+  scopeCurrent: boolean;
+  throughSeq: number | null;
+  observedHeadSeq?: number;
 }
 
 export type ReadMarkerGateReason =
@@ -33,10 +30,9 @@ export type ReadMarkerGateReason =
   | "document_hidden"
   | "session_not_ready"
   | "discovery_stale"
-  | "ledger_unavailable"
+  | "scope_mismatch"
   | "no_observed_head"
-  | "not_caught_up"
-  | "blocked_by_invalidation";
+  | "not_caught_up";
 
 export interface ReadMarkerDecision {
   mayAdvance: boolean;
@@ -44,8 +40,8 @@ export interface ReadMarkerDecision {
   reason?: ReadMarkerGateReason;
 }
 
-export function evaluateLedgerReadMarkerGate(
-  input: LedgerReadMarkerGateInput,
+export function evaluateConversationReadMarkerGate(
+  input: ConversationReadMarkerGateInput,
   agentId: string,
 ): ReadMarkerDecision {
   if (input.route !== "agent" || input.selectedAgentId !== agentId) {
@@ -63,22 +59,15 @@ export function evaluateLedgerReadMarkerGate(
   if (!input.discoveryFresh) {
     return { mayAdvance: false, reason: "discovery_stale" };
   }
-  if (!input.readiness) {
-    return { mayAdvance: false, reason: "ledger_unavailable" };
+  if (!input.scopeCurrent) {
+    return { mayAdvance: false, reason: "scope_mismatch" };
   }
-  const head = input.readiness.observedHeadSeq;
+  const head = input.observedHeadSeq;
   if (head == null || head <= 0) {
     return { mayAdvance: false, reason: "no_observed_head" };
   }
-  if (input.readiness.ingestedThroughSeq < head) {
+  if (input.throughSeq == null || input.throughSeq < head) {
     return { mayAdvance: false, reason: "not_caught_up" };
-  }
-  if (input.readiness.readyThroughSeq < head) {
-    return { mayAdvance: false, reason: "blocked_by_invalidation" };
-  }
-  const blockedAt = input.readiness.blockedByEventSeq;
-  if (blockedAt != null && blockedAt > input.readiness.readyThroughSeq) {
-    return { mayAdvance: false, reason: "blocked_by_invalidation" };
   }
   return { mayAdvance: true, candidateSeq: head };
 }

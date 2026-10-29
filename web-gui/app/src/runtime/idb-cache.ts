@@ -27,40 +27,6 @@ export const CONVERSATION_CACHE_MAX_ENTRIES = 500;
 let pruneTimer: ReturnType<typeof setTimeout> | undefined;
 let clearGeneration = 0;
 
-export interface CachedSyncCoverage {
-  eventLogEpoch?: string;
-  contiguousSeq: number;
-  observedSeq: number;
-  retainedOldestSeq?: number;
-  retainedNewestSeq?: number;
-  gaps: Array<{ afterSeq: number; beforeSeq: number }>;
-}
-
-export interface CachedSemanticHistoryState {
-  eventLogEpoch?: string;
-  cursorSeq?: number;
-  hasOlder: boolean;
-}
-
-export interface CachedAgentSession {
-  remoteKey: string;
-  agentId: string;
-  schemaVersion: number;
-  projectionGeneration?: number;
-  agentSummary?: unknown;
-  eventLogEpoch?: string;
-  eventsBySeq: Record<number, unknown>;
-  eventSeqs: number[];
-  messagesById: Record<string, unknown>;
-  transcriptEntriesById: Record<string, unknown>;
-  briefRecordsById: Record<string, unknown>;
-  newestSeq?: number;
-  oldestSeq?: number;
-  syncCoverage?: CachedSyncCoverage;
-  semanticHistoryByDisplayLevel?: Record<string, CachedSemanticHistoryState>;
-  cachedAt: number;
-}
-
 export interface CachedModelCatalog {
   remoteKey: string;
   schemaVersion: number;
@@ -186,52 +152,6 @@ function runRequest<T>(
   });
 }
 
-export async function cachePutSession(session: CachedAgentSession): Promise<void> {
-  const db = await openDB();
-  if (!db) return;
-  try {
-    await runRequest(db, SESSIONS_STORE, "readwrite", (store) => store.put(session));
-  } catch {
-    // Silent fallback — cache is best-effort.
-  }
-}
-
-export async function cacheGetSession(remoteKey: string, agentId: string): Promise<CachedAgentSession | undefined> {
-  const db = await openDB();
-  if (!db) return undefined;
-  try {
-    return await runRequest<CachedAgentSession>(db, SESSIONS_STORE, "readonly", (store) =>
-      store.get([remoteKey, agentId]),
-    );
-  } catch {
-    return undefined;
-  }
-}
-
-export async function cacheGetAllSessions(remoteKey: string): Promise<CachedAgentSession[]> {
-  const db = await openDB();
-  if (!db) return [];
-  try {
-    const index = db.transaction(SESSIONS_STORE, "readonly").objectStore(SESSIONS_STORE).index("byRemoteKey");
-    return await new Promise<CachedAgentSession[]>((resolve, reject) => {
-      const result: CachedAgentSession[] = [];
-      const request = index.openCursor(IDBKeyRange.only(remoteKey));
-      request.onsuccess = () => {
-        const cursor = request.result;
-        if (cursor) {
-          result.push(cursor.value as CachedAgentSession);
-          cursor.continue();
-        } else {
-          resolve(result);
-        }
-      };
-      request.onerror = () => reject(request.error);
-    });
-  } catch {
-    return [];
-  }
-}
-
 export async function cacheDeleteSession(remoteKey: string, agentId: string): Promise<void> {
   const db = await openDB();
   if (!db) return;
@@ -248,9 +168,12 @@ export async function cacheDeleteSession(remoteKey: string, agentId: string): Pr
  * conversation-content cache namespace after the conversation read-model
  * cutover.
  */
-export async function cacheClearRemoteSessions(remoteKey: string): Promise<void> {
+export async function cacheClearRemoteSessions(
+  remoteKey: string,
+  isCurrent: () => boolean = () => true,
+): Promise<void> {
   const db = await openDB();
-  if (!db) return;
+  if (!db || !isCurrent()) return;
   try {
     await new Promise<void>((resolve, reject) => {
       const store = db.transaction(SESSIONS_STORE, "readwrite").objectStore(SESSIONS_STORE);
@@ -490,55 +413,6 @@ export async function pruneConversationCaches(): Promise<void> {
       }
     });
   } catch { /* storage unavailable */ }
-}
-
-/**
- * Check if the cache schema is compatible. If any cached entry has a
- * mismatched schema version, wipe the entire database and return false.
- */
-export async function ensureCacheSchemaVersion(): Promise<boolean> {
-  const db = await openDB();
-  if (!db) return false;
-  try {
-    const store = db.transaction(SESSIONS_STORE, "readonly").objectStore(SESSIONS_STORE);
-    const incompatible = await new Promise<boolean>((resolve, reject) => {
-      const request = store.openCursor();
-      let foundIncompatible = false;
-      request.onsuccess = () => {
-        const cursor = request.result;
-        if (cursor) {
-          const entry = cursor.value as CachedAgentSession;
-          if (entry.schemaVersion !== CACHE_SCHEMA_VERSION) {
-            foundIncompatible = true;
-            resolve(true);
-            return;
-          }
-          cursor.continue();
-        } else {
-          resolve(foundIncompatible);
-        }
-      };
-      request.onerror = () => reject(request.error);
-    });
-    if (incompatible) {
-      db.close();
-      dbPromise = null;
-      await new Promise<void>((resolve) => {
-        try {
-          const req = indexedDB.deleteDatabase(DB_NAME);
-          req.onsuccess = () => resolve();
-          req.onerror = () => resolve();
-          req.onblocked = () => resolve();
-        } catch {
-          resolve();
-        }
-      });
-      return false;
-    }
-    return true;
-  } catch {
-    return false;
-  }
 }
 
 /** Reset the DB promise (test utility). */

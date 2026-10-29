@@ -1,8 +1,12 @@
 import http from "node:http";
+import { readFile } from "node:fs/promises";
+import path from "node:path";
 import { createServer as createViteServer } from "vite";
 import { tourAgents, tourApi, seedTour } from "./tour/scenario.mjs";
 
 const tour = process.argv.includes("--tour");
+const production = process.env.HOLON_E2E_PRODUCTION === "1";
+const productionRoot = new URL("../dist/", import.meta.url);
 
 const requestedPort = Number(process.argv[process.argv.indexOf("--port") + 1]);
 if (!Number.isInteger(requestedPort) || requestedPort <= 0) {
@@ -13,7 +17,7 @@ const sessions = new Map();
 const EVENT_CONTRACT_VERSION = "3";
 const EVENT_CONTRACT_VERSION_HEADER = "x-holon-event-contract-version";
 
-const vite = await createViteServer({
+const vite = production ? null : await createViteServer({
   appType: "spa",
   mode: "e2e",
   server: { hmr: false, middlewareMode: true, allowedHosts: ["holon-http.test"] },
@@ -43,8 +47,6 @@ function sessionFor(req, url) {
       requests: [],
       abortRequests: [],
       abortResponse: null,
-      globalStreams: new Set(),
-      agentStreams: new Set(),
       conversationStreams: new Set(),
       conversationData: new Map(),
       visibleAgentIds: tour ? tourAgents.map((agent) => agent.id) : ["bootstrap-agent"],
@@ -55,7 +57,6 @@ function sessionFor(req, url) {
       blockedBriefIds: new Set(),
       briefReadCursors: new Map(),
       failConversationByAgentId: new Set(),
-      streamGeneration: 0,
       runtimeId: "e2e-runtime",
       eventLogEpoch: "e2e-epoch",
       visibilityScopeId: "e2e-scope",
@@ -103,6 +104,12 @@ function openEventStream(req, res, clients) {
  * brief_created event becomes one settled operator turn carrying the brief,
  * so the GUI timeline can render brief results on demand.
  */
+function conversationCursor(session, agentId, head) {
+  return Buffer.from(JSON.stringify([
+    session.runtimeId, session.visibilityScopeId, session.eventLogEpoch, agentId, head,
+  ])).toString("base64url");
+}
+
 function conversationTurns(session, agentId) {
   return (session.eventsByAgentId.get(agentId) ?? [])
     .filter(
@@ -285,16 +292,6 @@ function projectionSnapshot(session, agentId) {
   };
 }
 
-function writeEvent(streams, envelope) {
-  const frame = `data: ${JSON.stringify(envelope)}\n\n`;
-  for (const stream of streams) stream.write(frame);
-}
-
-function writeRosterHint(streams, agentId) {
-  const frame = `event: agent_roster_hint\ndata: ${JSON.stringify({ agent_id: agentId })}\n\n`;
-  for (const stream of streams) stream.write(frame);
-}
-
 async function handleControl(req, res, url) {
   if (url.pathname === "/__e2e__/health") {
     json(res, { ok: true });
@@ -310,9 +307,6 @@ async function handleControl(req, res, url) {
       requests: session.requests,
       abortRequests: session.abortRequests,
       visibleAgentIds: session.visibleAgentIds,
-      globalStreamCount: session.globalStreams.size,
-      agentStreamCount: session.agentStreams.size,
-      streamGeneration: session.streamGeneration,
       blockedBriefIds: [...session.blockedBriefIds],
       runtimeId: session.runtimeId,
       eventLogEpoch: session.eventLogEpoch,
@@ -322,12 +316,9 @@ async function handleControl(req, res, url) {
   }
   if (url.pathname === "/__e2e__/disconnect-streams" && req.method === "POST") {
     const session = sessionFor(req, url);
-    for (const stream of [...session.globalStreams, ...session.agentStreams]) {
-      stream.end();
-    }
+    // Raw global/agent event streams are retired (#3808); only the
+    // conversation read-model stream remains for this control.
     for (const stream of session.conversationStreams) stream.end();
-    session.globalStreams.clear();
-    session.agentStreams.clear();
     session.conversationStreams.clear();
     json(res, { disconnected: true });
     return true;
@@ -359,7 +350,8 @@ async function handleControl(req, res, url) {
       ...Object.entries(data.invalidateOnly ? {} : data.activitiesByTurnId).flatMap(([turn_id, activities]) =>
         activities.map((activity) => ({ type: "activity_upsert", turn_id, activity }))),
       ...data.turns.map((turn) => ({ type: "detail_invalidated", turn_id: turn.turn_id, detail_revision: data.head })),
-      { type: "checkpoint", batch_id: batchId, ...scope, through_seq: data.head, checkpoint: `conv-${data.head}` },
+      { type: "checkpoint", batch_id: batchId, ...scope, through_seq: data.head,
+        checkpoint: conversationCursor(session, body.agentId, data.head) },
     ];
     for (const stream of session.conversationStreams) {
       if (stream.conversationAgentId !== body.agentId) continue;
@@ -448,12 +440,6 @@ async function handleControl(req, res, url) {
     ) {
       session.currentRunIdByAgentId.delete(envelope.agent_id);
     }
-    if (body.broadcast !== false) {
-      // Global SSE carries only roster hints; the agent stream remains the
-      // live event channel for subscribers that already opened this agent.
-      writeEvent(session.agentStreams, envelope);
-      writeRosterHint(session.globalStreams, envelope.agent_id);
-    }
     json(res, { appended: true });
     return true;
   }
@@ -466,7 +452,7 @@ async function handleControl(req, res, url) {
   }
   if (url.pathname === "/__e2e__/emit-agent" && req.method === "POST") {
     const session = sessionFor(req, url);
-    const { globalStreams, visibleAgentIds } = session;
+    const { visibleAgentIds } = session;
     if (!visibleAgentIds.includes("e2e-agent")) visibleAgentIds.push("e2e-agent");
     const envelope = {
       id: "e2e-event-1",
@@ -481,7 +467,8 @@ async function handleControl(req, res, url) {
     const events = session.eventsByAgentId.get("e2e-agent") ?? [];
     events.push(envelope);
     session.eventsByAgentId.set("e2e-agent", events);
-    writeRosterHint(globalStreams, envelope.agent_id);
+    // Discovery is roster-snapshot polling now (#3808): the appended
+    // canonical event only seeds server-side state for later reads.
     json(res, { emitted: true });
     return true;
   }
@@ -584,11 +571,6 @@ async function handleApi(req, res, url) {
     json(res, { state: briefReadState(session, agentId) });
     return true;
   }
-  if (url.pathname === "/api/events/stream") {
-    session.streamGeneration += 1;
-    openEventStream(req, res, session.globalStreams);
-    return true;
-  }
   const abortMatch = url.pathname.match(
     /^\/api\/control\/agents\/([^/]+)\/current-run\/abort$/,
   );
@@ -648,7 +630,7 @@ async function handleApi(req, res, url) {
       snapshot_through_seq: head,
       event_head_seq: head,
       oldest_retained_seq: session.oldestRetainedSeqByAgentId.get(agentId) ?? 0,
-      snapshot_cursor: `conv-snap:${agentId}:${head}`,
+      snapshot_cursor: conversationCursor(session, agentId, head),
       turns: data?.turns ?? conversationTurns(session, agentId),
       active_turns: data?.turns.filter((turn) => turn.execution.kind === "active") ?? [],
       pending_inputs: data?.pending_inputs ?? [],
@@ -667,7 +649,7 @@ async function handleApi(req, res, url) {
       schema_version: 2, query_version: 2, runtime_id: session.runtimeId,
       event_log_epoch: session.eventLogEpoch, visibility_scope_id: session.visibilityScopeId,
       snapshot_through_seq: data.head, event_head_seq: data.head, oldest_retained_seq: 0,
-      snapshot_cursor: `conv-snap:${activityMatch[1]}:${data.head}`,
+      snapshot_cursor: conversationCursor(session, decodeURIComponent(activityMatch[1]), data.head),
       turn, detail_revision: data.head,
       activities: data.activitiesByTurnId[turnId] ?? [], coverage: { kind: "complete" },
       next_before_cursor: null, has_more: false,
@@ -705,6 +687,18 @@ async function handleApi(req, res, url) {
       json(res, { ok: false, error: "conversation stream unavailable" }, 503);
       return true;
     }
+    const after = url.searchParams.get("after") ?? req.headers["last-event-id"];
+    if (after) {
+      let cursor;
+      try { cursor = JSON.parse(Buffer.from(after, "base64url").toString()); } catch { cursor = null; }
+      if (!Array.isArray(cursor) || cursor[0] !== session.runtimeId
+          || cursor[1] !== session.visibilityScopeId || cursor[2] !== session.eventLogEpoch
+          || cursor[3] !== streamAgent) {
+        json(res, { ok: false, code: "conversation_reset_required", reason: "event_log_epoch_mismatch",
+          error: "conversation cursor scope changed" }, 409);
+        return true;
+      }
+    }
     // The control endpoint publishes atomic conversation batches to this stream.
     res.conversationAgentId = streamAgent;
     openEventStream(req, res, session.conversationStreams);
@@ -727,10 +721,6 @@ async function handleApi(req, res, url) {
     });
     return true;
   }
-  if (/^\/api\/agents\/[^/]+\/events\/stream$/.test(url.pathname)) {
-    openEventStream(req, res, session.agentStreams);
-    return true;
-  }
   return false;
 }
 
@@ -740,6 +730,24 @@ const server = http.createServer(async (req, res) => {
   if (url.pathname.startsWith("/api/")) {
     if (!(await handleApi(req, res, url))) {
       json(res, { error: `unexpected fixture request: ${url.pathname}` }, 404);
+    }
+    return;
+  }
+  if (production) {
+    const file = new URL(`.${decodeURIComponent(url.pathname)}`, productionRoot);
+    if (!file.href.startsWith(productionRoot.href)) {
+      res.writeHead(403).end();
+      return;
+    }
+    const extension = path.extname(file.pathname);
+    const types = { ".html": "text/html", ".js": "text/javascript", ".css": "text/css",
+      ".svg": "image/svg+xml", ".png": "image/png", ".woff2": "font/woff2" };
+    try {
+      const body = await readFile(extension ? file : new URL("index.html", productionRoot));
+      res.writeHead(200, { "content-type": types[extension || ".html"] ?? "application/octet-stream" });
+      res.end(body);
+    } catch {
+      res.writeHead(404).end("not found");
     }
     return;
   }
@@ -756,9 +764,9 @@ await new Promise((resolve, reject) => {
 
 async function shutdown() {
   for (const session of sessions.values()) {
-    for (const stream of [...session.globalStreams, ...session.agentStreams]) stream.end();
+    for (const stream of session.conversationStreams) stream.end();
   }
-  await vite.close();
+  await vite?.close();
   await new Promise((resolve) => server.close(resolve));
 }
 

@@ -939,10 +939,6 @@ export type RightPanelView =
       agentId: string;
     }
   | {
-      kind: "timeline_events";
-      agentId: string;
-    }
-  | {
       kind: "work_item_detail";
       agentId: string;
       workItem: WorkItemSummary;

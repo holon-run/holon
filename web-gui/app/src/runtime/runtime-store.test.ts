@@ -9,7 +9,6 @@ import {
   isSessionCacheContextCurrent,
   mergeBootstrapAgentState,
   mergeAgentDetailIntoSession,
-  mergeTimelineEventPage,
   modelCatalogCacheKey,
   observerSyncDiagnostics,
   clearStoredRuntimeConnectionToken,
@@ -23,7 +22,6 @@ import {
   writeStoredRuntimeConnectionConfig,
 } from "./runtime-store";
 import type { BriefReadStateDto, StreamEventEnvelopeDto } from "./client";
-import { AgentSessionRepository } from "./agent-session-repository";
 import {
   getRuntimeTraceRecords,
   setRuntimeTraceEnabled,
@@ -37,15 +35,23 @@ import { createSessionProjectionState, reduceSessionProjection } from "./session
 import type { AgentSummary } from "./types";
 
 /** Seeds the conversation scope mirror the read-marker gate consumes. */
-function seedReadyConversationScope(agentId: string, gate: { navigationActive?: boolean; browsing?: boolean } = {}, scopeKey?: string): void {
+function seedReadyConversationScope(agentId: string, gate: { navigationActive?: boolean; browsing?: boolean; throughSeq?: number } = {}, scopeKey?: string): void {
+  const { throughSeq = 8, ...navigation } = gate;
+  useRuntimeStore.setState((state) => ({
+    discovery: { ...state.discovery, identity: {
+      runtimeId: "runtime-1", visibilityScopeId: "scope-1", eventLogEpoch: "epoch-1",
+    } },
+  }));
   useConversationScopeStore.setState({
     scopes: {
       [scopeKey ?? resolveConversationScopeKey("local", agentId, useRuntimeStore.getState().currentUser)]: {
         status: { kind: "ready" },
-        view: { scope: {}, reset_reason: null } as ConversationStateView,
+        view: { scope: {
+          agent_id: agentId, runtime_id: "runtime-1", visibility_scope_id: "scope-1", event_log_epoch: "epoch-1",
+        }, through_seq: throughSeq, reset_reason: null } as ConversationStateView,
         displayView: null,
         version: 1,
-        ...gate,
+        ...navigation,
       },
     },
   });
@@ -1016,6 +1022,8 @@ describe("observerSyncDiagnostics", () => {
     });
     expect(JSON.stringify(diagnostics)).not.toContain("private brief text");
     expect(JSON.stringify(diagnostics)).not.toContain("hidden-agent");
+    expect(diagnostics.agents[0]).toMatchObject({ state: "retired", durability: "unavailable" });
+    expect(diagnostics.agents[0].ingestedThroughSeq).toBeUndefined();
 
     useRuntimeStore.setState(previous, true);
   });
@@ -1158,114 +1166,6 @@ describe("resume session reset", () => {
       searchResultContentLoadingBySourceRef: { source: false },
       rightPanelView: { detailState: { loading: false } },
       rightPanelViewStack: [{ detailState: { loading: false } }],
-    });
-  });
-});
-
-describe("timeline events state", () => {
-  afterEach(() => {
-    useRuntimeStore.setState({
-      rightPanelOpen: true,
-      rightPanelView: undefined,
-      rightPanelViewStack: [],
-      timelineEventsByAgentId: {},
-    });
-  });
-
-  it("opens as a first-class right panel view and preserves back navigation", () => {
-    useRuntimeStore.setState({
-      selectedAgentId: "agent-a",
-      rightPanelView: { kind: "agent_overview", agentId: "agent-a" },
-      rightPanelViewStack: [],
-      timelineEventsByAgentId: {
-        "agent-a": {
-          eventsBySeq: { 1: { id: "event-1", event_seq: 1, type: "message_enqueued" } },
-          eventSeqs: [1],
-          oldestSeq: 1,
-          newestSeq: 1,
-          hasOlder: false,
-          loading: false,
-          loadingOlder: false,
-        },
-      },
-    });
-
-    useRuntimeStore.getState().showTimelineEvents("agent-a");
-    expect(useRuntimeStore.getState()).toMatchObject({
-      rightPanelOpen: true,
-      rightPanelView: { kind: "timeline_events", agentId: "agent-a" },
-      rightPanelViewStack: [{ kind: "agent_overview", agentId: "agent-a" }],
-    });
-
-    useRuntimeStore.getState().navigateBack();
-    expect(useRuntimeStore.getState()).toMatchObject({
-      rightPanelView: { kind: "agent_overview", agentId: "agent-a" },
-      rightPanelViewStack: [],
-    });
-  });
-
-  it("returns developer-only UI to a non-debug closed state when diagnostics are disabled", () => {
-    useRuntimeStore.setState({
-      selectedAgentId: "agent-a",
-      rightPanelOpen: true,
-      rightPanelView: { kind: "timeline_events", agentId: "agent-a" },
-      rightPanelViewStack: [
-        { kind: "agent_overview", agentId: "agent-a" },
-        { kind: "timeline_events", agentId: "agent-b" },
-      ],
-    });
-
-    useRuntimeStore.getState().disableDeveloperDiagnosticsUi();
-
-    expect(useRuntimeStore.getState()).toMatchObject({
-      rightPanelOpen: false,
-      rightPanelView: { kind: "agent_overview", agentId: "agent-a" },
-      rightPanelViewStack: [{ kind: "agent_overview", agentId: "agent-a" }],
-    });
-  });
-
-  it("appends older pages in sequence order and resets on epoch changes", () => {
-    const initial = mergeTimelineEventPage(
-      {
-        eventsBySeq: {},
-        eventSeqs: [],
-        hasOlder: false,
-        loading: false,
-        loadingOlder: false,
-      },
-      [
-        { id: "event-3", event_seq: 3, event_log_epoch: "epoch-a", type: "task_created" },
-        { id: "event-2", event_seq: 2, event_log_epoch: "epoch-a", type: "message_enqueued" },
-      ],
-      "epoch-a",
-      true,
-      false,
-    );
-    const appended = mergeTimelineEventPage(
-      initial,
-      [{ id: "event-1", event_seq: 1, event_log_epoch: "epoch-a", type: "agent_state_changed" }],
-      "epoch-a",
-      false,
-      true,
-    );
-    expect(appended).toMatchObject({
-      eventLogEpoch: "epoch-a",
-      eventSeqs: [1, 2, 3],
-      oldestSeq: 1,
-      newestSeq: 3,
-      hasOlder: false,
-    });
-
-    expect(mergeTimelineEventPage(
-      appended,
-      [{ id: "event-1-new", event_seq: 1, event_log_epoch: "epoch-b", type: "message_enqueued" }],
-      "epoch-b",
-      false,
-      true,
-    )).toMatchObject({
-      eventLogEpoch: "epoch-b",
-      eventSeqs: [1],
-      eventsBySeq: { 1: { id: "event-1-new" } },
     });
   });
 });
@@ -1471,7 +1371,7 @@ describe("server brief read state", () => {
     expect(fetchMock).toHaveBeenCalledWith(expect.stringContaining("/agents/brief-read-states"), expect.anything());
   });
 
-  it("keeps unread state until the durable ledger is ready", async () => {
+  it("keeps unread state until the displayed conversation catches up", async () => {
     const fetchMock = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input);
       return Promise.resolve(
@@ -1493,7 +1393,7 @@ describe("server brief read state", () => {
         freshness: "fresh",
       },
     });
-    seedReadyConversationScope("agent-a");
+    seedReadyConversationScope("agent-a", { throughSeq: 7 });
     useRuntimeStore.getState().markAgentConversationRead("agent-a");
     await vi.waitFor(() =>
       expect(useRuntimeStore.getState().briefReadStatesError).toBeUndefined(),
@@ -1507,6 +1407,29 @@ describe("server brief read state", () => {
     ).toBe(false);
   });
 
+  it.each(["runtimeId", "visibilityScopeId", "eventLogEpoch"] as const)(
+    "does not clear unread from an old conversation %s", async (field) => {
+      const fetchMock = vi.fn((input: RequestInfo | URL) => Promise.resolve(new Response(
+        JSON.stringify(String(input).includes("/agents/brief-read-states") ? [state()] : {}),
+        { status: 200 },
+      )));
+      vi.stubGlobal("fetch", fetchMock);
+      vi.stubGlobal("document", { visibilityState: "visible" });
+      await useRuntimeStore.getState().setRuntimeConnection({ mode: "local" });
+      await useRuntimeStore.getState().refreshBriefReadStates();
+      seedReadyConversationScope("agent-a");
+      useRuntimeStore.setState((current) => ({
+        route: "agent", selectedAgentId: "agent-a",
+        discovery: { ...current.discovery, freshness: "fresh",
+          identity: { ...current.discovery.identity!, [field]: "new-identity" } },
+      }));
+      useRuntimeStore.getState().markAgentConversationRead("agent-a");
+      await Promise.resolve();
+      expect(useRuntimeStore.getState().briefReadStateByAgentId["agent-a"]?.unread_count).toBe(5);
+      expect(fetchMock.mock.calls.some(([input]) => String(input).includes("/brief-read-cursor"))).toBe(false);
+    },
+  );
+
   it.each([{ navigationActive: true }, { browsing: true }])("does not clear unread or POST read markers during source navigation: %j", async (gate) => {
     const fetchMock = vi.fn((input: RequestInfo | URL) => Promise.resolve(new Response(
       JSON.stringify(String(input).includes("/agents/brief-read-states") ? [state()] : {}), { status: 200 },
@@ -1518,9 +1441,6 @@ describe("server brief read state", () => {
     useRuntimeStore.setState({
       route: "agent", selectedAgentId: "agent-a",
       discovery: { ...useRuntimeStore.getState().discovery, freshness: "fresh" },
-    });
-    vi.spyOn(AgentSessionRepository.prototype, "sessionLedgerReadiness").mockReturnValue({
-      readyThroughSeq: 8, ingestedThroughSeq: 8, observedHeadSeq: 8,
     });
     seedReadyConversationScope("agent-a", gate);
     useRuntimeStore.getState().markAgentConversationRead("agent-a");
@@ -1564,12 +1484,7 @@ describe("server brief read state", () => {
     });
     const scopeKey = resolveConversationScopeKey("local", "agent-a", useRuntimeStore.getState().currentUser, incarnation);
     seedReadyConversationScope("agent-a", {}, scopeKey);
-    vi.spyOn(AgentSessionRepository.prototype, "sessionLedgerReadiness").mockReturnValue({
-      readyThroughSeq: 1,
-      ingestedThroughSeq: 3,
-      observedHeadSeq: 3,
-      blockedByEventSeq: 2,
-    });
+    seedReadyConversationScope("agent-a", { throughSeq: 1 }, scopeKey);
     vi.stubGlobal("document", { visibilityState: "visible" });
 
     useRuntimeStore.getState().markAgentConversationRead("agent-a", scopeKey);
@@ -1586,11 +1501,7 @@ describe("server brief read state", () => {
       ),
     ).toBe(false);
 
-    vi.mocked(AgentSessionRepository.prototype.sessionLedgerReadiness).mockReturnValue({
-      readyThroughSeq: 3,
-      ingestedThroughSeq: 3,
-      observedHeadSeq: 3,
-    });
+    seedReadyConversationScope("agent-a", { throughSeq: 3 }, scopeKey);
     await retryPendingReadMarker("agent-a");
     await vi.waitFor(() =>
       expect(
@@ -1638,11 +1549,6 @@ describe("server brief read state", () => {
       },
     });
     seedReadyConversationScope("agent-a");
-    vi.spyOn(AgentSessionRepository.prototype, "sessionLedgerReadiness").mockReturnValue({
-      readyThroughSeq: 8,
-      ingestedThroughSeq: 8,
-      observedHeadSeq: 8,
-    });
     vi.stubGlobal("document", { visibilityState: "visible" });
 
     const refreshPromise = useRuntimeStore.getState().refreshBriefReadStates();
@@ -1696,11 +1602,6 @@ describe("server brief read state", () => {
       },
     });
     seedReadyConversationScope("agent-a");
-    vi.spyOn(AgentSessionRepository.prototype, "sessionLedgerReadiness").mockReturnValue({
-      readyThroughSeq: 8,
-      ingestedThroughSeq: 8,
-      observedHeadSeq: 8,
-    });
     vi.stubGlobal("document", { visibilityState: "visible" });
 
     useRuntimeStore.getState().markAgentConversationRead("agent-a");

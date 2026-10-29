@@ -15,7 +15,6 @@ import type {
   ToolExecutionDetailState,
 } from "./types";
 import type { SessionProjectionState } from "./session-projection";
-import type { SessionEventEnvelope } from "./session-events";
 
 export type { WorkItemDetailState, TaskDetailState, ToolExecutionDetailState };
 
@@ -47,18 +46,6 @@ export type AgentSyncStatus =
   | "reconnecting"
   | "stale"
   | "error";
-
-export interface TimelineEventsState {
-  eventLogEpoch?: string;
-  eventsBySeq: Record<number, SessionEventEnvelope>;
-  eventSeqs: number[];
-  oldestSeq?: number;
-  newestSeq?: number;
-  hasOlder: boolean;
-  loading: boolean;
-  loadingOlder: boolean;
-  error?: string;
-}
 
 export interface AgentSessionState extends SessionProjectionState {
   loading: boolean;

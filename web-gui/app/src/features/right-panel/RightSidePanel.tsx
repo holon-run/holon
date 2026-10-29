@@ -4,7 +4,6 @@ import { CONVERSATION_MIN, PANEL_MIN } from "./panel-layout";
 
 import type { AgentSummary, RightPanelView, RuntimeConnection, SkillCatalogState, TaskDetailState, ToolExecutionDetailState, WorkItemDetailState, WorkItemSummary } from "../../runtime/types";
 import type { AgentControlAction, AgentDeletionStatus } from "../../runtime/types";
-import type { AgentSessionState, TimelineEventsState } from "../../runtime/runtime-store";
 import { getRuntimeTraceRevision, isRuntimeTraceEnabled, subscribeRuntimeTrace } from "../../runtime/runtime-trace";
 import type { TaskSummary, TaskTargetRef } from "../../runtime/types";
 import { ArrowLeft, Maximize2, Minimize2, X } from "lucide-react";
@@ -13,7 +12,6 @@ import { AgentOverviewPanel, AgentSkillManagerPanel, ToolExecutionDetailPanel, W
 import { TaskDetailPanel } from "./TaskDetailPanel";
 import { FileBrowserPanel, type FileBrowserSnapshot } from "./FileBrowserPanel";
 import { RuntimeTracePanel } from "./RuntimeTracePanel";
-import { TimelineEventsPanel } from "./TimelineEventsPanel";
 import { useTranslation } from "react-i18next";
 
 interface RightSidePanelProps {
@@ -28,8 +26,6 @@ interface RightSidePanelProps {
   workItemDetailsById?: Record<string, WorkItemDetailState>;
   taskDetailsById?: Record<string, TaskDetailState>;
   toolExecutionDetailsById?: Record<string, ToolExecutionDetailState>;
-  timelineEvents?: TimelineEventsState;
-  session?: AgentSessionState;
   view?: RightPanelView;
   open: boolean;
   mode: "normal" | "expanded";
@@ -47,8 +43,6 @@ interface RightSidePanelProps {
   onDisableAgentSkill: (name: string) => void;
   onOpenSkill: (skillId: string) => void;
   onShowAgentOverview: () => void;
-  onRefreshTimelineEvents: () => void;
-  onLoadOlderTimelineEvents: () => void;
   onNavigateBack: () => void;
   onSelectView: (view: RightPanelView) => void;
   onBrowseFiles: (location: import("../../runtime/types").WorkspaceFileLocation) => void;
@@ -71,8 +65,6 @@ export function RightSidePanel({
   workItemDetailsById = {},
   taskDetailsById = {},
   toolExecutionDetailsById = {},
-  timelineEvents,
-  session,
   view,
   open,
   mode,
@@ -90,8 +82,6 @@ export function RightSidePanel({
   onDisableAgentSkill,
   onOpenSkill,
   onShowAgentOverview,
-  onRefreshTimelineEvents,
-  onLoadOlderTimelineEvents,
   onNavigateBack,
   onSelectView,
   onBrowseFiles,
@@ -217,8 +207,6 @@ export function RightSidePanel({
       ? t("runtimeTrace.title")
       : skillManagerActive
       ? t("rightPanel.manageSkills")
-      : activeView.kind === "timeline_events"
-      ? t("timelineEvents.title")
       : activeView.kind === "activity_inspector"
       ? activityInspectorTitle(activeView.activity)
       : activeView.kind === "work_item_detail"
@@ -333,14 +321,6 @@ export function RightSidePanel({
             availableSkillCatalogLoading={availableSkillCatalogLoading}
             onRefreshAvailableSkills={onRefreshAvailableSkills}
             onEnableAgentSkill={onEnableAgentSkill}
-          />
-        ) : activeView.kind === "timeline_events" ? (
-          <TimelineEventsPanel
-            agentId={agent.id}
-            timelineEvents={timelineEvents}
-            projection={session}
-            onRefresh={onRefreshTimelineEvents}
-            onLoadOlder={onLoadOlderTimelineEvents}
           />
         ) : activeView.kind === "activity_inspector" ? (
           <ActivityInspectorPanel activity={activeView.activity} detailState={activeView.detailState} />

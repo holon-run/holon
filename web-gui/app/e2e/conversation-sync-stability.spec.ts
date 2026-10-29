@@ -19,11 +19,16 @@ test("pause and reconnect preserve process expansion and transcript geometry wit
   const content = page.getByText("Checking the layout while the connection recovers.", { exact: true });
   await expect(content).toBeVisible();
   await expect(process).toHaveAttribute("aria-expanded", "true");
-  const geometry = () => page.evaluate(() => {
-    const list = document.querySelector(".message-list")!;
-    const rect = document.querySelector('[data-activity-id="progress"]')!.getBoundingClientRect();
-    return { y: rect.y, height: rect.height, scrollHeight: list.scrollHeight, scrollTop: list.scrollTop };
-  });
+  // Roster-driven re-renders can transiently replace the measured nodes;
+  // wait for the activity to reattach before comparing geometry.
+  const geometry = async () => {
+    await expect(page.locator('[data-activity-id="progress"]')).toBeAttached();
+    return page.evaluate(() => {
+      const list = document.querySelector(".message-list")!;
+      const rect = document.querySelector('[data-activity-id="progress"]')!.getBoundingClientRect();
+      return { y: rect.y, height: rect.height, scrollHeight: list.scrollHeight, scrollTop: list.scrollTop };
+    });
+  };
   // Wait for the original expansion animation to finish.
   await expect.poll(async () => (await content.boundingBox())!.height).toBeGreaterThan(0);
   await page.waitForTimeout(300);
@@ -41,22 +46,26 @@ test("pause and reconnect preserve process expansion and transcript geometry wit
   await expect(turnStatus).toContainText("Working");
   expect(await geometry()).toEqual(before);
 
+  // Real conversation snapshot failure (#3808): the retired raw-event
+  // transports are gone, so the outage is produced on the conversation read
+  // model itself. The live stream delivers the canonical reset_required
+  // retention signal, the SDK drops its checkpoint and refetches the summary,
+  // and that snapshot request fails over the wire.
   await request.post(control("/__e2e__/configure"), { data: { failConversationByAgentId: [agentId] } });
-  const unavailableStream = page.waitForResponse((response) => response.url().includes("/conversation/stream") && response.status() === 503);
-  await request.post(control("/__e2e__/disconnect-streams"));
+  const failedSnapshot = page.waitForResponse((response) =>
+    new URL(response.url()).pathname === `/api/agents/${agentId}/conversation` && response.status() === 503);
+  await request.post(control("/__e2e__/reset-conversation"), { data: { agentId, reason: "retention_expired" } });
+  await failedSnapshot;
   await expect(page.locator(".conversation-sync-status .is-reconnecting")).toBeVisible();
   await page.waitForTimeout(300);
   await expect(process).toHaveAttribute("aria-expanded", "true");
   await expect(content).toBeVisible();
   expect(await geometry()).toEqual(before);
-  await page.screenshot({ path: "/tmp/holon-sync-reconnecting.png" });
-  // Exercise a real failed reconnect, even when the local browser runs quickly.
-  await unavailableStream;
   await request.post(control("/__e2e__/configure"), { data: { failConversationByAgentId: [] } });
   await expect(turnStatus).toContainText("Working", { timeout: 10000 });
   expect(await geometry()).toEqual(before);
-  const diagnostics = await (await request.get(control("/__e2e__/state"))).json();
-  expect(diagnostics.requests.filter((path: string) => path.startsWith(`GET /api/agents/${agentId}/conversation?`))).toHaveLength(1);
+  // The recovered snapshot must not duplicate the retained turn.
+  await expect(page.locator('[data-turn-id="live"]')).toHaveCount(1);
 
   // Force a protocol reset and hold the fresh summary: stale content stays mounted,
   // while the SDK has discarded its checkpoint and cannot advance read markers.

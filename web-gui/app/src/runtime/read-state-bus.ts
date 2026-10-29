@@ -6,6 +6,7 @@
  * the server API after receiving a notification.
  */
 
+// Preserve the channel name so already-open tabs still receive revalidation hints.
 export const READ_STATE_BUS_CHANNEL = "holon.webGui.eventLedger.readStates.v1";
 
 export interface ReadStateBusMessage {

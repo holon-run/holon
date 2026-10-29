@@ -236,8 +236,6 @@ type MarkBriefReadResultDto = components["schemas"]["MarkBriefReadResult"];
 type BriefRecordDto = RuntimeBriefRecord;
 type AgentRosterSnapshotGeneratedDto = components["schemas"]["AgentRosterSnapshot"];
 
-export type EventPageResponseDto = components["schemas"]["EventsPageResponse"];
-type MeasuredEventPageResponseDto = EventPageResponseDto & { responseBytes?: number };
 export type AgentProjectionSnapshotDto = components["schemas"]["AgentProjectionSnapshot"];
 export type AgentRosterSnapshotDto = AgentRosterSnapshotGeneratedDto;
 /**
@@ -251,26 +249,6 @@ export interface AgentRosterSnapshotResult {
 }
 type GeneratedStreamEventEnvelopeDto = components["schemas"]["StreamEventEnvelope"];
 export type StreamEventEnvelopeDto = Partial<GeneratedStreamEventEnvelopeDto>;
-
-function emptyEventPage(): EventPageResponseDto {
-  return {
-    contract_version: 3,
-    events: [],
-    event_log_epoch: "",
-    has_older: false,
-    has_newer: false,
-    order: "desc",
-    limit: 0,
-  };
-}
-
-export interface AgentEventPageOptions {
-  beforeSeq?: number;
-  afterSeq?: number;
-  limit?: number;
-  order?: "asc" | "desc";
-  displayLevel?: DisplayLevel;
-}
 
 interface RuntimeModelsDto {
   available_models?: Array<string | RuntimeAvailableModelDto>;
@@ -1034,15 +1012,6 @@ export function createRuntimeClient(options: RuntimeClientOptions = {}) {
         {},
         requestHeaders,
       );
-    },
-    async getAgentEvents(
-      agentId: string,
-      options: AgentEventPageOptions = {},
-    ): Promise<MeasuredEventPageResponseDto> {
-      if (!baseUrl) {
-        return emptyEventPage();
-      }
-      return fetchAgentEvents(baseUrl, fetchImpl, requestHeaders, agentId, options);
     },
     async getAgentProjectionSnapshot(agentId: string): Promise<AgentProjectionSnapshotDto | null> {
       if (!baseUrl) {
@@ -1826,38 +1795,6 @@ export function createRuntimeClient(options: RuntimeClientOptions = {}) {
   };
 }
 
-async function fetchAgentEvents(
-  baseUrl: string,
-  fetchImpl: typeof fetch,
-  headers: Record<string, string>,
-  agentId: string,
-  options: AgentEventPageOptions,
-): Promise<MeasuredEventPageResponseDto> {
-  const query = new URLSearchParams();
-  if (options.beforeSeq != null) query.set("before_seq", String(options.beforeSeq));
-  if (options.afterSeq != null) query.set("after_seq", String(options.afterSeq));
-  if (options.limit != null) query.set("limit", String(options.limit));
-  if (options.order) query.set("order", options.order);
-  if (options.displayLevel) query.set("max_level", options.displayLevel);
-  const queryString = query.toString();
-  const path = `/agents/${encodeURIComponent(agentId)}/events${queryString ? `?${queryString}` : ""}`;
-  const { value: response, responseBytes, responseHeaders } = await getJsonWithResponseBytes<EventPageResponseDto>(
-    fetchImpl,
-    baseUrl,
-    path,
-    { headers, timeoutMs: HYDRATION_READ_TIMEOUT_MS, cache: "no-store" },
-  );
-  const pageContractVersion = responseHeaders.get(EVENT_CONTRACT_VERSION_HEADER);
-  validateEventContractVersion(pageContractVersion, "event page");
-  return {
-    ...response,
-    responseBytes,
-    events: response.events
-      .map((event) => decodeStreamEventEnvelope(event))
-      .filter((event): event is EventPageResponseDto["events"][number] => event != null),
-  };
-}
-
 async function getJsonWithResponseBytes<T>(
   fetchImpl: typeof fetch,
   baseUrl: string,
@@ -1942,50 +1879,6 @@ async function fetchBriefRecordsById(
     recordsById: Object.fromEntries((response.briefs ?? []).flatMap((brief) => brief.id ? [[brief.id, brief]] : [])),
     notFoundIds: response.missing_brief_ids ?? [],
   };
-}
-
-function decodeStreamEventEnvelope(value: unknown): StreamEventEnvelopeDto | undefined {
-  const record = asRecord(value);
-  if (!record) return undefined;
-  const id = stringValue(record.id);
-  const eventSeq = typeof record.event_seq === "number" ? record.event_seq : undefined;
-  const timestamp = stringValue(record.ts);
-  const agentId = stringValue(record.agent_id);
-  const eventType = stringValue(record.type);
-  const projectionEffect = record.projection_effect;
-  if (!id || eventSeq == null || !timestamp || !agentId || !eventType) return undefined;
-  return {
-    id,
-    event_seq: eventSeq,
-    event_log_epoch: stringValue(record.event_log_epoch) ?? "",
-    ts: timestamp,
-    agent_id: agentId,
-    type: eventType,
-    payload: record.payload,
-    ...(typeof record.payload_schema === "string"
-      ? { payload_schema: record.payload_schema }
-      : {}),
-    ...(typeof record.payload_schema_version === "number"
-      ? { payload_schema_version: record.payload_schema_version }
-      : {}),
-    ...(projectionEffect === "none" || projectionEffect === "display_invalidation"
-      ? { projection_effect: projectionEffect }
-      : {}),
-    ...(record.provenance != null ? { provenance: record.provenance } : {}),
-  };
-}
-
-const EVENT_CONTRACT_VERSION_HEADER = "x-holon-event-contract-version";
-const CURRENT_EVENT_CONTRACT_VERSION = 3;
-
-function validateEventContractVersion(value: unknown, source: string): number {
-  const version = typeof value === "number" ? value : Number(value);
-  if (!Number.isInteger(version) || version !== CURRENT_EVENT_CONTRACT_VERSION) {
-    throw new Error(
-      `unsupported ${source} contract version: ${value ?? "missing"}`,
-    );
-  }
-  return version;
 }
 
 async function fetchRuntimeBootstrap(

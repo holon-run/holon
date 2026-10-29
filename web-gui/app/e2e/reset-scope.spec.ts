@@ -8,606 +8,139 @@ import {
 
 import { sessionFor } from "./test-session";
 
-interface LedgerSnapshot {
-  runtimeId: string;
-  visibilityScopeId: string;
-  eventLogEpoch: string;
-  durability: string;
-  ingestionState: string;
-  ingestionError?: string;
-  ingestedThroughSeq: number;
-  projectionReadyThroughSeq: number;
-  pendingHydrationJobs: number;
-  failedHydrationJobs: number;
-  readThroughEventSeq?: number;
-  certainty?: "exact" | "truncated";
-  historyTruncatedBeforeSeq?: number;
-}
-
-interface LedgerPartition {
-  runtimeId: string;
-  visibilityScopeId: string;
-  eventLogEpoch: string;
-  eventSeqs: number[];
-  readThroughEventSeq?: number;
-  certainty?: "exact" | "truncated";
-}
-
-interface LedgerStatus {
-  durability: string;
-  ingestionState: string;
-  ingestionError?: string;
-}
-
 function controlPath(session: string, path: string): string {
   return `${path}?session=${encodeURIComponent(session)}`;
 }
 
 async function attachSession(context: BrowserContext, session: string): Promise<void> {
   await context.addCookies([{
-    name: "holon_e2e_session",
-    value: session,
-    domain: "127.0.0.1",
-    path: "/",
+    name: "holon_e2e_session", value: session, domain: "127.0.0.1", path: "/",
   }]);
 }
 
-async function configure(
-  request: APIRequestContext,
-  session: string,
-  body: Record<string, unknown>,
-): Promise<void> {
-  const response = await request.post(controlPath(session, "/__e2e__/configure"), { data: body });
-  expect(response.ok()).toBe(true);
+async function configure(request: APIRequestContext, session: string, body: Record<string, unknown>): Promise<void> {
+  expect((await request.post(controlPath(session, "/__e2e__/configure"), { data: body })).ok()).toBe(true);
 }
 
-function envelope(
-  agentId: string,
-  eventSeq: number,
-  eventLogEpoch = "e2e-epoch",
-  type = "agent_state_changed",
-  payload: Record<string, unknown> = {},
-) {
-  return {
-    id: `${agentId}-${eventLogEpoch}-event-${eventSeq}`,
-    event_seq: eventSeq,
-    event_log_epoch: eventLogEpoch,
-    ts: `2026-08-25T00:00:${String(eventSeq).padStart(2, "0")}Z`,
-    agent_id: agentId,
-    type,
-    payload_schema: `holon.runtime_event.${type}`,
-    projection_effect: "display_invalidation",
-    payload,
-  };
+async function seedConversation(request: APIRequestContext, session: string, agentId: string, turnIds: string[]): Promise<void> {
+  const turns = turnIds.map((turnId, index) => ({
+    turn_id: turnId, key: { turn_id: turnId, turn_index: index + 1 }, revision: 1,
+    presentation_class: "operator", inputs: [{ message_id: `input-${turnId}`, preview: `Question ${turnId}` }],
+    execution: { kind: "active" }, result: { kind: "pending" }, settled: false,
+    attention: null, detail_coverage: { kind: "complete" }, brief_ids: [],
+  }));
+  expect((await request.post(controlPath(session, "/__e2e__/conversation"), { data: {
+    agentId, turns, activitiesByTurnId: Object.fromEntries(turnIds.map((id, index) => [id, [{
+      kind: "assistant", id: `activity-${id}`, key: { event_seq: index + 1, activity_id: `activity-${id}` },
+      revision: 1, summary: `Answer ${id}`,
+    }]])),
+  } })).ok()).toBe(true);
 }
 
-function latestBrief(briefId: string, eventSeq: number) {
-  return {
-    brief_id: briefId,
-    created_at: `2026-08-25T00:00:${String(eventSeq).padStart(2, "0")}Z`,
-    created_event_seq: eventSeq,
-    preview: `Brief ${eventSeq}`,
-  };
+async function conversation(page: Page, agentId: string) {
+  return page.evaluate((id) => window.__HOLON_E2E__?.conversation(id) ?? null, agentId);
 }
 
-async function ledger(page: Page, agentId: string): Promise<LedgerSnapshot | null> {
-  return page.evaluate((id) => window.__HOLON_E2E__?.ledger(id) ?? null, agentId);
-}
-
-async function ledgerStatus(page: Page, agentId: string): Promise<LedgerStatus | null> {
-  return page.evaluate((id) => window.__HOLON_E2E__?.ledgerStatus(id) ?? null, agentId);
-}
-
-async function partitions(page: Page, agentId: string): Promise<LedgerPartition[]> {
-  return page.evaluate(
-    (id) => window.__HOLON_E2E__?.ledgerPartitions(id) ?? [],
-    agentId,
-  );
-}
-
-async function openAgent(page: Page, agentId: string): Promise<void> {
-  const agentButton = page.getByRole("region", { name: "agents" })
-    .getByRole("button")
-    .filter({ hasText: agentId });
-  if (!page.url().includes(`/agents/${agentId}/conversation`)) {
-    await expect(agentButton).toBeVisible({ timeout: 15_000 });
-    await agentButton.click();
+async function expectConversation(page: Page, agentId: string, epoch: string, turnIds: string[]): Promise<void> {
+  await expect.poll(() => conversation(page, agentId), { timeout: 15_000 }).toMatchObject({
+    status: "ready", eventLogEpoch: epoch, turnIds,
+  });
+  for (const id of turnIds) {
+    await expect(page.locator(`[data-turn-id="${id}"]`)).toHaveCount(1);
+    await expect(page.getByText(`Answer ${id}`, { exact: true })).toBeVisible();
   }
-  await expect(page).toHaveURL(new RegExp(`/agents/${agentId}/conversation`));
 }
 
-async function briefFetchCount(
-  request: APIRequestContext,
-  session: string,
-  agentId: string,
-): Promise<number> {
-  const response = await request.get(controlPath(session, "/__e2e__/requests"));
-  expect(response.ok()).toBe(true);
-  const body = await response.json() as { requests: string[] };
-  return body.requests.filter(
-    (entry) => entry === `POST /api/agents/${agentId}/briefs:batchGet`,
-  ).length;
-}
-
-async function refreshRoster(page: Page): Promise<void> {
-  // The ledger learns new recovery windows through HTTP discovery, not the
-  // retired global SSE. Leave the conversation so its read gate stays closed.
-  await page.getByRole("button", { name: "Dashboard", exact: true }).first().click();
-  await page.getByRole("button", { name: "Refresh", exact: true }).click();
-}
-
-async function hydrationAttemptCount(page: Page, agentId: string): Promise<number | null> {
-  return page.evaluate(async (id) => {
-    const database = await new Promise<IDBDatabase>((resolve, reject) => {
-      const request = indexedDB.open("holon.webGui.eventLedger.v1");
-      request.onsuccess = () => resolve(request.result);
-      request.onerror = () => reject(request.error);
-    });
-    try {
-      const records = await new Promise<Array<{ agentId?: string; attemptCount?: number }>>(
-        (resolve, reject) => {
-          const request = database
-            .transaction("pending_hydration", "readonly")
-            .objectStore("pending_hydration")
-            .getAll();
-          request.onsuccess = () => resolve(request.result);
-          request.onerror = () => reject(request.error);
-        },
-      );
-      const attempts = records
-        .filter((record) => record.agentId === id)
-        .map((record) => record.attemptCount ?? 0);
-      return attempts.length > 0 ? Math.max(...attempts) : null;
-    } finally {
-      database.close();
+// Fail on the wire, not only when a retired diagnostics method happens to be called.
+const forbiddenRequests = new WeakMap<Page, string[]>();
+test.beforeEach(async ({ page }) => {
+  const requests: string[] = [];
+  forbiddenRequests.set(page, requests);
+  page.on("request", (request) => {
+    if (/^\/api\/(?:agents\/[^/]+\/events(?:\/stream)?|events\/stream)\/?$/.test(new URL(request.url()).pathname)) {
+      requests.push(request.url());
     }
-  }, agentId);
-}
+  });
+});
+test.afterEach(async ({ page }) => {
+  expect(forbiddenRequests.get(page)).toEqual([]);
+});
 
-async function driveHydrationUntil(
-  page: Page,
-  request: APIRequestContext,
-  session: string,
-  agentId: string,
-  terminal: (snapshot: LedgerSnapshot | null) => boolean,
-): Promise<void> {
-  for (let attempt = 0; attempt < 16; attempt += 1) {
-    if (terminal(await ledger(page, agentId))) return;
-    const beforeAttemptCount = await hydrationAttemptCount(page, agentId);
-    await page.reload();
-    await expect.poll(async () => {
-      if (terminal(await ledger(page, agentId))) return true;
-      const currentAttemptCount = await hydrationAttemptCount(page, agentId);
-      return currentAttemptCount !== null &&
-        currentAttemptCount > (beforeAttemptCount ?? -1);
-    }).toBe(true);
-  }
-  const finalSnapshot = await ledger(page, agentId);
-  const finalBriefFetchCount = await briefFetchCount(request, session, agentId);
-  expect(
-    terminal(finalSnapshot),
-    JSON.stringify({ finalSnapshot, finalBriefFetchCount }, null, 2),
-  ).toBe(true);
-}
-
-test("retention reset is truncated until acknowledgement opens a new exact generation", async ({
-  context,
-  page,
-  request,
-}, testInfo) => {
-  const session = sessionFor(testInfo);
+test("retention recovery replaces missing history with the bounded conversation and deduplicates reloads", async ({ context, page, request }, info) => {
+  const session = sessionFor(info);
   const agentId = "retention-agent";
-  await configure(request, session, {
-    visibleAgentIds: [agentId],
-    ledgerEnabledAgentIds: [agentId],
-    eventsByAgentId: {
-      [agentId]: [1, 2, 3, 4, 5].map((seq) => envelope(agentId, seq)),
-    },
-  });
+  await configure(request, session, { visibleAgentIds: [agentId] });
+  await seedConversation(request, session, agentId, ["before-retention"]);
   await attachSession(context, session);
-  await page.goto("/");
-  await openAgent(page, agentId);
-  await expect.poll(() => ledger(page, agentId)).toMatchObject({
-    ingestedThroughSeq: 5,
-    projectionReadyThroughSeq: 5,
-    readThroughEventSeq: 5,
-    certainty: "exact",
-  });
+  await page.goto(`/agents/${agentId}/conversation`);
+  await expectConversation(page, agentId, "e2e-epoch", ["before-retention"]);
 
-  await configure(request, session, {
-    eventsByAgentId: { [agentId]: [envelope(agentId, 8)] },
-    oldestRetainedSeqByAgentId: { [agentId]: 7 },
-    snapshotThroughSeqByAgentId: { [agentId]: 8 },
-    failConversationByAgentId: [agentId],
-  });
-  // Discard the retained conversation checkpoint before resetting the global
-  // ledger. A transport reconnect alone can still expose the cached view.
-  const unavailableSummary = page.waitForResponse((response) =>
-    new URL(response.url()).pathname === `/api/agents/${agentId}/conversation` && response.status() === 503);
+  await configure(request, session, { oldestRetainedSeqByAgentId: { [agentId]: 1500 } });
+  await seedConversation(request, session, agentId, ["retained"]);
   await page.reload();
-  await request.post(controlPath(session, "/__e2e__/reset-conversation"), { data: { agentId, reason: "retention_expired" } });
-  await unavailableSummary;
-  await refreshRoster(page);
+  await expectConversation(page, agentId, "e2e-epoch", ["retained"]);
+  await expect(page.locator('[data-turn-id="before-retention"]')).toHaveCount(0);
+  await page.reload();
+  await expectConversation(page, agentId, "e2e-epoch", ["retained"]);
+});
 
-  // Hold the read-marker gate closed while the retention reset lands: the
-  // conversation read model is unavailable (503), so the gate cannot confirm
-  // a ready conversation view and the marker never auto-advances past the
-  // truncation. The ledger itself recovers from the HTTP roster window and
-  // still records the truncated generation for the manual acknowledgement.
-  await expect
-    .poll(() => ledger(page, agentId), { timeout: 15_000 })
-    .toMatchObject({
-      ingestedThroughSeq: 8,
-      projectionReadyThroughSeq: 8,
-      readThroughEventSeq: 5,
-      certainty: "truncated",
-      historyTruncatedBeforeSeq: 7,
+test("a failed conversation refresh preserves cached content and catches up when HTTP recovers", async ({ context, page, request }, info) => {
+  const session = sessionFor(info);
+  const agentId = "recovery-agent";
+  await configure(request, session, { visibleAgentIds: [agentId] });
+  await seedConversation(request, session, agentId, ["cached"]);
+  await attachSession(context, session);
+  await page.goto(`/agents/${agentId}/conversation`);
+  await expectConversation(page, agentId, "e2e-epoch", ["cached"]);
+  await expect.poll(() => page.evaluate(async () => {
+    return await new Promise<boolean>((resolve, reject) => {
+      const request = indexedDB.open("holon-webgui-cache");
+      request.onerror = () => reject(request.error);
+      request.onsuccess = () => {
+        const db = request.result;
+        const tx = db.transaction("snapshots", "readonly");
+        const entries = tx.objectStore("snapshots").getAll();
+        tx.oncomplete = () => {
+          db.close();
+          resolve(entries.result.some((entry) => entry.agentId === "recovery-agent"
+            && entry.summary.turns.some((turn: { turn_id: string }) => turn.turn_id === "cached")));
+        };
+        tx.onabort = () => { db.close(); reject(tx.error); };
+      };
     });
-  // The current client reports the server's truncated generation directly;
-  // recovery advances the cursor once the conversation can be read again.
+  })).toBe(true);
+
+  await configure(request, session, { failConversationByAgentId: [agentId] });
+  const failed = page.waitForResponse((response) => new URL(response.url()).pathname === `/api/agents/${agentId}/conversation` && response.status() === 503);
+  await page.reload();
+  await failed;
+  await expect.poll(() => conversation(page, agentId)).toMatchObject({ status: "reconnecting", turnIds: ["cached"] });
+  await expect(page.locator('[data-turn-id="cached"]')).toHaveCount(1);
+  await seedConversation(request, session, agentId, ["cached", "recovered"]);
   await configure(request, session, { failConversationByAgentId: [] });
-  await page.getByRole("button", { name: "Dashboard" }).first().click();
-  await openAgent(page, agentId);
-  await expect
-    .poll(() => ledger(page, agentId), { timeout: 15_000 })
-    .toMatchObject({
-      readThroughEventSeq: 8,
-      certainty: "exact",
-  });
+  await expectConversation(page, agentId, "e2e-epoch", ["cached", "recovered"]);
 });
 
-test("retention reset preserves truncated certainty until the server cursor advances", async ({
-  context,
-  page,
-  request,
-}, testInfo) => {
-  const session = sessionFor(testInfo);
-  const agentId = "retention-auto-agent";
-  await configure(request, session, {
-    visibleAgentIds: [agentId],
-    ledgerEnabledAgentIds: [agentId],
-    eventsByAgentId: {
-      [agentId]: [1, 2, 3, 4, 5].map((seq) => envelope(agentId, seq)),
-    },
-  });
-  await attachSession(context, session);
-  await page.goto("/");
-  await openAgent(page, agentId);
-  await expect.poll(() => ledger(page, agentId)).toMatchObject({
-    ingestedThroughSeq: 5,
-    readThroughEventSeq: 5,
-    certainty: "exact",
-  });
+for (const scope of ["eventLogEpoch", "visibilityScopeId"] as const) {
+  test(`${scope} rotation replaces the old conversation without an event ledger`, async ({ context, page, request }, info) => {
+    const session = sessionFor(info);
+    const agentId = "scope-agent";
+    await configure(request, session, { visibleAgentIds: [agentId], [scope]: "scope-before" });
+    await seedConversation(request, session, agentId, ["old-scope"]);
+    await attachSession(context, session);
+    await page.goto(`/agents/${agentId}/conversation`);
+    await expectConversation(page, agentId, scope === "eventLogEpoch" ? "scope-before" : "e2e-epoch", ["old-scope"]);
 
-  await configure(request, session, {
-    eventsByAgentId: { [agentId]: [envelope(agentId, 8)] },
-    oldestRetainedSeqByAgentId: { [agentId]: 7 },
-    snapshotThroughSeqByAgentId: { [agentId]: 8 },
+    await configure(request, session, { [scope]: "scope-after" });
+    await seedConversation(request, session, agentId, ["new-scope"]);
+    await page.getByRole("button", { name: "Dashboard", exact: true }).first().click();
+    await page.getByRole("button", { name: "Refresh", exact: true }).click();
+    await page.getByRole("region", { name: "agents" }).getByRole("button").filter({ hasText: agentId }).click();
+    await expectConversation(page, agentId, scope === "eventLogEpoch" ? "scope-after" : "e2e-epoch", ["new-scope"]);
+    await expect(page.locator('[data-turn-id="old-scope"]')).toHaveCount(0);
+    await page.reload();
+    await expectConversation(page, agentId, scope === "eventLogEpoch" ? "scope-after" : "e2e-epoch", ["new-scope"]);
+    expect(await page.evaluate(async () => (await indexedDB.databases()).map((db) => db.name)))
+      .not.toContain("holon.webGui.eventLedger.v1");
   });
-  await refreshRoster(page);
-
-  // No local acknowledgement UI exists in the server-backed contract; the
-  // cursor remains below the retention boundary until a later read advances it.
-  await expect.poll(() => ledger(page, agentId)).toMatchObject({
-    ingestedThroughSeq: 8,
-    readThroughEventSeq: 5,
-    certainty: "truncated",
-    historyTruncatedBeforeSeq: 7,
-  }, { timeout: 10_000 });
-});
-
-test("event log epoch replacement clears the old projection and read partition", async ({
-  context,
-  page,
-  request,
-}, testInfo) => {
-  const session = sessionFor(testInfo);
-  const agentId = "epoch-agent";
-  await configure(request, session, {
-    eventLogEpoch: "epoch-before",
-    visibleAgentIds: [agentId],
-    ledgerEnabledAgentIds: [agentId],
-    eventsByAgentId: {
-      [agentId]: [
-        envelope(agentId, 1, "epoch-before"),
-        envelope(agentId, 2, "epoch-before"),
-      ],
-    },
-  });
-  await attachSession(context, session);
-  await page.goto("/");
-  await openAgent(page, agentId);
-  await expect.poll(() => ledger(page, agentId)).toMatchObject({
-    eventLogEpoch: "epoch-before",
-    ingestedThroughSeq: 2,
-    projectionReadyThroughSeq: 2,
-    readThroughEventSeq: 2,
-    certainty: "exact",
-  });
-
-  await configure(request, session, {
-    eventLogEpoch: "epoch-after",
-    eventsByAgentId: {
-      [agentId]: [
-        envelope(agentId, 1, "epoch-after"),
-        envelope(agentId, 2, "epoch-after"),
-        envelope(agentId, 3, "epoch-after"),
-      ],
-    },
-  });
-  await refreshRoster(page);
-
-  await expect.poll(() => ledger(page, agentId)).toMatchObject({
-    eventLogEpoch: "epoch-after",
-    ingestedThroughSeq: 3,
-    projectionReadyThroughSeq: 3,
-    readThroughEventSeq: 0,
-    certainty: "exact",
-  });
-  await expect.poll(() => partitions(page, agentId)).toEqual([{
-    runtimeId: "e2e-runtime",
-    visibilityScopeId: "e2e-scope",
-    eventLogEpoch: "epoch-after",
-    eventSeqs: [1, 2, 3],
-    observedHeadSeq: 3,
-    readThroughEventSeq: 0,
-    certainty: "exact",
-  }]);
-});
-
-test("visibility scope rotation clears the old auth-scoped partition", async ({
-  context,
-  page,
-  request,
-}, testInfo) => {
-  const session = sessionFor(testInfo);
-  const agentId = "scope-agent";
-  await configure(request, session, {
-    visibilityScopeId: "scope-before",
-    visibleAgentIds: [agentId],
-    ledgerEnabledAgentIds: [agentId],
-    eventsByAgentId: {
-      [agentId]: [envelope(agentId, 1), envelope(agentId, 2)],
-    },
-  });
-  await attachSession(context, session);
-  await page.goto("/");
-  await openAgent(page, agentId);
-  await expect.poll(() => ledger(page, agentId)).toMatchObject({
-    visibilityScopeId: "scope-before",
-    ingestedThroughSeq: 2,
-    projectionReadyThroughSeq: 2,
-    readThroughEventSeq: 2,
-    certainty: "exact",
-  });
-
-  await configure(request, session, {
-    visibilityScopeId: "scope-after",
-    eventsByAgentId: {
-      [agentId]: [envelope(agentId, 1), envelope(agentId, 2), envelope(agentId, 3)],
-    },
-  });
-  await refreshRoster(page);
-
-  await expect.poll(() => ledger(page, agentId)).toMatchObject({
-    visibilityScopeId: "scope-after",
-    ingestedThroughSeq: 3,
-    projectionReadyThroughSeq: 3,
-    readThroughEventSeq: 0,
-    certainty: "exact",
-  });
-  await expect.poll(() => partitions(page, agentId)).toEqual([{
-    runtimeId: "e2e-runtime",
-    visibilityScopeId: "scope-after",
-    eventLogEpoch: "e2e-epoch",
-    eventSeqs: [1, 2, 3],
-    observedHeadSeq: 3,
-    readThroughEventSeq: 0,
-    certainty: "exact",
-  }]);
-});
-
-test("divergence repair, sync error, and degraded handle recovery preserve exactness", async ({
-  context,
-  page,
-  request,
-}, testInfo) => {
-  const session = sessionFor(testInfo);
-  const repairAgentId = "repair-agent";
-  const errorAgentId = "error-agent";
-  const degradedAgentId = "degraded-agent";
-  const repairEvent = envelope(
-    repairAgentId,
-    2,
-    "e2e-epoch",
-    "brief_created",
-    { brief_id: "repair-brief" },
-  );
-  const errorEventA = envelope(
-    errorAgentId,
-    2,
-    "e2e-epoch",
-    "brief_created",
-    { brief_id: "error-brief-a" },
-  );
-  const errorEventB = envelope(
-    errorAgentId,
-    3,
-    "e2e-epoch",
-    "brief_created",
-    { brief_id: "error-brief-b" },
-  );
-  await configure(request, session, {
-    visibleAgentIds: [repairAgentId, errorAgentId, degradedAgentId],
-    ledgerEnabledAgentIds: [repairAgentId, errorAgentId, degradedAgentId],
-    eventsByAgentId: {
-      [repairAgentId]: [envelope(repairAgentId, 1), repairEvent],
-      [errorAgentId]: [envelope(errorAgentId, 1), errorEventA, errorEventB],
-      [degradedAgentId]: [envelope(degradedAgentId, 1), envelope(degradedAgentId, 2)],
-    },
-    snapshotThroughSeqByAgentId: {
-      [repairAgentId]: 0,
-      [errorAgentId]: 0,
-      [degradedAgentId]: 0,
-    },
-  });
-  await attachSession(context, session);
-  await page.goto("/");
-
-  await openAgent(page, repairAgentId);
-  await expect.poll(() => briefFetchCount(request, session, repairAgentId))
-    .toBeGreaterThanOrEqual(1);
-  await configure(request, session, {
-    snapshotThroughSeqByAgentId: {
-      [repairAgentId]: 2,
-      [errorAgentId]: 2,
-      [degradedAgentId]: 0,
-    },
-    projectionLatestBriefByAgentId: {
-      [repairAgentId]: latestBrief("repair-brief", 2),
-    },
-  });
-  await driveHydrationUntil(
-    page,
-    request,
-    session,
-    repairAgentId,
-    (snapshot) => snapshot?.ingestionState === "idle" &&
-      snapshot.projectionReadyThroughSeq === 2,
-  );
-  await expect.poll(() => ledger(page, repairAgentId)).toMatchObject({
-    durability: "exact",
-    ingestionState: "idle",
-    ingestedThroughSeq: 2,
-    projectionReadyThroughSeq: 2,
-    pendingHydrationJobs: 0,
-    failedHydrationJobs: 0,
-  });
-
-  await openAgent(page, errorAgentId);
-  await expect.poll(() => briefFetchCount(request, session, errorAgentId))
-    .toBeGreaterThanOrEqual(1);
-  await driveHydrationUntil(
-    page,
-    request,
-    session,
-    errorAgentId,
-    (snapshot) => snapshot?.ingestionState === "sync_error",
-  );
-  await expect.poll(() => ledger(page, errorAgentId)).toMatchObject({
-    durability: "exact",
-    ingestionState: "sync_error",
-    ingestionError: "hydration_diverged_after_snapshot_repair",
-    ingestedThroughSeq: 3,
-    projectionReadyThroughSeq: 2,
-    pendingHydrationJobs: 0,
-    failedHydrationJobs: 1,
-  });
-
-  await openAgent(page, degradedAgentId);
-  await expect.poll(() => ledger(page, degradedAgentId)).toMatchObject({
-    durability: "exact",
-    ingestedThroughSeq: 2,
-    projectionReadyThroughSeq: 2,
-  });
-  await page.evaluate(() => {
-    const originalPut = IDBObjectStore.prototype.put;
-    const originalOpen = indexedDB.open.bind(indexedDB);
-    const ownOpenDescriptor = Object.getOwnPropertyDescriptor(indexedDB, "open");
-    let armed = true;
-    let abortedWrites = 0;
-    let rejectedReopens = 0;
-    IDBObjectStore.prototype.put = function (...args) {
-      const request = originalPut.apply(this, args);
-      if (armed && this.name === "raw_events") {
-        armed = false;
-        abortedWrites += 1;
-        this.transaction.abort();
-      }
-      return request;
-    };
-    Object.defineProperty(indexedDB, "open", {
-      configurable: true,
-      value: (...args: Parameters<IDBFactory["open"]>) => {
-        if (!armed) {
-          rejectedReopens += 1;
-          throw new DOMException("Injected ledger reopen failure", "AbortError");
-        }
-        return originalOpen(...args);
-      },
-    });
-    Object.defineProperty(window, "__HOLON_E2E_LEDGER_ABORTED_WRITES__", {
-      configurable: true,
-      get: () => abortedWrites,
-    });
-    Object.defineProperty(window, "__HOLON_E2E_LEDGER_REOPEN_REJECTIONS__", {
-      configurable: true,
-      get: () => rejectedReopens,
-    });
-    Object.defineProperty(window, "__HOLON_E2E_RELEASE_LEDGER_REOPEN__", {
-      configurable: true,
-      value: () => {
-        IDBObjectStore.prototype.put = originalPut;
-        if (ownOpenDescriptor) {
-          Object.defineProperty(indexedDB, "open", ownOpenDescriptor);
-        } else {
-          Reflect.deleteProperty(indexedDB, "open");
-        }
-      },
-    });
-  });
-  const degradedEvent = envelope(degradedAgentId, 3);
-  const failedWrite = await request.post(controlPath(session, "/__e2e__/append-event"), {
-    data: { envelope: degradedEvent },
-  });
-  expect(failedWrite.ok()).toBe(true);
-  await refreshRoster(page);
-  await expect.poll(() => page.evaluate(
-    () => Reflect.get(window, "__HOLON_E2E_LEDGER_ABORTED_WRITES__"),
-  )).toBeGreaterThan(0);
-  await expect.poll(async () => (await ledgerStatus(page, degradedAgentId))?.durability)
-    .not.toBe("exact");
-
-  await page.evaluate(() => {
-    const release = Reflect.get(window, "__HOLON_E2E_RELEASE_LEDGER_REOPEN__");
-    if (typeof release === "function") release();
-    Reflect.deleteProperty(window, "__HOLON_E2E_RELEASE_LEDGER_REOPEN__");
-    Reflect.deleteProperty(window, "__HOLON_E2E_LEDGER_REOPEN_REJECTIONS__");
-  });
-  await expect.poll(() => ledger(page, degradedAgentId)).toMatchObject({
-    ingestedThroughSeq: 2,
-    projectionReadyThroughSeq: 2,
-  });
-  await expect.poll(() => partitions(page, degradedAgentId)).toEqual([{
-    runtimeId: "e2e-runtime",
-    visibilityScopeId: "e2e-scope",
-    eventLogEpoch: "e2e-epoch",
-    eventSeqs: [1, 2],
-    observedHeadSeq: 2,
-    readThroughEventSeq: 2,
-    certainty: "exact",
-  }]);
-  const recoveredWrite = await request.post(controlPath(session, "/__e2e__/append-event"), {
-    data: { envelope: degradedEvent },
-  });
-  expect(recoveredWrite.ok()).toBe(true);
-  await refreshRoster(page);
-  await expect.poll(() => ledger(page, degradedAgentId)).toMatchObject({
-    durability: "exact",
-    ingestionState: "idle",
-    ingestedThroughSeq: 3,
-    projectionReadyThroughSeq: 3,
-    readThroughEventSeq: 2,
-    certainty: "exact",
-  });
-  await expect.poll(() => partitions(page, degradedAgentId)).toEqual([{
-    runtimeId: "e2e-runtime",
-    visibilityScopeId: "e2e-scope",
-    eventLogEpoch: "e2e-epoch",
-    eventSeqs: [1, 2, 3],
-    observedHeadSeq: 3,
-    readThroughEventSeq: 2,
-    certainty: "exact",
-  }]);
-});
-
+}
