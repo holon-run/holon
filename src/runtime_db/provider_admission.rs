@@ -91,6 +91,8 @@ pub enum ProviderCooldownPolicy {
     TransientQuota,
     HardQuota,
     PaymentRequired,
+    Credential,
+    Contract,
     Transport,
 }
 
@@ -99,6 +101,8 @@ impl ProviderCooldownPolicy {
         match self {
             Self::TransientQuota | Self::HardQuota => "rate_limited",
             Self::PaymentRequired => "payment_required",
+            Self::Credential => "auth_error",
+            Self::Contract => "contract_error",
             Self::Transport => "transport",
         }
     }
@@ -108,6 +112,8 @@ impl ProviderCooldownPolicy {
             Self::TransientQuota => "transient_quota",
             Self::HardQuota => "hard_quota",
             Self::PaymentRequired => "payment_required",
+            Self::Credential => "credential",
+            Self::Contract => "contract",
             Self::Transport => "transport",
         }
     }
@@ -117,6 +123,8 @@ impl ProviderCooldownPolicy {
             "transient_quota" => Ok(Self::TransientQuota),
             "hard_quota" => Ok(Self::HardQuota),
             "payment_required" => Ok(Self::PaymentRequired),
+            "credential" => Ok(Self::Credential),
+            "contract" => Ok(Self::Contract),
             "transport" => Ok(Self::Transport),
             _ => anyhow::bail!("invalid persisted provider cooldown policy"),
         }
@@ -126,7 +134,7 @@ impl ProviderCooldownPolicy {
         let exponent = failures.saturating_sub(1).clamp(0, 31) as u32;
         let (base_ms, cap_ms, jitter_percent) = match self {
             Self::TransientQuota => (250_i64.saturating_mul(1_i64 << exponent), 30_000, 0),
-            Self::HardQuota | Self::PaymentRequired => (
+            Self::HardQuota | Self::PaymentRequired | Self::Credential | Self::Contract => (
                 900_000_i64.saturating_mul(1_i64 << exponent),
                 21_600_000,
                 10,
@@ -217,7 +225,15 @@ impl ScopeState {
         }
         self.next_retry_at
             .filter(|_| {
-                !allow_policy_probe || self.policy == Some(ProviderCooldownPolicy::PaymentRequired)
+                !allow_policy_probe
+                    || matches!(
+                        self.policy,
+                        Some(
+                            ProviderCooldownPolicy::PaymentRequired
+                                | ProviderCooldownPolicy::Credential
+                                | ProviderCooldownPolicy::Contract
+                        )
+                    )
             })
             .into_iter()
             .chain(self.server_not_before)
@@ -461,6 +477,8 @@ impl RuntimeDb {
                     | "server_error"
                     | "transport"
                     | "payment_required"
+                    | "auth_error"
+                    | "contract_error"
             ) {
                 cause.failure_kind = "unknown".into();
                 cause.details_available = false;
@@ -568,6 +586,11 @@ impl RuntimeDb {
                     | (
                         ScopeKind::Candidate,
                         ProviderCooldownPolicy::PaymentRequired
+                    )
+                    | (ScopeKind::Candidate, ProviderCooldownPolicy::Contract)
+                    | (
+                        ScopeKind::Quota | ScopeKind::RouteThrottle,
+                        ProviderCooldownPolicy::Credential
                     )
                     | (
                         ScopeKind::Quota | ScopeKind::RouteThrottle,

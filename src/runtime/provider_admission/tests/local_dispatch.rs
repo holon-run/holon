@@ -782,6 +782,7 @@ async fn unsafe_pause_denial_scenario() {
             dispatch: None,
             dispatched,
             unknown_dispatch,
+            lossless_replay_dispatch: false,
             side_effect_boundary,
         };
         let error = admission.deny(&mut state, reason).unwrap_err();
@@ -824,6 +825,7 @@ async fn unsafe_pause_denial_scenario() {
         dispatch: None,
         dispatched: false,
         unknown_dispatch: false,
+        lossless_replay_dispatch: false,
         side_effect_boundary: false,
     };
     // A paused episode without a persisted deadline cannot promise recovery.

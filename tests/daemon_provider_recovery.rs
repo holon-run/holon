@@ -18,7 +18,7 @@
 //! Every invocation has its own home, socket, environment, process group,
 //! and mock provider ports. No real provider or network endpoint is used.
 
-#![cfg(target_os = "linux")]
+#![cfg(unix)]
 
 use std::{
     fs::{self, File},
@@ -76,6 +76,8 @@ enum MockMode {
     RateLimited,
     /// The spending-limit response must not be retried on the same candidate.
     PaymentRequired,
+    /// Invalid credentials must not loop the recovery chain.
+    Unauthorized,
     /// Every model request receives a successful completion.
     Success,
 }
@@ -92,6 +94,7 @@ struct MockState {
 struct MockStats {
     rate_limited: AtomicUsize,
     payment_required: AtomicUsize,
+    unauthorized: AtomicUsize,
     success: AtomicUsize,
     last_success_at: Mutex<Option<DateTime<Utc>>>,
     requested_models: Mutex<Vec<String>>,
@@ -102,6 +105,7 @@ impl MockStats {
         Arc::new(Self {
             rate_limited: AtomicUsize::new(0),
             payment_required: AtomicUsize::new(0),
+            unauthorized: AtomicUsize::new(0),
             success: AtomicUsize::new(0),
             last_success_at: Mutex::new(None),
             requested_models: Mutex::new(Vec::new()),
@@ -161,6 +165,10 @@ impl MockProvider {
         self.stats.payment_required.load(Ordering::SeqCst)
     }
 
+    fn unauthorized_hits(&self) -> usize {
+        self.stats.unauthorized.load(Ordering::SeqCst)
+    }
+
     fn requested_models(&self) -> Vec<String> {
         self.stats.requested_models.lock().unwrap().clone()
     }
@@ -168,6 +176,7 @@ impl MockProvider {
     fn reset_hits(&self) {
         self.stats.rate_limited.store(0, Ordering::SeqCst);
         self.stats.payment_required.store(0, Ordering::SeqCst);
+        self.stats.unauthorized.store(0, Ordering::SeqCst);
         self.stats.success.store(0, Ordering::SeqCst);
         *self.stats.last_success_at.lock().unwrap() = None;
         self.stats.requested_models.lock().unwrap().clear();
@@ -399,6 +408,15 @@ fn handle_mock_connection(
                 402,
                 "Payment Required",
                 "{\"error\":{\"code\":\"personal-team-blocked:spending-limit\",\"message\":\"You have reached your spending limit\"}}",
+            );
+        }
+        MockMode::Unauthorized => {
+            stats.unauthorized.fetch_add(1, Ordering::SeqCst);
+            write_mock_response(
+                stream,
+                401,
+                "Unauthorized",
+                "{\"error\":{\"code\":\"invalid_api_key\",\"message\":\"Incorrect API key provided\"}}",
             );
         }
         MockMode::Initialize | MockMode::Success => {
@@ -727,6 +745,81 @@ impl Fixture {
             assert!(
                 delay >= chrono::Duration::minutes(15) && delay <= chrono::Duration::seconds(990),
                 "first payment failure must retain the 15-minute floor plus at most 10% jitter"
+            );
+        }
+        snapshot
+    }
+
+    fn assert_auth_ledger(&self, root_message_id: &str, dispatches: usize) -> Value {
+        let snapshot = self.recovery_snapshot(root_message_id);
+        let episode = &snapshot["episode"];
+        assert_eq!(episode["binding"]["root_message_id"], root_message_id);
+        assert_eq!(episode["binding"]["agent_id"], AGENT_ID);
+        assert_eq!(
+            episode["epoch"], 1,
+            "deterministic auth failure must not reopen epochs"
+        );
+        assert_eq!(episode["request_count"].as_u64(), Some(dispatches as u64));
+        assert_eq!(episode["total_requests"].as_u64(), Some(dispatches as u64));
+        assert!(
+            matches!(
+                episode["state"].as_str(),
+                Some("cooling" | "budget_exhausted")
+            ),
+            "failed auth episode must not resolve"
+        );
+        let requests = snapshot["requests"].as_array().unwrap();
+        assert_eq!(requests.len(), dispatches);
+        let db = self.database();
+        for request in requests {
+            assert_eq!(request["outcome"], "auth_failure");
+            assert!(
+                matches!(
+                    request["failed_scope"]["kind"].as_str(),
+                    Some("quota" | "route_throttle")
+                ),
+                "auth failure must isolate the credential scope, got {:?}",
+                request["failed_scope"]["kind"]
+            );
+            assert!(request["settled_at"].is_string());
+            let key = request["failed_scope"]["key"].as_str().unwrap();
+            let table = match request["failed_scope"]["kind"].as_str().unwrap() {
+                "quota" => "provider_quota_incidents",
+                _ => "provider_route_throttle_incidents",
+            };
+            let (failures, policy, retry_at, failed_at, resolved): (
+                i64,
+                String,
+                String,
+                String,
+                Option<String>,
+            ) = db
+                .query_row(
+                    &format!(
+                        "SELECT consecutive_failures, cooldown_policy, next_retry_at,
+                                last_failed_at, resolved_at
+                         FROM {table} WHERE identity_key = ?1"
+                    ),
+                    [key],
+                    |row| {
+                        Ok((
+                            row.get(0)?,
+                            row.get(1)?,
+                            row.get(2)?,
+                            row.get(3)?,
+                            row.get(4)?,
+                        ))
+                    },
+                )
+                .expect("auth failure must persist a credential cooldown incident");
+            assert_eq!(failures, 1);
+            assert_eq!(policy, "credential");
+            assert!(resolved.is_none());
+            let delay = DateTime::parse_from_rfc3339(&retry_at).unwrap()
+                - DateTime::parse_from_rfc3339(&failed_at).unwrap();
+            assert!(
+                delay >= chrono::Duration::minutes(15) && delay <= chrono::Duration::seconds(990),
+                "first auth failure must retain the 15-minute floor plus at most 10% jitter"
             );
         }
         snapshot
@@ -1387,6 +1480,96 @@ fn payment_required_chain_parks_within_budget_and_restart_preserves_deadline() {
 }
 
 #[test]
+fn auth_failure_chain_parks_within_budget_and_restart_preserves_deadline() {
+    let _lock = server_lock();
+    let primary = MockProvider::start(MockMode::Initialize, "primary-must-not-answer", false);
+    let fallback = MockProvider::start(MockMode::Unauthorized, "fallback-must-not-answer", false);
+    let mut env = primary_env(&primary);
+    env.extend(fallback_env(&fallback));
+    let mut fixture = Fixture::new(env);
+    let (serve, address) = fixture.spawn_serve();
+    fixture.initialize_agent(&address, &primary);
+    primary.set_mode(MockMode::Unauthorized);
+    let initial_turns = fixture.turn_count();
+    let source = fixture.post_prompt(&address, "park the exhausted auth recovery");
+    let deadline = Instant::now() + DEADLINE;
+    let parked = loop {
+        let dispatches = primary.requested_models().len() + fallback.requested_models().len();
+        assert!(
+            dispatches <= 3,
+            "auth recovery must park within the existing epoch budget, not loop resolved episodes"
+        );
+        assert!(
+            fixture.turn_count() - initial_turns <= 3,
+            "exhausted candidates must not create empty model turns"
+        );
+        let paused = fixture.paused_events(&address);
+        if let Some(parked) = fixture.parked_inputs().into_iter().find(|parked| {
+            parked.not_before.signed_duration_since(Utc::now())
+                >= chrono::Duration::from_std(PARK_WINDOW).unwrap()
+                && paused.iter().any(|event| {
+                    event["payload"]["message_id"] == parked.message_id
+                        && event["payload"]["not_before"].as_str().is_some_and(|at| {
+                            DateTime::parse_from_rfc3339(at).is_ok_and(|at| at == parked.not_before)
+                        })
+                })
+        }) {
+            break parked;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "auth candidates never reached a committed park:\n{}",
+            fixture.diagnostics(serve)
+        );
+        thread::sleep(Duration::from_millis(100));
+    };
+    assert_eq!(primary.unauthorized_hits(), 1);
+    assert_eq!(fallback.unauthorized_hits(), 1);
+    assert_eq!(primary.requested_models(), ["gpt-5.4"]);
+    assert_eq!(fallback.requested_models(), ["claude-sonnet-4-6"]);
+    let snapshot = fixture.assert_auth_ledger(&source, 2);
+    assert_eq!(parked.episode_key, snapshot["episode"]["key"]);
+    assert_eq!(
+        parked.chain_fingerprint,
+        snapshot["episode"]["binding"]["chain_fingerprint"]
+    );
+    let turns = fixture.turn_count();
+    assert!(turns - initial_turns <= 3);
+    thread::sleep(Duration::from_millis(300));
+    assert_eq!(fixture.recovery_snapshot(&source), snapshot);
+
+    fixture.kill(serve);
+    let (_resumed, _address) = fixture.spawn_serve();
+    let observe_until = Instant::now() + Duration::from_secs(2);
+    loop {
+        assert!(
+            Utc::now() < parked.not_before,
+            "restart observation must remain before the persisted retry deadline"
+        );
+        fixture.assert_park_retained(&parked);
+        assert_eq!(
+            primary.requested_models().len() + fallback.requested_models().len(),
+            2,
+            "restart and ordinary reads must not dispatch before not_before"
+        );
+        assert_eq!(
+            fixture.turn_count(),
+            turns,
+            "parking must happen before creating another model turn"
+        );
+        assert_eq!(
+            fixture.recovery_snapshot(&source),
+            snapshot,
+            "restart must preserve root, owner, fences, grant, cursor, epoch and request ledger"
+        );
+        if Instant::now() >= observe_until {
+            break;
+        }
+        thread::sleep(Duration::from_millis(100));
+    }
+}
+
+#[test]
 fn cooldown_park_survives_sigkill_and_resumes_on_schedule_without_new_input() {
     let _lock = server_lock();
     let primary = MockProvider::start(MockMode::Initialize, "primary-recovered-final", false);
@@ -1454,6 +1637,50 @@ fn cooling_primary_uses_healthy_fallback_and_never_parks() {
         primary.success_hits(),
         0,
         "the cooling primary must not serve the turn"
+    );
+    assert_eq!(
+        fallback.success_hits(),
+        1,
+        "the healthy fallback must serve exactly one dispatch"
+    );
+    let paused = fixture.paused_events(&address);
+    assert!(
+        paused.is_empty(),
+        "a healthy fallback must prevent parking: {paused:#?}"
+    );
+}
+
+#[test]
+fn unauthorized_primary_uses_healthy_fallback_and_never_parks() {
+    let _lock = server_lock();
+    let primary = MockProvider::start(MockMode::Initialize, "primary-must-not-answer", false);
+    let fallback = MockProvider::start(MockMode::Success, "fallback-auth-recovered-final", false);
+    let mut env = primary_env(&primary);
+    env.extend(fallback_env(&fallback));
+    let mut fixture = Fixture::new(env);
+    let (_serve, address) = fixture.spawn_serve();
+    fixture.initialize_agent(&address, &primary);
+    primary.set_mode(MockMode::Unauthorized);
+    fixture.post_prompt(
+        &address,
+        "use the fallback while the primary credential is invalid",
+    );
+
+    wait_for_brief_marker(
+        &fixture,
+        &address,
+        "fallback-auth-recovered-final",
+        DEADLINE,
+    );
+    assert_eq!(
+        primary.unauthorized_hits(),
+        1,
+        "the invalid primary credential must be attempted exactly once"
+    );
+    assert_eq!(
+        primary.success_hits(),
+        0,
+        "the unauthorized primary must not serve the turn"
     );
     assert_eq!(
         fallback.success_hits(),

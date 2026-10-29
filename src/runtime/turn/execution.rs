@@ -546,6 +546,8 @@ impl RuntimeHandle {
                                 | "server_error"
                                 | "rate_limited"
                                 | "payment_required"
+                                | "auth_error"
+                                | "contract_error"
                         )
                     )
                 })

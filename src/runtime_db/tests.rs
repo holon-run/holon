@@ -289,6 +289,57 @@ mod tests {
     }
 
     #[test]
+    fn deterministic_outcome_upgrade_relaxes_recovery_request_check() -> Result<()> {
+        let mut connection = rusqlite::Connection::open_in_memory()?;
+        migrate_through(&mut connection, 90)?;
+        connection.execute_batch(
+            "INSERT INTO provider_recovery_episodes VALUES (
+                'legacy', '{\"chain_fingerprint\":\"old-chain\",\"root\":\"old-root\"}',
+                'operator', 8, 2, 'budget_exhausted', 3, 5, 4, 2,
+                '2026-10-25T14:00:00Z', 1, 'opened', 'updated');
+             INSERT INTO provider_recovery_requests VALUES (
+                'request-1', 'legacy', 2, 8,
+                '[{\"scope\":{\"kind\":\"candidate\",\"key\":\"candidate-hash\"},\"was_probe\":false}]',
+                'payment_required',
+                '{\"kind\":\"candidate\",\"key\":\"candidate-hash\"}',
+                'dispatched', 'settled');",
+        )?;
+        let read_rows =
+            |connection: &rusqlite::Connection| -> Result<Vec<Vec<rusqlite::types::Value>>> {
+                let mut statement = connection
+                    .prepare("SELECT * FROM provider_recovery_requests ORDER BY rowid")?;
+                let columns = statement.column_count();
+                let rows = statement
+                    .query_map([], |row| (0..columns).map(|i| row.get(i)).collect())?
+                    .collect::<rusqlite::Result<Vec<_>>>()?;
+                Ok(rows)
+            };
+        let before = read_rows(&connection)?;
+        let migration = MIGRATIONS
+            .iter()
+            .find(|migration| migration.version == 91)
+            .expect("deterministic outcomes need an explicit upgrade migration");
+        apply_migration(&mut connection, migration)?;
+        let after = read_rows(&connection)?;
+        assert_eq!(after, before, "provider_recovery_requests");
+        assert!(!connection.prepare("PRAGMA foreign_key_check")?.exists([])?);
+        // The relaxed CHECK accepts the new deterministic outcome labels.
+        for outcome in ["auth_failure", "contract_failure"] {
+            connection.execute(
+                "UPDATE provider_recovery_requests SET outcome = ?1 WHERE request_id = 'request-1'",
+                [outcome],
+            )?;
+        }
+        // Legacy labels remain valid after the rebuild.
+        connection.execute(
+            "UPDATE provider_recovery_requests SET outcome = 'other_failure'
+             WHERE request_id = 'request-1'",
+            [],
+        )?;
+        Ok(())
+    }
+
+    #[test]
     fn cooldown_cause_upgrade_preserves_all_four_incident_scopes() -> Result<()> {
         let mut connection = rusqlite::Connection::open_in_memory()?;
         migrate_through(&mut connection, 89)?;

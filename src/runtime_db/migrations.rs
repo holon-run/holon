@@ -4248,6 +4248,34 @@ ALTER TABLE provider_route_throttle_incidents ADD COLUMN cause_json TEXT;
 ALTER TABLE provider_candidate_incidents ADD COLUMN cause_json TEXT;
 "#,
     },
+    Migration {
+        version: 91,
+        name: "provider_recovery_deterministic_outcomes",
+        sql: r#"
+CREATE TABLE provider_recovery_requests_v91 (
+  request_id TEXT PRIMARY KEY,
+  episode_key TEXT NOT NULL REFERENCES provider_recovery_episodes(episode_key),
+  epoch INTEGER NOT NULL CHECK (epoch > 0),
+  revision INTEGER NOT NULL CHECK (revision > 0),
+  scopes_json TEXT NOT NULL,
+  outcome TEXT CHECK (outcome IN ('available_response', 'non_recovery_response', 'network_failure', 'rate_limited', 'payment_required', 'auth_failure', 'contract_failure', 'other_failure')),
+  failed_scope_json TEXT,
+  dispatched_at TEXT NOT NULL,
+  settled_at TEXT
+);
+INSERT INTO provider_recovery_requests_v91 (
+  request_id, episode_key, epoch, revision, scopes_json, outcome,
+  failed_scope_json, dispatched_at, settled_at
+)
+SELECT request_id, episode_key, epoch, revision, scopes_json, outcome,
+       failed_scope_json, dispatched_at, settled_at
+FROM provider_recovery_requests ORDER BY rowid;
+DROP TABLE provider_recovery_requests;
+ALTER TABLE provider_recovery_requests_v91 RENAME TO provider_recovery_requests;
+CREATE INDEX idx_provider_recovery_requests_episode
+  ON provider_recovery_requests(episode_key, epoch);
+"#,
+    },
 ];
 
 pub(crate) fn ensure_migration_table(connection: &Connection) -> Result<()> {

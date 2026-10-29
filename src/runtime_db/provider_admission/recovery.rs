@@ -199,6 +199,8 @@ pub enum ProviderRecoveryRequestOutcome<'a> {
     NetworkFailure(&'a ProviderAdmissionScope),
     RateLimited(&'a ProviderAdmissionScope),
     PaymentRequired(&'a ProviderAdmissionScope),
+    AuthFailure(&'a ProviderAdmissionScope),
+    ContractFailure(&'a ProviderAdmissionScope),
     OtherFailure,
 }
 
@@ -517,17 +519,20 @@ fn attempted_scopes(
     for row in rows {
         let (scopes, failed_scope, outcome) = row?;
         if episode.kind == ProviderRecoveryBudgetKind::Operator {
-            let payment_failure = outcome.as_deref() == Some("payment_required");
-            if payment_failure {
+            // A settled deterministic failure consumes only its failed scope,
+            // never a healthy shared one. Probes still consume their grant.
+            let deterministic_failure = matches!(
+                outcome.as_deref(),
+                Some("payment_required" | "auth_failure" | "contract_failure")
+            );
+            if deterministic_failure {
                 if let Some(scope) = failed_scope {
                     attempted.insert(serde_json::from_str::<ProviderAdmissionScope>(&scope)?);
                 }
             }
             for recorded in serde_json::from_str::<Vec<RecordedScope>>(&scopes)? {
-                // A settled 402 consumes its candidate, not a healthy shared
-                // quota. Any actual policy probe still consumes its one grant.
                 if recorded.was_probe
-                    || (!payment_failure
+                    || (!deterministic_failure
                         && matches!(
                             recorded.scope.kind,
                             ScopeKind::Quota | ScopeKind::RouteThrottle | ScopeKind::Candidate
@@ -846,7 +851,8 @@ impl RuntimeDb {
                     let has_failure = tx.query_row(
                         "SELECT EXISTS(SELECT 1 FROM provider_recovery_requests
                          WHERE episode_key = ?1 AND epoch = ?2
-                           AND (outcome IN ('network_failure', 'rate_limited', 'payment_required', 'other_failure')
+                           AND (outcome IN ('network_failure', 'rate_limited', 'payment_required',
+                                            'auth_failure', 'contract_failure', 'other_failure')
                              OR (settled_at IS NULL AND request_id != ?3)))",
                         params![episode.key, episode.epoch, dispatch.request_id],
                         |row| row.get::<_, bool>(0),
@@ -857,7 +863,8 @@ impl RuntimeDb {
                     let has_recovery_failure = tx.query_row(
                         "SELECT EXISTS(SELECT 1 FROM provider_recovery_requests
                          WHERE episode_key = ?1 AND epoch = ?2
-                           AND (outcome IN ('network_failure', 'rate_limited', 'payment_required')
+                           AND (outcome IN ('network_failure', 'rate_limited', 'payment_required',
+                                            'auth_failure', 'contract_failure')
                              OR (settled_at IS NULL AND request_id != ?3)))",
                         params![episode.key, episode.epoch, dispatch.request_id],
                         |row| row.get::<_, bool>(0),
@@ -901,7 +908,35 @@ impl RuntimeDb {
                                 .any(|recorded| recorded.scope == *scope),
                         "payment required scope was not admitted"
                     );
-                    ("payment_required", Some(serde_json::to_string(scope)?), false)
+                    (
+                        "payment_required",
+                        Some(serde_json::to_string(scope)?),
+                        false,
+                    )
+                }
+                ProviderRecoveryRequestOutcome::AuthFailure(scope) => {
+                    ensure!(
+                        matches!(scope.kind, ScopeKind::Quota | ScopeKind::RouteThrottle)
+                            && serde_json::from_str::<Vec<RecordedScope>>(&scopes)?
+                                .iter()
+                                .any(|recorded| recorded.scope == *scope),
+                        "auth failure scope was not admitted"
+                    );
+                    ("auth_failure", Some(serde_json::to_string(scope)?), false)
+                }
+                ProviderRecoveryRequestOutcome::ContractFailure(scope) => {
+                    ensure!(
+                        scope.kind == ScopeKind::Candidate
+                            && serde_json::from_str::<Vec<RecordedScope>>(&scopes)?
+                                .iter()
+                                .any(|recorded| recorded.scope == *scope),
+                        "contract failure scope was not admitted"
+                    );
+                    (
+                        "contract_failure",
+                        Some(serde_json::to_string(scope)?),
+                        false,
+                    )
                 }
             };
             tx.execute(
