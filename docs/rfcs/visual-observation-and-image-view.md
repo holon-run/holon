@@ -702,10 +702,20 @@ and image reserves. Runtime history projection uses the shared size-sensitive,
 provider-neutral heuristic when the eventual wire model is not known.
 
 Gemini receives the resolved context window and performs the same bounded
-text/tool preflight. Its transport still does not support image input: an
-explicit required image fails with `image_input_unsupported` before HTTP;
-optional historical images retain explicit text-only degradation. This is not
-Gemini visual support or visual acceptance.
+text/tool/image preflight. Native image parts use `contents[].parts[].inlineData`
+with the validated MIME type and base64 data; text and image order is preserved.
+Only these image-content slots exclude encoded bytes from text estimates;
+function arguments, responses, and non-image inline data remain text. Gemini
+currently uses the shared conservative per-image admission reserve, not a
+model-specific media-resolution billing rule or a universal upper bound.
+Diagnostics report image counts and encoded/decoded bytes separately.
+
+The native Gemini transport supports ordinary image turns and the same
+`ViewImage` observation path used by other image-capable transports. Model and
+endpoint image capabilities, authentication, explicit-route selection, aggregate
+attachment budgets, and route/endpoint-isolated observation caching still apply.
+This support does not add remote image fetching, Files API uploads, or image
+generation.
 
 ### Optional historical attachments at request preflight
 

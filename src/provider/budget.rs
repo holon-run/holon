@@ -1,6 +1,9 @@
 use serde_json::Value;
 
-use crate::token_estimate::{anthropic_image_tokens, inline_image_dimensions, openai_image_tokens};
+use crate::token_estimate::{
+    anthropic_image_tokens, conservative_image_reserve_tokens, inline_image_dimensions,
+    openai_image_tokens,
+};
 
 const MIN_SAFETY_HEADROOM_TOKENS: usize = 4_096;
 const MAX_SAFETY_HEADROOM_TOKENS: usize = 32_768;
@@ -110,6 +113,11 @@ enum Position {
     Block,
     AnthropicImageSource,
     OpenAiImageUrl,
+    GeminiContents,
+    GeminiContent,
+    GeminiParts,
+    GeminiPart,
+    GeminiInlineData,
     GenerationConfig,
     Plain,
 }
@@ -134,6 +142,8 @@ impl InputCounter<'_> {
                 let child = match position {
                     Position::Messages => Position::Message,
                     Position::Content => Position::Block,
+                    Position::GeminiContents => Position::GeminiContent,
+                    Position::GeminiParts => Position::GeminiPart,
                     _ => Position::Plain,
                 };
                 values.iter().fold(
@@ -168,10 +178,19 @@ impl InputCounter<'_> {
                         let url = url.as_str().or_else(|| url["url"].as_str());
                         url.is_some_and(is_image_url)
                     });
-                if anthropic_image || openai_image {
+                let gemini_image = matches!(position, Position::GeminiPart)
+                    && object.get("inlineData").is_some_and(|data| {
+                        data["mimeType"]
+                            .as_str()
+                            .is_some_and(|mime| mime.starts_with("image/"))
+                            && data["data"].is_string()
+                    });
+                if anthropic_image || openai_image || gemini_image {
                     self.estimate.image_count = self.estimate.image_count.saturating_add(1);
                     let inline_data = if anthropic_image {
                         object["source"]["data"].as_str()
+                    } else if gemini_image {
+                        object["inlineData"]["data"].as_str()
                     } else {
                         let image_url = &object["image_url"];
                         image_url
@@ -183,6 +202,11 @@ impl InputCounter<'_> {
                     let dimensions = inline_data.and_then(inline_image_dimensions);
                     let reserve = if anthropic_image {
                         anthropic_image_tokens(self.model, dimensions)
+                    } else if gemini_image {
+                        // Gemini media-resolution/model rules vary. Keep a
+                        // bounded admission heuristic, not base64 text tokens
+                        // or a claim about exact provider usage.
+                        conservative_image_reserve_tokens()
                     } else {
                         let detail = object.get("detail").and_then(Value::as_str).or_else(|| {
                             object
@@ -233,20 +257,32 @@ impl InputCounter<'_> {
                     }
                     let payload = (matches!(position, Position::AnthropicImageSource)
                         && key == "data")
+                        || (matches!(position, Position::GeminiInlineData) && key == "data")
                         || (matches!(position, Position::OpenAiImageUrl) && key == "url")
                         || (openai_image && key == "image_url" && value.is_string());
                     let child = if matches!(position, Position::Root) {
                         match key.as_str() {
                             "messages" | "input" => Position::Messages,
+                            "contents" => Position::GeminiContents,
                             "generationConfig" => Position::GenerationConfig,
                             _ => Position::Plain,
                         }
                     } else if is_message && key == "content" {
                         Position::Content
+                    } else if matches!(position, Position::GeminiContent)
+                        && matches!(
+                            object.get("role").and_then(Value::as_str),
+                            Some("user" | "model")
+                        )
+                        && key == "parts"
+                    {
+                        Position::GeminiParts
                     } else if anthropic_image && key == "source" {
                         Position::AnthropicImageSource
                     } else if openai_image && key == "image_url" {
                         Position::OpenAiImageUrl
+                    } else if gemini_image && key == "inlineData" {
+                        Position::GeminiInlineData
                     } else if matches!(position, Position::Block)
                         && object.get("type").and_then(Value::as_str) == Some("tool_result")
                         && key == "content"
@@ -301,7 +337,8 @@ fn safety_headroom_tokens(context_window_tokens: usize) -> usize {
 mod tests {
     use super::{effective_output_tokens, estimate_context_budget, estimate_input_tokens};
     use crate::token_estimate::{
-        estimate_json_tokens, ANTHROPIC_IMAGE_RESERVE_TOKENS, OPENAI_IMAGE_RESERVE_TOKENS,
+        conservative_image_reserve_tokens, estimate_json_tokens, ANTHROPIC_IMAGE_RESERVE_TOKENS,
+        OPENAI_IMAGE_RESERVE_TOKENS,
     };
     use serde_json::{json, Value};
 
@@ -657,6 +694,67 @@ mod tests {
             json!({"messages": [{"role": "user", "content": [
                 {"type": "text", "text": "normal input"}
             ]}], "tools": [{"description": "schema text"}]}),
+        ] {
+            assert_eq!(
+                estimate_input_tokens(&body, &[]),
+                estimate_json_tokens(&body)
+            );
+        }
+    }
+
+    #[test]
+    fn gemini_image_payloads_use_reserves_without_losing_text_or_tool_arguments() {
+        let image = json!({"inlineData": {"mimeType": "image/png", "data": "AA=="}});
+        let mut body = json!({
+            "contents": [{"role": "user", "parts": [{"text": "Inspect both"}, image, image]}],
+            "generationConfig": {"maxOutputTokens": 8192}
+        });
+        let before =
+            estimate_context_budget(Some(32_768), 512, &body, &[]).expect("known context window");
+        assert_eq!(before.image_count, 2);
+        assert_eq!(
+            before.image_reserve_tokens,
+            2 * conservative_image_reserve_tokens()
+        );
+        assert_eq!(before.inline_image_base64_bytes, 8);
+        assert_eq!(before.estimated_inline_image_decoded_bytes, 2);
+
+        body["contents"][0]["parts"][1]["inlineData"]["data"] =
+            Value::String("A".repeat(4_000_000));
+        let large = estimate_context_budget(Some(32_768), 512, &body, &[]).unwrap();
+        assert_eq!(large.estimated_input_tokens, before.estimated_input_tokens);
+        assert_eq!(large.inline_image_base64_bytes, 4_000_004);
+        assert_eq!(large.estimated_inline_image_decoded_bytes, 3_000_001);
+        assert_eq!(large.overflow_tokens(), 0);
+
+        body["contents"][0]["parts"]
+            .as_array_mut()
+            .unwrap()
+            .push(json!({
+                "functionCall": {"name": "inspect", "args": {
+                    "inlineData": {"mimeType": "image/png", "data": "A".repeat(40_000)}
+                }}
+            }));
+        let with_tool = estimate_context_budget(Some(32_768), 512, &body, &[]).unwrap();
+        assert_eq!(with_tool.image_count, 2);
+        assert!(with_tool.estimated_text_tokens >= large.estimated_text_tokens + 10_000);
+    }
+
+    #[test]
+    fn gemini_image_lookalikes_outside_wire_image_parts_remain_text() {
+        let image = json!({"inlineData": {"mimeType": "image/png", "data": "A".repeat(40_000)}});
+        for body in [
+            json!({"contents": [{"role": "user", "parts": [{
+                "inlineData": {"mimeType": "application/pdf", "data": "A".repeat(40_000)}
+            }]}]}),
+            json!({"contents": [{"role": "user", "parts": [{
+                "inlineData": {"mimeType": "image/png", "data": [1, 2, 3]}
+            }]}]}),
+            json!({"contents": [{"role": "user", "parts": [{
+                "functionResponse": {"name": "read", "response": image}
+            }]}]}),
+            json!({"tools": [{"contents": [{"role": "user", "parts": [image]}]}]}),
+            json!({"contents": [{"role": "tool", "parts": [image]}]}),
         ] {
             assert_eq!(
                 estimate_input_tokens(&body, &[]),

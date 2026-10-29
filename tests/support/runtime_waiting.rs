@@ -897,6 +897,47 @@ pub async fn message_processing_creates_briefs_and_sleeps() -> Result<()> {
     Ok(())
 }
 
+/// A settled turn keeps its terminal turn identity in the agent state.
+///
+/// Callers that wait for a turn to finish must not require `current_turn_id`
+/// to be cleared: the runtime points it at the terminal turn on purpose, so a
+/// wait that requires `current_turn_id == None` can never be satisfied.
+pub async fn settled_turn_retains_terminal_turn_identity() -> Result<()> {
+    let host =
+        RuntimeHost::new_with_provider(test_config(), Arc::new(StubProvider::new("stub result")))?;
+    let runtime = host.default_runtime().await?;
+
+    let message = admitted_operator_prompt("default", "settle this turn");
+    runtime.enqueue(message.clone()).await?;
+
+    wait_until_async_for(Duration::from_secs(15), || async {
+        let state = runtime.agent_state().await?;
+        Ok(state
+            .last_turn_terminal
+            .as_ref()
+            .is_some_and(|terminal| terminal.kind == TurnTerminalKind::Completed))
+    })
+    .await?;
+
+    let state = runtime.agent_state().await?;
+    let terminal = state
+        .last_turn_terminal
+        .as_ref()
+        .expect("settled turn keeps its terminal record");
+    assert_eq!(terminal.kind, TurnTerminalKind::Completed);
+    assert_eq!(
+        state.current_turn_id.as_deref(),
+        Some(terminal.turn_id.as_str()),
+        "a settled turn keeps the terminal turn as the current turn"
+    );
+    assert_eq!(state.pending, 0, "a settled turn drains the queue");
+    assert!(
+        state.current_run_id.is_none(),
+        "a settled turn leaves no active run"
+    );
+    Ok(())
+}
+
 pub async fn terminal_brief_uses_last_assistant_message_without_terminal_delivery_round(
 ) -> Result<()> {
     let host = RuntimeHost::new_with_provider(

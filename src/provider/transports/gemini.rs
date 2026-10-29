@@ -11,8 +11,9 @@ use crate::{
     provider::{
         http_trace::ProviderHttpTrace, AgentProvider, ConversationMessage, ModelBlock,
         ModelToolCallKind, ProviderBlockData, ProviderCacheUsage, ProviderContextBudgetDiagnostics,
-        ProviderPromptCapability, ProviderRequestDiagnostics, ProviderTransportDiagnostics,
-        ProviderTransportTimeline, ProviderTurnRequest, ProviderTurnResponse,
+        ProviderPromptCapability, ProviderRequestDiagnostics, ProviderResponseFormatDiagnostics,
+        ProviderResponseFormatRequest, ProviderTransportDiagnostics, ProviderTransportTimeline,
+        ProviderTurnRequest, ProviderTurnResponse,
     },
 };
 
@@ -51,6 +52,10 @@ struct GenerateContentRequest {
 #[serde(rename_all = "camelCase")]
 struct GeminiGenerationConfig {
     max_output_tokens: u32,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    response_mime_type: Option<&'static str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    response_json_schema: Option<Value>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -67,11 +72,20 @@ struct GeminiPart {
     #[serde(skip_serializing_if = "Option::is_none")]
     text: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    inline_data: Option<GeminiInlineData>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     function_call: Option<GeminiFunctionCall>,
     #[serde(skip_serializing_if = "Option::is_none")]
     function_response: Option<GeminiFunctionResponse>,
     #[serde(skip_serializing_if = "Option::is_none")]
     thought_signature: Option<String>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct GeminiInlineData {
+    mime_type: String,
+    data: String,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -173,29 +187,36 @@ impl AgentProvider for GeminiProvider {
             self.base_url,
             utf8_percent_encode(&self.model, NON_ALPHANUMERIC)
         );
-        if request.conversation.iter().any(|message| {
-            matches!(
-                message,
-                ConversationMessage::UserImage {
-                    optional_history: false,
-                    ..
+        for message in &request.conversation {
+            if let ConversationMessage::UserImage {
+                media_type,
+                data_base64,
+                optional_history: false,
+                ..
+            } = message
+            {
+                if let Some(reason) = gemini_image_input_error(media_type, data_base64) {
+                    return Err(gemini_preflight_error(
+                        &model_ref,
+                        &url,
+                        "image_input_invalid",
+                        reason,
+                        None,
+                    ));
                 }
-            )
-        }) {
-            return Err(gemini_preflight_error(
-                &model_ref,
-                &url,
-                "image_input_unsupported",
-                "Gemini image lowering is unavailable; required image input cannot be omitted",
-                None,
-            ));
+            }
         }
+        let response_json_schema = request.response_format.as_ref().map(|format| match format {
+            ProviderResponseFormatRequest::JsonSchema(format) => format.schema.clone(),
+        });
         let request_body = GenerateContentRequest {
             system_instruction: build_system_instruction(&request),
             contents: build_gemini_contents(&request),
             tools: build_gemini_tools(&request),
             generation_config: GeminiGenerationConfig {
                 max_output_tokens: self.max_output_tokens,
+                response_mime_type: response_json_schema.as_ref().map(|_| "application/json"),
+                response_json_schema,
             },
         };
         let mut request_payload = serde_json::to_value(&request_body)?;
@@ -317,11 +338,22 @@ impl AgentProvider for GeminiProvider {
             .map_err(|error| invalid_response_error("invalid Gemini JSON", error))?;
         let mut response = gemini_response_to_provider_turn_response(parsed)?;
         let parse_completed_at = chrono::Utc::now();
-        response
+        let diagnostics = response
             .request_diagnostics
             .as_mut()
-            .expect("Gemini responses include request diagnostics")
-            .transport_timeline = Some(ProviderTransportTimeline {
+            .expect("Gemini responses include request diagnostics");
+        diagnostics.response_format = request.response_format.as_ref().map(|format| match format {
+            ProviderResponseFormatRequest::JsonSchema(format) => {
+                ProviderResponseFormatDiagnostics {
+                    requested: true,
+                    lowered: true,
+                    format_type: "json_schema".into(),
+                    schema_name: Some(format.name.clone()),
+                    fallback_reason: None,
+                }
+            }
+        });
+        diagnostics.transport_timeline = Some(ProviderTransportTimeline {
             request_started_at,
             response_headers_at,
             response_body_completed_at: Some(response_body_completed_at),
@@ -401,6 +433,7 @@ fn build_system_instruction(request: &ProviderTurnRequest) -> GeminiContent {
         role: "user".to_string(),
         parts: vec![GeminiPart {
             text: Some(text),
+            inline_data: None,
             function_call: None,
             function_response: None,
             thought_signature: None,
@@ -426,12 +459,30 @@ fn build_gemini_contents(request: &ProviderTurnRequest) -> Vec<GeminiContent> {
         .collect()
 }
 
+fn gemini_image_input_error(media_type: &str, data_base64: &str) -> Option<&'static str> {
+    if !matches!(
+        media_type,
+        "image/png" | "image/jpeg" | "image/gif" | "image/webp"
+    ) {
+        return Some("Gemini image input has an unsupported media type");
+    }
+    if data_base64.is_empty() {
+        return Some("Gemini image input has no image data");
+    }
+    let max_bytes = crate::tool::tools::view_image::MAX_IMAGE_BYTES as usize;
+    if data_base64.len() > max_bytes.div_ceil(3) * 4 {
+        return Some("Gemini image input exceeds the runtime per-image byte limit");
+    }
+    None
+}
+
 fn conversation_message_to_gemini_content(message: &ConversationMessage) -> Option<GeminiContent> {
     match message {
         ConversationMessage::UserText(text) => (!text.trim().is_empty()).then(|| GeminiContent {
             role: "user".to_string(),
             parts: vec![GeminiPart {
                 text: Some(text.clone()),
+                inline_data: None,
                 function_call: None,
                 function_response: None,
                 thought_signature: None,
@@ -443,6 +494,7 @@ fn conversation_message_to_gemini_content(message: &ConversationMessage) -> Opti
                 .filter(|block| !block.text.trim().is_empty())
                 .map(|block| GeminiPart {
                     text: Some(block.text.clone()),
+                    inline_data: None,
                     function_call: None,
                     function_response: None,
                     thought_signature: None,
@@ -453,25 +505,56 @@ fn conversation_message_to_gemini_content(message: &ConversationMessage) -> Opti
                 parts,
             })
         }
-        ConversationMessage::UserImage { prompt, .. } => (!prompt.trim().is_empty()).then(|| {
-            GeminiContent {
-                role: "user".to_string(),
-                parts: vec![GeminiPart {
-                    text: Some(format!(
-                        "{prompt}\n\n[image input omitted: this provider transport does not support image lowering yet]"
-                    )),
+        ConversationMessage::UserImage {
+            prompt,
+            media_type,
+            data_base64,
+            ..
+        } => {
+            // Runtime loading already validates local files and attachment budgets.
+            let invalid_image = gemini_image_input_error(media_type, data_base64);
+            let mut parts = Vec::new();
+            if !prompt.trim().is_empty() {
+                parts.push(GeminiPart {
+                    text: Some(prompt.clone()),
+                    inline_data: None,
                     function_call: None,
                     function_response: None,
                     thought_signature: None,
-                }],
+                });
             }
-        }),
+            if let Some(reason) = invalid_image {
+                parts.push(GeminiPart {
+                    text: Some(format!("[image input omitted: {reason}]")),
+                    inline_data: None,
+                    function_call: None,
+                    function_response: None,
+                    thought_signature: None,
+                });
+            } else {
+                parts.push(GeminiPart {
+                    text: None,
+                    inline_data: Some(GeminiInlineData {
+                        mime_type: media_type.clone(),
+                        data: data_base64.clone(),
+                    }),
+                    function_call: None,
+                    function_response: None,
+                    thought_signature: None,
+                });
+            }
+            Some(GeminiContent {
+                role: "user".to_string(),
+                parts,
+            })
+        }
         ConversationMessage::AssistantBlocks(blocks) => {
             let parts = blocks
                 .iter()
                 .map(|block| match block {
                     ModelBlock::Text { text } => GeminiPart {
                         text: Some(text.clone()),
+                        inline_data: None,
                         function_call: None,
                         function_response: None,
                         thought_signature: None,
@@ -483,6 +566,7 @@ fn conversation_message_to_gemini_content(message: &ConversationMessage) -> Opti
                         ..
                     } => GeminiPart {
                         text: None,
+                        inline_data: None,
                         function_call: Some(GeminiFunctionCall {
                             name: name.clone(),
                             args: input.clone(),
@@ -494,16 +578,16 @@ fn conversation_message_to_gemini_content(message: &ConversationMessage) -> Opti
                     | ModelBlock::ReasoningText { .. }
                     | ModelBlock::RedactedThinking { .. }
                     | ModelBlock::ProviderToolUse { .. }
-                    | ModelBlock::ProviderToolResult { .. } => {
-                        GeminiPart {
-                            text: None,
-                            function_call: None,
-                            function_response: None,
-                            thought_signature: None,
-                        }
-                    }
+                    | ModelBlock::ProviderToolResult { .. } => GeminiPart {
+                        text: None,
+                        inline_data: None,
+                        function_call: None,
+                        function_response: None,
+                        thought_signature: None,
+                    },
                     ModelBlock::Citations { .. } => GeminiPart {
                         text: None,
+                        inline_data: None,
                         function_call: None,
                         function_response: None,
                         thought_signature: None,
@@ -523,6 +607,7 @@ fn conversation_message_to_gemini_content(message: &ConversationMessage) -> Opti
                     let response_name = gemini_function_response_name(&result.tool_use_id);
                     GeminiPart {
                         text: None,
+                        inline_data: None,
                         function_call: None,
                         function_response: Some(GeminiFunctionResponse {
                             name: response_name,
@@ -813,6 +898,7 @@ mod tests {
         let blocks = gemini_parts_to_model_blocks(vec![
             GeminiPart {
                 text: None,
+                inline_data: None,
                 function_call: Some(GeminiFunctionCall {
                     name: "ProbeTool".to_string(),
                     args: json!({"first": true}),
@@ -822,6 +908,7 @@ mod tests {
             },
             GeminiPart {
                 text: None,
+                inline_data: None,
                 function_call: Some(GeminiFunctionCall {
                     name: "ProbeTool".to_string(),
                     args: json!({"second": true}),
@@ -885,6 +972,7 @@ mod tests {
         let signature = "opaque-thought-signature";
         let blocks = gemini_parts_to_model_blocks(vec![GeminiPart {
             text: None,
+            inline_data: None,
             function_call: Some(GeminiFunctionCall {
                 name: "ProbeTool".to_string(),
                 args: json!({"probe": true}),

@@ -9,9 +9,24 @@ use crate::provider::{
     budget::estimate_context_budget,
     provider_error_code, provider_transport_diagnostics,
     retry::{classify_provider_error, ProviderFailureKind, RetryDisposition},
+    ModelToolCallKind, ProviderBlockData,
 };
 use axum::{routing::post, Json, Router};
+use base64::Engine;
 use serde_json::{json, Value};
+
+fn gemini_image_fixture(format: image::ImageFormat) -> (String, String) {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("image");
+    image::RgbImage::from_pixel(2, 1, image::Rgb([24, 64, 128]))
+        .save_with_format(&path, format)
+        .unwrap();
+    let image = crate::tool::tools::view_image::read_visual_reference(&path).unwrap();
+    (
+        image.visual_reference.mime,
+        base64::engine::general_purpose::STANDARD.encode(image.bytes),
+    )
+}
 
 async fn capture_gemini_request(request: ProviderTurnRequest) -> (Value, ProviderTurnResponse) {
     let (body, response) = gemini_request_with_budget(request, None, 8192).await;
@@ -88,6 +103,69 @@ fn text_occurrences(value: &Value, expected: &str) -> usize {
 }
 
 #[tokio::test]
+async fn gemini_request_lowers_json_schema_response_format_with_image() {
+    let (media_type, data_base64) = gemini_image_fixture(image::ImageFormat::Png);
+    let schema = json!({
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["type", "summary", "uncertainties"],
+        "properties": {
+            "type": { "type": "string", "const": "visual_observation" },
+            "summary": { "type": "string" },
+            "uncertainties": { "type": "array", "items": { "type": "string" } }
+        }
+    });
+    let mut request = ProviderTurnRequest::plain(
+        "Return a visual observation as JSON.",
+        vec![ConversationMessage::UserImage {
+            prompt: "Describe the image.".into(),
+            media_type: media_type.clone(),
+            data_base64: data_base64.clone(),
+            optional_history: false,
+        }],
+        Vec::new(),
+    );
+    request.response_format = Some(crate::provider::ProviderResponseFormatRequest::JsonSchema(
+        crate::provider::ProviderJsonSchemaResponseFormat {
+            name: "visual_observation_v1".into(),
+            schema: schema.clone(),
+            strict: true,
+        },
+    ));
+
+    let (body, response) = capture_gemini_request(request).await;
+
+    assert_eq!(
+        body["generationConfig"]["responseMimeType"],
+        "application/json"
+    );
+    assert_eq!(body["generationConfig"]["responseJsonSchema"], schema);
+    assert!(body["generationConfig"].get("responseSchema").is_none());
+    assert!(body.get("response_format").is_none());
+    assert_eq!(
+        body["contents"][0]["parts"][0]["text"],
+        "Describe the image."
+    );
+    assert_eq!(
+        body["contents"][0]["parts"][1]["inlineData"],
+        json!({ "mimeType": media_type, "data": data_base64 })
+    );
+    let diagnostics = response
+        .request_diagnostics
+        .unwrap()
+        .response_format
+        .expect("Gemini JSON schema response format diagnostics");
+    assert!(diagnostics.requested);
+    assert!(diagnostics.lowered);
+    assert_eq!(diagnostics.format_type, "json_schema");
+    assert_eq!(
+        diagnostics.schema_name.as_deref(),
+        Some("visual_observation_v1")
+    );
+    assert!(diagnostics.fallback_reason.is_none());
+}
+
+#[tokio::test]
 async fn gemini_request_emits_each_prompt_section_once() {
     let mut request = provider_turn_request_with_prompt_frame();
     request
@@ -96,6 +174,14 @@ async fn gemini_request_emits_each_prompt_section_once() {
 
     let (body, response) = capture_gemini_request(request).await;
 
+    assert!(body["generationConfig"].get("responseMimeType").is_none());
+    assert!(body["generationConfig"].get("responseJsonSchema").is_none());
+    assert!(response
+        .request_diagnostics
+        .as_ref()
+        .unwrap()
+        .response_format
+        .is_none());
     let timeline = response
         .request_diagnostics
         .as_ref()
@@ -256,45 +342,193 @@ async fn gemini_context_preflight_counts_system_text_and_tool_json_before_http()
 }
 
 #[tokio::test]
-async fn gemini_required_images_fail_fast_instead_of_becoming_text_only() {
-    for prompt in ["inspect this", ""] {
-        let (body, response) = gemini_request_with_budget(
-            ProviderTurnRequest::plain(
-                "system",
-                vec![ConversationMessage::UserImage {
-                    prompt: prompt.into(),
-                    media_type: "image/png".into(),
-                    data_base64: "sensitive-image-data".into(),
-                    optional_history: false,
-                }],
-                Vec::new(),
-            ),
-            None,
-            8192,
-        )
-        .await;
-        let error = response.expect_err("required images cannot be silently discarded");
-        assert!(body.is_none());
-        assert_eq!(provider_error_code(&error), Some("image_input_unsupported"));
-        assert_eq!(
-            classify_provider_error(&error).disposition,
-            RetryDisposition::FailFast
-        );
-        assert_eq!(
-            provider_transport_diagnostics(&error).unwrap().stage,
-            "request_preflight"
-        );
-        assert!(!error.to_string().contains("sensitive-image-data"));
+async fn gemini_request_lowers_png_jpeg_and_image_only_turns() {
+    for format in [image::ImageFormat::Png, image::ImageFormat::Jpeg] {
+        for prompt in ["inspect this", ""] {
+            for optional_history in [false, true] {
+                let (media_type, data_base64) = gemini_image_fixture(format);
+                let (body, _) = capture_gemini_request(ProviderTurnRequest::plain(
+                    "system",
+                    vec![ConversationMessage::UserImage {
+                        prompt: prompt.into(),
+                        media_type: media_type.clone(),
+                        data_base64: data_base64.clone(),
+                        optional_history,
+                    }],
+                    Vec::new(),
+                ))
+                .await;
+                let parts = body["contents"][0]["parts"].as_array().unwrap();
+                assert_eq!(parts.len(), if prompt.is_empty() { 1 } else { 2 });
+                if !prompt.is_empty() {
+                    assert_eq!(parts[0], json!({"text": prompt}));
+                }
+                assert_eq!(
+                    parts.last().unwrap(),
+                    &json!({"inlineData": {"mimeType": media_type, "data": data_base64}})
+                );
+                assert!(!body.to_string().contains("image input omitted"));
+            }
+        }
     }
 }
 
 #[tokio::test]
-async fn gemini_optional_history_remains_explicitly_text_only() {
+async fn gemini_request_preserves_image_text_and_tool_history_order() {
+    let (png_type, png_data) = gemini_image_fixture(image::ImageFormat::Png);
+    let (jpeg_type, jpeg_data) = gemini_image_fixture(image::ImageFormat::Jpeg);
+    let (body, _) = capture_gemini_request(ProviderTurnRequest::plain(
+        "system",
+        vec![
+            ConversationMessage::UserText("before".into()),
+            ConversationMessage::UserImage {
+                prompt: "first image".into(),
+                media_type: png_type.clone(),
+                data_base64: png_data.clone(),
+                optional_history: false,
+            },
+            ConversationMessage::UserText("between".into()),
+            ConversationMessage::UserImage {
+                prompt: String::new(),
+                media_type: jpeg_type.clone(),
+                data_base64: jpeg_data.clone(),
+                optional_history: false,
+            },
+            ConversationMessage::AssistantBlocks(vec![ModelBlock::ToolUse {
+                id: "ProbeTool__holon_gemini_call_0".into(),
+                name: "ProbeTool".into(),
+                input: json!({"inspect": true}),
+                kind: ModelToolCallKind::Function,
+                provider_data: Some(ProviderBlockData {
+                    format: "gemini.function_call".into(),
+                    payload: json!({"thoughtSignature": "opaque-signature"}),
+                }),
+            }]),
+            ConversationMessage::UserToolResults(vec![ToolResultBlock {
+                tool_use_id: "ProbeTool__holon_gemini_call_0".into(),
+                content: "tool result".into(),
+                is_error: false,
+                error: None,
+            }]),
+            ConversationMessage::UserText("after".into()),
+        ],
+        vec![crate::tool::ToolSpec {
+            name: "ProbeTool".into(),
+            description: "inspect an image".into(),
+            input_schema: json!({"type": "object", "properties": {}}),
+            freeform_grammar: None,
+        }],
+    ))
+    .await;
+    let contents = body["contents"].as_array().unwrap();
+    assert_eq!(contents.len(), 7);
+    assert_eq!(contents[0]["parts"], json!([{"text": "before"}]));
+    assert_eq!(
+        contents[1]["parts"],
+        json!([
+            {"text": "first image"},
+            {"inlineData": {"mimeType": png_type, "data": png_data}}
+        ])
+    );
+    assert_eq!(contents[2]["parts"], json!([{"text": "between"}]));
+    assert_eq!(
+        contents[3]["parts"],
+        json!([{"inlineData": {"mimeType": jpeg_type, "data": jpeg_data}}])
+    );
+    assert_eq!(contents[4]["role"], "model");
+    assert_eq!(
+        contents[4]["parts"],
+        json!([{
+            "functionCall": {"name": "ProbeTool", "args": {"inspect": true}},
+            "thoughtSignature": "opaque-signature"
+        }])
+    );
+    assert_eq!(
+        contents[5]["parts"],
+        json!([{"functionResponse": {
+            "name": "ProbeTool",
+            "response": {"content": "tool result", "is_error": false}
+        }}])
+    );
+    assert_eq!(contents[6]["parts"], json!([{"text": "after"}]));
+    assert_eq!(
+        body["tools"][0]["function_declarations"][0]["name"],
+        "ProbeTool"
+    );
+}
+
+#[tokio::test]
+async fn gemini_required_invalid_images_fail_fast_without_leaking_payloads() {
+    for (media_type, data_base64) in [
+        ("image/png", ""),
+        ("application/pdf", "sensitive-image-data"),
+    ] {
+        for prompt in ["inspect this", ""] {
+            let (body, response) = gemini_request_with_budget(
+                ProviderTurnRequest::plain(
+                    "system",
+                    vec![ConversationMessage::UserImage {
+                        prompt: prompt.into(),
+                        media_type: media_type.into(),
+                        data_base64: data_base64.into(),
+                        optional_history: false,
+                    }],
+                    Vec::new(),
+                ),
+                None,
+                8192,
+            )
+            .await;
+            let error = response.expect_err("required images cannot be silently discarded");
+            assert!(body.is_none());
+            assert_eq!(provider_error_code(&error), Some("image_input_invalid"));
+            assert_eq!(
+                classify_provider_error(&error).disposition,
+                RetryDisposition::FailFast
+            );
+            assert_eq!(
+                provider_transport_diagnostics(&error).unwrap().stage,
+                "request_preflight"
+            );
+            assert!(!error.to_string().contains("sensitive-image-data"));
+        }
+    }
+}
+
+#[tokio::test]
+async fn gemini_required_oversized_image_is_rejected_before_http() {
+    let max_bytes = crate::tool::tools::view_image::MAX_IMAGE_BYTES as usize;
+    let (body, response) = gemini_request_with_budget(
+        ProviderTurnRequest::plain(
+            "system",
+            vec![ConversationMessage::UserImage {
+                prompt: "inspect this".into(),
+                media_type: "image/png".into(),
+                data_base64: "A".repeat(max_bytes.div_ceil(3) * 4 + 4),
+                optional_history: false,
+            }],
+            Vec::new(),
+        ),
+        None,
+        8192,
+    )
+    .await;
+    assert!(body.is_none());
+    let error = response.expect_err("oversized image must not be sent");
+    assert_eq!(provider_error_code(&error), Some("image_input_invalid"));
+    assert_eq!(
+        classify_provider_error(&error).disposition,
+        RetryDisposition::FailFast
+    );
+}
+
+#[tokio::test]
+async fn gemini_optional_invalid_history_is_explicitly_omitted() {
     let (body, _) = capture_gemini_request(ProviderTurnRequest::plain(
         "system",
         vec![ConversationMessage::UserImage {
             prompt: "historical image".into(),
-            media_type: "image/png".into(),
+            media_type: "application/pdf".into(),
             data_base64: "sensitive-image-data".into(),
             optional_history: true,
         }],

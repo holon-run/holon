@@ -72,7 +72,7 @@ const TRANSPORT_DEFINITIONS: &[ProviderTransportDefinition] = &[
         kind: ProviderTransportKind::GeminiGenerateContent,
         wire_name: "gemini_generate_content",
         capabilities: TransportCapabilities {
-            image_input: false,
+            image_input: true,
             image_output: false,
         },
         builder: build_gemini_provider,

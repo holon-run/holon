@@ -3888,9 +3888,34 @@ fn view_image_vision_selection_uses_anthropic_messages_when_image_capable() {
 }
 
 #[test]
+fn view_image_vision_selection_uses_native_gemini_when_image_capable() {
+    let fixture = test_app_config("gemini/gemini-2.5-pro", &[]);
+    let catalog = RuntimeModelCatalog::from_config(&fixture.config);
+
+    let selection = catalog.select_view_image_vision_model(&ContextConfig::default(), None, None);
+
+    assert_eq!(
+        selection.selected_mode,
+        crate::types::ViewImageSelectedMode::NativeImageWithObservation
+    );
+    assert_eq!(selection.vision_provider.as_deref(), Some("gemini"));
+    assert_eq!(selection.vision_model.as_deref(), Some("gemini-2.5-pro"));
+    assert_eq!(
+        selection.selection_reason,
+        "current_primary_model_supports_image_input"
+    );
+}
+
+#[test]
 fn view_image_vision_selection_skips_image_capable_unsupported_transports() {
     let mut fixture = test_app_config("gemini/gemini-2.5-pro", &[]);
     fixture.config.vision_candidate_models = vec![route_ref("openai/gpt-5.4-mini")];
+    fixture
+        .config
+        .providers
+        .get_mut(&ProviderId::gemini())
+        .unwrap()
+        .transport = ProviderTransportKind::AiEvaluationModel;
     let catalog = RuntimeModelCatalog::from_config(&fixture.config);
 
     let selection = catalog.select_view_image_vision_model(&ContextConfig::default(), None, None);
