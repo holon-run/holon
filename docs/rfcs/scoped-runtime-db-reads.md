@@ -85,11 +85,22 @@ check before a cache hit, stale response, or flight join. It uses the caller's
 original absolute deadline, never a renewed budget after verification.
 
 Preflight has one fixed worker slot independent of the configured `B` build
-leaders. The combined supervised-work limit is **B + 1**, not B or 2B. A full
-preflight lane rejects even potential cache hits or followers with a retryable
-503; full build capacity still allows verification and joining an existing
-flight when the preflight slot is free. This does not add a configuration knob
-or allow parallel preflight writer recovery.
+leaders. The combined supervised-work limit is **B + 1**, not B or 2B. When
+the worker slot is busy, callers wait in a bounded first-in-first-out admission
+queue (`Q` slots, independent of `MAX_WORKERS` and of `B`) inside their own
+async future; they create no blocking task, register no read scope, and run no
+SQL while queued. Only an exhausted queue rejects even potential cache hits or
+followers with a retryable 503; full build capacity still allows verification
+and joining an existing flight when the preflight slot is free. This adds no
+configuration knob, no extra workers, and no parallel preflight writer
+recovery.
+
+Queue wait counts against the caller's original absolute deadline and never
+renews it. A queue timeout surfaces as the existing deadline failure, and gate
+close wakes queued waiters with the existing cancellation failure. A caller
+that receives the worker permit re-checks gate closure and its own deadline,
+then registers and runs its own per-caller capability verification; queued
+callers never inherit another caller's verification result.
 
 Admission, scope registration, blocking-task registration, and close use the
 same gate lock. A queued worker owns its real permit and exit guard before
@@ -99,6 +110,12 @@ writer recovery and panic. Close cancels all registered preflights, and the
 same cancellation-safe drain joins them. No read interrupt is installed on a
 writer, and an already-started recovery atomic section must finish its existing
 commit or rollback.
+
+The queue slot is held by an RAII guard under the same gate lock. Caller drop,
+deadline, or close removes the waiter or forwards a handed-off permit to the
+next queued waiter, so a permit is never released to fresh callers while older
+waiters remain and queue order cannot be barged past. The running worker's
+permit is only released to fresh callers when the queue is empty.
 
 Both snapshot routes perform scoped preflight after authentication and before
 accessing the gate's cached bytes or flights. Protection and retryable read
@@ -185,3 +202,8 @@ releases the lock and verifies the durable heal committed before drain returns.
 A paused-clock gate regression composes a real capability read with a delayed
 build and checks that preflight time does not renew the caller's deadline. This
 is a gate/DB contract test, not a complete HTTP or listener-shutdown E2E test.
+Gate regressions additionally pin the bounded admission queue: FIFO permit
+handoff, the one-running-plus-Q-waiting bound with queue-full rejection before
+any SQL, waiter drop/deadline/close slot recovery, permit forwarding after a
+post-handoff bail, and per-caller verification after queueing. Concurrent
+shared-route regressions cover both snapshot routes on one real gate.

@@ -36,6 +36,10 @@ Capability verification, gate decision, follower waiting and leader building
 are distinct stages. Existing gate hit/miss/leader/stale counters distinguish
 request volume from actual builds; none of these diagnostics adds a deadline,
 interrupts SQLite, changes cache freshness or changes reader capacity.
+Preflight admission waiting is its own fixed stage: it starts when the single
+capability-preflight worker slot is busy and stops when the caller receives
+the worker permit, so it excludes verification itself and never carries agent,
+principal or key labels.
 
 Counters are process-global relaxed atomics, not a request-level transaction.
 Nested stages overlap and must not be summed as independent wall time.

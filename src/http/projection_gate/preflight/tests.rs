@@ -64,10 +64,27 @@ async fn dropped_caller_and_cancelled_drain_retain_actual_worker_capacity() {
     drop(caller);
     assert_eq!(gate.preflight_workers.available_permits(), 0);
     assert_eq!(gate.state.lock().unwrap().preflights.len(), 1);
+    // The busy worker queues callers; only an exhausted queue is rejected.
     let called = Arc::new(AtomicBool::new(false));
+    let mut waiters = Vec::new();
+    for _ in 0..MAX_WAITERS {
+        let attempted = Arc::clone(&called);
+        waiters.push(Box::pin(gate.preflight::<(), _>(deadline(), move |_| {
+            attempted.store(true, Ordering::SeqCst);
+            Ok(())
+        })));
+    }
+    for waiter in waiters.iter_mut() {
+        enroll(waiter.as_mut()).await;
+    }
+    assert_eq!(
+        gate.state.lock().unwrap().preflight_waiters.len(),
+        MAX_WAITERS
+    );
+    assert!(!called.load(Ordering::SeqCst));
     let attempted = Arc::clone(&called);
     let failure = gate
-        .preflight(deadline(), move |_| {
+        .preflight::<(), _>(deadline(), move |_| {
             attempted.store(true, Ordering::SeqCst);
             Ok(())
         })
@@ -75,8 +92,10 @@ async fn dropped_caller_and_cancelled_drain_retain_actual_worker_capacity() {
         .unwrap_err();
     assert_eq!(failure.error_code(), Some("projection_preflight_saturated"));
     assert_eq!(failure.retryable(), Some(true));
-    assert!(!called.load(Ordering::SeqCst));
-    // The independent build budget is not held by the saturated preflight lane.
+    // Dropping queued waiters recovers their slots without running SQL.
+    drop(waiters);
+    assert_eq!(gate.state.lock().unwrap().preflight_waiters.len(), 0);
+    // The independent build budget is not held by the queued preflight lane.
     assert_eq!(
         gate.run_owned(key(), deadline(), Duration::from_secs(10), |_| async {
             Ok(Bytes::from_static(b"independent build"))
@@ -94,6 +113,195 @@ async fn dropped_caller_and_cancelled_drain_retain_actual_worker_capacity() {
     gate.close_and_drain().await;
     assert!(gate.state.lock().unwrap().preflights.is_empty());
     assert!(gate.state.lock().unwrap().tasks.is_empty());
+    assert_eq!(gate.preflight_workers.available_permits(), MAX_WORKERS);
+}
+
+#[tokio::test]
+async fn busy_worker_queues_callers_in_fifo_order_with_bounded_slots() {
+    let gate = Arc::new(ProjectionGate::new(1, Duration::from_millis(250)));
+    let (release, release_rx) = oneshot::channel::<()>();
+    let mut first = Box::pin(gate.preflight::<(), _>(deadline(), move |_| {
+        release_rx.blocking_recv().unwrap();
+        Ok(())
+    }));
+    enroll(first.as_mut()).await;
+    assert_eq!(gate.state.lock().unwrap().preflight_waiters.len(), 0);
+
+    let order = Arc::new(std::sync::Mutex::new(Vec::<usize>::new()));
+    let mut waiters = Vec::new();
+    for index in 0..MAX_WAITERS {
+        let order = Arc::clone(&order);
+        waiters.push(Box::pin(gate.preflight::<(), _>(deadline(), move |_| {
+            order.lock().unwrap().push(index);
+            Ok(())
+        })));
+    }
+    for waiter in waiters.iter_mut() {
+        enroll(waiter.as_mut()).await;
+    }
+    assert_eq!(
+        gate.state.lock().unwrap().preflight_waiters.len(),
+        MAX_WAITERS
+    );
+    assert_eq!(gate.preflight_workers.available_permits(), 0);
+
+    // One running worker plus a full queue: the next caller is queue-full and
+    // its closure never runs.
+    let overflow_ran = Arc::new(AtomicBool::new(false));
+    let attempted = Arc::clone(&overflow_ran);
+    let failure = gate
+        .preflight::<(), _>(deadline(), move |_| {
+            attempted.store(true, Ordering::SeqCst);
+            Ok(())
+        })
+        .await
+        .unwrap_err();
+    assert_eq!(failure.error_code(), Some("projection_preflight_saturated"));
+    assert_eq!(failure.retryable(), Some(true));
+    assert!(!overflow_ran.load(Ordering::SeqCst));
+
+    release.send(()).unwrap();
+    first.await.unwrap();
+    for waiter in waiters {
+        waiter.await.expect("queued callers must succeed");
+    }
+    assert_eq!(*order.lock().unwrap(), (0..MAX_WAITERS).collect::<Vec<_>>());
+    assert_eq!(gate.state.lock().unwrap().preflight_waiters.len(), 0);
+    gate.close_and_drain().await;
+    assert!(gate.state.lock().unwrap().tasks.is_empty());
+    assert_eq!(gate.preflight_workers.available_permits(), MAX_WORKERS);
+}
+
+#[tokio::test]
+async fn dropped_queued_waiter_frees_its_slot_without_sql() {
+    let gate = Arc::new(ProjectionGate::new(1, Duration::from_millis(250)));
+    let (release, release_rx) = oneshot::channel::<()>();
+    let mut first = Box::pin(gate.preflight::<(), _>(deadline(), move |_| {
+        release_rx.blocking_recv().unwrap();
+        Ok(())
+    }));
+    enroll(first.as_mut()).await;
+    let called = Arc::new(AtomicBool::new(false));
+    let attempted = Arc::clone(&called);
+    let mut waiter = Box::pin(gate.preflight::<(), _>(deadline(), move |_| {
+        attempted.store(true, Ordering::SeqCst);
+        Ok(())
+    }));
+    enroll(waiter.as_mut()).await;
+    assert_eq!(gate.state.lock().unwrap().preflight_waiters.len(), 1);
+    drop(waiter);
+    assert_eq!(gate.state.lock().unwrap().preflight_waiters.len(), 0);
+    assert!(!called.load(Ordering::SeqCst));
+    release.send(()).unwrap();
+    first.await.unwrap();
+    // With the queue empty, the released slot returns to fresh callers.
+    assert_eq!(gate.preflight(deadline(), |_| Ok(42)).await.unwrap(), 42);
+    gate.close_and_drain().await;
+    assert_eq!(gate.preflight_workers.available_permits(), MAX_WORKERS);
+}
+
+#[tokio::test(start_paused = true)]
+async fn queued_waiter_deadline_expires_without_sql_and_slot_recovers() {
+    let gate = Arc::new(ProjectionGate::new(1, Duration::from_millis(250)));
+    let (release, release_rx) = oneshot::channel::<()>();
+    let mut first = Box::pin(gate.preflight::<(), _>(deadline(), move |_| {
+        release_rx.blocking_recv().unwrap();
+        Ok(())
+    }));
+    enroll(first.as_mut()).await;
+    let called = Arc::new(AtomicBool::new(false));
+    let attempted = Arc::clone(&called);
+    let mut waiter = Box::pin(gate.preflight::<(), _>(
+        Instant::now() + Duration::from_millis(50),
+        move |_| {
+            attempted.store(true, Ordering::SeqCst);
+            Ok(())
+        },
+    ));
+    enroll(waiter.as_mut()).await;
+    assert_eq!(gate.state.lock().unwrap().preflight_waiters.len(), 1);
+    tokio::time::advance(Duration::from_millis(100)).await;
+    let failure = waiter.await.unwrap_err();
+    assert_eq!(
+        failure.error_code(),
+        ProjectionFailure::deadline_exhausted().error_code()
+    );
+    assert!(!called.load(Ordering::SeqCst));
+    assert_eq!(gate.state.lock().unwrap().preflight_waiters.len(), 0);
+    release.send(()).unwrap();
+    first.await.unwrap();
+    assert_eq!(gate.preflight(deadline(), |_| Ok(7)).await.unwrap(), 7);
+    gate.close_and_drain().await;
+    assert_eq!(gate.preflight_workers.available_permits(), MAX_WORKERS);
+}
+
+#[tokio::test]
+async fn gate_close_fails_queued_waiters_before_any_sql() {
+    let gate = Arc::new(ProjectionGate::new(1, Duration::from_millis(250)));
+    let (release, release_rx) = oneshot::channel::<()>();
+    let mut first = Box::pin(gate.preflight::<(), _>(deadline(), move |_| {
+        release_rx.blocking_recv().unwrap();
+        Ok(())
+    }));
+    enroll(first.as_mut()).await;
+    let called = Arc::new(AtomicBool::new(false));
+    let attempted = Arc::clone(&called);
+    let mut waiter = Box::pin(gate.preflight::<(), _>(deadline(), move |_| {
+        attempted.store(true, Ordering::SeqCst);
+        Ok(())
+    }));
+    enroll(waiter.as_mut()).await;
+    gate.close();
+    assert_eq!(gate.state.lock().unwrap().preflight_waiters.len(), 0);
+    let failure = waiter.await.unwrap_err();
+    assert_eq!(failure.error_code(), Some("projection_leader_cancelled"));
+    assert!(!called.load(Ordering::SeqCst));
+    release.send(()).unwrap();
+    gate.close_and_drain().await;
+    assert_eq!(gate.preflight_workers.available_permits(), MAX_WORKERS);
+    assert!(gate.state.lock().unwrap().tasks.is_empty());
+}
+
+#[tokio::test]
+async fn expired_waiter_forwards_a_received_permit_to_the_next_waiter() {
+    let gate = Arc::new(ProjectionGate::new(1, Duration::from_millis(250)));
+    let (release, release_rx) = oneshot::channel::<()>();
+    let mut first = Box::pin(gate.preflight::<(), _>(deadline(), move |_| {
+        release_rx.blocking_recv().unwrap();
+        Ok(())
+    }));
+    enroll(first.as_mut()).await;
+    // Release the worker well before the expired waiter's deadline.
+    tokio::spawn(async move {
+        tokio::time::sleep(Duration::from_millis(10)).await;
+        release.send(()).unwrap();
+    });
+    let first_expired = Arc::new(AtomicBool::new(false));
+    let expired_ran = Arc::clone(&first_expired);
+    let mut expired = Box::pin(gate.preflight::<(), _>(
+        Instant::now() + Duration::from_millis(50),
+        move |_| {
+            expired_ran.store(true, Ordering::SeqCst);
+            Ok(())
+        },
+    ));
+    enroll(expired.as_mut()).await;
+    let mut successor = Box::pin(gate.preflight::<(), _>(deadline(), |_| Ok(())));
+    enroll(successor.as_mut()).await;
+    // Both the permit handoff and the expired deadline are ready by now; the
+    // handoff wins, and the re-check forwards the permit to the successor.
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    let failure = expired.await.unwrap_err();
+    assert_eq!(
+        failure.error_code(),
+        ProjectionFailure::deadline_exhausted().error_code()
+    );
+    assert!(!first_expired.load(Ordering::SeqCst));
+    successor
+        .await
+        .expect("the successor must receive the permit");
+    assert_eq!(gate.state.lock().unwrap().preflight_waiters.len(), 0);
+    gate.close_and_drain().await;
     assert_eq!(gate.preflight_workers.available_permits(), MAX_WORKERS);
 }
 

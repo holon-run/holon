@@ -310,6 +310,9 @@ impl ProjectionGate {
         for scope in state.preflights.values() {
             scope.cancel();
         }
+        // Queued admission waiters own no read scope; dropping their senders
+        // wakes them to fail closed before any SQL runs.
+        state.preflight_waiters.clear();
         for (_, entry) in state.entries.drain() {
             if let Entry::InFlight { flight, .. } = entry {
                 let _ = close_flight(&flight, Err(ProjectionFailure::leader_cancelled().into()));

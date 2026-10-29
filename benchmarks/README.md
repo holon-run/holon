@@ -129,6 +129,21 @@ setup/measurement failures and early aborts. Shutdown is outside request timing;
 failure to finish within 15 seconds aborts the suite rather than starting
 another cell. Completed cells record this in `fixture_cleanup`.
 
+Beyond the serial fresh-AppState workload, the `child-state.v3` fixture also
+supports shared-gate cells: `HOLON_BENCH_CHILD_CONCURRENCY` closed-loop workers
+share one AppState and projection gate; `HOLON_BENCH_CHILD_ROUTE_MIX=state|snapshot|mixed`
+selects routes (the snapshot routes exercise the per-request capability
+preflight lane, `/state` does not); `HOLON_BENCH_CHILD_PARENTS` creates distinct
+parent state keys. Saturation cells set `HOLON_BENCH_CHILD_ARRIVAL_PER_SEC`
+with a `HOLON_BENCH_CHILD_MAX_INFLIGHT` bound; there, classified queue-full 503
+responses are expected outcomes recorded per reason under `failure_reasons`
+instead of aborting the cell, while any other failure still stops it.
+`HOLON_BENCH_CHILD_LOAD_MODE=loaded|unloaded|mixed` selects whether children
+are runtime-loaded or storage-backed, and benchmark ids are
+`http.child_state.<load_mode>.<children>`. Concurrent cells report one
+before/after cell-level stage and gate delta instead of summing overlapping
+per-request stage counters.
+
 `child_state` results include HTTP/child-summary p50 and p95, CPU and peak RSS,
 inclusive attribution-stage deltas, and independent read-only SQL probes with
 query plans, fullscan/VM steps, and returned/decoded row counts. Nested stages
@@ -141,6 +156,8 @@ Avoid concurrent benchmarks, preserve failures, and report missing concurrency
 or `/snapshot` coverage rather than inferring production capacity or 503 fixes.
 See the [stage 1 child-state results](child-state-stage1.md) for the bounded
 #3745 comparison, deadline-censored baseline, and unmeasured matrix.
+See the [preflight admission queue results](projection-preflight-queue-3745-3800.md)
+for the shared-gate #3745/#3800 acceptance cells and their uncovered matrix.
 
 The memory suite isolates every sample in a child process, grows a session with
 1,000 events and 100 briefs, repeatedly reads bounded history windows, and
