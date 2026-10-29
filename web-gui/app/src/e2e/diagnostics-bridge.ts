@@ -31,7 +31,6 @@ export interface HolonE2eSnapshot {
   route: string;
   bootstrapLoading: boolean;
   bootstrapError?: string;
-  globalStreamStatus: string;
   discovery: {
     mode: string;
     freshness: string;
@@ -99,7 +98,7 @@ function snapshot(): HolonE2eSnapshot {
   const state = useRuntimeStore.getState();
   const config = getRuntimeConnectionConfig();
   const connection = state.bootstrap.connection;
-  const authRejected = state.discovery?.freshness === "unauthorized" || state.globalStreamStatus === "unauthorized";
+  const authRejected = state.discovery?.freshness === "unauthorized";
   const contextKey = JSON.stringify([
     connection.mode, connection.baseUrl, config.token, state.currentUserLoaded,
     connection.authRequired, authRejected, state.currentUser?.authMethod, state.currentUser?.userId,
@@ -137,7 +136,6 @@ function snapshot(): HolonE2eSnapshot {
     route: state.route,
     bootstrapLoading: state.bootstrapLoading,
     bootstrapError: state.bootstrapError,
-    globalStreamStatus: state.globalStreamStatus,
     discovery: {
       mode: state.discovery.mode,
       freshness: state.discovery.freshness,

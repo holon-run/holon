@@ -57,7 +57,6 @@ export function isSessionCacheContextCurrent(
 export interface AgentSessionRepositoryState {
   route: string;
   selectedAgentId: string;
-  globalStreamStatus: string;
   sessionsByAgentId: Record<string, AgentSessionState>;
   refreshAgentDetail: (
     agentId: string | undefined,

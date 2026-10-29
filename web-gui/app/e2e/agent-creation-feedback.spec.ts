@@ -144,7 +144,9 @@ test("scope replacement dismisses an old verified existing-identity entry", asyn
   await request.post(`/__e2e__/configure?session=${encodeURIComponent(session)}`, {
     data: { visibilityScopeId: "replacement-scope" },
   });
-  await request.post(`/__e2e__/disconnect-streams?session=${encodeURIComponent(session)}`);
+  // Exercise a roster refresh while the modal remains open; the overlay
+  // intentionally prevents a pointer click on the dashboard underneath.
+  await page.getByRole("button", { name: "Refresh", exact: true }).dispatchEvent("click");
   await expect(dialog).not.toBeVisible();
   await expect(page.getByRole("button", { name: "Open existing agent" })).not.toBeVisible();
   await openCreate(page, "bootstrap-agent");

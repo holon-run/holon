@@ -34,7 +34,6 @@ test("production assets authenticate and use real snapshot, SSE, and route refre
   await expect.poll(() => requests).toEqual(expect.arrayContaining([
     "GET /api/handshake",
     "GET /api/agents/snapshot",
-    "GET /api/events/stream",
   ]));
   expect(await page.evaluate(() => window.__HOLON_E2E__)).toBeUndefined();
 

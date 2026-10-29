@@ -21,7 +21,6 @@ import {
   projectRosterAgents,
   RuntimeHttpError,
   type BriefReadStateDto,
-  type AgentEventStreamSubscription,
   type OperatorPromptAttachment,
   type AgentRosterSnapshotDto,
   type StreamEventEnvelopeDto,
@@ -32,20 +31,16 @@ import {
   snapshotRepairFromClient,
 } from "./agent-session-repository";
 import {
-  applyProjectionAction,
   emptyAgentSession,
   eventLogEpochFromEvents,
-  hasEventIdentityConflict,
   materializeProjectionDetail,
   mergeEventPageIntoConversation,
-  resetSessionForEventConflict,
   sessionForEventLogEpoch,
 } from "./conversation-store";
 import {
   backfillRetryDelayMs,
   GlobalSyncCoordinator,
   runWithConcurrencyLimit,
-  streamEventFromBackfill,
 } from "./global-sync-coordinator";
 import { ReadStateBus } from "./event-ledger/read-state-bus";
 import {
@@ -142,7 +137,6 @@ import type {
 } from "./runtime-store-helpers";
 export type { AgentLiveStatus, AgentSessionState, PendingOperatorPrompt, TimelineEventsState };
 export {
-  hasEventIdentityConflict,
   materializeProjectionDetail,
   sessionForEventLogEpoch,
 } from "./conversation-store";
@@ -153,7 +147,6 @@ export {
 export {
   backfillRetryDelayMs,
   runWithConcurrencyLimit,
-  streamEventFromBackfill,
 } from "./global-sync-coordinator";
 export { isSessionCacheContextCurrent } from "./agent-session-repository";
 export type { AgentRosterActivity } from "./read-state";
@@ -213,10 +206,6 @@ function mergeNewerLiveAgentState(httpAgent: AgentSummary, cachedAgent: AgentSum
 
 function isLiveRunningAgent(agent: AgentSummary): boolean {
   return Boolean(agent.currentRunId) || agent.lifecycle.toLowerCase() === "awake-running";
-}
-
-function isAgentEventStreamActive(agentId: string, liveStatus: AgentLiveStatus | undefined): boolean {
-  return activeEventStreams.has(agentId) && (liveStatus === "streaming" || liveStatus === "recovering");
 }
 
 function cachedAgentsByIdFromState(state: RuntimeStoreState): Record<string, AgentSummary> {
@@ -313,7 +302,6 @@ export interface RuntimeStoreState {
   currentUser?: CurrentUser;
   currentUserLoaded: boolean;
   bootstrapError?: string;
-  globalStreamStatus: "idle" | "connecting" | "catching_up" | "streaming" | "reconnecting" | "unauthorized";
   discovery: RosterDiscoveryState;
   modelCatalog: RuntimeModelCatalog;
   modelCatalogLoading: boolean;
@@ -449,13 +437,7 @@ export interface RuntimeStoreState {
   controlAgent: (agentId: string | undefined, action: AgentControlAction) => Promise<void>;
   deleteAgent: (agentId: string | undefined, cascadePrivateChildren?: boolean) => Promise<void>;
   renameAgent: (agentId: string | undefined, name: string) => Promise<void>;
-  // Debug inspector compatibility path; globalSyncCoordinator owns default correctness.
-  startAgentEventStream: (agentId: string | undefined, displayLevel: DisplayLevel) => void;
-  stopAgentEventStream: (agentId: string | undefined) => void;
-  startGlobalEventStream: () => void;
-  stopGlobalEventStream: () => void;
-  registerAgentForEvents: (agentId: string) => void;
-  unregisterAgentForEvents: (agentId: string) => void;
+  /** Operator-triggered per-agent sync retry over the roster HTTP cycle (#3808 slice 2). */
   retryAgentSync: (agentId: string) => void;
 }
 
@@ -506,7 +488,6 @@ const LEGACY_RUNTIME_CONNECTION_STORAGE_KEY = "holon.webGui.runtimeConnection.v1
 const ACTIVE_RUNTIME_CONNECTION_STORAGE_KEY = "holon.webGui.activeRuntimeConnection.v1";
 let runtimeConnectionConfig = readStoredRuntimeConnectionConfig();
 let runtimeClient = createRuntimeClient(runtimeClientOptions(runtimeConnectionConfig));
-const activeEventStreams = new Map<string, AgentEventStreamSubscription>();
 export interface SkillInstallJob {
   jobId: string;
   source: string;
@@ -565,8 +546,6 @@ function saveSkillInstallJobs(jobs: SkillInstallJob[]): void {
   }
 }
 
-const reconnectTimers = new Map<string, number>();
-const staleTimers = new Map<string, number>();
 const inspectorDetailInFlight = new Set<string>();
 const workItemRefreshInFlight = new Set<string>();
 const workItemDetailInFlight = new Set<string>();
@@ -587,9 +566,6 @@ let runtimeConfigSaveSequence = 0;
 let confirmedPresentationSubjectKey: string | undefined;
 let resumeReconciliationInFlight: Promise<void> | undefined;
 let resumeReconciliationCoordinator: ResumeReconciliationCoordinator | undefined;
-const STREAM_STALE_TIMEOUT_MS = 45_000;
-const STREAM_RECONNECT_BASE_MS = 1_000;
-const STREAM_RECONNECT_MAX_MS = 15_000;
 const AGENT_VALIDATION_TTL_MS = 60_000;
 const RESUME_RECONCILIATION_THRESHOLD_MS = 60_000;
 const AGENT_DETAIL_RETRY_DELAYS_MS = [2_000, 5_000, 15_000] as const;
@@ -689,17 +665,6 @@ function cancelClientGenerationWork(): void {
   toolExecutionDetailInFlight.clear();
 }
 
-
-function closeEventStreamsForResume(set: StoreSet): void {
-  globalSyncCoordinator.closeForResume(set);
-  for (const agentId of Array.from(activeEventStreams.keys())) {
-    stopAgentEventStream(agentId, set);
-  }
-  for (const timer of reconnectTimers.values()) window.clearTimeout(timer);
-  reconnectTimers.clear();
-  for (const timer of staleTimers.values()) window.clearTimeout(timer);
-  staleTimers.clear();
-}
 
 export function resetSessionsForResume(
   sessionsByAgentId: Record<string, AgentSessionState>,
@@ -1000,7 +965,6 @@ async function applyRosterSnapshotToStore(
   }
   if (!isCurrentClientRequest(context.request)) return [];
   for (const agentId of omittedAgentIds) {
-    stopAgentEventStream(agentId, set);
     void agentSessionRepository
       .purgeAgentLedger(agentId)
       .catch((error) => console.warn("Failed to purge omitted agent ledger.", error));
@@ -1009,11 +973,8 @@ async function applyRosterSnapshotToStore(
 }
 
 const globalSyncCoordinator = new GlobalSyncCoordinator<RuntimeStoreState>({
-  applyStreamEvents,
   captureClientRequest,
   isCurrentClientRequest,
-  setAgentLiveStatus,
-  setStreamState,
   fetchRosterSnapshot: async (request) => {
     return request.client.getAgentRosterSnapshot();
   },
@@ -1388,7 +1349,6 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => {
   agentRosterSource: undefined,
   currentUser: undefined,
   currentUserLoaded: false,
-  globalStreamStatus: "idle",
   discovery: {
     mode: "pending",
     freshness: "fresh",
@@ -1795,15 +1755,9 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => {
     briefReadStatesRefreshInFlight = undefined;
     briefReadStatesRefreshGeneration = undefined;
     resumeReconciliationInFlight = undefined;
-    for (const subscription of activeEventStreams.values()) subscription.close();
-    activeEventStreams.clear();
     globalSyncCoordinator.resetForClientChange();
     agentSessionRepository.switchRemote();
     inspectorDetailInFlight.clear();
-    for (const timer of reconnectTimers.values()) window.clearTimeout(timer);
-    for (const timer of staleTimers.values()) window.clearTimeout(timer);
-    reconnectTimers.clear();
-    staleTimers.clear();
     set({
       currentUser: undefined,
       currentUserLoaded: false,
@@ -1905,8 +1859,6 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => {
           generation = nextClientGeneration();
           cancelClientGenerationWork();
           bootstrapRefreshInFlight = request;
-          for (const subscription of activeEventStreams.values()) subscription.close();
-          activeEventStreams.clear();
           globalSyncCoordinator.resetForClientChange();
           clearAgentAccessRecords();
           disposeAllConversationScopes(false);
@@ -2025,12 +1977,11 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => {
           return updated ? { sessionsByAgentId: updated } : {};
         });
         void refreshBriefReadStatesInView();
-        if (options.syncEvents !== false) {
-          if (get().discovery.mode === "authoritative") {
-            globalSyncCoordinator.refreshRoster(get, set);
-          } else {
-            globalSyncCoordinator.syncRoster(get, set);
-          }
+        // A bootstrap that settled with a connection error (for example a
+        // daemon missing the observer-sync contract) must not start the
+        // authoritative roster cycle; discovery waits for a healthy connect.
+        if (options.syncEvents !== false && bootstrap.connection.error == null) {
+          globalSyncCoordinator.refreshRoster(get, set);
         }
         span.end("ok", { agentCount: bootstrap.agents.length });
       } catch (error) {
@@ -2062,7 +2013,7 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => {
 
     const generation = nextClientGeneration();
     cancelClientGenerationWork();
-    closeEventStreamsForResume(set);
+    globalSyncCoordinator.closeForResume();
     // First invalidate transient layout/loading state before fresh projections arrive.
     set((state) => ({
       ...resetTransientRuntimeStateForResume(state),
@@ -2092,7 +2043,7 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => {
           () => isCurrentClientGeneration(generation),
         );
         if (!isCurrentClientGeneration(generation)) return;
-        globalSyncCoordinator.syncRoster(get, set);
+        globalSyncCoordinator.refreshRoster(get, set);
       } finally {
         if (isCurrentClientGeneration(generation)) {
           // Then remeasure once more after the reconciled projections and hydration are scheduled.
@@ -3072,9 +3023,7 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => {
           return;
         }
         const currentSession = get().sessionsByAgentId[agentId];
-        const canRecover =
-          get().globalStreamStatus === "streaming" &&
-          Boolean(currentSession?.eventSeqs.length);
+        const canRecover = Boolean(currentSession?.eventSeqs.length);
         if (canRecover) {
           set((state) => ({
             sessionsByAgentId: {
@@ -3568,8 +3517,6 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => {
       await request.client.deleteAgent(agentId, cascadePrivateChildren);
       if (!isCurrentClientRequest(request)) return;
       await agentSessionRepository.deleteCachedSession(agentId);
-      globalSyncCoordinator.unregister(agentId);
-      stopAgentEventStream(agentId, set);
       set((state) => {
         const sessionsByAgentId = { ...state.sessionsByAgentId };
         const rosterActivityByAgentId = { ...state.rosterActivityByAgentId };
@@ -3607,81 +3554,10 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => {
     }
   },
 
-  // Agent-scoped SSE is intentionally retained only for Debug inspector compatibility.
-  startAgentEventStream: (agentId, displayLevel) => {
-    if (!agentId) return;
-    stopAgentEventStream(agentId, set);
-    const request = captureClientRequest();
-    const session = get().sessionsByAgentId[agentId] ?? emptyAgentSession();
-    if (session.detail?.error) return;
-
-    const reconnectAttempt = session.reconnectAttempt ?? 0;
-    setStreamState(set, agentId, reconnectAttempt > 0 ? "reconnecting" : "connecting", {
-      reconnectAttempt,
-      error: undefined,
-    });
-    const subscription = request.client.streamAgentEvents(agentId, {
-      afterSeq: highestSeq(session.eventSeqs) ?? session.newestSeq ?? 0,
-      limit: 100,
-      onOpen: () => {
-        if (!isCurrentClientRequest(request)) return;
-        markStreamActivity(set, agentId);
-        setStreamState(set, agentId, reconnectAttempt > 0 ? "recovering" : "streaming", {
-          reconnectAttempt: 0,
-          error: undefined,
-        });
-        scheduleStaleWatchdog(get, set, agentId, displayLevel);
-        if (reconnectAttempt > 0) {
-          setAgentLiveStatus(set, agentId, "streaming");
-        }
-      },
-      onActivity: () => {
-        if (!isCurrentClientRequest(request)) return;
-        markStreamActivity(set, agentId);
-        scheduleStaleWatchdog(get, set, agentId, displayLevel);
-      },
-      onEvent: (event) => {
-        if (!isCurrentClientRequest(request)) return;
-        markStreamActivity(set, agentId);
-        globalSyncCoordinator.enqueueStreamEvent(set, agentId, event);
-      },
-      onClose: () => {
-        if (isCurrentClientRequest(request)) {
-          scheduleStreamReconnect(get, set, agentId, displayLevel, "event stream closed");
-        }
-      },
-      onError: (error) => {
-        if (isCurrentClientRequest(request)) {
-          scheduleStreamReconnect(get, set, agentId, displayLevel, error.message);
-        }
-      },
-    });
-    if (!subscription) {
-      setAgentLiveStatus(set, agentId, "idle");
-      return;
-    }
-    activeEventStreams.set(agentId, subscription);
-  },
-
-  stopAgentEventStream: (agentId) => {
-    if (!agentId) return;
-    stopAgentEventStream(agentId, set);
-  },
-  startGlobalEventStream: () => {
-    globalSyncCoordinator.start(get, set);
-  },
-  stopGlobalEventStream: () => {
-    globalSyncCoordinator.stop(set);
-  },
-  registerAgentForEvents: (agentId) => {
-    globalSyncCoordinator.register(get, set, agentId);
-  },
-  unregisterAgentForEvents: (agentId) => {
-    globalSyncCoordinator.unregister(agentId);
-  },
   retryAgentSync: (agentId) => {
     if (!agentId) return;
     globalSyncCoordinator.retryAgentSync(get, set, agentId);
+    void get().refreshAgentState(agentId);
   },
   });
 });
@@ -3834,10 +3710,10 @@ function scheduleAgentSkillCatalogRetry(get: () => RuntimeStoreState, agentId: s
 function armAgentSkillCatalogRetry(get: () => RuntimeStoreState, agentId: string, delayMs: number): void {
   const timer = window.setTimeout(() => {
     agentSkillCatalogRetryTimers.delete(agentId);
-    const streamStatus = get().globalStreamStatus;
-    if (streamStatus !== "streaming" && streamStatus !== "catching_up") {
-      // Connection down: pause without fetching or consuming another attempt
-      // so the retry resumes once the stream reconnects.
+    const discovery = get().discovery;
+    if (discovery.mode === "authoritative" && discovery.freshness !== "fresh") {
+      // Discovery down: pause without fetching or consuming another attempt
+      // so the retry resumes once a fresh roster snapshot settles.
       armAgentSkillCatalogRetry(
         get,
         agentId,
@@ -3860,24 +3736,6 @@ function clearAgentSkillCatalogRetry(agentId: string): void {
 function retryJitterMs(): number {
   return Math.floor(Math.random() * 500);
 }
-
-
-function stopAgentEventStream(agentId: string, set?: StoreSet): void {
-  if (set) globalSyncCoordinator.stopBatchingAgent(set, agentId);
-  activeEventStreams.get(agentId)?.close();
-  activeEventStreams.delete(agentId);
-  const timer = reconnectTimers.get(agentId);
-  if (timer != null) {
-    window.clearTimeout(timer);
-    reconnectTimers.delete(agentId);
-  }
-  const staleTimer = staleTimers.get(agentId);
-  if (staleTimer != null) {
-    window.clearTimeout(staleTimer);
-    staleTimers.delete(agentId);
-  }
-}
-
 function hydrateInspectorActivityDetail(
   get: () => RuntimeStoreState,
   set: StoreSet,
@@ -4070,98 +3928,6 @@ function firstStringField(record: Record<string, unknown> | undefined, keys: str
   }
   return undefined;
 }
-
-function setAgentLiveStatus(set: StoreSet, agentId: string, liveStatus: AgentLiveStatus): void {
-  setStreamState(set, agentId, liveStatus);
-}
-
-function setStreamState(
-  set: StoreSet,
-  agentId: string,
-  liveStatus: AgentLiveStatus,
-  updates: Partial<AgentSessionState> = {},
-): void {
-  set((state) => ({
-    sessionsByAgentId: {
-      ...state.sessionsByAgentId,
-      [agentId]: {
-        ...emptyAgentSession(),
-        ...state.sessionsByAgentId[agentId],
-        liveStatus,
-        ...updates,
-      },
-    },
-  }));
-}
-
-function markStreamActivity(set: StoreSet, agentId: string): void {
-  set((state) => ({
-    sessionsByAgentId: {
-      ...state.sessionsByAgentId,
-      [agentId]: {
-        ...emptyAgentSession(),
-        ...state.sessionsByAgentId[agentId],
-        lastStreamActivityAt: new Date().toISOString(),
-      },
-    },
-  }));
-}
-
-function scheduleStaleWatchdog(
-  get: () => RuntimeStoreState,
-  set: StoreSet,
-  agentId: string,
-  displayLevel: DisplayLevel,
-): void {
-  const existing = staleTimers.get(agentId);
-  if (existing != null) window.clearTimeout(existing);
-  const timer = window.setTimeout(() => {
-    if (!activeEventStreams.has(agentId)) return;
-    globalSyncCoordinator.flushStreamEvents(set, agentId);
-    setStreamState(set, agentId, "stale", { error: "event stream is stale; reconnecting" });
-    activeEventStreams.get(agentId)?.close();
-    activeEventStreams.delete(agentId);
-    scheduleStreamReconnect(get, set, agentId, displayLevel, "event stream idle timeout");
-  }, STREAM_STALE_TIMEOUT_MS);
-  staleTimers.set(agentId, timer);
-}
-
-function scheduleStreamReconnect(
-  get: () => RuntimeStoreState,
-  set: StoreSet,
-  agentId: string,
-  displayLevel: DisplayLevel,
-  reason: string,
-): void {
-  globalSyncCoordinator.flushStreamEvents(set, agentId);
-  activeEventStreams.get(agentId)?.close();
-  activeEventStreams.delete(agentId);
-  const staleTimer = staleTimers.get(agentId);
-  if (staleTimer != null) {
-    window.clearTimeout(staleTimer);
-    staleTimers.delete(agentId);
-  }
-  if (reconnectTimers.has(agentId)) return;
-
-  const attempt = (get().sessionsByAgentId[agentId]?.reconnectAttempt ?? 0) + 1;
-  const delay = reconnectDelayMs(attempt);
-  setStreamState(set, agentId, "reconnecting", {
-    reconnectAttempt: attempt,
-    error: reason,
-  });
-  const timer = window.setTimeout(() => {
-    reconnectTimers.delete(agentId);
-    get().startAgentEventStream(agentId, displayLevel);
-  }, delay);
-  reconnectTimers.set(agentId, timer);
-}
-
-function reconnectDelayMs(attempt: number): number {
-  const exponential = Math.min(STREAM_RECONNECT_MAX_MS, STREAM_RECONNECT_BASE_MS * 2 ** Math.max(0, attempt - 1));
-  const jitter = Math.floor(Math.random() * 500);
-  return exponential + jitter;
-}
-
 function setSessionModelError(set: StoreSet, agentId: string, error: string | undefined): void {
   set((state) => ({
     sessionsByAgentId: {
@@ -4670,155 +4436,6 @@ export function mergeAgentDetailIntoSession(
     },
   };
 }
-
-export function applyStreamEvents(set: StoreSet, agentId: string, events: StreamEventEnvelopeDto[]): void {
-  const incomingEpoch = eventLogEpochFromEvents(events);
-  const incomingEvents = events.filter(
-    (event) =>
-      event.event_seq != null &&
-      (!incomingEpoch || !event.event_log_epoch || event.event_log_epoch === incomingEpoch),
-  );
-  if (!incomingEvents.length) return;
-  const currentSnapshot = useRuntimeStore.getState().sessionsByAgentId[agentId];
-  if (currentSnapshot && hasEventIdentityConflict(currentSnapshot, incomingEvents)) {
-    globalSyncCoordinator.discardPendingEvents(agentId);
-    globalSyncCoordinator.unregisterRecovery(agentId);
-    set((state) => ({
-      sessionsByAgentId: {
-        ...state.sessionsByAgentId,
-        [agentId]: resetSessionForEventConflict(
-          state.sessionsByAgentId[agentId] ?? emptyAgentSession(),
-          incomingEpoch,
-        ),
-      },
-    }));
-    void useRuntimeStore.getState().refreshAgentDetail(agentId);
-    return;
-  }
-  const liveStatus = globalSyncCoordinator.isRecovering(agentId) ? "recovering" : "streaming";
-
-  const currentSession = sessionForEventLogEpoch(
-    currentSnapshot ?? emptyAgentSession(),
-    incomingEpoch,
-  );
-  const uniqueEvents = incomingEvents.filter(
-    (event) => !currentSession.eventsBySeq[event.event_seq as number],
-  );
-  const offerToLedger = (): void => {
-    void agentSessionRepository
-      .ingestSessionEvents(agentId, incomingEvents)
-      .catch((error) => console.warn(`Agent ledger ingestion failed for ${agentId}.`, error));
-  };
-  // Duplicate stream events are common while gap recovery overlaps the live
-  // stream; they must not commit a new session object on every flush. The
-  // ledger is still offered every envelope so its exactness guarantees hold.
-  if (!uniqueEvents.length) {
-    if (currentSession.liveStatus !== liveStatus || currentSession.error !== undefined) {
-      set((state) => ({
-        sessionsByAgentId: {
-          ...state.sessionsByAgentId,
-          [agentId]: {
-            ...sessionForEventLogEpoch(
-              state.sessionsByAgentId[agentId] ?? emptyAgentSession(),
-              incomingEpoch,
-            ),
-            liveStatus,
-            error: undefined,
-          },
-        },
-      }));
-    }
-    offerToLedger();
-    return;
-  }
-
-  set((state) => {
-    const current = sessionForEventLogEpoch(
-      state.sessionsByAgentId[agentId] ?? emptyAgentSession(),
-      incomingEpoch,
-    );
-    const projectionEvents = uniqueEvents.filter(canApplySessionEvent);
-    const rosterActivityByAgentId = projectionEvents.reduce(
-      (activityByAgentId, event) =>
-        touchRosterActivityFromEvent(activityByAgentId, agentId, event, state.route === "agent" ? state.selectedAgentId : ""),
-      state.rosterActivityByAgentId,
-    );
-    if (rosterActivityByAgentId !== state.rosterActivityByAgentId) {
-      writeStoredRosterActivity(currentRemoteKey(runtimeConnectionConfig), rosterActivityByAgentId);
-    }
-    const baseDetail = current.detail ?? createLiveAgentDetail(state.bootstrap.agents.find((agent) => agent.id === agentId));
-    const runPatch = agentRunPatchFromEvents(projectionEvents);
-    const briefPatch = agentBriefPatchFromEvents(projectionEvents, current.briefRecordsById);
-    const patchedBaseDetail = patchAgentDetail(baseDetail, runPatch, briefPatch);
-    const projected = applyProjectionAction(current, {
-      type: "events_received",
-      events: uniqueEvents,
-      eventLogEpoch: incomingEpoch,
-    }, "debug", patchedBaseDetail);
-    const timelineEvents = state.timelineEventsByAgentId[agentId];
-
-    return {
-      bootstrap: sortBootstrapAgents(
-        patchBootstrapAgent(state.bootstrap, agentId, runPatch, briefPatch),
-        rosterActivityByAgentId,
-      ),
-      rosterActivityByAgentId,
-      timelineEventsByAgentId: timelineEvents
-        ? {
-            ...state.timelineEventsByAgentId,
-            [agentId]: mergeTimelineEventPage(
-              timelineEvents,
-              incomingEvents,
-              incomingEpoch,
-              timelineEvents.hasOlder,
-              true,
-            ),
-          }
-        : state.timelineEventsByAgentId,
-      sessionsByAgentId: {
-        ...state.sessionsByAgentId,
-        [agentId]: {
-          ...projected,
-          liveStatus,
-          error: undefined,
-        },
-      },
-    };
-  });
-  offerToLedger();
-  if (events.some((event) => canApplySessionEvent(event) && isWorkItemCacheInvalidationEvent(event))) {
-    void useRuntimeStore.getState().refreshAgentWorkItems(agentId);
-  }
-  if (events.some((event) => canApplySessionEvent(event) && isAgentStateCacheInvalidationEvent(event))) {
-    void useRuntimeStore.getState().refreshAgentState(agentId);
-  }
-}
-
-function isWorkItemCacheInvalidationEvent(event: StreamEventEnvelopeDto): boolean {
-  // Match all work_item_written events so updated/picked actions also refresh the cache.
-  return event.type === "work_item_written";
-}
-
-function isAgentStateCacheInvalidationEvent(event: StreamEventEnvelopeDto): boolean {
-  return (
-    event.type === "agent_state_changed" ||
-    event.type === "state_changed" ||
-    event.type === "message_processing_started" ||
-    event.type === "turn_terminal" ||
-    event.type === "work_item_written" ||
-    event.type === "task_created" ||
-    event.type === "task_status_updated" ||
-    event.type === "task_result_received" ||
-    event.type === "workspace_entered" ||
-    event.type === "workspace_used" ||
-    event.type === "workspace_attached" ||
-    event.type === "workspace_detached" ||
-    event.type === "workspace_exited" ||
-    event.type === "worktree_entered" ||
-    event.type === "worktree_exited"
-  );
-}
-
 export function agentDetailErrorKind(error: unknown): string {
   if (error instanceof Error) {
     if (error.name === "RuntimeHttpError") return "http_error";
@@ -4982,7 +4599,7 @@ function formatTime(value: string | null | undefined): string {
 
 function presentationAuthRejected(state: RuntimeStoreState): boolean {
   return Boolean(state.bootstrap.connection.authRequired)
-    || state.discovery.freshness === "unauthorized" || state.globalStreamStatus === "unauthorized";
+    || state.discovery.freshness === "unauthorized";
 }
 
 useRuntimeStore.subscribe((state, previous) => {

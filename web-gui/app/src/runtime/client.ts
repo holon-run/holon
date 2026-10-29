@@ -1,7 +1,6 @@
 import { agentDetailFixtures } from "./fixtures";
 import type { ConversationSummaryResponse } from "@holon/conversation-sdk";
 import type { components } from "./generated/openapi";
-import { briefIdForPayload, transcriptEntryIdForPayload } from "./session-reducer";
 import type {
   AddSkillInput,
   AgentDetail,
@@ -252,7 +251,6 @@ export interface AgentRosterSnapshotResult {
 }
 type GeneratedStreamEventEnvelopeDto = components["schemas"]["StreamEventEnvelope"];
 export type StreamEventEnvelopeDto = Partial<GeneratedStreamEventEnvelopeDto>;
-type EventEnvelopeDto = StreamEventEnvelopeDto;
 
 function emptyEventPage(): EventPageResponseDto {
   return {
@@ -264,28 +262,6 @@ function emptyEventPage(): EventPageResponseDto {
     order: "desc",
     limit: 0,
   };
-}
-
-export interface AgentEventStreamSubscription {
-  close: () => void;
-}
-
-export interface AgentEventStreamOptions {
-  afterSeq?: number;
-  limit?: number;
-  onOpen?: (contractVersion: number) => void;
-  onActivity?: () => void;
-  onEvent: (event: StreamEventEnvelopeDto) => void;
-  onClose?: () => void;
-  onError?: (error: Error) => void;
-}
-
-export interface GlobalEventStreamOptions {
-  onOpen?: (contractVersion: number) => void;
-  onActivity?: () => void;
-  onRosterHint: (agentId: string) => void;
-  onClose?: () => void;
-  onError?: (error: Error) => void;
 }
 
 export interface AgentEventPageOptions {
@@ -1545,14 +1521,6 @@ export function createRuntimeClient(options: RuntimeClientOptions = {}) {
       }, requestHeaders, { timeoutMs: USER_ACTION_TIMEOUT_MS });
       return projectMemorySourceContent(response);
     },
-    streamAgentEvents(agentId: string, options: AgentEventStreamOptions): AgentEventStreamSubscription | undefined {
-      if (!baseUrl) return undefined;
-      return streamAgentEvents(baseUrl, fetchImpl, requestHeaders, agentId, options);
-    },
-    streamGlobalEvents(options: GlobalEventStreamOptions): AgentEventStreamSubscription | undefined {
-      if (!baseUrl) return undefined;
-      return streamGlobalEvents(baseUrl, fetchImpl, requestHeaders, options);
-    },
     async sendOperatorPrompt(
       agentId: string,
       text: string,
@@ -1950,57 +1918,6 @@ async function fetchAgentWorkItem(
   );
 }
 
-async function fetchTranscriptEntriesForEvents(
-  baseUrl: string,
-  fetchImpl: typeof fetch,
-  headers: Record<string, string>,
-  agentId: string,
-  events: EventEnvelopeDto[],
-): Promise<Record<string, RuntimeTranscriptEntry>> {
-  const entryIds = Array.from(
-    new Set(
-      events
-        .map((event) => transcriptEntryIdForPayload(asRecord(event.payload)))
-        .filter((entryId): entryId is string => Boolean(entryId)),
-    ),
-  );
-  if (!entryIds.length) return {};
-  const response = await postJson<AgentTranscriptEntriesBatchGetResponseDto>(
-    fetchImpl,
-    baseUrl,
-    `/agents/${encodeURIComponent(agentId)}/transcript:batchGet`,
-    { entry_ids: entryIds },
-    headers,
-    { timeoutMs: HYDRATION_READ_TIMEOUT_MS },
-  ).catch((): AgentTranscriptEntriesBatchGetResponseDto => ({ entries: [], missing_entry_ids: entryIds }));
-  return Object.fromEntries((response.entries ?? []).flatMap((entry) => (entry.id ? [[entry.id, entry]] : [])));
-}
-
-async function fetchBriefRecordsForEvents(
-  baseUrl: string,
-  fetchImpl: typeof fetch,
-  headers: Record<string, string>,
-  agentId: string,
-  events: EventEnvelopeDto[],
-): Promise<Record<string, RuntimeBriefRecord>> {
-  const briefIds = Array.from(
-    new Set(
-      events
-        .filter((event) => event.type === "brief_created")
-        .filter((event) => {
-          const payload = asRecord(event.payload);
-          return !stringValue(payload?.text);
-        })
-        .map((event) => briefIdForPayload(asRecord(event.payload)))
-        .filter((briefId): briefId is string => Boolean(briefId)),
-    ),
-  );
-  if (!briefIds.length) return {};
-  return fetchBriefRecordsById(baseUrl, fetchImpl, headers, agentId, briefIds)
-    .then((r) => r.recordsById)
-    .catch(() => ({}));
-}
-
 interface BriefFetchResult {
   recordsById: Record<string, RuntimeBriefRecord>;
   notFoundIds: string[];
@@ -2025,160 +1942,6 @@ async function fetchBriefRecordsById(
     recordsById: Object.fromEntries((response.briefs ?? []).flatMap((brief) => brief.id ? [[brief.id, brief]] : [])),
     notFoundIds: response.missing_brief_ids ?? [],
   };
-}
-
-function streamAgentEvents(
-  baseUrl: string,
-  fetchImpl: typeof fetch,
-  headers: Record<string, string>,
-  agentId: string,
-  options: AgentEventStreamOptions,
-): AgentEventStreamSubscription {
-  const controller = new AbortController();
-  const encodedAgentId = encodeURIComponent(agentId);
-  const query = new URLSearchParams();
-  if (options.limit != null) query.set("limit", String(options.limit));
-  if (options.afterSeq != null) query.set("after_seq", String(options.afterSeq));
-  const queryString = query.toString();
-  const path = `/agents/${encodedAgentId}/events/stream${queryString ? `?${queryString}` : ""}`;
-
-  void readEventStream(fetchImpl, `${baseUrl}${path}`, headers, controller.signal, options);
-
-  return {
-    close: () => controller.abort(),
-  };
-}
-function streamGlobalEvents(
-  baseUrl: string,
-  fetchImpl: typeof fetch,
-  headers: Record<string, string>,
-  options: GlobalEventStreamOptions,
-): AgentEventStreamSubscription {
-  const controller = new AbortController();
-  const path = "/events/stream";
-  void readEventStream(fetchImpl, `${baseUrl}${path}`, headers, controller.signal, {
-    ...options,
-    rosterOnly: true,
-  });
-  return {
-    close: () => controller.abort(),
-  };
-}
-
-async function readEventStream(
-  fetchImpl: typeof fetch,
-  url: string,
-  headers: Record<string, string>,
-  signal: AbortSignal,
-  options: EventStreamReadOptions,
-): Promise<void> {
-  try {
-    const response = await fetchImpl(url, {
-      headers: { Accept: "text/event-stream", ...headers },
-      signal,
-    });
-    if (!response.ok) {
-      // Preserve the server's error envelope (status + machine code) so an
-      // auth rejection on the stream stays distinguishable from transport
-      // failures (#3299). Same-origin requests pass a relative URL, so the
-      // path must be resolved against a dummy base before use.
-      throw await httpRequestError("GET", requestPathForError(url), response);
-    }
-    if (!response.body) {
-      throw new Error("event stream response body is not readable");
-    }
-
-    const contractVersion = parseEventContractVersion(response.headers);
-    options.onOpen?.(contractVersion);
-    const reader = response.body.getReader();
-    const decoder = new TextDecoder();
-    let buffer = "";
-
-    while (!signal.aborted) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      options.onActivity?.();
-      buffer += decoder.decode(value, { stream: true });
-      const frames = takeSseFrames(buffer);
-      buffer = frames.remaining;
-      for (const frame of frames.frames) {
-        options.onActivity?.();
-        if (options.rosterOnly) {
-          const agentId = parseRosterHintFrame(frame);
-          if (agentId) options.onRosterHint?.(agentId);
-        } else {
-          const event = parseSseEventFrame(frame);
-          if (event) options.onEvent?.(event);
-        }
-      }
-    }
-    if (!signal.aborted) {
-      options.onClose?.();
-    }
-  } catch (error) {
-    if (!signal.aborted) {
-      options.onError?.(error instanceof Error ? error : new Error(String(error)));
-    }
-  }
-}
-
-type EventStreamReadOptions = Omit<AgentEventStreamOptions, "onEvent"> & {
-  onEvent?: (event: StreamEventEnvelopeDto) => void;
-  onRosterHint?: (agentId: string) => void;
-  rosterOnly?: boolean;
-};
-
-/** Absolute-or-relative request path for error reporting. */
-function requestPathForError(url: string | URL): string {
-  if (url instanceof URL) return url.pathname;
-  try {
-    return new URL(url).pathname;
-  } catch {
-    return new URL(url, "http://holon.invalid").pathname;
-  }
-}
-
-function takeSseFrames(buffer: string): { frames: string[]; remaining: string } {
-  const frames: string[] = [];
-  let remaining = buffer;
-  while (true) {
-    const lfIndex = remaining.indexOf("\n\n");
-    const crlfIndex = remaining.indexOf("\r\n\r\n");
-    const candidates = [lfIndex, crlfIndex].filter((index) => index >= 0);
-    if (candidates.length === 0) break;
-    const index = Math.min(...candidates);
-    const delimiterLength = remaining.startsWith("\r\n\r\n", index) ? 4 : 2;
-    frames.push(remaining.slice(0, index));
-    remaining = remaining.slice(index + delimiterLength);
-  }
-  return { frames, remaining };
-}
-
-function parseSseEventFrame(frame: string): StreamEventEnvelopeDto | undefined {
-  const dataLines: string[] = [];
-  for (const line of frame.split(/\r?\n/)) {
-    if (line.startsWith(":")) continue;
-    if (line.startsWith("data:")) {
-      dataLines.push(line.slice("data:".length).trimStart());
-    }
-  }
-  if (dataLines.length === 0) return undefined;
-  return decodeStreamEventEnvelope(JSON.parse(dataLines.join("\n")));
-}
-
-function parseRosterHintFrame(frame: string): string | undefined {
-  let eventName = "";
-  const dataLines: string[] = [];
-  for (const line of frame.split(/\r?\n/)) {
-    if (line.startsWith(":")) continue;
-    if (line.startsWith("event:")) {
-      eventName = line.slice("event:".length).trim();
-    } else if (line.startsWith("data:")) {
-      dataLines.push(line.slice("data:".length).trimStart());
-    }
-  }
-  if (eventName !== "agent_roster_hint" || dataLines.length === 0) return undefined;
-  return stringValue(asRecord(JSON.parse(dataLines.join("\n")))?.agent_id);
 }
 
 function decodeStreamEventEnvelope(value: unknown): StreamEventEnvelopeDto | undefined {
@@ -2214,12 +1977,6 @@ function decodeStreamEventEnvelope(value: unknown): StreamEventEnvelopeDto | und
 
 const EVENT_CONTRACT_VERSION_HEADER = "x-holon-event-contract-version";
 const CURRENT_EVENT_CONTRACT_VERSION = 3;
-
-function parseEventContractVersion(headers: Headers): number {
-  const raw = headers.get(EVENT_CONTRACT_VERSION_HEADER);
-  const version = raw == null ? Number.NaN : Number(raw);
-  return validateEventContractVersion(version, "event stream");
-}
 
 function validateEventContractVersion(value: unknown, source: string): number {
   const version = typeof value === "number" ? value : Number(value);
