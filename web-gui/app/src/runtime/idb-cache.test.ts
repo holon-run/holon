@@ -1,10 +1,14 @@
-import { IDBFactory } from "fake-indexeddb";
+import { IDBFactory, IDBKeyRange } from "fake-indexeddb";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { _resetDbPromise, CACHE_SCHEMA_VERSION, cacheGetSession, cacheGetConversationSnapshot, cachePutConversationSnapshot, cachePutConversationBrief,
+import { _resetDbPromise, CACHE_SCHEMA_VERSION, cacheClearRemoteSessions, cacheGetModelCatalog, cacheGetConversationSnapshot, cachePutConversationSnapshot, cachePutConversationBrief,
   cacheGetConversationBrief, cacheClearRemote, pruneConversationCaches, CONVERSATION_CACHE_MAX_ENTRIES,
   CONVERSATION_CACHE_MAX_AGE_MS, CONVERSATION_CACHE_MAX_BYTES } from "./idb-cache";
 
-beforeEach(() => { _resetDbPromise(); globalThis.indexedDB = new IDBFactory(); });
+beforeEach(() => {
+  _resetDbPromise();
+  globalThis.indexedDB = new IDBFactory();
+  globalThis.IDBKeyRange = IDBKeyRange;
+});
 afterEach(() => _resetDbPromise());
 const snapshot = (remoteKey = "local#user-A", agentId = "agent", cachedAt = Date.now()) => ({
   remoteKey, agentId, schemaVersion: 1, etag: "cached-etag", summary: {}, cachedAt,
@@ -33,7 +37,7 @@ describe("conversation cache lifecycle", () => {
     });
     next.close();
   });
-  it("preserves v5 sessions, briefs and snapshots while adding the presentation store", async () => {
+  it("cleans legacy sessions without losing v5 briefs, snapshots or model catalogs", async () => {
     const old = await new Promise<IDBDatabase>((resolve, reject) => {
       const request = indexedDB.open("holon-webgui-cache", 5);
       request.onupgradeneeded = () => {
@@ -50,20 +54,35 @@ describe("conversation cache lifecycle", () => {
     });
     const cachedSnapshot = snapshot();
     const cachedBrief = { remoteKey: "local#user-A", agentId: "agent", briefId: "brief", schemaVersion: 1, cachedAt: Date.now(), brief: {} };
-    const cachedSession = { remoteKey: "local#user-A", agentId: "agent", schemaVersion: 5, cachedAt: Date.now() };
+    // An obsolete session schema must not invalidate independent content caches.
+    const cachedSession = { remoteKey: "local#user-A", agentId: "agent", schemaVersion: 0, cachedAt: Date.now() };
+    const cachedCatalog = { remoteKey: "local#user-A", schemaVersion: CACHE_SCHEMA_VERSION, options: ["model"], cachedAt: Date.now() };
     await new Promise<void>((resolve, reject) => {
-      const tx = old.transaction(["sessions", "briefs", "snapshots"], "readwrite");
+      const tx = old.transaction(["sessions", "briefs", "snapshots", "modelCatalog"], "readwrite");
       tx.objectStore("sessions").put(cachedSession);
       tx.objectStore("briefs").put(cachedBrief);
       tx.objectStore("snapshots").put(cachedSnapshot);
+      tx.objectStore("modelCatalog").put(cachedCatalog);
       tx.oncomplete = () => resolve();
       tx.onabort = () => reject(tx.error);
     });
     old.close();
     expect(CACHE_SCHEMA_VERSION).toBe(5);
-    expect(await cacheGetSession("local#user-A", "agent")).toEqual(cachedSession);
+    await cacheClearRemoteSessions("local#user-A");
     expect(await cacheGetConversationBrief("local#user-A", "agent", "brief")).toEqual(cachedBrief);
     expect(await cacheGetConversationSnapshot("local#user-A", "agent")).toEqual(cachedSnapshot);
+    expect(await cacheGetModelCatalog("local#user-A")).toEqual(cachedCatalog);
+    const db = await new Promise<IDBDatabase>((resolve) => {
+      const request = indexedDB.open("holon-webgui-cache");
+      request.onsuccess = () => resolve(request.result);
+    });
+    try {
+      const session = await new Promise<unknown>((resolve) => {
+        const request = db.transaction("sessions").objectStore("sessions").get(["local#user-A", "agent"]);
+        request.onsuccess = () => resolve(request.result);
+      });
+      expect(session).toBeUndefined();
+    } finally { db.close(); }
   });
   it("still retires briefs and snapshots from before authenticated namespaces", async () => {
     const old = await new Promise<IDBDatabase>((resolve) => {

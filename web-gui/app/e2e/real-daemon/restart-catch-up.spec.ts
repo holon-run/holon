@@ -2,10 +2,12 @@ import type { Page } from "@playwright/test";
 
 import { expect, test } from "./daemon-fixture";
 
-interface LedgerSnapshot {
-  eventLogEpoch: string;
-  eventSeqs: number[];
-  ingestedThroughSeq: number;
+interface ConversationProbe {
+  status: string;
+  eventLogEpoch?: string;
+  throughSeq?: number;
+  turnIds: string[];
+  pendingInputIds: string[];
 }
 
 async function installLocalToken(page: Page, token: string): Promise<void> {
@@ -17,49 +19,26 @@ async function installLocalToken(page: Page, token: string): Promise<void> {
   }, token);
 }
 
-async function ledger(page: Page, agentId: string): Promise<LedgerSnapshot | null> {
-  return await page.evaluate(
-    async (id) => {
-      const diagnostics = window.__HOLON_E2E__;
-      if (!diagnostics) return null;
-      const [value, partitions] = await Promise.all([
-        diagnostics.ledger(id),
-        diagnostics.ledgerPartitions(id),
-      ]);
-      if (!value) return null;
-      const partition = partitions.find((candidate) =>
-        candidate.runtimeId === value.runtimeId
-        && candidate.visibilityScopeId === value.visibilityScopeId
-        && candidate.eventLogEpoch === value.eventLogEpoch
-      );
-      return {
-        eventLogEpoch: value.eventLogEpoch,
-        eventSeqs: partition?.eventSeqs ?? [],
-        ingestedThroughSeq: value.ingestedThroughSeq,
-      };
-    },
-    agentId,
-  );
+async function conversation(page: Page, agentId: string): Promise<ConversationProbe | null> {
+  return await page.evaluate((id) => window.__HOLON_E2E__?.conversation(id) ?? null, agentId);
 }
 
-test("same database restart recovers, catches up, preserves epoch, and deduplicates events", async ({
+test("same database restart recovers the conversation, preserves the epoch, and deduplicates turns", async ({
   daemonFactory,
   page,
 }) => {
   const daemon = await daemonFactory({ webDist: "dist-e2e" });
   await installLocalToken(page, daemon.token);
-  await page.goto(daemon.baseUrl);
+  await page.goto(`${daemon.baseUrl}/agents/${daemon.agentId}/conversation`);
 
-  await expect.poll(async () => page.evaluate(() => window.__HOLON_E2E__?.snapshot()))
-    .toMatchObject({
-      bootstrapLoading: false,
-      discovery: { mode: "authoritative", freshness: "fresh" },
-    });
+  await expect.poll(() => conversation(page, daemon.agentId), { timeout: 30_000 })
+    .toMatchObject({ status: "ready" });
 
   await daemon.enqueue("before restart");
-  await expect.poll(async () => ledger(page, daemon.agentId))
-    .toMatchObject({ eventLogEpoch: expect.any(String), ingestedThroughSeq: expect.any(Number) });
-  const before = await ledger(page, daemon.agentId);
+  await expect.poll(async () => (await conversation(page, daemon.agentId))?.turnIds.length ?? 0, {
+    timeout: 30_000,
+  }).toBeGreaterThan(0);
+  const before = await conversation(page, daemon.agentId);
   expect(before?.eventLogEpoch).toBeTruthy();
 
   await daemon.stop();
@@ -67,23 +46,23 @@ test("same database restart recovers, catches up, preserves epoch, and deduplica
   await daemon.start();
   await daemon.enqueue("during restart");
 
-  // The dormant global event stream is gone (#3808 slice 2): after a daemon
-  // restart the durable ledger catches up through the HTTP recovery path
-  // driven by the roster snapshot, exercised here by reloading the app.
+  // The durable event ledger is retired (#3808): after a daemon restart the
+  // user-visible conversation recovers through the roster snapshot plus the
+  // conversation summary read model, exercised here by reloading the app.
   await page.reload();
 
-  await expect.poll(async () => page.evaluate(() => window.__HOLON_E2E__?.snapshot()))
-    .toMatchObject({
-      bootstrapLoading: false,
-      discovery: { mode: "authoritative", freshness: "fresh" },
-    });
   await expect.poll(async () => {
-    const value = await ledger(page, daemon.agentId);
-    return value?.ingestedThroughSeq ?? 0;
-  }).toBeGreaterThan(before?.ingestedThroughSeq ?? 0);
-
-  const after = await ledger(page, daemon.agentId);
-  expect(after).not.toBeNull();
+    const value = await conversation(page, daemon.agentId);
+    return value !== null && value.status === "ready"
+      && value.turnIds.length > (before?.turnIds.length ?? 0);
+  }, { timeout: 30_000 }).toBe(true);
+  const after = await conversation(page, daemon.agentId);
   expect(after?.eventLogEpoch).toBe(before?.eventLogEpoch);
-  expect(new Set(after!.eventSeqs).size).toBe(after!.eventSeqs.length);
+  expect(after!.turnIds).toEqual(expect.arrayContaining(before!.turnIds));
+  expect(new Set(after!.turnIds).size).toBe(after!.turnIds.length);
+  expect(after!.throughSeq ?? 0).toBeGreaterThanOrEqual(before!.throughSeq ?? 0);
+  // Every recovered turn renders exactly once: catch-up must not duplicate UI history.
+  for (const turnId of after!.turnIds) {
+    await expect(page.locator(`[data-turn-id="${turnId}"]`)).toHaveCount(1);
+  }
 });

@@ -28,7 +28,6 @@ import {
 import {
   AgentSessionRepository,
   isSessionCacheContextCurrent,
-  snapshotRepairFromClient,
 } from "./agent-session-repository";
 import {
   emptyAgentSession,
@@ -42,13 +41,13 @@ import {
   GlobalSyncCoordinator,
   runWithConcurrencyLimit,
 } from "./global-sync-coordinator";
-import { ReadStateBus } from "./event-ledger/read-state-bus";
+import { ReadStateBus } from "./read-state-bus";
 import {
   readStoredRosterActivity,
   touchRosterActivity,
   touchRosterActivityFromEvent,
   writeStoredRosterActivity,
-  evaluateLedgerReadMarkerGate,
+  evaluateConversationReadMarkerGate,
   type AgentRosterActivity,
 } from "./read-state";
 import {
@@ -130,12 +129,11 @@ import type {
   AgentLiveStatus,
   AgentSessionState,
   PendingOperatorPrompt,
-  TimelineEventsState,
   WorkItemDetailState,
   TaskDetailState,
   ToolExecutionDetailState,
 } from "./runtime-store-helpers";
-export type { AgentLiveStatus, AgentSessionState, PendingOperatorPrompt, TimelineEventsState };
+export type { AgentLiveStatus, AgentSessionState, PendingOperatorPrompt };
 export {
   materializeProjectionDetail,
   sessionForEventLogEpoch,
@@ -291,7 +289,6 @@ export interface RuntimeStoreState {
   // navCollapsed snapshot restored when the expanded panel returns to normal.
   rightPanelExpandedNavWasCollapsed?: boolean;
   rightPanelView?: RightPanelView;
-  timelineEventsByAgentId: Record<string, TimelineEventsState>;
   navCollapsed: boolean;
 
   bootstrap: RuntimeBootstrap;
@@ -355,13 +352,9 @@ export interface RuntimeStoreState {
   refreshBriefReadStates: () => Promise<void>;
   openSkill: (skillId: string, agentId?: string) => void;
   openTemplate: (catalogId: string) => void;
-  disableDeveloperDiagnosticsUi: () => void;
   setRightPanelOpen: (open: boolean) => void;
   toggleRightPanelExpanded: () => void;
   showAgentOverview: (agentId?: string) => void;
-  showTimelineEvents: (agentId: string) => void;
-  refreshTimelineEvents: (agentId: string) => Promise<void>;
-  loadOlderTimelineEvents: (agentId: string) => Promise<void>;
   showWorkItemDetail: (agentId: string, workItem: WorkItemSummary) => void;
   showTaskDetail: (agentId: string, task: TaskSummary) => void;
   showToolExecutionDetail: (agentId: string, toolExecutionId: string, toolName?: string, relatedStateObjectRef?: TimelineStateObjectRef) => void;
@@ -465,12 +458,6 @@ export function resetTransientRuntimeStateForResume(
     searchResultContentLoadingBySourceRef: resetBooleanMap(state.searchResultContentLoadingBySourceRef),
     rightPanelView: resetRightPanelLoading(state.rightPanelView),
     rightPanelViewStack: state.rightPanelViewStack.map(resetRightPanelLoading).filter((view): view is RightPanelView => view !== undefined),
-    timelineEventsByAgentId: Object.fromEntries(
-      Object.entries(state.timelineEventsByAgentId).map(([agentId, timelineEvents]) => [
-        agentId,
-        { ...timelineEvents, loading: false, loadingOlder: false },
-      ]),
-    ),
     sessionsByAgentId: resetSessionsForResume(state.sessionsByAgentId),
   };
 }
@@ -920,11 +907,6 @@ async function applyRosterSnapshotToStore(
           Object.entries(state.briefReadStateByAgentId).filter(([id]) => !dropIds.has(id)),
         )
       : state.briefReadStateByAgentId;
-    const timelineEventsByAgentId = dropIds.size
-      ? Object.fromEntries(
-          Object.entries(state.timelineEventsByAgentId).filter(([id]) => !dropIds.has(id)),
-        )
-      : state.timelineEventsByAgentId;
     const attentionCount = countAgentsNeedingAttention(rosterAgents);
     return {
       bootstrap: sortBootstrapAgents(
@@ -949,26 +931,9 @@ async function applyRosterSnapshotToStore(
       sessionsByAgentId,
       rosterActivityByAgentId,
       briefReadStateByAgentId,
-      timelineEventsByAgentId,
     };
   });
-  if (identityReset) {
-    // Old-identity ledger scopes must never join the new scope's data.
-    try {
-      await agentSessionRepository.clearLedgerScopesNotMatching(
-        identity,
-        () => isCurrentClientRequest(context.request),
-      );
-    } catch (error) {
-      console.warn("Failed to clear old ledger scopes.", error);
-    }
-  }
-  if (!isCurrentClientRequest(context.request)) return [];
-  for (const agentId of omittedAgentIds) {
-    void agentSessionRepository
-      .purgeAgentLedger(agentId)
-      .catch((error) => console.warn("Failed to purge omitted agent ledger.", error));
-  }
+  void refreshBriefReadStatesInView(true);
   return omittedAgentIds;
 }
 
@@ -980,19 +945,9 @@ const globalSyncCoordinator = new GlobalSyncCoordinator<RuntimeStoreState>({
   },
   applyRosterSnapshot: (set, snapshot, context) =>
     applyRosterSnapshotToStore(set, snapshot, context),
-  registerAgentRecovery: (agentId, hint) => {
-    void agentSessionRepository
-      .syncAgentRecovery(agentId, hint)
-      .catch((error) => console.warn(`Agent ledger recovery failed for ${agentId}.`, error));
-  },
 });
 
-let agentSessionRepository!: AgentSessionRepository<RuntimeStoreState>;
-
-/** Read-only observer-sync status used by the e2e diagnostics bridge. */
-export function ledgerStatusForDiagnostics(agentId: string) {
-  return agentSessionRepository.sessionLedgerStatus(agentId);
-}
+let agentSessionRepository!: AgentSessionRepository;
 
 export interface ObserverSyncAgentDiagnostics {
   agentId: string;
@@ -1034,17 +989,12 @@ export function observerSyncDiagnostics(): ObserverSyncDiagnostics {
       eventLogEpoch: state.discovery.identity?.eventLogEpoch,
     },
     agents: state.bootstrap.agents.map((agent) => {
-      const status = agentSessionRepository.sessionLedgerStatus(agent.id);
       return {
         agentId: agent.id,
-        durability: status?.durability ?? "unavailable",
-        state: status?.state ?? "unavailable",
-        ingestedThroughSeq: status?.ingestedThroughSeq,
-        projectionReadyThroughSeq: status?.projectionReadyThroughSeq,
-        observedEventHeadSeq: status?.observedEventHeadSeq,
-        pendingHydrationJobs: status?.pendingHydrationJobs ?? 0,
-        failedHydrationJobs: status?.failedHydrationJobs ?? 0,
-        resetReason: agentSessionRepository.sessionLedgerResetReason(agent.id),
+        durability: "unavailable",
+        state: "retired",
+        pendingHydrationJobs: 0,
+        failedHydrationJobs: 0,
         readCertainty: state.briefReadStateByAgentId[agent.id] ? "exact" : "unavailable",
       };
     }),
@@ -1080,21 +1030,32 @@ function publishReadStateRevalidation(agentId: string): void {
   });
 }
 
-async function refreshBriefReadStatesInView(): Promise<void> {
+function briefReadStateScopeKey(): string {
+  const identity = useRuntimeStore.getState().discovery.identity;
+  return JSON.stringify(identity && [
+    identity.runtimeId, identity.visibilityScopeId, identity.eventLogEpoch,
+  ]);
+}
+
+export async function refreshBriefReadStatesInView(afterCurrent = false): Promise<void> {
   // The initial local connection uses the module-level runtime config and
   // does not pass through setRuntimeConnection. Ensure dashboard-only tabs
   // subscribe before another tab publishes a read-state revalidation hint.
   ensureReadStateBus();
   const generation = clientGeneration;
   if (briefReadStatesRefreshInFlight && briefReadStatesRefreshGeneration === generation) {
-    return briefReadStatesRefreshInFlight;
+    const inFlight = briefReadStatesRefreshInFlight;
+    return afterCurrent ? inFlight.then(() => refreshBriefReadStatesInView()) : inFlight;
   }
+  const scopeKey = briefReadStateScopeKey();
+  const isCurrent = () =>
+    isCurrentClientGeneration(generation) && briefReadStateScopeKey() === scopeKey;
   let request!: Promise<void>;
   request = (async () => {
     useRuntimeStore.setState({ briefReadStatesLoading: true, briefReadStatesError: undefined });
     try {
       const states = await runtimeClient.getBriefReadStates();
-      if (!isCurrentClientGeneration(generation)) return;
+      if (!isCurrent()) return;
       const currentStates = useRuntimeStore.getState().briefReadStateByAgentId;
       const nextStates = Object.fromEntries(states.map((state) => [state.agent_id, state]));
       for (const incoming of states) {
@@ -1133,7 +1094,7 @@ async function refreshBriefReadStatesInView(): Promise<void> {
         briefReadStatesError: undefined,
       });
     } catch (error) {
-      if (!isCurrentClientGeneration(generation)) return;
+      if (!isCurrent()) return;
       useRuntimeStore.setState({
         briefReadStatesLoading: false,
         briefReadStatesError: error instanceof Error ? error.message : String(error),
@@ -1160,7 +1121,10 @@ function evaluateReadMarkerGate(
     (typeof window !== "undefined" &&
       panelLayout(window.innerWidth, true, false, state.navCollapsed, PANEL_DEFAULT).full)
   );
-  return evaluateLedgerReadMarkerGate(
+  const identity = state.discovery.identity;
+  const viewScope = scope.view?.scope;
+  const readState = state.briefReadStateByAgentId[agentId];
+  return evaluateConversationReadMarkerGate(
     {
       route: state.route,
       selectedAgentId: state.selectedAgentId,
@@ -1173,7 +1137,15 @@ function evaluateReadMarkerGate(
         scope.view.reset_reason === null,
       conversationVisible: !covered,
       discoveryFresh: state.discovery.freshness === "fresh",
-      readiness: agentSessionRepository.sessionLedgerReadiness(agentId),
+      scopeCurrent: identity != null && viewScope != null && readState != null &&
+        viewScope.agent_id === agentId &&
+        viewScope.runtime_id === identity.runtimeId &&
+        viewScope.visibility_scope_id === identity.visibilityScopeId &&
+        viewScope.event_log_epoch === identity.eventLogEpoch &&
+        readState.event_log_epoch === viewScope.event_log_epoch &&
+        readState.visibility_scope_id === viewScope.visibility_scope_id,
+      throughSeq: scope.view?.through_seq ?? null,
+      observedHeadSeq: readState?.event_head_seq,
     },
     agentId,
   );
@@ -1279,56 +1251,9 @@ function collapseRightPanelExpansion(state: {
 const panelPreferences = readPanelPreferences();
 
 export const useRuntimeStore = create<RuntimeStoreState>((set, get) => {
-  agentSessionRepository = new AgentSessionRepository<RuntimeStoreState>({
-    get,
-    set,
-    getClient: () => runtimeClient,
+  agentSessionRepository = new AgentSessionRepository({
     getConnectionConfig: () => runtimeConnectionConfig,
     getGeneration: () => clientGeneration,
-    ledgerIngestion: {
-      // Stable runtime identity (runtime id + visibility scope) is learned
-      // from the per-Agent projection snapshot during W3 recovery; the
-      // repository also seeds it from the durable restart scan. The
-      // registry stays empty for remotes without the snapshot capability,
-      // so the in-memory path is unchanged until the W4/W6 cutover.
-      resolveScope: (agentId) => agentSessionRepository.knownLedgerScope(agentId),
-      snapshotRepair: snapshotRepairFromClient((agentId) =>
-        runtimeClient.getAgentProjectionSnapshot(agentId),
-      ),
-      fetchers: {
-        fetchCanonicalRecords: async (agentId, recordKind, recordIds) => {
-          if (recordKind === "message") {
-            const response = await runtimeClient.getAgentMessagesBatch(agentId, recordIds);
-            const recordsById: Record<string, { record: unknown }> = {};
-            for (const message of response.messages ?? []) {
-              if (message?.id) recordsById[message.id] = { record: message };
-            }
-            return { recordsById, missingIds: response.missing_message_ids ?? [] };
-          }
-          if (recordKind === "transcript_entry") {
-            const response = await runtimeClient.getAgentTranscriptEntriesBatch(
-              agentId,
-              recordIds,
-            );
-            const recordsById: Record<string, { record: unknown }> = {};
-            for (const entry of response.entries ?? []) {
-              if (entry?.id) recordsById[entry.id] = { record: entry };
-            }
-            return { recordsById, missingIds: response.missing_entry_ids ?? [] };
-          }
-          const response = await runtimeClient.getAgentBriefsById(agentId, recordIds);
-          const recordsById: Record<string, { record: unknown }> = {};
-          for (const [briefId, record] of Object.entries(response.recordsById ?? {})) {
-            recordsById[briefId] = { record };
-          }
-          return { recordsById, missingIds: response.notFoundIds ?? [] };
-        },
-      },
-      onStatus: (status) => {
-        void refreshBriefReadStatesInView();
-        void retryPendingReadMarker(status.scope.agentId);
-      },
-    },
   });
 
   return ({
@@ -1341,7 +1266,6 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => {
   rightPanelMode: panelPreferences.mode,
   rightPanelView: panelPreferences.view,
   rightPanelViewStack: [],
-  timelineEventsByAgentId: {},
   navCollapsed: false,
 
   bootstrap: pendingBootstrap(runtimeConnectionConfig),
@@ -1445,18 +1369,6 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => {
   refreshBriefReadStates: async () => {
     await refreshBriefReadStatesInView();
   },
-  disableDeveloperDiagnosticsUi: () =>
-    set((state) => {
-      const timelineEventsView =
-        state.rightPanelView?.kind === "timeline_events" ? state.rightPanelView : undefined;
-      return {
-        rightPanelOpen: timelineEventsView ? false : state.rightPanelOpen,
-        rightPanelView: timelineEventsView
-          ? { kind: "agent_overview", agentId: timelineEventsView.agentId }
-          : state.rightPanelView,
-        rightPanelViewStack: state.rightPanelViewStack.filter((view) => view.kind !== "timeline_events"),
-      };
-    }),
   setRightPanelOpen: (open) =>
     set((state) => {
       if (!open && state.rightPanelMode === "expanded") {
@@ -1485,126 +1397,6 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => {
       rightPanelView: { kind: "agent_overview", agentId: agentId ?? state.selectedAgentId },
       };
     }),
-  showTimelineEvents: (agentId) => {
-    set((state) => {
-      if (state.rightPanelView?.kind === "timeline_events" && state.rightPanelView.agentId === agentId) {
-        return { rightPanelOpen: true };
-      }
-      const stack = state.rightPanelView ? [...state.rightPanelViewStack, state.rightPanelView] : state.rightPanelViewStack;
-      return {
-        rightPanelViewStack: stack,
-        rightPanelOpen: true,
-        rightPanelView: { kind: "timeline_events", agentId },
-      };
-    });
-    const timelineEvents = get().timelineEventsByAgentId[agentId];
-    if (!timelineEvents || (!timelineEvents.loading && timelineEvents.eventSeqs.length === 0)) {
-      void get().refreshTimelineEvents(agentId);
-    }
-  },
-  refreshTimelineEvents: async (agentId) => {
-    const request = captureClientRequest();
-    set((state) => ({
-      timelineEventsByAgentId: {
-        ...state.timelineEventsByAgentId,
-        [agentId]: {
-          ...emptyTimelineEventsState(),
-          ...state.timelineEventsByAgentId[agentId],
-          loading: true,
-          error: undefined,
-        },
-      },
-    }));
-    try {
-      const page = await request.client.getAgentEvents(agentId, {
-        limit: 80,
-        order: "desc",
-        displayLevel: "debug",
-      });
-      if (!isCurrentClientRequest(request)) return;
-      set((state) => {
-        const latest = state.timelineEventsByAgentId[agentId] ?? emptyTimelineEventsState();
-        const preserveLoadedEvents = latest.eventSeqs.length > 0;
-        return {
-          timelineEventsByAgentId: {
-            ...state.timelineEventsByAgentId,
-            [agentId]: mergeTimelineEventPage(
-              latest,
-              page.events ?? [],
-              page.event_log_epoch,
-              preserveLoadedEvents ? latest.hasOlder && page.has_older : page.has_older,
-              preserveLoadedEvents,
-            ),
-          },
-        };
-      });
-    } catch (error) {
-      if (!isCurrentClientRequest(request)) return;
-      set((state) => ({
-        timelineEventsByAgentId: {
-          ...state.timelineEventsByAgentId,
-          [agentId]: {
-            ...emptyTimelineEventsState(),
-            ...state.timelineEventsByAgentId[agentId],
-            loading: false,
-            error: error instanceof Error ? error.message : String(error),
-          },
-        },
-      }));
-    }
-  },
-  loadOlderTimelineEvents: async (agentId) => {
-    const current = get().timelineEventsByAgentId[agentId];
-    if (!current || current.loadingOlder || !current.hasOlder || current.oldestSeq == null) return;
-    const request = captureClientRequest();
-    set((state) => ({
-      timelineEventsByAgentId: {
-        ...state.timelineEventsByAgentId,
-        [agentId]: {
-          ...(state.timelineEventsByAgentId[agentId] ?? current),
-          loadingOlder: true,
-          error: undefined,
-        },
-      },
-    }));
-    try {
-      const page = await request.client.getAgentEvents(agentId, {
-        beforeSeq: current.oldestSeq,
-        limit: 80,
-        order: "desc",
-        displayLevel: "debug",
-      });
-      if (!isCurrentClientRequest(request)) return;
-      set((state) => {
-        const latest = state.timelineEventsByAgentId[agentId] ?? emptyTimelineEventsState();
-        return {
-          timelineEventsByAgentId: {
-            ...state.timelineEventsByAgentId,
-            [agentId]: mergeTimelineEventPage(
-              latest,
-              page.events ?? [],
-              page.event_log_epoch,
-              page.has_older,
-              true,
-            ),
-          },
-        };
-      });
-    } catch (error) {
-      if (!isCurrentClientRequest(request)) return;
-      set((state) => ({
-        timelineEventsByAgentId: {
-          ...state.timelineEventsByAgentId,
-          [agentId]: {
-            ...emptyTimelineEventsState(),
-            ...state.timelineEventsByAgentId[agentId],
-            loadingOlder: false,
-            error: error instanceof Error ? error.message : String(error),
-          },
-        },
-      }));
-    }
-  },
   showWorkItemDetail: (agentId, workItem) =>
     set((state) => {
       const stack = state.rightPanelView ? [...state.rightPanelViewStack, state.rightPanelView] : state.rightPanelViewStack;
@@ -3611,57 +3403,6 @@ function installResumeReconciliationListeners(): ResumeReconciliationCoordinator
   window.addEventListener("pageshow", schedulePageShow);
   window.addEventListener("online", scheduleOnline);
   return coordinator;
-}
-
-function emptyTimelineEventsState(): TimelineEventsState {
-  return {
-    eventsBySeq: {},
-    eventSeqs: [],
-    hasOlder: false,
-    loading: false,
-    loadingOlder: false,
-  };
-}
-
-export function mergeTimelineEventPage(
-  current: TimelineEventsState,
-  incomingEvents: StreamEventEnvelopeDto[],
-  eventLogEpoch: string | undefined,
-  hasOlder: boolean,
-  append: boolean,
-): TimelineEventsState {
-  const epochChanged = Boolean(
-    eventLogEpoch
-    && current.eventLogEpoch
-    && eventLogEpoch !== current.eventLogEpoch,
-  );
-  const base = !append || epochChanged ? emptyTimelineEventsState() : current;
-  const eventsBySeq = { ...base.eventsBySeq };
-  for (const event of incomingEvents) {
-    if (event.event_seq == null) continue;
-    if (eventLogEpoch && event.event_log_epoch && event.event_log_epoch !== eventLogEpoch) continue;
-    const existing = eventsBySeq[event.event_seq];
-    if (existing && timelineEventIdentity(existing) !== timelineEventIdentity(event)) {
-      return mergeTimelineEventPage(emptyTimelineEventsState(), incomingEvents, eventLogEpoch, hasOlder, false);
-    }
-    eventsBySeq[event.event_seq] = event;
-  }
-  const eventSeqs = Object.keys(eventsBySeq).map(Number).sort((left, right) => left - right);
-  return {
-    eventLogEpoch: eventLogEpoch || base.eventLogEpoch,
-    eventsBySeq,
-    eventSeqs,
-    oldestSeq: eventSeqs[0],
-    newestSeq: eventSeqs.at(-1),
-    hasOlder,
-    loading: false,
-    loadingOlder: false,
-    error: undefined,
-  };
-}
-
-function timelineEventIdentity(event: { id?: string; type?: string; event_seq?: number }): string {
-  return `${event.event_seq ?? ""}:${event.id ?? ""}:${event.type ?? ""}`;
 }
 
 type StoreSet = (

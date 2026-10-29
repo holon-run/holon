@@ -67,6 +67,11 @@ jobs:
       - name: Verify production bundle
         run: npm run test:e2e:production-bundle
 
+      - name: Verify production network without raw events
+        env:
+          HOLON_E2E_PRODUCTION: "1"
+        run: npm run test:e2e -- --project=chromium e2e/no-event-requests.spec.ts --grep "production DOM and network"
+
       - name: Upload Chromium P0 artifacts
         if: always()
         uses: actions/upload-artifact@v4

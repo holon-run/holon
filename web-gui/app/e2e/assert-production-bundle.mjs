@@ -15,9 +15,14 @@ async function filesUnder(directory) {
 const files = await filesUnder(distDir);
 for (const file of files) {
   if (![".html", ".js", ".css"].includes(path.extname(file.pathname))) continue;
-  if ((await readFile(file, "utf8")).includes(marker)) {
+  const content = await readFile(file, "utf8");
+  if (content.includes(marker)) {
     throw new Error(`production bundle contains E2E diagnostics marker in ${file.pathname}`);
+  }
+  // Raw event transport paths must not survive tree-shaking into production.
+  if (path.extname(file.pathname) === ".js" && content.includes("/events")) {
+    throw new Error(`production bundle contains a raw events endpoint in ${file.pathname}`);
   }
 }
 
-console.log("production bundle excludes the E2E diagnostics bridge");
+console.log("production bundle excludes the E2E diagnostics bridge and raw events endpoints");

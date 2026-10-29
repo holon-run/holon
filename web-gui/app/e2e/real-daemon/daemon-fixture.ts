@@ -351,12 +351,13 @@ export const test = base.extend<Fixtures>({
       const bridge = window.__HOLON_E2E__;
       if (!bridge) return null;
       const snapshot = bridge.snapshot();
-      const ledgers = await Promise.all(snapshot.agentIds.map(async (agentId) => ({
+      // The ledger bridges are retired tombstones (#3808); attach the
+      // conversation read-model probe for every visible agent instead.
+      const conversations = snapshot.agentIds.map((agentId) => ({
         agentId,
-        ledger: await bridge.ledger(agentId),
-        partitions: await bridge.ledgerPartitions(agentId),
-      })));
-      return { snapshot, ledgers };
+        conversation: bridge.conversation(agentId),
+      })).filter((entry) => entry.conversation !== null);
+      return { snapshot, conversations };
     }).catch((error: unknown) => ({ error: String(error) }));
     await testInfo.attach("diagnostics", {
       body: Buffer.from(JSON.stringify(diagnostics, null, 2)),

@@ -13,7 +13,6 @@ import {
   type AgentRosterSnapshotDto,
   type AgentRosterSnapshotResult,
 } from "./client";
-import { AgentSessionRepository } from "./agent-session-repository";
 import { useRuntimeStore, type AgentSessionState } from "./runtime-store";
 import { createSessionProjectionState } from "./session-projection";
 
@@ -259,6 +258,83 @@ describe("authoritative discovery cutover", () => {
     expect(useRuntimeStore.getState().bootstrap.agents.map((agent) => agent.id)).toEqual(["agent-a"]);
     expect(useRuntimeStore.getState().sessionsByAgentId["agent-b"]).toBeUndefined();
   });
+
+  it.each(["epoch-1", "epoch-2"])(
+    "refreshes unread state from roster updates without reload in %s",
+    async (nextEpoch) => {
+      vi.useFakeTimers();
+      vi.stubGlobal("window", {
+        localStorage: new MemoryStorage(), sessionStorage: new MemoryStorage(),
+        setTimeout, clearTimeout, location: { hostname: "localhost", protocol: "http:" },
+      });
+      let epoch = "epoch-1";
+      let head = 5;
+      let delayRead = false;
+      let releaseRead!: (response: Response) => void;
+      const readState = () => ({
+        agent_id: "agent-a", event_log_epoch: epoch, visibility_scope_id: "vis-1",
+        oldest_retained_seq: 0, read_through_event_seq: 3, event_head_seq: head,
+        reset_required: false, retention_gap: false, revision: head, unread_count: head - 3,
+      });
+      const fetchMock = vi.fn((input: string | URL | Request) => {
+        const url = new URL(String(input), "http://localhost");
+        if (url.pathname.endsWith("/handshake")) {
+          return Promise.resolve(jsonResponse({ capabilities: OBSERVER_SYNC_CAPABILITIES }));
+        }
+        if (url.pathname.endsWith("/agents/list")) {
+          return Promise.resolve(jsonResponse([listEntry("agent-a")]));
+        }
+        if (url.pathname.endsWith("/agents/snapshot")) {
+          return Promise.resolve(jsonResponse(rosterSnapshot(["agent-a"], { event_log_epoch: epoch })));
+        }
+        if (url.pathname.endsWith("/agents/brief-read-states")) {
+          if (delayRead) {
+            delayRead = false;
+            return new Promise<Response>((resolve) => { releaseRead = resolve; });
+          }
+          return Promise.resolve(jsonResponse([readState()]));
+        }
+        throw new Error(`Unexpected request: ${url}`);
+      });
+      stubAuthenticatedFetch(fetchMock);
+      await useRuntimeStore.getState().setRuntimeConnection({ mode: "local" });
+      await vi.advanceTimersByTimeAsync(0);
+      expect(useRuntimeStore.getState().briefReadStateByAgentId["agent-a"]).toMatchObject({
+        event_log_epoch: "epoch-1", event_head_seq: 5, unread_count: 2,
+      });
+
+      // A read request predating the next roster must not swallow its refresh.
+      const oldState = readState();
+      delayRead = true;
+      const pending = useRuntimeStore.getState().refreshBriefReadStates();
+      epoch = nextEpoch;
+      head = 9;
+      useRuntimeStore.getState().retryAgentSync("agent-a");
+      await vi.advanceTimersByTimeAsync(2_000);
+      expect(useRuntimeStore.getState().discovery.identity?.eventLogEpoch).toBe(nextEpoch);
+      if (nextEpoch === "epoch-2") {
+        expect(useRuntimeStore.getState().briefReadStateByAgentId["agent-a"]).toBeUndefined();
+      }
+      const restoredEpochs: string[] = [];
+      const unsubscribe = useRuntimeStore.subscribe((state) => {
+        const read = state.briefReadStateByAgentId["agent-a"];
+        if (read) restoredEpochs.push(read.event_log_epoch);
+      });
+      try {
+        releaseRead(jsonResponse([oldState]));
+        await pending;
+        await vi.advanceTimersByTimeAsync(0);
+        expect(useRuntimeStore.getState().briefReadStateByAgentId["agent-a"]).toMatchObject({
+          event_log_epoch: nextEpoch, event_head_seq: 9, unread_count: 6,
+        });
+        if (nextEpoch === "epoch-2") expect(restoredEpochs).not.toContain("epoch-1");
+        expect(fetchMock.mock.calls.some(([input]) =>
+          /\/events(?:\/stream)?(?:\?|$)/.test(String(input)))).toBe(false);
+      } finally {
+        unsubscribe();
+      }
+    },
+  );
 
   it("applies a stale-marked roster but keeps discovery stale and retries to fresh", async () => {
     vi.stubGlobal("window", {
@@ -535,10 +611,8 @@ describe("authoritative discovery cutover", () => {
       localStorage: new MemoryStorage(), sessionStorage: new MemoryStorage(),
       setTimeout, clearTimeout, location: { hostname: "localhost", protocol: "http:" },
     });
-    let releaseCleanup!: () => void;
-    const cleanup = new Promise<void>((resolve) => { releaseCleanup = resolve; });
-    const clearLedger = vi.spyOn(AgentSessionRepository.prototype, "clearLedgerScopesNotMatching")
-      .mockReturnValue(cleanup);
+    let releaseOldRoster!: (response: Response) => void;
+    const oldRoster = new Promise<Response>((resolve) => { releaseOldRoster = resolve; });
     let releaseBobRoster!: (response: Response) => void;
     const bobRoster = new Promise<Response>((resolve) => { releaseBobRoster = resolve; });
     let user = "alice";
@@ -557,9 +631,9 @@ describe("authoritative discovery cutover", () => {
       }
       if (url.pathname.endsWith("/agents/snapshot")) {
         snapshots++;
-        return Promise.resolve(jsonResponse(snapshots === 1
-          ? rosterSnapshot(["agent-a", "agent-b"])
-          : rosterSnapshot(["agent-a"], { event_log_epoch: "epoch-2" })));
+        return snapshots === 1
+          ? Promise.resolve(jsonResponse(rosterSnapshot(["agent-a", "agent-b"])))
+          : oldRoster;
       }
       if (url.pathname.endsWith("/projection-snapshot")) {
         return Promise.resolve(errorJsonResponse(503, { error: "unavailable", code: "capability_unavailable" }));
@@ -580,13 +654,13 @@ describe("authoritative discovery cutover", () => {
           freshness: "fresh", identity: { eventLogEpoch: "epoch-1" },
         });
       });
-      // The next A snapshot applies its roster, then suspends in ledger cleanup.
+      // Hold the old subject response across the authenticated subject change.
       await useRuntimeStore.getState().refreshBootstrap();
-      await vi.waitFor(() => expect(clearLedger).toHaveBeenCalledTimes(1));
+      await vi.waitFor(() => expect(snapshots).toBe(2));
       user = "bob";
       refreshBob = useRuntimeStore.getState().refreshBootstrap({ syncEvents: false });
       await vi.waitFor(() => expect(useRuntimeStore.getState().currentUser?.userId).toBe("bob"));
-      releaseCleanup();
+      releaseOldRoster(jsonResponse(rosterSnapshot(["agent-a"], { event_log_epoch: "epoch-2" })));
       await new Promise((resolve) => setTimeout(resolve, 0));
       expect(useRuntimeStore.getState().discovery).toMatchObject({ mode: "pending" });
       expect(useRuntimeStore.getState().discovery.identity).toBeUndefined();
@@ -594,10 +668,9 @@ describe("authoritative discovery cutover", () => {
       await refreshBob;
       expect(useRuntimeStore.getState().bootstrap.agents.map((agent) => agent.id)).toEqual(["agent-b"]);
     } finally {
-      releaseCleanup();
+      releaseOldRoster(jsonResponse(rosterSnapshot(["agent-a"], { event_log_epoch: "epoch-2" })));
       releaseBobRoster(jsonResponse([listEntry("agent-b")]));
       await refreshBob;
-      clearLedger.mockRestore();
     }
   });
 
@@ -763,7 +836,6 @@ describe("roster refresh cadence", () => {
       set({ bootstrap: { agents } });
       return omitted.map(({ id }) => id);
     });
-    const recoveryHints: Array<[string, { eventHeadSeq?: number; oldestRetainedSeq?: number | null }]> = [];
     const coordinator = new GlobalSyncCoordinator<State>({
       captureClientRequest: () => ({ client, generation }),
       isCurrentClientRequest: (request) => request.generation === generation,
@@ -778,11 +850,10 @@ describe("roster refresh cadence", () => {
         }
       },
       applyRosterSnapshot: applySnapshot,
-      registerAgentRecovery: (agentId, hint) => recoveryHints.push([agentId, hint]),
     });
     cleanup = () => coordinator.closeForResume();
     return {
-      coordinator, get, set, response, result, starts, completions, applySnapshot, recoveryHints,
+      coordinator, get, set, response, result, starts, completions, applySnapshot,
       maxActive: () => maxActive,
       refresh: () => coordinator.refreshRoster(get, set),
       open: async () => {
@@ -899,11 +970,11 @@ describe("roster refresh cadence", () => {
     expect(h.get().discovery).toMatchObject({ freshness: "unauthorized", retryAt: undefined });
   });
 
-  it("registers ledger recovery hints for every roster agent", async () => {
+  it("applies roster metadata without registering event recovery", async () => {
     const h = harness();
     await h.open();
-    expect(h.recoveryHints.map(([id]) => id).sort()).toEqual(["agent-a", "agent-b"]);
-    expect(h.recoveryHints[0][1]).toMatchObject({ eventHeadSeq: 5, oldestRetainedSeq: 0 });
+    expect(h.applySnapshot).toHaveBeenCalledTimes(1);
+    expect(h.get().bootstrap.agents.map(({ id }) => id)).toEqual(["agent-a", "agent-b"]);
   });
 
   it("discards old in-flight responses after a subject reset", async () => {

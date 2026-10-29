@@ -2,7 +2,6 @@ import {
   createRuntimeClient,
   httpRetryAfterMs,
   isAuthRequiredError,
-  rosterAgentEntries,
   type AgentRosterSnapshotDto,
   type AgentRosterSnapshotResult,
 } from "./client";
@@ -54,11 +53,6 @@ interface GlobalSyncCoordinatorDependencies<State extends GlobalSyncStoreState> 
     snapshot: AgentRosterSnapshotDto,
     context: { previousIdentity?: RosterDiscoveryIdentity; request: ClientRequest },
   ) => string[] | Promise<string[]>;
-  /** Register per-Agent ledger recovery (W3) anchored on the roster event window. */
-  registerAgentRecovery: (
-    agentId: string,
-    hint: { eventHeadSeq?: number; oldestRetainedSeq?: number | null },
-  ) => void;
 }
 
 const ROSTER_REFRESH_INTERVAL_MS = 1_000;
@@ -70,21 +64,13 @@ const ROSTER_REFRESH_INTERVAL_MS = 1_000;
  */
 export const ROSTER_STALE_EXTENDED_RETRY_ATTEMPTS = 6;
 
-/** Authoritative per-agent event window learned from the roster snapshot. */
-interface RosterEventWindow {
-  eventHeadSeq: number;
-  oldestRetainedSeq: number;
-}
-
 /**
  * Owns the authoritative roster HTTP discovery cycle (#3808 slice 2): the
  * dormant global/agent SSE transports and their in-memory per-agent event
- * catch-up were removed; conversation polling plus roster snapshots carry
- * all live data. The durable event ledger keeps its own HTTP replay path
- * (registerAgentRecovery) and is intentionally independent of this class.
+ * catch-up were removed; the conversation read model plus roster snapshots carry
+ * all live data. No raw event replay is registered from roster discovery.
  */
 export class GlobalSyncCoordinator<State extends GlobalSyncStoreState> {
-  private readonly rosterEventWindows = new Map<string, RosterEventWindow>();
   /** Authoritative discovery cycle: in-flight snapshot + coalescing. */
   private rosterRefreshPromise: Promise<void> | undefined;
   private rosterDirty = false;
@@ -122,28 +108,20 @@ export class GlobalSyncCoordinator<State extends GlobalSyncStoreState> {
   }
 
   /**
-   * Operator-driven per-agent sync retry: force one roster snapshot and
-   * re-register that agent's ledger recovery so its durable replay
-   * restarts from the authoritative window.
+   * Operator-driven sync retry forces one authoritative roster snapshot.
    */
-  retryAgentSync(get: () => State, set: GlobalSyncStoreSet<State>, agentId: string): void {
+  retryAgentSync(get: () => State, set: GlobalSyncStoreSet<State>, _agentId: string): void {
     this.refreshRosterInner(
       get,
       set,
       this.dependencies.captureClientRequest(),
       "agent_retry",
-    ).then(() => {
-      const window = this.rosterEventWindows.get(agentId);
-      this.dependencies.registerAgentRecovery(agentId, {
-        eventHeadSeq: window?.eventHeadSeq,
-        oldestRetainedSeq: window?.oldestRetainedSeq,
-      });
-    }).catch(() => undefined);
+    ).catch(() => undefined);
   }
 
   /**
    * Discovery state machine (W4): request the authoritative roster, apply
-   * it atomically, and register per-Agent ledger recovery hints.
+   * it atomically.
    */
   private async beginDiscovery(
     get: () => State,
@@ -224,14 +202,6 @@ export class GlobalSyncCoordinator<State extends GlobalSyncStoreState> {
       );
       if (!isCurrent()) return;
       this.rosterIdentity = identity;
-      for (const agentId of omittedAgentIds) this.rosterEventWindows.delete(agentId);
-      for (const { agentId, eventWindow } of rosterAgentEntries(snapshot)) {
-        this.rosterEventWindows.set(agentId, eventWindow);
-        this.dependencies.registerAgentRecovery(agentId, {
-          eventHeadSeq: eventWindow.eventHeadSeq,
-          oldestRetainedSeq: eventWindow.oldestRetainedSeq,
-        });
-      }
       span.end("ok", { agentCount: snapshot.agents.length, omitted: omittedAgentIds.length });
       if (projectionStale) {
         // The runtime served its last good projection marked stale (via
@@ -358,7 +328,6 @@ export class GlobalSyncCoordinator<State extends GlobalSyncStoreState> {
   resetForClientChange(): void {
     this.cancelRosterRefresh();
     this.rosterIdentity = undefined;
-    this.rosterEventWindows.clear();
   }
 
   closeForResume(): void {

@@ -24,7 +24,7 @@ import {
   buildConversationSessionModel,
   type ConversationSessionModel,
 } from "./conversation-view-model";
-import { getRuntimeConnectionConfig, retryPendingReadMarker, useRuntimeStore } from "./runtime-store";
+import { getRuntimeConnectionConfig, refreshBriefReadStatesInView, retryPendingReadMarker, useRuntimeStore } from "./runtime-store";
 import { currentRemoteKey } from "./session-cache";
 import type { ConversationLocation, ConversationNavigation } from "../features/agent/conversation-location";
 
@@ -67,6 +67,10 @@ export function useConversationSession(
   const currentUser = useRuntimeStore((state) => state.currentUser);
   const currentUserLoaded = useRuntimeStore((state) => state.currentUserLoaded);
   const connection = useRuntimeStore((state) => state.bootstrap.connection);
+  const discoveryFreshness = useRuntimeStore((state) => state.discovery.freshness);
+  const readState = useRuntimeStore((state) =>
+    agentId === undefined ? undefined : state.briefReadStateByAgentId[agentId],
+  );
   const pendingOperatorPrompts = useRuntimeStore((state) =>
     agentId === undefined
       ? NO_PENDING_OPERATOR_PROMPTS
@@ -195,11 +199,20 @@ export function useConversationSession(
     pruneOperatorPrompts(agentId, confirmed);
   }, [agentId, snapshot, pendingOperatorPrompts, pruneOperatorPrompts]);
 
-  // A scope that becomes ready can retry a pending server read-state update.
+  // SSE head updates must revalidate unread state even when visibility prevents
+  // marking the conversation read and no roster refresh is requested.
+  useEffect(() => {
+    if (!conversationReady || agentId === undefined) return;
+    void refreshBriefReadStatesInView(true);
+  }, [conversationReady, agentId, scopeKey, snapshot.view?.through_seq, snapshot.view?.scope]);
+
+  // Retry when the displayed scope catches up, even if it stayed ready while
+  // receiving updates. Read markers must not depend on the retired raw-event ledger.
   useEffect(() => {
     if (!conversationReady || agentId === undefined) return;
     void retryPendingReadMarker(agentId);
-  }, [conversationReady, agentId]);
+  }, [conversationReady, agentId, scopeKey, snapshot.view?.through_seq,
+    snapshot.view?.scope, discoveryFreshness, readState]);
 
   const model = useMemo(() => {
     const view = snapshot.displayView;

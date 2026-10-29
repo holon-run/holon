@@ -20,7 +20,6 @@ import {
   Check,
   LayoutDashboard,
   LayoutTemplate,
-  ListTree,
   LoaderCircle,
   LogOut,
   Menu,
@@ -139,14 +138,10 @@ export function App() {
   const markAgentConversationRead = useRuntimeStore((state) => state.markAgentConversationRead);
   const openSkill = useRuntimeStore((state) => state.openSkill);
   const openTemplate = useRuntimeStore((state) => state.openTemplate);
-  const disableDeveloperDiagnosticsUi = useRuntimeStore((state) => state.disableDeveloperDiagnosticsUi);
   const setRightPanelOpen = useRuntimeStore((state) => state.setRightPanelOpen);
   const inspectActivity = useRuntimeStore((state) => state.inspectActivity);
   const loadAgentToolExecutionDetail = useRuntimeStore((state) => state.loadAgentToolExecutionDetail);
   const showAgentOverview = useRuntimeStore((state) => state.showAgentOverview);
-  const showTimelineEvents = useRuntimeStore((state) => state.showTimelineEvents);
-  const refreshTimelineEvents = useRuntimeStore((state) => state.refreshTimelineEvents);
-  const loadOlderTimelineEvents = useRuntimeStore((state) => state.loadOlderTimelineEvents);
   const retryAgentSync = useRuntimeStore((state) => state.retryAgentSync);
   const showWorkItemDetail = useRuntimeStore((state) => state.showWorkItemDetail);
   const showTaskDetail = useRuntimeStore((state) => state.showTaskDetail);
@@ -177,9 +172,6 @@ export function App() {
   const sidePanelAgentId = selectedAgent?.id ?? selectedAgentId;
   const selectedAgentSession = useRuntimeStore((state) =>
     sidePanelAgentId ? state.sessionsByAgentId[sidePanelAgentId] : undefined,
-  );
-  const selectedAgentTimelineEvents = useRuntimeStore((state) =>
-    sidePanelAgentId ? state.timelineEventsByAgentId[sidePanelAgentId] : undefined,
   );
   const modelCatalog = useRuntimeStore((state) => state.modelCatalog);
   const modelCatalogLoading = useRuntimeStore((state) => state.modelCatalogLoading);
@@ -362,19 +354,6 @@ export function App() {
             <RefreshCw size={16} />
           </Button>
         </div>
-        {developerDiagnosticsEnabled && activeAgentId ? (
-          <Button
-            type="button"
-            size="sm"
-            variant={rightPanelView?.kind === "timeline_events" && rightPanelView.agentId === activeAgentId ? "accent" : "secondary"}
-            aria-label={t("timelineEvents.open")}
-            title={t("timelineEvents.open")}
-            onClick={() => showTimelineEvents(activeAgentId)}
-          >
-            <ListTree size={15} />
-            {t("timelineEvents.shortTitle")}
-          </Button>
-        ) : null}
       </div>
     ) : null;
   const isInitialBootstrapping = loading && bootstrap.agents.length === 0 && !bootstrap.connection.error;
@@ -471,12 +450,6 @@ export function App() {
     window.addEventListener("resize", closeForDesktop);
     return () => window.removeEventListener("resize", closeForDesktop);
   }, []);
-
-  useEffect(() => {
-    if (!developerDiagnosticsEnabled) {
-      disableDeveloperDiagnosticsUi();
-    }
-  }, [developerDiagnosticsEnabled, disableDeveloperDiagnosticsUi, selectedAgentId]);
 
   function navigateRoute(nextRoute: RouteKey) {
     if (route === "search") searchRouteQuery.current = searchQueryForLocation(window.location);
@@ -1086,8 +1059,6 @@ export function App() {
           workItemDetailsById={selectedAgentSession?.workItemDetailsById ?? {}}
           taskDetailsById={selectedAgentSession?.taskDetailsById ?? {}}
           toolExecutionDetailsById={selectedAgentSession?.toolExecutionDetailsById ?? {}}
-          timelineEvents={selectedAgentTimelineEvents}
-          session={selectedAgentSession}
           view={rightPanelView?.agentId === selectedAgent.id ? rightPanelView : undefined}
           open={rightPanelOpen}
           mode={rightPanelMode}
@@ -1119,12 +1090,6 @@ export function App() {
           }}
           onOpenSkill={(skillId) => navigateSkill(skillId, selectedAgent.id)}
           onShowAgentOverview={showAgentOverview}
-          onRefreshTimelineEvents={() => {
-            void refreshTimelineEvents(selectedAgent.id);
-          }}
-          onLoadOlderTimelineEvents={() => {
-            void loadOlderTimelineEvents(selectedAgent.id);
-          }}
           onNavigateBack={navigateBack}
           onSelectView={restoreRightPanelView}
           onBrowseFiles={(location) => {

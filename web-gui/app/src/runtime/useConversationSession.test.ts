@@ -11,12 +11,15 @@ const mocks = vi.hoisted(() => ({
     currentUser: { authMethod: "token", userId: "alice" },
     currentUserLoaded: true,
     bootstrap: { connection: { mode: "local", baseUrl: "/api", authRequired: false } },
+    discovery: { freshness: "fresh" },
+    briefReadStateByAgentId: {},
     sessionsByAgentId: {},
     pruneOperatorPrompts: vi.fn(),
   },
 }));
 vi.mock("./runtime-store", () => ({
   getRuntimeConnectionConfig: () => ({ mode: "local" }),
+  refreshBriefReadStatesInView: vi.fn(),
   retryPendingReadMarker: vi.fn(),
   useRuntimeStore: (select: (state: typeof mocks.state) => unknown) => select(mocks.state),
 }));
@@ -28,7 +31,7 @@ vi.mock("./conversation-scope-store", async (original) => ({
 }));
 
 import { conversationCacheKey, resolveConversationScopeKey, useConversationScopeStore } from "./conversation-scope-store";
-import { retryPendingReadMarker } from "./runtime-store";
+import { refreshBriefReadStatesInView, retryPendingReadMarker } from "./runtime-store";
 import { useConversationSession } from "./useConversationSession";
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
@@ -47,6 +50,7 @@ beforeEach(() => {
   mocks.release.mockReset();
   mocks.peek.mockReset().mockReturnValue(null);
   vi.mocked(retryPendingReadMarker).mockClear();
+  vi.mocked(refreshBriefReadStatesInView).mockClear();
   useConversationScopeStore.setState({ scopes: {} });
   container = document.createElement("div");
   document.body.appendChild(container);
@@ -84,12 +88,48 @@ describe("conversation session identity binding", () => {
     for (const action of Object.values(actions)) expect(action).not.toHaveBeenCalled();
     expect(restoreCachedBrief).toHaveBeenCalledWith("b");
     expect(retryPendingReadMarker).not.toHaveBeenCalled();
+    expect(refreshBriefReadStatesInView).not.toHaveBeenCalled();
     expect(current.conversationReady).toBe(false);
     await render("child", 1, false);
     expect(current.conversationReady).toBe(true);
     expect(retryPendingReadMarker).toHaveBeenCalledWith("child");
+    vi.mocked(retryPendingReadMarker).mockClear();
+    await act(async () => {
+      useConversationScopeStore.setState({ scopes: { [key]: {
+        status: { kind: "ready" }, view: {
+          ...useConversationScopeStore.getState().scopes[key].view!, through_seq: 2,
+        },
+        displayView: view, version: 2,
+      } } });
+    });
+    expect(retryPendingReadMarker).toHaveBeenCalledWith("child");
     act(() => current.loadOlderHistory());
     expect(actions.loadOlderHistory).toHaveBeenCalledTimes(1);
+  });
+
+  it("revalidates unread state on a hidden conversation head update without a roster refresh", async () => {
+    const visibility = vi.spyOn(document, "visibilityState", "get").mockReturnValue("hidden");
+    const key = resolveConversationScopeKey("local", "child", mocks.state.currentUser, 1);
+    const view = { scope: {}, turns: [], pending_inputs: [], details: [], through_seq: 1,
+      next_before_cursor: null, has_more: false, checkpoint: null, reset_reason: null } as never;
+    try {
+      useConversationScopeStore.setState({ scopes: { [key]: {
+        status: { kind: "ready" }, view, displayView: view, version: 1,
+      } } });
+      await render("child", 1, false);
+      vi.mocked(refreshBriefReadStatesInView).mockClear();
+      await act(async () => {
+        const nextView = { ...useConversationScopeStore.getState().scopes[key].view!, through_seq: 2 };
+        useConversationScopeStore.setState({ scopes: { [key]: {
+          status: { kind: "ready" }, view: nextView, displayView: nextView, version: 2,
+        } } });
+      });
+      expect(refreshBriefReadStatesInView).toHaveBeenCalledExactlyOnceWith(true);
+      await render("child", 1, false);
+      expect(refreshBriefReadStatesInView).toHaveBeenCalledTimes(1);
+    } finally {
+      visibility.mockRestore();
+    }
   });
 
   it("attaches previews explicitly read-only and does not expose readiness or network actions", async () => {

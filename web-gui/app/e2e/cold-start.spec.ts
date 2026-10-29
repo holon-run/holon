@@ -33,10 +33,11 @@ test("manual agent detail refresh uses conversation without raw events or hydrat
   expect((await summaryResponse).ok()).toBe(true);
   await expect(refresh).toBeEnabled();
   expect(requests).toContain("/api/agents/bootstrap-agent/conversation?limit=50");
-  // The E2E bridge still starts the legacy catch-up machine (next slice).
-  // Its background requests must not be confused with the detail's 80-event page.
+  // Neither the detail refresh nor diagnostics may resurrect raw-event recovery.
   expect(requests.filter((path) =>
-    path.startsWith("/api/agents/bootstrap-agent/events?") && new URLSearchParams(path.split("?")[1]).get("limit") === "80",
+    /^\/api\/agents\/bootstrap-agent\/(?:events(?:\/stream)?|projection-snapshot)(?:\?|$)/.test(path)
+      || path.includes("messages:batchGet")
+      || path.includes("transcript:batchGet"),
   )).toEqual([]);
 });
 
@@ -62,7 +63,7 @@ for (const failure of [404, 503, "network"] as const) {
   });
 }
 
-test("cold start bootstraps and applies a live roster event", async ({ page, request }, testInfo) => {
+test("cold start refreshes the roster and loads conversation history only on selection", async ({ page, request }, testInfo) => {
   const session = sessionFor(testInfo);
   const controlPath = (path: string) => `${path}?session=${encodeURIComponent(session)}`;
   await page.context().addCookies([{
@@ -105,23 +106,17 @@ test("cold start bootstraps and applies a live roster event", async ({ page, req
   await expect.poll(async () => page.evaluate(() => window.__HOLON_E2E__?.snapshot().agentIds))
     .toEqual(["bootstrap-agent", "e2e-agent"]);
 
-  await expect.poll(async () => {
-    const finalRequests = await request.get(controlPath("/__e2e__/requests"))
-      .then((response) => response.json());
-    return finalRequests.requests;
-  }).toEqual(expect.arrayContaining([
-    "GET /api/agents/snapshot",
-    "GET /api/agents/e2e-agent/projection-snapshot",
-  ]));
-
   const finalRequests = await request.get(controlPath("/__e2e__/requests"))
     .then((response) => response.json());
   expect(finalRequests.requests.filter((entry: string) => entry === "GET /api/agents/snapshot")).toHaveLength(2);
-  expect(finalRequests.requests.filter((entry: string) => entry === "GET /api/events/stream")).toHaveLength(0);
-  expect(finalRequests.requests.filter(
-    (entry: string) => entry === "GET /api/agents/e2e-agent/projection-snapshot",
-  )).toHaveLength(1);
-  expect(finalRequests.requests.filter((entry: string) => entry.includes("/events"))).toHaveLength(0);
+  expect(finalRequests.requests).toContain("GET /api/agents/brief-read-states");
+  // Dashboard discovery needs neither an eager projection nor a conversation
+  // controller for any agent. Selection owns the history request boundary.
+  expect(finalRequests.requests.filter((entry: string) =>
+    /\/api\/agents\/[^/]+\/(?:projection-snapshot|conversation)(?:[/?]|$)/.test(entry),
+  )).toEqual([]);
+  expect(finalRequests.requests.filter((entry: string) => entry.includes("/events"))).toEqual([]);
+  expect(await page.evaluate(() => window.__HOLON_E2E__?.conversation("e2e-agent"))).toBeNull();
 
   // Opening an agent speaks the conversation read-model contract: one
   // capability handshake, one summary snapshot, one live conversation
@@ -152,5 +147,9 @@ test("cold start bootstraps and applies a live roster event", async ({ page, req
   expect(conversationRequests.requests.filter(
     (entry: string) => entry.includes("messages:batchGet")
       || entry.includes("transcript:batchGet")
+      || entry.includes("/projection-snapshot")
+      || entry.includes("/events")
   )).toHaveLength(0);
+  await expect.poll(() => page.evaluate(() => window.__HOLON_E2E__?.conversation("e2e-agent")))
+    .toMatchObject({ status: "ready", eventLogEpoch: "e2e-epoch" });
 });

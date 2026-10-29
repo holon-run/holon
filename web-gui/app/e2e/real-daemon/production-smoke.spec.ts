@@ -11,7 +11,7 @@ async function installLocalToken(page: Page, token: string): Promise<void> {
   }, token);
 }
 
-test("production assets authenticate and use real snapshot, SSE, and route refresh", async ({
+test("production assets authenticate and use real snapshots and the conversation read model across refresh", async ({
   daemonFactory,
   page,
 }) => {
@@ -37,11 +37,19 @@ test("production assets authenticate and use real snapshot, SSE, and route refre
   ]));
   expect(await page.evaluate(() => window.__HOLON_E2E__)).toBeUndefined();
 
-  await daemon.enqueue("production SSE marker");
+  await daemon.enqueue("production conversation marker");
   await page.goto(`${daemon.baseUrl}/agents/${daemon.agentId}`);
   await expect(page).toHaveURL(new RegExp(`/agents/${daemon.agentId}$`));
   await expect(page.locator("main")).toBeVisible();
+  await expect(page.locator(".message-list")).toContainText("production conversation marker", { timeout: 30_000 });
   await page.reload();
   await expect(page).toHaveURL(new RegExp(`/agents/${daemon.agentId}$`));
   await expect(page.locator('aside[aria-label="Holon navigation"]')).toBeVisible();
+  await expect(page.locator(".message-list")).toContainText("production conversation marker", { timeout: 30_000 });
+
+  // #3808: after bootstrap, a live conversation update, navigation, and a
+  // reload, the production GUI must never touch the retired raw event
+  // transports (per-agent or global).
+  expect(requests.filter((entry) =>
+    /^GET \/api\/(?:agents\/[^/]+\/events(?:\/stream)?|events\/stream)$/.test(entry))).toEqual([]);
 });
