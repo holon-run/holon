@@ -47,11 +47,15 @@ order: 30
   <!-- mdorigin:index kind=article -->
 
 - [运行长生命周期任务](./run-long-lived-task.md)
-  跨会话跟踪单一目标、等待外部依赖并在验收完成后核对结果摘要。
+  在关闭终端后让 Agent 继续工作，等待外部依赖并在新会话中找回同一任务结果。
   <!-- mdorigin:index kind=article -->
 
 - [将工作委派给另一个 Agent](./delegate-work.md)
-  挑选子 Agent 或对等 Agent、跟进其回复、验证工作结果并安全清理下属实例。
+  挑选子 Agent 或对等 Agent、交接已提交版本做只读审查、验证工作结果并安全清理下属实例。
+  <!-- mdorigin:index kind=article -->
+
+- [搭建 AI Agent 生态研究员：跨多开源项目的持续深度调研](./build-agent-ecosystem-researcher.md)
+  复用 Research Steward 模板与多 Workspace 挂载机制，打造一个持续跟踪开源生态、保持代码库纯净并沉淀证据资产库的研究 Agent。
   <!-- mdorigin:index kind=article -->
 
 - [使用 holon solve 处理 GitHub 任务](./run-github-task.md)
@@ -63,7 +67,7 @@ order: 30
   <!-- mdorigin:index kind=article -->
 
 - [调度 Agent 工作](./schedule-agent-work.md)
-  创建单次或周期性定时器，验证定时触发的工作并及时取消调度。
+  定时执行已授权的只读检查，验证返回的工作结果并及时取消定时器。
   <!-- mdorigin:index kind=article -->
 
 - [通过 HTTP 自动化执行](./automate-over-http.md)
@@ -83,11 +87,11 @@ order: 30
   <!-- mdorigin:index kind=article -->
 
 - [连接到远程 Holon 运行时](./connect-remote-runtime.md)
-  访问部署在其他机器上的运行时并验证连接安全性。
+  从另一台电脑或手机访问远程运行时，验证连接并查回已有任务结果。
   <!-- mdorigin:index kind=article -->
 
 - [配置 OIDC 认证](./configure-oidc-authentication.md)
-  配置 OpenID Connect 单点登录、会话超时策略及用户提示词审计。
+  配置 OpenID Connect 单点登录、团队共享运行时提示词审计与会话超时策略。
   <!-- mdorigin:index kind=article -->
 
 - [使用 Android 客户端连接](./connect-android-client.md)
@@ -115,7 +119,7 @@ order: 30
   <!-- mdorigin:index kind=article -->
 
 - [观察 Agent 工作](./observe-agent-work.md)
-  定位 Agent 的工作目标、查看任务进展并检索最终完成报告与交付产物。
+  定位 Agent 的工作目标、查看任务进展并获取最终完成报告与交付产物。
   <!-- mdorigin:index kind=article -->
 
 - [配置可观测性](./configure-observability.md)
