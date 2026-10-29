@@ -6,6 +6,7 @@ use crate::domain::execution_protocol::{
 
 mod auth_contract;
 mod payment_required;
+mod revision_diagnostics;
 
 fn now() -> DateTime<Utc> {
     "2026-10-24T17:00:00Z".parse().unwrap()

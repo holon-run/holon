@@ -3,11 +3,16 @@ use anyhow::bail;
 use schemars::JsonSchema;
 use serde::Deserialize;
 
+mod work_item;
+pub(crate) use work_item::work_item_repair_assessments;
+pub use work_item::WorkItemRepairAssessment;
+
 #[derive(Debug, Clone, Serialize, JsonSchema)]
 pub struct SchedulerRepairInspection {
     pub agent_id: String,
     pub active_waits: Vec<crate::types::WaitConditionRecord>,
     pub wake_only_queue_entries: Vec<QueueEntryRecord>,
+    pub work_items: Vec<WorkItemRepairAssessment>,
 }
 
 #[derive(Debug, Clone, Deserialize, JsonSchema)]
@@ -73,6 +78,11 @@ impl RuntimeHandle {
             }
         }
         Ok(SchedulerRepairInspection {
+            work_items: work_item_repair_assessments(
+                &self.inner.storage,
+                &self.inner.runtime_db,
+                &agent_id,
+            )?,
             agent_id,
             active_waits,
             wake_only_queue_entries,

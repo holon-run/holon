@@ -24,6 +24,7 @@ SCENARIOS = (
     "scheduler-worktree",
     "scheduler-spawn",
     "scheduler-checkpoint",
+    "scheduler-timer-admission",
 )
 
 
@@ -76,6 +77,8 @@ class Scenario:
         self.lock = threading.Lock()
         self.interrupted_schema47_seen = False
         self.interrupted_schema47_kinds: set[str] = set()
+        self.timer_ids: list[str] = []
+        self.timer_dispatch_requests: list[dict[str, Any]] = []
 
     def observe(self, request: dict[str, Any]) -> str:
         raw = json.dumps(request, ensure_ascii=False)
@@ -85,6 +88,9 @@ class Scenario:
         for task_id in re.findall(r"task_[0-9a-f]{15}", raw):
             if task_id not in self.task_ids:
                 self.task_ids.append(task_id)
+        for timer_id in re.findall(r"timer_[0-9a-f]{15}", raw):
+            if timer_id not in self.timer_ids:
+                self.timer_ids.append(timer_id)
         for workspace_id in re.findall(r"ws_[0-9a-f]+", raw):
             if workspace_id not in self.workspace_ids:
                 self.workspace_ids.append(workspace_id)
@@ -343,7 +349,76 @@ class Scenario:
                 return self.spawn()
             if self.name == "scheduler-checkpoint":
                 return self.checkpoint()
+            if self.name == "scheduler-timer-admission":
+                return self.timer_admission(raw)
             return 409, {"error": {"type": "unknown_scenario", "message": self.name}}
+
+    def timer_admission(self, raw: str) -> tuple[int, dict[str, Any]]:
+        markers = re.findall(r"SCHEDULER-TIMER-ADMISSION-[0-9a-f]+", raw)
+        marker = markers[-1] if markers else "SCHEDULER-TIMER-ADMISSION-missing"
+        todos = [
+            {"text": "timer-dispatch-1", "state": "pending"},
+            {"text": "timer-dispatch-2", "state": "pending"},
+        ]
+        if self.phase == 0:
+            return self.call(
+                "CreateWorkItem",
+                {"objective": marker, "plan_status": "ready", "todo_list": todos},
+            )
+        if len(self.work_ids) != 1:
+            return 409, {"error": {"type": "timer_work_item_identity"}}
+        wid = self.work_ids[0]
+        if self.phase == 1:
+            return self.call("PickWorkItem", {"work_item_id": wid})
+        if self.phase == 2:
+            # The harness checks the first stable exact wait before restarting;
+            # this interval leaves room for that barrier, not a blind sleep.
+            return self.call(
+                "CreateTimer",
+                {"duration_ms": 30000, "interval_ms": 30000, "summary": marker},
+            )
+        if len(self.timer_ids) != 1:
+            return 409, {"error": {"type": "timer_identity"}}
+        timer_id = self.timer_ids[0]
+        if self.phase in {3, 6}:
+            return self.call(
+                "WaitFor",
+                {
+                    "wake": "timer", "resource": timer_id, "delivery": "silent",
+                    "reason": f"exact timer admission dispatch {1 if self.phase == 3 else 2}",
+                },
+            )
+        if self.phase in {4, 7}:
+            ticks = [
+                item["provenance"] for item in self.current_inputs
+                if item["provenance"].get("kind") == "timer_tick"
+                and item["provenance"].get("authority_class") == "runtime_instruction"
+                and item["provenance"].get("origin", {}).get("kind") == "timer"
+                and item["provenance"].get("origin", {}).get("timer_id") == timer_id
+                and item["provenance"].get("work_item_id") == wid
+            ]
+            if len(ticks) != 1 or any(
+                entry["message_id"] == ticks[0].get("id")
+                for entry in self.timer_dispatch_requests
+            ):
+                return 409, {"error": {"type": "missing_exact_timer_dispatch"}}
+            self.timer_dispatch_requests.append({
+                "phase": self.phase, "message_id": ticks[0]["id"],
+                "work_item_id": wid, "timer_id": timer_id,
+            })
+            return self.call(
+                "GetWorkItem", {"work_item_id": wid, "include_todo_list": True}
+            )
+        if self.phase in {5, 8}:
+            todos[0]["state"] = "completed"
+            if self.phase == 8:
+                todos[1]["state"] = "completed"
+            return self.call(
+                "UpdateWorkItem", {"work_item_id": wid, "todo_list": todos}
+            )
+        if self.phase == 9:
+            return self.call("CancelTimer", {"timer_id": timer_id})
+        return self.call("CompleteWorkItem", {"work_item_id": wid}, f"{marker}-COMPLETE")
 
     def multi(self) -> tuple[int, dict[str, Any]]:
         if self.phase == 0:
@@ -1130,6 +1205,7 @@ class Scenario:
             "scheduler-worktree": 11,
             "scheduler-spawn": 6,
             "scheduler-checkpoint": 12,
+            "scheduler-timer-admission": 11,
         }[self.name]
 
     def status(self) -> dict[str, Any]:
@@ -1147,13 +1223,16 @@ class Scenario:
                 "complete": complete,
             }
         expected = self.expected_phase()
-        return {
+        status = {
             "scenario": self.name,
             "phase": self.phase,
             "expected_phase": expected,
             "extra_requests": self.extra_requests,
             "complete": self.phase == expected and self.extra_requests == 0,
         }
+        if self.name == "scheduler-timer-admission":
+            status["timer_dispatch_requests"] = self.timer_dispatch_requests
+        return status
 
 
 def make_handler(scenario: Scenario, log: Path) -> type[BaseHTTPRequestHandler]:

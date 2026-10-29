@@ -134,7 +134,7 @@ InFlight(g, attempt) -> Paused(g + 1, reason)
 InFlight(g, attempt) -> NeedsRepair(g + 1, repair)
 InFlight(g, attempt) -> Terminal(g + 1, completion)
 
-Paused(g) | NeedsRepair(g) -> Runnable(g + 1)
+Paused(g) -> Runnable(g + 1)
 ```
 
 An `InFlight` state and its same-agent open attempt must reference each other.
@@ -142,6 +142,15 @@ Creating a new eligibility epoch increments the scheduling generation.
 Terminal transition resolves owned waits and continuation obligations and
 removes scheduler eligibility. Focus may be cleared or restored in the same
 transaction, but it does not grant eligibility.
+
+`NeedsRepair` is not an ordinary readiness toggle. Timer ticks, focus changes,
+and blocker clearing cannot reopen it. Authenticated scheduler repair inspection
+reports the original source/wait and revision fences, but does not manufacture
+proof of a revision-only writer gap or zero side effects. Settled attempts and
+resolved exact waits remain terminal. When existing evidence cannot authorize
+an expectation-fenced original-source repair, restoration is explicitly refused;
+a separately trusted new root is not replay of that source. See
+[Atomic Wake Writer Contract](atomic-wake-writer-contract.md#revision-rejection-and-historical-repair).
 
 Provider lineage recovery is the only runtime-owned admission that may claim a
 `Waiting` WorkItem without consuming the wait that made it waiting. The source

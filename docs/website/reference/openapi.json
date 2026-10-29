@@ -16379,12 +16379,134 @@
               "type": "object"
             },
             "type": "array"
+          },
+          "work_items": {
+            "items": {
+              "properties": {
+                "admitted_revision": {
+                  "format": "uint64",
+                  "minimum": 0,
+                  "type": [
+                    "integer",
+                    "null"
+                  ]
+                },
+                "durable_revision": {
+                  "format": "uint64",
+                  "minimum": 0,
+                  "type": [
+                    "integer",
+                    "null"
+                  ]
+                },
+                "generation": {
+                  "format": "uint64",
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                "message_id": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "next_action": {
+                  "type": "string"
+                },
+                "original_attempt_id": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "original_source_restorable": {
+                  "type": "boolean"
+                },
+                "queue_status": {
+                  "anyOf": [
+                    {
+                      "oneOf": [
+                        {
+                          "enum": [
+                            "queued",
+                            "dequeued",
+                            "processed",
+                            "interjected",
+                            "aborted",
+                            "dropped",
+                            "quarantined"
+                          ],
+                          "type": "string"
+                        },
+                        {
+                          "const": "interrupted",
+                          "description": "Daemon shutdown interrupted processing; replay on recovery.",
+                          "type": "string"
+                        }
+                      ]
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "refusal_reasons": {
+                  "items": {
+                    "type": "string"
+                  },
+                  "type": "array"
+                },
+                "repair_id": {
+                  "type": "string"
+                },
+                "source_revision": {
+                  "format": "uint64",
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                "wait_id": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "wait_status": {
+                  "enum": [
+                    "active",
+                    "triggered",
+                    "resolved",
+                    "cancelled",
+                    "expired",
+                    null
+                  ],
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "work_item_id": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "work_item_id",
+                "source_revision",
+                "generation",
+                "repair_id",
+                "original_source_restorable",
+                "refusal_reasons",
+                "next_action"
+              ],
+              "type": "object"
+            },
+            "type": "array"
           }
         },
         "required": [
           "agent_id",
           "active_waits",
-          "wake_only_queue_entries"
+          "wake_only_queue_entries",
+          "work_items"
         ],
         "title": "SchedulerRepairInspection",
         "type": "object"

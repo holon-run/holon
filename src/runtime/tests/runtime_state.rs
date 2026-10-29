@@ -2876,6 +2876,262 @@ async fn canonical_turn_binding_preserves_the_admitted_work_item_revision() {
     );
 }
 
+struct ExactTimerAdmissionFixture {
+    harness: LifecycleHarness,
+    provider: Arc<CountingProvider>,
+    work_item_id: String,
+    wait_id: String,
+    timer_id: String,
+    message_id: String,
+}
+
+async fn exact_timer_admission_fixture() -> ExactTimerAdmissionFixture {
+    let provider = Arc::new(CountingProvider {
+        calls: Mutex::new(0),
+        reply: "exact timer resumed",
+    });
+    let harness = LifecycleHarness::with_provider(provider.clone());
+    let runtime = harness.runtime();
+    let work = runtime
+        .create_work_item("exact timer admission".into(), None, None, Vec::new())
+        .await
+        .unwrap();
+    let mut timer = runtime
+        .schedule_timer(60_000, Some(60_000), None)
+        .await
+        .unwrap();
+    let wait = runtime
+        .register_wait_for(
+            "default",
+            Some(work.id.clone()),
+            WaitForWakeKind::Timer,
+            Some(timer.id.clone()),
+            "resume this exact timer".into(),
+            None,
+        )
+        .await
+        .unwrap();
+    runtime.fire_timer_record(&mut timer).await.unwrap();
+    let wake = runtime
+        .inner
+        .runtime_db
+        .timers()
+        .pending_wake(&timer.id)
+        .unwrap()
+        .unwrap();
+    ExactTimerAdmissionFixture {
+        harness,
+        provider,
+        work_item_id: work.id,
+        wait_id: wait.condition.id,
+        timer_id: timer.id,
+        message_id: wake.message_id,
+    }
+}
+
+async fn claim_exact_timer(
+    fixture: &ExactTimerAdmissionFixture,
+) -> scheduler_executor::ScheduledMessage {
+    let scheduler_executor::RunLoopPoll::Message(scheduled) =
+        scheduler_executor::SchedulerDecisionExecutor::new(fixture.harness.runtime())
+            .poll()
+            .await
+            .unwrap()
+    else {
+        panic!("exact timer must claim its waiting WorkItem");
+    };
+    assert_eq!(scheduled.message.id, fixture.message_id);
+    assert_eq!(scheduled.message.kind, MessageKind::TimerTick);
+    scheduled
+}
+
+#[tokio::test(start_paused = true)]
+async fn exact_timer_first_dispatch_preserves_same_attempt_revision_advances() {
+    for advance_after_claim in [false, true] {
+        let fixture = exact_timer_admission_fixture().await;
+        let runtime = fixture.harness.runtime();
+        let scheduled = claim_exact_timer(&fixture).await;
+        let attempt_id = scheduler_executor::canonical_activation_id(&fixture.message_id);
+        let claimed = fixture.harness.snapshot();
+        let claimed_protocol = claimed.execution_protocol.as_ref().unwrap();
+        let admitted = claimed_protocol.attempts[&attempt_id].clone();
+        let source_revision = claimed_protocol.work_items[&fixture.work_item_id].source_revision;
+        assert_eq!(
+            admitted.admitted_fences.work_item_source_revision,
+            Some(source_revision)
+        );
+        assert_eq!(
+            runtime
+                .storage()
+                .latest_work_item(&fixture.work_item_id)
+                .unwrap()
+                .unwrap()
+                .revision,
+            source_revision
+        );
+        assert!(claimed.wait_conditions.iter().any(|wait| {
+            wait.id == fixture.wait_id && wait.status == WaitConditionStatus::Resolved
+        }));
+        if advance_after_claim {
+            let claimed_owner = claimed
+                .work_items
+                .iter()
+                .find(|work| work.id == fixture.work_item_id)
+                .unwrap();
+            std::fs::write(
+                &claimed_owner.plan_artifact.as_ref().unwrap().path,
+                "updated plan while the exact timer attempt is in flight",
+            )
+            .unwrap();
+            let updated = runtime
+                .update_work_item_fields(
+                    fixture.work_item_id.clone(),
+                    None,
+                    Some(WorkItemPlanStatus::Ready),
+                    None,
+                    Some(vec![TodoItem {
+                        text: "verify exact timer dispatch".into(),
+                        state: TodoItemState::InProgress,
+                    }]),
+                    None,
+                )
+                .await
+                .unwrap();
+            assert_ne!(updated.plan_artifact, claimed_owner.plan_artifact);
+            let mut record = runtime
+                .storage()
+                .latest_work_item(&fixture.work_item_id)
+                .unwrap()
+                .unwrap();
+            let expected_revision = record.revision;
+            record.work_refs.push(crate::types::WorkItemRef {
+                kind: crate::types::WorkItemRefKind::Other,
+                ref_id: "test:exact-timer".into(),
+                title: None,
+                reason: "same-attempt reference update".into(),
+                status: crate::types::WorkItemRefStatus::Active,
+                last_seen_at: runtime.now(),
+                source_ref: None,
+                metadata: Default::default(),
+            });
+            record.revision += 1;
+            runtime
+                .storage()
+                .update_work_item_expected(&record, expected_revision)
+                .unwrap();
+            let advanced = fixture.harness.snapshot();
+            let protocol = advanced.execution_protocol.as_ref().unwrap();
+            assert_eq!(protocol.attempts[&attempt_id], admitted);
+            assert_eq!(
+                protocol.work_items[&fixture.work_item_id].generation(),
+                claimed_protocol.work_items[&fixture.work_item_id].generation()
+            );
+            assert!(protocol.work_items[&fixture.work_item_id].source_revision > source_revision);
+            assert_eq!(
+                protocol.work_items[&fixture.work_item_id].source_revision, record.revision,
+                "the public record writer must advance canonical source in its transaction"
+            );
+        }
+        let started = std::time::Instant::now();
+        let result = runtime
+            .process_message_with_plan_deferred(
+                scheduled.message.clone(),
+                scheduled.dispatch_plan,
+                &scheduled.scheduler_decision,
+            )
+            .await;
+        assert!(result.is_ok(), "{result:?}");
+        assert_eq!(fixture.provider.call_count().await, 1);
+        runtime
+            .settle_processed_message(scheduled.message, result, started)
+            .await
+            .unwrap();
+        assert_eq!(fixture.provider.call_count().await, 1);
+    }
+}
+
+#[tokio::test(start_paused = true)]
+async fn exact_timer_claim_rejects_existing_revision_drift_without_consuming_wait() {
+    for durable_ahead in [false, true] {
+        let fixture = exact_timer_admission_fixture().await;
+        let runtime = fixture.harness.runtime();
+        let mut protocol = fixture.harness.snapshot().execution_protocol.unwrap();
+        // Corruption predates planning. Neither direction proves a legal writer,
+        // and an ordinary wait resolution must not act as a repair.
+        let durable_revision = runtime
+            .storage()
+            .latest_work_item(&fixture.work_item_id)
+            .unwrap()
+            .unwrap()
+            .revision;
+        protocol
+            .work_items
+            .get_mut(&fixture.work_item_id)
+            .unwrap()
+            .source_revision = if durable_ahead {
+            durable_revision.checked_sub(1).unwrap()
+        } else {
+            durable_revision + 1
+        };
+        runtime
+            .inner
+            .runtime_db
+            .transaction(|tx| crate::runtime_db::transitions::persist_state_tx(tx, &protocol))
+            .unwrap();
+        let before = fixture.harness.snapshot();
+        let result = scheduler_executor::SchedulerDecisionExecutor::new(runtime)
+            .poll()
+            .await;
+        assert!(
+            result.is_err(),
+            "claim must not bridge preexisting revision drift"
+        );
+        let after = fixture.harness.snapshot();
+        assert_eq!(after.execution_protocol, before.execution_protocol);
+        assert_eq!(after.work_items, before.work_items);
+        assert_eq!(after.wait_conditions, before.wait_conditions);
+        assert_eq!(after.queue_entries, before.queue_entries);
+        assert!(runtime
+            .inner
+            .runtime_db
+            .timers()
+            .pending_wake(&fixture.timer_id)
+            .unwrap()
+            .is_some());
+        assert_eq!(fixture.provider.call_count().await, 0);
+    }
+}
+
+#[tokio::test(start_paused = true)]
+async fn exact_timer_claim_failure_rolls_back_wait_source_and_revision() {
+    for fault in PRE_COMMIT_FAULTS {
+        let fixture = exact_timer_admission_fixture().await;
+        let runtime = fixture.harness.runtime();
+        let before = fixture.harness.snapshot();
+        fixture.harness.arm_fault(fault);
+        assert!(scheduler_executor::SchedulerDecisionExecutor::new(runtime)
+            .poll()
+            .await
+            .is_err());
+        let after = fixture.harness.snapshot();
+        assert_eq!(
+            after.execution_protocol, before.execution_protocol,
+            "{fault:?}"
+        );
+        assert_eq!(after.work_items, before.work_items, "{fault:?}");
+        assert_eq!(after.wait_conditions, before.wait_conditions, "{fault:?}");
+        assert_eq!(after.queue_entries, before.queue_entries, "{fault:?}");
+        assert!(runtime
+            .inner
+            .runtime_db
+            .timers()
+            .pending_wake(&fixture.timer_id)
+            .unwrap()
+            .is_some());
+        assert_eq!(fixture.provider.call_count().await, 0);
+    }
+}
+
 struct OperatorInterjectionProbeProvider {
     calls: Mutex<usize>,
     requests: Mutex<Vec<ProviderTurnRequest>>,
@@ -6786,7 +7042,24 @@ async fn production_settlement_interrupts_yield_to_stale_execution_revision() {
     stale_target.revision += 1;
     stale_target.objective = "metadata advanced without canonical execution".into();
     stale_target.updated_at = Utc::now();
-    runtime.storage().append_work_item(&stale_target).unwrap();
+    // Simulate an external writer that bypasses the composed protocol-aware
+    // writers: storage-level appends are atomic now, so only a direct record
+    // write can strand the durable revision ahead of canonical execution.
+    runtime
+        .inner
+        .runtime_db
+        .transaction(|tx| {
+            tx.execute(
+                "UPDATE work_items SET revision = ?1, payload_json = ?2 WHERE work_item_id = ?3",
+                rusqlite::params![
+                    stale_target.revision,
+                    serde_json::to_string(&stale_target).unwrap(),
+                    stale_target.id
+                ],
+            )?;
+            Ok(())
+        })
+        .unwrap();
     runtime
         .storage()
         .append_work_item_continuation(&crate::types::WorkItemContinuationFrame::new_on_completed(
@@ -7183,12 +7456,28 @@ async fn production_settlement_interrupts_stale_owner_execution_revision() {
             .unwrap(),
         scheduler_executor::RunLoopPoll::Message(_)
     ));
-
     let mut stale_owner = owner.clone();
     stale_owner.revision += 1;
     stale_owner.objective = "metadata advanced beyond admitted execution".into();
     stale_owner.updated_at = Utc::now();
-    runtime.storage().append_work_item(&stale_owner).unwrap();
+    // Storage-level appends are atomic protocol-aware writers now, so an
+    // external stray write is simulated with a direct record write that
+    // strands the durable revision ahead of canonical execution.
+    runtime
+        .inner
+        .runtime_db
+        .transaction(|tx| {
+            tx.execute(
+                "UPDATE work_items SET revision = ?1, payload_json = ?2 WHERE work_item_id = ?3",
+                rusqlite::params![
+                    stale_owner.revision,
+                    serde_json::to_string(&stale_owner).unwrap(),
+                    stale_owner.id
+                ],
+            )?;
+            Ok(())
+        })
+        .unwrap();
 
     finish_claimed_test_run(&runtime).await;
     let terminal = terminal_transition(&message, Some(&owner.id));
@@ -8965,7 +9254,7 @@ async fn exact_task_rejoin_uses_canonical_wait_when_work_item_revision_advanced(
     execution.work_items.insert(
         work_item.id.clone(),
         crate::domain::execution_protocol::WorkItemExecutionRecord {
-            source_revision: work_item.revision.max(1),
+            source_revision: waiting_work.revision.max(1),
             state: crate::domain::execution_protocol::WorkItemExecutionState::Waiting {
                 generation: wait_generation,
                 wait: crate::domain::execution_protocol::WaitReference {
@@ -8979,6 +9268,19 @@ async fn exact_task_rejoin_uses_canonical_wait_when_work_item_revision_advanced(
         .runtime_db
         .transaction(|tx| crate::runtime_db::transitions::persist_state_tx(tx, &execution))
         .unwrap();
+
+    let advanced_work = runtime
+        .update_work_item_fields(
+            work_item.id.clone(),
+            Some("task rejoin after a legitimate revision update".into()),
+            None,
+            None,
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+    assert!(advanced_work.revision > wait_generation);
 
     let terminal_task = TaskRecord {
         id: "task-stale-legacy-rejoin".into(),
@@ -9136,7 +9438,7 @@ async fn sibling_task_result_is_preserved_without_consuming_current_wait() {
     execution.work_items.insert(
         work_item.id.clone(),
         crate::domain::execution_protocol::WorkItemExecutionRecord {
-            source_revision: work_item.revision.max(1),
+            source_revision: waiting_work.revision.max(1),
             state: crate::domain::execution_protocol::WorkItemExecutionState::Waiting {
                 generation: wait_generation,
                 wait: crate::domain::execution_protocol::WaitReference {
@@ -9150,6 +9452,18 @@ async fn sibling_task_result_is_preserved_without_consuming_current_wait() {
         .runtime_db
         .transaction(|tx| crate::runtime_db::transitions::persist_state_tx(tx, &execution))
         .unwrap();
+    let advanced_work = runtime
+        .update_work_item_fields(
+            work_item.id.clone(),
+            Some("preserve sibling result after a legitimate revision update".into()),
+            None,
+            None,
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+    assert!(advanced_work.revision > wait_generation);
     let mut stale = task_result_message("task-stale-rejoin").with_admission(
         MessageDeliverySurface::TaskRejoin,
         AdmissionContext::RuntimeOwned,
@@ -18678,7 +18992,7 @@ async fn terminal_wait_leaves_late_interjection_for_next_activation() {
         .unwrap();
 
     runtime.arm_terminal_tool_interjection_checkpoint();
-    let runner = tokio::spawn(runtime.clone().run());
+    let mut runner = tokio::spawn(runtime.clone().run());
     tokio::time::timeout(
         std::time::Duration::from_secs(5),
         runtime.wait_for_terminal_tool_interjection_checkpoint(),
@@ -18716,7 +19030,10 @@ async fn terminal_wait_leaves_late_interjection_for_next_activation() {
                 break;
             }
             if runner.is_finished() {
-                panic!("runtime exited before processing the queued interjection");
+                panic!(
+                    "runtime exited before processing the queued interjection: {:?}",
+                    (&mut runner).await
+                );
             }
             tokio::time::sleep(std::time::Duration::from_millis(10)).await;
         }

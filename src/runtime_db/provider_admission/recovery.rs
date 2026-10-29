@@ -363,6 +363,36 @@ fn dispatch_attempt_rejection(
                     .work_item_source_revision
                     .is_some_and(|revision| revision > 0 && revision <= execution.source_revision)
             {
+                let admitted = attempt.admitted_fences.work_item_source_revision;
+                let detail = if work.revision != execution.source_revision {
+                    "durable_source_revision_mismatch"
+                } else {
+                    match admitted {
+                        None => "admitted_revision_missing",
+                        Some(0) => "admitted_revision_zero",
+                        Some(_) => "admitted_revision_ahead",
+                    }
+                };
+                crate::runtime_db::evidence::append_audit_event_tx(
+                    tx,
+                    Some(&attempt.agent_id),
+                    &crate::types::AuditEvent::legacy(
+                        "provider_dispatch_revision_rejected",
+                        serde_json::json!({
+                            "attempt_id": attempt.attempt_id,
+                            "message_id": attempt.source_message_id,
+                            "work_item_id": work_item_id,
+                            "reason": "work_item_revision_mismatch",
+                            "detail": detail,
+                            "durable_revision": work.revision,
+                            "source_revision": execution.source_revision,
+                            "admitted_revision": admitted,
+                            "expected_generation": attempt.admitted_fences.work_item_generation,
+                            "actual_generation": execution.generation(),
+                            "dispatch_occurred": false,
+                        }),
+                    ),
+                )?;
                 return Ok(Some(ProviderDispatchRejection::WorkItemRevisionMismatch));
             }
             if !matches!(

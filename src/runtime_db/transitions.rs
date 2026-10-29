@@ -327,6 +327,7 @@ pub(crate) struct QueueTransitionCommand {
 
 #[derive(Debug, Clone)]
 pub(crate) enum SchedulerClaimWorkItemExpectation {
+    Snapshot(WorkItemRecord),
     Runnable(WorkItemRecord),
     BlockedRecheck {
         record: WorkItemRecord,
@@ -1978,6 +1979,13 @@ impl RuntimeTransitionRepository<'_> {
                 }
             }
             validate_agent_state_mutation_tx(tx, command.agent_state.as_ref())?;
+            let execution_protocol =
+                execution_protocol_repository::synchronize_work_item_revisions_tx(
+                    tx,
+                    &command.agent_id,
+                    execution_protocol,
+                    &command.work_items,
+                )?;
             let execution_protocol = execution_protocol_repository::validate_execution_commands_tx(
                 tx,
                 &command.agent_id,
@@ -2526,6 +2534,17 @@ impl RuntimeTransitionRepository<'_> {
             let execution_continuations = completion
                 .map(|completion| completion.continuations.as_slice())
                 .unwrap_or_default();
+            let synchronized_execution_protocol = if let Some(registration) = wait_registration {
+                execution_protocol_repository::synchronize_work_item_revisions_tx(
+                    tx,
+                    &command.agent_id,
+                    execution_protocol_transition,
+                    &registration.work_items,
+                )?
+            } else {
+                execution_protocol_transition.clone()
+            };
+            let execution_protocol_transition = &synchronized_execution_protocol;
             let execution_protocol = execution_protocol_repository::validate_execution_commands_tx(
                 tx,
                 &command.agent_id,
@@ -2535,6 +2554,15 @@ impl RuntimeTransitionRepository<'_> {
                 execution_wait_conditions,
                 execution_continuations,
             )?;
+            if command.operation == QueueOperation::Claim {
+                execution_protocol_repository::validate_model_queue_claim_tx(
+                    tx,
+                    &command.agent_id,
+                    &queue_record.message_id,
+                    execution_protocol.as_ref(),
+                    execution_work_items,
+                )?;
+            }
             inject_fault(command.fault, TransitionFaultPoint::AfterValidation)?;
             let supervised_task_applied = supervised_task
                 .as_ref()
@@ -2799,6 +2827,13 @@ impl RuntimeTransitionRepository<'_> {
             for brief in &command.brief_evidence {
                 insert_brief_evidence_tx(tx, brief)?;
             }
+            // Terminal queue state is not sufficient until this transaction's
+            // attempt/turn settlements have also been persisted.
+            super::repositories::retire_terminal_timer_wake_tx(
+                tx,
+                queue_record,
+                queue_record.updated_at,
+            )?;
             inject_fault(command.fault, TransitionFaultPoint::AfterCanonicalWrites)?;
             let mut index_changes = wait_registration
                 .map(|transition| transition.index_changes.clone())
@@ -3445,7 +3480,8 @@ fn validate_scheduler_claim_work_item_tx(
         ));
     }
     let (expected, minimum_revision) = match expectation {
-        SchedulerClaimWorkItemExpectation::Runnable(record) => (record, None),
+        SchedulerClaimWorkItemExpectation::Snapshot(record)
+        | SchedulerClaimWorkItemExpectation::Runnable(record) => (record, None),
         SchedulerClaimWorkItemExpectation::BlockedRecheck {
             record,
             minimum_revision,
@@ -3469,6 +3505,11 @@ fn validate_scheduler_claim_work_item_tx(
             &expected.id,
         )
         .into());
+    }
+    // Explicit input and exact waits retain their existing scheduling rules;
+    // this expectation only fences the snapshot used by provider planning.
+    if matches!(expectation, SchedulerClaimWorkItemExpectation::Snapshot(_)) {
+        return Ok(());
     }
     if let Some(minimum_revision) = minimum_revision {
         if expected.revision < minimum_revision || expected.blocked_by.is_none() {
@@ -3520,6 +3561,7 @@ fn validate_scheduler_claim_work_item_tx(
     // The exact-record, `Open`, `blocked_by`, and revision fences above remain
     // authoritative; this check only rejects genuinely unexpected states.
     let scheduling_state_matches = match expectation {
+        SchedulerClaimWorkItemExpectation::Snapshot(_) => unreachable!("snapshot checked above"),
         SchedulerClaimWorkItemExpectation::Runnable(_) => {
             scheduling.scheduling_state == WorkItemSchedulingState::Runnable
         }

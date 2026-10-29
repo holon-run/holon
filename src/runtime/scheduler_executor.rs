@@ -2333,11 +2333,21 @@ impl<'a> SchedulerDecisionExecutor<'a> {
                     reason: "canonical_wait_execution_authority_missing",
                 });
             };
+            // A registration that ran while no attempt was in flight leaves
+            // the canonical record Runnable: the durable wait is still the
+            // authority for this resume. Revision consistency is independently
+            // checked by the claim transaction.
+            // Other states keep the strict Waiting fence.
+            let durable_wait_authorizes_runnable = matches!(
+                &authoritative_work.state,
+                crate::domain::execution_protocol::WorkItemExecutionState::Runnable { .. }
+            );
             if !matches!(
                 &authoritative_work.state,
                 crate::domain::execution_protocol::WorkItemExecutionState::Waiting { wait, .. }
                     if wait.wait_id == wait_id
             ) && !interrupted_task_result_replay
+                && !durable_wait_authorizes_runnable
             {
                 return Ok(CanonicalClaimOutcome::RejectQueued {
                     scenario_class,
@@ -2389,8 +2399,12 @@ impl<'a> SchedulerDecisionExecutor<'a> {
                 return Ok(CanonicalClaimOutcome::Plan(CanonicalClaimPlan {
                     activation_id,
                     scenario_class,
-                    work_item_id: Some(work_item.id),
-                    work_item_expectation: None,
+                    work_item_id: Some(work_item.id.clone()),
+                    work_item_expectation: Some(
+                        crate::runtime_db::transitions::SchedulerClaimWorkItemExpectation::Snapshot(
+                            work_item.clone(),
+                        ),
+                    ),
                     execution_protocol:
                         crate::runtime_db::transitions::ExecutionProtocolTransition::default(),
                 }));
@@ -2424,7 +2438,11 @@ impl<'a> SchedulerDecisionExecutor<'a> {
                     minimum_revision: expected_work_item_revision,
                 },
             ),
-            _ => None,
+            _ => Some(
+                crate::runtime_db::transitions::SchedulerClaimWorkItemExpectation::Snapshot(
+                    work_item.clone(),
+                ),
+            ),
         };
 
         Ok(CanonicalClaimOutcome::Plan(CanonicalClaimPlan {

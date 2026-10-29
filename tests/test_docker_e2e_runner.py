@@ -892,6 +892,7 @@ class DockerE2ERunnerTests(unittest.TestCase):
             case["id"]
             for case in self.manifest["cases"]
             if "scheduler" in case.get("tags", [])
+            and case["id"] != "scheduler-timer-admission-recovery"
         ]
         self.assertEqual(profile["gate_kind"], "required")
         self.assertEqual(profile["provider_mode"], "stub")
@@ -2699,6 +2700,7 @@ class DockerE2ERunnerTests(unittest.TestCase):
                 "scheduler-compaction-continuity",
                 "scheduler-worktree-isolation",
                 "scheduler-spawn-agent-supervision",
+                "scheduler-timer-admission-recovery",
                 "scheduler-checkpoint-replay",
             ],
         )

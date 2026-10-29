@@ -73,11 +73,57 @@ obligations. Claim resolves the exact wait whose
 queue consumption, canonical execution admission, WorkItem revision updates,
 and execution fences.
 
+Public WorkItem writers synchronize the canonical source revision in their
+record transaction. This includes direct wait registration and deferred
+terminal waits committed with queue settlement; neither path may leave a
+new durable revision behind an old canonical source.
+An `AdvanceWorkItemSourceRevision` must connect that
+transaction's expected revision to its updated revision for the same owner;
+an already-present durable target revision alone is not writer evidence.
+Claim rejects preexisting durable/source drift in either direction. Every
+WorkItem-bound claim fences the record snapshot used to prepare its provider
+guard. A concurrent legal writer causes full replanning and releases the old
+guard, rather than rewriting admission fences after guard capture.
+
 Dispatch reconciliation is audit-only on normal traffic. It may emit recovery
 signals for historical or damaged state, but it cannot advance an `Active` or
 `Triggered` wait, clear a WorkItem blocker, or revise a WorkItem. Any future
 repair path must be explicitly named, expectation-fenced, and independently
 audited.
+
+### Revision rejection and historical repair
+
+Provider dispatch keeps the durable/source revision equality check and the
+positive, non-future admitted fence check. Its rejection audit records the
+durable/source/admitted revision triple, expected/current lane generations,
+and attempt/message/WorkItem identities from the rejecting transaction. Missing,
+zero, future, and durable/source drift are distinct diagnostic details under
+the existing `WorkItemRevisionMismatch` reason; none grants dispatch authority.
+
+`GET /control/agents/{agent_id}/scheduler-repair` exposes read-only assessments
+for `NeedsRepair` WorkItems through the existing authenticated control boundary.
+An assessment is not a prepared repair or an authorization token. Revision
+numbers alone do not prove which writer caused a gap. In particular,
+`dispatch_occurred=false` describes one send, not the absence of earlier
+requests, tools, or input consumption in the attempt.
+
+A settled source or a resolved/dropped exact wait cannot be rearmed. Where the
+current ledgers cannot prove a revision-only gap, zero side effects, and a
+still-replayable original source/exact wait, inspection explicitly refuses
+original-source restoration. This change does not add a generic successful
+`NeedsRepair` unlock operation. A separately authorized new continuation/root
+is new input, not restoration or replay of the old input; operators must not
+edit revision, generation, or pending rows to simulate that authority.
+
+### Terminal timer obligations
+
+Queue terminalization and retirement of its unconsumed timer pending obligation
+share a transaction. Retirement means `cancelled`, not `incorporated`: it does
+not claim a successful model delivery. Retained, interrupted, or actively
+consumed inputs keep their obligation. Startup reconciliation uses the same
+terminal classification as the online writer. Timer age alone is never proof
+that pending can be cleared, and a later repeating tick never authorizes replay
+of the retired source.
 
 ## Replay And Recovery
 

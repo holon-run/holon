@@ -57,9 +57,10 @@ pub(crate) use agent_message_delivery::{
 pub use first_run_intro::maybe_enqueue_first_run_intro;
 pub(crate) use lifecycle::LightweightAgentStateProjection;
 pub(crate) use repair::is_wake_only_message;
+pub(crate) use repair::work_item_repair_assessments;
 pub use repair::{
     SchedulerRepairInspection, SchedulerRepairOperation, SchedulerRepairRequest,
-    SchedulerRepairResult,
+    SchedulerRepairResult, WorkItemRepairAssessment,
 };
 pub use scheduler_acceptance::{
     seed_scheduler_restart_fixture, seed_scheduler_terminal_recovery_fixture,

@@ -8,6 +8,208 @@ async fn yield_timer_loop() {
     }
 }
 
+fn legacy_timer_queue_status(
+    runtime: &RuntimeHandle,
+    timer: &TimerRecord,
+    status: QueueEntryStatus,
+) -> QueueEntryRecord {
+    let command = terminal_timer_queue_command(runtime, timer);
+    let crate::runtime_db::transitions::QueueMutation::CompareAndSet {
+        record: mut entry, ..
+    } = command.mutation
+    else {
+        unreachable!();
+    };
+    entry.status = status;
+    // Simulate a database written before terminal queue/timer composition.
+    runtime
+        .inner
+        .runtime_db
+        .connection()
+        .unwrap()
+        .execute(
+            "UPDATE queue_entries SET status = ?2, payload_json = ?3 WHERE message_id = ?1",
+            rusqlite::params![
+                entry.message_id,
+                serde_json::to_value(&entry.status)
+                    .unwrap()
+                    .as_str()
+                    .unwrap(),
+                serde_json::to_string(&entry).unwrap()
+            ],
+        )
+        .unwrap();
+    entry
+}
+
+#[tokio::test(start_paused = true)]
+async fn terminal_timer_restart_retires_orphan_pending_idempotently() {
+    let (dir, workspace, runtime, timer) = terminal_timer_fixture(true).await;
+    let entry = legacy_timer_queue_status(&runtime, &timer, QueueEntryStatus::Dropped);
+    let recovered = RuntimeHandle::new_with_clock(
+        "default",
+        dir.path().to_path_buf(),
+        workspace.path().to_path_buf(),
+        "http://127.0.0.1:7878".into(),
+        Arc::new(StubProvider::new("must not run")),
+        "default".into(),
+        context_config(),
+        controlled_clock(),
+    )
+    .unwrap();
+    assert!(recovered
+        .inner
+        .runtime_db
+        .timers()
+        .pending_wake(&timer.id)
+        .unwrap()
+        .is_none());
+    assert_eq!(timer_retirement_events(&recovered).len(), 1);
+    assert_eq!(
+        timer_retirement_events(&recovered)[0].data["message_id"],
+        entry.message_id
+    );
+    let again = recovered
+        .inner
+        .runtime_db
+        .timers()
+        .normalize_wakes_for_recovery("default", recovered.now())
+        .unwrap();
+    assert_eq!(again.invalidated_wakes, 0);
+    assert_eq!(timer_retirement_events(&recovered).len(), 1);
+    let mut timer = timer;
+    recovered.fire_timer_record(&mut timer).await.unwrap();
+    assert_eq!(
+        recovered
+            .inner
+            .runtime_db
+            .timers()
+            .pending_wake(&timer.id)
+            .unwrap()
+            .unwrap()
+            .fire_count,
+        2
+    );
+}
+
+#[tokio::test(start_paused = true)]
+async fn terminal_timer_recovery_preserves_live_queue_and_parked_sources() {
+    for status in [
+        QueueEntryStatus::Queued,
+        QueueEntryStatus::Interrupted,
+        QueueEntryStatus::Dequeued,
+        QueueEntryStatus::Interjected,
+    ] {
+        let (_dir, _workspace, runtime, timer) = terminal_timer_fixture(true).await;
+        let entry = legacy_timer_queue_status(&runtime, &timer, status);
+        runtime
+            .inner
+            .runtime_db
+            .timers()
+            .normalize_wakes_for_recovery("default", runtime.now())
+            .unwrap();
+        assert_eq!(
+            runtime
+                .inner
+                .runtime_db
+                .timers()
+                .pending_wake(&timer.id)
+                .unwrap()
+                .unwrap()
+                .message_id,
+            entry.message_id
+        );
+    }
+
+    let (_dir, _workspace, runtime, timer) = terminal_timer_fixture(true).await;
+    let message_id = assert_single_durable_timer_wake(&runtime, &timer.id);
+    let parking = crate::runtime_db::provider_admission::ProviderQueueParking {
+        agent_id: "default".into(),
+        message_id: message_id.clone(),
+        chain_fingerprint: "timer-chain".into(),
+        episode_key: "timer-episode".into(),
+        not_before: runtime.now() + chrono::Duration::hours(1),
+        reason: "chain_cooling".into(),
+    };
+    runtime
+        .inner
+        .runtime_db
+        .park_provider_queue(&parking)
+        .unwrap();
+    runtime
+        .inner
+        .runtime_db
+        .transitions()
+        .commit_queue(&terminal_timer_queue_command(&runtime, &timer))
+        .unwrap();
+    runtime
+        .inner
+        .runtime_db
+        .timers()
+        .normalize_wakes_for_recovery("default", runtime.now())
+        .unwrap();
+    assert!(runtime
+        .inner
+        .runtime_db
+        .timers()
+        .pending_wake(&timer.id)
+        .unwrap()
+        .is_some());
+    assert_eq!(
+        runtime
+            .inner
+            .runtime_db
+            .provider_queue_parking("default", &message_id)
+            .unwrap(),
+        Some(parking)
+    );
+    assert!(timer_retirement_events(&runtime).is_empty());
+}
+
+#[tokio::test(start_paused = true)]
+async fn terminal_timer_recovery_preserves_unsettled_turn_consumption() {
+    for interrupted in [false, true] {
+        let (_dir, _workspace, runtime, timer) = terminal_timer_fixture(true).await;
+        let message_id = assert_single_durable_timer_wake(&runtime, &timer.id);
+        let mut turn = TurnRecord::new("default", "retained-timer-turn", 1);
+        turn.input_message_ids = vec![message_id.clone()];
+        if interrupted {
+            turn.terminal = Some(crate::types::TurnTerminalSummary {
+                kind: crate::types::TurnTerminalKind::Interrupted,
+                reason: None,
+                no_brief_reason: None,
+                completed_at: runtime.now(),
+                duration_ms: 0,
+            });
+        }
+        runtime.storage().append_turn(&turn).unwrap();
+        runtime
+            .inner
+            .runtime_db
+            .transitions()
+            .commit_queue(&terminal_timer_queue_command(&runtime, &timer))
+            .unwrap();
+        runtime
+            .inner
+            .runtime_db
+            .timers()
+            .normalize_wakes_for_recovery("default", runtime.now())
+            .unwrap();
+        assert_eq!(
+            runtime
+                .inner
+                .runtime_db
+                .timers()
+                .pending_wake(&timer.id)
+                .unwrap()
+                .unwrap()
+                .message_id,
+            message_id
+        );
+        assert!(timer_retirement_events(&runtime).is_empty());
+    }
+}
+
 #[tokio::test(start_paused = true)]
 async fn cancelled_timer_settles_registered_wait_without_resuming_work() {
     for work_item_scope in [false, true] {
@@ -1858,4 +2060,504 @@ async fn recovery_reactivates_incorporated_wake_for_restored_timer_message() {
         .unwrap();
     assert_eq!(wake.message_id, message.id);
     assert_eq!(recovered.agent_state().await.unwrap().pending, 1);
+}
+
+async fn terminal_timer_fixture(
+    repeat: bool,
+) -> (
+    tempfile::TempDir,
+    tempfile::TempDir,
+    RuntimeHandle,
+    TimerRecord,
+) {
+    let dir = tempdir().unwrap();
+    let workspace = tempdir().unwrap();
+    let runtime = RuntimeHandle::new_with_clock(
+        "default",
+        dir.path().to_path_buf(),
+        workspace.path().to_path_buf(),
+        "http://127.0.0.1:7878".into(),
+        Arc::new(StubProvider::new("must not run")),
+        "default".into(),
+        context_config(),
+        controlled_clock(),
+    )
+    .unwrap();
+    let mut timer = runtime
+        .schedule_timer(60_000, repeat.then_some(60_000), None)
+        .await
+        .unwrap();
+    runtime.fire_timer_record(&mut timer).await.unwrap();
+    (dir, workspace, runtime, timer)
+}
+
+fn terminal_timer_queue_command(
+    runtime: &RuntimeHandle,
+    timer: &TimerRecord,
+) -> crate::runtime_db::transitions::QueueTransitionCommand {
+    use crate::runtime_db::transitions::{QueueMutation, QueueOperation, QueueTransitionCommand};
+    let wake = runtime
+        .inner
+        .runtime_db
+        .timers()
+        .pending_wake(&timer.id)
+        .unwrap()
+        .unwrap();
+    let expected = runtime
+        .inner
+        .runtime_db
+        .queue_entries()
+        .latest(&wake.message_id)
+        .unwrap()
+        .unwrap();
+    let mut record = expected.clone();
+    record.status = QueueEntryStatus::Dropped;
+    record.updated_at = runtime.now().max(record.updated_at);
+    QueueTransitionCommand {
+        agent_id: "default".into(),
+        operation: QueueOperation::Settle,
+        mutation: QueueMutation::CompareAndSet { expected, record },
+        scheduler_claim_work_item: None,
+        agent_state: None,
+        message_evidence: Vec::new(),
+        transcript_entries: Vec::new(),
+        turn_record: None,
+        audit_events: Vec::new(),
+        notify_scheduler: false,
+        fault: None,
+        brief_evidence: Vec::new(),
+    }
+}
+
+fn timer_retirement_events(runtime: &RuntimeHandle) -> Vec<AuditEvent> {
+    runtime
+        .storage()
+        .read_recent_events(100)
+        .unwrap()
+        .into_iter()
+        .filter(|event| event.kind == "timer_wake_terminal_retired")
+        .collect()
+}
+
+#[tokio::test(start_paused = true)]
+async fn terminal_timer_recovery_never_reactivates_cancelled_wake() {
+    let (_dir, _workspace, runtime, mut timer) = terminal_timer_fixture(true).await;
+    let entry = legacy_timer_queue_status(&runtime, &timer, QueueEntryStatus::Queued);
+    runtime.cancel_timer(&timer.id).await.unwrap();
+    // Old interrupted-source restoration must not undo a cancellation fence.
+    runtime
+        .inner
+        .runtime_db
+        .connection()
+        .unwrap()
+        .execute(
+            "UPDATE queue_entries SET status = 'queued', payload_json = ?2
+             WHERE message_id = ?1",
+            rusqlite::params![entry.message_id, serde_json::to_string(&entry).unwrap()],
+        )
+        .unwrap();
+    let result = runtime
+        .inner
+        .runtime_db
+        .timers()
+        .normalize_wakes_for_recovery("default", runtime.now())
+        .unwrap();
+    assert_eq!(result.reactivated_wakes, 0);
+    assert_eq!(result.dropped_message_ids, vec![entry.message_id]);
+    runtime.fire_timer_record(&mut timer).await.unwrap();
+    assert_eq!(
+        runtime
+            .inner
+            .runtime_db
+            .timers()
+            .latest(&timer.id)
+            .unwrap()
+            .unwrap()
+            .status,
+        TimerStatus::Cancelled
+    );
+    assert!(runtime
+        .inner
+        .runtime_db
+        .timers()
+        .pending_wake(&timer.id)
+        .unwrap()
+        .is_none());
+}
+
+#[tokio::test(start_paused = true)]
+async fn terminal_timer_retirement_preserves_wait_and_business_blocker() {
+    let (_dir, _workspace, runtime, timer) = terminal_timer_fixture(true).await;
+    let work = runtime
+        .create_work_item("independent timer blocker".into(), None, None, Vec::new())
+        .await
+        .unwrap();
+    let registration = runtime
+        .register_wait_for(
+            "default",
+            Some(work.id.clone()),
+            WaitForWakeKind::Timer,
+            Some(timer.id.clone()),
+            "timer continuation".into(),
+            None,
+        )
+        .await
+        .unwrap();
+    let before = runtime
+        .storage()
+        .latest_work_item(&work.id)
+        .unwrap()
+        .unwrap();
+    runtime
+        .inner
+        .runtime_db
+        .transitions()
+        .commit_queue(&terminal_timer_queue_command(&runtime, &timer))
+        .unwrap();
+    assert!(runtime
+        .inner
+        .runtime_db
+        .timers()
+        .pending_wake(&timer.id)
+        .unwrap()
+        .is_none());
+    assert_eq!(
+        runtime
+            .storage()
+            .latest_wait_conditions()
+            .unwrap()
+            .into_iter()
+            .find(|wait| wait.id == registration.condition.id)
+            .unwrap(),
+        registration.condition
+    );
+    assert_eq!(
+        runtime.storage().latest_work_item(&work.id).unwrap(),
+        Some(before)
+    );
+}
+
+#[tokio::test(start_paused = true)]
+async fn terminal_timer_retirement_fences_exact_fire_and_never_refires_one_shot() {
+    let (_dir, _workspace, runtime, mut timer) = terminal_timer_fixture(false).await;
+    assert_eq!(timer.status, TimerStatus::Completed);
+    runtime
+        .inner
+        .runtime_db
+        .connection()
+        .unwrap()
+        .execute(
+            "UPDATE timer_wakes SET fire_count = 2 WHERE timer_id = ?1",
+            [&timer.id],
+        )
+        .unwrap();
+    runtime
+        .inner
+        .runtime_db
+        .transitions()
+        .commit_queue(&terminal_timer_queue_command(&runtime, &timer))
+        .unwrap();
+    let mismatch = runtime
+        .inner
+        .runtime_db
+        .timers()
+        .normalize_wakes_for_recovery("default", runtime.now())
+        .unwrap();
+    assert_eq!(mismatch.invalidated_wakes, 0);
+    assert!(runtime
+        .inner
+        .runtime_db
+        .timers()
+        .pending_wake(&timer.id)
+        .unwrap()
+        .is_some());
+    runtime
+        .inner
+        .runtime_db
+        .connection()
+        .unwrap()
+        .execute(
+            "UPDATE timer_wakes SET fire_count = 1 WHERE timer_id = ?1",
+            [&timer.id],
+        )
+        .unwrap();
+    let matched = runtime
+        .inner
+        .runtime_db
+        .timers()
+        .normalize_wakes_for_recovery("default", runtime.now())
+        .unwrap();
+    assert_eq!(matched.invalidated_wakes, 1);
+    runtime.fire_timer_record(&mut timer).await.unwrap();
+    assert_eq!(timer.fire_count, 1);
+    assert_eq!(timer.status, TimerStatus::Completed);
+    assert!(runtime
+        .inner
+        .runtime_db
+        .timers()
+        .pending_wake(&timer.id)
+        .unwrap()
+        .is_none());
+}
+
+#[tokio::test(start_paused = true)]
+async fn terminal_timer_recovery_preserves_unsettled_attempt_consumption() {
+    use crate::domain::execution_protocol::*;
+    for state in [
+        ExecutionAttemptState::Open,
+        ExecutionAttemptState::Interrupted,
+        ExecutionAttemptState::ProtocolViolation,
+    ] {
+        let (_dir, _workspace, runtime, timer) = terminal_timer_fixture(true).await;
+        let message_id = assert_single_durable_timer_wake(&runtime, &timer.id);
+        let mut attempt = ExecutionAttempt {
+            attempt_id: "retained-timer-attempt".into(),
+            agent_id: "default".into(),
+            source_message_id: None,
+            input_projection: None,
+            source: ExecutionSource {
+                identity: ExecutionSourceIdentity::QueueMessage {
+                    message_id: message_id.clone(),
+                },
+                generation: 1,
+            },
+            binding: ExecutionBinding::AgentLifecycle {
+                agent_id: "default".into(),
+            },
+            provenance: ExecutionProvenance {
+                origin: ExecutionOrigin::Timer,
+                trust: ExecutionTrust::RuntimeInstruction,
+                priority: ExecutionPriority::Next,
+                correlation_id: None,
+                causation_id: None,
+            },
+            admitted_fences: AdmittedFences {
+                source_revision: 1,
+                work_item_source_revision: None,
+                work_item_generation: None,
+                rejoin: None,
+                agent_control_revision: 1,
+                host_registry_revision: 1,
+            },
+            state,
+            run_id: None,
+            turn_id: None,
+            recovery_of_attempt_id: None,
+            terminal_outcome_id: None,
+            admitted_at: runtime.now().to_rfc3339(),
+            terminal_at: None,
+        };
+        let mut protocol = ExecutionProtocolState::empty("default");
+        if state != ExecutionAttemptState::Open {
+            let outcome = ExecutionOutcomeRecord {
+                outcome_id: "retained-timer-outcome".into(),
+                attempt_id: attempt.attempt_id.clone(),
+                outcome: ExecutionOutcome::Conversation(ConversationOutcome::Interrupted {
+                    reason: "retained timer consumption".into(),
+                }),
+                created_at: runtime.now().to_rfc3339(),
+            };
+            attempt.terminal_outcome_id = Some(outcome.outcome_id.clone());
+            attempt.terminal_at = Some(outcome.created_at.clone());
+            protocol
+                .outcomes
+                .insert(outcome.outcome_id.clone(), outcome);
+        }
+        protocol
+            .attempts
+            .insert(attempt.attempt_id.clone(), attempt);
+        runtime
+            .inner
+            .runtime_db
+            .transaction(|tx| {
+                crate::runtime_db::transitions::execution_protocol_repository::persist_state_tx(
+                    tx, &protocol,
+                )
+            })
+            .unwrap();
+        runtime
+            .inner
+            .runtime_db
+            .transitions()
+            .commit_queue(&terminal_timer_queue_command(&runtime, &timer))
+            .unwrap();
+        runtime
+            .inner
+            .runtime_db
+            .timers()
+            .normalize_wakes_for_recovery("default", runtime.now())
+            .unwrap();
+        assert_eq!(
+            runtime
+                .inner
+                .runtime_db
+                .timers()
+                .pending_wake(&timer.id)
+                .unwrap()
+                .unwrap()
+                .message_id,
+            message_id
+        );
+        assert!(timer_retirement_events(&runtime).is_empty());
+    }
+}
+
+#[tokio::test(start_paused = true)]
+async fn terminal_timer_retirement_observes_same_transaction_turn_settlement() {
+    let (_dir, _workspace, runtime, timer) = terminal_timer_fixture(true).await;
+    let message_id = assert_single_durable_timer_wake(&runtime, &timer.id);
+    let mut turn = TurnRecord::new("default", "settling-timer-turn", 1);
+    turn.created_at = runtime.now();
+    turn.input_message_ids = vec![message_id];
+    runtime.storage().append_turn(&turn).unwrap();
+    turn.terminal = Some(crate::types::TurnTerminalSummary {
+        kind: crate::types::TurnTerminalKind::Completed,
+        reason: None,
+        no_brief_reason: None,
+        completed_at: runtime.now(),
+        duration_ms: 0,
+    });
+    let mut command = terminal_timer_queue_command(&runtime, &timer);
+    command.turn_record = Some(turn);
+    runtime
+        .inner
+        .runtime_db
+        .transitions()
+        .commit_queue(&command)
+        .unwrap();
+    assert!(runtime
+        .inner
+        .runtime_db
+        .timers()
+        .pending_wake(&timer.id)
+        .unwrap()
+        .is_none());
+    assert_eq!(timer_retirement_events(&runtime).len(), 1);
+}
+
+#[tokio::test(start_paused = true)]
+async fn terminal_timer_drop_releases_pending_for_next_fire() {
+    use crate::runtime_db::transitions::QueueMutation;
+    for status in [QueueEntryStatus::Dropped, QueueEntryStatus::Quarantined] {
+        let (_dir, _workspace, runtime, mut timer) = terminal_timer_fixture(true).await;
+        let old_wake = assert_single_durable_timer_wake(&runtime, &timer.id);
+        let mut command = terminal_timer_queue_command(&runtime, &timer);
+        let QueueMutation::CompareAndSet { record, .. } = &mut command.mutation else {
+            unreachable!();
+        };
+        record.status = status;
+        assert!(
+            runtime
+                .inner
+                .runtime_db
+                .transitions()
+                .commit_queue(&command)
+                .unwrap()
+                .applied
+        );
+        assert!(runtime
+            .inner
+            .runtime_db
+            .timers()
+            .pending_wake(&timer.id)
+            .unwrap()
+            .is_none());
+        let events = timer_retirement_events(&runtime);
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].data["message_id"], old_wake);
+        assert_eq!(events[0].data["fire_count"], 1);
+        let history: (String, Option<String>) = runtime
+            .inner
+            .runtime_db
+            .connection()
+            .unwrap()
+            .query_row(
+                "SELECT status, incorporated_at FROM timer_wakes WHERE message_id = ?1",
+                [&old_wake],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(history, ("cancelled".into(), None));
+
+        runtime.fire_timer_record(&mut timer).await.unwrap();
+        let wake = runtime
+            .inner
+            .runtime_db
+            .timers()
+            .pending_wake(&timer.id)
+            .unwrap()
+            .unwrap();
+        assert_ne!(wake.message_id, old_wake);
+        assert_eq!(wake.fire_count, 2);
+        runtime.fire_timer_record(&mut timer).await.unwrap();
+        assert_eq!(
+            runtime
+                .inner
+                .runtime_db
+                .timers()
+                .pending_wake(&timer.id)
+                .unwrap()
+                .unwrap(),
+            wake,
+            "duplicate ticks still coalesce after a terminal source is retired"
+        );
+    }
+}
+
+#[tokio::test(start_paused = true)]
+async fn terminal_timer_retirement_rolls_back_with_queue_transition() {
+    use crate::runtime_db::transitions::{QueueMutation, TransitionFaultPoint};
+    for fault in [
+        TransitionFaultPoint::AfterCanonicalWrites,
+        TransitionFaultPoint::AfterAuditWrites,
+        TransitionFaultPoint::BeforeCommit,
+    ] {
+        let (_dir, _workspace, runtime, timer) = terminal_timer_fixture(true).await;
+        let mut command = terminal_timer_queue_command(&runtime, &timer);
+        let QueueMutation::CompareAndSet { expected, .. } = &command.mutation else {
+            unreachable!();
+        };
+        let expected = expected.clone();
+        command.fault = Some(fault);
+        let error = runtime
+            .inner
+            .runtime_db
+            .transitions()
+            .commit_queue(&command)
+            .unwrap_err();
+        assert_injected_transition_fault(&error);
+        assert_eq!(
+            runtime
+                .inner
+                .runtime_db
+                .queue_entries()
+                .latest(&expected.message_id)
+                .unwrap(),
+            Some(expected)
+        );
+        assert!(runtime
+            .inner
+            .runtime_db
+            .timers()
+            .pending_wake(&timer.id)
+            .unwrap()
+            .is_some());
+        assert!(timer_retirement_events(&runtime).is_empty());
+
+        command.fault = None;
+        runtime
+            .inner
+            .runtime_db
+            .transitions()
+            .commit_queue(&command)
+            .unwrap();
+        assert_eq!(timer_retirement_events(&runtime).len(), 1);
+        // Either an OCC rejection or an idempotent result must leave history alone.
+        let _ = runtime
+            .inner
+            .runtime_db
+            .transitions()
+            .commit_queue(&command);
+        assert_eq!(timer_retirement_events(&runtime).len(), 1);
+    }
 }
