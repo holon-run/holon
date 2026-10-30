@@ -27,7 +27,10 @@ struct HolonApp: App {
         do {
             try TestingStateReset.resetIfRequested()
         } catch {
-            assertionFailure(String(describing: error))
+            // A failed reset must never let the app run against the state the
+            // case asked to clear. preconditionFailure always traps, unlike an
+            // assertion, which disappears in a release build.
+            preconditionFailure(String(describing: error))
         }
         let reading = ReadingCoordinator()
         _reader = State(initialValue: reading)

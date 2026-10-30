@@ -934,7 +934,19 @@ with fixture_directory(repo) as root:
                         text=True)
                     if probe.returncode != 0:
                         # Nothing is installed, so there is no group container to
-                        # clear and a later install starts empty.
+                        # clear and a later install starts empty. The group
+                        # container outlives the app, so a leftover approval
+                        # can still exist; report it only when the app is
+                        # installed, which is when the container is reachable
+                        # and the absence is suspicious.
+                        installed = subprocess.run(
+                            ["xcrun", "simctl", "get_app_container", simulator, bundle_id, "data"],
+                            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False)
+                        if installed.returncode == 0:
+                            print(f"::warning title=iOS UI state reset::the app "
+                                  f"group container for {bundle_id} could not be "
+                                  f"read on {simulator}; a leftover sharing "
+                                  f"approval would not be cleared", flush=True)
                         return
                     for line in str(probe.stdout or "").splitlines():
                         fields = line.split("\t")
@@ -1223,78 +1235,80 @@ with fixture_directory(repo) as root:
                 # each attempt took. A CI job that fails on a slow runner is
                 # only actionable if it says which budget ran out.
                 ui_telemetry = []
-                for (method, content_size), case_bundle in zip(cases, bundles):
-                    for attempt in range(1, max_attempts + 1):
-                        if attempt > 1:
-                            # Keep the failed attempt's diagnostics under a
-                            # distinct name, freeing the canonical per-case
-                            # result path the pre-flight check reserved.
-                            failed_bundle = case_bundle.with_name(
-                                case_bundle.stem + f"-attempt{attempt - 1}-failed.xcresult")
-                            if failed_bundle.exists():
-                                shutil.rmtree(failed_bundle, ignore_errors=True)
-                            if case_bundle.exists():
-                                case_bundle.rename(failed_bundle)
-                            # Content-report evidence is written with O_EXCL;
-                            # drop the failed attempt's stale per-case files so
-                            # the retry can regenerate them factually.
-                            if fixture_evidence is not None:
-                                for stale in fixture_evidence.glob(
-                                        f"content-reports-{method}-*"):
-                                    stale.unlink()
-                            # A crashed or shut-down simulator would fail the
-                            # retry for the wrong reason; restore boot state.
-                            subprocess.run(
-                                ["xcrun", "simctl", "bootstatus", simulator, "-b"],
-                                check=True, timeout=180)
-                            # The previous attempt may have approved sharing
-                            # consent for this host; that approval survives in
-                            # the App Group container and would skip the gate
-                            # the case asserts on. Reset it so the retry runs
-                            # the same clean state the first attempt saw.
-                            reset_app_group_consent(
-                                simulator, "run.holon.ios", "group.run.holon.ios")
-                        started = time.monotonic()
-                        try:
-                            run_ui_case(method, content_size, case_bundle)
-                            ui_telemetry.append({
-                                "case": method, "attempt": attempt,
-                                "outcome": "passed", "seconds": round(time.monotonic() - started, 1)})
-                            break
-                        except UICaseFailure:
-                            elapsed = round(time.monotonic() - started, 1)
-                            ui_telemetry.append({
-                                "case": method, "attempt": attempt,
-                                "outcome": "failed", "seconds": elapsed})
-                            if attempt >= max_attempts:
-                                raise
-                            ui_retries.append(method)
-                            detail = (f"{method} attempt {attempt} failed after "
-                                      f"{elapsed:.0f}s; rebuilding per-case fixtures and retrying once")
-                            print(f"::warning title=iOS UI retry::{detail}", flush=True)
-                            print(f"UI 用例 {method} 第 {attempt} 次尝试失败，重建该用例 fixture 后重试一次", flush=True)
-                # A stable, machine-readable record of the sweep's outcome.
-                # The CI summary prints it so a flaky case can be named
-                # without digging through the full xcodebuild log.
-                slowest = max(ui_telemetry, key=lambda record: record["seconds"], default=None)
-                summary = (f"UI sweep telemetry: {len(cases)} cases, "
-                           f"{len(ui_retries)} retried")
-                if slowest is not None:
-                    summary += (f", slowest {slowest['case']} "
-                                f"{slowest['seconds']}s")
-                print(summary, flush=True)
-                for record in ui_telemetry:
-                    if record["outcome"] == "failed":
-                        print(f"::warning title=iOS UI case failed::{record['case']} "
-                              f"attempt {record['attempt']} failed after {record['seconds']}s",
-                              flush=True)
-                if fixture_evidence is not None:
-                    write_fixture_json(fixture_evidence, "ui-sweep-telemetry.json", {
-                        "cases": len(cases),
-                        "retried": ui_retries,
-                        "attempts": ui_telemetry,
-                        "wait_scale": test_env.get("TEST_RUNNER_HOLON_UI_WAIT_SCALE"),
-                    })
+                try:
+                    for (method, content_size), case_bundle in zip(cases, bundles):
+                        for attempt in range(1, max_attempts + 1):
+                            if attempt > 1:
+                                # Keep the failed attempt's diagnostics under a
+                                # distinct name, freeing the canonical per-case
+                                # result path the pre-flight check reserved.
+                                failed_bundle = case_bundle.with_name(
+                                    case_bundle.stem + f"-attempt{attempt - 1}-failed.xcresult")
+                                if failed_bundle.exists():
+                                    shutil.rmtree(failed_bundle, ignore_errors=True)
+                                if case_bundle.exists():
+                                    case_bundle.rename(failed_bundle)
+                                # Content-report evidence is written with O_EXCL;
+                                # drop the failed attempt's stale per-case files so
+                                # the retry can regenerate them factually.
+                                if fixture_evidence is not None:
+                                    for stale in fixture_evidence.glob(
+                                            f"content-reports-{method}-*"):
+                                        stale.unlink()
+                                # A crashed or shut-down simulator would fail the
+                                # retry for the wrong reason; restore boot state.
+                                subprocess.run(
+                                    ["xcrun", "simctl", "bootstatus", simulator, "-b"],
+                                    check=True, timeout=180)
+                                # The previous attempt may have approved sharing
+                                # consent for this host; that approval survives in
+                                # the App Group container and would skip the gate
+                                # the case asserts on. Reset it so the retry runs
+                                # the same clean state the first attempt saw.
+                                reset_app_group_consent(
+                                    simulator, "run.holon.ios", "group.run.holon.ios")
+                            started = time.monotonic()
+                            try:
+                                run_ui_case(method, content_size, case_bundle)
+                                ui_telemetry.append({
+                                    "case": method, "attempt": attempt,
+                                    "outcome": "passed", "seconds": round(time.monotonic() - started, 1)})
+                                break
+                            except UICaseFailure:
+                                elapsed = round(time.monotonic() - started, 1)
+                                ui_telemetry.append({
+                                    "case": method, "attempt": attempt,
+                                    "outcome": "failed", "seconds": elapsed})
+                                if attempt >= max_attempts:
+                                    raise
+                                ui_retries.append(method)
+                                detail = (f"{method} attempt {attempt} failed after "
+                                          f"{elapsed:.0f}s; rebuilding per-case fixtures and retrying once")
+                                print(f"::warning title=iOS UI retry::{detail}", flush=True)
+                                print(f"UI 用例 {method} 第 {attempt} 次尝试失败，重建该用例 fixture 后重试一次", flush=True)
+                finally:
+                    # A stable, machine-readable record of the sweep's outcome.
+                    # The CI summary prints it so a flaky case can be named
+                    # without digging through the full xcodebuild log.
+                    slowest = max(ui_telemetry, key=lambda record: record["seconds"], default=None)
+                    summary = (f"UI sweep telemetry: {len(cases)} cases, "
+                               f"{len(ui_retries)} retried")
+                    if slowest is not None:
+                        summary += (f", slowest {slowest['case']} "
+                                    f"{slowest['seconds']}s")
+                    print(summary, flush=True)
+                    for record in ui_telemetry:
+                        if record["outcome"] == "failed":
+                            print(f"::warning title=iOS UI case failed::{record['case']} "
+                                  f"attempt {record['attempt']} failed after {record['seconds']}s",
+                                  flush=True)
+                    if fixture_evidence is not None:
+                        write_fixture_json(fixture_evidence, "ui-sweep-telemetry.json", {
+                            "cases": len(cases),
+                            "retried": ui_retries,
+                            "attempts": ui_telemetry,
+                            "wait_scale": test_env.get("TEST_RUNNER_HOLON_UI_WAIT_SCALE"),
+                        })
                 if ui_retries:
                     print(f"UI sweep 完成：{len(cases)} 个用例，其中 {len(ui_retries)} 个经一次有界重试通过："
                           + ", ".join(ui_retries), flush=True)

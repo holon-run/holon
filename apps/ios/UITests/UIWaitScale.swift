@@ -32,11 +32,19 @@ enum UIWaitScale {
     /// Asserts that the runner received the factor the fixture promised.
     ///
     /// The contract only holds when the factor reaches the test runner, so a
-    /// missing value is a wiring failure rather than a default to accept.
+    /// value that contradicts the factor is a wiring failure. An absent value
+    /// is not: the opt-in demo flow runs outside the fixture and legitimately
+    /// has no factor, and the default of 1 is the honest budget there.
     static func assertForwarded(file: StaticString = #filePath, line: UInt = #line) {
-        let raw = ProcessInfo.processInfo.environment["HOLON_UI_WAIT_SCALE"]
-        XCTAssertNotNil(raw, "The UI runner must receive HOLON_UI_WAIT_SCALE", file: file, line: line)
-        XCTAssertEqual(raw?.trimmingCharacters(in: .whitespaces), String(format: "%g", factor),
+        guard let raw = ProcessInfo.processInfo.environment["HOLON_UI_WAIT_SCALE"]?
+            .trimmingCharacters(in: .whitespaces), !raw.isEmpty else {
+            return
+        }
+        guard let requested = Double(raw) else {
+            XCTFail("HOLON_UI_WAIT_SCALE must be a number, got \(raw)", file: file, line: line)
+            return
+        }
+        XCTAssertEqual(requested, factor, accuracy: 0.0001,
                        "The UI runner's wait scale must match the requested factor",
                        file: file, line: line)
     }

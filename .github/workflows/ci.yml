@@ -399,8 +399,20 @@ jobs:
           IOS_TASK_RESULT_ACCEPTANCE: "1"
           # macos-latest contention slows the simulator; scale UI wait budgets.
           HOLON_UI_WAIT_SCALE: "2"
+          # Collect the per-case sweep telemetry so a failed job says which
+          # case ran out of budget.
+          IOS_UI_FIXTURE_PATH: ${{ runner.temp }}/holon-ios-ui-evidence
           IOS_DERIVED_DATA_PATH: ${{ runner.temp }}/holon-ios-ui
           IOS_RESULT_BUNDLE_PATH: ${{ runner.temp }}/holon-ios-ui.xcresult
+      - name: Preserve the UI sweep telemetry
+        if: always() && (needs.changes.outputs.full_sweep == 'true' || needs.changes.outputs.ios_app == 'true')
+        uses: actions/upload-artifact@v4
+        with:
+          name: ios-ui-sweep-telemetry
+          # Only the telemetry: the rest of the evidence directory holds the
+          # ephemeral pairing payload and must stay on the runner.
+          path: ${{ runner.temp }}/holon-ios-ui-evidence/ui-sweep-telemetry.json
+          if-no-files-found: ignore
       - name: Preserve application test results
         if: always() && (needs.changes.outputs.full_sweep == 'true' || needs.changes.outputs.ios_app == 'true')
         uses: actions/upload-artifact@v4

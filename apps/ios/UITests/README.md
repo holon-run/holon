@@ -116,6 +116,7 @@ not the forwarding contract. None are passed to the application environment.
 | `TEST_RUNNER_HOLON_UI_NODE_CONTROL_TOKEN` | Fixture control secret; runner only, never app launch arguments/environment or logs |
 | `TEST_RUNNER_HOLON_UI_HISTORY_OLDER_TOP` | Real top turn ID of the older bounded window for history/offline reading |
 | `TEST_RUNNER_HOLON_UI_OFFLINE_BODY_MARKER` | Literal body text from the real historical brief used by the offline case |
+| `TEST_RUNNER_HOLON_UI_WAIT_SCALE` | Factor every UI wait budget is scaled by; `1` keeps the unscaled budgets, a value in `[1, 5]` stretches them for a loaded runner |
 
 Missing authenticated fixture inputs fail the test; they never skip it. The
 fixture must accept the explicit message and return a received outbox receipt.
@@ -168,6 +169,11 @@ Forward `TEST_RUNNER_HOLON_DEMO_ENDPOINT` (`https://demo.holon.run/api`),
 `TEST_RUNNER_HOLON_DEMO_PAIRING_TICKET`, `TEST_RUNNER_HOLON_DEMO_AGENT_ID`, and
 `TEST_RUNNER_HOLON_DEMO_REPLY_MARKER` to `xcodebuild`. Missing inputs fail rather
 than skip; the ordinary CI harness does not select this live test.
+
+The demo flow runs outside the CI fixture, so it has no wait scale and keeps
+the unscaled budgets. Export `TEST_RUNNER_HOLON_UI_WAIT_SCALE=1` if the machine
+is slow enough to need them stretched; a value that contradicts the runner's
+own factor fails the test rather than silently changing the budget.
 
 Issue a short-lived, single-use pairing ticket using an authorized temporary
 native session. Do not pass the administrator/reviewer token into XCUITest,

@@ -53,26 +53,64 @@ def ui_case_sweep_statements(tree):
                           for target in node.target.elts))
     for node in ast.walk(tree):
         body = getattr(node, "body", None)
-        if isinstance(body, list) and driver in body:
-            # The per-case helpers the sweep calls must travel with it, or the
-            # extracted code references names that were never defined.
-            start = next(index for index, statement in enumerate(body)
+        if not isinstance(body, list):
+            continue
+        # The driver may sit inside a try block whose finally block carries
+        # the sweep's reporting; keep that shape so the extracted code
+        # behaves like the real one.
+        wrapper = None
+        if driver not in body:
+            nested = [statement for statement in body
+                      if isinstance(statement, ast.Try) and driver in statement.body]
+            if len(nested) != 1:
+                continue
+            wrapper = nested[0]
+            scope = body
+        else:
+            scope = body
+            # A bare driver body is the try block's own list; the enclosing
+            # scope holds the helpers, so step out to it.
+            if not any(isinstance(statement, ast.FunctionDef) for statement in body):
+                for candidate in ast.walk(tree):
+                    parent = getattr(candidate, "body", None)
+                    if not isinstance(parent, list):
+                        continue
+                    if any(statement is wrapper for statement in parent) if wrapper else False:
+                        scope = parent
+                        break
+                    if driver in parent and any(
+                            isinstance(statement, ast.FunctionDef) for statement in parent):
+                        scope = parent
+                        break
+        if driver not in scope and (wrapper is None or driver not in wrapper.body):
+            continue
+        # The helpers and the case body live next to the driver, in the
+        # enclosing block. Every helper the sweep calls must travel with it,
+        # or the extracted code references names that were never defined.
+        helpers = [statement for statement in scope
+                   if isinstance(statement, ast.FunctionDef)
+                   and statement.name != "run_ui_case"]
+        run_case = next((statement for statement in scope
                          if isinstance(statement, ast.FunctionDef)
-                         and statement.name == "run_ui_case")
-            # Every helper the sweep calls must travel with it, or the
-            # extracted code references names that were never defined.
-            helpers = [statement for statement in body[:start]
-                       if isinstance(statement, ast.FunctionDef)]
-            # The sweep's own reporting follows the driver loop; it belongs to
-            # the sweep and must travel with it.
-            driver_index = body.index(driver)
-            tail = []
-            for statement in body[driver_index + 1:]:
-                if isinstance(statement, ast.If) and isinstance(statement.test, ast.UnaryOp):
-                    break  # The SDK-only branch ends the UI sweep.
-                tail.append(statement)
-            return helpers + body[start:driver_index + 1] + tail
-    raise AssertionError("run_ui_case and the sweep driver must share one block")
+                         and statement.name == "run_ui_case"), None)
+        if run_case is None:
+            continue
+        # The driver's own setup statements travel with it too.
+        setup = [statement for statement in scope
+                 if isinstance(statement, ast.Assign)
+                 and any(isinstance(target, ast.Name)
+                         and target.id in {"max_attempts", "ui_retries", "ui_telemetry"}
+                         for target in statement.targets)]
+        selected = helpers + [run_case] + setup
+        if wrapper is None:
+            selected += scope[scope.index(driver):scope.index(driver) + 1]
+            return selected
+        # Rebuild the try/finally around the driver so the reporting still
+        # runs when a case fails.
+        try_statement = ast.Try(body=[driver], handlers=[], orelse=[],
+                                finalbody=wrapper.finalbody)
+        ast.fix_missing_locations(try_statement)
+        return selected + [try_statement]
 
 
 class AppMetadataContracts(unittest.TestCase):
@@ -561,8 +599,10 @@ class UIFixtureSetupContracts(unittest.TestCase):
                           and any(isinstance(target, ast.Name) and target.id == "cases"
                                   for target in statement.targets)), None)
             if start is not None:
+                # The setup ends where the sweep begins: the driver loop, or
+                # the try block that wraps it.
                 stop = next(index for index in range(start, len(body))
-                            if isinstance(body[index], ast.For))
+                            if isinstance(body[index], (ast.For, ast.Try)))
                 setup = ast.Module(body=body[start:stop], type_ignores=[])
                 break
         else:
@@ -627,6 +667,7 @@ class UIFixtureSetupContracts(unittest.TestCase):
         self.assertEqual(events, [
             "ready",
             ("xcrun", "simctl", "get_app_container", UUID, "run.holon.ios", "groups"),
+            ("xcrun", "simctl", "get_app_container", UUID, "run.holon.ios", "data"),
             ("xcrun", "simctl", "uninstall", UUID, "run.holon.ios"),
             ("xcrun", "simctl", "get_app_container", UUID, "run.holon.ios", "data"),
             "installed",
@@ -641,15 +682,33 @@ class UIFixtureSetupContracts(unittest.TestCase):
         """
         source = ROOT / "scripts/ios_ui_fixture.py"
         text = source.read_text()
-        reset = text.index("reset_app_group_consent(simulator")
-        uninstall = text.index('ensure_uninstalled(simulator, "run.holon.ios")')
-        self.assertLess(reset, uninstall,
+        def call_sites(source_text, needle):
+            """Every call of `needle`, skipping its definition."""
+            sites = []
+            for number, line in enumerate(source_text.splitlines(), start=1):
+                if needle in line and not line.lstrip().startswith("def "):
+                    sites.append(number)
+            return sites
+
+        reset_calls = call_sites(text, "reset_app_group_consent(")
+        uninstall_calls = call_sites(text, 'ensure_uninstalled(simulator, "run.holon.ios")')
+        self.assertTrue(reset_calls, "The sweep must reset the sharing consent")
+        self.assertTrue(uninstall_calls, "The sweep must uninstall the app")
+        # The definition always comes first, so the definition's line is
+        # never part of the call order.
+        definition = text.index("def reset_app_group_consent(")
+        definition_line = text[:definition].count("\n") + 1
+        reset_calls = [line for line in reset_calls if line != definition_line]
+        self.assertTrue(reset_calls, "The consent reset must be called")
+        self.assertLess(min(reset_calls), min(uninstall_calls),
                         "The consent reset must run while the app is still installed")
-        # The same order is required by the browser case's own clean install.
-        browser = text.index('if method == "testRuntimeBrowserWorkflow":')
-        browser_reset = text.index("reset_app_group_consent(", browser)
-        browser_uninstall = text.index('ensure_uninstalled(simulator, "run.holon.ios")', browser)
-        self.assertLess(browser_reset, browser_uninstall,
+        # The browser case's own clean install needs the same order.
+        browser = text[:text.index('if method == "testRuntimeBrowserWorkflow":')].count("\n") + 1
+        browser_reset = [line for line in reset_calls if line > browser]
+        browser_uninstall = [line for line in uninstall_calls if line > browser]
+        self.assertTrue(browser_reset and browser_uninstall,
+                        "The browser case must reset consent and uninstall the app")
+        self.assertLess(min(browser_reset), min(browser_uninstall),
                         "The browser case must reset consent before its uninstall")
 
     def test_failed_initialization_prevents_share_install(self):
