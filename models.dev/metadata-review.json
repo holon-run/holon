@@ -15379,7 +15379,8 @@
         "agent_turn": true,
         "decision_capable": false,
         "reasoning_effort_options": [
-          "none",
+          "low",
+          "medium",
           "high"
         ]
       },
@@ -15400,7 +15401,8 @@
           "effective_context_window_percent": 95,
           "max_output_tokens_upper_limit": 262144,
           "reasoning_effort_options": [
-            "none",
+            "low",
+            "medium",
             "high"
           ],
           "tool_output_truncation_estimated_tokens": 2500
@@ -19389,7 +19391,13 @@
         },
         "agent_turn": true,
         "decision_capable": false,
-        "reasoning_effort_options": []
+        "reasoning_effort_options": [
+          "low",
+          "medium",
+          "high",
+          "xhigh",
+          "max"
+        ]
       },
       "inputs": {
         "model": {
@@ -19407,7 +19415,14 @@
           "default_verbosity": null,
           "effective_context_window_percent": 95,
           "max_output_tokens_upper_limit": 131072,
-          "tool_output_truncation_estimated_tokens": 2500
+          "tool_output_truncation_estimated_tokens": 2500,
+          "reasoning_effort_options": [
+            "low",
+            "medium",
+            "high",
+            "xhigh",
+            "max"
+          ]
         },
         "route": {
           "capabilities": {},
@@ -19434,7 +19449,7 @@
             "image_generation": "model_builtin",
             "supports_reasoning": "model_builtin",
             "interactive_exec": "model_builtin",
-            "reasoning_effort_options": "derived"
+            "reasoning_effort_options": "model_builtin"
           }
         }
       },
@@ -19549,7 +19564,14 @@
           "default_verbosity": null,
           "effective_context_window_percent": 95,
           "max_output_tokens_upper_limit": 128000,
-          "tool_output_truncation_estimated_tokens": 2500
+          "tool_output_truncation_estimated_tokens": 2500,
+          "reasoning_effort_options": [
+            "low",
+            "medium",
+            "high",
+            "xhigh",
+            "max"
+          ]
         },
         "route": {
           "auto_compact_token_limit": null,
@@ -19611,12 +19633,13 @@
       "output_status": "unknown",
       "review": {
         "owner": "holon-model-provider",
-        "reviewed_at": "2026-10-28",
-        "reason": "Official OpenCode Go text eligibility includes translated Chat, Messages and Responses. Translation does not certify capacities, vision, reasoning controls, explicit cache controls or parallel tools.",
-        "recheck": "Recheck exact Go endpoint limits and translated capabilities.",
+        "reviewed_at": "2026-10-31",
+        "reason": "Exact native API fields reviewed against the official Go listing. Translated routes retain unknown capacity and conservative controls; native metadata is not inherited across protocols. Existing output defaults and local execution policy are preserved.",
+        "recheck": "Recheck exact native API key, registered base URL, capacities, modalities and effort options when the Go listing changes.",
         "evidence": [
           "models.dev/endpoint-review.md",
-          "models.dev/metadata-evidence.md"
+          "models.dev/metadata-evidence.md",
+          "https://opencode.ai/inference/go/v1/models"
         ]
       }
     },
@@ -19709,7 +19732,10 @@
         },
         "agent_turn": true,
         "decision_capable": false,
-        "reasoning_effort_options": []
+        "reasoning_effort_options": [
+          "high",
+          "max"
+        ]
       },
       "inputs": {
         "model": {
@@ -19727,7 +19753,11 @@
           "default_verbosity": null,
           "effective_context_window_percent": 95,
           "max_output_tokens_upper_limit": 384000,
-          "tool_output_truncation_estimated_tokens": 2500
+          "tool_output_truncation_estimated_tokens": 2500,
+          "reasoning_effort_options": [
+            "high",
+            "max"
+          ]
         },
         "route": {
           "capabilities": {},
@@ -19754,7 +19784,7 @@
             "image_generation": "model_builtin",
             "supports_reasoning": "model_builtin",
             "interactive_exec": "model_builtin",
-            "reasoning_effort_options": "derived"
+            "reasoning_effort_options": "model_builtin"
           }
         }
       },
@@ -19780,7 +19810,11 @@
         },
         "agent_turn": true,
         "decision_capable": false,
-        "reasoning_effort_options": []
+        "reasoning_effort_options": [
+          "low",
+          "high",
+          "max"
+        ]
       },
       "inputs": {
         "model": {
@@ -19798,7 +19832,12 @@
           "default_verbosity": null,
           "effective_context_window_percent": 95,
           "max_output_tokens_upper_limit": 384000,
-          "tool_output_truncation_estimated_tokens": 2500
+          "tool_output_truncation_estimated_tokens": 2500,
+          "reasoning_effort_options": [
+            "low",
+            "high",
+            "max"
+          ]
         },
         "route": {
           "capabilities": {},
@@ -19825,7 +19864,7 @@
             "image_generation": "model_builtin",
             "supports_reasoning": "model_builtin",
             "interactive_exec": "model_builtin",
-            "reasoning_effort_options": "derived"
+            "reasoning_effort_options": "model_builtin"
           }
         }
       },
@@ -20002,7 +20041,10 @@
         },
         "agent_turn": true,
         "decision_capable": false,
-        "reasoning_effort_options": []
+        "reasoning_effort_options": [
+          "high",
+          "max"
+        ]
       },
       "inputs": {
         "model": {
@@ -20020,7 +20062,11 @@
           "default_verbosity": null,
           "effective_context_window_percent": 95,
           "max_output_tokens_upper_limit": 131072,
-          "tool_output_truncation_estimated_tokens": 2500
+          "tool_output_truncation_estimated_tokens": 2500,
+          "reasoning_effort_options": [
+            "high",
+            "max"
+          ]
         },
         "route": {
           "capabilities": {},
@@ -20047,7 +20093,7 @@
             "image_generation": "model_builtin",
             "supports_reasoning": "model_builtin",
             "interactive_exec": "model_builtin",
-            "reasoning_effort_options": "derived"
+            "reasoning_effort_options": "model_builtin"
           }
         }
       },
@@ -20073,7 +20119,11 @@
         },
         "agent_turn": true,
         "decision_capable": false,
-        "reasoning_effort_options": []
+        "reasoning_effort_options": [
+          "low",
+          "high",
+          "max"
+        ]
       },
       "inputs": {
         "model": {
@@ -20091,7 +20141,12 @@
           "default_verbosity": null,
           "effective_context_window_percent": 95,
           "max_output_tokens_upper_limit": 131072,
-          "tool_output_truncation_estimated_tokens": 2500
+          "tool_output_truncation_estimated_tokens": 2500,
+          "reasoning_effort_options": [
+            "low",
+            "high",
+            "max"
+          ]
         },
         "route": {
           "capabilities": {},
@@ -20118,7 +20173,7 @@
             "image_generation": "model_builtin",
             "supports_reasoning": "model_builtin",
             "interactive_exec": "model_builtin",
-            "reasoning_effort_options": "derived"
+            "reasoning_effort_options": "model_builtin"
           }
         }
       },
@@ -20144,7 +20199,11 @@
         },
         "agent_turn": true,
         "decision_capable": false,
-        "reasoning_effort_options": []
+        "reasoning_effort_options": [
+          "low",
+          "high",
+          "max"
+        ]
       },
       "inputs": {
         "model": {
@@ -20162,7 +20221,12 @@
           "default_verbosity": null,
           "effective_context_window_percent": 95,
           "max_output_tokens_upper_limit": 131072,
-          "tool_output_truncation_estimated_tokens": 2500
+          "tool_output_truncation_estimated_tokens": 2500,
+          "reasoning_effort_options": [
+            "low",
+            "high",
+            "max"
+          ]
         },
         "route": {
           "capabilities": {},
@@ -20189,7 +20253,7 @@
             "image_generation": "model_builtin",
             "supports_reasoning": "model_builtin",
             "interactive_exec": "model_builtin",
-            "reasoning_effort_options": "derived"
+            "reasoning_effort_options": "model_builtin"
           }
         }
       },
@@ -20233,7 +20297,15 @@
           "default_verbosity": null,
           "effective_context_window_percent": 95,
           "max_output_tokens_upper_limit": 128000,
-          "tool_output_truncation_estimated_tokens": 2500
+          "tool_output_truncation_estimated_tokens": 2500,
+          "reasoning_effort_options": [
+            "none",
+            "low",
+            "medium",
+            "high",
+            "xhigh",
+            "max"
+          ]
         },
         "route": {
           "auto_compact_token_limit": null,
@@ -20295,12 +20367,13 @@
       "output_status": "unknown",
       "review": {
         "owner": "holon-model-provider",
-        "reviewed_at": "2026-10-28",
-        "reason": "Official OpenCode Go text eligibility includes translated Chat, Messages and Responses. Translation does not certify capacities, vision, reasoning controls, explicit cache controls or parallel tools.",
-        "recheck": "Recheck exact Go endpoint limits and translated capabilities.",
+        "reviewed_at": "2026-10-31",
+        "reason": "Exact native API fields reviewed against the official Go listing. Translated routes retain unknown capacity and conservative controls; native metadata is not inherited across protocols. Existing output defaults and local execution policy are preserved.",
+        "recheck": "Recheck exact native API key, registered base URL, capacities, modalities and effort options when the Go listing changes.",
         "evidence": [
           "models.dev/endpoint-review.md",
-          "models.dev/metadata-evidence.md"
+          "models.dev/metadata-evidence.md",
+          "https://opencode.ai/inference/go/v1/models"
         ]
       }
     },
@@ -20340,7 +20413,15 @@
           "default_verbosity": null,
           "effective_context_window_percent": 95,
           "max_output_tokens_upper_limit": 128000,
-          "tool_output_truncation_estimated_tokens": 2500
+          "tool_output_truncation_estimated_tokens": 2500,
+          "reasoning_effort_options": [
+            "none",
+            "low",
+            "medium",
+            "high",
+            "xhigh",
+            "max"
+          ]
         },
         "route": {
           "auto_compact_token_limit": null,
@@ -20402,12 +20483,13 @@
       "output_status": "unknown",
       "review": {
         "owner": "holon-model-provider",
-        "reviewed_at": "2026-10-28",
-        "reason": "Official OpenCode Go text eligibility includes translated Chat, Messages and Responses. Translation does not certify capacities, vision, reasoning controls, explicit cache controls or parallel tools.",
-        "recheck": "Recheck exact Go endpoint limits and translated capabilities.",
+        "reviewed_at": "2026-10-31",
+        "reason": "Exact native API fields reviewed against the official Go listing. Translated routes retain unknown capacity and conservative controls; native metadata is not inherited across protocols. Existing output defaults and local execution policy are preserved.",
+        "recheck": "Recheck exact native API key, registered base URL, capacities, modalities and effort options when the Go listing changes.",
         "evidence": [
           "models.dev/endpoint-review.md",
-          "models.dev/metadata-evidence.md"
+          "models.dev/metadata-evidence.md",
+          "https://opencode.ai/inference/go/v1/models"
         ]
       }
     },
@@ -20447,7 +20529,13 @@
           "default_verbosity": null,
           "effective_context_window_percent": 95,
           "max_output_tokens_upper_limit": 500000,
-          "tool_output_truncation_estimated_tokens": 2500
+          "tool_output_truncation_estimated_tokens": 2500,
+          "reasoning_effort_options": [
+            "low",
+            "medium",
+            "high",
+            "xhigh"
+          ]
         },
         "route": {
           "auto_compact_token_limit": null,
@@ -20509,12 +20597,13 @@
       "output_status": "unknown",
       "review": {
         "owner": "holon-model-provider",
-        "reviewed_at": "2026-10-28",
-        "reason": "Official OpenCode Go text eligibility includes translated Chat, Messages and Responses. Translation does not certify capacities, vision, reasoning controls, explicit cache controls or parallel tools.",
-        "recheck": "Recheck exact Go endpoint limits and translated capabilities.",
+        "reviewed_at": "2026-10-31",
+        "reason": "Exact native API fields reviewed against the official Go listing. Translated routes retain unknown capacity and conservative controls; native metadata is not inherited across protocols. Existing output defaults and local execution policy are preserved.",
+        "recheck": "Recheck exact native API key, registered base URL, capacities, modalities and effort options when the Go listing changes.",
         "evidence": [
           "models.dev/endpoint-review.md",
-          "models.dev/metadata-evidence.md"
+          "models.dev/metadata-evidence.md",
+          "https://opencode.ai/inference/go/v1/models"
         ]
       }
     },
@@ -20536,7 +20625,11 @@
         },
         "agent_turn": true,
         "decision_capable": false,
-        "reasoning_effort_options": []
+        "reasoning_effort_options": [
+          "none",
+          "low",
+          "high"
+        ]
       },
       "inputs": {
         "model": {
@@ -20554,7 +20647,12 @@
           "default_verbosity": null,
           "effective_context_window_percent": 95,
           "max_output_tokens_upper_limit": 128000,
-          "tool_output_truncation_estimated_tokens": 2500
+          "tool_output_truncation_estimated_tokens": 2500,
+          "reasoning_effort_options": [
+            "none",
+            "low",
+            "high"
+          ]
         },
         "route": {
           "capabilities": {},
@@ -20581,7 +20679,7 @@
             "image_generation": "model_builtin",
             "supports_reasoning": "model_builtin",
             "interactive_exec": "model_builtin",
-            "reasoning_effort_options": "derived"
+            "reasoning_effort_options": "model_builtin"
           }
         }
       },
@@ -20607,7 +20705,10 @@
         },
         "agent_turn": true,
         "decision_capable": false,
-        "reasoning_effort_options": []
+        "reasoning_effort_options": [
+          "none",
+          "high"
+        ]
       },
       "inputs": {
         "model": {
@@ -20625,7 +20726,11 @@
           "default_verbosity": null,
           "effective_context_window_percent": 95,
           "max_output_tokens_upper_limit": 64000,
-          "tool_output_truncation_estimated_tokens": 2500
+          "tool_output_truncation_estimated_tokens": 2500,
+          "reasoning_effort_options": [
+            "none",
+            "high"
+          ]
         },
         "route": {
           "capabilities": {},
@@ -20652,7 +20757,7 @@
             "image_generation": "model_builtin",
             "supports_reasoning": "model_builtin",
             "interactive_exec": "model_builtin",
-            "reasoning_effort_options": "derived"
+            "reasoning_effort_options": "model_builtin"
           }
         }
       },
@@ -20663,17 +20768,17 @@
     {
       "route_ref": "opencode-go@default/iceman-contributor-free",
       "facts": {
-        "context_window_tokens": null,
+        "context_window_tokens": 262144,
         "default_max_output_tokens": null,
-        "max_output_tokens_upper_limit": null,
-        "prompt_budget_estimated_tokens": 128000,
+        "max_output_tokens_upper_limit": 131072,
+        "prompt_budget_estimated_tokens": 249036,
         "runtime_max_output_tokens": 8192,
         "capabilities": {
           "agent_turn": true,
           "parallel_tool_calls": false,
           "image_input": false,
           "image_generation": false,
-          "supports_reasoning": false,
+          "supports_reasoning": true,
           "interactive_exec": false
         },
         "agent_turn": true,
@@ -20689,13 +20794,13 @@
             "image_input": false,
             "interactive_exec": false,
             "parallel_tool_calls": false,
-            "supports_reasoning": false
+            "supports_reasoning": true
           },
-          "context_window_tokens": null,
+          "context_window_tokens": 262144,
           "default_max_output_tokens": null,
           "default_verbosity": null,
           "effective_context_window_percent": 95,
-          "max_output_tokens_upper_limit": null,
+          "max_output_tokens_upper_limit": 131072,
           "tool_output_truncation_estimated_tokens": 2500
         },
         "route": {
@@ -20707,16 +20812,16 @@
           "fields": {
             "display_name": "model_builtin",
             "description": "model_builtin",
-            "context_window_tokens": "derived",
+            "context_window_tokens": "model_builtin",
             "effective_context_window_percent": "model_builtin",
             "auto_compact_token_limit": "derived",
-            "prompt_budget_estimated_tokens": "runtime_default",
+            "prompt_budget_estimated_tokens": "derived",
             "compaction_trigger_estimated_tokens": "derived",
             "compaction_keep_recent_estimated_tokens": "derived",
             "runtime_max_output_tokens": "runtime_default",
             "verbosity": "derived",
             "tool_output_truncation_estimated_tokens": "model_builtin",
-            "max_output_tokens_upper_limit": "derived",
+            "max_output_tokens_upper_limit": "model_builtin",
             "agent_turn": "model_builtin",
             "parallel_tool_calls": "model_builtin",
             "image_input": "model_builtin",
@@ -20727,17 +20832,18 @@
           }
         }
       },
-      "context_status": "unknown",
-      "output_status": "unknown",
+      "context_status": "known",
+      "output_status": "known",
       "review": {
         "owner": "holon-model-provider",
-        "reviewed_at": "2026-10-25",
-        "reason": "opencode-go@default/iceman-contributor-free: Missing capacity is retained as unknown. No exact endpoint upstream capacity evidence is associated; generic API, other region, plan, or protocol limits are not borrowed. Existing known fields and local output policy are preserved, not newly vendor-verified.",
-        "recheck": "At the next exact endpoint model/catalog/documentation change or before increasing its local execution budget; verify support and each missing capacity independently.",
+        "reviewed_at": "2026-10-31",
+        "reason": "Exact native API fields reviewed against the official Go listing. Translated routes retain unknown capacity and conservative controls; native metadata is not inherited across protocols. Existing output defaults and local execution policy are preserved.",
+        "recheck": "Recheck exact native API key, registered base URL, capacities, modalities and effort options when the Go listing changes.",
         "evidence": [
           "models.dev/metadata-evidence.md",
           "models.dev/endpoint-review.md",
-          "models.dev/endpoint-mappings.json"
+          "models.dev/endpoint-mappings.json",
+          "https://opencode.ai/inference/go/v1/models"
         ]
       }
     },
@@ -20901,7 +21007,9 @@
         },
         "agent_turn": true,
         "decision_capable": false,
-        "reasoning_effort_options": []
+        "reasoning_effort_options": [
+          "max"
+        ]
       },
       "inputs": {
         "model": {
@@ -20919,7 +21027,10 @@
           "default_verbosity": null,
           "effective_context_window_percent": 95,
           "max_output_tokens_upper_limit": 131072,
-          "tool_output_truncation_estimated_tokens": 2500
+          "tool_output_truncation_estimated_tokens": 2500,
+          "reasoning_effort_options": [
+            "max"
+          ]
         },
         "route": {
           "capabilities": {},
@@ -20946,7 +21057,7 @@
             "image_generation": "model_builtin",
             "supports_reasoning": "model_builtin",
             "interactive_exec": "model_builtin",
-            "reasoning_effort_options": "derived"
+            "reasoning_effort_options": "model_builtin"
           }
         }
       },
@@ -20957,22 +21068,26 @@
     {
       "route_ref": "opencode-go@default/kimi-k3.1-pro",
       "facts": {
-        "context_window_tokens": null,
+        "context_window_tokens": 1048576,
         "default_max_output_tokens": null,
-        "max_output_tokens_upper_limit": null,
-        "prompt_budget_estimated_tokens": 128000,
+        "max_output_tokens_upper_limit": 131072,
+        "prompt_budget_estimated_tokens": 996147,
         "runtime_max_output_tokens": 8192,
         "capabilities": {
           "agent_turn": true,
           "parallel_tool_calls": false,
-          "image_input": false,
+          "image_input": true,
           "image_generation": false,
-          "supports_reasoning": false,
+          "supports_reasoning": true,
           "interactive_exec": false
         },
         "agent_turn": true,
         "decision_capable": false,
-        "reasoning_effort_options": []
+        "reasoning_effort_options": [
+          "low",
+          "high",
+          "max"
+        ]
       },
       "inputs": {
         "model": {
@@ -20980,17 +21095,22 @@
           "capabilities": {
             "agent_turn": true,
             "image_generation": false,
-            "image_input": false,
+            "image_input": true,
             "interactive_exec": false,
             "parallel_tool_calls": false,
-            "supports_reasoning": false
+            "supports_reasoning": true
           },
-          "context_window_tokens": null,
+          "context_window_tokens": 1048576,
           "default_max_output_tokens": null,
           "default_verbosity": null,
           "effective_context_window_percent": 95,
-          "max_output_tokens_upper_limit": null,
-          "tool_output_truncation_estimated_tokens": 2500
+          "max_output_tokens_upper_limit": 131072,
+          "tool_output_truncation_estimated_tokens": 2500,
+          "reasoning_effort_options": [
+            "low",
+            "high",
+            "max"
+          ]
         },
         "route": {
           "capabilities": {},
@@ -21001,37 +21121,38 @@
           "fields": {
             "display_name": "model_builtin",
             "description": "model_builtin",
-            "context_window_tokens": "derived",
+            "context_window_tokens": "model_builtin",
             "effective_context_window_percent": "model_builtin",
             "auto_compact_token_limit": "derived",
-            "prompt_budget_estimated_tokens": "runtime_default",
+            "prompt_budget_estimated_tokens": "derived",
             "compaction_trigger_estimated_tokens": "derived",
             "compaction_keep_recent_estimated_tokens": "derived",
             "runtime_max_output_tokens": "runtime_default",
             "verbosity": "derived",
             "tool_output_truncation_estimated_tokens": "model_builtin",
-            "max_output_tokens_upper_limit": "derived",
+            "max_output_tokens_upper_limit": "model_builtin",
             "agent_turn": "model_builtin",
             "parallel_tool_calls": "model_builtin",
             "image_input": "model_builtin",
             "image_generation": "model_builtin",
             "supports_reasoning": "model_builtin",
             "interactive_exec": "model_builtin",
-            "reasoning_effort_options": "derived"
+            "reasoning_effort_options": "model_builtin"
           }
         }
       },
-      "context_status": "unknown",
-      "output_status": "unknown",
+      "context_status": "known",
+      "output_status": "known",
       "review": {
         "owner": "holon-model-provider",
-        "reviewed_at": "2026-10-25",
-        "reason": "opencode-go@default/kimi-k3.1-pro: Missing capacity is retained as unknown. No exact endpoint upstream capacity evidence is associated; generic API, other region, plan, or protocol limits are not borrowed. Existing known fields and local output policy are preserved, not newly vendor-verified.",
-        "recheck": "At the next exact endpoint model/catalog/documentation change or before increasing its local execution budget; verify support and each missing capacity independently.",
+        "reviewed_at": "2026-10-31",
+        "reason": "Exact native API fields reviewed against the official Go listing. Translated routes retain unknown capacity and conservative controls; native metadata is not inherited across protocols. Existing output defaults and local execution policy are preserved.",
+        "recheck": "Recheck exact native API key, registered base URL, capacities, modalities and effort options when the Go listing changes.",
         "evidence": [
           "models.dev/metadata-evidence.md",
           "models.dev/endpoint-review.md",
-          "models.dev/endpoint-mappings.json"
+          "models.dev/endpoint-mappings.json",
+          "https://opencode.ai/inference/go/v1/models"
         ]
       }
     },
@@ -21496,7 +21617,7 @@
           "default_max_output_tokens": null,
           "default_verbosity": null,
           "effective_context_window_percent": 95,
-          "max_output_tokens_upper_limit": null,
+          "max_output_tokens_upper_limit": 131072,
           "tool_output_truncation_estimated_tokens": 2500
         },
         "route": {
@@ -21559,12 +21680,13 @@
       "output_status": "unknown",
       "review": {
         "owner": "holon-model-provider",
-        "reviewed_at": "2026-10-28",
-        "reason": "Official OpenCode Go text eligibility includes translated Chat, Messages and Responses. Translation does not certify capacities, vision, reasoning controls, explicit cache controls or parallel tools.",
-        "recheck": "Recheck exact Go endpoint limits and translated capabilities.",
+        "reviewed_at": "2026-10-31",
+        "reason": "Exact native API fields reviewed against the official Go listing. Translated routes retain unknown capacity and conservative controls; native metadata is not inherited across protocols. Existing output defaults and local execution policy are preserved.",
+        "recheck": "Recheck exact native API key, registered base URL, capacities, modalities and effort options when the Go listing changes.",
         "evidence": [
           "models.dev/endpoint-review.md",
-          "models.dev/metadata-evidence.md"
+          "models.dev/metadata-evidence.md",
+          "https://opencode.ai/inference/go/v1/models"
         ]
       }
     },
@@ -21586,7 +21708,13 @@
         },
         "agent_turn": true,
         "decision_capable": false,
-        "reasoning_effort_options": []
+        "reasoning_effort_options": [
+          "low",
+          "medium",
+          "high",
+          "xhigh",
+          "max"
+        ]
       },
       "inputs": {
         "model": {
@@ -21604,7 +21732,14 @@
           "default_verbosity": null,
           "effective_context_window_percent": 95,
           "max_output_tokens_upper_limit": 512000,
-          "tool_output_truncation_estimated_tokens": 2500
+          "tool_output_truncation_estimated_tokens": 2500,
+          "reasoning_effort_options": [
+            "low",
+            "medium",
+            "high",
+            "xhigh",
+            "max"
+          ]
         },
         "route": {
           "capabilities": {},
@@ -21631,7 +21766,7 @@
             "image_generation": "model_builtin",
             "supports_reasoning": "model_builtin",
             "interactive_exec": "model_builtin",
-            "reasoning_effort_options": "derived"
+            "reasoning_effort_options": "model_builtin"
           }
         }
       },
@@ -21746,7 +21881,14 @@
           "default_verbosity": null,
           "effective_context_window_percent": 95,
           "max_output_tokens_upper_limit": 131072,
-          "tool_output_truncation_estimated_tokens": 2500
+          "tool_output_truncation_estimated_tokens": 2500,
+          "reasoning_effort_options": [
+            "minimal",
+            "low",
+            "medium",
+            "high",
+            "xhigh"
+          ]
         },
         "route": {
           "auto_compact_token_limit": null,
@@ -21808,12 +21950,13 @@
       "output_status": "unknown",
       "review": {
         "owner": "holon-model-provider",
-        "reviewed_at": "2026-10-28",
-        "reason": "Official OpenCode Go text eligibility includes translated Chat, Messages and Responses. Translation does not certify capacities, vision, reasoning controls, explicit cache controls or parallel tools.",
-        "recheck": "Recheck exact Go endpoint limits and translated capabilities.",
+        "reviewed_at": "2026-10-31",
+        "reason": "Exact native API fields reviewed against the official Go listing. Translated routes retain unknown capacity and conservative controls; native metadata is not inherited across protocols. Existing output defaults and local execution policy are preserved.",
+        "recheck": "Recheck exact native API key, registered base URL, capacities, modalities and effort options when the Go listing changes.",
         "evidence": [
           "models.dev/endpoint-review.md",
-          "models.dev/metadata-evidence.md"
+          "models.dev/metadata-evidence.md",
+          "https://opencode.ai/inference/go/v1/models"
         ]
       }
     },
@@ -21853,7 +21996,14 @@
           "default_verbosity": null,
           "effective_context_window_percent": 95,
           "max_output_tokens_upper_limit": 131072,
-          "tool_output_truncation_estimated_tokens": 2500
+          "tool_output_truncation_estimated_tokens": 2500,
+          "reasoning_effort_options": [
+            "minimal",
+            "low",
+            "medium",
+            "high",
+            "xhigh"
+          ]
         },
         "route": {
           "auto_compact_token_limit": null,
@@ -21915,12 +22065,13 @@
       "output_status": "unknown",
       "review": {
         "owner": "holon-model-provider",
-        "reviewed_at": "2026-10-28",
-        "reason": "Official OpenCode Go text eligibility includes translated Chat, Messages and Responses. Translation does not certify capacities, vision, reasoning controls, explicit cache controls or parallel tools.",
-        "recheck": "Recheck exact Go endpoint limits and translated capabilities.",
+        "reviewed_at": "2026-10-31",
+        "reason": "Exact native API fields reviewed against the official Go listing. Translated routes retain unknown capacity and conservative controls; native metadata is not inherited across protocols. Existing output defaults and local execution policy are preserved.",
+        "recheck": "Recheck exact native API key, registered base URL, capacities, modalities and effort options when the Go listing changes.",
         "evidence": [
           "models.dev/endpoint-review.md",
-          "models.dev/metadata-evidence.md"
+          "models.dev/metadata-evidence.md",
+          "https://opencode.ai/inference/go/v1/models"
         ]
       }
     },
@@ -22067,7 +22218,12 @@
           "default_verbosity": null,
           "effective_context_window_percent": 95,
           "max_output_tokens_upper_limit": 131072,
-          "tool_output_truncation_estimated_tokens": 2500
+          "tool_output_truncation_estimated_tokens": 2500,
+          "reasoning_effort_options": [
+            "low",
+            "medium",
+            "xhigh"
+          ]
         },
         "route": {
           "auto_compact_token_limit": null,
@@ -22129,12 +22285,13 @@
       "output_status": "unknown",
       "review": {
         "owner": "holon-model-provider",
-        "reviewed_at": "2026-10-28",
-        "reason": "Official OpenCode Go text eligibility includes translated Chat, Messages and Responses. Translation does not certify capacities, vision, reasoning controls, explicit cache controls or parallel tools.",
-        "recheck": "Recheck exact Go endpoint limits and translated capabilities.",
+        "reviewed_at": "2026-10-31",
+        "reason": "Exact native API fields reviewed against the official Go listing. Translated routes retain unknown capacity and conservative controls; native metadata is not inherited across protocols. Existing output defaults and local execution policy are preserved.",
+        "recheck": "Recheck exact native API key, registered base URL, capacities, modalities and effort options when the Go listing changes.",
         "evidence": [
           "models.dev/endpoint-review.md",
-          "models.dev/metadata-evidence.md"
+          "models.dev/metadata-evidence.md",
+          "https://opencode.ai/inference/go/v1/models"
         ]
       }
     },
@@ -22174,7 +22331,12 @@
           "default_verbosity": null,
           "effective_context_window_percent": 95,
           "max_output_tokens_upper_limit": 131072,
-          "tool_output_truncation_estimated_tokens": 2500
+          "tool_output_truncation_estimated_tokens": 2500,
+          "reasoning_effort_options": [
+            "low",
+            "medium",
+            "xhigh"
+          ]
         },
         "route": {
           "auto_compact_token_limit": null,
@@ -22236,12 +22398,13 @@
       "output_status": "unknown",
       "review": {
         "owner": "holon-model-provider",
-        "reviewed_at": "2026-10-28",
-        "reason": "Official OpenCode Go text eligibility includes translated Chat, Messages and Responses. Translation does not certify capacities, vision, reasoning controls, explicit cache controls or parallel tools.",
-        "recheck": "Recheck exact Go endpoint limits and translated capabilities.",
+        "reviewed_at": "2026-10-31",
+        "reason": "Exact native API fields reviewed against the official Go listing. Translated routes retain unknown capacity and conservative controls; native metadata is not inherited across protocols. Existing output defaults and local execution policy are preserved.",
+        "recheck": "Recheck exact native API key, registered base URL, capacities, modalities and effort options when the Go listing changes.",
         "evidence": [
           "models.dev/endpoint-review.md",
-          "models.dev/metadata-evidence.md"
+          "models.dev/metadata-evidence.md",
+          "https://opencode.ai/inference/go/v1/models"
         ]
       }
     },
@@ -22334,7 +22497,11 @@
         },
         "agent_turn": true,
         "decision_capable": false,
-        "reasoning_effort_options": []
+        "reasoning_effort_options": [
+          "low",
+          "medium",
+          "high"
+        ]
       },
       "inputs": {
         "model": {
@@ -22352,7 +22519,12 @@
           "default_verbosity": null,
           "effective_context_window_percent": 95,
           "max_output_tokens_upper_limit": 65536,
-          "tool_output_truncation_estimated_tokens": 2500
+          "tool_output_truncation_estimated_tokens": 2500,
+          "reasoning_effort_options": [
+            "low",
+            "medium",
+            "high"
+          ]
         },
         "route": {
           "capabilities": {},
@@ -22379,7 +22551,7 @@
             "image_generation": "model_builtin",
             "supports_reasoning": "model_builtin",
             "interactive_exec": "model_builtin",
-            "reasoning_effort_options": "derived"
+            "reasoning_effort_options": "model_builtin"
           }
         }
       },
@@ -22494,7 +22666,14 @@
           "default_verbosity": null,
           "effective_context_window_percent": 95,
           "max_output_tokens_upper_limit": 131072,
-          "tool_output_truncation_estimated_tokens": 2500
+          "tool_output_truncation_estimated_tokens": 2500,
+          "reasoning_effort_options": [
+            "low",
+            "medium",
+            "high",
+            "xhigh",
+            "max"
+          ]
         },
         "route": {
           "auto_compact_token_limit": null,
@@ -22549,12 +22728,13 @@
       "output_status": "unknown",
       "review": {
         "owner": "holon-model-provider",
-        "reviewed_at": "2026-10-28",
-        "reason": "Official OpenCode Go text eligibility includes translated Chat, Messages and Responses. Translation does not certify capacities, vision, reasoning controls, explicit cache controls or parallel tools.",
-        "recheck": "Recheck exact Go endpoint limits and translated capabilities.",
+        "reviewed_at": "2026-10-31",
+        "reason": "Exact native API fields reviewed against the official Go listing. Translated routes retain unknown capacity and conservative controls; native metadata is not inherited across protocols. Existing output defaults and local execution policy are preserved.",
+        "recheck": "Recheck exact native API key, registered base URL, capacities, modalities and effort options when the Go listing changes.",
         "evidence": [
           "models.dev/endpoint-review.md",
-          "models.dev/metadata-evidence.md"
+          "models.dev/metadata-evidence.md",
+          "https://opencode.ai/inference/go/v1/models"
         ]
       }
     },
@@ -22576,7 +22756,13 @@
         },
         "agent_turn": true,
         "decision_capable": false,
-        "reasoning_effort_options": []
+        "reasoning_effort_options": [
+          "low",
+          "medium",
+          "high",
+          "xhigh",
+          "max"
+        ]
       },
       "inputs": {
         "model": {
@@ -22594,7 +22780,14 @@
           "default_verbosity": null,
           "effective_context_window_percent": 95,
           "max_output_tokens_upper_limit": 128000,
-          "tool_output_truncation_estimated_tokens": 2500
+          "tool_output_truncation_estimated_tokens": 2500,
+          "reasoning_effort_options": [
+            "low",
+            "medium",
+            "high",
+            "xhigh",
+            "max"
+          ]
         },
         "route": {
           "capabilities": {},
@@ -22621,7 +22814,7 @@
             "image_generation": "model_builtin",
             "supports_reasoning": "model_builtin",
             "interactive_exec": "model_builtin",
-            "reasoning_effort_options": "derived"
+            "reasoning_effort_options": "model_builtin"
           }
         }
       },
@@ -22665,7 +22858,11 @@
           "default_verbosity": null,
           "effective_context_window_percent": 95,
           "max_output_tokens_upper_limit": 384000,
-          "tool_output_truncation_estimated_tokens": 2500
+          "tool_output_truncation_estimated_tokens": 2500,
+          "reasoning_effort_options": [
+            "high",
+            "max"
+          ]
         },
         "route": {
           "auto_compact_token_limit": null,
@@ -22720,12 +22917,13 @@
       "output_status": "unknown",
       "review": {
         "owner": "holon-model-provider",
-        "reviewed_at": "2026-10-28",
-        "reason": "Official OpenCode Go text eligibility includes translated Chat, Messages and Responses. Translation does not certify capacities, vision, reasoning controls, explicit cache controls or parallel tools.",
-        "recheck": "Recheck exact Go endpoint limits and translated capabilities.",
+        "reviewed_at": "2026-10-31",
+        "reason": "Exact native API fields reviewed against the official Go listing. Translated routes retain unknown capacity and conservative controls; native metadata is not inherited across protocols. Existing output defaults and local execution policy are preserved.",
+        "recheck": "Recheck exact native API key, registered base URL, capacities, modalities and effort options when the Go listing changes.",
         "evidence": [
           "models.dev/endpoint-review.md",
-          "models.dev/metadata-evidence.md"
+          "models.dev/metadata-evidence.md",
+          "https://opencode.ai/inference/go/v1/models"
         ]
       }
     },
@@ -22765,7 +22963,12 @@
           "default_verbosity": null,
           "effective_context_window_percent": 95,
           "max_output_tokens_upper_limit": 384000,
-          "tool_output_truncation_estimated_tokens": 2500
+          "tool_output_truncation_estimated_tokens": 2500,
+          "reasoning_effort_options": [
+            "low",
+            "high",
+            "max"
+          ]
         },
         "route": {
           "auto_compact_token_limit": null,
@@ -22827,12 +23030,13 @@
       "output_status": "unknown",
       "review": {
         "owner": "holon-model-provider",
-        "reviewed_at": "2026-10-28",
-        "reason": "Official OpenCode Go text eligibility includes translated Chat, Messages and Responses. Translation does not certify capacities, vision, reasoning controls, explicit cache controls or parallel tools.",
-        "recheck": "Recheck exact Go endpoint limits and translated capabilities.",
+        "reviewed_at": "2026-10-31",
+        "reason": "Exact native API fields reviewed against the official Go listing. Translated routes retain unknown capacity and conservative controls; native metadata is not inherited across protocols. Existing output defaults and local execution policy are preserved.",
+        "recheck": "Recheck exact native API key, registered base URL, capacities, modalities and effort options when the Go listing changes.",
         "evidence": [
           "models.dev/endpoint-review.md",
-          "models.dev/metadata-evidence.md"
+          "models.dev/metadata-evidence.md",
+          "https://opencode.ai/inference/go/v1/models"
         ]
       }
     },
@@ -22963,7 +23167,11 @@
           "default_verbosity": null,
           "effective_context_window_percent": 95,
           "max_output_tokens_upper_limit": 131072,
-          "tool_output_truncation_estimated_tokens": 2500
+          "tool_output_truncation_estimated_tokens": 2500,
+          "reasoning_effort_options": [
+            "high",
+            "max"
+          ]
         },
         "route": {
           "auto_compact_token_limit": null,
@@ -23018,12 +23226,13 @@
       "output_status": "unknown",
       "review": {
         "owner": "holon-model-provider",
-        "reviewed_at": "2026-10-28",
-        "reason": "Official OpenCode Go text eligibility includes translated Chat, Messages and Responses. Translation does not certify capacities, vision, reasoning controls, explicit cache controls or parallel tools.",
-        "recheck": "Recheck exact Go endpoint limits and translated capabilities.",
+        "reviewed_at": "2026-10-31",
+        "reason": "Exact native API fields reviewed against the official Go listing. Translated routes retain unknown capacity and conservative controls; native metadata is not inherited across protocols. Existing output defaults and local execution policy are preserved.",
+        "recheck": "Recheck exact native API key, registered base URL, capacities, modalities and effort options when the Go listing changes.",
         "evidence": [
           "models.dev/endpoint-review.md",
-          "models.dev/metadata-evidence.md"
+          "models.dev/metadata-evidence.md",
+          "https://opencode.ai/inference/go/v1/models"
         ]
       }
     },
@@ -23063,7 +23272,12 @@
           "default_verbosity": null,
           "effective_context_window_percent": 95,
           "max_output_tokens_upper_limit": 131072,
-          "tool_output_truncation_estimated_tokens": 2500
+          "tool_output_truncation_estimated_tokens": 2500,
+          "reasoning_effort_options": [
+            "low",
+            "high",
+            "max"
+          ]
         },
         "route": {
           "auto_compact_token_limit": null,
@@ -23118,12 +23332,13 @@
       "output_status": "unknown",
       "review": {
         "owner": "holon-model-provider",
-        "reviewed_at": "2026-10-28",
-        "reason": "Official OpenCode Go text eligibility includes translated Chat, Messages and Responses. Translation does not certify capacities, vision, reasoning controls, explicit cache controls or parallel tools.",
-        "recheck": "Recheck exact Go endpoint limits and translated capabilities.",
+        "reviewed_at": "2026-10-31",
+        "reason": "Exact native API fields reviewed against the official Go listing. Translated routes retain unknown capacity and conservative controls; native metadata is not inherited across protocols. Existing output defaults and local execution policy are preserved.",
+        "recheck": "Recheck exact native API key, registered base URL, capacities, modalities and effort options when the Go listing changes.",
         "evidence": [
           "models.dev/endpoint-review.md",
-          "models.dev/metadata-evidence.md"
+          "models.dev/metadata-evidence.md",
+          "https://opencode.ai/inference/go/v1/models"
         ]
       }
     },
@@ -23160,6 +23375,676 @@
           },
           "context_window_tokens": 1000000,
           "default_max_output_tokens": 131072,
+          "default_verbosity": null,
+          "effective_context_window_percent": 95,
+          "max_output_tokens_upper_limit": 131072,
+          "tool_output_truncation_estimated_tokens": 2500,
+          "reasoning_effort_options": [
+            "low",
+            "high",
+            "max"
+          ]
+        },
+        "route": {
+          "auto_compact_token_limit": null,
+          "capabilities": {
+            "image_generation": false,
+            "image_input": false,
+            "interactive_exec": false,
+            "parallel_tool_calls": false,
+            "supports_reasoning": false
+          },
+          "context_window_tokens": null,
+          "default_max_output_tokens": null,
+          "default_verbosity": null,
+          "effective_context_window_percent": null,
+          "max_output_tokens_upper_limit": null,
+          "reasoning_effort_options": []
+        },
+        "evidence": {
+          "fields": {
+            "display_name": "model_builtin",
+            "description": "route_builtin",
+            "context_window_tokens": "route_builtin",
+            "effective_context_window_percent": "model_builtin",
+            "auto_compact_token_limit": "route_builtin",
+            "prompt_budget_estimated_tokens": "runtime_default",
+            "compaction_trigger_estimated_tokens": "derived",
+            "compaction_keep_recent_estimated_tokens": "derived",
+            "runtime_max_output_tokens": "route_builtin",
+            "verbosity": "route_builtin",
+            "tool_output_truncation_estimated_tokens": "model_builtin",
+            "max_output_tokens_upper_limit": "route_builtin",
+            "agent_turn": "model_builtin",
+            "parallel_tool_calls": "model_builtin",
+            "image_input": "model_builtin",
+            "image_generation": "model_builtin",
+            "supports_reasoning": "model_builtin",
+            "interactive_exec": "model_builtin",
+            "reasoning_effort_options": "route_builtin"
+          },
+          "constraints": [
+            {
+              "field": "image_input",
+              "kind": "disabled",
+              "source": "endpoint_policy",
+              "requested": "true",
+              "effective": "false"
+            },
+            {
+              "field": "supports_reasoning",
+              "kind": "disabled",
+              "source": "endpoint_policy",
+              "requested": "true",
+              "effective": "false"
+            }
+          ]
+        }
+      },
+      "context_status": "unknown",
+      "output_status": "unknown",
+      "review": {
+        "owner": "holon-model-provider",
+        "reviewed_at": "2026-10-31",
+        "reason": "Exact native API fields reviewed against the official Go listing. Translated routes retain unknown capacity and conservative controls; native metadata is not inherited across protocols. Existing output defaults and local execution policy are preserved.",
+        "recheck": "Recheck exact native API key, registered base URL, capacities, modalities and effort options when the Go listing changes.",
+        "evidence": [
+          "models.dev/endpoint-review.md",
+          "models.dev/metadata-evidence.md",
+          "https://opencode.ai/inference/go/v1/models"
+        ]
+      }
+    },
+    {
+      "route_ref": "opencode-go@messages/gpt-5.6-luna",
+      "facts": {
+        "context_window_tokens": null,
+        "default_max_output_tokens": null,
+        "max_output_tokens_upper_limit": null,
+        "prompt_budget_estimated_tokens": 128000,
+        "runtime_max_output_tokens": 8192,
+        "capabilities": {
+          "agent_turn": true,
+          "parallel_tool_calls": false,
+          "image_input": false,
+          "image_generation": false,
+          "supports_reasoning": false,
+          "interactive_exec": false
+        },
+        "agent_turn": true,
+        "decision_capable": false,
+        "reasoning_effort_options": []
+      },
+      "inputs": {
+        "model": {
+          "auto_compact_token_limit": null,
+          "capabilities": {
+            "agent_turn": true,
+            "image_generation": false,
+            "image_input": true,
+            "interactive_exec": false,
+            "parallel_tool_calls": false,
+            "supports_reasoning": true
+          },
+          "context_window_tokens": 1050000,
+          "default_max_output_tokens": 128000,
+          "default_verbosity": null,
+          "effective_context_window_percent": 95,
+          "max_output_tokens_upper_limit": 128000,
+          "tool_output_truncation_estimated_tokens": 2500,
+          "reasoning_effort_options": [
+            "none",
+            "low",
+            "medium",
+            "high",
+            "xhigh",
+            "max"
+          ]
+        },
+        "route": {
+          "auto_compact_token_limit": null,
+          "capabilities": {
+            "image_generation": false,
+            "image_input": false,
+            "interactive_exec": false,
+            "parallel_tool_calls": false,
+            "supports_reasoning": false
+          },
+          "context_window_tokens": null,
+          "default_max_output_tokens": null,
+          "default_verbosity": null,
+          "effective_context_window_percent": null,
+          "max_output_tokens_upper_limit": null,
+          "reasoning_effort_options": []
+        },
+        "evidence": {
+          "fields": {
+            "display_name": "model_builtin",
+            "description": "route_builtin",
+            "context_window_tokens": "route_builtin",
+            "effective_context_window_percent": "model_builtin",
+            "auto_compact_token_limit": "route_builtin",
+            "prompt_budget_estimated_tokens": "runtime_default",
+            "compaction_trigger_estimated_tokens": "derived",
+            "compaction_keep_recent_estimated_tokens": "derived",
+            "runtime_max_output_tokens": "route_builtin",
+            "verbosity": "route_builtin",
+            "tool_output_truncation_estimated_tokens": "model_builtin",
+            "max_output_tokens_upper_limit": "route_builtin",
+            "agent_turn": "model_builtin",
+            "parallel_tool_calls": "model_builtin",
+            "image_input": "model_builtin",
+            "image_generation": "model_builtin",
+            "supports_reasoning": "model_builtin",
+            "interactive_exec": "model_builtin",
+            "reasoning_effort_options": "route_builtin"
+          },
+          "constraints": [
+            {
+              "field": "image_input",
+              "kind": "disabled",
+              "source": "endpoint_policy",
+              "requested": "true",
+              "effective": "false"
+            },
+            {
+              "field": "supports_reasoning",
+              "kind": "disabled",
+              "source": "endpoint_policy",
+              "requested": "true",
+              "effective": "false"
+            }
+          ]
+        }
+      },
+      "context_status": "unknown",
+      "output_status": "unknown",
+      "review": {
+        "owner": "holon-model-provider",
+        "reviewed_at": "2026-10-31",
+        "reason": "Exact native API fields reviewed against the official Go listing. Translated routes retain unknown capacity and conservative controls; native metadata is not inherited across protocols. Existing output defaults and local execution policy are preserved.",
+        "recheck": "Recheck exact native API key, registered base URL, capacities, modalities and effort options when the Go listing changes.",
+        "evidence": [
+          "models.dev/endpoint-review.md",
+          "models.dev/metadata-evidence.md",
+          "https://opencode.ai/inference/go/v1/models"
+        ]
+      }
+    },
+    {
+      "route_ref": "opencode-go@messages/gpt-6-luna",
+      "facts": {
+        "context_window_tokens": null,
+        "default_max_output_tokens": null,
+        "max_output_tokens_upper_limit": null,
+        "prompt_budget_estimated_tokens": 128000,
+        "runtime_max_output_tokens": 8192,
+        "capabilities": {
+          "agent_turn": true,
+          "parallel_tool_calls": false,
+          "image_input": false,
+          "image_generation": false,
+          "supports_reasoning": false,
+          "interactive_exec": false
+        },
+        "agent_turn": true,
+        "decision_capable": false,
+        "reasoning_effort_options": []
+      },
+      "inputs": {
+        "model": {
+          "auto_compact_token_limit": null,
+          "capabilities": {
+            "agent_turn": true,
+            "image_generation": false,
+            "image_input": true,
+            "interactive_exec": false,
+            "parallel_tool_calls": false,
+            "supports_reasoning": true
+          },
+          "context_window_tokens": 1050000,
+          "default_max_output_tokens": 128000,
+          "default_verbosity": null,
+          "effective_context_window_percent": 95,
+          "max_output_tokens_upper_limit": 128000,
+          "tool_output_truncation_estimated_tokens": 2500,
+          "reasoning_effort_options": [
+            "none",
+            "low",
+            "medium",
+            "high",
+            "xhigh",
+            "max"
+          ]
+        },
+        "route": {
+          "auto_compact_token_limit": null,
+          "capabilities": {
+            "image_generation": false,
+            "image_input": false,
+            "interactive_exec": false,
+            "parallel_tool_calls": false,
+            "supports_reasoning": false
+          },
+          "context_window_tokens": null,
+          "default_max_output_tokens": null,
+          "default_verbosity": null,
+          "effective_context_window_percent": null,
+          "max_output_tokens_upper_limit": null,
+          "reasoning_effort_options": []
+        },
+        "evidence": {
+          "fields": {
+            "display_name": "model_builtin",
+            "description": "route_builtin",
+            "context_window_tokens": "route_builtin",
+            "effective_context_window_percent": "model_builtin",
+            "auto_compact_token_limit": "route_builtin",
+            "prompt_budget_estimated_tokens": "runtime_default",
+            "compaction_trigger_estimated_tokens": "derived",
+            "compaction_keep_recent_estimated_tokens": "derived",
+            "runtime_max_output_tokens": "route_builtin",
+            "verbosity": "route_builtin",
+            "tool_output_truncation_estimated_tokens": "model_builtin",
+            "max_output_tokens_upper_limit": "route_builtin",
+            "agent_turn": "model_builtin",
+            "parallel_tool_calls": "model_builtin",
+            "image_input": "model_builtin",
+            "image_generation": "model_builtin",
+            "supports_reasoning": "model_builtin",
+            "interactive_exec": "model_builtin",
+            "reasoning_effort_options": "route_builtin"
+          },
+          "constraints": [
+            {
+              "field": "image_input",
+              "kind": "disabled",
+              "source": "endpoint_policy",
+              "requested": "true",
+              "effective": "false"
+            },
+            {
+              "field": "supports_reasoning",
+              "kind": "disabled",
+              "source": "endpoint_policy",
+              "requested": "true",
+              "effective": "false"
+            }
+          ]
+        }
+      },
+      "context_status": "unknown",
+      "output_status": "unknown",
+      "review": {
+        "owner": "holon-model-provider",
+        "reviewed_at": "2026-10-31",
+        "reason": "Exact native API fields reviewed against the official Go listing. Translated routes retain unknown capacity and conservative controls; native metadata is not inherited across protocols. Existing output defaults and local execution policy are preserved.",
+        "recheck": "Recheck exact native API key, registered base URL, capacities, modalities and effort options when the Go listing changes.",
+        "evidence": [
+          "models.dev/endpoint-review.md",
+          "models.dev/metadata-evidence.md",
+          "https://opencode.ai/inference/go/v1/models"
+        ]
+      }
+    },
+    {
+      "route_ref": "opencode-go@messages/grok-4.7",
+      "facts": {
+        "context_window_tokens": null,
+        "default_max_output_tokens": null,
+        "max_output_tokens_upper_limit": null,
+        "prompt_budget_estimated_tokens": 128000,
+        "runtime_max_output_tokens": 8192,
+        "capabilities": {
+          "agent_turn": true,
+          "parallel_tool_calls": false,
+          "image_input": false,
+          "image_generation": false,
+          "supports_reasoning": false,
+          "interactive_exec": false
+        },
+        "agent_turn": true,
+        "decision_capable": false,
+        "reasoning_effort_options": []
+      },
+      "inputs": {
+        "model": {
+          "auto_compact_token_limit": null,
+          "capabilities": {
+            "agent_turn": true,
+            "image_generation": false,
+            "image_input": true,
+            "interactive_exec": false,
+            "parallel_tool_calls": false,
+            "supports_reasoning": true
+          },
+          "context_window_tokens": 500000,
+          "default_max_output_tokens": 500000,
+          "default_verbosity": null,
+          "effective_context_window_percent": 95,
+          "max_output_tokens_upper_limit": 500000,
+          "tool_output_truncation_estimated_tokens": 2500,
+          "reasoning_effort_options": [
+            "low",
+            "medium",
+            "high",
+            "xhigh"
+          ]
+        },
+        "route": {
+          "auto_compact_token_limit": null,
+          "capabilities": {
+            "image_generation": false,
+            "image_input": false,
+            "interactive_exec": false,
+            "parallel_tool_calls": false,
+            "supports_reasoning": false
+          },
+          "context_window_tokens": null,
+          "default_max_output_tokens": null,
+          "default_verbosity": null,
+          "effective_context_window_percent": null,
+          "max_output_tokens_upper_limit": null,
+          "reasoning_effort_options": []
+        },
+        "evidence": {
+          "fields": {
+            "display_name": "model_builtin",
+            "description": "route_builtin",
+            "context_window_tokens": "route_builtin",
+            "effective_context_window_percent": "model_builtin",
+            "auto_compact_token_limit": "route_builtin",
+            "prompt_budget_estimated_tokens": "runtime_default",
+            "compaction_trigger_estimated_tokens": "derived",
+            "compaction_keep_recent_estimated_tokens": "derived",
+            "runtime_max_output_tokens": "route_builtin",
+            "verbosity": "route_builtin",
+            "tool_output_truncation_estimated_tokens": "model_builtin",
+            "max_output_tokens_upper_limit": "route_builtin",
+            "agent_turn": "model_builtin",
+            "parallel_tool_calls": "model_builtin",
+            "image_input": "model_builtin",
+            "image_generation": "model_builtin",
+            "supports_reasoning": "model_builtin",
+            "interactive_exec": "model_builtin",
+            "reasoning_effort_options": "route_builtin"
+          },
+          "constraints": [
+            {
+              "field": "image_input",
+              "kind": "disabled",
+              "source": "endpoint_policy",
+              "requested": "true",
+              "effective": "false"
+            },
+            {
+              "field": "supports_reasoning",
+              "kind": "disabled",
+              "source": "endpoint_policy",
+              "requested": "true",
+              "effective": "false"
+            }
+          ]
+        }
+      },
+      "context_status": "unknown",
+      "output_status": "unknown",
+      "review": {
+        "owner": "holon-model-provider",
+        "reviewed_at": "2026-10-31",
+        "reason": "Exact native API fields reviewed against the official Go listing. Translated routes retain unknown capacity and conservative controls; native metadata is not inherited across protocols. Existing output defaults and local execution policy are preserved.",
+        "recheck": "Recheck exact native API key, registered base URL, capacities, modalities and effort options when the Go listing changes.",
+        "evidence": [
+          "models.dev/endpoint-review.md",
+          "models.dev/metadata-evidence.md",
+          "https://opencode.ai/inference/go/v1/models"
+        ]
+      }
+    },
+    {
+      "route_ref": "opencode-go@messages/hy3",
+      "facts": {
+        "context_window_tokens": null,
+        "default_max_output_tokens": null,
+        "max_output_tokens_upper_limit": null,
+        "prompt_budget_estimated_tokens": 128000,
+        "runtime_max_output_tokens": 8192,
+        "capabilities": {
+          "agent_turn": true,
+          "parallel_tool_calls": false,
+          "image_input": false,
+          "image_generation": false,
+          "supports_reasoning": false,
+          "interactive_exec": false
+        },
+        "agent_turn": true,
+        "decision_capable": false,
+        "reasoning_effort_options": []
+      },
+      "inputs": {
+        "model": {
+          "auto_compact_token_limit": null,
+          "capabilities": {
+            "agent_turn": true,
+            "image_generation": false,
+            "image_input": false,
+            "interactive_exec": false,
+            "parallel_tool_calls": false,
+            "supports_reasoning": true
+          },
+          "context_window_tokens": 256000,
+          "default_max_output_tokens": 128000,
+          "default_verbosity": null,
+          "effective_context_window_percent": 95,
+          "max_output_tokens_upper_limit": 128000,
+          "tool_output_truncation_estimated_tokens": 2500,
+          "reasoning_effort_options": [
+            "none",
+            "low",
+            "high"
+          ]
+        },
+        "route": {
+          "auto_compact_token_limit": null,
+          "capabilities": {
+            "image_generation": false,
+            "image_input": false,
+            "interactive_exec": false,
+            "parallel_tool_calls": false,
+            "supports_reasoning": false
+          },
+          "context_window_tokens": null,
+          "default_max_output_tokens": null,
+          "default_verbosity": null,
+          "effective_context_window_percent": null,
+          "max_output_tokens_upper_limit": null,
+          "reasoning_effort_options": []
+        },
+        "evidence": {
+          "fields": {
+            "display_name": "model_builtin",
+            "description": "route_builtin",
+            "context_window_tokens": "route_builtin",
+            "effective_context_window_percent": "model_builtin",
+            "auto_compact_token_limit": "route_builtin",
+            "prompt_budget_estimated_tokens": "runtime_default",
+            "compaction_trigger_estimated_tokens": "derived",
+            "compaction_keep_recent_estimated_tokens": "derived",
+            "runtime_max_output_tokens": "route_builtin",
+            "verbosity": "route_builtin",
+            "tool_output_truncation_estimated_tokens": "model_builtin",
+            "max_output_tokens_upper_limit": "route_builtin",
+            "agent_turn": "model_builtin",
+            "parallel_tool_calls": "model_builtin",
+            "image_input": "model_builtin",
+            "image_generation": "model_builtin",
+            "supports_reasoning": "model_builtin",
+            "interactive_exec": "model_builtin",
+            "reasoning_effort_options": "route_builtin"
+          },
+          "constraints": [
+            {
+              "field": "supports_reasoning",
+              "kind": "disabled",
+              "source": "endpoint_policy",
+              "requested": "true",
+              "effective": "false"
+            }
+          ]
+        }
+      },
+      "context_status": "unknown",
+      "output_status": "unknown",
+      "review": {
+        "owner": "holon-model-provider",
+        "reviewed_at": "2026-10-31",
+        "reason": "Exact native API fields reviewed against the official Go listing. Translated routes retain unknown capacity and conservative controls; native metadata is not inherited across protocols. Existing output defaults and local execution policy are preserved.",
+        "recheck": "Recheck exact native API key, registered base URL, capacities, modalities and effort options when the Go listing changes.",
+        "evidence": [
+          "models.dev/endpoint-review.md",
+          "models.dev/metadata-evidence.md",
+          "https://opencode.ai/inference/go/v1/models"
+        ]
+      }
+    },
+    {
+      "route_ref": "opencode-go@messages/hy4-preview",
+      "facts": {
+        "context_window_tokens": null,
+        "default_max_output_tokens": null,
+        "max_output_tokens_upper_limit": null,
+        "prompt_budget_estimated_tokens": 128000,
+        "runtime_max_output_tokens": 8192,
+        "capabilities": {
+          "agent_turn": true,
+          "parallel_tool_calls": false,
+          "image_input": false,
+          "image_generation": false,
+          "supports_reasoning": false,
+          "interactive_exec": false
+        },
+        "agent_turn": true,
+        "decision_capable": false,
+        "reasoning_effort_options": []
+      },
+      "inputs": {
+        "model": {
+          "auto_compact_token_limit": null,
+          "capabilities": {
+            "agent_turn": true,
+            "image_generation": false,
+            "image_input": false,
+            "interactive_exec": false,
+            "parallel_tool_calls": false,
+            "supports_reasoning": true
+          },
+          "context_window_tokens": 1024000,
+          "default_max_output_tokens": 64000,
+          "default_verbosity": null,
+          "effective_context_window_percent": 95,
+          "max_output_tokens_upper_limit": 64000,
+          "tool_output_truncation_estimated_tokens": 2500,
+          "reasoning_effort_options": [
+            "none",
+            "high"
+          ]
+        },
+        "route": {
+          "auto_compact_token_limit": null,
+          "capabilities": {
+            "image_generation": false,
+            "image_input": false,
+            "interactive_exec": false,
+            "parallel_tool_calls": false,
+            "supports_reasoning": false
+          },
+          "context_window_tokens": null,
+          "default_max_output_tokens": null,
+          "default_verbosity": null,
+          "effective_context_window_percent": null,
+          "max_output_tokens_upper_limit": null,
+          "reasoning_effort_options": []
+        },
+        "evidence": {
+          "fields": {
+            "display_name": "model_builtin",
+            "description": "route_builtin",
+            "context_window_tokens": "route_builtin",
+            "effective_context_window_percent": "model_builtin",
+            "auto_compact_token_limit": "route_builtin",
+            "prompt_budget_estimated_tokens": "runtime_default",
+            "compaction_trigger_estimated_tokens": "derived",
+            "compaction_keep_recent_estimated_tokens": "derived",
+            "runtime_max_output_tokens": "route_builtin",
+            "verbosity": "route_builtin",
+            "tool_output_truncation_estimated_tokens": "model_builtin",
+            "max_output_tokens_upper_limit": "route_builtin",
+            "agent_turn": "model_builtin",
+            "parallel_tool_calls": "model_builtin",
+            "image_input": "model_builtin",
+            "image_generation": "model_builtin",
+            "supports_reasoning": "model_builtin",
+            "interactive_exec": "model_builtin",
+            "reasoning_effort_options": "route_builtin"
+          },
+          "constraints": [
+            {
+              "field": "supports_reasoning",
+              "kind": "disabled",
+              "source": "endpoint_policy",
+              "requested": "true",
+              "effective": "false"
+            }
+          ]
+        }
+      },
+      "context_status": "unknown",
+      "output_status": "unknown",
+      "review": {
+        "owner": "holon-model-provider",
+        "reviewed_at": "2026-10-31",
+        "reason": "Exact native API fields reviewed against the official Go listing. Translated routes retain unknown capacity and conservative controls; native metadata is not inherited across protocols. Existing output defaults and local execution policy are preserved.",
+        "recheck": "Recheck exact native API key, registered base URL, capacities, modalities and effort options when the Go listing changes.",
+        "evidence": [
+          "models.dev/endpoint-review.md",
+          "models.dev/metadata-evidence.md",
+          "https://opencode.ai/inference/go/v1/models"
+        ]
+      }
+    },
+    {
+      "route_ref": "opencode-go@messages/iceman-contributor-free",
+      "facts": {
+        "context_window_tokens": null,
+        "default_max_output_tokens": null,
+        "max_output_tokens_upper_limit": null,
+        "prompt_budget_estimated_tokens": 128000,
+        "runtime_max_output_tokens": 8192,
+        "capabilities": {
+          "agent_turn": true,
+          "parallel_tool_calls": false,
+          "image_input": false,
+          "image_generation": false,
+          "supports_reasoning": false,
+          "interactive_exec": false
+        },
+        "agent_turn": true,
+        "decision_capable": false,
+        "reasoning_effort_options": []
+      },
+      "inputs": {
+        "model": {
+          "auto_compact_token_limit": null,
+          "capabilities": {
+            "agent_turn": true,
+            "image_generation": false,
+            "image_input": false,
+            "interactive_exec": false,
+            "parallel_tool_calls": false,
+            "supports_reasoning": true
+          },
+          "context_window_tokens": 262144,
+          "default_max_output_tokens": null,
           "default_verbosity": null,
           "effective_context_window_percent": 95,
           "max_output_tokens_upper_limit": 131072,
@@ -23205,13 +24090,6 @@
           },
           "constraints": [
             {
-              "field": "image_input",
-              "kind": "disabled",
-              "source": "endpoint_policy",
-              "requested": "true",
-              "effective": "false"
-            },
-            {
               "field": "supports_reasoning",
               "kind": "disabled",
               "source": "endpoint_policy",
@@ -23225,624 +24103,13 @@
       "output_status": "unknown",
       "review": {
         "owner": "holon-model-provider",
-        "reviewed_at": "2026-10-28",
-        "reason": "Official OpenCode Go text eligibility includes translated Chat, Messages and Responses. Translation does not certify capacities, vision, reasoning controls, explicit cache controls or parallel tools.",
-        "recheck": "Recheck exact Go endpoint limits and translated capabilities.",
+        "reviewed_at": "2026-10-31",
+        "reason": "Exact native API fields reviewed against the official Go listing. Translated routes retain unknown capacity and conservative controls; native metadata is not inherited across protocols. Existing output defaults and local execution policy are preserved.",
+        "recheck": "Recheck exact native API key, registered base URL, capacities, modalities and effort options when the Go listing changes.",
         "evidence": [
           "models.dev/endpoint-review.md",
-          "models.dev/metadata-evidence.md"
-        ]
-      }
-    },
-    {
-      "route_ref": "opencode-go@messages/gpt-5.6-luna",
-      "facts": {
-        "context_window_tokens": null,
-        "default_max_output_tokens": null,
-        "max_output_tokens_upper_limit": null,
-        "prompt_budget_estimated_tokens": 128000,
-        "runtime_max_output_tokens": 8192,
-        "capabilities": {
-          "agent_turn": true,
-          "parallel_tool_calls": false,
-          "image_input": false,
-          "image_generation": false,
-          "supports_reasoning": false,
-          "interactive_exec": false
-        },
-        "agent_turn": true,
-        "decision_capable": false,
-        "reasoning_effort_options": []
-      },
-      "inputs": {
-        "model": {
-          "auto_compact_token_limit": null,
-          "capabilities": {
-            "agent_turn": true,
-            "image_generation": false,
-            "image_input": true,
-            "interactive_exec": false,
-            "parallel_tool_calls": false,
-            "supports_reasoning": true
-          },
-          "context_window_tokens": 1050000,
-          "default_max_output_tokens": 128000,
-          "default_verbosity": null,
-          "effective_context_window_percent": 95,
-          "max_output_tokens_upper_limit": 128000,
-          "tool_output_truncation_estimated_tokens": 2500
-        },
-        "route": {
-          "auto_compact_token_limit": null,
-          "capabilities": {
-            "image_generation": false,
-            "image_input": false,
-            "interactive_exec": false,
-            "parallel_tool_calls": false,
-            "supports_reasoning": false
-          },
-          "context_window_tokens": null,
-          "default_max_output_tokens": null,
-          "default_verbosity": null,
-          "effective_context_window_percent": null,
-          "max_output_tokens_upper_limit": null,
-          "reasoning_effort_options": []
-        },
-        "evidence": {
-          "fields": {
-            "display_name": "model_builtin",
-            "description": "route_builtin",
-            "context_window_tokens": "route_builtin",
-            "effective_context_window_percent": "model_builtin",
-            "auto_compact_token_limit": "route_builtin",
-            "prompt_budget_estimated_tokens": "runtime_default",
-            "compaction_trigger_estimated_tokens": "derived",
-            "compaction_keep_recent_estimated_tokens": "derived",
-            "runtime_max_output_tokens": "route_builtin",
-            "verbosity": "route_builtin",
-            "tool_output_truncation_estimated_tokens": "model_builtin",
-            "max_output_tokens_upper_limit": "route_builtin",
-            "agent_turn": "model_builtin",
-            "parallel_tool_calls": "model_builtin",
-            "image_input": "model_builtin",
-            "image_generation": "model_builtin",
-            "supports_reasoning": "model_builtin",
-            "interactive_exec": "model_builtin",
-            "reasoning_effort_options": "route_builtin"
-          },
-          "constraints": [
-            {
-              "field": "image_input",
-              "kind": "disabled",
-              "source": "endpoint_policy",
-              "requested": "true",
-              "effective": "false"
-            },
-            {
-              "field": "supports_reasoning",
-              "kind": "disabled",
-              "source": "endpoint_policy",
-              "requested": "true",
-              "effective": "false"
-            }
-          ]
-        }
-      },
-      "context_status": "unknown",
-      "output_status": "unknown",
-      "review": {
-        "owner": "holon-model-provider",
-        "reviewed_at": "2026-10-28",
-        "reason": "Official OpenCode Go text eligibility includes translated Chat, Messages and Responses. Translation does not certify capacities, vision, reasoning controls, explicit cache controls or parallel tools.",
-        "recheck": "Recheck exact Go endpoint limits and translated capabilities.",
-        "evidence": [
-          "models.dev/endpoint-review.md",
-          "models.dev/metadata-evidence.md"
-        ]
-      }
-    },
-    {
-      "route_ref": "opencode-go@messages/gpt-6-luna",
-      "facts": {
-        "context_window_tokens": null,
-        "default_max_output_tokens": null,
-        "max_output_tokens_upper_limit": null,
-        "prompt_budget_estimated_tokens": 128000,
-        "runtime_max_output_tokens": 8192,
-        "capabilities": {
-          "agent_turn": true,
-          "parallel_tool_calls": false,
-          "image_input": false,
-          "image_generation": false,
-          "supports_reasoning": false,
-          "interactive_exec": false
-        },
-        "agent_turn": true,
-        "decision_capable": false,
-        "reasoning_effort_options": []
-      },
-      "inputs": {
-        "model": {
-          "auto_compact_token_limit": null,
-          "capabilities": {
-            "agent_turn": true,
-            "image_generation": false,
-            "image_input": true,
-            "interactive_exec": false,
-            "parallel_tool_calls": false,
-            "supports_reasoning": true
-          },
-          "context_window_tokens": 1050000,
-          "default_max_output_tokens": 128000,
-          "default_verbosity": null,
-          "effective_context_window_percent": 95,
-          "max_output_tokens_upper_limit": 128000,
-          "tool_output_truncation_estimated_tokens": 2500
-        },
-        "route": {
-          "auto_compact_token_limit": null,
-          "capabilities": {
-            "image_generation": false,
-            "image_input": false,
-            "interactive_exec": false,
-            "parallel_tool_calls": false,
-            "supports_reasoning": false
-          },
-          "context_window_tokens": null,
-          "default_max_output_tokens": null,
-          "default_verbosity": null,
-          "effective_context_window_percent": null,
-          "max_output_tokens_upper_limit": null,
-          "reasoning_effort_options": []
-        },
-        "evidence": {
-          "fields": {
-            "display_name": "model_builtin",
-            "description": "route_builtin",
-            "context_window_tokens": "route_builtin",
-            "effective_context_window_percent": "model_builtin",
-            "auto_compact_token_limit": "route_builtin",
-            "prompt_budget_estimated_tokens": "runtime_default",
-            "compaction_trigger_estimated_tokens": "derived",
-            "compaction_keep_recent_estimated_tokens": "derived",
-            "runtime_max_output_tokens": "route_builtin",
-            "verbosity": "route_builtin",
-            "tool_output_truncation_estimated_tokens": "model_builtin",
-            "max_output_tokens_upper_limit": "route_builtin",
-            "agent_turn": "model_builtin",
-            "parallel_tool_calls": "model_builtin",
-            "image_input": "model_builtin",
-            "image_generation": "model_builtin",
-            "supports_reasoning": "model_builtin",
-            "interactive_exec": "model_builtin",
-            "reasoning_effort_options": "route_builtin"
-          },
-          "constraints": [
-            {
-              "field": "image_input",
-              "kind": "disabled",
-              "source": "endpoint_policy",
-              "requested": "true",
-              "effective": "false"
-            },
-            {
-              "field": "supports_reasoning",
-              "kind": "disabled",
-              "source": "endpoint_policy",
-              "requested": "true",
-              "effective": "false"
-            }
-          ]
-        }
-      },
-      "context_status": "unknown",
-      "output_status": "unknown",
-      "review": {
-        "owner": "holon-model-provider",
-        "reviewed_at": "2026-10-28",
-        "reason": "Official OpenCode Go text eligibility includes translated Chat, Messages and Responses. Translation does not certify capacities, vision, reasoning controls, explicit cache controls or parallel tools.",
-        "recheck": "Recheck exact Go endpoint limits and translated capabilities.",
-        "evidence": [
-          "models.dev/endpoint-review.md",
-          "models.dev/metadata-evidence.md"
-        ]
-      }
-    },
-    {
-      "route_ref": "opencode-go@messages/grok-4.7",
-      "facts": {
-        "context_window_tokens": null,
-        "default_max_output_tokens": null,
-        "max_output_tokens_upper_limit": null,
-        "prompt_budget_estimated_tokens": 128000,
-        "runtime_max_output_tokens": 8192,
-        "capabilities": {
-          "agent_turn": true,
-          "parallel_tool_calls": false,
-          "image_input": false,
-          "image_generation": false,
-          "supports_reasoning": false,
-          "interactive_exec": false
-        },
-        "agent_turn": true,
-        "decision_capable": false,
-        "reasoning_effort_options": []
-      },
-      "inputs": {
-        "model": {
-          "auto_compact_token_limit": null,
-          "capabilities": {
-            "agent_turn": true,
-            "image_generation": false,
-            "image_input": true,
-            "interactive_exec": false,
-            "parallel_tool_calls": false,
-            "supports_reasoning": true
-          },
-          "context_window_tokens": 500000,
-          "default_max_output_tokens": 500000,
-          "default_verbosity": null,
-          "effective_context_window_percent": 95,
-          "max_output_tokens_upper_limit": 500000,
-          "tool_output_truncation_estimated_tokens": 2500
-        },
-        "route": {
-          "auto_compact_token_limit": null,
-          "capabilities": {
-            "image_generation": false,
-            "image_input": false,
-            "interactive_exec": false,
-            "parallel_tool_calls": false,
-            "supports_reasoning": false
-          },
-          "context_window_tokens": null,
-          "default_max_output_tokens": null,
-          "default_verbosity": null,
-          "effective_context_window_percent": null,
-          "max_output_tokens_upper_limit": null,
-          "reasoning_effort_options": []
-        },
-        "evidence": {
-          "fields": {
-            "display_name": "model_builtin",
-            "description": "route_builtin",
-            "context_window_tokens": "route_builtin",
-            "effective_context_window_percent": "model_builtin",
-            "auto_compact_token_limit": "route_builtin",
-            "prompt_budget_estimated_tokens": "runtime_default",
-            "compaction_trigger_estimated_tokens": "derived",
-            "compaction_keep_recent_estimated_tokens": "derived",
-            "runtime_max_output_tokens": "route_builtin",
-            "verbosity": "route_builtin",
-            "tool_output_truncation_estimated_tokens": "model_builtin",
-            "max_output_tokens_upper_limit": "route_builtin",
-            "agent_turn": "model_builtin",
-            "parallel_tool_calls": "model_builtin",
-            "image_input": "model_builtin",
-            "image_generation": "model_builtin",
-            "supports_reasoning": "model_builtin",
-            "interactive_exec": "model_builtin",
-            "reasoning_effort_options": "route_builtin"
-          },
-          "constraints": [
-            {
-              "field": "image_input",
-              "kind": "disabled",
-              "source": "endpoint_policy",
-              "requested": "true",
-              "effective": "false"
-            },
-            {
-              "field": "supports_reasoning",
-              "kind": "disabled",
-              "source": "endpoint_policy",
-              "requested": "true",
-              "effective": "false"
-            }
-          ]
-        }
-      },
-      "context_status": "unknown",
-      "output_status": "unknown",
-      "review": {
-        "owner": "holon-model-provider",
-        "reviewed_at": "2026-10-28",
-        "reason": "Official OpenCode Go text eligibility includes translated Chat, Messages and Responses. Translation does not certify capacities, vision, reasoning controls, explicit cache controls or parallel tools.",
-        "recheck": "Recheck exact Go endpoint limits and translated capabilities.",
-        "evidence": [
-          "models.dev/endpoint-review.md",
-          "models.dev/metadata-evidence.md"
-        ]
-      }
-    },
-    {
-      "route_ref": "opencode-go@messages/hy3",
-      "facts": {
-        "context_window_tokens": null,
-        "default_max_output_tokens": null,
-        "max_output_tokens_upper_limit": null,
-        "prompt_budget_estimated_tokens": 128000,
-        "runtime_max_output_tokens": 8192,
-        "capabilities": {
-          "agent_turn": true,
-          "parallel_tool_calls": false,
-          "image_input": false,
-          "image_generation": false,
-          "supports_reasoning": false,
-          "interactive_exec": false
-        },
-        "agent_turn": true,
-        "decision_capable": false,
-        "reasoning_effort_options": []
-      },
-      "inputs": {
-        "model": {
-          "auto_compact_token_limit": null,
-          "capabilities": {
-            "agent_turn": true,
-            "image_generation": false,
-            "image_input": false,
-            "interactive_exec": false,
-            "parallel_tool_calls": false,
-            "supports_reasoning": true
-          },
-          "context_window_tokens": 256000,
-          "default_max_output_tokens": 128000,
-          "default_verbosity": null,
-          "effective_context_window_percent": 95,
-          "max_output_tokens_upper_limit": 128000,
-          "tool_output_truncation_estimated_tokens": 2500
-        },
-        "route": {
-          "auto_compact_token_limit": null,
-          "capabilities": {
-            "image_generation": false,
-            "image_input": false,
-            "interactive_exec": false,
-            "parallel_tool_calls": false,
-            "supports_reasoning": false
-          },
-          "context_window_tokens": null,
-          "default_max_output_tokens": null,
-          "default_verbosity": null,
-          "effective_context_window_percent": null,
-          "max_output_tokens_upper_limit": null,
-          "reasoning_effort_options": []
-        },
-        "evidence": {
-          "fields": {
-            "display_name": "model_builtin",
-            "description": "route_builtin",
-            "context_window_tokens": "route_builtin",
-            "effective_context_window_percent": "model_builtin",
-            "auto_compact_token_limit": "route_builtin",
-            "prompt_budget_estimated_tokens": "runtime_default",
-            "compaction_trigger_estimated_tokens": "derived",
-            "compaction_keep_recent_estimated_tokens": "derived",
-            "runtime_max_output_tokens": "route_builtin",
-            "verbosity": "route_builtin",
-            "tool_output_truncation_estimated_tokens": "model_builtin",
-            "max_output_tokens_upper_limit": "route_builtin",
-            "agent_turn": "model_builtin",
-            "parallel_tool_calls": "model_builtin",
-            "image_input": "model_builtin",
-            "image_generation": "model_builtin",
-            "supports_reasoning": "model_builtin",
-            "interactive_exec": "model_builtin",
-            "reasoning_effort_options": "route_builtin"
-          },
-          "constraints": [
-            {
-              "field": "supports_reasoning",
-              "kind": "disabled",
-              "source": "endpoint_policy",
-              "requested": "true",
-              "effective": "false"
-            }
-          ]
-        }
-      },
-      "context_status": "unknown",
-      "output_status": "unknown",
-      "review": {
-        "owner": "holon-model-provider",
-        "reviewed_at": "2026-10-28",
-        "reason": "Official OpenCode Go text eligibility includes translated Chat, Messages and Responses. Translation does not certify capacities, vision, reasoning controls, explicit cache controls or parallel tools.",
-        "recheck": "Recheck exact Go endpoint limits and translated capabilities.",
-        "evidence": [
-          "models.dev/endpoint-review.md",
-          "models.dev/metadata-evidence.md"
-        ]
-      }
-    },
-    {
-      "route_ref": "opencode-go@messages/hy4-preview",
-      "facts": {
-        "context_window_tokens": null,
-        "default_max_output_tokens": null,
-        "max_output_tokens_upper_limit": null,
-        "prompt_budget_estimated_tokens": 128000,
-        "runtime_max_output_tokens": 8192,
-        "capabilities": {
-          "agent_turn": true,
-          "parallel_tool_calls": false,
-          "image_input": false,
-          "image_generation": false,
-          "supports_reasoning": false,
-          "interactive_exec": false
-        },
-        "agent_turn": true,
-        "decision_capable": false,
-        "reasoning_effort_options": []
-      },
-      "inputs": {
-        "model": {
-          "auto_compact_token_limit": null,
-          "capabilities": {
-            "agent_turn": true,
-            "image_generation": false,
-            "image_input": false,
-            "interactive_exec": false,
-            "parallel_tool_calls": false,
-            "supports_reasoning": true
-          },
-          "context_window_tokens": 1024000,
-          "default_max_output_tokens": 64000,
-          "default_verbosity": null,
-          "effective_context_window_percent": 95,
-          "max_output_tokens_upper_limit": 64000,
-          "tool_output_truncation_estimated_tokens": 2500
-        },
-        "route": {
-          "auto_compact_token_limit": null,
-          "capabilities": {
-            "image_generation": false,
-            "image_input": false,
-            "interactive_exec": false,
-            "parallel_tool_calls": false,
-            "supports_reasoning": false
-          },
-          "context_window_tokens": null,
-          "default_max_output_tokens": null,
-          "default_verbosity": null,
-          "effective_context_window_percent": null,
-          "max_output_tokens_upper_limit": null,
-          "reasoning_effort_options": []
-        },
-        "evidence": {
-          "fields": {
-            "display_name": "model_builtin",
-            "description": "route_builtin",
-            "context_window_tokens": "route_builtin",
-            "effective_context_window_percent": "model_builtin",
-            "auto_compact_token_limit": "route_builtin",
-            "prompt_budget_estimated_tokens": "runtime_default",
-            "compaction_trigger_estimated_tokens": "derived",
-            "compaction_keep_recent_estimated_tokens": "derived",
-            "runtime_max_output_tokens": "route_builtin",
-            "verbosity": "route_builtin",
-            "tool_output_truncation_estimated_tokens": "model_builtin",
-            "max_output_tokens_upper_limit": "route_builtin",
-            "agent_turn": "model_builtin",
-            "parallel_tool_calls": "model_builtin",
-            "image_input": "model_builtin",
-            "image_generation": "model_builtin",
-            "supports_reasoning": "model_builtin",
-            "interactive_exec": "model_builtin",
-            "reasoning_effort_options": "route_builtin"
-          },
-          "constraints": [
-            {
-              "field": "supports_reasoning",
-              "kind": "disabled",
-              "source": "endpoint_policy",
-              "requested": "true",
-              "effective": "false"
-            }
-          ]
-        }
-      },
-      "context_status": "unknown",
-      "output_status": "unknown",
-      "review": {
-        "owner": "holon-model-provider",
-        "reviewed_at": "2026-10-28",
-        "reason": "Official OpenCode Go text eligibility includes translated Chat, Messages and Responses. Translation does not certify capacities, vision, reasoning controls, explicit cache controls or parallel tools.",
-        "recheck": "Recheck exact Go endpoint limits and translated capabilities.",
-        "evidence": [
-          "models.dev/endpoint-review.md",
-          "models.dev/metadata-evidence.md"
-        ]
-      }
-    },
-    {
-      "route_ref": "opencode-go@messages/iceman-contributor-free",
-      "facts": {
-        "context_window_tokens": null,
-        "default_max_output_tokens": null,
-        "max_output_tokens_upper_limit": null,
-        "prompt_budget_estimated_tokens": 128000,
-        "runtime_max_output_tokens": 8192,
-        "capabilities": {
-          "agent_turn": true,
-          "parallel_tool_calls": false,
-          "image_input": false,
-          "image_generation": false,
-          "supports_reasoning": false,
-          "interactive_exec": false
-        },
-        "agent_turn": true,
-        "decision_capable": false,
-        "reasoning_effort_options": []
-      },
-      "inputs": {
-        "model": {
-          "auto_compact_token_limit": null,
-          "capabilities": {
-            "agent_turn": true,
-            "image_generation": false,
-            "image_input": false,
-            "interactive_exec": false,
-            "parallel_tool_calls": false,
-            "supports_reasoning": false
-          },
-          "context_window_tokens": null,
-          "default_max_output_tokens": null,
-          "default_verbosity": null,
-          "effective_context_window_percent": 95,
-          "max_output_tokens_upper_limit": null,
-          "tool_output_truncation_estimated_tokens": 2500
-        },
-        "route": {
-          "auto_compact_token_limit": null,
-          "capabilities": {
-            "image_generation": false,
-            "image_input": false,
-            "interactive_exec": false,
-            "parallel_tool_calls": false,
-            "supports_reasoning": false
-          },
-          "context_window_tokens": null,
-          "default_max_output_tokens": null,
-          "default_verbosity": null,
-          "effective_context_window_percent": null,
-          "max_output_tokens_upper_limit": null,
-          "reasoning_effort_options": []
-        },
-        "evidence": {
-          "fields": {
-            "display_name": "model_builtin",
-            "description": "route_builtin",
-            "context_window_tokens": "route_builtin",
-            "effective_context_window_percent": "model_builtin",
-            "auto_compact_token_limit": "route_builtin",
-            "prompt_budget_estimated_tokens": "runtime_default",
-            "compaction_trigger_estimated_tokens": "derived",
-            "compaction_keep_recent_estimated_tokens": "derived",
-            "runtime_max_output_tokens": "route_builtin",
-            "verbosity": "route_builtin",
-            "tool_output_truncation_estimated_tokens": "model_builtin",
-            "max_output_tokens_upper_limit": "route_builtin",
-            "agent_turn": "model_builtin",
-            "parallel_tool_calls": "model_builtin",
-            "image_input": "model_builtin",
-            "image_generation": "model_builtin",
-            "supports_reasoning": "model_builtin",
-            "interactive_exec": "model_builtin",
-            "reasoning_effort_options": "route_builtin"
-          }
-        }
-      },
-      "context_status": "unknown",
-      "output_status": "unknown",
-      "review": {
-        "owner": "holon-model-provider",
-        "reviewed_at": "2026-10-28",
-        "reason": "Official OpenCode Go text eligibility includes translated Chat, Messages and Responses. Translation does not certify capacities, vision, reasoning controls, explicit cache controls or parallel tools.",
-        "recheck": "Recheck exact Go endpoint limits and translated capabilities.",
-        "evidence": [
-          "models.dev/endpoint-review.md",
-          "models.dev/metadata-evidence.md"
+          "models.dev/metadata-evidence.md",
+          "https://opencode.ai/inference/go/v1/models"
         ]
       }
     },
@@ -23989,7 +24256,10 @@
           "default_verbosity": null,
           "effective_context_window_percent": 95,
           "max_output_tokens_upper_limit": 131072,
-          "tool_output_truncation_estimated_tokens": 2500
+          "tool_output_truncation_estimated_tokens": 2500,
+          "reasoning_effort_options": [
+            "max"
+          ]
         },
         "route": {
           "auto_compact_token_limit": null,
@@ -24051,12 +24321,13 @@
       "output_status": "unknown",
       "review": {
         "owner": "holon-model-provider",
-        "reviewed_at": "2026-10-28",
-        "reason": "Official OpenCode Go text eligibility includes translated Chat, Messages and Responses. Translation does not certify capacities, vision, reasoning controls, explicit cache controls or parallel tools.",
-        "recheck": "Recheck exact Go endpoint limits and translated capabilities.",
+        "reviewed_at": "2026-10-31",
+        "reason": "Exact native API fields reviewed against the official Go listing. Translated routes retain unknown capacity and conservative controls; native metadata is not inherited across protocols. Existing output defaults and local execution policy are preserved.",
+        "recheck": "Recheck exact native API key, registered base URL, capacities, modalities and effort options when the Go listing changes.",
         "evidence": [
           "models.dev/endpoint-review.md",
-          "models.dev/metadata-evidence.md"
+          "models.dev/metadata-evidence.md",
+          "https://opencode.ai/inference/go/v1/models"
         ]
       }
     },
@@ -24086,17 +24357,22 @@
           "capabilities": {
             "agent_turn": true,
             "image_generation": false,
-            "image_input": false,
+            "image_input": true,
             "interactive_exec": false,
             "parallel_tool_calls": false,
-            "supports_reasoning": false
+            "supports_reasoning": true
           },
-          "context_window_tokens": null,
+          "context_window_tokens": 1048576,
           "default_max_output_tokens": null,
           "default_verbosity": null,
           "effective_context_window_percent": 95,
-          "max_output_tokens_upper_limit": null,
-          "tool_output_truncation_estimated_tokens": 2500
+          "max_output_tokens_upper_limit": 131072,
+          "tool_output_truncation_estimated_tokens": 2500,
+          "reasoning_effort_options": [
+            "low",
+            "high",
+            "max"
+          ]
         },
         "route": {
           "auto_compact_token_limit": null,
@@ -24135,19 +24411,36 @@
             "supports_reasoning": "model_builtin",
             "interactive_exec": "model_builtin",
             "reasoning_effort_options": "route_builtin"
-          }
+          },
+          "constraints": [
+            {
+              "field": "image_input",
+              "kind": "disabled",
+              "source": "endpoint_policy",
+              "requested": "true",
+              "effective": "false"
+            },
+            {
+              "field": "supports_reasoning",
+              "kind": "disabled",
+              "source": "endpoint_policy",
+              "requested": "true",
+              "effective": "false"
+            }
+          ]
         }
       },
       "context_status": "unknown",
       "output_status": "unknown",
       "review": {
         "owner": "holon-model-provider",
-        "reviewed_at": "2026-10-28",
-        "reason": "Official OpenCode Go text eligibility includes translated Chat, Messages and Responses. Translation does not certify capacities, vision, reasoning controls, explicit cache controls or parallel tools.",
-        "recheck": "Recheck exact Go endpoint limits and translated capabilities.",
+        "reviewed_at": "2026-10-31",
+        "reason": "Exact native API fields reviewed against the official Go listing. Translated routes retain unknown capacity and conservative controls; native metadata is not inherited across protocols. Existing output defaults and local execution policy are preserved.",
+        "recheck": "Recheck exact native API key, registered base URL, capacities, modalities and effort options when the Go listing changes.",
         "evidence": [
           "models.dev/endpoint-review.md",
-          "models.dev/metadata-evidence.md"
+          "models.dev/metadata-evidence.md",
+          "https://opencode.ai/inference/go/v1/models"
         ]
       }
     },
@@ -24829,7 +25122,7 @@
       "facts": {
         "context_window_tokens": 1000000,
         "default_max_output_tokens": null,
-        "max_output_tokens_upper_limit": null,
+        "max_output_tokens_upper_limit": 131072,
         "prompt_budget_estimated_tokens": 950000,
         "runtime_max_output_tokens": 8192,
         "capabilities": {
@@ -24859,7 +25152,7 @@
           "default_max_output_tokens": null,
           "default_verbosity": null,
           "effective_context_window_percent": 95,
-          "max_output_tokens_upper_limit": null,
+          "max_output_tokens_upper_limit": 131072,
           "tool_output_truncation_estimated_tokens": 2500
         },
         "route": {
@@ -24880,7 +25173,7 @@
             "runtime_max_output_tokens": "runtime_default",
             "verbosity": "derived",
             "tool_output_truncation_estimated_tokens": "model_builtin",
-            "max_output_tokens_upper_limit": "derived",
+            "max_output_tokens_upper_limit": "model_builtin",
             "agent_turn": "model_builtin",
             "parallel_tool_calls": "model_builtin",
             "image_input": "model_builtin",
@@ -24892,16 +25185,17 @@
         }
       },
       "context_status": "known",
-      "output_status": "unknown",
+      "output_status": "known",
       "review": {
         "owner": "holon-model-provider",
-        "reviewed_at": "2026-10-25",
-        "reason": "opencode-go@messages/minimax-m3: Missing capacity is retained as unknown. No exact endpoint upstream capacity evidence is associated; generic API, other region, plan, or protocol limits are not borrowed. Existing known fields and local output policy are preserved, not newly vendor-verified.",
-        "recheck": "At the next exact endpoint model/catalog/documentation change or before increasing its local execution budget; verify support and each missing capacity independently.",
+        "reviewed_at": "2026-10-31",
+        "reason": "Exact native API fields reviewed against the official Go listing. Translated routes retain unknown capacity and conservative controls; native metadata is not inherited across protocols. Existing output defaults and local execution policy are preserved.",
+        "recheck": "Recheck exact native API key, registered base URL, capacities, modalities and effort options when the Go listing changes.",
         "evidence": [
           "models.dev/metadata-evidence.md",
           "models.dev/endpoint-review.md",
-          "models.dev/endpoint-mappings.json"
+          "models.dev/endpoint-mappings.json",
+          "https://opencode.ai/inference/go/v1/models"
         ]
       }
     },
@@ -24941,7 +25235,14 @@
           "default_verbosity": null,
           "effective_context_window_percent": 95,
           "max_output_tokens_upper_limit": 512000,
-          "tool_output_truncation_estimated_tokens": 2500
+          "tool_output_truncation_estimated_tokens": 2500,
+          "reasoning_effort_options": [
+            "low",
+            "medium",
+            "high",
+            "xhigh",
+            "max"
+          ]
         },
         "route": {
           "auto_compact_token_limit": null,
@@ -25003,12 +25304,13 @@
       "output_status": "unknown",
       "review": {
         "owner": "holon-model-provider",
-        "reviewed_at": "2026-10-28",
-        "reason": "Official OpenCode Go text eligibility includes translated Chat, Messages and Responses. Translation does not certify capacities, vision, reasoning controls, explicit cache controls or parallel tools.",
-        "recheck": "Recheck exact Go endpoint limits and translated capabilities.",
+        "reviewed_at": "2026-10-31",
+        "reason": "Exact native API fields reviewed against the official Go listing. Translated routes retain unknown capacity and conservative controls; native metadata is not inherited across protocols. Existing output defaults and local execution policy are preserved.",
+        "recheck": "Recheck exact native API key, registered base URL, capacities, modalities and effort options when the Go listing changes.",
         "evidence": [
           "models.dev/endpoint-review.md",
-          "models.dev/metadata-evidence.md"
+          "models.dev/metadata-evidence.md",
+          "https://opencode.ai/inference/go/v1/models"
         ]
       }
     },
@@ -25048,7 +25350,14 @@
           "default_verbosity": null,
           "effective_context_window_percent": 95,
           "max_output_tokens_upper_limit": 131072,
-          "tool_output_truncation_estimated_tokens": 2500
+          "tool_output_truncation_estimated_tokens": 2500,
+          "reasoning_effort_options": [
+            "minimal",
+            "low",
+            "medium",
+            "high",
+            "xhigh"
+          ]
         },
         "route": {
           "auto_compact_token_limit": null,
@@ -25110,12 +25419,13 @@
       "output_status": "unknown",
       "review": {
         "owner": "holon-model-provider",
-        "reviewed_at": "2026-10-28",
-        "reason": "Official OpenCode Go text eligibility includes translated Chat, Messages and Responses. Translation does not certify capacities, vision, reasoning controls, explicit cache controls or parallel tools.",
-        "recheck": "Recheck exact Go endpoint limits and translated capabilities.",
+        "reviewed_at": "2026-10-31",
+        "reason": "Exact native API fields reviewed against the official Go listing. Translated routes retain unknown capacity and conservative controls; native metadata is not inherited across protocols. Existing output defaults and local execution policy are preserved.",
+        "recheck": "Recheck exact native API key, registered base URL, capacities, modalities and effort options when the Go listing changes.",
         "evidence": [
           "models.dev/endpoint-review.md",
-          "models.dev/metadata-evidence.md"
+          "models.dev/metadata-evidence.md",
+          "https://opencode.ai/inference/go/v1/models"
         ]
       }
     },
@@ -25155,7 +25465,14 @@
           "default_verbosity": null,
           "effective_context_window_percent": 95,
           "max_output_tokens_upper_limit": 131072,
-          "tool_output_truncation_estimated_tokens": 2500
+          "tool_output_truncation_estimated_tokens": 2500,
+          "reasoning_effort_options": [
+            "minimal",
+            "low",
+            "medium",
+            "high",
+            "xhigh"
+          ]
         },
         "route": {
           "auto_compact_token_limit": null,
@@ -25217,12 +25534,13 @@
       "output_status": "unknown",
       "review": {
         "owner": "holon-model-provider",
-        "reviewed_at": "2026-10-28",
-        "reason": "Official OpenCode Go text eligibility includes translated Chat, Messages and Responses. Translation does not certify capacities, vision, reasoning controls, explicit cache controls or parallel tools.",
-        "recheck": "Recheck exact Go endpoint limits and translated capabilities.",
+        "reviewed_at": "2026-10-31",
+        "reason": "Exact native API fields reviewed against the official Go listing. Translated routes retain unknown capacity and conservative controls; native metadata is not inherited across protocols. Existing output defaults and local execution policy are preserved.",
+        "recheck": "Recheck exact native API key, registered base URL, capacities, modalities and effort options when the Go listing changes.",
         "evidence": [
           "models.dev/endpoint-review.md",
-          "models.dev/metadata-evidence.md"
+          "models.dev/metadata-evidence.md",
+          "https://opencode.ai/inference/go/v1/models"
         ]
       }
     },
@@ -25457,7 +25775,11 @@
         },
         "agent_turn": true,
         "decision_capable": false,
-        "reasoning_effort_options": []
+        "reasoning_effort_options": [
+          "low",
+          "medium",
+          "xhigh"
+        ]
       },
       "inputs": {
         "model": {
@@ -25475,7 +25797,12 @@
           "default_verbosity": null,
           "effective_context_window_percent": 95,
           "max_output_tokens_upper_limit": 131072,
-          "tool_output_truncation_estimated_tokens": 2500
+          "tool_output_truncation_estimated_tokens": 2500,
+          "reasoning_effort_options": [
+            "low",
+            "medium",
+            "xhigh"
+          ]
         },
         "route": {
           "capabilities": {},
@@ -25502,7 +25829,7 @@
             "image_generation": "model_builtin",
             "supports_reasoning": "model_builtin",
             "interactive_exec": "model_builtin",
-            "reasoning_effort_options": "derived"
+            "reasoning_effort_options": "model_builtin"
           }
         }
       },
@@ -25528,7 +25855,11 @@
         },
         "agent_turn": true,
         "decision_capable": false,
-        "reasoning_effort_options": []
+        "reasoning_effort_options": [
+          "low",
+          "medium",
+          "xhigh"
+        ]
       },
       "inputs": {
         "model": {
@@ -25546,7 +25877,12 @@
           "default_verbosity": null,
           "effective_context_window_percent": 95,
           "max_output_tokens_upper_limit": 131072,
-          "tool_output_truncation_estimated_tokens": 2500
+          "tool_output_truncation_estimated_tokens": 2500,
+          "reasoning_effort_options": [
+            "low",
+            "medium",
+            "xhigh"
+          ]
         },
         "route": {
           "capabilities": {},
@@ -25573,7 +25909,7 @@
             "image_generation": "model_builtin",
             "supports_reasoning": "model_builtin",
             "interactive_exec": "model_builtin",
-            "reasoning_effort_options": "derived"
+            "reasoning_effort_options": "model_builtin"
           }
         }
       },
@@ -25617,7 +25953,12 @@
           "default_verbosity": null,
           "effective_context_window_percent": 95,
           "max_output_tokens_upper_limit": 65536,
-          "tool_output_truncation_estimated_tokens": 2500
+          "tool_output_truncation_estimated_tokens": 2500,
+          "reasoning_effort_options": [
+            "low",
+            "medium",
+            "high"
+          ]
         },
         "route": {
           "auto_compact_token_limit": null,
@@ -25679,12 +26020,13 @@
       "output_status": "unknown",
       "review": {
         "owner": "holon-model-provider",
-        "reviewed_at": "2026-10-28",
-        "reason": "Official OpenCode Go text eligibility includes translated Chat, Messages and Responses. Translation does not certify capacities, vision, reasoning controls, explicit cache controls or parallel tools.",
-        "recheck": "Recheck exact Go endpoint limits and translated capabilities.",
+        "reviewed_at": "2026-10-31",
+        "reason": "Exact native API fields reviewed against the official Go listing. Translated routes retain unknown capacity and conservative controls; native metadata is not inherited across protocols. Existing output defaults and local execution policy are preserved.",
+        "recheck": "Recheck exact native API key, registered base URL, capacities, modalities and effort options when the Go listing changes.",
         "evidence": [
           "models.dev/endpoint-review.md",
-          "models.dev/metadata-evidence.md"
+          "models.dev/metadata-evidence.md",
+          "https://opencode.ai/inference/go/v1/models"
         ]
       }
     },
@@ -25724,7 +26066,14 @@
           "default_verbosity": null,
           "effective_context_window_percent": 95,
           "max_output_tokens_upper_limit": 131072,
-          "tool_output_truncation_estimated_tokens": 2500
+          "tool_output_truncation_estimated_tokens": 2500,
+          "reasoning_effort_options": [
+            "low",
+            "medium",
+            "high",
+            "xhigh",
+            "max"
+          ]
         },
         "route": {
           "auto_compact_token_limit": null,
@@ -25779,12 +26128,13 @@
       "output_status": "unknown",
       "review": {
         "owner": "holon-model-provider",
-        "reviewed_at": "2026-10-28",
-        "reason": "Official OpenCode Go text eligibility includes translated Chat, Messages and Responses. Translation does not certify capacities, vision, reasoning controls, explicit cache controls or parallel tools.",
-        "recheck": "Recheck exact Go endpoint limits and translated capabilities.",
+        "reviewed_at": "2026-10-31",
+        "reason": "Exact native API fields reviewed against the official Go listing. Translated routes retain unknown capacity and conservative controls; native metadata is not inherited across protocols. Existing output defaults and local execution policy are preserved.",
+        "recheck": "Recheck exact native API key, registered base URL, capacities, modalities and effort options when the Go listing changes.",
         "evidence": [
           "models.dev/endpoint-review.md",
-          "models.dev/metadata-evidence.md"
+          "models.dev/metadata-evidence.md",
+          "https://opencode.ai/inference/go/v1/models"
         ]
       }
     },
@@ -25824,7 +26174,14 @@
           "default_verbosity": null,
           "effective_context_window_percent": 95,
           "max_output_tokens_upper_limit": 128000,
-          "tool_output_truncation_estimated_tokens": 2500
+          "tool_output_truncation_estimated_tokens": 2500,
+          "reasoning_effort_options": [
+            "low",
+            "medium",
+            "high",
+            "xhigh",
+            "max"
+          ]
         },
         "route": {
           "auto_compact_token_limit": null,
@@ -25886,12 +26243,13 @@
       "output_status": "unknown",
       "review": {
         "owner": "holon-model-provider",
-        "reviewed_at": "2026-10-28",
-        "reason": "Official OpenCode Go text eligibility includes translated Chat, Messages and Responses. Translation does not certify capacities, vision, reasoning controls, explicit cache controls or parallel tools.",
-        "recheck": "Recheck exact Go endpoint limits and translated capabilities.",
+        "reviewed_at": "2026-10-31",
+        "reason": "Exact native API fields reviewed against the official Go listing. Translated routes retain unknown capacity and conservative controls; native metadata is not inherited across protocols. Existing output defaults and local execution policy are preserved.",
+        "recheck": "Recheck exact native API key, registered base URL, capacities, modalities and effort options when the Go listing changes.",
         "evidence": [
           "models.dev/endpoint-review.md",
-          "models.dev/metadata-evidence.md"
+          "models.dev/metadata-evidence.md",
+          "https://opencode.ai/inference/go/v1/models"
         ]
       }
     },
@@ -25931,7 +26289,11 @@
           "default_verbosity": null,
           "effective_context_window_percent": 95,
           "max_output_tokens_upper_limit": 384000,
-          "tool_output_truncation_estimated_tokens": 2500
+          "tool_output_truncation_estimated_tokens": 2500,
+          "reasoning_effort_options": [
+            "high",
+            "max"
+          ]
         },
         "route": {
           "auto_compact_token_limit": null,
@@ -25986,12 +26348,13 @@
       "output_status": "unknown",
       "review": {
         "owner": "holon-model-provider",
-        "reviewed_at": "2026-10-28",
-        "reason": "Official OpenCode Go text eligibility includes translated Chat, Messages and Responses. Translation does not certify capacities, vision, reasoning controls, explicit cache controls or parallel tools.",
-        "recheck": "Recheck exact Go endpoint limits and translated capabilities.",
+        "reviewed_at": "2026-10-31",
+        "reason": "Exact native API fields reviewed against the official Go listing. Translated routes retain unknown capacity and conservative controls; native metadata is not inherited across protocols. Existing output defaults and local execution policy are preserved.",
+        "recheck": "Recheck exact native API key, registered base URL, capacities, modalities and effort options when the Go listing changes.",
         "evidence": [
           "models.dev/endpoint-review.md",
-          "models.dev/metadata-evidence.md"
+          "models.dev/metadata-evidence.md",
+          "https://opencode.ai/inference/go/v1/models"
         ]
       }
     },
@@ -26031,7 +26394,12 @@
           "default_verbosity": null,
           "effective_context_window_percent": 95,
           "max_output_tokens_upper_limit": 384000,
-          "tool_output_truncation_estimated_tokens": 2500
+          "tool_output_truncation_estimated_tokens": 2500,
+          "reasoning_effort_options": [
+            "low",
+            "high",
+            "max"
+          ]
         },
         "route": {
           "auto_compact_token_limit": null,
@@ -26093,12 +26461,13 @@
       "output_status": "unknown",
       "review": {
         "owner": "holon-model-provider",
-        "reviewed_at": "2026-10-28",
-        "reason": "Official OpenCode Go text eligibility includes translated Chat, Messages and Responses. Translation does not certify capacities, vision, reasoning controls, explicit cache controls or parallel tools.",
-        "recheck": "Recheck exact Go endpoint limits and translated capabilities.",
+        "reviewed_at": "2026-10-31",
+        "reason": "Exact native API fields reviewed against the official Go listing. Translated routes retain unknown capacity and conservative controls; native metadata is not inherited across protocols. Existing output defaults and local execution policy are preserved.",
+        "recheck": "Recheck exact native API key, registered base URL, capacities, modalities and effort options when the Go listing changes.",
         "evidence": [
           "models.dev/endpoint-review.md",
-          "models.dev/metadata-evidence.md"
+          "models.dev/metadata-evidence.md",
+          "https://opencode.ai/inference/go/v1/models"
         ]
       }
     },
@@ -26229,7 +26598,11 @@
           "default_verbosity": null,
           "effective_context_window_percent": 95,
           "max_output_tokens_upper_limit": 131072,
-          "tool_output_truncation_estimated_tokens": 2500
+          "tool_output_truncation_estimated_tokens": 2500,
+          "reasoning_effort_options": [
+            "high",
+            "max"
+          ]
         },
         "route": {
           "auto_compact_token_limit": null,
@@ -26284,12 +26657,13 @@
       "output_status": "unknown",
       "review": {
         "owner": "holon-model-provider",
-        "reviewed_at": "2026-10-28",
-        "reason": "Official OpenCode Go text eligibility includes translated Chat, Messages and Responses. Translation does not certify capacities, vision, reasoning controls, explicit cache controls or parallel tools.",
-        "recheck": "Recheck exact Go endpoint limits and translated capabilities.",
+        "reviewed_at": "2026-10-31",
+        "reason": "Exact native API fields reviewed against the official Go listing. Translated routes retain unknown capacity and conservative controls; native metadata is not inherited across protocols. Existing output defaults and local execution policy are preserved.",
+        "recheck": "Recheck exact native API key, registered base URL, capacities, modalities and effort options when the Go listing changes.",
         "evidence": [
           "models.dev/endpoint-review.md",
-          "models.dev/metadata-evidence.md"
+          "models.dev/metadata-evidence.md",
+          "https://opencode.ai/inference/go/v1/models"
         ]
       }
     },
@@ -26329,7 +26703,12 @@
           "default_verbosity": null,
           "effective_context_window_percent": 95,
           "max_output_tokens_upper_limit": 131072,
-          "tool_output_truncation_estimated_tokens": 2500
+          "tool_output_truncation_estimated_tokens": 2500,
+          "reasoning_effort_options": [
+            "low",
+            "high",
+            "max"
+          ]
         },
         "route": {
           "auto_compact_token_limit": null,
@@ -26384,12 +26763,13 @@
       "output_status": "unknown",
       "review": {
         "owner": "holon-model-provider",
-        "reviewed_at": "2026-10-28",
-        "reason": "Official OpenCode Go text eligibility includes translated Chat, Messages and Responses. Translation does not certify capacities, vision, reasoning controls, explicit cache controls or parallel tools.",
-        "recheck": "Recheck exact Go endpoint limits and translated capabilities.",
+        "reviewed_at": "2026-10-31",
+        "reason": "Exact native API fields reviewed against the official Go listing. Translated routes retain unknown capacity and conservative controls; native metadata is not inherited across protocols. Existing output defaults and local execution policy are preserved.",
+        "recheck": "Recheck exact native API key, registered base URL, capacities, modalities and effort options when the Go listing changes.",
         "evidence": [
           "models.dev/endpoint-review.md",
-          "models.dev/metadata-evidence.md"
+          "models.dev/metadata-evidence.md",
+          "https://opencode.ai/inference/go/v1/models"
         ]
       }
     },
@@ -26429,7 +26809,12 @@
           "default_verbosity": null,
           "effective_context_window_percent": 95,
           "max_output_tokens_upper_limit": 131072,
-          "tool_output_truncation_estimated_tokens": 2500
+          "tool_output_truncation_estimated_tokens": 2500,
+          "reasoning_effort_options": [
+            "low",
+            "high",
+            "max"
+          ]
         },
         "route": {
           "auto_compact_token_limit": null,
@@ -26491,12 +26876,13 @@
       "output_status": "unknown",
       "review": {
         "owner": "holon-model-provider",
-        "reviewed_at": "2026-10-28",
-        "reason": "Official OpenCode Go text eligibility includes translated Chat, Messages and Responses. Translation does not certify capacities, vision, reasoning controls, explicit cache controls or parallel tools.",
-        "recheck": "Recheck exact Go endpoint limits and translated capabilities.",
+        "reviewed_at": "2026-10-31",
+        "reason": "Exact native API fields reviewed against the official Go listing. Translated routes retain unknown capacity and conservative controls; native metadata is not inherited across protocols. Existing output defaults and local execution policy are preserved.",
+        "recheck": "Recheck exact native API key, registered base URL, capacities, modalities and effort options when the Go listing changes.",
         "evidence": [
           "models.dev/endpoint-review.md",
-          "models.dev/metadata-evidence.md"
+          "models.dev/metadata-evidence.md",
+          "https://opencode.ai/inference/go/v1/models"
         ]
       }
     },
@@ -26518,7 +26904,14 @@
         },
         "agent_turn": true,
         "decision_capable": false,
-        "reasoning_effort_options": []
+        "reasoning_effort_options": [
+          "none",
+          "low",
+          "medium",
+          "high",
+          "xhigh",
+          "max"
+        ]
       },
       "inputs": {
         "model": {
@@ -26536,7 +26929,15 @@
           "default_verbosity": null,
           "effective_context_window_percent": 95,
           "max_output_tokens_upper_limit": 128000,
-          "tool_output_truncation_estimated_tokens": 2500
+          "tool_output_truncation_estimated_tokens": 2500,
+          "reasoning_effort_options": [
+            "none",
+            "low",
+            "medium",
+            "high",
+            "xhigh",
+            "max"
+          ]
         },
         "route": {
           "capabilities": {},
@@ -26563,7 +26964,7 @@
             "image_generation": "model_builtin",
             "supports_reasoning": "model_builtin",
             "interactive_exec": "model_builtin",
-            "reasoning_effort_options": "derived"
+            "reasoning_effort_options": "model_builtin"
           }
         }
       },
@@ -26589,7 +26990,14 @@
         },
         "agent_turn": true,
         "decision_capable": false,
-        "reasoning_effort_options": []
+        "reasoning_effort_options": [
+          "none",
+          "low",
+          "medium",
+          "high",
+          "xhigh",
+          "max"
+        ]
       },
       "inputs": {
         "model": {
@@ -26607,7 +27015,15 @@
           "default_verbosity": null,
           "effective_context_window_percent": 95,
           "max_output_tokens_upper_limit": 128000,
-          "tool_output_truncation_estimated_tokens": 2500
+          "tool_output_truncation_estimated_tokens": 2500,
+          "reasoning_effort_options": [
+            "none",
+            "low",
+            "medium",
+            "high",
+            "xhigh",
+            "max"
+          ]
         },
         "route": {
           "capabilities": {},
@@ -26634,7 +27050,7 @@
             "image_generation": "model_builtin",
             "supports_reasoning": "model_builtin",
             "interactive_exec": "model_builtin",
-            "reasoning_effort_options": "derived"
+            "reasoning_effort_options": "model_builtin"
           }
         }
       },
@@ -26660,7 +27076,12 @@
         },
         "agent_turn": true,
         "decision_capable": false,
-        "reasoning_effort_options": []
+        "reasoning_effort_options": [
+          "low",
+          "medium",
+          "high",
+          "xhigh"
+        ]
       },
       "inputs": {
         "model": {
@@ -26678,7 +27099,13 @@
           "default_verbosity": null,
           "effective_context_window_percent": 95,
           "max_output_tokens_upper_limit": 500000,
-          "tool_output_truncation_estimated_tokens": 2500
+          "tool_output_truncation_estimated_tokens": 2500,
+          "reasoning_effort_options": [
+            "low",
+            "medium",
+            "high",
+            "xhigh"
+          ]
         },
         "route": {
           "capabilities": {},
@@ -26705,7 +27132,7 @@
             "image_generation": "model_builtin",
             "supports_reasoning": "model_builtin",
             "interactive_exec": "model_builtin",
-            "reasoning_effort_options": "derived"
+            "reasoning_effort_options": "model_builtin"
           }
         }
       },
@@ -26749,7 +27176,12 @@
           "default_verbosity": null,
           "effective_context_window_percent": 95,
           "max_output_tokens_upper_limit": 128000,
-          "tool_output_truncation_estimated_tokens": 2500
+          "tool_output_truncation_estimated_tokens": 2500,
+          "reasoning_effort_options": [
+            "none",
+            "low",
+            "high"
+          ]
         },
         "route": {
           "auto_compact_token_limit": null,
@@ -26804,12 +27236,13 @@
       "output_status": "unknown",
       "review": {
         "owner": "holon-model-provider",
-        "reviewed_at": "2026-10-28",
-        "reason": "Official OpenCode Go text eligibility includes translated Chat, Messages and Responses. Translation does not certify capacities, vision, reasoning controls, explicit cache controls or parallel tools.",
-        "recheck": "Recheck exact Go endpoint limits and translated capabilities.",
+        "reviewed_at": "2026-10-31",
+        "reason": "Exact native API fields reviewed against the official Go listing. Translated routes retain unknown capacity and conservative controls; native metadata is not inherited across protocols. Existing output defaults and local execution policy are preserved.",
+        "recheck": "Recheck exact native API key, registered base URL, capacities, modalities and effort options when the Go listing changes.",
         "evidence": [
           "models.dev/endpoint-review.md",
-          "models.dev/metadata-evidence.md"
+          "models.dev/metadata-evidence.md",
+          "https://opencode.ai/inference/go/v1/models"
         ]
       }
     },
@@ -26849,6 +27282,111 @@
           "default_verbosity": null,
           "effective_context_window_percent": 95,
           "max_output_tokens_upper_limit": 64000,
+          "tool_output_truncation_estimated_tokens": 2500,
+          "reasoning_effort_options": [
+            "none",
+            "high"
+          ]
+        },
+        "route": {
+          "auto_compact_token_limit": null,
+          "capabilities": {
+            "image_generation": false,
+            "image_input": false,
+            "interactive_exec": false,
+            "parallel_tool_calls": false,
+            "supports_reasoning": false
+          },
+          "context_window_tokens": null,
+          "default_max_output_tokens": null,
+          "default_verbosity": null,
+          "effective_context_window_percent": null,
+          "max_output_tokens_upper_limit": null,
+          "reasoning_effort_options": []
+        },
+        "evidence": {
+          "fields": {
+            "display_name": "model_builtin",
+            "description": "route_builtin",
+            "context_window_tokens": "route_builtin",
+            "effective_context_window_percent": "model_builtin",
+            "auto_compact_token_limit": "route_builtin",
+            "prompt_budget_estimated_tokens": "runtime_default",
+            "compaction_trigger_estimated_tokens": "derived",
+            "compaction_keep_recent_estimated_tokens": "derived",
+            "runtime_max_output_tokens": "route_builtin",
+            "verbosity": "route_builtin",
+            "tool_output_truncation_estimated_tokens": "model_builtin",
+            "max_output_tokens_upper_limit": "route_builtin",
+            "agent_turn": "model_builtin",
+            "parallel_tool_calls": "model_builtin",
+            "image_input": "model_builtin",
+            "image_generation": "model_builtin",
+            "supports_reasoning": "model_builtin",
+            "interactive_exec": "model_builtin",
+            "reasoning_effort_options": "route_builtin"
+          },
+          "constraints": [
+            {
+              "field": "supports_reasoning",
+              "kind": "disabled",
+              "source": "endpoint_policy",
+              "requested": "true",
+              "effective": "false"
+            }
+          ]
+        }
+      },
+      "context_status": "unknown",
+      "output_status": "unknown",
+      "review": {
+        "owner": "holon-model-provider",
+        "reviewed_at": "2026-10-31",
+        "reason": "Exact native API fields reviewed against the official Go listing. Translated routes retain unknown capacity and conservative controls; native metadata is not inherited across protocols. Existing output defaults and local execution policy are preserved.",
+        "recheck": "Recheck exact native API key, registered base URL, capacities, modalities and effort options when the Go listing changes.",
+        "evidence": [
+          "models.dev/endpoint-review.md",
+          "models.dev/metadata-evidence.md",
+          "https://opencode.ai/inference/go/v1/models"
+        ]
+      }
+    },
+    {
+      "route_ref": "opencode-go@responses/iceman-contributor-free",
+      "facts": {
+        "context_window_tokens": null,
+        "default_max_output_tokens": null,
+        "max_output_tokens_upper_limit": null,
+        "prompt_budget_estimated_tokens": 128000,
+        "runtime_max_output_tokens": 8192,
+        "capabilities": {
+          "agent_turn": true,
+          "parallel_tool_calls": false,
+          "image_input": false,
+          "image_generation": false,
+          "supports_reasoning": false,
+          "interactive_exec": false
+        },
+        "agent_turn": true,
+        "decision_capable": false,
+        "reasoning_effort_options": []
+      },
+      "inputs": {
+        "model": {
+          "auto_compact_token_limit": null,
+          "capabilities": {
+            "agent_turn": true,
+            "image_generation": false,
+            "image_input": false,
+            "interactive_exec": false,
+            "parallel_tool_calls": false,
+            "supports_reasoning": true
+          },
+          "context_window_tokens": 262144,
+          "default_max_output_tokens": null,
+          "default_verbosity": null,
+          "effective_context_window_percent": 95,
+          "max_output_tokens_upper_limit": 131072,
           "tool_output_truncation_estimated_tokens": 2500
         },
         "route": {
@@ -26904,103 +27442,13 @@
       "output_status": "unknown",
       "review": {
         "owner": "holon-model-provider",
-        "reviewed_at": "2026-10-28",
-        "reason": "Official OpenCode Go text eligibility includes translated Chat, Messages and Responses. Translation does not certify capacities, vision, reasoning controls, explicit cache controls or parallel tools.",
-        "recheck": "Recheck exact Go endpoint limits and translated capabilities.",
+        "reviewed_at": "2026-10-31",
+        "reason": "Exact native API fields reviewed against the official Go listing. Translated routes retain unknown capacity and conservative controls; native metadata is not inherited across protocols. Existing output defaults and local execution policy are preserved.",
+        "recheck": "Recheck exact native API key, registered base URL, capacities, modalities and effort options when the Go listing changes.",
         "evidence": [
           "models.dev/endpoint-review.md",
-          "models.dev/metadata-evidence.md"
-        ]
-      }
-    },
-    {
-      "route_ref": "opencode-go@responses/iceman-contributor-free",
-      "facts": {
-        "context_window_tokens": null,
-        "default_max_output_tokens": null,
-        "max_output_tokens_upper_limit": null,
-        "prompt_budget_estimated_tokens": 128000,
-        "runtime_max_output_tokens": 8192,
-        "capabilities": {
-          "agent_turn": true,
-          "parallel_tool_calls": false,
-          "image_input": false,
-          "image_generation": false,
-          "supports_reasoning": false,
-          "interactive_exec": false
-        },
-        "agent_turn": true,
-        "decision_capable": false,
-        "reasoning_effort_options": []
-      },
-      "inputs": {
-        "model": {
-          "auto_compact_token_limit": null,
-          "capabilities": {
-            "agent_turn": true,
-            "image_generation": false,
-            "image_input": false,
-            "interactive_exec": false,
-            "parallel_tool_calls": false,
-            "supports_reasoning": false
-          },
-          "context_window_tokens": null,
-          "default_max_output_tokens": null,
-          "default_verbosity": null,
-          "effective_context_window_percent": 95,
-          "max_output_tokens_upper_limit": null,
-          "tool_output_truncation_estimated_tokens": 2500
-        },
-        "route": {
-          "auto_compact_token_limit": null,
-          "capabilities": {
-            "image_generation": false,
-            "image_input": false,
-            "interactive_exec": false,
-            "parallel_tool_calls": false,
-            "supports_reasoning": false
-          },
-          "context_window_tokens": null,
-          "default_max_output_tokens": null,
-          "default_verbosity": null,
-          "effective_context_window_percent": null,
-          "max_output_tokens_upper_limit": null,
-          "reasoning_effort_options": []
-        },
-        "evidence": {
-          "fields": {
-            "display_name": "model_builtin",
-            "description": "route_builtin",
-            "context_window_tokens": "route_builtin",
-            "effective_context_window_percent": "model_builtin",
-            "auto_compact_token_limit": "route_builtin",
-            "prompt_budget_estimated_tokens": "runtime_default",
-            "compaction_trigger_estimated_tokens": "derived",
-            "compaction_keep_recent_estimated_tokens": "derived",
-            "runtime_max_output_tokens": "route_builtin",
-            "verbosity": "route_builtin",
-            "tool_output_truncation_estimated_tokens": "model_builtin",
-            "max_output_tokens_upper_limit": "route_builtin",
-            "agent_turn": "model_builtin",
-            "parallel_tool_calls": "model_builtin",
-            "image_input": "model_builtin",
-            "image_generation": "model_builtin",
-            "supports_reasoning": "model_builtin",
-            "interactive_exec": "model_builtin",
-            "reasoning_effort_options": "route_builtin"
-          }
-        }
-      },
-      "context_status": "unknown",
-      "output_status": "unknown",
-      "review": {
-        "owner": "holon-model-provider",
-        "reviewed_at": "2026-10-28",
-        "reason": "Official OpenCode Go text eligibility includes translated Chat, Messages and Responses. Translation does not certify capacities, vision, reasoning controls, explicit cache controls or parallel tools.",
-        "recheck": "Recheck exact Go endpoint limits and translated capabilities.",
-        "evidence": [
-          "models.dev/endpoint-review.md",
-          "models.dev/metadata-evidence.md"
+          "models.dev/metadata-evidence.md",
+          "https://opencode.ai/inference/go/v1/models"
         ]
       }
     },
@@ -27147,7 +27595,10 @@
           "default_verbosity": null,
           "effective_context_window_percent": 95,
           "max_output_tokens_upper_limit": 131072,
-          "tool_output_truncation_estimated_tokens": 2500
+          "tool_output_truncation_estimated_tokens": 2500,
+          "reasoning_effort_options": [
+            "max"
+          ]
         },
         "route": {
           "auto_compact_token_limit": null,
@@ -27209,12 +27660,13 @@
       "output_status": "unknown",
       "review": {
         "owner": "holon-model-provider",
-        "reviewed_at": "2026-10-28",
-        "reason": "Official OpenCode Go text eligibility includes translated Chat, Messages and Responses. Translation does not certify capacities, vision, reasoning controls, explicit cache controls or parallel tools.",
-        "recheck": "Recheck exact Go endpoint limits and translated capabilities.",
+        "reviewed_at": "2026-10-31",
+        "reason": "Exact native API fields reviewed against the official Go listing. Translated routes retain unknown capacity and conservative controls; native metadata is not inherited across protocols. Existing output defaults and local execution policy are preserved.",
+        "recheck": "Recheck exact native API key, registered base URL, capacities, modalities and effort options when the Go listing changes.",
         "evidence": [
           "models.dev/endpoint-review.md",
-          "models.dev/metadata-evidence.md"
+          "models.dev/metadata-evidence.md",
+          "https://opencode.ai/inference/go/v1/models"
         ]
       }
     },
@@ -27244,17 +27696,22 @@
           "capabilities": {
             "agent_turn": true,
             "image_generation": false,
-            "image_input": false,
+            "image_input": true,
             "interactive_exec": false,
             "parallel_tool_calls": false,
-            "supports_reasoning": false
+            "supports_reasoning": true
           },
-          "context_window_tokens": null,
+          "context_window_tokens": 1048576,
           "default_max_output_tokens": null,
           "default_verbosity": null,
           "effective_context_window_percent": 95,
-          "max_output_tokens_upper_limit": null,
-          "tool_output_truncation_estimated_tokens": 2500
+          "max_output_tokens_upper_limit": 131072,
+          "tool_output_truncation_estimated_tokens": 2500,
+          "reasoning_effort_options": [
+            "low",
+            "high",
+            "max"
+          ]
         },
         "route": {
           "auto_compact_token_limit": null,
@@ -27293,19 +27750,36 @@
             "supports_reasoning": "model_builtin",
             "interactive_exec": "model_builtin",
             "reasoning_effort_options": "route_builtin"
-          }
+          },
+          "constraints": [
+            {
+              "field": "image_input",
+              "kind": "disabled",
+              "source": "endpoint_policy",
+              "requested": "true",
+              "effective": "false"
+            },
+            {
+              "field": "supports_reasoning",
+              "kind": "disabled",
+              "source": "endpoint_policy",
+              "requested": "true",
+              "effective": "false"
+            }
+          ]
         }
       },
       "context_status": "unknown",
       "output_status": "unknown",
       "review": {
         "owner": "holon-model-provider",
-        "reviewed_at": "2026-10-28",
-        "reason": "Official OpenCode Go text eligibility includes translated Chat, Messages and Responses. Translation does not certify capacities, vision, reasoning controls, explicit cache controls or parallel tools.",
-        "recheck": "Recheck exact Go endpoint limits and translated capabilities.",
+        "reviewed_at": "2026-10-31",
+        "reason": "Exact native API fields reviewed against the official Go listing. Translated routes retain unknown capacity and conservative controls; native metadata is not inherited across protocols. Existing output defaults and local execution policy are preserved.",
+        "recheck": "Recheck exact native API key, registered base URL, capacities, modalities and effort options when the Go listing changes.",
         "evidence": [
           "models.dev/endpoint-review.md",
-          "models.dev/metadata-evidence.md"
+          "models.dev/metadata-evidence.md",
+          "https://opencode.ai/inference/go/v1/models"
         ]
       }
     },
@@ -27865,7 +28339,7 @@
           "default_max_output_tokens": null,
           "default_verbosity": null,
           "effective_context_window_percent": 95,
-          "max_output_tokens_upper_limit": null,
+          "max_output_tokens_upper_limit": 131072,
           "tool_output_truncation_estimated_tokens": 2500
         },
         "route": {
@@ -27928,12 +28402,13 @@
       "output_status": "unknown",
       "review": {
         "owner": "holon-model-provider",
-        "reviewed_at": "2026-10-28",
-        "reason": "Official OpenCode Go text eligibility includes translated Chat, Messages and Responses. Translation does not certify capacities, vision, reasoning controls, explicit cache controls or parallel tools.",
-        "recheck": "Recheck exact Go endpoint limits and translated capabilities.",
+        "reviewed_at": "2026-10-31",
+        "reason": "Exact native API fields reviewed against the official Go listing. Translated routes retain unknown capacity and conservative controls; native metadata is not inherited across protocols. Existing output defaults and local execution policy are preserved.",
+        "recheck": "Recheck exact native API key, registered base URL, capacities, modalities and effort options when the Go listing changes.",
         "evidence": [
           "models.dev/endpoint-review.md",
-          "models.dev/metadata-evidence.md"
+          "models.dev/metadata-evidence.md",
+          "https://opencode.ai/inference/go/v1/models"
         ]
       }
     },
@@ -27973,7 +28448,14 @@
           "default_verbosity": null,
           "effective_context_window_percent": 95,
           "max_output_tokens_upper_limit": 512000,
-          "tool_output_truncation_estimated_tokens": 2500
+          "tool_output_truncation_estimated_tokens": 2500,
+          "reasoning_effort_options": [
+            "low",
+            "medium",
+            "high",
+            "xhigh",
+            "max"
+          ]
         },
         "route": {
           "auto_compact_token_limit": null,
@@ -28035,12 +28517,13 @@
       "output_status": "unknown",
       "review": {
         "owner": "holon-model-provider",
-        "reviewed_at": "2026-10-28",
-        "reason": "Official OpenCode Go text eligibility includes translated Chat, Messages and Responses. Translation does not certify capacities, vision, reasoning controls, explicit cache controls or parallel tools.",
-        "recheck": "Recheck exact Go endpoint limits and translated capabilities.",
+        "reviewed_at": "2026-10-31",
+        "reason": "Exact native API fields reviewed against the official Go listing. Translated routes retain unknown capacity and conservative controls; native metadata is not inherited across protocols. Existing output defaults and local execution policy are preserved.",
+        "recheck": "Recheck exact native API key, registered base URL, capacities, modalities and effort options when the Go listing changes.",
         "evidence": [
           "models.dev/endpoint-review.md",
-          "models.dev/metadata-evidence.md"
+          "models.dev/metadata-evidence.md",
+          "https://opencode.ai/inference/go/v1/models"
         ]
       }
     },
@@ -28062,7 +28545,13 @@
         },
         "agent_turn": true,
         "decision_capable": false,
-        "reasoning_effort_options": []
+        "reasoning_effort_options": [
+          "minimal",
+          "low",
+          "medium",
+          "high",
+          "xhigh"
+        ]
       },
       "inputs": {
         "model": {
@@ -28080,7 +28569,14 @@
           "default_verbosity": null,
           "effective_context_window_percent": 95,
           "max_output_tokens_upper_limit": 131072,
-          "tool_output_truncation_estimated_tokens": 2500
+          "tool_output_truncation_estimated_tokens": 2500,
+          "reasoning_effort_options": [
+            "minimal",
+            "low",
+            "medium",
+            "high",
+            "xhigh"
+          ]
         },
         "route": {
           "capabilities": {},
@@ -28107,7 +28603,7 @@
             "image_generation": "model_builtin",
             "supports_reasoning": "model_builtin",
             "interactive_exec": "model_builtin",
-            "reasoning_effort_options": "derived"
+            "reasoning_effort_options": "model_builtin"
           }
         }
       },
@@ -28133,7 +28629,13 @@
         },
         "agent_turn": true,
         "decision_capable": false,
-        "reasoning_effort_options": []
+        "reasoning_effort_options": [
+          "minimal",
+          "low",
+          "medium",
+          "high",
+          "xhigh"
+        ]
       },
       "inputs": {
         "model": {
@@ -28151,7 +28653,14 @@
           "default_verbosity": null,
           "effective_context_window_percent": 95,
           "max_output_tokens_upper_limit": 131072,
-          "tool_output_truncation_estimated_tokens": 2500
+          "tool_output_truncation_estimated_tokens": 2500,
+          "reasoning_effort_options": [
+            "minimal",
+            "low",
+            "medium",
+            "high",
+            "xhigh"
+          ]
         },
         "route": {
           "capabilities": {},
@@ -28178,7 +28687,7 @@
             "image_generation": "model_builtin",
             "supports_reasoning": "model_builtin",
             "interactive_exec": "model_builtin",
-            "reasoning_effort_options": "derived"
+            "reasoning_effort_options": "model_builtin"
           }
         }
       },
@@ -28329,7 +28838,12 @@
           "default_verbosity": null,
           "effective_context_window_percent": 95,
           "max_output_tokens_upper_limit": 131072,
-          "tool_output_truncation_estimated_tokens": 2500
+          "tool_output_truncation_estimated_tokens": 2500,
+          "reasoning_effort_options": [
+            "low",
+            "medium",
+            "xhigh"
+          ]
         },
         "route": {
           "auto_compact_token_limit": null,
@@ -28391,12 +28905,13 @@
       "output_status": "unknown",
       "review": {
         "owner": "holon-model-provider",
-        "reviewed_at": "2026-10-28",
-        "reason": "Official OpenCode Go text eligibility includes translated Chat, Messages and Responses. Translation does not certify capacities, vision, reasoning controls, explicit cache controls or parallel tools.",
-        "recheck": "Recheck exact Go endpoint limits and translated capabilities.",
+        "reviewed_at": "2026-10-31",
+        "reason": "Exact native API fields reviewed against the official Go listing. Translated routes retain unknown capacity and conservative controls; native metadata is not inherited across protocols. Existing output defaults and local execution policy are preserved.",
+        "recheck": "Recheck exact native API key, registered base URL, capacities, modalities and effort options when the Go listing changes.",
         "evidence": [
           "models.dev/endpoint-review.md",
-          "models.dev/metadata-evidence.md"
+          "models.dev/metadata-evidence.md",
+          "https://opencode.ai/inference/go/v1/models"
         ]
       }
     },
@@ -28436,7 +28951,12 @@
           "default_verbosity": null,
           "effective_context_window_percent": 95,
           "max_output_tokens_upper_limit": 131072,
-          "tool_output_truncation_estimated_tokens": 2500
+          "tool_output_truncation_estimated_tokens": 2500,
+          "reasoning_effort_options": [
+            "low",
+            "medium",
+            "xhigh"
+          ]
         },
         "route": {
           "auto_compact_token_limit": null,
@@ -28498,12 +29018,13 @@
       "output_status": "unknown",
       "review": {
         "owner": "holon-model-provider",
-        "reviewed_at": "2026-10-28",
-        "reason": "Official OpenCode Go text eligibility includes translated Chat, Messages and Responses. Translation does not certify capacities, vision, reasoning controls, explicit cache controls or parallel tools.",
-        "recheck": "Recheck exact Go endpoint limits and translated capabilities.",
+        "reviewed_at": "2026-10-31",
+        "reason": "Exact native API fields reviewed against the official Go listing. Translated routes retain unknown capacity and conservative controls; native metadata is not inherited across protocols. Existing output defaults and local execution policy are preserved.",
+        "recheck": "Recheck exact native API key, registered base URL, capacities, modalities and effort options when the Go listing changes.",
         "evidence": [
           "models.dev/endpoint-review.md",
-          "models.dev/metadata-evidence.md"
+          "models.dev/metadata-evidence.md",
+          "https://opencode.ai/inference/go/v1/models"
         ]
       }
     },
@@ -28543,7 +29064,12 @@
           "default_verbosity": null,
           "effective_context_window_percent": 95,
           "max_output_tokens_upper_limit": 65536,
-          "tool_output_truncation_estimated_tokens": 2500
+          "tool_output_truncation_estimated_tokens": 2500,
+          "reasoning_effort_options": [
+            "low",
+            "medium",
+            "high"
+          ]
         },
         "route": {
           "auto_compact_token_limit": null,
@@ -28605,12 +29131,13 @@
       "output_status": "unknown",
       "review": {
         "owner": "holon-model-provider",
-        "reviewed_at": "2026-10-28",
-        "reason": "Official OpenCode Go text eligibility includes translated Chat, Messages and Responses. Translation does not certify capacities, vision, reasoning controls, explicit cache controls or parallel tools.",
-        "recheck": "Recheck exact Go endpoint limits and translated capabilities.",
+        "reviewed_at": "2026-10-31",
+        "reason": "Exact native API fields reviewed against the official Go listing. Translated routes retain unknown capacity and conservative controls; native metadata is not inherited across protocols. Existing output defaults and local execution policy are preserved.",
+        "recheck": "Recheck exact native API key, registered base URL, capacities, modalities and effort options when the Go listing changes.",
         "evidence": [
           "models.dev/endpoint-review.md",
-          "models.dev/metadata-evidence.md"
+          "models.dev/metadata-evidence.md",
+          "https://opencode.ai/inference/go/v1/models"
         ]
       }
     },

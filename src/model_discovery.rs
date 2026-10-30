@@ -908,6 +908,45 @@ impl OpenCodeGoModelsResponse {
 #[derive(Debug, Deserialize)]
 struct OpenCodeGoModel {
     id: String,
+    #[serde(default)]
+    api: BTreeMap<String, OpenCodeGoApi>,
+    #[serde(default)]
+    modalities: OpenCodeGoModalities,
+    #[serde(default)]
+    capabilities: OpenCodeGoCapabilities,
+    #[serde(default)]
+    limit: OpenCodeGoLimit,
+}
+
+#[derive(Debug, Deserialize)]
+struct OpenCodeGoApi {
+    base_url: Option<String>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+struct OpenCodeGoModalities {
+    #[serde(default)]
+    input: Vec<String>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+struct OpenCodeGoCapabilities {
+    #[serde(default)]
+    reasoning: OpenCodeGoReasoning,
+}
+
+#[derive(Debug, Default, Deserialize)]
+struct OpenCodeGoReasoning {
+    #[serde(default)]
+    supported: bool,
+    #[serde(default)]
+    effort: Vec<String>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+struct OpenCodeGoLimit {
+    context: Option<usize>,
+    output: Option<u32>,
 }
 
 impl OpenCodeGoModel {
@@ -935,21 +974,45 @@ impl OpenCodeGoModel {
         let endpoint = (preferred_endpoint != "default").then(|| {
             ProviderEndpointId::parse(preferred_endpoint).expect("valid OpenCode Go endpoint id")
         });
+        let (api, legacy_provider) = match preferred_endpoint {
+            "messages" => ("messages", "opencode-go-messages"),
+            "responses" => ("responses", "opencode-go-responses"),
+            _ => ("chat-completions", "opencode-go"),
+        };
+        // Global fields describe the published native API, not translated text
+        // routes. Gemini's native Google API is not registered in Holon.
+        let native = id != "gemini-4-argon"
+            && self.api.get(api).is_some_and(|api| {
+                provider_definition(legacy_provider).is_some_and(|definition| {
+                    api.base_url.as_deref() == Some(definition.default_base_url)
+                })
+            });
+        let supports_reasoning = native && self.capabilities.reasoning.supported;
         Some(BuiltInModelMetadata {
             model_ref: ModelRef::new(provider.clone(), id.to_string()),
             display_name: id.to_string(),
             description:
                 "Remote discovered OpenCode Go text model with its preferred registered endpoint or retained legacy mapping; translated eligibility is limited to reviewed current IDs."
                     .to_string(),
-            context_window_tokens: None,
+            context_window_tokens: native.then_some(self.limit.context).flatten().filter(|v| *v > 0),
             effective_context_window_percent: 95,
             auto_compact_token_limit: None,
             default_max_output_tokens: None,
-            max_output_tokens_upper_limit: None,
+            max_output_tokens_upper_limit: native.then_some(self.limit.output).flatten().filter(|v| *v > 0),
             default_verbosity: None,
             tool_output_truncation_estimated_tokens: None,
-            capabilities: ModelCapabilityFlags::default(),
-            reasoning_effort_options: Vec::new(),
+            capabilities: ModelCapabilityFlags {
+                image_input: native && self.modalities.input.iter().any(|input| {
+                    input == "image" || input.starts_with("image/")
+                }),
+                supports_reasoning,
+                ..ModelCapabilityFlags::default()
+            },
+            reasoning_effort_options: if supports_reasoning {
+                self.capabilities.reasoning.effort
+            } else {
+                Vec::new()
+            },
             source: ModelMetadataSource::RemoteDiscovered,
             endpoint,
         })
@@ -2415,6 +2478,229 @@ mod tests {
                 && model.max_output_tokens_upper_limit.is_none()
                 && model.capabilities == ModelCapabilityFlags::default()
         }));
+    }
+
+    #[test]
+    fn opencode_go_native_metadata_discovery_requires_exact_protocol_and_host() {
+        let native = serde_json::json!({
+            "id": "kimi-k3.1-pro",
+            "modalities": {"input": ["text", "image/jpeg"], "output": ["text"]},
+            "capabilities": {"reasoning": {"supported": true, "effort": ["low", "high", "max"]}},
+            "limit": {"context": 1048576, "output": 131072},
+            "api": {"chat-completions": {"base_url": "https://opencode.ai/inference/go/openai/v1"}}
+        });
+        let provider = ProviderId::parse("opencode-go").unwrap();
+        let decode = |record| {
+            serde_json::from_value::<OpenCodeGoModelsResponse>(
+                serde_json::json!({"data": [record]}),
+            )
+            .unwrap()
+            .into_model_metadata(&provider)
+            .pop()
+            .unwrap()
+        };
+        let model = decode(native.clone());
+        assert_eq!(model.context_window_tokens, Some(1_048_576));
+        assert_eq!(model.max_output_tokens_upper_limit, Some(131_072));
+        assert_eq!(model.default_max_output_tokens, None);
+        assert!(model.capabilities.image_input);
+        assert!(model.capabilities.supports_reasoning);
+        assert_eq!(model.reasoning_effort_options, ["low", "high", "max"]);
+        assert_eq!(model.source, ModelMetadataSource::RemoteDiscovered);
+
+        let mut messages = native.clone();
+        messages["id"] = serde_json::json!("minimax-m3");
+        messages["api"] = serde_json::json!({"messages": {"base_url": "https://opencode.ai/inference/go/anthropic/v1"}});
+        assert_eq!(
+            decode(messages).max_output_tokens_upper_limit,
+            Some(131_072)
+        );
+
+        let mut responses = native.clone();
+        responses["id"] = serde_json::json!("grok-4.7");
+        responses["api"] = serde_json::json!({"responses": {"base_url": "https://opencode.ai/inference/go/openai/v1"}});
+        assert_eq!(decode(responses).context_window_tokens, Some(1_048_576));
+
+        for (id, api) in [
+            (
+                "kimi-k3.1-pro",
+                serde_json::json!({"messages": {"base_url": "https://opencode.ai/inference/go/anthropic/v1"}}),
+            ),
+            (
+                "kimi-k3.1-pro",
+                serde_json::json!({"chat-completions": {"base_url": "https://example.invalid/v1"}}),
+            ),
+            (
+                "kimi-k3.1-pro",
+                serde_json::json!({"chat-completions": {"base_url": "https://opencode.ai/inference/go/anthropic/v1"}}),
+            ),
+            (
+                "grok-4.7",
+                serde_json::json!({"chat-completions": {"base_url": "https://opencode.ai/inference/go/openai/v1"}}),
+            ),
+            (
+                "gemini-4-argon",
+                serde_json::json!({"generate-content": {"base_url": "https://opencode.ai/inference/go/google/v1beta"}}),
+            ),
+            (
+                "gemini-4-argon",
+                serde_json::json!({"chat-completions": {"base_url": "https://opencode.ai/inference/go/openai/v1"}}),
+            ),
+        ] {
+            let mut record = native.clone();
+            record["id"] = serde_json::json!(id);
+            record["api"] = api;
+            let model = decode(record);
+            assert_eq!(model.context_window_tokens, None, "{id}");
+            assert_eq!(model.max_output_tokens_upper_limit, None, "{id}");
+            assert_eq!(model.capabilities, ModelCapabilityFlags::default(), "{id}");
+            assert!(model.reasoning_effort_options.is_empty(), "{id}");
+        }
+        let mut absent = native.clone();
+        absent.as_object_mut().unwrap().remove("api");
+        assert_eq!(decode(absent).context_window_tokens, None);
+        let missing = decode(serde_json::json!({
+            "id": "kimi-k3.1-pro",
+            "api": {"chat-completions": {"base_url": "https://opencode.ai/inference/go/openai/v1"}}
+        }));
+        assert_eq!(missing.context_window_tokens, None);
+        assert_eq!(missing.max_output_tokens_upper_limit, None);
+        assert_eq!(missing.capabilities, ModelCapabilityFlags::default());
+        assert!(missing.reasoning_effort_options.is_empty());
+        let mut no_reasoning = native;
+        no_reasoning["capabilities"]["reasoning"]["supported"] = serde_json::json!(false);
+        let model = decode(no_reasoning);
+        assert!(!model.capabilities.supports_reasoning);
+        assert!(model.reasoning_effort_options.is_empty());
+    }
+
+    #[test]
+    fn opencode_go_discovered_native_metadata_stays_on_its_resolved_endpoint() {
+        use crate::{
+            config::ModelRouteRef,
+            context::ContextConfig,
+            model_catalog::{BuiltInModelCatalog, ModelRuntimeOverride},
+        };
+
+        let catalog = BuiltInModelCatalog::new();
+        let provider = ProviderId::parse("opencode-go").unwrap();
+        for (id, native_endpoint, api, base_url, context, output, efforts) in [
+            (
+                "kimi-k3.1-pro",
+                "default",
+                "chat-completions",
+                "https://opencode.ai/inference/go/openai/v1",
+                1_048_576,
+                131_072,
+                vec!["low", "high", "max"],
+            ),
+            (
+                "minimax-m3",
+                "messages",
+                "messages",
+                "https://opencode.ai/inference/go/anthropic/v1",
+                1_000_000,
+                131_072,
+                vec![],
+            ),
+            (
+                "grok-4.7",
+                "responses",
+                "responses",
+                "https://opencode.ai/inference/go/openai/v1",
+                500_000,
+                500_000,
+                vec!["low", "medium", "high", "xhigh"],
+            ),
+        ] {
+            let decoded =
+                serde_json::from_value::<OpenCodeGoModelsResponse>(serde_json::json!({"data": [{
+                    "id": id,
+                    "modalities": {"input": ["text", "image/jpeg"], "output": ["text"]},
+                    "capabilities": {"reasoning": {"supported": true, "effort": efforts}},
+                    "limit": {"context": context, "output": output},
+                    "api": {(api): {"base_url": base_url}}
+                }]}))
+                .unwrap()
+                .into_model_metadata(&provider)
+                .pop()
+                .unwrap();
+            let model_ref = decoded.model_ref.clone();
+            let discovered = HashMap::from([(model_ref.clone(), decoded)]);
+            let empty_discovered = HashMap::new();
+            let preferred = catalog.resolve_policy(
+                &model_ref,
+                &HashMap::new(),
+                &discovered,
+                None,
+                &ContextConfig::default(),
+                8192,
+            );
+            assert_eq!(preferred.context_window_tokens, Some(context), "{id}");
+            assert_eq!(
+                preferred.source,
+                ModelMetadataSource::RemoteDiscovered,
+                "{id}"
+            );
+
+            for endpoint in ["default", "messages", "responses"] {
+                let route = ModelRouteRef::parse(&format!("opencode-go@{endpoint}/{id}")).unwrap();
+                let resolve =
+                    |overrides: &HashMap<ModelRef, ModelRuntimeOverride>,
+                     discovered: &HashMap<ModelRef, BuiltInModelMetadata>| {
+                        catalog.resolve_route_policy(
+                            &route,
+                            overrides,
+                            discovered,
+                            None,
+                            &ContextConfig::default(),
+                            8192,
+                        )
+                    };
+                let policy = resolve(&HashMap::new(), &discovered);
+                if endpoint == native_endpoint {
+                    assert_eq!(policy.context_window_tokens, Some(context), "{route:?}");
+                    assert_eq!(
+                        policy.max_output_tokens_upper_limit,
+                        Some(output),
+                        "{route:?}"
+                    );
+                    assert_eq!(
+                        policy.source,
+                        ModelMetadataSource::RemoteDiscovered,
+                        "{route:?}"
+                    );
+                } else {
+                    let without_discovery = resolve(&HashMap::new(), &empty_discovered);
+                    assert_eq!(without_discovery.context_window_tokens, None, "{route:?}");
+                    assert_eq!(policy, without_discovery, "{route:?}");
+                }
+                if native_endpoint == "default" {
+                    let mut explicit_default = discovered.clone();
+                    explicit_default.get_mut(&model_ref).unwrap().endpoint =
+                        Some(ProviderEndpointId::default_endpoint());
+                    assert_eq!(
+                        resolve(&HashMap::new(), &explicit_default),
+                        policy,
+                        "{route:?}"
+                    );
+                }
+                let overrides = HashMap::from([(
+                    model_ref.clone(),
+                    ModelRuntimeOverride {
+                        context_window_tokens: Some(16_384),
+                        ..Default::default()
+                    },
+                )]);
+                let overridden = resolve(&overrides, &discovered);
+                assert_eq!(overridden.context_window_tokens, Some(16_384), "{route:?}");
+                assert_eq!(
+                    overridden.source,
+                    ModelMetadataSource::ConfigOverride,
+                    "{route:?}"
+                );
+            }
+        }
     }
 
     #[test]

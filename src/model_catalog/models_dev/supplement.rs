@@ -383,7 +383,12 @@ pub fn generate(
                     continue;
                 }
                 // Native limits and effort metadata still need endpoint review.
-                if holon_provider_id == "mistral" && md_model_id == "deepseek-v4-1-flash-1017" {
+                if holon_provider_id == "mistral"
+                    && matches!(
+                        md_model_id.as_str(),
+                        "deepseek-v4-1-flash-1017" | "mistral-large-4-0-8"
+                    )
+                {
                     remaining_previous.remove(&model_ref_string);
                     deferred.push(DeferredModel {
                         model_ref: model_ref_string,
@@ -889,7 +894,14 @@ mod tests {
                         "id": "deepseek-v4-1-flash-1017",
                         "name": "DeepSeek V4.1 Flash",
                         "release_date": "2026-10-28",
-                        "modalities": { "input": ["text"], "output": ["text"] }
+                        "modalities": { "input": ["text", "image"], "output": ["text"] }
+                    },
+                    "mistral-large-4-0-8": {
+                        "id": "mistral-large-4-0-8",
+                        "name": "Mistral Large 4.0.8",
+                        "release_date": "2026-10-30",
+                        "limit": { "context": 1048576, "output": 262144 },
+                        "modalities": { "input": ["text", "image"], "output": ["text"] }
                     },
                     "reviewed-peer": {
                         "id": "reviewed-peer",
@@ -926,10 +938,12 @@ mod tests {
                     .collect::<Vec<_>>(),
                 ["mistral/reviewed-peer"]
             );
-            assert!(update.deferred.iter().any(|model| {
-                model.model_ref == "mistral/deepseek-v4-1-flash-1017"
-                    && model.reason == DeferredReason::EndpointReviewRequired
-            }));
+            for id in ["deepseek-v4-1-flash-1017", "mistral-large-4-0-8"] {
+                assert!(update.deferred.iter().any(|model| {
+                    model.model_ref == format!("mistral/{id}")
+                        && model.reason == DeferredReason::EndpointReviewRequired
+                }));
+            }
         }
     }
 

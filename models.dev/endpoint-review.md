@@ -9,6 +9,128 @@ reviewed routes unless there is affirmative removal evidence. New routes require
 their own endpoint evidence; missing capability flags are conservative omissions,
 not proof that a model lacks the feature.
 
+## 2026-10-31 incremental review
+
+This cycle starts from main `2563c0e5`; public evidence was sampled on
+October 30 UTC (October 31 in Beijing). The frozen upstream SHA-256 is
+`490b395ef18abff5b3fadfeffef6604ffbc79e1523d111eb0710335c63bc59e3`.
+Initial refresh/validation passed; the field gate correctly rejected one
+changed Mistral alias and one unreviewed candidate. Generated output is not
+automatic endpoint approval. Final post-change verification is separate.
+
+### Confirmed changes and unresolved evidence
+
+- The official [Go listing](https://opencode.ai/inference/go/v1/models) still
+  has 28 IDs but now publishes native `api`, `base_url`, limits, modalities
+  and reasoning metadata. Of 27 registered native matches, 22 have field
+  differences, including 20 exact effort enums. K3.1 Chat confirms context
+  **1,048,576**, output ceiling **131,072**, image input and reasoning;
+  Iceman Chat confirms **262,144 / 131,072** and reasoning; M3 Messages
+  confirms its previously unknown **131,072** ceiling. None establishes an
+  omitted-request output default. Preserve existing output defaults/runtime
+  policy and preferred routes. Discovery must match the native protocol
+  and registered host exactly; translated/missing metadata stays unknown.
+  Explicit Go route resolution also rejects the whole discovery record
+  when its native endpoint differs, before selecting fields or evidence;
+  a missing endpoint equals `default`. Model-only preferred resolution,
+  other providers and explicit overrides retain their existing behavior.
+  Real decoded Chat/Messages/Responses payloads cover native metadata,
+  complete translated-policy equality against no discovery, default
+  endpoint normalization and override precedence.
+  Gemini's native `generate-content` remains unregistered. Cache prices do
+  not prove an explicit `cache_control` request parameter.
+- Mistral's existing `mistral-large-4` alias now has independently documented
+  `low/medium/high` efforts. Defer the new exact `mistral-large-4-0-8` on
+  both new and retained supplement paths until exact-ID/capacity review;
+  retain its raw artifact and all reviewed peers. The earlier DeepSeek
+  candidate now documents image input, but unresolved endpoint limits and
+  efforts still prevent admission. See the [field evidence](metadata-evidence.md#incremental-review-2026-10-31).
+- Step's [router integration](https://platform.stepfun.com/docs/zh/step-plan/integrations/reasoning-api.md)
+  now names Step5 Preview / Step3.7, replacing DeepSeek V4 Pro / Step3.7.
+  Both [Chat](https://platform.stepfun.com/docs/zh/api-reference/chat/chat-completion-create.md)
+  and [Messages](https://platform.stepfun.com/docs/zh/api-reference/chat/messages-create.md)
+  now say **64K**, superseding the earlier 250K evidence. The static limits
+  were already unknown: do not invent a 250,000 field to fix or guess
+  65,536 versus 64,000. No inherited vision/effort, `web_search` or new
+  Messages registration.
+- BytePlus's [quick start](https://docs.byteplus.com/en/docs/modelark/coding-plan-personal-get-started)
+  and [OpenCode integration](https://docs.byteplus.com/en/docs/modelark/coding-plan-personal-ai-opencode)
+  now explicitly confirm `dola-seed-2.0-pro/lite/code`, resolving three of
+  six literal-ID gaps. Three older gaps remain. Client configuration is not
+  an independent service-schema guarantee of image support or hard/default
+  limits: preserve conservative fields. The [support table](https://docs.byteplus.com/en/docs/modelark/coding-plan-personal-plan-overview)
+  removed four older names, superseding the prior “all 13 still listed”
+  evidence. Its [retirement date](https://docs.byteplus.com/en/docs/modelark/coding-plan-personal-model-deprecation)
+  still lacks a year and resolved account/wire-ID scope. Absence alone does
+  not authorize deletion.
+
+### Independently rechecked endpoint matrix
+
+Unchanged historical fields are preserved, not newly certified. Earlier
+dated entries remain historical; this section supersedes conflicting prose.
+
+| Registered endpoint | Result and preserved boundary |
+| --- | --- |
+| `dashscope@default` | Messages unchanged; no new explicit-cache/integer-limit evidence. |
+| `dashscope@token-plan` | Personal/team pages semantically unchanged; quotas/custom URLs are not limits. |
+| `dashscope@coding-plan` | Domestic contract unchanged; no ordinary/Token Plan eligibility copied. |
+| `dashscope@coding-plan-intl` | Independent international six-model contract unchanged. |
+| `volcengine@default` | New concurrency/TPM quotas are not context/output; K3.1 default conflict remains. |
+| `volcengine@coding` | M3 final stop remains November 2, 2026, 14:00 Beijing time, still future. |
+| `volcengine@plan` | Independently unchanged; unknown K3.1 plan limits and future M3 boundary retained. |
+| `tencent-tokenhub@default` | Chat matrix/schema unchanged; endpoint-specific fields retained. |
+| `tencent-tokenhub@messages` | Independent schema unchanged; no Chat defaults/cache semantics copied. |
+| `tencent-tokenhub@responses` | Independent schema unchanged; own allowlist retained. |
+| `qianfan@default` | Six retirements already merged; experimental ERNIE not newly retired. |
+| `bigmodel@default` | Domestic Messages/model/key pages semantically unchanged. |
+| `zai@default` | International DevPack/key contract semantically unchanged; no domestic inference. |
+| `xiaomi@default` | Responses/model/parameter/retirement pages unchanged; historical IDs retained. |
+| `xiaomi@token-plan` | Independent plan unchanged; no ordinary/custom/region eligibility copied. |
+| `minimax@default` | Existing international users retain old-model access until November 18; recommendation is not default. |
+| `minimax-cn@default` | Chinese schema independently unchanged; no international eligibility copied. |
+| `minimax@m-plan` | Flash/Preview forwarding unchanged; ordinary retirement is not plan retirement. |
+| `minimax-cn@m-plan` | Chinese plan unchanged; Preview exact output remains unknown. |
+| `moonshot@default` | October 31 restricts new users, not existing-user EOS; K3 policy unchanged. |
+| `byteplus@default` | Zero static routes retained; November 11 is future; Coding evidence does not apply. |
+| `byteplus@coding` | Three Dola ID gaps resolved; older removal/date/qualification gaps remain. |
+| `stepfun@default` | Cards/retirement table unchanged; no plan-router limits copied. |
+| `stepfun@plan` | Router backend/output prose changed as above; exact integers still unknown. |
+| `opencode-go@default` | 17 native Chat records match; only native fields upgraded, absent historical IDs retained. |
+| `opencode-go@messages` | Five native matches; M3 ceiling/three effort enums confirmed, no translated upgrades. |
+| `opencode-go@responses` | Five native matches with effort enums; Gemini's different API does not apply. |
+| `kilocode@default` | Five auto selectors unchanged; listing 387→388/eight non-auto differences do not expand admission. |
+| `together@default` | Available cards unchanged; dedicated M2.7 not serverless; fetch failure is not retirement. |
+| `fireworks@default` | 329 selected listing contracts unchanged; Qwen Max exact context remains unresolved. |
+
+Codex's immutable 12-slug catalog is unchanged. DeepSeek's Flash image
+support is already implemented. Five OpenRouter audit deltas match its
+public listing; other raw changes do not prove special-endpoint eligibility
+or retirement. No live session, paid inference, credentials, deployment or
+user configuration was changed.
+
+### Final verification
+
+Frozen-file checks passed before and after the final serial gates. The
+656-route field audit confirms no route additions/removals: only 22 Go
+native routes and the existing Mistral alias change effective fields.
+All other effective fields, default/preferred mappings, 55 supplemental
+models and 16 explicit supplemental routes retain their reviewed contracts.
+
+- Pinned refresh, `models-dev validate`, fresh `coverage --json`, the
+  independent expected-field comparison and `coverage --check` passed.
+- `cargo test --locked --lib model_catalog::`: 177 passed, 1 ignored.
+- `cargo test --locked --lib model_discovery::`: 35 passed.
+- `cargo test --locked --lib config::tests::`: 155 passed.
+- `cargo test --locked models_dev`: nonempty targets passed with
+  71 / 1 / 11 / 1 tests; filters overlap the library runs above.
+- `cargo fmt --all -- --check`, `RUSTFLAGS="-D warnings" cargo check
+  --all-targets --locked` and `git diff --check` passed.
+
+Independent read-only review found no unresolved P1/P2 findings and verified
+the Go cross-protocol regression red-to-green, default-endpoint compatibility,
+precise Mistral admission gate and frozen artifact boundaries. This is local
+verification, not live account/session or paid inference acceptance.
+
 ## 2026-10-30 incremental review
 
 This cycle starts from main `330d105b`. Public evidence was sampled on
