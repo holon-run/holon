@@ -13,6 +13,8 @@ struct HolonApp: App {
     @State private var imports: SharedImportCoordinator
     @State private var router = AppRouter()
     @State private var addingConnection = false
+    // Escape hatch from the launch-time restore wait to the address screen.
+    @State private var changingAddress = false
     @State private var previousProfile: ConnectionProfile?
     @State private var returningConnection = false
     @State private var consentRevision = 0
@@ -70,12 +72,22 @@ struct HolonApp: App {
                 if let coordinator {
                     let readingActivation = ReadingActivation(coordinator)
                     Group {
-                        if addingConnection || (coordinator.launchState == .connection && coordinator.readingContext == nil) {
+                        if addingConnection || changingAddress
+                            || (coordinator.launchState == .connection && coordinator.readingContext == nil) {
                             ConnectionWelcomeView(coordinator: coordinator, cancel: addingConnection ? {
                                 returnToPreviousConnection(coordinator)
                             } : nil)
-                        } else if coordinator.launchState == .restoring && coordinator.readingContext == nil {
-                            ProgressView("onboarding.restoring")
+                        } else if coordinator.launchState == .restoring && coordinator.readingContext == nil && !changingAddress {
+                            // A first launch with a saved profile must keep the address
+                            // entry reachable even while the restore attempt is in flight.
+                            VStack(spacing: 16) {
+                                ProgressView("onboarding.restoring")
+                                Button("onboarding.changeAddress") {
+                                    coordinator.cancelLogin()
+                                    changingAddress = true
+                                }
+                                .accessibilityIdentifier("onboarding.changeAddress")
+                            }
                         } else if let url = coordinator.readingContext?.profile.apiBaseURL ?? coordinator.selectedProfile?.apiBaseURL,
                                   !SharingConsent.shared.approved(url) {
                             ConnectionSharingConsentView(apiBaseURL: url, onApproved: {
@@ -123,6 +135,7 @@ struct HolonApp: App {
                             })
                             if identity != nil {
                                 addingConnection = false
+                                changingAddress = false
                                 previousProfile = nil
                             }
                         }

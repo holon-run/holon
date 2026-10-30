@@ -25,6 +25,18 @@ final class ConnectionInputTests: XCTestCase {
                        .address(URL(string: "http://host.test:8787/api/")!))
     }
 
+    func testBareHostAssumesHTTPS() throws {
+        XCTAssertEqual(try ConnectionInput("demo.holon.run"),
+                       .address(URL(string: "https://demo.holon.run/api/")!))
+        XCTAssertEqual(try ConnectionInput(" host.test:8787 "),
+                       .address(URL(string: "https://host.test:8787/api/")!))
+        XCTAssertEqual(try ConnectionInput("host.test/proxy/"),
+                       .address(URL(string: "https://host.test/proxy/api/")!))
+        // The assumed scheme must not smuggle in credentials or non-web schemes.
+        XCTAssertThrowsError(try ConnectionInput("user:secret@host.test"))
+        XCTAssertThrowsError(try ConnectionInput("ftp://host.test"))
+    }
+
     func testUnsafeOrOversizedInputIsRejectedWithoutEchoingIt() {
         for input in [
             "https://user:secret@host.test/api", "https://host.test/api?token=secret",

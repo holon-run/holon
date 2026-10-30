@@ -7,9 +7,12 @@ enum ConnectionInput: Equatable {
     case address(URL)
 
     init(_ payload: String) throws {
-        let input = payload.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard input.utf8.count <= 2048,
-              var parts = URLComponents(string: input),
+        let trimmed = payload.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard trimmed.utf8.count <= 2048 else { throw HolonClientError.invalidRequest }
+        // A typed host without a scheme ("demo.holon.run") parses as a bare
+        // relative path; assume https:// the way browsers do.
+        let input = trimmed.contains("://") ? trimmed : "https://" + trimmed
+        guard var parts = URLComponents(string: input),
               parts.port.map({ (1...65535).contains($0) }) ?? true else {
             throw HolonClientError.invalidRequest
         }

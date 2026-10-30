@@ -835,6 +835,10 @@ with fixture_directory(repo) as root:
                          # Login consent precedes every connection attempt, so the
                          # gate is asserted before credentials exist on the device.
                          ("testLoginConsentPrecedesAnyConnection", "large"),
+                         # A bare host must normalize to https and hit the gate.
+                         ("testBareHostAddressReachesConsentPrompt", "large"),
+                         # A saved-profile launch must keep the address entry reachable.
+                         ("testSavedProfileLaunchOffersChangeAddress", "large"),
                          # Authenticate through shipped onboarding before diagnostics.
                          ("testAuthenticatedNativeWorkflow", "large"),
                          ("testOfflineReadingCacheColdLaunchAndRetry", "large"),

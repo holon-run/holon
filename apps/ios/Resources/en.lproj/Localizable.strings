@@ -258,6 +258,7 @@
 "action.cancel" = "Cancel";
 "onboarding.title" = "Connect Holon";
 "onboarding.restoring" = "Restoring your connection…";
+"onboarding.changeAddress" = "Change address";
 "onboarding.welcome" = "Connect to your Holon";
 "onboarding.purpose" = "View the Agents and work on your computer’s Holon.";
 "onboarding.scan" = "Scan to connect";
