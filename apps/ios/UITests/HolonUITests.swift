@@ -12,17 +12,7 @@ final class HolonUITests: XCTestCase {
     }
 
     private func launch(language: String, dark: Bool, large: Bool) -> XCUIApplication {
-        let app = XCUIApplication()
-        app.launchArguments = ["-AppleLanguages", "(\(language))", "-AppleLocale", language,
-                               "-AppleInterfaceStyle", dark ? "Dark" : "Light"]
-        // The runner verifies the real simulator preference, not an app-only override.
-        XCTAssertEqual(ProcessInfo.processInfo.environment["HOLON_UI_CONTENT_SIZE"],
-                       large ? "accessibility-extra-extra-extra-large" : "large",
-                       "The UI runner must configure and verify the system text size")
-        XCTAssertEqual(ProcessInfo.processInfo.environment["HOLON_UI_APPEARANCE"], dark ? "dark" : "light",
-                       "The UI runner must configure and verify the system appearance")
-        app.launch()
-        return app
+        launch(language: language, dark: dark, large: large, resettingState: false)
     }
 
     /// Launches the app after asking it to clear its own state.
@@ -31,10 +21,24 @@ final class HolonUITests: XCTestCase {
     /// install must say so instead of assuming it. The app owns the reset,
     /// so the case does not have to know where the state lives.
     private func launchClean(language: String, dark: Bool, large: Bool) -> XCUIApplication {
+        launch(language: language, dark: dark, large: large, resettingState: true)
+    }
+
+    private func launch(language: String, dark: Bool, large: Bool,
+                        resettingState: Bool) -> XCUIApplication {
         let app = XCUIApplication()
-        app.launchArguments = ["-AppleLanguages", "(\(language))", "-AppleLocale", language,
-                               "-AppleInterfaceStyle", dark ? "Dark" : "Light",
-                               TestingStateResetArgument.value]
+        var arguments = ["-AppleLanguages", "(\(language))", "-AppleLocale", language,
+                         "-AppleInterfaceStyle", dark ? "Dark" : "Light"]
+        if resettingState {
+            arguments.append(TestingStateResetArgument.value)
+        }
+        app.launchArguments = arguments
+        // The runner verifies the real simulator preference, not an app-only override.
+        XCTAssertEqual(ProcessInfo.processInfo.environment["HOLON_UI_CONTENT_SIZE"],
+                       large ? "accessibility-extra-extra-extra-large" : "large",
+                       "The UI runner must configure and verify the system text size")
+        XCTAssertEqual(ProcessInfo.processInfo.environment["HOLON_UI_APPEARANCE"], dark ? "dark" : "light",
+                       "The UI runner must configure and verify the system appearance")
         app.launch()
         return app
     }
