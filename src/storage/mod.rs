@@ -740,6 +740,15 @@ impl AppStorage {
             .tool_executions_for_turn(&self.storage_agent_id()?, turn_id)
     }
 
+    pub fn read_tool_executions_by_ids(
+        &self,
+        tool_ids: &[String],
+    ) -> Result<Vec<ToolExecutionRecord>> {
+        self.runtime_db
+            .evidence()
+            .tool_executions_by_ids(&self.storage_agent_id()?, tool_ids)
+    }
+
     pub fn read_tool_execution_by_id(&self, tool_id: &str) -> Result<Option<ToolExecutionRecord>> {
         let runtime_db = self.runtime_db.clone();
         return runtime_db

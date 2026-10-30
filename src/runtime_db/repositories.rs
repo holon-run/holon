@@ -4917,6 +4917,17 @@ impl EvidenceRepository<'_> {
             .collect()
     }
 
+    pub fn tool_executions_by_ids(
+        &self,
+        agent_id: &str,
+        tool_ids: &[String],
+    ) -> Result<Vec<ToolExecutionRecord>> {
+        self.payloads_by_ids(EvidenceKind::ToolExecution, agent_id, tool_ids)?
+            .into_iter()
+            .map(|row| serde_json::from_str(&row.payload_json).map_err(Into::into))
+            .collect()
+    }
+
     pub fn tool_execution_by_id(
         &self,
         agent_id: &str,
