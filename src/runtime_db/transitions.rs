@@ -2534,15 +2534,44 @@ impl RuntimeTransitionRepository<'_> {
             let execution_continuations = completion
                 .map(|completion| completion.continuations.as_slice())
                 .unwrap_or_default();
+            // #3816: every WorkItem mutation this transaction applies must
+            // synchronize the execution registration in the same commit, no
+            // matter which payload channel (wait registration, wait
+            // transition, or completion) carried it. Synchronizing only the
+            // wait registration stranded the other channels' revisions ahead
+            // of the registration and doomed later settlements. Derived
+            // registration of missing partitions stays owned by the wait
+            // registration channel; the other channels advance registrations
+            // without inventing them.
+            let mut advance_only_mutations: Vec<WorkItemMutation> = Vec::new();
+            if let Some(work_item) =
+                wait_transition.and_then(|transition| transition.work_item.as_ref())
+            {
+                advance_only_mutations.push(work_item.clone());
+            }
+            if let Some(completion) = completion {
+                advance_only_mutations.extend(completion.work_items.iter().cloned());
+            }
+            let advance_synchronized = if advance_only_mutations.is_empty() {
+                execution_protocol_transition.clone()
+            } else {
+                execution_protocol_repository::synchronize_work_item_revisions_opt(
+                    tx,
+                    &command.agent_id,
+                    execution_protocol_transition,
+                    &advance_only_mutations,
+                    false,
+                )?
+            };
             let synchronized_execution_protocol = if let Some(registration) = wait_registration {
                 execution_protocol_repository::synchronize_work_item_revisions_tx(
                     tx,
                     &command.agent_id,
-                    execution_protocol_transition,
+                    &advance_synchronized,
                     &registration.work_items,
                 )?
             } else {
-                execution_protocol_transition.clone()
+                advance_synchronized
             };
             let execution_protocol_transition = &synchronized_execution_protocol;
             let execution_protocol = execution_protocol_repository::validate_execution_commands_tx(
@@ -6646,6 +6675,645 @@ mod tests {
             );
             assert_eq!(db.wait_conditions().latest_all()?.len(), 1);
         }
+        Ok(())
+    }
+
+    // #3816 G1: a queue claim that resolves a wait and unblocks its Open
+    // WorkItem must synchronize the execution registration in the same
+    // transaction. Claims without a WorkItem-bound Admit command used to
+    // advance only the durable revision, stranding the registration behind
+    // durable state and dooming every later settlement of that WorkItem.
+    #[test]
+    fn queue_claim_wait_resolution_advances_execution_registration() -> Result<()> {
+        let (_dir, db) = runtime_db()?;
+        let now = Utc::now();
+        db.agent_states().upsert(&AgentState::new("agent-a"))?;
+        db.agent_identities().upsert(&active_agent("agent-a"))?;
+        let open = work_item("work-claim-wait");
+        db.transitions()
+            .commit_work_item(&WorkItemTransitionCommand {
+                agent_id: "agent-a".into(),
+                mutation: WorkItemMutation::Insert {
+                    record: open.clone(),
+                },
+                agent_state: None,
+                brief_evidence: Vec::new(),
+                audit_events: Vec::new(),
+                index_changes: vec![index_change("work_item", &open.id)],
+                notify_scheduler: false,
+                fault: None,
+            })?;
+        let admission = execution_admission(
+            "message-admit-claim",
+            "attempt-claim-wait",
+            "work-claim-wait",
+        );
+        db.transitions().commit_queue_with_execution_protocol(
+            &QueueTransitionCommand {
+                agent_id: "agent-a".into(),
+                operation: QueueOperation::Admit,
+                mutation: QueueMutation::Upsert(QueueEntryRecord {
+                    message_id: "message-admit-claim".into(),
+                    agent_id: "agent-a".into(),
+                    priority: Priority::Normal,
+                    status: QueueEntryStatus::Queued,
+                    created_at: now,
+                    updated_at: now,
+                }),
+                scheduler_claim_work_item: None,
+                agent_state: None,
+                message_evidence: Vec::new(),
+                transcript_entries: Vec::new(),
+                turn_record: None,
+                audit_events: Vec::new(),
+                notify_scheduler: false,
+                fault: None,
+                brief_evidence: Vec::new(),
+            },
+            &admission,
+        )?;
+        let mut wait = wait_condition("wait-claim-wait", "work-claim-wait", "task-claim-wait");
+        wait.updated_at = now;
+        db.transitions().commit_wait_with_execution_protocol(
+            &WaitTransitionCommand {
+                task_result_admission: None,
+                agent_id: "agent-a".into(),
+                work_items: Vec::new(),
+                expected_wait_conditions: Vec::new(),
+                wait_conditions: vec![wait.clone()],
+                timer_wake: None,
+                agent_state: None,
+                audit_events: Vec::new(),
+                index_changes: Vec::new(),
+                notify_scheduler: false,
+                fault: None,
+            },
+            &ExecutionProtocolTransition {
+                bootstrap: None,
+                commands: vec![ExecutionProtocolCommand::Settle(SettleExecution {
+                    outcome: ExecutionOutcomeRecord {
+                        outcome_id: "outcome-claim-wait".into(),
+                        attempt_id: "attempt-claim-wait".into(),
+                        outcome: ExecutionOutcome::WorkItem(WorkItemOutcome::Wait {
+                            wait: WaitReference {
+                                wait_id: wait.id.clone(),
+                            },
+                        }),
+                        created_at: now.to_rfc3339(),
+                    },
+                })],
+            },
+        )?;
+        // The wait fires for a runtime-owned task result message.
+        let mut triggered = wait.clone();
+        triggered.status = WaitConditionStatus::Triggered;
+        triggered.trigger_message_id = Some("message-claim-trigger".into());
+        triggered.triggered_at = Some(now + chrono::Duration::seconds(1));
+        triggered.updated_at = now + chrono::Duration::seconds(1);
+        db.transitions().commit_wait_with_execution_protocol(
+            &WaitTransitionCommand {
+                task_result_admission: None,
+                agent_id: "agent-a".into(),
+                work_items: Vec::new(),
+                expected_wait_conditions: vec![WaitConditionExpectation {
+                    id: wait.id.clone(),
+                    agent_id: "agent-a".into(),
+                    status: wait.status.clone(),
+                    updated_at: wait.updated_at,
+                }],
+                wait_conditions: vec![triggered.clone()],
+                timer_wake: None,
+                agent_state: None,
+                audit_events: Vec::new(),
+                index_changes: Vec::new(),
+                notify_scheduler: false,
+                fault: None,
+            },
+            &ExecutionProtocolTransition::default(),
+        )?;
+        db.transitions().commit_queue_with_execution_protocol(
+            &QueueTransitionCommand {
+                agent_id: "agent-a".into(),
+                operation: QueueOperation::Admit,
+                mutation: QueueMutation::Upsert(QueueEntryRecord {
+                    message_id: "message-claim-trigger".into(),
+                    agent_id: "agent-a".into(),
+                    priority: Priority::Normal,
+                    status: QueueEntryStatus::Queued,
+                    created_at: now,
+                    updated_at: now,
+                }),
+                scheduler_claim_work_item: None,
+                agent_state: None,
+                message_evidence: Vec::new(),
+                transcript_entries: Vec::new(),
+                turn_record: None,
+                audit_events: Vec::new(),
+                notify_scheduler: false,
+                fault: None,
+                brief_evidence: Vec::new(),
+            },
+            &ExecutionProtocolTransition::default(),
+        )?;
+        // The claim resolves the triggered wait and unblocks the WorkItem
+        // (revision 1 -> 2) without carrying a WorkItem-bound Admit command.
+        let mut resolved = triggered.clone();
+        resolved.status = WaitConditionStatus::Resolved;
+        resolved.updated_at = now + chrono::Duration::seconds(2);
+        resolved.resolved_at = Some(now + chrono::Duration::seconds(2));
+        let mut unblocked = open.clone();
+        unblocked.revision = 2;
+        unblocked.blocked_by = None;
+        unblocked.updated_at = now + chrono::Duration::seconds(2);
+        let claim = QueueTransitionCommand {
+            agent_id: "agent-a".into(),
+            operation: QueueOperation::Claim,
+            mutation: QueueMutation::Consume(QueueEntryRecord {
+                message_id: "message-claim-trigger".into(),
+                agent_id: "agent-a".into(),
+                priority: Priority::Normal,
+                status: QueueEntryStatus::Dequeued,
+                created_at: now,
+                updated_at: now + chrono::Duration::seconds(2),
+            }),
+            scheduler_claim_work_item: None,
+            agent_state: None,
+            message_evidence: Vec::new(),
+            transcript_entries: Vec::new(),
+            turn_record: None,
+            audit_events: Vec::new(),
+            notify_scheduler: false,
+            fault: None,
+            brief_evidence: Vec::new(),
+        };
+        db.transitions()
+            .commit_queue_with_execution_protocol_and_wait_transition(
+                &claim,
+                &ExecutionProtocolTransition::default(),
+                Some(&QueueWaitTransition {
+                    expected: WaitConditionExpectation {
+                        id: triggered.id.clone(),
+                        agent_id: "agent-a".into(),
+                        status: triggered.status.clone(),
+                        updated_at: triggered.updated_at,
+                    },
+                    record: resolved,
+                    work_item: Some(WorkItemMutation::Update {
+                        record: unblocked.clone(),
+                        expected_revision: open.revision,
+                    }),
+                    index_changes: vec![index_change("work_item", &open.id)],
+                }),
+                None,
+            )?;
+        assert_eq!(
+            db.work_items()
+                .latest(&open.id)?
+                .expect("durable row")
+                .revision,
+            2
+        );
+        let protocol = db
+            .transitions()
+            .load_execution_protocol_state_if_initialized("agent-a")?
+            .expect("execution protocol partition");
+        assert_eq!(
+            protocol.work_items[&open.id].source_revision, 2,
+            "queue claim wait resolution must advance the execution registration \
+             in the same transaction as the durable revision"
+        );
+        // With the invariant intact, the next settlement touching this
+        // WorkItem must succeed instead of bailing on stranded revisions.
+        let mut next = unblocked.clone();
+        next.revision = 3;
+        next.updated_at = now + chrono::Duration::seconds(3);
+        let follow_up = wait_condition("wait-claim-next", "work-claim-wait", "task-claim-next");
+        db.transitions().commit_wait_with_execution_protocol(
+            &WaitTransitionCommand {
+                task_result_admission: None,
+                agent_id: "agent-a".into(),
+                work_items: vec![WorkItemMutation::Update {
+                    record: next,
+                    expected_revision: unblocked.revision,
+                }],
+                expected_wait_conditions: Vec::new(),
+                wait_conditions: vec![follow_up],
+                timer_wake: None,
+                agent_state: None,
+                audit_events: Vec::new(),
+                index_changes: vec![index_change("work_item", &open.id)],
+                notify_scheduler: false,
+                fault: None,
+            },
+            &ExecutionProtocolTransition::default(),
+        )?;
+        let protocol = db
+            .transitions()
+            .load_execution_protocol_state_if_initialized("agent-a")?
+            .expect("execution protocol partition");
+        assert_eq!(protocol.work_items[&open.id].source_revision, 3);
+        Ok(())
+    }
+
+    // #3816 G1 (completion channel): a turn that completes one WorkItem
+    // while co-updating another registered Open WorkItem in the same
+    // completion commit must synchronize the open registration too. The
+    // completion channel used to bypass synchronization entirely, stranding
+    // the sibling registration behind its durable revision.
+    #[test]
+    fn completion_transition_advances_cotouched_open_work_item_registration() -> Result<()> {
+        let (_dir, db) = runtime_db()?;
+        let now = Utc::now();
+        let mut completed_item = work_item("work-comp-cotouch");
+        completed_item.updated_at = now;
+        let mut sibling = work_item("work-open-cotouch");
+        sibling.updated_at = now;
+        db.work_items().insert_new(&completed_item)?;
+        db.work_items().insert_new(&sibling)?;
+        db.agent_identities().upsert(&active_agent("agent-a"))?;
+        let mut initial_state = AgentState::new("agent-a");
+        initial_state.current_work_item_id = Some(completed_item.id.clone());
+        initial_state.current_turn_work_item_id = Some(completed_item.id.clone());
+        db.agent_states().upsert(&initial_state)?;
+        let queued = QueueEntryRecord {
+            message_id: "message-completion-cotouch".into(),
+            agent_id: "agent-a".into(),
+            priority: Priority::Normal,
+            status: QueueEntryStatus::Queued,
+            created_at: now,
+            updated_at: now,
+        };
+        let mut bootstrap = ExecutionProtocolState::empty("agent-a");
+        for record in [&completed_item, &sibling] {
+            bootstrap.work_items.insert(
+                record.id.clone(),
+                WorkItemExecutionRecord {
+                    source_revision: 1,
+                    state: WorkItemExecutionState::Runnable {
+                        generation: 1,
+                        recovery_ref: None,
+                    },
+                },
+            );
+        }
+        let admission = ExecutionProtocolTransition {
+            bootstrap: Some(bootstrap),
+            commands: vec![ExecutionProtocolCommand::Admit(Box::new(AdmitExecution {
+                attempt: ExecutionAttempt {
+                    input_projection: None,
+                    attempt_id: "attempt-completion-cotouch".into(),
+                    agent_id: "agent-a".into(),
+                    source_message_id: Some(queued.message_id.clone()),
+                    source: ExecutionSource {
+                        identity: ExecutionSourceIdentity::QueueMessage {
+                            message_id: queued.message_id.clone(),
+                        },
+                        generation: 1,
+                    },
+                    binding: ExecutionBinding::WorkItem {
+                        work_item_id: completed_item.id.clone(),
+                    },
+                    provenance: ExecutionProvenance {
+                        origin: ExecutionOrigin::System,
+                        trust: ExecutionTrust::RuntimeInstruction,
+                        priority: ExecutionPriority::Normal,
+                        correlation_id: None,
+                        causation_id: None,
+                    },
+                    admitted_fences: AdmittedFences {
+                        source_revision: 1,
+                        work_item_source_revision: Some(1),
+                        work_item_generation: Some(1),
+                        rejoin: None,
+                        agent_control_revision: 1,
+                        host_registry_revision: 1,
+                    },
+                    state: ExecutionAttemptState::Open,
+                    run_id: None,
+                    turn_id: None,
+                    recovery_of_attempt_id: None,
+                    terminal_outcome_id: None,
+                    admitted_at: "2026-08-01T00:00:00Z".into(),
+                    terminal_at: None,
+                },
+            }))],
+        };
+        db.transitions().commit_queue_with_execution_protocol(
+            &QueueTransitionCommand {
+                agent_id: "agent-a".into(),
+                operation: QueueOperation::Admit,
+                mutation: QueueMutation::Upsert(queued.clone()),
+                scheduler_claim_work_item: None,
+                agent_state: None,
+                message_evidence: Vec::new(),
+                transcript_entries: Vec::new(),
+                turn_record: None,
+                audit_events: Vec::new(),
+                notify_scheduler: false,
+                fault: None,
+                brief_evidence: Vec::new(),
+            },
+            &admission,
+        )?;
+        let mut brief = BriefRecord::new(
+            "agent-a",
+            crate::types::BriefKind::Result,
+            "cotouched completion",
+            None,
+            None,
+        );
+        brief.work_item_id = Some(completed_item.id.clone());
+        let mut terminal = completed_item.clone();
+        terminal.revision = 2;
+        terminal.state = WorkItemState::Completed;
+        terminal.result_brief_id = Some(brief.id.clone());
+        terminal.result_summary = Some(brief.text.clone());
+        terminal.completion_intent = Some(WorkItemCompletionIntent {
+            work_item_id: terminal.id.clone(),
+            source_activation_id: Some("attempt-completion-cotouch".into()),
+            source_message_id: Some(queued.message_id.clone()),
+            source_turn_id: Some("turn-completion-cotouch".into()),
+            expected_work_revision: completed_item.revision,
+            report_requirement: CompletionReportRequirement::Required,
+            report_state: CompletionReportState::Bound,
+            result_brief_id: Some(brief.id.clone()),
+            created_at: now,
+            updated_at: now,
+        });
+        terminal.updated_at = now + chrono::Duration::seconds(2);
+        let mut advanced_sibling = sibling.clone();
+        advanced_sibling.revision = 2;
+        advanced_sibling
+            .objective
+            .push_str(" co-updated in completion");
+        advanced_sibling.updated_at = now + chrono::Duration::seconds(2);
+        let tool_execution = ToolExecutionRecord {
+            id: "tool-completion-cotouch".into(),
+            agent_id: "agent-a".into(),
+            work_item_id: Some(completed_item.id.clone()),
+            turn_index: 1,
+            turn_id: Some("turn-completion-cotouch".into()),
+            tool_name: crate::tool::names::COMPLETE_WORK_ITEM.into(),
+            created_at: now,
+            completed_at: Some(now + chrono::Duration::seconds(2)),
+            duration_ms: 1,
+            authority_class: AuthorityClass::RuntimeInstruction,
+            status: ToolExecutionStatus::Success,
+            input: serde_json::json!({"work_item_id": completed_item.id}),
+            output: serde_json::json!({"status": "completed"}),
+            summary: "completed WorkItem".into(),
+            invocation_surface: None,
+        };
+        let mut turn = TurnRecord::new("agent-a", "turn-completion-cotouch", 1);
+        turn.current_work_item_id = Some(completed_item.id.clone());
+        turn.input_message_ids = vec![queued.message_id.clone()];
+        turn.tool_execution_ids = vec![tool_execution.id.clone()];
+        turn.produced_brief_ids = vec![brief.id.clone()];
+        turn.completed_work_item_ids = vec![completed_item.id.clone()];
+        turn.created_at = now;
+        let mut processed = queued.clone();
+        processed.status = QueueEntryStatus::Processed;
+        processed.updated_at = now + chrono::Duration::seconds(2);
+        let mut committed_state = initial_state.clone();
+        committed_state.current_work_item_id = None;
+        committed_state.current_turn_work_item_id = None;
+        committed_state.current_turn_id = Some("turn-completion-cotouch".into());
+        let command = QueueTransitionCommand {
+            agent_id: "agent-a".into(),
+            operation: QueueOperation::Settle,
+            mutation: QueueMutation::Upsert(processed),
+            scheduler_claim_work_item: None,
+            agent_state: Some(AgentStateMutation {
+                expected: Some(Box::new(initial_state)),
+                record: Box::new(committed_state.clone()),
+            }),
+            message_evidence: Vec::new(),
+            transcript_entries: Vec::new(),
+            turn_record: Some(turn),
+            audit_events: Vec::new(),
+            notify_scheduler: false,
+            fault: None,
+            brief_evidence: vec![brief.clone()],
+        };
+        let execution = ExecutionProtocolTransition {
+            bootstrap: None,
+            commands: vec![ExecutionProtocolCommand::Settle(SettleExecution {
+                outcome: ExecutionOutcomeRecord {
+                    outcome_id: "outcome-completion-cotouch".into(),
+                    attempt_id: "attempt-completion-cotouch".into(),
+                    outcome: ExecutionOutcome::WorkItem(WorkItemOutcome::Complete {
+                        completion: brief.id.clone(),
+                    }),
+                    created_at: now.to_rfc3339(),
+                },
+            })],
+        };
+        let completion = CompletionTransition {
+            requires_execution_continuation: false,
+            work_items: vec![
+                WorkItemMutation::Update {
+                    record: terminal.clone(),
+                    expected_revision: completed_item.revision,
+                },
+                WorkItemMutation::Update {
+                    record: advanced_sibling.clone(),
+                    expected_revision: sibling.revision,
+                },
+            ],
+            wait_conditions: Vec::new(),
+            continuation_expectations: Vec::new(),
+            continuations: Vec::new(),
+            tool_execution,
+            index_changes: vec![index_change("work_item", &completed_item.id)],
+        };
+        assert!(
+            db.transitions()
+                .commit_queue_with_completion(&command, &execution, &completion)?
+                .applied
+        );
+        assert_eq!(
+            db.work_items()
+                .latest(&sibling.id)?
+                .expect("sibling row")
+                .revision,
+            2
+        );
+        let protocol = db
+            .transitions()
+            .load_execution_protocol_state_if_initialized("agent-a")?
+            .expect("execution protocol partition");
+        assert_eq!(
+            protocol.work_items[&sibling.id].source_revision, 2,
+            "completion channel co-updates must advance the open sibling registration +             in the same transaction as its durable revision"
+        );
+        Ok(())
+    }
+
+    // #3816 P2: a pre-existing durable-ahead drift (for example written
+    // before this invariant was enforced) must keep failing closed at the
+    // next settlement instead of being silently adopted.
+    #[test]
+    fn settlement_rejects_preexisting_durable_ahead_drift() -> Result<()> {
+        let (dir, db) = runtime_db()?;
+        let now = Utc::now();
+        db.agent_states().upsert(&AgentState::new("agent-a"))?;
+        db.agent_identities().upsert(&active_agent("agent-a"))?;
+        let open = work_item("work-drift");
+        db.transitions()
+            .commit_work_item(&WorkItemTransitionCommand {
+                agent_id: "agent-a".into(),
+                mutation: WorkItemMutation::Insert {
+                    record: open.clone(),
+                },
+                agent_state: None,
+                brief_evidence: Vec::new(),
+                audit_events: Vec::new(),
+                index_changes: vec![index_change("work_item", &open.id)],
+                notify_scheduler: false,
+                fault: None,
+            })?;
+        let admission = execution_admission("message-admit-drift", "attempt-drift", "work-drift");
+        db.transitions().commit_queue_with_execution_protocol(
+            &QueueTransitionCommand {
+                agent_id: "agent-a".into(),
+                operation: QueueOperation::Admit,
+                mutation: QueueMutation::Upsert(QueueEntryRecord {
+                    message_id: "message-admit-drift".into(),
+                    agent_id: "agent-a".into(),
+                    priority: Priority::Normal,
+                    status: QueueEntryStatus::Queued,
+                    created_at: now,
+                    updated_at: now,
+                }),
+                scheduler_claim_work_item: None,
+                agent_state: None,
+                message_evidence: Vec::new(),
+                transcript_entries: Vec::new(),
+                turn_record: None,
+                audit_events: Vec::new(),
+                notify_scheduler: false,
+                fault: None,
+                brief_evidence: Vec::new(),
+            },
+            &admission,
+        )?;
+        let wait = wait_condition("wait-drift", "work-drift", "task-drift");
+        db.transitions().commit_wait_with_execution_protocol(
+            &WaitTransitionCommand {
+                task_result_admission: None,
+                agent_id: "agent-a".into(),
+                work_items: Vec::new(),
+                expected_wait_conditions: Vec::new(),
+                wait_conditions: vec![wait],
+                timer_wake: None,
+                agent_state: None,
+                audit_events: Vec::new(),
+                index_changes: Vec::new(),
+                notify_scheduler: false,
+                fault: None,
+            },
+            &ExecutionProtocolTransition {
+                bootstrap: None,
+                commands: vec![ExecutionProtocolCommand::Settle(SettleExecution {
+                    outcome: ExecutionOutcomeRecord {
+                        outcome_id: "outcome-drift".into(),
+                        attempt_id: "attempt-drift".into(),
+                        outcome: ExecutionOutcome::WorkItem(WorkItemOutcome::Wait {
+                            wait: WaitReference {
+                                wait_id: "wait-drift".into(),
+                            },
+                        }),
+                        created_at: now.to_rfc3339(),
+                    },
+                })],
+            },
+        )?;
+        // Simulate a legacy writer that stranded the durable revision ahead
+        // of the execution registration (source=1, durable=2).
+        let mut drifted = open.clone();
+        drifted.revision = 2;
+        drifted.updated_at = now + chrono::Duration::seconds(1);
+        db.transaction(|tx| {
+            tx.execute(
+                "UPDATE work_items SET revision = ?1, payload_json = ?2 WHERE work_item_id = ?3",
+                rusqlite::params![
+                    drifted.revision,
+                    serde_json::to_string(&drifted)?,
+                    drifted.id
+                ],
+            )?;
+            Ok(())
+        })?;
+        let mut next = drifted.clone();
+        next.revision = 3;
+        next.updated_at = now + chrono::Duration::seconds(2);
+        let follow_up = wait_condition("wait-drift-next", "work-drift", "task-drift-next");
+        let error = db
+            .transitions()
+            .commit_wait_with_execution_protocol(
+                &WaitTransitionCommand {
+                    task_result_admission: None,
+                    agent_id: "agent-a".into(),
+                    work_items: vec![WorkItemMutation::Update {
+                        record: next.clone(),
+                        expected_revision: drifted.revision,
+                    }],
+                    expected_wait_conditions: Vec::new(),
+                    wait_conditions: vec![follow_up],
+                    timer_wake: None,
+                    agent_state: None,
+                    audit_events: Vec::new(),
+                    index_changes: vec![index_change("work_item", &open.id)],
+                    notify_scheduler: false,
+                    fault: None,
+                },
+                &ExecutionProtocolTransition::default(),
+            )
+            .expect_err("pre-existing drift must fail closed");
+        assert!(
+            error
+                .to_string()
+                .contains("does not match durable revision"),
+            "unexpected error: {error:#}"
+        );
+        // The same failure must survive a restart: reopening the database
+        // cannot silently adopt the drifted revision.
+        drop(db);
+        let reopened = RuntimeDb::open_and_migrate(
+            dir.path().join("state/runtime.sqlite"),
+            dir.path().join("state/runtime.lock"),
+        )?;
+        // The rolled-back commit left durable revision 2; retry from there.
+        let retry = next.clone();
+        let retry_wait = wait_condition("wait-drift-retry", "work-drift", "task-drift-retry");
+        let error = reopened
+            .transitions()
+            .commit_wait_with_execution_protocol(
+                &WaitTransitionCommand {
+                    task_result_admission: None,
+                    agent_id: "agent-a".into(),
+                    work_items: vec![WorkItemMutation::Update {
+                        record: retry,
+                        expected_revision: drifted.revision,
+                    }],
+                    expected_wait_conditions: Vec::new(),
+                    wait_conditions: vec![retry_wait],
+                    timer_wake: None,
+                    agent_state: None,
+                    audit_events: Vec::new(),
+                    index_changes: vec![index_change("work_item", &open.id)],
+                    notify_scheduler: false,
+                    fault: None,
+                },
+                &ExecutionProtocolTransition::default(),
+            )
+            .expect_err("drift must stay rejected after restart");
+        assert!(
+            error
+                .to_string()
+                .contains("does not match durable revision"),
+            "unexpected error after restart: {error:#}"
+        );
         Ok(())
     }
 

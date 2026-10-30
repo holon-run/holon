@@ -42,6 +42,7 @@ pub mod turn_settlement_repair;
 mod turn_start;
 pub mod types;
 pub mod unread;
+pub mod work_item_source_revision_repair;
 pub mod write_queue;
 
 pub mod observer_sync;
@@ -102,6 +103,9 @@ pub use crate::runtime_db::types::{
     TranscriptRepository, TurnRecordRepository, WaitConditionRepository,
     WorkItemContinuationRepository, WorkItemDelegationRepository, WorkItemRepository,
     WorkspaceEntryRepository, WorkspaceOccupancyRepository,
+};
+pub use crate::runtime_db::work_item_source_revision_repair::{
+    WorkItemSourceRevisionRepairEntry, WorkItemSourceRevisionRepairReport,
 };
 pub use read_scope::RuntimeDbReadScope;
 #[cfg(test)]

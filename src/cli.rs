@@ -890,6 +890,21 @@ pub enum RuntimeDbDebugCommands {
         #[arg(long)]
         json: bool,
     },
+    #[command(
+        about = "Audit or apply an offline, evidence-fenced repair for WorkItem execution source revision drift"
+    )]
+    WorkItemSourceRevision {
+        #[arg(long, requires_all = ["agent", "work_item"])]
+        apply: bool,
+        #[arg(long, requires = "apply")]
+        no_backup: bool,
+        #[arg(long, conflicts_with = "apply")]
+        agent: Option<String>,
+        #[arg(long, conflicts_with = "apply")]
+        work_item: Option<String>,
+        #[arg(long)]
+        json: bool,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]

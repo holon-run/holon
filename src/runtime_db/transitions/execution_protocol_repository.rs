@@ -110,6 +110,14 @@ pub(super) fn validate_execution_commands_tx(
         if let ExecutionProtocolCommand::AdvanceWorkItemSourceRevision(command) = command {
             validate_work_item_source_revision_advance(tx, agent_id, command, work_item_mutations)?;
         }
+        if let ExecutionProtocolCommand::ReconcileWorkItemSourceRevision(command) = command {
+            validate_work_item_source_revision_reconcile(
+                tx,
+                agent_id,
+                command,
+                work_item_mutations,
+            )?;
+        }
         if let ExecutionProtocolCommand::RecoverInterruptedTaskResultClaim(command) = command {
             validate_recover_interrupted_task_result_claim(tx, agent_id, command)?;
         }
@@ -153,6 +161,34 @@ pub(super) fn validate_execution_commands_tx(
             payload_hash,
             references: transition.references,
         });
+    }
+    // #3816 invariant: an Open WorkItem mutation and its execution
+    // registration must settle on the same revision inside this
+    // transaction. Synchronize inserts the auto-advance for untouched
+    // registrations and the per-command validators keep constructed
+    // commands atomic; this final assertion is the uniform fail-closed net
+    // that turns any residual writer into a same-transaction rejection
+    // instead of persisting stranded revisions.
+    let mut final_open_mutations =
+        std::collections::BTreeMap::<&str, &crate::runtime_db::transitions::WorkItemMutation>::new(
+        );
+    for mutation in work_item_mutations {
+        if mutation.record().state == crate::types::WorkItemState::Open {
+            final_open_mutations.insert(mutation.record().id.as_str(), mutation);
+        }
+    }
+    for (work_item_id, mutation) in final_open_mutations {
+        if let Some(execution) = state.work_items.get(work_item_id) {
+            if execution.source_revision != mutation.record().revision {
+                bail!(
+                    "WorkItem execution source revision {} does not match committed revision {} \
+                     for {}",
+                    execution.source_revision,
+                    mutation.record().revision,
+                    work_item_id
+                );
+            }
+        }
     }
 
     Ok(Some(PreparedExecutionProtocolCommands {
@@ -280,6 +316,21 @@ pub(super) fn synchronize_work_item_revisions_tx(
     transition: &crate::runtime_db::transitions::ExecutionProtocolTransition,
     work_item_mutations: &[WorkItemMutation],
 ) -> Result<crate::runtime_db::transitions::ExecutionProtocolTransition> {
+    synchronize_work_item_revisions_opt(tx, agent_id, transition, work_item_mutations, true)
+}
+
+/// `register_missing` controls whether an unregistered open WorkItem gets a
+/// derived `RegisterWorkItem` command. Only the wait registration channel
+/// owns derived registration; the wait transition and completion channels
+/// synchronize advances (#3816) without inventing registrations that the
+/// canonical recovery paths are responsible for.
+pub(super) fn synchronize_work_item_revisions_opt(
+    tx: &Transaction<'_>,
+    agent_id: &str,
+    transition: &crate::runtime_db::transitions::ExecutionProtocolTransition,
+    work_item_mutations: &[WorkItemMutation],
+    register_missing: bool,
+) -> Result<crate::runtime_db::transitions::ExecutionProtocolTransition> {
     if !partition_exists_tx(tx, agent_id)? {
         return Ok(transition.clone());
     }
@@ -314,7 +365,7 @@ pub(super) fn synchronize_work_item_revisions_tx(
             _ => false,
         });
         let Some(authoritative) = state.work_items.get(&record.id) else {
-            if !command_targets_work_item {
+            if register_missing && !command_targets_work_item {
                 let mut statement = tx.prepare(
                     "SELECT wait_condition_id
                      FROM wait_conditions
@@ -446,6 +497,9 @@ fn reduce(
         ExecutionProtocolCommand::AdvanceWorkItemSourceRevision(command) => {
             execution_protocol::advance_work_item_source_revision(state, command)
         }
+        ExecutionProtocolCommand::ReconcileWorkItemSourceRevision(command) => {
+            execution_protocol::reconcile_work_item_source_revision(state, command)
+        }
         ExecutionProtocolCommand::SetWorkItemReadiness(command) => {
             execution_protocol::set_work_item_readiness(state, command)
         }
@@ -495,6 +549,9 @@ fn command_identity(command: &ExecutionProtocolCommand) -> (&'static str, &str) 
         }
         ExecutionProtocolCommand::AdvanceWorkItemSourceRevision(command) => {
             ("advance_work_item_source_revision", &command.command_id)
+        }
+        ExecutionProtocolCommand::ReconcileWorkItemSourceRevision(command) => {
+            ("reconcile_work_item_source_revision", &command.command_id)
         }
         ExecutionProtocolCommand::SetWorkItemReadiness(command) => {
             ("set_work_item_readiness", &command.command_id)
@@ -819,6 +876,92 @@ fn validate_work_item_source_revision_advance(
         durable.as_ref().map(|record| record.revision),
         atomic_record.is_some()
     )
+}
+
+fn validate_work_item_source_revision_reconcile(
+    tx: &Transaction<'_>,
+    agent_id: &str,
+    command: &execution_protocol::ReconcileWorkItemSourceRevision,
+    mutations: &[WorkItemMutation],
+) -> Result<()> {
+    anyhow::ensure!(
+        mutations
+            .iter()
+            .all(|mutation| mutation.record().id != command.work_item_id),
+        "WorkItem source revision reconcile is a repair and must not carry a durable mutation"
+    );
+    let durable = tx
+        .query_row(
+            "SELECT payload_json FROM work_items WHERE work_item_id = ?1 AND agent_id = ?2",
+            [command.work_item_id.as_str(), agent_id],
+            |row| row.get::<_, String>(0),
+        )
+        .optional()?
+        .map(|payload| serde_json::from_str::<crate::types::WorkItemRecord>(&payload))
+        .transpose()?
+        .ok_or_else(|| anyhow!("WorkItem source revision reconcile requires a durable row"))?;
+    anyhow::ensure!(
+        durable.state == crate::types::WorkItemState::Open,
+        "WorkItem source revision reconcile requires an open WorkItem"
+    );
+    anyhow::ensure!(
+        durable.revision == command.source_revision,
+        "WorkItem source revision reconcile target {} does not match durable revision {}",
+        command.source_revision,
+        durable.revision
+    );
+    let missing = missing_revision_attribution_tx(
+        tx,
+        agent_id,
+        &command.work_item_id,
+        command.expected_source_revision + 1,
+        command.source_revision,
+    )?;
+    anyhow::ensure!(
+        missing.is_empty(),
+        "WorkItem source revision reconcile lacks revision attribution evidence for {}",
+        missing
+            .iter()
+            .map(|revision| revision.to_string())
+            .collect::<Vec<_>>()
+            .join(",")
+    );
+    Ok(())
+}
+
+/// Revisions in `[from, to]` without a `work_item_written` attribution event.
+/// Complete attribution is the precondition for adopting drifted durable
+/// revisions back into the execution registration (#3816).
+pub(crate) fn missing_revision_attribution_tx(
+    tx: &Transaction<'_>,
+    agent_id: &str,
+    work_item_id: &str,
+    from: u64,
+    to: u64,
+) -> Result<Vec<u64>> {
+    let mut statement = tx.prepare(
+        "SELECT data_json FROM audit_events
+         WHERE agent_id = ?1 AND kind = 'work_item_written'",
+    )?;
+    let attributed = statement
+        .query_map([agent_id], |row| row.get::<_, String>(0))?
+        .map(|row| {
+            let payload: serde_json::Value = serde_json::from_str(&row?)?;
+            // data_json stores the full event envelope; the lifecycle
+            // payload lives under `data`.
+            let payload = payload.get("data").unwrap_or(&payload);
+            Ok::<_, anyhow::Error>((
+                payload["work_item_id"]
+                    .as_str()
+                    .unwrap_or_default()
+                    .to_string(),
+                payload["revision"].as_u64().unwrap_or_default(),
+            ))
+        })
+        .collect::<Result<std::collections::BTreeSet<_>, _>>()?;
+    Ok((from..=to)
+        .filter(|revision| !attributed.contains(&(work_item_id.to_string(), *revision)))
+        .collect())
 }
 
 fn validate_set_work_item_readiness(
@@ -1777,6 +1920,152 @@ mod tests {
         Ok((work, state, attempt))
     }
 
+    // #3816: the reconcile repair command is evidence-fenced. It must be
+    // rejected without per-revision attribution evidence, with a concurrent
+    // durable mutation, or for an in-flight registration.
+    #[test]
+    fn reconcile_work_item_source_revision_requires_full_evidence() -> Result<()> {
+        use crate::domain::execution_protocol::{
+            ReconcileWorkItemSourceRevision, WorkItemExecutionRecord,
+        };
+
+        let home = tempfile::tempdir()?;
+        let db = RuntimeDb::open_and_migrate(
+            home.path().join("state/runtime.sqlite"),
+            home.path().join("state/runtime.lock"),
+        )?;
+        let agent_id = "agent-reconcile";
+        setup_agent(&db, agent_id)?;
+        let work = crate::types::WorkItemRecord::new(
+            agent_id,
+            "reconcile drift",
+            crate::types::WorkItemState::Open,
+        );
+        assert!(db.work_items().insert_new(&work)?);
+        let mut drifted = work.clone();
+        drifted.revision = 3;
+        db.transaction(|tx| {
+            tx.execute(
+                "UPDATE work_items SET revision = ?1, payload_json = ?2 WHERE work_item_id = ?3",
+                rusqlite::params![3, serde_json::to_string(&drifted)?, work.id],
+            )?;
+            Ok(())
+        })?;
+        let mut state = ExecutionProtocolState::empty(agent_id);
+        state.work_items.insert(
+            work.id.clone(),
+            WorkItemExecutionRecord {
+                source_revision: 1,
+                state: WorkItemExecutionState::Waiting {
+                    generation: 1,
+                    wait: WaitReference {
+                        wait_id: "wait-reconcile".into(),
+                    },
+                },
+            },
+        );
+        db.transaction(|tx| {
+            persist_state_tx(tx, &state)?;
+            for revision in [2_u64, 3] {
+                crate::runtime_db::evidence::append_audit_event_tx(
+                    tx,
+                    Some(agent_id),
+                    &crate::types::AuditEvent::legacy(
+                        "work_item_written",
+                        serde_json::json!({
+                            "work_item_id": work.id,
+                            "revision": revision,
+                        }),
+                    ),
+                )?;
+            }
+            Ok(())
+        })?;
+        let command = ReconcileWorkItemSourceRevision {
+            command_id: format!("work_item:reconcile_source_revision:{}:3", work.id),
+            work_item_id: work.id.clone(),
+            expected_source_revision: 1,
+            source_revision: 3,
+            evidence_fingerprint: "test-fingerprint".into(),
+        };
+        db.transaction(|tx| {
+            validate_execution_commands_tx(
+                tx,
+                agent_id,
+                None,
+                &[ExecutionProtocolCommand::ReconcileWorkItemSourceRevision(
+                    command.clone(),
+                )],
+                &[],
+                &[],
+                &[],
+            )
+        })?
+        .expect("fully attributed reconcile prepares");
+
+        // A drift without per-revision attribution must fail closed.
+        let mut unattributed = crate::types::WorkItemRecord::new(
+            agent_id,
+            "unattributed drift",
+            crate::types::WorkItemState::Open,
+        );
+        unattributed.id = "work-unattributed".into();
+        assert!(db.work_items().insert_new(&unattributed)?);
+        let mut unattributed_drifted = unattributed.clone();
+        unattributed_drifted.revision = 2;
+        db.transaction(|tx| {
+            tx.execute(
+                "UPDATE work_items SET revision = ?1, payload_json = ?2 WHERE work_item_id = ?3",
+                rusqlite::params![
+                    unattributed_drifted.revision,
+                    serde_json::to_string(&unattributed_drifted)?,
+                    unattributed.id
+                ],
+            )?;
+            Ok(())
+        })?;
+        let mut state = ExecutionProtocolState::empty(agent_id);
+        state.work_items.insert(
+            unattributed.id.clone(),
+            WorkItemExecutionRecord {
+                source_revision: 1,
+                state: WorkItemExecutionState::Runnable {
+                    generation: 1,
+                    recovery_ref: None,
+                },
+            },
+        );
+        db.transaction(|tx| persist_state_tx(tx, &state))?;
+        let unattributed_command = ReconcileWorkItemSourceRevision {
+            command_id: format!("work_item:reconcile_source_revision:{}:2", unattributed.id),
+            work_item_id: unattributed.id.clone(),
+            expected_source_revision: 1,
+            source_revision: 2,
+            evidence_fingerprint: "test-fingerprint".into(),
+        };
+        let error = match db.transaction(|tx| {
+            validate_execution_commands_tx(
+                tx,
+                agent_id,
+                None,
+                &[ExecutionProtocolCommand::ReconcileWorkItemSourceRevision(
+                    unattributed_command.clone(),
+                )],
+                &[],
+                &[],
+                &[],
+            )
+        }) {
+            Ok(prepared) => panic!(
+                "unattributed reconcile must fail closed, got {:#?}",
+                prepared.is_some()
+            ),
+            Err(error) => error,
+        };
+        assert!(error.to_string().contains("attribution evidence"));
+        Ok(())
+    }
+
     #[test]
     fn source_revision_advance_requires_same_transaction_revision_chain() -> Result<()> {
         for case in [
@@ -1966,7 +2255,10 @@ mod tests {
                 assert!(result
                     .unwrap_err()
                     .to_string()
-                    .contains("final revision mismatch"));
+                    // #3816: the uniform final-revision equality assertion
+                    // now rejects the mismatched admission inside command
+                    // validation, before the claim-specific snapshot check.
+                    .contains("does not match committed revision"));
                 assert!(db
                     .transitions()
                     .load_execution_protocol_state_if_initialized(&work.agent_id)?

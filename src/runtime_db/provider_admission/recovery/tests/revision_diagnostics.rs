@@ -1,5 +1,84 @@
 use super::*;
 
+// #3816 B4a: a registered open WorkItem stranded off its durable revision
+// blocks the send before model IO, even when the drifting WorkItem is not
+// the attempt's own binding. Without this guard, conversation and lifecycle
+// attempts keep running the model and only fail at settlement.
+#[test]
+fn drifted_sibling_work_item_blocks_dispatch_before_io() -> Result<()> {
+    let (_dir, db) = database()?;
+    let attempt = canonical_root(&db)?;
+    // Strand a second registered open WorkItem: durable revision 2 while
+    // its execution registration still records source revision 1.
+    let mut sibling = WorkItemRecord::new(
+        "agent-a",
+        "drifted sibling",
+        crate::types::WorkItemState::Open,
+    );
+    sibling.id = "work-drifted".into();
+    db.work_items().insert_new(&sibling)?;
+    let mut protocol = db
+        .transitions()
+        .load_execution_protocol_state_if_initialized("agent-a")?
+        .unwrap();
+    protocol.work_items.insert(
+        sibling.id.clone(),
+        WorkItemExecutionRecord {
+            source_revision: 1,
+            state: WorkItemExecutionState::Runnable {
+                generation: 1,
+                recovery_ref: None,
+            },
+        },
+    );
+    db.transaction(|tx| {
+        crate::runtime_db::transitions::execution_protocol_repository::persist_state_tx(
+            tx, &protocol,
+        )?;
+        // Bypass the protocol-aware writers to strand the durable revision
+        // ahead of the sibling registration (legacy drift shape).
+        let mut drifted = sibling.clone();
+        drifted.revision = 2;
+        tx.execute(
+            "UPDATE work_items SET revision = ?1, payload_json = ?2 WHERE work_item_id = ?3",
+            rusqlite::params![2, serde_json::to_string(&drifted)?, sibling.id],
+        )?;
+        Ok(())
+    })?;
+    let episode = canonical_episode(&db, &attempt)?;
+    let admission = lease(&db, &[transport("drifted-owner")])?;
+    let result = db.charge_provider_recovery_dispatch_for_attempt(
+        &episode,
+        &admission,
+        "drift-blocked-send",
+        1,
+        &attempt,
+        now(),
+    )?;
+    assert_denied(
+        result,
+        ProviderRecoveryDispatchDenial::StaleExecution(
+            ProviderDispatchRejection::WorkItemRevisionDrift,
+        ),
+    );
+    assert_not_charged(&db, &episode)?;
+    let drifted = db
+        .audit_events()
+        .recent(Some("agent-a"), 10)?
+        .into_iter()
+        .find(|event| event.kind == "provider_dispatch_work_item_drift_rejected")
+        .expect("drift rejection audit event");
+    let details = &drifted.data;
+    assert_eq!(
+        details["drifted_work_items"][0]["work_item_id"],
+        "work-drifted"
+    );
+    assert_eq!(details["drifted_work_items"][0]["source_revision"], 1);
+    assert_eq!(details["drifted_work_items"][0]["durable_revision"], 2);
+    assert_eq!(details["dispatch_occurred"], false);
+    Ok(())
+}
+
 #[test]
 fn public_work_item_writer_advances_source_without_rewriting_attempt() -> Result<()> {
     let (_dir, db) = database()?;

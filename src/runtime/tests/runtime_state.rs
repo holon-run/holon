@@ -3348,6 +3348,11 @@ fn persist_execution_transition_only(
                     &state, &command,
                 )
             }
+            ExecutionProtocolCommand::ReconcileWorkItemSourceRevision(command) => {
+                crate::domain::execution_protocol::reconcile_work_item_source_revision(
+                    &state, &command,
+                )
+            }
             ExecutionProtocolCommand::SetWorkItemWaiting(command) => {
                 crate::domain::execution_protocol::set_work_item_waiting(&state, &command)
             }
