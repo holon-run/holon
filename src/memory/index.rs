@@ -4004,15 +4004,25 @@ fn episode_document_body(episode: &ContextEpisodeRecord) -> String {
 }
 
 fn turn_document_by_id(storage: &AppStorage, turn_id: &str) -> Result<Option<MemoryDocument>> {
-    Ok(storage
+    let Some(turn) = storage
         .read_recent_turns(usize::MAX)?
         .into_iter()
         .find(|turn| turn.turn_id == turn_id)
-        .map(turn_document))
+    else {
+        return Ok(None);
+    };
+    let tool_execution_ids = turn
+        .tool_execution_ids
+        .iter()
+        .take(12)
+        .cloned()
+        .collect::<Vec<_>>();
+    let tool_executions = storage.read_tool_executions_by_ids(&tool_execution_ids)?;
+    Ok(Some(turn_document(turn, &tool_executions)))
 }
 
-fn turn_document(turn: TurnRecord) -> MemoryDocument {
-    let body = turn_document_body(&turn);
+fn turn_document(turn: TurnRecord, tool_executions: &[ToolExecutionRecord]) -> MemoryDocument {
+    let body = turn_document_body(&turn, tool_executions);
     MemoryDocument {
         source_ref: format!("turn:{}", turn.turn_id),
         source_kind: "turn".into(),
@@ -4035,7 +4045,7 @@ fn turn_document(turn: TurnRecord) -> MemoryDocument {
     }
 }
 
-fn turn_document_body(turn: &TurnRecord) -> String {
+fn turn_document_body(turn: &TurnRecord, tool_executions: &[ToolExecutionRecord]) -> String {
     let mut lines = vec![
         format!("turn_ref: turn:{}", turn.turn_id),
         format!("turn_index: {}", turn.turn_index),
@@ -4064,15 +4074,7 @@ fn turn_document_body(turn: &TurnRecord) -> String {
         append_id_list(&mut lines, "tool_execution_ids", &turn.tool_execution_ids);
         lines.push(format!(
             "tool_execution_refs_when_available: {}",
-            turn.tool_execution_ids
-                .iter()
-                .take(12)
-                .flat_map(|id| {
-                    [
-                        format!("tool_execution:{id}:cmd"),
-                        format!("tool_execution:{id}:output"),
-                    ]
-                })
+            tool_execution_refs_when_available(&turn.tool_execution_ids, tool_executions)
                 .collect::<Vec<_>>()
                 .join(", ")
         ));
@@ -4116,6 +4118,43 @@ fn turn_document_body(turn: &TurnRecord) -> String {
         }
     }
     lines.join("\n")
+}
+
+fn tool_execution_refs_when_available<'a>(
+    tool_execution_ids: &'a [String],
+    tool_executions: &'a [ToolExecutionRecord],
+) -> impl Iterator<Item = String> + 'a {
+    let records_by_id = tool_executions
+        .iter()
+        .map(|record| (record.id.as_str(), record))
+        .collect::<BTreeMap<_, _>>();
+    tool_execution_ids
+        .iter()
+        .take(12)
+        .filter_map(move |id| records_by_id.get(id.as_str()).copied())
+        .flat_map(|record| {
+            let mut refs = Vec::new();
+            match record.tool_name.as_str() {
+                "ExecCommand" => {
+                    if record.input.get("cmd").and_then(Value::as_str).is_some() {
+                        refs.push(command_receipt_source_ref(&record.id, None));
+                    }
+                    refs.push(command_output_source_ref(&record.id, None, "output"));
+                }
+                "ExecCommandBatch" => {
+                    if let Some(items) = record.input.get("items").and_then(Value::as_array) {
+                        refs.extend(items.iter().enumerate().filter_map(|(index, item)| {
+                            item.get("cmd")
+                                .and_then(Value::as_str)
+                                .map(|_| command_receipt_source_ref(&record.id, Some(index + 1)))
+                        }));
+                    }
+                    refs.push(command_output_source_ref(&record.id, None, "output"));
+                }
+                _ => refs.push(command_output_source_ref(&record.id, None, "output")),
+            }
+            refs
+        })
 }
 
 fn append_id_list(lines: &mut Vec<String>, label: &str, values: &[String]) {
@@ -4974,6 +5013,145 @@ mod tests {
             params![agent, phase, all_backfill_source_kinds().len(), now],
         )?;
         Ok(index.rebuild_job(agent)?.unwrap())
+    }
+
+    #[test]
+    fn turn_document_only_advertises_resolvable_tool_refs() {
+        let dir = tempdir().unwrap();
+        let storage = AppStorage::new_for_agent_for_test(dir.path(), "default").unwrap();
+        let turn_id = "turn-ref-contract";
+        let command_id = "tool-command-ref-contract";
+        let patch_id = "tool-patch-ref-contract";
+        let batch_id = "tool-batch-ref-contract";
+
+        let mut turn = TurnRecord::new("default", turn_id, 1);
+        turn.tool_execution_ids = vec![
+            command_id.into(),
+            patch_id.into(),
+            batch_id.into(),
+            "tool-missing-ref-contract".into(),
+        ];
+        storage.append_turn(&turn).unwrap();
+
+        let record = |id: &str, tool_name: &str, input: Value, output: Value| ToolExecutionRecord {
+            id: id.into(),
+            agent_id: "default".into(),
+            work_item_id: None,
+            turn_index: 1,
+            turn_id: Some(turn_id.into()),
+            tool_name: tool_name.into(),
+            created_at: Utc::now(),
+            completed_at: Some(Utc::now()),
+            duration_ms: 1,
+            authority_class: crate::types::AuthorityClass::OperatorInstruction,
+            status: crate::types::ToolExecutionStatus::Success,
+            input,
+            output,
+            summary: format!("{tool_name} test record"),
+            invocation_surface: None,
+        };
+
+        storage
+            .append_tool_execution(&record(
+                command_id,
+                "ExecCommand",
+                json!({"cmd": "printf command"}),
+                json!({"stdout_preview": "command"}),
+            ))
+            .unwrap();
+        storage
+            .append_tool_execution(&record(
+                patch_id,
+                "ApplyPatch",
+                json!({"patch": "*** Begin Patch"}),
+                json!({"applied": true}),
+            ))
+            .unwrap();
+        storage
+            .append_tool_execution(&record(
+                batch_id,
+                "ExecCommandBatch",
+                json!({
+                    "items": [
+                        {"cmd": "printf batch-one"},
+                        {"path": "README.md"},
+                        {"cmd": "printf batch-three"}
+                    ]
+                }),
+                json!({"items": []}),
+            ))
+            .unwrap();
+
+        let turn_memory = get_memory(&storage, &format!("turn:{turn_id}"), None, None)
+            .unwrap()
+            .unwrap();
+        assert!(turn_memory
+            .content
+            .contains(&format!("tool_execution:{command_id}:cmd")));
+        assert!(turn_memory
+            .content
+            .contains(&format!("tool_execution:{command_id}:output")));
+        assert!(turn_memory
+            .content
+            .contains(&format!("tool_execution:{patch_id}:output")));
+        assert!(turn_memory
+            .content
+            .contains(&format!("tool_execution:{batch_id}:batch_item:1:cmd")));
+        assert!(turn_memory
+            .content
+            .contains(&format!("tool_execution:{batch_id}:batch_item:3:cmd")));
+        assert!(turn_memory
+            .content
+            .contains(&format!("tool_execution:{batch_id}:output")));
+        assert!(!turn_memory
+            .content
+            .contains(&format!("tool_execution:{patch_id}:cmd")));
+        assert!(!turn_memory
+            .content
+            .contains(&format!("tool_execution:{batch_id}:cmd")));
+        assert!(!turn_memory
+            .content
+            .contains("tool_execution:tool-missing-ref-contract:"));
+
+        for source_ref in [
+            format!("tool_execution:{command_id}:cmd"),
+            format!("tool_execution:{command_id}:output"),
+            format!("tool_execution:{patch_id}:output"),
+            format!("tool_execution:{batch_id}:batch_item:1:cmd"),
+            format!("tool_execution:{batch_id}:batch_item:3:cmd"),
+            format!("tool_execution:{batch_id}:output"),
+        ] {
+            assert!(
+                get_memory(&storage, &source_ref, None, None)
+                    .unwrap()
+                    .is_some(),
+                "expected MemoryGet to resolve {source_ref}"
+            );
+        }
+        assert!(get_memory(
+            &storage,
+            &format!("tool_execution:{patch_id}:cmd"),
+            None,
+            None
+        )
+        .unwrap()
+        .is_none());
+        assert!(get_memory(
+            &storage,
+            &format!("tool_execution:{batch_id}:cmd"),
+            None,
+            None
+        )
+        .unwrap()
+        .is_none());
+        assert!(get_memory(
+            &storage,
+            "tool_execution:tool-missing-ref-contract:output",
+            None,
+            None
+        )
+        .unwrap()
+        .is_none());
     }
 
     #[test]
