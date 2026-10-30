@@ -1,0 +1,21 @@
+[[skills]]
+kind = "github"
+repo = "holon-run/sview"
+path = "skills/sview"
+
+[[skills]]
+kind = "github"
+repo = "holon-run/holon"
+path = "skills/xlsx"
+
+[[skills]]
+kind = "github"
+repo = "coreyhaines31/marketingskills"
+path = "skills/seo-audit"
+ref = "0cd9b3a0ef4c411a1d690419ce843f2a1da32cce"
+
+[[skills]]
+kind = "github"
+repo = "coreyhaines31/marketingskills"
+path = "skills/ai-seo"
+ref = "0cd9b3a0ef4c411a1d690419ce843f2a1da32cce"

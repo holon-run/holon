@@ -166,6 +166,13 @@
         "summary": "持续开展防御性安全审阅，负责安全发现和告警分诊；不实现产品功能、不制作漏洞利用，也不替代合并审阅、验收或运维。"
       }
     },
+    "search-visibility-steward": {
+      "category": "operations",
+      "zh-CN": {
+        "name": "搜索与 AI 问答可见性管家",
+        "summary": "持续维护网站自然搜索与 AI 回答引用的独立基线、页面机会、附来源的改进简报及实施复测记录；不代替营销定位、内容事实维护或站点发布审批。"
+      }
+    },
     "server-ops": {
       "category": "operations",
       "zh-CN": {
