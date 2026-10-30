@@ -2301,6 +2301,16 @@ mod projection_tests {
         );
         reply.id = "original-reply".into();
         db.messages().upsert(&reply).unwrap();
+        db.queue_entries()
+            .upsert(&crate::types::QueueEntryRecord {
+                message_id: reply.id.clone(),
+                agent_id: reply.agent_id.clone(),
+                priority: reply.priority,
+                status: crate::types::QueueEntryStatus::Queued,
+                created_at: reply.created_at,
+                updated_at: reply.created_at,
+            })
+            .unwrap();
         let selected = std::collections::BTreeSet::from([record.result_identity.clone()]);
         let mut projections = BTreeMap::from([(
             record.message_id.clone(),

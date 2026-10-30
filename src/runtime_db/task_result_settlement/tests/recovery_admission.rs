@@ -21,6 +21,7 @@ fn result_fixture(db: &RuntimeDb, snapshot: Snapshot) -> TaskResultSettlementRec
         Snapshot::Unsettled => insert(db, &record),
         Snapshot::Reply => {
             let mut message = reply_result_fixture(db, &record);
+            queued_original_reply_fixture(db, &record);
             message.metadata.as_mut().unwrap()["task_detail"]["reply_content_source"] =
                 serde_json::json!("original_message");
             db.messages().upsert(&message).unwrap();

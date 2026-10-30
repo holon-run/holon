@@ -1657,7 +1657,7 @@ async fn late_agent_reply_wait_resumes_original_message_with_exact_owner() {
         });
         reply.metadata =
             Some(serde_json::json!({"agent_message_delivery": {"delivery_id":"reply-delivery"}}));
-        harness.runtime().storage().append_message(&reply).unwrap();
+        let reply = harness.runtime().enqueue(reply).await.unwrap();
         let task_owner = if different_owner {
             harness
                 .runtime()
