@@ -10,6 +10,12 @@ path = "skills/remotion-best-practices"
 
 [[skills]]
 kind = "github"
+repo = "showheyohtaki/motion-prompt"
+path = "skills/motion-prompt"
+ref = "7819d3879eb7d5a1475c11c001bedffb5cab64af"
+
+[[skills]]
+kind = "github"
 repo = "holon-run/sview"
 path = "skills/sview"
 

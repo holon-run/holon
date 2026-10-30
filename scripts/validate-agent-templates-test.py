@@ -57,5 +57,27 @@ class GithubSkillValidationTests(unittest.TestCase):
                     self.validate(fields)
 
 
+class VideoProducerSkillTests(unittest.TestCase):
+    def test_motion_reference_is_pinned_alongside_production_skills(self) -> None:
+        path = (
+            Path(__file__).resolve().parent.parent
+            / "agent_templates/video-producer/skills.toml"
+        )
+        VALIDATOR["validate_skills"](path)
+        skills = VALIDATOR["load_toml"](path)["skills"]
+        motion = [
+            skill
+            for skill in skills
+            if skill.get("repo") == "showheyohtaki/motion-prompt"
+        ]
+        self.assertEqual(len(motion), 1)
+        self.assertEqual(motion[0]["kind"], "github")
+        self.assertEqual(motion[0]["path"], "skills/motion-prompt")
+        self.assertRegex(motion[0]["ref"], r"^[0-9a-f]{40}$")
+        sources = {(skill.get("repo"), skill.get("path")) for skill in skills}
+        self.assertIn(("holon-run/holon", "skills/video-production"), sources)
+        self.assertIn(("remotion-dev/skills", "skills/remotion-best-practices"), sources)
+
+
 if __name__ == "__main__":
     unittest.main()
