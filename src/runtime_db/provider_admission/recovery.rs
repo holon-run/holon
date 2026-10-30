@@ -161,6 +161,10 @@ pub enum ProviderDispatchRejection {
     OwnerMismatch,
     OwnerNotOpen,
     WorkItemRevisionMismatch,
+    /// A registered open WorkItem is stranded off its durable revision, so
+    /// any turn touching it would only settle-fail after the model runs.
+    /// Block before IO instead of burning the doomed turn.
+    WorkItemRevisionDrift,
     LaneGenerationMismatch,
     EpisodeBindingMissing,
     EpisodeBindingMismatch,
@@ -278,6 +282,46 @@ fn dispatch_authority_rejection(
         return Ok(Some(ProviderDispatchRejection::AuthorityIdentityInactive));
     }
     Ok(None)
+}
+
+/// Registered open WorkItems whose execution registration source revision no
+/// longer matches their durable revision. Empty means the #3816 invariant
+/// holds for every open registration in this partition.
+pub(crate) fn drifted_open_work_items_tx(
+    tx: &Transaction<'_>,
+    agent_id: &str,
+) -> Result<Vec<(String, u64, u64)>> {
+    let mut statement = tx.prepare(
+        "SELECT w.work_item_id, w.payload_json, e.payload_json
+         FROM work_items w JOIN execution_protocol_work_items e
+           ON e.agent_id = w.agent_id AND e.work_item_id = w.work_item_id
+         WHERE w.agent_id = ?1",
+    )?;
+    let rows = statement
+        .query_map([agent_id], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+            ))
+        })?
+        .collect::<std::result::Result<Vec<_>, _>>()?;
+    let mut drifted = Vec::new();
+    for (work_item_id, work_payload, execution_payload) in rows {
+        let Ok(work) = serde_json::from_str::<WorkItemRecord>(&work_payload) else {
+            continue;
+        };
+        let Ok(execution) = serde_json::from_str::<WorkItemExecutionRecord>(&execution_payload)
+        else {
+            continue;
+        };
+        if work.state == crate::types::WorkItemState::Open
+            && work.revision != execution.source_revision
+        {
+            drifted.push((work_item_id, execution.source_revision, work.revision));
+        }
+    }
+    Ok(drifted)
 }
 
 fn dispatch_attempt_rejection(
@@ -408,6 +452,38 @@ fn dispatch_attempt_rejection(
             return Ok(Some(ProviderDispatchRejection::OwnerMismatch));
         }
         _ => {}
+    }
+
+    // #3816: check every registered open WorkItem, not just the attempt's
+    // own binding. Conversation and lifecycle attempts settle with the
+    // focused WorkItem's mutations too; a stranded registration turns those
+    // settlements into post-model failures that repeat until repair. The
+    // scan runs in this transaction, so it never observes a torn commit.
+    let drifted = drifted_open_work_items_tx(tx, &attempt.agent_id)?;
+    if !drifted.is_empty() {
+        crate::runtime_db::evidence::append_audit_event_tx(
+            tx,
+            Some(&attempt.agent_id),
+            &crate::types::AuditEvent::legacy(
+                "provider_dispatch_work_item_drift_rejected",
+                serde_json::json!({
+                    "attempt_id": attempt.attempt_id,
+                    "message_id": attempt.source_message_id,
+                    "drifted_work_items": drifted
+                        .iter()
+                        .map(|(work_item_id, source_revision, durable_revision)| {
+                            serde_json::json!({
+                                "work_item_id": work_item_id,
+                                "source_revision": source_revision,
+                                "durable_revision": durable_revision,
+                            })
+                        })
+                        .collect::<Vec<_>>(),
+                    "dispatch_occurred": false,
+                }),
+            ),
+        )?;
+        return Ok(Some(ProviderDispatchRejection::WorkItemRevisionDrift));
     }
 
     let binding = tx

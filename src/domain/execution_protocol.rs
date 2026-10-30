@@ -545,6 +545,21 @@ pub struct AdvanceWorkItemSourceRevision {
     pub source_revision: u64,
 }
 
+/// #3816 controlled recovery for a registration stranded behind its durable
+/// revision. Unlike [`AdvanceWorkItemSourceRevision`], this transition is a
+/// repair: the durable revision is already at `source_revision` and the
+/// caller must have verified the per-revision attribution evidence before
+/// issuing it. It never rewrites admitted fences, generations, wait state,
+/// or attempt history.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ReconcileWorkItemSourceRevision {
+    pub command_id: String,
+    pub work_item_id: String,
+    pub expected_source_revision: u64,
+    pub source_revision: u64,
+    pub evidence_fingerprint: String,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SetWorkItemReadiness {
     pub command_id: String,
@@ -703,6 +718,7 @@ pub struct RecoverUnadvancedTaskResultClaim {
 pub enum ExecutionProtocolCommand {
     RegisterWorkItem(Box<RegisterWorkItemExecution>),
     AdvanceWorkItemSourceRevision(AdvanceWorkItemSourceRevision),
+    ReconcileWorkItemSourceRevision(ReconcileWorkItemSourceRevision),
     SetWorkItemReadiness(Box<SetWorkItemReadiness>),
     RecheckContextBudgetStop(Box<RecheckContextBudgetStop>),
     SuspendWorkItemContinuation(Box<SuspendWorkItemContinuation>),
@@ -782,6 +798,49 @@ pub fn advance_work_item_source_revision(
     }
     if matches!(record.state, WorkItemExecutionState::Terminal { .. }) {
         return Err("terminal WorkItem source revision cannot advance".into());
+    }
+    record.source_revision = command.source_revision;
+    assert_invariants(&next)?;
+    Ok(ExecutionTransition {
+        state: next,
+        references: vec![format!("work_item:{}", command.work_item_id)],
+    })
+}
+
+pub fn reconcile_work_item_source_revision(
+    state: &ExecutionProtocolState,
+    command: &ReconcileWorkItemSourceRevision,
+) -> Result<ExecutionTransition, String> {
+    assert_invariants(state)?;
+    if command.command_id.is_empty()
+        || command.work_item_id.is_empty()
+        || command.evidence_fingerprint.is_empty()
+        || command.expected_source_revision == 0
+        || command.source_revision <= command.expected_source_revision
+    {
+        return Err(
+            "WorkItem source revision reconcile requires identity, evidence, and a \
+             durable-ahead revision range"
+                .into(),
+        );
+    }
+    let mut next = state.clone();
+    let record = next
+        .work_items
+        .get_mut(&command.work_item_id)
+        .ok_or_else(|| {
+            "WorkItem source revision reconcile requires registered state".to_string()
+        })?;
+    if record.source_revision != command.expected_source_revision {
+        return Err("WorkItem source revision reconcile fence is stale".into());
+    }
+    if matches!(
+        record.state,
+        WorkItemExecutionState::Terminal { .. } | WorkItemExecutionState::InFlight { .. }
+    ) {
+        return Err(
+            "WorkItem source revision reconcile requires a non-executing registration".into(),
+        );
     }
     record.source_revision = command.source_revision;
     assert_invariants(&next)?;
