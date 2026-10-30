@@ -1161,8 +1161,10 @@ with fixture_directory(repo) as root:
                                 # the stretched waits; otherwise a healthy but
                                 # slow case is killed by a timeout that no
                                 # longer matches its budget.
-                                execution_allowance = int(600 * float(
-                                    test_env.get("TEST_RUNNER_HOLON_UI_WAIT_SCALE", "1")))
+                                execution_allowance = min(
+                                    int(600 * float(
+                                        test_env.get("TEST_RUNNER_HOLON_UI_WAIT_SCALE", "1"))),
+                                    1800)
                                 result = subprocess.run(["xcodebuild", "-project", repo + "/apps/ios/Holon.xcodeproj",
                                     "-scheme", "Holon", "-destination", destination,
                                     "-parallel-testing-enabled", "NO",
