@@ -59,9 +59,10 @@ def ui_case_sweep_statements(tree):
             start = next(index for index, statement in enumerate(body)
                          if isinstance(statement, ast.FunctionDef)
                          and statement.name == "run_ui_case")
+            # Every helper the sweep calls must travel with it, or the
+            # extracted code references names that were never defined.
             helpers = [statement for statement in body[:start]
-                       if isinstance(statement, ast.FunctionDef)
-                       and statement.name == "reset_app_group_consent"]
+                       if isinstance(statement, ast.FunctionDef)]
             # The sweep's own reporting follows the driver loop; it belongs to
             # the sweep and must travel with it.
             driver_index = body.index(driver)
@@ -192,7 +193,10 @@ class UIFixtureSetupContracts(unittest.TestCase):
         receipts = []
         methods = ["testLostResponseAndProcessRecovery", "testDirectAgentShareWorkflow"]
 
-        def run(command, env):
+        def run(command, env=None, **keywords):
+            if command[0] != "xcodebuild":
+                # A simulator probe, not a test run.
+                return Mock(returncode=1, stdout="")
             method = next(argument.rsplit("/", 1)[-1] for argument in command
                           if argument.startswith("-only-testing:"))
             self.assertFalse(release.is_set(), method + " must begin with response loss armed")
@@ -425,6 +429,33 @@ class UIFixtureSetupContracts(unittest.TestCase):
         printed = "\n".join(str(call) for call in output.call_args_list)
         self.assertIn("UI sweep telemetry:", printed)
         self.assertIn("testAuthenticatedNativeWorkflow", printed)
+
+    def test_app_side_reset_failure_reaches_the_host(self):
+        """A reset that failed in the app process must still fail the case.
+
+        The app runs in its own process, so an assertion there cannot fail
+        the test. The failure is published in the App Group and read by the
+        host, which turns a dirty-state run into a red case instead of a
+        false pass.
+        """
+        source = ROOT / "scripts/ios_ui_fixture.py"
+        text = source.read_text()
+        self.assertIn("app_state_reset_failure", text,
+                      "The host must read the app's published reset failure")
+        self.assertIn("testing.state.reset.failure", text,
+                      "The published failure must use one agreed key")
+        app = (ROOT / "apps/ios/Sources/TestingStateReset.swift").read_text()
+        self.assertIn("testing.state.reset.failure", app,
+                      "The app must publish the failure under the agreed key")
+        self.assertIn("publish(failures)", app)
+
+        # The failure must be a case failure, so the bounded retry applies.
+        tree = ast.parse(text, filename=str(source))
+        run_case = next(node for node in ast.walk(tree)
+                        if isinstance(node, ast.FunctionDef) and node.name == "run_ui_case")
+        self.assertTrue(any("app_state_reset_failure" in ast.dump(statement)
+                            for statement in ast.walk(run_case)),
+                        "The case must check the published reset failure")
 
     def test_app_side_state_reset_uses_one_launch_argument(self):
         """The app and the UI test must ask for the reset the same way."""
@@ -679,7 +710,10 @@ class UIFixtureSetupContracts(unittest.TestCase):
                 return {"text": "# Real result\n\nActual fixture body cache oracle."}
             self.fail("Unexpected fixture call: " + path)
 
-        def run(command, env):
+        def run(command, env=None, **keywords):
+            if command[0] != "xcodebuild":
+                # A simulator probe, not a test run.
+                return Mock(returncode=1, stdout="")
             method = next(argument.rsplit("/", 1)[-1] for argument in command
                           if argument.startswith("-only-testing:"))
             runs.append(method)
@@ -902,7 +936,7 @@ class UIFixtureEvidenceContracts(unittest.TestCase):
             "testContentReportAcceptedReceiptCannotSubmitTwice",
         ]
 
-        def run(command, env):
+        def run(command, env=None, **keywords):
             if "-only-testing:HolonUITests/HolonUITests/" + methods[-1] in command:
                 with sqlite3.connect(database) as connection:
                     connection.execute("INSERT INTO content_reports VALUES (" +

@@ -6,6 +6,7 @@ import hashlib
 import json
 import os
 import pathlib
+import plistlib
 import re
 import secrets
 import shutil
@@ -954,6 +955,33 @@ with fixture_directory(repo) as root:
                           f"{group_id} not found on {simulator}; sharing consent "
                           f"could not be reset", flush=True)
 
+                def app_state_reset_failure(simulator, bundle_id, group_id):
+                    # The app runs in its own process, so it cannot fail the
+                    # test that asked for a reset. It publishes the failure
+                    # in the App Group instead, where the host can read it.
+                    probe = subprocess.run(
+                        ["xcrun", "simctl", "get_app_container", simulator, bundle_id, "groups"],
+                        stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, check=False,
+                        text=True)
+                    if probe.returncode != 0:
+                        return None
+                    for line in str(probe.stdout or "").splitlines():
+                        fields = line.split("\t")
+                        if len(fields) != 2 or fields[0].strip() != group_id:
+                            continue
+                        preferences = pathlib.Path(fields[1].strip()) / "Library" / "Preferences"
+                        if not preferences.is_dir():
+                            return None
+                        for stored in preferences.glob("*.plist"):
+                            try:
+                                content = plistlib.loads(stored.read_bytes())
+                            except Exception:
+                                continue
+                            failure = content.get("testing.state.reset.failure")
+                            if failure:
+                                return str(failure)
+                    return None
+
                 selected_cases = os.environ.get("IOS_UI_CASES")
                 if selected_cases:
                     requested = selected_cases.split(",")
@@ -1144,6 +1172,15 @@ with fixture_directory(repo) as root:
                                         report_db, fixture_evidence, method, "after")
                             if result.returncode:
                                 raise UICaseFailure(f"UI case {method} 失败（SDK 通过不能替代 UI）")
+                            # The app cannot fail the test that asked for a
+                            # reset, so it publishes the failure where the
+                            # host can see it. A case that ran against dirty
+                            # state would otherwise pass for the wrong reason.
+                            reset_failure = app_state_reset_failure(
+                                simulator, "run.holon.ios", "group.run.holon.ios")
+                            if reset_failure:
+                                raise UICaseFailure(
+                                    f"UI case {method} 的 app 状态复位失败：{reset_failure}")
                             if loss_case:
                                 with lost_lock:
                                     receipts = lost_receipts[loss_receipts_start:]

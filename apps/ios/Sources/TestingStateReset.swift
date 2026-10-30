@@ -11,6 +11,13 @@ import Foundation
 /// The reset is opt-in through a launch argument, so a normal launch is
 /// untouched.
 enum TestingStateReset {
+    /// The key the app records a reset failure under, in the App Group.
+    ///
+    /// The app runs in its own process, so an assertion there would not fail
+    /// the test that asked for the reset. The failure is published where the
+    /// test can see it instead.
+    static let failureKey = "testing.state.reset.failure"
+
     /// The launch argument that requests a reset before the UI appears.
     ///
     /// The UI test target cannot import the app target, so it names the same
@@ -57,8 +64,19 @@ enum TestingStateReset {
         }
 
         if !failures.isEmpty {
+            publish(failures)
             throw TestingStateResetError(failures: failures)
         }
+        // A previous attempt's failure must not be mistaken for this one's.
+        SharingConsent.shared.defaults?.removeObject(forKey: failureKey)
+        SharingConsent.shared.defaults?.synchronize()
+    }
+
+    /// Records the failure so the test that requested the reset can see it.
+    private static func publish(_ failures: [String]) {
+        SharingConsent.shared.defaults?.set(failures.joined(separator: "; "),
+                                            forKey: failureKey)
+        SharingConsent.shared.defaults?.synchronize()
     }
 }
 
