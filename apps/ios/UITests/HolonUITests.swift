@@ -25,6 +25,20 @@ final class HolonUITests: XCTestCase {
         return app
     }
 
+    /// Launches the app after asking it to clear its own state.
+    ///
+    /// The sweep shares one simulator, so a case that expects a clean
+    /// install must say so instead of assuming it. The app owns the reset,
+    /// so the case does not have to know where the state lives.
+    private func launchClean(language: String, dark: Bool, large: Bool) -> XCUIApplication {
+        let app = XCUIApplication()
+        app.launchArguments = ["-AppleLanguages", "(\(language))", "-AppleLocale", language,
+                               "-AppleInterfaceStyle", dark ? "Dark" : "Light",
+                               TestingStateResetArgument.value]
+        app.launch()
+        return app
+    }
+
     /// Backspace bursts are unreliable; only clear fields that hold text.
     private func clearTextField(_ field: XCUIElement) {
         let existing = (field.value as? String) ?? ""
@@ -766,7 +780,10 @@ final class HolonUITests: XCTestCase {
         }
         components.path = String(components.path.dropLast(4)) + "/login"
         components.fragment = "pair=" + code
-        let app = launch(language: "en", dark: false, large: false)
+        // This case asserts that the app stops at the sharing prompt, so it
+        // must start without an earlier approval. The app clears its own
+        // state; the case only states the precondition.
+        let app = launchClean(language: "en", dark: false, large: false)
         XCTAssertTrue(app.buttons["onboarding.scan"].waitForExistence(timeout: UIWaitScale.scaled(15)))
         XCTAssertFalse(app.tabBars.firstMatch.exists, "Identity must be confirmed before showing tabs")
         try connectThroughPairing(app, endpoint: endpoint, payload: try XCTUnwrap(components.string))

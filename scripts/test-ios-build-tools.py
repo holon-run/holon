@@ -426,6 +426,22 @@ class UIFixtureSetupContracts(unittest.TestCase):
         self.assertIn("UI sweep telemetry:", printed)
         self.assertIn("testAuthenticatedNativeWorkflow", printed)
 
+    def test_app_side_state_reset_uses_one_launch_argument(self):
+        """The app and the UI test must ask for the reset the same way."""
+        app_reset = (ROOT / "apps/ios/Sources/TestingStateReset.swift").read_text()
+        test_reset = (ROOT / "apps/ios/UITests/UIWaitScale.swift").read_text()
+        arguments = set(re.findall(r'"(-Holon[A-Za-z]*UITests)"', app_reset))
+        self.assertEqual(len(arguments), 1,
+                         "The app must name exactly one reset launch argument")
+        argument = arguments.pop()
+        self.assertIn(f'"{argument}"', test_reset,
+                      "The UI test must request the reset the app implements")
+        # The app must actually act on the argument, not merely declare it.
+        self.assertIn("CommandLine.arguments.contains(launchArgument)", app_reset)
+        self.assertIn("resetIfRequested()", app_reset)
+        # The app owns the reset, so it must clear the App Group consent too.
+        self.assertIn("revokeAll()", app_reset)
+
     def test_swift_ui_waits_all_use_the_scaled_budget(self):
         """Every UI wait budget must be stretched by the same factor.
 
@@ -579,11 +595,31 @@ class UIFixtureSetupContracts(unittest.TestCase):
         self.run_setup(initialize, install, commands=commands)
         self.assertEqual(events, [
             "ready",
+            ("xcrun", "simctl", "get_app_container", UUID, "run.holon.ios", "groups"),
             ("xcrun", "simctl", "uninstall", UUID, "run.holon.ios"),
             ("xcrun", "simctl", "get_app_container", UUID, "run.holon.ios", "data"),
-            ("xcrun", "simctl", "get_app_container", UUID, "run.holon.ios", "groups"),
             "installed",
         ], "A reused simulator must not restore stale app data into any case")
+
+    def test_sweep_resets_consent_before_uninstalling_the_app(self):
+        """The group container is only reachable while the app is installed.
+
+        The consent lives in the App Group container, which outlives the app
+        install. Resetting after the uninstall would find no container and
+        leave the previous run's approval in place.
+        """
+        source = ROOT / "scripts/ios_ui_fixture.py"
+        text = source.read_text()
+        reset = text.index("reset_app_group_consent(simulator")
+        uninstall = text.index('ensure_uninstalled(simulator, "run.holon.ios")')
+        self.assertLess(reset, uninstall,
+                        "The consent reset must run while the app is still installed")
+        # The same order is required by the browser case's own clean install.
+        browser = text.index('if method == "testRuntimeBrowserWorkflow":')
+        browser_reset = text.index("reset_app_group_consent(", browser)
+        browser_uninstall = text.index('ensure_uninstalled(simulator, "run.holon.ios")', browser)
+        self.assertLess(browser_reset, browser_uninstall,
+                        "The browser case must reset consent before its uninstall")
 
     def test_failed_initialization_prevents_share_install(self):
         install = Mock()

@@ -929,7 +929,8 @@ with fixture_directory(repo) as root:
                         stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, check=False,
                         text=True)
                     if probe.returncode != 0:
-                        # Nothing is installed yet; a later install starts empty.
+                        # Nothing is installed, so there is no group container to
+                        # clear and a later install starts empty.
                         return
                     for line in str(probe.stdout or "").splitlines():
                         fields = line.split("\t")
@@ -937,10 +938,18 @@ with fixture_directory(repo) as root:
                             continue
                         preferences = pathlib.Path(fields[1].strip()) / "Library" / "Preferences"
                         if not preferences.is_dir():
-                            continue
+                            return
                         for stale in preferences.glob("*.plist"):
-                            stale.unlink()
+                            # A concurrent write may remove the file first; the
+                            # reset must not fail the sweep for that.
+                            stale.unlink(missing_ok=True)
                         return
+                    # The group container was not listed. A case that expects
+                    # a clean install would fail later for an unclear reason,
+                    # so say so now.
+                    print(f"::warning title=iOS UI state reset::app group "
+                          f"{group_id} not found on {simulator}; sharing consent "
+                          f"could not be reset", flush=True)
 
                 selected_cases = os.environ.get("IOS_UI_CASES")
                 if selected_cases:
@@ -959,11 +968,12 @@ with fixture_directory(repo) as root:
                 # subset skips that ordering entirely. A reused simulator can
                 # otherwise restore a stale profile straight past onboarding.
                 # Always uninstall so every sweep starts from that clean install.
-                ensure_uninstalled(simulator, "run.holon.ios")
                 # The App Group container outlives the app install, so the
                 # sharing-consent approval from an earlier run would skip the
-                # consent gate. Reset it together with the clean install.
+                # consent gate. The container is only reachable while the app
+                # is still installed, so the reset must come first.
                 reset_app_group_consent(simulator, "run.holon.ios", "group.run.holon.ios")
+                ensure_uninstalled(simulator, "run.holon.ios")
                 if share_acceptance:
                     # The preceding xcodebuild may leave this simulator shut down.
                     from ios_share_probe import install
@@ -1032,6 +1042,11 @@ with fixture_directory(repo) as root:
                                 # subset run uses. The case pairs through its own fresh
                                 # ticket, and the trailing network-management case
                                 # re-establishes its own connection.
+                                # The App Group container outlives the uninstall, so
+                                # the consent must be cleared while the app is still
+                                # installed for the container to be reachable.
+                                reset_app_group_consent(
+                                    simulator, "run.holon.ios", "group.run.holon.ios")
                                 ensure_uninstalled(simulator, "run.holon.ios")
                                 # A full sweep stacks seeded history turns (history-window,
                                 # automatic-read cases) on the shared agent, burying the

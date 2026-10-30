@@ -41,3 +41,12 @@ enum UIWaitScale {
                        file: file, line: line)
     }
 }
+
+/// The launch argument that asks the app to clear its own state.
+///
+/// The app owns the reset; the test only names the request. The app target
+/// cannot import this file, so the contract test guards that both sides use
+/// the same argument.
+enum TestingStateResetArgument {
+    static let value = "-HolonResetAppStateForUITests"
+}
