@@ -1,4 +1,147 @@
-/* Holon site extensions. Keep documentation pages on mdorigin's default theme. */
+/* Holon site extensions. Preserve mdorigin's shared theme and page services. */
+
+/* Documentation details use a work-oriented shell; landing pages and Blog do not. */
+main:has(.docs-layout) {
+  max-width: 88rem;
+  padding: 1.75rem 2rem 3rem;
+}
+
+article:has(.docs-layout) {
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: none;
+  box-shadow: none;
+}
+
+.docs-layout {
+  --docs-top: calc(var(--docs-header-height, 5rem) + 1rem);
+  display: grid;
+  grid-template-columns: 14rem minmax(0, 1fr) 12rem;
+  align-items: start;
+  gap: 2rem;
+}
+
+.docs-content {
+  grid-column: 2;
+  grid-row: 1;
+  min-width: 0;
+  padding: 1.5rem 2rem 2rem;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--surface);
+  overflow-wrap: anywhere;
+}
+
+.docs-content h1 {
+  font-size: clamp(2rem, 3vw, 2.8rem);
+  line-height: 1.15;
+}
+
+.docs-content :is(h2, h3, h4, [id]) {
+  scroll-margin-top: calc(var(--docs-header-height, 5rem) + 1.5rem);
+}
+
+.docs-content pre { max-width: 100%; }
+.docs-content table { display: block; overflow-x: auto; }
+.docs-content img { max-width: 100%; height: auto; }
+
+.docs-sidebar,
+.docs-toc {
+  position: sticky;
+  top: var(--docs-top);
+  max-height: calc(100dvh - var(--docs-top) - 1rem);
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-width: thin;
+  font-size: 0.82rem;
+  line-height: 1.5;
+}
+
+.docs-sidebar { grid-column: 1; grid-row: 1; }
+.docs-sidebar > summary { display: none; }
+.docs-nav__group { margin-bottom: 1.4rem; }
+.docs-nav__group h2,
+.docs-toc > summary {
+  margin: 0 0 0.6rem;
+  padding: 0 0.55rem;
+  color: var(--text);
+  font-size: 0.76rem;
+  font-weight: 750;
+  letter-spacing: 0.03em;
+  line-height: 1.5;
+}
+
+.docs-layout :is(.docs-sidebar, .docs-toc) ul {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.docs-layout :is(.docs-sidebar, .docs-toc) li { margin: 0; }
+.docs-layout :is(.docs-sidebar, .docs-toc) a {
+  display: block;
+  padding: 0.4rem 0.55rem;
+  border-radius: 5px;
+  color: var(--muted);
+  overflow-wrap: anywhere;
+}
+
+.docs-layout :is(.docs-sidebar, .docs-toc) a:hover {
+  background: var(--surface-alt);
+  color: var(--link);
+  text-decoration: none;
+}
+
+.docs-layout a[aria-current] {
+  background: var(--accent);
+  color: var(--link);
+  font-weight: 650;
+}
+
+.docs-toc { grid-column: 3; grid-row: 1; }
+.docs-toc > summary { cursor: pointer; }
+.docs-toc__level-3 { padding-left: 0.7rem; }
+.docs-layout--no-toc { grid-template-columns: 14rem minmax(0, 48rem); }
+.docs-skip {
+  position: fixed;
+  top: -10rem;
+  left: 1rem;
+  z-index: 100;
+  padding: 0.6rem 1rem;
+  background: var(--surface);
+  border: 2px solid var(--link);
+}
+.docs-skip:focus { top: var(--docs-top); }
+.docs-layout :is(a, summary):focus-visible { outline: 2px solid var(--link); outline-offset: 2px; }
+
+@media (min-width: 768px) and (max-width: 1199px) {
+  .docs-layout { grid-template-columns: 12rem minmax(0, 1fr); gap: 1.5rem; }
+  .docs-toc { display: none; }
+}
+
+@media (max-width: 767px) {
+  main:has(.docs-layout) { padding: 1rem; }
+  .docs-layout { grid-template-columns: minmax(0, 1fr); gap: 0.8rem; }
+  .docs-sidebar,
+  .docs-toc {
+    position: static;
+    grid-column: 1;
+    max-height: none;
+    padding: 0.7rem;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    background: var(--surface);
+  }
+  .docs-sidebar { grid-row: 1; }
+  .docs-toc { grid-row: 2; }
+  .docs-content { grid-column: 1; grid-row: 3; padding: 1.2rem; }
+  .docs-sidebar > summary { display: list-item; padding: 0 0.55rem; font-weight: 700; cursor: pointer; }
+  .docs-sidebar nav { max-height: 60dvh; overflow-y: auto; margin-top: 1rem; }
+  .docs-toc > summary { margin: 0; }
+  .docs-toc nav { margin-top: 0.6rem; }
+  .docs-layout--no-toc .docs-content { grid-row: 2; }
+}
 
 /* Keep multi-column article tables readable without widening the page. */
 .article-table {
