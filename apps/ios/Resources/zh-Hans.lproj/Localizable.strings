@@ -258,6 +258,7 @@
 "action.cancel" = "取消";
 "onboarding.title" = "连接 Holon";
 "onboarding.restoring" = "正在恢复连接…";
+"onboarding.changeAddress" = "更换地址";
 "onboarding.welcome" = "连接你的 Holon";
 "onboarding.purpose" = "查看电脑上 Holon 的 Agent 和工作。";
 "onboarding.scan" = "扫码连接";
