@@ -1154,6 +1154,10 @@ with fixture_directory(repo) as root:
                 max_attempts = 1 if os.environ.get(
                     "IOS_UI_RETRY", "1").strip().lower() in {"0", "false", "no"} else 2
                 ui_retries = []
+                # Per-case telemetry: which cases needed a retry, and how long
+                # each attempt took. A CI job that fails on a slow runner is
+                # only actionable if it says which budget ran out.
+                ui_telemetry = []
                 for (method, content_size), case_bundle in zip(cases, bundles):
                     for attempt in range(1, max_attempts + 1):
                         if attempt > 1:
@@ -1188,16 +1192,44 @@ with fixture_directory(repo) as root:
                         started = time.monotonic()
                         try:
                             run_ui_case(method, content_size, case_bundle)
+                            ui_telemetry.append({
+                                "case": method, "attempt": attempt,
+                                "outcome": "passed", "seconds": round(time.monotonic() - started, 1)})
                             break
                         except UICaseFailure:
+                            elapsed = round(time.monotonic() - started, 1)
+                            ui_telemetry.append({
+                                "case": method, "attempt": attempt,
+                                "outcome": "failed", "seconds": elapsed})
                             if attempt >= max_attempts:
                                 raise
-                            duration = time.monotonic() - started
                             ui_retries.append(method)
                             detail = (f"{method} attempt {attempt} failed after "
-                                      f"{duration:.0f}s; rebuilding per-case fixtures and retrying once")
+                                      f"{elapsed:.0f}s; rebuilding per-case fixtures and retrying once")
                             print(f"::warning title=iOS UI retry::{detail}", flush=True)
                             print(f"UI 用例 {method} 第 {attempt} 次尝试失败，重建该用例 fixture 后重试一次", flush=True)
+                # A stable, machine-readable record of the sweep's outcome.
+                # The CI summary prints it so a flaky case can be named
+                # without digging through the full xcodebuild log.
+                slowest = max(ui_telemetry, key=lambda record: record["seconds"], default=None)
+                summary = (f"UI sweep telemetry: {len(cases)} cases, "
+                           f"{len(ui_retries)} retried")
+                if slowest is not None:
+                    summary += (f", slowest {slowest['case']} "
+                                f"{slowest['seconds']}s")
+                print(summary, flush=True)
+                for record in ui_telemetry:
+                    if record["outcome"] == "failed":
+                        print(f"::warning title=iOS UI case failed::{record['case']} "
+                              f"attempt {record['attempt']} failed after {record['seconds']}s",
+                              flush=True)
+                if fixture_evidence is not None:
+                    write_fixture_json(fixture_evidence, "ui-sweep-telemetry.json", {
+                        "cases": len(cases),
+                        "retried": ui_retries,
+                        "attempts": ui_telemetry,
+                        "wait_scale": test_env.get("TEST_RUNNER_HOLON_UI_WAIT_SCALE"),
+                    })
                 if ui_retries:
                     print(f"UI sweep 完成：{len(cases)} 个用例，其中 {len(ui_retries)} 个经一次有界重试通过："
                           + ", ".join(ui_retries), flush=True)

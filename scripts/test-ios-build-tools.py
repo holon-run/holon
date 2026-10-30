@@ -62,7 +62,15 @@ def ui_case_sweep_statements(tree):
             helpers = [statement for statement in body[:start]
                        if isinstance(statement, ast.FunctionDef)
                        and statement.name == "reset_app_group_consent"]
-            return helpers + body[start:body.index(driver) + 1]
+            # The sweep's own reporting follows the driver loop; it belongs to
+            # the sweep and must travel with it.
+            driver_index = body.index(driver)
+            tail = []
+            for statement in body[driver_index + 1:]:
+                if isinstance(statement, ast.If) and isinstance(statement.test, ast.UnaryOp):
+                    break  # The SDK-only branch ends the UI sweep.
+                tail.append(statement)
+            return helpers + body[start:driver_index + 1] + tail
     raise AssertionError("run_ui_case and the sweep driver must share one block")
 
 
@@ -218,7 +226,10 @@ class UIFixtureSetupContracts(unittest.TestCase):
         receipts, output = self.run_loss_scenarios()
         self.assertEqual(len(receipts), 4, "Keep both workflows' receipt evidence")
         self.assertEqual(len({request for request, _ in receipts}), 2)
-        self.assertEqual(len(output), 2, "Verify App and Share independently")
+        # The sweep also prints its telemetry; count only the acceptance lines.
+        acceptance = [call for call in output
+                      if "Lost-response acceptance" in str(call)]
+        self.assertEqual(len(acceptance), 2, "Verify App and Share independently")
 
     def test_flaky_ui_case_retries_once_with_clean_state(self):
         source = ROOT / "scripts/ios_ui_fixture.py"
@@ -378,6 +389,42 @@ class UIFixtureSetupContracts(unittest.TestCase):
         driver = driver[:driver.index("started = time.monotonic()")]
         self.assertIn("reset_app_group_consent(", driver,
                       "Every retried attempt must reset the persisted consent")
+
+    def test_ui_sweep_records_per_case_telemetry(self):
+        """A failing case must be nameable without reading the xcodebuild log."""
+        source = ROOT / "scripts/ios_ui_fixture.py"
+        text = source.read_text()
+        self.assertIn("ui-sweep-telemetry.json", text,
+                      "The sweep must write a machine-readable outcome record")
+        self.assertIn('"outcome": "passed"', text)
+        self.assertIn('"outcome": "failed"', text)
+        self.assertIn("UI sweep telemetry:", text,
+                      "The CI log must summarize the sweep outcome")
+        tree = ast.parse(text, filename=str(source))
+        sweep = ui_case_sweep_statements(tree)
+        module = ast.Module(body=sweep, type_ignores=[])
+        ast.fix_missing_locations(module)
+        namespace = dict(fixture_helpers(),
+            cases=[("testAuthenticatedNativeWorkflow", "large")],
+            bundles=[Path("/tmp/holon-ui-telemetry-case.xcresult")],
+            release_lost_response=threading.Event(), lost_receipts=[],
+            lost_lock=threading.Lock(), lost_response_acceptance=False,
+            simulator=UUID, repo=str(ROOT), destination="fixture", derived="fixture",
+            test_env={"TEST_RUNNER_HOLON_UI_WAIT_SCALE": "2"}, local=Mock(return_value={"ticket": "fixture"}),
+            fixture_evidence=None,
+            simulator_text_size=lambda *args: nullcontext(),
+            simulator_appearance=lambda *args: nullcontext(),
+            runtime_text_size_control=lambda *args: nullcontext(("fixture", "fixture")),
+            subprocess=Mock(run=lambda *args, **keywords: Mock(returncode=0, stdout="")))
+        with patch.dict(os.environ, {"IOS_UI_RETRY": "0"}, clear=True), \
+                patch("builtins.print") as output:
+            try:
+                exec(compile(module, str(source), "exec"), namespace)
+            except RuntimeError:
+                pass  # The mocked case fails; the telemetry must still be recorded.
+        printed = "\n".join(str(call) for call in output.call_args_list)
+        self.assertIn("UI sweep telemetry:", printed)
+        self.assertIn("testAuthenticatedNativeWorkflow", printed)
 
     def test_swift_ui_waits_all_use_the_scaled_budget(self):
         """Every UI wait budget must be stretched by the same factor.
