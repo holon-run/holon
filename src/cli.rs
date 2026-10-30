@@ -898,9 +898,9 @@ pub enum RuntimeDbDebugCommands {
         apply: bool,
         #[arg(long, requires = "apply")]
         no_backup: bool,
-        #[arg(long, conflicts_with = "apply")]
+        #[arg(long)]
         agent: Option<String>,
-        #[arg(long, conflicts_with = "apply")]
+        #[arg(long)]
         work_item: Option<String>,
         #[arg(long)]
         json: bool,
@@ -1218,6 +1218,105 @@ fn snapshot_entry_for_command(cmd: &clap::Command, path: &str) -> CommandSnapsho
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn work_item_source_revision_audit_accepts_optional_filters() {
+        for (agent, work_item) in [
+            (None, None),
+            (Some("agent-a"), None),
+            (None, Some("work-a")),
+            (Some("agent-a"), Some("work-a")),
+        ] {
+            let mut args = vec!["holon", "debug", "runtime-db", "work-item-source-revision"];
+            if let Some(agent) = agent {
+                args.extend(["--agent", agent]);
+            }
+            if let Some(work_item) = work_item {
+                args.extend(["--work-item", work_item]);
+            }
+            let cli = Cli::try_parse_from(args).unwrap();
+            let Commands::Debug {
+                command:
+                    DebugCommands::RuntimeDb {
+                        command:
+                            RuntimeDbDebugCommands::WorkItemSourceRevision {
+                                apply,
+                                no_backup,
+                                agent: parsed_agent,
+                                work_item: parsed_work_item,
+                                ..
+                            },
+                    },
+            } = cli.command
+            else {
+                panic!("expected WorkItem source revision repair command");
+            };
+            assert!(!apply);
+            assert!(!no_backup);
+            assert_eq!(parsed_agent.as_deref(), agent);
+            assert_eq!(parsed_work_item.as_deref(), work_item);
+        }
+    }
+
+    #[test]
+    fn work_item_source_revision_apply_accepts_required_filters() {
+        for no_backup in [false, true] {
+            let mut args = vec![
+                "holon",
+                "debug",
+                "runtime-db",
+                "work-item-source-revision",
+                "--apply",
+                "--agent",
+                "agent-a",
+                "--work-item",
+                "work-a",
+            ];
+            if no_backup {
+                args.push("--no-backup");
+            }
+            let cli = Cli::try_parse_from(args).unwrap();
+            let Commands::Debug {
+                command:
+                    DebugCommands::RuntimeDb {
+                        command:
+                            RuntimeDbDebugCommands::WorkItemSourceRevision {
+                                apply,
+                                no_backup: parsed_no_backup,
+                                agent,
+                                work_item,
+                                ..
+                            },
+                    },
+            } = cli.command
+            else {
+                panic!("expected WorkItem source revision repair command");
+            };
+            assert!(apply);
+            assert_eq!(parsed_no_backup, no_backup);
+            assert_eq!(agent.as_deref(), Some("agent-a"));
+            assert_eq!(work_item.as_deref(), Some("work-a"));
+        }
+    }
+
+    #[test]
+    fn work_item_source_revision_rejects_incomplete_apply_or_audit_no_backup() {
+        for options in [
+            vec!["--apply"],
+            vec!["--apply", "--agent", "agent-a"],
+            vec!["--apply", "--work-item", "work-a"],
+            vec!["--no-backup"],
+            vec!["--no-backup", "--agent", "agent-a", "--work-item", "work-a"],
+        ] {
+            let mut args = vec!["holon", "debug", "runtime-db", "work-item-source-revision"];
+            args.extend(options);
+            let error = Cli::try_parse_from(args).unwrap_err();
+            assert_eq!(
+                error.kind(),
+                clap::error::ErrorKind::MissingRequiredArgument
+            );
+        }
+    }
 
     #[test]
     fn agent_delete_archive_is_explicit() {
