@@ -3603,6 +3603,13 @@
         "supports_reasoning": true,
         "interactive_exec": false
       },
+      "reasoning_effort_options": [
+        "low",
+        "medium",
+        "high",
+        "xhigh",
+        "max"
+      ],
       "source": "conservative_builtin"
     },
     {
@@ -3645,6 +3652,13 @@
         "supports_reasoning": true,
         "interactive_exec": false
       },
+      "reasoning_effort_options": [
+        "low",
+        "medium",
+        "high",
+        "xhigh",
+        "max"
+      ],
       "source": "conservative_builtin"
     },
     {
@@ -3687,6 +3701,10 @@
         "supports_reasoning": true,
         "interactive_exec": false
       },
+      "reasoning_effort_options": [
+        "high",
+        "max"
+      ],
       "source": "conservative_builtin"
     },
     {
@@ -3708,6 +3726,11 @@
         "supports_reasoning": true,
         "interactive_exec": false
       },
+      "reasoning_effort_options": [
+        "low",
+        "high",
+        "max"
+      ],
       "source": "conservative_builtin"
     },
     {
@@ -3771,6 +3794,10 @@
         "supports_reasoning": true,
         "interactive_exec": false
       },
+      "reasoning_effort_options": [
+        "high",
+        "max"
+      ],
       "source": "conservative_builtin"
     },
     {
@@ -3792,6 +3819,11 @@
         "supports_reasoning": true,
         "interactive_exec": false
       },
+      "reasoning_effort_options": [
+        "low",
+        "high",
+        "max"
+      ],
       "source": "conservative_builtin"
     },
     {
@@ -3813,6 +3845,11 @@
         "supports_reasoning": true,
         "interactive_exec": false
       },
+      "reasoning_effort_options": [
+        "low",
+        "high",
+        "max"
+      ],
       "source": "conservative_builtin"
     },
     {
@@ -3834,6 +3871,14 @@
         "supports_reasoning": true,
         "interactive_exec": false
       },
+      "reasoning_effort_options": [
+        "none",
+        "low",
+        "medium",
+        "high",
+        "xhigh",
+        "max"
+      ],
       "source": "conservative_builtin"
     },
     {
@@ -3855,6 +3900,14 @@
         "supports_reasoning": true,
         "interactive_exec": false
       },
+      "reasoning_effort_options": [
+        "none",
+        "low",
+        "medium",
+        "high",
+        "xhigh",
+        "max"
+      ],
       "source": "conservative_builtin"
     },
     {
@@ -3876,6 +3929,12 @@
         "supports_reasoning": true,
         "interactive_exec": false
       },
+      "reasoning_effort_options": [
+        "low",
+        "medium",
+        "high",
+        "xhigh"
+      ],
       "source": "conservative_builtin"
     },
     {
@@ -3897,6 +3956,11 @@
         "supports_reasoning": true,
         "interactive_exec": false
       },
+      "reasoning_effort_options": [
+        "none",
+        "low",
+        "high"
+      ],
       "source": "conservative_builtin"
     },
     {
@@ -3918,17 +3982,21 @@
         "supports_reasoning": true,
         "interactive_exec": false
       },
+      "reasoning_effort_options": [
+        "none",
+        "high"
+      ],
       "source": "conservative_builtin"
     },
     {
       "model_ref": "opencode-go/iceman-contributor-free",
       "display_name": "Iceman Contributor Free",
-      "description": "OpenCode Go Chat-only limited-time free route; prompts and completions may be used for training (not ZDR). Token limits, modalities, and reasoning controls remain unconfirmed.",
-      "context_window_tokens": null,
+      "description": "OpenCode Go native Chat limited-time free route; prompts and completions may be used for training (not ZDR). Capacity and reasoning support follow the official Go model listing; effort controls remain unconfirmed.",
+      "context_window_tokens": 262144,
       "effective_context_window_percent": 95,
       "auto_compact_token_limit": null,
       "default_max_output_tokens": null,
-      "max_output_tokens_upper_limit": null,
+      "max_output_tokens_upper_limit": 131072,
       "default_verbosity": null,
       "tool_output_truncation_estimated_tokens": 2500,
       "capabilities": {
@@ -3936,7 +4004,7 @@
         "parallel_tool_calls": false,
         "image_input": false,
         "image_generation": false,
-        "supports_reasoning": false,
+        "supports_reasoning": true,
         "interactive_exec": false
       },
       "source": "conservative_builtin"
@@ -4002,27 +4070,35 @@
         "supports_reasoning": true,
         "interactive_exec": false
       },
+      "reasoning_effort_options": [
+        "max"
+      ],
       "source": "conservative_builtin"
     },
     {
       "model_ref": "opencode-go/kimi-k3.1-pro",
       "display_name": "Kimi K3.1 Pro",
-      "description": "OpenCode Go and Go Plus Chat route; token limits, modalities, and reasoning controls are unconfirmed for this endpoint.",
-      "context_window_tokens": null,
+      "description": "OpenCode Go and Go Plus native Chat route; capacity, modalities, and reasoning controls follow the official Go model listing.",
+      "context_window_tokens": 1048576,
       "effective_context_window_percent": 95,
       "auto_compact_token_limit": null,
       "default_max_output_tokens": null,
-      "max_output_tokens_upper_limit": null,
+      "max_output_tokens_upper_limit": 131072,
       "default_verbosity": null,
       "tool_output_truncation_estimated_tokens": 2500,
       "capabilities": {
         "agent_turn": true,
         "parallel_tool_calls": false,
-        "image_input": false,
+        "image_input": true,
         "image_generation": false,
-        "supports_reasoning": false,
+        "supports_reasoning": true,
         "interactive_exec": false
       },
+      "reasoning_effort_options": [
+        "low",
+        "high",
+        "max"
+      ],
       "source": "conservative_builtin"
     },
     {
@@ -4201,7 +4277,7 @@
       "effective_context_window_percent": 95,
       "auto_compact_token_limit": null,
       "default_max_output_tokens": null,
-      "max_output_tokens_upper_limit": null,
+      "max_output_tokens_upper_limit": 131072,
       "default_verbosity": null,
       "tool_output_truncation_estimated_tokens": 2500,
       "capabilities": {
@@ -4233,6 +4309,13 @@
         "supports_reasoning": true,
         "interactive_exec": false
       },
+      "reasoning_effort_options": [
+        "low",
+        "medium",
+        "high",
+        "xhigh",
+        "max"
+      ],
       "source": "conservative_builtin"
     },
     {
@@ -4275,6 +4358,13 @@
         "supports_reasoning": true,
         "interactive_exec": false
       },
+      "reasoning_effort_options": [
+        "minimal",
+        "low",
+        "medium",
+        "high",
+        "xhigh"
+      ],
       "source": "conservative_builtin"
     },
     {
@@ -4296,6 +4386,13 @@
         "supports_reasoning": true,
         "interactive_exec": false
       },
+      "reasoning_effort_options": [
+        "minimal",
+        "low",
+        "medium",
+        "high",
+        "xhigh"
+      ],
       "source": "conservative_builtin"
     },
     {
@@ -4380,6 +4477,11 @@
         "supports_reasoning": true,
         "interactive_exec": false
       },
+      "reasoning_effort_options": [
+        "low",
+        "medium",
+        "xhigh"
+      ],
       "source": "conservative_builtin"
     },
     {
@@ -4401,6 +4503,11 @@
         "supports_reasoning": true,
         "interactive_exec": false
       },
+      "reasoning_effort_options": [
+        "low",
+        "medium",
+        "xhigh"
+      ],
       "source": "conservative_builtin"
     },
     {
@@ -4443,6 +4550,11 @@
         "supports_reasoning": true,
         "interactive_exec": false
       },
+      "reasoning_effort_options": [
+        "low",
+        "medium",
+        "high"
+      ],
       "source": "conservative_builtin"
     },
     {

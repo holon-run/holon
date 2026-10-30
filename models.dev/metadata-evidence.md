@@ -5,6 +5,76 @@ unchanged catalog facts are preserved, not newly certified as vendor hard
 limits. An upstream candidate is evidence to review, not permission to change
 an endpoint, region, subscription entitlement, or runtime output policy.
 
+## Incremental review: 2026-10-31
+
+The frozen models.dev payload is
+`490b395ef18abff5b3fadfeffef6604ffbc79e1523d111eb0710335c63bc59e3`.
+The existing `mistral-large-4` alias changes only its reasoning enum:
+`none`/`high` becomes `low`/`medium`/`high`. The official
+[Large 4 family page](https://docs.mistral.ai/models/mistral-large-4-0) and
+[reasoning reference](https://docs.mistral.ai/capabilities/reasoning/)
+agree on the latter values. Preserve all previously reviewed capacity,
+modality and output-policy fields; this is not renewed certification of
+those unchanged fields.
+
+The new `mistral-large-4-0-8` candidate is not yet admitted. The public
+family page does not expose that exact wire ID and gives only abbreviated
+1M / 256k capacities, insufficient to independently confirm the candidate's
+1,048,576 / 262,144 integers. Retain the raw snapshot/artifact record and
+defer both newly drafted and locally retained unreviewed instances through
+`endpoint_review_required`. The existing alias is not removed or replaced.
+The previously deferred [DeepSeek candidate](https://docs.mistral.ai/models/deepseek-v4-flash-1017)
+now explicitly lists text/image input, superseding the earlier text-only
+evidence; its unresolved exact capacities and effort enum still prevent
+admission. Neither deferral is an unsupported/retirement claim.
+
+Five changed OpenRouter audit records agree with its independently sampled
+[public listing](https://openrouter.ai/api/v1/models): output ceilings are
+147,456 for DeepSeek V3.2, 81,920 for Qwen3.6 27B, 131,072 for Qwen3.8
+2.4T A95B and GLM-5.3-Flash, and 235,929 for Qwen3.8 27B. Context fields
+also match. These artifact projections do not overwrite static routes or
+establish output defaults. NEAR AI's three additions, Venice's removed
+Sonnet ID and changed MiniMax description do not establish native endpoint
+eligibility or retirement.
+
+The [Go Models API](https://opencode.ai/inference/go/v1/models) now publishes
+complete native records, not merely ID availability. Of 28 public IDs,
+27 match registered native protocols and base URLs. These confirm 22
+existing-route differences, not 22 new routes:
+
+| Native endpoint / IDs | Newly confirmed fields |
+| --- | --- |
+| Chat `kimi-k3.1-pro` | context 1,048,576; output ceiling 131,072; image input; reasoning |
+| Chat `iceman-contributor-free` | context 262,144; output ceiling 131,072; reasoning; still text-only |
+| Messages `minimax-m3` | output ceiling 131,072, not MiniMax's ordinary API ceiling |
+| Chat `deepseek-v4.1-flash`, `glm-5.3`, `glm-5.3-flash`, `kimi-k3.1-pro` | effort `low/high/max` |
+| Chat `deepseek-v4-pro`, `glm-5.2` | effort `high/max` |
+| Chat `hy3` | effort `none/low/high` |
+| Chat `hy4-preview` | effort `none/high` |
+| Chat `kimi-k3` | effort `max` |
+| Chat `minimax-m3.1-flash`, `beam-free` | effort `low/medium/high/xhigh/max` |
+| Chat `step-5-preview` | effort `low/medium/high` |
+| Messages `claude-haiku-5-5` | effort `low/medium/high/xhigh/max` |
+| Messages `qwen3.8-max`, `qwen3.8-flash` | effort `low/medium/xhigh` |
+| Responses `grok-4.7` | effort `low/medium/high/xhigh` |
+| Responses `muse-spark-1.2-contributor`, `muse-spark-1.3-contributor` | effort `minimal/low/medium/high/xhigh` |
+| Responses `gpt-5.6-luna`, `gpt-6-luna` | effort `none/low/medium/high/xhigh/max` |
+
+Preserve all existing output defaults/runtime policies, preferred routes,
+unmentioned fields and historical IDs. New ceilings are not omitted-request
+defaults. Apply discovered fields only when `api` names the model's
+registered native protocol and exact base URL. The two translated protocols
+must retain unknown capacity and conservative capabilities. Gemini's native
+`generate-content` record does not establish native metadata for any of its
+registered translated routes. Missing/mismatched records stay conservative;
+cache billing fields do not establish explicit request controls.
+
+Step router's backend and 64K prose, and BytePlus's three resolved Dola
+wire IDs, are described in the [current endpoint review](endpoint-review.md#2026-10-31-incremental-review).
+No guessed Step integer or client-config-only BytePlus service limit is
+certified. These changes supersede earlier unresolved-ID/all-models-listed
+and 250K descriptions without rewriting the historical samples.
+
 ## Incremental review: 2026-10-30
 
 The [endpoint review](endpoint-review.md#2026-10-30-incremental-review)

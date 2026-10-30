@@ -298,17 +298,21 @@ pub(super) fn opencode_entries() -> Vec<BuiltInModelMetadata> {
     entries.push(BuiltInModelMetadata {
         model_ref: ModelRef::new(provider_id("opencode-go"), "kimi-k3.1-pro"),
         display_name: "Kimi K3.1 Pro".into(),
-        description: "OpenCode Go and Go Plus Chat route; token limits, modalities, and reasoning controls are unconfirmed for this endpoint.".into(),
-        context_window_tokens: None,
+        description: "OpenCode Go and Go Plus native Chat route; capacity, modalities, and reasoning controls follow the official Go model listing.".into(),
+        context_window_tokens: Some(1_048_576),
         effective_context_window_percent: DEFAULT_EFFECTIVE_CONTEXT_WINDOW_PERCENT,
         auto_compact_token_limit: None,
         default_max_output_tokens: None,
-        max_output_tokens_upper_limit: None,
+        max_output_tokens_upper_limit: Some(131_072),
         default_verbosity: None,
         tool_output_truncation_estimated_tokens: Some(
             DEFAULT_TOOL_OUTPUT_TRUNCATION_ESTIMATED_TOKENS,
         ),
-        capabilities: ModelCapabilityFlags::default(),
+        capabilities: ModelCapabilityFlags {
+            image_input: true,
+            supports_reasoning: true,
+            ..ModelCapabilityFlags::default()
+        },
         reasoning_effort_options: Vec::new(),
         source: ModelMetadataSource::ConservativeBuiltin,
         endpoint: None,
@@ -316,17 +320,20 @@ pub(super) fn opencode_entries() -> Vec<BuiltInModelMetadata> {
     entries.push(BuiltInModelMetadata {
         model_ref: ModelRef::new(provider_id("opencode-go"), "iceman-contributor-free"),
         display_name: "Iceman Contributor Free".into(),
-        description: "OpenCode Go Chat-only limited-time free route; prompts and completions may be used for training (not ZDR). Token limits, modalities, and reasoning controls remain unconfirmed.".into(),
-        context_window_tokens: None,
+        description: "OpenCode Go native Chat limited-time free route; prompts and completions may be used for training (not ZDR). Capacity and reasoning support follow the official Go model listing; effort controls remain unconfirmed.".into(),
+        context_window_tokens: Some(262_144),
         effective_context_window_percent: DEFAULT_EFFECTIVE_CONTEXT_WINDOW_PERCENT,
         auto_compact_token_limit: None,
         default_max_output_tokens: None,
-        max_output_tokens_upper_limit: None,
+        max_output_tokens_upper_limit: Some(131_072),
         default_verbosity: None,
         tool_output_truncation_estimated_tokens: Some(
             DEFAULT_TOOL_OUTPUT_TRUNCATION_ESTIMATED_TOKENS,
         ),
-        capabilities: ModelCapabilityFlags::default(),
+        capabilities: ModelCapabilityFlags {
+            supports_reasoning: true,
+            ..ModelCapabilityFlags::default()
+        },
         reasoning_effort_options: Vec::new(),
         source: ModelMetadataSource::ConservativeBuiltin,
         endpoint: None,
@@ -350,12 +357,142 @@ pub(super) fn opencode_entries() -> Vec<BuiltInModelMetadata> {
         endpoint: None,
     });
     entries.extend(opencode_go_models_dev_entries());
+    for entry in &mut entries {
+        if entry.model_ref.provider != provider_id("opencode-go") {
+            continue;
+        }
+        let id = entry.model_ref.model.as_str();
+        if id == "minimax-m3" {
+            // The official ceiling is not a service default.
+            entry.max_output_tokens_upper_limit = Some(131_072);
+        }
+        let efforts: &[&str] = match id {
+            "deepseek-v4.1-flash" | "glm-5.3" | "glm-5.3-flash" | "kimi-k3.1-pro" => {
+                &["low", "high", "max"]
+            }
+            "deepseek-v4-pro" | "glm-5.2" => &["high", "max"],
+            "hy3" => &["none", "low", "high"],
+            "hy4-preview" => &["none", "high"],
+            "kimi-k3" => &["max"],
+            "minimax-m3.1-flash" | "beam-free" | "claude-haiku-5-5" => {
+                &["low", "medium", "high", "xhigh", "max"]
+            }
+            "step-5-preview" => &["low", "medium", "high"],
+            "qwen3.8-max" | "qwen3.8-flash" => &["low", "medium", "xhigh"],
+            "grok-4.7" => &["low", "medium", "high", "xhigh"],
+            "muse-spark-1.2-contributor" | "muse-spark-1.3-contributor" => {
+                &["minimal", "low", "medium", "high", "xhigh"]
+            }
+            "gpt-5.6-luna" | "gpt-6-luna" => &["none", "low", "medium", "high", "xhigh", "max"],
+            _ => &[],
+        };
+        entry.reasoning_effort_options = efforts.iter().map(|effort| (*effort).into()).collect();
+    }
     entries
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn opencode_go_native_metadata_preserves_defaults_and_exact_efforts() {
+        let entries = opencode_entries();
+        let find = |id: &str| {
+            entries
+                .iter()
+                .find(|entry| entry.model_ref.model == id)
+                .unwrap()
+        };
+        for (id, context, output, image) in [
+            ("kimi-k3.1-pro", 1_048_576, 131_072, true),
+            ("iceman-contributor-free", 262_144, 131_072, false),
+            ("minimax-m3", 1_000_000, 131_072, true),
+        ] {
+            let model = find(id);
+            assert_eq!(model.context_window_tokens, Some(context), "{id}");
+            assert_eq!(model.max_output_tokens_upper_limit, Some(output), "{id}");
+            assert_eq!(model.default_max_output_tokens, None, "{id}");
+            assert_eq!(model.capabilities.image_input, image, "{id}");
+            assert!(model.capabilities.supports_reasoning, "{id}");
+        }
+        for (id, endpoint, expected) in [
+            (
+                "deepseek-v4.1-flash",
+                "default",
+                &["low", "high", "max"][..],
+            ),
+            ("glm-5.3", "default", &["low", "high", "max"][..]),
+            ("glm-5.3-flash", "default", &["low", "high", "max"][..]),
+            ("kimi-k3.1-pro", "default", &["low", "high", "max"][..]),
+            ("deepseek-v4-pro", "default", &["high", "max"][..]),
+            ("glm-5.2", "default", &["high", "max"][..]),
+            ("hy3", "default", &["none", "low", "high"][..]),
+            ("hy4-preview", "default", &["none", "high"][..]),
+            ("kimi-k3", "default", &["max"][..]),
+            (
+                "minimax-m3.1-flash",
+                "default",
+                &["low", "medium", "high", "xhigh", "max"][..],
+            ),
+            (
+                "beam-free",
+                "default",
+                &["low", "medium", "high", "xhigh", "max"][..],
+            ),
+            ("step-5-preview", "default", &["low", "medium", "high"][..]),
+            (
+                "claude-haiku-5-5",
+                "messages",
+                &["low", "medium", "high", "xhigh", "max"][..],
+            ),
+            ("qwen3.8-max", "messages", &["low", "medium", "xhigh"][..]),
+            ("qwen3.8-flash", "messages", &["low", "medium", "xhigh"][..]),
+            (
+                "grok-4.7",
+                "responses",
+                &["low", "medium", "high", "xhigh"][..],
+            ),
+            (
+                "muse-spark-1.2-contributor",
+                "responses",
+                &["minimal", "low", "medium", "high", "xhigh"][..],
+            ),
+            (
+                "muse-spark-1.3-contributor",
+                "responses",
+                &["minimal", "low", "medium", "high", "xhigh"][..],
+            ),
+            (
+                "gpt-5.6-luna",
+                "responses",
+                &["none", "low", "medium", "high", "xhigh", "max"][..],
+            ),
+            (
+                "gpt-6-luna",
+                "responses",
+                &["none", "low", "medium", "high", "xhigh", "max"][..],
+            ),
+        ] {
+            let model = find(id);
+            assert_eq!(
+                model
+                    .endpoint
+                    .as_ref()
+                    .map_or("default", ProviderEndpointId::as_str),
+                endpoint
+            );
+            assert_eq!(model.reasoning_effort_options, expected, "{id}");
+        }
+        for id in [
+            "iceman-contributor-free",
+            "minimax-m3",
+            "gemini-4-argon",
+            "minimax-m3.1-flash-free",
+        ] {
+            assert!(find(id).reasoning_effort_options.is_empty(), "{id}");
+        }
+    }
 
     #[test]
     fn opencode_go_gemini_uses_exact_id_without_inventing_capabilities() {

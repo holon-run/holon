@@ -1012,7 +1012,19 @@ impl BuiltInModelCatalog {
         configured_runtime_max_output_tokens: u32,
         endpoint: Option<&ProviderEndpointId>,
     ) -> ResolvedModelMetadata {
-        let discovered = discovered_models.get(model_ref);
+        // Go discovery is model-scoped, but describes only its native endpoint.
+        let discovered = discovered_models
+            .get(model_ref)
+            .filter(|entry| match endpoint {
+                Some(endpoint) if model_ref.provider.as_str() == "opencode-go" => {
+                    entry
+                        .endpoint
+                        .as_ref()
+                        .unwrap_or(&ProviderEndpointId::default_endpoint())
+                        == endpoint
+                }
+                _ => true,
+            });
         let override_config = overrides.get(model_ref);
         let has_metadata =
             route_builtin.is_some() || model_builtin.is_some() || discovered.is_some();
@@ -5430,14 +5442,20 @@ mod tests {
     }
 
     #[test]
-    fn opencode_iceman_has_translated_routes_with_unknown_capabilities() {
+    fn opencode_iceman_preserves_training_warning_with_native_metadata() {
         for catalog in [curated_catalog(), BuiltInModelCatalog::new()] {
             let model_ref = ModelRef::parse("opencode-go/iceman-contributor-free").unwrap();
             let model = catalog.get(&model_ref).unwrap();
-            assert_eq!(model.context_window_tokens, None);
+            assert_eq!(model.context_window_tokens, Some(262_144));
             assert_eq!(model.default_max_output_tokens, None);
-            assert_eq!(model.max_output_tokens_upper_limit, None);
-            assert_eq!(model.capabilities, ModelCapabilityFlags::default());
+            assert_eq!(model.max_output_tokens_upper_limit, Some(131_072));
+            assert_eq!(
+                model.capabilities,
+                ModelCapabilityFlags {
+                    supports_reasoning: true,
+                    ..ModelCapabilityFlags::default()
+                }
+            );
             assert!(model.reasoning_effort_options.is_empty());
             assert!(model.description.contains("not ZDR"));
             assert_eq!(
@@ -5474,14 +5492,17 @@ mod tests {
         for model in &models {
             assert_eq!(
                 model.capabilities.supports_reasoning,
-                !matches!(
-                    model.model_ref.model.as_str(),
-                    "kimi-k3.1-pro" | "iceman-contributor-free" | "gemini-4-argon"
-                )
+                !matches!(model.model_ref.model.as_str(), "gemini-4-argon")
             );
-            assert!(model.reasoning_effort_options.is_empty());
             assert_eq!(model.source, ModelMetadataSource::ConservativeBuiltin);
         }
+        assert_eq!(
+            models
+                .iter()
+                .filter(|model| !model.reasoning_effort_options.is_empty())
+                .count(),
+            20
+        );
 
         for model in [
             "iceman-contributor-free",
@@ -5613,13 +5634,13 @@ mod tests {
             let route = ModelRouteRef::parse("opencode-go@default/kimi-k3.1-pro").unwrap();
             assert!(catalog.get_route(&route).is_some());
             let metadata = catalog.get(&route.model_ref()).unwrap();
-            assert_eq!(metadata.context_window_tokens, None);
+            assert_eq!(metadata.context_window_tokens, Some(1_048_576));
             assert_eq!(metadata.default_max_output_tokens, None);
-            assert_eq!(metadata.max_output_tokens_upper_limit, None);
+            assert_eq!(metadata.max_output_tokens_upper_limit, Some(131_072));
             assert_eq!(metadata.auto_compact_token_limit, None);
-            assert!(!metadata.capabilities.image_input);
-            assert!(!metadata.capabilities.supports_reasoning);
-            assert!(metadata.reasoning_effort_options.is_empty());
+            assert!(metadata.capabilities.image_input);
+            assert!(metadata.capabilities.supports_reasoning);
+            assert_eq!(metadata.reasoning_effort_options, ["low", "high", "max"]);
             for endpoint in ["messages", "responses"] {
                 assert!(catalog
                     .get_route(
