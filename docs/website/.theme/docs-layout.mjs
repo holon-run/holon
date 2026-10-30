@@ -6,11 +6,9 @@ export function documentationLayout(navigation) {
   return {
     name: "holon-documentation-layout",
     renderPage(page, _context, next) {
-      // Select canonical content, not aliases, and leave section landing pages alone.
+      // Keep section indexes and details in the same shell, using canonical sources.
       const source = page.sourcePath.replace(/^\/?(?:zh-CN\/)?/, "");
-      if (page.kind !== "page"
-        || !/^(getting-started|concepts|guides|reference)\/.+\.md$/.test(source)
-        || /\/(?:README|index)\.md$/.test(source)) {
+      if (!/^(getting-started|concepts|guides|reference)\/.+\.md$/.test(source)) {
         return next(page);
       }
       const zh = page.locale === "zh-CN";

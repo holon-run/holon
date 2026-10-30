@@ -27,16 +27,15 @@ async function fetchPage(route, accept = "text/html") {
 }
 
 let pages = 0;
+let indexes = 0;
 for (const [locale, groups] of Object.entries(navigation)) {
   for (const group of groups) {
     for (const entry of group.pages) {
       assert.equal(entry.href.startsWith("/zh-CN/"), locale === "zh-CN");
       const html = await fetchPage(entry.href);
-      if (entry.href.endsWith("/")) {
-        assert.ok(!html.includes('<div class="docs-layout'), `Index remains unchanged: ${entry.href}`);
-        continue;
-      }
       assert.ok(html.includes('<div class="docs-layout'), `Document shell: ${entry.href}`);
+      assert.equal((html.match(/<div class="docs-layout/g) || []).length, 1, entry.href);
+      if (entry.href.endsWith("/")) indexes++;
       assert.ok(html.includes('id="docs-content" tabindex="-1"'), `Skip target: ${entry.href}`);
       const sidebar = html.match(/<details class="docs-sidebar"[\s\S]*?<\/details>/)?.[0];
       assert.ok(sidebar, `Server-rendered navigation: ${entry.href}`);
@@ -55,6 +54,7 @@ for (const [locale, groups] of Object.entries(navigation)) {
     }
   }
 }
+assert.equal(indexes, 8, "All four bilingual section indexes use the documentation shell");
 for (const route of ["/", "/zh-CN/", "/blog/", "/zh-CN/blog/", "/templates/", "/zh-CN/templates/",
   "/privacy"]) {
   assert.ok(!(await fetchPage(route)).includes('<div class="docs-layout'), route);
@@ -88,4 +88,18 @@ assert.ok(rendered.includes('href="#a-2"'));
 assert.ok(!rendered.includes('href="#fake"'));
 assert.ok(plugin.renderPage({ ...base, bodyHtml: "<p>No headings</p>" }, {},
   (page) => page.bodyHtml).includes("docs-layout--no-toc"));
-console.log(`Documentation layout verified for ${pages} bilingual details, indexes, Blog, aliases and Markdown.`);
+for (const locale of ["en", "zh-CN"]) {
+  const prefix = locale === "en" ? "" : "zh-CN/";
+  for (const name of ["README", "index"]) {
+    for (const kind of ["page", "listing"]) {
+      const html = plugin.renderPage({
+        ...base, kind, locale, sourcePath: `${prefix}guides/${name}.md`,
+        canonicalPath: `/${prefix}guides/`, bodyHtml: "<h1>Guides</h1>",
+      }, {}, (page) => page.bodyHtml);
+      assert.ok(html.includes("docs-layout--no-toc"), `${locale}/${name}/${kind}`);
+      assert.ok(html.includes(`href="/${prefix}guides/" aria-current="page"`));
+      assert.ok(!html.includes('class="docs-toc"'), "Do not invent a TOC for a flat index");
+    }
+  }
+}
+console.log(`Documentation layout verified for ${pages} bilingual pages (${indexes} indexes), Blog, aliases and Markdown.`);

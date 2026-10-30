@@ -1,6 +1,6 @@
 /* Holon site extensions. Preserve mdorigin's shared theme and page services. */
 
-/* Documentation details use a work-oriented shell; landing pages and Blog do not. */
+/* Documentation indexes and details share a shell; the homepage and Blog do not. */
 main:has(.docs-layout) {
   max-width: 88rem;
   padding: 1.75rem 2rem 3rem;
@@ -102,7 +102,7 @@ article:has(.docs-layout) {
 .docs-toc { grid-column: 3; grid-row: 1; }
 .docs-toc > summary { cursor: pointer; }
 .docs-toc__level-3 { padding-left: 0.7rem; }
-.docs-layout--no-toc { grid-template-columns: 14rem minmax(0, 48rem); }
+/* Reserve the TOC column even without headings so navigation never resizes the body. */
 .docs-skip {
   position: fixed;
   top: -10rem;

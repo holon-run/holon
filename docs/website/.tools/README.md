@@ -23,8 +23,11 @@ the footer, and Markdown negotiation. No mdorigin fork is needed.
 Markdown files directly inside Getting Started, Concepts, Guides, and Reference.
 It writes `dist/content/assets/docs-navigation.json`; that generated data is
 bundled with the code config, not loaded from the browser. Add sections in this
-generator if the content structure changes. Section indexes, Blog, templates,
-and other pages keep the default layout.
+generator if the content structure changes. The four section indexes and their
+detail pages share the documentation shell. Pages without headings reserve the
+right column without rendering an empty TOC, keeping the body in the same
+position when navigating. The homepage, Blog, templates, and other pages keep
+the default layout.
 
 The plugin reuses mdorigin's H2/H3 IDs. `../assets/docs-layout.js` enhances the
 server-rendered navigation with responsive disclosure controls and scroll
@@ -33,7 +36,7 @@ disclosures rather than a modal drawer so keyboard and no-JavaScript access
 do not depend on focus trapping.
 
 `build:cloudflare` runs `check-docs-layout.mjs` against the actual Worker bundle.
-The check covers both locales, every documentation detail, TOC targets, current
+The check covers both locales, every documentation index and detail, TOC targets, current
 navigation, section indexes, Blog, alias redirects, and Markdown negotiation.
 Browser checks should also cover 1440px, 1024px, 390px, and 320px viewports,
 keyboard disclosure controls, heading jumps, and scroll highlighting.
