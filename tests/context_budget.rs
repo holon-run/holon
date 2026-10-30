@@ -11,7 +11,7 @@ use holon::{
     config::{AppConfig, ModelRef, ModelRouteRef, ProviderId},
     host::{AgentBootstrapExecution, RuntimeHost},
     model_catalog::{
-        BuiltInModelCatalog, ModelMetadataField, ModelMetadataOrigin, ModelMetadataSource,
+        BuiltInModelMetadata, ModelMetadataField, ModelMetadataOrigin, ModelMetadataSource,
     },
     model_discovery::ProviderModelDiscoveryCache,
     runtime::RuntimeHandle,
@@ -24,7 +24,7 @@ const CHILD_MARKER: &str = "HOLON_CONTEXT_BUDGET_TEST_CHILD";
 const TEST_NAME: &str =
     "incomplete_context_metadata_survives_initialization_tools_and_model_switches";
 const AGENT_ID: &str = "budget-new-agent";
-const PARTIAL_MODEL: &str = "opencode-go@default/iceman-contributor-free";
+const PARTIAL_MODEL: &str = "opencode-go@default/budget-partial";
 
 #[test]
 fn incomplete_context_metadata_survives_initialization_tools_and_model_switches() -> Result<()> {
@@ -129,6 +129,9 @@ async fn exercise_budget_lifecycle() -> Result<()> {
         serde_json::to_vec_pretty(&json!({
             "model": {"default": PARTIAL_MODEL},
             "models": {"catalog": {
+                "opencode-go/budget-partial": {
+                    "display_name": "Partial config budget fixture"
+                },
                 "opencode-go/budget-known": {"context_window_tokens": 256_000}
             }},
             "runtime": {"disable_provider_fallback": true, "max_output_tokens": 777},
@@ -145,15 +148,23 @@ async fn exercise_budget_lifecycle() -> Result<()> {
     assert_eq!(config.compaction_trigger_estimated_tokens, 115_200);
     assert_eq!(config.compaction_keep_recent_estimated_tokens, 43_776);
 
-    let catalog = BuiltInModelCatalog::new();
-    let mut discovered = catalog
-        .get(&ModelRef::parse("opencode-go/iceman-contributor-free")?)
-        .context("partial builtin fixture")?
-        .clone();
-    assert_eq!(discovered.context_window_tokens, None);
-    discovered.model_ref = ModelRef::parse("opencode-go/budget-discovered")?;
-    discovered.display_name = "Partial discovery budget fixture".into();
-    discovered.source = ModelMetadataSource::RemoteDiscovered;
+    // Synthetic metadata keeps this regression independent of catalog updates.
+    let discovered = BuiltInModelMetadata {
+        model_ref: ModelRef::parse("opencode-go/budget-discovered")?,
+        display_name: "Partial discovery budget fixture".into(),
+        description: "Discovered output limit without a context window".into(),
+        context_window_tokens: None,
+        effective_context_window_percent: 95,
+        auto_compact_token_limit: None,
+        default_max_output_tokens: None,
+        max_output_tokens_upper_limit: Some(8_192),
+        default_verbosity: None,
+        tool_output_truncation_estimated_tokens: None,
+        capabilities: Default::default(),
+        reasoning_effort_options: Vec::new(),
+        source: ModelMetadataSource::RemoteDiscovered,
+        endpoint: None,
+    };
     let provider_id = ProviderId::parse("opencode-go")?;
     config.model_discovery_cache.providers.insert(
         provider_id.clone(),
@@ -224,9 +235,9 @@ async fn exercise_budget_lifecycle() -> Result<()> {
     let requests = requests.lock().unwrap().clone();
     assert_eq!(requests.len(), 6);
     let expected_models = [
-        "iceman-contributor-free",
-        "iceman-contributor-free",
-        "iceman-contributor-free",
+        "budget-partial",
+        "budget-partial",
+        "budget-partial",
         "budget-known",
         "budget-unknown",
         "budget-discovered",
