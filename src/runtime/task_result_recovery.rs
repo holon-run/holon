@@ -218,6 +218,7 @@ impl RuntimeHandle {
                                 .runtime_db
                                 .queue_entries()
                                 .latest(source_id)?,
+                            dropped_reply_source: None,
                             wait_conditions: self
                                 .inner
                                 .storage

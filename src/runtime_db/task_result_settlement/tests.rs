@@ -633,6 +633,43 @@ fn reply_result_fixture(db: &RuntimeDb, record: &TaskResultSettlementRecord) -> 
     message
 }
 
+fn queued_original_reply_fixture(db: &RuntimeDb, record: &TaskResultSettlementRecord) {
+    use crate::types::{
+        AdmissionContext, AuthorityClass, MessageBody, MessageDeliverySurface, MessageKind,
+        MessageOrigin, Priority, QueueEntryRecord, QueueEntryStatus,
+    };
+
+    let mut reply = MessageEnvelope::new(
+        &record.agent_id,
+        MessageKind::InternalFollowup,
+        MessageOrigin::System {
+            subsystem: "agent_message".into(),
+        },
+        AuthorityClass::RuntimeInstruction,
+        Priority::Next,
+        MessageBody::Text {
+            text: "original peer output".into(),
+        },
+    )
+    .with_admission(
+        MessageDeliverySurface::RuntimeSystem,
+        AdmissionContext::RuntimeOwned,
+    );
+    reply.id = "original-reply".into();
+    reply.work_item_id = record.work_item_id.clone();
+    db.messages().upsert(&reply).unwrap();
+    db.queue_entries()
+        .upsert(&QueueEntryRecord {
+            message_id: reply.id,
+            agent_id: reply.agent_id,
+            priority: reply.priority,
+            status: QueueEntryStatus::Queued,
+            created_at: record.created_at,
+            updated_at: record.updated_at,
+        })
+        .unwrap();
+}
+
 #[test]
 fn legacy_copied_reply_result_remains_admissible() {
     let (_dir, db) = runtime_db();
@@ -656,6 +693,7 @@ fn reply_observations_wait_for_original_admission_instead_of_unrelated_owner_act
     let (_dir, db) = runtime_db();
     let record = pending_record(0);
     let mut message = reply_result_fixture(&db, &record);
+    queued_original_reply_fixture(&db, &record);
     message.metadata.as_mut().unwrap()["task_detail"]["reply_content_source"] =
         serde_json::json!("original_message");
     assert_eq!(

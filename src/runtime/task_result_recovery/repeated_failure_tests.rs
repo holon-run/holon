@@ -15,6 +15,9 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 #[path = "live_command_tests.rs"]
 mod live_command_tests;
 
+#[path = "terminal_reply_tests.rs"]
+mod terminal_reply_tests;
+
 #[tokio::test(start_paused = true)]
 async fn exact_recovery_restarts_after_anchor_snapshot_before_first_result_admission() {
     Box::pin(assert_exact_recovery_restart_before_admission(
@@ -1302,6 +1305,7 @@ async fn prepared_exact_successor_rejects_a_detached_captured_owner_close_atomic
                     .queue_entries()
                     .latest(source_id)
                     .unwrap(),
+                dropped_reply_source: None,
                 wait_conditions: runtime
                     .storage()
                     .latest_wait_conditions_for_agent("default")

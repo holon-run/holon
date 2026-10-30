@@ -16461,7 +16461,7 @@ async fn stale_bound_internal_followup_is_dropped_before_operator_resume() {
     );
     followup.work_item_id = Some(work_item.id.clone());
     let followup = runtime.enqueue(followup).await.unwrap();
-    runtime
+    let work_item = runtime
         .update_work_item_fields(
             work_item.id.clone(),
             None,
@@ -16479,6 +16479,15 @@ async fn stale_bound_internal_followup_is_dropped_before_operator_resume() {
         ))
         .await
         .unwrap();
+    let canonical_execution = runtime
+        .inner
+        .runtime_db
+        .transitions()
+        .load_execution_protocol_state_if_initialized("default")
+        .unwrap()
+        .unwrap()
+        .work_items[&work_item.id]
+        .clone();
 
     assert!(matches!(
         scheduler_executor::SchedulerDecisionExecutor::new(&runtime)
@@ -16497,17 +16506,64 @@ async fn stale_bound_internal_followup_is_dropped_before_operator_resume() {
             .map(|entry| entry.status),
         Some(QueueEntryStatus::Dropped)
     );
-    assert!(runtime
-        .storage()
-        .read_recent_events(usize::MAX)
-        .unwrap()
+    let events = runtime.storage().read_recent_events(usize::MAX).unwrap();
+    let rejection = events
         .iter()
-        .any(|event| {
+        .find(|event| {
             event.kind == "scheduler_authority_input_rejected"
                 && event.data["message_id"] == followup.id
-                && event.data["reason"] == "canonical_internal_followup_work_item_not_runnable"
-                && event.data["queue_disposition"] == "dropped"
-        }));
+        })
+        .expect("stale follow-up should record its rejection");
+    assert_eq!(
+        rejection.data["reason"],
+        "canonical_internal_followup_work_item_not_runnable"
+    );
+    assert_eq!(rejection.data["queue_disposition"], "dropped");
+    let observation = &rejection.data["rejection_observation"];
+    assert_eq!(observation["source"], "canonical_activation_plan");
+    assert_eq!(observation["commit_authority"], false);
+    assert_eq!(observation["scenario_variant"], "InternalFollowup");
+    assert_eq!(observation["work_item_id"], work_item.id);
+    assert_eq!(observation["work_item_revision"], work_item.revision);
+    assert_eq!(
+        observation["work_item_scheduling_revision"],
+        work_item.revision
+    );
+    assert_eq!(
+        observation["work_item_scheduling_state"],
+        "waiting_operator"
+    );
+    assert_eq!(
+        observation["work_item_scheduling_reason"],
+        "plan_needs_input"
+    );
+    assert_eq!(observation["active_wait_ids"], serde_json::json!([]));
+    assert!(observation["scenario_wait_id"].is_null());
+    assert_eq!(
+        observation["canonical_execution_owner"],
+        serde_json::json!({
+            "agent_id": "default",
+            "work_item_id": work_item.id,
+        })
+    );
+    assert_eq!(
+        observation["canonical_execution"],
+        serde_json::to_value(canonical_execution).unwrap()
+    );
+    let invariant = events
+        .iter()
+        .find(|event| {
+            event.kind == "scheduler_diagnostic"
+                && event.data["message_id"] == followup.id
+                && event.data["reason"] == rejection.data["reason"]
+        })
+        .expect("rejection should retain the same snapshot in its invariant diagnostic");
+    assert!(invariant.data["evidence"]
+        .as_array()
+        .unwrap()
+        .contains(&serde_json::json!(format!(
+            "rejection_observation={observation}"
+        ))));
 
     drop(runtime);
     let reopened = RuntimeHandle::new(

@@ -4,7 +4,10 @@ use rusqlite::{params, OptionalExtension, Transaction};
 use super::{RuntimeStateTransitionConflict, WaitTaskResultAdmission};
 use crate::{
     runtime_db::{
-        task_result_settlement::{classify_obligation_tx, TaskResultObligation},
+        task_result_settlement::{
+            classify_obligation_tx, dropped_reply_source_tx, DroppedReplySource,
+            TaskResultObligation,
+        },
         TaskResultSettlementRecord,
     },
     types::{
@@ -20,6 +23,7 @@ pub(crate) struct WaitTaskResultObligation {
     pub canonical_recovery: bool,
     pub source_message_id: String,
     pub source_queue: Option<QueueEntryRecord>,
+    pub dropped_reply_source: Option<DroppedReplySource>,
     pub wait_conditions: Vec<WaitConditionRecord>,
 }
 
@@ -69,6 +73,11 @@ pub(super) fn validate_obligation_tx(
     }
     if !guard.canonical_recovery {
         return Ok(());
+    }
+    if let Some(expected) = &guard.dropped_reply_source {
+        if dropped_reply_source_tx(tx, &guard.expected)?.as_ref() != Some(expected) {
+            return Err(conflict().into());
+        }
     }
     // Closing the captured owner need not mutate the waiter or agent CAS.
     // Recheck both owners in the transaction that publishes the repaired wait.
