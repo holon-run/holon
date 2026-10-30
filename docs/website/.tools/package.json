@@ -4,11 +4,12 @@
   "type": "module",
   "scripts": {
     "sync:generated": "python3 sync-generated-pages.py",
-    "prepare:content": "npm run sync:generated && python3 build-template-catalog.py",
-    "dev": "npm run prepare:content && mdorigin dev --root ./dist/content --config ./dist/content/mdorigin.config.json",
-    "build:index": "mdorigin build index --root ./dist/content --config ./dist/content/mdorigin.config.json",
-    "build:search": "mdorigin build search --root ./dist/content --config ./dist/content/mdorigin.config.json --out ./dist/search",
-    "build:cloudflare": "mdorigin build cloudflare --root ./dist/content --config ./dist/content/mdorigin.config.json --search ./dist/search --out ./dist/cloudflare && node check-template-bundle.mjs",
+    "prepare:content": "npm run sync:generated && python3 build-template-catalog.py && node build-docs-navigation.mjs",
+    "dev": "npm run prepare:content && mdorigin dev --root ./dist/content --config ./dist/content/mdorigin.config.mjs",
+    "build:index": "mdorigin build index --root ./dist/content --config ./dist/content/mdorigin.config.mjs",
+    "build:search": "mdorigin build search --root ./dist/content --config ./dist/content/mdorigin.config.mjs --out ./dist/search",
+    "build:cloudflare": "mdorigin build cloudflare --root ./dist/content --config ./dist/content/mdorigin.config.mjs --search ./dist/search --out ./dist/cloudflare && node check-template-bundle.mjs && node check-docs-layout.mjs",
+    "check:docs-layout": "node check-docs-layout.mjs",
     "check:templates": "node check-template-bundle.mjs",
     "check:content": "python3 check-links.py --root ./dist/content",
     "check:blog": "python3 check-blog.py",
@@ -17,6 +18,7 @@
     "deploy": "wrangler deploy --config ../wrangler.jsonc"
   },
   "devDependencies": {
+    "gray-matter": "^4.0.3",
     "mdorigin": "^0.7.0",
     "wrangler": "4.102.0"
   }
