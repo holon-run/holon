@@ -988,6 +988,9 @@ with fixture_directory(repo) as root:
                             try:
                                 content = plistlib.loads(stored.read_bytes())
                             except Exception:
+                                print(f"::warning title=iOS UI reset probe::"
+                                      f"skipping unreadable app-group plist {stored.name}",
+                                      flush=True)
                                 continue
                             failure = content.get("testing.state.reset.failure")
                             if failure:
@@ -1292,25 +1295,31 @@ with fixture_directory(repo) as root:
                     # A stable, machine-readable record of the sweep's outcome.
                     # The CI summary prints it so a flaky case can be named
                     # without digging through the full xcodebuild log.
-                    slowest = max(ui_telemetry, key=lambda record: record["seconds"], default=None)
-                    summary = (f"UI sweep telemetry: {len(cases)} cases, "
-                               f"{len(ui_retries)} retried")
-                    if slowest is not None:
-                        summary += (f", slowest {slowest['case']} "
-                                    f"{slowest['seconds']}s")
-                    print(summary, flush=True)
-                    for record in ui_telemetry:
-                        if record["outcome"] == "failed":
-                            print(f"::warning title=iOS UI case failed::{record['case']} "
-                                  f"attempt {record['attempt']} failed after {record['seconds']}s",
-                                  flush=True)
-                    if fixture_evidence is not None:
-                        write_fixture_json(fixture_evidence, "ui-sweep-telemetry.json", {
-                            "cases": len(cases),
-                            "retried": ui_retries,
-                            "attempts": ui_telemetry,
-                            "wait_scale": test_env.get("TEST_RUNNER_HOLON_UI_WAIT_SCALE"),
-                        })
+                    # Reporting must never replace the sweep's own failure,
+                    # so a telemetry problem is logged and swallowed here.
+                    try:
+                        slowest = max(ui_telemetry, key=lambda record: record["seconds"], default=None)
+                        summary = (f"UI sweep telemetry: {len(cases)} cases, "
+                                   f"{len(ui_retries)} retried")
+                        if slowest is not None:
+                            summary += (f", slowest {slowest['case']} "
+                                        f"{slowest['seconds']}s")
+                        print(summary, flush=True)
+                        for record in ui_telemetry:
+                            if record["outcome"] == "failed":
+                                print(f"::warning title=iOS UI case failed::{record['case']} "
+                                      f"attempt {record['attempt']} failed after {record['seconds']}s",
+                                      flush=True)
+                        if fixture_evidence is not None:
+                            write_fixture_json(fixture_evidence, "ui-sweep-telemetry.json", {
+                                "cases": len(cases),
+                                "retried": ui_retries,
+                                "attempts": ui_telemetry,
+                                "wait_scale": test_env.get("TEST_RUNNER_HOLON_UI_WAIT_SCALE"),
+                            })
+                    except Exception as telemetry_error:
+                        print(f"UI sweep telemetry unavailable: {telemetry_error}",
+                              file=sys.stderr, flush=True)
                 if ui_retries:
                     print(f"UI sweep 完成：{len(cases)} 个用例，其中 {len(ui_retries)} 个经一次有界重试通过："
                           + ", ".join(ui_retries), flush=True)

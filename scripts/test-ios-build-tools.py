@@ -51,66 +51,62 @@ def ui_case_sweep_statements(tree):
                   and isinstance(node.target, ast.Tuple)
                   and any(isinstance(target, ast.Name) and target.id == "case_bundle"
                           for target in node.target.elts))
+    driver_owner = None
     for node in ast.walk(tree):
         body = getattr(node, "body", None)
-        if not isinstance(body, list):
-            continue
-        # The driver may sit inside a try block whose finally block carries
-        # the sweep's reporting; keep that shape so the extracted code
-        # behaves like the real one.
-        wrapper = None
-        if driver not in body:
-            nested = [statement for statement in body
-                      if isinstance(statement, ast.Try) and driver in statement.body]
-            if len(nested) != 1:
-                continue
-            wrapper = nested[0]
-            scope = body
-        else:
-            scope = body
-            # A bare driver body is the try block's own list; the enclosing
-            # scope holds the helpers, so step out to it.
-            if not any(isinstance(statement, ast.FunctionDef) for statement in body):
-                for candidate in ast.walk(tree):
-                    parent = getattr(candidate, "body", None)
-                    if not isinstance(parent, list):
-                        continue
-                    if any(statement is wrapper for statement in parent) if wrapper else False:
-                        scope = parent
-                        break
-                    if driver in parent and any(
-                            isinstance(statement, ast.FunctionDef) for statement in parent):
-                        scope = parent
-                        break
-        if driver not in scope and (wrapper is None or driver not in wrapper.body):
-            continue
-        # The helpers and the case body live next to the driver, in the
-        # enclosing block. Every helper the sweep calls must travel with it,
-        # or the extracted code references names that were never defined.
-        helpers = [statement for statement in scope
-                   if isinstance(statement, ast.FunctionDef)
-                   and statement.name != "run_ui_case"]
-        run_case = next((statement for statement in scope
-                         if isinstance(statement, ast.FunctionDef)
-                         and statement.name == "run_ui_case"), None)
-        if run_case is None:
-            continue
-        # The driver's own setup statements travel with it too.
-        setup = [statement for statement in scope
-                 if isinstance(statement, ast.Assign)
-                 and any(isinstance(target, ast.Name)
-                         and target.id in {"max_attempts", "ui_retries", "ui_telemetry"}
-                         for target in statement.targets)]
-        selected = helpers + [run_case] + setup
-        if wrapper is None:
-            selected += scope[scope.index(driver):scope.index(driver) + 1]
-            return selected
-        # Rebuild the try/finally around the driver so the reporting still
-        # runs when a case fails.
-        try_statement = ast.Try(body=[driver], handlers=[], orelse=[],
-                                finalbody=wrapper.finalbody)
-        ast.fix_missing_locations(try_statement)
-        return selected + [try_statement]
+        if isinstance(body, list) and driver in body:
+            driver_owner = node
+            break
+    if driver_owner is None:
+        raise AssertionError("The UI sweep driver must live in a statement block")
+    # The driver may sit inside a try block whose finally block carries the
+    # sweep's reporting. The rebuild below keeps only the driver, so any
+    # other shape must fail loudly instead of dropping statements silently.
+    wrapper = driver_owner if isinstance(driver_owner, ast.Try) else None
+    if wrapper is not None:
+        if len(wrapper.body) != 1 or wrapper.body[0] is not driver:
+            raise AssertionError(
+                "The sweep's try body must hold only the case loop; extra "
+                "statements would be dropped by the extracted code")
+        if wrapper.handlers or wrapper.orelse:
+            raise AssertionError(
+                "The sweep's try must have no except/else clauses; they "
+                "would be dropped by the extracted code")
+        owner = next((node for node in ast.walk(tree)
+                      if isinstance(getattr(node, "body", None), list)
+                      and wrapper in node.body), None)
+        if owner is None:
+            raise AssertionError("The sweep's try wrapper must live in a statement block")
+        scope = owner.body
+    else:
+        scope = driver_owner.body
+    # The helpers and the case body live next to the driver, in the
+    # enclosing block. Every helper the sweep calls must travel with it,
+    # or the extracted code references names that were never defined.
+    helpers = [statement for statement in scope
+               if isinstance(statement, ast.FunctionDef)
+               and statement.name != "run_ui_case"]
+    run_case = next((statement for statement in scope
+                     if isinstance(statement, ast.FunctionDef)
+                     and statement.name == "run_ui_case"), None)
+    if run_case is None:
+        raise AssertionError("run_ui_case must be defined next to the sweep driver")
+    # The driver's own setup statements travel with it too.
+    setup = [statement for statement in scope
+             if isinstance(statement, ast.Assign)
+             and any(isinstance(target, ast.Name)
+                     and target.id in {"max_attempts", "ui_retries", "ui_telemetry"}
+                     for target in statement.targets)]
+    selected = helpers + [run_case] + setup
+    if wrapper is None:
+        selected += scope[scope.index(driver):scope.index(driver) + 1]
+        return selected
+    # Rebuild the try/finally around the driver so the reporting still
+    # runs when a case fails.
+    try_statement = ast.Try(body=[driver], handlers=[], orelse=[],
+                            finalbody=wrapper.finalbody)
+    ast.fix_missing_locations(try_statement)
+    return selected + [try_statement]
 
 
 class AppMetadataContracts(unittest.TestCase):
@@ -682,24 +678,26 @@ class UIFixtureSetupContracts(unittest.TestCase):
         """
         source = ROOT / "scripts/ios_ui_fixture.py"
         text = source.read_text()
-        def call_sites(source_text, needle):
-            """Every call of `needle`, skipping its definition."""
+        tree = ast.parse(text)
+        def call_sites(tree, function_name, literal=None):
+            """Line of every call to `function_name`, optionally requiring
+            `literal` among the call's constant arguments. Anchoring on AST
+            call nodes keeps comments and the definition out of the sites."""
             sites = []
-            for number, line in enumerate(source_text.splitlines(), start=1):
-                if needle in line and not line.lstrip().startswith("def "):
-                    sites.append(number)
+            for node in ast.walk(tree):
+                if not (isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+                        and node.func.id == function_name):
+                    continue
+                if literal is None or any(isinstance(argument, ast.Constant)
+                                          and argument.value == literal
+                                          for argument in node.args):
+                    sites.append(node.lineno)
             return sites
 
-        reset_calls = call_sites(text, "reset_app_group_consent(")
-        uninstall_calls = call_sites(text, 'ensure_uninstalled(simulator, "run.holon.ios")')
+        reset_calls = call_sites(tree, "reset_app_group_consent", "run.holon.ios")
+        uninstall_calls = call_sites(tree, "ensure_uninstalled", "run.holon.ios")
         self.assertTrue(reset_calls, "The sweep must reset the sharing consent")
         self.assertTrue(uninstall_calls, "The sweep must uninstall the app")
-        # The definition always comes first, so the definition's line is
-        # never part of the call order.
-        definition = text.index("def reset_app_group_consent(")
-        definition_line = text[:definition].count("\n") + 1
-        reset_calls = [line for line in reset_calls if line != definition_line]
-        self.assertTrue(reset_calls, "The consent reset must be called")
         self.assertLess(min(reset_calls), min(uninstall_calls),
                         "The consent reset must run while the app is still installed")
         # The browser case's own clean install needs the same order.
