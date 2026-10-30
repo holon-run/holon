@@ -801,6 +801,9 @@ with fixture_directory(repo) as root:
             test_env["TEST_RUNNER_HOLON_UI_WAIT_SCALE"] = f"{wait_scale:g}"
             if wait_scale != 1.0:
                 print(f"UI 等待预算按 HOLON_UI_WAIT_SCALE={wait_scale:g} 整体缩放", flush=True)
+            # The per-case execution allowance has to cover the stretched
+            # waits; otherwise a healthy but slow case is killed by a
+            # timeout that no longer matches its budget.
             test_env.update(HOLON_UI_BASE_URL=base, HOLON_UI_PAIRING_TICKET=pairing["ticket"],
                 HOLON_UI_AGENT_ID=agent, HOLON_UI_WORK_ID=work_id, HOLON_UI_TASK_ID=task["id"],
                 HOLON_UI_FILE_PATH=file_path, HOLON_UI_WORKSPACE_ID=workspace_id,
@@ -1114,14 +1117,24 @@ with fixture_directory(repo) as root:
                                         raise RuntimeError("offline reading brief has no visible body marker")
                                     test_env["TEST_RUNNER_HOLON_UI_OFFLINE_BODY_MARKER"] = marker
                             try:
+                                # The per-case execution allowance has to cover
+                                # the stretched waits; otherwise a healthy but
+                                # slow case is killed by a timeout that no
+                                # longer matches its budget.
+                                execution_allowance = int(600 * float(
+                                    test_env.get("TEST_RUNNER_HOLON_UI_WAIT_SCALE", "1")))
                                 result = subprocess.run(["xcodebuild", "-project", repo + "/apps/ios/Holon.xcodeproj",
                                     "-scheme", "Holon", "-destination", destination,
                                     "-parallel-testing-enabled", "NO",
                                     # Keep test failures and attachments, but avoid a blocking sysdiagnose.
                                     "-collect-test-diagnostics", "never",
                                     "-test-timeouts-enabled", "YES",
-                                    "-default-test-execution-time-allowance", "600",
-                                    "-maximum-test-execution-time-allowance", "600",
+                                    # The execution allowance must grow with the
+                                    # wait budgets: a case whose waits were
+                                    # stretched would otherwise be killed by a
+                                    # timeout that no longer covers it.
+                                    "-default-test-execution-time-allowance", str(execution_allowance),
+                                    "-maximum-test-execution-time-allowance", str(execution_allowance),
                                     "-derivedDataPath", derived,
                                     "-only-testing:HolonUITests/HolonUITests/" + method,
                                     "-resultBundlePath", str(case_bundle), "CODE_SIGN_IDENTITY=-", "test"], env=test_env)
