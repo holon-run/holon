@@ -11,6 +11,7 @@ import os
 import pathlib
 from pathlib import Path
 import plistlib
+import re
 import subprocess
 import sqlite3
 import struct
@@ -377,6 +378,32 @@ class UIFixtureSetupContracts(unittest.TestCase):
         driver = driver[:driver.index("started = time.monotonic()")]
         self.assertIn("reset_app_group_consent(", driver,
                       "Every retried attempt must reset the persisted consent")
+
+    def test_swift_ui_waits_all_use_the_scaled_budget(self):
+        """Every UI wait budget must be stretched by the same factor.
+
+        The fixture forwards one factor; a Swift wait that bypasses it would
+        keep the unscaled budget and still fail on a loaded CI runner.
+        """
+        sources = sorted((ROOT / "apps/ios/UITests").glob("*.swift"))
+        self.assertTrue(sources, "UI test sources must exist")
+        raw_waits = []
+        for source in sources:
+            for number, line in enumerate(source.read_text().splitlines(), start=1):
+                if "UIWaitScale" in line:
+                    continue
+                for match in re.finditer(
+                        r"waitForExistence\(timeout: ([0-9]+)\)"
+                        r"|XCTWaiter\.(?:wait|fulfillment)\([^)]*?timeout: ([0-9]+)\)", line):
+                    raw_waits.append(f"{source.name}:{number}: {line.strip()}")
+        self.assertEqual(raw_waits, [],
+                         "Every UI wait must use the scaled budget: " + "; ".join(raw_waits))
+
+        scale = (ROOT / "apps/ios/UITests/UIWaitScale.swift").read_text()
+        self.assertIn("HOLON_UI_WAIT_SCALE", scale,
+                      "The Swift side must read the factor the fixture forwards")
+        self.assertIn("timeout * factor", scale,
+                      "The factor must multiply the wait budget")
 
     def test_automatic_read_retry_pins_marker_baseline(self):
         source = ROOT / "scripts/ios_ui_fixture.py"
