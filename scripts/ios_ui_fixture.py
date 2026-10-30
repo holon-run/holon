@@ -374,6 +374,10 @@ with fixture_directory(repo) as root:
     lost_receipts = []
     prompt_evidence = []
     fixture_case = None
+    # The confirming automatic-read endpoint counts marker briefs created
+    # after this baseline so a bounded retry of that case starts from a clean
+    # count instead of deterministically failing its second attempt.
+    automatic_read_baseline_seq = -1
     lost_lock = threading.Lock()
     proxy_control_token = secrets.token_hex(32)
     proxy_available = threading.Event()
@@ -409,8 +413,9 @@ with fixture_directory(repo) as root:
                                  AND cursor.event_log_epoch =
                                      (SELECT value FROM runtime_metadata WHERE key = 'event_log_epoch')
                                  AND cursor.read_through_event_seq >= brief.created_event_seq
-                                 AND brief.preview LIKE 'IOS_AUTOMATIC_READ_FOLLOWUP_BRIEF%'""",
-                            (agent,)).fetchone()[0]
+                                 AND brief.preview LIKE 'IOS_AUTOMATIC_READ_FOLLOWUP_BRIEF%'
+                                 AND brief.created_event_seq > ?""",
+                            (agent, automatic_read_baseline_seq)).fetchone()[0]
                     confirming = self.path == "/fixture/automatic-read-confirmed"
                     if cursors > 0 and (not confirming or advanced == 1):
                         break
@@ -783,6 +788,19 @@ with fixture_directory(repo) as root:
                     }
                     raise RuntimeError("task results did not project into receipt turns: " + json.dumps(diagnostics))
             test_env = dict(os.environ)
+            # Slow CI runners blow fixed UI wait budgets. Scale every budget
+            # together through HOLON_UI_WAIT_SCALE; the TEST_RUNNER_ prefix is
+            # how xcodebuild forwards environment into the test runner.
+            raw_wait_scale = os.environ.get("HOLON_UI_WAIT_SCALE", "1").strip()
+            try:
+                wait_scale = float(raw_wait_scale)
+            except ValueError:
+                raise RuntimeError("HOLON_UI_WAIT_SCALE must be a number, got " + repr(raw_wait_scale))
+            if not 1.0 <= wait_scale <= 5.0:
+                raise RuntimeError("HOLON_UI_WAIT_SCALE must be within [1, 5]")
+            test_env["TEST_RUNNER_HOLON_UI_WAIT_SCALE"] = f"{wait_scale:g}"
+            if wait_scale != 1.0:
+                print(f"UI 等待预算按 HOLON_UI_WAIT_SCALE={wait_scale:g} 整体缩放", flush=True)
             test_env.update(HOLON_UI_BASE_URL=base, HOLON_UI_PAIRING_TICKET=pairing["ticket"],
                 HOLON_UI_AGENT_ID=agent, HOLON_UI_WORK_ID=work_id, HOLON_UI_TASK_ID=task["id"],
                 HOLON_UI_FILE_PATH=file_path, HOLON_UI_WORKSPACE_ID=workspace_id,
@@ -899,6 +917,31 @@ with fixture_directory(repo) as root:
                         f"simctl uninstall left {bundle_id} installed on {simulator}; "
                         "refusing to run UI cases against stale app data")
 
+                def reset_app_group_consent(simulator, bundle_id, group_id):
+                    # Sharing consent lives in the App Group container, which
+                    # survives app uninstall on the simulator. A previous
+                    # attempt's approval for the same host therefore skips the
+                    # in-app consent gate and makes the next attempt fail for
+                    # a reason the case never produced. Clear the persisted
+                    # defaults so every attempt observes a clean install.
+                    probe = subprocess.run(
+                        ["xcrun", "simctl", "get_app_container", simulator, bundle_id, "groups"],
+                        stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, check=False,
+                        text=True)
+                    if probe.returncode != 0:
+                        # Nothing is installed yet; a later install starts empty.
+                        return
+                    for line in str(probe.stdout or "").splitlines():
+                        fields = line.split("\t")
+                        if len(fields) != 2 or fields[0].strip() != group_id:
+                            continue
+                        preferences = pathlib.Path(fields[1].strip()) / "Library" / "Preferences"
+                        if not preferences.is_dir():
+                            continue
+                        for stale in preferences.glob("*.plist"):
+                            stale.unlink()
+                        return
+
                 selected_cases = os.environ.get("IOS_UI_CASES")
                 if selected_cases:
                     requested = selected_cases.split(",")
@@ -917,6 +960,10 @@ with fixture_directory(repo) as root:
                 # otherwise restore a stale profile straight past onboarding.
                 # Always uninstall so every sweep starts from that clean install.
                 ensure_uninstalled(simulator, "run.holon.ios")
+                # The App Group container outlives the app install, so the
+                # sharing-consent approval from an earlier run would skip the
+                # consent gate. Reset it together with the clean install.
+                reset_app_group_consent(simulator, "run.holon.ios", "group.run.holon.ios")
                 if share_acceptance:
                     # The preceding xcodebuild may leave this simulator shut down.
                     from ios_share_probe import install
@@ -926,7 +973,7 @@ with fixture_directory(repo) as root:
                     # (history seeds, loss reset, browser link turn, pairing
                     # ticket, report snapshots) is rebuilt from scratch, which
                     # is what makes one bounded retry after a flaky failure safe.
-                    global fixture_case
+                    global fixture_case, automatic_read_baseline_seq
                     fixture_case = method
                     if method == "testOfflineReadingCacheColdLaunchAndRetry":
                         # Do not push the onboarding smoke's original brief out of
@@ -936,6 +983,16 @@ with fixture_directory(repo) as root:
                         seed_fixture_history(local, agent, history_seed_active,
                                              count=35, marker_prefix="IOS_OFFLINE_HISTORY")
                     if method == "testVisibleBriefAutomaticallyUpdatesHomeUnreadCount":
+                        # Pin the marker-brief baseline before this attempt
+                        # seeds anything; the confirming endpoint above then
+                        # counts only the current attempt's followup brief.
+                        with sqlite3.connect(
+                                (root / "holon" / "state" / "runtime.sqlite").as_uri() + "?mode=ro",
+                                uri=True) as connection:
+                            automatic_read_baseline_seq = connection.execute(
+                                """SELECT COALESCE(MAX(created_event_seq), -1) FROM briefs
+                                   WHERE agent_id = ? AND preview LIKE 'IOS_AUTOMATIC_READ_FOLLOWUP_BRIEF%'""",
+                                (agent,)).fetchone()[0]
                         automatic_read_seed_active.set()
                         try:
                             seed_fixture_history(local, agent, history_seed_active,
@@ -1121,6 +1178,13 @@ with fixture_directory(repo) as root:
                             subprocess.run(
                                 ["xcrun", "simctl", "bootstatus", simulator, "-b"],
                                 check=True, timeout=180)
+                            # The previous attempt may have approved sharing
+                            # consent for this host; that approval survives in
+                            # the App Group container and would skip the gate
+                            # the case asserts on. Reset it so the retry runs
+                            # the same clean state the first attempt saw.
+                            reset_app_group_consent(
+                                simulator, "run.holon.ios", "group.run.holon.ios")
                         started = time.monotonic()
                         try:
                             run_ui_case(method, content_size, case_bundle)

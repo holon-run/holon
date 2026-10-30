@@ -53,10 +53,15 @@ def ui_case_sweep_statements(tree):
     for node in ast.walk(tree):
         body = getattr(node, "body", None)
         if isinstance(body, list) and driver in body:
+            # The per-case helpers the sweep calls must travel with it, or the
+            # extracted code references names that were never defined.
             start = next(index for index, statement in enumerate(body)
                          if isinstance(statement, ast.FunctionDef)
                          and statement.name == "run_ui_case")
-            return body[start:body.index(driver) + 1]
+            helpers = [statement for statement in body[:start]
+                       if isinstance(statement, ast.FunctionDef)
+                       and statement.name == "reset_app_group_consent"]
+            return helpers + body[start:body.index(driver) + 1]
     raise AssertionError("run_ui_case and the sweep driver must share one block")
 
 
@@ -232,6 +237,10 @@ class UIFixtureSetupContracts(unittest.TestCase):
                     runs.append(command)
                     bundle.mkdir(exist_ok=True)  # xcodebuild materializes the bundle
                     return Mock(returncode=65 if len(runs) <= failures else 0)
+                if "groups" in command:
+                    # The App Group container holds the persisted sharing
+                    # consent; a retry must clear it before the next attempt.
+                    return Mock(returncode=0, stdout="")
                 return Mock(returncode=0)  # simctl bootstatus health check
 
             namespace = dict(fixture_helpers(),
@@ -260,6 +269,9 @@ class UIFixtureSetupContracts(unittest.TestCase):
         self.assertEqual(len(runs), 2, "A flaky attempt retries exactly once")
         self.assertTrue(any("bootstatus" in command and UUID in command
                             for command in commands), "Retry restores simulator boot state")
+        self.assertTrue(any("groups" in command and UUID in command
+                            for command in commands),
+                        "Retry clears the persisted sharing consent")
         self.assertTrue((bundle.parent / "case-attempt1-failed.xcresult").exists(),
                         "Keep the failed attempt's diagnostics")
         self.assertTrue(bundle.exists(), "The passing attempt owns the canonical bundle")
@@ -276,6 +288,131 @@ class UIFixtureSetupContracts(unittest.TestCase):
             failures=2, environment={"IOS_UI_RETRY": "0"})
         self.assertIsInstance(error, RuntimeError)
         self.assertEqual(len(runs), 1, "IOS_UI_RETRY=0 keeps fail-fast semantics")
+
+    def test_ui_wait_scale_forwarded_to_test_runner(self):
+        source = ROOT / "scripts/ios_ui_fixture.py"
+        tree = ast.parse(source.read_text(), filename=str(source))
+        for node in ast.walk(tree):
+            body = getattr(node, "body", None)
+            if not isinstance(body, list):
+                continue
+            start = next((index for index, statement in enumerate(body)
+                          if isinstance(statement, ast.Assign)
+                          and any(isinstance(target, ast.Name) and target.id == "test_env"
+                                  for target in statement.targets)), None)
+            if start is None:
+                continue
+            stop = next(index for index in range(start + 1, len(body))
+                        if isinstance(body[index], ast.Expr)
+                        and isinstance(body[index].value, ast.Call)
+                        and isinstance(body[index].value.func, ast.Attribute)
+                        and body[index].value.func.attr == "update")
+            wait_scale = ast.Module(body=body[start:stop], type_ignores=[])
+            break
+        else:
+            self.fail("UI fixture wait-scale block not found")
+
+        def forwarded(environment):
+            namespace = dict(os=os)
+            with patch.dict(os.environ, environment, clear=True), patch("builtins.print"):
+                exec(compile(wait_scale, str(source), "exec"), namespace)
+            return namespace["test_env"]
+
+        self.assertEqual(forwarded({})["TEST_RUNNER_HOLON_UI_WAIT_SCALE"], "1")
+        self.assertEqual(forwarded({"HOLON_UI_WAIT_SCALE": " 2.5 "})["TEST_RUNNER_HOLON_UI_WAIT_SCALE"], "2.5")
+        with self.assertRaisesRegex(RuntimeError, "HOLON_UI_WAIT_SCALE"):
+            forwarded({"HOLON_UI_WAIT_SCALE": "fast"})
+        with self.assertRaisesRegex(RuntimeError, "HOLON_UI_WAIT_SCALE"):
+            forwarded({"HOLON_UI_WAIT_SCALE": "9"})
+
+    def test_retry_clears_persisted_sharing_consent(self):
+        source = ROOT / "scripts/ios_ui_fixture.py"
+        text = source.read_text()
+        tree = ast.parse(text, filename=str(source))
+        helper = next(node for node in ast.walk(tree)
+                      if isinstance(node, ast.FunctionDef)
+                      and node.name == "reset_app_group_consent")
+        namespace = {"pathlib": pathlib, "subprocess": Mock()}
+        # Rebuild the helper as a real function so its `return` statements
+        # keep their meaning.
+        module = ast.Module(body=[ast.FunctionDef(
+            name=helper.name, args=helper.args, body=helper.body,
+            decorator_list=[], returns=None, type_comment=None,
+            type_params=[])], type_ignores=[])
+        ast.fix_missing_locations(module)
+        with patch("builtins.print"):
+            exec(compile(module, str(source), "exec"), namespace)
+        reset = namespace["reset_app_group_consent"]
+
+        with tempfile.TemporaryDirectory(prefix="holon-ios-ui-group-") as directory:
+            group = Path(directory)
+            preferences = group / "Library" / "Preferences"
+            preferences.mkdir(parents=True)
+            stale = preferences / "group.run.holon.ios.plist"
+            stale.write_bytes(b"stale consent")
+
+            def container(*args, **kwargs):
+                return subprocess.CompletedProcess(
+                    args, 0, stdout=f"group.run.holon.ios\t{group}\n", stderr="")
+
+            namespace["subprocess"].run = container
+            reset("device", "run.holon.ios", "group.run.holon.ios")
+            self.assertFalse(stale.exists(),
+                             "The App Group consent must be cleared so a retry re-runs the gate")
+
+            # A second attempt must tolerate an already-clean group.
+            reset("device", "run.holon.ios", "group.run.holon.ios")
+            self.assertFalse(stale.exists())
+
+            # An uninstalled app has no group container; that is not an error.
+            def missing(*args, **kwargs):
+                return subprocess.CompletedProcess(args, 1, stdout="", stderr="missing")
+
+            namespace["subprocess"].run = missing
+            reset("device", "run.holon.ios", "group.run.holon.ios")
+
+        # The retry driver must reset consent before every retried attempt.
+        self.assertIn("reset_app_group_consent(", text)
+        driver = text[text.index("max_attempts = 1 if os.environ.get"):]
+        driver = driver[:driver.index("started = time.monotonic()")]
+        self.assertIn("reset_app_group_consent(", driver,
+                      "Every retried attempt must reset the persisted consent")
+
+    def test_automatic_read_retry_pins_marker_baseline(self):
+        source = ROOT / "scripts/ios_ui_fixture.py"
+        text = source.read_text()
+        # The confirming query must be bounded by the per-attempt baseline.
+        self.assertIn("AND brief.created_event_seq > ?", text)
+        tree = ast.parse(text, filename=str(source))
+        run_case = next(node for node in ast.walk(tree)
+                        if isinstance(node, ast.FunctionDef) and node.name == "run_ui_case")
+        branch = next(statement for statement in run_case.body
+                      if isinstance(statement, ast.If)
+                      and isinstance(statement.test, ast.Compare)
+                      and getattr(statement.test.comparators[0], "value", None)
+                          == "testVisibleBriefAutomaticallyUpdatesHomeUnreadCount")
+        with tempfile.TemporaryDirectory(prefix="holon-ios-ui-baseline-") as directory:
+            state = Path(directory) / "holon" / "state"
+            state.mkdir(parents=True)
+            connection = sqlite3.connect(state / "runtime.sqlite")
+            connection.execute("CREATE TABLE briefs (agent_id TEXT, created_event_seq INTEGER, preview TEXT)")
+            connection.executemany("INSERT INTO briefs VALUES (?, ?, ?)", [
+                ("holon-tester", 4, "IOS_AUTOMATIC_READ_FOLLOWUP_BRIEF attempt one"),
+                ("holon-tester", 7, "IOS_AUTOMATIC_READ_FOLLOWUP_BRIEF attempt two"),
+                ("holon-tester", 9, "unrelated preview"),
+                ("other-agent", 12, "IOS_AUTOMATIC_READ_FOLLOWUP_BRIEF other agent")])
+            connection.commit()
+            connection.close()
+            seeds = Mock()
+            namespace = dict(sqlite3=sqlite3, root=Path(directory), agent="holon-tester",
+                             automatic_read_seed_active=threading.Event(),
+                             history_seed_active=threading.Event(),
+                             seed_fixture_history=seeds, local=Mock())
+            with patch("builtins.print"):
+                exec(compile(ast.Module(body=branch.body, type_ignores=[]), str(source), "exec"), namespace)
+            self.assertEqual(namespace["automatic_read_baseline_seq"], 7,
+                             "Baseline is the newest followup marker before this attempt")
+            seeds.assert_called_once()
 
     def test_loss_scenario_rejects_invalid_retry_receipts(self):
         invalid = {
@@ -370,6 +507,7 @@ class UIFixtureSetupContracts(unittest.TestCase):
             "ready",
             ("xcrun", "simctl", "uninstall", UUID, "run.holon.ios"),
             ("xcrun", "simctl", "get_app_container", UUID, "run.holon.ios", "data"),
+            ("xcrun", "simctl", "get_app_container", UUID, "run.holon.ios", "groups"),
             "installed",
         ], "A reused simulator must not restore stale app data into any case")
 
