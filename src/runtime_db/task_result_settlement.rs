@@ -16,7 +16,9 @@ pub(crate) const TASK_RESULT_SETTLEMENT_ADMISSION_LIMIT: usize = 8;
 // live_turn is shared beyond this repository: the scheduler downcasts its
 // InterruptedReplaySourceInvalid for queue-head containment, and startup
 // repair reuses its strict attached-turn matcher.
+mod dropped_reply;
 mod exact_waiter;
+pub(crate) use dropped_reply::{dropped_reply_source_tx, DroppedReplySource};
 mod local_dispatch;
 pub(crate) use local_dispatch::pause_local_dispatch_rejected_tx;
 pub(crate) mod live_turn;
@@ -761,6 +763,11 @@ impl TaskResultSettlementRepository<'_> {
                     {
                         continue;
                     }
+                }
+                if !dropped_reply::terminal_source_admits_tx(
+                    tx, &record, current.as_ref(), work_item_id, message_id,
+                )? {
+                    continue;
                 }
                 if !charge_selected_recovery_tx(tx, &mut record, activation_id, cutoff)? {
                     continue;

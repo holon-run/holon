@@ -607,7 +607,8 @@ impl RuntimeHandle {
             repository.reply_source_is_consumed_for_owner(&record)
         } else {
             Ok(repository.reply_source_is_recoverable(&record)?
-                || (exact_waiter && repository.reply_source_is_consumed(&record)?))
+                || (exact_waiter
+                    && repository.reply_source_is_available_for_exact_wait(&record)?))
         }
     }
 
@@ -885,7 +886,7 @@ impl RuntimeHandle {
                     || (exact_waiter
                         .as_ref()
                         .is_some_and(|exact| exact.result_identity == record.result_identity)
-                        && repository.reply_source_is_consumed(&record)?)
+                        && repository.reply_source_is_available_for_exact_wait(&record)?)
                 {
                     reply_sources.insert(record.result_identity.clone(), reply_id.to_owned());
                     eligible_results.push(record);

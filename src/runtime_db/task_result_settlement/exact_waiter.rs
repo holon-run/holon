@@ -214,6 +214,7 @@ pub(super) fn source_candidate_tx(
         || wait.trigger_message_id() != Some(source_id)
         || !wait_claims_result_tx(tx, &wait, &record)?
         || !admissible
+        || !super::dropped_reply::exact_source_is_available_tx(tx, &record)?
     {
         return Ok(None);
     }

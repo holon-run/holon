@@ -29,6 +29,18 @@ recoverable and paused results. An explicit waiter in another WorkItem admits th
 promised task's settlement with its exact-wait activation; unrelated owners that
 observe the same reply retain their separate obligations. Cancellation does not consume the peer delivery.
 
+Late WaitFor never reopens a terminal reply queue entry or retries its failed
+delivery. A reply dropped by canonical autonomous-continuation admission can
+still carry an unfulfilled result obligation. Only a validated, unconsumed
+obligation and an exact consuming wait may authorize a distinct runtime-owned
+recovery wake. The original reply supplies content and provenance, not wake
+authority or a new delivery receipt. Its message, terminal queue and failed
+delivery remain unchanged. Preparation and the publishing transaction validate
+the same reply, delivery and canonical rejection evidence. Missing evidence,
+unknown rejection, aborted reply sources without a recovery grant, and
+quarantined sources fail closed; a fresh wake cannot bypass quarantine. Queueing
+the wake does not charge or reset the existing recovery admission budget.
+
 Task completion, caller admission, and successful activation settlement remain
 separate durable facts. The existing settlement ledger retains deferred results,
 restart recovery, and generation fences. A reply can satisfy concurrent observer

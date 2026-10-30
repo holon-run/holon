@@ -237,6 +237,18 @@ struct QueueCandidate {
     provider_parked: std::collections::BTreeSet<String>,
 }
 
+#[derive(Default)]
+struct CanonicalClaimObservation {
+    candidate: Option<scheduler::CanonicalActivationCandidate>,
+    scenario: Option<scheduler::CanonicalActivationScenario>,
+    work_item_revision: Option<u64>,
+    work_item_scheduling_revision: Option<u64>,
+    work_item_scheduling_state: Option<crate::types::WorkItemSchedulingState>,
+    work_item_scheduling_reason: Option<crate::work_item_scheduling::WorkItemSchedulingReasonCode>,
+    active_wait_ids: Vec<String>,
+    canonical_execution: Option<crate::domain::execution_protocol::WorkItemExecutionRecord>,
+}
+
 enum PrepareMessageOutcome {
     Poll(RunLoopPoll),
     Replan,
@@ -935,11 +947,13 @@ impl<'a> SchedulerDecisionExecutor<'a> {
                 continuation_resolution: dispatch_plan.continuation_resolution.as_ref(),
             },
         );
+        let mut claim_observation = CanonicalClaimObservation::default();
         let mut canonical_claim = match self.canonical_activation_plan(
             &projection,
             &persisted_message,
             &dispatch_plan,
             continuation_decision.model_reentry,
+            &mut claim_observation,
         ) {
             Ok(CanonicalClaimOutcome::ReduceOnly) => None,
             Ok(CanonicalClaimOutcome::ConsumeSettledRecoverySource) => {
@@ -957,6 +971,7 @@ impl<'a> SchedulerDecisionExecutor<'a> {
                     &persisted_message,
                     scenario_class,
                     reason,
+                    &claim_observation,
                 )
                 .await?;
                 // Terminalization notifies the scheduler, so the next poll can
@@ -1833,6 +1848,7 @@ impl<'a> SchedulerDecisionExecutor<'a> {
         message: &MessageEnvelope,
         dispatch_plan: &MessageDispatchPlan,
         model_reentry: bool,
+        observation: &mut CanonicalClaimObservation,
     ) -> Result<CanonicalClaimOutcome> {
         if message.kind == MessageKind::TaskResult
             && scheduler::matching_wait_conditions(projection, message).is_empty()
@@ -1914,6 +1930,7 @@ impl<'a> SchedulerDecisionExecutor<'a> {
             });
         };
         let scenario_class = candidate.scenario_class();
+        observation.candidate = Some(candidate.clone());
         let stale_correlated_wait = self.provably_stale_correlated_wait(&candidate, message)?;
         let stale_task_rejoin = self.provably_stale_task_rejoin(&candidate, message)?;
         if let scheduler::CanonicalActivationCandidate::ExactTaskRejoin { task_id, .. } = &candidate
@@ -2017,6 +2034,7 @@ impl<'a> SchedulerDecisionExecutor<'a> {
             ));
         };
 
+        observation.scenario = Some(scenario.clone());
         if scenario.work_item_id().is_none() {
             return self.plan_canonical_lifecycle_activation_claim(
                 message,
@@ -2053,9 +2071,14 @@ impl<'a> SchedulerDecisionExecutor<'a> {
             }
         }
 
+        observation.scenario = Some(scenario.clone());
         let work_item_id = scenario
             .work_item_id()
             .expect("WorkItem scenario has a WorkItem owner");
+        observation.canonical_execution = existing_execution
+            .as_ref()
+            .and_then(|state| state.work_items.get(work_item_id))
+            .cloned();
         let Some(work_item) = self.runtime.inner.storage.latest_work_item(work_item_id)? else {
             return Ok(
                 if matches!(
@@ -2074,6 +2097,7 @@ impl<'a> SchedulerDecisionExecutor<'a> {
                 },
             );
         };
+        observation.work_item_revision = Some(work_item.revision);
         if work_item.agent_id != message.agent_id {
             return Ok(CanonicalClaimOutcome::RejectQueued {
                 scenario_class,
@@ -2139,6 +2163,14 @@ impl<'a> SchedulerDecisionExecutor<'a> {
                 "canonical_work_item_projection_missing",
             ));
         };
+        observation.work_item_scheduling_revision = Some(work_projection.revision);
+        observation.work_item_scheduling_state = Some(work_projection.scheduling_state);
+        observation.work_item_scheduling_reason = Some(work_projection.reason_code);
+        observation.active_wait_ids = work_projection
+            .active_wait_conditions
+            .iter()
+            .map(|wait| wait.id.clone())
+            .collect();
         if matches!(
             scenario,
             scheduler::CanonicalActivationScenario::ProviderRecovery { .. }
@@ -2876,6 +2908,7 @@ impl<'a> SchedulerDecisionExecutor<'a> {
         message: &MessageEnvelope,
         scenario_class: crate::domain::scheduler::SchedulerScenarioClass,
         reason: &'static str,
+        observation: &CanonicalClaimObservation,
     ) -> Result<()> {
         let expected = self
             .runtime
@@ -2929,6 +2962,77 @@ impl<'a> SchedulerDecisionExecutor<'a> {
             } else {
                 None
             };
+        let scenario_variant = observation
+            .scenario
+            .as_ref()
+            .map(|scenario| match scenario {
+                scheduler::CanonicalActivationScenario::UnboundProviderRecovery { .. } => {
+                    "UnboundProviderRecovery"
+                }
+                scheduler::CanonicalActivationScenario::WorkItemAutonomousContinuation {
+                    ..
+                } => "WorkItemAutonomousContinuation",
+                scheduler::CanonicalActivationScenario::BlockedRecheck { .. } => "BlockedRecheck",
+                scheduler::CanonicalActivationScenario::ProviderRecovery { .. } => {
+                    "ProviderRecovery"
+                }
+                scheduler::CanonicalActivationScenario::InternalFollowup { .. } => {
+                    "InternalFollowup"
+                }
+                scheduler::CanonicalActivationScenario::ExactTaskRejoin { .. } => "ExactTaskRejoin",
+                scheduler::CanonicalActivationScenario::ExactWaitResume { .. } => "ExactWaitResume",
+                scheduler::CanonicalActivationScenario::LifecycleExternalNudge { .. } => {
+                    "LifecycleExternalNudge"
+                }
+                scheduler::CanonicalActivationScenario::ExplicitlyBoundOperatorInput { .. } => {
+                    "ExplicitlyBoundOperatorInput"
+                }
+            });
+        let work_item_id = observation
+            .scenario
+            .as_ref()
+            .and_then(scheduler::CanonicalActivationScenario::work_item_id);
+        let scenario_wait_id = observation
+            .scenario
+            .as_ref()
+            .and_then(|scenario| match scenario {
+                scheduler::CanonicalActivationScenario::ExactWaitResume { wait_id, .. } => {
+                    Some(wait_id.as_str())
+                }
+                scheduler::CanonicalActivationScenario::ExactTaskRejoin { wait_id, .. }
+                | scheduler::CanonicalActivationScenario::ExplicitlyBoundOperatorInput {
+                    wait_id,
+                    ..
+                } => wait_id.as_deref(),
+                _ => None,
+            });
+        let canonical_execution_owner = observation
+            .canonical_execution
+            .as_ref()
+            .and(work_item_id)
+            .map(|work_item_id| {
+                serde_json::json!({
+                    "agent_id": message.agent_id,
+                    "work_item_id": work_item_id,
+                })
+            });
+        // These are the planner's independent read snapshots, not additional
+        // commit fences; queue/state CAS below remains the settlement authority.
+        let rejection_observation = serde_json::json!({
+            "source": "canonical_activation_plan",
+            "commit_authority": false,
+            "candidate": observation.candidate.as_ref().map(|candidate| format!("{candidate:?}")),
+            "scenario_variant": scenario_variant,
+            "work_item_id": work_item_id,
+            "work_item_revision": observation.work_item_revision,
+            "work_item_scheduling_revision": observation.work_item_scheduling_revision,
+            "work_item_scheduling_state": observation.work_item_scheduling_state,
+            "work_item_scheduling_reason": observation.work_item_scheduling_reason,
+            "active_wait_ids": observation.active_wait_ids,
+            "scenario_wait_id": scenario_wait_id,
+            "canonical_execution_owner": canonical_execution_owner,
+            "canonical_execution": observation.canonical_execution,
+        });
         let invariant_event = scheduler::scheduler_invariant_diagnostic_event(
             &message.agent_id,
             reason,
@@ -2941,6 +3045,8 @@ impl<'a> SchedulerDecisionExecutor<'a> {
                 format!("authority_class={:?}", message.authority_class),
                 format!("delivery_surface={:?}", message.delivery_surface),
                 format!("admission_context={:?}", message.admission_context),
+                format!("scenario_class={}", scenario_class.as_str()),
+                format!("rejection_observation={rejection_observation}"),
                 "queue_disposition=dropped".into(),
             ],
         )?;
@@ -2980,6 +3086,7 @@ impl<'a> SchedulerDecisionExecutor<'a> {
                             "authority_class": message.authority_class,
                             "delivery_surface": message.delivery_surface,
                             "admission_context": message.admission_context,
+                            "rejection_observation": rejection_observation,
                         }),
                     ),
                     invariant_event,
@@ -5206,6 +5313,7 @@ mod tests {
                         &successor,
                         crate::domain::scheduler::SchedulerScenarioClass::ExplicitlyBoundOperatorInput,
                         "explicit_binding_work_item_missing",
+                        &CanonicalClaimObservation::default(),
                     )
                     .await
                     .unwrap();
@@ -5272,6 +5380,7 @@ mod tests {
                 &successor,
                 crate::domain::scheduler::SchedulerScenarioClass::ExplicitlyBoundOperatorInput,
                 "explicit_binding_work_item_missing",
+                &CanonicalClaimObservation::default(),
             )
             .await
             .unwrap();

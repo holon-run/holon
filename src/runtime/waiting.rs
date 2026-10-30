@@ -990,14 +990,26 @@ impl RuntimeHandle {
         if let Some(outcome) = immediate {
             return Ok(PrepareWaitForOutcome::Immediate(outcome));
         }
+        let is_agent_reply =
+            crate::wake_contract::agent_message_reply_reference(&result_message).is_some();
         let result_message = if let Some(reply_id) =
             crate::wake_contract::agent_message_reply_reference(&result_message)
         {
             let storage = self.inner.storage.clone();
             let reply_id = reply_id.to_owned();
-            tokio::task::spawn_blocking(move || storage.read_message_by_id(&reply_id))
-                .await??
-                .ok_or_else(|| anyhow!("agent reply message is missing"))?
+            let Some(reply) =
+                tokio::task::spawn_blocking(move || storage.read_message_by_id(&reply_id))
+                    .await??
+            else {
+                return Ok(PrepareWaitForOutcome::Immediate(
+                    WaitForRegistrationOutcome::TaskResultUnavailable {
+                        task_id: task.id,
+                        result_message_id: settlement_record.message_id,
+                        reason: "reply_source_missing".into(),
+                    },
+                ));
+            };
+            reply
         } else {
             result_message
         };
@@ -1009,12 +1021,41 @@ impl RuntimeHandle {
             .find(|entry| entry.message_id == result_message_id);
         let source_message_id = result_message_id.clone();
         let source_queue = existing_entry.clone();
+        let repository = self.inner.runtime_db.task_result_settlements();
+        let dropped_reply_source = if source_queue
+            .as_ref()
+            .is_some_and(|entry| entry.status == QueueEntryStatus::Dropped)
+        {
+            repository.dropped_reply_source(&settlement_record)?
+        } else {
+            None
+        };
+        let unavailable = match source_queue.as_ref().map(|entry| &entry.status) {
+            Some(QueueEntryStatus::Quarantined) => true,
+            Some(QueueEntryStatus::Dropped) => dropped_reply_source.is_none(),
+            Some(QueueEntryStatus::Aborted) => {
+                !is_agent_reply || !repository.reply_source_is_recoverable(&settlement_record)?
+            }
+            None => is_agent_reply,
+            _ => false,
+        };
+        if unavailable {
+            return Ok(PrepareWaitForOutcome::Immediate(
+                WaitForRegistrationOutcome::TaskResultUnavailable {
+                    task_id: task.id,
+                    result_message_id: settlement_record.message_id,
+                    reason: "terminal_reply_source_unavailable".into(),
+                },
+            ));
+        }
         let canonical_recovery = existing_entry.as_ref().is_some_and(|entry| {
             matches!(
                 entry.status,
                 QueueEntryStatus::Dequeued
                     | QueueEntryStatus::Interjected
                     | QueueEntryStatus::Processed
+                    | QueueEntryStatus::Dropped
+                    | QueueEntryStatus::Aborted
             )
         });
         let (result_message, existing_entry) = if canonical_recovery {
@@ -1354,6 +1395,7 @@ impl RuntimeHandle {
                                 canonical_recovery,
                                 source_message_id,
                                 source_queue,
+                                dropped_reply_source,
                                 wait_conditions: agent_wait_conditions,
                             },
                         },
