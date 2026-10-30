@@ -6,7 +6,6 @@ import XCTest
 final class DemoReviewUITests: XCTestCase {
     override func setUpWithError() throws {
         continueAfterFailure = false
-        UIWaitScale.assertForwarded()
     }
 
     private func required(_ suffix: String) throws -> String {

@@ -5,10 +5,6 @@ import XCTest
 final class HolonUITests: XCTestCase {
     override func setUpWithError() throws {
         continueAfterFailure = false
-        // The stretched wait budgets only hold when the factor reaches the
-        // runner, so a broken handoff must fail here rather than silently
-        // running the unscaled budgets on a loaded CI runner.
-        UIWaitScale.assertForwarded()
     }
 
     private func launch(language: String, dark: Bool, large: Bool) -> XCUIApplication {

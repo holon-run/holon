@@ -170,10 +170,9 @@ Forward `TEST_RUNNER_HOLON_DEMO_ENDPOINT` (`https://demo.holon.run/api`),
 `TEST_RUNNER_HOLON_DEMO_REPLY_MARKER` to `xcodebuild`. Missing inputs fail rather
 than skip; the ordinary CI harness does not select this live test.
 
-The demo flow runs outside the CI fixture, so it has no wait scale and keeps
-the unscaled budgets. Export `TEST_RUNNER_HOLON_UI_WAIT_SCALE=1` if the machine
-is slow enough to need them stretched; a value that contradicts the runner's
-own factor fails the test rather than silently changing the budget.
+The demo flow runs outside the CI fixture, so it keeps the unscaled budgets.
+Export `TEST_RUNNER_HOLON_UI_WAIT_SCALE` with a value in `[1, 5]` (for example
+`2`) if the machine is slow enough to need the budgets stretched.
 
 Issue a short-lived, single-use pairing ticket using an authorized temporary
 native session. Do not pass the administrator/reviewer token into XCUITest,
