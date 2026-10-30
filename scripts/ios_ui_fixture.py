@@ -8,6 +8,7 @@ import os
 import pathlib
 import re
 import secrets
+import shutil
 import socket
 import sqlite3
 import subprocess
@@ -25,6 +26,10 @@ from ios_simulator_text_size import (
     MAXIMUM_TEXT_SIZE, initialize_simulator_text_size, runtime_text_size_control,
     simulator_text_size, simulator_appearance,
 )
+
+
+class UICaseFailure(RuntimeError):
+    """A UI case xcodebuild run failed; eligible for one bounded retry."""
 
 
 @contextmanager
@@ -916,7 +921,12 @@ with fixture_directory(repo) as root:
                     # The preceding xcodebuild may leave this simulator shut down.
                     from ios_share_probe import install
                     install(simulator, repo, root)
-                for (method, content_size), case_bundle in zip(cases, bundles):
+                def run_ui_case(method, content_size, case_bundle):
+                    # Invoked once per attempt: every per-case fixture below
+                    # (history seeds, loss reset, browser link turn, pairing
+                    # ticket, report snapshots) is rebuilt from scratch, which
+                    # is what makes one bounded retry after a flaky failure safe.
+                    global fixture_case
                     fixture_case = method
                     if method == "testOfflineReadingCacheColdLaunchAndRetry":
                         # Do not push the onboarding smoke's original brief out of
@@ -1048,7 +1058,7 @@ with fixture_directory(repo) as root:
                                     rows = content_report_snapshot(
                                         report_db, fixture_evidence, method, "after")
                             if result.returncode:
-                                raise RuntimeError(f"UI case {method} 失败（SDK 通过不能替代 UI）")
+                                raise UICaseFailure(f"UI case {method} 失败（SDK 通过不能替代 UI）")
                             if loss_case:
                                 with lost_lock:
                                     receipts = lost_receipts[loss_receipts_start:]
@@ -1080,6 +1090,53 @@ with fixture_directory(repo) as root:
                                             or receipt["status"] != "received" or not receipt["client_request_id"]):
                                         raise RuntimeError("Content-report receipt lacks the real target, snapshot or request ID")
                                 print(f"Content-report SQLite acceptance: {method}, {expected} new reports", flush=True)
+                # Sweep flake control: a single xcodebuild attempt can fail on
+                # runner contention (fixed wait budgets, slow simulators) even
+                # though the case is healthy. Retry exactly once per case after
+                # rebuilding its fixtures; two real failures still fail the job.
+                max_attempts = 1 if os.environ.get(
+                    "IOS_UI_RETRY", "1").strip().lower() in {"0", "false", "no"} else 2
+                ui_retries = []
+                for (method, content_size), case_bundle in zip(cases, bundles):
+                    for attempt in range(1, max_attempts + 1):
+                        if attempt > 1:
+                            # Keep the failed attempt's diagnostics under a
+                            # distinct name, freeing the canonical per-case
+                            # result path the pre-flight check reserved.
+                            failed_bundle = case_bundle.with_name(
+                                case_bundle.stem + f"-attempt{attempt - 1}-failed.xcresult")
+                            if failed_bundle.exists():
+                                shutil.rmtree(failed_bundle, ignore_errors=True)
+                            if case_bundle.exists():
+                                case_bundle.rename(failed_bundle)
+                            # Content-report evidence is written with O_EXCL;
+                            # drop the failed attempt's stale per-case files so
+                            # the retry can regenerate them factually.
+                            if fixture_evidence is not None:
+                                for stale in fixture_evidence.glob(
+                                        f"content-reports-{method}-*"):
+                                    stale.unlink()
+                            # A crashed or shut-down simulator would fail the
+                            # retry for the wrong reason; restore boot state.
+                            subprocess.run(
+                                ["xcrun", "simctl", "bootstatus", simulator, "-b"],
+                                check=True, timeout=180)
+                        started = time.monotonic()
+                        try:
+                            run_ui_case(method, content_size, case_bundle)
+                            break
+                        except UICaseFailure:
+                            if attempt >= max_attempts:
+                                raise
+                            duration = time.monotonic() - started
+                            ui_retries.append(method)
+                            detail = (f"{method} attempt {attempt} failed after "
+                                      f"{duration:.0f}s; rebuilding per-case fixtures and retrying once")
+                            print(f"::warning title=iOS UI retry::{detail}", flush=True)
+                            print(f"UI 用例 {method} 第 {attempt} 次尝试失败，重建该用例 fixture 后重试一次", flush=True)
+                if ui_retries:
+                    print(f"UI sweep 完成：{len(cases)} 个用例，其中 {len(ui_retries)} 个经一次有界重试通过："
+                          + ", ".join(ui_retries), flush=True)
             else:
                 print(f"{5 if rich_turn else 4} 项真实 SDK probes 已运行；SDK-only 未运行 UI", flush=True)
             if FakeProvider.image_requests:
