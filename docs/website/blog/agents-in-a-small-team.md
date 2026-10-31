@@ -2,6 +2,7 @@
 title: "From personal AI tools to team collaboration: an agent-native case study"
 summary: "How a small team moved from individual AI tools to shared agents, with 77 days of retained usage records, device investigations, and a hands-on test of silent piano keys."
 order: 40
+date: 2026-09-13
 ---
 
 # From personal AI tools to team collaboration: an agent-native case study

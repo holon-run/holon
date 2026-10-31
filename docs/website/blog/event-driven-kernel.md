@@ -3,6 +3,7 @@ title: "From Request-Response to Event-Driven: Designing the Kernel for Long-Liv
 summary: "Why while(true) loops fail in production software engineering. Drawing from OS history—from busy-waiting to hardware interrupts and epoll—we explore durable wait-wake scheduling, decoupled work state, and causal contexts for long-lived autonomous agents."
 socialImage: "/assets/event-driven-kernel-cover.webp"
 order: 62
+date: 2026-10-09
 ---
 
 # From Request-Response to Event-Driven: Designing the Kernel for Long-Lived Agents

@@ -2,6 +2,7 @@
 title: "Beyond a one-time review: build a reviewer that follows PRs with Holon"
 summary: "Create a reviewer with built-in working rules and Skills, set its responsibilities and merge permissions, and have it discover PRs and follow fixes and CI updates."
 order: 30
+date: 2026-09-13
 ---
 
 # Beyond a one-time review: build a reviewer that follows PRs with Holon

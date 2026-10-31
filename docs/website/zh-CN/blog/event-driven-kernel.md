@@ -3,6 +3,7 @@ title: "从请求-响应到事件驱动：长周期 Agent 系统的内核设计"
 summary: "为什么死循环 while(true) 无法支撑生产级工作？融合操作系统中断演进史与直观工程隐喻，深度解析长周期自主 Agent 的持久化等待、唤醒调度与因果状态内核架构。"
 socialImage: "/assets/event-driven-kernel-cover.webp"
 order: 62
+date: 2026-10-09
 ---
 
 # 从“请求-响应”到“事件驱动”：长周期 Agent 系统的内核设计

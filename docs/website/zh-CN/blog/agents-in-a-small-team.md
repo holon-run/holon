@@ -2,6 +2,7 @@
 title: "从个人 AI 工具到团队协作：一个小团队的 Agent Native 实践"
 summary: "从开发者各自使用 AI，到共享 Agent 参与团队分工：用 77 天的留存用量、设备故障调查和琴键无声的实测案例，记录一个小团队的 Agent Native 实践。"
 order: 40
+date: 2026-09-13
 ---
 
 # 从个人 AI 工具到团队协作：一个小团队的 Agent Native 实践

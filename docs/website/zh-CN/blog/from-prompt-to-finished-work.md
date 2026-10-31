@@ -2,6 +2,7 @@
 title: “从 Prompt 到完成工作：一套可复现的 Holon 工作流”
 summary: “给 Agent 一项真实的仓库任务，让它在 Prompt 结束后继续工作，并在回来时检查结果。”
 order: 50
+date: 2026-10-06
 ---
 
 # 从 Prompt 到完成工作：一套可复现的 Holon 工作流

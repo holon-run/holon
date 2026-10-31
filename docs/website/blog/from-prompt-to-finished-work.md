@@ -2,6 +2,7 @@
 title: "From prompt to finished work: a practical Holon workflow"
 summary: "A repeatable workflow for giving an agent a real repository task, letting it work past the prompt, and checking the result when it comes back."
 order: 50
+date: 2026-10-06
 ---
 
 # From prompt to finished work: a practical Holon workflow

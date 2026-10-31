@@ -2,6 +2,7 @@
 title: "Holon 的 WorkItem 架构：把工作状态从对话中分离"
 summary: "从新版接口上线到旧版下线，解释 WorkItem 与 Goal、Loop 的侧重点：把跨发布周期的目标、进度、外部依赖和交付归入一项持续负责的工作。"
 order: 20
+date: 2026-09-13
 ---
 
 # Holon 的 WorkItem 架构：把工作状态从对话中分离

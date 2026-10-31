@@ -2,6 +2,7 @@
 title: "Holon's WorkItem architecture: separating work state from conversation"
 summary: "Follow an interface migration from launch to retirement to see how WorkItem differs from Goal and Loop: it keeps objectives, progress, external dependencies, and delivery together across release cycles."
 order: 20
+date: 2026-09-13
 ---
 
 # Holon's WorkItem architecture: separating work state from conversation

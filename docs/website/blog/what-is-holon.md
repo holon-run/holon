@@ -2,6 +2,7 @@
 title: "What is Holon? Multiple agents working in your environment"
 summary: "Assign recurring work to established roles, let agents follow up in the background, and reconnect when needed. An ongoing review example introduces Holon's local workbench for remote development and team collaboration."
 order: 10
+date: 2026-09-13
 ---
 
 # What is Holon? Multiple agents working in your environment

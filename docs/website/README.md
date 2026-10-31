@@ -1,6 +1,6 @@
 ---
-title: Create and run AI assistants
-summary: Create and run AI assistants on your own computer or server. Assign tasks, track progress, and let them follow up. Open source for individuals and teams.
+title: Open-source AI agent workbench for your own computer
+summary: "Open-source AI agent workbench: create and run AI assistants on your own computer or server. Assign tasks, track progress, and let them follow up on ongoing work."
 order: 1
 ---
 

@@ -2,6 +2,7 @@
 title: "不止审一次代码：用 Holon 搭建持续跟进 PR 的 Reviewer"
 summary: "从模板创建自带工作规范与 Skills 的 reviewer，确认职责与合并权限，订阅仓库 PR，自动审阅并持续跟进修复与 CI。"
 order: 30
+date: 2026-09-13
 ---
 
 # 不止审一次代码：用 Holon 搭建持续跟进 PR 的 Reviewer
