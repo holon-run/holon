@@ -153,7 +153,29 @@ the live cache, with the original label only a fallback. Detail-owned plan,
 todo, references and results are not replaced by an embedded navigation snapshot;
 list membership and current focus remain independent.
 
-Timer, recent-task and Skill resources remain a separate follow-up slice.
+Visible Overview Timers and expanded recent tasks each own a separate 30 s
+fallback budget with the same checkpoint, restore and failure rules. Collapsed
+sections, other inspector views and a closed inspector do not poll them.
+The route publishes its admitted context to these local resource hooks; card
+mount alone cannot grant read admission. Their cached data and in-flight reads
+are fenced by that complete context, and their GETs use the existing incarnation
+request/response contract. A client-generation replacement renews this admission,
+aborts obsolete reads and revalidates without discarding same-identity cached data.
+Deferred global resume reconciliation holds partition activation and restore
+reads until its final rerun settles, avoiding reads in a scope about to be replaced.
+Explicit operator retries remain available during that admission wait.
+Timer cancellation keeps the existing write action,
+applies its precise result locally and explicitly revalidates the visible list.
+
+Skill catalogs revalidate on entry after 60 s and after existing enable/disable
+actions or manual refresh. They do not poll or follow conversation checkpoints.
+Retry attempts and pending retry timers are reset when the catalog scope changes.
+Workspace directories and file bodies remain explicitly read resources, keyed
+by workspace, execution root and path. A changed plan descriptor may offer a
+reload hint; background resource refresh never replaces the displayed body.
+Plan hashes use the newer list/detail descriptor so a paused detail does not
+hide updates while its file remains open.
+
 There is no new server invalidation protocol or atomic cross-resource
 snapshot guarantee, and no raw-events transport is reintroduced.
 

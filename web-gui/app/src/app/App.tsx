@@ -195,6 +195,10 @@ export function App() {
   const skillCatalog = useRuntimeStore((state) => state.skillCatalog);
   const skillCatalogLoading = useRuntimeStore((state) => state.skillCatalogLoading);
   const skillCatalogError = useRuntimeStore((state) => state.skillCatalogError);
+  const skillCatalogContext = useRuntimeStore((state) => JSON.stringify([
+    state.discovery.identity, state.currentUser, state.currentUserLoaded,
+    state.bootstrap.connection.authRequired, state.discovery.freshness === "unauthorized",
+  ]));
   const selectedSkillCacheKey = selectedSkillId
     ? skillDetailCacheKey(selectedSkillId, selectedSkillAgentId || undefined)
     : "";
@@ -425,9 +429,9 @@ export function App() {
   }, [refreshRuntimeConfig, route, runtimeConfig.surface, runtimeConfigLoading]);
 
   useEffect(() => {
-    if (route !== "skills" || skillCatalogLoading || skillCatalog.source !== "fixture") return;
-    void refreshSkillCatalog();
-  }, [refreshSkillCatalog, route, skillCatalog.source, skillCatalogLoading]);
+    if (route !== "skills") return;
+    void refreshSkillCatalog({ force: false });
+  }, [refreshSkillCatalog, route, skillCatalogContext]);
 
   useEffect(() => {
     if (route !== "skillDetail" || !selectedSkillId || skillDetailLoading || skillDetail) return;
@@ -445,9 +449,14 @@ export function App() {
   }, [refreshTemplateDetail, route, selectedTemplateId, templateDetail, templateDetailLoading]);
 
   useEffect(() => {
-    if (!sidePanelAgentId || agentSkillCatalogLoading || agentSkillCatalog) return;
-    void refreshAgentSkillCatalog(sidePanelAgentId);
-  }, [agentSkillCatalog, agentSkillCatalogLoading, refreshAgentSkillCatalog, sidePanelAgentId]);
+    if (route !== "agent" || !rightPanelOpen || !sidePanelAgentId
+      || (rightPanelView?.agentId === sidePanelAgentId && rightPanelView.kind !== "agent_overview")) return;
+    void refreshAgentSkillCatalog(sidePanelAgentId, { force: false });
+    void refreshSkillCatalog({ force: false });
+  }, [
+    refreshAgentSkillCatalog, refreshSkillCatalog, rightPanelOpen, rightPanelView?.agentId,
+    rightPanelView?.kind, route, selectedAgent?.incarnation, sidePanelAgentId, skillCatalogContext,
+  ]);
 
   useEffect(() => {
     document.title = browserWindowTitle();
@@ -1083,8 +1092,8 @@ export function App() {
             });
           }}
           onRefreshAgentSkills={() => refreshAgentSkillCatalog(selectedAgent.id)}
-          onRefreshAvailableSkills={() => {
-            void refreshSkillCatalog();
+          onRefreshAvailableSkills={(options) => {
+            void refreshSkillCatalog(options);
           }}
           onEnableAgentSkill={(name) => {
             void enableAgentSkill(selectedAgent.id, name);

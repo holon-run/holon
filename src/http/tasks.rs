@@ -32,27 +32,37 @@ pub async fn tasks(
     Query(query): Query<TaskListQuery>,
 ) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
     authorize_remote_access(&headers, &state).map_err(authentication_error_response)?;
+    let expected_incarnation = conversation::request_incarnation(&headers)?;
     let storage = state
         .host
         .operator_agent_read_storage(&agent_id)
         .map_err(agent_access_error)?;
     let status = query.status.unwrap_or(TaskListStatus::Active);
-    let limit = query.limit;
-    let tasks = storage
+    let terminal = matches!(status, TaskListStatus::Terminal);
+    let limit = if terminal {
+        query.limit.unwrap_or(20).min(20)
+    } else {
+        query.limit.unwrap_or(50)
+    };
+    let (identity, tasks) = storage
         .read_block("http.tasks.list", move |storage| {
-            Ok(match status {
-                TaskListStatus::Active => storage.latest_active_task_records(limit.unwrap_or(50)),
-                TaskListStatus::Terminal => storage
-                    .latest_terminal_task_records_for_agent(&agent_id, limit.unwrap_or(20).min(20)),
-            }?)
+            storage
+                .read_models()
+                .agent_tasks_snapshot(expected_incarnation, terminal, limit)
         })
         .await
-        .map_err(error_response)?;
-    Ok(Json(
-        tasks
-            .into_iter()
-            .map(crate::http_dto::TaskRecordDto::from)
-            .collect::<Vec<_>>(),
+        .map_err(conversation::conversation_error)?
+        .ok_or_else(|| agent_access_error(PublicAgentError::NotFound { agent_id }))?;
+    Ok(conversation::bind_response(
+        &headers,
+        &identity,
+        Json(
+            tasks
+                .into_iter()
+                .map(crate::http_dto::TaskRecordDto::from)
+                .collect::<Vec<_>>(),
+        )
+        .into_response(),
     ))
 }
 
@@ -736,18 +746,26 @@ pub async fn timers(
     Query(query): Query<LimitQuery>,
 ) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
     authorize_remote_access(&headers, &state).map_err(authentication_error_response)?;
+    let expected_incarnation = conversation::request_incarnation(&headers)?;
     let storage = state
         .host
         .operator_agent_read_storage(&agent_id)
         .map_err(agent_access_error)?;
     let limit = query.limit.unwrap_or(50);
-    let timers = storage
+    let (identity, timers) = storage
         .read_block("http.tasks.timers", move |storage| {
-            Ok(storage.read_recent_timers(limit)?)
+            storage
+                .read_models()
+                .agent_timers_snapshot(expected_incarnation, limit)
         })
         .await
-        .map_err(error_response)?;
-    Ok(Json(timers))
+        .map_err(conversation::conversation_error)?
+        .ok_or_else(|| agent_access_error(PublicAgentError::NotFound { agent_id }))?;
+    Ok(conversation::bind_response(
+        &headers,
+        &identity,
+        Json(timers).into_response(),
+    ))
 }
 
 pub async fn timer(

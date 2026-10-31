@@ -4,6 +4,7 @@ import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({
+  clientGeneration: 0,
   factory: vi.fn(),
   scheduler: { hint: vi.fn(), resume: vi.fn(), setActive: vi.fn(), refreshNow: vi.fn(), dispose: vi.fn() },
   state: {
@@ -17,6 +18,7 @@ const mocks = vi.hoisted(() => ({
   },
 }));
 vi.mock("./runtime-store", () => ({
+  getRuntimeClientGeneration: () => mocks.clientGeneration,
   getRuntimeConnectionConfig: () => ({ mode: "local" }),
   useRuntimeStore: Object.assign(
     (select: (state: typeof mocks.state) => unknown) => select(mocks.state),
@@ -27,6 +29,7 @@ vi.mock("./selected-agent-refresh", () => ({ createSelectedAgentRefreshScheduler
 
 import { useConversationScopeStore } from "./conversation-scope-store";
 import { refreshSelectedAgentResources, useSelectedAgentRefresh } from "./useSelectedAgentRefresh";
+import { useSelectedAgentRefreshContext } from "./selected-agent-refresh-context";
 import type { AgentSummary } from "./types";
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
@@ -51,6 +54,7 @@ async function render(props: Parameters<typeof Probe>[0] = {}) {
 beforeEach(() => {
   vi.clearAllMocks();
   mocks.factory.mockReturnValue(mocks.scheduler);
+  mocks.clientGeneration = 0;
   mocks.state.currentUser = { authMethod: "token", userId: "alice" };
   mocks.state.discovery.freshness = "fresh";
   Object.defineProperty(document, "visibilityState", { value: "visible", configurable: true });
@@ -62,6 +66,30 @@ beforeEach(() => {
 afterEach(() => { act(() => root.unmount()); container.remove(); });
 
 describe("selected Agent refresh wiring", () => {
+  it("publishes inspector admission only for the available selected route", async () => {
+    await render({ enabled: false });
+    expect(useSelectedAgentRefreshContext.getState().current).toBeNull();
+    await render();
+    expect(useSelectedAgentRefreshContext.getState().current).toMatchObject({ agentId: "a", incarnation: 1, scopeKey: "scope" });
+    const previousKey = useSelectedAgentRefreshContext.getState().current?.key;
+    await render({ incarnation: 2 });
+    expect(useSelectedAgentRefreshContext.getState().current?.key).not.toBe(previousKey);
+    await render({ enabled: false });
+    expect(useSelectedAgentRefreshContext.getState().current).toBeNull();
+  });
+
+  it("renews inspector admission once per client generation without discarding identity-scoped data", async () => {
+    await render();
+    const first = useSelectedAgentRefreshContext.getState().current;
+    mocks.clientGeneration += 1;
+    await render();
+    const renewed = useSelectedAgentRefreshContext.getState().current;
+    expect(renewed).not.toBe(first);
+    expect(renewed?.key).toBe(first?.key);
+    await render();
+    expect(useSelectedAgentRefreshContext.getState().current).toBe(renewed);
+  });
+
   it("uses committed checkpoint-only advancement, not history/brief/version changes", async () => {
     seed(10, 1);
     await render();

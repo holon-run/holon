@@ -10,7 +10,7 @@ import { ArrowLeft, Maximize2, Minimize2, X } from "lucide-react";
 import { ActivityInspectorPanel, activityInspectorTitle } from "../inspector/ActivityInspectorPanel";
 import { AgentOverviewPanel, AgentSkillManagerPanel, ToolExecutionDetailPanel, WorkItemDetailPanel } from "./AgentOverviewPanel";
 import { TaskDetailPanel } from "./TaskDetailPanel";
-import { FileBrowserPanel, type FileBrowserSnapshot } from "./FileBrowserPanel";
+import { FileBrowserPanel, type FileBrowserSnapshot, type FileRevision } from "./FileBrowserPanel";
 import { RuntimeTracePanel } from "./RuntimeTracePanel";
 import { useTranslation } from "react-i18next";
 import { useRuntimeStore } from "../../runtime/runtime-store";
@@ -40,7 +40,7 @@ interface RightSidePanelProps {
   onOpenTask: (task: TaskSummary) => void;
   onOpenConversation?: (target: TaskTargetRef) => void;
   onRefreshAgentSkills: () => void;
-  onRefreshAvailableSkills: () => void;
+  onRefreshAvailableSkills: (options?: { force?: boolean }) => void;
   onEnableAgentSkill: (name: string) => void;
   onDisableAgentSkill: (name: string) => void;
   onOpenSkill: (skillId: string) => void;
@@ -230,6 +230,18 @@ export function RightSidePanel({
     : undefined;
   const detailWorkItem = activeView.kind === "work_item_detail"
     ? resolveWorkItemDetail(activeView.workItem, listedWorkItem, detailState, listReadId) : undefined;
+  // The list keeps refreshing while the file view pauses detail reads.
+  const planFileRevisions = activeView.kind === "file_browser"
+    ? [...new Set([...Object.keys(workItemDetailsById), ...(agent.workItems ?? []).map((item) => item.id)])].flatMap((id): FileRevision[] => {
+        const listed = agent.workItems?.find((item) => item.id === id);
+        const detail = workItemDetailsById[id];
+        const fallback = listed ?? detail?.workItem;
+        const plan = fallback ? resolveWorkItemDetail(fallback, listed, detail, listReadId).planArtifact : undefined;
+        return plan?.hash && plan.workspaceId && plan.relativePath
+          ? [{ workspaceId: plan.workspaceId, path: plan.relativePath, hash: plan.hash }]
+          : [];
+      })
+    : undefined;
   const taskDetailState = activeView.kind === "task_detail" ? taskDetailsById[activeView.task.id] ?? activeView.detailState : undefined;
   const toolExecutionDetailState = activeView.kind === "tool_execution_detail"
     ? toolExecutionDetailsById[activeView.toolExecutionId] ?? activeView.detailState
@@ -252,9 +264,7 @@ export function RightSidePanel({
 
   const openSkillManager = () => {
     setShowSkillManager(true);
-    if (!availableSkillCatalogLoading && (availableSkillCatalog?.catalog.length ?? 0) === 0) {
-      onRefreshAvailableSkills();
-    }
+    onRefreshAvailableSkills({ force: false });
   };
 
   return (
@@ -336,7 +346,7 @@ export function RightSidePanel({
             availableSkillCatalog={availableSkillCatalog}
             skillCatalogLoading={skillCatalogLoading}
             availableSkillCatalogLoading={availableSkillCatalogLoading}
-            onRefreshAvailableSkills={onRefreshAvailableSkills}
+            onRefreshAvailableSkills={() => onRefreshAvailableSkills()}
             onEnableAgentSkill={onEnableAgentSkill}
           />
         ) : activeView.kind === "activity_inspector" ? (
@@ -371,7 +381,7 @@ export function RightSidePanel({
               fileSnapshots.current.delete(viewKey);
               fileSnapshots.current.set(viewKey, snapshot);
               while (fileSnapshots.current.size > 6) fileSnapshots.current.delete(fileSnapshots.current.keys().next().value!);
-            }} />
+            }} fileRevisions={planFileRevisions} />
         ) : (
           <AgentOverviewPanel
             agent={agent}

@@ -51,6 +51,10 @@ export interface SkillCatalogState {
   agentId?: string;
   catalog: SkillCatalogEntry[];
   error?: string;
+  scopeKey?: string;
+  incarnation?: number;
+  lastSuccessAt?: number;
+  stale?: boolean;
 }
 
 export type AgentTemplateSourceKind = "builtin" | "user_global" | "agent_home" | "remote";
@@ -152,6 +156,7 @@ export interface WorkItemSummary {
 export interface WorkItemPlanArtifactSummary {
   path?: string;
   relativePath?: string;
+  hash?: string;
   workspaceAlias?: string;
   workspaceId?: string;
   preview?: string;

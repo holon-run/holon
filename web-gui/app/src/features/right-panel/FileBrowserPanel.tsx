@@ -47,6 +47,11 @@ interface FileBrowserPanelProps {
   onClose?: () => void;
   snapshot?: FileBrowserSnapshot;
   onSnapshot?: (snapshot: FileBrowserSnapshot) => void;
+  fileRevisions?: readonly FileRevision[];
+}
+
+export interface FileRevision extends WorkspaceFileLocation {
+  hash: string;
 }
 
 export interface FileBrowserSnapshot {
@@ -81,6 +86,8 @@ interface SelectedFile {
   size?: number;
   loading: boolean;
   error?: string;
+  revisionHash?: string;
+  refreshToken?: number;
 }
 
 export function markdownFileReference(
@@ -278,12 +285,13 @@ function useShikiHighlight(content: string | undefined, filePath: string | undef
 }
 
 export function FileBrowserPanel(props: FileBrowserPanelProps) {
-  const identity = useFileIdentity();
+  const sourceIdentity = useFileIdentity();
+  const identity = JSON.stringify([sourceIdentity, props.workspaceId, props.executionRootId ?? null, props.initialPath ?? null, props.initialFilePath ?? null]);
   return <FileBrowserPanelView key={identity} {...props} identity={identity}
     snapshot={props.snapshot?.identity === identity ? props.snapshot : undefined} />;
 }
 
-function FileBrowserPanelView({ identity, workspaceId, executionRootId, initialPath, initialFilePath, initialFragment, onOpenFile, workspaceLabel, workspaceControl, backActionRef, onClose, snapshot, onSnapshot }: FileBrowserPanelProps & { identity: string }) {
+function FileBrowserPanelView({ identity, workspaceId, executionRootId, initialPath, initialFilePath, initialFragment, onOpenFile, workspaceLabel, workspaceControl, backActionRef, onClose, snapshot, onSnapshot, fileRevisions }: FileBrowserPanelProps & { identity: string }) {
   const copyText = useCopyText();
   const client = useMemo(() => createRuntimeClient(getRuntimeConnectionConfig()), [identity]);
   const connection = connectionLocation(getRuntimeConnectionConfig(), window.location.origin);
@@ -337,6 +345,22 @@ function FileBrowserPanelView({ identity, workspaceId, executionRootId, initialP
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string>();
   const [selectedFile, setSelectedFile] = useState<SelectedFile | null>(snapshot?.selectedFile ?? null);
+  const revisionsRef = useRef(fileRevisions);
+  revisionsRef.current = fileRevisions;
+  const revisionFor = useCallback((path: string) => revisionsRef.current?.find((revision) =>
+    revision.workspaceId === workspaceId &&
+    // Plan artifact revisions carry no executionRootId; they apply to the root
+    // currently browsed because the plan path is unique inside the workspace.
+    (revision.executionRootId ?? listing?.executionRootId ?? executionRootId) === (listing?.executionRootId ?? executionRootId) &&
+    revision.path === path,
+  )?.hash, [workspaceId, executionRootId, listing?.executionRootId]);
+  const currentRevision = selectedFile ? revisionFor(selectedFile.path) : undefined;
+  // A detail first loaded after the file establishes a baseline, not a change.
+  useEffect(() => {
+    if (!currentRevision || !selectedFile || selectedFile.loading || selectedFile.error || selectedFile.revisionHash) return;
+    setSelectedFile((file) => file ? { ...file, revisionHash: currentRevision } : file);
+  }, [currentRevision, selectedFile]);
+  const fileMayHaveChanged = Boolean(currentRevision && selectedFile?.revisionHash && currentRevision !== selectedFile.revisionHash);
   const [showHidden, setShowHidden] = useState(snapshot?.showHidden ?? false);
   const [copiedValue, setCopiedValue] = useState<"absolute" | "markdown" | "web" | null>(null);
   const autoOpenedRef = useRef(Boolean(snapshot?.selectedFile));
@@ -449,6 +473,25 @@ function FileBrowserPanelView({ identity, workspaceId, executionRootId, initialP
     [workspaceId, executionRootId, browseWorkspaceDir],
   );
 
+  const readFile = useCallback(async (path: string): Promise<SelectedFile> => {
+    const revisionHash = revisionFor(path);
+    const content = await readWorkspaceFile({ workspaceId, path, executionRootId });
+    return {
+      path: content.path,
+      absolutePath: content.absolutePath,
+      rootKind: content.rootKind,
+      content: content.content,
+      mimeType: content.mimeType,
+      truncated: content.truncated,
+      totalSize: content.totalSize ?? content.size,
+      modified: content.modified,
+      lineCount: content.lineCount,
+      size: content.totalSize ?? content.size,
+      revisionHash,
+      loading: false,
+    };
+  }, [workspaceId, executionRootId, readWorkspaceFile, revisionFor]);
+
   const reloadFile = useCallback(async () => {
     if (!selectedFile?.path) return;
     const request = ++requestGeneration.current;
@@ -459,27 +502,14 @@ function FileBrowserPanelView({ identity, workspaceId, executionRootId, initialP
       isAudioFile(selectedFile.mimeType, selectedFile.path) ||
       isPdfFile(selectedFile.mimeType, selectedFile.path)
     ) {
-      // URL-backed previews: force re-render by re-setting state.
-      setSelectedFile({ ...selectedFile, path: filePath, loading: false });
+      setSelectedFile({ ...selectedFile, revisionHash: revisionFor(filePath), refreshToken: Math.max(Date.now(), (selectedFile.refreshToken ?? 0) + 1), loading: false });
       return;
     }
     setSelectedFile({ path: filePath, loading: true });
     try {
-      const content = await readWorkspaceFile({ workspaceId, path: filePath, executionRootId });
+      const file = await readFile(filePath);
       if (request !== requestGeneration.current) return;
-      setSelectedFile({
-        path: filePath,
-        absolutePath: content.absolutePath,
-        rootKind: content.rootKind,
-        content: content.content,
-        mimeType: content.mimeType,
-        truncated: content.truncated,
-        totalSize: content.totalSize ?? content.size,
-        modified: content.modified,
-        lineCount: content.lineCount,
-        size: content.totalSize ?? content.size,
-        loading: false,
-      });
+      setSelectedFile(file);
     } catch (err) {
       if (request !== requestGeneration.current) return;
       setSelectedFile({
@@ -488,7 +518,7 @@ function FileBrowserPanelView({ identity, workspaceId, executionRootId, initialP
         error: err instanceof Error ? err.message : String(err),
       });
     }
-  }, [selectedFile, workspaceId, executionRootId, readWorkspaceFile]);
+  }, [selectedFile, readFile, revisionFor]);
 
   useEffect(() => {
     if (!snapshot?.listing) void loadDir(effectiveInitialPath);
@@ -552,21 +582,9 @@ function FileBrowserPanelView({ identity, workspaceId, executionRootId, initialP
 
     setSelectedFile({ path: filePath, loading: true });
     try {
-      const content = await readWorkspaceFile({ workspaceId, path: filePath, executionRootId });
+      const file = await readFile(filePath);
       if (request !== requestGeneration.current) return;
-      setSelectedFile({
-        path: filePath,
-        absolutePath: content.absolutePath,
-        rootKind: content.rootKind,
-        content: content.content,
-        mimeType: content.mimeType,
-        truncated: content.truncated,
-        totalSize: content.totalSize ?? content.size,
-        modified: content.modified,
-        lineCount: content.lineCount,
-        size: content.totalSize ?? content.size,
-        loading: false,
-      });
+      setSelectedFile(file);
     } catch (err) {
       if (request !== requestGeneration.current) return;
       setSelectedFile({
@@ -617,21 +635,9 @@ function FileBrowserPanelView({ identity, workspaceId, executionRootId, initialP
         });
         return;
       }
-      const content = await readWorkspaceFile({ workspaceId, path: filePath, executionRootId });
+      const file = await readFile(filePath);
       if (request !== requestGeneration.current) return;
-      setSelectedFile({
-        path: content.path,
-        absolutePath: content.absolutePath,
-        rootKind: content.rootKind,
-        content: content.content,
-        mimeType: content.mimeType,
-        truncated: content.truncated,
-        totalSize: content.totalSize ?? content.size,
-        modified: content.modified,
-        lineCount: content.lineCount,
-        size: content.totalSize ?? content.size,
-        loading: false,
-      });
+      setSelectedFile(file);
     } catch (err) {
       if (request !== requestGeneration.current) return;
       setSelectedFile({
@@ -640,7 +646,7 @@ function FileBrowserPanelView({ identity, workspaceId, executionRootId, initialP
         error: err instanceof Error ? err.message : String(err),
       });
     }
-  }, [workspaceId, executionRootId, fetchWorkspacePath, readWorkspaceFile, browseWorkspaceDir]);
+  }, [workspaceId, executionRootId, fetchWorkspacePath, readFile, browseWorkspaceDir]);
 
   const effectiveRootId = listing?.executionRootId ?? executionRootId;
   const downloadSelectedFile = async () => {
@@ -726,9 +732,12 @@ function FileBrowserPanelView({ identity, workspaceId, executionRootId, initialP
     ? sortedEntries.filter((e) => e.name.toLowerCase().includes(filterText.toLowerCase()))
     : sortedEntries;
 
-  const selectedFileUrl = selectedFile
+  const originalFileUrl = selectedFile
     ? workspaceFileUrl({ workspaceId, path: selectedFile.path, executionRootId })
     : undefined;
+  const selectedFileUrl = originalFileUrl && selectedFile?.refreshToken
+    ? `${originalFileUrl}${originalFileUrl.includes("?") ? "&" : "?"}refresh=${selectedFile.refreshToken}`
+    : originalFileUrl;
   const selectedFileTotalBytes =
     selectedFile?.totalSize ?? selectedFile?.size;
   const previewVisible = Boolean(selectedFile) && (viewMode === "preview" || split);
@@ -840,6 +849,12 @@ function FileBrowserPanelView({ identity, workspaceId, executionRootId, initialP
 
       {error ? <p className="inspector-error">{error}</p> : null}
 
+      {fileMayHaveChanged ? <p className="inspector-muted file-browser-update-hint" role="status">
+        {t("fileBrowser.mayHaveChanged", { defaultValue: "File may have changed." })}{" "}
+        <button type="button" disabled={selectedFile?.loading} onClick={() => void reloadFile()}>
+          {t("fileBrowser.reload", { defaultValue: "Reload" })}
+        </button>
+      </p> : null}
       <div className="file-browser-panes">
       {viewMode === "files" || split ? (
         <>
@@ -909,6 +924,7 @@ function FileBrowserPanelView({ identity, workspaceId, executionRootId, initialP
             <p className="inspector-error">{selectedFile.error}</p>
           ) : isImageFile(selectedFile.mimeType) ? (
             <WorkspaceImage
+              key={selectedFile.refreshToken ?? 0}
               className="file-browser-image"
               workspaceId={workspaceId}
               path={selectedFile.path}

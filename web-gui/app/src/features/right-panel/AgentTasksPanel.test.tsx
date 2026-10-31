@@ -6,17 +6,24 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import "../../i18n";
 import type { TaskSummary, TaskTargetRef } from "../../runtime/types";
 import { AgentTasksPanel, RECENT_TASK_LIMIT } from "./AgentTasksPanel";
+import { registerSelectedAgentRefreshContext, useSelectedAgentRefreshContext } from "../../runtime/selected-agent-refresh-context";
 
 const task = (id: string): TaskSummary => ({
   id, kind: "command_task", status: "completed", summary: `Task ${id}`,
 });
 
 const roots: Root[] = [];
-beforeEach(() => vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true));
+beforeEach(() => {
+  vi.useFakeTimers();
+  vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
+  registerSelectedAgentRefreshContext({ key: "parent-1", agentId: "parent", incarnation: 1, scopeKey: "test", onAccessError: vi.fn() });
+});
 afterEach(async () => {
   for (const root of roots.splice(0)) await act(async () => root.unmount());
   document.body.innerHTML = "";
+  useSelectedAgentRefreshContext.setState({ current: null });
   vi.unstubAllGlobals();
+  vi.useRealTimers();
 });
 
 async function renderPanel(
@@ -38,6 +45,7 @@ async function renderPanel(
       recentDetails.open = true;
       recentDetails.dispatchEvent(new Event("toggle"));
     });
+    await act(async () => { await vi.advanceTimersByTimeAsync(0); });
   }
   return { host, root, openRecent, recentDetails, onOpenTask };
 }
@@ -48,7 +56,7 @@ describe("AgentTasksPanel", () => {
     const { host, openRecent, onOpenTask } = await renderPanel(load);
     expect(load).not.toHaveBeenCalled();
     await openRecent();
-    expect(load).toHaveBeenCalledWith("parent");
+    expect(load).toHaveBeenCalledWith("parent", { incarnation: 1, signal: expect.any(AbortSignal) });
     expect(host.textContent).toContain("Task done");
     await act(async () => (host.querySelector(".task-button") as HTMLButtonElement).click());
     expect(onOpenTask).toHaveBeenCalledWith(task("done"));
@@ -68,6 +76,7 @@ describe("AgentTasksPanel", () => {
     await openRecent();
     expect(host.querySelector("[role=alert]")?.textContent).toContain("offline");
     await act(async () => (host.querySelector(".text-button") as HTMLButtonElement).click());
+    await act(async () => { await vi.advanceTimersByTimeAsync(0); });
     expect(load).toHaveBeenCalledTimes(2);
     expect(host.querySelector("[role=alert]")).toBeNull();
     expect(host.textContent).toContain("Task retried");
@@ -140,6 +149,25 @@ describe("AgentTasksPanel", () => {
     });
     await act(async () => resolve([task("stale")]));
     expect(host.textContent).not.toContain("Task stale");
+  });
+
+  it("pauses recent history while the outer Tasks section is collapsed", async () => {
+    const load = vi.fn().mockResolvedValue([task("done")]);
+    const { host, openRecent } = await renderPanel(load);
+    await openRecent();
+    const outer = host.querySelector(".collapsible-inspector-card") as HTMLDetailsElement;
+    await act(async () => {
+      outer.open = false;
+      outer.dispatchEvent(new Event("toggle"));
+    });
+    await act(async () => { await vi.advanceTimersByTimeAsync(60_000); });
+    expect(load).toHaveBeenCalledTimes(1);
+    await act(async () => {
+      outer.open = true;
+      outer.dispatchEvent(new Event("toggle"));
+    });
+    await act(async () => { await vi.advanceTimersByTimeAsync(0); });
+    expect(load).toHaveBeenCalledTimes(2);
   });
 
   it("resets recent history when switching agents and ignores the previous agent's response", async () => {

@@ -1695,7 +1695,11 @@ describe("createRuntimeClient", () => {
           state: "open",
           plan_status: "ready",
           revision: 7,
-          plan_artifact: { path: "/agent/work-items/work-detail/plan.md", preview: "1. Ship it" },
+          plan_artifact: {
+            path: "/agent/work-items/work-detail/plan.md",
+            hash: "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+            preview: "1. Ship it",
+          },
           todo_list: [{ text: "verify", state: "pending" }],
           result_summary: "not done yet",
         });
@@ -1716,7 +1720,11 @@ describe("createRuntimeClient", () => {
         state: "open",
         planStatus: "ready",
         revision: 7,
-        planArtifact: expect.objectContaining({ path: "/agent/work-items/work-detail/plan.md", preview: "1. Ship it" }),
+        planArtifact: expect.objectContaining({
+          path: "/agent/work-items/work-detail/plan.md",
+          hash: "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          preview: "1. Ship it",
+        }),
         todoList: [{ text: "verify", state: "pending" }],
         resultSummary: "not done yet",
       }),
@@ -1726,7 +1734,37 @@ describe("createRuntimeClient", () => {
 
   type DetailFenceOptions = { incarnation?: number; signal?: AbortSignal };
   type RuntimeClientForTests = ReturnType<typeof createRuntimeClient>;
+
+  it("keeps unfenced timer defaults and recent-task list calls compatible without options", async () => {
+    const fetchImpl = vi.fn().mockImplementation(async () => Response.json([]));
+    const client = createRuntimeClient({ mode: "local", fetchImpl });
+    await expect(client.getAgentTimers("agent/one")).resolves.toEqual([]);
+    await expect(client.getAgentRecentTasks("agent/one")).resolves.toEqual([]);
+    expect(fetchImpl.mock.calls.map(([url]) => url)).toEqual([
+      "/api/agents/agent%2Fone/timers?limit=50",
+      "/api/agents/agent%2Fone/tasks?status=terminal&limit=20",
+    ]);
+    for (const [, init] of fetchImpl.mock.calls) {
+      expect(new Headers(init.headers).get("x-holon-expected-incarnation")).toBeNull();
+      expect(init.cache).toBeUndefined();
+    }
+  });
+
   const identityFencedDetailReads = [
+    {
+      label: "timers",
+      path: "/agents/agent%2Fone/timers?limit=7",
+      body: [],
+      call: (client: RuntimeClientForTests, options: DetailFenceOptions) =>
+        client.getAgentTimers("agent/one", { limit: 7, ...options }),
+    },
+    {
+      label: "recent tasks",
+      path: "/agents/agent%2Fone/tasks?status=terminal&limit=20",
+      body: [],
+      call: (client: RuntimeClientForTests, options: DetailFenceOptions) =>
+        client.getAgentRecentTasks("agent/one", options),
+    },
     {
       label: "work item detail",
       path: "/agents/agent%2Fone/work-items/work%2Fdetail",
@@ -1797,6 +1835,25 @@ describe("createRuntimeClient", () => {
       status: 409,
       code: "agent_incarnation_mismatch",
     });
+  });
+
+  it.each(identityFencedDetailReads)("rejects stale or unbound $label responses after recreation", async ({ body, call }) => {
+    const responseHeaderCases: Record<string, string>[] = [
+      { "x-holon-agent-id": "agent/one", "x-holon-agent-incarnation": "2" },
+      { "x-holon-agent-id": "another-agent", "x-holon-agent-incarnation": "3" },
+      {},
+    ];
+    for (const responseHeaders of responseHeaderCases) {
+      const client = createRuntimeClient({
+        mode: "remote",
+        baseUrl: "http://example.test:7878",
+        fetchImpl: (async () => Response.json(body, { headers: responseHeaders })) as typeof fetch,
+      });
+      await expect(call(client, { incarnation: 3 })).rejects.toMatchObject({
+        status: 409,
+        code: "agent_incarnation_mismatch",
+      });
+    }
   });
 
   it.each(identityFencedDetailReads)("passes an abort signal through to $label reads", async ({ call }) => {

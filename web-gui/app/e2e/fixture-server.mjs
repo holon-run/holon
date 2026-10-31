@@ -101,6 +101,11 @@ function agentResource(req, res, session, agentId, body, status = 200) {
   });
 }
 
+function resourceFailure(fixture, resource) {
+  return fixture?.failureStatusByResource?.[resource]
+    ?? (fixture?.failResources?.includes(resource) ? 503 : undefined);
+}
+
 function openEventStream(req, res, clients) {
   res.writeHead(200, {
     "Cache-Control": "no-cache",
@@ -185,10 +190,11 @@ function briefReadState(session, agentId) {
 function listEntry(agentId, session) {
   if (tour) return tourAgents.find((agent) => agent.id === agentId)?.entry;
   const currentRunId = session ? (session.currentRunIdByAgentId.get(agentId) ?? null) : null;
+  const fixture = session?.rightPanelByAgentId.get(agentId);
   return {
     identity: {
       agent_id: agentId,
-      incarnation: 1,
+      incarnation: fixture?.incarnation ?? 1,
       visibility: "public",
       ownership: "self_owned",
       profile_preset: "public_named",
@@ -196,6 +202,7 @@ function listEntry(agentId, session) {
     status: currentRunId ? "awake_running" : "awake_idle",
     current_run_id: currentRunId,
     pending: 0,
+    ...(fixture?.activeWorkspaceEntry ? { active_workspace_entry: fixture.activeWorkspaceEntry } : {}),
   };
 }
 
@@ -236,7 +243,7 @@ function agentState(agentId, session) {
     timers: [],
     work_items: rightPanel?.stateWorkItems ?? rightPanel?.workItems ?? [],
     external_triggers: [],
-    workspace: { workspaces: [] },
+    workspace: { workspaces: rightPanel?.activeWorkspaceEntry ? [{ ...rightPanel.activeWorkspaceEntry, is_active: true }] : [] },
   };
 }
 
@@ -593,7 +600,7 @@ async function handleApi(req, res, url) {
       return true;
     }
     json(res, {
-      identity: { ...listEntry(agentId, session).identity, status: "active", incarnation: 1 },
+      identity: { ...listEntry(agentId, session).identity, status: "active" },
       display_name: agentId,
       canonical_relations: {},
     });
@@ -602,7 +609,43 @@ async function handleApi(req, res, url) {
   const tasksMatch = url.pathname.match(/^\/api\/agents\/([^/]+)\/tasks$/);
   if (tasksMatch) {
     const agentId = decodeURIComponent(tasksMatch[1]);
-    json(res, session.rightPanelByAgentId.get(agentId)?.tasks ?? []);
+    const fixture = session.rightPanelByAgentId.get(agentId);
+    const terminal = url.searchParams.get("status") === "terminal";
+    const resource = terminal ? "recent-tasks" : "tasks";
+    const failure = resourceFailure(fixture, resource);
+    agentResource(req, res, session, agentId,
+      failure ? { error: `right-panel ${resource} unavailable` } : (terminal ? fixture?.recentTasks : fixture?.tasks) ?? [],
+      failure ?? 200);
+    return true;
+  }
+  const timersMatch = url.pathname.match(/^\/api\/agents\/([^/]+)\/timers$/);
+  if (timersMatch) {
+    const agentId = decodeURIComponent(timersMatch[1]);
+    const fixture = session.rightPanelByAgentId.get(agentId);
+    const failure = resourceFailure(fixture, "timers");
+    agentResource(req, res, session, agentId,
+      failure ? { error: "right-panel timers unavailable" } : fixture?.timers ?? [], failure ?? 200);
+    return true;
+  }
+  const skillsMatch = url.pathname.match(/^\/api\/agents\/([^/]+)\/skills$/);
+  if (skillsMatch) {
+    const fixture = session.rightPanelByAgentId.get(decodeURIComponent(skillsMatch[1]));
+    const failure = resourceFailure(fixture, "skills");
+    json(res, failure ? { error: "right-panel skills unavailable" } : { skills: fixture?.skills ?? [] }, failure ?? 200);
+    return true;
+  }
+  if (url.pathname === "/api/skills/catalog") {
+    json(res, { catalog: [] });
+    return true;
+  }
+  const filesMatch = url.pathname.match(/^\/api\/workspaces\/([^/]+)\/files(?:\/(.*))?$/);
+  if (filesMatch && req.method === "GET") {
+    const workspaceId = decodeURIComponent(filesMatch[1]);
+    const fixture = [...session.rightPanelByAgentId.values()]
+      .find((entry) => entry.activeWorkspaceEntry?.workspace_id === workspaceId);
+    const filePath = decodeURIComponent(filesMatch[2] ?? "");
+    const record = fixture?.filesByPath?.[filePath];
+    json(res, record ?? { error: "file not found" }, record ? 200 : 404);
     return true;
   }
   const stateMatch = url.pathname.match(/^\/api\/agents\/([^/]+)\/state$/);

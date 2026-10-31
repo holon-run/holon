@@ -1,9 +1,11 @@
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import { useTranslation } from "react-i18next";
 
 import { StatusBadge } from "../../components/ui/StatusChip";
 import type { TaskSummary, TaskTargetRef } from "../../runtime/types";
 import { TaskConversationLink } from "./TaskConversationLink";
+import { ObjectDetailRefreshFeedback } from "./ObjectDetailRefreshFeedback";
+import { useVisibleAgentResourceRefresh, type AgentResourceReadOptions } from "../../runtime/useVisibleAgentResourceRefresh";
 
 export const RECENT_TASK_LIMIT = 20;
 
@@ -12,7 +14,7 @@ interface AgentTasksPanelProps {
   tasks: TaskSummary[];
   activeTaskCount: number;
   onOpenTask: (task: TaskSummary) => void;
-  loadRecentTasks: (agentId: string) => Promise<TaskSummary[]>;
+  loadRecentTasks: (agentId: string, options?: AgentResourceReadOptions) => Promise<TaskSummary[]>;
   onOpenConversation?: (target: TaskTargetRef) => void;
 }
 
@@ -49,36 +51,17 @@ function AgentTasksPanelContent({
 }: AgentTasksPanelProps) {
   const { t } = useTranslation();
   const [recentOpen, setRecentOpen] = useState(false);
-  const [recent, setRecent] = useState<TaskSummary[]>([]);
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState<string>();
-  const [revision, setRevision] = useState(0);
-
-  useEffect(() => {
-    if (!recentOpen) return;
-    let cancelled = false;
-    setLoading(true);
-    setRecent([]);
-    setError(undefined);
-    void loadRecentTasks(agentId).then(
-      (result) => {
-        if (!cancelled) {
-          setRecent(result.slice(0, RECENT_TASK_LIMIT));
-          setLoading(false);
-        }
-      },
-      (cause: unknown) => {
-        if (!cancelled) {
-          setError(cause instanceof Error ? cause.message : String(cause));
-          setLoading(false);
-        }
-      },
-    );
-    return () => { cancelled = true; };
-  }, [agentId, recentOpen, revision, loadRecentTasks]);
+  const [sectionOpen, setSectionOpen] = useState(true);
+  const resource = useVisibleAgentResourceRefresh(agentId, "recentTasks", sectionOpen && recentOpen, loadRecentTasks);
+  const recent = resource.state?.data?.slice(0, RECENT_TASK_LIMIT) ?? [];
+  const loading = resource.state?.loading;
+  const error = resource.state?.error;
 
   return (
-    <details className="context-card inspector-card collapsible-inspector-card" open>
+    <details className="context-card inspector-card collapsible-inspector-card" open
+      onToggle={(event) => {
+        if (event.target === event.currentTarget) setSectionOpen(event.currentTarget.open);
+      }}>
       <summary className="collapsible-inspector-summary">
         <span className="collapsible-inspector-title">
           <span className="eyebrow">{t("rightPanel.tasks")}</span>
@@ -94,9 +77,10 @@ function AgentTasksPanelContent({
           <summary>{t("rightPanel.recentCompletedTasks", { count: RECENT_TASK_LIMIT })}</summary>
           {recentOpen ? (
             <div className="inspector-nested-stack">
-              <button type="button" className="text-button" disabled={loading} onClick={() => setRevision((value) => value + 1)}>
+              <button type="button" className="text-button" disabled={loading || resource.state?.refreshing} onClick={resource.refresh}>
                 {t("rightPanel.refreshRecentTasks")}
               </button>
+              <ObjectDetailRefreshFeedback state={resource.state ? { ...resource.state, error: undefined } : undefined} />
               {loading ? <p className="inspector-muted">{t("rightPanel.loadingRecentTasks")}</p> : null}
               {error ? <p className="inspector-error" role="alert">{t("rightPanel.recentTasksError", { error })}</p> : null}
               {!loading && !error && !recent.length ? <p className="inspector-muted">{t("rightPanel.noRecentTasks")}</p> : null}

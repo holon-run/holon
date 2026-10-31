@@ -404,6 +404,41 @@ impl RuntimeReadModels {
         Ok(Some((identity, work_queue_from_facts(&facts))))
     }
 
+    pub(crate) fn agent_tasks_snapshot(
+        &self,
+        expected_incarnation: Option<u64>,
+        terminal: bool,
+        limit: usize,
+    ) -> Result<
+        Option<(
+            crate::runtime_db::conversation::ConversationIdentity,
+            Vec<crate::types::TaskRecord>,
+        )>,
+    > {
+        let Some(agent_id) = self.agent_id.as_deref() else {
+            return Ok(None);
+        };
+        self.runtime_db
+            .agent_tasks_snapshot(agent_id, expected_incarnation, terminal, limit)
+    }
+
+    pub(crate) fn agent_timers_snapshot(
+        &self,
+        expected_incarnation: Option<u64>,
+        limit: usize,
+    ) -> Result<
+        Option<(
+            crate::runtime_db::conversation::ConversationIdentity,
+            Vec<TimerRecord>,
+        )>,
+    > {
+        let Some(agent_id) = self.agent_id.as_deref() else {
+            return Ok(None);
+        };
+        self.runtime_db
+            .agent_timers_snapshot(agent_id, expected_incarnation, limit)
+    }
+
     /// One committed view of this agent's identity fence plus the latest
     /// task record, mirroring [`work_queue_snapshot`] admission.
     pub(crate) fn agent_task_snapshot(

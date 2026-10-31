@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useMemo, useState } from "react";
 import {
   CalendarClock,
   Check,
@@ -23,6 +23,7 @@ import { compactModelRouteDisplay } from "../../lib/model-route-ref";
 import { ToolExecutionContent } from "./ToolExecutionRenderers";
 import { AgentTasksPanel } from "./AgentTasksPanel";
 import { useRuntimeStore } from "../../runtime/runtime-store";
+import { useVisibleAgentResourceRefresh } from "../../runtime/useVisibleAgentResourceRefresh";
 import type { AgentSummary, AgentControlAction, AgentDeletionStatus, SkillCatalogEntry, SkillCatalogState, TaskSummary, TaskTargetRef, ToolExecutionDetailState, WorkItemDetailState, WorkItemSummary } from "../../runtime/types";
 import type { components } from "../../runtime/generated/openapi";
 import { useTranslation } from "react-i18next";
@@ -243,8 +244,10 @@ export function AgentOverviewPanel({
   const [renameText, setRenameText] = useState("");
   const [renameError, setRenameError] = useState<string | undefined>(undefined);
   const [renameSaving, setRenameSaving] = useState(false);
-  const [timers, setTimers] = useState<components["schemas"]["TimerRecord"][]>([]);
-  const [timersLoading, setTimersLoading] = useState(false);
+  const [timersOpen, setTimersOpen] = useState(true);
+  const timerResource = useVisibleAgentResourceRefresh(agent.id, "timers", timersOpen, queryAgentTimers);
+  const timers = timerResource.state?.data ?? [];
+  const timersLoading = timerResource.state?.loading;
   const [timerError, setTimerError] = useState<string | undefined>();
   const [cancellingTimerId, setCancellingTimerId] = useState<string | undefined>();
   const workItems = agent.workItems ?? (agent.currentWork ? [agent.currentWork] : []);
@@ -253,31 +256,13 @@ export function AgentOverviewPanel({
     () => timers.filter((timer) => timer.status !== "completed" && timer.status !== "cancelled"),
     [timers],
   );
-  useEffect(() => {
-    let cancelled = false;
-    setTimersLoading(true);
-    setTimerError(undefined);
-    void queryAgentTimers(agent.id)
-      .then((nextTimers) => {
-        if (!cancelled) setTimers(nextTimers);
-      })
-      .catch((error) => {
-        if (!cancelled) setTimerError(error instanceof Error ? error.message : String(error));
-      })
-      .finally(() => {
-        if (!cancelled) setTimersLoading(false);
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [agent.id, queryAgentTimers]);
-
   async function handleCancelTimer(timerId: string) {
     setCancellingTimerId(timerId);
     setTimerError(undefined);
     try {
       const updated = await cancelAgentTimer(agent.id, timerId);
-      setTimers((current) => current.map((timer) => timer.id === updated.id ? updated : timer));
+      timerResource.updateData((current) => current.map((timer) => timer.id === updated.id ? updated : timer));
+      timerResource.refresh();
     } catch (error) {
       setTimerError(error instanceof Error ? error.message : String(error));
     } finally {
@@ -667,8 +652,10 @@ export function AgentOverviewPanel({
       <CollapsibleInspectorCard
         title={visibleTimers.length ? t("rightPanel.timersWithActiveCount", { count: visibleTimers.length }) : t("rightPanel.timers")}
         className="agent-timers-card"
+        onOpenChange={setTimersOpen}
         badge={visibleTimers.length ? <span className="inspector-card-count">{visibleTimers.length}</span> : undefined}
       >
+        <ObjectDetailRefreshFeedback state={timerResource.state} onRefresh={timerResource.refresh} />
         {timersLoading ? <p className="muted">{t("rightPanel.loadingTimers")}</p> : null}
         {timerError ? <p className="error-text">{t("rightPanel.timersError", { error: timerError })}</p> : null}
         {!timersLoading && !visibleTimers.length && !timerError ? <p className="muted">{t("rightPanel.noTimers")}</p> : null}
@@ -852,6 +839,7 @@ function CollapsibleInspectorCard({
   children,
   defaultOpen = true,
   className,
+  onOpenChange,
 }: {
   title: string;
   summary?: string;
@@ -859,9 +847,13 @@ function CollapsibleInspectorCard({
   children: React.ReactNode;
   defaultOpen?: boolean;
   className?: string;
+  onOpenChange?: (open: boolean) => void;
 }) {
   return (
-    <details className={`context-card inspector-card collapsible-inspector-card${className ? ` ${className}` : ""}`} open={defaultOpen}>
+    <details className={`context-card inspector-card collapsible-inspector-card${className ? ` ${className}` : ""}`} open={defaultOpen}
+      onToggle={(event) => {
+        if (event.target === event.currentTarget) onOpenChange?.(event.currentTarget.open);
+      }}>
       <summary className="collapsible-inspector-summary">
         <span className="collapsible-inspector-title">
           <span className="eyebrow">{title}</span>

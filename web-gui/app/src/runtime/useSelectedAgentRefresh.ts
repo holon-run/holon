@@ -3,10 +3,11 @@ import { useEffect, useRef } from "react";
 import { agentAccessRejection } from "./agent-access-records";
 import { conversationScopeSnapshot, subscribeConversationScope, useConversationScopeStore } from "./conversation-scope-store";
 import { createSelectedAgentRefreshScheduler } from "./selected-agent-refresh";
-import { getRuntimeConnectionConfig, useRuntimeStore } from "./runtime-store";
+import { getRuntimeClientGeneration, getRuntimeConnectionConfig, useRuntimeStore } from "./runtime-store";
 import { registerSelectedAgentRefresh } from "./selected-agent-resource-invalidation";
 import type { AgentSummary } from "./types";
 import { useVisibleAgentDetailRefresh } from "./useVisibleAgentDetailRefresh";
+import { registerSelectedAgentRefreshContext } from "./selected-agent-refresh-context";
 export { refreshSelectedAgentResources } from "./selected-agent-resource-invalidation";
 
 /** Only the admitted, selected route owns automatic HTTP resource reads. */
@@ -17,6 +18,7 @@ export function useSelectedAgentRefresh(
   onAccessError: (error: unknown) => void,
 ): void {
   const connection = useRuntimeStore((state) => state.bootstrap.connection);
+  const clientGeneration = useRuntimeStore(getRuntimeClientGeneration);
   const user = useRuntimeStore((state) => state.currentUser);
   const userLoaded = useRuntimeStore((state) => state.currentUserLoaded);
   const identity = useRuntimeStore((state) => state.discovery.identity);
@@ -33,6 +35,15 @@ export function useSelectedAgentRefresh(
   errorHandler.current = onAccessError;
   const agentId = agent?.id;
   const incarnation = agent?.incarnation;
+  useEffect(() => {
+    if (!enabled || !agentId || incarnation === undefined || !scopeKey
+      || !userLoaded || unauthorized || connection.authRequired) return;
+    return registerSelectedAgentRefreshContext({
+      key: JSON.stringify([contextKey, scopeKey, agentId, incarnation]),
+      agentId, incarnation, scopeKey,
+      onAccessError: (error) => errorHandler.current(error),
+    });
+  }, [agentId, incarnation, scopeKey, enabled, userLoaded, unauthorized, connection.authRequired, contextKey, clientGeneration]);
   useVisibleAgentDetailRefresh(agentId, incarnation, scopeKey,
     enabled && userLoaded && !unauthorized && !connection.authRequired, contextKey, onAccessError);
 
