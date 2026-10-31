@@ -614,7 +614,7 @@ final class HolonUITests: XCTestCase {
         // Save a selected profile whose host never answers, so the next launch
         // blocks on the restore screen instead of signing in.
         let app = launch(language: "en", dark: false, large: false)
-        XCTAssertTrue(app.buttons["onboarding.scan"].waitForExistence(timeout: 15))
+        XCTAssertTrue(app.buttons["onboarding.scan"].waitForExistence(timeout: UIWaitScale.scaled(15)))
         let address = app.textFields["onboarding.address"]
         reveal(address, in: app)
         address.tap()
@@ -626,24 +626,24 @@ final class HolonUITests: XCTestCase {
         reveal(next, in: app)
         next.tap()
         let consent = app.switches["privacy.accept"]
-        XCTAssertTrue(consent.waitForExistence(timeout: 10))
+        XCTAssertTrue(consent.waitForExistence(timeout: UIWaitScale.scaled(10)))
         consent.switches.firstMatch.tap()
         let proceed = app.buttons["privacy.continueLogin"]
         reveal(proceed, in: app)
         waitForEnabled(proceed)
         proceed.tap()
         // The sign-in step appears immediately; the host probe stays in flight.
-        XCTAssertTrue(app.buttons["onboarding.back"].waitForExistence(timeout: 15))
+        XCTAssertTrue(app.buttons["onboarding.back"].waitForExistence(timeout: UIWaitScale.scaled(15)))
         app.terminate()
 
         // Relaunch: the saved profile holds the first screen on restoring. The
         // change-address entry must stay reachable while the probe hangs.
         app.launch()
         let change = app.buttons["onboarding.changeAddress"]
-        XCTAssertTrue(change.waitForExistence(timeout: 20),
+        XCTAssertTrue(change.waitForExistence(timeout: UIWaitScale.scaled(20)),
                       "A first launch with a saved profile must offer changing the address")
         change.tap()
-        XCTAssertTrue(app.textFields["onboarding.address"].waitForExistence(timeout: 15),
+        XCTAssertTrue(app.textFields["onboarding.address"].waitForExistence(timeout: UIWaitScale.scaled(15)),
                       "Changing the address must return to the address entry screen")
         // Clean up saved profiles for the tests that follow. Earlier sweep
         // cases may leave their own unreachable profile behind, so remove
@@ -656,14 +656,14 @@ final class HolonUITests: XCTestCase {
             reveal(actions, in: app)
             actions.tap()
             app.buttons["Delete network"].tap()
-            XCTAssertTrue(app.alerts.firstMatch.waitForExistence(timeout: 10))
+            XCTAssertTrue(app.alerts.firstMatch.waitForExistence(timeout: UIWaitScale.scaled(10)))
             try confirmNetworkDeletion(app)
             let removed = XCTNSPredicateExpectation(predicate: NSPredicate(format: "exists == false"),
                                                     object: app.buttons[identifier])
-            XCTAssertEqual(XCTWaiter.wait(for: [removed], timeout: 10), .completed,
+            XCTAssertEqual(XCTWaiter.wait(for: [removed], timeout: UIWaitScale.scaled(10)), .completed,
                            "Deleting must remove the profile row")
         }
-        XCTAssertTrue(app.buttons["onboarding.scan"].waitForExistence(timeout: 10))
+        XCTAssertTrue(app.buttons["onboarding.scan"].waitForExistence(timeout: UIWaitScale.scaled(10)))
         app.terminate()
     }
 
@@ -671,7 +671,7 @@ final class HolonUITests: XCTestCase {
         // A bare host normalizes to https and is gated by the sharing prompt
         // before any probe; cancelling must return to the address screen.
         let app = launch(language: "en", dark: false, large: false)
-        XCTAssertTrue(app.buttons["onboarding.scan"].waitForExistence(timeout: 15))
+        XCTAssertTrue(app.buttons["onboarding.scan"].waitForExistence(timeout: UIWaitScale.scaled(15)))
         let address = app.textFields["onboarding.address"]
         reveal(address, in: app)
         address.tap()
@@ -680,12 +680,12 @@ final class HolonUITests: XCTestCase {
         reveal(next, in: app)
         next.tap()
         let consent = app.switches["privacy.accept"]
-        XCTAssertTrue(consent.waitForExistence(timeout: 10),
+        XCTAssertTrue(consent.waitForExistence(timeout: UIWaitScale.scaled(10)),
                       "A bare host must advance to the sharing consent prompt")
         let cancel = app.buttons["privacy.cancelLogin"]
-        XCTAssertTrue(cancel.waitForExistence(timeout: 5))
+        XCTAssertTrue(cancel.waitForExistence(timeout: UIWaitScale.scaled(5)))
         cancel.tap()
-        XCTAssertTrue(app.textFields["onboarding.address"].waitForExistence(timeout: 10),
+        XCTAssertTrue(app.textFields["onboarding.address"].waitForExistence(timeout: UIWaitScale.scaled(10)),
                       "Cancelling consent must return to the address entry screen")
         app.terminate()
     }
