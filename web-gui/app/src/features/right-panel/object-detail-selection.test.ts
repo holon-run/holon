@@ -5,6 +5,14 @@ import type { WorkItemSummary } from "../../runtime/types";
 const fallback: WorkItemSummary = { id: "w", objective: "Navigation snapshot", state: "open", current: true };
 
 describe("live WorkItem detail selection", () => {
+  it("uses the newer read's plan descriptor when business revisions are equal", () => {
+    const plan = { path: "/test/plan.md", hash: "detail" };
+    const full = { ...fallback, planArtifact: plan };
+    const list = { ...fallback, planArtifact: { ...plan, hash: "list" } };
+    expect(resolveWorkItemDetail(fallback, list, { workItem: full, dataRequestId: 1 }, 2).planArtifact?.hash).toBe("list");
+    expect(resolveWorkItemDetail(fallback, list, { workItem: full, dataRequestId: 3 }, 2).planArtifact?.hash).toBe("detail");
+  });
+
   it("prefers an explicit newer business revision even if its list was read later", () => {
     expect(resolveWorkItemDetail(
       fallback, { ...fallback, revision: 1 },

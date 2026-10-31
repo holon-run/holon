@@ -86,12 +86,16 @@ test("production DOM and network: bootstrap, selection, refresh, reconnect, epoc
   await roster.getByRole("button").filter({ hasText: agentId }).click();
   const oldTurn = page.locator('[data-turn-id="production-before"]');
   await expect(oldTurn).toBeVisible();
+  await expect.poll(() => streamConnections).toBeGreaterThan(0);
+  const connectionsBeforeReload = streamConnections;
   await page.reload();
   await expect(oldTurn).toBeVisible();
+  // Snapshot hydration precedes stream subscription. Wait for this document's
+  // stream so the reload connection cannot satisfy the reconnect assertion.
+  await expect.poll(() => streamConnections).toBeGreaterThan(connectionsBeforeReload);
 
   // Close an established SSE connection, then prove the replacement delivers
   // a new live batch without a page reload or raw-event recovery.
-  await expect.poll(() => streamConnections).toBeGreaterThan(0);
   const previousConnections = streamConnections;
   expect((await request.post(controlPath(session, "/__e2e__/disconnect-streams"))).ok()).toBe(true);
   await expect.poll(() => streamConnections, { timeout: 15_000 }).toBeGreaterThan(previousConnections);

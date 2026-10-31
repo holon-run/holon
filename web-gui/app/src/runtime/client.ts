@@ -993,7 +993,7 @@ export function createRuntimeClient(options: RuntimeClientOptions = {}) {
       const workItem = await fetchAgentWorkItem(baseUrl, fetchImpl, requestHeaders, agentId, workItemId, options);
       return projectWorkItem(workItem);
     },
-    async getAgentTimers(agentId: string, options: { limit?: number } = {}): Promise<components["schemas"]["TimerRecord"][]> {
+    async getAgentTimers(agentId: string, options: { limit?: number; incarnation?: number; signal?: AbortSignal } = {}): Promise<components["schemas"]["TimerRecord"][]> {
       if (!baseUrl) {
         return [];
       }
@@ -1002,7 +1002,7 @@ export function createRuntimeClient(options: RuntimeClientOptions = {}) {
         fetchImpl,
         baseUrl,
         `/agents/${encodeURIComponent(agentId)}/timers?limit=${encodeURIComponent(limit)}`,
-        { headers: requestHeaders, timeoutMs: OPTIONAL_DETAIL_TIMEOUT_MS },
+        { timeoutMs: OPTIONAL_DETAIL_TIMEOUT_MS, ...identityFencedGetOptions(requestHeaders, agentId, options) },
       );
     },
     async cancelAgentTimer(agentId: string, timerId: string): Promise<components["schemas"]["TimerRecord"]> {
@@ -1121,11 +1121,14 @@ export function createRuntimeClient(options: RuntimeClientOptions = {}) {
         { timeoutMs: OPTIONAL_DETAIL_TIMEOUT_MS, ...identityFencedGetOptions(requestHeaders, agentId, options) },
       );
     },
-    async getAgentRecentTasks(agentId: string): Promise<TaskSummary[]> {
+    async getAgentRecentTasks(
+      agentId: string,
+      options: { incarnation?: number; signal?: AbortSignal } = {},
+    ): Promise<TaskSummary[]> {
       if (!baseUrl) throw new Error("Task history requires a runtime connection.");
       const tasks = await getJson<NonNullable<AgentStateDto["tasks"]>>(
         fetchImpl, baseUrl, `/agents/${encodeURIComponent(agentId)}/tasks?status=terminal&limit=20`,
-        { timeoutMs: OPTIONAL_DETAIL_TIMEOUT_MS, headers: requestHeaders },
+        { timeoutMs: OPTIONAL_DETAIL_TIMEOUT_MS, ...identityFencedGetOptions(requestHeaders, agentId, options) },
       );
       return projectTasks(tasks).slice(0, 20);
     },
@@ -2821,6 +2824,7 @@ function projectWorkItem(workItem: WorkItemTransportDto | undefined, currentWork
           relativePath: planArtifact.relative_path,
           workspaceAlias: planArtifact.workspace_alias ?? undefined,
           workspaceId: planArtifact.workspace_id,
+          hash: planArtifact.hash,
           preview: planArtifact.preview,
           previewComplete: planArtifact.preview_complete,
           updatedAt: planArtifact.updated_at,

@@ -12,6 +12,7 @@ import { readPanelPreferences, writePanelPreferences, rememberPanelView } from "
 import { panelLayout, PANEL_DEFAULT } from "../features/right-panel/panel-layout";
 import { clearConversationCaches } from "./conversation-cache-lifecycle";
 import { refreshSelectedAgentResources } from "./selected-agent-resource-invalidation";
+import { setResumeAdmissionStatus, useResumeAdmission } from "./selected-agent-refresh-context";
 import type { CurrentUser } from "./client";
 import { create } from "zustand";
 
@@ -391,8 +392,8 @@ export interface RuntimeStoreState {
   toggleNavCollapsed: () => void;
   setRuntimeConnection: (config: RuntimeConnectionConfig) => Promise<void>;
   refreshBootstrap: (options?: BootstrapRefreshOptions) => Promise<void>;
-  queryAgentRecentTasks: (agentId: string) => Promise<TaskSummary[]>;
-  queryAgentTimers: (agentId: string) => Promise<import("./generated/openapi").components["schemas"]["TimerRecord"][]>;
+  queryAgentRecentTasks: (agentId: string, options?: AgentResourceRefreshOptions) => Promise<TaskSummary[]>;
+  queryAgentTimers: (agentId: string, options?: AgentResourceRefreshOptions) => Promise<import("./generated/openapi").components["schemas"]["TimerRecord"][]>;
   cancelAgentTimer: (agentId: string, timerId: string) => Promise<import("./generated/openapi").components["schemas"]["TimerRecord"]>;
   reconcileAfterResume: () => Promise<void>;
   refreshModelCatalog: (options?: { refresh: boolean }) => Promise<void>;
@@ -400,7 +401,7 @@ export interface RuntimeStoreState {
   updateRuntimeConfig: (updates: Array<{ key: string; value?: unknown; unset?: boolean }>) => Promise<RuntimeConfigState | undefined>;
   downloadLocalOnnxPreset: (preset: string) => Promise<RuntimeLocalOnnxPresetStatus>;
   cancelLocalOnnxPreset: (preset: string) => Promise<RuntimeLocalOnnxPresetStatus>;
-  refreshSkillCatalog: () => Promise<void>;
+  refreshSkillCatalog: (options?: { force?: boolean }) => Promise<void>;
   refreshSkillDetail: (skillId: string | undefined, agentId?: string) => Promise<void>;
   refreshTemplateCatalog: () => Promise<void>;
   refreshTemplateDetail: (catalogId: string | undefined) => Promise<void>;
@@ -418,7 +419,7 @@ export interface RuntimeStoreState {
   updateSkillCatalog: (name?: string) => Promise<boolean>;
   dismissSkillJob: (jobId: string) => void;
   checkSkillCatalog: (name?: string) => Promise<boolean>;
-  refreshAgentSkillCatalog: (agentId: string | undefined) => Promise<void>;
+  refreshAgentSkillCatalog: (agentId: string | undefined, options?: { force?: boolean }) => Promise<void>;
   enableAgentSkill: (agentId: string | undefined, name: string) => Promise<boolean>;
   disableAgentSkill: (agentId: string | undefined, name: string) => Promise<boolean>;
   refreshCredentialStore: () => Promise<void>;
@@ -559,6 +560,8 @@ const agentDetailRetryTimers = new Map<string, number>();
 const agentDetailRetryAttempts = new Map<string, number>();
 const agentSkillCatalogRetryTimers = new Map<string, number>();
 const agentSkillCatalogRetryAttempts = new Map<string, number>();
+const skillCatalogInFlight = new Map<string, ClientRequest & { scopeKey: string; promise: Promise<void> }>();
+const SKILL_CATALOG_TTL_MS = 60_000;
 let bootstrapRefreshInFlight: Promise<void> | undefined;
 let bootstrapRefreshTimer: ReturnType<typeof setTimeout> | undefined;
 let clientGeneration = 0;
@@ -577,8 +580,35 @@ function nextClientGeneration(): number {
   return clientGeneration;
 }
 
+export function getRuntimeClientGeneration(): number {
+  return clientGeneration;
+}
+
 function isCurrentClientGeneration(generation: number): boolean {
   return generation === clientGeneration;
+}
+
+let resumeReconciliationSchedules = 0;
+let resumeAdmissionToken = 0;
+
+/**
+ * Deferred resume reconciliation replaces the client generation and resets
+ * transient resource state. Partitions hold automatic reads while it is
+ * pending so each resource performs exactly one post-resume read.
+ */
+export function markResumeReconciliationScheduled(): void {
+  resumeReconciliationSchedules += 1;
+  if (useResumeAdmission.getState().status.pending) return;
+  resumeAdmissionToken += 1;
+  setResumeAdmissionStatus({ pending: true, token: resumeAdmissionToken });
+}
+
+function settleResumeReconciliationAdmission(schedulesAtStart: number): void {
+  // A schedule during the run leaves a coordinator rerun pending; only the
+  // final run settles resume admission.
+  if (resumeReconciliationSchedules !== schedulesAtStart) return;
+  resumeAdmissionToken += 1;
+  setResumeAdmissionStatus({ pending: false, token: resumeAdmissionToken });
 }
 
 type RuntimeClient = ReturnType<typeof createRuntimeClient>;
@@ -606,6 +636,111 @@ function agentResourceContext(state: RuntimeStoreState): string {
   return JSON.stringify([
     state.discovery.identity, state.currentUser, state.currentUserLoaded,
     state.bootstrap.connection.authRequired, state.discovery.freshness === "unauthorized",
+  ]);
+}
+
+function skillCatalogScopeKey(state: RuntimeStoreState, agentId?: string): string {
+  return JSON.stringify([
+    clientGeneration, agentResourceContext(state),
+    agentId ? state.bootstrap.agents.find((agent) => agent.id === agentId)?.incarnation : null,
+  ]);
+}
+
+function refreshSkillCatalogResource(
+  set: StoreSet,
+  get: () => RuntimeStoreState,
+  agentId?: string,
+  options: { force?: boolean } = {},
+): Promise<void> {
+  const key = agentId ?? "";
+  const scopeKey = skillCatalogScopeKey(get(), agentId);
+  const cached = agentId ? get().agentSkillCatalogByAgentId[agentId] : get().skillCatalog;
+  if (agentId && cached?.scopeKey !== scopeKey) clearAgentSkillCatalogRetry(agentId);
+  const existing = skillCatalogInFlight.get(key);
+  if (existing && isCurrentClientRequest(existing) && existing.scopeKey === scopeKey) return existing.promise;
+  if (options.force === false && cached?.scopeKey === scopeKey && !cached.stale
+    && cached.lastSuccessAt !== undefined && Date.now() - cached.lastSuccessAt < SKILL_CATALOG_TTL_MS) {
+    return Promise.resolve();
+  }
+  const request = { ...captureClientRequest(), scopeKey, promise: Promise.resolve() };
+  const current = () => skillCatalogInFlight.get(key) === request && isCurrentClientRequest(request)
+    && skillCatalogScopeKey(get(), agentId) === scopeKey;
+  const patch = (state: RuntimeStoreState, catalog: SkillCatalogState, loading: boolean): Partial<RuntimeStoreState> =>
+    agentId ? {
+      agentSkillCatalogByAgentId: { ...state.agentSkillCatalogByAgentId, [agentId]: catalog },
+      agentSkillCatalogLoadingByAgentId: { ...state.agentSkillCatalogLoadingByAgentId, [agentId]: loading },
+      agentSkillCatalogErrorByAgentId: { ...state.agentSkillCatalogErrorByAgentId, [agentId]: catalog.error },
+    } : { skillCatalog: catalog, skillCatalogLoading: loading, skillCatalogError: catalog.error };
+  skillCatalogInFlight.set(key, request);
+  set((state) => patch(state, {
+    ...(cached?.scopeKey === scopeKey ? cached : emptySkillCatalog),
+    scopeKey,
+    incarnation: agentId ? state.bootstrap.agents.find((agent) => agent.id === agentId)?.incarnation : undefined,
+    error: undefined,
+  }, true));
+  request.promise = Promise.resolve().then(async () => {
+    try {
+      if (!current()) return;
+      const catalog = await request.client.getSkillCatalog(agentId);
+      if (!current()) return;
+      if (catalog.error) throw new Error(catalog.error);
+      set((state) => patch(state, {
+        ...catalog, scopeKey, stale: false, lastSuccessAt: Date.now(),
+        incarnation: agentId ? state.bootstrap.agents.find((agent) => agent.id === agentId)?.incarnation : undefined,
+      }, false));
+      if (agentId) clearAgentSkillCatalogRetry(agentId);
+    } catch (error) {
+      if (!current()) return;
+      const message = error instanceof Error ? error.message : String(error);
+      set((state) => patch(state, {
+        ...(agentId ? state.agentSkillCatalogByAgentId[agentId] : state.skillCatalog),
+        source: "http", scopeKey, stale: true, error: message,
+      }, false));
+      if (agentId) scheduleAgentSkillCatalogRetry(get, agentId, scopeKey);
+    } finally {
+      if (skillCatalogInFlight.get(key) === request) {
+        const scopeCurrent = current();
+        skillCatalogInFlight.delete(key);
+        if (!scopeCurrent) {
+          set((state) => agentId
+            ? { agentSkillCatalogLoadingByAgentId: { ...state.agentSkillCatalogLoadingByAgentId, [agentId]: false } }
+            : { skillCatalogLoading: false });
+        }
+      }
+    }
+  });
+  return request.promise;
+}
+
+async function refreshAffectedSkillCatalogs(
+  set: StoreSet,
+  get: () => RuntimeStoreState,
+  agentId?: string,
+): Promise<void> {
+  const affectedAgentIds = agentId ? [agentId] : Object.keys(get().agentSkillCatalogByAgentId);
+  skillCatalogInFlight.delete("");
+  for (const id of affectedAgentIds) {
+    skillCatalogInFlight.delete(id);
+    clearAgentSkillCatalogRetry(id);
+  }
+  set((state) => ({
+    skillCatalog: { ...state.skillCatalog, stale: true },
+    skillCatalogLoading: false,
+    agentSkillCatalogLoadingByAgentId: {
+      ...state.agentSkillCatalogLoadingByAgentId,
+      ...Object.fromEntries(affectedAgentIds.map((id) => [id, false])),
+    },
+    agentSkillCatalogByAgentId: {
+      ...state.agentSkillCatalogByAgentId,
+      ...Object.fromEntries(affectedAgentIds.map((id) => [
+        id, { ...(state.agentSkillCatalogByAgentId[id] ?? emptySkillCatalog), stale: true },
+      ])),
+    },
+  }));
+  const visibleAgentId = agentId ?? get().selectedAgentId;
+  await Promise.all([
+    get().refreshSkillCatalog(),
+    visibleAgentId ? get().refreshAgentSkillCatalog(visibleAgentId) : Promise.resolve(),
   ]);
 }
 
@@ -862,6 +997,7 @@ async function observeRuntimeConfigReload(
 
 function cancelClientGenerationWork(): void {
   bootstrapRefreshInFlight = undefined;
+  skillCatalogInFlight.clear();
   if (bootstrapRefreshTimer != null) {
     globalThis.clearTimeout(bootstrapRefreshTimer);
     bootstrapRefreshTimer = undefined;
@@ -1172,6 +1308,10 @@ async function applyRosterSnapshotToStore(
       sessionsByAgentId,
       rosterActivityByAgentId,
       briefReadStateByAgentId,
+      agentSkillCatalogByAgentId: Object.fromEntries(
+        Object.entries(state.agentSkillCatalogByAgentId).filter(([id, catalog]) =>
+          !identityReset && rosterAgents.some((agent) => agent.id === id && agent.incarnation === catalog.incarnation)),
+      ),
     };
   });
   void refreshBriefReadStatesInView(true);
@@ -2041,6 +2181,11 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => {
   reconcileAfterResume: async () => {
     if (resumeReconciliationInFlight) return resumeReconciliationInFlight;
 
+    if (!useResumeAdmission.getState().status.pending) {
+      resumeAdmissionToken += 1;
+      setResumeAdmissionStatus({ pending: true, token: resumeAdmissionToken });
+    }
+    const resumeSchedulesAtStart = resumeReconciliationSchedules;
     const generation = nextClientGeneration();
     cancelClientGenerationWork();
     globalSyncCoordinator.closeForResume();
@@ -2089,6 +2234,7 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => {
     const clearRequest = () => {
       if (resumeReconciliationInFlight === request) {
         resumeReconciliationInFlight = undefined;
+        settleResumeReconciliationAdmission(resumeSchedulesAtStart);
       }
     };
     void request.then(clearRequest, clearRequest);
@@ -2203,23 +2349,7 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => {
     return request.client.cancelLocalOnnxPreset(preset);
   },
 
-  refreshSkillCatalog: async () => {
-    const request = captureClientRequest();
-    set({ skillCatalogLoading: true, skillCatalogError: undefined });
-    try {
-      const skillCatalog = await request.client.getSkillCatalog();
-      if (!isCurrentClientRequest(request)) return;
-      set({ skillCatalog, skillCatalogLoading: false, skillCatalogError: skillCatalog.error });
-    } catch (error) {
-      if (!isCurrentClientRequest(request)) return;
-      const message = error instanceof Error ? error.message : String(error);
-      set((state) => ({
-        skillCatalog: { ...state.skillCatalog, source: "http", error: message },
-        skillCatalogLoading: false,
-        skillCatalogError: message,
-      }));
-    }
-  },
+  refreshSkillCatalog: (options) => refreshSkillCatalogResource(set, get, undefined, options),
 
   refreshSkillDetail: async (skillId, agentId) => {
     if (!skillId) return;
@@ -2485,9 +2615,8 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => {
     set({ skillCatalogLoading: true, skillCatalogError: undefined });
     try {
       await request.client.removeSkillFromCatalog(name);
-      const skillCatalog = await request.client.getSkillCatalog();
       if (!isCurrentClientRequest(request)) return false;
-      set({ skillCatalog, skillCatalogLoading: false, skillCatalogError: skillCatalog.error });
+      await refreshAffectedSkillCatalogs(set, get);
       return true;
     } catch (error) {
       if (!isCurrentClientRequest(request)) return false;
@@ -2538,9 +2667,8 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => {
     set({ skillCatalogLoading: true, skillCatalogError: undefined });
     try {
       await request.client.checkSkillCatalog(name);
-      const skillCatalog = await request.client.getSkillCatalog();
       if (!isCurrentClientRequest(request)) return false;
-      set({ skillCatalog, skillCatalogLoading: false, skillCatalogError: skillCatalog.error });
+      await refreshAffectedSkillCatalogs(set, get);
       return true;
     } catch (error) {
       if (!isCurrentClientRequest(request)) return false;
@@ -2554,64 +2682,14 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => {
     }
   },
 
-  refreshAgentSkillCatalog: async (agentId) => {
-    if (!agentId) return;
-    const request = captureClientRequest();
-    set((state) => ({
-      agentSkillCatalogLoadingByAgentId: {
-        ...state.agentSkillCatalogLoadingByAgentId,
-        [agentId]: true,
-      },
-      agentSkillCatalogErrorByAgentId: {
-        ...state.agentSkillCatalogErrorByAgentId,
-        [agentId]: undefined,
-      },
-    }));
-    try {
-      const catalog = await request.client.getSkillCatalog(agentId);
-      if (!isCurrentClientRequest(request)) return;
-      set((state) => ({
-        agentSkillCatalogByAgentId: {
-          ...state.agentSkillCatalogByAgentId,
-          [agentId]: catalog,
-        },
-        agentSkillCatalogLoadingByAgentId: {
-          ...state.agentSkillCatalogLoadingByAgentId,
-          [agentId]: false,
-        },
-      }));
-      clearAgentSkillCatalogRetry(agentId);
-    } catch (error) {
-      if (!isCurrentClientRequest(request)) return;
-      const message = error instanceof Error ? error.message : String(error);
-      set((state) => ({
-        // Keep an error-carrying (or last-known-good) catalog in the map so
-        // the App-level fetch effect terminates instead of hot-retrying;
-        // recovery retries from the store with bounded backoff.
-        agentSkillCatalogByAgentId: {
-          ...state.agentSkillCatalogByAgentId,
-          [agentId]: {
-            ...(state.agentSkillCatalogByAgentId[agentId] ?? emptySkillCatalog),
-            source: "http",
-            error: message,
-          },
-        },
-        agentSkillCatalogLoadingByAgentId: {
-          ...state.agentSkillCatalogLoadingByAgentId,
-          [agentId]: false,
-        },
-        agentSkillCatalogErrorByAgentId: {
-          ...state.agentSkillCatalogErrorByAgentId,
-          [agentId]: message,
-        },
-      }));
-      scheduleAgentSkillCatalogRetry(get, agentId);
-    }
-  },
+  refreshAgentSkillCatalog: (agentId, options) => agentId
+    ? refreshSkillCatalogResource(set, get, agentId, options)
+    : Promise.resolve(),
 
   enableAgentSkill: async (agentId, name) => {
     if (!agentId) return false;
     const request = captureClientRequest();
+    const scopeKey = skillCatalogScopeKey(get(), agentId);
     set((state) => ({
       agentSkillCatalogLoadingByAgentId: {
         ...state.agentSkillCatalogLoadingByAgentId,
@@ -2624,21 +2702,11 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => {
     }));
     try {
       await request.client.enableAgentSkill(agentId, name);
-      const catalog = await request.client.getSkillCatalog(agentId);
-      if (!isCurrentClientRequest(request)) return false;
-      set((state) => ({
-        agentSkillCatalogByAgentId: {
-          ...state.agentSkillCatalogByAgentId,
-          [agentId]: catalog,
-        },
-        agentSkillCatalogLoadingByAgentId: {
-          ...state.agentSkillCatalogLoadingByAgentId,
-          [agentId]: false,
-        },
-      }));
+      if (!isCurrentClientRequest(request) || skillCatalogScopeKey(get(), agentId) !== scopeKey) return false;
+      await refreshAffectedSkillCatalogs(set, get, agentId);
       return true;
     } catch (error) {
-      if (!isCurrentClientRequest(request)) return false;
+      if (!isCurrentClientRequest(request) || skillCatalogScopeKey(get(), agentId) !== scopeKey) return false;
       const message = error instanceof Error ? error.message : String(error);
       set((state) => ({
         agentSkillCatalogLoadingByAgentId: {
@@ -2657,6 +2725,7 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => {
   disableAgentSkill: async (agentId, name) => {
     if (!agentId) return false;
     const request = captureClientRequest();
+    const scopeKey = skillCatalogScopeKey(get(), agentId);
     set((state) => ({
       agentSkillCatalogLoadingByAgentId: {
         ...state.agentSkillCatalogLoadingByAgentId,
@@ -2669,21 +2738,11 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => {
     }));
     try {
       await request.client.disableAgentSkill(agentId, name);
-      const catalog = await request.client.getSkillCatalog(agentId);
-      if (!isCurrentClientRequest(request)) return false;
-      set((state) => ({
-        agentSkillCatalogByAgentId: {
-          ...state.agentSkillCatalogByAgentId,
-          [agentId]: catalog,
-        },
-        agentSkillCatalogLoadingByAgentId: {
-          ...state.agentSkillCatalogLoadingByAgentId,
-          [agentId]: false,
-        },
-      }));
+      if (!isCurrentClientRequest(request) || skillCatalogScopeKey(get(), agentId) !== scopeKey) return false;
+      await refreshAffectedSkillCatalogs(set, get, agentId);
       return true;
     } catch (error) {
-      if (!isCurrentClientRequest(request)) return false;
+      if (!isCurrentClientRequest(request) || skillCatalogScopeKey(get(), agentId) !== scopeKey) return false;
       const message = error instanceof Error ? error.message : String(error);
       set((state) => ({
         agentSkillCatalogLoadingByAgentId: {
@@ -3118,15 +3177,23 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => {
     await refreshAgentResource(set, get, agentId, "workItems", options);
   },
 
-  queryAgentRecentTasks: async (agentId) => {
+  queryAgentRecentTasks: async (agentId, options = {}) => {
     const request = captureClientRequest();
-    const tasks = await request.client.getAgentRecentTasks(agentId);
-    return isCurrentClientRequest(request) ? tasks : [];
+    const tasks = await request.client.getAgentRecentTasks(agentId, options);
+    if (!isCurrentClientRequest(request) || options.signal?.aborted
+      || (options.incarnation !== undefined && get().bootstrap.agents.find((agent) => agent.id === agentId)?.incarnation !== options.incarnation)) {
+      throw new AgentResourceSupersededError(agentId, "recentTasks");
+    }
+    return tasks;
   },
-  queryAgentTimers: async (agentId) => {
+  queryAgentTimers: async (agentId, options = {}) => {
     const request = captureClientRequest();
-    const timers = await request.client.getAgentTimers(agentId);
-    return isCurrentClientRequest(request) ? timers : [];
+    const timers = await request.client.getAgentTimers(agentId, options);
+    if (!isCurrentClientRequest(request) || options.signal?.aborted
+      || (options.incarnation !== undefined && get().bootstrap.agents.find((agent) => agent.id === agentId)?.incarnation !== options.incarnation)) {
+      throw new AgentResourceSupersededError(agentId, "timers");
+    }
+    return timers;
   },
   cancelAgentTimer: async (agentId, timerId) => {
     const request = captureClientRequest();
@@ -3526,14 +3593,18 @@ function installResumeReconciliationListeners(): ResumeReconciliationCoordinator
       hiddenAt != null &&
       Date.now() - hiddenAt >= RESUME_RECONCILIATION_THRESHOLD_MS
     ) {
-      coordinator.schedule();
+      scheduleReconciliation();
     }
     hiddenAt = undefined;
   };
   const schedulePageShow = (event: PageTransitionEvent) => {
-    if (event.persisted) coordinator.schedule();
+    if (event.persisted) scheduleReconciliation();
   };
-  const scheduleOnline = () => coordinator.schedule();
+  const scheduleReconciliation = () => {
+    markResumeReconciliationScheduled();
+    coordinator.schedule();
+  };
+  const scheduleOnline = () => scheduleReconciliation();
   document.addEventListener("visibilitychange", scheduleIfVisible);
   window.addEventListener("pageshow", schedulePageShow);
   window.addEventListener("online", scheduleOnline);
@@ -3571,7 +3642,7 @@ function clearAgentDetailRetry(agentId: string): void {
   agentDetailRetryAttempts.delete(agentId);
 }
 
-function scheduleAgentSkillCatalogRetry(get: () => RuntimeStoreState, agentId: string): void {
+function scheduleAgentSkillCatalogRetry(get: () => RuntimeStoreState, agentId: string, scopeKey: string): void {
   if (agentSkillCatalogRetryTimers.has(agentId)) return;
   const attempt = agentSkillCatalogRetryAttempts.get(agentId) ?? 0;
   if (attempt >= AGENT_SKILL_CATALOG_RETRY_DELAYS_MS.length) return;
@@ -3580,12 +3651,17 @@ function scheduleAgentSkillCatalogRetry(get: () => RuntimeStoreState, agentId: s
     get,
     agentId,
     AGENT_SKILL_CATALOG_RETRY_DELAYS_MS[attempt] + retryJitterMs(),
+    scopeKey,
   );
 }
 
-function armAgentSkillCatalogRetry(get: () => RuntimeStoreState, agentId: string, delayMs: number): void {
+function armAgentSkillCatalogRetry(get: () => RuntimeStoreState, agentId: string, delayMs: number, scopeKey: string): void {
   const timer = window.setTimeout(() => {
     agentSkillCatalogRetryTimers.delete(agentId);
+    if (skillCatalogScopeKey(get(), agentId) !== scopeKey) {
+      clearAgentSkillCatalogRetry(agentId);
+      return;
+    }
     const discovery = get().discovery;
     if (discovery.mode === "authoritative" && discovery.freshness !== "fresh") {
       // Discovery down: pause without fetching or consuming another attempt
@@ -3594,6 +3670,7 @@ function armAgentSkillCatalogRetry(get: () => RuntimeStoreState, agentId: string
         get,
         agentId,
         AGENT_SKILL_CATALOG_RETRY_DELAYS_MS[AGENT_SKILL_CATALOG_RETRY_DELAYS_MS.length - 1] + retryJitterMs(),
+        scopeKey,
       );
       return;
     }
@@ -3856,7 +3933,7 @@ async function pollSkillInstallJob(
       if (!isCurrentClientRequest(request)) return;
       if (job.status === "completed") {
         updateSkillInstallJob(set, jobId, "completed", undefined, job.summary);
-        await get().refreshSkillCatalog();
+        await refreshAffectedSkillCatalogs(set, get);
         return;
       }
       if (job.status === "failed") {

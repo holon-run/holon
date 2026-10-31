@@ -4,7 +4,7 @@ use std::collections::BTreeMap;
 
 use anyhow::{anyhow, Context, Result};
 use chrono::{DateTime, Utc};
-use rusqlite::{params, params_from_iter, OptionalExtension, ToSql, Transaction};
+use rusqlite::{params, params_from_iter, Connection, OptionalExtension, ToSql, Transaction};
 use sha2::{Digest, Sha256};
 
 use crate::runtime_db::agent_relations::{
@@ -2625,23 +2625,28 @@ impl TaskRepository<'_> {
         params: [&str; 1],
         limit: usize,
     ) -> Result<Vec<TaskRecord>> {
-        if limit == 0 {
-            return Ok(Vec::new());
-        }
-        let limit = i64::try_from(limit).unwrap_or(i64::MAX);
-        self.db.with_read(|connection| {
-            let sql = format!(
-                "SELECT payload_json
-             FROM tasks
-             WHERE {where_clause}
-             ORDER BY updated_at DESC, created_at DESC, task_id ASC
-             LIMIT {limit}",
-            );
-            let mut statement = connection.prepare(&sql)?;
-            let rows = statement.query_map(params, |row| row.get::<_, String>(0))?;
-            rows.map(|row| decode_task_payload(&row?)).collect()
-        })
+        self.db
+            .with_read(|connection| query_tasks_for_agent(connection, where_clause, params, limit))
     }
+}
+
+pub(super) fn query_tasks_for_agent(
+    connection: &Connection,
+    where_clause: &str,
+    params: [&str; 1],
+    limit: usize,
+) -> Result<Vec<TaskRecord>> {
+    if limit == 0 {
+        return Ok(Vec::new());
+    }
+    let limit = i64::try_from(limit).unwrap_or(i64::MAX);
+    let sql = format!(
+        "SELECT payload_json FROM tasks WHERE {where_clause}
+         ORDER BY updated_at DESC, created_at DESC, task_id ASC LIMIT {limit}",
+    );
+    let mut statement = connection.prepare(&sql)?;
+    let rows = statement.query_map(params, |row| row.get::<_, String>(0))?;
+    rows.map(|row| decode_task_payload(&row?)).collect()
 }
 
 impl WaitConditionRepository<'_> {
@@ -3791,27 +3796,30 @@ impl TimerRepository<'_> {
     }
 
     pub fn recent_for_agent(&self, agent_id: &str, limit: usize) -> Result<Vec<TimerRecord>> {
-        if limit == 0 {
-            return Ok(Vec::new());
-        }
-        let limit = i64::try_from(limit).unwrap_or(i64::MAX);
-        self.db.with_read(|connection| {
-            let mut statement = connection.prepare(
-                "SELECT payload_json
-             FROM timers
-             WHERE agent_id = ?1
-             ORDER BY updated_at DESC, created_at DESC, timer_id ASC
-             LIMIT ?2",
-            )?;
-            let rows =
-                statement.query_map(params![agent_id, limit], |row| row.get::<_, String>(0))?;
-            let mut records: Vec<_> = rows
-                .map(|row| decode_timer_payload(&row?))
-                .collect::<Result<_>>()?;
-            records.reverse();
-            Ok(records)
-        })
+        self.db
+            .with_read(|connection| recent_timers_for_agent(connection, agent_id, limit))
     }
+}
+
+pub(super) fn recent_timers_for_agent(
+    connection: &Connection,
+    agent_id: &str,
+    limit: usize,
+) -> Result<Vec<TimerRecord>> {
+    if limit == 0 {
+        return Ok(Vec::new());
+    }
+    let limit = i64::try_from(limit).unwrap_or(i64::MAX);
+    let mut statement = connection.prepare(
+        "SELECT payload_json FROM timers WHERE agent_id = ?1
+         ORDER BY updated_at DESC, created_at DESC, timer_id ASC LIMIT ?2",
+    )?;
+    let rows = statement.query_map(params![agent_id, limit], |row| row.get::<_, String>(0))?;
+    let mut records: Vec<_> = rows
+        .map(|row| decode_timer_payload(&row?))
+        .collect::<Result<_>>()?;
+    records.reverse();
+    Ok(records)
 }
 
 #[derive(Default)]

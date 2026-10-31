@@ -24,15 +24,15 @@ use anyhow::Result;
 use rusqlite::{params, Connection, OptionalExtension, TransactionBehavior};
 
 use crate::types::{
-    ExternalTriggerRecord, QueueEntryStatus, TaskRecord, ToolExecutionRecord, WaitConditionRecord,
-    WorkItemContinuationFrame, WorkItemRecord,
+    ExternalTriggerRecord, QueueEntryStatus, TaskRecord, TimerRecord, ToolExecutionRecord,
+    WaitConditionRecord, WorkItemContinuationFrame, WorkItemRecord,
 };
 
 use super::conversation::{active_agent_identity, ConversationIdentity, ConversationReadError};
 use super::repositories::{
     decode_external_trigger_payload, decode_task_payload, decode_wait_condition_row,
     decode_work_item_continuation_payload, decode_work_item_payload, enum_string,
-    wait_condition_decode_error,
+    query_tasks_for_agent, recent_timers_for_agent, wait_condition_decode_error,
 };
 use super::RuntimeDb;
 
@@ -83,6 +83,42 @@ pub struct AgentListPostureRows {
 }
 
 impl RuntimeDb {
+    pub(crate) fn agent_tasks_snapshot(
+        &self,
+        agent_id: &str,
+        expected_incarnation: Option<u64>,
+        terminal: bool,
+        limit: usize,
+    ) -> Result<Option<(ConversationIdentity, Vec<TaskRecord>)>> {
+        self.with_read(|connection| {
+            read_agent_record_snapshot(connection, agent_id, expected_incarnation, |view| {
+                query_tasks_for_agent(
+                    view,
+                    if terminal {
+                        "owner_agent_id = ?1 AND status IN ('completed', 'failed', 'cancelled', 'interrupted')"
+                    } else {
+                        "owner_agent_id = ?1 AND status IN ('queued', 'running', 'cancelling')"
+                    },
+                    [agent_id],
+                    limit,
+                )
+            })
+        })
+    }
+
+    pub(crate) fn agent_timers_snapshot(
+        &self,
+        agent_id: &str,
+        expected_incarnation: Option<u64>,
+        limit: usize,
+    ) -> Result<Option<(ConversationIdentity, Vec<TimerRecord>)>> {
+        self.with_read(|connection| {
+            read_agent_record_snapshot(connection, agent_id, expected_incarnation, |view| {
+                recent_timers_for_agent(view, agent_id, limit)
+            })
+        })
+    }
+
     /// Captures the work queue's identity and all facts in one committed view.
     pub(crate) fn agent_work_queue_snapshot(
         &self,
@@ -182,6 +218,23 @@ impl RuntimeDb {
         crate::diagnostics::record_agent_list_projection(started_at.elapsed());
         Ok(rows)
     }
+}
+
+/// Both identity admission and records use the same deferred read transaction.
+fn read_agent_record_snapshot<T>(
+    connection: &mut Connection,
+    agent_id: &str,
+    expected_incarnation: Option<u64>,
+    read_records: impl FnOnce(&Connection) -> Result<T>,
+) -> Result<Option<(ConversationIdentity, T)>> {
+    let transaction = connection.transaction_with_behavior(TransactionBehavior::Deferred)?;
+    let Some(identity) = fenced_agent_identity(&transaction, agent_id, expected_incarnation)?
+    else {
+        return Ok(None);
+    };
+    let records = read_records(&transaction)?;
+    transaction.commit()?;
+    Ok(Some((identity, records)))
 }
 
 fn read_work_queue_snapshot(

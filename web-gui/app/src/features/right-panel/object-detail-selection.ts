@@ -22,7 +22,7 @@ export function resolveWorkItemDetail(
     // Focus/membership belongs to the list, including authoritative absence.
     current: listed ? listed.current : listReadId === undefined ? summary.current : false,
     ...(full ? {
-      planArtifact: full.planArtifact,
+      planArtifact: detailIsNewer ? full.planArtifact : listed?.planArtifact ?? full.planArtifact,
       todoList: full.todoList,
       workRefs: full.workRefs,
       resultSummary: full.resultSummary,

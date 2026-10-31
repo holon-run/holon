@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-const reads = vi.hoisted(() => ({ state: vi.fn(), workItems: vi.fn(), detail: vi.fn() }));
+const reads = vi.hoisted(() => ({ state: vi.fn(), workItems: vi.fn(), detail: vi.fn(), timers: vi.fn(), recentTasks: vi.fn() }));
 vi.mock("./client", async (original) => {
   const actual = await original<typeof import("./client")>();
   return {
@@ -10,6 +10,8 @@ vi.mock("./client", async (original) => {
       getAgentState: reads.state,
       getAgentWorkItems: reads.workItems,
       getAgentDetail: reads.detail,
+      getAgentTimers: reads.timers,
+      getAgentRecentTasks: reads.recentTasks,
     }),
   };
 });
@@ -41,6 +43,8 @@ beforeEach(() => {
   reads.state.mockReset().mockResolvedValue(agent());
   reads.workItems.mockReset().mockResolvedValue([]);
   reads.detail.mockReset();
+  reads.timers.mockReset().mockResolvedValue([]);
+  reads.recentTasks.mockReset().mockResolvedValue([]);
   useRuntimeStore.setState({
     ...initial,
     bootstrap: { ...initial.bootstrap, agents: [agent()] },
@@ -50,6 +54,31 @@ beforeEach(() => {
 afterEach(() => { useRuntimeStore.setState(initial, true); });
 
 describe("selected Agent resource reads", () => {
+  it.each(["timers", "recentTasks"] as const)("rejects replaced %s reads instead of settling with an empty list", async (resource) => {
+    const pending = deferred<[]>();
+    reads[resource].mockReturnValueOnce(pending.promise);
+    const abort = new AbortController();
+    const method = resource === "timers" ? current().queryAgentTimers : current().queryAgentRecentTasks;
+    const read = method("agent-a", { incarnation: 1, signal: abort.signal });
+    expect(reads[resource]).toHaveBeenCalledWith("agent-a", { incarnation: 1, signal: abort.signal });
+    useRuntimeStore.setState({ bootstrap: { ...current().bootstrap, agents: [agent({ incarnation: 2 })] } });
+    const rejected = expect(read).rejects.toBeInstanceOf(AgentResourceSupersededError);
+    pending.resolve([]);
+    await rejected;
+  });
+
+  it.each(["timers", "recentTasks"] as const)("does not admit %s after its request is aborted", async (resource) => {
+    const pending = deferred<[]>();
+    reads[resource].mockReturnValueOnce(pending.promise);
+    const abort = new AbortController();
+    const method = resource === "timers" ? current().queryAgentTimers : current().queryAgentRecentTasks;
+    const read = method("agent-a", { incarnation: 1, signal: abort.signal });
+    abort.abort();
+    const rejected = expect(read).rejects.toBeInstanceOf(AgentResourceSupersededError);
+    pending.resolve([]);
+    await rejected;
+  });
+
   it("settles failed detail placeholders without requiring a successful identity", async () => {
     reads.detail.mockResolvedValueOnce({
       agent: agent({ incarnation: undefined }), source: "fixture", timeline: [], error: "HTTP 503",

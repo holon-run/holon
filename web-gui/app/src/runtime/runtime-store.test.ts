@@ -7,6 +7,7 @@ import {
   agentDetailErrorKind,
   backfillRetryDelayMs,
   isSessionCacheContextCurrent,
+  markResumeReconciliationScheduled,
   mergeBootstrapAgentState,
   mergeAgentDetailIntoSession,
   modelCatalogCacheKey,
@@ -21,6 +22,7 @@ import {
   useRuntimeStore,
   writeStoredRuntimeConnectionConfig,
 } from "./runtime-store";
+import { useResumeAdmission } from "./selected-agent-refresh-context";
 import type { BriefReadStateDto, StreamEventEnvelopeDto } from "./client";
 import {
   getRuntimeTraceRecords,
@@ -1876,6 +1878,50 @@ describe("bounded resume refresh scheduling", () => {
     );
 
     expect(started).toEqual([1]);
+  });
+});
+
+describe("resume reconciliation admission", () => {
+  afterEach(() => {
+    useResumeAdmission.setState({ status: { pending: false, token: 0 } });
+    vi.unstubAllGlobals();
+  });
+
+  it("holds admission pending for the duration of a deferred reconciliation", async () => {
+    vi.stubGlobal("window", {
+      localStorage: new MemoryStorage(),
+      sessionStorage: new MemoryStorage(),
+      setTimeout,
+      clearTimeout,
+      location: { hostname: "localhost", protocol: "http:" },
+    });
+    vi.stubGlobal("fetch", vi.fn(() => Promise.reject(new Error("offline"))));
+
+    markResumeReconciliationScheduled();
+    expect(useResumeAdmission.getState().status.pending).toBe(true);
+
+    await useRuntimeStore.getState().reconcileAfterResume().catch(() => undefined);
+    expect(useResumeAdmission.getState().status.pending).toBe(false);
+  });
+
+  it("stays pending when another reconciliation is scheduled mid-run", async () => {
+    vi.stubGlobal("window", {
+      localStorage: new MemoryStorage(),
+      sessionStorage: new MemoryStorage(),
+      setTimeout,
+      clearTimeout,
+      location: { hostname: "localhost", protocol: "http:" },
+    });
+    vi.stubGlobal("fetch", vi.fn(() => Promise.reject(new Error("offline"))));
+
+    markResumeReconciliationScheduled();
+    const first = useRuntimeStore.getState().reconcileAfterResume().catch(() => undefined);
+    markResumeReconciliationScheduled();
+    await first;
+    expect(useResumeAdmission.getState().status.pending).toBe(true);
+
+    await useRuntimeStore.getState().reconcileAfterResume().catch(() => undefined);
+    expect(useResumeAdmission.getState().status.pending).toBe(false);
   });
 });
 

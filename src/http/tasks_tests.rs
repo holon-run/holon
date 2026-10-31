@@ -3,8 +3,8 @@ use crate::{
     config::AppConfig,
     provider::StubProvider,
     types::{
-        AgentState, AuthorityClass, TaskKind, TaskRecord, TaskStatus, ToolExecutionRecord,
-        ToolExecutionStatus, WorkItemRecord, WorkItemState,
+        AgentState, AuthorityClass, TaskKind, TaskRecord, TaskStatus, TimerRecord,
+        ToolExecutionRecord, ToolExecutionStatus, WorkItemRecord, WorkItemState,
     },
 };
 use axum::{
@@ -30,6 +30,125 @@ async fn request(
     let headers = response.headers().clone();
     let bytes = to_bytes(response.into_body(), usize::MAX).await.unwrap();
     (status, headers, serde_json::from_slice(&bytes).unwrap())
+}
+
+#[tokio::test]
+async fn task_and_timer_list_http_incarnation_binding_preserves_legacy_and_recreation_isolation() {
+    let home = tempfile::tempdir().unwrap();
+    std::fs::write(
+        home.path().join("config.json"),
+        r#"{"model":{"default":"openai/gpt-5.4"}}"#,
+    )
+    .unwrap();
+    let config = AppConfig::load_with_home(Some(home.path().to_path_buf())).unwrap();
+    let host = RuntimeHost::new_with_provider(config, Arc::new(StubProvider::new("done"))).unwrap();
+    host.create_named_agent("list-agent", None).await.unwrap();
+    host.unload_runtime("list-agent").await;
+    let now = chrono::Utc::now();
+    for index in 0..23 {
+        let task: TaskRecord = serde_json::from_value(serde_json::json!({
+            "id": format!("task-list-{index:02}"), "agent_id": "list-agent",
+            "kind": "command_task", "status": if index == 0 { "running" } else { "completed" },
+            "created_at": now, "updated_at": now, "summary": "original"
+        }))
+        .unwrap();
+        host.runtime_db().tasks().upsert(&task).unwrap();
+    }
+    for index in 0..3 {
+        let timer: TimerRecord = serde_json::from_value(serde_json::json!({
+            "id": format!("timer-list-{index}"), "agent_id": "list-agent", "created_at": now,
+            "duration_ms": 1000, "repeat": false, "summary": "original"
+        }))
+        .unwrap();
+        host.runtime_db().timers().upsert(&timer).unwrap();
+    }
+    let storage = host.operator_agent_read_storage("list-agent").unwrap();
+    let events_before = storage.read_recent_events(100).unwrap();
+    let state = AppState::for_tcp(host.clone());
+    let paths = [
+        "/api/agents/list-agent/tasks",
+        "/api/agents/list-agent/tasks?status=terminal&limit=100",
+        "/api/agents/list-agent/timers",
+        "/api/agents/list-agent/timers?limit=1",
+    ];
+    let task_dtos = |tasks: Vec<TaskRecord>| {
+        serde_json::to_value(
+            tasks
+                .into_iter()
+                .map(crate::http_dto::TaskRecordDto::from)
+                .collect::<Vec<_>>(),
+        )
+        .unwrap()
+    };
+    let legacy = [
+        task_dtos(storage.latest_active_task_records(50).unwrap()),
+        task_dtos(
+            storage
+                .latest_terminal_task_records_for_agent("list-agent", 20)
+                .unwrap(),
+        ),
+        serde_json::to_value(storage.read_recent_timers(50).unwrap()).unwrap(),
+        serde_json::to_value(storage.read_recent_timers(1).unwrap()).unwrap(),
+    ];
+    assert_eq!(legacy[1].as_array().unwrap().len(), 20);
+    assert_eq!(legacy[3].as_array().unwrap().len(), 1);
+    for (path, legacy) in paths.iter().zip(&legacy) {
+        for expected in [None, Some("1")] {
+            let (status, headers, body) = request(&state, path, expected).await;
+            assert_eq!(status, StatusCode::OK, "{path}");
+            assert_eq!(headers["x-holon-agent-id"], "list-agent");
+            assert_eq!(headers["x-holon-agent-incarnation"], "1");
+            assert_eq!(&body, legacy, "legacy payload/order must not change");
+        }
+        for expected in ["2", "invalid", "0", "", "-1", "18446744073709551616"] {
+            let (status, headers, body) = request(&state, path, Some(expected)).await;
+            assert_eq!(status, StatusCode::CONFLICT, "{path}: {expected}");
+            assert_eq!(body["code"], "conversation_identity_changed");
+            assert_eq!(body["retryable"], false);
+            assert!(!headers.contains_key("x-holon-agent-incarnation"));
+        }
+        let mut authenticated = state.clone();
+        authenticated.require_control_token = true;
+        assert_eq!(
+            request(&authenticated, path, Some("invalid")).await.0,
+            StatusCode::UNAUTHORIZED,
+            "authentication must precede incarnation validation"
+        );
+    }
+    assert_eq!(storage.read_recent_events(100).unwrap(), events_before);
+    assert!(host.try_get_loaded_runtime("list-agent").await.is_none());
+    host.runtime_db()
+        .transaction(|tx| {
+            tx.execute(
+                "UPDATE agent_identities SET payload_json = json_set(payload_json, '$.incarnation', 2)
+                 WHERE agent_id = 'list-agent'",
+                [],
+            )?;
+            for table in ["tasks", "timers"] {
+                tx.execute(
+                    &format!(
+                        "UPDATE {table} SET payload_json =
+                         json_set(payload_json, '$.summary', 'replacement-only')"
+                    ),
+                    [],
+                )?;
+            }
+            Ok(())
+        })
+        .unwrap();
+    for path in paths {
+        let (status, _, body) = request(&state, path, Some("1")).await;
+        assert_eq!(status, StatusCode::CONFLICT);
+        assert_eq!(body["code"], "conversation_identity_changed");
+        assert!(!body.to_string().contains("replacement-only"));
+        for expected in [None, Some("2")] {
+            let (status, headers, body) = request(&state, path, expected).await;
+            assert_eq!(status, StatusCode::OK);
+            assert_eq!(headers["x-holon-agent-incarnation"], "2");
+            assert!(body.to_string().contains("replacement-only"));
+        }
+    }
+    assert!(host.try_get_loaded_runtime("list-agent").await.is_none());
 }
 
 #[tokio::test]
