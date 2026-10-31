@@ -840,22 +840,26 @@ export interface InspectorActivityDetailState {
   taskOutput?: RuntimeTaskOutputResult;
 }
 
-export interface WorkItemDetailState {
+export interface ObjectDetailRefreshState {
   loading?: boolean;
+  refreshing?: boolean;
+  stale?: boolean;
+  lastSuccessAt?: number;
+  scopeKey?: string;
+  dataRequestId?: number;
   error?: string;
+}
+
+export interface WorkItemDetailState extends ObjectDetailRefreshState {
   workItem?: WorkItemSummary;
 }
 
-export interface TaskDetailState {
-  loading?: boolean;
-  error?: string;
+export interface TaskDetailState extends ObjectDetailRefreshState {
   output?: RuntimeTaskOutputResult;
   status?: TaskStatusSnapshot;
 }
 
-export interface ToolExecutionDetailState {
-  loading?: boolean;
-  error?: string;
+export interface ToolExecutionDetailState extends ObjectDetailRefreshState {
   toolExecution?: RuntimeToolExecutionRecord;
   conversationRevision?: number;
 }
@@ -963,6 +967,7 @@ export type RightPanelView =
       toolExecutionId: string;
       toolName?: string;
       relatedStateObjectRef?: TimelineStateObjectRef;
+      fallbackActivity?: AgentTimelineActivity;
       detailState?: ToolExecutionDetailState;
     }
   | {

@@ -225,7 +225,7 @@ test("work item details prioritize results and keep technical fields and plan na
     todo_list: [{ text: "Verify artifacts", state: "completed" }], work_refs: [] };
   await page.route("**/api/agents/bootstrap-agent/work-items**", async (route) => {
     if (new URL(route.request().url()).pathname.endsWith(work.id)) {
-      await route.fulfill({ json: work });
+      await route.fulfill({ headers: { "x-holon-agent-id": "bootstrap-agent", "x-holon-agent-incarnation": "1" }, json: work });
       return;
     }
     const response = await route.fetch();

@@ -34,8 +34,9 @@ fails explicitly. Existing historical ties remain readable and are not renumbere
 
 `agents.conversation-incarnation.v1` explicitly negotiates incarnation-bound
 reads. Clients send `x-holon-expected-incarnation` on summary, activities, Brief,
-locate and stream requests. Successful responses (including conditional 304)
-carry `x-holon-agent-id` and `x-holon-agent-incarnation`. Missing or mismatched
+locate and stream requests, and on agent work-item list/detail plus task detail
+reads (task status, task output, tool execution). Successful responses
+(including conditional 304) carry `x-holon-agent-id` and `x-holon-agent-incarnation`. Missing or mismatched
 bindings are terminal protocol errors for a negotiated client, not permission
 to fall back to an unbound result.
 

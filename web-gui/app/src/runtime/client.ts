@@ -982,11 +982,15 @@ export function createRuntimeClient(options: RuntimeClientOptions = {}) {
       const workItems = await fetchAgentWorkItems(baseUrl, fetchImpl, requestHeaders, agentId, options);
       return projectWorkItems(workItems);
     },
-    async getAgentWorkItem(agentId: string, workItemId: string): Promise<WorkItemSummary | undefined> {
+    async getAgentWorkItem(
+      agentId: string,
+      workItemId: string,
+      options: { incarnation?: number; signal?: AbortSignal } = {},
+    ): Promise<WorkItemSummary | undefined> {
       if (!baseUrl || !workItemId) {
         return undefined;
       }
-      const workItem = await fetchAgentWorkItem(baseUrl, fetchImpl, requestHeaders, agentId, workItemId);
+      const workItem = await fetchAgentWorkItem(baseUrl, fetchImpl, requestHeaders, agentId, workItemId, options);
       return projectWorkItem(workItem);
     },
     async getAgentTimers(agentId: string, options: { limit?: number } = {}): Promise<components["schemas"]["TimerRecord"][]> {
@@ -1072,7 +1076,11 @@ export function createRuntimeClient(options: RuntimeClientOptions = {}) {
       }
       return fetchBriefRecordsById(baseUrl, fetchImpl, requestHeaders, agentId, briefIds);
     },
-    async getToolExecution(agentId: string, toolExecutionId: string): Promise<RuntimeToolExecutionRecord> {
+    async getToolExecution(
+      agentId: string,
+      toolExecutionId: string,
+      options: { incarnation?: number; signal?: AbortSignal } = {},
+    ): Promise<RuntimeToolExecutionRecord> {
       if (!baseUrl) {
         throw new Error("Holon API base URL is not configured.");
       }
@@ -1080,10 +1088,14 @@ export function createRuntimeClient(options: RuntimeClientOptions = {}) {
         fetchImpl,
         baseUrl,
         `/agents/${encodeURIComponent(agentId)}/tool-executions/${encodeURIComponent(toolExecutionId)}`,
-        { headers: requestHeaders },
+        identityFencedGetOptions(requestHeaders, agentId, options),
       );
     },
-    async getTaskOutput(agentId: string, taskId: string): Promise<RuntimeTaskOutputResult> {
+    async getTaskOutput(
+      agentId: string,
+      taskId: string,
+      options: { incarnation?: number; signal?: AbortSignal } = {},
+    ): Promise<RuntimeTaskOutputResult> {
       if (!baseUrl) {
         throw new Error("Holon API base URL is not configured.");
       }
@@ -1091,10 +1103,14 @@ export function createRuntimeClient(options: RuntimeClientOptions = {}) {
         fetchImpl,
         baseUrl,
         `/agents/${encodeURIComponent(agentId)}/tasks/${encodeURIComponent(taskId)}/output?block=false`,
-        { timeoutMs: OPTIONAL_DETAIL_TIMEOUT_MS, headers: requestHeaders },
+        { timeoutMs: OPTIONAL_DETAIL_TIMEOUT_MS, ...identityFencedGetOptions(requestHeaders, agentId, options) },
       );
     },
-    async getTaskStatus(agentId: string, taskId: string): Promise<TaskStatusSnapshot> {
+    async getTaskStatus(
+      agentId: string,
+      taskId: string,
+      options: { incarnation?: number; signal?: AbortSignal } = {},
+    ): Promise<TaskStatusSnapshot> {
       if (!baseUrl) {
         throw new Error("Holon API base URL is not configured.");
       }
@@ -1102,7 +1118,7 @@ export function createRuntimeClient(options: RuntimeClientOptions = {}) {
         fetchImpl,
         baseUrl,
         `/agents/${encodeURIComponent(agentId)}/tasks/${encodeURIComponent(taskId)}`,
-        { timeoutMs: OPTIONAL_DETAIL_TIMEOUT_MS, headers: requestHeaders },
+        { timeoutMs: OPTIONAL_DETAIL_TIMEOUT_MS, ...identityFencedGetOptions(requestHeaders, agentId, options) },
       );
     },
     async getAgentRecentTasks(agentId: string): Promise<TaskSummary[]> {
@@ -1846,18 +1862,46 @@ async function fetchAgentWorkItems(
   );
 }
 
+/**
+ * Shared identity-fence request options for per-agent detail reads. Without
+ * an expected incarnation the request stays byte-identical to legacy calls;
+ * with one, the request carries the fence header and refuses cached or
+ * mislabelled responses.
+ */
+function identityFencedGetOptions(
+  headers: Record<string, string>,
+  agentId: string,
+  options: { incarnation?: number; signal?: AbortSignal },
+): {
+  headers: Record<string, string>;
+  signal?: AbortSignal;
+  cache?: RequestCache;
+  expectedIdentity?: { agentId: string; incarnation: number };
+} {
+  if (options.incarnation === undefined) {
+    return { headers, signal: options.signal };
+  }
+  return {
+    headers: { ...headers, "x-holon-expected-incarnation": String(options.incarnation) },
+    signal: options.signal,
+    cache: "no-store",
+    expectedIdentity: { agentId, incarnation: options.incarnation },
+  };
+}
+
 async function fetchAgentWorkItem(
   baseUrl: string,
   fetchImpl: typeof fetch,
   headers: Record<string, string>,
   agentId: string,
   workItemId: string,
+  options: { incarnation?: number; signal?: AbortSignal } = {},
 ): Promise<WorkItemDto> {
   return getJson<WorkItemDto>(
     fetchImpl,
     baseUrl,
     `/agents/${encodeURIComponent(agentId)}/work-items/${encodeURIComponent(workItemId)}`,
-    { timeoutMs: HYDRATION_READ_TIMEOUT_MS, headers },
+    { timeoutMs: HYDRATION_READ_TIMEOUT_MS, ...identityFencedGetOptions(headers, agentId, options) },
   );
 }
 

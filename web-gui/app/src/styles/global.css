@@ -5573,6 +5573,19 @@ code {
   font-size: 12px;
 }
 
+.detail-refresh-feedback {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.detail-refresh-feedback .inspector-error {
+  flex-basis: 100%;
+}
+
 .inspector-list-head {
   display: flex;
   align-items: flex-start;

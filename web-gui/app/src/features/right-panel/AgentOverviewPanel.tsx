@@ -18,6 +18,7 @@ import { MarkdownContent } from "../../components/MarkdownContent";
 import { EmptyState } from "../../components/ui/EmptyState";
 import { StatusBadge } from "../../components/ui/StatusChip";
 import { agentRenameErrorKey, isAgentRenameable, validateAgentDisplayName } from "./agent-rename";
+import { ObjectDetailRefreshFeedback } from "./ObjectDetailRefreshFeedback";
 import { compactModelRouteDisplay } from "../../lib/model-route-ref";
 import { ToolExecutionContent } from "./ToolExecutionRenderers";
 import { AgentTasksPanel } from "./AgentTasksPanel";
@@ -34,7 +35,6 @@ interface AgentOverviewPanelProps {
   availableSkillCatalog?: SkillCatalogState;
   skillCatalogLoading?: boolean;
   skillCatalogError?: string;
-  onLoadWorkItemDetail: (workItemId: string) => void;
   onOpenWorkItemDetail: (workItem: WorkItemSummary) => void;
   onOpenTask: (task: TaskSummary) => void;
   onOpenConversation?: (target: TaskTargetRef) => void;
@@ -218,7 +218,6 @@ export function AgentOverviewPanel({
   availableSkillCatalog,
   skillCatalogLoading,
   skillCatalogError,
-  onLoadWorkItemDetail,
   onOpenWorkItemDetail,
   onOpenTask,
   onOpenConversation,
@@ -299,7 +298,6 @@ export function AgentOverviewPanel({
   const showCwd = Boolean(workspace?.cwd && workspace.cwd !== workspace.executionRoot);
   const selectWorkItem = (workItem: WorkItemSummary) => {
     onOpenWorkItemDetail(workItem);
-    onLoadWorkItemDetail(workItem.id);
   };
   async function handleControl(action: AgentControlAction) {
     if (!onControlAgent) return;
@@ -902,7 +900,7 @@ function WorkItemCard({
   );
 }
 
-export function WorkItemDetailPanel({ workItem, detailState, onOpenPlanFile }: { workItem: WorkItemSummary; detailState?: WorkItemDetailState; onOpenPlanFile?: (location: import("../../runtime/types").WorkspaceFileLocation) => void }) {
+export function WorkItemDetailPanel({ workItem, detailState, onOpenPlanFile, onRefresh }: { workItem: WorkItemSummary; detailState?: WorkItemDetailState; onOpenPlanFile?: (location: import("../../runtime/types").WorkspaceFileLocation) => void; onRefresh?: () => void }) {
   const { t } = useTranslation();
   const loading = detailState?.loading && !detailState.workItem;
   const plan = workItem.planArtifact;
@@ -918,7 +916,7 @@ export function WorkItemDetailPanel({ workItem, detailState, onOpenPlanFile }: {
         </div>
         {workItem.updatedAt ? <p className="detail-updated">{t("rightPanel.updated")} · {formatDateTime(workItem.updatedAt)}</p> : null}
       </header>
-      {detailState?.error ? <p className="inspector-error">{detailState.error}</p> : null}
+      <ObjectDetailRefreshFeedback state={detailState} onRefresh={onRefresh} />
       {workItem.blockedBy ? <div className="detail-notice"><strong>{t("rightPanel.blockedBy")}</strong><span>{workItem.blockedBy}</span></div> : null}
       {workItem.resultSummary ? (
         <section className="work-item-detail-section detail-prose">
@@ -992,6 +990,7 @@ export function ToolExecutionDetailPanel({
   onOpenWorkItem,
   onOpenTask,
   onBrowseFiles,
+  onRefresh,
 }: {
   toolExecutionId: string;
   toolName?: string;
@@ -1000,6 +999,7 @@ export function ToolExecutionDetailPanel({
   onOpenWorkItem?: (workItem: WorkItemSummary) => void;
   onOpenTask?: (task: TaskSummary) => void;
   onBrowseFiles?: (location: import("../../runtime/types").WorkspaceFileLocation) => void;
+  onRefresh?: () => void;
 }) {
   const { t } = useTranslation();
   const loading = detailState?.loading && !detailState?.toolExecution;
@@ -1037,7 +1037,7 @@ export function ToolExecutionDetailPanel({
           {loading ? <StatusBadge className="state-chip" kind="runtime" value="loading" /> : null}
         </div>
       </header>
-      {detailState?.error ? <p className="inspector-error">{detailState.error}</p> : null}
+      <ObjectDetailRefreshFeedback state={detailState} onRefresh={onRefresh} />
       {record ? <ToolExecutionContent record={record} onBrowseFiles={onBrowseFiles} /> : null}
       <details className="inspector-raw-detail detail-technical">
         <summary>{t("inspector.rawJson")}</summary>

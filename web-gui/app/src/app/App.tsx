@@ -279,8 +279,6 @@ export function App() {
   const controlAgent = useRuntimeStore((state) => state.controlAgent);
   const deleteAgent = useRuntimeStore((state) => state.deleteAgent);
   const renameAgentAction = useRuntimeStore((state) => state.renameAgent);
-  const loadAgentWorkItemDetail = useRuntimeStore((state) => state.loadAgentWorkItemDetail);
-  const loadAgentTaskDetail = useRuntimeStore((state) => state.loadAgentTaskDetail);
   const {
     detail: selectedAgentDetail,
     loading: agentDetailLoading,
@@ -889,8 +887,7 @@ export function App() {
                     onLoadDetail: conversationSession.loadDetail,
                     onLoadOlderActivities: conversationSession.loadOlderActivities,
                     onRetry: conversationSession.retry,
-                    onOpenWorkItemId: async (id) => {
-                      await loadAgentWorkItemDetail(activeAgent.id, id);
+                    onOpenWorkItemId: (id) => {
                       const state = useRuntimeStore.getState();
                       if (state.selectedAgentId !== activeAgent.id) return;
                       const work = state.sessionsByAgentId[activeAgent.id]?.workItemDetailsById[id]?.workItem;
@@ -931,11 +928,9 @@ export function App() {
             onConversationRead={markSelectedAgentConversationRead}
             onOpenWorkItem={(work) => {
               showWorkItemDetail(activeAgent.id, work);
-              void loadAgentWorkItemDetail(activeAgent.id, work.id);
             }}
             onOpenTask={(task) => {
               showTaskDetail(activeAgent.id, task);
-              void loadAgentTaskDetail(activeAgent.id, task.id);
             }}
           />
         ) : null}
@@ -1075,14 +1070,11 @@ export function App() {
           open={rightPanelOpen}
           mode={rightPanelMode}
           onToggleMode={toggleRightPanelExpanded}
-          onLoadWorkItemDetail={(workItemId) => loadAgentWorkItemDetail(selectedAgent.id, workItemId)}
           onOpenWorkItemDetail={(workItem) => {
             showWorkItemDetail(selectedAgent.id, workItem);
-            loadAgentWorkItemDetail(selectedAgent.id, workItem.id);
           }}
           onOpenTask={(task) => {
             showTaskDetail(selectedAgent.id, task);
-            loadAgentTaskDetail(selectedAgent.id, task.id);
           }}
           onOpenConversation={(target) => {
             navigateAgent(target.agent_id, undefined, {
