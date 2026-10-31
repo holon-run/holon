@@ -76,6 +76,17 @@ request budgets, and shared cooldown management:
   (Payment Required) are persistently isolated from immediate retry loops and
   re-evaluated only through unified recovery. Quota-less 429 rate limits persist
   across runtime restarts to avoid repeated threshold collisions.
+- **Deterministic failure containment** — Beyond payment exhaustion (402),
+  deterministic authentication failures (401/403) and contract rejections (400)
+  establish persisted cooldowns. This stops single-candidate lineages from
+  looping indefinitely through unbounded recovery cycles.
+- **Correctable dispatch retries** — Dispatches declaring refreshable
+  credentials, such as OAuth tokens with mid-turn header updates, bypass
+  credential cooldown fencing. A refreshable call can recover from an initial 401
+  without locking out the provider scope, while static credentials stay fenced.
+- **Preserved failure causes** — When cooling waits trigger replanning, Holon
+  preserves the original failure reason rather than masking it with generic
+  re-selection errors.
 
 ## Fast mode
 

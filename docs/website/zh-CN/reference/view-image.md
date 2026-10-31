@@ -85,9 +85,17 @@ Agent 可通过传递 `model`（例如 `"anthropic@direct/claude-sonnet-4-6"`）
 
 - 凭据有效
 - 声明支持 `image_input`
-- 使用支持生成图片观察结果的 transport（OpenAI 兼容 API 或 Anthropic Messages）
+- 使用支持生成图片观察结果的 transport（OpenAI 兼容 API、Anthropic Messages 或 Gemini GenerateContent）
 
 选择结果会随工具响应一起返回，你能看到选了哪个模型。
+
+### Gemini 原生图像输入与预检预算
+
+Gemini 模型通过 `GenerateContent` 的原生 `inlineData` parts 接收本地图像。该传输方式严格保留文本与图像的相对顺序，并使用 JSON Schema lowering 提取结构化视觉观察。
+
+图像输入完整纳入请求前置准入与配额核算：
+- 图像部分按图片张数和解码字节上限核算，不再被折算为纯文本 Token 估算。
+- 缺少图像输入支持的回退路由会在实际分发前提前拒绝必需图片，防止触发不可预期的下游调用异常。
 
 ### 没有可用视觉模型时
 

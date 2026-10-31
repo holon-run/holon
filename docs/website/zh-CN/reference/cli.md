@@ -1,9 +1,9 @@
 ---
 title: CLI 参考
-summary: Holon 命令行界面——基于 holon --help 验证（v0.55.0）。
+summary: Holon 命令行界面——基于 holon --help 验证（v0.56.0）。
 order: 10
 ---
-<!-- maintenance: regenerate from `holon --help` output when commands change. Last regenerated against v0.55.0. -->
+<!-- maintenance: regenerate from `holon --help` output when commands change. Last regenerated against v0.56.0. -->
 
 # CLI 参考
 
@@ -41,7 +41,7 @@ holon tail --agent child --include-progress --follow --cursor '<checkpoint>'
 ## 命令树
 
 ```text
-holon (v0.55.0)
+holon (v0.56.0)
 ├── context      显示本次 CLI 调用的声明式调用方上下文
 ├── commands     显示机器可读的 CLI 命令元数据
 ├── serve        启动 HTTP 控制平面服务

@@ -51,6 +51,12 @@ resume. Writing "waiting for CI" in a plan or ending a reply does not register
 that wait. Readiness and waiting are runtime state, managed through the
 work-item and wait operations.
 
+WorkItem source revisions stay synchronized across all queue commit channels
+within the same transaction. Whether an update occurs through wait transitions,
+task claims, or completions, execution registrations match durable revisions
+exactly. The runtime validates this equality before dispatch, stopping token
+burn if drift is detected.
+
 Switching focus also does not move an existing task to another WorkItem.
 The task retains the owner captured at creation. This matters when a slow
 test finishes after the agent has started considering a different objective:

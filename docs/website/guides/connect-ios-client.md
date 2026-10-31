@@ -45,7 +45,7 @@ If your camera is unavailable or permission is denied, paste the pairing link in
 
 ### Option B: Manual Connection
 
-1. Type or paste the full API base URL (e.g. `https://holon.example.com/api` or `http://192.168.1.50:7878/api`) into the address field on the welcome screen.
+1. Type or paste the API base URL (e.g. `https://holon.example.com/api` or `http://192.168.1.50:7878/api`) into the address field on the welcome screen. Bare hostnames without a scheme (such as `demo.holon.run`) automatically normalize to `https://`.
 2. Tap **Next**; the app probes the host's sign-in method automatically.
 3. Token hosts show an access-token field: enter your bearer token or bootstrap secret and tap **Sign in with token**.
 4. After sign-in, review the data-sharing disclosure—which explicitly lists configured host AI data recipients—and tap **Continue** before any agent data appears.
@@ -136,6 +136,8 @@ report has been moderated.
 - **Cannot connect on Wi-Fi:** Check iOS Local Network permission, the server
   address, and the host's listen interface. A physical phone cannot reach your
   computer through the phone's `localhost`.
+- **Unreachable saved host on launch:** If a saved server becomes unreachable,
+  tap **Change address** during the initial restore probe to switch endpoints.
 - **Pairing fails:** Request a fresh invitation. Check its host before redeeming
   it and ensure the phone can reach that host.
 - **Organization login returns without a session:** Retry sign-in and check
