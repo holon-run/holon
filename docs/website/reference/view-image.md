@@ -96,10 +96,22 @@ model by scanning configured providers for those that:
 - Have valid credentials
 - Advertise `image_input` support
 - Use a transport that supports image observation generation
-  (OpenAI-compatible APIs or Anthropic Messages)
+  (OpenAI-compatible APIs, Anthropic Messages, or Gemini GenerateContent)
 
 The selection result is returned in the tool response so you can see which
 model was chosen.
+
+### Native Gemini image input and preflight budgeting
+
+Gemini models handle images through native `inlineData` parts in `GenerateContent`.
+The transport preserves the order of text and images and uses JSON Schema lowering
+for structured visual observations.
+
+Image inputs participate in preflight admission and request budgeting:
+- Image parts count toward image count limits and decoded byte allowances rather
+  than plain-text token estimates.
+- Fallback routes lacking image support reject required images before dispatch,
+  preventing unexpected runtime failures.
 
 ### When no vision model is available
 

@@ -127,14 +127,14 @@ Select an agent from the Dashboard to open its conversation page:
   Verbose (tool calls and intermediate results), and Debug (full runtime
   metadata including tool execution records).
 - **Input bar** — send operator messages to the selected agent.
-- **Event timeline** — a sidebar timeline of recent events including turns,
-  tool executions, and state transitions.
+- **Conversation hydration** — Agent detail and execution state hydrate directly
+  from conversation records rather than legacy event logs.
 - **Tool execution details** — expand individual tool calls in the message
   stream to inspect request/response payloads, timing, and metadata.
   Tool result panels show structured output alongside raw data, making
   it easier to debug agent behavior.
-- **Live updates** — watch new output, tool activity, and completion briefs
-  as the runtime sends events.
+- **Live conversation updates** — watch new turns, tool activity, and completion
+  briefs update in real time.
 - **Waiting & scheduler indicators** — clearly displays explicit wait states when agents invoke `WaitFor` (waiting on background tasks, external callbacks, or operator input), including delivery modes (`final` vs `silent`).
 
 ### Search
