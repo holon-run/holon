@@ -3932,6 +3932,34 @@ fn apply_agent_state_mutation_tx(
     Ok(true)
 }
 
+/// Compose a repository-owned WorkItem update without creating new execution authority.
+pub(super) fn apply_work_item_mutation_with_source_revision_tx(
+    tx: &Transaction<'_>,
+    mutation: &WorkItemMutation,
+) -> Result<bool> {
+    validate_work_item_mutation_tx(tx, mutation)?;
+    let mutations = std::slice::from_ref(mutation);
+    let transition = execution_protocol_repository::synchronize_work_item_revisions_opt(
+        tx,
+        &mutation.record().agent_id,
+        &ExecutionProtocolTransition::default(),
+        mutations,
+        false,
+    )?;
+    let prepared = execution_protocol_repository::validate_execution_commands_tx(
+        tx,
+        &mutation.record().agent_id,
+        None,
+        &transition.commands,
+        mutations,
+        &[],
+        &[],
+    )?;
+    let applied = apply_work_item_mutation_tx(tx, mutation)?;
+    execution_protocol_repository::persist_execution_commands_tx(tx, prepared)?;
+    Ok(applied)
+}
+
 pub(super) fn validate_work_item_mutation_tx(
     tx: &Transaction<'_>,
     mutation: &WorkItemMutation,

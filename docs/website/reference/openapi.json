@@ -16320,6 +16320,130 @@
           "agent_id": {
             "type": "string"
           },
+          "source_revision_drifts": {
+            "items": {
+              "properties": {
+                "durable_revision": {
+                  "format": "uint64",
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                "generation": {
+                  "format": "uint64",
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                "source_revision": {
+                  "format": "uint64",
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                "work_item_id": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "work_item_id",
+                "generation",
+                "source_revision",
+                "durable_revision"
+              ],
+              "type": "object"
+            },
+            "type": "array"
+          },
+          "source_revision_repair_blocks": {
+            "items": {
+              "properties": {
+                "alert_brief_id": {
+                  "type": "string"
+                },
+                "alert_created_event_seq": {
+                  "format": "uint64",
+                  "minimum": 0,
+                  "type": [
+                    "integer",
+                    "null"
+                  ]
+                },
+                "drift": {
+                  "properties": {
+                    "durable_revision": {
+                      "format": "uint64",
+                      "minimum": 0,
+                      "type": "integer"
+                    },
+                    "generation": {
+                      "format": "uint64",
+                      "minimum": 0,
+                      "type": "integer"
+                    },
+                    "source_revision": {
+                      "format": "uint64",
+                      "minimum": 0,
+                      "type": "integer"
+                    },
+                    "work_item_id": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "work_item_id",
+                    "generation",
+                    "source_revision",
+                    "durable_revision"
+                  ],
+                  "type": "object"
+                },
+                "drift_present": {
+                  "description": "Computed from current canonical records, not the cached episode flag.",
+                  "type": "boolean"
+                },
+                "episode_id": {
+                  "type": "string"
+                },
+                "first_attempt_id": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "first_message_id": {
+                  "type": "string"
+                },
+                "incarnation": {
+                  "format": "uint64",
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                "rejection": {
+                  "type": "string"
+                },
+                "retained_source_count": {
+                  "format": "uint64",
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                "retained_source_disposition": {
+                  "description": "Disappearance of drift does not authorize replay of a retained source.",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "episode_id",
+                "incarnation",
+                "drift",
+                "drift_present",
+                "first_message_id",
+                "rejection",
+                "alert_brief_id",
+                "retained_source_count",
+                "retained_source_disposition"
+              ],
+              "type": "object"
+            },
+            "type": "array"
+          },
           "wake_only_queue_entries": {
             "items": {
               "properties": {
@@ -16506,7 +16630,9 @@
           "agent_id",
           "active_waits",
           "wake_only_queue_entries",
-          "work_items"
+          "work_items",
+          "source_revision_repair_blocks",
+          "source_revision_drifts"
         ],
         "title": "SchedulerRepairInspection",
         "type": "object"
@@ -25342,7 +25468,7 @@
     },
     "/api/control/agents/{agent_id}/scheduler-repair": {
       "get": {
-        "description": "Return active waits and queued wake-only messages eligible for an explicit scheduler repair transition.",
+        "description": "Return active waits, queued wake-only messages, current source-revision drift, and retained-source repair-block diagnostics. Inspection does not authorize replay.",
         "operationId": "inspectSchedulerRepair",
         "parameters": [
           {

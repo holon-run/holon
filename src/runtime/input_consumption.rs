@@ -1688,6 +1688,13 @@ impl RuntimeHandle {
             if batch.items.len() >= max_items {
                 break;
             }
+            if self
+                .inner
+                .runtime_db
+                .source_revision_repair_retains_source(&anchor.agent_id, &candidate.id)?
+            {
+                continue;
+            }
             // Do not delay pending operator/control input for a follower batch.
             if candidate.priority != anchor.priority
                 || candidate.priority == Priority::Interject

@@ -10,6 +10,7 @@ mod canonical_not_runnable;
 mod recovery_batching;
 mod recovery_diagnostics;
 mod rejected_producers;
+mod retained_sources;
 mod task_rejoin_recovery;
 
 #[derive(Default)]
@@ -1857,6 +1858,12 @@ async fn p1_shared_reply_overflow_recovers_after_queued_notifications_finish() {
     }
     harness.restart();
     let runtime = harness.runtime();
+    // Exercise the identity cap, independently of evolving tool-schema overhead.
+    let mut recovery_context = context_config();
+    recovery_context.prompt_budget_estimated_tokens += 16_384;
+    recovery_context.turn_projection_min_budget = recovery_context.prompt_budget_estimated_tokens;
+    recovery_context.turn_projection_max_budget = recovery_context.prompt_budget_estimated_tokens;
+    *runtime.inner.context_config.write().await = recovery_context;
     runtime.recover_scheduler_bootstrap_claims().await.unwrap();
     assert!(runtime.inner.agent.lock().await.queue.is_empty());
     assert_eq!(

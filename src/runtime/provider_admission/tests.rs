@@ -5,6 +5,7 @@ mod local_dispatch;
 mod payment_required;
 mod probe_frontier;
 mod rate_limited;
+mod repair_blocks;
 mod root_fairness;
 
 use super::*;

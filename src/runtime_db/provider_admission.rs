@@ -12,6 +12,8 @@ mod recovery;
 pub use recovery::*;
 mod queue_parking;
 pub use queue_parking::*;
+mod repair_block;
+pub use repair_block::*;
 
 #[derive(
     Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, serde::Serialize, serde::Deserialize,

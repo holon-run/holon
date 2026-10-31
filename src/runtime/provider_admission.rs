@@ -23,7 +23,7 @@ use crate::{
     runtime_db::RuntimeDb,
     types::{
         AdmissionContext, AgentState, AgentStatus, AuditEvent, AuthorityClass, BriefRecord,
-        MessageEnvelope, MessageOrigin,
+        MessageEnvelope, MessageKind, MessageOrigin,
     },
 };
 
@@ -110,6 +110,21 @@ pub(super) fn local_dispatch_rejection_user_summary(error: &anyhow::Error) -> Op
         return None;
     }
     let denial = dispatch_denial(error).map(|deferred| deferred.0);
+    if matches!(
+        denial,
+        Some(LocalDispatchDenial::Dispatch(
+            ProviderRecoveryDispatchDenial::StaleExecution(
+                crate::runtime_db::provider_admission::ProviderDispatchRejection::WorkItemRevisionMismatch
+                | crate::runtime_db::provider_admission::ProviderDispatchRejection::WorkItemRevisionDrift
+            )
+        ))
+    ) {
+        return Some(
+            "The input was received, but this model send was blocked by a local source revision fault. \
+             Repair is required; inspect scheduler-repair diagnostics. Retained inputs are not automatically replayed."
+                .into(),
+        );
+    }
     let base = match denial {
         Some(LocalDispatchDenial::ScopeCooling { .. }) => {
             "The model channel is cooling down. This send was blocked."
@@ -692,6 +707,63 @@ impl Drop for ActiveAdmission {
 }
 
 impl RuntimeHandle {
+    /// Only suppress selection. The source's canonical state and recovery
+    /// authority remain untouched, including after the revision fault disappears.
+    pub(super) fn suppress_repair_blocked_source(&self, message: &MessageEnvelope) -> Result<bool> {
+        if matches!(
+            message.kind,
+            MessageKind::Control
+                | MessageKind::TaskStatus
+                | MessageKind::BriefAck
+                | MessageKind::BriefResult
+        ) {
+            return Ok(false);
+        }
+        let blocked = self
+            .inner
+            .runtime_db
+            .source_revision_repair_blocks_source(message, self.now())?;
+        self.publish_pending_source_revision_repair_briefs(&message.agent_id)?;
+        Ok(blocked)
+    }
+
+    pub(super) fn publish_pending_source_revision_repair_briefs(
+        &self,
+        agent_id: &str,
+    ) -> Result<()> {
+        let index = self.inner.storage.index_outbox();
+        for brief in self
+            .inner
+            .runtime_db
+            .pending_source_revision_repair_briefs(agent_id)?
+        {
+            let Some(commit) = self
+                .inner
+                .runtime_db
+                .commit_source_revision_repair_brief(&brief, &index.changes_for_brief(&brief))?
+            else {
+                continue;
+            };
+            index.enqueue_brief_best_effort(&commit.brief)?;
+            if commit.event_inserted {
+                if let Err(error) = self
+                    .inner
+                    .storage
+                    .event_log()
+                    .publish_committed_event(Some(agent_id.into()), &commit.event)
+                {
+                    tracing::warn!(
+                        error = %error,
+                        event_id = %commit.event.id,
+                        "failed to publish committed repair-block brief_created event"
+                    );
+                }
+            }
+            self.inner.notify.notify_one();
+        }
+        Ok(())
+    }
+
     pub(super) async fn settle_provider_dispatch_pause(
         &self,
         message: &MessageEnvelope,

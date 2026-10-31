@@ -18,7 +18,8 @@ use crate::runtime_db::conversation::{
 use crate::runtime_db::evidence::*;
 use crate::runtime_db::index_outbox::RuntimeIndexChange;
 use crate::runtime_db::transitions::{
-    inject_fault, trigger_wait_and_enqueue_tx, PostCommitEffects,
+    apply_work_item_mutation_with_source_revision_tx, inject_fault, trigger_wait_and_enqueue_tx,
+    PostCommitEffects, WorkItemMutation,
 };
 use crate::runtime_db::types::*;
 use crate::runtime_db::write_queue::RuntimeDbWriteContext;
@@ -26,6 +27,7 @@ use crate::runtime_db::{
     RuntimeStateTransitionConflict, CONTEXT_EPISODE_ANCHORS_DOMAIN, TASK_PAYLOAD_ARRAY_LIMIT,
     TASK_PAYLOAD_STRING_LIMIT,
 };
+use crate::runtime_event::RuntimeEventKind;
 use crate::types::*;
 
 #[derive(Debug, Clone)]
@@ -3911,7 +3913,28 @@ fn settle_cancelled_timer_waits_tx(
                 work_item.recheck_at = None;
                 work_item.recheck_consumed_at = None;
                 work_item.updated_at = work_item.updated_at.max(cancelled_at);
-                update_expected_work_item_tx(tx, &work_item, revision)?;
+                apply_work_item_mutation_with_source_revision_tx(
+                    tx,
+                    &WorkItemMutation::Update {
+                        record: work_item.clone(),
+                        expected_revision: revision,
+                    },
+                )?;
+                let mut event = AuditEvent::typed(
+                    RuntimeEventKind::WorkItemWritten,
+                    &WorkItemLifecycleAuditEvent::from_work_item("timer_cancelled", &work_item),
+                )?;
+                event.id = format!(
+                    "audit:timer-work-item-cancelled:{}:{}",
+                    work_item.id, work_item.revision
+                );
+                event.created_at = cancelled_at;
+                event.data["timer_id"] = serde_json::json!(timer.id);
+                event.data["wait_condition_id"] = serde_json::json!(condition.id);
+                event.data["expected_revision"] = serde_json::json!(revision);
+                result
+                    .audit_events
+                    .push(append_audit_event_tx(tx, Some(&timer.agent_id), &event)?.0);
                 insert_runtime_index_changes_tx(
                     tx,
                     &[RuntimeIndexChange {
@@ -6662,6 +6685,13 @@ pub(crate) fn queue_entry_is_claimable_tx(
     record: &QueueEntryRecord,
     include_interrupted: bool,
 ) -> Result<bool> {
+    if super::provider_admission::source_revision_repair_retains_source_tx(
+        tx,
+        &record.agent_id,
+        &record.message_id,
+    )? {
+        return Ok(false);
+    }
     let status = tx
         .query_row(
             "SELECT status
@@ -6694,6 +6724,9 @@ fn try_transition_claimable_message_tx(
     include_interrupted: bool,
 ) -> Result<bool> {
     super::reclamation::ensure_work_admission_tx(tx, &record.agent_id)?;
+    if !queue_entry_is_claimable_tx(tx, record, include_interrupted)? {
+        return Ok(false);
+    }
     let queued_status = enum_string(&QueueEntryStatus::Queued)?;
     let secondary_status = enum_string(if include_interrupted {
         &QueueEntryStatus::Interrupted

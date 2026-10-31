@@ -76,6 +76,22 @@ fn drifted_sibling_work_item_blocks_dispatch_before_io() -> Result<()> {
     assert_eq!(details["drifted_work_items"][0]["source_revision"], 1);
     assert_eq!(details["drifted_work_items"][0]["durable_revision"], 2);
     assert_eq!(details["dispatch_occurred"], false);
+    let repair = db.source_revision_repair_assessments("agent-a")?;
+    assert_eq!(repair.len(), 1);
+    assert_eq!(repair[0].drift.work_item_id, "work-drifted");
+    assert_eq!(
+        repair[0].first_attempt_id.as_deref(),
+        Some(attempt.attempt_id.as_str())
+    );
+    assert_eq!(
+        repair[0].first_message_id.as_str(),
+        attempt.source_message_id.as_deref().unwrap(),
+    );
+    assert_eq!(repair[0].rejection, "work_item_revision_drift");
+    assert_eq!(
+        db.pending_source_revision_repair_briefs("agent-a")?.len(),
+        1
+    );
     Ok(())
 }
 
@@ -203,6 +219,25 @@ fn revision_rejection_audits_the_exact_transaction_snapshot_without_charging() -
             assert!(event.data.get("prompt").is_none());
             Ok(())
         })?;
+        let repair = db.source_revision_repair_assessments("agent-a")?;
+        if source != 1 {
+            assert_eq!(repair.len(), 1);
+            assert_eq!(repair[0].drift.source_revision, source);
+            assert_eq!(repair[0].drift.durable_revision, 1);
+            assert_eq!(repair[0].rejection, "work_item_revision_mismatch");
+            assert_eq!(
+                db.pending_source_revision_repair_briefs("agent-a")?.len(),
+                1
+            );
+        } else {
+            assert!(
+                repair.is_empty(),
+                "an admitted-fence error is not canonical drift"
+            );
+            assert!(db
+                .pending_source_revision_repair_briefs("agent-a")?
+                .is_empty());
+        }
     }
     Ok(())
 }

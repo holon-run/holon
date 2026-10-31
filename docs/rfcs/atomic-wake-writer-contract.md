@@ -77,6 +77,14 @@ Public WorkItem writers synchronize the canonical source revision in their
 record transaction. This includes direct wait registration and deferred
 terminal waits committed with queue settlement; neither path may leave a
 new durable revision behind an old canonical source.
+Timer cancellation and cancelled-timer startup recovery share that boundary:
+settling an unadmitted exact timer wait, retaining its explicit cancellation
+blocker, advancing an existing source registration, and recording
+`work_item_written` attribution and index changes must commit or roll back
+together. Cancellation does not create a missing registration, change the
+execution generation or owner, resume the WorkItem, or repair preexisting
+revision drift. It preserves the current canonical readiness; cancelling a
+wait is not authority to turn `Waiting` into `Runnable`.
 An `AdvanceWorkItemSourceRevision` must connect that
 transaction's expected revision to its updated revision for the same owner;
 an already-present durable target revision alone is not writer evidence.
@@ -85,8 +93,9 @@ WorkItem-bound claim fences the record snapshot used to prepare its provider
 guard. A concurrent legal writer causes full replanning and releases the old
 guard, rather than rewriting admission fences after guard capture.
 
-Dispatch reconciliation is audit-only on normal traffic. It may emit recovery
-signals for historical or damaged state, but it cannot advance an `Active` or
+Dispatch reconciliation is audit-only with respect to execution authority on
+normal traffic. It may persist fault observations and failure publications for
+historical or damaged state, but it cannot advance an `Active` or
 `Triggered` wait, clear a WorkItem blocker, or revise a WorkItem. Any future
 repair path must be explicitly named, expectation-fenced, and independently
 audited.
@@ -114,6 +123,36 @@ original-source restoration. This change does not add a generic successful
 `NeedsRepair` unlock operation. A separately authorized new continuation/root
 is new input, not restoration or replay of the old input; operators must not
 edit revision, generation, or pending rows to simulate that authority.
+
+### Durable source-revision repair blocks
+
+An open WorkItem's durable/source mismatch creates a persistent fault episode,
+keyed by agent incarnation and the WorkItem generation/revision pair. Concurrent
+observations share one episode and logical alert. A changed pair or an observed
+resolution followed by the same fault starts a new episode. Read-only diagnostics
+recheck the current canonical predicate rather than trusting a cached block flag.
+
+Scheduler selection retains affected sources without claiming, settling, or
+consuming them. Authenticated operator inputs each receive a deterministic
+failure Brief correlated to that input; they are not reported as executed.
+Control and non-model bookkeeping retain their existing paths. Dispatch still
+checks its original owner, generation, admission, terminal, and consumption
+fences, including a fault introduced after scheduler selection.
+
+Episode/source observations and a publication outbox commit together. Failure
+Briefs use stable IDs and payloads through the existing atomic Brief/event writer;
+the outbox is acknowledged only after its committed event linkage exists.
+Polling retries pending publications after restart even without a queued input.
+This provides idempotent local publication, not exactly-once external delivery.
+
+Removing revision drift resolves only that observation. Retained sources remain
+ineligible for automatic replay. Shared consumption transactions also fence
+retained sources: a new turn must not attach an old operator interject or batched
+agent-message follower merely because the revision drift has disappeared.
+Selection filters alone are not a consumption authority boundary.
+Existing `NeedsRepair` states, wait
+obligations, consumption, and business blockers remain unchanged. These records
+are diagnostics and failure feedback, never online reconcile authority.
 
 ### Terminal timer obligations
 

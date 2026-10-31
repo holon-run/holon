@@ -1350,7 +1350,7 @@ export interface paths {
         };
         /**
          * Inspect scheduler repair state
-         * @description Return active waits and queued wake-only messages eligible for an explicit scheduler repair transition.
+         * @description Return active waits, queued wake-only messages, current source-revision drift, and retained-source repair-block diagnostics. Inspection does not authorize replay.
          */
         get: operations["inspectSchedulerRepair"];
         put?: never;
@@ -7315,6 +7315,41 @@ export interface components {
                 work_item_id?: string | null;
             }[];
             agent_id: string;
+            source_revision_drifts: {
+                /** Format: uint64 */
+                durable_revision: number;
+                /** Format: uint64 */
+                generation: number;
+                /** Format: uint64 */
+                source_revision: number;
+                work_item_id: string;
+            }[];
+            source_revision_repair_blocks: {
+                alert_brief_id: string;
+                /** Format: uint64 */
+                alert_created_event_seq?: number | null;
+                drift: {
+                    /** Format: uint64 */
+                    durable_revision: number;
+                    /** Format: uint64 */
+                    generation: number;
+                    /** Format: uint64 */
+                    source_revision: number;
+                    work_item_id: string;
+                };
+                /** @description Computed from current canonical records, not the cached episode flag. */
+                drift_present: boolean;
+                episode_id: string;
+                first_attempt_id?: string | null;
+                first_message_id: string;
+                /** Format: uint64 */
+                incarnation: number;
+                rejection: string;
+                /** Format: uint64 */
+                retained_source_count: number;
+                /** @description Disappearance of drift does not authorize replay of a retained source. */
+                retained_source_disposition: string;
+            }[];
             wake_only_queue_entries: {
                 agent_id: string;
                 /** Format: date-time */
