@@ -4,12 +4,17 @@ import http.server
 import json
 import secrets
 import subprocess
+import time
 import threading
 
 
 MAXIMUM_TEXT_SIZE = "accessibility-extra-extra-extra-large"
 # Case preparation/restoration runs outside XCTest's interactive deadlines.
 _CONFIGURATION_TIMEOUT = 120
+# The simctl ui service can hang transiently mid-run; runtime control calls
+# retry within a bounded budget instead of failing the whole job on one miss.
+_RUNTIME_RETRY_ATTEMPTS = 3
+_RETRY_BACKOFF_SECONDS = (1.0, 4.0)
 _TEXT_SIZES = {
     "extra-small", "small", "medium", "large", "extra-large",
     "extra-extra-large", "extra-extra-extra-large", "accessibility-medium",
@@ -52,25 +57,37 @@ def simulator_appearance(simulator, appearance):
         _set_appearance(simulator, original, timeout=_CONFIGURATION_TIMEOUT)
 
 
-def _read_text_size(simulator, *, timeout=15):
-    result = subprocess.run(
-        ["xcrun", "simctl", "ui", simulator, "content_size"],
-        check=True, capture_output=True, text=True, timeout=timeout,
-    )
+def _run_content_size(simulator, arguments, *, timeout, attempts):
+    command = ["xcrun", "simctl", "ui", simulator, "content_size", *arguments]
+    for attempt in range(1, attempts + 1):
+        try:
+            return subprocess.run(
+                command, check=True, capture_output=True, text=True, timeout=timeout,
+            )
+        except subprocess.SubprocessError as error:
+            if attempt == attempts:
+                raise
+            backoff = _RETRY_BACKOFF_SECONDS[min(attempt - 1,
+                                                 len(_RETRY_BACKOFF_SECONDS) - 1)]
+            print(f"模拟器 {simulator}：simctl ui content_size 第 {attempt}/{attempts} "
+                  f"次尝试失败（{type(error).__name__}），{backoff:g}s 后重试", flush=True)
+            time.sleep(backoff)
+
+
+def _read_text_size(simulator, *, timeout=15, attempts=1):
+    result = _run_content_size(simulator, [], timeout=timeout, attempts=attempts)
     category = result.stdout.strip()
     if category not in _TEXT_SIZES:
         raise RuntimeError(f"无法读取可恢复的模拟器系统字号：{category!r}")
     return category
 
 
-def set_simulator_text_size(simulator, category, phase="运行时切换", *, timeout=15):
+def set_simulator_text_size(simulator, category, phase="运行时切换", *, timeout=15,
+                            attempts=1):
     if category not in _TEXT_SIZES:
         raise ValueError("不支持的系统字号")
-    subprocess.run(
-        ["xcrun", "simctl", "ui", simulator, "content_size", category],
-        check=True, capture_output=True, text=True, timeout=timeout,
-    )
-    actual = _read_text_size(simulator, timeout=timeout)
+    _run_content_size(simulator, [category], timeout=timeout, attempts=attempts)
+    actual = _read_text_size(simulator, timeout=timeout, attempts=attempts)
     print(f"模拟器 {simulator} 系统字号（{phase}）：{actual}", flush=True)
     if actual != category:
         raise RuntimeError(f"系统字号核验失败：期望 {category}，实际 {actual}")
@@ -134,7 +151,8 @@ def runtime_text_size_control(simulator):
                 self.send_error(400)
                 return
             try:
-                actual = set_simulator_text_size(simulator, category)
+                actual = set_simulator_text_size(
+                    simulator, category, attempts=_RUNTIME_RETRY_ATTEMPTS)
             except (subprocess.SubprocessError, RuntimeError):
                 self.send_error(500, "System text-size verification failed")
                 return
