@@ -9334,11 +9334,11 @@ mod tests {
             AgentRegistryStatus, AgentStatus, AgentVisibility, AuthorityClass, BriefKind,
             BriefRecord, ChildAgentWorkspaceMode, ControlAction, DeliverySummaryRecord,
             InvokeAgentRequest, InvokeAgentTarget, MessageBody, MessageEnvelope, MessageKind,
-            MessageOrigin, Priority, QueueEntryRecord, QueueEntryStatus, TaskKind, TaskRecord,
-            TaskRecoverySpec, TaskStatus, TimerRecord, TimerStatus, TurnTerminalKind,
-            WaitConditionKind, WaitConditionRecord, WaitConditionStatus, WakeSource,
-            WorkItemRecord, WorkItemState, ACTOR_INVOCATION_TASK_KIND,
-            AGENT_MESSAGE_WAIT_TASK_KIND,
+            MessageOrigin, Priority, QueueEntryRecord, QueueEntryStatus, RuntimeFailurePhase,
+            RuntimeFailureSummary, TaskKind, TaskRecord, TaskRecoverySpec, TaskStatus, TimerRecord,
+            TimerStatus, TurnTerminalKind, TurnTerminalRecord, WaitConditionKind,
+            WaitConditionRecord, WaitConditionStatus, WakeSource, WorkItemRecord, WorkItemState,
+            ACTOR_INVOCATION_TASK_KIND, AGENT_MESSAGE_WAIT_TASK_KIND,
         },
     };
 
@@ -20114,6 +20114,89 @@ mod tests {
             .to_string()
             .contains("home_artifact"));
         assert_eq!(fs::read_to_string(&artifact).unwrap(), "durable result");
+        host.shutdown().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn parent_cleanup_allows_historical_failure_without_cancelling_live_work() {
+        let (_home, host) = test_host();
+        let parent = host.default_runtime().await.unwrap();
+        let child = retained_cleanup_fixture(&host, "parent-cleanup-historical-failure");
+        let mut state = host
+            .runtime_db()
+            .agent_states()
+            .latest(&child.agent_id)
+            .unwrap()
+            .unwrap();
+        state.status = AgentStatus::Asleep;
+        state.last_turn_terminal = Some(TurnTerminalRecord {
+            turn_id: "failed-turn".into(),
+            turn_index: 2,
+            kind: TurnTerminalKind::Aborted,
+            reason: Some("provider failed".into()),
+            last_assistant_message: None,
+            no_brief_reason: None,
+            checkpoint: None,
+            completed_at: Utc::now(),
+            duration_ms: 4,
+        });
+        state.last_runtime_failure = Some(RuntimeFailureSummary {
+            occurred_at: Utc::now(),
+            summary: "provider_dispatch_rejected".into(),
+            phase: RuntimeFailurePhase::RuntimeTurn,
+            detail_hint: Some("settled after failure".into()),
+            failure_artifact: None,
+        });
+        let diagnostic = state.last_runtime_failure.clone();
+        host.runtime_db().agent_states().upsert(&state).unwrap();
+        let job = host
+            .begin_parent_agent_deletion(&parent, &child.agent_id, child.incarnation)
+            .await
+            .unwrap();
+        assert_eq!(
+            host.runtime_db()
+                .agent_states()
+                .latest(&child.agent_id)
+                .unwrap()
+                .unwrap()
+                .last_runtime_failure,
+            diagnostic
+        );
+        host.execute_deletion_job(job).await.unwrap();
+        assert_eq!(
+            host.agent_identity_record(&child.agent_id)
+                .unwrap()
+                .unwrap()
+                .status,
+            AgentRegistryStatus::Deleted
+        );
+
+        let child = retained_cleanup_fixture(&host, "parent-cleanup-failure-plus-task");
+        let mut state = host
+            .runtime_db()
+            .agent_states()
+            .latest(&child.agent_id)
+            .unwrap()
+            .unwrap();
+        state.last_runtime_failure = diagnostic;
+        host.runtime_db().agent_states().upsert(&state).unwrap();
+        let task = test_child_supervision_task(&child.agent_id, "cleanup-failure-active-task");
+        host.runtime_db().tasks().upsert(&task).unwrap();
+        assert!(host
+            .begin_parent_agent_deletion(&parent, &child.agent_id, child.incarnation)
+            .await
+            .unwrap_err()
+            .to_string()
+            .contains("active_task"));
+        assert_eq!(
+            host.runtime_db()
+                .tasks()
+                .latest(&task.id)
+                .unwrap()
+                .unwrap()
+                .status,
+            TaskStatus::Running
+        );
         host.shutdown().await.unwrap();
     }
 
