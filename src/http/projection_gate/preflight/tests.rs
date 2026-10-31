@@ -238,12 +238,15 @@ async fn queued_waiter_deadline_expires_without_sql_and_slot_recovers() {
 #[tokio::test]
 async fn gate_close_fails_queued_waiters_before_any_sql() {
     let gate = Arc::new(ProjectionGate::new(1, Duration::from_millis(250)));
+    let (started_tx, started) = oneshot::channel();
     let (release, release_rx) = oneshot::channel::<()>();
     let mut first = Box::pin(gate.preflight::<(), _>(deadline(), move |_| {
+        let _ = started_tx.send(());
         release_rx.blocking_recv().unwrap();
         Ok(())
     }));
     enroll(first.as_mut()).await;
+    started.await.unwrap();
     let called = Arc::new(AtomicBool::new(false));
     let attempted = Arc::clone(&called);
     let mut waiter = Box::pin(gate.preflight::<(), _>(deadline(), move |_| {
