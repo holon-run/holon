@@ -120,6 +120,29 @@ test result: ok. 4 passed; 0 failed; finished in 0.25s
         self.assertEqual(report["coverage_job_seconds"], 1800)
         self.assertEqual(report["jobs"][1]["steps"][0]["seconds"], 1800)
 
+    def test_split_rust_jobs_report_the_slowest_path_member(self):
+        jobs = [
+            job(
+                "Rust lint",
+                "2026-09-13T00:00:00Z",
+                "2026-09-13T00:05:00Z",
+            ),
+            job(
+                "Rust build",
+                "2026-09-13T00:00:00Z",
+                "2026-09-13T00:11:00Z",
+            ),
+            job(
+                "Rust Test (lib-a)",
+                "2026-09-13T00:00:00Z",
+                "2026-09-13T00:09:00Z",
+            ),
+        ]
+
+        report = workflow_metrics(jobs)
+
+        self.assertEqual(report["rust_job_seconds"], 660)
+
     def test_history_and_budgets_are_warning_only(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

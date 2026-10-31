@@ -118,5 +118,89 @@ class CiTestShardsTests(unittest.TestCase):
         self.assertNotIn("--test", lib)
 
 
+    def test_lib_test_names_are_read_from_the_libtest_list(self):
+        completed = mock.Mock()
+        completed.stdout = (
+            "running 0 tests\n"
+            "alpha::tests::one: test\n"
+            "alpha::tests::two: test\n"
+            "beta::solo: test\n"
+            "gamma::bench: benchmark\n"
+            "4 tests, 1 benchmark\n"
+        )
+        with mock.patch.object(
+            ci_test_shards.subprocess, "run", return_value=completed
+        ) as run:
+            names = ci_test_shards.lib_test_names()
+        self.assertEqual(
+            names,
+            ["alpha::tests::one", "alpha::tests::two", "beta::solo"],
+        )
+        self.assertEqual(
+            run.call_args.args[0],
+            ["cargo", "test", "--lib", "--", "--list"],
+        )
+
+    def test_lib_partition_assigns_every_test_exactly_once(self):
+        names = [
+            "alpha::tests::one",
+            "alpha::tests::two",
+            "beta::tests::one",
+            "gamma::solo",
+            "delta::tests::one",
+        ]
+        shards = ci_test_shards.partition_lib_tests(names, 2)
+        flattened = [name for shard in shards for name in shard]
+        self.assertEqual(sorted(flattened), sorted(names))
+        self.assertEqual(len(flattened), len(set(flattened)))
+
+    def test_lib_partition_keeps_modules_together_and_balances_counts(self):
+        names = [
+            f"module_{index}::tests::case_{case}"
+            for index in range(6)
+            for case in range(4)
+        ]
+        names += [f"heavy::tests::case_{case}" for case in range(10)]
+        shards = ci_test_shards.partition_lib_tests(names, 2)
+        module_sets = [
+            {name.rsplit("::", 1)[0] for name in shard} for shard in shards
+        ]
+        self.assertEqual(
+            module_sets[0] & module_sets[1],
+            set(),
+            "a module must not span two lib shards",
+        )
+        sizes = [len(shard) for shard in shards]
+        self.assertLessEqual(
+            abs(sizes[0] - sizes[1]),
+            10,
+            "lib shards must stay close in test count",
+        )
+
+    def test_lib_shard_commands_run_exact_names_with_two_threads(self):
+        names = ["alpha::tests::one", "beta::tests::one"]
+        first = ci_test_shards.lib_shard_commands("lib-a", names)
+        second = ci_test_shards.lib_shard_commands("lib-b", names)
+        self.assertEqual(
+            first[0][:5], ["cargo", "test", "--lib", "--", "--exact"]
+        )
+        self.assertIn("--test-threads=2", first[0])
+        self.assertEqual(len(first[0]) - 6, 1)
+        self.assertEqual(first[1][:3], ["cargo", "test", "--bins"])
+        self.assertEqual(
+            second[0][:5], ["cargo", "test", "--lib", "--", "--exact"]
+        )
+        self.assertEqual(len(second), 1)
+
+    def test_lib_shard_splits_the_enumerated_test_names(self):
+        names = ["alpha::tests::one", "beta::tests::one"]
+        with mock.patch.object(
+            ci_test_shards, "lib_test_names", return_value=names
+        ):
+            commands = ci_test_shards.suite_commands("lib-a", FAKE_TARGETS, None)
+        self.assertEqual(
+            commands[0][:5], ["cargo", "test", "--lib", "--", "--exact"]
+        )
+
 if __name__ == "__main__":
     unittest.main()
