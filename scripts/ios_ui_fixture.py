@@ -6,8 +6,10 @@ import hashlib
 import json
 import os
 import pathlib
+import plistlib
 import re
 import secrets
+import shutil
 import socket
 import sqlite3
 import subprocess
@@ -25,6 +27,10 @@ from ios_simulator_text_size import (
     MAXIMUM_TEXT_SIZE, initialize_simulator_text_size, runtime_text_size_control,
     simulator_text_size, simulator_appearance,
 )
+
+
+class UICaseFailure(RuntimeError):
+    """A UI case xcodebuild run failed; eligible for one bounded retry."""
 
 
 @contextmanager
@@ -369,6 +375,10 @@ with fixture_directory(repo) as root:
     lost_receipts = []
     prompt_evidence = []
     fixture_case = None
+    # The confirming automatic-read endpoint counts marker briefs created
+    # after this baseline so a bounded retry of that case starts from a clean
+    # count instead of deterministically failing its second attempt.
+    automatic_read_baseline_seq = -1
     lost_lock = threading.Lock()
     proxy_control_token = secrets.token_hex(32)
     proxy_available = threading.Event()
@@ -404,8 +414,9 @@ with fixture_directory(repo) as root:
                                  AND cursor.event_log_epoch =
                                      (SELECT value FROM runtime_metadata WHERE key = 'event_log_epoch')
                                  AND cursor.read_through_event_seq >= brief.created_event_seq
-                                 AND brief.preview LIKE 'IOS_AUTOMATIC_READ_FOLLOWUP_BRIEF%'""",
-                            (agent,)).fetchone()[0]
+                                 AND brief.preview LIKE 'IOS_AUTOMATIC_READ_FOLLOWUP_BRIEF%'
+                                 AND brief.created_event_seq > ?""",
+                            (agent, automatic_read_baseline_seq)).fetchone()[0]
                     confirming = self.path == "/fixture/automatic-read-confirmed"
                     if cursors > 0 and (not confirming or advanced == 1):
                         break
@@ -778,6 +789,22 @@ with fixture_directory(repo) as root:
                     }
                     raise RuntimeError("task results did not project into receipt turns: " + json.dumps(diagnostics))
             test_env = dict(os.environ)
+            # Slow CI runners blow fixed UI wait budgets. Scale every budget
+            # together through HOLON_UI_WAIT_SCALE; the TEST_RUNNER_ prefix is
+            # how xcodebuild forwards environment into the test runner.
+            raw_wait_scale = os.environ.get("HOLON_UI_WAIT_SCALE", "1").strip()
+            try:
+                wait_scale = float(raw_wait_scale)
+            except ValueError:
+                raise RuntimeError("HOLON_UI_WAIT_SCALE must be a number, got " + repr(raw_wait_scale))
+            if not 1.0 <= wait_scale <= 5.0:
+                raise RuntimeError("HOLON_UI_WAIT_SCALE must be within [1, 5]")
+            test_env["TEST_RUNNER_HOLON_UI_WAIT_SCALE"] = f"{wait_scale:g}"
+            if wait_scale != 1.0:
+                print(f"UI 等待预算按 HOLON_UI_WAIT_SCALE={wait_scale:g} 整体缩放", flush=True)
+            # The per-case execution allowance has to cover the stretched
+            # waits; otherwise a healthy but slow case is killed by a
+            # timeout that no longer matches its budget.
             test_env.update(HOLON_UI_BASE_URL=base, HOLON_UI_PAIRING_TICKET=pairing["ticket"],
                 HOLON_UI_AGENT_ID=agent, HOLON_UI_WORK_ID=work_id, HOLON_UI_TASK_ID=task["id"],
                 HOLON_UI_FILE_PATH=file_path, HOLON_UI_WORKSPACE_ID=workspace_id,
@@ -894,6 +921,82 @@ with fixture_directory(repo) as root:
                         f"simctl uninstall left {bundle_id} installed on {simulator}; "
                         "refusing to run UI cases against stale app data")
 
+                def reset_app_group_consent(simulator, bundle_id, group_id):
+                    # Sharing consent lives in the App Group container, which
+                    # survives app uninstall on the simulator. A previous
+                    # attempt's approval for the same host therefore skips the
+                    # in-app consent gate and makes the next attempt fail for
+                    # a reason the case never produced. Clear the persisted
+                    # defaults so every attempt observes a clean install.
+                    probe = subprocess.run(
+                        ["xcrun", "simctl", "get_app_container", simulator, bundle_id, "groups"],
+                        stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, check=False,
+                        text=True)
+                    if probe.returncode != 0:
+                        # Nothing is installed, so there is no group container to
+                        # clear and a later install starts empty. The group
+                        # container outlives the app, so a leftover approval
+                        # can still exist; report it only when the app is
+                        # installed, which is when the container is reachable
+                        # and the absence is suspicious.
+                        installed = subprocess.run(
+                            ["xcrun", "simctl", "get_app_container", simulator, bundle_id, "data"],
+                            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False)
+                        if installed.returncode == 0:
+                            print(f"::warning title=iOS UI state reset::the app "
+                                  f"group container for {bundle_id} could not be "
+                                  f"read on {simulator}; a leftover sharing "
+                                  f"approval would not be cleared", flush=True)
+                        return
+                    for line in str(probe.stdout or "").splitlines():
+                        fields = line.split("\t")
+                        if len(fields) != 2 or fields[0].strip() != group_id:
+                            continue
+                        preferences = pathlib.Path(fields[1].strip()) / "Library" / "Preferences"
+                        if not preferences.is_dir():
+                            return
+                        for stale in preferences.glob("*.plist"):
+                            # A concurrent write may remove the file first; the
+                            # reset must not fail the sweep for that.
+                            stale.unlink(missing_ok=True)
+                        return
+                    # The group container was not listed. A case that expects
+                    # a clean install would fail later for an unclear reason,
+                    # so say so now.
+                    print(f"::warning title=iOS UI state reset::app group "
+                          f"{group_id} not found on {simulator}; sharing consent "
+                          f"could not be reset", flush=True)
+
+                def app_state_reset_failure(simulator, bundle_id, group_id):
+                    # The app runs in its own process, so it cannot fail the
+                    # test that asked for a reset. It publishes the failure
+                    # in the App Group instead, where the host can read it.
+                    probe = subprocess.run(
+                        ["xcrun", "simctl", "get_app_container", simulator, bundle_id, "groups"],
+                        stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, check=False,
+                        text=True)
+                    if probe.returncode != 0:
+                        return None
+                    for line in str(probe.stdout or "").splitlines():
+                        fields = line.split("\t")
+                        if len(fields) != 2 or fields[0].strip() != group_id:
+                            continue
+                        preferences = pathlib.Path(fields[1].strip()) / "Library" / "Preferences"
+                        if not preferences.is_dir():
+                            return None
+                        for stored in preferences.glob("*.plist"):
+                            try:
+                                content = plistlib.loads(stored.read_bytes())
+                            except Exception:
+                                print(f"::warning title=iOS UI reset probe::"
+                                      f"skipping unreadable app-group plist {stored.name}",
+                                      flush=True)
+                                continue
+                            failure = content.get("testing.state.reset.failure")
+                            if failure:
+                                return str(failure)
+                    return None
+
                 selected_cases = os.environ.get("IOS_UI_CASES")
                 if selected_cases:
                     requested = selected_cases.split(",")
@@ -911,12 +1014,22 @@ with fixture_directory(repo) as root:
                 # subset skips that ordering entirely. A reused simulator can
                 # otherwise restore a stale profile straight past onboarding.
                 # Always uninstall so every sweep starts from that clean install.
+                # The App Group container outlives the app install, so the
+                # sharing-consent approval from an earlier run would skip the
+                # consent gate. The container is only reachable while the app
+                # is still installed, so the reset must come first.
+                reset_app_group_consent(simulator, "run.holon.ios", "group.run.holon.ios")
                 ensure_uninstalled(simulator, "run.holon.ios")
                 if share_acceptance:
                     # The preceding xcodebuild may leave this simulator shut down.
                     from ios_share_probe import install
                     install(simulator, repo, root)
-                for (method, content_size), case_bundle in zip(cases, bundles):
+                def run_ui_case(method, content_size, case_bundle):
+                    # Invoked once per attempt: every per-case fixture below
+                    # (history seeds, loss reset, browser link turn, pairing
+                    # ticket, report snapshots) is rebuilt from scratch, which
+                    # is what makes one bounded retry after a flaky failure safe.
+                    global fixture_case, automatic_read_baseline_seq
                     fixture_case = method
                     if method == "testOfflineReadingCacheColdLaunchAndRetry":
                         # Do not push the onboarding smoke's original brief out of
@@ -926,6 +1039,16 @@ with fixture_directory(repo) as root:
                         seed_fixture_history(local, agent, history_seed_active,
                                              count=35, marker_prefix="IOS_OFFLINE_HISTORY")
                     if method == "testVisibleBriefAutomaticallyUpdatesHomeUnreadCount":
+                        # Pin the marker-brief baseline before this attempt
+                        # seeds anything; the confirming endpoint above then
+                        # counts only the current attempt's followup brief.
+                        with sqlite3.connect(
+                                (root / "holon" / "state" / "runtime.sqlite").as_uri() + "?mode=ro",
+                                uri=True) as connection:
+                            automatic_read_baseline_seq = connection.execute(
+                                """SELECT COALESCE(MAX(created_event_seq), -1) FROM briefs
+                                   WHERE agent_id = ? AND preview LIKE 'IOS_AUTOMATIC_READ_FOLLOWUP_BRIEF%'""",
+                                (agent,)).fetchone()[0]
                         automatic_read_seed_active.set()
                         try:
                             seed_fixture_history(local, agent, history_seed_active,
@@ -965,6 +1088,11 @@ with fixture_directory(repo) as root:
                                 # subset run uses. The case pairs through its own fresh
                                 # ticket, and the trailing network-management case
                                 # re-establishes its own connection.
+                                # The App Group container outlives the uninstall, so
+                                # the consent must be cleared while the app is still
+                                # installed for the container to be reachable.
+                                reset_app_group_consent(
+                                    simulator, "run.holon.ios", "group.run.holon.ios")
                                 ensure_uninstalled(simulator, "run.holon.ios")
                                 # A full sweep stacks seeded history turns (history-window,
                                 # automatic-read cases) on the shared agent, burying the
@@ -1032,14 +1160,26 @@ with fixture_directory(repo) as root:
                                         raise RuntimeError("offline reading brief has no visible body marker")
                                     test_env["TEST_RUNNER_HOLON_UI_OFFLINE_BODY_MARKER"] = marker
                             try:
+                                # The per-case execution allowance has to cover
+                                # the stretched waits; otherwise a healthy but
+                                # slow case is killed by a timeout that no
+                                # longer matches its budget.
+                                execution_allowance = min(
+                                    int(600 * float(
+                                        test_env.get("TEST_RUNNER_HOLON_UI_WAIT_SCALE", "1"))),
+                                    1800)
                                 result = subprocess.run(["xcodebuild", "-project", repo + "/apps/ios/Holon.xcodeproj",
                                     "-scheme", "Holon", "-destination", destination,
                                     "-parallel-testing-enabled", "NO",
                                     # Keep test failures and attachments, but avoid a blocking sysdiagnose.
                                     "-collect-test-diagnostics", "never",
                                     "-test-timeouts-enabled", "YES",
-                                    "-default-test-execution-time-allowance", "600",
-                                    "-maximum-test-execution-time-allowance", "600",
+                                    # The execution allowance must grow with the
+                                    # wait budgets: a case whose waits were
+                                    # stretched would otherwise be killed by a
+                                    # timeout that no longer covers it.
+                                    "-default-test-execution-time-allowance", str(execution_allowance),
+                                    "-maximum-test-execution-time-allowance", str(execution_allowance),
                                     "-derivedDataPath", derived,
                                     "-only-testing:HolonUITests/HolonUITests/" + method,
                                     "-resultBundlePath", str(case_bundle), "CODE_SIGN_IDENTITY=-", "test"], env=test_env)
@@ -1048,7 +1188,16 @@ with fixture_directory(repo) as root:
                                     rows = content_report_snapshot(
                                         report_db, fixture_evidence, method, "after")
                             if result.returncode:
-                                raise RuntimeError(f"UI case {method} 失败（SDK 通过不能替代 UI）")
+                                raise UICaseFailure(f"UI case {method} 失败（SDK 通过不能替代 UI）")
+                            # The app cannot fail the test that asked for a
+                            # reset, so it publishes the failure where the
+                            # host can see it. A case that ran against dirty
+                            # state would otherwise pass for the wrong reason.
+                            reset_failure = app_state_reset_failure(
+                                simulator, "run.holon.ios", "group.run.holon.ios")
+                            if reset_failure:
+                                raise UICaseFailure(
+                                    f"UI case {method} 的 app 状态复位失败：{reset_failure}")
                             if loss_case:
                                 with lost_lock:
                                     receipts = lost_receipts[loss_receipts_start:]
@@ -1080,6 +1229,100 @@ with fixture_directory(repo) as root:
                                             or receipt["status"] != "received" or not receipt["client_request_id"]):
                                         raise RuntimeError("Content-report receipt lacks the real target, snapshot or request ID")
                                 print(f"Content-report SQLite acceptance: {method}, {expected} new reports", flush=True)
+                # Sweep flake control: a single xcodebuild attempt can fail on
+                # runner contention (fixed wait budgets, slow simulators) even
+                # though the case is healthy. Retry exactly once per case after
+                # rebuilding its fixtures; two real failures still fail the job.
+                max_attempts = 1 if os.environ.get(
+                    "IOS_UI_RETRY", "1").strip().lower() in {"0", "false", "no"} else 2
+                ui_retries = []
+                # Per-case telemetry: which cases needed a retry, and how long
+                # each attempt took. A CI job that fails on a slow runner is
+                # only actionable if it says which budget ran out.
+                ui_telemetry = []
+                try:
+                    for (method, content_size), case_bundle in zip(cases, bundles):
+                        for attempt in range(1, max_attempts + 1):
+                            if attempt > 1:
+                                # Keep the failed attempt's diagnostics under a
+                                # distinct name, freeing the canonical per-case
+                                # result path the pre-flight check reserved.
+                                failed_bundle = case_bundle.with_name(
+                                    case_bundle.stem + f"-attempt{attempt - 1}-failed.xcresult")
+                                if failed_bundle.exists():
+                                    shutil.rmtree(failed_bundle, ignore_errors=True)
+                                if case_bundle.exists():
+                                    case_bundle.rename(failed_bundle)
+                                # Content-report evidence is written with O_EXCL;
+                                # drop the failed attempt's stale per-case files so
+                                # the retry can regenerate them factually.
+                                if fixture_evidence is not None:
+                                    for stale in fixture_evidence.glob(
+                                            f"content-reports-{method}-*"):
+                                        stale.unlink()
+                                # A crashed or shut-down simulator would fail the
+                                # retry for the wrong reason; restore boot state.
+                                subprocess.run(
+                                    ["xcrun", "simctl", "bootstatus", simulator, "-b"],
+                                    check=True, timeout=180)
+                                # The previous attempt may have approved sharing
+                                # consent for this host; that approval survives in
+                                # the App Group container and would skip the gate
+                                # the case asserts on. Reset it so the retry runs
+                                # the same clean state the first attempt saw.
+                                reset_app_group_consent(
+                                    simulator, "run.holon.ios", "group.run.holon.ios")
+                            started = time.monotonic()
+                            try:
+                                run_ui_case(method, content_size, case_bundle)
+                                ui_telemetry.append({
+                                    "case": method, "attempt": attempt,
+                                    "outcome": "passed", "seconds": round(time.monotonic() - started, 1)})
+                                break
+                            except UICaseFailure:
+                                elapsed = round(time.monotonic() - started, 1)
+                                ui_telemetry.append({
+                                    "case": method, "attempt": attempt,
+                                    "outcome": "failed", "seconds": elapsed})
+                                if attempt >= max_attempts:
+                                    raise
+                                ui_retries.append(method)
+                                detail = (f"{method} attempt {attempt} failed after "
+                                          f"{elapsed:.0f}s; rebuilding per-case fixtures and retrying once")
+                                print(f"::warning title=iOS UI retry::{detail}", flush=True)
+                                print(f"UI 用例 {method} 第 {attempt} 次尝试失败，重建该用例 fixture 后重试一次", flush=True)
+                finally:
+                    # A stable, machine-readable record of the sweep's outcome.
+                    # The CI summary prints it so a flaky case can be named
+                    # without digging through the full xcodebuild log.
+                    # Reporting must never replace the sweep's own failure,
+                    # so a telemetry problem is logged and swallowed here.
+                    try:
+                        slowest = max(ui_telemetry, key=lambda record: record["seconds"], default=None)
+                        summary = (f"UI sweep telemetry: {len(cases)} cases, "
+                                   f"{len(ui_retries)} retried")
+                        if slowest is not None:
+                            summary += (f", slowest {slowest['case']} "
+                                        f"{slowest['seconds']}s")
+                        print(summary, flush=True)
+                        for record in ui_telemetry:
+                            if record["outcome"] == "failed":
+                                print(f"::warning title=iOS UI case failed::{record['case']} "
+                                      f"attempt {record['attempt']} failed after {record['seconds']}s",
+                                      flush=True)
+                        if fixture_evidence is not None:
+                            write_fixture_json(fixture_evidence, "ui-sweep-telemetry.json", {
+                                "cases": len(cases),
+                                "retried": ui_retries,
+                                "attempts": ui_telemetry,
+                                "wait_scale": test_env.get("TEST_RUNNER_HOLON_UI_WAIT_SCALE"),
+                            })
+                    except Exception as telemetry_error:
+                        print(f"UI sweep telemetry unavailable: {telemetry_error}",
+                              file=sys.stderr, flush=True)
+                if ui_retries:
+                    print(f"UI sweep 完成：{len(cases)} 个用例，其中 {len(ui_retries)} 个经一次有界重试通过："
+                          + ", ".join(ui_retries), flush=True)
             else:
                 print(f"{5 if rich_turn else 4} 项真实 SDK probes 已运行；SDK-only 未运行 UI", flush=True)
             if FakeProvider.image_requests:

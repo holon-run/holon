@@ -50,6 +50,18 @@ struct SharingConsent: @unchecked Sendable {
         defaults?.synchronize()
     }
 
+    /// Removes every consent entry.
+    ///
+    /// A UI case that must start from a clean install needs no approval to
+    /// exist, so the whole store is cleared rather than one endpoint.
+    func revokeAll() {
+        guard let defaults else { return }
+        for key in defaults.dictionaryRepresentation().keys where key.hasPrefix("sharing.consent.") {
+            defaults.removeObject(forKey: key)
+        }
+        defaults.synchronize()
+    }
+
     func require(_ url: URL) throws {
         guard approved(url) else { throw SharingConsentRequired() }
     }

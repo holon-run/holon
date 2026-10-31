@@ -21,6 +21,17 @@ struct HolonApp: App {
     @State private var displayedReadingPartition: ReadingPartition?
 
     init() {
+        // A UI case that must observe a clean install asks for it through a
+        // launch argument. The reset runs before the store is read, so the
+        // app never presents the state it was asked to clear.
+        do {
+            try TestingStateReset.resetIfRequested()
+        } catch {
+            // A failed reset must never let the app run against the state the
+            // case asked to clear. preconditionFailure always traps, unlike an
+            // assertion, which disappears in a release build.
+            preconditionFailure(String(describing: error))
+        }
         let reading = ReadingCoordinator()
         _reader = State(initialValue: reading)
         let work = WorkCoordinator()

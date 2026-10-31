@@ -11,6 +11,7 @@ import os
 import pathlib
 from pathlib import Path
 import plistlib
+import re
 import subprocess
 import sqlite3
 import struct
@@ -38,9 +39,74 @@ def fixture_helpers():
     tree = ast.parse(source.read_text(), filename=str(source))
     namespace = {}
     exec(compile(ast.Module(body=[node for node in tree.body
-        if isinstance(node, (ast.Import, ast.ImportFrom, ast.FunctionDef))],
+        if isinstance(node, (ast.Import, ast.ImportFrom, ast.FunctionDef, ast.ClassDef))],
         type_ignores=[]), str(source), "exec"), namespace)
     return namespace
+
+
+def ui_case_sweep_statements(tree):
+    """The per-case sweep: run_ui_case plus its bounded-retry driver."""
+    driver = next(node for node in ast.walk(tree)
+                  if isinstance(node, ast.For)
+                  and isinstance(node.target, ast.Tuple)
+                  and any(isinstance(target, ast.Name) and target.id == "case_bundle"
+                          for target in node.target.elts))
+    driver_owner = None
+    for node in ast.walk(tree):
+        body = getattr(node, "body", None)
+        if isinstance(body, list) and driver in body:
+            driver_owner = node
+            break
+    if driver_owner is None:
+        raise AssertionError("The UI sweep driver must live in a statement block")
+    # The driver may sit inside a try block whose finally block carries the
+    # sweep's reporting. The rebuild below keeps only the driver, so any
+    # other shape must fail loudly instead of dropping statements silently.
+    wrapper = driver_owner if isinstance(driver_owner, ast.Try) else None
+    if wrapper is not None:
+        if len(wrapper.body) != 1 or wrapper.body[0] is not driver:
+            raise AssertionError(
+                "The sweep's try body must hold only the case loop; extra "
+                "statements would be dropped by the extracted code")
+        if wrapper.handlers or wrapper.orelse:
+            raise AssertionError(
+                "The sweep's try must have no except/else clauses; they "
+                "would be dropped by the extracted code")
+        owner = next((node for node in ast.walk(tree)
+                      if isinstance(getattr(node, "body", None), list)
+                      and wrapper in node.body), None)
+        if owner is None:
+            raise AssertionError("The sweep's try wrapper must live in a statement block")
+        scope = owner.body
+    else:
+        scope = driver_owner.body
+    # The helpers and the case body live next to the driver, in the
+    # enclosing block. Every helper the sweep calls must travel with it,
+    # or the extracted code references names that were never defined.
+    helpers = [statement for statement in scope
+               if isinstance(statement, ast.FunctionDef)
+               and statement.name != "run_ui_case"]
+    run_case = next((statement for statement in scope
+                     if isinstance(statement, ast.FunctionDef)
+                     and statement.name == "run_ui_case"), None)
+    if run_case is None:
+        raise AssertionError("run_ui_case must be defined next to the sweep driver")
+    # The driver's own setup statements travel with it too.
+    setup = [statement for statement in scope
+             if isinstance(statement, ast.Assign)
+             and any(isinstance(target, ast.Name)
+                     and target.id in {"max_attempts", "ui_retries", "ui_telemetry"}
+                     for target in statement.targets)]
+    selected = helpers + [run_case] + setup
+    if wrapper is None:
+        selected += scope[scope.index(driver):scope.index(driver) + 1]
+        return selected
+    # Rebuild the try/finally around the driver so the reporting still
+    # runs when a case fails.
+    try_statement = ast.Try(body=[driver], handlers=[], orelse=[],
+                            finalbody=wrapper.finalbody)
+    ast.fix_missing_locations(try_statement)
+    return selected + [try_statement]
 
 
 class AppMetadataContracts(unittest.TestCase):
@@ -155,17 +221,16 @@ class UIFixtureSetupContracts(unittest.TestCase):
         # Execute the real per-case loop; only external XCTest/services are mocked.
         source = ROOT / "scripts/ios_ui_fixture.py"
         tree = ast.parse(source.read_text(), filename=str(source))
-        loop = next(node for node in ast.walk(tree)
-                    if isinstance(node, ast.For)
-                    and isinstance(node.target, ast.Tuple)
-                    and any(isinstance(target, ast.Name) and target.id == "case_bundle"
-                            for target in node.target.elts))
+        sweep = ui_case_sweep_statements(tree)
         release = threading.Event()
         release.set()  # A preceding workflow may already have released its response.
         receipts = []
         methods = ["testLostResponseAndProcessRecovery", "testDirectAgentShareWorkflow"]
 
-        def run(command, env):
+        def run(command, env=None, **keywords):
+            if command[0] != "xcodebuild":
+                # A simulator probe, not a test run.
+                return Mock(returncode=1, stdout="")
             method = next(argument.rsplit("/", 1)[-1] for argument in command
                           if argument.startswith("-only-testing:"))
             self.assertFalse(release.is_set(), method + " must begin with response loss armed")
@@ -192,14 +257,317 @@ class UIFixtureSetupContracts(unittest.TestCase):
             subprocess=Mock(run=run), fixture_evidence=None,
         )
         with patch("builtins.print") as output:
-            exec(compile(ast.Module(body=[loop], type_ignores=[]), str(source), "exec"), namespace)
+            exec(compile(ast.Module(body=sweep, type_ignores=[]), str(source), "exec"), namespace)
         return receipts, output.call_args_list
 
     def test_loss_scenarios_rearm_and_verify_independent_requests(self):
         receipts, output = self.run_loss_scenarios()
         self.assertEqual(len(receipts), 4, "Keep both workflows' receipt evidence")
         self.assertEqual(len({request for request, _ in receipts}), 2)
-        self.assertEqual(len(output), 2, "Verify App and Share independently")
+        # The sweep also prints its telemetry; count only the acceptance lines.
+        acceptance = [call for call in output
+                      if "Lost-response acceptance" in str(call)]
+        self.assertEqual(len(acceptance), 2, "Verify App and Share independently")
+
+    def test_flaky_ui_case_retries_once_with_clean_state(self):
+        source = ROOT / "scripts/ios_ui_fixture.py"
+        tree = ast.parse(source.read_text(), filename=str(source))
+        sweep = ui_case_sweep_statements(tree)
+        method = "testAuthenticatedNativeWorkflow"
+
+        def scenario(failures, environment=None):
+            runs, commands = [], []
+            directory = tempfile.TemporaryDirectory(prefix="holon-ios-ui-retry-")
+            self.addCleanup(directory.cleanup)
+            bundle = Path(directory.name) / "case.xcresult"
+
+            def run(command, env=None, **keywords):
+                commands.append(list(command))
+                if command[0] == "xcodebuild":
+                    runs.append(command)
+                    bundle.mkdir(exist_ok=True)  # xcodebuild materializes the bundle
+                    return Mock(returncode=65 if len(runs) <= failures else 0)
+                if "groups" in command:
+                    # The App Group container holds the persisted sharing
+                    # consent; a retry must clear it before the next attempt.
+                    return Mock(returncode=0, stdout="")
+                return Mock(returncode=0)  # simctl bootstatus health check
+
+            namespace = dict(fixture_helpers(),
+                cases=[(method, "large")], bundles=[bundle],
+                release_lost_response=threading.Event(), lost_receipts=[],
+                lost_lock=threading.Lock(), lost_response_acceptance=False,
+                simulator=UUID, repo=str(ROOT), destination="fixture", derived="fixture",
+                test_env={}, local=Mock(return_value={"ticket": "fixture"}),
+                fixture_evidence=None,
+                simulator_text_size=lambda *args: nullcontext(),
+                simulator_appearance=lambda *args: nullcontext(),
+                runtime_text_size_control=lambda *args: nullcontext(("fixture", "fixture")),
+                subprocess=Mock(run=run))
+            with patch.dict(os.environ, environment or {}, clear=True), \
+                    patch("builtins.print") as output:
+                error = None
+                try:
+                    exec(compile(ast.Module(body=sweep, type_ignores=[]),
+                                 str(source), "exec"), namespace)
+                except RuntimeError as failure:
+                    error = failure
+            return runs, commands, bundle, error, output.call_args_list
+
+        runs, commands, bundle, error, output = scenario(failures=1)
+        self.assertIsNone(error)
+        self.assertEqual(len(runs), 2, "A flaky attempt retries exactly once")
+        self.assertTrue(any("bootstatus" in command and UUID in command
+                            for command in commands), "Retry restores simulator boot state")
+        self.assertTrue(any("groups" in command and UUID in command
+                            for command in commands),
+                        "Retry clears the persisted sharing consent")
+        self.assertTrue((bundle.parent / "case-attempt1-failed.xcresult").exists(),
+                        "Keep the failed attempt's diagnostics")
+        self.assertTrue(bundle.exists(), "The passing attempt owns the canonical bundle")
+        messages = " ".join(str(call) for call in output)
+        self.assertIn("::warning title=iOS UI retry::", messages)
+        self.assertIn(method, messages)
+
+        runs, commands, bundle, error, output = scenario(failures=2)
+        self.assertIsInstance(error, RuntimeError)
+        self.assertIn("UI case " + method, str(error))
+        self.assertEqual(len(runs), 2, "Two real failures still fail the job")
+
+        runs, commands, bundle, error, output = scenario(
+            failures=2, environment={"IOS_UI_RETRY": "0"})
+        self.assertIsInstance(error, RuntimeError)
+        self.assertEqual(len(runs), 1, "IOS_UI_RETRY=0 keeps fail-fast semantics")
+
+    def test_ui_wait_scale_forwarded_to_test_runner(self):
+        source = ROOT / "scripts/ios_ui_fixture.py"
+        tree = ast.parse(source.read_text(), filename=str(source))
+        for node in ast.walk(tree):
+            body = getattr(node, "body", None)
+            if not isinstance(body, list):
+                continue
+            start = next((index for index, statement in enumerate(body)
+                          if isinstance(statement, ast.Assign)
+                          and any(isinstance(target, ast.Name) and target.id == "test_env"
+                                  for target in statement.targets)), None)
+            if start is None:
+                continue
+            stop = next(index for index in range(start + 1, len(body))
+                        if isinstance(body[index], ast.Expr)
+                        and isinstance(body[index].value, ast.Call)
+                        and isinstance(body[index].value.func, ast.Attribute)
+                        and body[index].value.func.attr == "update")
+            wait_scale = ast.Module(body=body[start:stop], type_ignores=[])
+            break
+        else:
+            self.fail("UI fixture wait-scale block not found")
+
+        def forwarded(environment):
+            namespace = dict(os=os)
+            with patch.dict(os.environ, environment, clear=True), patch("builtins.print"):
+                exec(compile(wait_scale, str(source), "exec"), namespace)
+            return namespace["test_env"]
+
+        self.assertEqual(forwarded({})["TEST_RUNNER_HOLON_UI_WAIT_SCALE"], "1")
+        self.assertEqual(forwarded({"HOLON_UI_WAIT_SCALE": " 2.5 "})["TEST_RUNNER_HOLON_UI_WAIT_SCALE"], "2.5")
+        with self.assertRaisesRegex(RuntimeError, "HOLON_UI_WAIT_SCALE"):
+            forwarded({"HOLON_UI_WAIT_SCALE": "fast"})
+        with self.assertRaisesRegex(RuntimeError, "HOLON_UI_WAIT_SCALE"):
+            forwarded({"HOLON_UI_WAIT_SCALE": "9"})
+
+    def test_retry_clears_persisted_sharing_consent(self):
+        source = ROOT / "scripts/ios_ui_fixture.py"
+        text = source.read_text()
+        tree = ast.parse(text, filename=str(source))
+        helper = next(node for node in ast.walk(tree)
+                      if isinstance(node, ast.FunctionDef)
+                      and node.name == "reset_app_group_consent")
+        namespace = {"pathlib": pathlib, "subprocess": Mock()}
+        # Rebuild the helper as a real function so its `return` statements
+        # keep their meaning.
+        module = ast.Module(body=[ast.FunctionDef(
+            name=helper.name, args=helper.args, body=helper.body,
+            decorator_list=[], returns=None, type_comment=None,
+            type_params=[])], type_ignores=[])
+        ast.fix_missing_locations(module)
+        with patch("builtins.print"):
+            exec(compile(module, str(source), "exec"), namespace)
+        reset = namespace["reset_app_group_consent"]
+
+        with tempfile.TemporaryDirectory(prefix="holon-ios-ui-group-") as directory:
+            group = Path(directory)
+            preferences = group / "Library" / "Preferences"
+            preferences.mkdir(parents=True)
+            stale = preferences / "group.run.holon.ios.plist"
+            stale.write_bytes(b"stale consent")
+
+            def container(*args, **kwargs):
+                return subprocess.CompletedProcess(
+                    args, 0, stdout=f"group.run.holon.ios\t{group}\n", stderr="")
+
+            namespace["subprocess"].run = container
+            reset("device", "run.holon.ios", "group.run.holon.ios")
+            self.assertFalse(stale.exists(),
+                             "The App Group consent must be cleared so a retry re-runs the gate")
+
+            # A second attempt must tolerate an already-clean group.
+            reset("device", "run.holon.ios", "group.run.holon.ios")
+            self.assertFalse(stale.exists())
+
+            # An uninstalled app has no group container; that is not an error.
+            def missing(*args, **kwargs):
+                return subprocess.CompletedProcess(args, 1, stdout="", stderr="missing")
+
+            namespace["subprocess"].run = missing
+            reset("device", "run.holon.ios", "group.run.holon.ios")
+
+        # The retry driver must reset consent before every retried attempt.
+        self.assertIn("reset_app_group_consent(", text)
+        driver = text[text.index("max_attempts = 1 if os.environ.get"):]
+        driver = driver[:driver.index("started = time.monotonic()")]
+        self.assertIn("reset_app_group_consent(", driver,
+                      "Every retried attempt must reset the persisted consent")
+
+    def test_ui_sweep_records_per_case_telemetry(self):
+        """A failing case must be nameable without reading the xcodebuild log."""
+        source = ROOT / "scripts/ios_ui_fixture.py"
+        text = source.read_text()
+        self.assertIn("ui-sweep-telemetry.json", text,
+                      "The sweep must write a machine-readable outcome record")
+        self.assertIn('"outcome": "passed"', text)
+        self.assertIn('"outcome": "failed"', text)
+        self.assertIn("UI sweep telemetry:", text,
+                      "The CI log must summarize the sweep outcome")
+        tree = ast.parse(text, filename=str(source))
+        sweep = ui_case_sweep_statements(tree)
+        module = ast.Module(body=sweep, type_ignores=[])
+        ast.fix_missing_locations(module)
+        namespace = dict(fixture_helpers(),
+            cases=[("testAuthenticatedNativeWorkflow", "large")],
+            bundles=[Path("/tmp/holon-ui-telemetry-case.xcresult")],
+            release_lost_response=threading.Event(), lost_receipts=[],
+            lost_lock=threading.Lock(), lost_response_acceptance=False,
+            simulator=UUID, repo=str(ROOT), destination="fixture", derived="fixture",
+            test_env={"TEST_RUNNER_HOLON_UI_WAIT_SCALE": "2"}, local=Mock(return_value={"ticket": "fixture"}),
+            fixture_evidence=None,
+            simulator_text_size=lambda *args: nullcontext(),
+            simulator_appearance=lambda *args: nullcontext(),
+            runtime_text_size_control=lambda *args: nullcontext(("fixture", "fixture")),
+            subprocess=Mock(run=lambda *args, **keywords: Mock(returncode=0, stdout="")))
+        with patch.dict(os.environ, {"IOS_UI_RETRY": "0"}, clear=True), \
+                patch("builtins.print") as output:
+            try:
+                exec(compile(module, str(source), "exec"), namespace)
+            except RuntimeError:
+                pass  # The mocked case fails; the telemetry must still be recorded.
+        printed = "\n".join(str(call) for call in output.call_args_list)
+        self.assertIn("UI sweep telemetry:", printed)
+        self.assertIn("testAuthenticatedNativeWorkflow", printed)
+
+    def test_app_side_reset_failure_reaches_the_host(self):
+        """A reset that failed in the app process must still fail the case.
+
+        The app runs in its own process, so an assertion there cannot fail
+        the test. The failure is published in the App Group and read by the
+        host, which turns a dirty-state run into a red case instead of a
+        false pass.
+        """
+        source = ROOT / "scripts/ios_ui_fixture.py"
+        text = source.read_text()
+        self.assertIn("app_state_reset_failure", text,
+                      "The host must read the app's published reset failure")
+        self.assertIn("testing.state.reset.failure", text,
+                      "The published failure must use one agreed key")
+        app = (ROOT / "apps/ios/Sources/TestingStateReset.swift").read_text()
+        self.assertIn("testing.state.reset.failure", app,
+                      "The app must publish the failure under the agreed key")
+        self.assertIn("publish(failures)", app)
+
+        # The failure must be a case failure, so the bounded retry applies.
+        tree = ast.parse(text, filename=str(source))
+        run_case = next(node for node in ast.walk(tree)
+                        if isinstance(node, ast.FunctionDef) and node.name == "run_ui_case")
+        self.assertTrue(any("app_state_reset_failure" in ast.dump(statement)
+                            for statement in ast.walk(run_case)),
+                        "The case must check the published reset failure")
+
+    def test_app_side_state_reset_uses_one_launch_argument(self):
+        """The app and the UI test must ask for the reset the same way."""
+        app_reset = (ROOT / "apps/ios/Sources/TestingStateReset.swift").read_text()
+        test_reset = (ROOT / "apps/ios/UITests/UIWaitScale.swift").read_text()
+        arguments = set(re.findall(r'"(-Holon[A-Za-z]*UITests)"', app_reset))
+        self.assertEqual(len(arguments), 1,
+                         "The app must name exactly one reset launch argument")
+        argument = arguments.pop()
+        self.assertIn(f'"{argument}"', test_reset,
+                      "The UI test must request the reset the app implements")
+        # The app must actually act on the argument, not merely declare it.
+        self.assertIn("CommandLine.arguments.contains(launchArgument)", app_reset)
+        self.assertIn("resetIfRequested()", app_reset)
+        # The app owns the reset, so it must clear the App Group consent too.
+        self.assertIn("revokeAll()", app_reset)
+
+    def test_swift_ui_waits_all_use_the_scaled_budget(self):
+        """Every UI wait budget must be stretched by the same factor.
+
+        The fixture forwards one factor; a Swift wait that bypasses it would
+        keep the unscaled budget and still fail on a loaded CI runner.
+        """
+        sources = sorted((ROOT / "apps/ios/UITests").glob("*.swift"))
+        self.assertTrue(sources, "UI test sources must exist")
+        raw_waits = []
+        for source in sources:
+            for number, line in enumerate(source.read_text().splitlines(), start=1):
+                if "UIWaitScale" in line:
+                    continue
+                for match in re.finditer(
+                        r"waitForExistence\(timeout: ([0-9]+)\)"
+                        r"|XCTWaiter\.(?:wait|fulfillment)\([^)]*?timeout: ([0-9]+)\)", line):
+                    raw_waits.append(f"{source.name}:{number}: {line.strip()}")
+        self.assertEqual(raw_waits, [],
+                         "Every UI wait must use the scaled budget: " + "; ".join(raw_waits))
+
+        scale = (ROOT / "apps/ios/UITests/UIWaitScale.swift").read_text()
+        self.assertIn("HOLON_UI_WAIT_SCALE", scale,
+                      "The Swift side must read the factor the fixture forwards")
+        self.assertIn("timeout * factor", scale,
+                      "The factor must multiply the wait budget")
+
+    def test_automatic_read_retry_pins_marker_baseline(self):
+        source = ROOT / "scripts/ios_ui_fixture.py"
+        text = source.read_text()
+        # The confirming query must be bounded by the per-attempt baseline.
+        self.assertIn("AND brief.created_event_seq > ?", text)
+        tree = ast.parse(text, filename=str(source))
+        run_case = next(node for node in ast.walk(tree)
+                        if isinstance(node, ast.FunctionDef) and node.name == "run_ui_case")
+        branch = next(statement for statement in run_case.body
+                      if isinstance(statement, ast.If)
+                      and isinstance(statement.test, ast.Compare)
+                      and getattr(statement.test.comparators[0], "value", None)
+                          == "testVisibleBriefAutomaticallyUpdatesHomeUnreadCount")
+        with tempfile.TemporaryDirectory(prefix="holon-ios-ui-baseline-") as directory:
+            state = Path(directory) / "holon" / "state"
+            state.mkdir(parents=True)
+            connection = sqlite3.connect(state / "runtime.sqlite")
+            connection.execute("CREATE TABLE briefs (agent_id TEXT, created_event_seq INTEGER, preview TEXT)")
+            connection.executemany("INSERT INTO briefs VALUES (?, ?, ?)", [
+                ("holon-tester", 4, "IOS_AUTOMATIC_READ_FOLLOWUP_BRIEF attempt one"),
+                ("holon-tester", 7, "IOS_AUTOMATIC_READ_FOLLOWUP_BRIEF attempt two"),
+                ("holon-tester", 9, "unrelated preview"),
+                ("other-agent", 12, "IOS_AUTOMATIC_READ_FOLLOWUP_BRIEF other agent")])
+            connection.commit()
+            connection.close()
+            seeds = Mock()
+            namespace = dict(sqlite3=sqlite3, root=Path(directory), agent="holon-tester",
+                             automatic_read_seed_active=threading.Event(),
+                             history_seed_active=threading.Event(),
+                             seed_fixture_history=seeds, local=Mock())
+            with patch("builtins.print"):
+                exec(compile(ast.Module(body=branch.body, type_ignores=[]), str(source), "exec"), namespace)
+            self.assertEqual(namespace["automatic_read_baseline_seq"], 7,
+                             "Baseline is the newest followup marker before this attempt")
+            seeds.assert_called_once()
 
     def test_loss_scenario_rejects_invalid_retry_receipts(self):
         invalid = {
@@ -227,8 +595,10 @@ class UIFixtureSetupContracts(unittest.TestCase):
                           and any(isinstance(target, ast.Name) and target.id == "cases"
                                   for target in statement.targets)), None)
             if start is not None:
+                # The setup ends where the sweep begins: the driver loop, or
+                # the try block that wraps it.
                 stop = next(index for index in range(start, len(body))
-                            if isinstance(body[index], ast.For))
+                            if isinstance(body[index], (ast.For, ast.Try)))
                 setup = ast.Module(body=body[start:stop], type_ignores=[])
                 break
         else:
@@ -292,10 +662,52 @@ class UIFixtureSetupContracts(unittest.TestCase):
         self.run_setup(initialize, install, commands=commands)
         self.assertEqual(events, [
             "ready",
+            ("xcrun", "simctl", "get_app_container", UUID, "run.holon.ios", "groups"),
+            ("xcrun", "simctl", "get_app_container", UUID, "run.holon.ios", "data"),
             ("xcrun", "simctl", "uninstall", UUID, "run.holon.ios"),
             ("xcrun", "simctl", "get_app_container", UUID, "run.holon.ios", "data"),
             "installed",
         ], "A reused simulator must not restore stale app data into any case")
+
+    def test_sweep_resets_consent_before_uninstalling_the_app(self):
+        """The group container is only reachable while the app is installed.
+
+        The consent lives in the App Group container, which outlives the app
+        install. Resetting after the uninstall would find no container and
+        leave the previous run's approval in place.
+        """
+        source = ROOT / "scripts/ios_ui_fixture.py"
+        text = source.read_text()
+        tree = ast.parse(text)
+        def call_sites(tree, function_name, literal=None):
+            """Line of every call to `function_name`, optionally requiring
+            `literal` among the call's constant arguments. Anchoring on AST
+            call nodes keeps comments and the definition out of the sites."""
+            sites = []
+            for node in ast.walk(tree):
+                if not (isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+                        and node.func.id == function_name):
+                    continue
+                if literal is None or any(isinstance(argument, ast.Constant)
+                                          and argument.value == literal
+                                          for argument in node.args):
+                    sites.append(node.lineno)
+            return sites
+
+        reset_calls = call_sites(tree, "reset_app_group_consent", "run.holon.ios")
+        uninstall_calls = call_sites(tree, "ensure_uninstalled", "run.holon.ios")
+        self.assertTrue(reset_calls, "The sweep must reset the sharing consent")
+        self.assertTrue(uninstall_calls, "The sweep must uninstall the app")
+        self.assertLess(min(reset_calls), min(uninstall_calls),
+                        "The consent reset must run while the app is still installed")
+        # The browser case's own clean install needs the same order.
+        browser = text[:text.index('if method == "testRuntimeBrowserWorkflow":')].count("\n") + 1
+        browser_reset = [line for line in reset_calls if line > browser]
+        browser_uninstall = [line for line in uninstall_calls if line > browser]
+        self.assertTrue(browser_reset and browser_uninstall,
+                        "The browser case must reset consent and uninstall the app")
+        self.assertLess(min(browser_reset), min(browser_uninstall),
+                        "The browser case must reset consent before its uninstall")
 
     def test_failed_initialization_prevents_share_install(self):
         install = Mock()
@@ -328,10 +740,7 @@ class UIFixtureSetupContracts(unittest.TestCase):
     def test_real_offline_case_loop_seeds_after_onboarding_and_exports_real_brief_oracle(self):
         source = ROOT / "scripts/ios_ui_fixture.py"
         tree = ast.parse(source.read_text(), filename=str(source))
-        loop = next(node for node in ast.walk(tree)
-                    if isinstance(node, ast.For) and isinstance(node.target, ast.Tuple)
-                    and any(isinstance(target, ast.Name) and target.id == "case_bundle"
-                            for target in node.target.elts))
+        sweep = ui_case_sweep_statements(tree)
         methods = ["testAuthenticatedNativeWorkflow", "testOfflineReadingCacheColdLaunchAndRetry",
                    "testOfflineReadingCacheSignOutBoundary"]
         turns = [{"turn_id": "initial-turn", "key": {"turn_index": 0}, "brief_ids": ["initial-brief"]}]
@@ -358,7 +767,10 @@ class UIFixtureSetupContracts(unittest.TestCase):
                 return {"text": "# Real result\n\nActual fixture body cache oracle."}
             self.fail("Unexpected fixture call: " + path)
 
-        def run(command, env):
+        def run(command, env=None, **keywords):
+            if command[0] != "xcodebuild":
+                # A simulator probe, not a test run.
+                return Mock(returncode=1, stdout="")
             method = next(argument.rsplit("/", 1)[-1] for argument in command
                           if argument.startswith("-only-testing:"))
             runs.append(method)
@@ -380,7 +792,7 @@ class UIFixtureSetupContracts(unittest.TestCase):
             simulator_appearance=lambda *args: nullcontext(),
             runtime_text_size_control=lambda *args: nullcontext(("fixture", "fixture")),
             subprocess=Mock(run=run))
-        exec(compile(ast.Module(body=[loop], type_ignores=[]), str(source), "exec"), namespace)
+        exec(compile(ast.Module(body=sweep, type_ignores=[]), str(source), "exec"), namespace)
         self.assertEqual(runs, methods)
         self.assertEqual(len(tickets), 3, "Each independently selectable authenticated case gets a fresh ticket")
         self.assertFalse(seed_active.is_set())
@@ -581,17 +993,14 @@ class UIFixtureEvidenceContracts(unittest.TestCase):
             "testContentReportAcceptedReceiptCannotSubmitTwice",
         ]
 
-        def run(command, env):
+        def run(command, env=None, **keywords):
             if "-only-testing:HolonUITests/HolonUITests/" + methods[-1] in command:
                 with sqlite3.connect(database) as connection:
                     connection.execute("INSERT INTO content_reports VALUES (" +
                                        ",".join("?" for _ in row) + ")", tuple(row.values()))
             return Mock(returncode=0)
 
-        loop = next(node for node in ast.walk(self.tree) if isinstance(node, ast.For)
-                    and isinstance(node.target, ast.Tuple)
-                    and any(isinstance(item, ast.Name) and item.id == "case_bundle"
-                            for item in node.target.elts))
+        sweep = ui_case_sweep_statements(self.tree)
         namespace = dict(self.helpers, cases=[(method, "large") for method in methods],
             bundles=[Path(method + ".xcresult") for method in methods], home=home,
             fixture_evidence=evidence, lost_response_acceptance=False,
@@ -603,7 +1012,7 @@ class UIFixtureEvidenceContracts(unittest.TestCase):
             runtime_text_size_control=lambda *args: nullcontext(("fixture", "do-not-export-control-token")),
             subprocess=Mock(run=run))
         with patch("builtins.print"):
-            self.execute([loop], namespace)
+            self.execute(sweep, namespace)
         deltas = []
         for method in methods:
             snapshots = []
@@ -637,7 +1046,7 @@ class UIFixtureEvidenceContracts(unittest.TestCase):
         namespace.update(fixture_evidence=failed_evidence, cases=[(methods[0], "large")],
                          bundles=[Path("failed.xcresult")], subprocess=Mock(run=Mock(return_value=Mock(returncode=65))))
         with self.assertRaises(RuntimeError):
-            self.execute([loop], namespace)
+            self.execute(sweep, namespace)
         self.assertEqual(len(list(failed_evidence.glob("*.sqlite"))), 2)
 
     def test_conversation_inputs_merges_turn_windows_not_message_identities(self):

@@ -8,9 +8,27 @@ final class HolonUITests: XCTestCase {
     }
 
     private func launch(language: String, dark: Bool, large: Bool) -> XCUIApplication {
+        launch(language: language, dark: dark, large: large, resettingState: false)
+    }
+
+    /// Launches the app after asking it to clear its own state.
+    ///
+    /// The sweep shares one simulator, so a case that expects a clean
+    /// install must say so instead of assuming it. The app owns the reset,
+    /// so the case does not have to know where the state lives.
+    private func launchClean(language: String, dark: Bool, large: Bool) -> XCUIApplication {
+        launch(language: language, dark: dark, large: large, resettingState: true)
+    }
+
+    private func launch(language: String, dark: Bool, large: Bool,
+                        resettingState: Bool) -> XCUIApplication {
         let app = XCUIApplication()
-        app.launchArguments = ["-AppleLanguages", "(\(language))", "-AppleLocale", language,
-                               "-AppleInterfaceStyle", dark ? "Dark" : "Light"]
+        var arguments = ["-AppleLanguages", "(\(language))", "-AppleLocale", language,
+                         "-AppleInterfaceStyle", dark ? "Dark" : "Light"]
+        if resettingState {
+            arguments.append(TestingStateResetArgument.value)
+        }
+        app.launchArguments = arguments
         // The runner verifies the real simulator preference, not an app-only override.
         XCTAssertEqual(ProcessInfo.processInfo.environment["HOLON_UI_CONTENT_SIZE"],
                        large ? "accessibility-extra-extra-extra-large" : "large",
@@ -37,7 +55,7 @@ final class HolonUITests: XCTestCase {
                                 file: StaticString = #filePath, line: UInt = #line) {
         let enabled = XCTNSPredicateExpectation(
             predicate: NSPredicate(format: "isEnabled == true"), object: element)
-        XCTAssertEqual(XCTWaiter.wait(for: [enabled], timeout: timeout), .completed,
+        XCTAssertEqual(XCTWaiter.wait(for: [enabled], timeout: UIWaitScale.scaled(timeout)), .completed,
                        message, file: file, line: line)
     }
 
@@ -47,7 +65,7 @@ final class HolonUITests: XCTestCase {
         // exists guard: an absent element reports isEnabled == false and would pass vacuously.
         let disabled = XCTNSPredicateExpectation(
             predicate: NSPredicate(format: "exists == true AND isEnabled == false"), object: element)
-        XCTAssertEqual(XCTWaiter.wait(for: [disabled], timeout: timeout), .completed,
+        XCTAssertEqual(XCTWaiter.wait(for: [disabled], timeout: UIWaitScale.scaled(timeout)), .completed,
                        message, file: file, line: line)
     }
 
@@ -56,7 +74,7 @@ final class HolonUITests: XCTestCase {
                               file: StaticString = #filePath, line: UInt = #line) {
         let matched = XCTNSPredicateExpectation(
             predicate: NSPredicate(format: "value == %@", value), object: element)
-        XCTAssertEqual(XCTWaiter.wait(for: [matched], timeout: timeout), .completed,
+        XCTAssertEqual(XCTWaiter.wait(for: [matched], timeout: UIWaitScale.scaled(timeout)), .completed,
                        file: file, line: line)
     }
 
@@ -64,7 +82,7 @@ final class HolonUITests: XCTestCase {
     /// stays offline until the confirmation button is pressed.
     private func enterPairingPayload(_ app: XCUIApplication, payload: String) throws {
         let address = app.textFields["onboarding.address"]
-        XCTAssertTrue(address.waitForExistence(timeout: 10))
+        XCTAssertTrue(address.waitForExistence(timeout: UIWaitScale.scaled(10)))
         reveal(address, in: app)
         address.tap()
         clearTextField(address)
@@ -79,7 +97,7 @@ final class HolonUITests: XCTestCase {
     private func connectThroughPairing(_ app: XCUIApplication, endpoint: String, payload: String) throws {
         try enterPairingPayload(app, payload: payload)
         let target = app.staticTexts["onboarding.pairingTarget"]
-        XCTAssertTrue(target.waitForExistence(timeout: 10))
+        XCTAssertTrue(target.waitForExistence(timeout: UIWaitScale.scaled(10)))
         XCTAssertEqual(target.label, endpoint + "/")
         let permission = app.switches["onboarding.pairingHTTP"]
         reveal(permission, in: app)
@@ -94,14 +112,14 @@ final class HolonUITests: XCTestCase {
     /// restored sessions re-review the same consent at the in-app gate.
     private func approveSharingConsent(_ app: XCUIApplication) {
         let consent = app.switches["privacy.accept"]
-        XCTAssertTrue(consent.waitForExistence(timeout: 30), "Login must stop at the sharing prompt before data")
+        XCTAssertTrue(consent.waitForExistence(timeout: UIWaitScale.scaled(30)), "Login must stop at the sharing prompt before data")
         agreeToSharingConsent(app)
         let sheetProceed = app.buttons["privacy.continueLogin"]
         let proceed = sheetProceed.exists ? sheetProceed : app.buttons["privacy.continue"]
         reveal(proceed, in: app)
         waitForEnabled(proceed, message: "Consent must enable the continue action")
         proceed.tap()
-        XCTAssertTrue(app.buttons["settings.open"].waitForExistence(timeout: 30),
+        XCTAssertTrue(app.buttons["settings.open"].waitForExistence(timeout: UIWaitScale.scaled(30)),
                       "Agent home appears only after consent")
     }
 
@@ -123,13 +141,13 @@ final class HolonUITests: XCTestCase {
         XCTAssertTrue(app.links["privacy.policy"].exists || app.buttons["privacy.policy"].exists)
         revoke.tap()
         let review = app.buttons["privacy.review"]
-        XCTAssertTrue(review.waitForExistence(timeout: 5))
+        XCTAssertTrue(review.waitForExistence(timeout: UIWaitScale.scaled(5)))
         review.tap()
         let alert = app.alerts.firstMatch
-        XCTAssertTrue(alert.waitForExistence(timeout: 5))
+        XCTAssertTrue(alert.waitForExistence(timeout: UIWaitScale.scaled(5)))
         XCTAssertTrue(alert.staticTexts.containing(NSPredicate(format: "label CONTAINS %@", "third-party AI")).firstMatch.exists)
         alert.buttons["privacy.agree"].firstMatch.tap()
-        XCTAssertTrue(app.buttons["privacy.revoke"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.buttons["privacy.revoke"].waitForExistence(timeout: UIWaitScale.scaled(5)))
     }
 
     private func capture(_ app: XCUIApplication, _ name: String) {
@@ -223,7 +241,7 @@ final class HolonUITests: XCTestCase {
             start.press(forDuration: 0.05, thenDragTo: end, withVelocity: .slow,
                         thenHoldForDuration: 0.1)
         }
-        guard element.waitForExistence(timeout: 10), element.isHittable,
+        guard element.waitForExistence(timeout: UIWaitScale.scaled(10)), element.isHittable,
               contained(element.frame, in: viewport()) else {
             capture(app, "unreachable-control")
             XCTFail("Tap target must remain inside the unobscured viewport", file: file, line: line)
@@ -245,21 +263,21 @@ final class HolonUITests: XCTestCase {
     private func openSettings(_ app: XCUIApplication) {
         // Bootstrap can briefly expose home before restoring the confirmed Agent.
         // Wait for that route before looking for the home-only settings control.
-        if app.buttons["conversation.more"].waitForExistence(timeout: 30) {
+        if app.buttons["conversation.more"].waitForExistence(timeout: UIWaitScale.scaled(30)) {
             let back = app.navigationBars.buttons.element(boundBy: 0)
-            XCTAssertTrue(back.waitForExistence(timeout: 10))
+            XCTAssertTrue(back.waitForExistence(timeout: UIWaitScale.scaled(10)))
             back.tap()
         }
         let settings = app.buttons["settings.open"]
         for _ in 0..<6 {
-            if settings.waitForExistence(timeout: 3) { break }
+            if settings.waitForExistence(timeout: UIWaitScale.scaled(3)) { break }
             let back = app.navigationBars.buttons.element(boundBy: 0)
-            XCTAssertTrue(back.waitForExistence(timeout: 10))
+            XCTAssertTrue(back.waitForExistence(timeout: UIWaitScale.scaled(10)))
             back.tap()
         }
-        XCTAssertTrue(settings.waitForExistence(timeout: 10))
+        XCTAssertTrue(settings.waitForExistence(timeout: UIWaitScale.scaled(10)))
         settings.tap()
-        XCTAssertTrue(app.buttons["settings.connection"].waitForExistence(timeout: 10),
+        XCTAssertTrue(app.buttons["settings.connection"].waitForExistence(timeout: UIWaitScale.scaled(10)),
                       "Settings must finish opening before revealing its controls")
     }
 
@@ -267,7 +285,7 @@ final class HolonUITests: XCTestCase {
         let open = app.buttons["diagnostics.open"]
         reveal(open, in: app, fullyVisible: true)
         open.tap()
-        XCTAssertTrue(app.buttons["diagnostics.prepare"].waitForExistence(timeout: 10))
+        XCTAssertTrue(app.buttons["diagnostics.prepare"].waitForExistence(timeout: UIWaitScale.scaled(10)))
     }
 
     func testDisconnectedEnglishLight() throws {
@@ -302,7 +320,7 @@ final class HolonUITests: XCTestCase {
         openSettings(app)
         openDiagnostics(app)
         app.buttons["diagnostics.prepare"].tap()
-        XCTAssertTrue(app.staticTexts["diagnostics.report"].waitForExistence(timeout: 10))
+        XCTAssertTrue(app.staticTexts["diagnostics.report"].waitForExistence(timeout: UIWaitScale.scaled(10)))
         continueAfterFailure = true
         defer { continueAfterFailure = false }
 
@@ -311,7 +329,7 @@ final class HolonUITests: XCTestCase {
         for element in [app.staticTexts["diagnostics.report"],
                         app.buttons["diagnostics.export"],
                         app.staticTexts["diagnostics.chooseAgent"]] {
-            XCTAssertTrue(element.waitForExistence(timeout: 10))
+            XCTAssertTrue(element.waitForExistence(timeout: UIWaitScale.scaled(10)))
             for _ in 0..<20 {
                 let viewport = diagnosticsViewport(app)
                 let frame = element.frame
@@ -389,7 +407,7 @@ final class HolonUITests: XCTestCase {
         let report = app.staticTexts["diagnostics.report"]
         let export = app.buttons["diagnostics.export"]
         let chooseAgent = app.staticTexts["diagnostics.chooseAgent"]
-        XCTAssertTrue(report.waitForExistence(timeout: 10))
+        XCTAssertTrue(report.waitForExistence(timeout: UIWaitScale.scaled(10)))
         let elements = [report, export, chooseAgent]
         let originalHeights = elements.map { element in
             reveal(element, in: app)
@@ -410,7 +428,7 @@ final class HolonUITests: XCTestCase {
             let changed = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
                 element.exists && element.frame.height > originalHeight
             }, object: nil)
-            let result = await XCTWaiter.fulfillment(of: [changed], timeout: 10)
+            let result = await XCTWaiter.fulfillment(of: [changed], timeout: UIWaitScale.scaled(10))
             XCTAssertEqual(result, .completed)
             XCTAssertGreaterThan(element.frame.height, originalHeight,
                                  "\(element.identifier) must respond without regenerating the report")
@@ -428,7 +446,7 @@ final class HolonUITests: XCTestCase {
         let allowlist = app.staticTexts[
             "Only connection states and counts are included. Credentials, identities, addresses, message content and raw errors are excluded."]
         let prepare = app.buttons["diagnostics.prepare"]
-        XCTAssertTrue(allowlist.waitForExistence(timeout: 10))
+        XCTAssertTrue(allowlist.waitForExistence(timeout: UIWaitScale.scaled(10)))
         let elements = [allowlist, prepare]
         let maximumHeights = elements.map { element in
             reveal(element, in: app)
@@ -446,7 +464,7 @@ final class HolonUITests: XCTestCase {
             let changed = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
                 element.exists && element.frame.height > 0 && element.frame.height < maximumHeight
             }, object: nil)
-            let result = await XCTWaiter.fulfillment(of: [changed], timeout: 10)
+            let result = await XCTWaiter.fulfillment(of: [changed], timeout: UIWaitScale.scaled(10))
             XCTAssertEqual(result, .completed)
             XCTAssertLessThan(element.frame.height, maximumHeight,
                               "\(element.label) must respond to the real system text size")
@@ -511,13 +529,13 @@ final class HolonUITests: XCTestCase {
         defer { app.terminate() }
         let chinese = language == "zh-Hans"
         let scan = app.buttons["onboarding.scan"]
-        XCTAssertTrue(scan.waitForExistence(timeout: 15))
+        XCTAssertTrue(scan.waitForExistence(timeout: UIWaitScale.scaled(15)))
         XCTAssertEqual(scan.label, chinese ? "扫码连接" : "Scan to connect")
         XCTAssertFalse(app.tabBars.firstMatch.exists, "No empty content tabs before authentication")
         capture(app, "\(language)-welcome")
         try audit(app, name: language)
         let address = app.textFields["onboarding.address"]
-        XCTAssertTrue(address.waitForExistence(timeout: 10), "The address field is the single entry point")
+        XCTAssertTrue(address.waitForExistence(timeout: UIWaitScale.scaled(10)), "The address field is the single entry point")
         let checkAddress = app.buttons["onboarding.checkAddress"]
         reveal(checkAddress, in: app)
         XCTAssertFalse(checkAddress.isEnabled, "An empty address cannot proceed")
@@ -535,10 +553,10 @@ final class HolonUITests: XCTestCase {
     func testPairingPreviewStaysOfflineAndCanCancel() throws {
         let app = launch(language: "en", dark: false, large: false)
         defer { app.terminate() }
-        XCTAssertTrue(app.buttons["onboarding.scan"].waitForExistence(timeout: 15))
+        XCTAssertTrue(app.buttons["onboarding.scan"].waitForExistence(timeout: UIWaitScale.scaled(15)))
         try enterPairingPayload(app, payload: "http://pair.example.test/login#pair=" + String(repeating: "a", count: 64))
         let target = app.staticTexts["onboarding.pairingTarget"]
-        XCTAssertTrue(target.waitForExistence(timeout: 10))
+        XCTAssertTrue(target.waitForExistence(timeout: UIWaitScale.scaled(10)))
         XCTAssertEqual(target.label, "http://pair.example.test/api/")
         XCTAssertFalse(app.tabBars.firstMatch.exists)
         let permission = app.switches["onboarding.pairingHTTP"]
@@ -548,7 +566,7 @@ final class HolonUITests: XCTestCase {
         XCTAssertFalse(app.switches["privacy.accept"].exists,
                        "The offline pairing preview shows no consent prompt; confirm asks first")
         app.buttons["onboarding.back"].tap()
-        XCTAssertTrue(app.textFields["onboarding.address"].waitForExistence(timeout: 10))
+        XCTAssertTrue(app.textFields["onboarding.address"].waitForExistence(timeout: UIWaitScale.scaled(10)))
         XCTAssertFalse(target.exists)
         try enterPairingPayload(app, payload: "https://other.example.test/login#pair=" + String(repeating: "b", count: 64))
         XCTAssertEqual(app.staticTexts["onboarding.pairingTarget"].label, "https://other.example.test/api/")
@@ -558,9 +576,9 @@ final class HolonUITests: XCTestCase {
     func testLoginConsentPrecedesAnyConnection() throws {
         let app = launch(language: "en", dark: false, large: false)
         defer { app.terminate() }
-        XCTAssertTrue(app.buttons["onboarding.scan"].waitForExistence(timeout: 15))
+        XCTAssertTrue(app.buttons["onboarding.scan"].waitForExistence(timeout: UIWaitScale.scaled(15)))
         let address = app.textFields["onboarding.address"]
-        XCTAssertTrue(address.waitForExistence(timeout: 10))
+        XCTAssertTrue(address.waitForExistence(timeout: UIWaitScale.scaled(10)))
         address.tap()
         address.typeText("https://unreachable.example.test")
         let next = app.buttons["onboarding.checkAddress"]
@@ -568,27 +586,27 @@ final class HolonUITests: XCTestCase {
         next.tap()
         // The prompt precedes the probe: an unreachable host still names itself first.
         let consent = app.switches["privacy.accept"]
-        XCTAssertTrue(consent.waitForExistence(timeout: 10),
+        XCTAssertTrue(consent.waitForExistence(timeout: UIWaitScale.scaled(10)),
                       "下一步 must stop at the sharing prompt before probing the host")
         XCTAssertTrue(app.staticTexts.containing(NSPredicate(format: "label CONTAINS %@",
                                                              "unreachable.example.test")).firstMatch.exists,
                       "The prompt must name the host receiving the data")
         XCTAssertEqual(consent.value as? String, "0", "Consent must never be preselected")
         let cancel = app.buttons["privacy.cancelLogin"]
-        XCTAssertTrue(cancel.waitForExistence(timeout: 5))
+        XCTAssertTrue(cancel.waitForExistence(timeout: UIWaitScale.scaled(5)))
         cancel.tap()
-        XCTAssertTrue(address.waitForExistence(timeout: 10), "Declining consent returns to the address screen")
+        XCTAssertTrue(address.waitForExistence(timeout: UIWaitScale.scaled(10)), "Declining consent returns to the address screen")
         XCTAssertFalse(app.staticTexts["connection.status"].exists,
                        "Declining consent must not create a profile or probe the host")
         reveal(next, in: app)
         next.tap()
-        XCTAssertTrue(consent.waitForExistence(timeout: 10), "Declined consent is not persisted")
+        XCTAssertTrue(consent.waitForExistence(timeout: UIWaitScale.scaled(10)), "Declined consent is not persisted")
         agreeToSharingConsent(app)
         let proceed = app.buttons["privacy.continueLogin"]
         reveal(proceed, in: app)
         waitForEnabled(proceed, message: "Consent must enable the continue action")
         proceed.tap()
-        XCTAssertTrue(app.buttons["onboarding.back"].waitForExistence(timeout: 10),
+        XCTAssertTrue(app.buttons["onboarding.back"].waitForExistence(timeout: UIWaitScale.scaled(10)),
                       "Approved consent continues into the sign-in step")
     }
 
@@ -596,7 +614,7 @@ final class HolonUITests: XCTestCase {
         // Save a selected profile whose host never answers, so the next launch
         // blocks on the restore screen instead of signing in.
         let app = launch(language: "en", dark: false, large: false)
-        XCTAssertTrue(app.buttons["onboarding.scan"].waitForExistence(timeout: 15))
+        XCTAssertTrue(app.buttons["onboarding.scan"].waitForExistence(timeout: UIWaitScale.scaled(15)))
         let address = app.textFields["onboarding.address"]
         reveal(address, in: app)
         address.tap()
@@ -608,24 +626,24 @@ final class HolonUITests: XCTestCase {
         reveal(next, in: app)
         next.tap()
         let consent = app.switches["privacy.accept"]
-        XCTAssertTrue(consent.waitForExistence(timeout: 10))
+        XCTAssertTrue(consent.waitForExistence(timeout: UIWaitScale.scaled(10)))
         consent.switches.firstMatch.tap()
         let proceed = app.buttons["privacy.continueLogin"]
         reveal(proceed, in: app)
         waitForEnabled(proceed)
         proceed.tap()
         // The sign-in step appears immediately; the host probe stays in flight.
-        XCTAssertTrue(app.buttons["onboarding.back"].waitForExistence(timeout: 15))
+        XCTAssertTrue(app.buttons["onboarding.back"].waitForExistence(timeout: UIWaitScale.scaled(15)))
         app.terminate()
 
         // Relaunch: the saved profile holds the first screen on restoring. The
         // change-address entry must stay reachable while the probe hangs.
         app.launch()
         let change = app.buttons["onboarding.changeAddress"]
-        XCTAssertTrue(change.waitForExistence(timeout: 20),
+        XCTAssertTrue(change.waitForExistence(timeout: UIWaitScale.scaled(20)),
                       "A first launch with a saved profile must offer changing the address")
         change.tap()
-        XCTAssertTrue(app.textFields["onboarding.address"].waitForExistence(timeout: 15),
+        XCTAssertTrue(app.textFields["onboarding.address"].waitForExistence(timeout: UIWaitScale.scaled(15)),
                       "Changing the address must return to the address entry screen")
         // Clean up saved profiles for the tests that follow. Earlier sweep
         // cases may leave their own unreachable profile behind, so remove
@@ -638,14 +656,14 @@ final class HolonUITests: XCTestCase {
             reveal(actions, in: app)
             actions.tap()
             app.buttons["Delete network"].tap()
-            XCTAssertTrue(app.alerts.firstMatch.waitForExistence(timeout: 10))
+            XCTAssertTrue(app.alerts.firstMatch.waitForExistence(timeout: UIWaitScale.scaled(10)))
             try confirmNetworkDeletion(app)
             let removed = XCTNSPredicateExpectation(predicate: NSPredicate(format: "exists == false"),
                                                     object: app.buttons[identifier])
-            XCTAssertEqual(XCTWaiter.wait(for: [removed], timeout: 10), .completed,
+            XCTAssertEqual(XCTWaiter.wait(for: [removed], timeout: UIWaitScale.scaled(10)), .completed,
                            "Deleting must remove the profile row")
         }
-        XCTAssertTrue(app.buttons["onboarding.scan"].waitForExistence(timeout: 10))
+        XCTAssertTrue(app.buttons["onboarding.scan"].waitForExistence(timeout: UIWaitScale.scaled(10)))
         app.terminate()
     }
 
@@ -653,7 +671,7 @@ final class HolonUITests: XCTestCase {
         // A bare host normalizes to https and is gated by the sharing prompt
         // before any probe; cancelling must return to the address screen.
         let app = launch(language: "en", dark: false, large: false)
-        XCTAssertTrue(app.buttons["onboarding.scan"].waitForExistence(timeout: 15))
+        XCTAssertTrue(app.buttons["onboarding.scan"].waitForExistence(timeout: UIWaitScale.scaled(15)))
         let address = app.textFields["onboarding.address"]
         reveal(address, in: app)
         address.tap()
@@ -662,12 +680,12 @@ final class HolonUITests: XCTestCase {
         reveal(next, in: app)
         next.tap()
         let consent = app.switches["privacy.accept"]
-        XCTAssertTrue(consent.waitForExistence(timeout: 10),
+        XCTAssertTrue(consent.waitForExistence(timeout: UIWaitScale.scaled(10)),
                       "A bare host must advance to the sharing consent prompt")
         let cancel = app.buttons["privacy.cancelLogin"]
-        XCTAssertTrue(cancel.waitForExistence(timeout: 5))
+        XCTAssertTrue(cancel.waitForExistence(timeout: UIWaitScale.scaled(5)))
         cancel.tap()
-        XCTAssertTrue(app.textFields["onboarding.address"].waitForExistence(timeout: 10),
+        XCTAssertTrue(app.textFields["onboarding.address"].waitForExistence(timeout: UIWaitScale.scaled(10)),
                       "Cancelling consent must return to the address entry screen")
         app.terminate()
     }
@@ -696,7 +714,7 @@ final class HolonUITests: XCTestCase {
         let chooseAgent = app.staticTexts["diagnostics.chooseAgent"]
         let elements = [prepare, report, export, chooseAgent]
         for element in elements {
-            XCTAssertTrue(element.waitForExistence(timeout: 10))
+            XCTAssertTrue(element.waitForExistence(timeout: UIWaitScale.scaled(10)))
         }
         let startingFrames = elements.map(\.frame)
         let viewportBottom = app.tabBars.firstMatch.frame.minY
@@ -728,7 +746,7 @@ final class HolonUITests: XCTestCase {
             previousLabels = labels
             return stableSamples >= 2 && elements.allSatisfy { $0.exists && !$0.frame.isEmpty }
         }, object: nil)
-        XCTAssertEqual(XCTWaiter.wait(for: [stable], timeout: 15), .completed)
+        XCTAssertEqual(XCTWaiter.wait(for: [stable], timeout: UIWaitScale.scaled(15)), .completed)
         let restoredFrames = elements.map(\.frame)
         for (starting, restored) in zip(startingFrames, restoredFrames) {
             XCTAssertEqual(starting.minY, restored.minY, accuracy: 1)
@@ -762,36 +780,39 @@ final class HolonUITests: XCTestCase {
         }
         components.path = String(components.path.dropLast(4)) + "/login"
         components.fragment = "pair=" + code
-        let app = launch(language: "en", dark: false, large: false)
-        XCTAssertTrue(app.buttons["onboarding.scan"].waitForExistence(timeout: 15))
+        // This case asserts that the app stops at the sharing prompt, so it
+        // must start without an earlier approval. The app clears its own
+        // state; the case only states the precondition.
+        let app = launchClean(language: "en", dark: false, large: false)
+        XCTAssertTrue(app.buttons["onboarding.scan"].waitForExistence(timeout: UIWaitScale.scaled(15)))
         XCTAssertFalse(app.tabBars.firstMatch.exists, "Identity must be confirmed before showing tabs")
         try connectThroughPairing(app, endpoint: endpoint, payload: try XCTUnwrap(components.string))
         approveSharingConsent(app)
         XCTAssertFalse(app.tabBars.firstMatch.exists, "Agent home has no global bottom tabs")
         let manage = app.buttons["connection.manage"]
-        XCTAssertTrue(manage.waitForExistence(timeout: 10))
+        XCTAssertTrue(manage.waitForExistence(timeout: UIWaitScale.scaled(10)))
         let originalHost = manage.label.components(separatedBy: ",").first ?? manage.label
         manage.tap()
         let add = app.buttons["connection.add"]
         reveal(add, in: app)
         add.tap()
-        XCTAssertTrue(app.buttons["onboarding.scan"].waitForExistence(timeout: 10))
+        XCTAssertTrue(app.buttons["onboarding.scan"].waitForExistence(timeout: UIWaitScale.scaled(10)))
         let cancel = app.buttons["onboarding.cancel"]
-        XCTAssertTrue(cancel.waitForExistence(timeout: 10))
+        XCTAssertTrue(cancel.waitForExistence(timeout: UIWaitScale.scaled(10)))
         cancel.tap()
         reveal(add, in: app)
-        XCTAssertTrue(add.waitForExistence(timeout: 10), "Cancel returns to existing connection management")
+        XCTAssertTrue(add.waitForExistence(timeout: UIWaitScale.scaled(10)), "Cancel returns to existing connection management")
         XCTAssertFalse(app.buttons["onboarding.scan"].exists)
         app.navigationBars.buttons.element(boundBy: 0).tap()
-        XCTAssertTrue(manage.waitForExistence(timeout: 10), "One back returns to Agent home")
-        XCTAssertTrue(manage.waitForExistence(timeout: 10))
+        XCTAssertTrue(manage.waitForExistence(timeout: UIWaitScale.scaled(10)), "One back returns to Agent home")
+        XCTAssertTrue(manage.waitForExistence(timeout: UIWaitScale.scaled(10)))
         XCTAssertEqual(manage.label.components(separatedBy: ",").first, originalHost,
                        "Cancelled onboarding preserves the original host independently of live/offline status")
         let agentButton = app.buttons["agent." + agent]
-        XCTAssertTrue(agentButton.waitForExistence(timeout: 30))
+        XCTAssertTrue(agentButton.waitForExistence(timeout: UIWaitScale.scaled(30)))
         agentButton.tap()
         let read = app.staticTexts.containing(NSPredicate(format: "label CONTAINS %@", readMarker)).firstMatch
-        XCTAssertTrue(read.waitForExistence(timeout: 30))
+        XCTAssertTrue(read.waitForExistence(timeout: UIWaitScale.scaled(30)))
         reveal(read, in: app)
         capture(app, "authenticated-reading")
         XCTAssertFalse(app.staticTexts["Loading messages…"].exists,
@@ -802,7 +823,7 @@ final class HolonUITests: XCTestCase {
         capture(app, "conversation-absolute-markdown-path")
         pathLink.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).tap()
         XCTAssertTrue(app.staticTexts.containing(NSPredicate(format: "label CONTAINS %@", fileMarker))
-            .firstMatch.waitForExistence(timeout: 30))
+            .firstMatch.waitForExistence(timeout: UIWaitScale.scaled(30)))
         capture(app, "conversation-path-opened-file")
         app.navigationBars.buttons.element(boundBy: 0).tap()
         XCTAssertFalse(read.frame.isEmpty, "Assert margins only on a laid-out, visible element")
@@ -810,21 +831,21 @@ final class HolonUITests: XCTestCase {
         XCTAssertGreaterThanOrEqual(read.frame.minX, 12, "Conversation text must retain native horizontal margins")
         XCTAssertLessThanOrEqual(read.frame.maxX, app.windows.firstMatch.frame.maxX - 12)
         let editor = app.descendants(matching: .any)["sending.text"].firstMatch
-        XCTAssertTrue(editor.waitForExistence(timeout: 10))
+        XCTAssertTrue(editor.waitForExistence(timeout: UIWaitScale.scaled(10)))
         editor.tap()
         editor.typeText("P6 native UI explicit operator message")
         // The native Outbox action clears composer focus without relying on
         // a scroll gesture whose origin can fall outside the conversation.
         let queue = app.buttons["sending.queue"]
         app.buttons["sending.options"].tap()
-        XCTAssertTrue(queue.waitForExistence(timeout: 10))
+        XCTAssertTrue(queue.waitForExistence(timeout: UIWaitScale.scaled(10)))
         queue.tap()
         let closeQueue = app.buttons["Close"]
-        XCTAssertTrue(closeQueue.waitForExistence(timeout: 10))
+        XCTAssertTrue(closeQueue.waitForExistence(timeout: UIWaitScale.scaled(10)))
         closeQueue.tap()
         let composerKeyboardDismissed = XCTNSPredicateExpectation(
             predicate: NSPredicate(format: "exists == false"), object: app.keyboards.firstMatch)
-        XCTAssertEqual(XCTWaiter.wait(for: [composerKeyboardDismissed], timeout: 5), .completed)
+        XCTAssertEqual(XCTWaiter.wait(for: [composerKeyboardDismissed], timeout: UIWaitScale.scaled(5)), .completed)
         XCTAssertEqual(editor.value as? String, "P6 native UI explicit operator message")
         let enqueue = app.buttons["sending.enqueue"]
         reveal(enqueue, in: app)
@@ -833,12 +854,12 @@ final class HolonUITests: XCTestCase {
         // Returning from the native editor is not evidence of server acceptance.
         // Outbox must expose a concrete accepted state.
         app.buttons["sending.options"].tap()
-        XCTAssertTrue(queue.waitForExistence(timeout: 10))
+        XCTAssertTrue(queue.waitForExistence(timeout: UIWaitScale.scaled(10)))
         queue.tap()
         // Server acceptance includes a real daemon round trip; slow runners
         // need a wider window than presentation waits.
         XCTAssertTrue(app.descendants(matching: .any)["sending.state.received"]
-            .waitForExistence(timeout: 60))
+            .waitForExistence(timeout: UIWaitScale.scaled(60)))
         capture(app, "authenticated-outbox")
         app.buttons["Close"].tap()
         app.buttons["conversation.more"].tap()
@@ -849,22 +870,22 @@ final class HolonUITests: XCTestCase {
             reveal(more, in: app); more.tap()
         }
         reveal(item, in: app)
-        XCTAssertTrue(item.waitForExistence(timeout: 10))
+        XCTAssertTrue(item.waitForExistence(timeout: UIWaitScale.scaled(10)))
         item.tap()
         let openPlan = app.buttons["work.openPlan"]
         reveal(openPlan, in: app)
         openPlan.tap()
         XCTAssertTrue(app.staticTexts.containing(NSPredicate(format: "label CONTAINS %@", planMarker))
-            .firstMatch.waitForExistence(timeout: 30))
+            .firstMatch.waitForExistence(timeout: UIWaitScale.scaled(30)))
         capture(app, "full-plan")
         app.navigationBars.buttons.element(boundBy: 0).tap()
-        XCTAssertTrue(openPlan.waitForExistence(timeout: 10))
+        XCTAssertTrue(openPlan.waitForExistence(timeout: UIWaitScale.scaled(10)))
         app.navigationBars.buttons.element(boundBy: 0).tap()
         let taskRow = app.buttons["work.task." + task]
         reveal(taskRow, in: app)
         taskRow.tap()
         let output = app.staticTexts["work.output"]
-        XCTAssertTrue(output.waitForExistence(timeout: 30))
+        XCTAssertTrue(output.waitForExistence(timeout: UIWaitScale.scaled(30)))
         XCTAssertTrue(output.label.contains(taskMarker))
         capture(app, "task-output")
         app.navigationBars.buttons.element(boundBy: 0).tap()
@@ -876,25 +897,25 @@ final class HolonUITests: XCTestCase {
         app.buttons["files.options"].tap()
         app.buttons["Server reference"].tap()
         let reference = app.textFields["files.reference"]
-        XCTAssertTrue(reference.waitForExistence(timeout: 10))
+        XCTAssertTrue(reference.waitForExistence(timeout: UIWaitScale.scaled(10)))
         reference.tap()
         reference.typeText(fileReference)
         app.buttons["files.openReference"].tap()
         XCTAssertTrue(app.staticTexts.containing(NSPredicate(format: "label CONTAINS %@", fileMarker))
-            .firstMatch.waitForExistence(timeout: 30))
+            .firstMatch.waitForExistence(timeout: UIWaitScale.scaled(30)))
         capture(app, "file-preview")
         app.navigationBars.buttons.element(boundBy: 0).tap()
-        XCTAssertTrue(app.navigationBars["Files"].waitForExistence(timeout: 10))
+        XCTAssertTrue(app.navigationBars["Files"].waitForExistence(timeout: UIWaitScale.scaled(10)))
         app.navigationBars.buttons.element(boundBy: 0).tap()
         app.buttons["conversation.more"].tap()
         openDiagnostics(app)
         app.buttons["diagnostics.prepare"].tap()
-        XCTAssertTrue(app.staticTexts["diagnostics.report"].waitForExistence(timeout: 10))
+        XCTAssertTrue(app.staticTexts["diagnostics.report"].waitForExistence(timeout: UIWaitScale.scaled(10)))
         let send = app.buttons["diagnostics.send"]
         reveal(send, in: app)
         send.tap()
         let confirmButtons = app.sheets.buttons.matching(identifier: "diagnostics.confirmSend")
-        XCTAssertTrue(confirmButtons.firstMatch.waitForExistence(timeout: 10))
+        XCTAssertTrue(confirmButtons.firstMatch.waitForExistence(timeout: UIWaitScale.scaled(10)))
         // A native sheet can expose the action as a button wrapper and child.
         // Require one leaf action rather than accepting arbitrary duplicate controls.
         let leafButtons = confirmButtons.allElementsBoundByIndex.filter { $0.buttons.count == 0 }
@@ -905,7 +926,7 @@ final class HolonUITests: XCTestCase {
         confirmSend.tap()
         XCTAssertTrue(app.staticTexts[
             "Queued independently; your editor draft is unchanged. Check the Agent's sending queue for receipt."
-        ].waitForExistence(timeout: 10))
+        ].waitForExistence(timeout: UIWaitScale.scaled(10)))
         app.terminate()
     }
 
@@ -922,39 +943,39 @@ final class HolonUITests: XCTestCase {
         components.path = String(components.path.dropLast(4)) + "/login"
         components.fragment = "pair=" + code
         let app = launch(language: "en", dark: false, large: false)
-        XCTAssertTrue(app.buttons["onboarding.scan"].waitForExistence(timeout: 15))
+        XCTAssertTrue(app.buttons["onboarding.scan"].waitForExistence(timeout: UIWaitScale.scaled(15)))
         try connectThroughPairing(app, endpoint: endpoint, payload: try XCTUnwrap(components.string))
         approveSharingConsent(app)
         let agentButton = app.buttons["agent." + agent]
-        XCTAssertTrue(agentButton.waitForExistence(timeout: 30))
+        XCTAssertTrue(agentButton.waitForExistence(timeout: UIWaitScale.scaled(30)))
         agentButton.tap()
         let appLink = app.links["Open runtime app page"].firstMatch
-        XCTAssertTrue(appLink.waitForExistence(timeout: 30), "Fixture reply must link the runtime app page")
+        XCTAssertTrue(appLink.waitForExistence(timeout: UIWaitScale.scaled(30)), "Fixture reply must link the runtime app page")
         reveal(appLink, in: app)
         appLink.tap()
         let close = app.buttons["browser.close"]
         // Full-screen browser presentation is heavy on slow runners.
-        XCTAssertTrue(close.waitForExistence(timeout: 30), "A classified app link opens the runtime browser")
+        XCTAssertTrue(close.waitForExistence(timeout: UIWaitScale.scaled(30)), "A classified app link opens the runtime browser")
         // The WKHTTPCookieStore-bound holon_session cookie must authorize the
         // app page's same-origin API fetch.
-        XCTAssertTrue(app.staticTexts["SESSION_200"].firstMatch.waitForExistence(timeout: 30),
+        XCTAssertTrue(app.staticTexts["SESSION_200"].firstMatch.waitForExistence(timeout: UIWaitScale.scaled(30)),
                       "The runtime browser session cookie must reach the runtime API")
         // Stage 2 audit follow-up: the external confirm alert must stack over
         // the presented full-screen browser cover.
         let external = app.links["External probe"].firstMatch
-        XCTAssertTrue(external.waitForExistence(timeout: 15))
+        XCTAssertTrue(external.waitForExistence(timeout: UIWaitScale.scaled(15)))
         reveal(external, in: app)
         external.tap()
         // SwiftUI alert buttons surface as nested parent/child nodes sharing
         // one identifier; firstMatch resolves the duplicated hierarchy.
         let confirmExternal = app.buttons["browser.openExternal.confirm"].firstMatch
-        XCTAssertTrue(confirmExternal.waitForExistence(timeout: 10),
+        XCTAssertTrue(confirmExternal.waitForExistence(timeout: UIWaitScale.scaled(10)),
                       "External navigations need an explicit confirm above the runtime browser")
         app.buttons["browser.openExternal.cancel"].firstMatch.tap()
-        XCTAssertFalse(confirmExternal.waitForExistence(timeout: 5))
+        XCTAssertFalse(confirmExternal.waitForExistence(timeout: UIWaitScale.scaled(5)))
         XCTAssertTrue(close.exists, "Cancelling the external confirm keeps the runtime browser open")
         close.firstMatch.tap()
-        XCTAssertTrue(app.descendants(matching: .any)["sending.text"].firstMatch.waitForExistence(timeout: 15),
+        XCTAssertTrue(app.descendants(matching: .any)["sending.text"].firstMatch.waitForExistence(timeout: UIWaitScale.scaled(15)),
                       "Closing the runtime browser returns to the conversation")
     }
 
@@ -963,16 +984,16 @@ final class HolonUITests: XCTestCase {
         let app = launch(language: "en", dark: false, large: false)
         let agent = try required("AGENT_ID")
         let turn = try required("RICH_TURN_ID")
-        if app.buttons["conversation.more"].waitForExistence(timeout: 30) {
+        if app.buttons["conversation.more"].waitForExistence(timeout: UIWaitScale.scaled(30)) {
             app.navigationBars.buttons.element(boundBy: 0).tap()
         }
-        XCTAssertTrue(app.buttons["settings.open"].waitForExistence(timeout: 15))
+        XCTAssertTrue(app.buttons["settings.open"].waitForExistence(timeout: UIWaitScale.scaled(15)))
         let search = app.searchFields.firstMatch
         app.swipeDown()
-        XCTAssertTrue(search.waitForExistence(timeout: 10))
+        XCTAssertTrue(search.waitForExistence(timeout: UIWaitScale.scaled(10)))
         search.tap(); search.typeText(agent + "\n")
         let row = app.buttons["agent." + agent]
-        XCTAssertTrue(row.waitForExistence(timeout: 15)); row.tap()
+        XCTAssertTrue(row.waitForExistence(timeout: UIWaitScale.scaled(15))); row.tap()
         if app.buttons["conversation.latest"].exists { app.buttons["conversation.latest"].tap() }
         let message = app.staticTexts["conversation.time." + turn]
         for _ in 0..<40 {
@@ -985,18 +1006,18 @@ final class HolonUITests: XCTestCase {
         let report = app.buttons["report.open." + turn]
         XCTAssertFalse(report.exists, "Report must not be a permanent message-row button")
         message.press(forDuration: 1)
-        XCTAssertTrue(report.waitForExistence(timeout: 5)); report.tap()
+        XCTAssertTrue(report.waitForExistence(timeout: UIWaitScale.scaled(5))); report.tap()
         let target = app.buttons.matching(NSPredicate(format:
             "identifier BEGINSWITH %@", "report.target.assistant:")).firstMatch
-        XCTAssertTrue(target.waitForExistence(timeout: 20))
+        XCTAssertTrue(target.waitForExistence(timeout: UIWaitScale.scaled(20)))
         reveal(target, in: app); target.tap()
         XCTAssertTrue(app.staticTexts.matching(NSPredicate(format:
-            "label CONTAINS %@", "IOS_RICH_ASSISTANT:")).firstMatch.waitForExistence(timeout: 20),
+            "label CONTAINS %@", "IOS_RICH_ASSISTANT:")).firstMatch.waitForExistence(timeout: UIWaitScale.scaled(20)),
                       "Reporting must load the real assistant transcript")
         let category = app.buttons["report.category"]
         reveal(category, in: app); category.tap()
         let reason = app.buttons["Spam or other"]
-        XCTAssertTrue(reason.waitForExistence(timeout: 10)); reason.tap()
+        XCTAssertTrue(reason.waitForExistence(timeout: UIWaitScale.scaled(10))); reason.tap()
         return app
     }
 
@@ -1006,7 +1027,7 @@ final class HolonUITests: XCTestCase {
         let full = app.buttons["report.viewFullResponse"]
         reveal(full, in: app); full.tap()
         let source = app.textViews["reading.selectionText"]
-        XCTAssertTrue(source.waitForExistence(timeout: 10))
+        XCTAssertTrue(source.waitForExistence(timeout: UIWaitScale.scaled(10)))
         let content = try XCTUnwrap(source.value as? String)
         XCTAssertGreaterThan(content.count, 8_000)
         XCTAssertTrue(content.hasSuffix("IOS_CONTENT_REPORT_TAIL"), "Full preview must include the selected response's tail")
@@ -1021,7 +1042,7 @@ final class HolonUITests: XCTestCase {
         let submit = app.buttons["report.submit"]
         reveal(submit, in: app); waitForEnabled(submit); submit.tap()
         let confirm = app.alerts.buttons["report.confirm"].firstMatch
-        XCTAssertTrue(confirm.waitForExistence(timeout: 10))
+        XCTAssertTrue(confirm.waitForExistence(timeout: UIWaitScale.scaled(10)))
         app.alerts.buttons["Cancel"].tap()
         XCTAssertFalse(confirm.exists)
         XCTAssertFalse(app.descendants(matching: .any)["report.accepted"].firstMatch.exists)
@@ -1057,10 +1078,10 @@ final class HolonUITests: XCTestCase {
         reveal(submit, in: app); waitForEnabled(submit); submit.tap()
         // SwiftUI exposes the native alert control as nested Button nodes.
         let confirm = app.alerts.buttons["report.confirm"].firstMatch
-        XCTAssertTrue(confirm.waitForExistence(timeout: 10)); confirm.tap()
+        XCTAssertTrue(confirm.waitForExistence(timeout: UIWaitScale.scaled(10))); confirm.tap()
         // Assert the receipt text, not the Label's decorative, non-hittable icon.
         let accepted = app.staticTexts["report.accepted"].firstMatch
-        XCTAssertTrue(accepted.waitForExistence(timeout: 30))
+        XCTAssertTrue(accepted.waitForExistence(timeout: UIWaitScale.scaled(30)))
         reveal(accepted, in: app, fullyVisible: true)
         let receipt = app.staticTexts.matching(NSPredicate(format:
             "label MATCHES %@", "report_[0-9a-f]+")).firstMatch
@@ -1072,7 +1093,7 @@ final class HolonUITests: XCTestCase {
         XCUIDevice.shared.press(.home); app.activate()
         // Foreground refresh may reset the Form offset; receipt rows are lazy.
         reveal(accepted, in: app, fullyVisible: true)
-        XCTAssertTrue(accepted.waitForExistence(timeout: 30))
+        XCTAssertTrue(accepted.waitForExistence(timeout: UIWaitScale.scaled(30)))
         reveal(receipt, in: app)
         XCTAssertEqual(receipt.label, receiptID, "Foreground restoration must preserve the accepted receipt")
         XCTAssertFalse(submit.exists, "Foreground restoration must not resend an accepted report")
@@ -1087,38 +1108,38 @@ final class HolonUITests: XCTestCase {
         // Existing credentials came only from the preceding shipped onboarding flow.
         // Diagnostics may leave home with no saved Agent. Establish selection
         // through the shipped UI before testing confirmed route restoration.
-        if !app.buttons["conversation.more"].waitForExistence(timeout: 30) {
-            XCTAssertTrue(app.buttons["settings.open"].waitForExistence(timeout: 15))
+        if !app.buttons["conversation.more"].waitForExistence(timeout: UIWaitScale.scaled(30)) {
+            XCTAssertTrue(app.buttons["settings.open"].waitForExistence(timeout: UIWaitScale.scaled(15)))
             let agentRow = app.buttons["agent." + agent]
-            XCTAssertTrue(agentRow.waitForExistence(timeout: 15))
+            XCTAssertTrue(agentRow.waitForExistence(timeout: UIWaitScale.scaled(15)))
             reveal(agentRow, in: app); agentRow.tap()
         }
-        XCTAssertTrue(app.buttons["conversation.more"].waitForExistence(timeout: 30))
+        XCTAssertTrue(app.buttons["conversation.more"].waitForExistence(timeout: UIWaitScale.scaled(30)))
         app.terminate()
         app.launch()
-        XCTAssertTrue(app.buttons["conversation.more"].waitForExistence(timeout: 30))
+        XCTAssertTrue(app.buttons["conversation.more"].waitForExistence(timeout: UIWaitScale.scaled(30)))
         app.navigationBars.buttons.element(boundBy: 0).tap()
-        XCTAssertTrue(app.buttons["settings.open"].waitForExistence(timeout: 15))
+        XCTAssertTrue(app.buttons["settings.open"].waitForExistence(timeout: UIWaitScale.scaled(15)))
         XCTAssertFalse(app.tabBars.firstMatch.exists)
         app.swipeDown()
         let search = app.searchFields.firstMatch
-        XCTAssertTrue(search.waitForExistence(timeout: 10)); search.tap()
+        XCTAssertTrue(search.waitForExistence(timeout: UIWaitScale.scaled(10))); search.tap()
         search.typeText("ios-fixture-agent-089\n")
         let lastAgent = app.buttons["agent.ios-fixture-agent-089"]
-        XCTAssertTrue(lastAgent.waitForExistence(timeout: 15)); lastAgent.tap()
-        XCTAssertTrue(app.descendants(matching: .any)["sending.text"].firstMatch.waitForExistence(timeout: 15))
+        XCTAssertTrue(lastAgent.waitForExistence(timeout: UIWaitScale.scaled(15))); lastAgent.tap()
+        XCTAssertTrue(app.descendants(matching: .any)["sending.text"].firstMatch.waitForExistence(timeout: UIWaitScale.scaled(15)))
         app.navigationBars.buttons.element(boundBy: 0).tap()
-        XCTAssertTrue(lastAgent.waitForExistence(timeout: 10), "One native back returns to the filtered Agent list")
+        XCTAssertTrue(lastAgent.waitForExistence(timeout: UIWaitScale.scaled(10)), "One native back returns to the filtered Agent list")
         XCTAssertTrue(search.exists)
         XCTAssertFalse(app.buttons["conversation.more"].exists)
         search.tap()
         let clearSearch = search.buttons["Clear text"]
-        XCTAssertTrue(clearSearch.waitForExistence(timeout: 10)); clearSearch.tap()
+        XCTAssertTrue(clearSearch.waitForExistence(timeout: UIWaitScale.scaled(10))); clearSearch.tap()
         search.typeText(agent + "\n")
         let agentRow = app.buttons["agent." + agent]
-        XCTAssertTrue(agentRow.waitForExistence(timeout: 15)); agentRow.tap()
+        XCTAssertTrue(agentRow.waitForExistence(timeout: UIWaitScale.scaled(15))); agentRow.tap()
         app.buttons["sending.options"].tap(); app.buttons["Take photo"].tap()
-        XCTAssertTrue(app.staticTexts["The camera is not available on this device. Choose a photo or file instead."].waitForExistence(timeout: 10))
+        XCTAssertTrue(app.staticTexts["The camera is not available on this device. Choose a photo or file instead."].waitForExistence(timeout: UIWaitScale.scaled(10)))
         app.buttons["conversation.more"].tap(); app.buttons["conversation.work"].tap()
         let moreWork = app.buttons["work.moreItems"]
         reveal(moreWork, in: app); moreWork.tap()
@@ -1144,13 +1165,13 @@ final class HolonUITests: XCTestCase {
         reveal(activity, in: app, fullyVisible: true)
         XCTAssertTrue(activity.isHittable); activity.tap()
         let fullProcess = app.buttons["activities.full." + turn]
-        XCTAssertTrue(fullProcess.waitForExistence(timeout: 10))
+        XCTAssertTrue(fullProcess.waitForExistence(timeout: UIWaitScale.scaled(10)))
         reveal(fullProcess, in: app); fullProcess.tap()
         let fullReader = app.scrollViews["activities.fullReader"]
-        XCTAssertTrue(fullReader.waitForExistence(timeout: 10))
+        XCTAssertTrue(fullReader.waitForExistence(timeout: UIWaitScale.scaled(10)))
         let older = fullReader.buttons["activities.older"]
         XCUIDevice.shared.press(.home); app.activate()
-        XCTAssertTrue(older.waitForExistence(timeout: 30),
+        XCTAssertTrue(older.waitForExistence(timeout: UIWaitScale.scaled(30)),
                       "Open activity reader reacquires detail after a quiet foreground bootstrap")
         let firstBatch = fullReader.staticTexts.containing(NSPredicate(format: "label CONTAINS %@", "IOS_RICH_ASSISTANT: read-only inspection batch 1.")).firstMatch
         for _ in 0..<4 {
@@ -1167,15 +1188,15 @@ final class HolonUITests: XCTestCase {
         let assistant = fullReader.buttons["Full assistant text"].firstMatch
         reveal(assistant, in: app); assistant.tap()
         let rawRecord = fullReader.buttons["Raw record"].firstMatch
-        XCTAssertTrue(rawRecord.waitForExistence(timeout: 20)); rawRecord.tap()
+        XCTAssertTrue(rawRecord.waitForExistence(timeout: UIWaitScale.scaled(20))); rawRecord.tap()
         XCTAssertTrue(fullReader.staticTexts.containing(NSPredicate(format: "label CONTAINS %@", "assistant_round"))
-            .firstMatch.waitForExistence(timeout: 20), "Canonical transcript detail was fetched, not the summary fallback")
+            .firstMatch.waitForExistence(timeout: UIWaitScale.scaled(20)), "Canonical transcript detail was fetched, not the summary fallback")
         capture(app, "rich-assistant-full-detail")
         rawRecord.tap()
         let tool = fullReader.buttons.containing(NSPredicate(format: "label CONTAINS %@", "GetAgent")).firstMatch
         reveal(tool, in: app); tool.tap()
         let input = fullReader.staticTexts["Input"].firstMatch
-        XCTAssertTrue(input.waitForExistence(timeout: 20), "Canonical tool input is readable")
+        XCTAssertTrue(input.waitForExistence(timeout: UIWaitScale.scaled(20)), "Canonical tool input is readable")
         capture(app, "rich-tool-detail")
         app.buttons["Close"].tap()
         app.terminate()
@@ -1189,17 +1210,17 @@ final class HolonUITests: XCTestCase {
         for kind in ["text", "url", "image", "file"] {
             probe.launch()
             let share = probe.buttons["probe." + kind]
-            XCTAssertTrue(share.waitForExistence(timeout: 10)); share.tap()
+            XCTAssertTrue(share.waitForExistence(timeout: UIWaitScale.scaled(10))); share.tap()
             let holon = probe.cells["Holon"].firstMatch
-            if !holon.waitForExistence(timeout: 5) {
+            if !holon.waitForExistence(timeout: UIWaitScale.scaled(5)) {
                 let more = probe.cells["More"].firstMatch
-                XCTAssertTrue(more.waitForExistence(timeout: 10)); more.tap()
+                XCTAssertTrue(more.waitForExistence(timeout: UIWaitScale.scaled(10))); more.tap()
             }
             let destination = probe.cells["Holon"].firstMatch
-            XCTAssertTrue(destination.waitForExistence(timeout: 10)); destination.tap()
+            XCTAssertTrue(destination.waitForExistence(timeout: UIWaitScale.scaled(10))); destination.tap()
             // These elements belong to the real extension hosted in the sender process.
             let recipient = probe.cells["share.agent." + agent]
-            guard recipient.waitForExistence(timeout: 30) else {
+            guard recipient.waitForExistence(timeout: UIWaitScale.scaled(30)) else {
                 capture(probe, "system-share-" + kind + "-failed-preview")
                 let detail = XCTAttachment(string: probe.debugDescription)
                 detail.name = "share-preview-hierarchy"; detail.lifetime = .keepAlways; add(detail)
@@ -1208,7 +1229,7 @@ final class HolonUITests: XCTestCase {
             if kind == "text" {
                 let search = probe.descendants(matching: .any)["share.search"].firstMatch
                 XCTAssertTrue(search.exists); search.tap(); search.typeText(agent)
-                XCTAssertTrue(recipient.waitForExistence(timeout: 10))
+                XCTAssertTrue(recipient.waitForExistence(timeout: UIWaitScale.scaled(10)))
             }
             recipient.tap()
             let send = probe.buttons["share.send"]
@@ -1216,11 +1237,11 @@ final class HolonUITests: XCTestCase {
             capture(probe, "system-share-" + kind + "-agent")
             send.tap()
             let confirm = probe.alerts.buttons["Send"]
-            XCTAssertTrue(confirm.waitForExistence(timeout: 10)); confirm.tap()
+            XCTAssertTrue(confirm.waitForExistence(timeout: UIWaitScale.scaled(10))); confirm.tap()
             if kind == "text", ProcessInfo.processInfo.environment["HOLON_UI_LOSS_CONTROL_URL"] != nil {
                 let unknown = probe.staticTexts.matching(NSPredicate(format:
                     "identifier == %@ AND label CONTAINS %@", "share.status", "Receipt unknown")).firstMatch
-                XCTAssertTrue(unknown.waitForExistence(timeout: 35))
+                XCTAssertTrue(unknown.waitForExistence(timeout: UIWaitScale.scaled(35)))
                 capture(probe, "system-share-unknown-original-recipient")
                 var request = URLRequest(url: try XCTUnwrap(URL(string: required("LOSS_CONTROL_URL"))))
                 request.httpMethod = "POST"
@@ -1229,10 +1250,10 @@ final class HolonUITests: XCTestCase {
                 XCTAssertEqual((response as? HTTPURLResponse)?.statusCode, 204)
                 XCTAssertEqual(probe.buttons["share.send"].label, "Retry same request")
                 probe.buttons["share.send"].tap()
-                XCTAssertTrue(confirm.waitForExistence(timeout: 10)); confirm.tap()
+                XCTAssertTrue(confirm.waitForExistence(timeout: UIWaitScale.scaled(10))); confirm.tap()
             }
             let received = probe.staticTexts["Received by Agent"]
-            XCTAssertTrue(received.waitForExistence(timeout: 35))
+            XCTAssertTrue(received.waitForExistence(timeout: UIWaitScale.scaled(35)))
             capture(probe, "system-share-" + kind + "-received")
             probe.buttons["share.send"].tap()
             probe.terminate()
@@ -1244,11 +1265,11 @@ final class HolonUITests: XCTestCase {
         components.path = String(components.path.dropLast(4)) + "/login"
         components.fragment = "pair=" + (try required("PAIRING_CODE"))
         let app = launch(language: "en", dark: false, large: false)
-        if !app.buttons["onboarding.scan"].waitForExistence(timeout: 5) {
+        if !app.buttons["onboarding.scan"].waitForExistence(timeout: UIWaitScale.scaled(5)) {
             // A full sweep already authenticated through the shipped UI. Restore
             // that validated session; don't require a second disconnected install.
-            XCTAssertTrue(app.buttons["settings.open"].waitForExistence(timeout: 15) ||
-                          app.buttons["conversation.more"].waitForExistence(timeout: 15))
+            XCTAssertTrue(app.buttons["settings.open"].waitForExistence(timeout: UIWaitScale.scaled(15)) ||
+                          app.buttons["conversation.more"].waitForExistence(timeout: UIWaitScale.scaled(15)))
             app.terminate(); return
         }
         try connectThroughPairing(app, endpoint: endpoint, payload: try XCTUnwrap(components.string))
@@ -1266,7 +1287,7 @@ final class HolonUITests: XCTestCase {
         reveal(revoke, in: app); revoke.tap()
         app.terminate(); app.launch()
         let consent = app.switches["privacy.accept"]
-        XCTAssertTrue(consent.waitForExistence(timeout: 20),
+        XCTAssertTrue(consent.waitForExistence(timeout: UIWaitScale.scaled(20)),
                       "A restored session without consent must review it before using the app")
         XCTAssertEqual(app.staticTexts["privacy.target"].label, try required("ENDPOINT") + "/")
         let proceed = app.buttons["privacy.continue"]
@@ -1274,11 +1295,11 @@ final class HolonUITests: XCTestCase {
         XCTAssertFalse(proceed.isEnabled)
         agreeToSharingConsent(app)
         reveal(proceed, in: app); waitForEnabled(proceed); proceed.tap()
-        XCTAssertTrue(app.buttons["settings.open"].waitForExistence(timeout: 15) ||
-                      app.buttons["conversation.more"].waitForExistence(timeout: 15))
+        XCTAssertTrue(app.buttons["settings.open"].waitForExistence(timeout: UIWaitScale.scaled(15)) ||
+                      app.buttons["conversation.more"].waitForExistence(timeout: UIWaitScale.scaled(15)))
         app.terminate(); app.launch()
-        XCTAssertTrue(app.buttons["settings.open"].waitForExistence(timeout: 15) ||
-                      app.buttons["conversation.more"].waitForExistence(timeout: 15))
+        XCTAssertTrue(app.buttons["settings.open"].waitForExistence(timeout: UIWaitScale.scaled(15)) ||
+                      app.buttons["conversation.more"].waitForExistence(timeout: UIWaitScale.scaled(15)))
         XCTAssertFalse(consent.exists, "Explicit approval is persistent for this server")
     }
 
@@ -1286,11 +1307,11 @@ final class HolonUITests: XCTestCase {
         try connectForSharing()
         let app = launch(language: "en", dark: false, large: false)
         defer { app.terminate() }
-        if app.buttons["conversation.more"].waitForExistence(timeout: 3) {
+        if app.buttons["conversation.more"].waitForExistence(timeout: UIWaitScale.scaled(3)) {
             app.navigationBars.buttons.element(boundBy: 0).tap()
         }
         let manage = app.buttons["connection.manage"]
-        XCTAssertTrue(manage.waitForExistence(timeout: 30)); manage.tap()
+        XCTAssertTrue(manage.waitForExistence(timeout: UIWaitScale.scaled(30))); manage.tap()
         let rows = app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH %@", "profiles.select."))
         XCTAssertEqual(rows.count, 1)
         let originalID = rows.firstMatch.identifier
@@ -1309,7 +1330,7 @@ final class HolonUITests: XCTestCase {
             let status = app.staticTexts["connection.status"]
             return app.navigationBars["Connections"].exists && status.exists && status.label == "Connected"
         }, object: nil)
-        XCTAssertEqual(XCTWaiter.wait(for: [reconnected], timeout: 30), .completed,
+        XCTAssertEqual(XCTWaiter.wait(for: [reconnected], timeout: UIWaitScale.scaled(30)), .completed,
                        "The saved session should reconnect without another token")
         XCTAssertFalse(app.secureTextFields["onboarding.token"].exists)
         XCTAssertEqual(rows.count, 1)
@@ -1327,16 +1348,16 @@ final class HolonUITests: XCTestCase {
         reveal(proceed, in: app)
         waitForEnabled(proceed, message: "Consent must enable the continue action")
         proceed.tap()
-        XCTAssertTrue(app.staticTexts["connection.status"].waitForExistence(timeout: 10))
+        XCTAssertTrue(app.staticTexts["connection.status"].waitForExistence(timeout: UIWaitScale.scaled(10)))
         try assertNoCachedSessionUI(app)
         app.buttons["onboarding.back"].tap()
-        XCTAssertTrue(app.buttons["onboarding.scan"].waitForExistence(timeout: 10))
+        XCTAssertTrue(app.buttons["onboarding.scan"].waitForExistence(timeout: UIWaitScale.scaled(10)))
         XCTAssertEqual(rows.count, 2)
         let other = try XCTUnwrap(rows.allElementsBoundByIndex.first { $0.identifier != originalID })
         let otherActions = app.buttons[other.identifier.replacingOccurrences(of: "profiles.select.", with: "profiles.actions.")]
         reveal(otherActions, in: app); otherActions.tap()
         app.buttons["Delete network"].tap()
-        XCTAssertTrue(app.alerts.firstMatch.waitForExistence(timeout: 10))
+        XCTAssertTrue(app.alerts.firstMatch.waitForExistence(timeout: UIWaitScale.scaled(10)))
         XCTAssertTrue(app.alerts.staticTexts.containing(NSPredicate(format: "label CONTAINS %@", "http://127.0.0.1:1/api/"))
             .firstMatch.exists, "Confirm the address, not only a potentially shared network name")
         app.alerts.buttons["Cancel"].tap()
@@ -1347,19 +1368,19 @@ final class HolonUITests: XCTestCase {
         XCTAssertEqual(rows.firstMatch.identifier, originalID)
         capture(app, "welcome-network-deleted")
         app.buttons["onboarding.cancel"].tap()
-        XCTAssertTrue(manage.waitForExistence(timeout: 30), "Deleting the attempted host must not prevent returning to the previous host")
+        XCTAssertTrue(manage.waitForExistence(timeout: UIWaitScale.scaled(30)), "Deleting the attempted host must not prevent returning to the previous host")
         manage.tap()
         let actions = app.buttons[originalID.replacingOccurrences(of: "profiles.select.", with: "profiles.actions.")]
         reveal(actions, in: app); actions.tap()
         app.buttons["Delete network"].tap()
         XCTAssertTrue(app.alerts.staticTexts.containing(NSPredicate(format: "label CONTAINS %@", try required("ENDPOINT") + "/"))
-            .firstMatch.waitForExistence(timeout: 10))
+            .firstMatch.waitForExistence(timeout: UIWaitScale.scaled(10)))
         capture(app, "delete-active-network-confirmation")
         try confirmNetworkDeletion(app)
-        XCTAssertTrue(app.buttons["onboarding.scan"].waitForExistence(timeout: 10))
+        XCTAssertTrue(app.buttons["onboarding.scan"].waitForExistence(timeout: UIWaitScale.scaled(10)))
         XCTAssertEqual(rows.count, 0)
         app.terminate(); app.launch()
-        XCTAssertTrue(app.buttons["onboarding.scan"].waitForExistence(timeout: 15))
+        XCTAssertTrue(app.buttons["onboarding.scan"].waitForExistence(timeout: UIWaitScale.scaled(15)))
         XCTAssertEqual(rows.count, 0, "Deleted networks must not reappear after process restart")
         try assertNoCachedSessionUI(app)
         capture(app, "network-deletion-restored-empty")
@@ -1367,7 +1388,7 @@ final class HolonUITests: XCTestCase {
 
     private func confirmNetworkDeletion(_ app: XCUIApplication) throws {
         let buttons = app.alerts.buttons.matching(identifier: "profiles.confirmDelete")
-        XCTAssertTrue(buttons.firstMatch.waitForExistence(timeout: 10))
+        XCTAssertTrue(buttons.firstMatch.waitForExistence(timeout: UIWaitScale.scaled(10)))
         // UIKit can expose a wrapper and child for one SwiftUI alert action.
         let actions = buttons.allElementsBoundByIndex.filter { $0.buttons.count == 0 }
         XCTAssertEqual(actions.count, 1, "There must be exactly one destructive action")
@@ -1380,15 +1401,15 @@ final class HolonUITests: XCTestCase {
         // Earlier diagnostics cases intentionally return to home and clear
         // the saved Agent route. Wait for confirmed restoration before treating
         // the transient bootstrap home as a settled navigation destination.
-        if !app.buttons["conversation.more"].waitForExistence(timeout: 30) {
-            XCTAssertTrue(app.buttons["settings.open"].waitForExistence(timeout: 10))
+        if !app.buttons["conversation.more"].waitForExistence(timeout: UIWaitScale.scaled(30)) {
+            XCTAssertTrue(app.buttons["settings.open"].waitForExistence(timeout: UIWaitScale.scaled(10)))
             let agent = app.buttons["agent." + (try required("AGENT_ID"))]
-            XCTAssertTrue(agent.waitForExistence(timeout: 15))
+            XCTAssertTrue(agent.waitForExistence(timeout: UIWaitScale.scaled(15)))
             reveal(agent, in: app); agent.tap()
         }
-        XCTAssertTrue(app.buttons["conversation.more"].waitForExistence(timeout: 30))
+        XCTAssertTrue(app.buttons["conversation.more"].waitForExistence(timeout: UIWaitScale.scaled(30)))
         let editor = app.descendants(matching: .any)["sending.text"].firstMatch
-        XCTAssertTrue(editor.waitForExistence(timeout: 15)); XCTAssertTrue(editor.isHittable)
+        XCTAssertTrue(editor.waitForExistence(timeout: UIWaitScale.scaled(15))); XCTAssertTrue(editor.isHittable)
         editor.tap(); editor.typeText("IOS_ACCESSIBILITY_DRAFT")
         let send = app.buttons["sending.enqueue"]
         XCTAssertTrue(send.isHittable); waitForEnabled(send)
@@ -1402,7 +1423,7 @@ final class HolonUITests: XCTestCase {
         XCTAssertGreaterThan(editor.frame.minY, app.navigationBars.firstMatch.frame.maxY)
         capture(app, "chinese-dark-maximum-composer-keyboard")
         app.navigationBars.buttons.element(boundBy: 0).tap()
-        XCTAssertTrue(app.buttons["settings.open"].waitForExistence(timeout: 15), "One native back returns to Agents even with the keyboard open")
+        XCTAssertTrue(app.buttons["settings.open"].waitForExistence(timeout: UIWaitScale.scaled(15)), "One native back returns to Agents even with the keyboard open")
         capture(app, "chinese-dark-maximum-agent-home")
     }
 
@@ -1410,7 +1431,7 @@ final class HolonUITests: XCTestCase {
         let directory = try required("RICH_DIRECTORY")
         let workspace = try required("WORKSPACE_ID")
         let app = launch(language: "en", dark: false, large: false)
-        XCTAssertTrue(app.buttons["conversation.more"].waitForExistence(timeout: 30))
+        XCTAssertTrue(app.buttons["conversation.more"].waitForExistence(timeout: UIWaitScale.scaled(30)))
         app.buttons["conversation.more"].tap(); app.buttons["conversation.files"].tap()
         let home = app.buttons["files.workspace." + workspace].firstMatch
         reveal(home, in: app); home.tap()
@@ -1420,28 +1441,28 @@ final class HolonUITests: XCTestCase {
         reveal(lastNote, in: app, fullyVisible: true)
         let savedY = lastNote.frame.minY
         lastNote.tap()
-        XCTAssertTrue(app.staticTexts["IOS_RICH_NOTE_079\n"].waitForExistence(timeout: 20))
+        XCTAssertTrue(app.staticTexts["IOS_RICH_NOTE_079\n"].waitForExistence(timeout: UIWaitScale.scaled(20)))
         app.navigationBars.buttons.element(boundBy: 0).tap()
-        XCTAssertTrue(lastNote.waitForExistence(timeout: 10)); XCTAssertTrue(lastNote.isHittable)
+        XCTAssertTrue(lastNote.waitForExistence(timeout: UIWaitScale.scaled(10))); XCTAssertTrue(lastNote.isHittable)
         XCTAssertEqual(lastNote.frame.minY, savedY, accuracy: 44, "Reader return preserves native directory position")
         func open(_ name: String) {
             // Returning preserves the bottom-of-directory bookmark. Use the
             // shipped filter to select an earlier file rather than scrolling away.
             let filter = app.searchFields.firstMatch
-            XCTAssertTrue(filter.waitForExistence(timeout: 10)); filter.tap()
+            XCTAssertTrue(filter.waitForExistence(timeout: UIWaitScale.scaled(10))); filter.tap()
             let clear = filter.buttons["Clear text"]
             if clear.exists { clear.tap() }
             filter.typeText(name + "\n")
             let row = app.buttons["files.entry." + directory + "/" + name]
             reveal(row, in: app); row.tap()
-            XCTAssertTrue(app.descendants(matching: .any)["files.preview"].firstMatch.waitForExistence(timeout: 20))
+            XCTAssertTrue(app.descendants(matching: .any)["files.preview"].firstMatch.waitForExistence(timeout: UIWaitScale.scaled(20)))
         }
         open("large-utf8.txt")
         app.buttons["files.end"].tap()
         let end = app.staticTexts["files.endOfFile"]
         // Do not swipe to rescue a failed End action; the real footer must be on-screen.
         let endVisible = XCTNSPredicateExpectation(predicate: NSPredicate(format: "hittable == true"), object: end)
-        XCTAssertEqual(XCTWaiter.wait(for: [endVisible], timeout: 20), .completed)
+        XCTAssertEqual(XCTWaiter.wait(for: [endVisible], timeout: UIWaitScale.scaled(20)), .completed)
         XCTAssertTrue(app.staticTexts.containing(NSPredicate(format: "label CONTAINS %@", "IOS_RICH_TEXT_END"))
             .firstMatch.exists, "The final source bytes are loaded, not just a synthetic footer")
         XCTAssertEqual(app.staticTexts["files.textPageCount"].label, "42/42")
@@ -1449,11 +1470,11 @@ final class HolonUITests: XCTestCase {
         XCTAssertLessThanOrEqual(end.frame.maxX, app.windows.firstMatch.frame.maxX - 12)
         capture(app, "large-utf8-real-document-end")
         XCUIDevice.shared.press(.home); app.activate()
-        XCTAssertTrue(end.waitForExistence(timeout: 30)); XCTAssertTrue(end.isHittable, "Foreground reauthorization restores the last page")
+        XCTAssertTrue(end.waitForExistence(timeout: UIWaitScale.scaled(30))); XCTAssertTrue(end.isHittable, "Foreground reauthorization restores the last page")
         app.navigationBars.buttons.element(boundBy: 0).tap()
         open("source.ts"); app.buttons["files.end"].tap()
         let codeEnd = XCTNSPredicateExpectation(predicate: NSPredicate(format: "hittable == true"), object: end)
-        XCTAssertEqual(XCTWaiter.wait(for: [codeEnd], timeout: 30), .completed)
+        XCTAssertEqual(XCTWaiter.wait(for: [codeEnd], timeout: UIWaitScale.scaled(30)), .completed)
         XCTAssertTrue(app.staticTexts.containing(NSPredicate(format: "label CONTAINS %@", "IOS_RICH_CODE_END"))
             .firstMatch.exists)
         XCTAssertEqual(app.staticTexts["files.textPageCount"].label, "41/41")
@@ -1461,45 +1482,45 @@ final class HolonUITests: XCTestCase {
         app.navigationBars.buttons.element(boundBy: 0).tap()
         open("report.md")
         let relative = app.links["Open sibling"].firstMatch
-        XCTAssertTrue(relative.waitForExistence(timeout: 20))
+        XCTAssertTrue(relative.waitForExistence(timeout: UIWaitScale.scaled(20)))
         // Verify the actual text bounds; native file navigation cannot be
         // substituted with a direct resolver call or an auxiliary button.
         XCTAssertGreaterThan(relative.frame.minY, app.navigationBars.firstMatch.frame.maxY)
         XCTAssertLessThan(relative.frame.maxY, app.windows.firstMatch.frame.maxY - 44)
         capture(app, "native-markdown-relative-file-link")
         relative.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).tap()
-        XCTAssertTrue(app.staticTexts["IOS_RICH_NOTE_079\n"].waitForExistence(timeout: 20))
+        XCTAssertTrue(app.staticTexts["IOS_RICH_NOTE_079\n"].waitForExistence(timeout: UIWaitScale.scaled(20)))
         app.navigationBars.buttons.element(boundBy: 0).tap()
-        XCTAssertTrue(relative.waitForExistence(timeout: 15), "Relative links return to their source file")
+        XCTAssertTrue(relative.waitForExistence(timeout: UIWaitScale.scaled(15)), "Relative links return to their source file")
         let heading = app.staticTexts.containing(NSPredicate(format: "label CONTAINS %@", "Native report")).firstMatch
         heading.press(forDuration: 1)
         let selectText = app.buttons["Select source text"]
-        XCTAssertTrue(selectText.waitForExistence(timeout: 10)); selectText.tap()
+        XCTAssertTrue(selectText.waitForExistence(timeout: UIWaitScale.scaled(10))); selectText.tap()
         let selection = app.textViews["reading.selectionText"]
-        XCTAssertTrue(selection.waitForExistence(timeout: 10))
+        XCTAssertTrue(selection.waitForExistence(timeout: UIWaitScale.scaled(10)))
         XCTAssertTrue((selection.value as? String)?.contains("[Open sibling](./note-079.txt)") == true)
         selection.coordinate(withNormalizedOffset: .zero).withOffset(CGVector(dx: 45, dy: 25)).press(forDuration: 1)
         let copy = app.menuItems["Copy"].firstMatch
-        XCTAssertTrue(copy.waitForExistence(timeout: 10), "Native range selection retains copy")
+        XCTAssertTrue(copy.waitForExistence(timeout: UIWaitScale.scaled(10)), "Native range selection retains copy")
         capture(app, "native-markdown-text-selection")
         copy.tap()
         app.navigationBars.buttons["Close"].tap()
-        XCTAssertTrue(relative.waitForExistence(timeout: 10))
+        XCTAssertTrue(relative.waitForExistence(timeout: UIWaitScale.scaled(10)))
         app.navigationBars.buttons.element(boundBy: 0).tap()
         open("image.png")
         let raster = app.descendants(matching: .any)["files.raster"].firstMatch
-        XCTAssertTrue(raster.waitForExistence(timeout: 20)); XCTAssertTrue(raster.isHittable)
+        XCTAssertTrue(raster.waitForExistence(timeout: UIWaitScale.scaled(20))); XCTAssertTrue(raster.isHittable)
         capture(app, "native-image-preview")
         app.navigationBars.buttons.element(boundBy: 0).tap()
         open("report.pdf")
-        XCTAssertTrue(raster.waitForExistence(timeout: 20))
+        XCTAssertTrue(raster.waitForExistence(timeout: UIWaitScale.scaled(20)))
         XCTAssertTrue(app.staticTexts["1/2"].exists)
         app.buttons["files.nextPage"].tap()
-        XCTAssertTrue(app.staticTexts["2/2"].waitForExistence(timeout: 10))
+        XCTAssertTrue(app.staticTexts["2/2"].waitForExistence(timeout: UIWaitScale.scaled(10)))
         capture(app, "native-pdf-second-page")
         app.buttons["files.options"].tap(); app.buttons["Export a copy"].tap()
         let exportName = app.textFields["DOCPicker.filenameTextField"]
-        XCTAssertTrue(exportName.waitForExistence(timeout: 15), "Export opens the native destination picker")
+        XCTAssertTrue(exportName.waitForExistence(timeout: UIWaitScale.scaled(15)), "Export opens the native destination picker")
         XCTAssertEqual(exportName.value as? String, "report")
         let save = app.buttons["Save"].firstMatch
         XCTAssertTrue(save.isHittable); XCTAssertTrue(save.isEnabled)
@@ -1508,16 +1529,16 @@ final class HolonUITests: XCTestCase {
         add(exportHierarchy)
         capture(app, "native-file-export-destination")
         save.tap()
-        XCTAssertTrue(app.staticTexts["Copy saved."].waitForExistence(timeout: 15),
+        XCTAssertTrue(app.staticTexts["Copy saved."].waitForExistence(timeout: UIWaitScale.scaled(15)),
                       "Native save must finish successfully, not only open a picker")
-        XCTAssertTrue(app.buttons["files.options"].waitForExistence(timeout: 10))
+        XCTAssertTrue(app.buttons["files.options"].waitForExistence(timeout: UIWaitScale.scaled(10)))
         app.buttons["files.options"].tap(); app.buttons["Share a copy"].tap()
-        XCTAssertTrue(app.otherElements["ActivityListView"].waitForExistence(timeout: 10), "Share hands the original file to the native system sheet")
+        XCTAssertTrue(app.otherElements["ActivityListView"].waitForExistence(timeout: UIWaitScale.scaled(10)), "Share hands the original file to the native system sheet")
         XCTAssertTrue(app.staticTexts.containing(NSPredicate(format: "label CONTAINS %@", "report.pdf")).firstMatch.exists,
                       "Sharing preserves the original safe filename")
         capture(app, "native-original-file-share")
         app.terminate(); app.launch()
-        XCTAssertTrue(app.buttons["conversation.more"].waitForExistence(timeout: 30), "Process relaunch restores the confirmed Agent route")
+        XCTAssertTrue(app.buttons["conversation.more"].waitForExistence(timeout: UIWaitScale.scaled(30)), "Process relaunch restores the confirmed Agent route")
         XCTAssertTrue(app.descendants(matching: .any)["sending.text"].firstMatch.exists)
         capture(app, "restored-confirmed-conversation")
         app.terminate()
@@ -1525,7 +1546,7 @@ final class HolonUITests: XCTestCase {
 
     func testTaskResultProcessWorkflow() throws {
         let app = launch(language: "en", dark: false, large: false)
-        if app.buttons["onboarding.scan"].waitForExistence(timeout: 5) {
+        if app.buttons["onboarding.scan"].waitForExistence(timeout: UIWaitScale.scaled(5)) {
             let endpoint = try required("ENDPOINT")
             var components = try XCTUnwrap(URLComponents(string: endpoint))
             components.path = String(components.path.dropLast(4)) + "/login"
@@ -1534,8 +1555,8 @@ final class HolonUITests: XCTestCase {
             approveSharingConsent(app)
         }
         let agent = try required("AGENT_ID")
-        if app.buttons["agent." + agent].waitForExistence(timeout: 5) { app.buttons["agent." + agent].tap() }
-        XCTAssertTrue(app.buttons["conversation.more"].waitForExistence(timeout: 30))
+        if app.buttons["agent." + agent].waitForExistence(timeout: UIWaitScale.scaled(5)) { app.buttons["agent." + agent].tap() }
+        XCTAssertTrue(app.buttons["conversation.more"].waitForExistence(timeout: UIWaitScale.scaled(30)))
         let turn = try required("RESULT_COMPLETED_TURN")
         let message = try required("RESULT_COMPLETED_MESSAGE")
         let failureTurn = try required("RESULT_FAILED_TURN")
@@ -1562,7 +1583,7 @@ final class HolonUITests: XCTestCase {
         let read = app.staticTexts.containing(NSPredicate(
             format: "label CONTAINS %@", try required("READ_MARKER")
         )).firstMatch
-        XCTAssertTrue(read.waitForExistence(timeout: 30),
+        XCTAssertTrue(read.waitForExistence(timeout: UIWaitScale.scaled(30)),
                       "Visible preceding brief loads before tapping task result controls")
         reveal(process, in: app, fullyVisible: true)
         XCTAssertTrue(process.isHittable)
@@ -1574,7 +1595,7 @@ final class HolonUITests: XCTestCase {
         XCTAssertTrue(app.staticTexts.containing(NSPredicate(format: "label CONTAINS %@", "IOS_TASK_FAILURE_REASON")).firstMatch.exists, "Task failure stays visible although the receiving turn completed")
         capture(app, "task-results-collapsed")
         process.tap()
-        XCTAssertTrue(app.buttons["activities.full." + turn].waitForExistence(timeout: 10),
+        XCTAssertTrue(app.buttons["activities.full." + turn].waitForExistence(timeout: UIWaitScale.scaled(10)),
                       "Process disclosure expands before looking for task output")
         let output = app.buttons["taskResult.source." + message]
         reveal(output, in: app)
@@ -1583,11 +1604,11 @@ final class HolonUITests: XCTestCase {
         capture(app, "task-result-expanded")
         output.tap()
         let taskOutput = app.staticTexts["work.output"]
-        XCTAssertTrue(taskOutput.waitForExistence(timeout: 20))
+        XCTAssertTrue(taskOutput.waitForExistence(timeout: UIWaitScale.scaled(20)))
         XCTAssertTrue(taskOutput.label.contains("IOS_TASK_OUTPUT_COMPLETE"), "Explicit detail opens the authorized task output reader")
         app.navigationBars.buttons.element(boundBy: 0).tap()
         app.terminate(); app.launch()
-        XCTAssertTrue(app.buttons["conversation.more"].waitForExistence(timeout: 30))
+        XCTAssertTrue(app.buttons["conversation.more"].waitForExistence(timeout: UIWaitScale.scaled(30)))
         revealResultProcess()
         XCTAssertTrue(process.isHittable)
         XCTAssertFalse(app.buttons["taskResult.source." + message].exists, "Cold launch folds completed process again")
@@ -1597,18 +1618,18 @@ final class HolonUITests: XCTestCase {
         try connectForSharing()
         let app = launch(language: "en", dark: false, large: false)
         defer { app.terminate() }
-        if app.buttons["conversation.more"].waitForExistence(timeout: 5) {
+        if app.buttons["conversation.more"].waitForExistence(timeout: UIWaitScale.scaled(5)) {
             app.navigationBars.buttons.element(boundBy: 0).tap()
         }
         let agent = app.buttons["agent." + (try required("AGENT_ID"))]
         reveal(agent, in: app); agent.tap()
-        XCTAssertTrue(app.buttons["conversation.more"].waitForExistence(timeout: 30))
+        XCTAssertTrue(app.buttons["conversation.more"].waitForExistence(timeout: UIWaitScale.scaled(30)))
         if app.buttons["conversation.latest"].exists {
             app.buttons["conversation.latest"].tap()
         }
         let body = app.staticTexts.containing(NSPredicate(
             format: "label CONTAINS %@", "IOS_AUTOMATIC_READ_BRIEF")).firstMatch
-        XCTAssertTrue(body.waitForExistence(timeout: 30), "Load the newest real fixture brief")
+        XCTAssertTrue(body.waitForExistence(timeout: UIWaitScale.scaled(30)), "Load the newest real fixture brief")
         reveal(body, in: app, fullyVisible: true)
         XCTAssertTrue(body.isHittable)
         // Never invoke manual mark-read. The fixture enqueues a later real result
@@ -1619,7 +1640,7 @@ final class HolonUITests: XCTestCase {
             agent.exists && !agent.label.contains(" unread") &&
                 !agent.label.contains("Unread unknown")
         }, object: nil)
-        let initialRead = await XCTWaiter.fulfillment(of: [read], timeout: 30)
+        let initialRead = await XCTWaiter.fulfillment(of: [read], timeout: UIWaitScale.scaled(30))
         XCTAssertEqual(initialRead, .completed,
                        "Visible loaded body must clear the server-confirmed home badge")
 
@@ -1640,15 +1661,15 @@ final class HolonUITests: XCTestCase {
         let unread = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
             agent.exists && agent.label.contains(" unread")
         }, object: nil)
-        let newUnread = await XCTWaiter.fulfillment(of: [unread], timeout: 30)
+        let newUnread = await XCTWaiter.fulfillment(of: [unread], timeout: UIWaitScale.scaled(30))
         XCTAssertEqual(newUnread, .completed, "A new unseen result must first have a nonzero badge")
         capture(app, "automatic-read-new-unread")
         reveal(agent, in: app); agent.tap()
-        XCTAssertTrue(app.buttons["conversation.more"].waitForExistence(timeout: 30))
+        XCTAssertTrue(app.buttons["conversation.more"].waitForExistence(timeout: UIWaitScale.scaled(30)))
         if app.buttons["conversation.latest"].exists { app.buttons["conversation.latest"].tap() }
         let followup = app.staticTexts.containing(NSPredicate(
             format: "label CONTAINS %@", "IOS_AUTOMATIC_READ_FOLLOWUP_BRIEF")).firstMatch
-        XCTAssertTrue(followup.waitForExistence(timeout: 30))
+        XCTAssertTrue(followup.waitForExistence(timeout: UIWaitScale.scaled(30)))
         reveal(followup, in: app, fullyVisible: true)
         XCTAssertTrue(followup.isHittable)
         capture(app, "automatic-read-followup-visible")
@@ -1657,7 +1678,7 @@ final class HolonUITests: XCTestCase {
             agent.exists && !agent.label.contains(" unread") &&
                 !agent.label.contains("Unread unknown")
         }, object: nil)
-        let finalRead = await XCTWaiter.fulfillment(of: [cleared], timeout: 30)
+        let finalRead = await XCTWaiter.fulfillment(of: [cleared], timeout: UIWaitScale.scaled(30))
         XCTAssertEqual(finalRead, .completed, "Reading the new body must clear its known unread badge")
         request.url = control.deletingLastPathComponent().appendingPathComponent("automatic-read-confirmed")
         let (_, confirmedResponse) = try await URLSession.shared.data(for: request)
@@ -1671,13 +1692,13 @@ final class HolonUITests: XCTestCase {
         let app = launch(language: "en", dark: false, large: false)
         defer { app.terminate() }
         let agentID = try required("AGENT_ID")
-        if app.buttons["conversation.more"].waitForExistence(timeout: 5) {
+        if app.buttons["conversation.more"].waitForExistence(timeout: UIWaitScale.scaled(5)) {
             app.navigationBars.buttons.element(boundBy: 0).tap()
         }
         let agent = app.buttons["agent." + agentID]
         reveal(agent, in: app); agent.tap()
         let editor = app.descendants(matching: .any)["sending.text"].firstMatch
-        XCTAssertTrue(editor.waitForExistence(timeout: 30), "Populate the cache from an authenticated online reader")
+        XCTAssertTrue(editor.waitForExistence(timeout: UIWaitScale.scaled(30)), "Populate the cache from an authenticated online reader")
         if app.buttons["conversation.latest"].exists { app.buttons["conversation.latest"].tap() }
         let older = app.buttons["conversation.older"]
         for _ in 0..<40 {
@@ -1696,14 +1717,14 @@ final class HolonUITests: XCTestCase {
                 let top = max(app.navigationBars.firstMatch.frame.maxY, chrome.exists ? chrome.frame.maxY : 0)
                 return timestamp.frame.minY >= top - 2 && timestamp.frame.minY <= top + 80
             }, object: nil)
-            let result = XCTWaiter.wait(for: [positioned], timeout: 20)
+            let result = XCTWaiter.wait(for: [positioned], timeout: UIWaitScale.scaled(20))
             if result != .completed { capture(app, "historical-position-restoration-failure") }
             XCTAssertEqual(result, .completed,
                            "The saved historical turn must restore near the reader's unobscured top")
             XCTAssertTrue(historicalActivities.exists, "The restored historical turn must retain its activity disclosure")
         }
         assertRestoredPosition()
-        XCTAssertTrue(body.waitForExistence(timeout: 30), "The real historical brief body must be fetched through UI")
+        XCTAssertTrue(body.waitForExistence(timeout: UIWaitScale.scaled(30)), "The real historical brief body must be fetched through UI")
         capture(app, "online-history-before-cache-cold-launch")
 
         // Termination precedes the fixture outage: no running app or live stream
@@ -1711,16 +1732,16 @@ final class HolonUITests: XCTestCase {
         app.terminate()
         try await changeFixtureNodeAvailability(false)
         app.launch()
-        XCTAssertTrue(app.buttons["conversation.more"].waitForExistence(timeout: 30),
+        XCTAssertTrue(app.buttons["conversation.more"].waitForExistence(timeout: UIWaitScale.scaled(30)),
                       "A confirmed cached session must not fall back to login when its node is unavailable")
-        XCTAssertTrue(app.staticTexts["Cached content · offline"].waitForExistence(timeout: 30))
+        XCTAssertTrue(app.staticTexts["Cached content · offline"].waitForExistence(timeout: UIWaitScale.scaled(30)))
         XCTAssertTrue(app.descendants(matching: .any)["conversation.connectionStatus"].firstMatch.exists)
-        XCTAssertTrue(app.staticTexts["conversation.readOnly"].waitForExistence(timeout: 10))
+        XCTAssertTrue(app.staticTexts["conversation.readOnly"].waitForExistence(timeout: UIWaitScale.scaled(10)))
         assertRestoredPosition()
-        XCTAssertTrue(body.waitForExistence(timeout: 10), "Cold offline launch must retain the fetched brief body")
+        XCTAssertTrue(body.waitForExistence(timeout: UIWaitScale.scaled(10)), "Cold offline launch must retain the fetched brief body")
         XCTAssertFalse(app.staticTexts["conversation.notCached"].exists)
         // Offline keeps the composer available: input and local drafts work without a connection.
-        XCTAssertTrue(editor.waitForExistence(timeout: 10), "Offline must not block input")
+        XCTAssertTrue(editor.waitForExistence(timeout: UIWaitScale.scaled(10)), "Offline must not block input")
         XCTAssertTrue(app.otherElements["sending.composer"].exists)
         XCTAssertTrue(app.buttons["sending.enqueue"].exists)
         editor.tap()
@@ -1731,23 +1752,23 @@ final class HolonUITests: XCTestCase {
         capture(app, "offline-cold-launch-cached-body-and-position")
 
         app.navigationBars.buttons.element(boundBy: 0).tap()
-        XCTAssertTrue(agent.waitForExistence(timeout: 10), "The cached Agent roster must survive process death")
-        XCTAssertTrue(app.staticTexts["agents.connectionStatus"].waitForExistence(timeout: 10))
+        XCTAssertTrue(agent.waitForExistence(timeout: UIWaitScale.scaled(10)), "The cached Agent roster must survive process death")
+        XCTAssertTrue(app.staticTexts["agents.connectionStatus"].waitForExistence(timeout: UIWaitScale.scaled(10)))
         XCTAssertTrue(app.staticTexts["agents.connectionStatus"].label.contains("offline"))
         XCTAssertTrue(app.buttons["agents.retry"].exists)
         reveal(agent, in: app); agent.tap()
-        XCTAssertTrue(body.waitForExistence(timeout: 10))
+        XCTAssertTrue(body.waitForExistence(timeout: UIWaitScale.scaled(10)))
         XCTAssertTrue(app.staticTexts["conversation.readOnly"].exists)
         try await changeFixtureNodeAvailability(true)
         let retry = app.buttons["conversation.retry"]
-        XCTAssertTrue(retry.waitForExistence(timeout: 10)); retry.tap()
-        XCTAssertTrue(editor.waitForExistence(timeout: 30), "Explicit UI retry must establish a fresh online bootstrap")
+        XCTAssertTrue(retry.waitForExistence(timeout: UIWaitScale.scaled(10))); retry.tap()
+        XCTAssertTrue(editor.waitForExistence(timeout: UIWaitScale.scaled(30)), "Explicit UI retry must establish a fresh online bootstrap")
         let writable = XCTNSPredicateExpectation(predicate: NSPredicate(format: "exists == false"),
                                                  object: app.staticTexts["conversation.readOnly"])
-        XCTAssertEqual(XCTWaiter.wait(for: [writable], timeout: 10), .completed)
+        XCTAssertEqual(XCTWaiter.wait(for: [writable], timeout: UIWaitScale.scaled(10)), .completed)
         XCTAssertFalse(app.staticTexts["Cached content · offline"].exists)
         XCTAssertFalse(app.buttons["onboarding.scan"].exists)
-        XCTAssertTrue(body.waitForExistence(timeout: 10))
+        XCTAssertTrue(body.waitForExistence(timeout: UIWaitScale.scaled(10)))
         capture(app, "offline-cache-explicit-ui-retry-live")
     }
 
@@ -1757,16 +1778,16 @@ final class HolonUITests: XCTestCase {
         defer { app.terminate() }
         // A preceding sweep case can restore straight into its conversation;
         // this case starts from the roster like a fresh sign-in.
-        if app.buttons["conversation.more"].waitForExistence(timeout: 5) {
+        if app.buttons["conversation.more"].waitForExistence(timeout: UIWaitScale.scaled(5)) {
             app.navigationBars.buttons.element(boundBy: 0).tap()
         }
         let agent = app.buttons["agent." + (try required("AGENT_ID"))]
         reveal(agent, in: app); agent.tap()
         let editor = app.descendants(matching: .any)["sending.text"].firstMatch
-        XCTAssertTrue(editor.waitForExistence(timeout: 30), "The live session must open before the interruption")
+        XCTAssertTrue(editor.waitForExistence(timeout: UIWaitScale.scaled(30)), "The live session must open before the interruption")
         let turnTime = app.staticTexts.matching(NSPredicate(
             format: "identifier BEGINSWITH %@", "conversation.time.")).firstMatch
-        XCTAssertTrue(turnTime.waitForExistence(timeout: 10),
+        XCTAssertTrue(turnTime.waitForExistence(timeout: UIWaitScale.scaled(10)),
                       "A visible turn must anchor the reading position before the interruption")
         XCTAssertFalse(app.staticTexts["conversation.readOnly"].exists,
                        "A live session shows no offline caption")
@@ -1776,7 +1797,7 @@ final class HolonUITests: XCTestCase {
         // read live. A sustained outage must degrade honestly to offline while
         // keeping the conversation the reader is looking at.
         try await changeFixtureNodeAvailability(false)
-        XCTAssertTrue(app.staticTexts["Cached content · offline"].waitForExistence(timeout: 10),
+        XCTAssertTrue(app.staticTexts["Cached content · offline"].waitForExistence(timeout: UIWaitScale.scaled(10)),
                       "A sustained outage must surface the offline state")
         XCTAssertTrue(turnTime.exists,
                       "The interruption must not clear the conversation being read")
@@ -1788,13 +1809,13 @@ final class HolonUITests: XCTestCase {
         try await changeFixtureNodeAvailability(true)
         let liveAgain = XCTNSPredicateExpectation(predicate: NSPredicate(
             format: "exists == false"), object: app.staticTexts["conversation.readOnly"])
-        XCTAssertEqual(XCTWaiter.wait(for: [liveAgain], timeout: 45), .completed,
+        XCTAssertEqual(XCTWaiter.wait(for: [liveAgain], timeout: UIWaitScale.scaled(45)), .completed,
                        "Unbounded recovery must return the session to live without user action")
         XCTAssertFalse(app.staticTexts["Cached content · offline"].exists)
         XCTAssertFalse(app.buttons["onboarding.scan"].exists, "Recovery must not fall back to onboarding")
-        XCTAssertTrue(turnTime.waitForExistence(timeout: 10),
+        XCTAssertTrue(turnTime.waitForExistence(timeout: UIWaitScale.scaled(10)),
                       "The recovered session must keep the conversation in place")
-        XCTAssertTrue(editor.waitForExistence(timeout: 10), "The composer must return with the live session")
+        XCTAssertTrue(editor.waitForExistence(timeout: UIWaitScale.scaled(10)), "The composer must return with the live session")
         capture(app, "live-interruption-recovered")
     }
 
@@ -1802,27 +1823,27 @@ final class HolonUITests: XCTestCase {
         try connectForSharing()
         let app = launch(language: "en", dark: false, large: false)
         defer { app.terminate() }
-        if app.buttons["conversation.more"].waitForExistence(timeout: 5) {
+        if app.buttons["conversation.more"].waitForExistence(timeout: UIWaitScale.scaled(5)) {
             app.navigationBars.buttons.element(boundBy: 0).tap()
         }
         let agent = app.buttons["agent." + (try required("AGENT_ID"))]
         reveal(agent, in: app); agent.tap()
-        XCTAssertTrue(app.descendants(matching: .any)["sending.text"].firstMatch.waitForExistence(timeout: 30))
+        XCTAssertTrue(app.descendants(matching: .any)["sending.text"].firstMatch.waitForExistence(timeout: UIWaitScale.scaled(30)))
         app.navigationBars.buttons.element(boundBy: 0).tap()
         let manage = app.buttons["connection.manage"]
-        XCTAssertTrue(manage.waitForExistence(timeout: 10)); manage.tap()
+        XCTAssertTrue(manage.waitForExistence(timeout: UIWaitScale.scaled(10))); manage.tap()
         let signOut = app.buttons["Sign out"]
         reveal(signOut, in: app); signOut.tap()
-        XCTAssertTrue(app.buttons["onboarding.scan"].waitForExistence(timeout: 20))
+        XCTAssertTrue(app.buttons["onboarding.scan"].waitForExistence(timeout: UIWaitScale.scaled(20)))
         app.terminate()
         try await changeFixtureNodeAvailability(false)
         app.launch()
-        XCTAssertTrue(app.buttons["onboarding.scan"].waitForExistence(timeout: 20))
+        XCTAssertTrue(app.buttons["onboarding.scan"].waitForExistence(timeout: UIWaitScale.scaled(20)))
         try assertNoCachedSessionUI(app)
         capture(app, "signed-out-offline-cache-inaccessible")
         try await changeFixtureNodeAvailability(true)
         app.terminate(); app.launch()
-        XCTAssertTrue(app.buttons["onboarding.scan"].waitForExistence(timeout: 20),
+        XCTAssertTrue(app.buttons["onboarding.scan"].waitForExistence(timeout: UIWaitScale.scaled(20)),
                       "Restoring the node cannot restore an explicitly signed-out reading context")
         try assertNoCachedSessionUI(app)
     }
@@ -1830,7 +1851,7 @@ final class HolonUITests: XCTestCase {
     func testConversationHistoryWindowPosition() throws {
         let app = launch(language: "en", dark: false, large: false)
         defer { app.terminate() }
-        XCTAssertTrue(app.buttons["conversation.more"].waitForExistence(timeout: 30))
+        XCTAssertTrue(app.buttons["conversation.more"].waitForExistence(timeout: UIWaitScale.scaled(30)))
         if app.buttons["conversation.latest"].exists { app.buttons["conversation.latest"].tap() }
         let older = app.buttons["conversation.older"]
         // The lazy older-window control is above the initial latest position.
@@ -1842,7 +1863,7 @@ final class HolonUITests: XCTestCase {
         func assertTop(_ id: String) {
             let timestamp = app.staticTexts["conversation.time." + id]
             let visible = XCTNSPredicateExpectation(predicate: NSPredicate(format: "hittable == true"), object: timestamp)
-            XCTAssertEqual(XCTWaiter.wait(for: [visible], timeout: 20), .completed)
+            XCTAssertEqual(XCTWaiter.wait(for: [visible], timeout: UIWaitScale.scaled(20)), .completed)
             let top = app.navigationBars.firstMatch.frame.maxY
             XCTAssertGreaterThanOrEqual(timestamp.frame.minY, top - 2)
             XCTAssertLessThanOrEqual(timestamp.frame.minY, top + 50,
@@ -1865,13 +1886,13 @@ final class HolonUITests: XCTestCase {
         let app = launch(language: "en", dark: false, large: false)
         // The maximum-size composer case intentionally returns to Agents.
         // Establish selection before testing restoration after process death.
-        if !app.buttons["conversation.more"].waitForExistence(timeout: 30) {
-            XCTAssertTrue(app.buttons["settings.open"].waitForExistence(timeout: 15))
+        if !app.buttons["conversation.more"].waitForExistence(timeout: UIWaitScale.scaled(30)) {
+            XCTAssertTrue(app.buttons["settings.open"].waitForExistence(timeout: UIWaitScale.scaled(15)))
             let agent = app.buttons["agent." + (try required("AGENT_ID"))]
-            XCTAssertTrue(agent.waitForExistence(timeout: 15))
+            XCTAssertTrue(agent.waitForExistence(timeout: UIWaitScale.scaled(15)))
             reveal(agent, in: app); agent.tap()
         }
-        XCTAssertTrue(app.buttons["conversation.more"].waitForExistence(timeout: 30))
+        XCTAssertTrue(app.buttons["conversation.more"].waitForExistence(timeout: UIWaitScale.scaled(30)))
         let editor = app.descendants(matching: .any)["sending.text"].firstMatch
         editor.tap(); editor.typeText(marker)
         // The preceding composer case legitimately preserves its unsent draft.
@@ -1883,20 +1904,20 @@ final class HolonUITests: XCTestCase {
         }
         openQueue()
         let unknown = app.staticTexts["sending.state.unknown"]
-        XCTAssertTrue(unknown.waitForExistence(timeout: 30))
+        XCTAssertTrue(unknown.waitForExistence(timeout: UIWaitScale.scaled(30)))
         let row = app.cells.containing(.staticText, identifier: frozenText).firstMatch
-        XCTAssertTrue(row.waitForExistence(timeout: 10))
+        XCTAssertTrue(row.waitForExistence(timeout: UIWaitScale.scaled(10)))
         XCTAssertTrue(row.staticTexts["sending.state.unknown"].exists)
         let uuid = row.staticTexts.matching(NSPredicate(format:
             "label MATCHES %@", "[0-9A-Fa-f]{8}(-[0-9A-Fa-f]{4}){3}-[0-9A-Fa-f]{12}")).firstMatch.label
         XCTAssertNotNil(UUID(uuidString: uuid))
         capture(app, "lost-response-unknown-immutable-request")
         app.terminate(); app.launch()
-        XCTAssertTrue(app.buttons["conversation.more"].waitForExistence(timeout: 30))
+        XCTAssertTrue(app.buttons["conversation.more"].waitForExistence(timeout: UIWaitScale.scaled(30)))
         openQueue()
         let entry = app.cells.containing(.staticText, identifier: frozenText).firstMatch
-        XCTAssertTrue(entry.waitForExistence(timeout: 10), "Process death retains the frozen text")
-        XCTAssertTrue(entry.staticTexts["sending.state.unknown"].waitForExistence(timeout: 10))
+        XCTAssertTrue(entry.waitForExistence(timeout: UIWaitScale.scaled(10)), "Process death retains the frozen text")
+        XCTAssertTrue(entry.staticTexts["sending.state.unknown"].waitForExistence(timeout: UIWaitScale.scaled(10)))
         XCTAssertTrue(entry.staticTexts["sending.requestID." + uuid].exists,
                       "Process death retains the original UUID")
         var request = URLRequest(url: try XCTUnwrap(URL(string: required("LOSS_CONTROL_URL"))))
@@ -1905,7 +1926,7 @@ final class HolonUITests: XCTestCase {
         let (_, response) = try await URLSession.shared.data(for: request)
         XCTAssertEqual((response as? HTTPURLResponse)?.statusCode, 204)
         let retry = entry.buttons["sending.retry." + uuid]
-        XCTAssertTrue(retry.waitForExistence(timeout: 10))
+        XCTAssertTrue(retry.waitForExistence(timeout: UIWaitScale.scaled(10)))
         XCTAssertTrue(retry.isEnabled, "The original request must be explicitly retryable after restoration")
         let queueGeometry = XCTAttachment(string: app.debugDescription)
         queueGeometry.name = "lost-response-restored-queue-controls"
@@ -1913,7 +1934,7 @@ final class HolonUITests: XCTestCase {
         reveal(retry, in: app); retry.tap()
         // The retried send must round-trip the real daemon; keep the same
         // wide window as the primary outbox acceptance wait.
-        XCTAssertTrue(entry.staticTexts["sending.state.received"].waitForExistence(timeout: 60))
+        XCTAssertTrue(entry.staticTexts["sending.state.received"].waitForExistence(timeout: UIWaitScale.scaled(60)))
         XCTAssertTrue(entry.staticTexts["sending.requestID." + uuid].exists)
         capture(app, "lost-response-explicit-retry-received")
         app.terminate()
