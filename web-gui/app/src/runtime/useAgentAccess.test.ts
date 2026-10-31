@@ -52,6 +52,13 @@ function childDetail(supervision: Record<string, unknown> = {}, resolution = "re
 function withChild(detail: unknown, parent: unknown = { identity: { agent_id: "parent", status: "active" } }) {
   mocks.identity.mockImplementation(async (id: string) => id === "parent" ? parent : detail);
 }
+function failChildIdentity(error: unknown) {
+  mocks.identity.mockImplementation(async (id: string) => {
+    if (id === "private-child") throw error;
+    return { identity: { agent_id: "parent", status: "active" } };
+  });
+}
+const childIdentityCalls = () => mocks.identity.mock.calls.filter(([id]) => id === "private-child").length;
 function Probe({ id, incarnation }: { id: string; incarnation?: number }) {
   current = useAgentAccess(id, incarnation);
   return null;
@@ -135,17 +142,26 @@ describe("route-selected agent admission", () => {
       expect(current.status).toBe("available");
       const error = typeof failure === "number" ? new RuntimeHttpError("GET", "/state", failure)
         : failure === "timeout" ? new DOMException("Request timed out", "AbortError") : new TypeError("Failed to fetch");
-      mocks.state.mockRejectedValue(error);
+      failChildIdentity(error);
       await act(async () => { await vi.advanceTimersByTimeAsync(5000); });
       expect(current.status).toBe("available");
       expect(current.agent?.acceptsInput).toBe(true);
       expect(current.error).toBeTruthy();
-      mocks.state.mockResolvedValue({ id: "private-child", incarnation: 1, acceptsInput: true });
+      withChild(childDetail());
       await act(async () => { await vi.advanceTimersByTimeAsync(5000); });
       expect(current.status).toBe("available");
       expect(current.error).toBeUndefined();
     },
   );
+
+  it("revalidates continuous admission through identity without a second state poller", async () => {
+    await render();
+    expect(current.status).toBe("available");
+    await act(async () => { await vi.advanceTimersByTimeAsync(30_000); });
+    expect(childIdentityCalls()).toBe(7);
+    expect(mocks.state).toHaveBeenCalledTimes(1);
+    expect(current.status).toBe("available");
+  });
 
   it("never grants initial admission from cached presentation after a transient state failure", async () => {
     mocks.cached.mockResolvedValue([{ id: "private-child", incarnation: 1, acceptsInput: false }]);
@@ -172,25 +188,25 @@ describe("route-selected agent admission", () => {
 
   it.each([401, 403, 404])("revokes previously admitted access immediately after a background HTTP %s", async (status) => {
     await render();
-    mocks.state.mockRejectedValue(new RuntimeHttpError("GET", "/state", status));
+    failChildIdentity(new RuntimeHttpError("GET", "/detail", status));
     await act(async () => { await vi.advanceTimersByTimeAsync(5000); });
     expect(current.status).toBe(status === 404 ? "missing" : "unauthorized");
     expect(current.agent).toBeUndefined();
     expect(mocks.remove).toHaveBeenCalledTimes(2);
-    const calls = mocks.state.mock.calls.length;
+    const calls = childIdentityCalls();
     await act(async () => { await vi.advanceTimersByTimeAsync(60_000); });
-    expect(mocks.state).toHaveBeenCalledTimes(calls);
+    expect(childIdentityCalls()).toBe(calls);
   });
 
   it("backs off consecutive transient failures instead of polling every five seconds", async () => {
     await render();
-    mocks.state.mockRejectedValue(new RuntimeHttpError("GET", "/state", 503));
+    failChildIdentity(new RuntimeHttpError("GET", "/detail", 503));
     await act(async () => { await vi.advanceTimersByTimeAsync(10_000); });
-    expect(mocks.state).toHaveBeenCalledTimes(3);
+    expect(childIdentityCalls()).toBe(3);
     await act(async () => { await vi.advanceTimersByTimeAsync(9999); });
-    expect(mocks.state).toHaveBeenCalledTimes(3);
+    expect(childIdentityCalls()).toBe(3);
     await act(async () => { await vi.advanceTimersByTimeAsync(1); });
-    expect(mocks.state).toHaveBeenCalledTimes(4);
+    expect(childIdentityCalls()).toBe(4);
   });
 
   it("restores a persisted pinned summary without a warm in-memory scope or online responses", async () => {
@@ -678,7 +694,7 @@ describe("route-selected agent admission", () => {
     expect(current.status).toBe("replaced");
     await act(async () => current.retry());
     expect(current.status).toBe("replaced");
-    expect(mocks.state).toHaveBeenCalledTimes(2);
+    expect(mocks.state).toHaveBeenCalledTimes(1);
   });
 
   it("rejects an identity change between detail and state", async () => {

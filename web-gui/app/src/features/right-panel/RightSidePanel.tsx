@@ -13,6 +13,8 @@ import { TaskDetailPanel } from "./TaskDetailPanel";
 import { FileBrowserPanel, type FileBrowserSnapshot } from "./FileBrowserPanel";
 import { RuntimeTracePanel } from "./RuntimeTracePanel";
 import { useTranslation } from "react-i18next";
+import { useRuntimeStore } from "../../runtime/runtime-store";
+import { refreshSelectedAgentResources } from "../../runtime/useSelectedAgentRefresh";
 
 interface RightSidePanelProps {
   agent: AgentSummary;
@@ -92,6 +94,10 @@ export function RightSidePanel({
   onClose,
 }: RightSidePanelProps) {
   const { t } = useTranslation();
+  const resourceRefresh = useRuntimeStore((state) => state.sessionsByAgentId[agent.id]?.resourceRefresh);
+  useEffect(() => {
+    if (open) refreshSelectedAgentResources(agent.id);
+  }, [open, agent.id, agent.incarnation]);
   const panelRef = useRef<HTMLElement>(null);
   const [dragging, setDragging] = useState(false);
   const returnFocus = useRef<HTMLElement | null>(null);
@@ -265,6 +271,9 @@ export function RightSidePanel({
           <strong>{title}</strong>
         </div>
         <div className="panel-actions">
+          <button type="button" onClick={() => refreshSelectedAgentResources(agent.id)}>
+            {t("rightPanel.refreshCore")}
+          </button>
           {full ? <button type="button" onClick={onClose}>{t("rightPanel.backToConversation")}</button> : null}
           {activeView.kind !== "agent_overview" || skillManagerActive ? (
             <button
@@ -310,6 +319,15 @@ export function RightSidePanel({
         <button type="button" aria-current={activeView.kind === "file_browser" ? "page" : undefined} disabled={!lastFile.current && !workspaces.length} onClick={openFiles}>{t("fileBrowser.files")}</button>
         <button type="button" aria-current={activeView.kind !== "file_browser" && activeView.kind !== "agent_overview" ? "page" : undefined} disabled={!lastDetail.current && (activeView.kind === "file_browser" || activeView.kind === "agent_overview")} onClick={() => { if (lastDetail.current) onSelectView(lastDetail.current); }}>{t("rightPanel.detailTab")}</button>
       </nav>
+      {open && (["state", "workItems"] as const).map((resource) => {
+        const status = resourceRefresh?.[resource];
+        return status?.stale ? (
+          <p className="detail-error" role="status" key={resource} title={status.error}>
+            {t(resource === "state" ? "rightPanel.stateRefreshStale" : "rightPanel.workItemsRefreshStale")}
+            {status.lastSuccessAt !== undefined ? ` · ${new Date(status.lastSuccessAt).toLocaleTimeString()}` : ""}
+          </p>
+        ) : null;
+      })}
       <div className="panel-body" ref={bodyRef} key={viewKey}>
         {open && (runtimeTraceActive ? (
           <RuntimeTracePanel agentId={agent.id} connection={connection} />

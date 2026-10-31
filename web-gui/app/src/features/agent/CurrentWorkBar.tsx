@@ -59,16 +59,14 @@ function Duration({ since, label }: { since: string; label: string }) {
   </time>;
 }
 
-export function CurrentWorkBar({ agent, conversation, onOpenWorkItem, onOpenTask }: {
+export function CurrentWorkBar({ agent, onOpenWorkItem, onOpenTask }: {
   agent: AgentSummary;
   conversation?: ConversationSessionModel;
   onOpenWorkItem: (work: WorkItemSummary) => void;
   onOpenTask: (task: TaskSummary) => void;
 }) {
   const { t } = useTranslation();
-  const latestTurn = conversation?.turns.at(-1);
-  const changeKey = `${latestTurn?.turnId}:${latestTurn?.execution.kind}:${conversation?.pendingInputs.length}`;
-  const snapshot = useAgentWorkStatus(agent.id, changeKey);
+  const snapshot = useAgentWorkStatus(agent.id, agent.incarnation);
   const current = snapshot.agent ?? agent;
   const view = deriveCurrentWorkStatus(current);
   const [expanded, setExpanded] = useState(false);
@@ -76,8 +74,13 @@ export function CurrentWorkBar({ agent, conversation, onOpenWorkItem, onOpenTask
   const [completed, setCompleted] = useState<WorkItemSummary>();
   useEffect(() => {
     const previous = previousWork.current;
-    previousWork.current = view.work;
-    if (view.work) { setCompleted(undefined); return; }
+    if (view.work) {
+      // Keep the last focused work so a completed item arriving in a later
+      // work-items refresh can still produce the completion flash.
+      previousWork.current = view.work;
+      setCompleted(undefined);
+      return;
+    }
     if (!previous || snapshot.stale) return;
     const finished = current.workItems?.find((item) => item.id === previous.id && item.state === "completed");
     if (!finished) return;

@@ -376,6 +376,34 @@ impl RuntimeReadModels {
         Ok(work_queue_from_facts(&self.work_queue_facts()?))
     }
 
+    pub(crate) fn work_queue_snapshot(
+        &self,
+        expected_incarnation: Option<u64>,
+    ) -> Result<
+        Option<(
+            crate::runtime_db::conversation::ConversationIdentity,
+            WorkQueueReadModel,
+        )>,
+    > {
+        let _timer = attribution::WORK_QUEUE.start();
+        let Some(agent_id) = self.agent_id.as_deref() else {
+            return Ok(None);
+        };
+        let Some((identity, row)) = self
+            .runtime_db
+            .agent_work_queue_snapshot(agent_id, expected_incarnation)?
+        else {
+            return Ok(None);
+        };
+        let mut facts = row.facts.map_err(anyhow::Error::msg)?;
+        facts.current_work_item_id = row
+            .agent_state_json
+            .map(|payload| serde_json::from_str::<AgentState>(&payload))
+            .transpose()?
+            .and_then(|agent| agent.current_work_item_id);
+        Ok(Some((identity, work_queue_from_facts(&facts))))
+    }
+
     /// Gathers this read model's per-agent facts through the per-agent
     /// repository queries (one connection per query). The pure assembly in
     /// [`work_queue_from_facts`] and the batched `/agents/list` reader

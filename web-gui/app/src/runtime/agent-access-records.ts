@@ -184,9 +184,13 @@ function load(record: AccessRecord, preview: boolean): Promise<void> {
   record.abort = abort;
   const live = () => record.users > 0 && record.generation === generation && records.get(record.key) === record;
   const { client, agentId } = record.options;
-  // Start together, but identity terminal results need not await a slow state.
-  const stateResult = client.getAgentState(agentId, abort.signal)
-    .then((agent) => ({ agent }), (error: unknown) => ({ error }));
+  // Identity owns continuous admission; the selected-resource scheduler owns
+  // ongoing state reads. Route entry and recovery still require online state.
+  const admittedAgent = retainAdmission && !record.access.error ? record.lastAgent : undefined;
+  const stateResult = admittedAgent
+    ? Promise.resolve({ agent: admittedAgent })
+    : client.getAgentState(agentId, abort.signal)
+      .then((agent) => ({ agent }), (error: unknown) => ({ error }));
   const run = async () => {
     try {
       const identityRequest = client.getAgentIdentity(agentId, abort.signal);

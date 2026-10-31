@@ -1,4 +1,4 @@
-import { expect, test } from "@playwright/test";
+import { expect, test, type Route } from "@playwright/test";
 
 import { sessionFor } from "./test-session";
 
@@ -113,6 +113,12 @@ for (const result of ["available", "reloaded", "offline", "forbidden", "missing"
     let states = 0;
     let preview = true;
     let offline = result === "offline";
+    const pendingRevalidations: Promise<void>[] = [];
+    const trackRevalidation = (handler: (route: Route) => Promise<void>) => (route: Route) => {
+      const pending = handler(route);
+      pendingRevalidations.push(pending);
+      return pending;
+    };
     const prompts: Record<string, unknown>[] = [];
     await page.route(`**/api/control/agents/${agentId}/prompt`, async (route) => {
       prompts.push(route.request().postDataJSON());
@@ -137,7 +143,7 @@ for (const result of ["available", "reloaded", "offline", "forbidden", "missing"
         previewWrites.push(outgoing.url());
       }
     });
-    await page.route(`**/api/control/agents/${agentId}/detail`, async (route) => {
+    await page.route(`**/api/control/agents/${agentId}/detail`, trackRevalidation(async (route) => {
       identities++;
       await gate;
       if (offline) {
@@ -155,8 +161,8 @@ for (const result of ["available", "reloaded", "offline", "forbidden", "missing"
       const detail = await response.json();
       if (result === "replaced") detail.identity.incarnation = 2;
       await route.fulfill({ json: detail });
-    });
-    await page.route(`**/api/agents/${agentId}/state`, async (route) => {
+    }));
+    await page.route(`**/api/agents/${agentId}/state`, trackRevalidation(async (route) => {
       states++;
       await gate;
       if (offline) {
@@ -170,7 +176,7 @@ for (const result of ["available", "reloaded", "offline", "forbidden", "missing"
         state.agent.lifecycle = { accepts_external_messages: false, operator_hint: "Stopped by operator" };
       }
       await route.fulfill({ json: state });
-    });
+    }));
 
     try {
       if (result === "reloaded" || result === "stopped") {
@@ -309,6 +315,8 @@ for (const result of ["available", "reloaded", "offline", "forbidden", "missing"
       }
     } finally {
       release();
+      // Complete held callbacks before removing interception, including successful previews.
+      await Promise.all(pendingRevalidations);
       await page.unrouteAll({ behavior: "wait" });
     }
   });

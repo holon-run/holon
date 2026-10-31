@@ -7,6 +7,10 @@ const wait = { id: "wait-tests", work_item_id: work.id, kind: "task", status: "a
 
 test("all waiting statuses stay visible without a waiting timer", async ({ page }) => {
   let kind = "operator";
+  await page.route("**/api/agents/bootstrap-agent/work-items?**", async (route) => {
+    const response = await route.fetch();
+    await route.fulfill({ response, json: [work] });
+  });
   await page.route("**/api/agents/bootstrap-agent/state", async (route) => {
     const body = await (await route.fetch()).json();
     body.agent.agent.current_work_item_id = work.id;
@@ -27,6 +31,10 @@ test("all waiting statuses stay visible without a waiting timer", async ({ page 
 });
 
 test("current work stays visible with the panel closed and opens work/task details", async ({ page }) => {
+  await page.route("**/api/agents/bootstrap-agent/work-items?**", async (route) => {
+    const response = await route.fetch();
+    await route.fulfill({ response, json: [work] });
+  });
   await page.route("**/api/agents/bootstrap-agent/state", async (route) => {
     const body = await (await route.fetch()).json();
     body.agent.agent.current_work_item_id = work.id;
@@ -60,6 +68,10 @@ test("current work stays visible with the panel closed and opens work/task detai
 
 test("live state moves from waiting to result ready to running and completed without changing turn time", async ({ page }) => {
   let phase = "waiting";
+  await page.route("**/api/agents/bootstrap-agent/work-items?**", async (route) => {
+    const response = await route.fetch();
+    await route.fulfill({ response, json: [{ ...work, state: phase === "completed" ? "completed" : "open" }] });
+  });
   await page.route("**/api/agents/bootstrap-agent/state", async (route) => {
     const body = await (await route.fetch()).json();
     body.agent.agent.current_work_item_id = phase === "completed" ? null : work.id;
@@ -99,7 +111,8 @@ test("background-only work shows ownership and refresh failures preserve visibly
   failed = true;
   await page.evaluate(() => document.dispatchEvent(new Event("visibilitychange")));
   await expect(bar).toHaveAttribute("data-state", "stale");
-  await expect(bar).toContainText("status may be outdated");
+  await expect(bar.getByRole("status")).toHaveText("Status refresh failed · showing last known data");
+  await expect(bar).toContainText(task.summary);
   failed = false;
   await bar.getByRole("button", { name: "Refresh status" }).click();
   await expect(bar).toHaveAttribute("data-state", "background");

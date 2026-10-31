@@ -1,0 +1,146 @@
+use super::*;
+use crate::{
+    config::AppConfig,
+    provider::StubProvider,
+    types::{AgentState, WorkItemRecord, WorkItemState},
+};
+use axum::{
+    body::{to_bytes, Body},
+    http::Request,
+};
+use tower::ServiceExt;
+
+async fn request(
+    state: &AppState,
+    path: &str,
+    expected_incarnation: Option<&str>,
+) -> (StatusCode, HeaderMap, Value) {
+    let mut builder = Request::builder().uri(path);
+    if let Some(expected) = expected_incarnation {
+        builder = builder.header("x-holon-expected-incarnation", expected);
+    }
+    let response = crate::http::router(state.clone())
+        .oneshot(builder.body(Body::empty()).unwrap())
+        .await
+        .unwrap();
+    let status = response.status();
+    let headers = response.headers().clone();
+    let bytes = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+    (status, headers, serde_json::from_slice(&bytes).unwrap())
+}
+
+#[tokio::test]
+async fn work_queue_http_incarnation_binding_preserves_legacy_reads_without_runtime_or_writes() {
+    let home = tempfile::tempdir().unwrap();
+    std::fs::write(
+        home.path().join("config.json"),
+        r#"{"model":{"default":"openai/gpt-5.4"}}"#,
+    )
+    .unwrap();
+    let config = AppConfig::load_with_home(Some(home.path().to_path_buf())).unwrap();
+    let host = RuntimeHost::new_with_provider(config, Arc::new(StubProvider::new("done"))).unwrap();
+    host.create_named_agent("queue-agent", None).await.unwrap();
+    host.unload_runtime("queue-agent").await;
+    let item = WorkItemRecord::new("queue-agent", "original", WorkItemState::Open);
+    let second = WorkItemRecord::new("queue-agent", "second", WorkItemState::Open);
+    host.runtime_db().work_items().insert_new(&item).unwrap();
+    host.runtime_db().work_items().insert_new(&second).unwrap();
+    let mut agent = AgentState::new("queue-agent");
+    agent.current_work_item_id = Some(item.id.clone());
+    host.runtime_db().agent_states().upsert(&agent).unwrap();
+    let storage = host.operator_agent_read_storage("queue-agent").unwrap();
+    let legacy = storage.work_queue_read_model().unwrap();
+    let events_before = storage.read_recent_events(100).unwrap();
+    let state = AppState::for_tcp(host.clone());
+    let list = "/api/agents/queue-agent/work-items";
+    let detail = format!("{list}/{}", item.id);
+    assert!(host.try_get_loaded_runtime("queue-agent").await.is_none());
+
+    for path in [list, detail.as_str()] {
+        for expected in [None, Some("1")] {
+            let (status, headers, body) = request(&state, path, expected).await;
+            assert_eq!(status, StatusCode::OK, "{path}");
+            assert_eq!(headers["x-holon-agent-id"], "queue-agent");
+            assert_eq!(headers["x-holon-agent-incarnation"], "1");
+            let expected_body = if path == list {
+                serde_json::to_value(&legacy.items).unwrap()
+            } else {
+                serde_json::to_value(
+                    legacy
+                        .items
+                        .iter()
+                        .find(|entry| entry.id == item.id)
+                        .unwrap(),
+                )
+                .unwrap()
+            };
+            assert_eq!(body, expected_body, "legacy projection must not change");
+        }
+        for expected in ["2", "invalid", "0", "", "-1", "18446744073709551616"] {
+            let (status, headers, body) = request(&state, path, Some(expected)).await;
+            assert_eq!(status, StatusCode::CONFLICT, "{path}: {expected}");
+            assert_eq!(body["code"], "conversation_identity_changed");
+            assert_eq!(body["retryable"], false);
+            assert!(!headers.contains_key("x-holon-agent-incarnation"));
+        }
+    }
+    let (_, _, limited) = request(&state, &format!("{list}?limit=1"), Some("1")).await;
+    assert_eq!(limited.as_array().unwrap().len(), 1);
+    let missing = format!("{list}/missing");
+    assert_eq!(
+        request(&state, &missing, Some("1")).await.0,
+        StatusCode::NOT_FOUND
+    );
+    assert_eq!(
+        request(&state, &missing, Some("2")).await.0,
+        StatusCode::CONFLICT
+    );
+    let mut authenticated = state.clone();
+    authenticated.require_control_token = true;
+    assert_eq!(
+        request(&authenticated, list, Some("invalid")).await.0,
+        StatusCode::UNAUTHORIZED,
+        "authentication must precede incarnation validation"
+    );
+    assert_eq!(
+        storage.read_recent_events(100).unwrap(),
+        events_before,
+        "GET must not append business events"
+    );
+    assert_eq!(storage.read_agent().unwrap(), Some(agent));
+    assert_eq!(
+        host.runtime_db().work_items().latest(&item.id).unwrap(),
+        Some(item.clone())
+    );
+    assert!(host.try_get_loaded_runtime("queue-agent").await.is_none());
+
+    host.runtime_db()
+        .transaction(|tx| {
+            tx.execute(
+                "UPDATE agent_identities SET payload_json = json_set(payload_json, '$.incarnation', 2)
+                 WHERE agent_id = 'queue-agent'",
+                [],
+            )?;
+            tx.execute(
+                "UPDATE work_items SET objective = 'replacement-only',
+                 payload_json = json_set(payload_json, '$.objective', 'replacement-only')
+                 WHERE agent_id = 'queue-agent'",
+                [],
+            )?;
+            Ok(())
+        })
+        .unwrap();
+    for path in [list, detail.as_str()] {
+        let (status, _, body) = request(&state, path, Some("1")).await;
+        assert_eq!(status, StatusCode::CONFLICT);
+        assert_eq!(body["code"], "conversation_identity_changed");
+        assert!(!body.to_string().contains("replacement-only"));
+        for expected in [None, Some("2")] {
+            let (status, headers, body) = request(&state, path, expected).await;
+            assert_eq!(status, StatusCode::OK);
+            assert_eq!(headers["x-holon-agent-incarnation"], "2");
+            assert!(body.to_string().contains("replacement-only"));
+        }
+    }
+    assert!(host.try_get_loaded_runtime("queue-agent").await.is_none());
+}

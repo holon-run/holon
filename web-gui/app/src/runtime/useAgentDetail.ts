@@ -1,6 +1,7 @@
 import { useCallback } from "react";
 
 import { useRuntimeStore } from "./runtime-store";
+import { refreshSelectedAgentResources } from "./useSelectedAgentRefresh";
 import type { AgentSyncStatus } from "./runtime-store-helpers";
 import type { AgentDetail } from "./types";
 
@@ -14,22 +15,24 @@ interface AgentDetailState {
 
 export function useAgentDetail(agentId: string | undefined): AgentDetailState {
   const detail = useRuntimeStore((state) => (agentId ? state.sessionsByAgentId[agentId]?.detail ?? null : null));
-  const loading = useRuntimeStore((state) => (agentId ? state.sessionsByAgentId[agentId]?.loading ?? false : false));
+  const loading = useRuntimeStore((state) => {
+    const session = agentId ? state.sessionsByAgentId[agentId] : undefined;
+    return Boolean(session?.loading || session?.resourceRefresh?.state?.loading || session?.resourceRefresh?.workItems?.loading);
+  });
   const contentStatus = useRuntimeStore((state) =>
     agentId ? state.sessionsByAgentId[agentId]?.contentStatus ?? "unknown" : "unknown",
   );
   const syncStatus = useRuntimeStore((state) =>
     agentId ? state.sessionsByAgentId[agentId]?.syncStatus ?? "idle" : "idle",
   );
-  const refreshAgentDetail = useRuntimeStore((state) => state.refreshAgentDetail);
   const refresh = useCallback(async () => {
     if (agentId === undefined) return;
-    await refreshAgentDetail(agentId, { trigger: "manual.refresh" });
-  }, [agentId, refreshAgentDetail]);
+    refreshSelectedAgentResources(agentId);
+  }, [agentId]);
 
   // Conversation content now flows from the conversation read model
   // (useConversationSession). Mounting a page must not start the legacy
-  // event-session hydration or catch-up; refresh stays available for the
-  // manual action only.
+  // event-session hydration or catch-up. Manual resource refresh also uses
+  // the shared scheduler, not the full-detail composite HTTP reader.
   return { detail, loading, contentStatus, syncStatus, refresh };
 }

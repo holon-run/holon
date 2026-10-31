@@ -975,7 +975,7 @@ export function createRuntimeClient(options: RuntimeClientOptions = {}) {
         { headers: requestHeaders, timeoutMs: PROJECTION_READ_TIMEOUT_MS, signal, cache: "no-store" },
       );
     },
-    async getAgentWorkItems(agentId: string, options: { limit?: number } = {}): Promise<WorkItemSummary[]> {
+    async getAgentWorkItems(agentId: string, options: { limit?: number; signal?: AbortSignal; incarnation?: number } = {}): Promise<WorkItemSummary[]> {
       if (!baseUrl) {
         return [];
       }
@@ -1827,7 +1827,7 @@ async function fetchAgentWorkItems(
   fetchImpl: typeof fetch,
   headers: Record<string, string>,
   agentId: string,
-  options: { limit?: number } = {},
+  options: { limit?: number; signal?: AbortSignal; incarnation?: number } = {},
 ): Promise<WorkItemDto[]> {
   const query = new URLSearchParams();
   if (options.limit != null) query.set("limit", String(options.limit));
@@ -1836,7 +1836,13 @@ async function fetchAgentWorkItems(
     fetchImpl,
     baseUrl,
     `/agents/${encodeURIComponent(agentId)}/work-items${queryString ? `?${queryString}` : ""}`,
-    { timeoutMs: HYDRATION_READ_TIMEOUT_MS, headers },
+    {
+      timeoutMs: HYDRATION_READ_TIMEOUT_MS,
+      headers: options.incarnation === undefined ? headers
+        : { ...headers, "x-holon-expected-incarnation": String(options.incarnation) },
+      signal: options.signal, cache: "no-store",
+      expectedIdentity: options.incarnation === undefined ? undefined : { agentId, incarnation: options.incarnation },
+    },
   );
 }
 
@@ -2021,7 +2027,10 @@ async function getJson<T>(
   fetchImpl: typeof fetch,
   baseUrl: string,
   path: string,
-  options: { timeoutMs?: number; headers?: Record<string, string>; signal?: AbortSignal; cache?: RequestCache } = {},
+  options: {
+    timeoutMs?: number; headers?: Record<string, string>; signal?: AbortSignal; cache?: RequestCache;
+    expectedIdentity?: { agentId: string; incarnation: number };
+  } = {},
 ): Promise<T> {
   const controller = new AbortController();
   const timeout = globalThis.setTimeout(() => controller.abort(), options.timeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS);
@@ -2033,6 +2042,11 @@ async function getJson<T>(
   }).finally(() => globalThis.clearTimeout(timeout));
   if (!response.ok) {
     throw await httpRequestError("GET", path, response);
+  }
+  const expected = options.expectedIdentity;
+  if (expected && (response.headers.get("x-holon-agent-id") !== expected.agentId
+    || response.headers.get("x-holon-agent-incarnation") !== String(expected.incarnation))) {
+    throw new RuntimeHttpError("GET", path, 409, "Agent identity changed.", "agent_incarnation_mismatch");
   }
   return (await response.json()) as T;
 }
@@ -2445,6 +2459,7 @@ function projectAgent(entry: AgentListEntryDto, state?: AgentStateDto, brief?: B
     posture,
     postureReason,
     currentRunId,
+    currentWorkItemId: state ? state.agent?.agent?.current_work_item_id ?? null : undefined,
     currentWork,
     providerCooldownWait: state?.agent.agent.provider_cooldown_wait ?? undefined,
     workspaceSummary,

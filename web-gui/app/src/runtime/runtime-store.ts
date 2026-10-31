@@ -11,6 +11,7 @@ import { hydrateInputActivity } from "./conversation-input";
 import { readPanelPreferences, writePanelPreferences, rememberPanelView } from "./panel-preferences";
 import { panelLayout, PANEL_DEFAULT } from "../features/right-panel/panel-layout";
 import { clearConversationCaches } from "./conversation-cache-lifecycle";
+import { refreshSelectedAgentResources } from "./selected-agent-resource-invalidation";
 import type { CurrentUser } from "./client";
 import { create } from "zustand";
 
@@ -157,9 +158,17 @@ export interface BootstrapRefreshOptions {
 }
 
 export interface AgentDetailRefreshOptions {
+  incarnation?: number;
   retry?: boolean;
   trace?: RuntimeTraceContext;
   trigger?: string;
+}
+
+export interface AgentResourceRefreshOptions {
+  incarnation?: number;
+  signal?: AbortSignal;
+  /** The selected scope's scheduler owns retry/backoff when set. */
+  throwOnError?: boolean;
 }
 
 function createLiveAgentDetail(agent: AgentSummary | undefined): AgentDetail | null {
@@ -175,8 +184,8 @@ function createLiveAgentDetail(agent: AgentSummary | undefined): AgentDetail | n
 export function mergeBootstrapAgentState(httpAgent: AgentSummary, cachedAgent: AgentSummary): AgentSummary {
   return {
     ...httpAgent,
-    currentWork: cachedAgent.currentWork ?? httpAgent.currentWork,
-    workItems: cachedAgent.workItems?.length ? cachedAgent.workItems : httpAgent.workItems,
+    currentWork: cachedAgent.workItems !== undefined ? cachedAgent.currentWork : httpAgent.currentWork,
+    workItems: cachedAgent.workItems ?? httpAgent.workItems,
     // Tasks come from the live /state endpoint, not the /agents/list bootstrap.
     // When httpAgent.tasks is empty it may mean "no tasks" (from /state) or
     // "tasks not included" (from /agents/list). Only overwrite cached tasks
@@ -416,8 +425,8 @@ export interface RuntimeStoreState {
   runSearch: (query: string, options?: RuntimeSearchOptions) => Promise<void>;
   loadSearchResultContent: (sourceRef: string) => Promise<void>;
   refreshAgentDetail: (agentId: string | undefined, options?: AgentDetailRefreshOptions) => Promise<void>;
-  refreshAgentWorkItems: (agentId: string | undefined) => Promise<void>;
-  refreshAgentState: (agentId: string | undefined) => Promise<void>;
+  refreshAgentWorkItems: (agentId: string | undefined, options?: AgentResourceRefreshOptions) => Promise<void>;
+  refreshAgentState: (agentId: string | undefined, options?: AgentResourceRefreshOptions) => Promise<void>;
   loadAgentWorkItemDetail: (agentId: string | undefined, workItemId: string | undefined) => Promise<void>;
   loadAgentTaskDetail: (agentId: string | undefined, taskId: string | undefined, force?: boolean) => Promise<void>;
   loadAgentToolExecutionDetail: (agentId: string | undefined, toolExecutionId: string | undefined, fallbackActivity?: AgentTimelineActivity, conversationRevision?: number) => Promise<void>;
@@ -534,12 +543,15 @@ function saveSkillInstallJobs(jobs: SkillInstallJob[]): void {
 }
 
 const inspectorDetailInFlight = new Set<string>();
-const workItemRefreshInFlight = new Set<string>();
+const workItemRefreshInFlight = new Map<string, AgentResourceRequest>();
 const workItemDetailInFlight = new Set<string>();
 const taskDetailInFlight = new Set<string>();
 const toolExecutionDetailInFlight = new Set<string>();
-const agentStateRefreshInFlight = new Map<string, number>();
-const agentDetailRefreshInFlight = new Map<string, { generation: number; promise: Promise<void> }>();
+const agentStateRefreshInFlight = new Map<string, AgentResourceRequest>();
+let agentResourceReadSequence = 0;
+const agentDetailRefreshInFlight = new Map<string, {
+  generation: number; contextKey: string; incarnation?: number; promise: Promise<void>;
+}>();
 const agentDetailRequestSequence = new Map<string, number>();
 const agentDetailRetryTimers = new Map<string, number>();
 const agentDetailRetryAttempts = new Map<string, number>();
@@ -576,6 +588,127 @@ export function skillDetailCacheKey(skillId: string, agentId?: string): string {
 interface ClientRequest {
   client: RuntimeClient;
   generation: number;
+}
+
+type AgentResource = "state" | "workItems";
+
+interface AgentResourceRequest extends ClientRequest {
+  contextKey: string;
+  incarnation?: number;
+  signal?: AbortSignal;
+  sequence: number;
+  promise: Promise<void>;
+}
+
+function agentResourceContext(state: RuntimeStoreState): string {
+  return JSON.stringify([
+    state.discovery.identity, state.currentUser, state.currentUserLoaded,
+    state.bootstrap.connection.authRequired, state.discovery.freshness === "unauthorized",
+  ]);
+}
+
+/**
+ * A resource read completed after its scope was replaced (client generation,
+ * authorization context, or agent incarnation changed mid-flight). The result
+ * must not settle the resource as fresh: callers such as the refresh
+ * scheduler retry instead of coasting on data that was never merged.
+ */
+export class AgentResourceSupersededError extends Error {
+  constructor(agentId: string, resource: AgentResource) {
+    super(`Agent ${agentId} ${resource} read superseded by a newer scope.`);
+    this.name = "AgentResourceSupersededError";
+  }
+}
+
+function refreshAgentResource(
+  set: StoreSet,
+  get: () => RuntimeStoreState,
+  agentId: string,
+  resource: AgentResource,
+  options: AgentResourceRefreshOptions,
+): Promise<void> {
+  const inFlight = resource === "state" ? agentStateRefreshInFlight : workItemRefreshInFlight;
+  const clientRequest = captureClientRequest();
+  const contextKey = agentResourceContext(get());
+  const incarnation = options.incarnation ?? get().bootstrap.agents.find((agent) => agent.id === agentId)?.incarnation;
+  const existing = inFlight.get(agentId);
+  const result = (promise: Promise<void>) => options.throwOnError ? promise : promise.catch(() => undefined);
+  if (existing && isCurrentClientRequest(existing) && existing.contextKey === contextKey
+    && existing.incarnation === incarnation && !existing.signal?.aborted) return result(existing.promise);
+  const request: AgentResourceRequest = {
+    ...clientRequest, contextKey, incarnation, signal: options.signal,
+    sequence: ++agentResourceReadSequence, promise: Promise.resolve(),
+  };
+  const current = () => {
+    const agent = get().bootstrap.agents.find((entry) => entry.id === agentId);
+    return inFlight.get(agentId) === request && isCurrentClientRequest(request) && !request.signal?.aborted
+      && agentResourceContext(get()) === contextKey
+      && (agent?.incarnation === undefined || incarnation === undefined || agent.incarnation === incarnation);
+  };
+  inFlight.set(agentId, request);
+  set((state) => {
+    const session = state.sessionsByAgentId[agentId];
+    const scopeKey = JSON.stringify([request.generation, contextKey, incarnation]);
+    const replaced = (session?.resourceScopeKey !== undefined && session.resourceScopeKey !== scopeKey)
+      || (incarnation !== undefined && session?.detail?.agent.incarnation !== undefined
+        && session.detail.agent.incarnation !== incarnation);
+    const scopedState = { ...state, sessionsByAgentId: {
+      ...state.sessionsByAgentId,
+      [agentId]: { ...(replaced ? emptyAgentSession() : session ?? emptyAgentSession()), resourceScopeKey: scopeKey },
+    } };
+    return patchAgentResourceStatus(scopedState, agentId, resource, { loading: true, error: undefined });
+  });
+  request.promise = Promise.resolve().then(async () => {
+    try {
+      if (!current()) throw new AgentResourceSupersededError(agentId, resource);
+      const data = resource === "state"
+        ? await request.client.getAgentState(agentId, request.signal)
+        : await request.client.getAgentWorkItems(agentId, { limit: 50, signal: request.signal, incarnation });
+      if (!current()) throw new AgentResourceSupersededError(agentId, resource);
+      if (resource === "state" && incarnation !== undefined && (data as AgentSummary).incarnation !== incarnation) {
+        throw new RuntimeHttpError("GET", `/agents/${agentId}/state`, 409,
+          "Agent identity changed.", "agent_incarnation_mismatch");
+      }
+      set((state) => {
+        const merged = resource === "state"
+          ? mergeAgentStateIntoState(state, agentId, data as AgentSummary)
+          : mergeAgentWorkItemsIntoState(state, agentId, data as WorkItemSummary[]);
+        return {
+          ...merged,
+          ...patchAgentResourceStatus({ ...state, ...merged }, agentId, resource, {
+            loading: false, stale: false, error: undefined,
+            lastSuccessAt: Date.now(), dataRequestId: request.sequence,
+          }),
+        };
+      });
+    } catch (error) {
+      if (error instanceof AgentResourceSupersededError) throw error;
+      if (!current()) throw new AgentResourceSupersededError(agentId, resource);
+      set((state) => patchAgentResourceStatus(state, agentId, resource, {
+        loading: false, stale: true, error: error instanceof Error ? error.message : String(error),
+      }));
+      throw error;
+    } finally {
+      if (inFlight.get(agentId) === request) inFlight.delete(agentId);
+    }
+  });
+  return result(request.promise);
+}
+
+function patchAgentResourceStatus(
+  state: RuntimeStoreState,
+  agentId: string,
+  resource: AgentResource,
+  patch: Partial<NonNullable<AgentSessionState["resourceRefresh"]>[AgentResource]>,
+): Partial<RuntimeStoreState> {
+  const session = state.sessionsByAgentId[agentId] ?? emptyAgentSession();
+  return { sessionsByAgentId: {
+    ...state.sessionsByAgentId,
+    [agentId]: { ...session, resourceRefresh: {
+      ...session.resourceRefresh,
+      [resource]: { loading: false, stale: false, ...session.resourceRefresh?.[resource], ...patch },
+    } },
+  } };
 }
 
 interface AgentCreationRequest extends ClientRequest {
@@ -883,7 +1016,11 @@ async function applyRosterSnapshotToStore(
     const cachedAgentsById = cachedAgentsByIdFromState(state);
     const rosterAgents = projectRosterAgents(snapshot).map((agent) => {
       const cached = cachedAgentsById[agent.id];
-      return cached ? mergeBootstrapAgentState(agent, cached) : agent;
+      if (!cached || identityReset || cached.incarnation !== agent.incarnation) return agent;
+      return preserveResourceOwnedAgent(
+        mergeBootstrapAgentState(agent, cached), cached,
+        state.sessionsByAgentId[agent.id]?.resourceRefresh,
+      );
     });
     const rosterIds = new Set(rosterAgents.map((agent) => agent.id));
     const previousIds = state.bootstrap.agents.map((agent) => agent.id);
@@ -1831,6 +1968,10 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => {
           4,
           async (agentId) => {
             await get().refreshAgentState(agentId);
+            // The resume generation bump resets the resource scope; a state
+            // read alone would render the state's work_items as the whole
+            // list. Re-hydrate the list resource this reset invalidated.
+            await get().refreshAgentWorkItems(agentId);
           },
           () => isCurrentClientGeneration(generation),
         );
@@ -2750,13 +2891,23 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => {
       });
     const span = startRuntimeSpan(trace, "agent.detail", { retry: Boolean(options.retry) });
     const key = agentId;
+    const resourceContextKey = agentResourceContext(get());
+    const expectedIncarnation = options.incarnation ?? get().bootstrap.agents.find((agent) => agent.id === agentId)?.incarnation;
     const existing = agentDetailRefreshInFlight.get(key);
-    if (existing?.generation === request.generation) {
+    if (existing?.generation === request.generation && existing.contextKey === resourceContextKey
+      && existing.incarnation === expectedIncarnation) {
       span.end("deduped");
       return existing.promise;
     }
     const sequence = (agentDetailRequestSequence.get(agentId) ?? 0) + 1;
     agentDetailRequestSequence.set(agentId, sequence);
+    const resourceSequence = ++agentResourceReadSequence;
+    const isCurrentDetailRequest = () => {
+      const agent = get().bootstrap.agents.find((entry) => entry.id === agentId);
+      return isCurrentClientRequest(request) && agentDetailRequestSequence.get(agentId) === sequence
+        && agentResourceContext(get()) === resourceContextKey
+        && (expectedIncarnation === undefined || agent?.incarnation === undefined || agent.incarnation === expectedIncarnation);
+    };
     set((state) => ({
       sessionsByAgentId: {
         ...state.sessionsByAgentId,
@@ -2774,11 +2925,12 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => {
     promise = (async () => {
       try {
         const detail = await request.client.getAgentDetail(agentId);
-        if (
-          !isCurrentClientRequest(request) ||
-          agentDetailRequestSequence.get(agentId) !== sequence
-        ) return;
-        set((state) => mergeAgentDetailIntoSession(state, agentId, detail));
+        if (!isCurrentDetailRequest()) return;
+        if (!detail.error && expectedIncarnation !== undefined && detail.agent.incarnation !== expectedIncarnation) {
+          throw new RuntimeHttpError("GET", `/agents/${agentId}/state`, 409,
+            "Agent identity changed.", "agent_incarnation_mismatch");
+        }
+        set((state) => mergeAgentDetailIntoSession(state, agentId, detail, resourceSequence));
         startRuntimeSpan(trace, "ui.session_state_transition", {
           state: `${get().sessionsByAgentId[agentId]?.contentStatus ?? "unknown"}/${
             get().sessionsByAgentId[agentId]?.syncStatus ?? "idle"
@@ -2795,10 +2947,7 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => {
         clearAgentDetailRetry(agentId);
         span.end(detail.error ? "error" : "ok");
       } catch (error) {
-        if (
-          !isCurrentClientRequest(request) ||
-          agentDetailRequestSequence.get(agentId) !== sequence
-        ) return;
+        if (!isCurrentDetailRequest()) return;
         if (isProjectionBusyError(error)) {
           set((state) => ({
             sessionsByAgentId: {
@@ -2857,35 +3006,15 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => {
         }
       }
     })();
-    agentDetailRefreshInFlight.set(key, { generation: request.generation, promise });
+    agentDetailRefreshInFlight.set(key, {
+      generation: request.generation, contextKey: resourceContextKey, incarnation: expectedIncarnation, promise,
+    });
     return promise;
   },
 
-  refreshAgentWorkItems: async (agentId) => {
-    if (!agentId || workItemRefreshInFlight.has(agentId)) return;
-    const request = captureClientRequest();
-    workItemRefreshInFlight.add(agentId);
-    try {
-      const workItems = await request.client.getAgentWorkItems(agentId, { limit: 50 });
-      if (!isCurrentClientRequest(request)) return;
-      set((state) => mergeAgentWorkItemsIntoState(state, agentId, workItems));
-    } catch (error) {
-      if (!isCurrentClientRequest(request)) return;
-      set((state) => ({
-        sessionsByAgentId: {
-          ...state.sessionsByAgentId,
-          [agentId]: {
-            ...emptyAgentSession(),
-            ...state.sessionsByAgentId[agentId],
-            error: error instanceof Error ? error.message : String(error),
-          },
-        },
-      }));
-    } finally {
-      if (isCurrentClientRequest(request)) {
-        workItemRefreshInFlight.delete(agentId);
-      }
-    }
+  refreshAgentWorkItems: async (agentId, options = {}) => {
+    if (!agentId) return;
+    await refreshAgentResource(set, get, agentId, "workItems", options);
   },
 
   queryAgentRecentTasks: async (agentId) => {
@@ -2905,24 +3034,9 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => {
     return timer;
   },
 
-  refreshAgentState: async (agentId) => {
-    if (!agentId || agentStateRefreshInFlight.has(agentId)) return;
-    const request = captureClientRequest();
-    agentStateRefreshInFlight.set(agentId, request.generation);
-    try {
-      const freshAgent = await request.client.getAgentState(agentId);
-      if (!isCurrentClientRequest(request)) return;
-      set((state) => mergeAgentStateIntoState(state, agentId, freshAgent));
-    } catch {
-      // Swallow — state refresh is best-effort; the next full detail refresh will recover.
-    } finally {
-      if (
-        isCurrentClientRequest(request) &&
-        agentStateRefreshInFlight.get(agentId) === request.generation
-      ) {
-        agentStateRefreshInFlight.delete(agentId);
-      }
-    }
+  refreshAgentState: async (agentId, options = {}) => {
+    if (!agentId) return;
+    await refreshAgentResource(set, get, agentId, "state", options);
   },
 
   loadAgentWorkItemDetail: async (agentId, workItemId) => {
@@ -3228,7 +3342,7 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => {
           modelServiceTierOverride: modelState?.override_service_tier ?? undefined,
         }),
       );
-      await get().refreshAgentDetail(agentId);
+      if (!refreshSelectedAgentResources(agentId)) await get().refreshAgentState(agentId);
     } catch (error) {
       if (!isCurrentClientRequest(request)) return;
       const message = error instanceof Error ? error.message : String(error);
@@ -3259,7 +3373,7 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => {
           modelServiceTierOverride: modelState?.override_service_tier ?? undefined,
         }),
       );
-      await get().refreshAgentDetail(agentId);
+      if (!refreshSelectedAgentResources(agentId)) await get().refreshAgentState(agentId);
     } catch (error) {
       if (!isCurrentClientRequest(request)) return;
       const message = error instanceof Error ? error.message : String(error);
@@ -3277,6 +3391,7 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => {
     try {
       await request.client.controlAgent(agentId, action);
       if (!isCurrentClientRequest(request)) return;
+      refreshSelectedAgentResources(agentId);
       await get().refreshBootstrap({ background: true });
     } catch (error) {
       if (!isCurrentClientRequest(request)) return;
@@ -3289,7 +3404,7 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => {
     try {
       await request.client.renameAgent(agentId, name);
       if (!isCurrentClientRequest(request)) return;
-      await get().refreshAgentDetail(agentId, { trigger: "agent.rename" });
+      if (!refreshSelectedAgentResources(agentId)) await get().refreshAgentState(agentId);
       if (get().discovery.mode === "authoritative") {
         // The authoritative roster owns the displayed identity; one snapshot
         // refresh applies the new name (and any concurrent roster change).
@@ -3918,13 +4033,16 @@ function mergeAgentIntoBootstrap(bootstrap: RuntimeBootstrap, updatedAgent: Agen
 
 function mergeAgentWorkItemsIntoState(state: RuntimeStoreState, agentId: string, workItems: WorkItemSummary[]): Partial<RuntimeStoreState> {
   const session = state.sessionsByAgentId[agentId] ?? emptyAgentSession();
+  const stateOwnsFocus = session.resourceRefresh?.state?.dataRequestId !== undefined;
   const detail = session.detail
     ? {
         ...session.detail,
-        agent: patchAgentWorkItems(session.detail.agent, workItems),
+        agent: patchAgentWorkItems(session.detail.agent, workItems, stateOwnsFocus),
       }
     : session.detail;
-  const agents = state.bootstrap.agents.map((agent) => (agent.id === agentId ? patchAgentWorkItems(agent, workItems) : agent));
+  const agents = state.bootstrap.agents.map((agent) => (
+    agent.id === agentId ? patchAgentWorkItems(agent, workItems, stateOwnsFocus) : agent
+  ));
 
   return {
     bootstrap: sortBootstrapAgents(
@@ -3941,38 +4059,53 @@ function mergeAgentWorkItemsIntoState(state: RuntimeStoreState, agentId: string,
         ...emptyAgentSession(),
         ...session,
         detail,
+        workItemsSnapshot: workItems,
       },
     },
   };
 }
 
-function patchAgentWorkItems(agent: AgentSummary, workItems: WorkItemSummary[]): AgentSummary {
-  const currentWork = workItems.find((item) => item.current);
+function patchAgentWorkItems(agent: AgentSummary, workItems: WorkItemSummary[], stateOwnsFocus = false): AgentSummary {
+  const focusId = agent.currentWorkItemId === null ? undefined : agent.currentWorkItemId ?? agent.currentWork?.id;
+  const currentWork = stateOwnsFocus
+    ? workItems.find((item) => item.id === focusId)
+      ?? (agent.currentWork?.id === focusId ? agent.currentWork : undefined)
+    : workItems.find((item) => item.current);
   return {
     ...agent,
     currentWork,
-    workItems,
+    workItems: workItems.map((item) => ({ ...item, current: item.id === currentWork?.id })),
   };
+}
+
+function preserveResourceOwnedAgent(
+  incoming: AgentSummary,
+  cached: AgentSummary,
+  resources: AgentSessionState["resourceRefresh"],
+  afterSequence = 0,
+): AgentSummary {
+  let agent = (resources?.state?.dataRequestId ?? 0) > afterSequence
+    ? { ...cached, name: incoming.name, canRename: incoming.canRename,
+        lastBrief: incoming.lastBrief || cached.lastBrief }
+    : incoming;
+  if ((resources?.workItems?.dataRequestId ?? 0) > afterSequence) {
+    agent = patchAgentWorkItems(agent, cached.workItems ?? [], true);
+  }
+  return agent;
 }
 
 function mergeAgentStateIntoState(state: RuntimeStoreState, agentId: string, freshAgent: AgentSummary): Partial<RuntimeStoreState> {
   const session = state.sessionsByAgentId[agentId] ?? emptyAgentSession();
-  // Preserve cached work items from existing detail — those are managed by
-  // refreshAgentWorkItems. Tasks come from the state endpoint and are always trusted.
   const cachedDetail = session.detail;
-  const mergedAgent: AgentSummary = cachedDetail
-    ? {
-        ...freshAgent,
-        // Tasks come from the live state endpoint, so always trust fresh data
-        // to ensure cancelled/completed tasks are removed promptly.
-        tasks: freshAgent.tasks,
-        // Work items are managed by a separate endpoint, preserve cached data.
-        workItems: cachedDetail.agent.workItems?.length ? cachedDetail.agent.workItems : freshAgent.workItems,
-        currentWork: cachedDetail.agent.currentWork ?? freshAgent.currentWork,
-        lastBrief: cachedDetail.agent.lastBrief || freshAgent.lastBrief,
-      }
-    : freshAgent;
-  const detail = cachedDetail ? { ...cachedDetail, agent: mergedAgent } : cachedDetail;
+  const cachedAgent = cachedDetail?.agent ?? state.bootstrap.agents.find((agent) => agent.id === agentId);
+  const workItems = session.workItemsSnapshot ?? freshAgent.workItems ?? [];
+  // State owns focus and active tasks; list membership belongs to /work-items,
+  // including a successful empty list. Neither may resurrect a cleared focus.
+  const mergedAgent = patchAgentWorkItems({
+    ...freshAgent,
+    lastBrief: cachedAgent?.lastBrief || freshAgent.lastBrief,
+  }, workItems, true);
+  const detail = cachedDetail ? { ...cachedDetail, agent: mergedAgent } : createLiveAgentDetail(mergedAgent);
   const agents = state.bootstrap.agents.map((agent) => (agent.id === agentId ? mergedAgent : agent));
 
   return {
@@ -4098,6 +4231,7 @@ export function mergeAgentDetailIntoSession(
   state: RuntimeStoreState,
   agentId: string,
   detail: AgentDetail,
+  resourceSequence = Number.POSITIVE_INFINITY,
 ): Partial<RuntimeStoreState> {
   const conversation = detail.conversation;
   const current = sessionForEventLogEpoch(
@@ -4125,8 +4259,11 @@ export function mergeAgentDetailIntoSession(
   const freshAgent = liveDetailIsNewer && current.detail ? mergeNewerLiveAgentState(detail.agent, current.detail.agent) : detail.agent;
   // Discovery owns the brief preview; detail no longer hydrates raw brief events.
   const rosterAgent = state.bootstrap.agents.find((entry) => entry.id === agentId);
+  const resourceAgent = current.detail && current.detail.agent.incarnation === freshAgent.incarnation
+    ? preserveResourceOwnedAgent(freshAgent, current.detail.agent, current.resourceRefresh, resourceSequence)
+    : freshAgent;
   const agent = {
-    ...freshAgent,
+    ...resourceAgent,
     lastBrief: rosterAgent?.lastBrief ?? current.detail?.agent.lastBrief ?? freshAgent.lastBrief,
   };
   const detailBase: AgentDetail = {

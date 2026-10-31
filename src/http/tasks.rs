@@ -1,6 +1,10 @@
 use super::*;
 use crate::runtime_error::RuntimeError;
 
+#[cfg(test)]
+#[path = "tasks_tests.rs"]
+mod tests;
+
 #[derive(Debug, Serialize, JsonSchema)]
 pub struct ToolExecutionArtifactContent {
     pub artifact_index: usize,
@@ -633,22 +637,27 @@ pub async fn work_items(
     Query(query): Query<LimitQuery>,
 ) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
     authorize_remote_access(&headers, &state).map_err(authentication_error_response)?;
+    let expected_incarnation = conversation::request_incarnation(&headers)?;
     let storage = state
         .host
         .operator_agent_read_storage(&agent_id)
         .map_err(agent_access_error)?;
     let limit = query.limit.unwrap_or(50);
-    let work_items = storage
+    let (identity, work_queue) = storage
         .read_block("http.tasks.work_items", move |storage| {
-            Ok(storage.work_queue_read_model()?)
+            storage
+                .read_models()
+                .work_queue_snapshot(expected_incarnation)
         })
         .await
-        .map_err(error_response)?
-        .items
-        .into_iter()
-        .take(limit)
-        .collect::<Vec<_>>();
-    Ok(Json(work_items))
+        .map_err(conversation::conversation_error)?
+        .ok_or_else(|| agent_access_error(PublicAgentError::NotFound { agent_id }))?;
+    let work_items = work_queue.items.into_iter().take(limit).collect::<Vec<_>>();
+    Ok(conversation::bind_response(
+        &headers,
+        &identity,
+        Json(work_items).into_response(),
+    ))
 }
 
 pub async fn work_item(
@@ -657,18 +666,23 @@ pub async fn work_item(
     headers: HeaderMap,
 ) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
     authorize_remote_access(&headers, &state).map_err(authentication_error_response)?;
+    let expected_incarnation = conversation::request_incarnation(&headers)?;
     let storage = state
         .host
         .operator_agent_read_storage(&agent_id)
         .map_err(agent_access_error)?;
     let read_work_item_id = work_item_id.clone();
     let read_agent_id = agent_id.clone();
-    let Some(work_item) = storage
+    let (identity, work_queue) = storage
         .read_block("http.tasks.work_item", move |storage| {
-            Ok(storage.work_queue_read_model()?)
+            storage
+                .read_models()
+                .work_queue_snapshot(expected_incarnation)
         })
         .await
-        .map_err(error_response)?
+        .map_err(conversation::conversation_error)?
+        .ok_or_else(|| agent_access_error(PublicAgentError::NotFound { agent_id }))?;
+    let Some(work_item) = work_queue
         .items
         .into_iter()
         .find(|item| item.id == read_work_item_id && item.agent_id == read_agent_id)
@@ -682,7 +696,11 @@ pub async fn work_item(
             .into(),
         ));
     };
-    Ok(Json(work_item))
+    Ok(conversation::bind_response(
+        &headers,
+        &identity,
+        Json(work_item).into_response(),
+    ))
 }
 
 pub async fn timers(

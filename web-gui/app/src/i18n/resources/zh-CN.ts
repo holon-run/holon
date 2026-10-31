@@ -268,7 +268,7 @@ const zh: Record<string, any> = {
     otherWork: "其他工作",
     agentTask: "智能体级任务",
     noTasks: "当前没有运行中的后台任务",
-    stale: "连接中断 · 状态可能已过期",
+    stale: "状态刷新失败 · 显示上次成功数据",
     retry: "刷新状态",
     taskState: { queued: "排队中", running: "运行中", cancelling: "正在取消" },
   },
@@ -1048,6 +1048,9 @@ const zh: Record<string, any> = {
     openGithub: "在 GitHub 上打开 Holon",
   },
   rightPanel: {
+    refreshCore: "刷新 Agent 与工作项",
+    stateRefreshStale: "Agent 状态可能已过期",
+    workItemsRefreshStale: "工作项列表可能已过期",
     loadingAgentInformation: "正在加载智能体信息…",
     recentCompletedTasks: "最近完成（最多 {{count}} 条）",
     refreshRecentTasks: "刷新最近任务",
