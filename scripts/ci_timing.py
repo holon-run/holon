@@ -14,6 +14,14 @@ from typing import Any, Iterable
 
 SCHEMA_VERSION = 1
 TIMING_JOB_NAME = "CI Timing"
+# The Rust path is one logical gate. It used to be a single "Rust" job and is
+# now split into parallel jobs, so the tracked metric is the slowest member of
+# the family. Historical samples keep the old job name in the same family.
+RUST_PATH_JOB_NAMES = (
+    "Rust",
+    "Rust lint",
+    "Rust build",
+)
 DEFAULT_BUDGETS_SECONDS = {
     "rust_job": 45 * 60,
     "coverage_job": 29 * 60,
@@ -207,12 +215,18 @@ def workflow_metrics(jobs: Iterable[dict[str, Any]]) -> dict[str, Any]:
     wall_seconds = None
     if starts and completions:
         wall_seconds = max(0.0, (max(completions) - min(starts)).total_seconds())
+    rust_path_seconds = [
+        job["seconds"] for job in summaries
+        if job["name"] in RUST_PATH_JOB_NAMES and job["seconds"] is not None
+    ]
     return {
         "workflow_wall_seconds": wall_seconds,
         "total_runner_seconds": round(
             sum(job["seconds"] for job in timed_jobs), 3
         ),
-        "rust_job_seconds": (by_name.get("Rust") or {}).get("seconds"),
+        "rust_job_seconds": (
+            max(rust_path_seconds) if rust_path_seconds else None
+        ),
         "coverage_job_seconds": (by_name.get("Coverage") or {}).get("seconds"),
         "jobs": summaries,
     }
@@ -318,7 +332,7 @@ def render_summary(report: dict[str, Any]) -> str:
     for label, field in (
         ("Workflow wall", "workflow_wall_seconds"),
         ("Total runner", "total_runner_seconds"),
-        ("Rust job", "rust_job_seconds"),
+        ("Rust path", "rust_job_seconds"),
         ("Coverage job", "coverage_job_seconds"),
     ):
         historical = history[field]

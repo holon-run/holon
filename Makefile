@@ -159,7 +159,7 @@ all: web app-sdk build ## Build everything: web GUI, App SDK, then Rust
 test: ## Run serial integration-test targets (concurrent-proven binaries excluded; see test-concurrent)
 	python3 scripts/ci_test_shards.py run serial
 
-test-shard: ## Run one CI test shard (SHARD=lib|control|cli|misc); lib uses 2 test threads
+test-shard: ## Run one CI test shard (SHARD=lib-a|lib-b|control|cli|misc); lib shards use 2 test threads
 	python3 scripts/ci_test_shards.py run $(SHARD)
 
 test-resource-lint: ## Audit permanent test temp directories against the reasoned allowlist
