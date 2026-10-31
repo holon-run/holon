@@ -451,14 +451,23 @@ pub(crate) fn observer_principal_and_entitlement(
     state: &AppState,
 ) -> super::AuthenticationResult<(String, &'static str)> {
     if state.host.config().auth.mode == crate::authentication::AuthenticationMode::Oidc {
-        Ok((
-            super::control_actor(headers, state)?.principal_id(),
-            CONTROL_SCOPE_ENTITLEMENT,
-        ))
+        let principal = super::control_actor(headers, state)?.principal_id();
+        record_observer_principal(&principal);
+        Ok((principal, CONTROL_SCOPE_ENTITLEMENT))
     } else {
         let (principal, entitlement) = observer_scope_authority(state);
+        record_observer_principal(principal);
         Ok((principal.to_string(), entitlement))
     }
+}
+
+/// Journal attribution only: annotate the enclosing `http_request` span with
+/// the observer principal that resolved this route, so per-client polling can
+/// be answered from journal records without process forensics. Recording a
+/// field the current span does not declare is a no-op, so non-HTTP callers
+/// are unaffected.
+fn record_observer_principal(principal: &str) {
+    tracing::Span::current().record("observer_principal", tracing::field::display(principal));
 }
 
 pub(crate) fn observer_visibility_scope_for(

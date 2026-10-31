@@ -989,16 +989,32 @@ pub fn router(state: AppState) -> Router {
                         .get::<MatchedPath>()
                         .map(MatchedPath::as_str)
                         .unwrap_or_else(|| request.uri().path());
-                    tracing::info_span!(
+                    // Metadata-only client attribution: a bounded user agent
+                    // plus the observer principal recorded during
+                    // authentication. Together they let journal records answer
+                    // "which client polls which route" without process
+                    // forensics; no request body is captured.
+                    let user_agent = request
+                        .headers()
+                        .get(axum::http::header::USER_AGENT)
+                        .and_then(|value| value.to_str().ok())
+                        .map(|value| value.chars().take(120).collect::<String>());
+                    let span = tracing::info_span!(
                         "http_request",
                         method = %request.method(),
                         path = %redact_request_path(request.uri().path()),
                         matched_path,
+                        user_agent = tracing::field::Empty,
+                        observer_principal = tracing::field::Empty,
                         status = tracing::field::Empty,
                         response_bytes = tracing::field::Empty,
                         elapsed_ms = tracing::field::Empty,
                         in_flight = tracing::field::Empty,
-                    )
+                    );
+                    if let Some(user_agent) = user_agent {
+                        span.record("user_agent", user_agent.as_str());
+                    }
+                    span
                 })
                 .on_request(|_request: &AxumRequest<axum::body::Body>, span: &Span| {
                     let in_flight = HTTP_IN_FLIGHT_REQUESTS.fetch_add(1, Ordering::Relaxed) + 1;

@@ -584,6 +584,21 @@ impl Drop for RuntimeDbWriteTurn {
     }
 }
 
+#[cfg(test)]
+impl RuntimeDbWriterState {
+    /// Write-channel admissions (queue tickets issued) so far. Tests assert
+    /// that a request path never entered the single writer channel by
+    /// comparing this counter before and after the call.
+    pub(crate) fn write_channel_admissions_for_tests(&self) -> Result<u64> {
+        let state = self
+            .queue
+            .state
+            .lock()
+            .map_err(|_| anyhow!("runtime db write queue mutex poisoned"))?;
+        Ok(state.next_ticket)
+    }
+}
+
 fn runtime_db_write_queue(path: &Path) -> Result<Arc<RuntimeDbWriteQueue>> {
     let key = runtime_db_write_queue_key(path);
     let queues = RUNTIME_DB_WRITE_QUEUES.get_or_init(|| Mutex::new(BTreeMap::new()));

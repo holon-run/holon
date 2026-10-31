@@ -11,6 +11,10 @@ use std::time::Instant;
 #[path = "unread_scope_tests.rs"]
 mod scope_tests;
 
+#[cfg(test)]
+#[path = "unread_fast_path_tests.rs"]
+mod fast_path_tests;
+
 use crate::runtime_db::evidence::audit_event_sequence_scope;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -41,6 +45,7 @@ fn as_u64(value: i64, field: &str) -> Result<u64> {
     u64::try_from(value).with_context(|| format!("{field} must not be negative"))
 }
 
+#[derive(Clone, Copy)]
 enum ReadScope<'a> {
     Explicit(&'a str),
     Observer(&'a str),
@@ -183,6 +188,49 @@ fn state_for_connection(
     })
 }
 
+fn agent_is_public(connection: &rusqlite::Connection, agent_id: &str) -> Result<bool> {
+    let public: Option<i64> = connection
+        .query_row(
+            "SELECT 1 FROM agent_identities
+             WHERE agent_id = ?1 AND status = 'active' AND visibility = 'public'",
+            [agent_id],
+            |row| row.get(0),
+        )
+        .optional()?;
+    Ok(public.is_some())
+}
+
+fn cursor_row_exists(
+    connection: &rusqlite::Connection,
+    principal_id: &str,
+    visibility_scope_id: &str,
+    agent_id: &str,
+    epoch: &str,
+) -> Result<bool> {
+    let pinned: Option<i64> = connection
+        .query_row(
+            "SELECT 1 FROM agent_brief_read_cursors
+             WHERE principal_id = ?1 AND visibility_scope_id = ?2
+               AND agent_id = ?3 AND event_log_epoch = ?4",
+            params![principal_id, visibility_scope_id, agent_id, epoch],
+            |row| row.get(0),
+        )
+        .optional()?;
+    Ok(pinned.is_some())
+}
+
+enum BriefReadStateFastPath {
+    NotPublic,
+    Ready(BriefReadState),
+    NeedsPin,
+}
+
+enum MarkBriefReadFastPath {
+    NotPublic,
+    Noop(MarkBriefReadResult),
+    NeedsWriter,
+}
+
 impl crate::runtime_db::RuntimeDb {
     pub fn brief_read_state(
         &self,
@@ -212,17 +260,61 @@ impl crate::runtime_db::RuntimeDb {
         scope: ReadScope<'_>,
         agent_id: &str,
     ) -> Result<Option<BriefReadState>> {
+        match self.brief_read_state_fast_path(principal_id, scope, agent_id)? {
+            BriefReadStateFastPath::Ready(state) => Ok(Some(state)),
+            BriefReadStateFastPath::NotPublic => Ok(None),
+            BriefReadStateFastPath::NeedsPin => {
+                self.brief_read_state_pin_cursor(principal_id, scope, agent_id)
+            }
+        }
+    }
+
+    /// Polled repeat reads never need the writer channel: once a cursor row
+    /// exists, the state is pure derivation over committed rows. Only the
+    /// first-ever read for a principal/scope/agent still pins the baseline
+    /// cursor, preserving first-view unread semantics.
+    fn brief_read_state_fast_path(
+        &self,
+        principal_id: &str,
+        scope: ReadScope<'_>,
+        agent_id: &str,
+    ) -> Result<BriefReadStateFastPath> {
+        self.with_read(|connection| {
+            let transaction =
+                connection.transaction_with_behavior(TransactionBehavior::Deferred)?;
+            let visibility_scope_id = scope.resolve(&transaction, principal_id)?;
+            if !agent_is_public(&transaction, agent_id)? {
+                return Ok(BriefReadStateFastPath::NotPublic);
+            }
+            let state = state_for_connection(
+                &transaction,
+                principal_id,
+                &visibility_scope_id,
+                agent_id,
+                false,
+            )?;
+            if !cursor_row_exists(
+                &transaction,
+                principal_id,
+                visibility_scope_id.as_ref(),
+                agent_id,
+                &state.event_log_epoch,
+            )? {
+                return Ok(BriefReadStateFastPath::NeedsPin);
+            }
+            Ok(BriefReadStateFastPath::Ready(state))
+        })
+    }
+
+    fn brief_read_state_pin_cursor(
+        &self,
+        principal_id: &str,
+        scope: ReadScope<'_>,
+        agent_id: &str,
+    ) -> Result<Option<BriefReadState>> {
         self.transaction(|transaction| {
             let visibility_scope_id = scope.resolve(transaction, principal_id)?;
-            let public: Option<i64> = transaction
-                .query_row(
-                    "SELECT 1 FROM agent_identities
-                     WHERE agent_id = ?1 AND status = 'active' AND visibility = 'public'",
-                    [agent_id],
-                    |row| row.get(0),
-                )
-                .optional()?;
-            if public.is_none() {
+            if !agent_is_public(transaction, agent_id)? {
                 return Ok(None);
             }
             Ok(Some(state_for_connection(
@@ -338,17 +430,82 @@ impl crate::runtime_db::RuntimeDb {
         agent_id: &str,
         requested_cursor: u64,
     ) -> Result<Option<MarkBriefReadResult>> {
+        match self.mark_brief_read_fast_path(principal_id, scope, agent_id, requested_cursor)? {
+            MarkBriefReadFastPath::Noop(result) => Ok(Some(result)),
+            MarkBriefReadFastPath::NotPublic => Ok(None),
+            MarkBriefReadFastPath::NeedsWriter => {
+                self.mark_brief_read_via_writer(principal_id, scope, agent_id, requested_cursor)
+            }
+        }
+    }
+
+    /// Polled clients re-send cursors the persisted row already covers. Those
+    /// requests (and non-public agent lookups) are answered entirely from the
+    /// reader pool, so the single writer channel only sees cursors that
+    /// actually advance or pin a baseline.
+    fn mark_brief_read_fast_path(
+        &self,
+        principal_id: &str,
+        scope: ReadScope<'_>,
+        agent_id: &str,
+        requested_cursor: u64,
+    ) -> Result<MarkBriefReadFastPath> {
+        self.with_read(|connection| {
+            let transaction =
+                connection.transaction_with_behavior(TransactionBehavior::Deferred)?;
+            let visibility_scope_id = scope.resolve(&transaction, principal_id)?;
+            if !agent_is_public(&transaction, agent_id)? {
+                return Ok(MarkBriefReadFastPath::NotPublic);
+            }
+            let state = state_for_connection(
+                &transaction,
+                principal_id,
+                &visibility_scope_id,
+                agent_id,
+                false,
+            )?;
+            // The guarded UPDATE below only changes a row while the persisted
+            // cursor is below the clamped request; otherwise it would open a
+            // write transaction just to change nothing. Answer that case here.
+            let applied = requested_cursor.min(state.event_head_seq);
+            if state.read_through_event_seq < applied {
+                return Ok(MarkBriefReadFastPath::NeedsWriter);
+            }
+            // A derived-but-never-persisted cursor must still go through the
+            // writer once so first-touch initialization keeps its exact
+            // previous behavior.
+            if !cursor_row_exists(
+                &transaction,
+                principal_id,
+                visibility_scope_id.as_ref(),
+                agent_id,
+                &state.event_log_epoch,
+            )? {
+                return Ok(MarkBriefReadFastPath::NeedsWriter);
+            }
+            tracing::debug!(
+                target: "holon::http::unread",
+                requested_cursor,
+                read_through_event_seq = state.read_through_event_seq,
+                "mark brief read answered from reader pool"
+            );
+            Ok(MarkBriefReadFastPath::Noop(MarkBriefReadResult {
+                applied_read_through_event_seq: state.read_through_event_seq,
+                state,
+            }))
+        })
+    }
+
+    fn mark_brief_read_via_writer(
+        &self,
+        principal_id: &str,
+        scope: ReadScope<'_>,
+        agent_id: &str,
+        requested_cursor: u64,
+    ) -> Result<Option<MarkBriefReadResult>> {
         self.transaction(|transaction| {
             let visibility_scope_id = scope.resolve(transaction, principal_id)?;
-            let public: Option<i64> = transaction
-                .query_row(
-                    "SELECT 1 FROM agent_identities
-                     WHERE agent_id = ?1 AND status = 'active' AND visibility = 'public'",
-                    [agent_id],
-                    |row| row.get(0),
-                )
-                .optional()?;
-            if public.is_none() {
+            if !agent_is_public(transaction, agent_id)? {
                 return Ok(None);
             }
             let state = state_for_connection(
