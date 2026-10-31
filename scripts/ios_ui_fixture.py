@@ -10,6 +10,7 @@ import plistlib
 import re
 import secrets
 import shutil
+import signal
 import socket
 import sqlite3
 import subprocess
@@ -37,6 +38,59 @@ class UIStallTimeout(UICaseFailure):
     """An xcodebuild run produced no output for longer than its idle budget."""
 
 
+def report(message):
+    """Write a CI annotation without ever raising.
+
+    The stall watchdog must not be silenced by a failing stdout: a broken
+    pipe during runner teardown would otherwise kill the watcher and leave
+    the unbounded wait this watchdog exists to prevent.
+    """
+    try:
+        print(message, flush=True)
+    except Exception:  # noqa: BLE001 - reporting must not break the watchdog
+        pass
+
+
+def child_is_running(child):
+    """Report whether a started child is still alive.
+
+    The child may have finished on its own, in which case its exit status
+    is the case's result and must not be overwritten by a kill.
+    """
+    try:
+        return child.poll() is None
+    except (OSError, AttributeError, TypeError):
+        # A stand-in without poll() cannot report its state; treat it as
+        # running so the cleanup path still gets a chance to stop it.
+        return True
+
+
+def kill_child(child):
+    """Kill a started child and everything it spawned.
+
+    xcodebuild drives SwiftDriver and the test runner as descendants. A
+    stall kill that only reaches xcodebuild leaves those processes alive,
+    and they keep the simulator busy for the next attempt. The child runs
+    in its own session, so the whole group can be signalled at once.
+    """
+    if child is None:
+        return
+    try:
+        group = os.getpgid(child.pid)
+    except (OSError, AttributeError, TypeError):
+        group = None
+    try:
+        if group is not None:
+            os.killpg(group, signal.SIGKILL)
+            return
+    except (OSError, TypeError):
+        pass
+    try:
+        child.kill()
+    except (OSError, AttributeError, TypeError):
+        pass
+
+
 def monitor_xcodebuild(command, env, idle_budget, subprocess_module=None,
                         heartbeat_interval=60):
     """Run xcodebuild with a visible progress signal and an idle-timeout.
@@ -51,68 +105,101 @@ def monitor_xcodebuild(command, env, idle_budget, subprocess_module=None,
     idle budget. The captured output is replayed to stdout afterwards, so
     the CI log still shows what xcodebuild reported.
 
+    The watchdog fails closed: if the watcher cannot keep watching, the
+    child is killed rather than left hanging, because an unbounded wait is
+    exactly the failure this function exists to prevent.
+
+    The child is started in its own session so the stall kill reaches the
+    whole xcodebuild process group. Killing only xcodebuild would leave
+    SwiftDriver and the test runner alive, and they would keep the
+    simulator busy for the next attempt.
+
     subprocess_module lets the caller supply the subprocess implementation it
     runs under, so a test harness can observe the invocation.
     """
     if subprocess_module is None:
         subprocess_module = subprocess
-    captured = pathlib.Path(tempfile.mkdtemp(prefix="holon-ios-ui-log-")) / "xcodebuild.log"
     state = {"last_growth": time.monotonic(), "size": 0, "stalled": False}
+    state["watcher_failed"] = None
     done = threading.Event()
     holder = {}
 
     def watch():
         last_heartbeat = time.monotonic()
-        while not done.wait(1):
-            try:
-                size = captured.stat().st_size
-            except OSError:
-                size = state["size"]
-            now = time.monotonic()
-            if size != state["size"]:
-                state["size"] = size
-                state["last_growth"] = now
-                last_heartbeat = now
-                continue
-            if now - state["last_growth"] >= idle_budget:
-                state["stalled"] = True
-                print(f"::warning title=iOS UI stall::xcodebuild produced no "
-                      f"output for {idle_budget:.0f}s and was killed", flush=True)
-                # Kill the stalled child now: waiting for the job's
-                # timeout-minutes backstop is what made this failure slow
-                # and silent.
-                child = holder.get("process")
-                if child is not None:
-                    try:
-                        child.kill()
-                    except OSError:
-                        pass
-                return
-            if now - last_heartbeat >= heartbeat_interval:
-                last_heartbeat = now
-                print(f"::notice title=iOS UI heartbeat::xcodebuild idle "
-                      f"{now - state['last_growth']:.0f}s "
-                      f"(budget {idle_budget:.0f}s)", flush=True)
+        try:
+            while not done.wait(1):
+                try:
+                    size = captured.stat().st_size
+                except OSError:
+                    size = state["size"]
+                now = time.monotonic()
+                if size != state["size"]:
+                    state["size"] = size
+                    state["last_growth"] = now
+                    last_heartbeat = now
+                    continue
+                if now - state["last_growth"] >= idle_budget:
+                    state["stalled"] = True
+                    report(f"::warning title=iOS UI stall::xcodebuild produced no "
+                           f"output for {idle_budget:.0f}s and was killed")
+                    # Kill the stalled child now: waiting for the job's
+                    # timeout-minutes backstop is what made this failure slow
+                    # and silent.
+                    kill_child(holder.get("process"))
+                    return
+                if now - last_heartbeat >= heartbeat_interval:
+                    last_heartbeat = now
+                    report(f"::notice title=iOS UI heartbeat::xcodebuild idle "
+                           f"{now - state['last_growth']:.0f}s "
+                           f"(budget {idle_budget:.0f}s)")
+        except BaseException as error:  # noqa: BLE001 - the watchdog must not die silently
+            state["watcher_failed"] = error
+            # Stop the child first: the report must not be able to prevent
+            # the kill, otherwise a failing stdout would leave the very
+            # unbounded wait this watchdog exists to prevent.
+            kill_child(holder.get("process"))
+            report(f"::warning title=iOS UI watchdog failed::the stall "
+                   f"watchdog stopped ({error!r}); the build is killed")
 
     watcher = threading.Thread(target=watch, daemon=True)
-    watcher.start()
-    try:
-        with captured.open("w") as log:
-            process = subprocess_module.Popen(command, env=env, stdout=log,
-                                             stderr=subprocess_module.STDOUT)
-            holder["process"] = process
-            returncode = process.wait()
-    finally:
-        done.set()
-        watcher.join(timeout=5)
+    with tempfile.TemporaryDirectory(prefix="holon-ios-ui-log-") as log_dir:
+        captured = pathlib.Path(log_dir) / "xcodebuild.log"
+        watcher.start()
         try:
-            sys.stdout.write(captured.read_text(errors="replace"))
-            sys.stdout.flush()
-        except OSError:
-            pass
+            with captured.open("w") as log:
+                try:
+                    process = subprocess_module.Popen(
+                        command, env=env, stdout=log,
+                        stderr=subprocess_module.STDOUT,
+                        start_new_session=True)
+                except TypeError:
+                    # A harness stand-in may not accept start_new_session.
+                    process = subprocess_module.Popen(
+                        command, env=env, stdout=log,
+                        stderr=subprocess_module.STDOUT)
+                holder["process"] = process
+                returncode = process.wait()
+        finally:
+            done.set()
+            watcher.join(timeout=5)
+            # Never leave the child running: an orphaned xcodebuild would
+            # keep the simulator busy for the next attempt and would keep
+            # the original silent hang alive. A child that already exited
+            # must not be signalled: its result is the case's result.
+            child = holder.get("process")
+            if child is not None and child_is_running(child):
+                kill_child(child)
+            try:
+                sys.stdout.write(captured.read_text(errors="replace"))
+                sys.stdout.flush()
+            except OSError:
+                pass
     if state["stalled"]:
         raise UIStallTimeout(
             f"xcodebuild stalled: no output for {idle_budget:.0f}s")
+    if state["watcher_failed"] is not None:
+        raise UIStallTimeout(
+            f"xcodebuild watchdog failed: {state['watcher_failed']!r}")
     return returncode
 
 
@@ -1256,13 +1343,19 @@ with fixture_directory(repo) as root:
                                 # the start, so a long but progressing compile
                                 # is never killed. A healthy sweep's largest
                                 # baseline gap was 79s and xcodebuild is chatty
-                                # even under contention, so 15 minutes leaves
-                                # generous headroom while still catching the
-                                # 51-minute SwiftDriver hang. The budget does
-                                # not scale with the wait budgets: a stretched
-                                # wait makes the tests slower, not the build
-                                # quieter.
-                                idle_budget = 900
+                                # even under contention, so the compile-phase
+                                # bound has generous headroom while still
+                                # catching the 51-minute SwiftDriver hang.
+                                #
+                                # The budget also covers the test-execution
+                                # phase, whose output is boundary-based: a
+                                # single long case can stay silent for the
+                                # whole execution allowance without being
+                                # stalled. It therefore has to be at least the
+                                # allowance plus a margin, otherwise a healthy
+                                # but slow case would be killed as a stall.
+                                idle_budget = max(
+                                    900, execution_allowance + 300)
                                 command = ["xcodebuild", "-project", repo + "/apps/ios/Holon.xcodeproj",
                                     "-scheme", "Holon", "-destination", destination,
                                     "-parallel-testing-enabled", "NO",

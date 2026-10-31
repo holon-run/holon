@@ -17,6 +17,7 @@ import sqlite3
 import struct
 import tempfile
 import threading
+import time
 import unittest
 import uuid
 from unittest.mock import Mock, call, patch
@@ -900,24 +901,39 @@ class UIFixtureStallDetectionContracts(unittest.TestCase):
         self.source = str(source)
         self.text = source.read_text()
 
+    class SilentProcess:
+        """A child that never writes and only dies when it is killed."""
+
+        returncode = None
+
+        def __init__(self, killed):
+            self.killed = killed
+            self.pid = None
+
+        def poll(self):
+            return 137 if self.killed else None
+
+        def wait(self):
+            # The watcher kills the child; the wait returns once it dies.
+            # The deadline keeps a broken kill from hanging the suite: the
+            # test must fail, not stall until the CI timeout.
+            deadline = time.monotonic() + 30
+            while not self.killed:
+                if time.monotonic() > deadline:
+                    raise AssertionError(
+                        "the stalled child was never killed")
+                threading.Event().wait(0.05)
+            return 137
+
+        def kill(self):
+            self.killed.append(True)
+
     def test_monitored_runner_kills_a_silent_child(self):
         """A child that never writes must be killed and reported."""
         helpers = self.helpers
         killed = []
 
-        class SilentProcess:
-            returncode = None
-
-            def wait(self):
-                # The watcher kills the child; the wait returns once it dies.
-                while not killed:
-                    threading.Event().wait(0.05)
-                return 137
-
-            def kill(self):
-                killed.append(True)
-
-        popen = Mock(return_value=SilentProcess())
+        popen = Mock(return_value=self.SilentProcess(killed))
         module = Mock(Popen=popen, STDOUT=subprocess.STDOUT)
         with patch("builtins.print") as output:
             with self.assertRaises(helpers["UIStallTimeout"]):
@@ -929,6 +945,101 @@ class UIFixtureStallDetectionContracts(unittest.TestCase):
         self.assertIn("iOS UI stall", printed)
         self.assertIn("no output", printed)
 
+    def test_a_quiet_but_live_child_reports_a_heartbeat(self):
+        """A child that is slow but alive must be visible in the log."""
+        helpers = self.helpers
+
+        class QuietProcess:
+            returncode = None
+            pid = None
+            finished = False
+
+            def wait(self):
+                # Quiet but progressing: it returns before any stall is due.
+                threading.Event().wait(1.2)
+                self.finished = True
+                return 0
+
+            def poll(self):
+                return 0 if self.finished else None
+
+            def kill(self):
+                raise AssertionError("a live child must not be killed")
+
+        module = Mock(Popen=Mock(return_value=QuietProcess()),
+                      STDOUT=subprocess.STDOUT)
+        with patch("builtins.print") as output:
+            helpers["monitor_xcodebuild"](
+                ["xcodebuild", "build"], {}, 30, subprocess_module=module,
+                heartbeat_interval=1)
+        printed = "\n".join(str(call) for call in output.call_args_list)
+        self.assertIn("iOS UI heartbeat", printed)
+        self.assertIn("budget 30s", printed)
+
+    def test_a_watcher_that_dies_fails_closed(self):
+        """The watchdog must not leave an unbounded wait behind it."""
+        helpers = self.helpers
+
+        class BrokenWatcherProcess:
+            returncode = None
+            pid = None
+            killed = False
+
+            def wait(self):
+                deadline = time.monotonic() + 20
+                while not self.killed and time.monotonic() < deadline:
+                    threading.Event().wait(0.05)
+                return 137
+
+            def poll(self):
+                return 137 if self.killed else None
+
+            def kill(self):
+                self.killed = True
+                return None
+
+        module = Mock(Popen=Mock(return_value=BrokenWatcherProcess()),
+                      STDOUT=subprocess.STDOUT)
+        # A failing growth probe breaks the watcher the way an unexpected
+        # runtime error would.
+        with patch("pathlib.Path.stat",
+                   side_effect=RuntimeError("probe failed")):
+            with self.assertRaises(helpers["UIStallTimeout"]):
+                helpers["monitor_xcodebuild"](
+                    ["xcodebuild", "build"], {}, 3600,
+                    subprocess_module=module, heartbeat_interval=1)
+
+    def test_a_failing_report_does_not_break_the_watchdog(self):
+        """A broken stdout must not disable the stall watchdog."""
+        helpers = self.helpers
+        killed = []
+
+        class SilentProcess:
+            returncode = None
+            pid = None
+
+            def poll(self):
+                return 137 if killed else None
+
+            def wait(self):
+                deadline = time.monotonic() + 20
+                while not killed and time.monotonic() < deadline:
+                    threading.Event().wait(0.05)
+                return 137
+
+            def kill(self):
+                killed.append(True)
+
+        module = Mock(Popen=Mock(return_value=SilentProcess()),
+                      STDOUT=subprocess.STDOUT)
+        # A print that raises is what a closing runner pipe looks like.
+        with patch("builtins.print", side_effect=BrokenPipeError("closed")):
+            with self.assertRaises(helpers["UIStallTimeout"]):
+                helpers["monitor_xcodebuild"](
+                    ["xcodebuild", "build"], {}, 1,
+                    subprocess_module=module, heartbeat_interval=1)
+        self.assertTrue(killed, "A stalled xcodebuild must be killed")
+
     def test_stall_is_a_case_failure_so_the_bounded_retry_applies(self):
         """A stall must be retryable, not a hard sweep abort."""
         helpers = self.helpers
@@ -939,11 +1050,32 @@ class UIFixtureStallDetectionContracts(unittest.TestCase):
         """The workflow step must carry its own bound."""
         workflow = (ROOT / ".github/workflows/ci.yml").read_text()
         marker = "- name: Test isolated simulator UI"
-        self.assertIn(marker, workflow)
+        self.assertEqual(workflow.count(marker), 1,
+                         "The UI step must be declared exactly once")
         step = workflow[workflow.index(marker):]
-        step = step[:step.index("\n      - name:", 1) if "\n      - name:" in step[1:] else len(step)]
-        self.assertIn("timeout-minutes:", step,
-                      "The UI step must carry a step-level timeout")
+        end = step.find("\n      - name:", 1)
+        step = step[:end] if end != -1 else step
+        # The bound belongs to this step, so it must appear before the next
+        # step starts and carry the intended value.
+        self.assertRegex(step, r"timeout-minutes:\s*60\b",
+                         "The UI step must carry a 60 minute bound")
+
+    def test_idle_budget_covers_the_test_execution_allowance(self):
+        """A healthy but slow case must not be killed as a stall."""
+        source = ROOT / "scripts/ios_ui_fixture.py"
+        tree = ast.parse(source.read_text(), filename=str(source))
+        sweep = ui_case_sweep_statements(tree)
+        calls = [
+            node for node in ast.walk(ast.Module(body=sweep, type_ignores=[]))
+            if isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Name)
+            and node.func.id == "monitor_xcodebuild"
+        ]
+        self.assertEqual(len(calls), 1,
+                         "The sweep must run xcodebuild through the monitor")
+        source_text = source.read_text()
+        self.assertIn("execution_allowance + 300", source_text,
+                      "The idle budget must cover the execution allowance")
 
     def test_sweep_runs_xcodebuild_through_the_monitored_runner(self):
         """The sweep must not call xcodebuild through an unbounded run()."""
