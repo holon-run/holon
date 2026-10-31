@@ -3083,8 +3083,8 @@ async fn exact_timer_claim_rejects_existing_revision_drift_without_consuming_wai
             .poll()
             .await;
         assert!(
-            result.is_err(),
-            "claim must not bridge preexisting revision drift"
+            matches!(result, Ok(scheduler_executor::RunLoopPoll::Idle)),
+            "scheduler must isolate preexisting revision drift"
         );
         let after = fixture.harness.snapshot();
         assert_eq!(after.execution_protocol, before.execution_protocol);
@@ -3099,6 +3099,23 @@ async fn exact_timer_claim_rejects_existing_revision_drift_without_consuming_wai
             .unwrap()
             .is_some());
         assert_eq!(fixture.provider.call_count().await, 0);
+        let inspection = runtime.inspect_scheduler_repair().await.unwrap();
+        assert_eq!(inspection.source_revision_drifts.len(), 1);
+        assert_eq!(inspection.source_revision_repair_blocks.len(), 1);
+        let block = &inspection.source_revision_repair_blocks[0];
+        assert_eq!(block.drift.work_item_id, fixture.work_item_id);
+        assert!(block.drift_present);
+        assert!(block.alert_created_event_seq.is_some());
+        assert_eq!(
+            runtime
+                .storage()
+                .read_recent_briefs(100)
+                .unwrap()
+                .iter()
+                .filter(|brief| brief.id == block.alert_brief_id && brief.kind == BriefKind::Failure)
+                .count(),
+            1
+        );
     }
 }
 

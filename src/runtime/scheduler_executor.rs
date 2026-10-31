@@ -741,6 +741,8 @@ impl<'a> SchedulerDecisionExecutor<'a> {
         self.reconcile_stale_run_projection(StaleRunProjectionBoundary::RunLoopPoll)
             .await?;
         self.runtime.reconcile_context_budget_stops().await?;
+        self.runtime
+            .publish_pending_source_revision_repair_briefs(&self.runtime.agent_id().await?)?;
         let mut replans = 0;
         let mut provider_parked = std::collections::BTreeSet::new();
         loop {
@@ -796,6 +798,13 @@ impl<'a> SchedulerDecisionExecutor<'a> {
                 }
             };
 
+            if self
+                .runtime
+                .suppress_repair_blocked_source(&candidate.message)?
+            {
+                provider_parked.insert(candidate.message.id.clone());
+                continue;
+            }
             match self.prepare_message(candidate.clone()).await? {
                 // Parked entries (provider parking or not-runnable deferral)
                 // stay queued durably and are skipped for the rest of this

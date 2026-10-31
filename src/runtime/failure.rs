@@ -377,6 +377,7 @@ impl RuntimeHandle {
         error: &anyhow::Error,
         terminal: &TurnTerminalRecord,
     ) -> Result<RuntimeFailureArtifacts> {
+        self.publish_pending_source_revision_repair_briefs(&message.agent_id)?;
         let failure_text = Self::concise_runtime_failure_text(message, error);
         let attempt_timeline = provider_attempt_timeline(error);
         let (run_id, current_work_item_id) = {
@@ -402,6 +403,25 @@ impl RuntimeHandle {
         };
         let descriptor = describe_runtime_error(error);
         let mut failure_artifact = Self::failure_artifact(message, &failure_text, error, context);
+        if descriptor.code == "provider_dispatch_rejected" {
+            let episodes = self
+                .inner
+                .runtime_db
+                .source_revision_repair_assessments(&message.agent_id)?;
+            let episode_ids = episodes
+                .iter()
+                .filter(|episode| episode.drift_present)
+                .map(|episode| episode.episode_id.as_str())
+                .collect::<Vec<_>>();
+            if !episode_ids.is_empty() {
+                failure_artifact
+                    .metadata
+                    .insert("repair_episode_ids".into(), episode_ids.join(","));
+                failure_artifact
+                    .metadata
+                    .insert("repair_diagnostics".into(), "scheduler-repair".into());
+            }
+        }
         if error.is::<crate::runtime_error::IdleInputRecoveryRejection>() {
             // Published only with the existing atomic queue/turn/attempt settlement.
             failure_artifact.metadata.extend([

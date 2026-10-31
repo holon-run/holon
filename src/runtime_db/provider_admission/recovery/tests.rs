@@ -6,6 +6,7 @@ use crate::domain::execution_protocol::{
 
 mod auth_contract;
 mod payment_required;
+mod repair_blocks;
 mod revision_diagnostics;
 
 fn now() -> DateTime<Utc> {

@@ -93,7 +93,7 @@ fn live_input_budget(
 
 enum OperatorInterjectionPlan {
     Admit,
-    RetainInterruptedSource,
+    RetainSource,
 }
 
 #[derive(Clone)]
@@ -1328,7 +1328,7 @@ impl RuntimeHandle {
                         boundary_str,
                     )? {
                         OperatorInterjectionPlan::Admit => {}
-                        OperatorInterjectionPlan::RetainInterruptedSource => {
+                        OperatorInterjectionPlan::RetainSource => {
                             retained_sources.insert(message.id);
                             continue 'outer;
                         }
@@ -1486,6 +1486,13 @@ impl RuntimeHandle {
     ) -> Result<OperatorInterjectionPlan> {
         use crate::types::ExecutionAdmissionProvenance;
 
+        if self
+            .inner
+            .runtime_db
+            .source_revision_repair_retains_source(agent_id, &message.id)?
+        {
+            return Ok(OperatorInterjectionPlan::RetainSource);
+        }
         // Parked sources remain in memory for canonical claim/reentry. Interjecting
         // them into another turn would bypass their recovery deadline and owner.
         if self
@@ -1497,7 +1504,7 @@ impl RuntimeHandle {
                 record.agent_id == agent_id && record.status == QueueEntryStatus::Interrupted
             })
         {
-            return Ok(OperatorInterjectionPlan::RetainInterruptedSource);
+            return Ok(OperatorInterjectionPlan::RetainSource);
         }
 
         let execution_binding = expected_state

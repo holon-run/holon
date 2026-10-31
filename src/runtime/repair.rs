@@ -13,6 +13,9 @@ pub struct SchedulerRepairInspection {
     pub active_waits: Vec<crate::types::WaitConditionRecord>,
     pub wake_only_queue_entries: Vec<QueueEntryRecord>,
     pub work_items: Vec<WorkItemRepairAssessment>,
+    pub source_revision_repair_blocks:
+        Vec<crate::runtime_db::provider_admission::SourceRevisionRepairAssessment>,
+    pub source_revision_drifts: Vec<crate::runtime_db::provider_admission::SourceRevisionDrift>,
 }
 
 #[derive(Debug, Clone, Deserialize, JsonSchema)]
@@ -78,6 +81,11 @@ impl RuntimeHandle {
             }
         }
         Ok(SchedulerRepairInspection {
+            source_revision_drifts: self.inner.runtime_db.source_revision_drifts(&agent_id)?,
+            source_revision_repair_blocks: self
+                .inner
+                .runtime_db
+                .source_revision_repair_assessments(&agent_id)?,
             work_items: work_item_repair_assessments(
                 &self.inner.storage,
                 &self.inner.runtime_db,

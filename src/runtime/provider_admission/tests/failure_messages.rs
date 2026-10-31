@@ -17,6 +17,32 @@ fn rejection(denial: Option<LocalDispatchDenial>, disposition: &str) -> anyhow::
 }
 
 #[test]
+fn revision_dispatch_failure_has_explicit_receipt_and_no_replay_promise() {
+    use crate::runtime_db::provider_admission::ProviderDispatchRejection;
+    for reason in [
+        ProviderDispatchRejection::WorkItemRevisionMismatch,
+        ProviderDispatchRejection::WorkItemRevisionDrift,
+    ] {
+        let error = rejection(
+            Some(LocalDispatchDenial::Dispatch(
+                ProviderRecoveryDispatchDenial::StaleExecution(reason),
+            )),
+            "needs_repair",
+        );
+        let before = serde_json::to_value(describe_runtime_error(&error)).unwrap();
+        let summary = RuntimeHandle::concise_runtime_failure_text(&operator(), &error);
+        assert!(summary.contains("input was received"));
+        assert!(summary.contains("local source revision fault"));
+        assert!(summary.contains("scheduler-repair"));
+        assert!(summary.contains("not automatically replayed"));
+        assert_eq!(
+            serde_json::to_value(describe_runtime_error(&error)).unwrap(),
+            before
+        );
+    }
+}
+
+#[test]
 fn local_dispatch_failure_messages_use_typed_reasons_without_changing_diagnostics() {
     let deadline = Utc::now() + Duration::minutes(10);
     for (denial, reason) in [

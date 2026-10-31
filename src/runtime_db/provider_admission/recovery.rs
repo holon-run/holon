@@ -291,37 +291,18 @@ pub(crate) fn drifted_open_work_items_tx(
     tx: &Transaction<'_>,
     agent_id: &str,
 ) -> Result<Vec<(String, u64, u64)>> {
-    let mut statement = tx.prepare(
-        "SELECT w.work_item_id, w.payload_json, e.payload_json
-         FROM work_items w JOIN execution_protocol_work_items e
-           ON e.agent_id = w.agent_id AND e.work_item_id = w.work_item_id
-         WHERE w.agent_id = ?1",
-    )?;
-    let rows = statement
-        .query_map([agent_id], |row| {
-            Ok((
-                row.get::<_, String>(0)?,
-                row.get::<_, String>(1)?,
-                row.get::<_, String>(2)?,
-            ))
-        })?
-        .collect::<std::result::Result<Vec<_>, _>>()?;
-    let mut drifted = Vec::new();
-    for (work_item_id, work_payload, execution_payload) in rows {
-        let Ok(work) = serde_json::from_str::<WorkItemRecord>(&work_payload) else {
-            continue;
-        };
-        let Ok(execution) = serde_json::from_str::<WorkItemExecutionRecord>(&execution_payload)
-        else {
-            continue;
-        };
-        if work.state == crate::types::WorkItemState::Open
-            && work.revision != execution.source_revision
-        {
-            drifted.push((work_item_id, execution.source_revision, work.revision));
-        }
-    }
-    Ok(drifted)
+    Ok(
+        super::repair_block::current_source_revision_drifts(tx, agent_id)?
+            .into_iter()
+            .map(|drift| {
+                (
+                    drift.work_item_id,
+                    drift.source_revision,
+                    drift.durable_revision,
+                )
+            })
+            .collect(),
+    )
 }
 
 fn dispatch_attempt_rejection(
@@ -437,6 +418,16 @@ fn dispatch_attempt_rejection(
                         }),
                     ),
                 )?;
+                if work.revision != execution.source_revision {
+                    super::repair_block::observe_source_revision_repair_blocks_tx(
+                        tx,
+                        &attempt.agent_id,
+                        attempt.source_message_id.as_deref().unwrap_or_default(),
+                        Some(&attempt),
+                        "work_item_revision_mismatch",
+                        Utc::now(),
+                    )?;
+                }
                 return Ok(Some(ProviderDispatchRejection::WorkItemRevisionMismatch));
             }
             if !matches!(
@@ -461,6 +452,14 @@ fn dispatch_attempt_rejection(
     // scan runs in this transaction, so it never observes a torn commit.
     let drifted = drifted_open_work_items_tx(tx, &attempt.agent_id)?;
     if !drifted.is_empty() {
+        super::repair_block::observe_source_revision_repair_blocks_tx(
+            tx,
+            &attempt.agent_id,
+            attempt.source_message_id.as_deref().unwrap_or_default(),
+            Some(&attempt),
+            "work_item_revision_drift",
+            Utc::now(),
+        )?;
         crate::runtime_db::evidence::append_audit_event_tx(
             tx,
             Some(&attempt.agent_id),

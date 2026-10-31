@@ -4276,6 +4276,45 @@ CREATE INDEX idx_provider_recovery_requests_episode
   ON provider_recovery_requests(episode_key, epoch);
 "#,
     },
+    Migration {
+        version: 92,
+        name: "source_revision_repair_blocks",
+        sql: r#"
+CREATE TABLE source_revision_repair_blocks (
+  episode_id TEXT PRIMARY KEY,
+  agent_id TEXT NOT NULL,
+  incarnation INTEGER NOT NULL,
+  signature TEXT NOT NULL,
+  work_item_id TEXT NOT NULL,
+  generation INTEGER NOT NULL,
+  source_revision INTEGER NOT NULL,
+  durable_revision INTEGER NOT NULL,
+  first_message_id TEXT NOT NULL,
+  first_attempt_id TEXT,
+  first_source_json TEXT,
+  rejection TEXT NOT NULL,
+  opened_at TEXT NOT NULL,
+  last_observed_at TEXT NOT NULL,
+  resolved_at TEXT
+);
+CREATE UNIQUE INDEX idx_source_revision_repair_block_active
+  ON source_revision_repair_blocks(agent_id, incarnation, signature)
+  WHERE resolved_at IS NULL;
+CREATE TABLE source_revision_repair_block_sources (
+  agent_id TEXT NOT NULL,
+  incarnation INTEGER NOT NULL,
+  message_id TEXT NOT NULL,
+  episode_id TEXT NOT NULL REFERENCES source_revision_repair_blocks(episode_id) ON DELETE CASCADE,
+  PRIMARY KEY (agent_id, incarnation, message_id, episode_id)
+);
+CREATE TABLE source_revision_repair_block_publications (
+  publication_id TEXT PRIMARY KEY,
+  episode_id TEXT NOT NULL REFERENCES source_revision_repair_blocks(episode_id) ON DELETE CASCADE,
+  brief_json TEXT NOT NULL,
+  created_event_seq INTEGER
+);
+"#,
+    },
 ];
 
 pub(crate) fn ensure_migration_table(connection: &Connection) -> Result<()> {

@@ -10,6 +10,37 @@
 const SNAPSHOT_PATH: &str = "docs/website/reference/openapi.json";
 
 #[test]
+fn scheduler_repair_inspection_exposes_revision_faults_and_retained_sources() {
+    let openapi = holon::openapi::generate_openapi_json();
+    let schemas = &openapi["components"]["schemas"];
+    let inspection = &schemas["SchedulerRepairInspection"];
+    for field in ["source_revision_drifts", "source_revision_repair_blocks"] {
+        assert_eq!(inspection["properties"][field]["type"], "array");
+        assert_eq!(inspection["properties"][field]["items"]["type"], "object");
+    }
+    let drift = &inspection["properties"]["source_revision_drifts"]["items"];
+    let repair_block = &inspection["properties"]["source_revision_repair_blocks"]["items"];
+    assert_eq!(
+        drift["required"],
+        serde_json::json!([
+            "work_item_id",
+            "generation",
+            "source_revision",
+            "durable_revision"
+        ])
+    );
+    assert_eq!(repair_block["properties"]["drift"], *drift);
+    for field in [
+        "drift_present",
+        "retained_source_count",
+        "retained_source_disposition",
+        "alert_created_event_seq",
+    ] {
+        assert!(repair_block["properties"][field].is_object());
+    }
+}
+
+#[test]
 fn task_observability_contract_includes_targets_and_terminal_query() {
     let openapi = holon::openapi::generate_openapi_json();
     let schemas = &openapi["components"]["schemas"];

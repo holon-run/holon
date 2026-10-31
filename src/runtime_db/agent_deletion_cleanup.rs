@@ -41,6 +41,7 @@ const PRIVATE_TABLES: &[(&str, &str)] = &[
     ("runtime_index_outbox", "agent_id"),
     ("runtime_index_outbox_watermarks", "agent_id"),
     ("queue_head_no_progress", "agent_id"),
+    ("source_revision_repair_blocks", "agent_id"),
     ("brief_created_linkage_uncertain", "agent_id"),
     ("agent_brief_read_cursors", "agent_id"),
     ("operator_notifications", "agent_id"),
