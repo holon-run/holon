@@ -9,6 +9,87 @@ reviewed routes unless there is affirmative removal evidence. New routes require
 their own endpoint evidence; missing capability flags are conservative omissions,
 not proof that a model lacks the feature.
 
+## 2026-11-01 incremental review
+
+This cycle starts from main `38fceacb`; public evidence was sampled on
+October 31 UTC (November 1 in Beijing). The frozen upstream SHA-256 is
+`30f6fb19affa533339b2930bafacbc59fb4ee2c4e034288e8e972f31a82d5e9a`.
+Refresh, validation and the 656-route field gate pass. The generated delta
+is limited to four removed OpenRouter discovery records and four changed
+output projections, detailed with the sampling caveats in the
+[field evidence](metadata-evidence.md#incremental-review-2026-11-01).
+No production source, endpoint mapping, reviewed baseline, static route,
+alias, preferred model or user configuration changes.
+
+### Independently rechecked endpoint matrix
+
+Unchanged historical fields are preserved, not newly certified. Generic
+documentation shells are not model-body evidence; new billing or usage
+text is not a context/output limit.
+
+| Registered endpoint | Result and preserved boundary |
+| --- | --- |
+| `dashscope@default` | Messages unchanged; no new explicit-cache/integer-limit evidence. |
+| `dashscope@token-plan` | Personal/team contracts unchanged; no ordinary API eligibility copied. |
+| `dashscope@coding-plan` | Domestic contract independently unchanged. |
+| `dashscope@coding-plan-intl` | International six-model contract independently unchanged. |
+| `volcengine@default` | No new field evidence; K3.1 output-default conflict remains unresolved. |
+| `volcengine@coding` | M3 stop remains November 2, 2026, 14:00 Beijing time, still future. |
+| `volcengine@plan` | Independently unchanged; future M3 boundary and unknown K3.1 plan limits retained. |
+| `tencent-tokenhub@default` | New search billing/usage prose does not change Chat fields or allowlist. |
+| `tencent-tokenhub@messages` | Independent schema unchanged; no Chat defaults/cache semantics copied. |
+| `tencent-tokenhub@responses` | Independent schema unchanged; own allowlist retained. |
+| `qianfan@default` | Six prior retirements remain removed; no new experimental ERNIE retirement. |
+| `bigmodel@default` | Domestic Messages/model/key contract unchanged. |
+| `zai@default` | International DevPack/key contract independently unchanged. |
+| `xiaomi@default` | No new model-body evidence; historical records preserved. |
+| `xiaomi@token-plan` | Independent plan unchanged; generic shells do not resolve existing gaps. |
+| `minimax@default` | International Messages contract unchanged; recommended output is not an omitted-request default, and existing-user M2.5/M2.7 access is not removed early. |
+| `minimax-cn@default` | Chinese schema and eligibility independently unchanged; no international key or default copied. |
+| `minimax@m-plan` | International plan unchanged; ordinary API retirement dates and Flash output limits do not certify Preview fields. |
+| `minimax-cn@m-plan` | Chinese plan independently unchanged; quota is not context/output capacity. |
+| `moonshot@default` | October 31 restricts new registrations, not existing users; no exact year-end retirement time inferred. |
+| `byteplus@default` | Ordinary API evidence unchanged; November 11 remains future and Coding/Ark eligibility is not copied. |
+| `byteplus@coding` | Six documentation bodies unchanged; yesterday's Dola additions are already present, and older account/date gaps remain unknown. |
+| `stepfun@default` | Ordinary model and effort contracts unchanged; no plan capacity borrowed. |
+| `stepfun@plan` | Router unchanged; `64K` does not resolve an exact integer/default or authorize Messages, images, or backend effort inheritance. |
+| `opencode-go@default` | Seventeen native Chat projections match the baseline; historical absent IDs are not removed. |
+| `opencode-go@messages` | Five native Messages projections match; translated capacities and omitted-output defaults remain conservative. |
+| `opencode-go@responses` | Five native Responses projections match; Gemini generate-content evidence does not certify a translated protocol. |
+| `kilocode@default` | All five auto records are unchanged; aggregate non-auto changes do not widen static eligibility. |
+| `together@default` | Five retrieved model bodies unchanged; Dedicated eligibility is not Serverless, and failed documentation requests are not EOS evidence. |
+| `fireworks@default` | All 329 index IDs and selected capacity/eligibility fields unchanged; Serverless retirement is not on-demand EOS. |
+
+All thirty registered endpoints have been rechecked without a new static
+route or field patch. The second group independently compared 168 frozen
+routes, including 27 native Go projections and 57 conservatively translated
+current-ID routes. The [Go listing](https://opencode.ai/inference/go/v1/models)
+has the same 28 IDs and differs only in `created`; this is not a new native
+capacity change.
+
+The [Kilo listing](https://api.kilo.ai/api/gateway/models) decreases from
+388 to 384 records, omitting the same four Poolside IDs as OpenRouter.
+Other non-auto records change, but none of the five registered auto records
+does. In particular, Kilo's M2.5 `top_provider` context/output change is not
+an OpenRouter model-level context reduction or evidence for another
+provider's native endpoint.
+
+Seventeen of the second group's 82 public-source requests failed, including
+Mistral connection resets, Together documentation 403s, and guessed model
+paths returning 404. No exact Mistral Small 3.5 wire ID, integer capacity,
+or effort contract was established; existing candidate gates remain closed.
+Failure or an empty search result is not proof of model absence/retirement.
+Historical Step exact-limit/default, MiniMax Preview, BytePlus eligibility,
+and Fireworks image/context/router gaps remain unresolved.
+
+Final local verification passed: 315 tests passed and one was ignored across
+the `models_dev` CI filter, catalog/discovery unit tests and context-budget
+integration test. Formatting, warning-free locked all-targets checking,
+artifact/supplement validation and the 656-route field gate passed; frozen
+generated JSON hashes remained unchanged. Independent review of the frozen
+generated delta found no unresolved confirmed P1/P2; the remaining endpoint
+evidence adds documentation only, not a newly admitted model.
+
 ## 2026-10-31 incremental review
 
 This cycle starts from main `2563c0e5`; public evidence was sampled on

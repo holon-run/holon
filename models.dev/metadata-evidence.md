@@ -5,6 +5,50 @@ unchanged catalog facts are preserved, not newly certified as vendor hard
 limits. An upstream candidate is evidence to review, not permission to change
 an endpoint, region, subscription entitlement, or runtime output policy.
 
+## Incremental review: 2026-11-01
+
+The frozen models.dev payload is
+`30f6fb19affa533339b2930bafacbc59fb4ee2c4e034288e8e972f31a82d5e9a`.
+Only eight remote-discovered OpenRouter records change; all other artifact
+fields and every route, alias and preferred mapping are unchanged. The 55
+supplement models, 16 explicit supplement routes and 656 reviewed route
+projections remain unchanged. These are artifact refreshes, not new static
+endpoint eligibility or runtime output-default policies.
+
+The [official public listing](https://openrouter.ai/api/v1/models), sampled
+again on October 31 at 20:43 UTC, independently confirms these output ceilings:
+
+| OpenRouter model ID | Previous artifact | Frozen artifact / official resample |
+| --- | ---: | ---: |
+| `deepseek/deepseek-v4-pro-0813` | 393,216 | 943,718 |
+| `qwen/qwen3.6-27b` | 81,920 | 65,536 |
+| `minimax/minimax-m2.5` | 131,072 | 32,768 |
+| `~deepseek/deepseek-v4-flash-latest` | 943,718 | 131,072 |
+
+Both the frozen upstream and the official listing omit
+`poolside/laguna-s-2.1`, `poolside/laguna-s-2.1:free`,
+`poolside/laguna-xs-2.1` and `poolside/laguna-xs-2.1:free`.
+Remove only their generated remote-discovered records. Absence is not
+affirmative model-wide retirement evidence; no static route or user
+configuration is deleted.
+
+Preserve the sampling distinction: the earlier 20:35 UTC official listing
+still gave Flash Latest a 943,718 ceiling; the 20:43 resample agrees with
+the frozen upstream's 131,072. Both samples give M2.5 a model-level
+`context_length` of 204,800 and a `top_provider.context_length` of 198,000.
+These are different aggregation levels, not a temporal context reduction.
+The unchanged artifact retains the model-level 204,800; a provider-level
+value neither rewrites that field nor certifies every provider's capacity.
+The [Flash Latest endpoints response](https://openrouter.ai/api/v1/models/~deepseek/deepseek-v4-flash-latest/endpoints)
+has no endpoints; this does not establish alias retirement.
+
+The immutable [Codex model catalog](https://github.com/openai/codex/blob/126a0ee92ed2c5e73cd8a8f7e37563e8527552d7/codex-rs/models-manager/models.json)
+is byte-identical to the previous sample, including all 12 slugs.
+DeepSeek's [pricing](https://api-docs.deepseek.com/quick_start/pricing/) and
+[Responses reference](https://api-docs.deepseek.com/api/create-response)
+also have unchanged extracted public text. No generic API field is copied
+to Codex or an unrelated protocol, region or subscription endpoint.
+
 ## Incremental review: 2026-10-31
 
 The frozen models.dev payload is

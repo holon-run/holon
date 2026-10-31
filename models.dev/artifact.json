@@ -1,12 +1,12 @@
 {
   "schema_version": 1,
-  "revision": "models-dev-490b395ef18abff5b3fadfeffef6604ffbc79e1523d111eb0710335c63bc59e3",
+  "revision": "models-dev-30f6fb19affa533339b2930bafacbc59fb4ee2c4e034288e8e972f31a82d5e9a",
   "upstream": {
     "source": "models.dev",
-    "revision": "490b395ef18abff5b3fadfeffef6604ffbc79e1523d111eb0710335c63bc59e3",
-    "fetched_at": "2026-10-30T21:23:47.559641877+00:00",
-    "content_sha256": "490b395ef18abff5b3fadfeffef6604ffbc79e1523d111eb0710335c63bc59e3",
-    "adapter_version": "0.55.0 (2563c0e5-dirty)"
+    "revision": "30f6fb19affa533339b2930bafacbc59fb4ee2c4e034288e8e972f31a82d5e9a",
+    "fetched_at": "2026-10-31T20:38:25.541277760+00:00",
+    "content_sha256": "30f6fb19affa533339b2930bafacbc59fb4ee2c4e034288e8e972f31a82d5e9a",
+    "adapter_version": "0.56.0 (38fceacb)"
   },
   "models": [
     {
@@ -12407,8 +12407,8 @@
       "context_window_tokens": 1048576,
       "effective_context_window_percent": 95,
       "auto_compact_token_limit": 996147,
-      "default_max_output_tokens": 393216,
-      "max_output_tokens_upper_limit": 393216,
+      "default_max_output_tokens": 943718,
+      "max_output_tokens_upper_limit": 943718,
       "default_verbosity": null,
       "tool_output_truncation_estimated_tokens": 2500,
       "capabilities": {
@@ -14170,8 +14170,8 @@
       "context_window_tokens": 204800,
       "effective_context_window_percent": 95,
       "auto_compact_token_limit": 194560,
-      "default_max_output_tokens": 131072,
-      "max_output_tokens_upper_limit": 131072,
+      "default_max_output_tokens": 32768,
+      "max_output_tokens_upper_limit": 32768,
       "default_verbosity": null,
       "tool_output_truncation_estimated_tokens": 2500,
       "capabilities": {
@@ -17049,90 +17049,6 @@
       "source": "remote_discovered"
     },
     {
-      "model_ref": "openrouter/poolside/laguna-s-2.1",
-      "display_name": "Laguna S 2.1",
-      "description": "Reasoning model for deliberate analysis, multi-step problem solving, and tool use",
-      "context_window_tokens": 1048576,
-      "effective_context_window_percent": 95,
-      "auto_compact_token_limit": 996147,
-      "default_max_output_tokens": 131072,
-      "max_output_tokens_upper_limit": 131072,
-      "default_verbosity": null,
-      "tool_output_truncation_estimated_tokens": 2500,
-      "capabilities": {
-        "agent_turn": true,
-        "parallel_tool_calls": false,
-        "image_input": false,
-        "image_generation": false,
-        "supports_reasoning": true,
-        "interactive_exec": false
-      },
-      "source": "remote_discovered"
-    },
-    {
-      "model_ref": "openrouter/poolside/laguna-s-2.1:free",
-      "display_name": "Laguna S 2.1 (free)",
-      "description": "Free provider route for experiments, demos, and cost-sensitive chat workloads",
-      "context_window_tokens": 262144,
-      "effective_context_window_percent": 95,
-      "auto_compact_token_limit": 249036,
-      "default_max_output_tokens": 32768,
-      "max_output_tokens_upper_limit": 32768,
-      "default_verbosity": null,
-      "tool_output_truncation_estimated_tokens": 2500,
-      "capabilities": {
-        "agent_turn": true,
-        "parallel_tool_calls": false,
-        "image_input": false,
-        "image_generation": false,
-        "supports_reasoning": true,
-        "interactive_exec": false
-      },
-      "source": "remote_discovered"
-    },
-    {
-      "model_ref": "openrouter/poolside/laguna-xs-2.1",
-      "display_name": "Laguna XS 2.1",
-      "description": "Agentic coding model from Poolside in the XS size class for local deployment",
-      "context_window_tokens": 262144,
-      "effective_context_window_percent": 95,
-      "auto_compact_token_limit": 249036,
-      "default_max_output_tokens": 32768,
-      "max_output_tokens_upper_limit": 32768,
-      "default_verbosity": null,
-      "tool_output_truncation_estimated_tokens": 2500,
-      "capabilities": {
-        "agent_turn": true,
-        "parallel_tool_calls": false,
-        "image_input": false,
-        "image_generation": false,
-        "supports_reasoning": true,
-        "interactive_exec": false
-      },
-      "source": "remote_discovered"
-    },
-    {
-      "model_ref": "openrouter/poolside/laguna-xs-2.1:free",
-      "display_name": "Laguna XS 2.1 (free)",
-      "description": "Free provider route for experiments, demos, and cost-sensitive chat workloads",
-      "context_window_tokens": 262144,
-      "effective_context_window_percent": 95,
-      "auto_compact_token_limit": 249036,
-      "default_max_output_tokens": 32768,
-      "max_output_tokens_upper_limit": 32768,
-      "default_verbosity": null,
-      "tool_output_truncation_estimated_tokens": 2500,
-      "capabilities": {
-        "agent_turn": true,
-        "parallel_tool_calls": false,
-        "image_input": false,
-        "image_generation": false,
-        "supports_reasoning": true,
-        "interactive_exec": false
-      },
-      "source": "remote_discovered"
-    },
-    {
       "model_ref": "openrouter/prism-ml/ternary-bonsai-2-27b",
       "display_name": "Ternary Bonsai 2 27B",
       "description": "Multimodal reasoning model for visual analysis, planning, and tool use",
@@ -17774,8 +17690,8 @@
       "context_window_tokens": 262144,
       "effective_context_window_percent": 95,
       "auto_compact_token_limit": 249036,
-      "default_max_output_tokens": 81920,
-      "max_output_tokens_upper_limit": 81920,
+      "default_max_output_tokens": 65536,
+      "max_output_tokens_upper_limit": 65536,
       "default_verbosity": null,
       "tool_output_truncation_estimated_tokens": 2500,
       "capabilities": {
@@ -19780,8 +19696,8 @@
       "context_window_tokens": 1048576,
       "effective_context_window_percent": 95,
       "auto_compact_token_limit": 996147,
-      "default_max_output_tokens": 943718,
-      "max_output_tokens_upper_limit": 943718,
+      "default_max_output_tokens": 131072,
+      "max_output_tokens_upper_limit": 131072,
       "default_verbosity": null,
       "tool_output_truncation_estimated_tokens": 2500,
       "capabilities": {
