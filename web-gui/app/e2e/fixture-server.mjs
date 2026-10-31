@@ -88,11 +88,21 @@ function json(res, body, status = 200, extraHeaders = {}) {
   res.end(JSON.stringify(body));
 }
 
+/** Mirrors the daemon's HTTP error envelope for a real identity change. */
+function identityChangedEnvelope() {
+  return { ok: false, code: "conversation_identity_changed", error: "The conversation agent identity is no longer available." };
+}
+
 function agentResource(req, res, session, agentId, body, status = 200) {
+  const fixture = session.rightPanelByAgentId.get(agentId);
   const identity = listEntry(agentId, session).identity;
   const expectedIncarnation = req.headers["x-holon-expected-incarnation"];
   if (expectedIncarnation !== undefined && expectedIncarnation !== String(identity.incarnation)) {
-    json(res, { error: "conversation_identity_changed" }, 409);
+    json(res, identityChangedEnvelope(), 409);
+    return;
+  }
+  if (fixture?.omitIdentityHeaders) {
+    json(res, body, status);
     return;
   }
   json(res, body, status, {
@@ -665,16 +675,20 @@ async function handleApi(req, res, url) {
     const identity = listEntry(agentId, session).identity;
     const expectedIncarnation = req.headers["x-holon-expected-incarnation"];
     if (expectedIncarnation !== undefined && expectedIncarnation !== String(identity.incarnation)) {
-      json(res, { error: "conversation_identity_changed" }, 409);
+      json(res, identityChangedEnvelope(), 409);
       return true;
     }
     if (fixture?.failResources.includes("work-items")) {
       json(res, { error: "right-panel work items unavailable" }, 503);
     } else {
-      json(res, fixture?.workItems ?? [], 200, {
-        "x-holon-agent-id": identity.agent_id,
-        "x-holon-agent-incarnation": String(identity.incarnation),
-      });
+      if (fixture?.omitIdentityHeaders) {
+        json(res, fixture?.workItems ?? []);
+      } else {
+        json(res, fixture?.workItems ?? [], 200, {
+          "x-holon-agent-id": identity.agent_id,
+          "x-holon-agent-incarnation": String(identity.incarnation),
+        });
+      }
     }
     return true;
   }

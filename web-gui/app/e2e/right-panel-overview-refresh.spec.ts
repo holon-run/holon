@@ -26,9 +26,11 @@ const skill = (name: string) => ({
 });
 
 test.setTimeout(60_000);
-const observed = new WeakMap<Page, { rawEvents: string[]; identityErrors: string[]; navigations: number }>();
+const observed = new WeakMap<Page, {
+  rawEvents: string[]; identityErrors: string[]; navigations: number; allowMissingIdentityHeaders?: boolean;
+}>();
 test.beforeEach(async ({ page }) => {
-  const trace = { rawEvents: [] as string[], identityErrors: [] as string[], navigations: 0 };
+  const trace = { rawEvents: [] as string[], identityErrors: [] as string[], navigations: 0, allowMissingIdentityHeaders: false };
   observed.set(page, trace);
   const fenced = (url: URL) => url.pathname === `${agentPath}/timers`
     || (url.pathname === `${agentPath}/tasks` && url.searchParams.get("status") === "terminal");
@@ -43,7 +45,8 @@ test.beforeEach(async ({ page }) => {
     const url = new URL(response.url());
     if (!fenced(url) || !response.ok()) return;
     const headers = response.headers();
-    if (headers["x-holon-agent-id"] !== agentId || headers["x-holon-agent-incarnation"] !== "1") {
+    if (!trace.allowMissingIdentityHeaders
+      && (headers["x-holon-agent-id"] !== agentId || headers["x-holon-agent-incarnation"] !== "1")) {
       trace.identityErrors.push(`response ${url.pathname}`);
     }
   });
@@ -473,4 +476,24 @@ test("directory and open-file contents change only after explicit refresh, not c
   await expect(browser.locator(".file-browser-markdown")).toContainText("Externally changed file content");
   expect((await ui.counts()).files - preview.files).toBe(1);
   await ui.healthy();
+});
+
+test("ordinary resources without identity response headers still load; the request fence stays", async ({ page, context, request }, info) => {
+  observed.get(page)!.allowMissingIdentityHeaders = true;
+  const ui = await scenario(page, context, request, info, { omitIdentityHeaders: true });
+  await expect(ui.timers).toBeVisible();
+  await ui.healthy();
+  await ui.openRecent();
+  await expect(ui.recent.getByRole("button", { name: "Refresh recent tasks", exact: true })).toBeVisible();
+  await ui.healthy();
+});
+
+test("a real identity change still replaces the old link instead of serving stale data", async ({ page, context, request }, info) => {
+  const ui = await scenario(page, context, request, info);
+  await expect(ui.timers).toBeVisible();
+  await ui.update({ incarnation: 2 });
+  await ui.visibility("hidden");
+  await ui.visibility("visible");
+  await ui.advance(31_000);
+  await expect(ui.panel.locator(".agent-overview-placeholder")).toContainText("This link belongs to an earlier agent identity");
 });

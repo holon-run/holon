@@ -327,7 +327,15 @@ export function retryAgentAccess(key: string): void {
 
 export function agentAccessRejection(error: unknown): AgentAccessStatus | undefined {
   if (error instanceof RuntimeHttpError) {
-    if (error.status === 409 && error.code === "agent_incarnation_mismatch") return "replaced";
+    // A real identity change is admitted server-side: the daemon compares the
+    // expected incarnation inside the data's read transaction and answers 409
+    // `conversation_identity_changed`. The client-side generation check keeps
+    // its own `agent_incarnation_mismatch` code. Both mean the link points at
+    // an earlier agent identity.
+    if (error.status === 409
+      && (error.code === "agent_incarnation_mismatch" || error.code === "conversation_identity_changed")) {
+      return "replaced";
+    }
     return error.status === 401 || error.status === 403 ? "unauthorized"
       : error.status === 404 ? "missing" : undefined;
   }

@@ -1860,7 +1860,6 @@ async function fetchAgentWorkItems(
       headers: options.incarnation === undefined ? headers
         : { ...headers, "x-holon-expected-incarnation": String(options.incarnation) },
       signal: options.signal, cache: "no-store",
-      expectedIdentity: options.incarnation === undefined ? undefined : { agentId, incarnation: options.incarnation },
     },
   );
 }
@@ -1868,8 +1867,10 @@ async function fetchAgentWorkItems(
 /**
  * Shared identity-fence request options for per-agent detail reads. Without
  * an expected incarnation the request stays byte-identical to legacy calls;
- * with one, the request carries the fence header and refuses cached or
- * mislabelled responses.
+ * with one, the request carries the fence header and refuses cached
+ * responses. Identity admission is server-side: the daemon compares the
+ * expected incarnation inside the data's read transaction and returns a real
+ * 409 on mismatch, so ordinary reads do not re-verify identity here.
  */
 function identityFencedGetOptions(
   headers: Record<string, string>,
@@ -1879,7 +1880,6 @@ function identityFencedGetOptions(
   headers: Record<string, string>;
   signal?: AbortSignal;
   cache?: RequestCache;
-  expectedIdentity?: { agentId: string; incarnation: number };
 } {
   if (options.incarnation === undefined) {
     return { headers, signal: options.signal };
@@ -1888,7 +1888,6 @@ function identityFencedGetOptions(
     headers: { ...headers, "x-holon-expected-incarnation": String(options.incarnation) },
     signal: options.signal,
     cache: "no-store",
-    expectedIdentity: { agentId, incarnation: options.incarnation },
   };
 }
 
@@ -2076,7 +2075,6 @@ async function getJson<T>(
   path: string,
   options: {
     timeoutMs?: number; headers?: Record<string, string>; signal?: AbortSignal; cache?: RequestCache;
-    expectedIdentity?: { agentId: string; incarnation: number };
   } = {},
 ): Promise<T> {
   const controller = new AbortController();
@@ -2089,11 +2087,6 @@ async function getJson<T>(
   }).finally(() => globalThis.clearTimeout(timeout));
   if (!response.ok) {
     throw await httpRequestError("GET", path, response);
-  }
-  const expected = options.expectedIdentity;
-  if (expected && (response.headers.get("x-holon-agent-id") !== expected.agentId
-    || response.headers.get("x-holon-agent-incarnation") !== String(expected.incarnation))) {
-    throw new RuntimeHttpError("GET", path, 409, "Agent identity changed.", "agent_incarnation_mismatch");
   }
   return (await response.json()) as T;
 }
