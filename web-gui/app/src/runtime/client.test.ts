@@ -1664,11 +1664,11 @@ describe("createRuntimeClient", () => {
   });
 
   it.each([
-    { id: "agent/one", incarnation: "3", accepted: true },
-    { id: "agent/one", incarnation: "4", accepted: false },
-    { id: "other", incarnation: "3", accepted: false },
-    { id: undefined, incarnation: undefined, accepted: false },
-  ])("checks the WorkItem list response identity: $id / $incarnation", async ({ id, incarnation, accepted }) => {
+    { id: "agent/one", incarnation: "3" },
+    { id: "agent/one", incarnation: "4" },
+    { id: "other", incarnation: "3" },
+    { id: undefined, incarnation: undefined },
+  ])("accepts a server-verified WorkItem list regardless of informational identity headers: $id / $incarnation", async ({ id, incarnation }) => {
     const fetchImpl = vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
       expect(new Headers(init?.headers).get("x-holon-expected-incarnation")).toBe("3");
       expect(init?.cache).toBe("no-store");
@@ -1679,8 +1679,19 @@ describe("createRuntimeClient", () => {
     });
     const client = createRuntimeClient({ mode: "remote", baseUrl: "http://example.test:7878", fetchImpl });
     const result = client.getAgentWorkItems("agent/one", { incarnation: 3 });
-    if (accepted) await expect(result).resolves.toEqual([expect.objectContaining({ id: "w-replacement" })]);
-    else await expect(result).rejects.toMatchObject({ status: 409, code: "agent_incarnation_mismatch" });
+    await expect(result).resolves.toEqual([expect.objectContaining({ id: "w-replacement" })]);
+  });
+
+  it("passes a real WorkItem list identity 409 through unchanged", async () => {
+    const fetchImpl = async () => Response.json(
+      { code: "conversation_identity_changed", error: "The conversation agent identity is no longer available." },
+      { status: 409 },
+    );
+    const client = createRuntimeClient({ mode: "remote", baseUrl: "http://example.test:7878", fetchImpl });
+    await expect(client.getAgentWorkItems("agent/one", { incarnation: 3 })).rejects.toMatchObject({
+      status: 409,
+      code: "conversation_identity_changed",
+    });
   });
 
   it("fetches agent work item details from the scoped detail endpoint", async () => {
@@ -1818,7 +1829,7 @@ describe("createRuntimeClient", () => {
     expect(capturedInit?.cache).toBe("no-store");
   });
 
-  it.each(identityFencedDetailReads)("rejects a mislabelled $label response", async ({ body, call }) => {
+  it.each(identityFencedDetailReads)("accepts a mislabelled $label response; server admission is authoritative", async ({ body, call }) => {
     const fetchImpl = async () => {
       const headers = new Headers();
       headers.set("x-holon-agent-id", "agent/one");
@@ -1831,29 +1842,24 @@ describe("createRuntimeClient", () => {
       fetchImpl: fetchImpl as typeof fetch,
     });
 
-    await expect(call(client, { incarnation: 3 })).rejects.toMatchObject({
-      status: 409,
-      code: "agent_incarnation_mismatch",
-    });
+    await expect(call(client, { incarnation: 3 })).resolves.toBeDefined();
   });
 
-  it.each(identityFencedDetailReads)("rejects stale or unbound $label responses after recreation", async ({ body, call }) => {
-    const responseHeaderCases: Record<string, string>[] = [
-      { "x-holon-agent-id": "agent/one", "x-holon-agent-incarnation": "2" },
-      { "x-holon-agent-id": "another-agent", "x-holon-agent-incarnation": "3" },
-      {},
-    ];
-    for (const responseHeaders of responseHeaderCases) {
-      const client = createRuntimeClient({
-        mode: "remote",
-        baseUrl: "http://example.test:7878",
-        fetchImpl: (async () => Response.json(body, { headers: responseHeaders })) as typeof fetch,
-      });
-      await expect(call(client, { incarnation: 3 })).rejects.toMatchObject({
-        status: 409,
-        code: "agent_incarnation_mismatch",
-      });
-    }
+  it.each(identityFencedDetailReads)("passes a real identity 409 through $label reads unchanged", async ({ call }) => {
+    const fetchImpl = async () => Response.json(
+      { code: "conversation_identity_changed", error: "The conversation agent identity is no longer available." },
+      { status: 409 },
+    );
+    const client = createRuntimeClient({
+      mode: "remote",
+      baseUrl: "http://example.test:7878",
+      fetchImpl: fetchImpl as typeof fetch,
+    });
+
+    await expect(call(client, { incarnation: 3 })).rejects.toMatchObject({
+      status: 409,
+      code: "conversation_identity_changed",
+    });
   });
 
   it.each(identityFencedDetailReads)("passes an abort signal through to $label reads", async ({ call }) => {

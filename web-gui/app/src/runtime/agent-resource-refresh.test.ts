@@ -101,7 +101,7 @@ describe("selected Agent resource reads", () => {
     reads.workItems.mockResolvedValueOnce([work]);
     await current().refreshAgentWorkItems("agent-a", { incarnation: 1 });
     reads.workItems.mockRejectedValueOnce(
-      new RuntimeHttpError("GET", "/agents/agent-a/work-items", 409, "Identity changed", "agent_incarnation_mismatch"),
+      new RuntimeHttpError("GET", "/agents/agent-a/work-items", 409, "Identity changed", "conversation_identity_changed"),
     );
     await current().refreshAgentWorkItems("agent-a", { incarnation: 1 });
     expect(reads.workItems).toHaveBeenLastCalledWith("agent-a", {

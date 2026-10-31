@@ -30,7 +30,7 @@ vi.mock("./agent-presentation-cache", async (original) => ({
 import { RuntimeHttpError } from "./client";
 import { ConversationHttpError } from "@holon/conversation-sdk";
 import { useAgentAccess } from "./useAgentAccess";
-import { AGENT_ACCESS_KEEP_ALIVE, agentAccessRecordCount, clearAgentAccessRecords } from "./agent-access-records";
+import { AGENT_ACCESS_KEEP_ALIVE, agentAccessRejection, agentAccessRecordCount, clearAgentAccessRecords } from "./agent-access-records";
 import { resolveConversationScopeKey, useConversationScopeStore } from "./conversation-scope-store";
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
@@ -714,5 +714,26 @@ describe("route-selected agent admission", () => {
     await act(async () => resolve({ identity: { status: "deleted", incarnation: 1 } }));
     expect(current.status).toBe("available");
     expect(mocks.state).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe("agent access rejection codes", () => {
+  it("treats an identity change as a replaced link on both admission paths", () => {
+    expect(agentAccessRejection(new RuntimeHttpError(
+      "GET",
+      "/agents/agent-a/work-items",
+      409,
+      "The conversation agent identity is no longer available.",
+      "conversation_identity_changed",
+    ))).toBe("replaced");
+    expect(agentAccessRejection(new RuntimeHttpError(
+      "GET",
+      "/agents/agent-a/state",
+      409,
+      "Agent identity changed.",
+      "agent_incarnation_mismatch",
+    ))).toBe("replaced");
+    expect(agentAccessRejection(new RuntimeHttpError("GET", "/agents/agent-a/work-items", 409, "conflict", "other_code")))
+      .toBeUndefined();
   });
 });

@@ -35,10 +35,11 @@ fails explicitly. Existing historical ties remain readable and are not renumbere
 `agents.conversation-incarnation.v1` explicitly negotiates incarnation-bound
 reads. Clients send `x-holon-expected-incarnation` on summary, activities, Brief,
 locate and stream requests, and on agent work-item list/detail plus task detail
-reads (task status, task output, tool execution). Successful responses
-(including conditional 304) carry `x-holon-agent-id` and `x-holon-agent-incarnation`. Missing or mismatched
-bindings are terminal protocol errors for a negotiated client, not permission
-to fall back to an unbound result.
+reads (task status, task output, tool execution, timers). Successful
+conversation responses (including conditional 304) carry `x-holon-agent-id`
+and `x-holon-agent-incarnation`. Missing or mismatched bindings are terminal
+protocol errors for a negotiated conversation client, not permission to fall
+back to an unbound result.
 
 The binding comes from the **same SQLite read transaction** as the projected
 data, not an identity lookup before or after it. Admission compares the expected
@@ -49,6 +50,23 @@ Cursor bindings include incarnation separately from the shared visibility scope,
 so old history/detail/resume cursors cannot be reused for a replacement.
 Pre-capability cursors require one fresh bootstrap after upgrade; an absent
 incarnation decodes as zero and fails binding validation.
+
+### Ordinary resource identity fence (2026-10-31)
+
+Ordinary agent resources (work-item list/detail, task status, task output,
+tool execution, timers, recent tasks) use the request precondition as the
+contract, not a response-header gate. The GUI sends
+`x-holon-expected-incarnation` and the daemon admits it inside the same read
+transaction as the data, returning `409 conversation_identity_changed` on a
+real mismatch. A 200 response means that precondition passed. These responses
+still carry `x-holon-agent-id` and `x-holon-agent-incarnation` bound to the
+data's snapshot identity for diagnostics and existing consumers, but the GUI
+does not treat a missing or mismatched ordinary-resource identity header as
+an identity change. That earlier client-side rule misread a plain 200 without
+the headers (#3849) as `agent_incarnation_mismatch` and blocked live agent
+pages. Late responses from an old identity are discarded client-side by the
+refresh request generation, which keys commits on agent id plus incarnation.
+Web and daemon ship together; mixed-version combinations are out of scope.
 
 A stream binds to its initial transaction's identity, even for legacy callers.
 Every SSE data frame, including batch begin, changes, checkpoint and reset,
