@@ -1552,6 +1552,34 @@ function clearReadMarkerAdvanceDebounce(agentId: string): void {
   readMarkerAdvanceScheduledSeq.delete(agentId);
 }
 
+let readMarkerPageHideFlushBound = false;
+
+/**
+ * A reload or close inside the quiet window would destroy the debounce timer
+ * and lose the advance entirely, so flush gate-approved candidates during
+ * `pagehide` with a keepalive fetch the browser can still deliver after the
+ * page is gone (#3851). The candidates were already gated when recorded; the
+ * full gate is intentionally not re-evaluated here because the page is already
+ * tearing down (and may already report itself hidden).
+ */
+function flushPendingReadMarkerAdvancesOnPageHide(): void {
+  for (const agentId of [...pendingReadMarkerAgentIds]) {
+    const candidate = Math.max(
+      readMarkerAdvanceScheduledSeq.get(agentId) ?? 0,
+      pendingReadMarkerCursorByAgentId.get(agentId) ?? 0,
+    );
+    if (candidate <= 0) continue;
+    runtimeClient.markBriefReadKeepalive(agentId, candidate);
+  }
+}
+
+function ensureReadMarkerPageHideFlush(): void {
+  if (readMarkerPageHideFlushBound) return;
+  if (typeof window === "undefined" || typeof window.addEventListener !== "function") return;
+  readMarkerPageHideFlushBound = true;
+  window.addEventListener("pagehide", flushPendingReadMarkerAdvancesOnPageHide);
+}
+
 /**
  * Postpone the advance POST until the observed head stays quiet for the
  * debounce window. A strictly newer candidate boundary restarts the window
@@ -1577,6 +1605,7 @@ export async function retryPendingReadMarker(
   options: { flush?: boolean } = {},
 ): Promise<void> {
   if (!pendingReadMarkerAgentIds.has(agentId)) return;
+  ensureReadMarkerPageHideFlush();
   if (readMarkerAdvanceInFlight.has(agentId)) {
     readMarkerAdvanceQueued.add(agentId);
     return;

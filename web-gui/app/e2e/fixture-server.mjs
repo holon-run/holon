@@ -47,6 +47,7 @@ function sessionFor(req, url) {
       requests: [],
       abortRequests: [],
       abortResponse: null,
+      briefReadAdvanceSeqs: [],
       conversationStreams: new Set(),
       conversationData: new Map(),
       visibleAgentIds: tour ? tourAgents.map((agent) => agent.id) : ["bootstrap-agent"],
@@ -322,6 +323,10 @@ async function handleControl(req, res, url) {
   }
   if (url.pathname === "/__e2e__/requests") {
     json(res, { requests: sessionFor(req, url).requests });
+    return true;
+  }
+  if (url.pathname === "/__e2e__/read-advances") {
+    json(res, { advanceSeqs: sessionFor(req, url).briefReadAdvanceSeqs });
     return true;
   }
   if (url.pathname === "/__e2e__/right-panel") {
@@ -718,6 +723,10 @@ async function handleApi(req, res, url) {
     ].join("\u0000");
     const current = session.briefReadCursors.get(key) ?? 0;
     session.briefReadCursors.set(key, Math.max(current, candidate));
+    // Server-side record (queried via /__e2e__/read-advances) so specs can
+    // observe advances delivered through page-teardown keepalive fetches,
+    // which never surface in page-level request interception.
+    session.briefReadAdvanceSeqs.push(candidate);
     json(res, { state: briefReadState(session, agentId) });
     return true;
   }

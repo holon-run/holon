@@ -1628,6 +1628,53 @@ describe("server brief read state", () => {
     expect(cursors).toEqual([16]);
   });
 
+  it("flushes a pending quiet-window advance with a keepalive POST on pagehide", async () => {
+    vi.useFakeTimers();
+    const pageHideListeners: Array<() => void> = [];
+    vi.stubGlobal("window", {
+      addEventListener: (type: string, listener: () => void) => {
+        if (type === "pagehide") pageHideListeners.push(listener);
+      },
+    });
+    const advances: Array<{ seq: number; keepalive: boolean }> = [];
+    const fetchMock = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url.includes("/brief-read-cursor") && init?.method === "POST") {
+        const requested = (JSON.parse(String(init.body)) as { read_through_event_seq: number })
+          .read_through_event_seq;
+        advances.push({ seq: requested, keepalive: init?.keepalive === true });
+        return Promise.resolve(new Response(JSON.stringify({
+          state: state({ read_through_event_seq: requested, event_head_seq: requested, unread_count: 0 }),
+        }), { status: 200 }));
+      }
+      return Promise.resolve(new Response(JSON.stringify([state()]), { status: 200 }));
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    await useRuntimeStore.getState().setRuntimeConnection({ mode: "local" });
+    await useRuntimeStore.getState().refreshBriefReadStates();
+    useRuntimeStore.setState({
+      route: "agent",
+      selectedAgentId: "agent-a",
+      discovery: { ...useRuntimeStore.getState().discovery, freshness: "fresh" },
+    });
+    seedReadyConversationScope("agent-a");
+    vi.stubGlobal("document", { visibilityState: "visible" });
+
+    useRuntimeStore.getState().markAgentConversationRead("agent-a");
+    // Still inside the quiet window: the advance has not been posted yet.
+    expect(advances).toEqual([]);
+    expect(pageHideListeners).toHaveLength(1);
+    // During teardown the document may already report itself hidden; the
+    // flush must deliver the recorded boundary without re-running the gate.
+    vi.stubGlobal("document", { visibilityState: "hidden" });
+    for (const listener of pageHideListeners) listener();
+    await vi.waitFor(() => expect(advances).toEqual([{ seq: 8, keepalive: true }]));
+    // Let the abandoned debounce timer fire (gate stays closed while hidden)
+    // so no timer leaks into the next test's connection reset.
+    await vi.advanceTimersByTimeAsync(READ_MARKER_ADVANCE_QUIET_WINDOW_MS);
+    expect(advances).toEqual([{ seq: 8, keepalive: true }]);
+  });
+
   it("retries a failed read cursor advance with backoff", async () => {
     vi.useFakeTimers();
     let markAttempts = 0;
