@@ -44,6 +44,20 @@ def fixture_helpers():
     return namespace
 
 
+def mocked_subprocess(run):
+    """A subprocess stand-in that answers both run() and Popen().
+
+    The UI sweep starts xcodebuild through Popen so a silent stall can be
+    killed. The harness only needs the child's exit code, so Popen returns a
+    process-like object whose wait() reports the same code run() would.
+    """
+    def popen(command, env=None, **keywords):
+        completed = run(command, env=env, **keywords)
+        return Mock(wait=Mock(return_value=completed.returncode))
+
+    return Mock(run=run, Popen=popen)
+
+
 def ui_case_sweep_statements(tree):
     """The per-case sweep: run_ui_case plus its bounded-retry driver."""
     driver = next(node for node in ast.walk(tree)
@@ -254,7 +268,7 @@ class UIFixtureSetupContracts(unittest.TestCase):
             simulator_text_size=lambda *args: nullcontext(),
             simulator_appearance=lambda *args: nullcontext(),
             runtime_text_size_control=lambda *args: nullcontext(("fixture", "fixture")),
-            subprocess=Mock(run=run), fixture_evidence=None,
+            subprocess=mocked_subprocess(run), fixture_evidence=None,
         )
         with patch("builtins.print") as output:
             exec(compile(ast.Module(body=sweep, type_ignores=[]), str(source), "exec"), namespace)
@@ -303,7 +317,7 @@ class UIFixtureSetupContracts(unittest.TestCase):
                 simulator_text_size=lambda *args: nullcontext(),
                 simulator_appearance=lambda *args: nullcontext(),
                 runtime_text_size_control=lambda *args: nullcontext(("fixture", "fixture")),
-                subprocess=Mock(run=run))
+                subprocess=mocked_subprocess(run))
             with patch.dict(os.environ, environment or {}, clear=True), \
                     patch("builtins.print") as output:
                 error = None
@@ -453,7 +467,7 @@ class UIFixtureSetupContracts(unittest.TestCase):
             simulator_text_size=lambda *args: nullcontext(),
             simulator_appearance=lambda *args: nullcontext(),
             runtime_text_size_control=lambda *args: nullcontext(("fixture", "fixture")),
-            subprocess=Mock(run=lambda *args, **keywords: Mock(returncode=0, stdout="")))
+            subprocess=mocked_subprocess(lambda *args, **keywords: Mock(returncode=0, stdout="")))
         with patch.dict(os.environ, {"IOS_UI_RETRY": "0"}, clear=True), \
                 patch("builtins.print") as output:
             try:
@@ -791,7 +805,7 @@ class UIFixtureSetupContracts(unittest.TestCase):
             simulator_text_size=lambda *args: nullcontext(),
             simulator_appearance=lambda *args: nullcontext(),
             runtime_text_size_control=lambda *args: nullcontext(("fixture", "fixture")),
-            subprocess=Mock(run=run))
+            subprocess=mocked_subprocess(run))
         exec(compile(ast.Module(body=sweep, type_ignores=[]), str(source), "exec"), namespace)
         self.assertEqual(runs, methods)
         self.assertEqual(len(tickets), 3, "Each independently selectable authenticated case gets a fresh ticket")
@@ -870,6 +884,93 @@ class UIFixtureSetupContracts(unittest.TestCase):
             "TEST_RUNNER_HOLON_UI_NODE_CONTROL_URL": "http://127.0.0.1:12345/fixture/node-availability",
             "TEST_RUNNER_HOLON_UI_NODE_CONTROL_TOKEN": "fixture-runner-only-control",
         })
+
+
+class UIFixtureStallDetectionContracts(unittest.TestCase):
+    """A silent xcodebuild stall must fail fast and say so.
+
+    A macOS runner can hang inside SwiftDriver without emitting any output.
+    The sweep used to wait for the job's timeout-minutes backstop, so the
+    log ended mid-compile with no explanation.
+    """
+
+    def setUp(self):
+        self.helpers = fixture_helpers()
+        source = ROOT / "scripts/ios_ui_fixture.py"
+        self.source = str(source)
+        self.text = source.read_text()
+
+    def test_monitored_runner_kills_a_silent_child(self):
+        """A child that never writes must be killed and reported."""
+        helpers = self.helpers
+        killed = []
+
+        class SilentProcess:
+            returncode = None
+
+            def wait(self):
+                # The watcher kills the child; the wait returns once it dies.
+                while not killed:
+                    threading.Event().wait(0.05)
+                return 137
+
+            def kill(self):
+                killed.append(True)
+
+        popen = Mock(return_value=SilentProcess())
+        module = Mock(Popen=popen, STDOUT=subprocess.STDOUT)
+        with patch("builtins.print") as output:
+            with self.assertRaises(helpers["UIStallTimeout"]):
+                helpers["monitor_xcodebuild"](
+                    ["xcodebuild", "build"], {}, 1, subprocess_module=module,
+                    heartbeat_interval=1)
+        self.assertTrue(killed, "A stalled xcodebuild must be killed")
+        printed = "\n".join(str(call) for call in output.call_args_list)
+        self.assertIn("iOS UI stall", printed)
+        self.assertIn("no output", printed)
+
+    def test_stall_is_a_case_failure_so_the_bounded_retry_applies(self):
+        """A stall must be retryable, not a hard sweep abort."""
+        helpers = self.helpers
+        self.assertTrue(issubclass(helpers["UIStallTimeout"],
+                                   helpers["UICaseFailure"]))
+
+    def test_ui_step_has_a_step_level_timeout(self):
+        """The workflow step must carry its own bound."""
+        workflow = (ROOT / ".github/workflows/ci.yml").read_text()
+        marker = "- name: Test isolated simulator UI"
+        self.assertIn(marker, workflow)
+        step = workflow[workflow.index(marker):]
+        step = step[:step.index("\n      - name:", 1) if "\n      - name:" in step[1:] else len(step)]
+        self.assertIn("timeout-minutes:", step,
+                      "The UI step must carry a step-level timeout")
+
+    def test_sweep_runs_xcodebuild_through_the_monitored_runner(self):
+        """The sweep must not call xcodebuild through an unbounded run()."""
+        source = ROOT / "scripts/ios_ui_fixture.py"
+        tree = ast.parse(source.read_text(), filename=str(source))
+        sweep = ui_case_sweep_statements(tree)
+        module = ast.Module(body=sweep, type_ignores=[])
+        ast.fix_missing_locations(module)
+        calls = []
+        for node in ast.walk(module):
+            if not (isinstance(node, ast.Call)
+                    and isinstance(node.func, ast.Attribute)
+                    and node.func.attr == "run"
+                    and isinstance(node.func.value, ast.Name)
+                    and node.func.value.id == "subprocess"):
+                continue
+            command = node.args[0] if node.args else None
+            if isinstance(command, ast.Name) and command.id == "command":
+                # The xcodebuild invocation is routed through the monitored
+                # runner; it must not reach subprocess.run unbounded.
+                calls.append(node)
+        self.assertEqual(calls, [],
+                         "The UI case must not call subprocess.run directly")
+        source_text = source.read_text()
+        self.assertIn("monitor_xcodebuild(", source_text,
+                      "The UI case must go through the monitored runner")
+
 
 
 class UIFixtureEvidenceContracts(unittest.TestCase):
@@ -1010,7 +1111,7 @@ class UIFixtureEvidenceContracts(unittest.TestCase):
             simulator_text_size=lambda *args: nullcontext(),
             simulator_appearance=lambda *args: nullcontext(),
             runtime_text_size_control=lambda *args: nullcontext(("fixture", "do-not-export-control-token")),
-            subprocess=Mock(run=run))
+            subprocess=mocked_subprocess(run))
         with patch("builtins.print"):
             self.execute(sweep, namespace)
         deltas = []
@@ -1044,7 +1145,7 @@ class UIFixtureEvidenceContracts(unittest.TestCase):
         # An XCTest failure still leaves both factual snapshots, not an alleged pass.
         failed_evidence = self.directory / "failed-evidence"
         namespace.update(fixture_evidence=failed_evidence, cases=[(methods[0], "large")],
-                         bundles=[Path("failed.xcresult")], subprocess=Mock(run=Mock(return_value=Mock(returncode=65))))
+                         bundles=[Path("failed.xcresult")], subprocess=mocked_subprocess(Mock(return_value=Mock(returncode=65))))
         with self.assertRaises(RuntimeError):
             self.execute(sweep, namespace)
         self.assertEqual(len(list(failed_evidence.glob("*.sqlite"))), 2)

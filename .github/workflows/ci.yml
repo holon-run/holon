@@ -392,6 +392,12 @@ jobs:
           IOS_DERIVED_DATA_PATH: ${{ runner.temp }}/holon-ios-test
           IOS_RESULT_BUNDLE_PATH: ${{ runner.temp }}/holon-ios-test.xcresult
       - name: Test isolated simulator UI
+        # A macOS runner can hang inside SwiftDriver without emitting any
+        # output. The fixture's own idle budget kills such a stalled build
+        # and names it; this step-level bound is the backstop for a hang the
+        # fixture cannot observe, so the job ends with a step conclusion
+        # instead of waiting out the job timeout.
+        timeout-minutes: 60
         if: needs.changes.outputs.full_sweep == 'true' || needs.changes.outputs.ios_app == 'true'
         run: make ios-ui-test
         env:

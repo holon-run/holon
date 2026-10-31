@@ -33,6 +33,89 @@ class UICaseFailure(RuntimeError):
     """A UI case xcodebuild run failed; eligible for one bounded retry."""
 
 
+class UIStallTimeout(UICaseFailure):
+    """An xcodebuild run produced no output for longer than its idle budget."""
+
+
+def monitor_xcodebuild(command, env, idle_budget, subprocess_module=None,
+                        heartbeat_interval=60):
+    """Run xcodebuild with a visible progress signal and an idle-timeout.
+
+    A macOS runner can hang inside SwiftDriver without emitting anything at
+    all. Without a bound the sweep waits for the job's timeout-minutes
+    backstop and the log ends mid-compile with no explanation.
+
+    The child's output is captured to a log file so its growth can be
+    watched. A watcher thread prints a heartbeat whenever the log stops
+    growing, and raises once the child has been silent for longer than the
+    idle budget. The captured output is replayed to stdout afterwards, so
+    the CI log still shows what xcodebuild reported.
+
+    subprocess_module lets the caller supply the subprocess implementation it
+    runs under, so a test harness can observe the invocation.
+    """
+    if subprocess_module is None:
+        subprocess_module = subprocess
+    captured = pathlib.Path(tempfile.mkdtemp(prefix="holon-ios-ui-log-")) / "xcodebuild.log"
+    state = {"last_growth": time.monotonic(), "size": 0, "stalled": False}
+    done = threading.Event()
+    holder = {}
+
+    def watch():
+        last_heartbeat = time.monotonic()
+        while not done.wait(1):
+            try:
+                size = captured.stat().st_size
+            except OSError:
+                size = state["size"]
+            now = time.monotonic()
+            if size != state["size"]:
+                state["size"] = size
+                state["last_growth"] = now
+                last_heartbeat = now
+                continue
+            if now - state["last_growth"] >= idle_budget:
+                state["stalled"] = True
+                print(f"::warning title=iOS UI stall::xcodebuild produced no "
+                      f"output for {idle_budget:.0f}s and was killed", flush=True)
+                # Kill the stalled child now: waiting for the job's
+                # timeout-minutes backstop is what made this failure slow
+                # and silent.
+                child = holder.get("process")
+                if child is not None:
+                    try:
+                        child.kill()
+                    except OSError:
+                        pass
+                return
+            if now - last_heartbeat >= heartbeat_interval:
+                last_heartbeat = now
+                print(f"::notice title=iOS UI heartbeat::xcodebuild idle "
+                      f"{now - state['last_growth']:.0f}s "
+                      f"(budget {idle_budget:.0f}s)", flush=True)
+
+    watcher = threading.Thread(target=watch, daemon=True)
+    watcher.start()
+    try:
+        with captured.open("w") as log:
+            process = subprocess_module.Popen(command, env=env, stdout=log,
+                                             stderr=subprocess_module.STDOUT)
+            holder["process"] = process
+            returncode = process.wait()
+    finally:
+        done.set()
+        watcher.join(timeout=5)
+        try:
+            sys.stdout.write(captured.read_text(errors="replace"))
+            sys.stdout.flush()
+        except OSError:
+            pass
+    if state["stalled"]:
+        raise UIStallTimeout(
+            f"xcodebuild stalled: no output for {idle_budget:.0f}s")
+    return returncode
+
+
 @contextmanager
 def fixture_directory(repo):
     """Retain only an explicitly requested, new, private directory outside the repo."""
@@ -1168,7 +1251,19 @@ with fixture_directory(repo) as root:
                                     int(600 * float(
                                         test_env.get("TEST_RUNNER_HOLON_UI_WAIT_SCALE", "1"))),
                                     1800)
-                                result = subprocess.run(["xcodebuild", "-project", repo + "/apps/ios/Holon.xcodeproj",
+                                # The idle budget bounds a silent stall. It is
+                                # measured from the last output line, not from
+                                # the start, so a long but progressing compile
+                                # is never killed. A healthy sweep's largest
+                                # baseline gap was 79s and xcodebuild is chatty
+                                # even under contention, so 15 minutes leaves
+                                # generous headroom while still catching the
+                                # 51-minute SwiftDriver hang. The budget does
+                                # not scale with the wait budgets: a stretched
+                                # wait makes the tests slower, not the build
+                                # quieter.
+                                idle_budget = 900
+                                command = ["xcodebuild", "-project", repo + "/apps/ios/Holon.xcodeproj",
                                     "-scheme", "Holon", "-destination", destination,
                                     "-parallel-testing-enabled", "NO",
                                     # Keep test failures and attachments, but avoid a blocking sysdiagnose.
@@ -1182,12 +1277,15 @@ with fixture_directory(repo) as root:
                                     "-maximum-test-execution-time-allowance", str(execution_allowance),
                                     "-derivedDataPath", derived,
                                     "-only-testing:HolonUITests/HolonUITests/" + method,
-                                    "-resultBundlePath", str(case_bundle), "CODE_SIGN_IDENTITY=-", "test"], env=test_env)
+                                    "-resultBundlePath", str(case_bundle), "CODE_SIGN_IDENTITY=-", "test"]
+                                returncode = monitor_xcodebuild(
+                                    command, test_env, idle_budget,
+                                    subprocess_module=subprocess)
                             finally:
                                 if report_rows_before is not None:
                                     rows = content_report_snapshot(
                                         report_db, fixture_evidence, method, "after")
-                            if result.returncode:
+                            if returncode:
                                 raise UICaseFailure(f"UI case {method} 失败（SDK 通过不能替代 UI）")
                             # The app cannot fail the test that asked for a
                             # reset, so it publishes the failure where the
