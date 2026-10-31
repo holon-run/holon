@@ -70,6 +70,9 @@ const RETENTION_BLOCKER_CHECKS: &[(&str, &str)] = &[
 ];
 
 /// Fail closed on unknown state. Historical rows alone are not live work.
+/// `last_runtime_failure` is a diagnostic and is intentionally not an execution
+/// obligation: a settled idle agent remains deletable and idle even if the last
+/// turn failed and no later turn succeeded.
 fn runtime_state_blocker_tx(tx: &Transaction<'_>, agent_id: &str) -> Result<Option<String>> {
     let state: Option<String> = tx
         .query_row(
@@ -91,7 +94,6 @@ fn runtime_state_blocker_tx(tx: &Transaction<'_>, agent_id: &str) -> Result<Opti
         || state.pending > 0
         || state.sleeping_until.is_some()
         || state.pending_wake_hint.is_some()
-        || state.last_runtime_failure.is_some()
     {
         return Ok(Some("runtime_execution_or_wake".into()));
     }
@@ -212,4 +214,243 @@ pub(crate) fn idle_evidence_tx(tx: &Transaction<'_>, agent_id: &str) -> Result<S
         state.last_turn_terminal,
         latest_task,
     ))?)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::runtime_db::RuntimeDb;
+    use crate::types::{
+        AgentState, AgentStatus, PendingWakeHint, QueueEntryRecord, QueueEntryStatus,
+        RuntimeFailurePhase, RuntimeFailureSummary, TaskKind, TaskRecord, TaskStatus,
+        TurnTerminalKind, TurnTerminalRecord, WorkItemRecord, WorkItemState,
+    };
+    use chrono::Utc;
+
+    fn open_db() -> (tempfile::TempDir, RuntimeDb) {
+        let dir = tempfile::tempdir().unwrap();
+        let db = RuntimeDb::open_and_migrate(
+            dir.path().join("runtime.sqlite"),
+            dir.path().join("runtime.lock"),
+        )
+        .unwrap();
+        (dir, db)
+    }
+
+    fn failure(summary: &str) -> RuntimeFailureSummary {
+        RuntimeFailureSummary {
+            occurred_at: Utc::now(),
+            summary: summary.to_string(),
+            phase: RuntimeFailurePhase::RuntimeTurn,
+            detail_hint: Some("historical diagnostic".into()),
+            failure_artifact: None,
+        }
+    }
+
+    fn terminal_record(kind: TurnTerminalKind) -> TurnTerminalRecord {
+        TurnTerminalRecord {
+            turn_id: "turn-1".into(),
+            turn_index: 1,
+            kind,
+            reason: Some("fixture".into()),
+            last_assistant_message: None,
+            no_brief_reason: None,
+            checkpoint: None,
+            completed_at: Utc::now(),
+            duration_ms: 1,
+        }
+    }
+
+    fn settled(agent_id: &str, status: AgentStatus, kind: TurnTerminalKind) -> AgentState {
+        let mut state = AgentState::new(agent_id);
+        state.status = status;
+        state.last_turn_terminal = Some(terminal_record(kind));
+        state.last_runtime_failure = Some(failure("provider_dispatch_rejected"));
+        state
+    }
+
+    fn blockers(
+        db: &RuntimeDb,
+        agent_id: &str,
+    ) -> (Option<String>, Option<String>, Option<String>) {
+        db.transaction(|tx| {
+            Ok((
+                execution_blocker_tx(tx, agent_id)?,
+                idle_blocker_tx(tx, agent_id)?,
+                parent_cleanup_blocker_tx(tx, agent_id)?,
+            ))
+        })
+        .unwrap()
+    }
+
+    #[test]
+    fn historical_failure_is_not_an_execution_obligation() {
+        let (_dir, db) = open_db();
+        assert_eq!(
+            blockers(&db, "missing").0.as_deref(),
+            Some("unknown_runtime_state")
+        );
+
+        for (agent_id, status, kind) in [
+            (
+                "failed-then-ok",
+                AgentStatus::AwakeIdle,
+                TurnTerminalKind::Completed,
+            ),
+            (
+                "last-failed-idle",
+                AgentStatus::AwakeIdle,
+                TurnTerminalKind::Aborted,
+            ),
+            (
+                "last-failed-asleep",
+                AgentStatus::Asleep,
+                TurnTerminalKind::ProviderFailedNeedsRecovery,
+            ),
+            (
+                "last-failed-stopped",
+                AgentStatus::Stopped,
+                TurnTerminalKind::Interrupted,
+            ),
+        ] {
+            let state = settled(agent_id, status, kind);
+            let diagnostic = state.last_runtime_failure.clone();
+            db.agent_states().upsert(&state).unwrap();
+            assert_eq!(blockers(&db, agent_id), (None, None, None), "{agent_id}");
+            assert_eq!(
+                db.agent_states()
+                    .latest(agent_id)
+                    .unwrap()
+                    .unwrap()
+                    .last_runtime_failure,
+                diagnostic,
+                "diagnostic must survive admission"
+            );
+        }
+
+        let mut running = settled(
+            "running",
+            AgentStatus::AwakeRunning,
+            TurnTerminalKind::Aborted,
+        );
+        db.agent_states().upsert(&running).unwrap();
+        assert_eq!(
+            blockers(&db, "running").0.as_deref(),
+            Some("runtime_execution_or_wake")
+        );
+
+        running.id = "run-id".into();
+        running.status = AgentStatus::AwakeIdle;
+        running.current_run_id = Some("run-1".into());
+        db.agent_states().upsert(&running).unwrap();
+        assert_eq!(
+            blockers(&db, "run-id").0.as_deref(),
+            Some("runtime_execution_or_wake")
+        );
+
+        let mut pending = settled("pending", AgentStatus::Asleep, TurnTerminalKind::Aborted);
+        pending.pending = 1;
+        db.agent_states().upsert(&pending).unwrap();
+        assert_eq!(
+            blockers(&db, "pending").0.as_deref(),
+            Some("runtime_execution_or_wake")
+        );
+
+        let mut sleeping = settled("sleeping", AgentStatus::Stopped, TurnTerminalKind::Aborted);
+        sleeping.sleeping_until = Some(Utc::now());
+        db.agent_states().upsert(&sleeping).unwrap();
+        assert_eq!(
+            blockers(&db, "sleeping").0.as_deref(),
+            Some("runtime_execution_or_wake")
+        );
+
+        let mut hinted = settled("hinted", AgentStatus::AwakeIdle, TurnTerminalKind::Aborted);
+        hinted.pending_wake_hint = Some(PendingWakeHint {
+            reason: "external".into(),
+            description: None,
+            source: None,
+            scope: None,
+            external_trigger_id: None,
+            resource: None,
+            body: None,
+            content_type: None,
+            correlation_id: None,
+            causation_id: None,
+            created_at: Utc::now(),
+        });
+        db.agent_states().upsert(&hinted).unwrap();
+        assert_eq!(
+            blockers(&db, "hinted").0.as_deref(),
+            Some("runtime_execution_or_wake")
+        );
+
+        let retained = settled(
+            "retained",
+            AgentStatus::AwakeIdle,
+            TurnTerminalKind::Aborted,
+        );
+        db.agent_states().upsert(&retained).unwrap();
+        db.work_items()
+            .insert_new(&WorkItemRecord::new(
+                "retained",
+                "still open",
+                WorkItemState::Open,
+            ))
+            .unwrap();
+        let (execution, idle, cleanup) = blockers(&db, "retained");
+        assert_eq!(execution, None);
+        assert_eq!(idle.as_deref(), Some("open_work_item"));
+        assert_eq!(cleanup, None);
+
+        let live = settled(
+            "live-task",
+            AgentStatus::AwakeIdle,
+            TurnTerminalKind::Aborted,
+        );
+        db.agent_states().upsert(&live).unwrap();
+        let now = Utc::now();
+        let task = TaskRecord {
+            id: "live-task-1".into(),
+            agent_id: "live-task".into(),
+            kind: TaskKind::ChildAgentTask,
+            status: TaskStatus::Running,
+            created_at: now,
+            updated_at: now,
+            parent_message_id: None,
+            work_item_id: None,
+            summary: None,
+            detail: None,
+            recovery: None,
+        };
+        db.tasks().upsert(&task).unwrap();
+        assert_eq!(blockers(&db, "live-task").0.as_deref(), Some("active_task"));
+        assert_eq!(
+            db.tasks().latest(&task.id).unwrap().unwrap().status,
+            TaskStatus::Running
+        );
+
+        let queued_agent = settled("queued", AgentStatus::Asleep, TurnTerminalKind::Aborted);
+        db.agent_states().upsert(&queued_agent).unwrap();
+        let queued = QueueEntryRecord {
+            message_id: "queued-1".into(),
+            agent_id: "queued".into(),
+            priority: crate::types::Priority::Normal,
+            status: QueueEntryStatus::Queued,
+            created_at: now,
+            updated_at: now,
+        };
+        db.queue_entries().upsert(&queued).unwrap();
+        assert_eq!(
+            blockers(&db, "queued").0.as_deref(),
+            Some("queued_or_claimed_input")
+        );
+        assert_eq!(
+            db.queue_entries()
+                .latest(&queued.message_id)
+                .unwrap()
+                .unwrap()
+                .status,
+            QueueEntryStatus::Queued
+        );
+    }
 }

@@ -47,6 +47,8 @@ action, structured review response, or monitoring agent.
   other current uses, descendant responsibilities, and protected resources. Open
   WorkItems and retention timers are the parent's reuse decision, not blockers. Cleanup
   cannot cancel legitimate work merely to make the child eligible for deletion.
+  A historical `last_runtime_failure` is a diagnostic, not an execution obligation.
+  It does not by itself block idle retirement, cleanup reminders, or safe deletion, and cleanup must not clear it to create eligibility.
 - Admission must serialize with new work and resource-reference changes. Stale
   observations or references to a previous identity incarnation cannot authorize
   deletion. Retirement must likewise preserve concurrently accepted work and
