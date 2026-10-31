@@ -1610,6 +1610,7 @@ fn cooldown_park_survives_sigkill_and_resumes_on_schedule_without_new_input() {
         1,
         "recovery must dispatch exactly one successful model request"
     );
+    fixture.wait_input_completed(&parked.message_id);
     fixture.assert_source_processed(&parked.message_id);
     let next = fixture.post_prompt(&address, "confirm the ordinary input queue remains live");
     fixture.wait_input_completed(&next);
