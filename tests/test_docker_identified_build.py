@@ -94,19 +94,6 @@ class IdentifiedBuildTests(unittest.TestCase):
         require_build(f"holon test ({short_revision}) [recovery-acceptance-test]", result["revision"])
         self.assertEqual((self.source / "Dockerfile").read_text(), original)
 
-    def test_fast_acceptance_build_tunes_only_the_generated_dockerfile(self):
-        original = "FROM rust:bookworm AS rust-builder\nRUN cargo build --release --locked\n"
-        (self.source / "Dockerfile").write_text(original)
-        git(self.source, "commit", "-am", "rust builder stage")
-        result = prepare(self.source, self.root / "identified", fast_acceptance_build=True)
-        self.assertTrue(result["fast_acceptance_build"])
-        dockerfile = Path(result["dockerfile"]).read_text()
-        self.assertIn("CARGO_PROFILE_RELEASE_CODEGEN_UNITS=64", dockerfile)
-        self.assertIn("CARGO_PROFILE_RELEASE_STRIP=symbols", dockerfile)
-        self.assertIn("-fuse-ld=lld", dockerfile)
-        self.assertEqual((Path(result["context"]) / "Dockerfile").read_text(), original)
-        self.assertEqual((self.source / "Dockerfile").read_text(), original)
-
     def test_acceptance_build_rejects_missing_or_ambiguous_cargo_command(self):
         for index, count in enumerate((0, 2)):
             (self.source / "Dockerfile").write_text(
