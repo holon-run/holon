@@ -925,6 +925,22 @@ export function createRuntimeClient(options: RuntimeClientOptions = {}) {
         { timeoutMs: USER_ACTION_TIMEOUT_MS },
       );
     },
+    // Fire-and-forget variant for page teardown: `keepalive` lets the browser
+    // deliver the POST after the page goes away, so the quiet-window debounce
+    // cannot lose an already-read boundary to a reload or close (#3851).
+    markBriefReadKeepalive(agentId: string, readThroughEventSeq: number): void {
+      if (!baseUrl) return;
+      void fetchImpl(`${baseUrl}/agents/${encodeURIComponent(agentId)}/brief-read-cursor`, {
+        method: "POST",
+        headers: {
+          Accept: "application/json",
+          "Content-Type": "application/json",
+          ...requestHeaders,
+        },
+        body: JSON.stringify({ read_through_event_seq: readThroughEventSeq }),
+        keepalive: true,
+      }).catch(() => undefined);
+    },
     async getCurrentUser(options: { strict?: boolean } = {}): Promise<CurrentUser | null> {
       if (!baseUrl) {
         return null;

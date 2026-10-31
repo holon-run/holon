@@ -1014,6 +1014,9 @@ function cancelClientGenerationWork(): void {
   for (const timer of readMarkerRetryTimers.values()) window.clearTimeout(timer);
   readMarkerRetryTimers.clear();
   readMarkerRetryAttempts.clear();
+  for (const timer of readMarkerAdvanceTimers.values()) window.clearTimeout(timer);
+  readMarkerAdvanceTimers.clear();
+  readMarkerAdvanceScheduledSeq.clear();
   pendingReadMarkerAgentIds.clear();
   pendingReadMarkerCursorByAgentId.clear();
   readMarkerScopeKeyByAgentId.clear();
@@ -1384,6 +1387,14 @@ export function observerSyncDiagnostics(): ObserverSyncDiagnostics {
 
 let briefReadStatesRefreshInFlight: Promise<void> | undefined;
 let briefReadStatesRefreshGeneration: number | undefined;
+// Quiet-window debounce for read-cursor advances (#3851): while the observed
+// head keeps moving, hold the candidate boundary and only take the write path
+// once the head has stayed quiet for the window. Collapses per-event advance
+// POSTs on active agents to at most one per window without changing gate,
+// visibility, or caught-up semantics.
+export const READ_MARKER_ADVANCE_QUIET_WINDOW_MS = 2_000;
+const readMarkerAdvanceTimers = new Map<string, ReturnType<typeof setTimeout>>();
+const readMarkerAdvanceScheduledSeq = new Map<string, number>();
 const pendingReadMarkerAgentIds = new Set<string>();
 const pendingReadMarkerCursorByAgentId = new Map<string, number>();
 const readMarkerScopeKeyByAgentId = new Map<string, string>();
@@ -1532,8 +1543,69 @@ function evaluateReadMarkerGate(
   );
 }
 
-export async function retryPendingReadMarker(agentId: string): Promise<void> {
+function clearReadMarkerAdvanceDebounce(agentId: string): void {
+  const timer = readMarkerAdvanceTimers.get(agentId);
+  if (timer != null) {
+    clearTimeout(timer);
+    readMarkerAdvanceTimers.delete(agentId);
+  }
+  readMarkerAdvanceScheduledSeq.delete(agentId);
+}
+
+let readMarkerPageHideFlushBound = false;
+
+/**
+ * A reload or close inside the quiet window would destroy the debounce timer
+ * and lose the advance entirely, so flush gate-approved candidates during
+ * `pagehide` with a keepalive fetch the browser can still deliver after the
+ * page is gone (#3851). The candidates were already gated when recorded; the
+ * full gate is intentionally not re-evaluated here because the page is already
+ * tearing down (and may already report itself hidden).
+ */
+function flushPendingReadMarkerAdvancesOnPageHide(): void {
+  for (const agentId of [...pendingReadMarkerAgentIds]) {
+    const candidate = Math.max(
+      readMarkerAdvanceScheduledSeq.get(agentId) ?? 0,
+      pendingReadMarkerCursorByAgentId.get(agentId) ?? 0,
+    );
+    if (candidate <= 0) continue;
+    runtimeClient.markBriefReadKeepalive(agentId, candidate);
+  }
+}
+
+function ensureReadMarkerPageHideFlush(): void {
+  if (readMarkerPageHideFlushBound) return;
+  if (typeof window === "undefined" || typeof window.addEventListener !== "function") return;
+  readMarkerPageHideFlushBound = true;
+  window.addEventListener("pagehide", flushPendingReadMarkerAdvancesOnPageHide);
+}
+
+/**
+ * Postpone the advance POST until the observed head stays quiet for the
+ * debounce window. A strictly newer candidate boundary restarts the window
+ * (the head is still moving); an equal-or-older one keeps the deadline, so
+ * repeated refreshes at an unchanged boundary never re-arm the timer.
+ */
+function scheduleReadMarkerAdvance(agentId: string, candidateSeq: number): void {
+  const scheduledSeq = readMarkerAdvanceScheduledSeq.get(agentId);
+  if (scheduledSeq != null && candidateSeq <= scheduledSeq) return;
+  readMarkerAdvanceScheduledSeq.set(agentId, candidateSeq);
+  const existingTimer = readMarkerAdvanceTimers.get(agentId);
+  if (existingTimer != null) clearTimeout(existingTimer);
+  const timer = setTimeout(() => {
+    readMarkerAdvanceTimers.delete(agentId);
+    readMarkerAdvanceScheduledSeq.delete(agentId);
+    void retryPendingReadMarker(agentId, { flush: true });
+  }, READ_MARKER_ADVANCE_QUIET_WINDOW_MS);
+  readMarkerAdvanceTimers.set(agentId, timer);
+}
+
+export async function retryPendingReadMarker(
+  agentId: string,
+  options: { flush?: boolean } = {},
+): Promise<void> {
   if (!pendingReadMarkerAgentIds.has(agentId)) return;
+  ensureReadMarkerPageHideFlush();
   if (readMarkerAdvanceInFlight.has(agentId)) {
     readMarkerAdvanceQueued.add(agentId);
     return;
@@ -1560,8 +1632,22 @@ export async function retryPendingReadMarker(agentId: string): Promise<void> {
   if (!decision.mayAdvance || decision.candidateSeq == null) {
     if (decision.reason === "not_selected") {
       pendingReadMarkerAgentIds.delete(agentId);
+      clearReadMarkerAdvanceDebounce(agentId);
     }
     span.end("skipped", { reason: decision.reason ?? "candidate_unavailable" });
+    return;
+  }
+
+  if (options.flush !== true) {
+    // Active agents move the observed head with every event batch; advancing
+    // immediately would track the event rate. Wait for a quiet window first
+    // (#3851). The gate is re-evaluated when the window deadline fires.
+    scheduleReadMarkerAdvance(agentId, decision.candidateSeq);
+    span.end("skipped", {
+      reason: "quiet_window",
+      candidateSeq: decision.candidateSeq,
+      quietWindowMs: READ_MARKER_ADVANCE_QUIET_WINDOW_MS,
+    });
     return;
   }
 

@@ -66,6 +66,15 @@ async function readState(page: Page, agentId: string) {
   return page.evaluate((id) => window.__HOLON_E2E__?.readState(id) ?? null, agentId);
 }
 
+// Server-side advance log: reload/close durability relies on keepalive
+// flushes delivered after page teardown, which page-level request
+// interception never observes, so this test asserts against what the server
+// actually received instead of the browser request log.
+async function readAdvanceSeqs(request: APIRequestContext, session: string): Promise<number[]> {
+  const payload = await (await request.get(controlPath(session, "/__e2e__/read-advances"))).json() as { advanceSeqs: number[] };
+  return payload.advanceSeqs;
+}
+
 function observeRetiredRequests(context: BrowserContext): string[] {
   const requests: string[] = [];
   context.on("request", (request) => {
@@ -304,12 +313,6 @@ test("cached conversation survives reload and close without advancing a stale re
   await expect.poll(() => readState(page, agentId)).toMatchObject({ read_through_event_seq: 2 });
   await expectCachedTurn(page, agentId, "turn-2");
 
-  const readAdvances: number[] = [];
-  context.on("request", (request) => {
-    if (request.method() === "POST" && new URL(request.url()).pathname === `/api/agents/${agentId}/brief-read-cursor`) {
-      readAdvances.push(request.postDataJSON().read_through_event_seq);
-    }
-  });
   await appendUnread(request, session, agentId);
   await configure(request, session, { failConversationByAgentId: [agentId] });
   const failed = page.waitForResponse((response) =>
@@ -330,7 +333,7 @@ test("cached conversation survives reload and close without advancing a stale re
   });
   await expect(reopened.locator('[data-turn-id="turn-2"]')).toHaveCount(1);
   await expect.poll(() => readState(reopened, agentId)).toMatchObject({ event_head_seq: 4, read_through_event_seq: 2, unread_count: 1 });
-  expect(readAdvances.filter((seq) => seq > 2)).toEqual([]);
+  expect((await readAdvanceSeqs(request, session)).filter((seq) => seq > 2)).toEqual([]);
 
   await configure(request, session, { failConversationByAgentId: [] });
   await reopened.reload();
@@ -341,7 +344,7 @@ test("cached conversation survives reload and close without advancing a stale re
   await expect.poll(() => readState(reopened, agentId)).toMatchObject({ event_head_seq: 4, read_through_event_seq: 4, unread_count: 0 });
   await expect(reopened.getByText("Brief 2", { exact: true })).toHaveCount(1);
   await expect(reopened.getByText("Brief 4", { exact: true })).toHaveCount(1);
-  expect(readAdvances).toContain(4);
+  await expect.poll(() => readAdvanceSeqs(request, session)).toContain(4);
 });
 
 test("dashboard-only tab receives unread changes and a covered conversation stays unread", async ({ page, context, request }, info) => {

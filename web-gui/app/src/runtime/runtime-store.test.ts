@@ -11,6 +11,7 @@ import {
   mergeBootstrapAgentState,
   mergeAgentDetailIntoSession,
   modelCatalogCacheKey,
+  READ_MARKER_ADVANCE_QUIET_WINDOW_MS,
   observerSyncDiagnostics,
   clearStoredRuntimeConnectionToken,
   resetSessionsForResume,
@@ -1504,7 +1505,9 @@ describe("server brief read state", () => {
     ).toBe(false);
 
     seedReadyConversationScope("agent-a", { throughSeq: 3 }, scopeKey);
-    await retryPendingReadMarker("agent-a");
+    // The flush path mirrors the quiet-window deadline firing after the
+    // caught-up retry scheduled the debounced advance.
+    await retryPendingReadMarker("agent-a", { flush: true });
     await vi.waitFor(() =>
       expect(
         fetchMock.mock.calls.filter(
@@ -1553,10 +1556,12 @@ describe("server brief read state", () => {
     seedReadyConversationScope("agent-a");
     vi.stubGlobal("document", { visibilityState: "visible" });
 
+    vi.useFakeTimers();
     const refreshPromise = useRuntimeStore.getState().refreshBriefReadStates();
     useRuntimeStore.getState().markAgentConversationRead("agent-a");
     resolveStaleRefresh(new Response(JSON.stringify([state()]), { status: 200 }));
     await refreshPromise;
+    await vi.advanceTimersByTimeAsync(READ_MARKER_ADVANCE_QUIET_WINDOW_MS);
     await vi.waitFor(() =>
       expect(
         fetchMock.mock.calls.filter(
@@ -1570,6 +1575,104 @@ describe("server brief read state", () => {
       read_through_event_seq: 8,
       unread_count: 0,
     });
+  });
+
+  it("collapses a moving head into at most one advance POST per quiet window", async () => {
+    vi.useFakeTimers();
+    const cursors: number[] = [];
+    const fetchMock = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url.includes("/brief-read-cursor") && init?.method === "POST") {
+        const requested = (JSON.parse(String(init.body)) as { read_through_event_seq: number })
+          .read_through_event_seq;
+        cursors.push(requested);
+        return Promise.resolve(new Response(JSON.stringify({
+          state: state({ read_through_event_seq: requested, event_head_seq: requested, unread_count: 0 }),
+        }), { status: 200 }));
+      }
+      return Promise.resolve(new Response(JSON.stringify([state()]), { status: 200 }));
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    await useRuntimeStore.getState().setRuntimeConnection({ mode: "local" });
+    await useRuntimeStore.getState().refreshBriefReadStates();
+    useRuntimeStore.setState({
+      route: "agent",
+      selectedAgentId: "agent-a",
+      discovery: { ...useRuntimeStore.getState().discovery, freshness: "fresh" },
+    });
+    seedReadyConversationScope("agent-a");
+    vi.stubGlobal("document", { visibilityState: "visible" });
+
+    useRuntimeStore.getState().markAgentConversationRead("agent-a");
+    // A producing agent: every event batch moves the observed head and the
+    // rendered boundary together, retriggering the read-marker retry.
+    for (let head = 9; head <= 16; head += 1) {
+      useRuntimeStore.setState({
+        briefReadStateByAgentId: { "agent-a": state({ event_head_seq: head, unread_count: 2 }) },
+      });
+      seedReadyConversationScope("agent-a", { throughSeq: head });
+      void retryPendingReadMarker("agent-a");
+      await vi.advanceTimersByTimeAsync(250);
+    }
+    // The head kept moving inside every quiet window: no POST has fired yet.
+    expect(cursors).toEqual([]);
+    await vi.advanceTimersByTimeAsync(READ_MARKER_ADVANCE_QUIET_WINDOW_MS);
+    await vi.waitFor(() => expect(cursors).toEqual([16]));
+    expect(useRuntimeStore.getState().briefReadStateByAgentId["agent-a"]).toMatchObject({
+      read_through_event_seq: 16,
+      unread_count: 0,
+    });
+    // Caught up and quiet: further retries stay free of write traffic.
+    void retryPendingReadMarker("agent-a");
+    await vi.advanceTimersByTimeAsync(READ_MARKER_ADVANCE_QUIET_WINDOW_MS * 2);
+    expect(cursors).toEqual([16]);
+  });
+
+  it("flushes a pending quiet-window advance with a keepalive POST on pagehide", async () => {
+    vi.useFakeTimers();
+    const pageHideListeners: Array<() => void> = [];
+    vi.stubGlobal("window", {
+      addEventListener: (type: string, listener: () => void) => {
+        if (type === "pagehide") pageHideListeners.push(listener);
+      },
+    });
+    const advances: Array<{ seq: number; keepalive: boolean }> = [];
+    const fetchMock = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url.includes("/brief-read-cursor") && init?.method === "POST") {
+        const requested = (JSON.parse(String(init.body)) as { read_through_event_seq: number })
+          .read_through_event_seq;
+        advances.push({ seq: requested, keepalive: init?.keepalive === true });
+        return Promise.resolve(new Response(JSON.stringify({
+          state: state({ read_through_event_seq: requested, event_head_seq: requested, unread_count: 0 }),
+        }), { status: 200 }));
+      }
+      return Promise.resolve(new Response(JSON.stringify([state()]), { status: 200 }));
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    await useRuntimeStore.getState().setRuntimeConnection({ mode: "local" });
+    await useRuntimeStore.getState().refreshBriefReadStates();
+    useRuntimeStore.setState({
+      route: "agent",
+      selectedAgentId: "agent-a",
+      discovery: { ...useRuntimeStore.getState().discovery, freshness: "fresh" },
+    });
+    seedReadyConversationScope("agent-a");
+    vi.stubGlobal("document", { visibilityState: "visible" });
+
+    useRuntimeStore.getState().markAgentConversationRead("agent-a");
+    // Still inside the quiet window: the advance has not been posted yet.
+    expect(advances).toEqual([]);
+    expect(pageHideListeners).toHaveLength(1);
+    // During teardown the document may already report itself hidden; the
+    // flush must deliver the recorded boundary without re-running the gate.
+    vi.stubGlobal("document", { visibilityState: "hidden" });
+    for (const listener of pageHideListeners) listener();
+    await vi.waitFor(() => expect(advances).toEqual([{ seq: 8, keepalive: true }]));
+    // Let the abandoned debounce timer fire (gate stays closed while hidden)
+    // so no timer leaks into the next test's connection reset.
+    await vi.advanceTimersByTimeAsync(READ_MARKER_ADVANCE_QUIET_WINDOW_MS);
+    expect(advances).toEqual([{ seq: 8, keepalive: true }]);
   });
 
   it("retries a failed read cursor advance with backoff", async () => {
@@ -1607,10 +1710,11 @@ describe("server brief read state", () => {
     vi.stubGlobal("document", { visibilityState: "visible" });
 
     useRuntimeStore.getState().markAgentConversationRead("agent-a");
+    await vi.advanceTimersByTimeAsync(READ_MARKER_ADVANCE_QUIET_WINDOW_MS);
     await vi.waitFor(() => expect(markAttempts).toBe(1));
     expect(useRuntimeStore.getState().briefReadStateByAgentId["agent-a"]?.unread_count).toBe(0);
 
-    await vi.advanceTimersByTimeAsync(1_000);
+    await vi.advanceTimersByTimeAsync(1_000 + READ_MARKER_ADVANCE_QUIET_WINDOW_MS);
     await vi.waitFor(() => expect(markAttempts).toBe(2));
     expect(useRuntimeStore.getState().briefReadStateByAgentId["agent-a"]).toMatchObject({
       read_through_event_seq: 8,

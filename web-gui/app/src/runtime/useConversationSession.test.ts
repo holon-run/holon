@@ -132,6 +132,40 @@ describe("conversation session identity binding", () => {
     }
   });
 
+  it("does not re-arm the read-marker retry when a refresh carries the same read-state boundary", async () => {
+    const key = resolveConversationScopeKey("local", "child", mocks.state.currentUser, 1);
+    const view = { scope: {}, turns: [], pending_inputs: [], details: [], through_seq: 1,
+      next_before_cursor: null, has_more: false, checkpoint: null, reset_reason: null } as never;
+    useConversationScopeStore.setState({ scopes: { [key]: {
+      status: { kind: "ready" }, view, displayView: view, version: 1,
+    } } });
+    const boundary = {
+      event_log_epoch: "epoch-1", visibility_scope_id: "scope-1",
+      event_head_seq: 4, read_through_event_seq: 3,
+    };
+    mocks.state.briefReadStateByAgentId = { child: { ...boundary, revision: 1 } };
+    try {
+      await render("child", 1, false);
+      expect(retryPendingReadMarker).toHaveBeenCalledWith("child");
+      vi.mocked(retryPendingReadMarker).mockClear();
+
+      // A new store object with the same epoch/scope/head/cursor boundary is
+      // the steady-state refresh outcome; it must not retrigger the advance.
+      mocks.state.briefReadStateByAgentId = { child: { ...boundary, revision: 2 } };
+      await render("child", 1, false);
+      expect(retryPendingReadMarker).not.toHaveBeenCalled();
+
+      // A moved head is a real boundary change and retriggers the retry.
+      mocks.state.briefReadStateByAgentId = {
+        child: { ...boundary, revision: 3, event_head_seq: 5 },
+      };
+      await render("child", 1, false);
+      expect(retryPendingReadMarker).toHaveBeenCalledWith("child");
+    } finally {
+      mocks.state.briefReadStateByAgentId = {};
+    }
+  });
+
   it("attaches previews explicitly read-only and does not expose readiness or network actions", async () => {
     await render("child", 1, true);
     expect(mocks.acquire).toHaveBeenLastCalledWith(expect.objectContaining({ readOnly: true, incarnation: 1 }));
