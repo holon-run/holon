@@ -207,12 +207,18 @@ export function useConversationSession(
   }, [conversationReady, agentId, scopeKey, snapshot.view?.through_seq, snapshot.view?.scope]);
 
   // Retry when the displayed scope catches up, even if it stayed ready while
-  // receiving updates. Read markers must not depend on the retired raw-event ledger.
+  // receiving updates. Read markers must not depend on the retired raw-event
+  // ledger. The retrigger keys on the read-state boundary (epoch, scope, head,
+  // cursor) instead of store object identity: refreshes that carry the same
+  // boundary must not re-arm the advance loop (#3851).
+  const readStateBoundaryKey = readState == null
+    ? null
+    : `${readState.event_log_epoch}:${readState.visibility_scope_id}:${readState.event_head_seq}:${readState.read_through_event_seq}`;
   useEffect(() => {
     if (!conversationReady || agentId === undefined) return;
     void retryPendingReadMarker(agentId);
   }, [conversationReady, agentId, scopeKey, snapshot.view?.through_seq,
-    snapshot.view?.scope, discoveryFreshness, readState]);
+    snapshot.view?.scope, discoveryFreshness, readStateBoundaryKey]);
 
   const model = useMemo(() => {
     const view = snapshot.displayView;
