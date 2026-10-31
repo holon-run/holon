@@ -70,6 +70,25 @@ pub struct ConversationIdentity {
     pub agent_incarnation: u64,
 }
 
+pub(crate) fn active_agent_identity(
+    connection: &Connection,
+    agent_id: &str,
+) -> Result<Option<ConversationIdentity>> {
+    let incarnation: Option<u64> = connection
+        .query_row(
+            "SELECT COALESCE(json_extract(payload_json, '$.incarnation'), 1)
+             FROM agent_identities
+             WHERE agent_id = ?1 AND status = 'active'",
+            [agent_id],
+            |row| row.get(0),
+        )
+        .optional()?;
+    Ok(incarnation.map(|agent_incarnation| ConversationIdentity {
+        agent_id: agent_id.to_owned(),
+        agent_incarnation,
+    }))
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ConversationResetReason {
     RetentionExpired,
@@ -1615,16 +1634,7 @@ fn conversation_snapshot_context(
     scope_principal: &str,
     scope_entitlement: &str,
 ) -> Result<Option<ConversationSnapshotContext>> {
-    let incarnation: Option<u64> = connection
-        .query_row(
-            "SELECT COALESCE(json_extract(payload_json, '$.incarnation'), 1)
-             FROM agent_identities
-             WHERE agent_id = ?1 AND status = 'active'",
-            [agent_id],
-            |row| row.get(0),
-        )
-        .optional()?;
-    let Some(incarnation) = incarnation else {
+    let Some(identity) = active_agent_identity(connection, agent_id)? else {
         return Ok(None);
     };
     let metadata = |key: &str| -> Result<String> {
@@ -1657,10 +1667,7 @@ fn conversation_snapshot_context(
         |row| Ok((row.get(0)?, row.get(1)?)),
     )?;
     Ok(Some(ConversationSnapshotContext {
-        identity: ConversationIdentity {
-            agent_id: agent_id.to_owned(),
-            agent_incarnation: incarnation,
-        },
+        identity,
         visibility_scope_id: crate::ids::visibility_scope_id(
             &runtime_id,
             scope_principal,

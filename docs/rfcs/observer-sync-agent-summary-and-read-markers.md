@@ -101,6 +101,45 @@ browser acceptance also rejects raw events requests on the wire. CI runs the
 DOM/network scenario against static production assets without the bridge,
 covering bootstrap, selection, refresh, reconnect, and epoch rotation.
 
+### Selected Agent resource freshness (2026-10-31)
+
+The selected, admitted Agent route owns a bounded HTTP refresh scheduler.
+Committed live conversation checkpoint advancement is an invalidation hint,
+not a WorkItem or Agent-state payload. Same-head reconnect completion, route
+entry, visibility/online restoration and explicit refresh also revalidate.
+History pagination, lazy Brief reads and unchanged checkpoints do not.
+
+`/agents/{id}/state` owns focus, active tasks and workspace state;
+`/agents/{id}/work-items` independently owns WorkItem membership. The current
+work bar and inspector consume these shared resources, not independent polls.
+Continuous admission revalidates the identity endpoint, not a second state
+poller. Route entry and admission-error recovery still pair online identity
+and state; cached presentation alone never grants access.
+A successful empty list or cleared focus is authoritative. Roster discovery
+must not resurrect an older cached list or overwrite refreshed resource data.
+Independent failures retain last-good data, mark only that resource stale,
+and do not declare conversation synchronization offline.
+
+Hints coalesce at a fixed 300 ms deadline with a 5 s minimum automatic
+interval per resource. State polls at 5 s while running/holding active tasks,
+otherwise 30 s; WorkItem membership has a 30 s no-notification fallback.
+Entry, explicit refresh and restoration may bypass ordinary throttling, but
+not server `Retry-After`. Each resource is single-flight with bounded retry
+backoff and one trailing read when a change arrives during a request.
+Hidden/offline or nonselected routes do not issue automatic resource reads.
+Client/auth/runtime/epoch/incarnation changes fence old responses.
+These GET reads neither write read markers nor change scheduling state.
+
+WorkItem list/detail reads accept the existing
+`x-holon-expected-incarnation` header and bind successful responses to the
+Agent identity. Identity and work-queue facts are read in one database
+snapshot, so an old scope cannot admit a recreated Agent's list.
+
+This first slice does not refresh cached WorkItem plan/todo detail, Timer,
+recent-task or Skill resources; those remain separate follow-up slices.
+There is no new server invalidation protocol or atomic cross-resource
+snapshot guarantee, and no raw-events transport is reintroduced.
+
 The browser-ledger storage and SSE recovery steps below describe the earlier
 design, not the current Web GUI implementation.
 

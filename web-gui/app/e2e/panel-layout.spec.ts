@@ -224,7 +224,12 @@ test("work item details prioritize results and keep technical fields and plan na
     plan_artifact: { path: "/test/README.md", relative_path: "README.md", workspace_id: "files-test", preview: "## Release plan\n\n- Verify artifacts", preview_complete: true },
     todo_list: [{ text: "Verify artifacts", state: "completed" }], work_refs: [] };
   await page.route("**/api/agents/bootstrap-agent/work-items**", async (route) => {
-    await route.fulfill({ json: new URL(route.request().url()).pathname.endsWith(work.id) ? work : [work] });
+    if (new URL(route.request().url()).pathname.endsWith(work.id)) {
+      await route.fulfill({ json: work });
+      return;
+    }
+    const response = await route.fetch();
+    await route.fulfill({ response, json: [work] });
   });
   await request.post(`/__e2e__/append-event?session=${encodeURIComponent(session)}`, { data: { envelope: {
     id: "work-written", event_seq: 1, event_log_epoch: "e2e-epoch",
@@ -234,7 +239,6 @@ test("work item details prioritize results and keep technical fields and plan na
     payload: { work_item: { id: work.id, objective: work.objective, state: work.state, revision: work.revision }, work_item_id: work.id },
   } } });
   await page.reload();
-  await page.getByRole("button", { name: "Refresh agent detail", exact: true }).click();
   const panel = page.locator(".side-panel");
   const shell = page.locator(".app-shell");
   await expect(shell).toBeVisible();
@@ -243,6 +247,7 @@ test("work item details prioritize results and keep technical fields and plan na
     await page.getByRole("button", { name: "Context side panel", exact: true }).click();
   }
   await expect(panel).toBeVisible();
+  await panel.getByRole("button", { name: "Refresh agent and work items", exact: true }).click();
   await panel.locator(".work-item-button").filter({ hasText: work.objective }).click();
   const detail = panel.locator(".work-item-detail");
   await expect(detail.locator(".detail-title")).toHaveText(work.objective);

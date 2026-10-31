@@ -64,6 +64,7 @@ function sessionFor(req, url) {
       currentRunIdByAgentId: new Map(),
       snapshotThroughSeqByAgentId: new Map(),
       projectionLatestBriefByAgentId: new Map(),
+      rightPanelByAgentId: new Map(),
     };
     if (tour) seedTour(session);
     sessions.set(id, session);
@@ -187,6 +188,7 @@ function listEntry(agentId, session) {
 
 function agentState(agentId, session) {
   if (tour) return tourAgents.find((agent) => agent.id === agentId)?.state;
+  const rightPanel = session?.rightPanelByAgentId.get(agentId);
   const running = Boolean(session?.currentRunIdByAgentId.get(agentId));
   return {
     agent: {
@@ -200,6 +202,7 @@ function agentState(agentId, session) {
         id: agentId,
         status: running ? "awake_running" : "awake_idle",
         current_run_id: running ? (session.currentRunIdByAgentId.get(agentId) ?? null) : null,
+        ...(rightPanel ? { current_work_item_id: rightPanel.currentWorkItemId } : {}),
         pending: 0,
         attached_workspaces: [],
         turn_index: 0,
@@ -218,7 +221,7 @@ function agentState(agentId, session) {
     session: { current_run_id: running ? (session.currentRunIdByAgentId.get(agentId) ?? null) : null, pending_count: 0, last_turn: null },
     tasks: [],
     timers: [],
-    work_items: [],
+    work_items: rightPanel?.stateWorkItems ?? rightPanel?.workItems ?? [],
     external_triggers: [],
     workspace: { workspaces: [] },
   };
@@ -299,6 +302,53 @@ async function handleControl(req, res, url) {
   }
   if (url.pathname === "/__e2e__/requests") {
     json(res, { requests: sessionFor(req, url).requests });
+    return true;
+  }
+  if (url.pathname === "/__e2e__/right-panel") {
+    const session = sessionFor(req, url);
+    if (req.method === "GET") {
+      json(res, { streamAgentIds: [...session.conversationStreams].map((stream) => stream.conversationAgentId) });
+      return true;
+    }
+    if (req.method !== "POST") {
+      json(res, { error: "use GET or POST" }, 405);
+      return true;
+    }
+    const { agentId, notify, ...update } = await requestBody(req);
+    if (typeof agentId !== "string") {
+      json(res, { error: "agentId is required" }, 400);
+      return true;
+    }
+    session.rightPanelByAgentId.set(agentId, {
+      workItems: [], currentWorkItemId: null, failResources: [],
+      ...session.rightPanelByAgentId.get(agentId), ...update,
+    });
+    if (notify === "checkpoint") {
+      const previous = session.conversationData.get(agentId);
+      const fromSeq = previous?.head ?? eventHead(session, agentId);
+      const head = fromSeq + 1000;
+      // Advance coverage without fabricating a turn, activity, or raw event.
+      session.conversationData.set(agentId, {
+        turns: previous?.turns ?? conversationTurns(session, agentId),
+        activitiesByTurnId: {}, pending_inputs: [], ...previous, head,
+      });
+      const scope = { event_log_epoch: session.eventLogEpoch, visibility_scope_id: session.visibilityScopeId };
+      const batchId = `right-panel-${head}`;
+      const changes = [
+        { type: "batch_begin", batch_id: batchId, schema_version: 2, query_version: 2,
+          runtime_id: session.runtimeId, ...scope, from_seq: fromSeq, through_seq: head },
+        { type: "checkpoint", batch_id: batchId, ...scope, through_seq: head,
+          checkpoint: conversationCursor(session, agentId, head) },
+      ];
+      for (const stream of session.conversationStreams) {
+        if (stream.conversationAgentId !== agentId) continue;
+        for (const change of changes) {
+          const id = change.type === "checkpoint" ? `id: ${change.checkpoint}\n` : "";
+          stream.write(`${id}event: ${change.type}\ndata: ${JSON.stringify(change)}\n\n`);
+        }
+      }
+    }
+    json(res, { updated: true });
     return true;
   }
   if (url.pathname === "/__e2e__/state") {
@@ -542,7 +592,32 @@ async function handleApi(req, res, url) {
   }
   const stateMatch = url.pathname.match(/^\/api\/agents\/([^/]+)\/state$/);
   if (stateMatch) {
-    json(res, agentState(decodeURIComponent(stateMatch[1]), session));
+    const agentId = decodeURIComponent(stateMatch[1]);
+    if (session.rightPanelByAgentId.get(agentId)?.failResources.includes("state")) {
+      json(res, { error: "right-panel state unavailable" }, 503);
+    } else {
+      json(res, agentState(agentId, session));
+    }
+    return true;
+  }
+  const workItemsMatch = url.pathname.match(/^\/api\/agents\/([^/]+)\/work-items$/);
+  if (workItemsMatch) {
+    const agentId = decodeURIComponent(workItemsMatch[1]);
+    const fixture = session.rightPanelByAgentId.get(agentId);
+    const identity = listEntry(agentId, session).identity;
+    const expectedIncarnation = req.headers["x-holon-expected-incarnation"];
+    if (expectedIncarnation !== undefined && expectedIncarnation !== String(identity.incarnation)) {
+      json(res, { error: "conversation_identity_changed" }, 409);
+      return true;
+    }
+    if (fixture?.failResources.includes("work-items")) {
+      json(res, { error: "right-panel work items unavailable" }, 503);
+    } else {
+      json(res, fixture?.workItems ?? [], 200, {
+        "x-holon-agent-id": identity.agent_id,
+        "x-holon-agent-incarnation": String(identity.incarnation),
+      });
+    }
     return true;
   }
   if (url.pathname === "/api/agents/brief-read-states" && req.method === "GET") {

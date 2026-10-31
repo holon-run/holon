@@ -14,6 +14,10 @@
 //! (matching the previous per-agent read-error behavior) while the rest of
 //! the roster stays servable.
 
+#[cfg(test)]
+#[path = "agent_list_tests.rs"]
+mod tests;
+
 use std::collections::HashMap;
 
 use anyhow::Result;
@@ -24,6 +28,7 @@ use crate::types::{
     WorkItemRecord,
 };
 
+use super::conversation::{active_agent_identity, ConversationIdentity, ConversationReadError};
 use super::repositories::{
     decode_external_trigger_payload, decode_wait_condition_row,
     decode_work_item_continuation_payload, decode_work_item_payload, enum_string,
@@ -78,6 +83,17 @@ pub struct AgentListPostureRows {
 }
 
 impl RuntimeDb {
+    /// Captures the work queue's identity and all facts in one committed view.
+    pub(crate) fn agent_work_queue_snapshot(
+        &self,
+        agent_id: &str,
+        expected_incarnation: Option<u64>,
+    ) -> Result<Option<(ConversationIdentity, AgentListPostureRow)>> {
+        self.with_read(|connection| {
+            read_work_queue_snapshot(connection, agent_id, expected_incarnation, || {})
+        })
+    }
+
     /// Reads posture facts for every requested agent through one
     /// connection inside one deferred read transaction. Returns exactly
     /// one row per requested agent id (empty facts when the agent has no
@@ -106,6 +122,28 @@ impl RuntimeDb {
         crate::diagnostics::record_agent_list_projection(started_at.elapsed());
         Ok(rows)
     }
+}
+
+fn read_work_queue_snapshot(
+    connection: &mut Connection,
+    agent_id: &str,
+    expected_incarnation: Option<u64>,
+    after_identity: impl FnOnce(),
+) -> Result<Option<(ConversationIdentity, AgentListPostureRow)>> {
+    let transaction = connection.transaction_with_behavior(TransactionBehavior::Deferred)?;
+    let Some(identity) = active_agent_identity(&transaction, agent_id)? else {
+        if expected_incarnation.is_some() {
+            return Err(ConversationReadError::IdentityChanged.into());
+        }
+        return Ok(None);
+    };
+    if expected_incarnation.is_some_and(|expected| expected != identity.agent_incarnation) {
+        return Err(ConversationReadError::IdentityChanged.into());
+    }
+    after_identity();
+    let rows = collect_agent_list_posture_rows(&transaction, &[agent_id.to_owned()])?;
+    transaction.commit()?;
+    Ok(rows.rows.into_iter().next().map(|row| (identity, row)))
 }
 
 fn read_posture_rows(

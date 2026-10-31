@@ -381,6 +381,8 @@ export interface AgentSummary {
   posture: string;
   postureReason: string;
   currentRunId?: string | null;
+  /** Canonical state focus, even when the embedded WorkItem record is absent. */
+  currentWorkItemId?: string | null;
   currentWork?: WorkItemSummary;
   providerCooldownWait?: ProviderCooldownWait | null;
   workspaceSummary?: WorkspaceSummary;

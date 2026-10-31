@@ -266,7 +266,7 @@ const en = {
     otherWork: "Other work",
     agentTask: "Agent-level task",
     noTasks: "No active background tasks",
-    stale: "Connection interrupted · status may be outdated",
+    stale: "Status refresh failed · showing last known data",
     retry: "Refresh status",
     taskState: { queued: "Queued", running: "Running", cancelling: "Cancelling" },
   },
@@ -1047,6 +1047,9 @@ const en = {
     openGithub: "Open Holon on GitHub",
   },
   rightPanel: {
+    refreshCore: "Refresh agent and work items",
+    stateRefreshStale: "Agent status is stale",
+    workItemsRefreshStale: "Work item list is stale",
     loadingAgentInformation: "Loading agent information…",
     recentCompletedTasks: "Recently completed (up to {{count}})",
     refreshRecentTasks: "Refresh recent tasks",

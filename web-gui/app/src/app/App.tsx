@@ -66,6 +66,7 @@ import {
 import { useAgentDetail } from "../runtime/useAgentDetail";
 import { useAgentAccess, type AgentAccessStatus } from "../runtime/useAgentAccess";
 import { useConversationSession } from "../runtime/useConversationSession";
+import { useSelectedAgentRefresh } from "../runtime/useSelectedAgentRefresh";
 import { useRuntimeDashboard } from "../runtime/useRuntimeDashboard";
 import type { AgentSummary, RouteKey, RuntimeConnection } from "../runtime/types";
 import { truncateToWidth } from "../lib/utils";
@@ -157,9 +158,14 @@ export function App() {
     : /^\d+$/.test(incarnationParam) && Number.isSafeInteger(Number(incarnationParam)) && Number(incarnationParam) > 0
       ? Number(incarnationParam) : -1;
   const agentAccess = useAgentAccess(route === "agent" ? selectedAgentId : undefined, expectedIncarnation);
+  const sharedAgent = useRuntimeStore((state) => {
+    const agent = state.sessionsByAgentId[selectedAgentId]?.detail?.agent;
+    return agentAccess.agent && agent?.incarnation === agentAccess.agent.incarnation ? agent : undefined;
+  });
   const selectedAgent = route === "agent"
-    ? agentAccess.agent && rosterAgent?.id === agentAccess.agent.id && rosterAgent.incarnation === agentAccess.agent.incarnation
-      ? { ...rosterAgent, acceptsInput: agentAccess.agent.acceptsInput, inputDisabledReason: agentAccess.agent.inputDisabledReason }
+    ? agentAccess.agent && (sharedAgent ?? rosterAgent)?.id === agentAccess.agent.id
+      && (sharedAgent ?? rosterAgent)?.incarnation === agentAccess.agent.incarnation
+      ? { ...(sharedAgent ?? rosterAgent)!, acceptsInput: agentAccess.agent.acceptsInput, inputDisabledReason: agentAccess.agent.inputDisabledReason }
       : agentAccess.agent
     : rosterAgent;
   const rosterActivityByAgentId = useRuntimeStore((state) => state.rosterActivityByAgentId);
@@ -286,6 +292,12 @@ export function App() {
     agentAccess.agent?.incarnation,
     agentAccess.status !== "available",
   );
+  useSelectedAgentRefresh(
+    route === "agent" ? agentAccess.agent : undefined,
+    conversationSession.scopeKey,
+    route === "agent" && agentAccess.status === "available",
+    agentAccess.rejectInput,
+  );
   // The creation banner reports that the agent was created, not that its
   // first turn succeeded. It retires once this agent's conversation proves a
   // settled successful turn; a failed first turn keeps it visible so
@@ -349,7 +361,7 @@ export function App() {
             aria-label={agentDetailLoading ? t("app.refreshingAgent") : t("app.refreshAgent")}
             title={agentDetailLoading ? t("common.refreshing") : t("app.refreshAgent")}
             disabled={agentDetailLoading}
-            onClick={() => void refreshAgentDetail()}
+            onClick={() => { conversationSession.retry(); void refreshAgentDetail(); }}
           >
             <RefreshCw size={16} />
           </Button>

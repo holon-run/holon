@@ -11,6 +11,7 @@ import type {
   RuntimeTranscriptEntry,
   DisplayLevel,
   WorkItemDetailState,
+  WorkItemSummary,
   TaskDetailState,
   ToolExecutionDetailState,
 } from "./types";
@@ -47,7 +48,20 @@ export type AgentSyncStatus =
   | "stale"
   | "error";
 
+export interface AgentResourceRefreshState {
+  loading: boolean;
+  stale: boolean;
+  error?: string;
+  lastSuccessAt?: number;
+  dataRequestId?: number;
+}
+
 export interface AgentSessionState extends SessionProjectionState {
+  /** Independent HTTP resources must not change conversation sync health. */
+  resourceRefresh?: Partial<Record<"state" | "workItems", AgentResourceRefreshState>>;
+  resourceScopeKey?: string;
+  /** Independent membership also exists for admitted Agents outside the roster. */
+  workItemsSnapshot?: WorkItemSummary[];
   loading: boolean;
   liveStatus: AgentLiveStatus;
   contentStatus: AgentContentStatus;

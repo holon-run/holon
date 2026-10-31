@@ -632,6 +632,23 @@ describe("createRuntimeClient", () => {
     });
   });
 
+  it("preserves canonical focus when the embedded WorkItem record is absent", async () => {
+    const state = agentStateFixture("agent-one");
+    state.agent.agent.current_work_item_id = "work-without-embedded-record";
+    state.work_items = [];
+    const client = createRuntimeClient({
+      mode: "remote", baseUrl: "http://example.test:7878",
+      fetchImpl: (async () => Response.json(state)) as typeof fetch,
+    });
+    await expect(client.getAgentState("agent-one")).resolves.toMatchObject({
+      currentWorkItemId: "work-without-embedded-record", currentWork: undefined, workItems: [],
+    });
+    state.agent.agent.current_work_item_id = null;
+    await expect(client.getAgentState("agent-one")).resolves.toMatchObject({
+      currentWorkItemId: null, currentWork: undefined,
+    });
+  });
+
   it("loads agent state without fetching the full roster", async () => {
     const seen: string[] = [];
     const client = createRuntimeClient({
@@ -1644,6 +1661,26 @@ describe("createRuntimeClient", () => {
       expect.objectContaining({ id: "work-done", objective: "Done", state: "completed" }),
     ]);
     expect(seen).toEqual(["http://example.test:7878/api/agents/agent%2Fone/work-items?limit=25"]);
+  });
+
+  it.each([
+    { id: "agent/one", incarnation: "3", accepted: true },
+    { id: "agent/one", incarnation: "4", accepted: false },
+    { id: "other", incarnation: "3", accepted: false },
+    { id: undefined, incarnation: undefined, accepted: false },
+  ])("checks the WorkItem list response identity: $id / $incarnation", async ({ id, incarnation, accepted }) => {
+    const fetchImpl = vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
+      expect(new Headers(init?.headers).get("x-holon-expected-incarnation")).toBe("3");
+      expect(init?.cache).toBe("no-store");
+      const headers = new Headers();
+      if (id !== undefined) headers.set("x-holon-agent-id", id);
+      if (incarnation !== undefined) headers.set("x-holon-agent-incarnation", incarnation);
+      return Response.json([{ id: "w-replacement", objective: "Should stay isolated", state: "open" }], { headers });
+    });
+    const client = createRuntimeClient({ mode: "remote", baseUrl: "http://example.test:7878", fetchImpl });
+    const result = client.getAgentWorkItems("agent/one", { incarnation: 3 });
+    if (accepted) await expect(result).resolves.toEqual([expect.objectContaining({ id: "w-replacement" })]);
+    else await expect(result).rejects.toMatchObject({ status: 409, code: "agent_incarnation_mismatch" });
   });
 
   it("fetches agent work item details from the scoped detail endpoint", async () => {
