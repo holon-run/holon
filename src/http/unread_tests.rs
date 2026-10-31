@@ -239,29 +239,55 @@ async fn static_token_unread_handlers_keep_lightweight_http_responsive_under_wri
         .unwrap()
         .unwrap();
 
-    let mut requests = Vec::new();
-    for (method, uri) in unread_routes() {
-        let app = app.clone();
-        requests.push(tokio::spawn(async move {
-            app.oneshot(unread_request(method, &uri, Some("Bearer secret"), head))
-                .await
-                .unwrap()
-        }));
-    }
-    let batch = requests.remove(0);
-    let response = tokio::time::timeout(TEST_TIMEOUT, batch)
-        .await
-        .expect("the read-only batch must not wait for a writer")
-        .unwrap();
-    assert_eq!(response.status(), StatusCode::OK);
-    assert_eq!(response_json(response).await[0]["unread_count"], 2);
+    // The batch read and the single-agent read are pure reader-pool reads
+    // once the baseline cursor is pinned, so both must answer while an
+    // independent writer holds the database write lock. Only the genuine
+    // cursor advance still waits for that writer.
+    let batch = tokio::time::timeout(
+        TEST_TIMEOUT,
+        app.clone().oneshot(unread_request(
+            "GET",
+            "/api/agents/brief-read-states",
+            Some("Bearer secret"),
+            head,
+        )),
+    )
+    .await
+    .expect("the read-only batch must not wait for a writer")
+    .unwrap();
+    assert_eq!(batch.status(), StatusCode::OK);
+    assert_eq!(response_json(batch).await[0]["unread_count"], 2);
+
+    let single = tokio::time::timeout(
+        TEST_TIMEOUT,
+        app.clone().oneshot(unread_request(
+            "GET",
+            &format!("/api/agents/{AGENT_ID}/brief-read-state"),
+            Some("Bearer secret"),
+            head,
+        )),
+    )
+    .await
+    .expect("the pinned single-agent read must not wait for a writer")
+    .unwrap();
+    assert_eq!(single.status(), StatusCode::OK);
+    let single_body = response_json(single).await;
+    assert_eq!(single_body["unread_count"], 2);
+    assert_eq!(single_body["read_through_event_seq"], 0);
+
+    let mark = tokio::spawn(app.clone().oneshot(unread_request(
+        "POST",
+        &format!("/api/agents/{AGENT_ID}/brief-read-cursor"),
+        Some("Bearer secret"),
+        head,
+    )));
     tokio::time::timeout(TEST_TIMEOUT, async {
-        while permits.available_permits() != 2 {
+        while permits.available_permits() != 3 {
             tokio::task::yield_now().await;
         }
     })
     .await
-    .expect("both mutating unread handlers must enter the bounded DB path");
+    .expect("the genuine cursor advance must enter the bounded DB path");
 
     let response = tokio::time::timeout(
         TEST_TIMEOUT,
@@ -273,7 +299,7 @@ async fn static_token_unread_handlers_keep_lightweight_http_responsive_under_wri
         )),
     )
     .await
-    .expect("lightweight HTTP must run alongside all three unread handlers")
+    .expect("lightweight HTTP must run alongside the advancing unread handler")
     .unwrap();
     assert_eq!(response.status(), StatusCode::OK);
     assert!(
@@ -281,19 +307,19 @@ async fn static_token_unread_handlers_keep_lightweight_http_responsive_under_wri
         "HTTP responses must arrive before the independent writer watchdog releases the lock"
     );
     assert!(
-        requests.iter().all(|request| !request.is_finished()),
-        "single read and cursor update must still be waiting on the writer"
+        !mark.is_finished(),
+        "the genuine cursor advance must still be waiting on the writer"
     );
     release.send(()).unwrap();
-    for request in requests {
-        let response = tokio::time::timeout(TEST_TIMEOUT, request)
-            .await
-            .unwrap()
-            .unwrap();
-        let status = response.status();
-        let body = response_json(response).await;
-        assert_eq!(status, StatusCode::OK, "{body}");
-    }
+    let response = tokio::time::timeout(TEST_TIMEOUT, mark)
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = response_json(response).await;
+    assert_eq!(body["applied_read_through_event_seq"], head);
+    assert_eq!(body["state"]["unread_count"], 0);
     writer.join().unwrap();
     assert_eq!(permits.available_permits(), 4);
 }

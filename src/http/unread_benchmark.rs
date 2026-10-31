@@ -156,3 +156,118 @@ async fn unread_scope_benchmark() {
         "samples": samples,
     })).unwrap());
 }
+
+#[tokio::test(flavor = "current_thread")]
+#[ignore = "fixed-workload performance comparison; cargo test --lib mark_brief_read_repeat -- --ignored --nocapture"]
+async fn mark_brief_read_repeat_benchmark() {
+    use axum::body::Body;
+    use axum::http::Request;
+    use tower::ServiceExt;
+
+    let (_home, host) = super::super::tests::control_token_test_host();
+    const HISTORY: usize = 20;
+    const REPEATS: usize = 200;
+    let agent_id = "unread-mark-bench";
+    host.runtime_db()
+        .agent_identities()
+        .upsert(&AgentIdentityRecord::new(
+            agent_id,
+            AgentKind::Named,
+            AgentVisibility::Public,
+            AgentOwnership::SelfOwned,
+            AgentProfilePreset::PublicNamed,
+            None,
+            None,
+        ))
+        .unwrap();
+    let mut head = 0_u64;
+    for number in 0..HISTORY {
+        let brief = BriefRecord::new(
+            agent_id,
+            BriefKind::Result,
+            format!("brief {number}"),
+            None,
+            None,
+        );
+        let event = crate::types::brief_created_event_for(&brief).unwrap();
+        head = host
+            .runtime_db()
+            .evidence()
+            .append_brief_with_created_event(Some(agent_id), &brief, &event, &[])
+            .unwrap()
+            .event
+            .event_seq;
+    }
+    let host_for_db = host.clone();
+    let app = router(AppState::for_tcp(host));
+    let uri = format!("/api/agents/{agent_id}/brief-read-cursor");
+    let mark_request = |seq: u64| {
+        Request::builder()
+            .method("POST")
+            .uri(&uri)
+            .header(AUTHORIZATION, "Bearer secret")
+            .header(CONTENT_TYPE, "application/json")
+            .body(Body::from(
+                json!({"read_through_event_seq": seq}).to_string(),
+            ))
+            .unwrap()
+    };
+
+    // First mark at the head is a genuine advance through the writer.
+    let started = Instant::now();
+    let response = app.clone().oneshot(mark_request(head)).await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let first_mark_us = started.elapsed().as_micros() as u64;
+
+    let admissions = || -> u64 {
+        host_for_db
+            .runtime_db()
+            .reader_pool_writer_weak_for_tests()
+            .upgrade()
+            .expect("writer state alive")
+            .write_channel_admissions_for_tests()
+            .expect("write queue healthy")
+    };
+    // Let fixture appends finish their background write turns so the delta
+    // below measures only the repeated covered marks.
+    let mut quiesced = admissions();
+    loop {
+        std::thread::sleep(std::time::Duration::from_millis(10));
+        let current = admissions();
+        if current == quiesced {
+            break;
+        }
+        quiesced = current;
+    }
+    let before = admissions();
+
+    let mut samples = Vec::with_capacity(REPEATS);
+    for _ in 0..REPEATS {
+        let started = Instant::now();
+        let response = app.clone().oneshot(mark_request(head)).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        samples.push(started.elapsed().as_micros() as u64);
+    }
+    let admissions_delta = admissions() - before;
+    assert_eq!(
+        admissions_delta, 0,
+        "repeated covered marks must not enter the writer channel"
+    );
+    samples.sort_unstable();
+    let pick = |quantile: usize| samples[(quantile * samples.len()) / 100];
+    println!(
+        "{}",
+        serde_json::to_string_pretty(&json!({
+            "fixture": {"briefs": HISTORY, "repeats": REPEATS},
+            "first_mark_us": first_mark_us,
+            "repeat_marks": {
+                "p50_us": pick(50),
+                "p95_us": pick(95),
+                "max_us": samples[samples.len() - 1],
+                "writer_channel_admissions": admissions_delta,
+            },
+            "notes": "first_mark_us includes the writer-channel advance; repeats are covered no-ops served from the reader pool.",
+        }))
+        .unwrap()
+    );
+}
