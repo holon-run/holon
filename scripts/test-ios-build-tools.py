@@ -2,10 +2,11 @@
 """Run build/archive and UI command contract regressions without starting Xcode."""
 import ast
 import base64
-from contextlib import nullcontext
+from contextlib import nullcontext, redirect_stdout
 import hashlib
 import http.client
 import http.server
+from io import StringIO
 import json
 import os
 import pathlib
@@ -24,8 +25,9 @@ import urllib.error
 import urllib.request
 
 from ios_simulator_text_size import (
-    MAXIMUM_TEXT_SIZE, initialize_simulator_text_size, runtime_text_size_control,
-    set_simulator_text_size, simulator_text_size, simulator_appearance,
+    _RUNTIME_RETRY_ATTEMPTS, MAXIMUM_TEXT_SIZE, initialize_simulator_text_size,
+    runtime_text_size_control, set_simulator_text_size, simulator_text_size,
+    simulator_appearance,
 )
 
 
@@ -1814,17 +1816,68 @@ class SimulatorTextSizeContracts(unittest.TestCase):
                 run.assert_not_called()
 
     def test_runtime_control_command_failure_or_wrong_readback_cannot_acknowledge(self):
-        for responses in [
-            [subprocess.CalledProcessError(1, ["xcrun"])],
-            [self.result(), self.result("large")],
-            [subprocess.TimeoutExpired(["xcrun"], 15)],
+        for responses, expected_calls in [
+            ([subprocess.CalledProcessError(1, ["xcrun"])] * _RUNTIME_RETRY_ATTEMPTS,
+             _RUNTIME_RETRY_ATTEMPTS),
+            ([self.result(), self.result("large")], 2),
+            ([subprocess.TimeoutExpired(["xcrun"], 15)] * _RUNTIME_RETRY_ATTEMPTS,
+             _RUNTIME_RETRY_ATTEMPTS),
         ]:
             with self.subTest(responses=responses):
-                with patch("ios_simulator_text_size.subprocess.run", side_effect=responses):
+                with patch("ios_simulator_text_size.subprocess.run",
+                           side_effect=responses) as run, \
+                        patch("ios_simulator_text_size.time.sleep"):
                     with runtime_text_size_control(UUID) as control:
                         with self.assertRaises(urllib.error.HTTPError) as failure:
                             self.request_control(control, {"category": MAXIMUM_TEXT_SIZE})
                         self.assertEqual(failure.exception.code, 500)
+                    self.assertEqual(run.call_count, expected_calls)
+
+    def test_runtime_set_retries_transient_subprocess_errors(self):
+        responses = [subprocess.CalledProcessError(1, ["xcrun"]), self.result(),
+                     self.result("large")]
+        with patch("ios_simulator_text_size.subprocess.run", side_effect=responses) as run, \
+                patch("ios_simulator_text_size.time.sleep") as sleep:
+            self.assertEqual(
+                set_simulator_text_size(UUID, "large", attempts=_RUNTIME_RETRY_ATTEMPTS),
+                "large")
+            self.assertEqual(run.call_count, 3)
+            self.assertEqual(sleep.call_args_list, [call(1.0)])
+
+    def test_runtime_transient_set_failure_recovers_with_backoff(self):
+        responses = [subprocess.TimeoutExpired(["xcrun"], 15), self.result(),
+                     self.result(MAXIMUM_TEXT_SIZE)]
+        with patch("ios_simulator_text_size.subprocess.run", side_effect=responses) as run, \
+                patch("ios_simulator_text_size.time.sleep") as sleep:
+            with runtime_text_size_control(UUID) as control:
+                with self.request_control(control, {"category": MAXIMUM_TEXT_SIZE}) as response:
+                    self.assertEqual(json.load(response), {"category": MAXIMUM_TEXT_SIZE})
+            self.assertEqual(run.call_count, 3)
+            self.assertEqual(sleep.call_args_list, [call(1.0)])
+
+    def test_runtime_transient_read_failure_recovers_with_backoff(self):
+        responses = [self.result(), subprocess.TimeoutExpired(["xcrun"], 15),
+                     self.result(MAXIMUM_TEXT_SIZE)]
+        with patch("ios_simulator_text_size.subprocess.run", side_effect=responses) as run, \
+                patch("ios_simulator_text_size.time.sleep") as sleep:
+            with runtime_text_size_control(UUID) as control:
+                with self.request_control(control, {"category": MAXIMUM_TEXT_SIZE}) as response:
+                    self.assertEqual(json.load(response), {"category": MAXIMUM_TEXT_SIZE})
+            self.assertEqual(run.call_count, 3)
+            self.assertEqual(sleep.call_args_list, [call(1.0)])
+
+    def test_runtime_retry_exhaustion_is_bounded_logged_and_backed_off(self):
+        responses = [subprocess.TimeoutExpired(["xcrun"], 15)] * _RUNTIME_RETRY_ATTEMPTS
+        with patch("ios_simulator_text_size.subprocess.run", side_effect=responses) as run, \
+                patch("ios_simulator_text_size.time.sleep") as sleep, \
+                redirect_stdout(StringIO()) as logs:
+            with runtime_text_size_control(UUID) as control:
+                with self.assertRaises(urllib.error.HTTPError) as failure:
+                    self.request_control(control, {"category": MAXIMUM_TEXT_SIZE})
+                self.assertEqual(failure.exception.code, 500)
+            self.assertEqual(run.call_count, _RUNTIME_RETRY_ATTEMPTS)
+            self.assertEqual([item.args[0] for item in sleep.call_args_list], [1.0, 4.0])
+            self.assertEqual(logs.getvalue().count("后重试"), _RUNTIME_RETRY_ATTEMPTS - 1)
 
     def test_runtime_change_and_ui_failure_restore_exact_original_size(self):
         responses = [self.result("extra-large"), self.result(), self.result(MAXIMUM_TEXT_SIZE),
@@ -1843,9 +1896,11 @@ class SimulatorTextSizeContracts(unittest.TestCase):
         started, release, closing, restored = (threading.Event() for _ in range(4))
         failure = []
 
-        def set_size(simulator, category, phase="运行时切换", *, timeout=15):
+        def set_size(simulator, category, phase="运行时切换", *, timeout=15, attempts=1):
             self.assertEqual(simulator, UUID)
             self.assertEqual(timeout, 15 if phase == "运行时切换" else 120)
+            self.assertEqual(
+                attempts, _RUNTIME_RETRY_ATTEMPTS if phase == "运行时切换" else 1)
             if phase == "运行时切换":
                 started.set()
                 if not release.wait(5):
