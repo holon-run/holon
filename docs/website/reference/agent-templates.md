@@ -51,6 +51,14 @@ directly from upstream, alongside `sview`, `uxc`, and `agentinbox`.
   environment; the template bundles neither Remotion nor upstream skill files.
   Before first use, check the license applicable to the installed version with
   the operator. Direct installation does not waive usage or paid-license terms.
+- **Motion references:** the pinned
+  `showheyohtaki/motion-prompt/skills/motion-prompt` skill helps select numbered
+  title, caption, and transition effects. It is a vocabulary/reference layer,
+  not an importable Remotion component library. Rebuild approved references in
+  the project and verify a real render. Record reference snapshots: the skill
+  pin does not freeze its remote catalog. Inspect remote samples before adapting;
+  do not execute fetched code automatically or send private project inputs.
+  Headless use can rely on search/specs or supplied picks, without a browser.
 - **Explicit boundaries:** original video generation and TTS require separately
   configured backends. OpenMontage is optional and external. Publishing,
   purchasing, and rights-sensitive operations require separate authorization.
