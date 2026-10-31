@@ -62,22 +62,27 @@ pub async fn task_status(
     headers: HeaderMap,
 ) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
     authorize_remote_access(&headers, &state).map_err(authentication_error_response)?;
+    let expected_incarnation = conversation::request_incarnation(&headers)?;
     let storage = state
         .host
         .operator_agent_read_storage(&agent_id)
         .map_err(agent_access_error)?;
     let read_task_id = task_id.clone();
     let read_agent_id = agent_id.clone();
-    let Some(task) = storage
+    let (identity, task) = storage
         .read_block("http.tasks.status", move |storage| {
-            let task = storage
-                .latest_task_record(&read_task_id)?
-                .filter(|task| task.agent_id == read_agent_id);
-            Ok(task)
+            storage
+                .read_models()
+                .agent_task_snapshot(&read_task_id, expected_incarnation)
         })
         .await
-        .map_err(error_response)?
-    else {
+        .map_err(conversation::conversation_error)?
+        .ok_or_else(|| {
+            agent_access_error(PublicAgentError::NotFound {
+                agent_id: agent_id.clone(),
+            })
+        })?;
+    let Some(task) = task.filter(|task| task.agent_id == read_agent_id) else {
         return Err(task_not_found_response(&task_id));
     };
     let snapshot = match state
@@ -93,7 +98,11 @@ pub async fn task_status(
             .map_err(task_lifecycle_error)?,
         None => TaskStatusSnapshot::from_task_record(&task),
     };
-    Ok(Json(snapshot))
+    Ok(conversation::bind_response(
+        &headers,
+        &identity,
+        Json(snapshot).into_response(),
+    ))
 }
 
 pub async fn task_output(
@@ -103,20 +112,27 @@ pub async fn task_output(
     Query(query): Query<TaskOutputQuery>,
 ) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
     authorize_remote_access(&headers, &state).map_err(authentication_error_response)?;
+    let expected_incarnation = conversation::request_incarnation(&headers)?;
     let storage = state
         .host
         .operator_agent_read_storage(&agent_id)
         .map_err(agent_access_error)?;
     let read_task_id = task_id.clone();
     let read_agent_id = agent_id.clone();
-    if !storage
+    let (identity, task) = storage
         .read_block("http.tasks.output", move |storage| {
-            Ok(storage.latest_task_record(&read_task_id)?)
+            storage
+                .read_models()
+                .agent_task_snapshot(&read_task_id, expected_incarnation)
         })
         .await
-        .map_err(error_response)?
-        .is_some_and(|task| task.agent_id == read_agent_id)
-    {
+        .map_err(conversation::conversation_error)?
+        .ok_or_else(|| {
+            agent_access_error(PublicAgentError::NotFound {
+                agent_id: agent_id.clone(),
+            })
+        })?;
+    if !task.is_some_and(|task| task.agent_id == read_agent_id) {
         return Err(task_not_found_response(&task_id));
     }
     let runtime = state
@@ -144,7 +160,11 @@ pub async fn task_output(
         )
         .await
         .map_err(task_lifecycle_error)?;
-    Ok(Json(output))
+    Ok(conversation::bind_response(
+        &headers,
+        &identity,
+        Json(output).into_response(),
+    ))
 }
 
 pub async fn tool_execution(
@@ -153,25 +173,31 @@ pub async fn tool_execution(
     headers: HeaderMap,
 ) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
     authorize_remote_access(&headers, &state).map_err(authentication_error_response)?;
+    let expected_incarnation = conversation::request_incarnation(&headers)?;
     let storage = state
         .host
         .operator_agent_read_storage(&agent_id)
         .map_err(agent_access_error)?;
     let read_tool_execution_id = tool_execution_id.clone();
-    let read_agent_id = agent_id.clone();
-    let Some(record) = storage
+    let (identity, record) = storage
         .read_block("http.tasks.tool_execution", move |storage| {
-            Ok(storage.read_tool_execution_by_id(&read_tool_execution_id)?)
+            storage
+                .read_models()
+                .agent_tool_execution_snapshot(&read_tool_execution_id, expected_incarnation)
         })
         .await
-        .map_err(error_response)?
-        .filter(|record| record.agent_id == read_agent_id)
-    else {
+        .map_err(conversation::conversation_error)?
+        .ok_or_else(|| agent_access_error(PublicAgentError::NotFound { agent_id }))?;
+    let Some(record) = record else {
         return Err(not_found(format!(
             "tool execution {tool_execution_id} not found"
         )));
     };
-    Ok(Json(record))
+    Ok(conversation::bind_response(
+        &headers,
+        &identity,
+        Json(record).into_response(),
+    ))
 }
 
 pub async fn tool_execution_artifact(

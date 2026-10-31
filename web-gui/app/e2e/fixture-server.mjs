@@ -88,6 +88,19 @@ function json(res, body, status = 200, extraHeaders = {}) {
   res.end(JSON.stringify(body));
 }
 
+function agentResource(req, res, session, agentId, body, status = 200) {
+  const identity = listEntry(agentId, session).identity;
+  const expectedIncarnation = req.headers["x-holon-expected-incarnation"];
+  if (expectedIncarnation !== undefined && expectedIncarnation !== String(identity.incarnation)) {
+    json(res, { error: "conversation_identity_changed" }, 409);
+    return;
+  }
+  json(res, body, status, {
+    "x-holon-agent-id": identity.agent_id,
+    "x-holon-agent-incarnation": String(identity.incarnation),
+  });
+}
+
 function openEventStream(req, res, clients) {
   res.writeHead(200, {
     "Cache-Control": "no-cache",
@@ -219,7 +232,7 @@ function agentState(agentId, session) {
       closure: { outcome: "completed", runtime_posture: "awake" },
     },
     session: { current_run_id: running ? (session.currentRunIdByAgentId.get(agentId) ?? null) : null, pending_count: 0, last_turn: null },
-    tasks: [],
+    tasks: rightPanel?.tasks ?? [],
     timers: [],
     work_items: rightPanel?.stateWorkItems ?? rightPanel?.workItems ?? [],
     external_triggers: [],
@@ -586,8 +599,10 @@ async function handleApi(req, res, url) {
     });
     return true;
   }
-  if (/^\/api\/agents\/[^/]+\/tasks$/.test(url.pathname)) {
-    json(res, []);
+  const tasksMatch = url.pathname.match(/^\/api\/agents\/([^/]+)\/tasks$/);
+  if (tasksMatch) {
+    const agentId = decodeURIComponent(tasksMatch[1]);
+    json(res, session.rightPanelByAgentId.get(agentId)?.tasks ?? []);
     return true;
   }
   const stateMatch = url.pathname.match(/^\/api\/agents\/([^/]+)\/state$/);
@@ -618,6 +633,23 @@ async function handleApi(req, res, url) {
         "x-holon-agent-incarnation": String(identity.incarnation),
       });
     }
+    return true;
+  }
+  const workItemDetailMatch = url.pathname.match(/^\/api\/agents\/([^/]+)\/work-items\/([^/]+)$/);
+  const taskDetailMatch = url.pathname.match(/^\/api\/agents\/([^/]+)\/tasks\/([^/]+)(\/output)?$/);
+  if (workItemDetailMatch || taskDetailMatch) {
+    const match = workItemDetailMatch ?? taskDetailMatch;
+    const agentId = decodeURIComponent(match[1]);
+    const id = decodeURIComponent(match[2]);
+    const fixture = session.rightPanelByAgentId.get(agentId);
+    const resource = workItemDetailMatch ? "work-item-detail" : match[3] ? "task-output" : "task-status";
+    const records = workItemDetailMatch ? fixture?.workItemDetailsById
+      : match[3] ? fixture?.taskOutputsById : fixture?.taskDetailsById;
+    const failed = fixture?.failResources.includes(resource);
+    const record = records?.[id];
+    agentResource(req, res, session, agentId,
+      failed ? { error: `right-panel ${resource} unavailable` } : record ?? { error: `${resource} not found` },
+      failed ? 503 : record ? 200 : 404);
     return true;
   }
   if (url.pathname === "/api/agents/brief-read-states" && req.method === "GET") {
@@ -731,10 +763,16 @@ async function handleApi(req, res, url) {
     });
     return true;
   }
-  const toolMatch = url.pathname.match(/^\/api\/agents\/[^/]+\/tool-executions\/([^/]+)$/);
+  const toolMatch = url.pathname.match(/^\/api\/agents\/([^/]+)\/tool-executions\/([^/]+)$/);
   if (toolMatch) {
-    const tool = session.toolExecutionsById.get(decodeURIComponent(toolMatch[1]));
-    json(res, tool ?? { error: "tool not found" }, tool ? 200 : 404);
+    const agentId = decodeURIComponent(toolMatch[1]);
+    const id = decodeURIComponent(toolMatch[2]);
+    const fixture = session.rightPanelByAgentId.get(agentId);
+    const tool = fixture?.toolExecutionsById?.[id] ?? session.toolExecutionsById.get(id);
+    const failed = fixture?.failResources.includes("tool-execution");
+    agentResource(req, res, session, agentId,
+      failed ? { error: "right-panel tool execution unavailable" } : tool ?? { error: "tool not found" },
+      failed ? 503 : tool ? 200 : 404);
     return true;
   }
   const briefMatch = url.pathname.match(/^\/api\/agents\/([^/]+)\/briefs\/([^/]+)$/);

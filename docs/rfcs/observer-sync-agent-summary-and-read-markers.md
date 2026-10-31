@@ -135,8 +135,25 @@ WorkItem list/detail reads accept the existing
 Agent identity. Identity and work-queue facts are read in one database
 snapshot, so an old scope cannot admit a recreated Agent's list.
 
-This first slice does not refresh cached WorkItem plan/todo detail, Timer,
-recent-task or Skill resources; those remain separate follow-up slices.
+The visible WorkItem/Task/Tool inspector owns one additional scheduler resource.
+Opening or returning to a detail revalidates it; WorkItem details have a 30 s
+silent fallback, and active Task/Tool details poll every 5 s. A terminal Task
+status alone does not stop polling until final output has also been read.
+Terminal details stop periodic reads but still accept hints and explicit retries.
+Closing the inspector or hiding/leaving its route stops its automatic reads.
+Task status and output each count as an HTTP read; the former private 4 s
+Task poller no longer runs.
+
+Initial, manual and scheduled detail reads share scoped single-flight admission.
+Forced reads do not bypass an existing request, and replaced-scope completions
+cannot settle or release a newer request. Detail data survives background
+failures with local stale/error and last-success feedback; partial Task success
+does not mark its failed endpoint fresh. Navigation resolves an entity ID against
+the live cache, with the original label only a fallback. Detail-owned plan,
+todo, references and results are not replaced by an embedded navigation snapshot;
+list membership and current focus remain independent.
+
+Timer, recent-task and Skill resources remain a separate follow-up slice.
 There is no new server invalidation protocol or atomic cross-resource
 snapshot guarantee, and no raw-events transport is reintroduced.
 

@@ -15,6 +15,7 @@ import { RuntimeTracePanel } from "./RuntimeTracePanel";
 import { useTranslation } from "react-i18next";
 import { useRuntimeStore } from "../../runtime/runtime-store";
 import { refreshSelectedAgentResources } from "../../runtime/useSelectedAgentRefresh";
+import { resolveWorkItemDetail } from "./object-detail-selection";
 
 interface RightSidePanelProps {
   agent: AgentSummary;
@@ -35,7 +36,6 @@ interface RightSidePanelProps {
   width: number;
   onResize: (width: number, save?: boolean) => void;
   onToggleMode: () => void;
-  onLoadWorkItemDetail: (workItemId: string) => void;
   onOpenWorkItemDetail: (workItem: WorkItemSummary) => void;
   onOpenTask: (task: TaskSummary) => void;
   onOpenConversation?: (target: TaskTargetRef) => void;
@@ -74,7 +74,6 @@ export function RightSidePanel({
   width,
   onResize,
   onToggleMode,
-  onLoadWorkItemDetail,
   onOpenWorkItemDetail,
   onOpenTask,
   onOpenConversation,
@@ -225,22 +224,22 @@ export function RightSidePanel({
             ? ((fileTitle?.viewKey === viewKey ? fileTitle.path : activeView.initialFilePath)?.split("/").pop() ?? t("rightPanel.fileBrowser"))
           : t("panel.agentOverview");
   const detailState = activeView.kind === "work_item_detail" ? workItemDetailsById[activeView.workItem.id] : undefined;
+  const listReadId = useRuntimeStore((state) => state.sessionsByAgentId[agent.id]?.resourceRefresh?.workItems?.dataRequestId);
   const listedWorkItem = activeView.kind === "work_item_detail"
     ? agent.workItems?.find((wi) => wi.id === activeView.workItem.id)
-      ?? activeView.workItem
     : undefined;
-  // Keep live list status while filling in fields omitted from slim projections.
-  const detailWorkItem = detailState?.workItem && listedWorkItem ? {
-    ...listedWorkItem,
-    planArtifact: detailState.workItem.planArtifact,
-    todoList: detailState.workItem.todoList,
-    workRefs: detailState.workItem.workRefs,
-    resultSummary: listedWorkItem.resultSummary ?? detailState.workItem.resultSummary,
-  } : detailState?.workItem ?? listedWorkItem;
-  const taskDetailState = activeView.kind === "task_detail" ? activeView.detailState ?? taskDetailsById[activeView.task.id] : undefined;
+  const detailWorkItem = activeView.kind === "work_item_detail"
+    ? resolveWorkItemDetail(activeView.workItem, listedWorkItem, detailState, listReadId) : undefined;
+  const taskDetailState = activeView.kind === "task_detail" ? taskDetailsById[activeView.task.id] ?? activeView.detailState : undefined;
   const toolExecutionDetailState = activeView.kind === "tool_execution_detail"
     ? toolExecutionDetailsById[activeView.toolExecutionId] ?? activeView.detailState
     : undefined;
+  const refreshDetail = () => {
+    if (refreshSelectedAgentResources(agent.id)) return;
+    const store = useRuntimeStore.getState();
+    if (activeView.kind === "work_item_detail") void store.loadAgentWorkItemDetail(agent.id, activeView.workItem.id, { force: true });
+    if (activeView.kind === "tool_execution_detail") void store.loadAgentToolExecutionDetail(agent.id, activeView.toolExecutionId, undefined, undefined, { force: true });
+  };
 
   useEffect(() => {
     setShowSkillManager(false);
@@ -344,12 +343,12 @@ export function RightSidePanel({
           <ActivityInspectorPanel activity={activeView.activity} detailState={activeView.detailState} />
         ) : activeView.kind === "work_item_detail" && detailWorkItem ? (
           <div className="inspector-stack">
-            <WorkItemDetailPanel workItem={detailWorkItem} detailState={detailState} onOpenPlanFile={onOpenPlanFile} />
+            <WorkItemDetailPanel workItem={detailWorkItem} detailState={detailState} onOpenPlanFile={onOpenPlanFile} onRefresh={refreshDetail} />
           </div>
         ) : activeView.kind === "task_detail" ? (
           <div className="inspector-stack">
             <TaskDetailPanel
-              task={activeView.task}
+              task={agent.tasks?.find((task) => task.id === activeView.task.id) ?? activeView.task}
               detailState={taskDetailState}
               agentId={agent.id}
               onOpenWorkItem={onOpenWorkItemDetail}
@@ -358,7 +357,7 @@ export function RightSidePanel({
           </div>
         ) : activeView.kind === "tool_execution_detail" ? (
           <div className="inspector-stack">
-            <ToolExecutionDetailPanel toolExecutionId={activeView.toolExecutionId} toolName={activeView.toolName} detailState={toolExecutionDetailState} relatedStateObjectRef={activeView.relatedStateObjectRef} onOpenWorkItem={onOpenWorkItemDetail} onOpenTask={onOpenTask} onBrowseFiles={onBrowseFiles} />
+            <ToolExecutionDetailPanel toolExecutionId={activeView.toolExecutionId} toolName={activeView.toolName} detailState={toolExecutionDetailState} relatedStateObjectRef={activeView.relatedStateObjectRef} onOpenWorkItem={onOpenWorkItemDetail} onOpenTask={onOpenTask} onBrowseFiles={onBrowseFiles} onRefresh={refreshDetail} />
           </div>
         ) : activeView.kind === "file_browser" ? (
           <FileBrowserPanel backActionRef={fileBackAction} workspaceControl={activeView.kind === "file_browser" && workspaces.length > 1 ? <select className="panel-workspace-select" aria-label={t("rightPanel.workspaces")} value={JSON.stringify([activeView.workspaceId, activeView.executionRootId ?? null])}
@@ -381,7 +380,6 @@ export function RightSidePanel({
             availableSkillCatalog={availableSkillCatalog}
             skillCatalogLoading={skillCatalogLoading}
             skillCatalogError={skillCatalogError}
-            onLoadWorkItemDetail={onLoadWorkItemDetail}
             onOpenWorkItemDetail={onOpenWorkItemDetail}
             onOpenTask={onOpenTask}
             onOpenConversation={onOpenConversation}

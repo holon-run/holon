@@ -2,7 +2,10 @@ use super::*;
 use crate::{
     config::AppConfig,
     provider::StubProvider,
-    types::{AgentState, WorkItemRecord, WorkItemState},
+    types::{
+        AgentState, AuthorityClass, TaskKind, TaskRecord, TaskStatus, ToolExecutionRecord,
+        ToolExecutionStatus, WorkItemRecord, WorkItemState,
+    },
 };
 use axum::{
     body::{to_bytes, Body},
@@ -143,4 +146,136 @@ async fn work_queue_http_incarnation_binding_preserves_legacy_reads_without_runt
         }
     }
     assert!(host.try_get_loaded_runtime("queue-agent").await.is_none());
+}
+
+#[tokio::test]
+async fn task_detail_http_incarnation_binding_fences_status_output_and_tool_execution() {
+    let home = tempfile::tempdir().unwrap();
+    std::fs::write(
+        home.path().join("config.json"),
+        r#"{"model":{"default":"openai/gpt-5.4"}}"#,
+    )
+    .unwrap();
+    let config = AppConfig::load_with_home(Some(home.path().to_path_buf())).unwrap();
+    let host = RuntimeHost::new_with_provider(config, Arc::new(StubProvider::new("done"))).unwrap();
+    host.create_named_agent("detail-agent", None).await.unwrap();
+    host.unload_runtime("detail-agent").await;
+    let now = chrono::Utc::now();
+    let task = TaskRecord {
+        id: "task-detail-1".into(),
+        agent_id: "detail-agent".into(),
+        kind: TaskKind::CommandTask,
+        status: TaskStatus::Completed,
+        created_at: now,
+        updated_at: now,
+        parent_message_id: None,
+        work_item_id: None,
+        summary: Some("terminal detail".into()),
+        detail: None,
+        recovery: None,
+    };
+    host.runtime_db().tasks().upsert(&task).unwrap();
+    host.runtime_db()
+        .evidence()
+        .append_tool_execution(&ToolExecutionRecord {
+            id: "tool-detail-1".into(),
+            agent_id: "detail-agent".into(),
+            work_item_id: None,
+            turn_index: 1,
+            turn_id: None,
+            tool_name: "ExecCommand".into(),
+            created_at: now,
+            completed_at: None,
+            duration_ms: 0,
+            authority_class: AuthorityClass::RuntimeInstruction,
+            status: ToolExecutionStatus::Success,
+            input: serde_json::json!({"cmd": "echo ok"}),
+            output: serde_json::json!({"exit_status": 0}),
+            summary: "detail read".into(),
+            invocation_surface: None,
+        })
+        .unwrap();
+    assert!(host.try_get_loaded_runtime("detail-agent").await.is_none());
+    let state = AppState::for_tcp(host.clone());
+    let status_path = "/api/agents/detail-agent/tasks/task-detail-1";
+    let output_path = "/api/agents/detail-agent/tasks/task-detail-1/output";
+    let tool_path = "/api/agents/detail-agent/tool-executions/tool-detail-1";
+
+    for expected in [None, Some("1")] {
+        let (status, headers, body) = request(&state, status_path, expected).await;
+        assert_eq!(status, StatusCode::OK, "status: {expected:?}");
+        assert_eq!(headers["x-holon-agent-id"], "detail-agent");
+        assert_eq!(headers["x-holon-agent-incarnation"], "1");
+        assert_eq!(body["task_id"], "task-detail-1");
+        assert_eq!(body["summary"], "terminal detail");
+
+        let (status, headers, body) = request(&state, tool_path, expected).await;
+        assert_eq!(status, StatusCode::OK, "tool: {expected:?}");
+        assert_eq!(headers["x-holon-agent-id"], "detail-agent");
+        assert_eq!(headers["x-holon-agent-incarnation"], "1");
+        assert_eq!(body["id"], "tool-detail-1");
+        assert_eq!(body["agent_id"], "detail-agent");
+
+        // The runtime stays unloaded, so an identity-admitted output read
+        // must still refuse the payload with task_not_live.
+        let (status, _, body) = request(&state, output_path, expected).await;
+        assert_eq!(status, StatusCode::CONFLICT, "output: {expected:?}");
+        assert_eq!(body["code"], "task_not_live");
+    }
+    for expected in ["2", "invalid", "0"] {
+        for path in [status_path, output_path, tool_path] {
+            let (status, headers, body) = request(&state, path, Some(expected)).await;
+            assert_eq!(status, StatusCode::CONFLICT, "{path}: {expected}");
+            assert_eq!(body["code"], "conversation_identity_changed");
+            assert!(!headers.contains_key("x-holon-agent-incarnation"));
+        }
+    }
+    let missing_status = "/api/agents/detail-agent/tasks/missing";
+    let missing_tool = "/api/agents/detail-agent/tool-executions/missing";
+    assert_eq!(
+        request(&state, missing_status, Some("1")).await.0,
+        StatusCode::NOT_FOUND
+    );
+    assert_eq!(
+        request(&state, missing_status, Some("2")).await.0,
+        StatusCode::CONFLICT
+    );
+    assert_eq!(
+        request(&state, missing_tool, Some("1")).await.0,
+        StatusCode::NOT_FOUND
+    );
+    assert_eq!(
+        request(&state, missing_tool, Some("2")).await.0,
+        StatusCode::CONFLICT
+    );
+
+    host.runtime_db()
+        .transaction(|tx| {
+            tx.execute(
+                "UPDATE agent_identities SET payload_json = json_set(payload_json, '$.incarnation', 2)
+                 WHERE agent_id = 'detail-agent'",
+                [],
+            )?;
+            tx.execute(
+                "UPDATE tasks SET payload_json = json_set(payload_json, '$.summary', 'replacement-only')
+                 WHERE task_id = 'task-detail-1'",
+                [],
+            )?;
+            Ok(())
+        })
+        .unwrap();
+    for path in [status_path, output_path, tool_path] {
+        let (status, _, body) = request(&state, path, Some("1")).await;
+        assert_eq!(status, StatusCode::CONFLICT, "{path}");
+        assert_eq!(body["code"], "conversation_identity_changed");
+        assert!(!body.to_string().contains("replacement-only"));
+    }
+    let (status, headers, body) = request(&state, status_path, Some("2")).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(headers["x-holon-agent-incarnation"], "2");
+    assert_eq!(body["summary"], "replacement-only");
+    let (status, headers, _) = request(&state, tool_path, Some("2")).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(headers["x-holon-agent-incarnation"], "2");
+    assert!(host.try_get_loaded_runtime("detail-agent").await.is_none());
 }

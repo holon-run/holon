@@ -404,6 +404,47 @@ impl RuntimeReadModels {
         Ok(Some((identity, work_queue_from_facts(&facts))))
     }
 
+    /// One committed view of this agent's identity fence plus the latest
+    /// task record, mirroring [`work_queue_snapshot`] admission.
+    pub(crate) fn agent_task_snapshot(
+        &self,
+        task_id: &str,
+        expected_incarnation: Option<u64>,
+    ) -> Result<
+        Option<(
+            crate::runtime_db::conversation::ConversationIdentity,
+            Option<crate::types::TaskRecord>,
+        )>,
+    > {
+        let Some(agent_id) = self.agent_id.as_deref() else {
+            return Ok(None);
+        };
+        self.runtime_db
+            .agent_task_snapshot(agent_id, task_id, expected_incarnation)
+    }
+
+    /// One committed view of this agent's identity fence plus one tool
+    /// execution record, mirroring [`work_queue_snapshot`] admission.
+    pub(crate) fn agent_tool_execution_snapshot(
+        &self,
+        tool_execution_id: &str,
+        expected_incarnation: Option<u64>,
+    ) -> Result<
+        Option<(
+            crate::runtime_db::conversation::ConversationIdentity,
+            Option<crate::types::ToolExecutionRecord>,
+        )>,
+    > {
+        let Some(agent_id) = self.agent_id.as_deref() else {
+            return Ok(None);
+        };
+        self.runtime_db.agent_tool_execution_snapshot(
+            agent_id,
+            tool_execution_id,
+            expected_incarnation,
+        )
+    }
+
     /// Gathers this read model's per-agent facts through the per-agent
     /// repository queries (one connection per query). The pure assembly in
     /// [`work_queue_from_facts`] and the batched `/agents/list` reader

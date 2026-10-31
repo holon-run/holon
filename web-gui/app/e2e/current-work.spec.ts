@@ -4,6 +4,7 @@ const created = new Date(Date.now() - 90_000).toISOString();
 const work = { id: "work-current", objective: "Restore session after login", state: "open", plan_status: "ready", revision: 1, created_at: created, updated_at: created, scheduling_state: "waiting_task", is_current: true, readiness: "blocked", focus: "current" };
 const task = { id: "task-tests", agent_id: "bootstrap-agent", work_item_id: work.id, kind: "command_task", status: "running", summary: "Run login regression tests", created_at: created, updated_at: created };
 const wait = { id: "wait-tests", work_item_id: work.id, kind: "task", status: "active", task_ids: [task.id], created_at: created };
+const identityHeaders = { "x-holon-agent-id": "bootstrap-agent", "x-holon-agent-incarnation": "1" };
 
 test("all waiting statuses stay visible without a waiting timer", async ({ page }) => {
   let kind = "operator";
@@ -41,9 +42,9 @@ test("current work stays visible with the panel closed and opens work/task detai
     body.work_items = [work]; body.tasks = [task]; body.waits = [wait];
     await route.fulfill({ json: body });
   });
-  await page.route(`**/api/agents/bootstrap-agent/work-items/${work.id}`, (route) => route.fulfill({ json: { ...work, agent_id: "bootstrap-agent", workspace_id: "test", plan_artifact: { path: "/test/plan.md", relative_path: "plan.md", workspace_id: "test", preview: "# Login repair plan", preview_complete: true, updated_at: created } } }));
-  await page.route(`**/api/agents/bootstrap-agent/tasks/${task.id}`, (route) => route.fulfill({ json: { ...task, wait_policy: "none", command: { cmd: "npm test", workdir: "/test" } } }));
-  await page.route(`**/api/agents/bootstrap-agent/tasks/${task.id}/output**`, (route) => route.fulfill({ json: { task_id: task.id, output: "Tests running", status: "running" } }));
+  await page.route(`**/api/agents/bootstrap-agent/work-items/${work.id}`, (route) => route.fulfill({ headers: identityHeaders, json: { ...work, agent_id: "bootstrap-agent", workspace_id: "test", plan_artifact: { path: "/test/plan.md", relative_path: "plan.md", workspace_id: "test", preview: "# Login repair plan", preview_complete: true, updated_at: created } } }));
+  await page.route(`**/api/agents/bootstrap-agent/tasks/${task.id}`, (route) => route.fulfill({ headers: identityHeaders, json: { ...task, wait_policy: "none", command: { cmd: "npm test", workdir: "/test" } } }));
+  await page.route(`**/api/agents/bootstrap-agent/tasks/${task.id}/output**`, (route) => route.fulfill({ headers: identityHeaders, json: { task_id: task.id, output: "Tests running", status: "running" } }));
   await page.setViewportSize({ width: 1440, height: 1000 });
   await page.goto("/agents/bootstrap-agent/conversation");
   const bar = page.getByRole("region", { name: "Current work", exact: true });

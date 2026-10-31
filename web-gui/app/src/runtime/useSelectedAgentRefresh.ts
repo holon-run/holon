@@ -6,6 +6,7 @@ import { createSelectedAgentRefreshScheduler } from "./selected-agent-refresh";
 import { getRuntimeConnectionConfig, useRuntimeStore } from "./runtime-store";
 import { registerSelectedAgentRefresh } from "./selected-agent-resource-invalidation";
 import type { AgentSummary } from "./types";
+import { useVisibleAgentDetailRefresh } from "./useVisibleAgentDetailRefresh";
 export { refreshSelectedAgentResources } from "./selected-agent-resource-invalidation";
 
 /** Only the admitted, selected route owns automatic HTTP resource reads. */
@@ -32,6 +33,8 @@ export function useSelectedAgentRefresh(
   errorHandler.current = onAccessError;
   const agentId = agent?.id;
   const incarnation = agent?.incarnation;
+  useVisibleAgentDetailRefresh(agentId, incarnation, scopeKey,
+    enabled && userLoaded && !unauthorized && !connection.authRequired, contextKey, onAccessError);
 
   useEffect(() => {
     if (!enabled || !agentId || incarnation === undefined || !scopeKey

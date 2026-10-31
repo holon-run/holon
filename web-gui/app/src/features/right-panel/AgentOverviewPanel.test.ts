@@ -24,7 +24,6 @@ describe("AgentOverviewPanel (skill detail lookup removed)", () => {
     const noop = () => {};
     const html = renderToStaticMarkup(createElement(AgentOverviewPanel, {
       agent,
-      onLoadWorkItemDetail: noop,
       onOpenWorkItemDetail: noop,
       onOpenTask: noop,
       onRefreshAgentSkills: noop,

@@ -14,8 +14,9 @@ import type {
 } from "../../runtime/types";
 import { normalizeTaskDetailContent } from "./TaskDetailRenderers";
 import { TaskConversationLink } from "./TaskConversationLink";
+import { ObjectDetailRefreshFeedback } from "./ObjectDetailRefreshFeedback";
+import { refreshSelectedAgentResources } from "../../runtime/selected-agent-resource-invalidation";
 
-const ACTIVE_REFRESH_MS = 4000;
 const TERMINAL_STATUSES = new Set(["completed", "failed", "cancelled", "interrupted"]);
 
 function formatDateTime(value: string | null | undefined): string {
@@ -64,17 +65,8 @@ export function TaskDetailPanel({ task, detailState, agentId, onOpenWorkItem, on
   const summary = detail.summary || task.summary;
 
   const handleRefresh = useCallback(() => {
-    void loadAgentTaskDetail(agentId, task.id, true);
+    if (!refreshSelectedAgentResources(agentId)) void loadAgentTaskDetail(agentId, task.id, true);
   }, [agentId, task.id, loadAgentTaskDetail]);
-
-  // Auto-refresh for running tasks
-  useEffect(() => {
-    if (!isRunning) return;
-    const interval = setInterval(() => {
-      void loadAgentTaskDetail(agentId, task.id, true);
-    }, ACTIVE_REFRESH_MS);
-    return () => clearInterval(interval);
-  }, [isRunning, agentId, task.id, loadAgentTaskDetail]);
 
   const failureArtifact = useMemo(() => {
     const raw = taskRecord?.failure_artifact as TaskFailureArtifact | undefined;
@@ -96,7 +88,7 @@ export function TaskDetailPanel({ task, detailState, agentId, onOpenWorkItem, on
         t={t}
       />
       <TaskConversationLink task={task} target={task.target ?? status?.target} fromAgentId={agentId} onOpenConversation={onOpenConversation} />
-      {detailState?.error ? <p className="inspector-error">{detailState.error}</p> : null}
+      <ObjectDetailRefreshFeedback state={detailState} />
       {failureArtifact ? <TaskFailureSection failure={failureArtifact} t={t} /> : null}
       <TaskOverviewSection status={status} task={task} onOpenWorkItem={onOpenWorkItem} t={t} />
       {task.kind === "command_task" || status?.kind === "command_task" ? (
@@ -158,7 +150,7 @@ function TaskDetailHeader({
           type="button"
           className="task-detail-refresh"
           onClick={onRefresh}
-          aria-label={t("inspector.refresh")}
+          aria-label={t("rightPanel.refreshDetail")}
         >
           ↻
         </button>

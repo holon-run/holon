@@ -1047,6 +1047,10 @@ const en = {
     openGithub: "Open Holon on GitHub",
   },
   rightPanel: {
+    refreshDetail: "Refresh detail",
+    detailRefreshing: "Refreshing detail…",
+    detailStale: "Detail is stale · showing last known data",
+    detailLastSuccess: "Last successful refresh: {{time}}",
     refreshCore: "Refresh agent and work items",
     stateRefreshStale: "Agent status is stale",
     workItemsRefreshStale: "Work item list is stale",

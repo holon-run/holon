@@ -1724,6 +1724,119 @@ describe("createRuntimeClient", () => {
     expect(seen).toEqual(["http://example.test:7878/api/agents/agent%2Fone/work-items/work%2Fdetail"]);
   });
 
+  type DetailFenceOptions = { incarnation?: number; signal?: AbortSignal };
+  type RuntimeClientForTests = ReturnType<typeof createRuntimeClient>;
+  const identityFencedDetailReads = [
+    {
+      label: "work item detail",
+      path: "/agents/agent%2Fone/work-items/work%2Fdetail",
+      body: { id: "work/detail", objective: "Inspect details", state: "open" },
+      call: (client: RuntimeClientForTests, options: DetailFenceOptions) =>
+        client.getAgentWorkItem("agent/one", "work/detail", options),
+    },
+    {
+      label: "task status",
+      path: "/agents/agent%2Fone/tasks/task%2F42",
+      body: { task_id: "task/42", status: "completed" },
+      call: (client: RuntimeClientForTests, options: DetailFenceOptions) =>
+        client.getTaskStatus("agent/one", "task/42", options),
+    },
+    {
+      label: "task output",
+      path: "/agents/agent%2Fone/tasks/task%2F42/output?block=false",
+      body: { task: { task_id: "task/42", status: "completed", output_preview: "full output" } },
+      call: (client: RuntimeClientForTests, options: DetailFenceOptions) =>
+        client.getTaskOutput("agent/one", "task/42", options),
+    },
+    {
+      label: "tool execution",
+      path: "/agents/agent%2Fone/tool-executions/tool%2F9",
+      body: { tool_execution_id: "tool/9", agent_id: "agent/one", status: "succeeded" },
+      call: (client: RuntimeClientForTests, options: DetailFenceOptions) =>
+        client.getToolExecution("agent/one", "tool/9", options),
+    },
+  ] as const;
+
+  it.each(identityFencedDetailReads)("sends the incarnation fence on $label reads", async ({ path, body, call }) => {
+    const seen: string[] = [];
+    let capturedInit: RequestInit | undefined;
+    const fetchImpl = async (input: RequestInfo | URL, init?: RequestInit) => {
+      seen.push(String(input));
+      capturedInit = init;
+      const headers = new Headers();
+      headers.set("x-holon-agent-id", "agent/one");
+      headers.set("x-holon-agent-incarnation", "3");
+      return Response.json(body, { headers });
+    };
+    const client = createRuntimeClient({
+      mode: "remote",
+      baseUrl: "http://example.test:7878",
+      fetchImpl: fetchImpl as typeof fetch,
+    });
+
+    await expect(call(client, { incarnation: 3 })).resolves.toBeDefined();
+    expect(seen).toEqual([`http://example.test:7878/api${path}`]);
+    expect(new Headers(capturedInit?.headers).get("x-holon-expected-incarnation")).toBe("3");
+    expect(capturedInit?.cache).toBe("no-store");
+  });
+
+  it.each(identityFencedDetailReads)("rejects a mislabelled $label response", async ({ body, call }) => {
+    const fetchImpl = async () => {
+      const headers = new Headers();
+      headers.set("x-holon-agent-id", "agent/one");
+      headers.set("x-holon-agent-incarnation", "4");
+      return Response.json(body, { headers });
+    };
+    const client = createRuntimeClient({
+      mode: "remote",
+      baseUrl: "http://example.test:7878",
+      fetchImpl: fetchImpl as typeof fetch,
+    });
+
+    await expect(call(client, { incarnation: 3 })).rejects.toMatchObject({
+      status: 409,
+      code: "agent_incarnation_mismatch",
+    });
+  });
+
+  it.each(identityFencedDetailReads)("passes an abort signal through to $label reads", async ({ call }) => {
+    const controller = new AbortController();
+    let captured: AbortSignal | undefined;
+    const fetchImpl = (_input: RequestInfo | URL, init?: RequestInit) => {
+      captured = init?.signal ?? undefined;
+      return new Promise<Response>((_resolve, reject) => {
+        captured?.addEventListener("abort", () => reject(new DOMException("Aborted", "AbortError")));
+      });
+    };
+    const client = createRuntimeClient({
+      mode: "remote",
+      baseUrl: "http://example.test:7878",
+      fetchImpl: fetchImpl as typeof fetch,
+    });
+
+    const pending = call(client, { signal: controller.signal });
+    controller.abort();
+    expect(captured?.aborted).toBe(true);
+    await expect(pending).rejects.toMatchObject({ name: "AbortError" });
+  });
+
+  it.each(identityFencedDetailReads)("keeps legacy $label requests unchanged without an incarnation", async ({ body, call }) => {
+    let capturedInit: RequestInit | undefined;
+    const fetchImpl = async (_input: RequestInfo | URL, init?: RequestInit) => {
+      capturedInit = init;
+      return Response.json(body);
+    };
+    const client = createRuntimeClient({
+      mode: "remote",
+      baseUrl: "http://example.test:7878",
+      fetchImpl: fetchImpl as typeof fetch,
+    });
+
+    await expect(call(client, {})).resolves.toBeDefined();
+    expect(new Headers(capturedInit?.headers).get("x-holon-expected-incarnation")).toBeNull();
+    expect(capturedInit?.cache).toBeUndefined();
+  });
+
   it("loads agent detail through state, conversation and work items only", async () => {
     const seen: string[] = [];
     const conversation = {

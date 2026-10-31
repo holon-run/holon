@@ -154,7 +154,8 @@ test("an invalidated active process refreshes before its brief and opens the exi
   await expect(page.locator(".side-panel").getByText("live-marker", { exact: true })).toBeVisible();
   const toolRequests = async () => (await request.get(control("/__e2e__/requests")).then((r) => r.json())).requests
     .filter((url: string) => url.includes("/tool-executions/exec-live"));
-  expect(await toolRequests()).toHaveLength(1);
+  // The row hydrates once; explicitly opening its inspector revalidates once.
+  await expect.poll(toolRequests).toHaveLength(2);
   // The same canonical record changes while mounted; both preview and open inspector refresh.
   await request.post(control("/__e2e__/configure"), { data: { toolExecutionsById: {
     "exec-live": { id: "exec-live", agent_id: agentId, tool_name: "ExecCommand", status: "error",
@@ -165,7 +166,7 @@ test("an invalidated active process refreshes before its brief and opens the exi
   await expect(page.locator('[data-activity-id="assistant:3"]')).toContainText("Tool output received.");
   await expect(toolRow).toContainText("ExecCommand · error · 1.3s");
   await expect(page.locator(".side-panel").getByText("updated failure", { exact: true })).toBeVisible();
-  expect(await toolRequests()).toHaveLength(2);
+  expect(await toolRequests()).toHaveLength(3);
   await page.getByRole("button", { name: "Close side panel", exact: true }).click();
   await page.getByText("Starting the live check.", { exact: true }).click();
   await expect(page.locator(".side-panel").getByText("Starting the live check.", { exact: true }).first()).toBeVisible();

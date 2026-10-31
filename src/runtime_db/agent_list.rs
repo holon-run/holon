@@ -21,16 +21,16 @@ mod tests;
 use std::collections::HashMap;
 
 use anyhow::Result;
-use rusqlite::{Connection, TransactionBehavior};
+use rusqlite::{params, Connection, OptionalExtension, TransactionBehavior};
 
 use crate::types::{
-    ExternalTriggerRecord, QueueEntryStatus, WaitConditionRecord, WorkItemContinuationFrame,
-    WorkItemRecord,
+    ExternalTriggerRecord, QueueEntryStatus, TaskRecord, ToolExecutionRecord, WaitConditionRecord,
+    WorkItemContinuationFrame, WorkItemRecord,
 };
 
 use super::conversation::{active_agent_identity, ConversationIdentity, ConversationReadError};
 use super::repositories::{
-    decode_external_trigger_payload, decode_wait_condition_row,
+    decode_external_trigger_payload, decode_task_payload, decode_wait_condition_row,
     decode_work_item_continuation_payload, decode_work_item_payload, enum_string,
     wait_condition_decode_error,
 };
@@ -94,6 +94,66 @@ impl RuntimeDb {
         })
     }
 
+    /// One committed view of the agent identity fence plus the latest task record.
+    pub(crate) fn agent_task_snapshot(
+        &self,
+        agent_id: &str,
+        task_id: &str,
+        expected_incarnation: Option<u64>,
+    ) -> Result<Option<(ConversationIdentity, Option<TaskRecord>)>> {
+        self.with_read(|connection| {
+            let transaction =
+                connection.transaction_with_behavior(TransactionBehavior::Deferred)?;
+            let Some(identity) =
+                fenced_agent_identity(&transaction, agent_id, expected_incarnation)?
+            else {
+                return Ok(None);
+            };
+            let task = transaction
+                .query_row(
+                    "SELECT payload_json FROM tasks WHERE task_id = ?1",
+                    [task_id],
+                    |row| row.get::<_, String>(0),
+                )
+                .optional()?
+                .map(|payload| decode_task_payload(&payload))
+                .transpose()?;
+            transaction.commit()?;
+            Ok(Some((identity, task)))
+        })
+    }
+
+    /// One committed view of the agent identity fence plus one tool execution.
+    pub(crate) fn agent_tool_execution_snapshot(
+        &self,
+        agent_id: &str,
+        tool_execution_id: &str,
+        expected_incarnation: Option<u64>,
+    ) -> Result<Option<(ConversationIdentity, Option<ToolExecutionRecord>)>> {
+        self.with_read(|connection| {
+            let transaction =
+                connection.transaction_with_behavior(TransactionBehavior::Deferred)?;
+            let Some(identity) =
+                fenced_agent_identity(&transaction, agent_id, expected_incarnation)?
+            else {
+                return Ok(None);
+            };
+            let record = transaction
+                .query_row(
+                    "SELECT payload_json FROM tool_executions
+                     WHERE agent_id = ?1 AND evidence_id = ?2
+                     LIMIT 1",
+                    params![agent_id, tool_execution_id],
+                    |row| row.get::<_, String>(0),
+                )
+                .optional()?
+                .map(|payload| serde_json::from_str(&payload))
+                .transpose()?;
+            transaction.commit()?;
+            Ok(Some((identity, record)))
+        })
+    }
+
     /// Reads posture facts for every requested agent through one
     /// connection inside one deferred read transaction. Returns exactly
     /// one row per requested agent id (empty facts when the agent has no
@@ -131,7 +191,22 @@ fn read_work_queue_snapshot(
     after_identity: impl FnOnce(),
 ) -> Result<Option<(ConversationIdentity, AgentListPostureRow)>> {
     let transaction = connection.transaction_with_behavior(TransactionBehavior::Deferred)?;
-    let Some(identity) = active_agent_identity(&transaction, agent_id)? else {
+    let Some(identity) = fenced_agent_identity(&transaction, agent_id, expected_incarnation)?
+    else {
+        return Ok(None);
+    };
+    after_identity();
+    let rows = collect_agent_list_posture_rows(&transaction, &[agent_id.to_owned()])?;
+    transaction.commit()?;
+    Ok(rows.rows.into_iter().next().map(|row| (identity, row)))
+}
+
+fn fenced_agent_identity(
+    connection: &Connection,
+    agent_id: &str,
+    expected_incarnation: Option<u64>,
+) -> Result<Option<ConversationIdentity>> {
+    let Some(identity) = active_agent_identity(connection, agent_id)? else {
         if expected_incarnation.is_some() {
             return Err(ConversationReadError::IdentityChanged.into());
         }
@@ -140,10 +215,7 @@ fn read_work_queue_snapshot(
     if expected_incarnation.is_some_and(|expected| expected != identity.agent_incarnation) {
         return Err(ConversationReadError::IdentityChanged.into());
     }
-    after_identity();
-    let rows = collect_agent_list_posture_rows(&transaction, &[agent_id.to_owned()])?;
-    transaction.commit()?;
-    Ok(rows.rows.into_iter().next().map(|row| (identity, row)))
+    Ok(Some(identity))
 }
 
 fn read_posture_rows(

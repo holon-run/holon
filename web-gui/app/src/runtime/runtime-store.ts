@@ -171,6 +171,10 @@ export interface AgentResourceRefreshOptions {
   throwOnError?: boolean;
 }
 
+export interface AgentObjectDetailRefreshOptions extends AgentResourceRefreshOptions {
+  force?: boolean;
+}
+
 function createLiveAgentDetail(agent: AgentSummary | undefined): AgentDetail | null {
   if (!agent) return null;
   return {
@@ -366,7 +370,7 @@ export interface RuntimeStoreState {
   showAgentOverview: (agentId?: string) => void;
   showWorkItemDetail: (agentId: string, workItem: WorkItemSummary) => void;
   showTaskDetail: (agentId: string, task: TaskSummary) => void;
-  showToolExecutionDetail: (agentId: string, toolExecutionId: string, toolName?: string, relatedStateObjectRef?: TimelineStateObjectRef) => void;
+  showToolExecutionDetail: (agentId: string, toolExecutionId: string, toolName?: string, relatedStateObjectRef?: TimelineStateObjectRef, fallbackActivity?: AgentTimelineActivity) => void;
   inspectActivity: (agentId: string, activity: AgentTimelineActivity) => void;
   showFileBrowser: (agentId: string, location: WorkspaceBrowserLocation) => void;
   openResolvedFile: (agentId: string, location: FileOpenTarget) => void;
@@ -427,9 +431,9 @@ export interface RuntimeStoreState {
   refreshAgentDetail: (agentId: string | undefined, options?: AgentDetailRefreshOptions) => Promise<void>;
   refreshAgentWorkItems: (agentId: string | undefined, options?: AgentResourceRefreshOptions) => Promise<void>;
   refreshAgentState: (agentId: string | undefined, options?: AgentResourceRefreshOptions) => Promise<void>;
-  loadAgentWorkItemDetail: (agentId: string | undefined, workItemId: string | undefined) => Promise<void>;
-  loadAgentTaskDetail: (agentId: string | undefined, taskId: string | undefined, force?: boolean) => Promise<void>;
-  loadAgentToolExecutionDetail: (agentId: string | undefined, toolExecutionId: string | undefined, fallbackActivity?: AgentTimelineActivity, conversationRevision?: number) => Promise<void>;
+  loadAgentWorkItemDetail: (agentId: string | undefined, workItemId: string | undefined, options?: AgentObjectDetailRefreshOptions) => Promise<void>;
+  loadAgentTaskDetail: (agentId: string | undefined, taskId: string | undefined, force?: boolean, options?: AgentObjectDetailRefreshOptions) => Promise<void>;
+  loadAgentToolExecutionDetail: (agentId: string | undefined, toolExecutionId: string | undefined, fallbackActivity?: AgentTimelineActivity, conversationRevision?: number, options?: AgentObjectDetailRefreshOptions) => Promise<void>;
   sendOperatorPrompt: (agentId: string | undefined, text: string, attachments?: OperatorPromptAttachment[], expectedIncarnation?: number) => Promise<void>;
   /** Drop locally echoed prompts once the server view carries them. */
   pruneOperatorPrompts: (agentId: string, confirmedMessageIds: readonly string[]) => void;
@@ -544,9 +548,7 @@ function saveSkillInstallJobs(jobs: SkillInstallJob[]): void {
 
 const inspectorDetailInFlight = new Set<string>();
 const workItemRefreshInFlight = new Map<string, AgentResourceRequest>();
-const workItemDetailInFlight = new Set<string>();
-const taskDetailInFlight = new Set<string>();
-const toolExecutionDetailInFlight = new Set<string>();
+const objectDetailInFlight = new Map<string, AgentResourceRequest>();
 const agentStateRefreshInFlight = new Map<string, AgentResourceRequest>();
 let agentResourceReadSequence = 0;
 const agentDetailRefreshInFlight = new Map<string, {
@@ -614,7 +616,7 @@ function agentResourceContext(state: RuntimeStoreState): string {
  * scheduler retry instead of coasting on data that was never merged.
  */
 export class AgentResourceSupersededError extends Error {
-  constructor(agentId: string, resource: AgentResource) {
+  constructor(agentId: string, resource: string) {
     super(`Agent ${agentId} ${resource} read superseded by a newer scope.`);
     this.name = "AgentResourceSupersededError";
   }
@@ -711,6 +713,110 @@ function patchAgentResourceStatus(
   } };
 }
 
+type ObjectDetailKind = "workItem" | "task" | "toolExecution";
+type ObjectDetailState = WorkItemDetailState & TaskDetailState & ToolExecutionDetailState;
+
+/** All entry points share one scoped read, including forced reads during loading. */
+function refreshAgentObjectDetail(
+  set: StoreSet,
+  get: () => RuntimeStoreState,
+  agentId: string,
+  objectId: string,
+  kind: ObjectDetailKind,
+  options: AgentObjectDetailRefreshOptions = {},
+  conversationRevision?: number,
+): Promise<void> {
+  const clientRequest = captureClientRequest();
+  const contextKey = agentResourceContext(get());
+  const incarnation = options.incarnation ?? get().bootstrap.agents.find((agent) => agent.id === agentId)?.incarnation;
+  const scopeKey = JSON.stringify([clientRequest.generation, contextKey, incarnation]);
+  const key = JSON.stringify([agentId, kind, objectId]);
+  const result = (promise: Promise<void>) => options.throwOnError ? promise : promise.catch(() => undefined);
+  const existing = objectDetailInFlight.get(key);
+  if (existing && isCurrentClientRequest(existing) && existing.contextKey === contextKey
+    && existing.incarnation === incarnation && !existing.signal?.aborted) return result(existing.promise);
+  // Stamp the shared scope before parallel core reads can reset this detail.
+  set((state) => {
+    const previous = state.sessionsByAgentId[agentId];
+    if (previous?.resourceScopeKey === scopeKey) return {};
+    const replaced = previous?.resourceScopeKey !== undefined
+      || (incarnation !== undefined && previous?.detail?.agent.incarnation !== undefined
+        && previous.detail.agent.incarnation !== incarnation);
+    return { sessionsByAgentId: {
+      ...state.sessionsByAgentId,
+      [agentId]: { ...(replaced ? emptyAgentSession() : previous ?? emptyAgentSession()), resourceScopeKey: scopeKey },
+    } };
+  });
+  const session = get().sessionsByAgentId[agentId];
+  const cached: ObjectDetailState | undefined = kind === "workItem" ? session?.workItemDetailsById[objectId]
+    : kind === "task" ? session?.taskDetailsById[objectId] : session?.toolExecutionDetailsById[objectId];
+  const sameScope = cached?.scopeKey === scopeKey;
+  const hasData = sameScope && Boolean(cached?.workItem || cached?.output || cached?.status || cached?.toolExecution);
+  const ttl = kind === "workItem" ? 30_000 : 5_000;
+  if (!options.force && hasData && !cached?.stale && Date.now() - (cached?.lastSuccessAt ?? 0) < ttl
+    && (conversationRevision === undefined || (cached?.conversationRevision ?? -1) >= conversationRevision)) return Promise.resolve();
+  const request: AgentResourceRequest = {
+    ...clientRequest, contextKey, incarnation, signal: options.signal,
+    sequence: ++agentResourceReadSequence, promise: Promise.resolve(),
+  };
+  const current = () => objectDetailInFlight.get(key) === request && isCurrentClientRequest(request)
+    && !request.signal?.aborted && agentResourceContext(get()) === contextKey
+    && (incarnation === undefined || get().bootstrap.agents.find((agent) => agent.id === agentId)?.incarnation === incarnation);
+  const patch = (value: ObjectDetailState) => {
+    const scoped = { ...value, scopeKey };
+    if (kind === "workItem") setWorkItemDetailState(set, agentId, objectId, scoped);
+    else if (kind === "task") setTaskDetailState(set, agentId, objectId, scoped);
+    else setToolExecutionDetailState(set, agentId, objectId, scoped);
+  };
+  objectDetailInFlight.set(key, request);
+  patch({
+    ...(!sameScope ? { workItem: undefined, output: undefined, status: undefined, toolExecution: undefined, lastSuccessAt: undefined } : {}),
+    loading: !hasData, refreshing: hasData, stale: sameScope && (cached?.stale ?? false), error: undefined,
+  });
+  request.promise = Promise.resolve().then(async () => {
+    try {
+      if (!current()) throw new AgentResourceSupersededError(agentId, `detail:${kind}:${objectId}`);
+      const readOptions = { incarnation, signal: request.signal };
+      let data: ObjectDetailState;
+      let failure: unknown;
+      if (kind === "workItem") {
+        data = { workItem: await request.client.getAgentWorkItem(agentId, objectId, readOptions) };
+      } else if (kind === "toolExecution") {
+        data = {
+          toolExecution: await request.client.getToolExecution(agentId, objectId, readOptions),
+          ...(conversationRevision !== undefined ? { conversationRevision } : {}),
+        };
+      } else {
+        const [status, output] = await Promise.allSettled([
+          request.client.getTaskStatus(agentId, objectId, readOptions),
+          request.client.getTaskOutput(agentId, objectId, readOptions),
+        ]);
+        data = {
+          ...(status.status === "fulfilled" ? { status: status.value } : {}),
+          ...(output.status === "fulfilled" ? { output: output.value } : {}),
+        };
+        failure = status.status === "rejected" ? status.reason : output.status === "rejected" ? output.reason : undefined;
+      }
+      if (!current()) throw new AgentResourceSupersededError(agentId, `detail:${kind}:${objectId}`);
+      // Partial Task success is useful data, not proof that its output is fresh.
+      patch({ ...data, dataRequestId: request.sequence });
+      if (failure !== undefined) throw failure;
+      patch({ loading: false, refreshing: false, stale: false, error: undefined, lastSuccessAt: Date.now() });
+    } catch (error) {
+      if (!current()) throw new AgentResourceSupersededError(agentId, `detail:${kind}:${objectId}`);
+      patch({
+        loading: false, refreshing: false, stale: true, error: error instanceof Error ? error.message : String(error),
+        // A mounted conversation row retries only when a newer revision arrives.
+        ...(kind === "toolExecution" && conversationRevision !== undefined ? { conversationRevision } : {}),
+      });
+      throw error;
+    } finally {
+      if (objectDetailInFlight.get(key) === request) objectDetailInFlight.delete(key);
+    }
+  });
+  return result(request.promise);
+}
+
 interface AgentCreationRequest extends ClientRequest {
   creationContext: number;
 }
@@ -780,9 +886,7 @@ function cancelClientGenerationWork(): void {
   globalSyncCoordinator.cancelClientGenerationWork();
   inspectorDetailInFlight.clear();
   workItemRefreshInFlight.clear();
-  workItemDetailInFlight.clear();
-  taskDetailInFlight.clear();
-  toolExecutionDetailInFlight.clear();
+  objectDetailInFlight.clear();
 }
 
 
@@ -1552,13 +1656,13 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => {
       rightPanelView: { kind: "task_detail", agentId, task },
       };
     }),
-  showToolExecutionDetail: (agentId, toolExecutionId, toolName, relatedStateObjectRef) =>
+  showToolExecutionDetail: (agentId, toolExecutionId, toolName, relatedStateObjectRef, fallbackActivity) =>
     set((state) => {
       const stack = state.rightPanelView ? [...state.rightPanelViewStack, state.rightPanelView] : state.rightPanelViewStack;
       return {
       rightPanelViewStack: stack,
       rightPanelOpen: true,
-      rightPanelView: { kind: "tool_execution_detail", agentId, toolExecutionId, toolName, relatedStateObjectRef },
+      rightPanelView: { kind: "tool_execution_detail", agentId, toolExecutionId, toolName, relatedStateObjectRef, fallbackActivity },
       };
     }),
   showFileBrowser: (agentId, location) =>
@@ -1610,7 +1714,6 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => {
         state: ref.state ?? "unknown",
       };
       get().showWorkItemDetail(agentId, workItem);
-      void get().loadAgentWorkItemDetail(agentId, ref.id);
       return;
     }
 
@@ -1623,13 +1726,11 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => {
         summary: ref.summary ?? activity.body,
       };
       get().showTaskDetail(agentId, task);
-      void get().loadAgentTaskDetail(agentId, taskId);
       return;
     }
 
     if (activity.stateObjectRef?.kind === "tool_execution") {
-      get().showToolExecutionDetail(agentId, activity.stateObjectRef.id, activity.stateObjectRef.toolName, activity.relatedStateObjectRef);
-      void get().loadAgentToolExecutionDetail(agentId, activity.stateObjectRef.id, activity);
+      get().showToolExecutionDetail(agentId, activity.stateObjectRef.id, activity.stateObjectRef.toolName, activity.relatedStateObjectRef, activity);
       return;
     }
 
@@ -3039,99 +3140,29 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => {
     await refreshAgentResource(set, get, agentId, "state", options);
   },
 
-  loadAgentWorkItemDetail: async (agentId, workItemId) => {
+  loadAgentWorkItemDetail: async (agentId, workItemId, options = {}) => {
     if (!agentId || !workItemId) return;
-    const request = captureClientRequest();
-    const key = `${agentId}:${workItemId}`;
-    const cached = get().sessionsByAgentId[agentId]?.workItemDetailsById[workItemId];
-    if (cached?.workItem || cached?.loading || workItemDetailInFlight.has(key)) return;
-    workItemDetailInFlight.add(key);
-    setWorkItemDetailState(set, agentId, workItemId, { loading: true, error: undefined });
-    try {
-      const workItem = await request.client.getAgentWorkItem(agentId, workItemId);
-      if (!isCurrentClientRequest(request)) return;
-      setWorkItemDetailState(set, agentId, workItemId, { loading: false, workItem });
-    } catch (error) {
-      if (!isCurrentClientRequest(request)) return;
-      setWorkItemDetailState(set, agentId, workItemId, {
-        loading: false,
-        error: error instanceof Error ? error.message : String(error),
-      });
-    } finally {
-      if (isCurrentClientRequest(request)) {
-        workItemDetailInFlight.delete(key);
-      }
-    }
+    await refreshAgentObjectDetail(set, get, agentId, workItemId, "workItem", options);
   },
 
-  loadAgentTaskDetail: async (agentId, taskId, force) => {
+  loadAgentTaskDetail: async (agentId, taskId, force, options = {}) => {
     if (!agentId || !taskId) return;
-    const request = captureClientRequest();
-    const key = `${agentId}:${taskId}`;
-    const cached = get().sessionsByAgentId[agentId]?.taskDetailsById[taskId];
-    if (!force && (cached?.output || cached?.loading || taskDetailInFlight.has(key))) return;
-    taskDetailInFlight.add(key);
-    setTaskDetailState(set, agentId, taskId, { loading: !cached?.output, error: undefined });
-    try {
-      const [statusResult, outputResult] = await Promise.allSettled([
-        request.client.getTaskStatus(agentId, taskId),
-        request.client.getTaskOutput(agentId, taskId),
-      ]);
-      if (!isCurrentClientRequest(request)) return;
-      const status = statusResult.status === "fulfilled" ? statusResult.value : cached?.status;
-      const output = outputResult.status === "fulfilled" ? outputResult.value : cached?.output;
-      const error = statusResult.status === "rejected" && outputResult.status === "rejected"
-        ? (statusResult.reason instanceof Error ? statusResult.reason.message : String(statusResult.reason))
-        : undefined;
-      setTaskDetailState(set, agentId, taskId, { loading: false, status, output, error });
-    } catch (error) {
-      if (!isCurrentClientRequest(request)) return;
-      setTaskDetailState(set, agentId, taskId, {
-        loading: false,
-        error: error instanceof Error ? error.message : String(error),
-      });
-    } finally {
-      if (!isCurrentClientRequest(request)) {
-        return;
-      }
-      taskDetailInFlight.delete(key);
-      const selection = get().rightPanelView;
-      if (selection?.kind === "task_detail" && selection.agentId === agentId && selection.task.id === taskId) {
-        const detail = get().sessionsByAgentId[agentId]?.taskDetailsById[taskId];
-        if (detail) {
-          set({ rightPanelView: { ...selection, detailState: detail } });
-        }
-      }
-    }
+    await refreshAgentObjectDetail(set, get, agentId, taskId, "task", { ...options, force: force ?? options.force });
   },
 
-  loadAgentToolExecutionDetail: async (agentId, toolExecutionId, fallbackActivity, conversationRevision) => {
+  loadAgentToolExecutionDetail: async (agentId, toolExecutionId, fallbackActivity, conversationRevision, options = {}) => {
     if (!agentId || !toolExecutionId) return;
-    const request = captureClientRequest();
-    const key = `${agentId}:${toolExecutionId}`;
-    const cached = get().sessionsByAgentId[agentId]?.toolExecutionDetailsById[toolExecutionId];
-    const currentRevision = conversationRevision === undefined || (cached?.conversationRevision ?? -1) >= conversationRevision;
-    if ((cached?.toolExecution && currentRevision) || cached?.loading || toolExecutionDetailInFlight.has(key)) return;
-    toolExecutionDetailInFlight.add(key);
-    setToolExecutionDetailState(set, agentId, toolExecutionId, { loading: true, error: undefined });
     try {
-      const toolExecution = await request.client.getToolExecution(agentId, toolExecutionId);
-      if (!isCurrentClientRequest(request)) return;
-      setToolExecutionDetailState(set, agentId, toolExecutionId, {
-        loading: false, toolExecution,
-        ...(conversationRevision !== undefined ? { conversationRevision } : {}),
-      });
+      await refreshAgentObjectDetail(set, get, agentId, toolExecutionId, "toolExecution",
+        { ...options, throwOnError: true }, conversationRevision);
     } catch (error) {
-      if (!isCurrentClientRequest(request)) return;
-      setToolExecutionDetailState(set, agentId, toolExecutionId, {
-        loading: false,
-        error: error instanceof Error ? error.message : String(error),
-        ...(conversationRevision !== undefined ? { conversationRevision } : {}),
-      });
       // If the tool execution record doesn't exist (e.g. historical events
       // without tool_execution_id), fall back to the activity inspector
       // which renders structured detail from the raw event payload.
-      if (fallbackActivity) {
+      if (fallbackActivity && error instanceof RuntimeHttpError && error.status === 404) {
+        const selection = get().rightPanelView;
+        if (selection?.kind !== "tool_execution_detail" || selection.agentId !== agentId
+          || selection.toolExecutionId !== toolExecutionId) return;
         set((state) => {
           const stack = state.rightPanelView ? [...state.rightPanelViewStack, state.rightPanelView] : state.rightPanelViewStack;
           return {
@@ -3142,18 +3173,7 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => {
         void hydrateInspectorActivityDetail(get, set, agentId, fallbackActivity);
         return;
       }
-    } finally {
-      if (!isCurrentClientRequest(request)) {
-        return;
-      }
-      toolExecutionDetailInFlight.delete(key);
-      const selection = get().rightPanelView;
-      if (selection?.kind === "tool_execution_detail" && selection.agentId === agentId && selection.toolExecutionId === toolExecutionId) {
-        const detail = get().sessionsByAgentId[agentId]?.toolExecutionDetailsById[toolExecutionId];
-        if (detail) {
-          set({ rightPanelView: { ...selection, detailState: detail } });
-        }
-      }
+      if (options.throwOnError) throw error;
     }
   },
 
