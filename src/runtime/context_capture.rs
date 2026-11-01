@@ -463,10 +463,10 @@ impl RuntimeHandle {
         })?;
 
         let tools = if admission.is_none() {
-            let (provider, tools, surface, _, _) = self
+            let (_, tools, surface, _, _) = self
                 .provider_tool_selection_for_turn(fallback_model)
                 .await?;
-            Some((provider.prompt_tool_specs(&tools), surface))
+            Some((tools, surface))
         } else {
             None
         };

@@ -1716,29 +1716,72 @@ class RecoveryRunnerTests(unittest.TestCase):
             with self.subTest(mutation=mutation), self.assertRaises(AssertionError):
                 check(broken)
 
-    def test_fast_fallback_keeps_exact_task_result_root(self):
-        spec = {"goal": 0, "outcome": "success", "fallback": True}
-        snapshot, record = self.owned_snapshot(spec)
+    def fast_fallback_snapshot(self):
+        snapshot, record = self.owned_snapshot({"goal": 0, "outcome": "success"})
         row = snapshot["execution_protocol_attempts"][0]
         original = oracle.payload(row)
         snapshot["execution_protocol_attempts"].append({
-            **row, "attempt_id": "task-root",
+            **row, "attempt_id": "task-root", "terminal_outcome_id": "root-outcome",
             "payload_json": json.dumps({
                 **original, "attempt_id": "task-root", "turn_id": "original-turn",
+                "run_id": "original-run",
             }),
         })
         row["payload_json"] = json.dumps({
-            **original, "recovery_of_attempt_id": "task-root",
+            **original, "turn_id": None, "run_id": None,
+            "recovery_of_attempt_id": "task-root",
             "source_message_id": "fallback-source",
-            "source": {"identity": {"kind": "runtime_recovery"}, "generation": 2},
+            "source": {"identity": {
+                "kind": "runtime_recovery", "recovery_id": "fallback-source",
+            }, "generation": 2},
         })
         original_turn = copy.deepcopy(snapshot["turn_records"][0])
-        original_turn.update(turn_id="original-turn", terminal_kind="interrupted")
-        snapshot["turn_records"][0]["trigger_message_id"] = "fallback-source"
+        original_turn.update(
+            turn_id="original-turn", run_id="original-run",
+            terminal_kind="deferred_to_fallback", payload_json=json.dumps({
+                "input_message_ids": ["result-1"],
+                "idle_input_batch": {
+                    "activation_id": "task-root", "items": [{"message_id": "result-1"}],
+                },
+            }),
+        )
+        snapshot["turn_records"][0].update(
+            trigger_message_id="fallback-source", run_id="reentry-run",
+            payload_json=json.dumps({
+                "input_message_ids": ["fallback-source", "result-1"],
+                "produced_brief_ids": ["brief-1"],
+            }),
+        )
         snapshot["turn_records"].append(original_turn)
+        snapshot["messages"].append({
+            "message_id": "fallback-source", "payload_json": json.dumps({
+                "kind": "internal_followup", "authority_class": "runtime_instruction",
+                "origin": {"kind": "system", "subsystem": "model_lineage_recovery"},
+                "source_refs": {
+                    "source_message_id": "result-1", "source_turn_id": "original-turn",
+                },
+            }),
+        })
+        outcome = snapshot["execution_protocol_outcomes"][0]
+        snapshot["execution_protocol_outcomes"].append({
+            **outcome, "outcome_id": "root-outcome", "attempt_id": "task-root",
+            "payload_json": json.dumps({
+                "outcome_id": "root-outcome", "attempt_id": "task-root",
+                "outcome": {"owner": "work_item", "outcome": {"kind": "continue"}},
+            }),
+        })
+        value = oracle.payload(outcome)
+        value["outcome"]["outcome"]["completion"] = "brief-1"
+        outcome["payload_json"] = json.dumps(value)
         snapshot["briefs"][0].update(message_id="fallback-source", payload_json=json.dumps({
             **oracle.payload(snapshot["briefs"][0]), "related_message_id": "fallback-source",
         }))
+        return snapshot, record
+
+    def test_fast_fallback_keeps_exact_task_result_root(self):
+        spec = {"goal": 0, "outcome": "success", "fallback": True}
+        snapshot, record = self.fast_fallback_snapshot()
+        row = snapshot["execution_protocol_attempts"][0]
         with tempfile.TemporaryDirectory() as directory:
             run = recovery.RecoveryRun(Namespace(evidence_dir=Path(directory)),
                                        "fallback-success", spec)
@@ -1762,6 +1805,96 @@ class RecoveryRunnerTests(unittest.TestCase):
             }))
             with self.assertRaises(AssertionError):
                 run.verify_frozen()
+
+    def test_fast_fallback_accepts_null_or_matching_turn_and_run_hints(self):
+        for hints in (None, {"turn_id": "reentry-turn", "run_id": "reentry-run"}):
+            snapshot, _ = self.fast_fallback_snapshot()
+            row = snapshot["execution_protocol_attempts"][0]
+            if hints is not None:
+                row["payload_json"] = json.dumps({**oracle.payload(row), **hints})
+            with self.subTest(hints=hints):
+                oracle.require_task_reentry(
+                    snapshot, agent_id="qa", task_id="task-1", parent_turn_id="parent-turn",
+                )
+
+    def test_null_hint_fallback_preserves_reducer_only_notification_fence(self):
+        snapshot, _ = self.fast_fallback_snapshot()
+        notification = {
+            **snapshot["turn_records"][0], "turn_id": "reduced-notification",
+            "payload_json": json.dumps({
+                "external_side_effect_possible": False,
+                "terminal": {
+                    "kind": "completed", "reason": "reducer_only/parent_turn_already_delivered",
+                    "no_brief_reason": {
+                        "kind": "reducer_only", "reason": "parent_turn_already_delivered",
+                    },
+                },
+            }),
+        }
+        snapshot["turn_records"].append(notification)
+        oracle.require_task_reentry(
+            snapshot, agent_id="qa", task_id="task-1", parent_turn_id="parent-turn",
+        )
+        value = oracle.payload(notification)
+        value["external_side_effect_possible"] = True
+        notification["payload_json"] = json.dumps(value)
+        with self.assertRaises(AssertionError):
+            oracle.require_task_reentry(
+                snapshot, agent_id="qa", task_id="task-1", parent_turn_id="parent-turn",
+            )
+
+    def test_null_hint_fallback_rejects_foreign_or_duplicate_delivery_evidence(self):
+        for mutation in (
+            "agent", "owner", "source", "terminal", "duplicate-trigger", "duplicate-input",
+            "turn-hint", "run-hint", "ancestor-owner", "ancestor-source", "ancestor-run",
+            "missing-ancestor", "exact-wait", "typed-outcome", "completion", "brief",
+        ):
+            snapshot, _ = self.fast_fallback_snapshot()
+            turn = snapshot["turn_records"][0]
+            attempt = snapshot["execution_protocol_attempts"][0]
+            ancestor = snapshot["execution_protocol_attempts"][-1]
+            if mutation in {"agent", "owner", "source", "terminal"}:
+                field = {
+                    "agent": "agent_id", "owner": "current_work_item_id",
+                    "source": "trigger_message_id", "terminal": "terminal_kind",
+                }[mutation]
+                turn[field] = "foreign"
+            elif mutation.startswith("duplicate"):
+                duplicate = {**turn, "turn_id": "duplicate-turn"}
+                if mutation == "duplicate-input":
+                    duplicate["trigger_message_id"] = "other-source"
+                snapshot["turn_records"].append(duplicate)
+            elif mutation in {"turn-hint", "run-hint"}:
+                field = "turn_id" if mutation == "turn-hint" else "run_id"
+                hint = "original-turn" if mutation == "turn-hint" else "original-run"
+                attempt["payload_json"] = json.dumps({**oracle.payload(attempt), field: hint})
+            elif mutation.startswith("ancestor"):
+                value = oracle.payload(ancestor)
+                if mutation == "ancestor-owner":
+                    value["binding"]["work_item_id"] = "foreign"
+                elif mutation == "ancestor-source":
+                    value["source"]["identity"]["kind"] = "queue_message"
+                else:
+                    value["run_id"] = "foreign-run"
+                ancestor["payload_json"] = json.dumps(value)
+            elif mutation == "missing-ancestor":
+                snapshot["execution_protocol_attempts"].pop()
+            elif mutation == "exact-wait":
+                snapshot["wait_conditions"][0]["status"] = "pending"
+            elif mutation in {"typed-outcome", "completion"}:
+                row = snapshot["execution_protocol_outcomes"][0]
+                value = oracle.payload(row)
+                if mutation == "typed-outcome":
+                    value["attempt_id"] = "task-root"
+                else:
+                    value["outcome"]["outcome"]["completion"] = "foreign-brief"
+                row["payload_json"] = json.dumps(value)
+            else:
+                snapshot["briefs"][0]["message_id"] = "result-1"
+            with self.subTest(mutation=mutation), self.assertRaises(AssertionError):
+                oracle.require_task_reentry(
+                    snapshot, agent_id="qa", task_id="task-1", parent_turn_id="parent-turn",
+                )
 
     def test_frozen_provider_join_preserves_recorded_attempt_after_restart(self):
         spec = {"goal": 5, "outcome": "success"}

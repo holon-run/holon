@@ -1810,11 +1810,22 @@ async fn assert_run_once_includes_worktree_task_metadata() -> Result<()> {
     assert_eq!(response.agent_id, "worktree-metadata-owner");
     assert_eq!(response.final_status, RunFinalStatus::Completed);
     assert_eq!(response.tasks.len(), 1);
+    let execution = host
+        .get_public_agent_for_external_ingress(&response.agent_id)
+        .await?
+        .execution_snapshot()
+        .await?;
+    assert_eq!(
+        execution.execution_root, workspace_dir,
+        "new named run_once session should bind the configured workspace: {execution:#?}"
+    );
     assert_eq!(
         response.tasks[0].task.status,
         holon::types::TaskStatus::Completed,
-        "{}",
-        serde_json::to_string(&response.tasks[0]).expect("serialize task summary")
+        "task={}, recent_tool_executions={:#?}",
+        serde_json::to_string(&response.tasks[0]).expect("serialize task summary"),
+        host.agent_storage(&response.agent_id)
+            .and_then(|storage| storage.read_recent_tool_executions(1))
     );
     let worktree = response.tasks[0].worktree.as_ref().unwrap_or_else(|| {
         panic!(
@@ -1874,6 +1885,14 @@ async fn run_once_can_target_a_persistent_named_agent_session() -> Result<()> {
         .read_agent()?
         .expect("persistent agent state should be stored after the first run");
     assert!(first_state.total_message_count > 0);
+    assert_eq!(
+        first_state
+            .active_workspace_entry
+            .as_ref()
+            .expect("new named run_once should bind a workspace")
+            .execution_root,
+        test_config.workspace_dir()
+    );
 
     let second_host = RuntimeHost::new_with_provider(test_config.config().clone(), provider)?;
     let listed_agents = second_host

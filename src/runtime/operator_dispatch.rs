@@ -730,6 +730,7 @@ impl RuntimeHandle {
                 .await?,
             native_web_search.is_some(),
         );
+        let available_tools = provider.prompt_tool_specs(&available_tools);
         Ok((
             provider,
             available_tools,

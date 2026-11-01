@@ -1,5 +1,6 @@
 use super::super::*;
 use super::support::*;
+use crate::tool::ToolSpec;
 
 struct FreeformPromptProvider;
 
@@ -24,6 +25,59 @@ impl AgentProvider for FreeformPromptProvider {
     fn supports_freeform_grammar_tools(&self) -> bool {
         true
     }
+}
+
+struct FilteredPromptProvider {
+    projections: std::sync::atomic::AtomicUsize,
+}
+
+#[async_trait]
+impl AgentProvider for FilteredPromptProvider {
+    async fn complete_turn(&self, request: ProviderTurnRequest) -> Result<ProviderTurnResponse> {
+        StubProvider::new("done").complete_turn(request).await
+    }
+
+    fn prompt_tool_specs(&self, tools: &[ToolSpec]) -> Vec<ToolSpec> {
+        self.projections.fetch_add(1, Ordering::SeqCst);
+        tools
+            .iter()
+            .filter(|tool| tool.name == "GetAgent")
+            .cloned()
+            .collect()
+    }
+}
+
+#[tokio::test]
+async fn provider_tool_selection_projects_once_for_prompt_capture_and_continuations() {
+    let dir = tempdir().unwrap();
+    let workspace = tempdir().unwrap();
+    let provider = Arc::new(FilteredPromptProvider {
+        projections: std::sync::atomic::AtomicUsize::new(0),
+    });
+    let runtime = RuntimeHandle::new(
+        "default",
+        dir.path().to_path_buf(),
+        workspace.path().to_path_buf(),
+        "http://127.0.0.1:7878".into(),
+        provider.clone(),
+        "default".into(),
+        context_config(),
+    )
+    .unwrap();
+
+    let (_, tools, _, _, _) = runtime.provider_tool_selection().await.unwrap();
+    assert_eq!(tools.len(), 1);
+    assert_eq!(tools[0].name, "GetAgent");
+    assert_eq!(provider.projections.load(Ordering::SeqCst), 1);
+
+    runtime
+        .preview_prompt(
+            "inspect this agent".into(),
+            AuthorityClass::OperatorInstruction,
+        )
+        .await
+        .unwrap();
+    assert_eq!(provider.projections.load(Ordering::SeqCst), 2);
 }
 
 #[tokio::test]
