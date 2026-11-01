@@ -4016,6 +4016,36 @@ class DockerE2ERunnerTests(unittest.TestCase):
 
 
 class LiveAcceptanceEvidenceTests(unittest.TestCase):
+    def test_live_input_batch_accepts_async_sender_creation_before_bootstrap(self) -> None:
+        for status in (200, 202):
+            with self.subTest(status=status):
+                harness = Mock()
+                sender = Mock()
+                sender.agent_path.return_value = "/api/control/agents/sender/create"
+                sender.wait_default_bootstrap_turn_settled.side_effect = RuntimeError(
+                    "sender bootstrap reached"
+                )
+
+                def request(method, path, body, *, expected_status=200):
+                    accepted = (
+                        (expected_status,) if isinstance(expected_status, int)
+                        else expected_status
+                    )
+                    self.assertIn(status, accepted)
+                    return {"receipt": {"created": True}}
+
+                harness.request.side_effect = request
+                with (
+                    patch.object(runner.copy, "copy", return_value=sender),
+                    self.assertRaisesRegex(RuntimeError, "sender bootstrap reached"),
+                ):
+                    runner.run_live_input_batch_case(harness, {"timeout_seconds": 480})
+                harness.request.assert_called_once_with(
+                    "POST", sender.agent_path.return_value, {},
+                    expected_status=(200, 202),
+                )
+                sender.wait_default_bootstrap_turn_settled.assert_called_once_with()
+
     def test_agent_tail_checks_bounds_scope_cursor_and_null_device(self) -> None:
         for case in ("good", "foreign-agent", "task-scope", "oversized", "null-error"):
             with self.subTest(case=case), tempfile.TemporaryDirectory() as directory:

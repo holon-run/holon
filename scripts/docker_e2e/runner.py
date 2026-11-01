@@ -6401,7 +6401,10 @@ def run_live_input_batch_case(harness: CaseHarness, case: dict[str, Any]) -> Non
     marker = secrets.token_hex(4)
     sender = copy.copy(harness)
     sender.agent_id = f"batch-sender-{marker}"
-    harness.request("POST", sender.agent_path("create", control=True), {})
+    harness.request(
+        "POST", sender.agent_path("create", control=True), {},
+        expected_status=(200, 202),
+    )
     sender.wait_default_bootstrap_turn_settled()
     gates = [
         harness.workspace_parent / f".{stage}-{marker}"
