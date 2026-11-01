@@ -708,6 +708,8 @@ impl RuntimeHandle {
         &self,
     ) -> Result<LightweightAgentStateProjection> {
         let read = self.capture_scheduler_projection().await?;
+        let (work_queue, work_budget) =
+            read.full_state_work_queue(&self.inner.input_evidence_budget)?;
         let mut agent = read.state.as_ref().clone();
         self.project_provider_cooldown_wait(&mut agent);
         let posture_timer = attribution::POSTURE.start();
@@ -747,8 +749,8 @@ impl RuntimeHandle {
             scheduling_posture,
             closure,
             active_children,
-            work_queue: read.work_queue,
-            _work_budget: Some(read._owned_budget),
+            work_queue,
+            _work_budget: Some(work_budget),
             _scheduling_material: Some(scheduling_material),
         })
     }

@@ -2,6 +2,59 @@ use super::*;
 use crate::runtime::tests::support::LifecycleHarness;
 
 #[tokio::test]
+async fn fleet_state_decided_posture_still_requires_the_original_current_binding() -> Result<()> {
+    use crate::diagnostics::resource_io::ResourceReadMaterial;
+
+    let harness = LifecycleHarness::new();
+    let runtime = harness.runtime();
+    runtime.await_initial_resources().await;
+    let _refresh = runtime.hold_resource_refresh_for_test().await?;
+    runtime
+        .create_work_item("roster queued input".into(), None, None, Vec::new())
+        .await?;
+    runtime
+        .enqueue(MessageEnvelope::new(
+            "default",
+            MessageKind::OperatorPrompt,
+            MessageOrigin::Operator {
+                actor_id: None,
+                actor_display_name: None,
+            },
+            AuthorityClass::OperatorInstruction,
+            Priority::Normal,
+            MessageBody::Text {
+                text: "roster queued input".into(),
+            },
+        ))
+        .await?;
+    let mut owner = runtime.begin_mutation().await?;
+    owner.prepare_current_query(None).await?;
+    let root = owner.capture_published_root()?;
+    let material = ResourceReadMaterial::current_or_new_for_identity(
+        &runtime.inner.input_evidence_budget,
+        &root.state.id,
+        root.token.identity_incarnation,
+    )?;
+    let expected = material.read(|| runtime.roster_list_fields_from_root(&root))?;
+    assert_eq!(
+        expected.2.posture,
+        crate::types::AgentSchedulingPosture::HasQueuedInput
+    );
+    let mut malformed = root.as_ref().clone();
+    malformed.current = None;
+    assert!(material
+        .read(|| runtime.roster_list_fields_from_root(&malformed))
+        .is_err());
+    let mut foreign = root.as_ref().clone();
+    foreign.token.identity_incarnation += 1;
+    assert!(material
+        .read(|| runtime.roster_list_fields_from_root(&foreign))
+        .is_err());
+    material.finish()?;
+    Ok(())
+}
+
+#[tokio::test]
 async fn fleet_loaded_entry_uses_one_ready_cut_without_state_lock_body_sql_or_root_retention(
 ) -> Result<()> {
     use crate::diagnostics::resource_io::ResourceReadMaterial;

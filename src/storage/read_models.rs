@@ -1302,9 +1302,19 @@ pub(crate) fn derive_agent_posture(
         .materialize(true)
 }
 
+pub(crate) fn derive_agent_posture_from_state(
+    agent: &AgentState,
+    has_queued_input: bool,
+) -> Result<Option<AgentPostureProjection>> {
+    derive_agent_posture_before_work_queue(agent, has_queued_input)
+        .map(|posture| posture.materialize(true))
+        .transpose()
+}
+
 enum PostureReason<'a> {
     Text(&'static str),
     WorkItem(&'a super::work_queue::WorkItemSchedulingProjection),
+    WorkItemFacts(crate::work_item_scheduling::WorkItemPostureReason<'a>),
 }
 
 impl std::fmt::Display for PostureReason<'_> {
@@ -1312,8 +1322,61 @@ impl std::fmt::Display for PostureReason<'_> {
         match self {
             Self::Text(text) => output.write_str(text),
             Self::WorkItem(item) => std::fmt::Display::fmt(&item.posture_reason_display(), output),
+            Self::WorkItemFacts(item) => std::fmt::Display::fmt(item, output),
         }
     }
+}
+
+pub(crate) fn derive_agent_posture_from_selected_work(
+    agent: &AgentState,
+    has_queued_input: bool,
+    selected: Option<(
+        AgentSchedulingPosture,
+        &WorkItemRecord,
+        WorkItemSchedulingState,
+        bool,
+    )>,
+    active_waits: &[WaitConditionRecord],
+) -> Result<AgentPostureProjection> {
+    let fields =
+        derive_agent_posture_before_work_queue(agent, has_queued_input).unwrap_or_else(|| {
+            match selected {
+                Some((posture, work, scheduling_state, is_current)) => AgentPostureFields {
+                    task_id: (posture == AgentSchedulingPosture::WaitingForTask)
+                        .then(|| {
+                            active_waits
+                                .iter()
+                                .find(|wait| {
+                                    wait.status == WaitConditionStatus::Active
+                                        && wait.kind == WaitConditionKind::Task
+                                        && wait.work_item_id.as_deref() == Some(work.id.as_str())
+                                })
+                                .and_then(|wait| wait.subject_ref.as_deref())
+                        })
+                        .flatten(),
+                    posture,
+                    reason: PostureReason::WorkItemFacts(
+                        crate::work_item_scheduling::WorkItemPostureReason {
+                            id: &work.id,
+                            is_current,
+                            scheduling_state,
+                        },
+                    ),
+                    work_item_id: Some(&work.id),
+                    run_id: None,
+                },
+                None => AgentPostureFields {
+                    posture: AgentSchedulingPosture::Idle,
+                    reason: PostureReason::Text(
+                        "no queued input, active turn, runnable work, or active waits",
+                    ),
+                    work_item_id: None,
+                    task_id: None,
+                    run_id: None,
+                },
+            }
+        });
+    fields.materialize(true)
 }
 
 struct AgentPostureFields<'a> {

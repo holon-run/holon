@@ -237,6 +237,22 @@ impl RuntimeHandle {
         AgentIdentityView,
         crate::runtime_db::current_query::CurrentSchedulerMetadata,
     )> {
+        let query = self.roster_query_from_root(root)?;
+        let read = self.capture_operator_scheduler_from_root(root, self.now())?;
+        let identity = read.acquisition.read(|| {
+            crate::diagnostics::resource_io::admit_cloned_value(&query.identity.as_ref())?;
+            Ok(AgentIdentityView::from_record(
+                &query.identity,
+                &self.inner.default_agent_id,
+            ))
+        })?;
+        Ok((read, identity, query.scheduler))
+    }
+
+    fn roster_query_from_root<'a>(
+        &self,
+        root: &'a super::resident_state::AgentSnapshot,
+    ) -> Result<&'a crate::runtime_db::current_query::CurrentQuery> {
         anyhow::ensure!(
             root.state.id == self.inner.mutation_owner.agent_id()
                 && root.token.identity_incarnation == self.inner.identity_incarnation,
@@ -253,21 +269,39 @@ impl RuntimeHandle {
             "Summary Current scope differs"
         );
         query.validate_binding(&query.scope, &self.inner.input_evidence_budget)?;
-        let read = self.capture_operator_scheduler_from_root(root, self.now())?;
-        let identity = read.acquisition.read(|| {
-            anyhow::ensure!(
-                query.identity.agent_id == root.state.id
-                    && query.identity.incarnation == root.token.identity_incarnation
-                    && query.identity.status == crate::types::AgentRegistryStatus::Active,
-                "Summary identity differs"
-            );
+        anyhow::ensure!(
+            query.identity.agent_id == root.state.id
+                && query.identity.incarnation == root.token.identity_incarnation
+                && query.identity.status == crate::types::AgentRegistryStatus::Active,
+            "Summary identity differs"
+        );
+        Ok(query)
+    }
+
+    fn roster_list_fields_from_root(
+        &self,
+        root: &super::resident_state::AgentSnapshot,
+    ) -> Result<(
+        Arc<AgentState>,
+        AgentIdentityView,
+        crate::types::AgentPostureProjection,
+    )> {
+        let query = self.roster_query_from_root(root)?;
+        // These precedence rules need only this Root's State/Current, not
+        // owned copies of every WorkItem in its scheduler projection.
+        if let Some(posture) = crate::storage::derive_agent_posture_from_state(
+            &root.state,
+            query.scheduler.has_queued_input,
+        )? {
             crate::diagnostics::resource_io::admit_cloned_value(&query.identity.as_ref())?;
-            Ok(AgentIdentityView::from_record(
-                &query.identity,
-                &self.inner.default_agent_id,
-            ))
-        })?;
-        Ok((read, identity, query.scheduler))
+            return Ok((
+                root.state.clone(),
+                AgentIdentityView::from_record(&query.identity, &self.inner.default_agent_id),
+                posture,
+            ));
+        }
+        let (read, identity, _) = self.roster_scheduler_from_root(root)?;
+        Ok((read.state, identity, read.scheduling_posture))
     }
 
     pub(crate) async fn agent_list_entry_read(
@@ -294,7 +328,7 @@ impl RuntimeHandle {
             .mutation_owner
             .capture()?
             .context("roster root needs publication")?;
-        let (read, identity, _) = if root
+        let (agent, identity, scheduling_posture) = if root
             .current
             .as_ref()
             .and_then(|current| current.query.as_ref())
@@ -306,14 +340,14 @@ impl RuntimeHandle {
             owner.prepare_current_query(None).await?;
             db.check_read_scope()?;
             material.read(|| {
-                self.roster_scheduler_from_root(owner.capture_published_root()?.as_ref())
+                self.roster_list_fields_from_root(owner.capture_published_root()?.as_ref())
             })?
         } else {
-            material.read(|| self.roster_scheduler_from_root(&root))?
+            material.read(|| self.roster_list_fields_from_root(&root))?
         };
         material.read(|| {
             use crate::diagnostics::resource_io;
-            let agent = &read.state;
+            let agent = &agent;
             let model = super::try_agent_model_list_summary_for_catalog(
                 &self.inner.config_snapshot.load_full().model_catalog,
                 agent,
@@ -329,7 +363,7 @@ impl RuntimeHandle {
                     agent.status.clone(),
                 )?,
                 status: agent.status.clone(),
-                scheduling_posture: read.scheduling_posture,
+                scheduling_posture,
                 pending: agent.pending,
                 current_run_id: agent.current_run_id.clone(),
                 waiting_reason: super::lightweight_agent_list_waiting_reason(agent),

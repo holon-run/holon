@@ -380,7 +380,7 @@ impl RuntimeHandle {
         )?;
         let triggers = &owned_triggers.records;
         let projection =
-            planned_work.work_queue_with_material(state, triggers, &resource_material)?;
+            planned_work.context_work_queue_with_material(state, triggers, &resource_material)?;
         let bound_work = admission
             .map(|plan| plan.work_item_id)
             .unwrap_or_else(|| {

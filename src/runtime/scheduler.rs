@@ -198,7 +198,9 @@ mod semantic_selection;
 pub(crate) use diagnostics::append_deferred_activation_advisory;
 #[cfg(test)]
 pub(crate) use diagnostics::append_scheduling_advisories;
+#[cfg(test)]
 pub(crate) use diagnostics::scheduling_advisories_for_facts;
+pub(crate) use diagnostics::scheduling_advisories_for_selected_facts;
 pub(super) use diagnostics::{ambiguous_wait_advisory_event, pending_scheduling_advisory_events};
 pub(crate) use diagnostics::{
     append_interrupted_replay_source_advisory, append_queue_head_starved_advisory,
@@ -212,7 +214,9 @@ pub(crate) use diagnostics::{
     scheduling_advisory_event, SchedulingAdvisory, SchedulingAdvisorySeverity,
 };
 use projection::CanonicalWorkExecutionState;
-pub(crate) use projection::{SchedulerAgentSnapshot, SchedulerObservations, SchedulerProjection};
+pub(crate) use projection::{
+    SchedulerAgentSnapshot, SchedulerObservations, SchedulerProjection, SchedulerWorkSelection,
+};
 pub(crate) use semantic_selection::{
     resolve_autonomous_continuation_work_item, select_autonomous_continuation_with_async_hook,
     select_autonomous_continuation_with_hook, AsyncSemanticCandidateSelectionHook,

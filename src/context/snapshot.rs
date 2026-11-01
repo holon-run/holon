@@ -7,10 +7,11 @@ use super::inputs::{
 use super::resources::{ContextResourceInput, ContextResourceViews};
 use super::*;
 use crate::runtime::resident_state::CapturedAgentContext;
+#[cfg(test)]
+use crate::storage::WorkQueueReadModel;
 use crate::{
     runtime::provider_recovery::ProviderRecoverySource,
-    runtime_db::task_result_settlement::TaskResultSettlementRecord, storage::WorkQueueReadModel,
-    types::WorkItemPlanArtifact,
+    runtime_db::task_result_settlement::TaskResultSettlementRecord, types::WorkItemPlanArtifact,
 };
 use anyhow::{Context, Result};
 use serde::Serialize;
@@ -215,7 +216,7 @@ pub(super) struct ContextSnapshotData {
     pub continuation_anchor_messages: Vec<MessageEnvelope>,
     pub active_wait_conditions: Vec<WaitConditionRecord>,
     pub episodes: Vec<Arc<ContextEpisodeRecord>>,
-    pub work_queue_projection: WorkQueueReadModel,
+    pub work_queue_projection: crate::work_item_scheduling::ContextWorkQueue,
     pub current_work_item: Option<WorkItemRecord>,
     pub default_ingress: Option<ExternalTriggerRecord>,
     pub active_task_count: usize,
@@ -275,8 +276,6 @@ impl ContextSnapshotData {
                 &self.current_work_item,
                 &self.active_wait_conditions,
                 &queue.current,
-                &queue.queued_blocked,
-                &queue.items,
                 &queue.current_runnable,
                 &queue.triggered_blocked,
                 &queue.queued_runnable,
@@ -660,7 +659,7 @@ pub(crate) fn acquire_durable_context_with_work_queue(
     default_external_ingress_override: Option<&ExternalTriggerRecord>,
     history_policy: ContextHistoryPreparation,
     resident: &CapturedAgentContext,
-    prepared_work_queue: Option<WorkQueueReadModel>,
+    prepared_work_queue: Option<crate::work_item_scheduling::ContextWorkQueue>,
     admission: Option<ContextAdmissionPlan<'_>>,
 ) -> Result<DurableContextInputs> {
     anyhow::ensure!(
@@ -710,7 +709,7 @@ fn acquire_durable_context_inputs(
     history_policy: ContextHistoryPreparation,
     episodes: Vec<Arc<ContextEpisodeRecord>>,
     mut report: ContextAcquisitionReport,
-    prepared_work_queue: Option<WorkQueueReadModel>,
+    prepared_work_queue: Option<crate::work_item_scheduling::ContextWorkQueue>,
     admission: Option<ContextAdmissionPlan<'_>>,
 ) -> Result<DurableContextInputs> {
     anyhow::ensure!(
@@ -816,7 +815,12 @@ fn acquire_durable_context_inputs(
         .collect();
     let work_queue_projection = read!(
         "work_queue",
-        prepared_work_queue.map_or_else(|| inputs.work_queue(), Ok),
+        prepared_work_queue.map_or_else(
+            || inputs
+                .work_queue()
+                .map(crate::work_item_scheduling::ContextWorkQueue::from),
+            Ok,
+        ),
         |_| 0
     );
     let execution_work_item = admission
@@ -1079,7 +1083,7 @@ fn observe_context_resource_views(
 /// candidate selector rather than loading every non-open Work's result body.
 pub(crate) fn completion_work_item_ids(
     current_work_item: Option<&WorkItemRecord>,
-    projection: &WorkQueueReadModel,
+    projection: &crate::work_item_scheduling::ContextWorkQueue,
 ) -> Result<BTreeSet<String>> {
     crate::diagnostics::resource_io::check_active_budget()?;
     let mut ids = BTreeSet::new();
@@ -1103,7 +1107,9 @@ pub(crate) fn completion_work_item_ids(
     Ok(ids)
 }
 
-fn candidate_items(projection: &WorkQueueReadModel) -> impl Iterator<Item = &WorkItemRecord> {
+fn candidate_items(
+    projection: &crate::work_item_scheduling::ContextWorkQueue,
+) -> impl Iterator<Item = &WorkItemRecord> {
     projection
         .triggered_blocked
         .iter()
@@ -1547,7 +1553,7 @@ mod tests {
             identity_incarnation: 1,
         };
         let work = WorkItemRecord::new("default", "selector", WorkItemState::Open);
-        let projection = WorkQueueReadModel {
+        let projection = crate::work_item_scheduling::ContextWorkQueue {
             current: Some(work.clone()),
             ..Default::default()
         };
@@ -1571,7 +1577,11 @@ mod tests {
             {
                 let _active = phase.enter();
                 assert!(completion_work_item_ids(Some(&work), &projection).is_err());
-                assert!(completion_work_item_ids(None, &WorkQueueReadModel::default()).is_err());
+                assert!(completion_work_item_ids(
+                    None,
+                    &crate::work_item_scheduling::ContextWorkQueue::default()
+                )
+                .is_err());
             }
             assert!(phase.finish().is_err());
             drop(phase);

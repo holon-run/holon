@@ -1,5 +1,58 @@
 use super::*;
 use crate::runtime::tests::support::LifecycleHarness;
+use crate::types::WorkItemPlanStatus;
+
+#[tokio::test]
+async fn loaded_state_surfaces_keep_full_queue_beyond_scheduler_candidates() -> Result<()> {
+    fn queue_wire(
+        queue: &crate::work_item_scheduling::WorkQueueReadModel,
+    ) -> Result<serde_json::Value> {
+        Ok(serde_json::to_value((
+            &queue.current,
+            &queue.queued_blocked,
+            &queue.items,
+            &queue.current_runnable,
+            &queue.triggered_blocked,
+            &queue.queued_runnable,
+            &queue.yielded,
+            &queue.waiting_for_operator,
+            &queue.blocked,
+            &queue.completing,
+            &queue.completed_recent,
+        ))?)
+    }
+
+    let harness = LifecycleHarness::new();
+    let runtime = harness.runtime();
+    runtime.await_initial_resources().await;
+    let _refresh = runtime.hold_resource_refresh_for_test().await?;
+    for index in 0..9 {
+        runtime
+            .create_work_item(
+                format!("full State inventory {index}"),
+                Some(WorkItemPlanStatus::Ready),
+                None,
+                Vec::new(),
+            )
+            .await?;
+    }
+    let read = runtime.capture_scheduler_projection().await?;
+    assert_eq!(read.projection.queued_runnable_work_items.len(), 5);
+    let full = read.work.work_queue_with_material(
+        &read.state,
+        &read.triggers.records,
+        &read.acquisition,
+    )?;
+    assert_eq!(full.items.len(), 9);
+    let expected = queue_wire(&full)?;
+    let lightweight = runtime.lightweight_agent_state_projection().await?;
+    assert_eq!(queue_wire(&lightweight.work_queue)?, expected);
+    assert!(lightweight._work_budget.is_some());
+    let operator = runtime.operator_state_read_projection(10, 10).await?;
+    assert_eq!(queue_wire(&operator.agent.work_queue)?, expected);
+    assert!(operator.material._work.is_some());
+    Ok(())
+}
 
 #[tokio::test]
 async fn operator_state_keeps_scheduler_window_after_narrow_owner_preparation() -> Result<()> {

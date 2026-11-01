@@ -1,6 +1,9 @@
 //! Qualified Work/wait/continuation records, separate from scheduling authority.
 //! Loading/qualification belongs to same-transaction storage adapters.
 
+mod context_queue;
+mod scheduler_queue;
+
 use std::{
     collections::{BTreeMap, BTreeSet},
     sync::Arc,
@@ -1375,6 +1378,7 @@ mod work_observations {
 mod tests {
     use super::*;
 
+    mod context_queue_tests;
     mod queue_displayed_id_material_tests;
     mod queue_record_material_tests;
     mod queue_work_material_tests;
@@ -1448,6 +1452,7 @@ mod tests {
             },
             latest_results: BTreeMap::new(),
         };
+        let mut history = Vec::new();
         for evidence in records {
             value
                 .observations
@@ -1458,7 +1463,12 @@ mod tests {
                         value.live_work_ids.insert(work.id.clone());
                     }
                     if work.state != WorkItemState::Open {
-                        value.nonopen.keys.push(evidence.key.clone());
+                        history.push((
+                            std::cmp::Reverse(work.updated_at),
+                            std::cmp::Reverse(work.created_at),
+                            &work.id,
+                            evidence.key.clone(),
+                        ));
                     }
                     value.latest_results.insert(work.id.clone(), None);
                 }
@@ -1477,7 +1487,8 @@ mod tests {
                 }
             }
         }
-        value.nonopen.keys.sort();
+        history.sort();
+        value.nonopen.keys = history.into_iter().map(|(_, _, _, key)| key).collect();
         value
     }
     fn domain(

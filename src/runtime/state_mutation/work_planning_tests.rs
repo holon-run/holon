@@ -703,10 +703,10 @@ async fn loaded_borrowed_queue_keeps_rich_work_advisories_and_last_owned_holder(
     assert_eq!(read.projection.active_waiting_intents, 1);
     assert_eq!(read.projection.active_work_item_waiting_intents, 1);
     assert_eq!(read.projection.active_agent_waiting_intents, 0);
-    assert!(read.work_queue.items.iter().any(|item| {
-        item.work_item.id == waiting.id
-            && item.work_item.todo_list == waiting.todo_list
-            && item.work_item.objective == waiting.objective
+    assert!(read.projection.waiting_work_item.iter().any(|item| {
+        item.id == waiting.id
+            && item.todo_list == waiting.todo_list
+            && item.objective == waiting.objective
     }));
     assert!(read
         .projection
@@ -726,36 +726,35 @@ async fn loaded_borrowed_queue_keeps_rich_work_advisories_and_last_owned_holder(
         read.scheduling_posture,
         runtime.storage().agent_posture_projection(&read.state)?
     );
-    let queue_value = |queue: &WorkQueueReadModel| {
-        serde_json::to_value((
-            &queue.current,
-            &queue.queued_blocked,
-            &queue.items,
-            &queue.current_runnable,
-            &queue.triggered_blocked,
-            &queue.queued_runnable,
-            &queue.yielded,
-            &queue.waiting_for_operator,
-            &queue.blocked,
-            &queue.completing,
-            &queue.completed_recent,
-        ))
-    };
-    let original_queue = queue_value(&read.work_queue)?;
+    let original_selection = serde_json::to_value((
+        &read.projection.current_work_item,
+        &read.projection.current_work_item_scheduling_state,
+        &read.projection.queued_runnable_work_items,
+        &read.projection.waiting_work_item,
+        &read.projection.waiting_work_item_scheduling_state,
+    ))?;
     let owned = Arc::downgrade(&read._owned_budget);
     let last_holder = Arc::clone(&read._owned_budget);
     let PreparedSchedulerRead {
         projection,
-        work_queue,
         active_waits,
         _owned_budget,
         ..
     } = read;
-    drop((projection, mutation, _owned_budget));
+    drop((mutation, _owned_budget));
     assert!(owned.upgrade().is_some());
-    assert_eq!(queue_value(&work_queue)?, original_queue);
+    assert_eq!(
+        serde_json::to_value((
+            &projection.current_work_item,
+            &projection.current_work_item_scheduling_state,
+            &projection.queued_runnable_work_items,
+            &projection.waiting_work_item,
+            &projection.waiting_work_item_scheduling_state,
+        ))?,
+        original_selection
+    );
     assert_eq!(active_waits, original_waits);
-    drop((work_queue, active_waits));
+    drop((projection, active_waits));
     assert!(owned.upgrade().is_some());
     drop(last_holder);
     assert!(owned.upgrade().is_none());

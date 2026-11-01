@@ -679,7 +679,8 @@ pub(super) mod tests {
             .map(|record| record.key.clone())
             .collect();
         let state = AgentState::new("default");
-        let projection = work.work_queue(&state, Vec::new()).unwrap();
+        let projection: crate::work_item_scheduling::ContextWorkQueue =
+            work.work_queue(&state, Vec::new()).unwrap().into();
         let ids = crate::context::completion_work_item_ids(None, &projection).unwrap();
         assert_eq!(ids.len(), 3);
         let heads = selected_completion_brief_ids(&work, &ids).unwrap();
