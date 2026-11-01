@@ -1980,3 +1980,44 @@ async fn daemon_stop_errors_on_permission_denied_signals() {
         "metadata file should still exist after permission-denied stop failure"
     );
 }
+
+#[cfg(target_os = "linux")]
+mod zombie_liveness {
+    use crate::daemon::lifecycle::{pid_is_alive, proc_stat_state};
+
+    #[test]
+    fn proc_stat_state_parses_after_comm_parentheses() {
+        // `comm` may contain spaces and parentheses; state follows the last `)`.
+        assert_eq!(proc_stat_state("42 ((bad name) S) R 1 0"), Some("R"));
+        assert_eq!(proc_stat_state("7 (holon daemon) Z 1 0"), Some("Z"));
+        assert_eq!(proc_stat_state("42 1 2 3"), None);
+    }
+
+    #[test]
+    fn unreaped_zombie_is_not_alive() {
+        let mut child = std::process::Command::new("sleep")
+            .arg("30")
+            .spawn()
+            .expect("spawn sleep helper");
+        let pid = child.id();
+        assert!(pid_is_alive(pid), "freshly spawned helper must be alive");
+        child.kill().expect("SIGKILL helper");
+        // Without wait() the exited child stays a zombie owned by this test
+        // process — the same reaping-lag shape as #3844.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        loop {
+            let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok();
+            let state = stat.as_deref().and_then(proc_stat_state);
+            if matches!(state, Some("Z") | Some("X")) {
+                break;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "helper never became a zombie"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        assert!(!pid_is_alive(pid), "zombie helper must not count as alive");
+        child.wait().expect("reap helper");
+    }
+}
