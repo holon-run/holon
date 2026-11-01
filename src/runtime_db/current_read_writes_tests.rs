@@ -272,7 +272,7 @@ fn current_original_address_slot_moves_to_ack_without_another_map_allocation() -
         Ok(ack)
     })?;
     assert!(!ack.is_empty());
-    assert_eq!(ack.facts().get(&key), Some(&CurrentAddressFact::Absent));
+    assert_eq!(ack.facts().get(&key), Some(&CurrentAddressFact::Unborn));
     ack.validate_binding(&f.scope, &ledger)?;
     drop(ack);
     assert_eq!(ledger.report()?.observed_bytes, 0);
@@ -751,6 +751,77 @@ fn qualified_count(f: &Fixture) -> Result<usize> {
         [],
         |row| row.get(0),
     )?)
+}
+
+#[test]
+fn current_unborn_observation_preserves_original_first_birth() -> Result<()> {
+    let f = Fixture::new()?;
+    let ledger = InputEvidenceBudgetLedger::new(Default::default())?;
+    let event = AuditEvent::legacy("current-unborn", serde_json::json!({}));
+    let key = (CurrentFamily::Event, event.id.clone());
+    let keys = [(CurrentFamily::Event, event.id.as_str())];
+    let unborn = attempt(&f, &ledger, &keys, &keys, |_| Ok(()))?;
+    assert_eq!(unborn.facts().get(&key), Some(&CurrentAddressFact::Unborn));
+    let still_unborn = attempt(&f, &ledger, &keys, &keys, |_| Ok(()))?;
+    assert_eq!(still_unborn.facts(), unborn.facts());
+    let born = attempt(&f, &ledger, &keys, &keys, |tx| {
+        append_audit_event_tx(tx, Some(&f.scope.agent_id), &event)?;
+        Ok(())
+    })?;
+    assert!(born.is_complete());
+    assert!(born.qualifies(&key));
+    assert_eq!(born.base_revision, still_unborn.revision);
+    assert_eq!(qualified_count(&f)?, 1);
+    Ok(())
+}
+
+#[test]
+fn current_unborn_observation_does_not_qualify_an_earlier_raw_insertion() -> Result<()> {
+    let f = Fixture::new()?;
+    let ledger = InputEvidenceBudgetLedger::new(Default::default())?;
+    let event = AuditEvent::legacy("current-unborn-raw", serde_json::json!({}));
+    let key = (CurrentFamily::Event, event.id.clone());
+    let keys = [(CurrentFamily::Event, event.id.as_str())];
+    let unborn = attempt(&f, &ledger, &keys, &keys, |_| Ok(()))?;
+    assert_eq!(unborn.facts().get(&key), Some(&CurrentAddressFact::Unborn));
+    f.db.transaction(|tx| {
+        append_audit_event_tx(tx, Some(&f.scope.agent_id), &event)?;
+        Ok(())
+    })?;
+    let denied = attempt(&f, &ledger, &keys, &keys, |_| Ok(()))?;
+    assert!(!denied.is_complete());
+    assert_eq!(
+        denied.facts().get(&key),
+        Some(&CurrentAddressFact::Unprepared)
+    );
+    assert_eq!(qualified_count(&f)?, 0);
+    Ok(())
+}
+
+#[test]
+fn current_unborn_observation_cannot_birth_in_deleting_scope() -> Result<()> {
+    let f = Fixture::new()?;
+    let ledger = InputEvidenceBudgetLedger::new(Default::default())?;
+    let event = AuditEvent::legacy("current-unborn-deleting", serde_json::json!({}));
+    let key = (CurrentFamily::Event, event.id.clone());
+    let keys = [(CurrentFamily::Event, event.id.as_str())];
+    let unborn = attempt(&f, &ledger, &keys, &keys, |_| Ok(()))?;
+    assert_eq!(unborn.facts().get(&key), Some(&CurrentAddressFact::Unborn));
+    f.db.connection()?.execute(
+        "UPDATE agent_identities SET status='deleting',payload_json=json_set(payload_json,'$.status','deleting') WHERE agent_id=?1",
+        [&f.scope.agent_id],
+    )?;
+    let denied = attempt(&f, &ledger, &keys, &keys, |tx| {
+        append_audit_event_tx(tx, Some(&f.scope.agent_id), &event)?;
+        Ok(())
+    })?;
+    assert!(!denied.is_complete());
+    assert_eq!(
+        denied.facts().get(&key),
+        Some(&CurrentAddressFact::Unprepared)
+    );
+    assert_eq!(qualified_count(&f)?, 0);
+    Ok(())
 }
 
 #[test]

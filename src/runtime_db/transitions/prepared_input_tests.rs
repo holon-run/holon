@@ -909,6 +909,7 @@ fn pending_obligation(agent: &str, message: &MessageEnvelope) -> WaitTaskResultO
         current_activation_id: None,
         waiter_work_item_id: None,
         canonical_recovery: false,
+        dropped_reply_source: None,
         source_message_id: message.id.clone(),
         source_queue: None,
         wait_witness: WaitTaskResultWitness {

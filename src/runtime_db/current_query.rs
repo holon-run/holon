@@ -16,7 +16,11 @@ use crate::runtime::{
 mod event_page;
 #[cfg(test)]
 pub(crate) use event_page::append_qualified_event_for_fixture;
+#[cfg(test)]
+mod source_fixture;
 pub(crate) use event_page::{prepare_event_page, PreparedEventPage};
+#[cfg(test)]
+pub(crate) use source_fixture::remove_qualified_terminal_queue_for_fixture;
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize)]
 pub(crate) struct CurrentSelection {
@@ -334,7 +338,7 @@ impl CurrentQuerySource {
         for id in &self.selection.queue_ids {
             let body = match writes.outcome(CurrentFamily::Queue, id) {
                 Some((CurrentAddressFact::Qualified(_), Some(body))) => Some(body.clone()),
-                Some((CurrentAddressFact::Absent, None)) => None,
+                Some((CurrentAddressFact::Unborn | CurrentAddressFact::Absent, None)) => None,
                 Some(_) => anyhow::bail!("Current Queue writer needs preparation"),
                 None => self
                     .baseline
@@ -591,7 +595,7 @@ fn load_body(
             |row| row.get::<_, String>(0),
         ).optional()?;
         ensure!(
-            state.as_deref() == Some("absent"),
+            matches!(state.as_deref(), Some("unborn" | "absent")),
             "Current absent address needs preparation"
         );
         return Ok(None);

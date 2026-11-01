@@ -45,6 +45,22 @@ fn wire_cost(value: &impl serde::Serialize) -> Result<(u64, usize)> {
     let payload = serde_json::to_string(value)?;
     Ok(cost(payload.len(), slots(&serde_json::from_str(&payload)?)))
 }
+fn state_read_cost(value: &AgentState) -> Result<(u64, usize)> {
+    fn nodes(value: &serde_json::Value) -> usize {
+        1 + match value {
+            serde_json::Value::Object(fields) => fields.values().map(nodes).sum::<usize>(),
+            serde_json::Value::Array(values) => values.iter().map(nodes).sum::<usize>(),
+            _ => 0,
+        }
+    }
+    let payload = serde_json::to_string(value)?;
+    let nodes = nodes(&serde_json::from_str(&payload)?);
+    Ok((
+        (payload.len() as u64 + 256 + (nodes * std::mem::size_of::<serde_json::Value>()) as u64)
+            * 8,
+        (1 + nodes) * 8,
+    ))
+}
 fn now() -> DateTime<Utc> {
     "2026-10-17T11:22:23.123456789Z".parse().unwrap()
 }
@@ -283,8 +299,8 @@ fn state_sql_read_write_read_uses_original_allowance_and_last_ack_holder() -> Re
     changed.turn_index = 1;
     changed.status = AgentStatus::AwakeIdle;
     let body = add(
-        add(wire_cost(&record())?, wire_cost(&changed)?),
-        add(wire_cost(&now())?, wire_cost(&changed)?),
+        add(state_read_cost(&record())?, state_read_cost(&changed)?),
+        add(wire_cost(&changed)?, wire_cost(&now())?),
     );
     assert_eq!(
         wire_cost(&now())?,
@@ -327,6 +343,41 @@ fn state_sql_read_write_read_uses_original_allowance_and_last_ack_holder() -> Re
     assert_eq!(budget.report()?.observed_bytes, add(header(), body).0);
     drop(last);
     assert_eq!(budget.report()?.observed_bytes, 0);
+    Ok(())
+}
+
+#[test]
+fn state_decode_uses_exact_nodes_and_rejects_one_unit_short() -> Result<()> {
+    let (_home, db) = fixture()?;
+    let budget = ledger()?;
+    let exact = add(header(), state_read_cost(&record())?);
+    for (bytes_short, records_short) in [(0, 0), (1, 0), (0, 1)] {
+        let phase = ResourceReadMaterial::with_test_limits(
+            &budget,
+            &scope(),
+            exact.0 - bytes_short,
+            exact.1 - records_short,
+        )?;
+        let result = phase.read(|| db.transaction(|tx| agent_state_tx(tx, "scheduling-agent")));
+        if bytes_short == 0 && records_short == 0 {
+            assert_eq!(result?, Some(record()));
+            assert_eq!(phase.finish()?, exact);
+        } else {
+            assert!(format!("{:#}", result.unwrap_err())
+                .to_lowercase()
+                .contains("resourceexhausted"));
+            assert!(phase.finish().is_err());
+            assert!(phase
+                .read(|| db.transaction(|tx| agent_state_tx(tx, "scheduling-agent")))
+                .is_err());
+        }
+        drop(phase);
+        assert_eq!(budget.report()?.observed_bytes, 0);
+    }
+    assert_eq!(
+        db.transaction(|tx| agent_state_tx(tx, "scheduling-agent"))?,
+        Some(record())
+    );
     Ok(())
 }
 
@@ -387,7 +438,7 @@ fn borrowed_state_decode_gates_before_parser_and_missing_rows_are_free() -> Resu
     })?;
     let budget = ledger()?;
     let prefix = add(header(), header());
-    let next = cost(1, 1);
+    let next = ((1 + 256) * 8, 8);
     for bytes in [true, false] {
         let phase = ResourceReadMaterial::with_test_limits(
             &budget,
@@ -433,7 +484,7 @@ fn borrowed_state_decode_gates_before_parser_and_missing_rows_are_free() -> Resu
             .unwrap_err();
         assert!(error.downcast_ref::<serde_json::Error>().is_some());
     }
-    assert_eq!(transaction.finish()?, add(header(), next));
+    assert_eq!(transaction.finish()?, add(add(header(), next), cost(1, 1)));
     drop(transaction);
     assert_eq!(budget.report()?.observed_bytes, header().0);
     drop(phase);

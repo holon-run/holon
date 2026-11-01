@@ -546,6 +546,7 @@ pub(in crate::runtime_db) fn visit_execution_commands(
         match command {
             C::RegisterWorkItem(c) => visit(Family::WorkExecution, &c.work_item_id)?,
             C::AdvanceWorkItemSourceRevision(c) => visit(Family::WorkExecution, &c.work_item_id)?,
+            C::ReconcileWorkItemSourceRevision(c) => visit(Family::WorkExecution, &c.work_item_id)?,
             C::SetWorkItemReadiness(c) => visit(Family::WorkExecution, &c.work_item_id)?,
             C::RecheckContextBudgetStop(c) => visit(Family::WorkExecution, &c.work_item_id)?,
             C::SuspendWorkItemContinuation(c) => visit(Family::WorkExecution, &c.work_item_id)?,

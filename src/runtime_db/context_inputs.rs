@@ -236,6 +236,11 @@ impl<'a> ContextDurableRead<'a> {
         })
     }
 
+    pub(crate) fn owned_state(&self) -> Result<Option<AgentState>> {
+        let (state, _) = self.state_facts()?;
+        state.map(own_state).transpose()
+    }
+
     pub(crate) fn scope_read(&self) -> Result<ContextScopeRead<'a>> {
         self.scope_read_using_decode(None)
     }

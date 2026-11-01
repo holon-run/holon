@@ -23,10 +23,10 @@ CREATE TABLE current_read_qualification (
  family TEXT NOT NULL CHECK(family IN ('queue','event')),
  record_id TEXT NOT NULL CHECK(length(CAST(record_id AS BLOB))>0),
  revision INTEGER NOT NULL CHECK(revision>0),
- qualification_state TEXT NOT NULL CHECK(qualification_state IN ('qualified','absent','unprepared')),
+ qualification_state TEXT NOT NULL CHECK(qualification_state IN ('qualified','unborn','absent','unprepared')),
  content_digest TEXT,
  CHECK((qualification_state='qualified' AND content_digest IS NOT NULL AND length(content_digest)=64)
-    OR (qualification_state IN ('absent','unprepared') AND content_digest IS NULL)),
+    OR (qualification_state IN ('unborn','absent','unprepared') AND content_digest IS NULL)),
  PRIMARY KEY(agent_id,identity_incarnation,family,record_id),
  FOREIGN KEY(agent_id,identity_incarnation) REFERENCES current_read_revisions(agent_id,identity_incarnation));
 CREATE INDEX current_read_known_address ON current_read_qualification(family,record_id);
@@ -38,10 +38,11 @@ pub(crate) enum CurrentFamily {
     Event,
 }
 
-/// Negative facts fence an address; neither can authorize a later body birth.
+/// Unborn preserves first-birth eligibility; deletion and refusal fence an ID.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum CurrentAddressFact {
     Qualified(String),
+    Unborn,
     Absent,
     Unprepared,
 }
@@ -130,6 +131,7 @@ impl CommittedEventRead {
 #[derive(Debug, Clone, Copy)]
 enum OriginalAddress {
     MayWrite,
+    MayBirth,
     AbsentOnly,
     Unprepared,
 }
@@ -324,17 +326,20 @@ impl<'tx, 'conn> OriginalCurrentWrites<'tx, 'conn> {
                 OriginalAddress::Unprepared
             }
         } else {
-            let absent: bool = tx.query_row(
-                    "SELECT EXISTS(SELECT 1 FROM current_read_qualification WHERE agent_id=?1 AND identity_incarnation=?2 AND family=?3 AND record_id=?4 AND qualification_state='absent')",
-                    params![scope.agent_id, scope.identity_incarnation, family.name(), id], |row| row.get(0),
-                )?;
-            if absent {
+            let state = tx.query_row(
+                    "SELECT qualification_state FROM current_read_qualification WHERE agent_id=?1 AND identity_incarnation=?2 AND family=?3 AND record_id=?4",
+                    params![scope.agent_id, scope.identity_incarnation, family.name(), id],
+                    |row| row.get::<_, String>(0),
+                ).optional()?;
+            if self.active && state.as_deref() == Some("unborn") {
+                    OriginalAddress::MayBirth
+                } else if matches!(state.as_deref(), Some("unborn" | "absent")) {
                     OriginalAddress::AbsentOnly
                 } else if self.active && !tx.query_row(
                     "SELECT EXISTS(SELECT 1 FROM current_read_qualification WHERE family=?1 AND record_id=?2)",
                     params![family.name(), id], |row| row.get::<_, bool>(0),
                 )? {
-                    OriginalAddress::MayWrite
+                    OriginalAddress::MayBirth
                 } else {
                     OriginalAddress::Unprepared
                 }
@@ -625,7 +630,7 @@ impl<'tx, 'conn> OriginalCurrentWrites<'tx, 'conn> {
             let mut rows = statement.query([id])?;
             let mut body = None;
             let fact = match (slot.original, rows.next()?) {
-                (OriginalAddress::MayWrite, Some(row)) => {
+                (OriginalAddress::MayWrite | OriginalAddress::MayBirth, Some(row)) => {
                     ensure!(
                         row.get_ref(0)?.as_str()? == self.scope.agent_id,
                         "Current actual owner differs"
@@ -710,6 +715,7 @@ impl<'tx, 'conn> OriginalCurrentWrites<'tx, 'conn> {
                     }));
                     CurrentAddressFact::Qualified(digest(payload))
                 }
+                (OriginalAddress::MayBirth, None) => CurrentAddressFact::Unborn,
                 (OriginalAddress::MayWrite | OriginalAddress::AbsentOnly, None) => {
                     CurrentAddressFact::Absent
                 }
@@ -717,6 +723,7 @@ impl<'tx, 'conn> OriginalCurrentWrites<'tx, 'conn> {
             };
             let (state, hash) = match &fact {
                 CurrentAddressFact::Qualified(hash) => ("qualified", Some(hash.as_str())),
+                CurrentAddressFact::Unborn => ("unborn", None),
                 CurrentAddressFact::Absent => ("absent", None),
                 CurrentAddressFact::Unprepared => ("unprepared", None),
             };
@@ -972,7 +979,11 @@ impl CommittedCurrentWrites {
             self.addresses.values().all(|slot| match &slot.fact {
                 Some(CurrentAddressFact::Qualified(hash)) =>
                     hash.len() == 64 && hash.bytes().all(|byte| byte.is_ascii_hexdigit()),
-                Some(CurrentAddressFact::Absent | CurrentAddressFact::Unprepared) => true,
+                Some(
+                    CurrentAddressFact::Unborn
+                    | CurrentAddressFact::Absent
+                    | CurrentAddressFact::Unprepared,
+                ) => true,
                 None => false,
             }),
             "Current ACK omitted a qualified digest"

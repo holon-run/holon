@@ -1895,8 +1895,12 @@ effects are constructed before publishing either; repository Work ACK borrows
 the original Wait write set and then moves it to the outer effects, without a
 duplicate set. Failure drops transaction material; success keeps its charges
 through the existing whole ACK holders. Timer State validation and ACK reads
-share the transition State reader: it borrows the SQLite payload and admits
-decoding under the original caller phase. The shared State writer admits JSON
+share the canonical Context State reader: it borrows the SQLite payload, admits
+raw bytes before SQLite JSON traversal and actual nodes before decoding one
+State under the original caller phase, not a completion/resolver envelope.
+The owned return moves that decoded State without a second body clone or a
+decoder proof. Every separate typed State clone remains independently gated.
+The shared State writer admits JSON
 and the actual updated-at timestamp before allocating either, with static status
 text; turn monotonicity, control revisions and timestamp format are unchanged.
 Neither helper opens a detached phase for its plain return value. The shared
@@ -3535,17 +3539,24 @@ Current Queue/Event writer qualification has a separate incarnation-scoped
 revision and digest namespace; Input family eligibility never supplies it.
 Before business SQL, a non-Clone/non-Serde proof observes only frozen command
 addresses. An address is eligible only if it was absent in both canonical and
-qualification storage, or its original canonical digest matched its existing
-qualification. The actual ACK alone advances qualification in that same
-transaction. Unobserved, legacy raw or changed canonical values invalidate
+qualification storage, its same-incarnation Active namespace retained an
+`Unborn` observation and the canonical body is still absent, or its original
+canonical digest matched its existing qualification. The actual ACK alone
+advances qualification in that same transaction. Unobserved, legacy raw or
+changed canonical values invalidate
 their addresses rather than acquiring authority from a later read.
 
-An actual address ACK distinguishes `Qualified(digest)`, `Absent`, and
-`Unprepared`. An observed qualified value deleted by the original transaction
+An actual address ACK distinguishes `Qualified(digest)`, `Unborn`, `Absent`, and
+`Unprepared`. An originally new address still absent at commit produces
+`Unborn`: observing a Task result before its first Queue admission must not
+retire that Queue ID. Only a later original writer in the same Active
+incarnation, still observing no canonical body, may perform its first birth.
+Raw insertion before that writer's preparation remains unqualified.
+An observed qualified value deleted by the original transaction
 produces `Absent`, not a missing-body failure. Negative outcomes retain their
 durable address fence instead of deleting qualification metadata: a later
 transaction cannot reuse a deleted or refused ID as a fresh birth. Only the
-same incarnation's previously attested absence may remain absent; it never
+same incarnation's previously attested deletion may remain absent; it never
 authorizes a new body, even in an Active namespace. A raw or unobserved deletion
 remains `Unprepared`, not attested absence. These states and their revision
 commit with the original transaction and retain the original material guards.

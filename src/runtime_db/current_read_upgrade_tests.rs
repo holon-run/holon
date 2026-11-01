@@ -3,6 +3,7 @@ use crate::{
     runtime::input_evidence_budget::InputEvidenceBudgetLedger,
     runtime_db::{
         current_query::{prepare, CurrentSelection},
+        current_read_writes,
         evidence::{
             append_audit_event_tx, append_message_tx, upsert_agent_identity_tx,
             upsert_agent_state_tx,
@@ -31,7 +32,7 @@ fn migrate_to(connection: &mut Connection, version: i64) -> Result<()> {
 fn current_migration() -> &'static Migration {
     MIGRATIONS
         .iter()
-        .find(|migration| migration.version == super::current_read_writes::VERSION)
+        .find(|migration| migration.version == current_read_writes::VERSION)
         .unwrap()
 }
 
@@ -148,7 +149,7 @@ fn qualified_count(connection: &Connection) -> Result<usize> {
 #[test]
 fn current_upgrade_adopts_only_fixed_pending_queues_and_no_event_history() -> Result<()> {
     let (mut connection, messages) = legacy(1)?;
-    migrate_to(&mut connection, super::current_read_writes::VERSION)?;
+    migrate_to(&mut connection, current_read_writes::VERSION)?;
     assert_eq!(qualified_count(&connection)?, 1);
     let scope = InputEvidenceScope {
         agent_id: AGENT.into(),
@@ -185,7 +186,7 @@ fn current_upgrade_does_not_adopt_a_later_raw_queue_address() -> Result<()> {
                 json_set(payload_json,'$.message_id','late-queue') FROM queue_entries",
         [],
     )?;
-    migrate_to(&mut connection, super::current_read_writes::VERSION)?;
+    migrate_to(&mut connection, current_read_writes::VERSION)?;
     assert_eq!(qualified_count(&connection)?, 1);
     assert_eq!(
         connection.query_row(
@@ -208,7 +209,7 @@ fn current_upgrade_rejects_fixed_queue_or_canonical_column_drift() -> Result<()>
         "UPDATE queue_entries SET agent_id='foreign'",
     ] {
         let (mut connection, _) = legacy(1)?;
-        migrate_to(&mut connection, super::current_read_writes::VERSION - 1)?;
+        migrate_to(&mut connection, current_read_writes::VERSION - 1)?;
         connection.execute(sql, [])?;
         assert!(
             apply_migration(&mut connection, current_migration()).is_err(),
@@ -223,7 +224,7 @@ fn current_upgrade_rejects_fixed_queue_or_canonical_column_drift() -> Result<()>
 fn current_upgrade_rejects_message_rewrites_even_with_a_new_canonical_hash() -> Result<()> {
     for cut in [
         episode_migration_version(),
-        super::current_read_writes::VERSION - 1,
+        current_read_writes::VERSION - 1,
     ] {
         let (mut connection, _) = legacy(1)?;
         freeze_episode_cut(&mut connection)?;
@@ -241,7 +242,7 @@ fn current_upgrade_rejects_message_rewrites_even_with_a_new_canonical_hash() -> 
             ],
         )?;
         assert!(
-            migrate_to(&mut connection, super::current_read_writes::VERSION).is_err(),
+            migrate_to(&mut connection, current_read_writes::VERSION).is_err(),
             "cut={cut}"
         );
         assert_eq!(qualified_count(&connection)?, 0);
@@ -258,7 +259,7 @@ fn current_upgrade_requires_original_mandatory_input_membership() -> Result<()> 
         "DELETE FROM messages",
     ] {
         let (mut connection, _) = legacy(1)?;
-        migrate_to(&mut connection, super::current_read_writes::VERSION - 1)?;
+        migrate_to(&mut connection, current_read_writes::VERSION - 1)?;
         connection.execute(sql, [])?;
         assert!(
             apply_migration(&mut connection, current_migration()).is_err(),
@@ -283,7 +284,7 @@ fn current_upgrade_never_borrows_another_or_unbound_identity_scope() -> Result<(
         "UPDATE agent_identities SET payload_json=json_set(payload_json,'$.status','deleted')",
     ] {
         let (mut connection, _) = legacy(1)?;
-        migrate_to(&mut connection, super::current_read_writes::VERSION - 1)?;
+        migrate_to(&mut connection, current_read_writes::VERSION - 1)?;
         connection.execute(sql, [])?;
         let _ = apply_migration(&mut connection, current_migration());
         assert_eq!(qualified_count(&connection)?, 0, "{sql}");
@@ -294,7 +295,7 @@ fn current_upgrade_never_borrows_another_or_unbound_identity_scope() -> Result<(
 #[test]
 fn current_upgrade_rolls_back_earlier_qualifications_and_retries_the_original_cut() -> Result<()> {
     let (mut connection, messages) = legacy(2)?;
-    migrate_to(&mut connection, super::current_read_writes::VERSION - 1)?;
+    migrate_to(&mut connection, current_read_writes::VERSION - 1)?;
     let original: String = connection.query_row(
         "SELECT payload_json FROM queue_entries WHERE message_id=?1",
         [&messages[1].id],
@@ -310,7 +311,7 @@ fn current_upgrade_rolls_back_earlier_qualifications_and_retries_the_original_cu
             .get::<_, i64>(
             0
         ),)?,
-        super::current_read_writes::VERSION - 1
+        current_read_writes::VERSION - 1
     );
     assert_eq!(qualified_count(&connection)?, 0);
     connection.execute(
@@ -325,7 +326,7 @@ fn current_upgrade_rolls_back_earlier_qualifications_and_retries_the_original_cu
 #[test]
 fn current_upgrade_is_not_a_startup_requalification_path() -> Result<()> {
     let (mut connection, messages) = legacy(1)?;
-    migrate_to(&mut connection, super::current_read_writes::VERSION)?;
+    migrate_to(&mut connection, current_read_writes::VERSION)?;
     connection.execute(
         "UPDATE current_read_qualification SET qualification_state='unprepared',content_digest=NULL,revision=2",
         [],

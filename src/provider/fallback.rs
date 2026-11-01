@@ -351,6 +351,7 @@ mod tests {
                 .await
                 .push(request.conversation.clone());
             Ok(ProviderTurnResponse {
+                material: Default::default(),
                 blocks: vec![ModelBlock::Text { text: "ok".into() }],
                 stop_reason: None,
                 input_tokens: 0,
@@ -1121,7 +1122,7 @@ mod tests {
         ConversationMessage::UserImage {
             prompt: "workspace screenshot".into(),
             media_type: "image/png".into(),
-            data_base64: "aGVsbG8=".into(),
+            data_base64: "aGVsbG8=".to_owned().into(),
             optional_history,
         }
     }

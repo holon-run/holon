@@ -475,17 +475,18 @@ fn assert_budgeted_recovery_capacity(
                     .cloned()
                     .unwrap();
                 let message = runtime.storage().read_message_by_id(&id).unwrap().unwrap();
-                runtime
-                    .storage()
-                    .append_queue_entry(&QueueEntryRecord {
+                persist_native_queue_fixture(
+                    runtime,
+                    QueueEntryRecord {
                         message_id: id,
                         agent_id: message.agent_id,
                         priority: message.priority,
                         status: QueueEntryStatus::Processed,
                         created_at: message.created_at,
                         updated_at: runtime.now(),
-                    })
-                    .unwrap();
+                    },
+                )
+                .await;
                 blocked.push(record);
             }
             for root in 0..if paused { 5 } else { 1 } {
@@ -535,17 +536,18 @@ fn assert_budgeted_recovery_capacity(
                 .unwrap()
                 .unwrap();
             if !normal_anchor {
-                runtime
-                    .storage()
-                    .append_queue_entry(&QueueEntryRecord {
+                persist_native_queue_fixture(
+                    runtime,
+                    QueueEntryRecord {
                         message_id: fresh.clone(),
                         agent_id: message.agent_id,
                         priority: message.priority,
                         status: QueueEntryStatus::Processed,
                         created_at: message.created_at,
                         updated_at: runtime.now(),
-                    })
-                    .unwrap();
+                    },
+                )
+                .await;
             }
             let before: Vec<_> = blocked
                 .iter()

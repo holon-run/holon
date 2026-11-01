@@ -42,6 +42,10 @@ pub(super) fn visit_original(
             if let Some(queue) = &task.command.queue_entry {
                 visit(CurrentFamily::Queue, &queue.message_id)?;
             }
+            // A Task can publish its result before Queue admission.
+            for message in &task.command.message_evidence {
+                visit(CurrentFamily::Queue, &message.id)?;
+            }
         }
         InputTransitionCommand::Queue(queue) => {
             events(&queue.command.audit_events, visit)?;

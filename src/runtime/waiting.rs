@@ -1051,28 +1051,41 @@ impl RuntimeHandle {
             result_message
         };
         let result_message_id = result_message.id.clone();
-        let storage = self.inner.storage.clone();
-        let existing_entry = tokio::task::spawn_blocking(move || storage.latest_queue_entries())
-            .await??
-            .into_iter()
-            .find(|entry| entry.message_id == result_message_id);
+        let source_material =
+            crate::diagnostics::resource_io::ResourceReadMaterial::current_or_new(
+                &self.inner.input_evidence_budget,
+                &task_read.tasks.scope,
+            )?;
+        let (existing_entry, dropped_reply_source, aborted_reply_recoverable) = self
+            .with_idle_read(Some(&state), &source_material, |read| {
+                let queue = read.queue(&result_message_id)?;
+                let dropped = if let Some(queue) = queue
+                    .as_ref()
+                    .filter(|queue| queue.status == QueueEntryStatus::Dropped)
+                {
+                    read.dropped_reply_source(&settlement_record, queue)?
+                } else {
+                    None
+                };
+                let aborted_recoverable = is_agent_reply
+                    && queue
+                        .as_ref()
+                        .is_some_and(|queue| queue.status == QueueEntryStatus::Aborted)
+                    && read.reply_source_recoverable(&settlement_record)?;
+                let queue = queue
+                    .map(|queue| {
+                        crate::diagnostics::resource_io::admit_cloned_value(&*queue)?;
+                        Ok::<_, anyhow::Error>((*queue).clone())
+                    })
+                    .transpose()?;
+                Ok((queue, dropped, aborted_recoverable))
+            })?;
         let source_message_id = result_message_id.clone();
         let source_queue = existing_entry.clone();
-        let repository = self.inner.runtime_db.task_result_settlements();
-        let dropped_reply_source = if source_queue
-            .as_ref()
-            .is_some_and(|entry| entry.status == QueueEntryStatus::Dropped)
-        {
-            repository.dropped_reply_source(&settlement_record)?
-        } else {
-            None
-        };
         let unavailable = match source_queue.as_ref().map(|entry| &entry.status) {
             Some(QueueEntryStatus::Quarantined) => true,
             Some(QueueEntryStatus::Dropped) => dropped_reply_source.is_none(),
-            Some(QueueEntryStatus::Aborted) => {
-                !is_agent_reply || !repository.reply_source_is_recoverable(&settlement_record)?
-            }
+            Some(QueueEntryStatus::Aborted) => !aborted_reply_recoverable,
             None => is_agent_reply,
             _ => false,
         };
@@ -1470,7 +1483,11 @@ impl RuntimeHandle {
                 tool_execution: None,
                 brief: None,
                 brief_publication_scope: None,
-                _scheduling_material: vec![settlement_material, wait_material],
+                _scheduling_material: vec![
+                    settlement_material,
+                    wait_material,
+                    source_material.guard()?,
+                ],
             },
         )))
     }

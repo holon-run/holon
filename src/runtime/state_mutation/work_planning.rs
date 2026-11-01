@@ -341,13 +341,12 @@ impl RuntimeMutation {
                     .with_idle_read(Some(&read.state), &read.acquisition, |idle| {
                         let mut eligible = BTreeSet::new();
                         idle.validate_task_observation(read.tasks.revision)?;
-                        let candidates = if let Some(exact) =
-                            super::super::task_reads::exact_recovery_metadata(
-                                source,
-                                &read.tasks,
-                                &read.work,
-                            )?
-                        {
+                        let exact = super::super::task_reads::exact_recovery_metadata(
+                            source,
+                            &read.tasks,
+                            &read.work,
+                        )?;
+                        let candidates = if let Some(exact) = exact {
                             let mut selected = [None;
                                 crate::runtime_db::task_result_settlement::TASK_RESULT_SETTLEMENT_ADMISSION_LIMIT];
                             selected[0] = Some(exact);
@@ -385,7 +384,13 @@ impl RuntimeMutation {
                             if metadata.reply_message_id.is_some() {
                                 let record =
                                     super::super::task_reads::result_record(&read.tasks, metadata)?;
-                                if idle.reply_source_recoverable(record)? {
+                                let exact_waiter = exact.is_some_and(|exact| {
+                                    exact.result_identity == record.result_identity
+                                });
+                                if idle.reply_source_recoverable(record)?
+                                    || (exact_waiter
+                                        && idle.reply_source_available_for_exact_wait(record)?)
+                                {
                                     crate::diagnostics::resource_io::admit_cloned_value(
                                         &metadata.result_identity,
                                     )?;

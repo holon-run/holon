@@ -892,6 +892,19 @@ impl<'a, 'connection> IdleRead<'a, 'connection> {
         })
     }
 
+    pub(in crate::runtime) fn dropped_reply_source(
+        &self,
+        record: &TaskResultSettlementRecord,
+        queue: &QueueEntryRecord,
+    ) -> Result<Option<results::DroppedReplySource>> {
+        let mut captured = None;
+        self.source_predicate(record, |source, record| {
+            captured = source.dropped_reply_source(record, queue)?;
+            Ok(captured.is_some())
+        })?;
+        Ok(captured)
+    }
+
     pub(in crate::runtime) fn source_revision_repair_retains_source(
         &self,
         message_id: &str,

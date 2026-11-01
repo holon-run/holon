@@ -472,6 +472,7 @@ async fn actual_task_result_dispatch_and_recovery_decisions_do_not_read_body_tab
         &result,
         &plan,
         false,
+        &mut CanonicalClaimObservation::default(),
         &inputs,
         &read.work,
         &read.work_queue,

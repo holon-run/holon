@@ -6,11 +6,9 @@ use rusqlite::{params, Connection, OptionalExtension, Transaction};
 use serde::de::DeserializeOwned;
 use sha2::{Digest, Sha256};
 
-#[cfg(test)]
-use crate::domain::execution_protocol::ExecutionAttempt;
 use crate::domain::execution_protocol::{
-    self, ExecutionOutcomeRecord, ExecutionProtocolCommand, ExecutionProtocolState,
-    ExecutionTransition, WorkItemExecutionState,
+    self, ExecutionAttempt, ExecutionOutcomeRecord, ExecutionProtocolCommand,
+    ExecutionProtocolState, ExecutionTransition, WorkItemExecutionState,
 };
 use crate::{
     runtime_db::transitions::{
