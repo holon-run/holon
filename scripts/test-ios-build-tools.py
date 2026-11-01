@@ -1003,19 +1003,27 @@ class UIFixtureStallDetectionContracts(unittest.TestCase):
                 self.killed = False
 
             def wait(self, timeout=None):
-                deadline = time.monotonic() + 20
+                # Mirror subprocess.Popen.wait(timeout=...): block until the
+                # child exits or the timeout expires. The child only exits
+                # when the watchdog kills it, so a wait that returns
+                # without a kill means the watchdog failed to stop it.
+                deadline = time.monotonic() + (20 if timeout is None else timeout)
                 while not self.killed and time.monotonic() < deadline:
-                    if timeout is not None:
-                        raise subprocess.TimeoutExpired("xcodebuild", timeout)
-                    threading.Event().wait(0.05)
-                raise AssertionError("the watcher died without killing the child")
+                    threading.Event().wait(0.01)
+                if not self.killed:
+                    raise subprocess.TimeoutExpired("xcodebuild", timeout or 20)
+                return 137
 
             def poll(self):
                 return 137 if self.killed else None
 
             def kill(self):
                 self.killed = True
-                killed.append(True)
+                # Record which thread stopped the child. The watchdog
+                # must be the one that does it: the main thread also
+                # stops a child whose watchdog died, so the outcome
+                # alone would not prove the watchdog acted.
+                killed.append(threading.current_thread().name)
                 return None
 
         module = Mock(Popen=Mock(return_value=BrokenWatcherProcess()),
@@ -1028,7 +1036,12 @@ class UIFixtureStallDetectionContracts(unittest.TestCase):
                 helpers["monitor_xcodebuild"](
                     ["xcodebuild", "build"], {}, 3600,
                     subprocess_module=module, heartbeat_interval=1)
+        # The kill must come from the watchdog itself: the main thread
+        # also stops a child whose watchdog died, so a passing assertion
+        # on the outcome alone would not prove the watchdog killed it.
         self.assertTrue(killed, "A dead watcher must still kill the child")
+        self.assertTrue(all(name != "MainThread" for name in killed),
+                        "the watchdog must kill the child, not the main thread")
 
     def test_a_failing_report_does_not_break_the_watchdog(self):
         """A broken stdout must not disable the stall watchdog."""
