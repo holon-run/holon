@@ -308,6 +308,8 @@ impl ControlCommandAction {
 pub enum ServeAccess {
     Local,
     Tunnel,
+    /// Run a preconfigured Cloudflare Named Tunnel (not Quick Tunnels).
+    Cloudflare,
     Lan,
     Tailnet,
 }
@@ -327,6 +329,9 @@ pub struct ServeOptions {
     pub port: Option<u16>,
     #[arg(long)]
     pub advertise: Option<String>,
+    /// Connector token file for a preconfigured Cloudflare Named Tunnel.
+    #[arg(long)]
+    pub cloudflare_token_file: Option<PathBuf>,
     #[arg(long)]
     pub token: Option<String>,
     #[arg(long)]

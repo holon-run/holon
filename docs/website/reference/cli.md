@@ -521,10 +521,11 @@ holon run --agent builder --workspace-root /path/to/project "Fix build errors"
 | `--port <PORT>` | Listen port |
 | `--host <HOST>` | Bind host |
 | `--listen <ADDR>` | Listen address |
-| `--access <MODE>` | `local`, `tunnel`, `lan`, `tailnet` |
+| `--access <MODE>` | `local`, `tunnel`, `cloudflare`, `lan`, `tailnet` |
 | `--token <TOKEN>` | Bearer token for auth |
 | `--token-file <PATH>` | Read token from file |
 | `--advertise <URL>` | Advertised URL |
+| `--cloudflare-token-file <PATH>` | Named Tunnel connector token file; requires `cloudflare` access and an HTTPS advertised hostname |
 | `--web-dist <PATH>` | Web assets directory; persisted as an absolute path |
 | `--reset-serve-options` | Discard inherited serve intent; resolve explicit CLI/env and defaults |
 | `--desktop-integration[=true\|false]` | Allow authorized Finder actions on the daemon host; macOS only, independent of LAN/Serve; default off |
@@ -541,6 +542,7 @@ holon run --agent builder --workspace-root /path/to/project "Fix build errors"
 | `--token <TOKEN>` | Auth token |
 | `--token-file <PATH>` | Read token from a file; persist only its absolute path |
 | `--advertise <URL>` | Advertised URL |
+| `--cloudflare-token-file <PATH>` | Same as serve; persists the absolute path, not the connector token |
 | `--web-dist <PATH>` | Web assets directory |
 | `--reset-serve-options` | Same as serve; also available on daemon restart |
 | `--desktop-integration[=true\|false]` | Same as serve; restart inherits the setting unless explicitly overridden |

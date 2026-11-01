@@ -67,6 +67,8 @@ pub struct DaemonStatusView {
     pub ok: bool,
     pub state: DaemonLifecycleState,
     pub healthy: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tunnel: Option<crate::cloudflare_tunnel::TunnelStatus>,
     pub home_dir: PathBuf,
     pub socket_path: PathBuf,
     pub http_addr: String,

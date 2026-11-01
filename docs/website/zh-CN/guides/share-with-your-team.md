@@ -24,13 +24,16 @@ order: 185
 
 安装 Holon 后，根据团队现有的网络架构启动守护进程：
 
-- **Cloudflare Tunnel（`--access tunnel`）：** 最简接入方式，无需公网 IP、端口映射或手动配置证书，自动建立安全的 HTTPS 域名。
+- **Cloudflare Named Tunnel（`--access cloudflare`）：** 使用预配置的专用隧道、域名与 connector token 提供公网 HTTPS。
 - **Tailscale（`--access tailnet`）：** 适合团队成员已加入同一私有虚拟网格的场景。
 - **局域网或反向代理（`--access lan`）：** 适合已有自建机房，前端挂载 Nginx、Caddy 或 Kubernetes Ingress 的场景。
 
 ```bash
-# 示例：通过 Cloudflare Tunnel 启动并指定控制 Token
-holon daemon start --access tunnel --token-file ~/.holon/remote.token
+# 先配置 Named Tunnel ingress 指向 http://127.0.0.1:8787。
+holon daemon start --access cloudflare --port 8787 \
+  --advertise https://holon.example.com \
+  --cloudflare-token-file ~/.cloudflared/holon-connector.token \
+  --token-file ~/.holon/remote.token
 ```
 
 有关详细的网络配置与服务管理说明，请参阅[连接到远程 Holon 运行时](./connect-remote-runtime.md)。

@@ -25,26 +25,45 @@ order: 160
 |---|---|---|
 | `local` | 仅回环地址（127.0.0.1） | 默认值，单机开发使用 |
 | `lan` | 局域网监听 | 同一局域网内，已知固定 IP |
-| `tunnel` | Cloudflare Tunnel | 自动通过安全隧道接入公网 |
+| `tunnel` | 仅回环绑定，自行配置隧道 | SSH 转发或外部代理 |
+| `cloudflare` | 托管预配置的 Named Tunnel | 公网 HTTPS，保留现有 SSE |
 | `tailnet` | Tailscale 虚拟网格 | 仅限你名下设备间的私有互联 |
 
 ## 启动远程服务
 
 ### 隧道模式（Cloudflare Tunnel）
 
-启动通过 Cloudflare Tunnel 暴露的守护进程：
+先安装 `cloudflared`，在 Cloudflare 创建专用的 remotely-managed **Named Tunnel**，
+配置公网域名及指向 `http://127.0.0.1:8787` 的 ingress。
+将该隧道的 connector token 写入仅当前账户可读的文件（Unix 权限 0600）；
+它不是 Cloudflare 账户 API token。使用相同的固定端口启动：
 
 ```bash
-holon daemon start --access tunnel --token-file ~/.holon/remote.token
+holon daemon start --access cloudflare --port 8787 \
+  --advertise https://holon.example.com \
+  --cloudflare-token-file ~/.cloudflared/holon-connector.token \
+  --token-file ~/.holon/remote.token
 ```
 
 或使用前台独立服务启动：
 
 ```bash
-holon serve --access tunnel --token-file ~/.holon/remote.token
+holon serve --access cloudflare --port 8787 \
+  --advertise https://holon.example.com \
+  --cloudflare-token-file ~/.cloudflared/holon-connector.token \
+  --token-file ~/.holon/remote.token
 ```
 
-运行时会自动管理隧道的生命周期，无需你在 Cloudflare 端手动预配置 — Holon 会自动创建并维护临时安全隧道。请以运行时实际输出的公网 URL 为准，不要把本地监听端口当作公网地址。隧道本质上是通过第三方代理暴露控制平面，因此必须始终开启 Holon 身份鉴权。
+Holon 仅托管 connector 进程，不创建账户、隧道或 DNS。首期不支持 Quick Tunnels，
+因为它不支持 SSE。原有 `--access tunnel` 仍仅做回环绑定，不启动 cloudflared。
+只使用远端 ingress 配置可信的专用隧道。`cloudflare` 即使绑定回环也强制 Holon Token
+鉴权；两个 token 不可混用，不要通过 URL 传递。
+
+`holon daemon status` 中独立的 `tunnel` 字段表示 connector 状态；本地 healthy
+不代表公网可达，`connected` 也不等于端到端验收通过。隧道失败不影响本地运行时。
+无参数 restart 会恢复已保存的公网隧道意图；使用 `--access local` 明确停止托管，
+但不会清除原有鉴权要求。正常关闭会终止并回收子进程；Linux 额外防护父进程死亡，
+其他平台不保证 SIGKILL 后无残留。
 
 ### Tailnet 模式（Tailscale）
 

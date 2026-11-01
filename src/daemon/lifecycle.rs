@@ -132,6 +132,7 @@ fn daemon_status_from_probe(
             runtime_config_fingerprint: Some(status.config_fingerprint.clone()),
             config_fingerprint_match: Some(status.config_fingerprint == fingerprint),
             activity: status.activity.clone(),
+            tunnel: status.tunnel.clone(),
             last_failure: merge_latest_failure(status.last_failure.clone(), persisted_failure),
             stale_files: Vec::new(),
             message: if status.healthy {
@@ -185,6 +186,7 @@ fn daemon_status_from_probe(
                 runtime_config_fingerprint: metadata.map(|record| record.config_fingerprint),
                 config_fingerprint_match: None,
                 activity: None,
+                tunnel: None,
                 last_failure: persisted_failure,
                 stale_files,
                 message,
@@ -215,6 +217,7 @@ fn daemon_status_from_probe(
             runtime_config_fingerprint: metadata.map(|record| record.config_fingerprint),
             config_fingerprint_match: None,
             activity: None,
+            tunnel: None,
             last_failure: persisted_failure,
             stale_files: stale_files(config),
             message: details.clone(),
@@ -244,6 +247,7 @@ fn daemon_status_from_probe(
             runtime_config_fingerprint: metadata.map(|record| record.config_fingerprint),
             config_fingerprint_match: None,
             activity: None,
+            tunnel: None,
             last_failure: persisted_failure,
             stale_files: stale_files(config),
             message: format!(
@@ -369,6 +373,7 @@ where
         }
         _ => return Err(anyhow!("cannot accept serve intent for an occupied, foreign, incompatible or unresponsive control surface")),
     }
+    preflight_serve_dependencies(&plan).await?;
     persist_serve_profile(config, &plan.profile)?;
     persist_daemon_desired_running(config, true)?;
     if restart {
@@ -396,6 +401,19 @@ where
     Ok(started)
 }
 
+async fn preflight_serve_dependencies(plan: &ResolvedDaemonServePlan) -> Result<()> {
+    if let Some(path) = plan.profile.cloudflare_token_file.clone() {
+        // Reject missing credentials/dependencies before accepting durable intent
+        // or stopping a healthy runtime. The serve child rechecks before launch.
+        tokio::task::spawn_blocking(move || {
+            crate::cloudflare_tunnel::CloudflareTunnel::preflight(&path)
+        })
+        .await
+        .context("Cloudflare Named Tunnel preflight task failed")??;
+    }
+    Ok(())
+}
+
 pub async fn prepare_serve_with_profile<F>(
     config: &AppConfig,
     reset: bool,
@@ -419,6 +437,7 @@ where
         None
     };
     let plan = resolve(profile.as_ref(), metadata.as_ref())?;
+    preflight_serve_dependencies(&plan).await?;
     ensure_serve_preflight(&plan.config).await?;
     persist_serve_profile(config, &plan.profile)?;
     persist_daemon_desired_running(config, true)?;
@@ -956,6 +975,7 @@ fn stopped_status(config: &AppConfig) -> Result<DaemonStatusView> {
         runtime_config_fingerprint: None,
         config_fingerprint_match: None,
         activity: None,
+        tunnel: None,
         last_failure: latest_known_runtime_failure(config)?,
         stale_files: stale_files(config),
         message: "runtime is not running".into(),
@@ -1711,6 +1731,7 @@ fn status_from_metadata(metadata: RuntimeServiceMetadata) -> RuntimeStatusRespon
         lifecycle_owner: metadata.lifecycle_owner,
         executable_path: metadata.executable_path,
         activity: None,
+        tunnel: None,
         startup_surface: None,
         runtime_surface: None,
         last_failure: None,

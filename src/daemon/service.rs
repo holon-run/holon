@@ -3,7 +3,7 @@ use std::{
     path::PathBuf,
     sync::{
         atomic::{AtomicBool, Ordering},
-        Arc,
+        Arc, RwLock,
     },
 };
 
@@ -52,6 +52,8 @@ pub struct RuntimeServiceMetadata {
 pub struct RuntimeStatusResponse {
     pub ok: bool,
     pub healthy: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tunnel: Option<crate::cloudflare_tunnel::TunnelStatus>,
     pub pid: u32,
     pub home_dir: PathBuf,
     pub socket_path: PathBuf,
@@ -441,6 +443,7 @@ struct RuntimeServiceInner {
     metadata: RuntimeServiceMetadata,
     shutdown_tx: watch::Sender<bool>,
     healthy: AtomicBool,
+    tunnel: RwLock<Option<crate::cloudflare_tunnel::TunnelStatusHandle>>,
 }
 
 impl RuntimeServiceHandle {
@@ -476,12 +479,36 @@ impl RuntimeServiceHandle {
                 },
                 shutdown_tx,
                 healthy: AtomicBool::new(healthy),
+                tunnel: RwLock::new(None),
             }),
         })
     }
 
     pub fn mark_healthy(&self) {
         self.inner.healthy.store(true, Ordering::Release);
+    }
+
+    pub fn set_tunnel_status(&self, status: crate::cloudflare_tunnel::TunnelStatusHandle) {
+        *self
+            .inner
+            .tunnel
+            .write()
+            .expect("tunnel status lock poisoned") = Some(status);
+    }
+
+    pub fn set_tunnel_failed(&self, public_url: &str) {
+        self.set_tunnel_status(crate::cloudflare_tunnel::TunnelStatusHandle::failed(
+            public_url,
+        ));
+    }
+
+    fn tunnel_status(&self) -> Option<crate::cloudflare_tunnel::TunnelStatus> {
+        self.inner
+            .tunnel
+            .read()
+            .expect("tunnel status lock poisoned")
+            .as_ref()
+            .map(|status| status.snapshot())
     }
 
     pub fn status_response(
@@ -494,6 +521,7 @@ impl RuntimeServiceHandle {
         RuntimeStatusResponse {
             ok: true,
             healthy: self.inner.healthy.load(Ordering::Acquire),
+            tunnel: self.tunnel_status(),
             pid: self.inner.metadata.pid,
             home_dir: self.inner.metadata.home_dir.clone(),
             socket_path: self.inner.metadata.socket_path.clone(),
@@ -520,6 +548,7 @@ impl RuntimeServiceHandle {
         RuntimeStatusResponse {
             ok: true,
             healthy: self.inner.healthy.load(Ordering::Acquire),
+            tunnel: self.tunnel_status(),
             pid: self.inner.metadata.pid,
             home_dir: self.inner.metadata.home_dir.clone(),
             socket_path: self.inner.metadata.socket_path.clone(),

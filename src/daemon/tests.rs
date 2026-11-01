@@ -67,6 +67,7 @@ fn serve_profile_fixture() -> super::DaemonServeProfile {
         listen: Some("127.0.0.1:8787".into()),
         port: None,
         advertise: None,
+        cloudflare_token_file: None,
         desktop_integration: false,
         web_dist: None,
         authentication: super::ServeProfileAuthentication::ExternalRequired,
@@ -83,6 +84,31 @@ fn serve_profile_roundtrip_is_independent_of_runtime_cleanup() {
     super::cleanup_daemon_state(&config).unwrap();
     assert_eq!(super::load_serve_profile(&config).unwrap(), Some(profile));
     assert!(!super::serve_profile_path(&config).starts_with(config.run_dir()));
+}
+
+#[test]
+fn serve_profile_v1_without_cloudflare_field_remains_compatible() {
+    let mut json = serde_json::to_value(serve_profile_fixture()).unwrap();
+    json.as_object_mut()
+        .unwrap()
+        .remove("cloudflare_token_file");
+    let profile: super::DaemonServeProfile = serde_json::from_value(json).unwrap();
+    profile.validate().unwrap();
+    assert!(profile.cloudflare_token_file.is_none());
+}
+
+#[test]
+fn serve_profile_cloudflare_cannot_disable_auth_or_store_relative_credentials() {
+    let mut profile = serve_profile_fixture();
+    profile.access = super::ServeProfileAccess::Cloudflare;
+    profile.cloudflare_token_file = Some(std::env::temp_dir().join("connector.token"));
+    profile.advertise = Some("https://holon.example.com".into());
+    profile.validate().unwrap();
+    profile.control_auth_mode = RuntimeControlAuthMode::Disabled;
+    assert!(profile.validate().is_err());
+    profile.control_auth_mode = RuntimeControlAuthMode::Required;
+    profile.cloudflare_token_file = Some("connector.token".into());
+    assert!(profile.validate().is_err());
 }
 
 #[test]
@@ -1139,6 +1165,7 @@ fn effective_config_mismatch_summary_lists_actionable_differences() {
         lifecycle_owner: crate::daemon::DaemonLifecycleOwner::Standalone,
         executable_path: std::env::current_exe().unwrap(),
         activity: None,
+        tunnel: None,
         startup_surface: Some(RuntimeStartupSurface {
             user_home_dir: expected.user_home_dir.clone(),
             home_dir: expected.home_dir.clone(),
@@ -1526,6 +1553,7 @@ fn runtime_status_metadata_match_rejects_foreign_runtime() {
         lifecycle_owner: crate::daemon::DaemonLifecycleOwner::Standalone,
         executable_path: std::env::current_exe().unwrap(),
         activity: None,
+        tunnel: None,
         startup_surface: None,
         runtime_surface: None,
         last_failure: None,

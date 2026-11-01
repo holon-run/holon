@@ -16,6 +16,7 @@ use crate::config::AppConfig;
 pub enum ServeProfileAccess {
     Local,
     Tunnel,
+    Cloudflare,
     Lan,
     Tailnet,
 }
@@ -38,6 +39,8 @@ pub struct DaemonServeProfile {
     pub listen: Option<String>,
     pub port: Option<u16>,
     pub advertise: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cloudflare_token_file: Option<PathBuf>,
     pub desktop_integration: bool,
     pub web_dist: Option<PathBuf>,
     pub authentication: ServeProfileAuthentication,
@@ -88,6 +91,28 @@ impl DaemonServeProfile {
                 bail!("daemon serve profile token file path must be absolute");
             }
         }
+        if self.access == ServeProfileAccess::Cloudflare {
+            let path = self
+                .cloudflare_token_file
+                .as_ref()
+                .context("Cloudflare Named Tunnel requires a connector token file")?;
+            if !path.is_absolute() {
+                bail!("Cloudflare connector token file path must be absolute");
+            }
+            if self.control_auth_mode != RuntimeControlAuthMode::Required
+                || matches!(self.authentication, ServeProfileAuthentication::None)
+            {
+                bail!("Cloudflare Named Tunnel requires Holon token authentication");
+            }
+            let listen = self.listen.as_deref().unwrap_or("127.0.0.1:7878");
+            let address: std::net::SocketAddr = listen.parse()?;
+            if !address.ip().is_loopback() || address.port() == 0 {
+                bail!("Cloudflare Named Tunnel requires a fixed loopback listener");
+            }
+            validate_cloudflare_url(self.advertise.as_deref())?;
+        } else if self.cloudflare_token_file.is_some() {
+            bail!("Cloudflare connector token file requires Cloudflare access");
+        }
         Ok(())
     }
 }
@@ -105,11 +130,36 @@ impl ResolvedDaemonServePlan {
         self.config.http_addr == recorded.config.http_addr
             && self.profile.access == recorded.profile.access
             && self.profile.advertise == recorded.profile.advertise
+            && self.profile.cloudflare_token_file == recorded.profile.cloudflare_token_file
             && self.profile.desktop_integration == recorded.profile.desktop_integration
             && self.profile.web_dist == recorded.profile.web_dist
             && self.profile.authentication == recorded.profile.authentication
             && self.profile.control_auth_mode == recorded.profile.control_auth_mode
     }
+}
+
+/// Named Tunnel hostnames are preconfigured; no URL or credential discovery.
+pub fn validate_cloudflare_url(value: Option<&str>) -> Result<()> {
+    let url =
+        reqwest::Url::parse(value.context(
+            "Cloudflare Named Tunnel requires --advertise https://<configured-hostname>",
+        )?)?;
+    let host = url.domain().unwrap_or_default();
+    if url.scheme() != "https"
+        || host.is_empty()
+        || host == "localhost"
+        || host == "trycloudflare.com"
+        || host.ends_with(".trycloudflare.com")
+        || !url.username().is_empty()
+        || url.password().is_some()
+        || url.query().is_some()
+        || url.fragment().is_some()
+        || url.path() != "/"
+        || url.port_or_known_default() != Some(443)
+    {
+        bail!("Cloudflare Named Tunnel requires a credential-free HTTPS hostname origin (not a Quick Tunnel URL)");
+    }
+    Ok(())
 }
 
 pub fn serve_profile_path(config: &AppConfig) -> PathBuf {
