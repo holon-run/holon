@@ -2324,9 +2324,9 @@ struct StaleExecutionBinding {
     reason: &'static str,
 }
 
-/// Activation settlement does not finish the actual dispatch. Keep bindings
-/// with an unfinished original Start for startup recovery; clear legacy terminal
-/// bindings only when they have no such outstanding responsibility.
+/// Activation settlement and memory completion do not retire persisted dispatch
+/// state. Keep bindings with an original checkpoint for startup recovery; clear
+/// legacy terminal bindings only when they have no checkpoint.
 fn stale_execution_binding_on(
     runtime_db: &RuntimeDb,
     scope: &super::resident_input_evidence::InputEvidenceScope,
@@ -2335,7 +2335,7 @@ fn stale_execution_binding_on(
     let Some(attempt_id) = binding.activation_id.as_deref() else {
         return Ok(None);
     };
-    if crate::runtime_db::dispatch_memory::has_unfinished_dispatch_memory_start_on(
+    if crate::runtime_db::dispatch_memory::has_dispatch_memory_checkpoint_on(
         &runtime_db.connection()?,
         scope,
         &binding.turn_id,

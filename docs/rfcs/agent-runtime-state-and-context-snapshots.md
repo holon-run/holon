@@ -3745,9 +3745,12 @@ normalization audits — attach the same ACK
 inside their own append transaction once the Current schema is committed.
 Offline recovery before that schema leaves the Event for the original upgrade
 cut; an absent ACK table after schema activation is an error, not a bypass.
-Bootstrap retains a terminal activation's execution binding while its original
-dispatch memory Start is unfinished; activation settlement alone does not
-discharge that recovery responsibility.
+Bootstrap retains a terminal activation's execution binding when its original
+dispatch memory checkpoint exists, including Done: neither activation settlement
+nor memory completion retires the persisted dispatch state. Only legacy terminal
+bindings without an original checkpoint may be cleared here. Checkpoint
+existence grants no read or finish authority; original checkpoint and receipt
+validation remain mandatory.
 The ACK is archive-read authority only: a
 live Current selection address, SSE live notification or Ready publication
 never consumes it, no read path or ordinary startup may create or extend it,
