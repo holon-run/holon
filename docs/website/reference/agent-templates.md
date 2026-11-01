@@ -156,6 +156,16 @@ discrepancies, missing documentation, and upcoming renewal deadlines visible. It
 does not initiate payments or fund transfers, cancel subscriptions, or certify
 tax filings without explicit operator approval.
 
+## Travel operations
+
+`travel-steward` maintains authorized traveler preferences, versioned
+itineraries, confirmation records, budgets, conflicts, and preparation
+reminders. A map route, price page, or search result is a sourced candidate,
+not a booking or locked fare. Its bundled China map adapter runs only after
+the operator provides a key and authorizes that lookup. It does not book,
+hold, cancel, pay, send messages, or write remote calendars without explicit
+approval. Visa, insurance, and legal conclusions stay with qualified owners.
+
 ## Marketing operations
 
 `marketing-steward` maintains product-marketing context, content queues,
