@@ -481,7 +481,7 @@ async fn actual_owner_busy_keeps_ready_then_dirty_until_explicit_retry() -> Resu
     let before = runtime
         .preview_prompt("before busy".into(), AuthorityClass::OperatorInstruction)
         .await?;
-    let owner = runtime.inner.mutation_owner.try_reserve()?;
+    let owner = runtime.inner.mutation_owner.reserve().await?;
     // Force I/O without changing the published source; Busy never poisons Ready.
     let source = before
         ._resource_read_material
@@ -940,6 +940,42 @@ async fn summary_re_prepares_after_the_published_source_moves_during_a_refresh()
     assert_eq!(summary.identity.agent_id, runtime.agent_id().await?);
     host.shutdown().await?;
     Ok(())
+}
+
+async fn resource_preparation_waits_for_publication(summary: bool) -> Result<()> {
+    let (_home, host, runtime) = fixture().await?;
+    let mut mutation = runtime.inner.mutation_owner.reserve().await?;
+    mutation.begin("resource-preparation-publication-race".into())?;
+    let mut read = tokio::spawn({
+        let runtime = runtime.clone();
+        async move {
+            if summary {
+                runtime.agent_summary().await.map(|_| ())
+            } else {
+                runtime.ensure_context_resources().await.map(|_| ())
+            }
+        }
+    });
+    let early = tokio::time::timeout(std::time::Duration::from_millis(50), &mut read).await;
+    mutation.definitely_not_committed()?;
+    drop(mutation);
+    assert!(
+        early.is_err(),
+        "resource preparation must wait for an in-flight publication: {early:?}"
+    );
+    tokio::time::timeout(std::time::Duration::from_secs(10), read).await???;
+    host.shutdown().await?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn summary_resource_preparation_waits_for_an_in_flight_publication() -> Result<()> {
+    resource_preparation_waits_for_publication(true).await
+}
+
+#[tokio::test]
+async fn context_resource_preparation_waits_for_an_in_flight_publication() -> Result<()> {
+    resource_preparation_waits_for_publication(false).await
 }
 
 #[tokio::test]

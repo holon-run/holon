@@ -3959,6 +3959,10 @@ impl RuntimeHandle {
             agent.state == agent.last_persisted_state,
             "runtime recovery cannot discard unpersisted state"
         );
+        // An identical durable readback does not replace transient run handles.
+        if &agent.state == state.as_ref() {
+            return Ok(());
+        }
         anyhow::ensure!(
             agent
                 .current_run_abort

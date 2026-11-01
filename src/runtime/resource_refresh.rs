@@ -438,6 +438,7 @@ impl RuntimeHandle {
     }
     pub(super) async fn prepare_summary_instruction_resources(&self) -> Result<()> {
         let captured = {
+            let _owner = self.reserve_resource_source().await?;
             let root = self
                 .inner
                 .mutation_owner
@@ -464,6 +465,7 @@ impl RuntimeHandle {
         let mut source_changes = 0usize;
         loop {
             {
+                let _owner = self.reserve_resource_source().await?;
                 let root = self
                     .inner
                     .mutation_owner
@@ -519,16 +521,20 @@ impl RuntimeHandle {
             }
             // The physical attempt has exited. Wait without its refresh lock,
             // and release the owner before acquiring resources on the next attempt.
-            tokio::select! {
-                owner = self.inner.mutation_owner.reserve() => drop(owner?),
-                _ = self.inner.resources.closed() => {
-                    return Err(ResourceObservationError::NotReady(
-                        super::resource_observation::ResourceFreshness::Closed
-                    ).into());
-                }
+            drop(self.reserve_resource_source().await?);
+        }
+    }
+    async fn reserve_resource_source(&self) -> Result<mutation_owner::MutationReservation> {
+        tokio::select! {
+            owner = self.inner.mutation_owner.reserve() => Ok(owner?),
+            _ = self.inner.resources.closed() => {
+                Err(ResourceObservationError::NotReady(
+                    super::resource_observation::ResourceFreshness::Closed
+                ).into())
             }
         }
     }
+
     async fn lock_context_resource_refresh(&self) -> Result<tokio::sync::OwnedMutexGuard<()>> {
         let refresh = tokio::select! {
             guard = self.inner.resources.refresh_lock.clone().lock_owned() => guard,
@@ -742,6 +748,9 @@ impl RuntimeHandle {
                 super::resource_observation::ResourceFreshness::Closed
             )
         );
+        resources.retry_owner.store(true, Ordering::Release);
+        let owner = self.inner.mutation_owner.try_reserve()?;
+        resources.retry_owner.store(false, Ordering::Release);
         let root = self
             .inner
             .mutation_owner
@@ -756,6 +765,8 @@ impl RuntimeHandle {
             let _io = source_material.enter();
             self.context_resource_source(&state, &config)?
         };
+        // Only the synchronous source capture owns this reservation.
+        drop(owner);
         if let Ok(value) = resources.registry.capture(&source) {
             return Ok(value);
         }
@@ -1334,9 +1345,9 @@ mod tests {
         config.user_home_dir = None;
         runtime.inner.config_snapshot.store(Arc::new(config));
         let checkpoint = runtime.pause_next_resource_refresh();
-        let owner = runtime.inner.mutation_owner.try_reserve()?;
         let wake = ResourceOwnerWake(Arc::downgrade(&runtime.inner));
         tokio::time::timeout(Duration::from_secs(5), checkpoint.wait()).await?;
+        let owner = runtime.inner.mutation_owner.try_reserve()?;
         checkpoint.release();
         tokio::time::timeout(Duration::from_secs(5), async {
             while !runtime.inner.resources.retry_owner.load(Ordering::Acquire) {
@@ -1368,12 +1379,12 @@ mod tests {
             let runtime = synchronous_runtime("explicit-resource-busy", home.path())?;
             tokio::runtime::Runtime::new()?.block_on(async {
                 let checkpoint = runtime.pause_next_resource_refresh();
-                let mut owner = Some(runtime.inner.mutation_owner.try_reserve()?);
                 let request = tokio::spawn({
                     let runtime = runtime.clone();
                     async move { runtime.ensure_context_resources().await }
                 });
                 tokio::time::timeout(Duration::from_secs(5), checkpoint.wait()).await?;
+                let mut owner = Some(runtime.inner.mutation_owner.try_reserve()?);
                 checkpoint.release();
                 tokio::time::timeout(Duration::from_secs(5), async {
                     while !runtime.inner.resources.retry_owner.load(Ordering::Acquire) {

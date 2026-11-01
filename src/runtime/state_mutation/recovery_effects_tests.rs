@@ -19,14 +19,95 @@ async fn fixture() -> Result<(RuntimeHandle, TempDir)> {
     Ok((runtime, home))
 }
 
+async fn terminal_handle_fixture() -> Result<(RuntimeHandle, TempDir, CurrentRunAbortHandle)> {
+    let (runtime, home) = fixture().await?;
+    let handle = CurrentRunAbortHandle {
+        run_id: "acknowledged-terminal-run".into(),
+        token: CancellationToken::new(),
+        reason: Arc::new(StdMutex::new("terminal".into())),
+    };
+    {
+        let mut agent = runtime.inner.agent.lock().await;
+        assert!(agent.state.current_run_id.is_none());
+        assert_eq!(agent.state, agent.last_persisted_state);
+        // Terminal ACK installed State; the next mutation owns handle cleanup.
+        agent.current_run_abort = Some(handle.clone());
+    }
+    Ok((runtime, home, handle))
+}
+
+#[tokio::test]
+async fn durable_readback_preserves_the_same_state_terminal_handle() -> Result<()> {
+    let (runtime, _home, handle) = terminal_handle_fixture().await?;
+    let state = Arc::new(runtime.inner.agent.lock().await.state.clone());
+    runtime.install_exact_durable_readback(&state).await?;
+    let agent = runtime.inner.agent.lock().await;
+    assert_eq!(&agent.state, state.as_ref());
+    assert_eq!(agent.state, agent.last_persisted_state);
+    let installed = agent.current_run_abort.as_ref().unwrap();
+    assert_eq!(installed.run_id, handle.run_id);
+    assert!(Arc::ptr_eq(&installed.reason, &handle.reason));
+    assert!(!handle.token.is_cancelled());
+    handle.token.cancel();
+    assert!(installed.token.is_cancelled());
+    Ok(())
+}
+
+#[tokio::test]
+async fn durable_readback_rejects_changed_state_with_a_conflicting_handle() -> Result<()> {
+    let (runtime, _home, handle) = terminal_handle_fixture().await?;
+    let before = runtime.inner.agent.lock().await.state.clone();
+    let mut changed = before.clone();
+    changed.total_input_tokens += 1;
+    let error = runtime
+        .install_exact_durable_readback(&Arc::new(changed))
+        .await
+        .unwrap_err();
+    assert!(error
+        .to_string()
+        .contains("conflicts with a live run handle"));
+    let agent = runtime.inner.agent.lock().await;
+    assert_eq!(agent.state, before);
+    assert_eq!(agent.last_persisted_state, before);
+    assert!(Arc::ptr_eq(
+        &agent.current_run_abort.as_ref().unwrap().reason,
+        &handle.reason
+    ));
+    assert!(!handle.token.is_cancelled());
+    Ok(())
+}
+
+#[tokio::test]
+async fn durable_readback_rejects_unpersisted_state_even_when_readback_matches() -> Result<()> {
+    let (runtime, _home, handle) = terminal_handle_fixture().await?;
+    let (persisted, dirty) = {
+        let mut agent = runtime.inner.agent.lock().await;
+        let persisted = agent.last_persisted_state.clone();
+        agent.state.pending += 1;
+        (persisted, Arc::new(agent.state.clone()))
+    };
+    let error = runtime
+        .install_exact_durable_readback(&dirty)
+        .await
+        .unwrap_err();
+    assert!(error
+        .to_string()
+        .contains("cannot discard unpersisted state"));
+    let agent = runtime.inner.agent.lock().await;
+    assert_eq!(&agent.state, dirty.as_ref());
+    assert_eq!(agent.last_persisted_state, persisted);
+    assert!(!handle.token.is_cancelled());
+    Ok(())
+}
+
 #[tokio::test]
 async fn recovery_install_returns_original_facts_and_preserves_durable_ack() -> Result<()> {
     let (runtime, _home) = fixture().await?;
     {
-        let mut agent = runtime.inner.agent.lock().await;
+        let mut agent = runtime.begin_mutation().await?;
         agent.state.status = AgentStatus::AwakeRunning;
         agent.state.current_run_id = Some("original-recovery-run".into());
-        agent.persist_state(&runtime.inner.storage)?;
+        agent.persist_state(&runtime.inner.storage).await?;
     }
     runtime.inject_next_transition_fault(TransitionFaultPoint::BeforeCacheUpdate);
     let error = scheduler_executor::SchedulerDecisionExecutor::new(&runtime)
