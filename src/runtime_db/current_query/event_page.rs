@@ -140,7 +140,7 @@ pub(crate) fn prepare_event_page(
             let id = row.get_ref(0)?.as_str()?;
             let seq = u64::try_from(row.get::<_, i64>(1)?)
                 .context("stored audit event sequence is negative")?;
-            let body = load_body(tx, scope, CurrentFamily::Event, id, &mut material)?
+            let body = load_body(tx, scope, CurrentFamily::Event, id, &mut material, true)?
                 .context("selected Event disappeared")?;
             let CurrentRecord::Event(event) = body.record() else {
                 unreachable!("selected Event has another family")

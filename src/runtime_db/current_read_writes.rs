@@ -30,6 +30,14 @@ CREATE TABLE current_read_qualification (
  PRIMARY KEY(agent_id,identity_incarnation,family,record_id),
  FOREIGN KEY(agent_id,identity_incarnation) REFERENCES current_read_revisions(agent_id,identity_incarnation));
 CREATE INDEX current_read_known_address ON current_read_qualification(family,record_id);
+CREATE TABLE event_history_acks (
+ agent_id TEXT NOT NULL,
+ identity_incarnation INTEGER NOT NULL CHECK(identity_incarnation>0),
+ audit_event_id TEXT NOT NULL CHECK(length(CAST(audit_event_id AS BLOB))>0),
+ event_seq INTEGER NOT NULL CHECK(event_seq>0),
+ content_digest TEXT NOT NULL CHECK(length(content_digest)=64),
+ PRIMARY KEY(agent_id,identity_incarnation,audit_event_id));
+CREATE INDEX event_history_ack_address ON event_history_acks(audit_event_id);
 "#;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -766,6 +774,40 @@ impl<'tx, 'conn> OriginalCurrentWrites<'tx, 'conn> {
 
 pub(super) fn digest(payload: &str) -> String {
     format!("{:x}", Sha256::digest(payload.as_bytes()))
+}
+
+/// Archive proof attached by original Event writers inside their own append
+/// transaction, and frozen once by the legacy upgrade cut. It never grants
+/// live Current authority; only the finite history page consumes it, against
+/// the exact identity, sequence and body digest.
+pub(crate) fn append_event_history_ack_tx(
+    tx: &Transaction<'_>,
+    scope: &InputEvidenceScope,
+    event_id: &str,
+) -> Result<()> {
+    let (seq, payload): (i64, String) = tx
+        .query_row(
+            "SELECT event_seq,data_json FROM audit_events
+             WHERE audit_event_id=?1 AND agent_id=?2",
+            params![event_id, scope.agent_id],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .context("history ACK Event row is absent")?;
+    ensure!(seq > 0, "history ACK Event sequence is not allocated");
+    tx.execute(
+        "INSERT INTO event_history_acks(agent_id,identity_incarnation,audit_event_id,event_seq,content_digest)
+         VALUES(?1,?2,?3,?4,?5)
+         ON CONFLICT(agent_id,identity_incarnation,audit_event_id)
+         DO UPDATE SET event_seq=excluded.event_seq,content_digest=excluded.content_digest",
+        params![
+            scope.agent_id,
+            scope.identity_incarnation,
+            event_id,
+            seq,
+            digest(&payload)
+        ],
+    )?;
+    Ok(())
 }
 
 fn validate_canonical_payload(value: &impl serde::Serialize, payload: &str) -> Result<()> {

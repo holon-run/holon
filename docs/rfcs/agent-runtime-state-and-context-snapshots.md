@@ -3736,6 +3736,19 @@ incarnation owner. Every examined body, including filter lookahead, must match
 its original Current qualification and canonical digest in the same transaction
 as the page cursor, epoch and recovery window. This read neither extends a live
 Current interval nor publishes Ready, retains a Root, or activates a cold Agent.
+An Event body may instead match an archive history ACK frozen in its original
+write transaction: the one-time legacy Current upgrade cut freezes one ACK per
+already-persisted Event under the exact agent, incarnation, event id, sequence
+and content digest, and original non-Active Event writers — offline scheduler
+recovery observations, startup interrupted-turn repair and startup
+normalization audits — attach the same ACK
+inside their own append transaction. The ACK is archive-read authority only: a
+live Current selection address, SSE live notification or Ready publication
+never consumes it, no read path or ordinary startup may create or extend it,
+and a body whose stored digest or sequence differs from its frozen ACK is
+refused exactly like an unqualified raw row. Live Current qualification still
+deliberately excludes Events the legacy upgrade adopted without a Current
+writer.
 The existing display filter remains presentation context, not Work body authority.
 Public envelopes borrow selected facts and omit private top-level payload keys
 during serialization rather than copying and removing them. Exact wire buffers
@@ -3832,6 +3845,14 @@ Response Bytes retain all original acquisition guards through cache clones
 and slices; an empty list uses the static empty array without inventing an
 Agent scope. Tree and committed roster-snapshot consistency are separate
 contracts, not capabilities inferred from the public list.
+
+For HTTP lists, the registered projection blocking worker owns acquisition and
+serialization together. Its build scope covers nested cold storage reads and
+loaded registry/owner reservation waits, including explicit Current preparation.
+Cancellation and the absolute build deadline interrupt those waits without
+waiting for an unrelated writer to release its reservation. The original
+per-Agent material and owner selection remain unchanged, and the leader's
+capacity remains owned until the registered worker exits.
 
 The full-Summary fleet reader uses the same borrowed public-identity selection
 before copying inventory, but consumes the existing loaded/cold Summary reader

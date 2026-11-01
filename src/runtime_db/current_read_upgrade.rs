@@ -163,6 +163,47 @@ pub(in crate::runtime_db) fn capture_tx(tx: &Transaction<'_>) -> Result<()> {
                 params![scope.agent_id, scope.identity_incarnation, id, frozen],
             )?;
         }
+        // Freeze the archive history ACK for every Event this legacy
+        // database already holds, in the same original upgrade transaction.
+        // Live Current qualification still excludes them; only the finite
+        // history page consumes these ACKs.
+        {
+            let (event_count, event_bytes): (usize, usize) = tx.query_row(
+                "SELECT COUNT(*),COALESCE(SUM(length(CAST(audit_event_id AS BLOB))+length(CAST(data_json AS BLOB))),0) FROM audit_events WHERE agent_id=?1",
+                params![scope.agent_id],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )?;
+            ensure!(
+                event_count <= CONTINUITY_MAX_RECORDS
+                    && event_bytes <= CONTINUITY_MAX_PAYLOAD_BYTES,
+                "Current upgrade Event history inventory exceeds limit"
+            );
+            let mut statement = tx.prepare(
+                "SELECT audit_event_id,event_seq,data_json FROM audit_events WHERE agent_id=?1 ORDER BY event_seq",
+            )?;
+            let mut rows = statement.query(params![scope.agent_id])?;
+            while let Some(row) = rows.next()? {
+                let id = row.get_ref(0)?.as_str()?;
+                let seq: i64 = row.get(1)?;
+                let payload = row.get_ref(2)?.as_str()?;
+                ensure!(
+                    seq > 0,
+                    "Current upgrade Event history sequence is not allocated"
+                );
+                tx.execute(
+                    "INSERT INTO event_history_acks(agent_id,identity_incarnation,audit_event_id,event_seq,content_digest)
+                     VALUES(?1,?2,?3,?4,?5)
+                     ON CONFLICT(agent_id,identity_incarnation,audit_event_id) DO NOTHING",
+                    params![
+                        scope.agent_id,
+                        scope.identity_incarnation,
+                        id,
+                        seq,
+                        bytes_digest(payload.as_bytes())
+                    ],
+                )?;
+            }
+        }
     }
     Ok(())
 }

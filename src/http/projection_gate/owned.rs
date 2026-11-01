@@ -348,3 +348,6 @@ mod tests;
 
 #[cfg(test)]
 mod sql_tests;
+
+#[cfg(test)]
+mod roster_tests;

@@ -676,6 +676,23 @@ impl RuntimeDb {
         Ok(scopes)
     }
 
+    /// Append an offline observation Event and its archive history ACK in one
+    /// original transaction. The ACK never grants live Current authority; the
+    /// finite history page consumes it against the exact identity and body.
+    pub(crate) fn append_offline_observation_event(
+        &self,
+        agent_id: &str,
+        event: &AuditEvent,
+    ) -> Result<()> {
+        self.transaction(|tx| {
+            let (actual, _) = super::evidence::append_audit_event_tx(tx, Some(agent_id), event)?;
+            if let Some(scope) = active_input_scope_tx(tx, agent_id)? {
+                super::current_read_writes::append_event_history_ack_tx(tx, &scope, &actual.id)?;
+            }
+            Ok(())
+        })
+    }
+
     #[cfg(test)]
     pub(crate) fn recover_interrupted_runtime_state_at_startup_in_scopes(
         &self,
@@ -990,9 +1007,17 @@ impl RuntimeDb {
                         "trigger_message_id": &trigger_message_id,
                     }),
                 };
-                append_audit_event_tx(tx, Some(&turn.agent_id), &event)?;
+                let (event, _) = append_audit_event_tx(tx, Some(&turn.agent_id), &event)?;
+                if let Some(scope) = startup_current_recovery_scope(input_scopes, &turn.agent_id)
+                {
+                    super::current_read_writes::append_event_history_ack_tx(
+                        tx,
+                        scope,
+                        &event.id,
+                    )?;
+                }
                 if turn.external_side_effect_possible {
-                    append_audit_event_tx(
+                    let (event, _) = append_audit_event_tx(
                         tx,
                         Some(&turn.agent_id),
                         &AuditEvent {
@@ -1016,6 +1041,15 @@ impl RuntimeDb {
                             }),
                         },
                     )?;
+                    if let Some(scope) =
+                        startup_current_recovery_scope(input_scopes, &turn.agent_id)
+                    {
+                        super::current_read_writes::append_event_history_ack_tx(
+                            tx,
+                            scope,
+                            &event.id,
+                        )?;
+                    }
                 }
                 report.interrupted_turns += 1;
             }
@@ -4970,6 +5004,47 @@ fn validate_task_expectation_tx(tx: &Transaction<'_>, expected: &TaskExpectation
     Ok(())
 }
 
+/// Resolve the live input scope of an agent inside a writer transaction, so
+/// an offline transition can still attach its archive history ACK.
+fn active_input_scope_tx(
+    tx: &Transaction<'_>,
+    agent_id: &str,
+) -> Result<Option<InputEvidenceScope>> {
+    let payload: Option<String> = tx
+        .query_row(
+            "SELECT payload_json FROM agent_identities WHERE agent_id=?1",
+            [agent_id],
+            |row| row.get(0),
+        )
+        .optional()?;
+    let Some(payload) = payload else {
+        return Ok(None);
+    };
+    let identity: crate::types::AgentIdentityRecord = serde_json::from_str(&payload)?;
+    if identity.agent_id == agent_id
+        && identity.incarnation > 0
+        && identity.status == crate::types::AgentRegistryStatus::Active
+    {
+        Ok(Some(InputEvidenceScope {
+            agent_id: agent_id.to_string(),
+            identity_incarnation: identity.incarnation,
+        }))
+    } else {
+        Ok(None)
+    }
+}
+
+/// The live Current scope of an agent within startup recovery input scopes.
+fn startup_current_recovery_scope<'a>(
+    scopes: Option<&'a [StartupInputRecoveryScope]>,
+    agent_id: &str,
+) -> Option<&'a InputEvidenceScope> {
+    scopes?.iter().find_map(|scope| match scope {
+        StartupInputRecoveryScope::Current(scope) if scope.agent_id == agent_id => Some(scope),
+        _ => None,
+    })
+}
+
 fn finish_transition_tx(
     tx: &Transaction<'_>,
     input_scope: Option<&InputEvidenceScope>,
@@ -5024,6 +5099,20 @@ fn finish_transition_with_cleanup_tx(
             super::evidence::append_audit_event_ack_tx(tx, Some(agent_id), event)?;
         if inserted {
             committed_events.push(event);
+        }
+    }
+    // Every original transition Event append is archive-readable history.
+    // Attach the ACK in this same transaction; live Current authority is
+    // still granted only by its own qualification writer.
+    {
+        let history_scope = match input_scope {
+            Some(scope) => Some(scope.clone()),
+            None => active_input_scope_tx(tx, agent_id)?,
+        };
+        if let Some(scope) = history_scope.as_ref() {
+            for event in &committed_events {
+                super::current_read_writes::append_event_history_ack_tx(tx, scope, &event.id)?;
+            }
         }
     }
     inject_fault(fault, TransitionFaultPoint::AfterAuditWrites)?;

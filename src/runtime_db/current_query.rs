@@ -534,7 +534,7 @@ fn prepare_inner(
     for id in &selection.queue_ids {
         queue.insert(
             id.clone(),
-            load_body(tx, scope, CurrentFamily::Queue, id, &mut material)?,
+            load_body(tx, scope, CurrentFamily::Queue, id, &mut material, false)?,
         );
     }
     let mut events = BTreeMap::new();
@@ -547,7 +547,7 @@ fn prepare_inner(
             ensure!(events.len() < count, "Current source interval changed");
             let id = row.get_ref(0)?.as_str()?;
             let seq: u64 = row.get(1)?;
-            let body = load_body(tx, scope, CurrentFamily::Event, id, &mut material)?
+            let body = load_body(tx, scope, CurrentFamily::Event, id, &mut material, false)?
                 .context("Current Event body is absent")?;
             ensure!(
                 matches!(body.record(), CurrentRecord::Event(event) if event.event_seq == seq),
@@ -585,6 +585,7 @@ fn load_body(
     family: CurrentFamily,
     id: &str,
     material: &mut InputReadMaterial<'_>,
+    history: bool,
 ) -> Result<Option<Arc<OwnedCurrentRecord>>> {
     let mut statement = tx.prepare(family.sql())?;
     let mut rows = statement.query([id])?;
@@ -611,6 +612,24 @@ fn load_body(
         params![scope.agent_id, scope.identity_incarnation, family.name(), id, hash],
         |row| row.get::<_, bool>(0),
     ).optional()?.unwrap_or(false);
+    // The explicit finite history page may also consume an archive ACK
+    // frozen by the original upgrade cut or attached by an original
+    // non-Active writer. Exact identity, sequence and digest must all match;
+    // this never satisfies a live Current selection address.
+    let qualified = if !qualified && history && family == CurrentFamily::Event {
+        tx.query_row(
+            "SELECT 1 FROM event_history_acks k
+             JOIN audit_events a ON a.audit_event_id=k.audit_event_id AND a.agent_id=k.agent_id
+             WHERE k.agent_id=?1 AND k.identity_incarnation=?2 AND k.audit_event_id=?3
+               AND k.content_digest=?4 AND a.event_seq=k.event_seq",
+            params![scope.agent_id, scope.identity_incarnation, id, hash],
+            |_| Ok(true),
+        )
+        .optional()?
+        .unwrap_or(false)
+    } else {
+        qualified
+    };
     ensure!(qualified, "Current body needs original writer preparation");
     let (address_material, guard) = if family == CurrentFamily::Event {
         // One typed Event, not a completion/resolver aggregate. Gate SQLite
