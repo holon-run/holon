@@ -1096,16 +1096,18 @@ class UIFixtureStallDetectionContracts(unittest.TestCase):
         step = step[:end] if end != -1 else step
         # The bound belongs to this step, so it must appear before the next
         # step starts and carry the intended value.
-        self.assertRegex(step, r"timeout-minutes:\s*70\b",
-                         "The UI step must carry a 70 minute bound")
+        self.assertRegex(step, r"timeout-minutes:\s*90\b",
+                         "The UI step must carry a 90 minute bound")
 
     def test_ui_step_bound_clears_the_slowest_observed_sweep(self):
         """The step bound must not kill a sweep that may still be healthy.
 
         Measured on main, a successful UI step took up to 63 minutes and
         the slowest observed sweep — a run that was cancelled, not
-        failed — reached 67 minutes. A bound below that turns a run that
-        might still be healthy into a timeout failure.
+        failed — reached 67 minutes. Case-level retries then inflated a
+        healthy sweep past 70 minutes (two retried cases added 13), on
+        pace for ~80. A bound below that tail turns a run that might
+        still be healthy into a timeout failure.
         """
         workflow = (ROOT / ".github/workflows/ci.yml").read_text()
         marker = "- name: Test isolated simulator UI"
@@ -1115,7 +1117,7 @@ class UIFixtureStallDetectionContracts(unittest.TestCase):
         match = re.search(r"timeout-minutes:\s*(\d+)\b", step)
         self.assertIsNotNone(match, "The UI step must carry a bound")
         bound = int(match.group(1))
-        slowest_observed_minutes = 67
+        slowest_observed_minutes = 80
         self.assertGreater(bound, slowest_observed_minutes,
                            "The UI step bound must clear the slowest "
                            "observed sweep measured on main")
