@@ -62,6 +62,10 @@ cleanup authority and has no needed work or artifacts. Preserve the result
 first. A completed invocation does not authorize deleting a shared peer or
 another agent's workspace. The runtime's ownership and active-use checks can
 refuse cleanup even when the caller believes the assignment is over.
+Historical error records (`last_runtime_failure`) serve as diagnostic evidence
+rather than active execution blockers. A settled child agent that is idle or
+stopped can be safely deleted once its work is done, without being kept alive
+merely because an earlier failure was recorded.
 
 ## Boundaries and trust
 

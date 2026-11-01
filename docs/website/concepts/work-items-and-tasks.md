@@ -56,6 +56,9 @@ within the same transaction. Whether an update occurs through wait transitions,
 task claims, or completions, execution registrations match durable revisions
 exactly. The runtime validates this equality before dispatch, stopping token
 burn if drift is detected.
+When an execution is cancelled, revision maintenance commits atomically
+alongside a persisted repair block, preventing cancelled executions from
+wedging between revision increments during unexpected interruptions.
 
 Switching focus also does not move an existing task to another WorkItem.
 The task retains the owner captured at creation. This matters when a slow

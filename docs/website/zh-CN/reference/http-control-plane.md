@@ -3,7 +3,7 @@ title: HTTP 控制平面
 summary: 如何理解 Holon 的无头集成接口。
 order: 20
 ---
-<!-- maintenance: hand-written; verify endpoints against `openapi.json` and the Axum route tree when routes change. Last reviewed against v0.56.0. -->
+<!-- maintenance: hand-written; verify endpoints against `openapi.json` and the Axum route tree when routes change. Last reviewed against v0.57.0. -->
 
 # HTTP 控制平面
 
