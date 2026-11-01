@@ -9,8 +9,9 @@ order: 180
 By default, Holon uses local control tokens for authentication. For shared team
 servers or remote deployments, you can switch to OpenID Connect (OIDC). Team
 members log in through your existing identity provider (IdP), and Holon records
-which user prompted an agent, enabling multiple team members to share an agent
-runtime with clear accountability.
+which user prompted an agent, enabling multiple team members to share an
+assistant with clear accountability. To see how OIDC fits into the broader team
+collaboration workflow, see [Share AI assistants with your team](./share-with-your-team.md).
 
 This guide covers registering an OIDC client, configuring Holon, tuning
 session timeouts, and verifying logins.

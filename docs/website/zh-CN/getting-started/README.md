@@ -44,6 +44,7 @@ Holon 提供三种与运行时交互的方式：
 
 - **[运行长生命周期任务](/zh-CN/guides/run-long-lived-task)** — 跟踪进度、等待外部事件并验证完成状态
 - **[委派工作给另一个 Agent](/zh-CN/guides/delegate-work)** — 把有界任务交给子 Agent
+- **[与团队共用](/zh-CN/guides/share-with-your-team)** — 部署到共享服务器、接入团队登录，让全组协同交办任务给同一个 AI 助手
 - **[通过 HTTP 自动化 Holon](/zh-CN/guides/automate-over-http)** — 用代码驱动 Holon
 - **[概念](/zh-CN/concepts/)** — Agent、复用角色、工作区与持续工作的心智模型
 - **[CLI 参考](/zh-CN/reference/cli.md)** — 完整命令行接口

@@ -6,9 +6,11 @@ order: 160
 
 # Connect to a remote Holon runtime
 
-Run Holon on a server or host machine and connect from your laptop, desktop,
-or mobile device. Choose a reachable address, protect the control plane, then
-verify authorized access and inspect existing task results.
+Run Holon on a server or host machine and connect from your laptop, desktop, or
+mobile device. Whether you want mobile access to your personal assistant or
+are deploying a shared assistant for your team on a central server (see
+[Share AI assistants with your team](./share-with-your-team.md)), Holon lets
+the runtime stay active remotely while you interact from any client.
 
 ## Prerequisites
 

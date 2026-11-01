@@ -52,6 +52,7 @@ If you're already familiar with Holon or want to jump straight into specifics:
 
 - **[Run a long-lived task](/guides/run-long-lived-task)** — track progress, wait for events, and verify completion
 - **[Delegate work to another agent](/guides/delegate-work)** — hand a scoped task to a child agent
+- **[Share with your team](/guides/share-with-your-team)** — deploy to a shared server, enable team login, and collaborate with common AI assistants
 - **[Automate Holon over HTTP](/guides/automate-over-http)** — drive Holon from code
 - **[Concepts](/concepts/)** — agents, reusable roles, workspaces, and continuing work
 - **[CLI reference](/reference/cli.md)** — full command surface

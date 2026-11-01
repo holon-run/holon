@@ -96,6 +96,10 @@ Use [Reference](../reference/) for complete command syntax and schemas.
   Set up OpenID Connect single sign-on, attribute prompts in shared team runtimes, tune session policies, and audit user activity.
   <!-- mdorigin:index kind=article -->
 
+- [Share AI assistants with your team](./share-with-your-team.md)
+  Deploy Holon on a shared server, enable team sign-in, assign tasks to common assistants, and track progress together.
+  <!-- mdorigin:index kind=article -->
+
 - [Connect with the Android client](./connect-android-client.md)
   Set up the native Android client, pair with a running Holon daemon, and manage agents on mobile.
   <!-- mdorigin:index kind=article -->
