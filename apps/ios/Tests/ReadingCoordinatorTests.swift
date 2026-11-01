@@ -1685,8 +1685,9 @@ final class ReadingCoordinatorTests: XCTestCase {
         XCTAssertEqual(coordinator.status, .offline)
         // Recovery retries without a count limit (0.5s, 1s, 2s, 4s, ...) while foregrounded;
         // the old implementation silently stopped after three attempts.
-        try await wait { await fake.rosterCalls >= previous + 4 }
-        XCTAssertEqual(coordinator.status, .offline)
+        // rosterCalls increments when the call starts, so also wait for the failure to
+        // settle status back to .offline (merged-predicate pattern used elsewhere here).
+        try await wait { await fake.rosterCalls >= previous + 4 && coordinator.status == .offline }
         await fake.setOffline(false)
         try await wait { coordinator.status == .live }
         coordinator.disconnect()
