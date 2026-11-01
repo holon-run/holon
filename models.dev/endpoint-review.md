@@ -9,6 +9,102 @@ reviewed routes unless there is affirmative removal evidence. New routes require
 their own endpoint evidence; missing capability flags are conservative omissions,
 not proof that a model lacks the feature.
 
+## 2026-11-02 incremental review
+
+This cycle starts from main `bc586ecd`; public evidence was sampled on
+November 1 UTC (November 2 in Beijing). The frozen upstream SHA-256 is
+`a2e417bd2a17eb0839af84dcc16280542da492809502f2faedf86ba0a52cc911`.
+Two OpenRouter output projections have fresh endpoint support. Its Mistral
+Large 4.0 effort projection requires an exact endpoint exception because
+the official listing contradicts the new upstream enum; details are in
+the [capacity evidence](metadata-evidence.md#incremental-review-2026-11-02).
+Raw pricing changes and unmapped-provider additions are not new runtime
+eligibility or independently certified native capacities.
+
+### Verification
+
+The exact-endpoint effort regression failed with `low/medium/high` before
+the fix and passed with `none/high` afterwards. The frozen refresh,
+artifact/supplement validation and 656-route metadata gate pass.
+`cargo test --locked models_dev` passed 85 tests; the complete catalog
+suite passed 178 with one ignored, discovery passed 35, and the adapter,
+coverage, reviewed-capacity and context-budget integration targets passed
+24. These command counts overlap and are not a distinct-test total.
+Formatting, warning-free locked all-target checking, strict semantic
+increment review and frozen code/artifact hashes all pass. Independent
+read-only review found no confirmed P1/P2; its evidence-link correction
+was applied without changing source or generated data. Account access,
+paid inference and unknown historical fields were not re-certified.
+
+### Independently rechecked first endpoint group
+
+All 15 endpoints and 363 reviewed route records are unchanged. All 61
+official URLs returned HTTP 200; extracted text is unchanged after newline
+normalization. The three Xiaomi documentation shells still do not supply
+model-body field evidence. Historical values are preserved, not recertified.
+
+| Registered endpoint | Result and preserved boundary |
+| --- | --- |
+| `dashscope@default` | Messages unchanged; no new cache or integer-limit evidence. |
+| `dashscope@token-plan` | Personal/team plan contracts independently unchanged. |
+| `dashscope@coding-plan` | Domestic contract unchanged; no ordinary API eligibility copied. |
+| `dashscope@coding-plan-intl` | International six-model contract independently unchanged. |
+| `volcengine@default` | K3.1 output-default conflict remains unresolved. |
+| `volcengine@coding` | M3 stop is November 2, 2026, 14:00 Beijing time, still future at this sample. |
+| `volcengine@plan` | Independent future M3 boundary and unknown K3.1 plan limits retained. |
+| `tencent-tokenhub@default` | Chat contract unchanged; no Messages/Responses fields copied. |
+| `tencent-tokenhub@messages` | Independent schema and allowlist unchanged. |
+| `tencent-tokenhub@responses` | Independent schema and allowlist unchanged. |
+| `qianfan@default` | Six prior retirements stay removed; no new experimental ERNIE retirement. |
+| `bigmodel@default` | Domestic model, Messages and key contract unchanged. |
+| `zai@default` | International model, DevPack and key contract independently unchanged. |
+| `xiaomi@default` | No new model-body evidence; historical records preserved. |
+| `xiaomi@token-plan` | Independent plan unchanged; shells do not resolve existing gaps. |
+
+### Independently rechecked second endpoint group
+
+All 15 endpoints and 168 frozen reviewed routes match the previous cycle.
+Local sampling produced 87 URL receipts: 65 HTTP 200 and 22 failures
+(14 Mistral connection resets, five Together 403s and three guessed-card
+404s). Successful response hashes were rechecked. Separate browser-assisted
+Mistral excerpts have local excerpt hashes, not full upstream response hashes;
+numeric HTTP status was not exposed for those successful reads.
+
+| Registered endpoint | Review outcome and retained boundary |
+| --- | --- |
+| `minimax@default` | International schema/FAQ unchanged; November 18 existing-user retirement boundary remains future. |
+| `minimax-cn@default` | China schema and host independently unchanged; no international eligibility copied. |
+| `minimax@m-plan` | Preview forwarding and independent plan eligibility unchanged; no ordinary-API retirement inferred. |
+| `minimax-cn@m-plan` | China plan independently unchanged; unknown output defaults remain unknown. |
+| `moonshot@default` | October 31 new-user cutoff has passed, not an existing-user retirement; K3 fields unchanged. |
+| `byteplus@default` | No static routes added; November 11 boundary remains future. |
+| `byteplus@coding` | Six decoded page bodies unchanged; prior Dola IDs retained, no example limit promoted. |
+| `stepfun@default` | Ordinary models and effort enums unchanged; no plan-router capacity inherited. |
+| `stepfun@plan` | Router contract unchanged; ambiguous 64K is not converted to an integer; ignored Messages effort is not enabled. |
+| `opencode-go@default` | 17 native Chat routes rechecked; ten missing historical routes retained, not treated as EOS. |
+| `opencode-go@messages` | Five native routes rechecked; six historical absences and translated routes remain separate. |
+| `opencode-go@responses` | Five native routes rechecked; two historical absences retained; Gemini native protocol not generalized. |
+| `kilocode@default` | Five auto records unchanged; two non-auto aggregate field changes do not widen static eligibility. |
+| `together@default` | Five model cards unchanged; failed serverless/retirement reads do not certify eligibility or EOS. |
+| `fireworks@default` | All 329 index records match on six reviewed fields; on-demand/serverless boundaries retained. |
+
+The 27 Go native routes and 57 conservative translated routes were checked
+independently against the [public model list](https://opencode.ai/inference/go/v1/models).
+Its [console page](https://opencode.ai/v2/docs/console/go/) only extends the
+DeepSeek monthly ZDR term to November 30; this is not a capacity or
+cross-provider privacy claim. The [Kilo listing](https://api.kilo.ai/api/gateway/models)
+has no ID changes: its non-auto GPT-OSS-20B output ceiling changes to 117,964
+and Gemma 4 gains a parameter; neither is a five-auto-selector contract.
+
+Mistral's [Large 4 family card](https://docs.mistral.ai/models/mistral-large-4-0)
+and [reasoning reference](https://docs.mistral.ai/studio/conversations/reasoning)
+were partly readable through the independent browser transport. Native
+Large 4's `low/medium/high` does not replace OpenRouter's `none/high`.
+The exact `mistral-large-4-0-8` binding and integer capacity/default limits
+remain unverified, so its existing admission gate stays closed. The overview
+names Medium 3.5, not Small 3.5; family names and failed guessed paths do not
+certify a new wire ID or retirement.
+
 ## 2026-11-01 incremental review
 
 This cycle starts from main `38fceacb`; public evidence was sampled on

@@ -1,12 +1,12 @@
 {
   "schema_version": 1,
-  "revision": "models-dev-30f6fb19affa533339b2930bafacbc59fb4ee2c4e034288e8e972f31a82d5e9a",
+  "revision": "models-dev-a2e417bd2a17eb0839af84dcc16280542da492809502f2faedf86ba0a52cc911",
   "upstream": {
     "source": "models.dev",
-    "revision": "30f6fb19affa533339b2930bafacbc59fb4ee2c4e034288e8e972f31a82d5e9a",
-    "fetched_at": "2026-10-31T20:38:25.541277760+00:00",
-    "content_sha256": "30f6fb19affa533339b2930bafacbc59fb4ee2c4e034288e8e972f31a82d5e9a",
-    "adapter_version": "0.56.0 (38fceacb)"
+    "revision": "a2e417bd2a17eb0839af84dcc16280542da492809502f2faedf86ba0a52cc911",
+    "fetched_at": "2026-11-01T20:54:02.724785039+00:00",
+    "content_sha256": "a2e417bd2a17eb0839af84dcc16280542da492809502f2faedf86ba0a52cc911",
+    "adapter_version": "0.57.0 (bc586ecd-dirty)"
   },
   "models": [
     {
@@ -16672,8 +16672,8 @@
       "context_window_tokens": 131072,
       "effective_context_window_percent": 95,
       "auto_compact_token_limit": 124518,
-      "default_max_output_tokens": 32768,
-      "max_output_tokens_upper_limit": 32768,
+      "default_max_output_tokens": 117964,
+      "max_output_tokens_upper_limit": 117964,
       "default_verbosity": null,
       "tool_output_truncation_estimated_tokens": 2500,
       "capabilities": {
@@ -19696,8 +19696,8 @@
       "context_window_tokens": 1048576,
       "effective_context_window_percent": 95,
       "auto_compact_token_limit": 996147,
-      "default_max_output_tokens": 131072,
-      "max_output_tokens_upper_limit": 131072,
+      "default_max_output_tokens": 943718,
+      "max_output_tokens_upper_limit": 943718,
       "default_verbosity": null,
       "tool_output_truncation_estimated_tokens": 2500,
       "capabilities": {
