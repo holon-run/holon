@@ -1,10 +1,10 @@
 ---
-title: Getting started
-summary: Install Holon, configure a model, and verify your first agent result.
+title: "Quickstart: Run your first AI agent locally"
+summary: Install Holon, configure a model, and get your first autonomous AI assistant running locally in minutes.
 order: 10
 ---
 
-# Getting started
+# Getting started: Run your first AI agent locally
 
 Holon ships as an installable release. This section gives you
 the shortest path from install to a running agent, then shows where to branch

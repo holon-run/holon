@@ -1,10 +1,10 @@
 ---
-title: Reference
-summary: Current-contract snapshots of Holon's CLI, configuration, and control-plane surfaces.
+title: "Reference: CLI commands, config, and runtime APIs"
+summary: Current-contract reference for Holon's CLI commands, runtime configuration, HTTP control plane, and tool schemas.
 order: 40
 ---
 
-# Reference
+# Reference: CLI commands, config, and runtime APIs
 
 Reference pages describe Holon's current public surface as it actually behaves —
 not as it is planned or promised. They are verified against the compiled runtime

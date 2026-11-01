@@ -1,10 +1,10 @@
 ---
-title: Guides
-summary: Complete a specific task, verify the result, and diagnose common failures.
+title: "How-To Guides: Step-by-step agent workflows"
+summary: Practical guides to automate coding tasks, delegate work across agents, connect tools, and run long-lived AI workflows.
 order: 30
 ---
 
-# Guides
+# Guides: Step-by-step agent workflows
 
 Choose a guide for the outcome you want. Each gives the prerequisites,
 steps, and checks needed to finish the task. If you have not yet run a

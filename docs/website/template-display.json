@@ -25,6 +25,10 @@
     "code-reviewer": {
       "category": "engineering",
       "featuredRank": 2,
+      "en": {
+        "name": "Code Reviewer: Automated PR & Code Review Agent",
+        "summary": "Review pull requests with evidence-backed findings, evaluate merge readiness, and manage event-driven GitHub review workflows."
+      },
       "zh-CN": {
         "name": "代码审阅员",
         "summary": "持续跟踪 PR 生命周期，评估合并准备情况，并管理事件驱动的审阅订阅。"
@@ -32,6 +36,10 @@
     },
     "community-steward": {
       "category": "operations",
+      "en": {
+        "name": "Community Steward: Contributor Experience Agent",
+        "summary": "Maintain contributor experience, monitor community health signals, triage escalation queues, and prepare reviewable briefs."
+      },
       "zh-CN": {
         "name": "社区管家",
         "summary": "持续维护贡献者体验、社区状况记录、升级处理队列和可审阅的社区健康简报；不代表维护者发言或执行社区管理操作。"
@@ -53,6 +61,10 @@
     },
     "docs-steward": {
       "category": "content",
+      "en": {
+        "name": "Docs Steward: Documentation Drift & Hygiene Agent",
+        "summary": "Keep documentation in sync with codebase behavior using automated drift detection, gap analysis, and review-ready doc updates."
+      },
       "zh-CN": {
         "name": "文档管家",
         "summary": "持续检测文档与实际情况的偏差、跟进缺口并完成纯文档变更；不实现产品功能，也不负责发布。"
@@ -74,6 +86,10 @@
     },
     "github-solver": {
       "category": "engineering",
+      "en": {
+        "name": "GitHub Solver: Autonomous Issue & PR Agent",
+        "summary": "Solve GitHub issues and fix pull requests end-to-end on your local repository with automated tests and verification."
+      },
       "zh-CN": {
         "name": "GitHub 任务助手",
         "summary": "由 holon solve 命令管理、用于一次性 GitHub 任务的预设。"
@@ -81,6 +97,10 @@
     },
     "holon-ops": {
       "category": "operations",
+      "en": {
+        "name": "Holon Operations: Runtime Diagnostics & Health Agent",
+        "summary": "Diagnose and patrol Holon runtime instances with metadata-only health audits, incremental error analysis, and bug escalation."
+      },
       "zh-CN": {
         "name": "Holon 运维",
         "summary": "持续负责 Holon 运行时的运维工作。"
@@ -126,6 +146,10 @@
     "office-assistant": {
       "category": "productivity",
       "featuredRank": 3,
+      "en": {
+        "name": "Office Assistant: Document Automation Agent",
+        "summary": "Process, edit, and generate Word, Excel, PowerPoint, and PDF documents using local open-source tools with verified fidelity."
+      },
       "zh-CN": {
         "name": "办公助手",
         "summary": "持续负责办公文档与生产力事务。"
@@ -147,6 +171,10 @@
     },
     "release-manager": {
       "category": "engineering",
+      "en": {
+        "name": "Release Manager: Delivery & Release Automation Agent",
+        "summary": "Coordinate software release workflows, compile verified changelogs, manage release checklists, and track deployment readiness."
+      },
       "zh-CN": {
         "name": "发布经理",
         "summary": "持续负责软件发布与交付工作。"
@@ -154,6 +182,10 @@
     },
     "reverse-engineer": {
       "category": "engineering",
+      "en": {
+        "name": "Reverse Engineer: Protocol & Binary Analysis Agent",
+        "summary": "Analyze protocols, binary formats, network traffic, and runtime behavior with structured, evidence-backed inspection."
+      },
       "zh-CN": {
         "name": "逆向工程师",
         "summary": "以证据为依据，持续对已获授权的软件、协议、文件格式和运行时行为开展逆向分析。"
@@ -161,6 +193,10 @@
     },
     "security-reviewer": {
       "category": "engineering",
+      "en": {
+        "name": "Security Reviewer: Defensive Code Audit Agent",
+        "summary": "Audit code for security vulnerabilities, triage dependency alerts, and produce actionable defensive review reports."
+      },
       "zh-CN": {
         "name": "安全审阅员",
         "summary": "持续开展防御性安全审阅，负责安全发现和告警分诊；不实现产品功能、不制作漏洞利用，也不替代合并审阅、验收或运维。"
@@ -175,6 +211,10 @@
     },
     "server-ops": {
       "category": "operations",
+      "en": {
+        "name": "Server Operations: Safe Server & Service Ops Agent",
+        "summary": "Operate servers and remote services safely with read-only diagnostics, explicit execution plans, and auditable command logs."
+      },
       "zh-CN": {
         "name": "服务器运维",
         "summary": "持续负责服务器与服务的运维工作。"
@@ -183,6 +223,10 @@
     "software-developer": {
       "category": "engineering",
       "featuredRank": 1,
+      "en": {
+        "name": "Software Developer: Feature & Bugfix Coding Agent",
+        "summary": "Implement features, refactor code, and fix bugs directly in your local repository with automated tests and checks."
+      },
       "zh-CN": {
         "name": "软件开发者",
         "summary": "专注于持续推进实现工作的 Agent。"

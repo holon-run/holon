@@ -247,17 +247,20 @@ def render_home(catalog, locale):
 def render_directory(catalog, locale):
     zh = locale == "zh-CN"
     base = "/zh-CN" if zh else ""
-    title = "Agent 模板" if zh else "Agent Templates"
+    page_title = "Agent 模板" if zh else "Agent Templates: Pre-built roles for AI agents"
+    heading = "Agent 模板" if zh else "Agent Templates"
     summary = ("找到合适的长期角色，让 Agent 在明确权限内持续跟进。" if zh else
-               "Find a long-lived role to follow through within the permissions you set.")
+               "Browse ready-to-use roles for coding, operations, review, and documentation with explicit permissions.")
     notice = ("这是构建快照，不是 GitHub 实时列表。创建前请安装 Holon，并检查角色契约、技能依赖、环境与权限；展示不代表已安装或已配置。固定模板 SHA 不会固定未指定 ref 的外部技能。" if zh else
               "This is a build snapshot, not a live GitHub listing. Install Holon and review the role contract, skill dependencies, environment and permissions before creating an agent. Listing does not mean installed or configured. Pinning a template SHA does not pin external skills without a ref.")
     result = [
-        f"---\ntitle: {title}\nsummary: {summary}\n---\n",
+        "---\n"
+        f'title: {json.dumps(page_title, ensure_ascii=False)}\n'
+        f'summary: {json.dumps(summary, ensure_ascii=False)}\n---\n',
         '<div class="template-directory">',
         '<header class="template-directory-heading">'
         f'<p class="template-eyebrow">{"从一个角色开始" if zh else "A ROLE TO START WITH"}</p>'
-        f'<h1>{title}</h1><p>{summary}</p>'
+        f'<h1>{heading}</h1><p>{summary}</p>'
         f'<a class="template-guide" href="{base}/reference/agent-templates">{"如何使用模板" if zh else "How to use templates"} →</a></header>',
         '<div class="template-toolbar">',
         '<div class="template-search" data-template-search hidden>'

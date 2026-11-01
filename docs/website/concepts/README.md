@@ -1,10 +1,10 @@
 ---
-title: Concepts
-summary: Understand agents, reusable roles, workspaces, durable work, and the boundaries you can rely on.
+title: "Core Concepts: How long-lived AI agents work"
+summary: Understand how Holon manages long-lived agents, event-driven waits, durable work items, and workspace trust boundaries.
 order: 20
 ---
 
-# Concepts
+# Concepts: How long-lived AI agents work
 
 These pages explain what Holon's objects mean, how they relate, and which
 behaviors you can rely on. Start with the runtime model, then read the pages

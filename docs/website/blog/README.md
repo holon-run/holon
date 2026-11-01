@@ -1,6 +1,6 @@
 ---
-title: Blog
-summary: Meet Holon, explore its design, and see how long-lived agents work in practice.
+title: "Blog: Engineering long-lived AI agents"
+summary: Articles and engineering insights on event-driven runtime design, durable agent workflows, and practical local AI assistance.
 order: 4
 ---
 
