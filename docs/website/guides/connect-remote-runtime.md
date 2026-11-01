@@ -31,30 +31,48 @@ Both `holon daemon start` and `holon serve` accept an `--access` flag:
 |------|-------------|----------|
 | `local` | Loopback only (127.0.0.1) | Default; single-machine use |
 | `lan` | Local network | Same LAN, known IP |
-| `tunnel` | Cloudflare Tunnel | Public access through a tunnel |
+| `tunnel` | Loopback only; bring your own tunnel | SSH forwarding or external proxy |
+| `cloudflare` | Managed, preconfigured Named Tunnel | Public HTTPS with existing SSE |
 | `tailnet` | Tailscale network | Private mesh between your devices |
 
 ## Remote Server
 
 ### Tunnel Mode (Cloudflare)
 
-Start a daemon accessible through a Cloudflare Tunnel:
+Install `cloudflared` and preconfigure a dedicated remotely-managed **Named
+Tunnel**, public hostname and ingress targeting `http://127.0.0.1:8787`.
+Save its connector token in an owner-readable file (0600 on Unix).
+This is not a Cloudflare account API token. Start with the same fixed port:
 
 ```bash
-holon daemon start --access tunnel --token-file ~/.holon/remote.token
+holon daemon start --access cloudflare --port 8787 \
+  --advertise https://holon.example.com \
+  --cloudflare-token-file ~/.cloudflared/holon-connector.token \
+  --token-file ~/.holon/remote.token
 ```
 
 Or use the standalone server:
 
 ```bash
-holon serve --access tunnel --token-file ~/.holon/remote.token
+holon serve --access cloudflare --port 8787 \
+  --advertise https://holon.example.com \
+  --cloudflare-token-file ~/.cloudflared/holon-connector.token \
+  --token-file ~/.holon/remote.token
 ```
 
-The runtime manages the tunnel lifecycle. No Cloudflare configuration is
-required on your side — Holon creates and manages ephemeral tunnels
-automatically. Use the URL reported by the runtime rather than assuming that
-its local listen address is the public endpoint. The tunnel exposes the
-control plane through a third party; keep Holon authentication enabled.
+Holon manages the connector process, not your Cloudflare account or DNS.
+Quick Tunnels are unsupported because they do not support SSE.
+`--access tunnel` still only binds loopback and does not launch cloudflared.
+Use a dedicated tunnel with trusted remote ingress rules. Holon token
+authentication is mandatory even on loopback; never share either token in URLs.
+
+The separate `tunnel` field in `holon daemon status` reports connector state.
+Local healthy does not mean public reachability; `connected` is not an
+end-to-end check. Connector failure leaves the local runtime available.
+Restart restores saved tunnel intent and public exposure. Use `--access local`
+to stop launching the connector; saved authentication requirements remain.
+Normal shutdown reaps the child; Linux also protects against parent death.
+SIGKILL cleanup on other platforms is not guaranteed.
 
 ### Tailnet Mode (Tailscale)
 

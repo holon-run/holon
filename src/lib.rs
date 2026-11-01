@@ -13,6 +13,7 @@ pub mod brief;
 pub mod calendar;
 pub mod cli;
 pub mod client;
+pub mod cloudflare_tunnel;
 pub mod config;
 pub mod context;
 pub mod contract_inventory;

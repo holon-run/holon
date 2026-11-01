@@ -40,16 +40,19 @@ server, or a continuous workstation.
 Install Holon and start the daemon with the network mode that matches your
 infrastructure:
 
-- **Cloudflare Tunnel (`--access tunnel`):** Quickest setup for public HTTPS
-  without opening firewall ports or managing certificates.
+- **Cloudflare Named Tunnel (`--access cloudflare`):** Public HTTPS with a
+  preconfigured dedicated tunnel, hostname and connector token.
 - **Tailscale (`--access tailnet`):** Ideal for private mesh networks between
   team devices.
 - **LAN or reverse proxy (`--access lan`):** Best for on-premise servers behind
   an existing Nginx, Caddy, or Kubernetes ingress.
 
 ```bash
-# Example: Start daemon with Cloudflare tunnel and token
-holon daemon start --access tunnel --token-file ~/.holon/remote.token
+# Preconfigure Named Tunnel ingress to http://127.0.0.1:8787 first.
+holon daemon start --access cloudflare --port 8787 \
+  --advertise https://holon.example.com \
+  --cloudflare-token-file ~/.cloudflared/holon-connector.token \
+  --token-file ~/.holon/remote.token
 ```
 
 For detailed network configuration and service management, see

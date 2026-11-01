@@ -354,6 +354,215 @@ fn output_text(output: &Output) -> String {
     )
 }
 
+fn fake_cloudflared(fixture: &Fixture, connect: bool) -> String {
+    use std::os::unix::fs::PermissionsExt;
+    let bin = fixture.path("bin");
+    fs::create_dir_all(&bin).unwrap();
+    let script = if connect {
+        "#!/bin/sh\nif [ \"$1\" = --version ]; then exit 0; fi\nprintf '%s\\n' \"$$\" > \"$HOME/connector.pid\"\nprintf '%s\\n' \"$@\" > \"$HOME/connector.argv\"\nprintf '%s\\n' '{\"message\":\"Registered tunnel connection\",\"connIndex\":0}' >&2\nexec /bin/sleep 600\n"
+    } else {
+        "#!/bin/sh\nif [ \"$1\" = --version ]; then exit 0; fi\nprintf '%s\\n' 'secret-connector-error-must-not-be-published' >&2\nexit 8\n"
+    };
+    let file = bin.join("cloudflared");
+    fs::write(&file, script).unwrap();
+    fs::set_permissions(file, fs::Permissions::from_mode(0o700)).unwrap();
+    fs::write(fixture.path("connector.token"), "fake-connector-secret").unwrap();
+    bin.to_str().unwrap().to_owned()
+}
+
+fn wait_for_tunnel(fixture: &mut Fixture, phase: &str) -> Value {
+    let deadline = Instant::now() + DEADLINE;
+    loop {
+        let status = fixture.success(&["daemon", "status"]);
+        if status["tunnel"]["phase"] == phase {
+            return status;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "missing tunnel phase {phase}: {status}"
+        );
+        thread::sleep(Duration::from_millis(25));
+    }
+}
+
+fn assert_connector_gone(pid: u32) {
+    let deadline = Instant::now() + DEADLINE;
+    while Path::new(&format!("/proc/{pid}")).exists() {
+        assert!(
+            Instant::now() < deadline,
+            "connector {pid} survived shutdown"
+        );
+        thread::sleep(Duration::from_millis(25));
+    }
+}
+
+#[test]
+fn cloudflare_named_daemon_restart_and_mode_replacement_clean_up_connector() {
+    let _lock = server_lock();
+    let mut fixture = Fixture::new();
+    let path = fake_cloudflared(&fixture, true);
+    let address = free_address();
+    let started = fixture.success_env(
+        &[
+            "daemon",
+            "start",
+            "--access",
+            "cloudflare",
+            "--listen",
+            &address,
+            "--advertise",
+            "https://holon.example.com",
+            "--cloudflare-token-file",
+            "connector.token",
+            "--token-file",
+            "control.token",
+            "--web-dist",
+            "ui",
+        ],
+        &[("PATH", &path), ("HOLON_CONTROL_AUTH_MODE", "disabled")],
+    );
+    assert_eq!(started["healthy"], true, "{started}");
+    let connected = wait_for_tunnel(&mut fixture, "connected");
+    assert_eq!(
+        connected["tunnel"]["public_url"],
+        "https://holon.example.com"
+    );
+    assert_eq!(fixture.profile()["control_auth_mode"], "required");
+    let first_pid: u32 = fs::read_to_string(fixture.path("connector.pid"))
+        .unwrap()
+        .trim()
+        .parse()
+        .unwrap();
+    let argv = fs::read_to_string(fixture.path("connector.argv")).unwrap();
+    assert!(argv.contains("--output\njson\nrun\n--token-file\n"));
+    assert!(argv.contains("--config\n/dev/null\n"));
+    assert!(!argv.contains("fake-connector-secret"));
+    let restarted = fixture.success_env(&["daemon", "restart"], &[("PATH", &path)]);
+    assert_eq!(restarted["healthy"], true, "{restarted}");
+    wait_for_tunnel(&mut fixture, "connected");
+    assert_connector_gone(first_pid);
+    let second_pid: u32 = fs::read_to_string(fixture.path("connector.pid"))
+        .unwrap()
+        .trim()
+        .parse()
+        .unwrap();
+    assert_ne!(first_pid, second_pid);
+    fixture.success(&["daemon", "restart", "--access", "local"]);
+    assert_connector_gone(second_pid);
+    assert!(fixture.profile().get("cloudflare_token_file").is_none());
+    assert_eq!(
+        fixture.success(&["daemon", "status"])["tunnel"],
+        Value::Null
+    );
+    fixture.stop();
+    fixture.assert_no_secrets();
+}
+
+#[test]
+fn cloudflare_connector_failure_keeps_local_daemon_healthy() {
+    let _lock = server_lock();
+    let mut fixture = Fixture::new();
+    let path = fake_cloudflared(&fixture, false);
+    let address = free_address();
+    fixture.success_env(
+        &[
+            "daemon",
+            "start",
+            "--access",
+            "cloudflare",
+            "--listen",
+            &address,
+            "--advertise",
+            "https://holon.example.com",
+            "--cloudflare-token-file",
+            "connector.token",
+            "--token-file",
+            "control.token",
+        ],
+        &[("PATH", &path)],
+    );
+    let failed = wait_for_tunnel(&mut fixture, "failed");
+    assert_eq!(failed["healthy"], true, "{failed}");
+    assert_eq!(failed["state"], "running", "{failed}");
+    assert!(!failed.to_string().contains("secret-connector-error"));
+    assert!(!fs::read_to_string(fixture.path("run/daemon.log"))
+        .unwrap_or_default()
+        .contains("secret-connector-error"));
+    fixture.stop();
+}
+
+#[test]
+fn cloudflare_failed_preflight_preserves_healthy_pid_and_accepted_profile() {
+    let _lock = server_lock();
+    let mut fixture = Fixture::new();
+    let path = fake_cloudflared(&fixture, true);
+    let address = free_address();
+    let original = fixture.start(&address);
+    let original_profile = fixture.profile_bytes();
+    let empty_path = fixture.path("empty-bin");
+    fs::create_dir(&empty_path).unwrap();
+    for (token_file, dependency_path, expected_error) in [
+        ("missing-connector.token", path.as_str(), "token file"),
+        (
+            "connector.token",
+            empty_path.to_str().unwrap(),
+            "cloudflared",
+        ),
+    ] {
+        let output = fixture.run_env(
+            &[
+                "daemon",
+                "restart",
+                "--access",
+                "cloudflare",
+                "--listen",
+                &address,
+                "--advertise",
+                "https://holon.example.com",
+                "--cloudflare-token-file",
+                token_file,
+            ],
+            &[("PATH", dependency_path)],
+        );
+        assert!(!output.status.success(), "{}", output_text(&output));
+        assert!(
+            output_text(&output).contains(expected_error),
+            "{}",
+            output_text(&output)
+        );
+        let current = fixture.success(&["daemon", "status"]);
+        assert_eq!(current["pid"], original["pid"], "{current}");
+        assert_eq!(current["healthy"], true, "{current}");
+        assert_eq!(fixture.profile_bytes(), original_profile);
+        assert!(!fixture.path("connector.pid").exists());
+    }
+    fixture.stop();
+}
+
+#[test]
+fn cloudflare_foreground_preflight_failure_does_not_accept_profile() {
+    let _lock = server_lock();
+    let mut fixture = Fixture::new();
+    let address = free_address();
+    let output = fixture.run(&[
+        "serve",
+        "--access",
+        "cloudflare",
+        "--listen",
+        &address,
+        "--advertise",
+        "https://holon.example.com",
+        "--cloudflare-token-file",
+        "missing-connector.token",
+        "--token-file",
+        "control.token",
+    ]);
+    assert!(!output.status.success(), "{}", output_text(&output));
+    assert!(!fixture.path("daemon/serve_profile.json").exists());
+    assert!(!fixture.path("run/daemon.json").exists());
+    assert!(!fixture.path("runtime.db").exists());
+}
+
 fn free_address() -> String {
     TcpListener::bind("127.0.0.1:0")
         .unwrap()

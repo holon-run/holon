@@ -15,8 +15,8 @@ pub use lifecycle::{
     DAEMON_SERVE_RESOLUTION_ENV, PRE_SERVER_PREPARED_ENV,
 };
 pub use profile::{
-    load_serve_profile, persist_serve_profile, serve_profile_path, DaemonServeProfile,
-    ResolvedDaemonServePlan, ServeProfileAccess, ServeProfileAuthentication,
+    load_serve_profile, persist_serve_profile, serve_profile_path, validate_cloudflare_url,
+    DaemonServeProfile, ResolvedDaemonServePlan, ServeProfileAccess, ServeProfileAuthentication,
 };
 pub(crate) use service::runtime_activity_message;
 pub use service::{

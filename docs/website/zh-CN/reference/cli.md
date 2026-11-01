@@ -490,10 +490,11 @@ holon daemon restart --reset-serve-options --access local
 | `--port <PORT>` | 监听端口 |
 | `--host <HOST>` | 绑定主机 |
 | `--listen <ADDR>` | 监听地址 |
-| `--access <MODE>` | `local`、`tunnel`、`lan`、`tailnet` |
+| `--access <MODE>` | `local`、`tunnel`、`cloudflare`、`lan`、`tailnet` |
 | `--token <TOKEN>` | 用于鉴权的 Bearer token |
 | `--token-file <PATH>` | 从文件读取 token |
 | `--advertise <URL>` | 对外公布的 URL |
+| `--cloudflare-token-file <PATH>` | Named Tunnel connector token 文件；要求 cloudflare 模式与 HTTPS 公网域名 |
 | `--web-dist <PATH>` | Web 静态资源目录，保存为绝对路径 |
 | `--reset-serve-options` | 丢弃继承配置，使用明确的 CLI/env 与默认值 |
 | `--desktop-integration[=true\|false]` | 允许已授权调用操作 daemon 主机 Finder；仅支持 macOS，与 LAN/Serve 无关，默认关闭 |
@@ -510,6 +511,7 @@ holon daemon restart --reset-serve-options --access local
 | `--token <TOKEN>` | 鉴权 token |
 | `--token-file <PATH>` | 从文件读取 token，仅保存绝对路径 |
 | `--advertise <URL>` | 对外公布的 URL |
+| `--cloudflare-token-file <PATH>` | 与 serve 相同；仅保存绝对路径，不保存 connector token |
 | `--web-dist <PATH>` | Web 静态资源目录 |
 | `--reset-serve-options` | 与 serve 相同；daemon restart 也支持 |
 | `--desktop-integration[=true\|false]` | 与 serve 相同；restart 继承设置，除非显式覆盖 |

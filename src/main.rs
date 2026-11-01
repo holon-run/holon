@@ -532,6 +532,14 @@ async fn run_solve_command(
 
 fn apply_serve_options(config: &mut AppConfig, options: ServeOptions) -> Result<Option<String>> {
     let access = options.access.unwrap_or(ServeAccess::Local);
+    if access == ServeAccess::Cloudflare {
+        if options.cloudflare_token_file.is_none() {
+            anyhow::bail!("--access cloudflare requires --cloudflare-token-file (Named Tunnel connector token, not an API token)");
+        }
+        holon::daemon::validate_cloudflare_url(options.advertise.as_deref())?;
+    } else if options.cloudflare_token_file.is_some() {
+        anyhow::bail!("--cloudflare-token-file requires --access cloudflare");
+    }
     let token = resolve_inline_or_file_token(options.token, options.token_file)?;
     if let Some(token) = token {
         config.control_token = Some(token);
@@ -545,7 +553,7 @@ fn apply_serve_options(config: &mut AppConfig, options: ServeOptions) -> Result<
 
     if let Some(listen) = options.listen {
         config.http_addr = listen;
-    } else if access == ServeAccess::Tunnel {
+    } else if matches!(access, ServeAccess::Tunnel | ServeAccess::Cloudflare) {
         config.http_addr = loopback_with_configured_port(&config.http_addr, options.port);
     } else if matches!(access, ServeAccess::Lan | ServeAccess::Tailnet) {
         config.http_addr =
@@ -558,6 +566,7 @@ fn apply_serve_options(config: &mut AppConfig, options: ServeOptions) -> Result<
         Some(url) => Some(validate_client_visible_url("advertise URL", &url)?),
         None => match access {
             ServeAccess::Local | ServeAccess::Tunnel => None,
+            ServeAccess::Cloudflare => unreachable!("validated explicit advertise URL"),
             ServeAccess::Lan | ServeAccess::Tailnet => {
                 let Some(host) = options
                     .host
@@ -589,6 +598,15 @@ fn apply_serve_options(config: &mut AppConfig, options: ServeOptions) -> Result<
     config.callback_base_url =
         validate_client_visible_url("callback base URL", &config.callback_base_url)?;
 
+    if access == ServeAccess::Cloudflare {
+        let listen: SocketAddr = config
+            .http_addr
+            .parse()
+            .context("invalid Cloudflare listener")?;
+        if !listen.ip().is_loopback() || listen.port() == 0 {
+            anyhow::bail!("Cloudflare Named Tunnel requires a fixed loopback listener matching its preconfigured ingress");
+        }
+    }
     let non_loopback_tcp = !config.tcp_listener_is_local();
     if non_loopback_tcp
         && config
@@ -601,18 +619,25 @@ fn apply_serve_options(config: &mut AppConfig, options: ServeOptions) -> Result<
             config.http_addr
         ));
     }
-    if matches!(access, ServeAccess::Lan | ServeAccess::Tailnet)
-        && config
-            .control_token
-            .as_deref()
-            .is_none_or(|token| token.trim().is_empty())
+    if matches!(
+        access,
+        ServeAccess::Lan | ServeAccess::Tailnet | ServeAccess::Cloudflare
+    ) && config
+        .control_token
+        .as_deref()
+        .is_none_or(|token| token.trim().is_empty())
     {
         return Err(anyhow!(
             "--access {:?} requires --token, --token-file, or HOLON_CONTROL_TOKEN",
             access
         ));
     }
-    if non_loopback_tcp || matches!(access, ServeAccess::Lan | ServeAccess::Tailnet) {
+    if non_loopback_tcp
+        || matches!(
+            access,
+            ServeAccess::Lan | ServeAccess::Tailnet | ServeAccess::Cloudflare
+        )
+    {
         config.control_auth_mode = ControlAuthMode::Required;
     }
 
@@ -805,6 +830,12 @@ fn serve_args_for_options(options: &ServeOptions) -> DaemonServeLaunchOptions {
     if let Some(advertise) = &options.advertise {
         args.extend([OsString::from("--advertise"), OsString::from(advertise)]);
     }
+    if let Some(path) = &options.cloudflare_token_file {
+        args.extend([
+            OsString::from("--cloudflare-token-file"),
+            path.as_os_str().to_owned(),
+        ]);
+    }
     if let Some(token_file) = &options.token_file {
         args.extend([
             OsString::from("--token-file"),
@@ -844,6 +875,13 @@ fn merge_serve_options(inherited: ServeOptions, explicit: ServeOptions) -> Serve
             .desktop_integration
             .or(inherited.desktop_integration),
         access: explicit.access.or(inherited.access),
+        cloudflare_token_file: explicit.cloudflare_token_file.or_else(|| {
+            if explicit_access && explicit.access != Some(ServeAccess::Cloudflare) {
+                None
+            } else {
+                inherited.cloudflare_token_file
+            }
+        }),
         host: explicit.host.or(inherited.host),
         listen: if explicit_listen {
             explicit.listen
@@ -916,6 +954,7 @@ fn options_from_profile(profile: &DaemonServeProfile) -> ServeOptions {
         access: Some(match profile.access {
             ServeProfileAccess::Local => ServeAccess::Local,
             ServeProfileAccess::Tunnel => ServeAccess::Tunnel,
+            ServeProfileAccess::Cloudflare => ServeAccess::Cloudflare,
             ServeProfileAccess::Lan => ServeAccess::Lan,
             ServeProfileAccess::Tailnet => ServeAccess::Tailnet,
         }),
@@ -923,6 +962,7 @@ fn options_from_profile(profile: &DaemonServeProfile) -> ServeOptions {
         listen: profile.listen.clone(),
         port: profile.port,
         advertise: profile.advertise.clone(),
+        cloudflare_token_file: profile.cloudflare_token_file.clone(),
         token: None,
         token_file: match &profile.authentication {
             ServeProfileAuthentication::TokenFile { path } => Some(path.clone()),
@@ -941,6 +981,10 @@ fn explicit_serve_fields(options: &ServeOptions) -> Vec<&'static str> {
         (options.listen.is_some(), "listen"),
         (options.port.is_some(), "port"),
         (options.advertise.is_some(), "advertise"),
+        (
+            options.cloudflare_token_file.is_some(),
+            "cloudflare_token_file",
+        ),
         (options.token.is_some(), "authentication(--token)"),
         (options.token_file.is_some(), "authentication(--token-file)"),
         (options.desktop_integration.is_some(), "desktop_integration"),
@@ -1086,9 +1130,13 @@ fn resolve_daemon_serve_plan_with_inputs(
         options.port = options.port.or(inherited_port).or(Some(7878));
     }
     let cwd = std::env::current_dir().context("cannot resolve serve option paths")?;
-    for path in [&mut options.token_file, &mut options.web_dist]
-        .into_iter()
-        .flatten()
+    for path in [
+        &mut options.token_file,
+        &mut options.web_dist,
+        &mut options.cloudflare_token_file,
+    ]
+    .into_iter()
+    .flatten()
     {
         if path.is_relative() {
             *path = cwd.join(&*path);
@@ -1136,6 +1184,7 @@ fn resolve_daemon_serve_plan_with_inputs(
         access: match options.access.unwrap_or(ServeAccess::Local) {
             ServeAccess::Local => ServeProfileAccess::Local,
             ServeAccess::Tunnel => ServeProfileAccess::Tunnel,
+            ServeAccess::Cloudflare => ServeProfileAccess::Cloudflare,
             ServeAccess::Lan => ServeProfileAccess::Lan,
             ServeAccess::Tailnet => ServeProfileAccess::Tailnet,
         },
@@ -1143,6 +1192,7 @@ fn resolve_daemon_serve_plan_with_inputs(
         listen: options.listen.clone(),
         port: options.port,
         advertise: options.advertise.clone(),
+        cloudflare_token_file: options.cloudflare_token_file.clone(),
         desktop_integration: options.desktop_integration.unwrap_or(false),
         web_dist: options.web_dist.clone(),
         authentication: if let Some(path) = &options.token_file {
@@ -1236,7 +1286,11 @@ async fn serve(mut config: AppConfig, options: ServeOptions) -> Result<()> {
     let serve_args = serve_args_for_options(&options).args;
     let desktop_integration = options.desktop_integration.unwrap_or(false);
     let web_dist = options.web_dist.clone();
+    let cloudflare_token_file = options.cloudflare_token_file.clone();
     let advertise_url = apply_serve_options(&mut config, options)?;
+    if let Some(path) = &cloudflare_token_file {
+        holon::cloudflare_tunnel::CloudflareTunnel::preflight(path)?;
+    }
     if desktop_integration && !cfg!(target_os = "macos") {
         anyhow::bail!("desktop integration requires macOS");
     }
@@ -1441,6 +1495,28 @@ async fn serve(mut config: AppConfig, options: ServeOptions) -> Result<()> {
     #[cfg(not(unix))]
     let _ = unix_server;
 
+    // Remote ingress must already target the fixed loopback listener.
+    let cloudflare_tunnel = if let Some(path) = &cloudflare_token_file {
+        let url = advertise_url.as_deref().expect("validated Cloudflare URL");
+        match holon::cloudflare_tunnel::CloudflareTunnel::start(path, url) {
+            Ok(tunnel) => {
+                runtime_service.set_tunnel_status(tunnel.status_handle());
+                println!("Cloudflare Named Tunnel starting: {url}");
+                println!("TUI: holon tui --connect {url} --token-file <HOLON_TOKEN_FILE>");
+                Some(tunnel)
+            }
+            Err(_) => {
+                runtime_service.set_tunnel_failed(url);
+                tracing::warn!(
+                    "Cloudflare Named Tunnel failed to start; local service remains available"
+                );
+                None
+            }
+        }
+    } else {
+        None
+    };
+
     #[cfg(unix)]
     {
         let tcp_server = async {
@@ -1482,13 +1558,18 @@ async fn serve(mut config: AppConfig, options: ServeOptions) -> Result<()> {
                 .context("runtime servers failed")
         };
         projection_owner.close_projection_reads().await;
+        let tunnel_result = if let Some(tunnel) = cloudflare_tunnel {
+            tunnel.shutdown().await
+        } else {
+            Ok(())
+        };
         let _ = runtime_service.cleanup_state_files(&config);
         host.shutdown_daemon_memory_indexer().await;
         if let Some(exporter) = otlp_exporter {
             exporter.shutdown()?;
         }
         diagnostics_writer.shutdown()?;
-        return result;
+        return result.and(tunnel_result);
     }
 
     #[cfg(not(unix))]
@@ -1524,13 +1605,18 @@ async fn serve(mut config: AppConfig, options: ServeOptions) -> Result<()> {
         }
         .await;
         projection_owner.close_projection_reads().await;
+        let tunnel_result = if let Some(tunnel) = cloudflare_tunnel {
+            tunnel.shutdown().await
+        } else {
+            Ok(())
+        };
         let _ = runtime_service.cleanup_state_files(&config);
         host.shutdown_daemon_memory_indexer().await;
         if let Some(exporter) = otlp_exporter {
             exporter.shutdown()?;
         }
         diagnostics_writer.shutdown()?;
-        result
+        result.and(tunnel_result)
     }
 }
 
@@ -2206,6 +2292,7 @@ mod tests {
                 listen: None,
                 port: None,
                 advertise: None,
+                cloudflare_token_file: None,
                 token: None,
                 token_file: None,
                 web_dist: None,
@@ -2233,6 +2320,7 @@ mod tests {
                 listen: None,
                 port: Some(8787),
                 advertise: None,
+                cloudflare_token_file: None,
                 token: None,
                 token_file: None,
                 web_dist: None,
@@ -3548,6 +3636,7 @@ mod tests {
             listen: None,
             port: None,
             advertise: None,
+            cloudflare_token_file: None,
             token: Some("secret-token".into()),
             token_file: None,
             web_dist: None,
@@ -3565,6 +3654,145 @@ mod tests {
             .args
             .iter()
             .any(|arg| arg == &token_flag || arg == &token_value));
+    }
+
+    fn named_tunnel_options() -> ServeOptions {
+        parse_serve_options_from_args(
+            &[
+                "--access",
+                "cloudflare",
+                "--advertise",
+                "https://holon.example.com",
+                "--cloudflare-token-file",
+                "connector.token",
+                "--token",
+                "holon-test-secret",
+                "--port",
+                "8787",
+            ]
+            .map(OsString::from),
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn cloudflare_requires_holon_auth_even_on_loopback() {
+        let mut config = test_config();
+        config.control_token = None;
+        config.control_auth_mode = ControlAuthMode::Disabled;
+        let mut options = named_tunnel_options();
+        options.token = None;
+        assert!(apply_serve_options(&mut config, options).is_err());
+        let url = apply_serve_options(&mut config, named_tunnel_options()).unwrap();
+        assert_eq!(url.as_deref(), Some("https://holon.example.com"));
+        assert_eq!(config.http_addr, "127.0.0.1:8787");
+        assert_eq!(config.control_auth_mode, ControlAuthMode::Required);
+    }
+
+    #[test]
+    fn cloudflare_rejects_quick_urls_non_loopback_and_incomplete_intent() {
+        for url in [
+            "http://holon.example.com",
+            "https://demo.trycloudflare.com",
+            "https://user:secret@holon.example.com",
+            "https://holon.example.com/?token=secret",
+            "https://holon.example.com/#secret",
+            "https://holon.example.com/path",
+            "https://127.0.0.1",
+            "https://[::1]",
+            "https://[2001:db8::1]",
+        ] {
+            let mut options = named_tunnel_options();
+            options.advertise = Some(url.into());
+            assert!(
+                apply_serve_options(&mut test_config(), options).is_err(),
+                "{url}"
+            );
+        }
+        for listen in ["0.0.0.0:8787", "[::]:8787", "127.0.0.1:0"] {
+            let mut options = named_tunnel_options();
+            options.port = None;
+            options.listen = Some(listen.into());
+            assert!(
+                apply_serve_options(&mut test_config(), options).is_err(),
+                "{listen}"
+            );
+        }
+        let mut options = named_tunnel_options();
+        options.cloudflare_token_file = None;
+        assert!(apply_serve_options(&mut test_config(), options).is_err());
+        let mut options = named_tunnel_options();
+        options.advertise = None;
+        assert!(apply_serve_options(&mut test_config(), options).is_err());
+        let mut options = named_tunnel_options();
+        options.access = Some(ServeAccess::Tunnel);
+        assert!(apply_serve_options(&mut test_config(), options).is_err());
+        assert!(
+            parse_serve_options_from_args(&["--access", "quick-tunnel"].map(OsString::from))
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn cloudflare_profile_roundtrip_restart_and_explicit_access_reset() {
+        let empty = || parse_serve_options_from_args(&[]).unwrap();
+        let plan = resolve_daemon_serve_plan_with_inputs(
+            test_config(),
+            named_tunnel_options(),
+            None,
+            None,
+            empty(),
+            false,
+        )
+        .unwrap();
+        let path = plan.profile.cloudflare_token_file.as_ref().unwrap();
+        assert!(path.is_absolute());
+        assert_eq!(plan.profile.access, ServeProfileAccess::Cloudflare);
+        assert!(plan
+            .serve_args
+            .iter()
+            .any(|arg| arg == "--cloudflare-token-file"));
+        let json = serde_json::to_string(&plan.profile).unwrap();
+        assert!(!json.contains("holon-test-secret"));
+        let profile: DaemonServeProfile = serde_json::from_str(&json).unwrap();
+        let mut restart = empty();
+        restart.token = Some("replacement-secret".into());
+        let inherited = resolve_daemon_serve_plan_with_inputs(
+            test_config(),
+            restart,
+            Some(&profile),
+            None,
+            empty(),
+            false,
+        )
+        .unwrap();
+        assert_eq!(
+            inherited.profile.cloudflare_token_file,
+            profile.cloudflare_token_file
+        );
+        assert_eq!(inherited.profile.advertise, profile.advertise);
+        assert_eq!(
+            inherited.config.control_auth_mode,
+            ControlAuthMode::Required
+        );
+        let mut local = empty();
+        local.access = Some(ServeAccess::Local);
+        local.token = Some("replacement-secret".into());
+        let local = resolve_daemon_serve_plan_with_inputs(
+            test_config(),
+            local,
+            Some(&profile),
+            None,
+            empty(),
+            false,
+        )
+        .unwrap();
+        assert!(local.profile.cloudflare_token_file.is_none());
+        assert!(local.profile.advertise.is_none());
+        assert!(!local
+            .serve_args
+            .iter()
+            .any(|arg| arg == "--cloudflare-token-file"));
     }
 
     #[test]
@@ -3707,6 +3935,7 @@ mod tests {
                 listen: None,
                 port: None,
                 advertise: None,
+                cloudflare_token_file: None,
                 token: None,
                 token_file: Some(token_file.clone()),
                 web_dist: None,
@@ -3771,6 +4000,7 @@ mod tests {
                 listen: None,
                 port: None,
                 advertise: None,
+                cloudflare_token_file: None,
                 token: None,
                 token_file: None,
                 web_dist: None,
@@ -3839,6 +4069,7 @@ mod tests {
                 listen: None,
                 port: None,
                 advertise: None,
+                cloudflare_token_file: None,
                 token: None,
                 token_file: None,
                 web_dist: None,
@@ -3891,6 +4122,7 @@ mod tests {
                 listen: None,
                 port: None,
                 advertise: None,
+                cloudflare_token_file: None,
                 token: None,
                 token_file: None,
                 web_dist: None,
@@ -3940,6 +4172,7 @@ mod tests {
                 listen: Some("0.0.0.0:8989".into()),
                 port: None,
                 advertise: None,
+                cloudflare_token_file: None,
                 token: None,
                 token_file: None,
                 web_dist: None,
@@ -3979,6 +4212,7 @@ mod tests {
                 listen: None,
                 port: Some(8989),
                 advertise: None,
+                cloudflare_token_file: None,
                 token: None,
                 token_file: None,
                 web_dist: None,
@@ -4023,6 +4257,7 @@ mod tests {
                 listen: None,
                 port: None,
                 advertise: None,
+                cloudflare_token_file: None,
                 token: Some("restart-secret".into()),
                 token_file: None,
                 web_dist: None,
@@ -4057,6 +4292,7 @@ mod tests {
                 listen: None,
                 port: None,
                 advertise: None,
+                cloudflare_token_file: None,
                 token: None,
                 token_file: None,
                 web_dist: None,
@@ -4165,6 +4401,7 @@ mod tests {
                 listen: Some("0.0.0.0:7878".into()),
                 port: None,
                 advertise: Some("http://lab.example.test:7878".into()),
+                cloudflare_token_file: None,
                 token: None,
                 token_file: None,
                 web_dist: None,
@@ -4194,6 +4431,7 @@ mod tests {
                 listen: None,
                 port: None,
                 advertise: None,
+                cloudflare_token_file: None,
                 token: None,
                 token_file: None,
                 web_dist: None,
