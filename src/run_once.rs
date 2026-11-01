@@ -231,7 +231,13 @@ async fn run_once_with_host_inner(
     request: RunOnceRequest,
 ) -> Result<RunOnceResponse> {
     let session = prepare_run_session(&host, &request).await?;
-    bind_run_workspace(&host, &session.runtime, &request, session.is_persistent).await?;
+    bind_run_workspace(
+        &host,
+        &session.runtime,
+        &request,
+        session.is_existing_session,
+    )
+    .await?;
     let baseline = capture_baseline(&session.runtime).await?;
 
     let inbound = InboundRequest {
@@ -499,7 +505,7 @@ struct RunSession {
     agent_id: String,
     runtime: RuntimeHandle,
     cleanup: RunSessionCleanup,
-    is_persistent: bool,
+    is_existing_session: bool,
 }
 
 enum RunSessionCleanup {
@@ -513,30 +519,34 @@ async fn prepare_run_session(host: &RuntimeHost, request: &RunOnceRequest) -> Re
     }
 
     if let Some(agent_id) = request.agent_id.as_deref() {
-        if request.create_agent {
+        let is_existing_session = if request.create_agent {
             // No default initialization turn here (#2795): a run_once
             // creation is always immediately followed by the user's prompt
             // in this same session, so the conversation is never empty and
             // an intro turn would only compete with the real request.
             // Standalone `holon agent create` goes through the control HTTP
             // path and does request the default turn.
-            host.create_public_named_agent_with_name(
-                agent_id,
-                request.template.as_deref(),
-                None,
-                None,
-                None,
-                AgentBootstrapExecution::Inline,
-                false,
-            )
-            .await?;
-        }
+            let creation = host
+                .create_public_named_agent_with_name(
+                    agent_id,
+                    request.template.as_deref(),
+                    None,
+                    None,
+                    None,
+                    AgentBootstrapExecution::Inline,
+                    false,
+                )
+                .await?;
+            !creation.receipt.created
+        } else {
+            true
+        };
         let runtime = host.get_public_agent_for_external_ingress(agent_id).await?;
         Ok(RunSession {
             agent_id: agent_id.to_string(),
             runtime,
             cleanup: RunSessionCleanup::Persistent,
-            is_persistent: true,
+            is_existing_session,
         })
     } else {
         let (agent_id, runtime, runtime_task) = host.spawn_temporary_runtime("run").await?;
@@ -544,7 +554,7 @@ async fn prepare_run_session(host: &RuntimeHost, request: &RunOnceRequest) -> Re
             agent_id,
             runtime,
             cleanup: RunSessionCleanup::Temporary { runtime_task },
-            is_persistent: false,
+            is_existing_session: false,
         })
     }
 }

@@ -220,13 +220,17 @@ def require_live_task_owner(
     return record["activation_id"]
 
 
-def task_result_consuming_turns(snapshot, record, *, admitted_turn_id=None):
+def task_result_consuming_turns(
+    snapshot, record, *, admitted_turn_id=None, carrier_message_id=None,
+):
     carriers = {
         row["message_id"] for row in snapshot["messages"]
         if payload(row).get("source_refs", {}).get("task_result_identity")
         == record["result_identity"]
     }
     carriers.add(record["message_id"])
+    if carrier_message_id is not None:
+        carriers.add(carrier_message_id)
     turns = []
     for row in snapshot["turn_records"]:
         if row["agent_id"] != record["agent_id"] or row["terminal_kind"] != "completed":
@@ -303,7 +307,7 @@ def require_task_reentry(
     require(len(attempts) == 1, f"settlement has no unique admitted activation: {attempts}")
     activation = attempts[0]
     attempt = payload(activation)
-    turns = [
+    hinted_turns = [
         row for row in snapshot["turn_records"]
         if row["agent_id"] == agent_id and row["turn_id"] == attempt.get("turn_id")
     ]
@@ -317,7 +321,8 @@ def require_task_reentry(
         replay = stored.get("replay") or {}
         batch = stored.get("idle_input_batch") or {}
         if (
-            replay.get("source_turn_id") == attempt.get("turn_id")
+            attempt.get("turn_id") is not None
+            and replay.get("source_turn_id") == attempt.get("turn_id")
             and replay.get("source_message_id") == attempt.get("source_message_id")
             and replay.get("reason") == "interrupted_queue_claim_reentry"
             and (replay.get("prior_terminal") or {}).get("kind") == "interrupted"
@@ -329,17 +334,42 @@ def require_task_reentry(
             replays.append(row)
     if replays:
         require(
-            len(turns) == 1 and turns[0].get("terminal_kind") == "interrupted"
-            and turns[0].get("current_work_item_id") == record["work_item_id"]
-            and turns[0].get("trigger_message_id") == attempt.get("source_message_id")
+            len(hinted_turns) == 1 and hinted_turns[0].get("terminal_kind") == "interrupted"
+            and hinted_turns[0].get("current_work_item_id") == record["work_item_id"]
+            and hinted_turns[0].get("trigger_message_id") == attempt.get("source_message_id")
             and attempt.get("recovery_of_attempt_id"),
             "replay execution has no unique interrupted ingress attachment",
         )
         turns = replays
+    else:
+        # Recovery attempts need not retain turn/run hints. The durable source,
+        # owner and completed turn are authoritative; present hints must agree.
+        turns = [
+            row for row in task_result_consuming_turns(
+                snapshot, record, carrier_message_id=attempt.get("source_message_id"),
+            )
+            if row.get("trigger_message_id") == attempt.get("source_message_id")
+            and row.get("current_work_item_id") == record["work_item_id"]
+        ]
+    require(
+        len(turns) <= 1,
+        f"task result caused duplicate successful consumption: {turns}",
+    )
+    hint_targets = hinted_turns if replays else turns
+    require(
+        (attempt.get("turn_id") is None or (
+            len(hint_targets) == 1 and hint_targets[0]["turn_id"] == attempt["turn_id"]
+        ))
+        and (attempt.get("run_id") is None or (
+            len(hint_targets) == 1 and hint_targets[0].get("run_id") == attempt["run_id"]
+        )),
+        f"activation turn/run hint disagrees with its actual owner turn: {attempt}",
+    )
     require(
         activation["lifecycle_state"] == "settled"
         and attempt.get("attempt_id") == activation["attempt_id"]
         and attempt.get("agent_id") == agent_id
+        and bool(attempt.get("source_message_id"))
         and len(turns) == 1 and turns[0]["turn_id"] != parent_turn_id
         and turns[0]["terminal_kind"] == "completed"
         and turns[0].get("current_work_item_id") == record["work_item_id"],
@@ -405,7 +435,9 @@ def require_task_reentry(
         require(
             len(source_turns) == 1
             and source_turns[0].get("current_work_item_id") == record["work_item_id"]
-            and source_turns[0]["trigger_message_id"] == causal.get("source_message_id"),
+            and source_turns[0]["trigger_message_id"] == causal.get("source_message_id")
+            and (causal.get("run_id") is None
+                 or source_turns[0].get("run_id") == causal["run_id"]),
             "replay source lost its original owner turn",
         )
         model_input_turns.append((predecessor, source_turns[0]))
@@ -460,10 +492,11 @@ def require_task_reentry(
     require(direct or exact or scanner, f"activation lost task-result source causality: {attempt}")
     require(wait_policy == "exact" or scanner,
             "unwaited consumption requires the validated scanner source and model input")
-    # A scanner wake is the only model-delivered carrier of this promise, so a
-    # completed turn that consumed the wake consumed the same task result.
+    # Validated recovery wakes also carry this promise; their completed model
+    # turns must not hide duplicate consumption of the same task result.
     successful = task_result_consuming_turns(
         snapshot, record, admitted_turn_id=turn["turn_id"],
+        carrier_message_id=source_message_id,
     )
     require(
         len(successful) == 1,
@@ -473,6 +506,7 @@ def require_task_reentry(
         require_result_brief(
             snapshot, agent_id=agent_id, turn_id=turn["turn_id"],
             message_id=turn["trigger_message_id"], work_item_id=record["work_item_id"],
+            brief_id=terminal.get("outcome", {}).get("completion"),
         )
     return task
 

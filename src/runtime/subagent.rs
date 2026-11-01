@@ -43,11 +43,11 @@ impl RuntimeHandle {
                 "managed worktrees are disabled by the current execution profile"
             ));
         }
-        let original_cwd = self.workspace_root();
         let system = self.system();
         let execution = self
             .effective_execution(ExecutionScopeKind::AgentTurn)
             .await?;
+        let original_cwd = execution.workspace.execution_root().to_path_buf();
         let original_branch_output = system
             .run(
                 &execution,
