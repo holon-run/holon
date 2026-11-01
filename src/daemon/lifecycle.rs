@@ -928,9 +928,15 @@ Probe error: {details}",
                 }
             }
             if wait_for_shutdown(config, STOP_TIMEOUT).await.is_err() && pid_is_alive(pid) {
-                return Err(anyhow!(
-                    "cannot stop daemon PID {pid}: process is still running after TERM and KILL; state files were left intact"
-                ));
+                // A KILL'd exit can race the final liveness probe on loaded
+                // runners; zombies are already excluded by `pid_is_alive`.
+                // Re-check once before declaring failure (#3844).
+                tokio::time::sleep(Duration::from_millis(250)).await;
+                if pid_is_alive(pid) {
+                    return Err(anyhow!(
+                        "cannot stop daemon PID {pid}: process is still running after TERM and KILL; state files were left intact"
+                    ));
+                }
             }
         }
     }
@@ -1754,11 +1760,18 @@ fn unix_probe_stopped_socket_occupancy(root: &(dyn std::error::Error + 'static))
 }
 
 /// Check whether a process with the given PID is still alive.
-fn pid_is_alive(pid: u32) -> bool {
+///
+/// A process that already exited but was not reaped yet (a zombie) counts as
+/// not alive: `kill(pid, 0)` still succeeds for zombies, which made the stop
+/// path report the daemon as still running on loaded runners where reaping
+/// lags behind process exit (#3844).
+pub(crate) fn pid_is_alive(pid: u32) -> bool {
     #[cfg(unix)]
     {
         match send_signal(pid, 0, "0") {
-            Ok(SignalOutcome::Delivered) | Ok(SignalOutcome::PermissionDenied) => true,
+            Ok(SignalOutcome::Delivered) | Ok(SignalOutcome::PermissionDenied) => {
+                !process_has_exited(pid)
+            }
             Ok(SignalOutcome::MissingProcess) => false,
             // Conservative: on unknown error assume the process may still exist.
             Err(_) => true,
@@ -1768,6 +1781,32 @@ fn pid_is_alive(pid: u32) -> bool {
     {
         false
     }
+}
+
+/// Report whether `/proc/<pid>/stat` shows the process already exited (state
+/// `Z` zombie or `X` dead). Returns false when the state cannot be read, so
+/// the signal-based verdict from `pid_is_alive` is preserved.
+#[cfg(target_os = "linux")]
+fn process_has_exited(pid: u32) -> bool {
+    match fs::read_to_string(format!("/proc/{pid}/stat")) {
+        Ok(stat) => matches!(proc_stat_state(&stat), Some("Z") | Some("X")),
+        Err(_) => false,
+    }
+}
+
+#[cfg(all(unix, not(target_os = "linux")))]
+fn process_has_exited(_pid: u32) -> bool {
+    // No /proc on this platform; keep the signal-based liveness verdict.
+    false
+}
+
+/// Extract the process state field from a `/proc/<pid>/stat` line. `comm` is
+/// parenthesized and may itself contain spaces and parentheses, so parsing
+/// starts after the last `)`.
+#[cfg(target_os = "linux")]
+pub(crate) fn proc_stat_state(stat: &str) -> Option<&str> {
+    let after_comm = stat.rfind(')')?;
+    stat[after_comm + 1..].split_whitespace().next()
 }
 
 fn merge_latest_failure(
