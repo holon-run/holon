@@ -7,11 +7,7 @@ use crate::{
     domain::execution_protocol::{
         ExecutionAttemptState, ExecutionBinding, ExecutionSourceIdentity,
     },
-    storage::AppStorage,
-    types::{
-        IdleInputBatchRecord, MessageEnvelope, TurnOwner, TurnRecord, TurnTerminalKind,
-        TurnTriggerSummary,
-    },
+    types::{MessageEnvelope, TurnOwner, TurnRecord, TurnTerminalKind, TurnTriggerSummary},
 };
 
 const REPLAY_LINEAGE_LIMIT: usize = 64;
@@ -49,11 +45,13 @@ fn source_matches_anchor(source: &ExecutionSourceIdentity, anchor_id: &str) -> b
 }
 
 pub(super) fn classify_message_reference(
-    storage: &AppStorage,
+    storage: &impl super::ContextInputs,
     turn: &TurnRecord,
     message: &MessageEnvelope,
 ) -> Result<MessageReferenceClass> {
-    if super::turn_record_owns_object(turn, message.turn_id.as_deref()) {
+    if storage.inspect_assigned_turn(&message.id, |assigned| {
+        super::turn_record_owns_object(turn, assigned)
+    })? {
         return Ok(MessageReferenceClass::OwnedByTurn);
     }
     if verified_replay_reference(storage, turn, message)? {
@@ -63,17 +61,14 @@ pub(super) fn classify_message_reference(
 }
 
 fn verified_replay_reference(
-    storage: &AppStorage,
+    storage: &impl super::ContextInputs,
     turn: &TurnRecord,
     message: &MessageEnvelope,
 ) -> Result<bool> {
     let Some(replay) = turn.replay.as_ref() else {
         return Ok(false);
     };
-    let Some(anchor) = storage.read_message_by_id(&replay.source_message_id)? else {
-        return Ok(false);
-    };
-    let Some(runtime_db) = storage.runtime_db()? else {
+    let Some(anchor) = storage.history_message_by_id(&replay.source_message_id)? else {
         return Ok(false);
     };
     let owner = turn.effective_owner();
@@ -101,9 +96,7 @@ fn verified_replay_reference(
     else {
         return Ok(false);
     };
-    let repository = runtime_db.transitions();
-    let Some(mut attempt) = repository.execution_attempt_by_id(&turn.agent_id, activation_id)?
-    else {
+    let Some(mut attempt) = storage.execution_attempt_by_id(&turn.agent_id, activation_id)? else {
         return Ok(false);
     };
     if attempt.agent_id != turn.agent_id
@@ -116,7 +109,7 @@ fn verified_replay_reference(
     {
         return Ok(false);
     }
-    let mut younger = turn.clone();
+    let mut previous_turn: Option<super::inputs::ContextHistoryTurn> = None;
     let mut seen_turns = BTreeSet::from([turn.turn_id.clone()]);
     let mut seen_attempts = BTreeSet::from([attempt.attempt_id.clone()]);
     let mut anchor_ingress_found = false;
@@ -124,6 +117,7 @@ fn verified_replay_reference(
     // Match the runtime's bounded, cycle-checked replay ancestry, not numeric ids
     // or attempt.turn_id: attempts may retain the original ingress turn stamp.
     for _ in 0..REPLAY_LINEAGE_LIMIT {
+        let younger = previous_turn.as_deref().unwrap_or(turn);
         let Some(replay) = younger.replay.as_ref() else {
             return Ok(anchor_ingress_found
                 && message_ingress_found
@@ -136,7 +130,7 @@ fn verified_replay_reference(
         {
             return Ok(false);
         }
-        let Some(source) = storage.read_turn_by_id(&replay.source_turn_id)? else {
+        let Some(source) = storage.history_turn_by_id(&replay.source_turn_id)? else {
             return Ok(false);
         };
         let Some(prior_id) = attempt.recovery_of_attempt_id.as_deref() else {
@@ -145,7 +139,7 @@ fn verified_replay_reference(
         if !seen_attempts.insert(prior_id.to_owned()) {
             return Ok(false);
         }
-        let Some(prior) = repository.execution_attempt_by_id(&turn.agent_id, prior_id)? else {
+        let Some(prior) = storage.execution_attempt_by_id(&turn.agent_id, prior_id)? else {
             return Ok(false);
         };
         if prior.agent_id != turn.agent_id
@@ -175,9 +169,10 @@ fn verified_replay_reference(
         }
         anchor_ingress_found |= anchor.turn_id.as_deref() == Some(source.turn_id.as_str());
         message_ingress_found |= message.turn_id.as_deref() == Some(source.turn_id.as_str());
-        younger = source;
+        previous_turn = Some(source);
         attempt = prior;
     }
+    let younger = previous_turn.as_deref().unwrap_or(turn);
     Ok(younger.replay.is_none()
         && anchor_ingress_found
         && message_ingress_found
@@ -199,13 +194,16 @@ fn snapshot_contains(turn: &TurnRecord, anchor_id: &str, message_id: &str) -> bo
 }
 
 fn same_snapshot(younger: &TurnRecord, source: &TurnRecord) -> bool {
-    let without_activation = |batch: &IdleInputBatchRecord| {
-        let mut batch = batch.clone();
-        batch.activation_id = None;
-        batch
-    };
     match (&younger.idle_input_batch, &source.idle_input_batch) {
-        (Some(younger), Some(source)) => without_activation(younger) == without_activation(source),
+        (Some(younger), Some(source)) => {
+            younger.anchor_message_id == source.anchor_message_id
+                && younger.sender_agent_id == source.sender_agent_id
+                && younger.cutoff == source.cutoff
+                && younger.max_items == source.max_items
+                && younger.max_bytes == source.max_bytes
+                && younger.rendered_bytes == source.rendered_bytes
+                && younger.items == source.items
+        }
         _ => false,
     }
 }

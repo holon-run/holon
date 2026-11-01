@@ -28,7 +28,9 @@ fn source_matches(source: &MessageEnvelope, record: &TaskResultSettlementRecord)
         && source.admission_context == Some(AdmissionContext::RuntimeOwned)
         && source.source_refs.get("task_result_message_id") == Some(&record.message_id)
         && source.source_refs.get("task_result_identity") == Some(&record.result_identity)
-        && source.source_refs.get("task_result_parent_turn_id") == Some(&record.parent_turn_id)
+        && record
+            .source
+            .matches_result_source_refs(&source.source_refs)
         && source.source_refs.get("task_result_rejoin_generation")
             == Some(&record.rejoin_generation.to_string())
 }
@@ -164,7 +166,7 @@ fn wait_matches_result(wait: &WaitConditionRecord, record: &TaskResultSettlement
             }]
 }
 
-pub(super) fn candidate_tx(
+pub(crate) fn candidate_tx(
     tx: &Transaction<'_>,
     agent_id: &str,
     waiter_work_item_id: Option<&str>,
@@ -248,18 +250,27 @@ pub(super) fn exact_wait_for_source_tx(
     if expected_wait_id.is_some_and(|expected| expected != wait_id) {
         return Ok(None);
     }
-    let Some(payload) = tx
+    tx
         .query_row(
-            "SELECT payload_json FROM wait_conditions
+            "SELECT wait_condition_id,agent_id,work_item_id,status,kind,source,subject_ref,
+             waiting_for,created_at,updated_at,expires_at,resolved_at,cancelled_at,last_turn_id,
+             trigger_message_id,triggered_at,wake_sources_json,continuation_json FROM wait_conditions
              WHERE wait_condition_id = ?1 AND agent_id = ?2",
             params![wait_id, source.agent_id],
-            |row| row.get::<_, String>(0),
+            decode_canonical_wait,
         )
-        .optional()?
-    else {
-        return Ok(None);
-    };
-    Ok(Some(serde_json::from_str::<WaitConditionRecord>(&payload)?))
+        .optional()
+        .map_err(Into::into)
+}
+
+fn decode_canonical_wait(row: &rusqlite::Row<'_>) -> rusqlite::Result<WaitConditionRecord> {
+    crate::runtime_db::repositories::decode_wait_condition_row(row).map_err(|error| {
+        rusqlite::Error::FromSqlConversionFailure(
+            0,
+            rusqlite::types::Type::Text,
+            format!("{error:#}").into(),
+        )
+    })
 }
 
 /// The exact wait a runtime recovery source triggers for the same work item.
@@ -271,15 +282,18 @@ fn wait_triggered_by_source_tx(
     expected_wait_id: Option<&str>,
 ) -> Result<Option<WaitConditionRecord>> {
     let mut statement = tx.prepare(
-        "SELECT payload_json FROM wait_conditions
+        "SELECT wait_condition_id,agent_id,work_item_id,status,kind,source,subject_ref,
+         waiting_for,created_at,updated_at,expires_at,resolved_at,cancelled_at,last_turn_id,
+         trigger_message_id,triggered_at,wake_sources_json,continuation_json FROM wait_conditions
          WHERE agent_id = ?1 AND work_item_id IS ?2
          ORDER BY wait_condition_id ASC",
     )?;
-    let rows = statement.query_map(params![source.agent_id, source.work_item_id], |row| {
-        row.get::<_, String>(0)
-    })?;
-    for payload in rows {
-        let wait: WaitConditionRecord = serde_json::from_str(&payload?)?;
+    let rows = statement.query_map(
+        params![source.agent_id, source.work_item_id],
+        decode_canonical_wait,
+    )?;
+    for wait in rows {
+        let wait = wait?;
         if wait.kind != WaitConditionKind::Task
             || !matches!(
                 wait.status,
@@ -295,7 +309,7 @@ fn wait_triggered_by_source_tx(
     Ok(None)
 }
 
-fn candidate_for_attempt_tx(
+pub(super) fn candidate_for_attempt_tx(
     tx: &Transaction<'_>,
     attempt: &ExecutionAttempt,
     waiter_work_item_id: Option<&str>,

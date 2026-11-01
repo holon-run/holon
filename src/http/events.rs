@@ -12,79 +12,214 @@ pub async fn events(
         .clamp(1, MAX_EVENT_STREAM_WINDOW);
     let order = query.order.unwrap_or(EventPageOrder::Desc);
     authorize_remote_access(&headers, &state).map_err(authentication_error_response)?;
+    let emit_projection_effect = projection_effect_emission_enabled(&state);
+    let max_level = query.max_level;
+    let event_kind = query.event_kind;
     let storage = state
         .host
         .operator_agent_read_storage(&agent_id)
         .map_err(agent_access_error)?;
-    let max_level = query.max_level;
-    let event_kind = query.event_kind.clone();
+    let read_state = Arc::clone(&state);
+    let read_agent_id = agent_id.clone();
+    let handle = tokio::runtime::Handle::current();
     let before_seq = query.before_seq;
     let after_seq = query.after_seq;
-    // Polling clients keep several of these in flight; a slow page read must
-    // cost one request instead of pinning a tokio worker.
-    let read_state = Arc::clone(&state);
-    let (emit_projection_effect, cursor_seq, event_log_epoch, page) = storage
+    let page = storage
         .read_block("http.events.page", move |storage| {
-            let emit_projection_effect = projection_effect_emission_enabled(&read_state);
-            let cursor_seq = storage.latest_event_seq()?;
-            let event_log_epoch = storage.event_log_epoch()?;
-            let filter_context = match max_level {
-                Some(_) => Some(event_filter_context(&storage)?),
-                None => None,
-            };
-            let page = storage.read_event_page_matching(
+            let scope = crate::runtime_db::read_block::current_scope()
+                .ok_or_else(|| anyhow::anyhow!("Event read requires blocking read scope"))?;
+            let db = storage
+                .runtime_db()?
+                .ok_or_else(|| anyhow::anyhow!("Event read requires runtime database"))?
+                .with_read_scope(scope);
+            Ok(read_state.host.operator_event_page_scoped(
+                &read_agent_id,
                 before_seq,
                 after_seq,
                 limit,
                 order.into(),
-                |event| {
-                    let level_matches = match (max_level, filter_context.as_ref()) {
-                        (Some(level), Some(filter_context)) => is_operator_event_in_display_mode(
-                            &event.kind,
-                            &event.data,
-                            &event_fallback_summary(event),
-                            filter_context,
-                            level,
-                        ),
-                        _ => true,
-                    };
-                    level_matches && event_kind.as_deref().is_none_or(|kind| event.kind == kind)
+                &db,
+                &handle,
+                move |storage| {
+                    let filter_context = max_level
+                        .map(|_| event_filter_context(storage))
+                        .transpose()?;
+                    Ok(move |event: &AuditEvent| {
+                        let level_matches = match (max_level, filter_context.as_ref()) {
+                            (Some(level), Some(filter_context)) => {
+                                is_operator_event_in_display_mode(
+                                    &event.kind,
+                                    &event.data,
+                                    &event_fallback_summary(event),
+                                    filter_context,
+                                    level,
+                                )
+                            }
+                            _ => true,
+                        };
+                        level_matches && event_kind.as_deref().is_none_or(|kind| event.kind == kind)
+                    })
                 },
-            )?;
-            Ok((emit_projection_effect, cursor_seq, event_log_epoch, page))
+            ))
         })
         .await
-        .map_err(error_response)?;
-    let oldest_seq = oldest_seq(&page.events, order);
-    let newest_seq = newest_seq(&page.events, order);
-    let events = page
-        .events
-        .iter()
-        .map(|event| {
-            stream_event_envelope(&agent_id, &event_log_epoch, event, emit_projection_effect)
-        })
-        .collect();
+        .map_err(error_response)?
+        .map_err(agent_access_error)?;
+    let first = page.events().next().map(|event| event.event_seq);
+    let last = page.events().next_back().map(|event| event.event_seq);
+    let (oldest_seq, newest_seq) = match order {
+        EventPageOrder::Asc => (first, last),
+        EventPageOrder::Desc => (last, first),
+    };
+    let response = BorrowedEventsPage {
+        events: BorrowedEventEnvelopes {
+            page: &page,
+            agent_id: &agent_id,
+            emit_projection_effect,
+        },
+        event_log_epoch: &page.recovery.event_log_epoch,
+        contract_version: crate::runtime_event::RUNTIME_EVENT_CONTRACT_VERSION,
+        oldest_seq,
+        newest_seq,
+        cursor_seq: page.cursor_seq,
+        has_older: page.has_older,
+        has_newer: page.has_newer,
+        order,
+        limit,
+    };
+    let bytes = page.json_bytes(&response).map_err(error_response)?;
     Ok((
-        [(
-            axum::http::HeaderName::from_static(
-                crate::runtime_event::EVENT_CONTRACT_VERSION_HEADER,
+        [
+            (
+                axum::http::HeaderName::from_static(
+                    crate::runtime_event::EVENT_CONTRACT_VERSION_HEADER,
+                ),
+                crate::runtime_event::RUNTIME_EVENT_CONTRACT_VERSION.to_string(),
             ),
-            crate::runtime_event::RUNTIME_EVENT_CONTRACT_VERSION.to_string(),
-        )],
-        Json(EventsPageResponse {
-            events,
-            event_log_epoch,
-            contract_version: crate::runtime_event::RUNTIME_EVENT_CONTRACT_VERSION,
-            oldest_seq,
-            newest_seq,
-            cursor_seq,
-            has_older: page.has_older,
-            has_newer: page.has_newer,
-            order,
-            limit,
-        }),
+            (
+                axum::http::header::CONTENT_TYPE,
+                "application/json".to_owned(),
+            ),
+        ],
+        bytes,
     ))
 }
+
+#[derive(Serialize)]
+struct BorrowedEventsPage<'a> {
+    events: BorrowedEventEnvelopes<'a>,
+    event_log_epoch: &'a str,
+    contract_version: u32,
+    oldest_seq: Option<u64>,
+    newest_seq: Option<u64>,
+    cursor_seq: Option<u64>,
+    has_older: bool,
+    has_newer: bool,
+    order: EventPageOrder,
+    limit: usize,
+}
+
+struct BorrowedEventEnvelopes<'a> {
+    page: &'a crate::host::OwnedEventPageRead,
+    agent_id: &'a str,
+    emit_projection_effect: bool,
+}
+
+impl Serialize for BorrowedEventEnvelopes<'_> {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        use serde::ser::SerializeSeq;
+        let mut sequence = serializer.serialize_seq(Some(self.page.events().len()))?;
+        for event in self.page.events() {
+            sequence.serialize_element(&borrowed_event_envelope(
+                self.agent_id,
+                &self.page.recovery.event_log_epoch,
+                event,
+                self.emit_projection_effect,
+            ))?;
+        }
+        sequence.end()
+    }
+}
+
+#[derive(Serialize)]
+struct BorrowedEventEnvelope<'a> {
+    id: &'a str,
+    event_seq: u64,
+    event_log_epoch: &'a str,
+    ts: chrono::DateTime<Utc>,
+    agent_id: &'a str,
+    #[serde(rename = "type")]
+    event_type: &'a str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    payload_schema: Option<&'a str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    payload_schema_version: Option<u32>,
+    payload: PublicEventPayload<'a>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    projection_effect: Option<crate::runtime_event::ProjectionEffect>,
+}
+
+fn borrowed_event_envelope<'a>(
+    agent_id: &'a str,
+    event_log_epoch: &'a str,
+    event: &'a AuditEvent,
+    emit_projection_effect: bool,
+) -> BorrowedEventEnvelope<'a> {
+    let legacy =
+        crate::runtime_event::is_legacy_event_shape(&event.payload_schema, event.contract_version);
+    BorrowedEventEnvelope {
+        id: &event.id,
+        event_seq: event.event_seq,
+        event_log_epoch: if event.event_log_epoch.is_empty() {
+            event_log_epoch
+        } else {
+            &event.event_log_epoch
+        },
+        ts: event.created_at,
+        agent_id,
+        event_type: &event.kind,
+        payload_schema: (!legacy).then_some(event.payload_schema.as_str()),
+        payload_schema_version: (!legacy).then_some(event.payload_schema_version),
+        payload: PublicEventPayload(&event.data),
+        projection_effect: emit_projection_effect.then(|| {
+            crate::runtime_event::projection_effect_of(
+                &event.kind,
+                event.contract_version,
+                &event.payload_schema,
+                event.payload_schema_version,
+            )
+        }),
+    }
+}
+
+struct PublicEventPayload<'a>(&'a Value);
+
+impl Serialize for PublicEventPayload<'_> {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        use serde::ser::SerializeMap;
+        let Value::Object(object) = self.0 else {
+            return self.0.serialize(serializer);
+        };
+        let mut map = serializer.serialize_map(None)?;
+        for (key, value) in object {
+            if !PRIVATE_EVENT_PAYLOAD_KEYS.contains(&key.as_str()) {
+                map.serialize_entry(key, value)?;
+            }
+        }
+        map.end()
+    }
+}
+
+const PRIVATE_EVENT_PAYLOAD_KEYS: &[&str] = &[
+    "prompt_cache_key",
+    "context_fingerprint",
+    "compression_epoch",
+    "provider_request_id",
+    "provider_message_id",
+    "provider_request_diagnostics",
+    "provider_attempt_timeline",
+    "only_sleep_tools",
+];
 
 pub async fn message(
     Path((agent_id, message_id)): Path<(String, String)>,
@@ -155,69 +290,104 @@ pub async fn events_stream(
         .clamp(1, MAX_EVENT_STREAM_WINDOW);
     let after_seq = query.after_seq;
     authorize_remote_access(&headers, &state).map_err(authentication_error_response)?;
+    // Subscribe before the committed replay cut so concurrent ACKs are either
+    // replayed or received live; sequence de-duplication resolves the overlap.
+    let mut live_rx = state.host.subscribe_events();
+    // Capability advertisement is captured once at stream open and applies
+    // to every event in the stream: the underlying verification only
+    // changes on migration/restart, and a lagging stream is closed instead
+    // of being resumed with different emission semantics mid-stream.
+    let emit_projection_effect = projection_effect_emission_enabled(&state);
     let storage = state
         .host
         .operator_agent_read_storage(&agent_id)
         .map_err(agent_access_error)?;
-    let mut live_rx = state.host.subscribe_events();
-    let replay_limit = event_window_limit.saturating_add(1);
     let read_state = Arc::clone(&state);
-    let (event_log_epoch, emit_projection_effect, recovery_window, events) = storage
+    let read_agent_id = agent_id.clone();
+    let handle = tokio::runtime::Handle::current();
+    let page = storage
         .read_block("http.events.stream", move |storage| {
-            let event_log_epoch = storage.event_log_epoch()?;
-            // Capability advertisement is captured once at stream open and
-            // applies to every event in the stream: the underlying
-            // verification only changes on migration/restart, and a lagging
-            // stream is closed instead of being resumed with different
-            // emission semantics mid-stream.
-            let emit_projection_effect = projection_effect_emission_enabled(&read_state);
-            let recovery_window = storage.agent_event_recovery_window()?;
-            let events = storage.read_recent_events(replay_limit)?;
-            Ok((
-                event_log_epoch,
-                emit_projection_effect,
-                recovery_window,
-                events,
+            let scope = crate::runtime_db::read_block::current_scope()
+                .ok_or_else(|| anyhow::anyhow!("Event read requires blocking read scope"))?;
+            let db = storage
+                .runtime_db()?
+                .ok_or_else(|| anyhow::anyhow!("Event read requires runtime database"))?
+                .with_read_scope(scope);
+            Ok(read_state.host.operator_event_page_scoped(
+                &read_agent_id,
+                None,
+                None,
+                event_window_limit.saturating_add(1),
+                EventLogPageOrder::Desc,
+                &db,
+                &handle,
+                |_| Ok(|_: &AuditEvent| true),
             ))
         })
         .await
+        .map_err(error_response)?
+        .map_err(agent_access_error)?;
+    let start_index = initial_buffered_events(&page, after_seq)?;
+    let scope = state
+        .host
+        .event_stream_scope(&page)
         .map_err(error_response)?;
-    let buffered = initial_buffered_events(&events, after_seq, &recovery_window)?;
-    let (tx, out_rx) = tokio::sync::mpsc::channel::<Result<Event, std::convert::Infallible>>(32);
+    let (tx, out_rx) = tokio::sync::mpsc::channel::<Result<Bytes, std::convert::Infallible>>(32);
     let runtime_id = agent_id.clone();
     tokio::spawn(async move {
         let mut last_sent_seq = after_seq.unwrap_or(0);
-        for event in buffered {
-            if send_stream_event(
-                &tx,
-                &runtime_id,
-                &event_log_epoch,
-                &event,
-                emit_projection_effect,
-            )
-            .await
-            .is_err()
-            {
+        for offset in start_index..page.events().len() {
+            let frame = scope
+                .history_frame(&page, page.events().len() - 1 - offset)
+                .and_then(|read| {
+                    let event = read.event();
+                    let seq = event.event_seq;
+                    let envelope = borrowed_event_envelope(
+                        &runtime_id,
+                        &page.recovery.event_log_epoch,
+                        event,
+                        emit_projection_effect,
+                    );
+                    Ok((seq, read.sse_bytes(&envelope)?))
+                });
+            let Ok((seq, bytes)) = frame else {
+                warn!(agent_id = %runtime_id, "qualified Event replay encoding failed");
+                return;
+            };
+            if tx.send(Ok(bytes)).await.is_err() {
                 return;
             }
-            last_sent_seq = last_sent_seq.max(event.event_seq);
+            last_sent_seq = last_sent_seq.max(seq);
         }
+        drop(page);
         loop {
-            match live_rx.recv().await {
+            let next = tokio::select! {
+                _ = tx.closed() => break,
+                next = live_rx.recv() => next,
+            };
+            match next {
                 Ok(published) if published.agent_id.as_deref() == Some(runtime_id.as_str()) => {
                     if published.event.event_seq <= last_sent_seq {
                         continue;
                     }
-                    if send_stream_event(
-                        &tx,
-                        &runtime_id,
-                        &event_log_epoch,
-                        &published.event,
-                        emit_projection_effect,
-                    )
-                    .await
-                    .is_err()
-                    {
+                    let frame = scope.live_frame(&published).and_then(|read| {
+                        let event = read.event();
+                        let envelope = borrowed_event_envelope(
+                            &runtime_id,
+                            &event.event_log_epoch,
+                            event,
+                            emit_projection_effect,
+                        );
+                        read.sse_bytes(&envelope)
+                    });
+                    let bytes = match frame {
+                        Ok(bytes) => bytes,
+                        Err(error) => {
+                            warn!(agent_id = %runtime_id, %error, "Event notification is not a qualified stream body");
+                            break;
+                        }
+                    };
+                    if tx.send(Ok(bytes)).await.is_err() {
                         break;
                     }
                     last_sent_seq = published.event.event_seq;
@@ -231,18 +401,25 @@ pub async fn events_stream(
             }
         }
     });
-    let stream = ReceiverStream::new(out_rx);
-    let keep_alive = KeepAlive::new()
-        .interval(EVENT_STREAM_HEARTBEAT_INTERVAL)
-        .text("heartbeat");
+    let stream = futures_util::stream::unfold(out_rx, |mut receiver| async move {
+        match tokio::time::timeout(EVENT_STREAM_HEARTBEAT_INTERVAL, receiver.recv()).await {
+            Ok(Some(frame)) => Some((frame, receiver)),
+            Ok(None) => None,
+            Err(_) => Some((Ok(Bytes::from_static(b": heartbeat\n\n")), receiver)),
+        }
+    });
     Ok((
-        [(
-            axum::http::HeaderName::from_static(
-                crate::runtime_event::EVENT_CONTRACT_VERSION_HEADER,
+        [
+            (
+                axum::http::HeaderName::from_static(
+                    crate::runtime_event::EVENT_CONTRACT_VERSION_HEADER,
+                ),
+                crate::runtime_event::RUNTIME_EVENT_CONTRACT_VERSION.to_string(),
             ),
-            crate::runtime_event::RUNTIME_EVENT_CONTRACT_VERSION.to_string(),
-        )],
-        Sse::new(stream).keep_alive(keep_alive),
+            (CONTENT_TYPE, "text/event-stream".into()),
+            (CACHE_CONTROL, "no-cache".into()),
+        ],
+        Body::from_stream(stream),
     ))
 }
 
@@ -253,8 +430,9 @@ pub async fn global_events_stream(
     if state.require_control_token {
         authorize_control(&headers, &state).map_err(authentication_error_response)?;
     }
-    let mut rx = state.host.subscribe_events();
-    let (tx, rx_out) = tokio::sync::mpsc::channel::<Result<Event, std::convert::Infallible>>(32);
+    let host = state.host.clone();
+    let mut rx = host.subscribe_events();
+    let (tx, rx_out) = tokio::sync::mpsc::channel::<Result<Bytes, std::convert::Infallible>>(32);
     tokio::spawn(async move {
         loop {
             match rx.recv().await {
@@ -262,14 +440,14 @@ pub async fn global_events_stream(
                     let Some(agent_id) = published.agent_id.as_deref() else {
                         continue;
                     };
-                    let payload = serde_json::json!({ "agent_id": agent_id }).to_string();
-                    if tx
-                        .send(Ok(Event::default()
-                            .event("agent_roster_hint")
-                            .data(payload)))
-                        .await
-                        .is_err()
-                    {
+                    let frame = host
+                        .observer_inventory_material()
+                        .and_then(|material| crate::host::observer_hint_bytes(agent_id, material));
+                    let Ok(bytes) = frame else {
+                        warn!("global metadata hint material refused");
+                        break;
+                    };
+                    if tx.send(Ok(bytes)).await.is_err() {
                         break;
                     }
                 }
@@ -281,57 +459,52 @@ pub async fn global_events_stream(
             }
         }
     });
-    let stream = ReceiverStream::new(rx_out);
-    let keep_alive = KeepAlive::new()
-        .interval(EVENT_STREAM_HEARTBEAT_INTERVAL)
-        .text("heartbeat");
+    let stream = futures_util::stream::unfold(rx_out, |mut receiver| async move {
+        match tokio::time::timeout(EVENT_STREAM_HEARTBEAT_INTERVAL, receiver.recv()).await {
+            Ok(Some(frame)) => Some((frame, receiver)),
+            Ok(None) => None,
+            Err(_) => Some((Ok(Bytes::from_static(b": heartbeat\n\n")), receiver)),
+        }
+    });
     Ok((
-        [(
-            axum::http::HeaderName::from_static(
-                crate::runtime_event::EVENT_CONTRACT_VERSION_HEADER,
+        [
+            (
+                axum::http::HeaderName::from_static(
+                    crate::runtime_event::EVENT_CONTRACT_VERSION_HEADER,
+                ),
+                crate::runtime_event::RUNTIME_EVENT_CONTRACT_VERSION.to_string(),
             ),
-            crate::runtime_event::RUNTIME_EVENT_CONTRACT_VERSION.to_string(),
-        )],
-        Sse::new(stream).keep_alive(keep_alive),
+            (CONTENT_TYPE, "text/event-stream".into()),
+            (CACHE_CONTROL, "no-cache".into()),
+        ],
+        Body::from_stream(stream),
     ))
 }
 
 fn initial_buffered_events(
-    events: &[AuditEvent],
+    page: &crate::host::OwnedEventPageRead,
     after_seq: Option<u64>,
-    recovery_window: &crate::runtime_db::AgentEventRecoveryWindow,
-) -> std::result::Result<VecDeque<AuditEvent>, (StatusCode, Json<Value>)> {
+) -> std::result::Result<usize, (StatusCode, Json<Value>)> {
     let start_index = if let Some(after_seq) = after_seq {
         if after_seq == 0 {
             0
         } else {
-            match events.iter().position(|event| event.event_seq == after_seq) {
+            match page
+                .events()
+                .rev()
+                .position(|event| event.event_seq == after_seq)
+            {
                 Some(position) => position + 1,
-                None => return Err(event_seq_not_found(after_seq, recovery_window)),
+                None => return Err(event_seq_not_found(after_seq, &page.recovery)),
             }
         }
     } else {
-        events.len()
+        page.events().len()
     };
-    Ok(events.iter().skip(start_index).cloned().collect())
+    Ok(start_index)
 }
 
-fn oldest_seq(events: &[AuditEvent], order: EventPageOrder) -> Option<u64> {
-    match order {
-        EventPageOrder::Asc => events.first(),
-        EventPageOrder::Desc => events.last(),
-    }
-    .map(|event| event.event_seq)
-}
-
-fn newest_seq(events: &[AuditEvent], order: EventPageOrder) -> Option<u64> {
-    match order {
-        EventPageOrder::Asc => events.last(),
-        EventPageOrder::Desc => events.first(),
-    }
-    .map(|event| event.event_seq)
-}
-
+#[cfg(test)]
 fn stream_event_envelope(
     agent_id: &str,
     event_log_epoch: &str,
@@ -368,6 +541,7 @@ fn stream_event_envelope(
 
 /// Keep provider diagnostics available in the durable audit record while
 /// keeping them out of the default public event contract.
+#[cfg(test)]
 fn public_event_payload(payload: &Value) -> Value {
     let Value::Object(object) = payload else {
         return payload.clone();
@@ -396,25 +570,6 @@ fn projection_effect_emission_enabled(state: &AppState) -> bool {
     advertised_observer_sync_capabilities(&verification).contains(&PROJECTION_EFFECT_CAPABILITY)
 }
 
-async fn send_stream_event(
-    tx: &tokio::sync::mpsc::Sender<Result<Event, std::convert::Infallible>>,
-    agent_id: &str,
-    event_log_epoch: &str,
-    event: &AuditEvent,
-    emit_projection_effect: bool,
-) -> std::result::Result<
-    (),
-    tokio::sync::mpsc::error::SendError<Result<Event, std::convert::Infallible>>,
-> {
-    let envelope = stream_event_envelope(agent_id, event_log_epoch, event, emit_projection_effect);
-    let payload = serde_json::to_string(&envelope).unwrap_or_else(|_| "{}".to_string());
-    tx.send(Ok(Event::default()
-        .id(envelope.event_seq.to_string())
-        .event(envelope.event_type)
-        .data(payload)))
-        .await
-}
-
 fn event_filter_context(
     storage: &crate::storage::AppStorage,
 ) -> Result<OperatorPresentationContext> {
@@ -431,14 +586,13 @@ fn event_filter_context(
     })
 }
 
-fn event_fallback_summary(event: &AuditEvent) -> String {
+fn event_fallback_summary(event: &AuditEvent) -> &str {
     event
         .data
         .get("summary")
         .and_then(Value::as_str)
         .filter(|summary| !summary.trim().is_empty())
         .unwrap_or(event.kind.as_str())
-        .to_string()
 }
 
 fn event_seq_not_found(
@@ -457,4 +611,39 @@ fn event_seq_not_found(
         .extension("oldest_retained_seq", recovery_window.oldest_retained_seq)
         .extension("event_head_seq", recovery_window.event_head_seq),
     )
+}
+
+#[cfg(test)]
+mod material_tests {
+    use super::*;
+
+    #[test]
+    fn borrowed_event_wire_matches_original_schema_and_top_level_privacy_without_body_copy(
+    ) -> Result<()> {
+        for payload in [
+            serde_json::json!({"visible": {"provider_request_id": "nested"}, "provider_request_id": "private", "only_sleep_tools": true}),
+            serde_json::json!(["opaque", {"provider_request_id": "nested"}]),
+            serde_json::json!("opaque"),
+        ] {
+            let mut event = AuditEvent::legacy("future-unknown", payload);
+            for typed in [false, true] {
+                if typed {
+                    event.payload_schema = "holon.future.v1".to_owned();
+                    event.payload_schema_version = 1;
+                    event.contract_version = crate::runtime_event::RUNTIME_EVENT_CONTRACT_VERSION;
+                    event.event_log_epoch = "original-epoch".to_owned();
+                }
+                for emit in [false, true] {
+                    let borrowed =
+                        borrowed_event_envelope("agent-a", "fallback-epoch", &event, emit);
+                    let original = stream_event_envelope("agent-a", "fallback-epoch", &event, emit);
+                    assert_eq!(
+                        serde_json::to_value(borrowed)?,
+                        serde_json::to_value(original)?
+                    );
+                }
+            }
+        }
+        Ok(())
+    }
 }

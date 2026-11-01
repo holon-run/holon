@@ -13,6 +13,7 @@ macro_rules! http_async_tests {
 
 http_async_tests!(
     events_route_supports_cursor_pagination,
+    events_route_rejects_raw_event_without_original_writer,
     events_route_supports_cursor_replay,
     events_stream_supports_cursor_and_rfc3339_ts,
     events_stream_receives_live_events_without_polling_replay,

@@ -737,6 +737,31 @@ pub fn prepare_runtime_before_server_observed(
     config: &AppConfig,
     startup: &crate::startup::StartupObservation,
 ) -> Result<()> {
+    let lease = RuntimeDbLock::try_lock(config.runtime_db_maintenance_lock_path())
+        .context("pre-server preparation requires the daemon to be stopped")?;
+    prepare_runtime_before_server_observed_with_maintenance_lease(config, startup, &lease)
+}
+
+pub fn prepare_runtime_before_server_with_maintenance_lease(
+    config: &AppConfig,
+    lease: &RuntimeDbLock,
+) -> Result<()> {
+    prepare_runtime_before_server_observed_with_maintenance_lease(
+        config,
+        &crate::startup::StartupObservation::new(),
+        lease,
+    )
+}
+
+pub fn prepare_runtime_before_server_observed_with_maintenance_lease(
+    config: &AppConfig,
+    startup: &crate::startup::StartupObservation,
+    lease: &RuntimeDbLock,
+) -> Result<()> {
+    anyhow::ensure!(
+        lease.path() == config.runtime_db_maintenance_lock_path(),
+        "runtime maintenance lease path mismatch"
+    );
     startup.observe_sync("storage_prepare", || {
         info!(
             startup_id = %startup.startup_id,
@@ -755,7 +780,7 @@ pub fn prepare_runtime_before_server_observed(
             );
             return Ok(());
         }
-        RuntimeHost::prepare_runtime_storage(config).with_context(|| {
+        RuntimeHost::prepare_runtime_storage_with_maintenance_lease(config, lease).with_context(|| {
             "pre-server runtime preparation failed; fix the reported storage domain error and retry"
         })?;
         info!(

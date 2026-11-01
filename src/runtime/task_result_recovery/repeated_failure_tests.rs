@@ -1,7 +1,8 @@
 use super::*;
 use crate::provider::ProviderTurnResponse;
 use crate::runtime::tests::support::{
-    seed_waiting_work_execution, DeferredFallbackProvider, LifecycleHarness,
+    persist_completed_task_parent_fixture, seed_live_waiting_work_execution,
+    DeferredFallbackProvider, LifecycleHarness,
 };
 use crate::runtime_db::task_result_settlement::{
     TaskResultSettlementRecord, TaskResultSettlementState,
@@ -30,6 +31,16 @@ async fn exact_recovery_restarts_after_anchor_snapshot_before_first_result_admis
 async fn exact_recovery_restarts_before_any_input_batch_or_result_admission() {
     Box::pin(assert_exact_recovery_restart_before_admission(
         false, None, false,
+    ))
+    .await;
+}
+
+#[tokio::test(start_paused = true)]
+async fn batchless_exact_recovery_rejects_missing_original_memory_start() {
+    Box::pin(assert_exact_recovery_restart_before_admission(
+        false,
+        Some("missing_start"),
+        false,
     ))
     .await;
 }
@@ -102,14 +113,15 @@ async fn assert_exact_recovery_restart_before_admission(
     };
     let before_admission = latest(harness.runtime(), result_id);
     Box::pin(
-        harness.runtime().begin_interactive_turn_with_provenance(
-            Some(&source),
+        harness.runtime().begin_dispatch_turn(
+            &source,
             None,
             None,
             successor
                 .dispatch_plan
                 .execution_admission_provenance
                 .clone(),
+            &successor.dispatch_plan.prior_closure,
         ),
     )
     .await
@@ -174,37 +186,69 @@ async fn assert_exact_recovery_restart_before_admission(
     assert_eq!(latest(harness.runtime(), result_id), before_admission);
     assert_eq!(provider.requests.lock().await.len(), 1);
 
-    if anchor_snapshot {
-        // Bootstrap must not timestamp an interruption before its attachment.
-        let advance = (interrupted_turn.created_at - harness.now())
-            .to_std()
-            .unwrap_or_default()
-            + std::time::Duration::from_secs(1);
-        harness.advance(advance).await;
+    // Bootstrap must not timestamp an interruption before its actual turn.
+    let advance = (interrupted_turn.created_at - harness.now())
+        .to_std()
+        .unwrap_or_default()
+        + std::time::Duration::from_secs(1);
+    harness.advance(advance).await;
+    if revoke == Some("missing_start") {
+        harness
+            .runtime()
+            .runtime_db()
+            .transaction(|tx| {
+                assert_eq!(
+                    tx.execute(
+                        "DELETE FROM dispatch_memory_checkpoints WHERE agent_id='default' AND turn_id=?1",
+                        [&interrupted_turn.turn_id],
+                    )?,
+                    1,
+                );
+                Ok(())
+            })
+            .unwrap();
     }
     harness.restart();
+    if revoke == Some("missing_start") {
+        let before = harness.snapshot();
+        let error = Box::pin(harness.runtime().recover_scheduler_bootstrap_claims())
+            .await
+            .unwrap_err();
+        assert!(
+            error.to_string().contains("original memory start"),
+            "{error:#}"
+        );
+        harness.assert_unchanged(&before);
+        assert_eq!(latest(harness.runtime(), result_id), before_admission);
+        assert_eq!(provider.requests.lock().await.len(), 1);
+        return;
+    }
     assert_eq!(
         Box::pin(harness.runtime().recover_scheduler_bootstrap_claims())
             .await
             .unwrap(),
         1
     );
-    if anchor_snapshot {
-        let recovered_turn = harness
-            .runtime()
-            .storage()
-            .read_turn_by_id(&interrupted_turn.turn_id)
-            .unwrap()
-            .unwrap();
-        assert_eq!(
-            recovered_turn
-                .terminal
-                .as_ref()
-                .map(|terminal| terminal.kind),
-            Some(crate::types::TurnTerminalKind::Interrupted),
-            "{recovered_turn:#?}"
-        );
-    }
+    let recovered_turn = harness
+        .runtime()
+        .storage()
+        .read_turn_by_id(&interrupted_turn.turn_id)
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        recovered_turn
+            .terminal
+            .as_ref()
+            .map(|terminal| terminal.kind),
+        Some(crate::types::TurnTerminalKind::Interrupted),
+        "{recovered_turn:#?}"
+    );
+    assert_eq!(
+        recovered_turn.idle_input_batch,
+        interrupted_turn.idle_input_batch
+    );
+    assert_eq!(latest(harness.runtime(), result_id), before_admission);
+    assert_eq!(provider.requests.lock().await.len(), 1);
     if let Some(revoke) = revoke {
         let runtime = harness.runtime();
         match revoke {
@@ -326,10 +370,14 @@ async fn assert_exact_recovery_restart_before_admission(
             record.activation_id = admitted.activation_id.clone();
             record.created_at = result.created_at;
             record.admitted_at = Some(result.created_at);
-            harness
-                .runtime()
-                .runtime_db()
-                .transaction(|tx| {
+            let persisted = record.clone();
+            super::budget_tests::owned_task_fixture_write(
+                harness.runtime(),
+                std::collections::BTreeSet::from([crate::runtime::resident_task::TaskKey::new(
+                    crate::runtime::resident_task::TaskFamily::ResultSettlement,
+                    &record.result_identity,
+                )]),
+                move |tx| {
                     assert_eq!(
                         tx.execute(
                             "UPDATE task_result_settlements
@@ -337,17 +385,19 @@ async fn assert_exact_recovery_restart_before_admission(
                                  created_at = ?2, admitted_at = ?2, payload_json = ?3
                              WHERE result_identity = ?4",
                             rusqlite::params![
-                                record.activation_id,
-                                record.created_at.to_rfc3339(),
-                                serde_json::to_string(&record)?,
-                                record.result_identity,
+                                persisted.activation_id,
+                                persisted.created_at.to_rfc3339(),
+                                serde_json::to_string(&persisted)?,
+                                persisted.result_identity,
                             ],
                         )?,
                         1
                     );
                     Ok(())
-                })
-                .unwrap();
+                },
+            )
+            .await;
+            assert_eq!(latest(harness.runtime(), &result.id), record);
             unrelated.push(record);
         }
         let activation_id = match replay.dispatch_plan.execution_admission_provenance.as_ref() {
@@ -542,6 +592,7 @@ impl AgentProvider for FailureProvider {
             }
         }
         Ok(ProviderTurnResponse {
+            material: Default::default(),
             blocks: vec![ModelBlock::Text {
                 text: "delivered".into(),
             }],
@@ -561,22 +612,54 @@ async fn remove_source(
     message: &MessageEnvelope,
     status: QueueEntryStatus,
 ) {
-    runtime
-        .inner
-        .agent
-        .lock()
-        .await
-        .queue
-        .pop_next_matching(|queued| queued.id == message.id);
-    let mut entry = runtime
-        .runtime_db()
-        .queue_entries()
-        .latest(&message.id)
-        .unwrap()
-        .unwrap();
-    entry.status = status;
-    entry.updated_at = runtime.now().max(entry.updated_at);
-    runtime.storage().append_queue_entry(&entry).unwrap();
+    use crate::runtime_db::transitions::{
+        AgentStateMutation, PreparedQueueTransition, QueueMutation, QueueOperation,
+        QueueTransitionCommand,
+    };
+
+    assert!(matches!(
+        status,
+        QueueEntryStatus::Processed | QueueEntryStatus::Dropped
+    ));
+    let (entry, commit) = {
+        let mut mutation = runtime.begin_mutation().await.unwrap();
+        let mut entry = runtime
+            .runtime_db()
+            .queue_entries()
+            .latest(&message.id)
+            .unwrap()
+            .unwrap();
+        mutation
+            .queue
+            .pop_next_matching(|queued| queued.id == message.id);
+        mutation.state.pending = mutation.queue.len();
+        entry.status = status;
+        entry.updated_at = runtime.now().max(entry.updated_at);
+        let prepared = PreparedQueueTransition::new(QueueTransitionCommand {
+            agent_id: message.agent_id.clone(),
+            operation: QueueOperation::Settle,
+            mutation: QueueMutation::Upsert(entry.clone()),
+            scheduler_claim_work_item: None,
+            agent_state: Some(AgentStateMutation {
+                expected: Some(Box::new(mutation.last_persisted_state.clone())),
+                record: Box::new(mutation.state.clone()),
+            }),
+            message_evidence: Vec::new(),
+            transcript_entries: Vec::new(),
+            turn_record: None,
+            audit_events: Vec::new(),
+            notify_scheduler: false,
+            fault: None,
+            brief_evidence: Vec::new(),
+        });
+        let commit = mutation
+            .commit_prepared_queue(crate::ids::audit_event_id(), prepared)
+            .await
+            .unwrap();
+        assert!(commit.applied);
+        (entry, commit)
+    };
+    runtime.apply_transition_commit(commit).await;
     assert_eq!(
         runtime
             .runtime_db()
@@ -1016,6 +1099,13 @@ fn repaired_command(
             MessageDeliverySurface::TaskRejoin,
             AdmissionContext::RuntimeOwned,
         );
+        persist_completed_task_parent_fixture(
+            runtime,
+            "repeated-cross-owner-parent",
+            Some(&owner.id),
+        )
+        .await
+        .unwrap();
         result.created_at = runtime.now();
         result.task_id = Some("repeated-cross-owner-task".into());
         result.work_item_id = Some(owner.id.clone());
@@ -1071,7 +1161,7 @@ fn repaired_command(
             panic!("expected exact repair: {outcome:?}");
         };
         let updated_waiter = runtime.latest_work_item(&waiter.id).await.unwrap().unwrap();
-        seed_waiting_work_execution(runtime.storage(), &updated_waiter, &wait_condition_id);
+        seed_live_waiting_work_execution(runtime, &updated_waiter, &wait_condition_id).await;
         (owner, waiter, task, wait_condition_id)
     })
 }
@@ -1130,14 +1220,44 @@ async fn admitted_exact_repair_recovers_its_consuming_owner_without_migrating_th
             successor.created_at = runtime.now();
             harness.arm_fault(fault);
             let error = runtime
-                .enqueue_exact_recovery_continuation(result_id, &wait, successor, runtime.now())
+                .enqueue_exact_recovery_continuation(
+                    before_result.clone(),
+                    &wait,
+                    successor,
+                    runtime.now(),
+                )
                 .await
                 .unwrap_err();
             crate::runtime::tests::support::assert_injected_transition_fault(&error);
             harness.assert_unchanged(&before);
             assert_eq!(latest(runtime, result_id), before_result);
+            let agent = runtime.inner.agent.lock().await;
+            assert_eq!(
+                agent.state.pending,
+                before.agent_state.as_ref().unwrap().pending
+            );
+            assert_eq!(agent.state.pending, agent.queue.len());
         }
+        let pending_before = runtime.agent_state().await.unwrap().pending;
         assert!(runtime.emit_due_task_result_recovery().await.unwrap());
+        let snapshot = harness.snapshot();
+        let queued = snapshot
+            .queue_entries
+            .iter()
+            .filter(|entry| {
+                matches!(
+                    entry.status,
+                    QueueEntryStatus::Queued | QueueEntryStatus::Interrupted
+                )
+            })
+            .count();
+        assert_eq!(queued, pending_before + 1);
+        assert_eq!(snapshot.agent_state.as_ref().unwrap().pending, queued);
+        {
+            let agent = runtime.inner.agent.lock().await;
+            assert_eq!(agent.state.pending, queued);
+            assert_eq!(agent.queue.len(), queued);
+        }
         let next = Box::pin(claim_model(runtime)).await;
         assert_eq!(next.message.work_item_id, Some(waiter.id.clone()));
         assert_ne!(next.message.source_refs["wait_id"], original_wait);
@@ -1274,6 +1394,30 @@ async fn prepared_exact_successor_rejects_a_detached_captured_owner_close_atomic
         ))],
         ..ExecutionProtocolTransition::default()
     };
+    let capture_wait_witness = || async {
+        let mut mutation = runtime.begin_mutation().await.unwrap();
+        let mut work_request = crate::runtime::work_reads::live_work_request();
+        work_request
+            .required_trigger_message_ids
+            .insert(source_id.into());
+        work_request
+            .mandatory_roots
+            .insert(crate::runtime::resident_work::WorkKey::new(
+                crate::runtime::resident_work::WorkFamily::Wait,
+                &predecessor.id,
+            ));
+        mutation
+            .prepare_owner_work_request(&work_request)
+            .await
+            .unwrap();
+        let work = mutation.capture_work(&work_request).unwrap();
+        let witness = runtime
+            .capture_task_result_wait_witness(&mutation, &work, Some(&predecessor.id), &[source_id])
+            .unwrap();
+        drop(mutation);
+        witness
+    };
+    let (wait_witness, _wait_material) = capture_wait_witness().await;
     let mut command = WaitTransitionCommand {
         agent_id: "default".into(),
         work_items: vec![WorkItemMutation::Update {
@@ -1306,10 +1450,7 @@ async fn prepared_exact_successor_rejects_a_detached_captured_owner_close_atomic
                     .latest(source_id)
                     .unwrap(),
                 dropped_reply_source: None,
-                wait_conditions: runtime
-                    .storage()
-                    .latest_wait_conditions_for_agent("default")
-                    .unwrap(),
+                wait_witness,
             },
         }),
         agent_state: Some(AgentStateMutation {
@@ -1363,6 +1504,23 @@ async fn prepared_exact_successor_rejects_a_detached_captured_owner_close_atomic
         .unwrap_err();
     let conflict = error
         .downcast_ref::<crate::runtime_db::RuntimeStateTransitionConflict>()
+        .expect("owner closure must invalidate the captured Work witness");
+    assert_eq!(conflict.domain(), "task_result_wait_witness");
+    harness.assert_unchanged(&closed);
+    let (wait_witness, _fresh_wait_material) = capture_wait_witness().await;
+    command
+        .task_result_admission
+        .as_mut()
+        .unwrap()
+        .obligation
+        .wait_witness = wait_witness;
+    let error = runtime
+        .runtime_db()
+        .transitions()
+        .commit_wait_with_execution_protocol(&command, &protocol)
+        .unwrap_err();
+    let conflict = error
+        .downcast_ref::<crate::runtime_db::RuntimeStateTransitionConflict>()
         .expect("owner closure must invalidate the prepared obligation");
     assert_eq!(conflict.domain(), "task_result_obligation");
     harness.assert_unchanged(&closed);
@@ -1396,11 +1554,27 @@ async fn repeated_exact_recovery_preserves_the_five_root_pause_and_rearm_budget(
     assert!(!runtime.emit_due_task_result_recovery().await.unwrap());
     assert_eq!(provider.requests.lock().await.len(), 5);
     assert_eq!(latest(runtime, result_id).recovery_attempts, 5);
-    assert!(runtime
-        .runtime_db()
-        .task_result_settlements()
-        .rearm_recovery("default", &paused.result_identity, runtime.now())
-        .unwrap());
+    let result_identity = paused.result_identity.clone();
+    let now = runtime.now();
+    super::budget_tests::owned_task_fixture_write(
+        runtime,
+        std::collections::BTreeSet::from([crate::runtime::resident_task::TaskKey::new(
+            crate::runtime::resident_task::TaskFamily::ResultSettlement,
+            &result_identity,
+        )]),
+        move |tx| {
+            assert!(
+                crate::runtime_db::task_result_settlement::recovery_budget::rearm_recovery_tx(
+                    tx,
+                    "default",
+                    &result_identity,
+                    now,
+                )?
+            );
+            Ok(())
+        },
+    )
+    .await;
     assert!(!runtime.emit_due_task_result_recovery().await.unwrap());
     harness.advance(std::time::Duration::from_secs(30)).await;
     assert!(runtime.emit_due_task_result_recovery().await.unwrap());
@@ -1492,16 +1666,18 @@ async fn closed_exact_continuation_fails_closed_after_replacement_stop_owner_clo
             }
             "stale_task" => {
                 task.detail.as_mut().unwrap()["rejoin_generation"] = serde_json::json!(2);
-                runtime
-                    .runtime_db()
-                    .transaction(|tx| {
-                        tx.execute(
-                            "UPDATE tasks SET payload_json = ?2 WHERE task_id = ?1",
-                            rusqlite::params![task.id, serde_json::to_string(&task)?],
-                        )?;
-                        Ok(())
-                    })
-                    .unwrap();
+                super::stale_source_tests::replace_terminal_task_fixture(runtime, &task).await;
+                assert_eq!(
+                    runtime
+                        .storage()
+                        .latest_task_record(&task.id)
+                        .unwrap()
+                        .unwrap()
+                        .rejoin_fence()
+                        .unwrap()
+                        .generation,
+                    2
+                );
             }
             _ => unreachable!(),
         }
@@ -1594,7 +1770,7 @@ async fn cross_owner_reply_repair_survives_a_failed_recovery_snapshot() {
         panic!("expected exact reply repair: {outcome:?}");
     };
     let updated_waiter = runtime.latest_work_item(&waiter.id).await.unwrap().unwrap();
-    seed_waiting_work_execution(runtime.storage(), &updated_waiter, &wait_condition_id);
+    seed_live_waiting_work_execution(runtime, &updated_waiter, &wait_condition_id).await;
     let repair = Box::pin(claim_model(runtime)).await;
     process(runtime, repair).await;
     discard_provider_handoffs(runtime).await;

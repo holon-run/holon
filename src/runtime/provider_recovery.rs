@@ -5,8 +5,8 @@ use anyhow::{anyhow, bail, Result};
 
 use crate::{
     domain::execution_protocol::{
-        ExecutionAttempt, ExecutionAttemptState, ExecutionBinding, ExecutionProtocolState,
-        ExecutionSourceIdentity,
+        ExecutionAttempt, ExecutionAttemptState, ExecutionBinding, ExecutionOutcomeRecord,
+        ExecutionProtocolState, ExecutionSourceIdentity,
     },
     storage::AppStorage,
     types::{
@@ -14,6 +14,52 @@ use crate::{
         WaitConditionStatus,
     },
 };
+
+/// Typed, provenance-checked raw source IDs; callers resolve records coherently.
+pub(crate) fn continuity_sources(
+    message: &MessageEnvelope,
+) -> Result<Option<(String, String, TurnTerminalKind)>> {
+    if !super::turn::TurnModelSelection::message_has_provider_recovery_provenance(message) {
+        return Ok(None);
+    }
+    let selection = super::turn::TurnModelSelection::from_message(message)?;
+    let directive = selection
+        .recovery
+        .ok_or_else(|| anyhow!("provider recovery directive missing"))?;
+    if directive.source_turn_id.is_empty()
+        || directive.source_message_id.is_empty()
+        || !matches!(
+            directive.source_terminal_kind,
+            TurnTerminalKind::DeferredToFallback | TurnTerminalKind::ProviderFailedNeedsRecovery
+        )
+        || message.source_refs.get("source_turn_id") != Some(&directive.source_turn_id)
+        || message.source_refs.get("source_message_id") != Some(&directive.source_message_id)
+        || message.causation_id.as_deref() != Some(directive.source_message_id.as_str())
+    {
+        bail!("provider recovery continuity source references mismatch");
+    }
+    Ok(Some((
+        directive.source_turn_id,
+        directive.source_message_id,
+        directive.source_terminal_kind,
+    )))
+}
+
+/// Recheck an earlier authority rejection against the newly captured owner
+/// view. None means the source is now valid and the scheduler must replan.
+pub(crate) fn invalid_source_reason_from_captured(
+    inputs: &super::resident_input_evidence::CapturedInputEvidence,
+    message: &MessageEnvelope,
+) -> Result<Option<String>> {
+    let state = inputs
+        .execution_state_if_initialized()?
+        .unwrap_or_else(|| ExecutionProtocolState::empty(message.agent_id.clone()));
+    match resolve_from_captured(inputs, message, &state) {
+        Ok(_) => Ok(None),
+        Err(error) if is_preparation_error(&error) => Err(error),
+        Err(error) => Ok(Some(error.to_string())),
+    }
+}
 
 #[derive(Debug, Clone)]
 pub(crate) struct ProviderRecoverySource {
@@ -79,10 +125,15 @@ impl ProviderRecoverySource {
         }
         // Only the bounded, same-message interrupted replay may bridge the
         // current attempt to this recovery directive's exact predecessor.
-        Ok(
-            initial_source_attempt(message, turn, attempt, state, &mut read_turn)?
-                .is_some_and(|initial| self.is_initial_attempt(message, initial)),
-        )
+        Ok(initial_source_attempt(
+            message,
+            message.turn_id.as_deref(),
+            turn,
+            attempt,
+            RecoveryExecutionLookup::Protocol(state),
+            &mut read_turn,
+        )?
+        .is_some_and(|initial| self.is_initial_attempt(message, initial)))
     }
 
     pub fn interrupted_initial_attempt<'a>(
@@ -133,12 +184,153 @@ pub(crate) fn resolved_exact_wait(
         }))
 }
 
-/// The transition uses the same resolver against its transaction snapshot.
-pub(crate) fn resolve_with(
+fn source_terminal_candidates<'a>(
+    state: &'a ExecutionProtocolState,
+    source: &MessageEnvelope,
+) -> Vec<&'a ExecutionAttempt> {
+    state
+        .attempts
+        .values()
+        .filter(|attempt| {
+            attempt.agent_id == source.agent_id
+                && attempt.source_message_id.as_deref() == Some(source.id.as_str())
+                && matches!(
+                    attempt.state,
+                    ExecutionAttemptState::Settled | ExecutionAttemptState::Interrupted
+                )
+                && attempt.terminal_outcome_id.is_some()
+        })
+        .collect()
+}
+
+/// Transactional callers validate their own canonical message/turn relation.
+pub(crate) fn resolve_with<'a>(
     message: &MessageEnvelope,
-    state: &ExecutionProtocolState,
+    state: &'a ExecutionProtocolState,
+    read_message: impl FnMut(&str) -> Result<Option<MessageEnvelope>>,
+    read_turn: impl FnMut(&str) -> Result<Option<TurnRecord>>,
+) -> Result<ProviderRecoverySource> {
+    resolve_with_source_relation(
+        message,
+        RecoveryExecutionLookup::Protocol(state),
+        read_message,
+        read_turn,
+        |_, _| Ok(SourceIngressTurn::LegacyHint),
+        |source, _| {
+            Ok(source_terminal_candidates(state, source)
+                .into_iter()
+                .filter(|attempt| attempt.turn_id == source.turn_id)
+                .collect())
+        },
+        |_| Ok(()),
+    )
+}
+
+enum SourceIngressTurn {
+    LegacyHint,
+    AssignedTurn,
+    AssignedReplaySource,
+}
+
+fn canonical_source_ingress(
+    source: &MessageEnvelope,
+    turn: &TurnRecord,
+    assigned: Option<&str>,
+) -> Result<SourceIngressTurn> {
+    if !turn.input_message_ids.iter().any(|id| id == &source.id) {
+        bail!("provider recovery source turn mismatch");
+    }
+    if assigned == Some(turn.turn_id.as_str()) {
+        return Ok(SourceIngressTurn::AssignedTurn);
+    }
+    if turn.replay.as_ref().is_some_and(|replay| {
+        assigned == Some(replay.source_turn_id.as_str())
+            && replay.source_message_id == source.id
+            && replay.reason == "interrupted_queue_claim_reentry"
+    }) {
+        return Ok(SourceIngressTurn::AssignedReplaySource);
+    }
+    bail!("provider recovery source turn mismatch");
+}
+
+/// Context borrows exact captured allocations instead of materializing the
+/// complete execution partition for the shared lineage validator.
+#[derive(Clone, Copy)]
+enum RecoveryExecutionLookup<'a> {
+    Protocol(&'a ExecutionProtocolState),
+    Captured(&'a super::resident_input_evidence::CapturedInputEvidence),
+}
+
+impl<'a> RecoveryExecutionLookup<'a> {
+    fn agent_id(self) -> &'a str {
+        match self {
+            Self::Protocol(state) => &state.agent_id,
+            Self::Captured(inputs) => &inputs.scope.agent_id,
+        }
+    }
+
+    fn attempt(self, id: &str) -> Result<Option<&'a ExecutionAttempt>> {
+        use super::resident_input_evidence::{
+            InputEvidenceFamily as Family, PreparedInputEvidence,
+        };
+        match self {
+            Self::Protocol(state) => Ok(state.attempts.get(id)),
+            Self::Captured(inputs) => match captured_execution_record(inputs, Family::Attempt, id)?
+            {
+                Some(PreparedInputEvidence::Attempt(attempt)) if attempt.attempt_id == id => {
+                    Ok(Some(attempt))
+                }
+                None => Ok(None),
+                _ => bail!("captured Attempt family or ID differs from its key"),
+            },
+        }
+    }
+
+    fn outcome(self, id: &str) -> Result<Option<&'a ExecutionOutcomeRecord>> {
+        use super::resident_input_evidence::{
+            InputEvidenceFamily as Family, PreparedInputEvidence,
+        };
+        match self {
+            Self::Protocol(state) => Ok(state.outcomes.get(id)),
+            Self::Captured(inputs) => match captured_execution_record(inputs, Family::Outcome, id)?
+            {
+                Some(PreparedInputEvidence::Outcome(outcome)) if outcome.outcome_id == id => {
+                    Ok(Some(outcome))
+                }
+                None => Ok(None),
+                _ => bail!("captured Outcome family or ID differs from its key"),
+            },
+        }
+    }
+}
+
+fn captured_execution_record<'a>(
+    inputs: &'a super::resident_input_evidence::CapturedInputEvidence,
+    family: super::resident_input_evidence::InputEvidenceFamily,
+    id: &str,
+) -> Result<Option<&'a super::resident_input_evidence::PreparedInputEvidence>> {
+    inputs
+        .lookup_borrowed(family, id)?
+        .map(|evidence| {
+            if evidence.locator.scope != inputs.scope {
+                bail!("provider recovery captured execution scope mismatch");
+            }
+            Ok(&evidence.record)
+        })
+        .transpose()
+}
+
+fn resolve_with_source_relation<'a>(
+    message: &MessageEnvelope,
+    state: RecoveryExecutionLookup<'a>,
     mut read_message: impl FnMut(&str) -> Result<Option<MessageEnvelope>>,
     mut read_turn: impl FnMut(&str) -> Result<Option<TurnRecord>>,
+    mut read_source_ingress: impl FnMut(&MessageEnvelope, &TurnRecord) -> Result<SourceIngressTurn>,
+    mut predecessor_candidates: impl FnMut(
+        &MessageEnvelope,
+        &TurnRecord,
+    ) -> Result<Vec<&'a ExecutionAttempt>>,
+    mut validate_source_presence: impl FnMut(&MessageEnvelope) -> Result<()>,
 ) -> Result<ProviderRecoverySource> {
     let mut cursor = message.clone();
     let mut seen = BTreeSet::new();
@@ -157,7 +349,7 @@ pub(crate) fn resolve_with(
             .recovery
             .as_ref()
             .ok_or_else(|| anyhow!("provider recovery directive missing"))?;
-        if state.agent_id != message.agent_id
+        if state.agent_id() != message.agent_id
             || cursor.agent_id != message.agent_id
             || !matches!(
                 directive.source_terminal_kind,
@@ -170,6 +362,7 @@ pub(crate) fn resolve_with(
         {
             bail!("provider recovery source references mismatch");
         }
+        validate_source_presence(&cursor)?;
         let source_message = read_message(&directive.source_message_id)?
             .ok_or_else(|| anyhow!("provider recovery source message missing"))?;
         let source_turn = read_turn(&directive.source_turn_id)?
@@ -186,25 +379,29 @@ pub(crate) fn resolve_with(
         {
             bail!("provider recovery source turn mismatch");
         }
-        let attempts = state.attempts.values().filter(|attempt| {
-            attempt.agent_id == message.agent_id
-                && attempt.source_message_id.as_deref() == Some(source_message.id.as_str())
-                && attempt.turn_id == source_message.turn_id
-                && matches!(
-                    attempt.state,
-                    ExecutionAttemptState::Settled | ExecutionAttemptState::Interrupted
-                )
-                && attempt.terminal_outcome_id.as_ref().is_some_and(|id| {
-                    state
-                        .outcomes
-                        .get(id)
-                        .is_some_and(|outcome| outcome.attempt_id == attempt.attempt_id)
-                })
-        });
+        let ingress_turn = match read_source_ingress(&source_message, &source_turn)? {
+            SourceIngressTurn::LegacyHint => source_message.turn_id.as_deref(),
+            SourceIngressTurn::AssignedTurn => Some(source_turn.turn_id.as_str()),
+            SourceIngressTurn::AssignedReplaySource => source_turn
+                .replay
+                .as_ref()
+                .map(|replay| replay.source_turn_id.as_str()),
+        };
+        let candidates = predecessor_candidates(&source_message, &source_turn)?;
         let mut resolved = Vec::new();
-        for attempt in attempts {
+        for attempt in candidates {
+            let Some(outcome_id) = attempt.terminal_outcome_id.as_deref() else {
+                continue;
+            };
+            if !state
+                .outcome(outcome_id)?
+                .is_some_and(|outcome| outcome.attempt_id == attempt.attempt_id)
+            {
+                continue;
+            }
             if let Some(initial) = initial_source_attempt(
                 &source_message,
+                ingress_turn,
                 &source_turn,
                 attempt,
                 state,
@@ -213,13 +410,7 @@ pub(crate) fn resolve_with(
                 resolved.push((attempt, initial));
             }
         }
-        let (predecessor, initial) = resolved
-            .first()
-            .copied()
-            .ok_or_else(|| anyhow!("provider recovery predecessor missing"))?;
-        if resolved.len() != 1 {
-            bail!("provider recovery predecessor ambiguous");
-        }
+        let (predecessor, initial) = source_turn_predecessor(&source_turn, &resolved)?;
         if expected_predecessor
             .as_ref()
             .is_some_and(|id| id != &predecessor.attempt_id)
@@ -264,8 +455,7 @@ pub(crate) fn resolve_with(
                 .as_ref()
                 .ok_or_else(|| anyhow!("provider recovery predecessor lineage missing"))?;
             let prior = state
-                .attempts
-                .get(prior_id)
+                .attempt(prior_id)?
                 .ok_or_else(|| anyhow!("provider recovery prior attempt missing"))?;
             let prior_selection = super::turn::TurnModelSelection::from_message(&source_message)
                 .map_err(|_| anyhow!("provider recovery prior directive malformed"))?;
@@ -299,40 +489,180 @@ pub(crate) fn resolve_with(
     }
 }
 
-fn initial_source_attempt<'a>(
+fn source_turn_predecessor<'a>(
+    turn: &TurnRecord,
+    candidates: &[(&'a ExecutionAttempt, &'a ExecutionAttempt)],
+) -> Result<(&'a ExecutionAttempt, &'a ExecutionAttempt)> {
+    let mut actual = candidates.iter().copied().filter(|(attempt, _)| {
+        // A message-wide assignment belongs to the validated resumed claim,
+        // not its exact unstarted predecessor. Both share the original hint.
+        !(turn.replay.is_none()
+            && turn.idle_input_batch.is_none()
+            && attempt.state == ExecutionAttemptState::Interrupted
+            && attempt.run_id.is_none()
+            && attempt.turn_id.is_none()
+            && candidates.iter().any(|(resumed, initial)| {
+                resumed.attempt_id != attempt.attempt_id && initial.attempt_id == attempt.attempt_id
+            }))
+    });
+    let predecessor = actual
+        .next()
+        .ok_or_else(|| anyhow!("provider recovery predecessor missing"))?;
+    if actual.next().is_some() {
+        bail!("provider recovery predecessor ambiguous");
+    }
+    Ok(predecessor)
+}
+
+/// The caller must first resolve the source through its authoritative assignment.
+/// Reuse recovery's bounded same-message replay checks rather than treating hints
+/// or a later Turn as an execution identity.
+pub(crate) fn attempt_turn_relation_matches(
     message: &MessageEnvelope,
     turn: &TurnRecord,
+    assigned_turn_id: &str,
+    attempt: &ExecutionAttempt,
+    state: &ExecutionProtocolState,
+    mut read_turn: impl FnMut(&str) -> Result<Option<TurnRecord>>,
+) -> Result<bool> {
+    let owner = match &attempt.binding {
+        ExecutionBinding::WorkItem { work_item_id } => TurnOwner::WorkItem {
+            work_item_id: work_item_id.clone(),
+        },
+        ExecutionBinding::Conversation { interaction_id } => TurnOwner::Conversation {
+            interaction_id: interaction_id.clone(),
+        },
+        ExecutionBinding::AgentLifecycle { agent_id } => TurnOwner::AgentLifecycle {
+            agent_id: agent_id.clone(),
+        },
+        ExecutionBinding::Command => TurnOwner::Command,
+    };
+    if state.agent_id != attempt.agent_id
+        || message.agent_id != attempt.agent_id
+        || turn.agent_id != attempt.agent_id
+        || attempt.source_message_id.as_deref() != Some(message.id.as_str())
+        || !turn.input_message_ids.contains(&message.id)
+        || turn.trigger.as_ref() != Some(&crate::types::TurnTriggerSummary::from_message(message))
+        || turn.owner.as_ref() != Some(&owner)
+        || attempt
+            .run_id
+            .as_ref()
+            .is_some_and(|id| turn.run_id.as_ref() != Some(id))
+        || turn.idle_input_batch.as_ref().is_some_and(|batch| {
+            batch.activation_id.as_deref() != Some(attempt.attempt_id.as_str())
+        })
+    {
+        return Ok(false);
+    }
+    canonical_source_ingress(message, turn, Some(assigned_turn_id))?;
+    if turn.replay.as_ref().is_some_and(|replay| {
+        replay.source_message_id != message.id
+            || replay.source_turn_id.trim().is_empty()
+            || replay.source_turn_id == turn.turn_id
+            || replay.reason != "interrupted_queue_claim_reentry"
+    }) || attempt.turn_id.as_deref().is_some_and(|hint| {
+        hint != turn.turn_id
+            && turn
+                .replay
+                .as_ref()
+                .map(|replay| replay.source_turn_id.as_str())
+                != Some(hint)
+    }) {
+        return Ok(false);
+    }
+    // Validate replay even when a present hint happens to equal the actual Turn.
+    let ingress_turn = turn
+        .replay
+        .as_ref()
+        .map(|replay| replay.source_turn_id.as_str())
+        .or(attempt.turn_id.as_deref());
+    Ok(initial_source_attempt(
+        message,
+        ingress_turn,
+        turn,
+        attempt,
+        RecoveryExecutionLookup::Protocol(state),
+        &mut read_turn,
+    )?
+    .is_some())
+}
+
+fn initial_source_attempt<'a>(
+    message: &MessageEnvelope,
+    ingress_turn: Option<&str>,
+    turn: &TurnRecord,
     attempt: &'a ExecutionAttempt,
-    state: &'a ExecutionProtocolState,
+    state: RecoveryExecutionLookup<'a>,
     read_turn: &mut impl FnMut(&str) -> Result<Option<TurnRecord>>,
 ) -> Result<Option<&'a ExecutionAttempt>> {
-    // Task-result ingress may legitimately have no turn stamp. Its canonical
-    // initial attempt and persisted trigger still identify the failed turn.
-    if message.turn_id.is_none() && turn.replay.is_none() {
-        return Ok(attempt.recovery_of_attempt_id.is_none().then_some(attempt));
+    let provider_hop = matches!(
+        &attempt.source.identity,
+        ExecutionSourceIdentity::RuntimeRecovery { recovery_id }
+            if recovery_id == &message.id
+    )
+        && super::turn::TurnModelSelection::message_has_provider_recovery_provenance(message);
+    if provider_hop && turn.replay.is_none() {
+        if let Some(prior) = attempt
+            .recovery_of_attempt_id
+            .as_deref()
+            .map(|id| state.attempt(id))
+            .transpose()?
+            .flatten()
+            .filter(|prior| prior.source_message_id == attempt.source_message_id)
+        {
+            // An unstarted claim has no prior Turn to declare as replay. Its
+            // exact same-message edge still precedes this actual provider hop.
+            if prior.state != ExecutionAttemptState::Interrupted
+                || prior.agent_id != attempt.agent_id
+                || prior.run_id.is_some()
+                || prior.turn_id.is_some()
+                || attempt.turn_id.is_some()
+                || prior.source != attempt.source
+                || prior.binding != attempt.binding
+                || prior.provenance != attempt.provenance
+            {
+                return Ok(None);
+            }
+            if let Some(id) = prior.recovery_of_attempt_id.as_deref() {
+                if state
+                    .attempt(id)?
+                    .is_some_and(|ancestor| ancestor.source_message_id == prior.source_message_id)
+                {
+                    return Ok(None);
+                }
+            }
+            return Ok(Some(prior));
+        }
     }
-    let Some(ingress_turn) = message.turn_id.as_deref().or_else(|| {
-        turn.replay
-            .as_ref()
-            .map(|replay| replay.source_turn_id.as_str())
-    }) else {
+    // Unstamped recovery hops keep their real predecessor. The caller validates
+    // that whole lineage; an ordinary unstamped root still cannot invent one.
+    if ingress_turn.is_none() && turn.replay.is_none() {
+        return Ok((attempt.recovery_of_attempt_id.is_none() || provider_hop).then_some(attempt));
+    }
+    // A real Message→Turn assignment does not bypass the Turn's replay lineage.
+    let Some(ingress_turn) = turn
+        .replay
+        .as_ref()
+        .map(|replay| replay.source_turn_id.as_str())
+        .or(ingress_turn)
+    else {
         return Ok(None);
     };
-    if turn.turn_id == ingress_turn {
+    if turn.replay.is_none() && turn.turn_id == ingress_turn {
         return Ok(Some(attempt));
     }
     let Some(replay) = turn.replay.as_ref() else {
         return Ok(None);
     };
-    let Some(prior) = attempt
-        .recovery_of_attempt_id
-        .as_ref()
-        .and_then(|id| state.attempts.get(id))
-    else {
+    let Some(prior_id) = attempt.recovery_of_attempt_id.as_deref() else {
+        return Ok(None);
+    };
+    let Some(prior) = state.attempt(prior_id)? else {
         return Ok(None);
     };
     if replay.source_message_id != message.id
         || replay.source_turn_id != ingress_turn
+        || replay.source_turn_id == turn.turn_id
         || replay.reason != "interrupted_queue_claim_reentry"
         || prior.state != ExecutionAttemptState::Interrupted
         || prior.agent_id != attempt.agent_id
@@ -341,11 +671,17 @@ fn initial_source_attempt<'a>(
         || prior.source != attempt.source
         || prior.binding != attempt.binding
         || prior.provenance != attempt.provenance
-        // Provider hops do not spend the one same-message replay allowance.
-        || prior.recovery_of_attempt_id.as_ref().and_then(|id| state.attempts.get(id))
-            .is_some_and(|ancestor| ancestor.source_message_id == prior.source_message_id)
     {
         return Ok(None);
+    }
+    // Provider hops do not spend the one same-message replay allowance.
+    if let Some(id) = prior.recovery_of_attempt_id.as_deref() {
+        if state
+            .attempt(id)?
+            .is_some_and(|ancestor| ancestor.source_message_id == prior.source_message_id)
+        {
+            return Ok(None);
+        }
     }
     if let Some(interrupted) = read_turn(ingress_turn)? {
         if interrupted.agent_id != turn.agent_id
@@ -366,21 +702,146 @@ fn initial_source_attempt<'a>(
     Ok(Some(prior))
 }
 
-pub(crate) fn resolve_for_context(
-    storage: &AppStorage,
+/// Ordinary loaded admission uses one owner-captured finite domain. Source
+/// indexes prove the candidate set complete; actual input assignment still
+/// proves the Message→Turn relation, independently of payload replay hints.
+pub(crate) fn resolve_from_captured<'a>(
+    inputs: &'a super::resident_input_evidence::CapturedInputEvidence,
+    message: &MessageEnvelope,
+    state: &'a ExecutionProtocolState,
+) -> Result<ProviderRecoverySource> {
+    resolve_captured_with_lookup(inputs, message, RecoveryExecutionLookup::Protocol(state))
+}
+
+fn resolve_captured_with_lookup<'a>(
+    inputs: &'a super::resident_input_evidence::CapturedInputEvidence,
+    message: &MessageEnvelope,
+    state: RecoveryExecutionLookup<'a>,
+) -> Result<ProviderRecoverySource> {
+    use super::resident_input_evidence::{
+        InputEvidenceFamily as Family, InputEvidenceKey as Key, InputEvidenceReadError,
+    };
+    if inputs.scope.agent_id != message.agent_id || state.agent_id() != message.agent_id {
+        bail!("provider recovery captured scope mismatch");
+    }
+    resolve_with_source_relation(
+        message,
+        state,
+        |id| captured_message(inputs, id),
+        |id| captured_turn(inputs, id),
+        |source, turn| {
+            let assigned = inputs.message_turn_keys.get(&source.id).ok_or_else(|| {
+                InputEvidenceReadError::NeedsPreparation(Key::new(Family::Message, &source.id))
+            })?;
+            canonical_source_ingress(source, turn, assigned.as_deref())
+        },
+        |source, turn| inputs.execution_predecessor_candidates(source, &turn.turn_id),
+        |cursor| inputs.reject_proven_missing_recovery_source(cursor),
+    )
+}
+
+pub(crate) fn resolve_for_context_from_captured(
+    inputs: &super::resident_input_evidence::CapturedInputEvidence,
     message: &MessageEnvelope,
 ) -> Result<Option<ProviderRecoverySource>> {
     if !super::turn::TurnModelSelection::message_has_provider_recovery_provenance(message) {
         return Ok(None);
     }
-    let db = storage
-        .runtime_db()?
-        .ok_or_else(|| anyhow!("provider recovery database missing"))?;
-    let state = db
-        .transitions()
-        .load_execution_protocol_state_if_initialized(&message.agent_id)?
-        .ok_or_else(|| anyhow!("provider recovery execution state missing"))?;
-    resolve(storage, message, &state).map(Some)
+    if !inputs.execution.initialized {
+        bail!("provider recovery execution state missing");
+    }
+    resolve_captured_with_lookup(inputs, message, RecoveryExecutionLookup::Captured(inputs))
+        .map(Some)
+}
+
+pub(super) fn captured_message(
+    inputs: &super::resident_input_evidence::CapturedInputEvidence,
+    id: &str,
+) -> Result<Option<MessageEnvelope>> {
+    use super::resident_input_evidence::{
+        InputEvidenceFamily as Family, InputEvidenceKey as Key, PreparedInputEvidence,
+    };
+    match inputs.lookup(&Key::new(Family::Message, id))? {
+        Some(record) => match &record.record {
+            PreparedInputEvidence::Message(message) => Ok(Some(message.clone())),
+            _ => bail!("captured Message family differs from its key"),
+        },
+        None => Ok(None),
+    }
+}
+
+pub(super) fn captured_turn(
+    inputs: &super::resident_input_evidence::CapturedInputEvidence,
+    id: &str,
+) -> Result<Option<TurnRecord>> {
+    use super::resident_input_evidence::{
+        InputEvidenceFamily as Family, InputEvidenceKey as Key, PreparedInputEvidence,
+    };
+    match inputs.lookup(&Key::new(Family::Turn, id))? {
+        Some(record) => match &record.record {
+            PreparedInputEvidence::Turn(turn) => Ok(Some(turn.clone())),
+            _ => bail!("captured Turn family differs from its key"),
+        },
+        None => Ok(None),
+    }
+}
+
+/// Preparation errors describe the loaded domain, rather than invalid incoming
+/// authority. A scheduler must not drop an accepted input for this condition.
+pub(super) fn is_preparation_error(error: &anyhow::Error) -> bool {
+    error
+        .downcast_ref::<super::resident_input_evidence::InputEvidenceReadError>()
+        .is_some()
+        || error
+            .downcast_ref::<crate::runtime_db::input_evidence_snapshot::InputEvidenceSnapshotError>(
+            )
+            .is_some()
+}
+
+#[cfg(test)]
+pub(crate) fn resolve_for_context(
+    storage: &AppStorage,
+    message: &MessageEnvelope,
+) -> Result<Option<ProviderRecoverySource>> {
+    resolve_for_context_with_sources(
+        message,
+        || {
+            let db = storage
+                .runtime_db()?
+                .ok_or_else(|| anyhow!("provider recovery database missing"))?;
+            db.transitions()
+                .load_execution_protocol_state_if_initialized(&message.agent_id)
+        },
+        |id| storage.read_message_by_id(id),
+        |id| storage.read_turn_by_id(id),
+        |id| crate::context::inputs::ContextInputs::assigned_turn_for_message(storage, id),
+    )
+}
+
+pub(crate) fn resolve_for_context_with_sources(
+    message: &MessageEnvelope,
+    load_state: impl FnOnce() -> Result<Option<ExecutionProtocolState>>,
+    read_message: impl FnMut(&str) -> Result<Option<MessageEnvelope>>,
+    read_turn: impl FnMut(&str) -> Result<Option<TurnRecord>>,
+    mut read_assignment: impl FnMut(&str) -> Result<Option<String>>,
+) -> Result<Option<ProviderRecoverySource>> {
+    if !super::turn::TurnModelSelection::message_has_provider_recovery_provenance(message) {
+        return Ok(None);
+    }
+    let state =
+        load_state()?.ok_or_else(|| anyhow!("provider recovery execution state missing"))?;
+    resolve_with_source_relation(
+        message,
+        RecoveryExecutionLookup::Protocol(&state),
+        read_message,
+        read_turn,
+        |source, turn| {
+            canonical_source_ingress(source, turn, read_assignment(&source.id)?.as_deref())
+        },
+        |source, _| Ok(source_terminal_candidates(&state, source)),
+        |_| Ok(()),
+    )
+    .map(Some)
 }
 
 // References are consumed only after durable resolution by context assembly.
@@ -393,4 +854,720 @@ pub(crate) fn continuity_turn_id(message: &MessageEnvelope) -> Option<&str> {
                 .map(String::as_str)
         })
         .flatten()
+}
+
+#[cfg(test)]
+mod context_assignment_tests {
+    use super::*;
+    use crate::{
+        domain::execution_protocol::{
+            self, AdmitExecution, AdmittedFences, ExecutionOrigin, ExecutionPriority,
+            ExecutionProvenance, ExecutionSource, ExecutionTrust, InterruptExecution,
+        },
+        runtime_db::context_inputs::ContextDurableRead,
+        types::{
+            AdmissionContext, AgentIdentityRecord, AgentKind, AgentOwnership, AgentProfilePreset,
+            AgentVisibility, AuthorityClass, MessageBody, MessageDeliverySurface, MessageKind,
+            MessageOrigin, Priority, TurnTerminalSummary, TurnTriggerSummary,
+        },
+    };
+
+    #[test]
+    fn captured_context_ignores_non_recovery_without_execution_preparation() {
+        use crate::runtime::resident_input_evidence::{CapturedInputEvidence, InputEvidenceScope};
+        let inputs = CapturedInputEvidence {
+            query: None,
+            query_acquisition: None,
+            selected_completion_brief_ids: Default::default(),
+            completion_source_observations: Default::default(),
+            recovery_source_absences: Default::default(),
+            execution: Default::default(),
+            scope: InputEvidenceScope {
+                agent_id: "different-agent".into(),
+                identity_incarnation: 1,
+            },
+            budget: None,
+            budget_views: Vec::new(),
+            windows: Vec::new(),
+            records: Vec::new(),
+            unavailable: Default::default(),
+            turn_transcript_keys: Default::default(),
+            message_turn_keys: Default::default(),
+        };
+        let message = MessageEnvelope::new(
+            "default",
+            MessageKind::OperatorPrompt,
+            MessageOrigin::Operator {
+                actor_id: None,
+                actor_display_name: None,
+            },
+            AuthorityClass::OperatorInstruction,
+            Priority::Normal,
+            MessageBody::Text {
+                text: "ordinary input".into(),
+            },
+        );
+        assert!(resolve_for_context_from_captured(&inputs, &message)
+            .unwrap()
+            .is_none());
+    }
+
+    #[test]
+    fn unstamped_provider_hop_retains_predecessor_but_an_ordinary_root_cannot() {
+        let mut message = MessageEnvelope::new(
+            "default",
+            MessageKind::InternalFollowup,
+            MessageOrigin::System {
+                subsystem: "model_lineage_recovery".into(),
+            },
+            AuthorityClass::RuntimeInstruction,
+            Priority::Next,
+            MessageBody::Text {
+                text: "second provider hop".into(),
+            },
+        )
+        .with_admission(
+            MessageDeliverySurface::RuntimeSystem,
+            AdmissionContext::RuntimeOwned,
+        );
+        let turn = TurnRecord::new("default", "failed-provider-turn", 1);
+        let state = ExecutionProtocolState::empty("default");
+        let mut attempt = ExecutionAttempt {
+            input_projection: None,
+            attempt_id: "provider-hop".into(),
+            agent_id: "default".into(),
+            source_message_id: Some(message.id.clone()),
+            source: ExecutionSource {
+                identity: ExecutionSourceIdentity::RuntimeRecovery {
+                    recovery_id: message.id.clone(),
+                },
+                generation: 1,
+            },
+            binding: ExecutionBinding::AgentLifecycle {
+                agent_id: "default".into(),
+            },
+            provenance: ExecutionProvenance {
+                origin: ExecutionOrigin::RuntimeRecovery,
+                trust: ExecutionTrust::RuntimeInstruction,
+                priority: ExecutionPriority::Next,
+                correlation_id: None,
+                causation_id: None,
+            },
+            admitted_fences: AdmittedFences {
+                source_revision: 1,
+                work_item_source_revision: None,
+                work_item_generation: None,
+                rejoin: None,
+                agent_control_revision: 1,
+                host_registry_revision: 1,
+            },
+            state: ExecutionAttemptState::Interrupted,
+            run_id: None,
+            turn_id: None,
+            recovery_of_attempt_id: Some("real-predecessor".into()),
+            terminal_outcome_id: Some("provider-failure".into()),
+            admitted_at: chrono::Utc::now().to_rfc3339(),
+            terminal_at: None,
+        };
+        let resolve = |message: &MessageEnvelope, attempt: &ExecutionAttempt| {
+            initial_source_attempt(
+                message,
+                message.turn_id.as_deref(),
+                &turn,
+                attempt,
+                RecoveryExecutionLookup::Protocol(&state),
+                &mut |_| panic!("an unreplayed input must not read a replay Turn"),
+            )
+            .unwrap()
+            .map(|initial| initial.attempt_id.clone())
+        };
+        assert_eq!(
+            resolve(&message, &attempt),
+            Some(attempt.attempt_id.clone())
+        );
+        attempt.source.identity = ExecutionSourceIdentity::RuntimeRecovery {
+            recovery_id: "different-message".into(),
+        };
+        assert_eq!(resolve(&message, &attempt), None);
+        attempt.source.identity = ExecutionSourceIdentity::RuntimeRecovery {
+            recovery_id: message.id.clone(),
+        };
+        message.admission_context = None;
+        assert_eq!(resolve(&message, &attempt), None);
+        attempt.source.identity = ExecutionSourceIdentity::QueueMessage {
+            message_id: message.id.clone(),
+        };
+        assert_eq!(resolve(&message, &attempt), None);
+        attempt.recovery_of_attempt_id = None;
+        assert_eq!(
+            resolve(&message, &attempt),
+            Some(attempt.attempt_id.clone())
+        );
+    }
+
+    #[test]
+    fn assigned_turn_still_validates_claim_only_provider_replay() {
+        let message = MessageEnvelope::new(
+            "default",
+            MessageKind::InternalFollowup,
+            MessageOrigin::System {
+                subsystem: "model_lineage_recovery".into(),
+            },
+            AuthorityClass::RuntimeInstruction,
+            Priority::Next,
+            MessageBody::Text {
+                text: "continue fallback".into(),
+            },
+        )
+        .with_admission(
+            MessageDeliverySurface::RuntimeSystem,
+            AdmissionContext::RuntimeOwned,
+        );
+        let prior = ExecutionAttempt {
+            input_projection: None,
+            attempt_id: "interrupted-claim".into(),
+            agent_id: message.agent_id.clone(),
+            source_message_id: Some(message.id.clone()),
+            source: ExecutionSource {
+                identity: ExecutionSourceIdentity::RuntimeRecovery {
+                    recovery_id: message.id.clone(),
+                },
+                generation: 11,
+            },
+            binding: ExecutionBinding::AgentLifecycle {
+                agent_id: message.agent_id.clone(),
+            },
+            provenance: ExecutionProvenance {
+                origin: ExecutionOrigin::RuntimeRecovery,
+                trust: ExecutionTrust::RuntimeInstruction,
+                priority: ExecutionPriority::Next,
+                correlation_id: None,
+                causation_id: None,
+            },
+            admitted_fences: AdmittedFences {
+                source_revision: 11,
+                work_item_source_revision: None,
+                work_item_generation: None,
+                rejoin: None,
+                agent_control_revision: 1,
+                host_registry_revision: 1,
+            },
+            state: ExecutionAttemptState::Interrupted,
+            run_id: None,
+            turn_id: None,
+            recovery_of_attempt_id: Some("original-provider-attempt".into()),
+            terminal_outcome_id: Some("claim-interrupted".into()),
+            admitted_at: chrono::Utc::now().to_rfc3339(),
+            terminal_at: None,
+        };
+        let attempt = ExecutionAttempt {
+            attempt_id: "reentered-claim".into(),
+            state: ExecutionAttemptState::Settled,
+            recovery_of_attempt_id: Some(prior.attempt_id.clone()),
+            ..prior.clone()
+        };
+        let mut state = ExecutionProtocolState::empty(&message.agent_id);
+        state
+            .attempts
+            .insert(prior.attempt_id.clone(), prior.clone());
+        let mut turn = TurnRecord::new(&message.agent_id, "actual-replay-turn", 1);
+        turn.input_message_ids.push(message.id.clone());
+        turn.replay = Some(crate::types::TurnReplayProvenance {
+            source_message_id: message.id.clone(),
+            source_turn_id: "unstarted-claim-turn".into(),
+            reason: "interrupted_queue_claim_reentry".into(),
+            prior_terminal: None,
+        });
+        let resolve = |turn: &TurnRecord, state: &ExecutionProtocolState| {
+            assert!(matches!(
+                canonical_source_ingress(&message, turn, Some(&turn.turn_id)).unwrap(),
+                SourceIngressTurn::AssignedTurn
+            ));
+            initial_source_attempt(
+                &message,
+                Some(&turn.turn_id),
+                turn,
+                &attempt,
+                RecoveryExecutionLookup::Protocol(state),
+                &mut |_| Ok(None),
+            )
+            .unwrap()
+            .map(|initial| initial.attempt_id.clone())
+        };
+        assert_eq!(resolve(&turn, &state), Some(prior.attempt_id.clone()));
+        let mut unstarted_claim_turn = turn.clone();
+        unstarted_claim_turn.replay = None;
+        assert_eq!(
+            resolve(&unstarted_claim_turn, &state),
+            Some(prior.attempt_id.clone()),
+        );
+        // The raw context index can contain both claim outcomes. Only the
+        // validated resumed claim owns the actual fallback Turn.
+        let candidates = [(&prior, &prior), (&attempt, &prior)];
+        assert_eq!(
+            source_turn_predecessor(&unstarted_claim_turn, &candidates)
+                .unwrap()
+                .0
+                .attempt_id,
+            attempt.attempt_id
+        );
+        let duplicate = ExecutionAttempt {
+            attempt_id: "another-resumed-claim".into(),
+            ..attempt.clone()
+        };
+        assert_eq!(
+            source_turn_predecessor(
+                &unstarted_claim_turn,
+                &[(&prior, &prior), (&attempt, &prior), (&duplicate, &prior)],
+            )
+            .unwrap_err()
+            .to_string(),
+            "provider recovery predecessor ambiguous"
+        );
+        assert!(source_turn_predecessor(&turn, &candidates).is_err());
+        let mut activated_turn = unstarted_claim_turn.clone();
+        activated_turn.idle_input_batch = Some(crate::types::IdleInputBatchRecord {
+            anchor_message_id: message.id.clone(),
+            activation_id: Some(prior.attempt_id.clone()),
+            sender_agent_id: message.agent_id.clone(),
+            cutoff: chrono::Utc::now(),
+            max_items: 1,
+            max_bytes: 1,
+            rendered_bytes: 0,
+            items: Vec::new(),
+        });
+        assert_eq!(
+            source_turn_predecessor(&activated_turn, &candidates)
+                .unwrap_err()
+                .to_string(),
+            "provider recovery predecessor ambiguous"
+        );
+        let mut started_successor = attempt.clone();
+        started_successor.turn_id = Some(unstarted_claim_turn.turn_id.clone());
+        assert!(initial_source_attempt(
+            &message,
+            Some(&unstarted_claim_turn.turn_id),
+            &unstarted_claim_turn,
+            &started_successor,
+            RecoveryExecutionLookup::Protocol(&state),
+            &mut |_| Ok(None),
+        )
+        .unwrap()
+        .is_none());
+        for defect in 0..9 {
+            let mut invalid_state = state.clone();
+            let invalid_prior = invalid_state.attempts.get_mut(&prior.attempt_id).unwrap();
+            match defect {
+                0 => invalid_prior.state = ExecutionAttemptState::Open,
+                1 => invalid_prior.agent_id = "foreign".into(),
+                2 => invalid_prior.run_id = Some("started-run".into()),
+                3 => invalid_prior.turn_id = Some("started-turn".into()),
+                4 => invalid_prior.source.generation += 1,
+                5 => {
+                    invalid_prior.binding = ExecutionBinding::AgentLifecycle {
+                        agent_id: "foreign".into(),
+                    }
+                }
+                6 => invalid_prior.provenance.trust = ExecutionTrust::ExternalEvidence,
+                7 => {
+                    let ancestor = ExecutionAttempt {
+                        attempt_id: "same-message-ancestor".into(),
+                        ..prior.clone()
+                    };
+                    invalid_prior.recovery_of_attempt_id = Some(ancestor.attempt_id.clone());
+                    invalid_state
+                        .attempts
+                        .insert(ancestor.attempt_id.clone(), ancestor);
+                }
+                8 => {
+                    invalid_prior.source.identity = ExecutionSourceIdentity::QueueMessage {
+                        message_id: message.id.clone(),
+                    }
+                }
+                _ => unreachable!(),
+            }
+            assert_eq!(
+                resolve(&unstarted_claim_turn, &invalid_state),
+                None,
+                "unstarted claim defect {defect}",
+            );
+        }
+        for defect in 0..8 {
+            let mut invalid_turn = turn.clone();
+            let mut invalid_state = state.clone();
+            let invalid_prior = invalid_state.attempts.get_mut(&prior.attempt_id).unwrap();
+            match defect {
+                0 => invalid_turn.replay.as_mut().unwrap().source_message_id = "foreign".into(),
+                1 => invalid_turn.replay.as_mut().unwrap().reason = "unproved-replay".into(),
+                2 => {
+                    invalid_turn.replay.as_mut().unwrap().source_turn_id =
+                        invalid_turn.turn_id.clone()
+                }
+                3 => invalid_prior.state = ExecutionAttemptState::Open,
+                4 => invalid_prior.source_message_id = Some("foreign".into()),
+                5 => {
+                    invalid_prior.binding = ExecutionBinding::AgentLifecycle {
+                        agent_id: "foreign".into(),
+                    }
+                }
+                6 => invalid_prior.provenance.trust = ExecutionTrust::ExternalEvidence,
+                7 => {
+                    let ancestor = ExecutionAttempt {
+                        attempt_id: "same-message-ancestor".into(),
+                        ..prior.clone()
+                    };
+                    invalid_prior.recovery_of_attempt_id = Some(ancestor.attempt_id.clone());
+                    invalid_state
+                        .attempts
+                        .insert(ancestor.attempt_id.clone(), ancestor);
+                }
+                _ => unreachable!(),
+            }
+            assert_eq!(
+                resolve(&invalid_turn, &invalid_state),
+                None,
+                "defect {defect}"
+            );
+        }
+    }
+
+    #[test]
+    fn context_continuity_uses_same_sql_assignment_and_never_falls_back_to_the_message_hint() {
+        let directory = tempfile::tempdir().unwrap();
+        let storage = AppStorage::new_for_test(directory.path()).unwrap();
+        let db = storage.runtime_db().unwrap().unwrap();
+        db.agent_identities()
+            .upsert(&AgentIdentityRecord::new(
+                "default",
+                AgentKind::Default,
+                AgentVisibility::Public,
+                AgentOwnership::SelfOwned,
+                AgentProfilePreset::PublicNamed,
+                None,
+                None,
+            ))
+            .unwrap();
+        let mut source = MessageEnvelope::new(
+            "default",
+            MessageKind::OperatorPrompt,
+            MessageOrigin::Operator {
+                actor_id: None,
+                actor_display_name: None,
+            },
+            AuthorityClass::OperatorInstruction,
+            Priority::Normal,
+            MessageBody::Text {
+                text: "original provider input".into(),
+            },
+        );
+        source.turn_id = Some("unstarted-preallocation-hint".into());
+        storage.append_message(&source).unwrap();
+        source = storage.read_message_by_id(&source.id).unwrap().unwrap();
+        let now = chrono::Utc::now();
+        let mut turn = TurnRecord::new("default", "actual-provider-turn", 1);
+        turn.owner = Some(TurnOwner::AgentLifecycle {
+            agent_id: "default".into(),
+        });
+        turn.trigger = Some(TurnTriggerSummary::from_message(&source));
+        turn.input_message_ids = vec![source.id.clone()];
+        turn.terminal = Some(TurnTerminalSummary {
+            kind: TurnTerminalKind::DeferredToFallback,
+            reason: None,
+            no_brief_reason: None,
+            completed_at: now,
+            duration_ms: 1,
+        });
+        storage.append_turn(&turn).unwrap();
+        let sequence = source.message_seq.unwrap();
+        let admitted = execution_protocol::admit_execution(
+            &ExecutionProtocolState::empty("default"),
+            &AdmitExecution {
+                attempt: ExecutionAttempt {
+                    input_projection: None,
+                    attempt_id: "original-provider-attempt".into(),
+                    agent_id: "default".into(),
+                    source_message_id: Some(source.id.clone()),
+                    source: ExecutionSource {
+                        identity: ExecutionSourceIdentity::QueueMessage {
+                            message_id: source.id.clone(),
+                        },
+                        generation: sequence,
+                    },
+                    binding: ExecutionBinding::AgentLifecycle {
+                        agent_id: "default".into(),
+                    },
+                    provenance: ExecutionProvenance {
+                        origin: ExecutionOrigin::Operator,
+                        trust: ExecutionTrust::OperatorInstruction,
+                        priority: ExecutionPriority::Normal,
+                        correlation_id: None,
+                        causation_id: None,
+                    },
+                    admitted_fences: AdmittedFences {
+                        source_revision: sequence,
+                        work_item_source_revision: None,
+                        work_item_generation: None,
+                        rejoin: None,
+                        agent_control_revision: 1,
+                        host_registry_revision: 1,
+                    },
+                    state: ExecutionAttemptState::Open,
+                    run_id: None,
+                    turn_id: Some(turn.turn_id.clone()),
+                    recovery_of_attempt_id: None,
+                    terminal_outcome_id: None,
+                    admitted_at: now.to_rfc3339(),
+                    terminal_at: None,
+                },
+            },
+        )
+        .unwrap()
+        .state;
+        let protocol = execution_protocol::interrupt_execution(
+            &admitted,
+            &InterruptExecution {
+                attempt_id: "original-provider-attempt".into(),
+                outcome_id: "provider-failure-outcome".into(),
+                reason: "provider fallback".into(),
+                interrupted_at: now.to_rfc3339(),
+            },
+        )
+        .unwrap()
+        .state;
+        db.transaction(|tx| crate::runtime_db::transitions::persist_state_tx(tx, &protocol))
+            .unwrap();
+        let mut recovery = MessageEnvelope::new(
+            "default",
+            MessageKind::InternalFollowup,
+            MessageOrigin::System {
+                subsystem: "model_lineage_recovery".into(),
+            },
+            AuthorityClass::RuntimeInstruction,
+            Priority::Next,
+            MessageBody::Text {
+                text: "continue original provider input".into(),
+            },
+        )
+        .with_admission(
+            MessageDeliverySurface::RuntimeSystem,
+            AdmissionContext::RuntimeOwned,
+        );
+        recovery.causation_id = Some(source.id.clone());
+        recovery
+            .source_refs
+            .insert("source_message_id".into(), source.id.clone());
+        recovery
+            .source_refs
+            .insert("source_turn_id".into(), turn.turn_id.clone());
+        recovery.metadata = Some(serde_json::json!({"provider_recovery": {
+            "fallback_model_ref":"anthropic/claude-sonnet-4-6", "source_message_id": source.id,
+            "source_turn_id":turn.turn_id, "source_terminal_kind":"deferred_to_fallback", "source_round":1
+        }}));
+        let mut connection = db.connection().unwrap();
+        let tx = connection.transaction().unwrap();
+        let inputs = ContextDurableRead::new(&tx, "default");
+        let resolved = resolve_for_context_with_sources(
+            &recovery,
+            || inputs.execution_protocol_state("default"),
+            |id| inputs.message_by_id(id),
+            |id| inputs.turn_by_id(id),
+            |id| inputs.assigned_turn_for_message(id),
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(resolved.source_turn().turn_id, turn.turn_id);
+        assert_eq!(
+            resolved.root_message.turn_id.as_deref(),
+            Some("unstarted-preallocation-hint")
+        );
+        tx.commit().unwrap();
+        // The loaded resolver consumes canonical rows qualified in one SQLite
+        // view. The misleading payload hint remains unchanged for display.
+        use crate::{
+            runtime::resident_input_evidence::{
+                InputEvidenceFamily as Family, InputEvidenceKey as Key, InputEvidenceScope,
+            },
+            runtime_db::input_evidence_snapshot::{
+                prepare_input_evidence_snapshot_tx, register_committed_input_evidence_tx,
+                CanonicalInputEvidence, InputEvidenceBootstrapSnapshot, InputEvidenceLoadRequest,
+            },
+        };
+        let captured = db
+            .transaction(|tx| {
+                register_committed_input_evidence_tx(
+                    tx,
+                    &InputEvidenceScope {
+                        agent_id: "default".into(),
+                        identity_incarnation: 1,
+                    },
+                    &[
+                        CanonicalInputEvidence::Message(source.clone()),
+                        CanonicalInputEvidence::Turn(
+                            ContextDurableRead::new(tx, "default")
+                                .turn_by_id(&turn.turn_id)?
+                                .ok_or_else(|| {
+                                    anyhow!("provider fixture canonical Turn missing")
+                                })?,
+                        ),
+                        CanonicalInputEvidence::Attempt(
+                            protocol.attempts["original-provider-attempt"].clone(),
+                        ),
+                        CanonicalInputEvidence::Outcome(
+                            protocol.outcomes["provider-failure-outcome"].clone(),
+                        ),
+                    ],
+                )?;
+                let snapshot = prepare_input_evidence_snapshot_tx(
+                    tx,
+                    &InputEvidenceScope {
+                        agent_id: "default".into(),
+                        identity_incarnation: 1,
+                    },
+                    &InputEvidenceLoadRequest {
+                        query: None,
+                        selected_completion_brief_ids: Default::default(),
+                        interrupted_sources: Default::default(),
+                        windows: Vec::new(),
+                        mandatory_roots: BTreeSet::from([
+                            Key::new(Family::Message, &source.id),
+                            Key::new(Family::Turn, &turn.turn_id),
+                            Key::new(Family::Attempt, "original-provider-attempt"),
+                            Key::new(Family::Outcome, "provider-failure-outcome"),
+                        ]),
+                        record_limit: 64,
+                        byte_limit: 256 * 1024,
+                    },
+                )?;
+                let InputEvidenceBootstrapSnapshot::Current(snapshot) = snapshot else {
+                    bail!("provider fixture did not capture its current namespace");
+                };
+                snapshot.resident.capture()
+            })
+            .unwrap();
+        let captured_protocol = captured.execution_state_if_initialized().unwrap().unwrap();
+        let loaded = resolve_from_captured(&captured, &recovery, &captured_protocol).unwrap();
+        assert_eq!(loaded.predecessor.attempt_id, "original-provider-attempt");
+        assert_eq!(loaded.root_message.turn_id, source.turn_id);
+        let borrowed = resolve_for_context_from_captured(&captured, &recovery)
+            .unwrap()
+            .unwrap();
+        assert_eq!(borrowed.predecessor, loaded.predecessor);
+        assert_eq!(borrowed.predecessors, loaded.predecessors);
+        assert_eq!(borrowed.source_turns, loaded.source_turns);
+        assert_eq!(borrowed.root_message, loaded.root_message);
+        // Exact execution reads retain the original allocations, not a cloned
+        // projection of every Attempt, Outcome and WorkExecution in the capture.
+        let lookup = RecoveryExecutionLookup::Captured(&captured);
+        for evidence in &captured.records {
+            use crate::runtime::resident_input_evidence::PreparedInputEvidence;
+            match &evidence.record {
+                PreparedInputEvidence::Attempt(attempt) => assert!(std::ptr::eq(
+                    lookup.attempt(&attempt.attempt_id).unwrap().unwrap(),
+                    attempt,
+                )),
+                PreparedInputEvidence::Outcome(outcome) => assert!(std::ptr::eq(
+                    lookup.outcome(&outcome.outcome_id).unwrap().unwrap(),
+                    outcome,
+                )),
+                _ => {}
+            }
+        }
+
+        let mut incomplete = captured;
+        incomplete.scope.agent_id = "different-agent".into();
+        assert!(resolve_for_context_from_captured(&incomplete, &recovery).is_err());
+        incomplete.scope.agent_id = "default".into();
+        incomplete.execution.initialized = false;
+        assert!(resolve_for_context_from_captured(&incomplete, &recovery).is_err());
+        incomplete.execution.initialized = true;
+        let outcome_index = incomplete
+            .records
+            .iter()
+            .position(|record| {
+                record.locator.key == Key::new(Family::Outcome, "provider-failure-outcome")
+            })
+            .unwrap();
+        let saved_outcome = incomplete.records.remove(outcome_index);
+        let error = resolve_for_context_from_captured(&incomplete, &recovery).unwrap_err();
+        assert!(is_preparation_error(&error), "{error:#}");
+        incomplete.records.push(saved_outcome);
+        let attempt_index = incomplete
+            .records
+            .iter()
+            .position(|record| {
+                record.locator.key == Key::new(Family::Attempt, "original-provider-attempt")
+            })
+            .unwrap();
+        let actual_turn = Key::new(Family::Turn, &turn.turn_id);
+        assert!(
+            std::sync::Arc::make_mut(&mut incomplete.records[attempt_index])
+                .attempt_turn_keys
+                .as_mut()
+                .unwrap()
+                .remove(&actual_turn)
+        );
+        assert!(
+            resolve_from_captured(&incomplete, &recovery, &captured_protocol).is_err(),
+            "an Attempt without its actual Turn proof supplied a predecessor"
+        );
+        assert!(resolve_for_context_from_captured(&incomplete, &recovery).is_err());
+        std::sync::Arc::make_mut(&mut incomplete.records[attempt_index])
+            .attempt_turn_keys
+            .as_mut()
+            .unwrap()
+            .insert(actual_turn);
+        let saved_sources = std::mem::take(&mut incomplete.execution.sources);
+        let error = resolve_from_captured(&incomplete, &recovery, &captured_protocol).unwrap_err();
+        assert!(is_preparation_error(&error), "{error:#}");
+        let error = resolve_for_context_from_captured(&incomplete, &recovery).unwrap_err();
+        assert!(is_preparation_error(&error), "{error:#}");
+        incomplete.execution.sources = saved_sources;
+        let saved_attempt = incomplete
+            .records
+            .iter()
+            .position(|record| {
+                record.locator.key == Key::new(Family::Attempt, "original-provider-attempt")
+            })
+            .map(|index| incomplete.records.remove(index))
+            .unwrap();
+        let error = resolve_from_captured(&incomplete, &recovery, &captured_protocol).unwrap_err();
+        assert!(is_preparation_error(&error), "{error:#}");
+        let error = resolve_for_context_from_captured(&incomplete, &recovery).unwrap_err();
+        assert!(is_preparation_error(&error), "{error:#}");
+        incomplete.records.push(saved_attempt);
+        std::sync::Arc::make_mut(&mut incomplete.message_turn_keys).remove(&source.id);
+        let error = resolve_from_captured(&incomplete, &recovery, &captured_protocol).unwrap_err();
+        assert!(is_preparation_error(&error), "{error:#}");
+        let error = resolve_for_context_from_captured(&incomplete, &recovery).unwrap_err();
+        assert!(is_preparation_error(&error), "{error:#}");
+        std::sync::Arc::make_mut(&mut incomplete.message_turn_keys).insert(source.id.clone(), None);
+        assert!(resolve_from_captured(&incomplete, &recovery, &captured_protocol).is_err());
+        assert!(resolve_for_context_from_captured(&incomplete, &recovery).is_err());
+
+        // Admission compatibility is intentionally unchanged in this context slice.
+        assert!(resolve(&storage, &recovery, &protocol).is_err());
+        source.turn_id = Some(turn.turn_id.clone());
+        db.transaction(|tx| {
+            crate::runtime_db::evidence::upsert_message_tx(tx, &source)?;
+            tx.execute(
+                "DELETE FROM conversation_input_assignments WHERE message_id=?1",
+                [&source.id],
+            )?;
+            Ok(())
+        })
+        .unwrap();
+        let tx = connection.transaction().unwrap();
+        let inputs = ContextDurableRead::new(&tx, "default");
+        assert!(
+            resolve_for_context_with_sources(
+                &recovery,
+                || inputs.execution_protocol_state("default"),
+                |id| inputs.message_by_id(id),
+                |id| inputs.turn_by_id(id),
+                |id| inputs.assigned_turn_for_message(id)
+            )
+            .is_err(),
+            "matching raw hint hid the missing actual assignment"
+        );
+    }
 }

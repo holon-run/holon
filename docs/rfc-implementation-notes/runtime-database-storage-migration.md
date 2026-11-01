@@ -1,5 +1,18 @@
 # Runtime Database Storage Migration Implementation Plan
 
+## Current support boundary (2026-10-18)
+
+The Agent Runtime State refactor retires automatic JSON/JSONL storage import.
+New installations initialize SQLite domains directly; existing SQLite databases
+retain schema upgrades, fixed continuity qualification, and restart recovery.
+Legacy-file-only scopes and unfinished imports fail explicitly without reading
+legacy bodies or deleting data. Leftover files in completed SQLite scopes are
+ignored. SQLite JSON columns and current payload formats remain supported.
+
+The original rollout plan below is historical. Its importer, first-import
+checkpoint, and import-retry requirements are no longer implementation targets.
+See [the current runtime-state boundary](../rfcs/agent-runtime-state-and-context-snapshots.md#sqlite-only-upgrade-boundary).
+
 Related handle:
 
 - `rfc-runtime-ledger-files-and-relations`

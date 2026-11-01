@@ -77,19 +77,14 @@ async fn execute_with_name(
 ) -> Result<crate::tool::ToolResult> {
     let args: ListTasksArgs = parse_tool_args(tool_name, input)?;
     let limit = args.limit.unwrap_or(DEFAULT_LIMIT).clamp(1, MAX_LIMIT);
-    let current_agent = runtime.agent_state().await?;
-    let agent_id = current_agent.id;
-    let total_active = runtime.storage().active_task_count_for_agent(&agent_id)?;
-    let tasks = runtime
-        .latest_task_list_entries_for_agent(&agent_id, limit)
-        .await?;
+    let read = runtime.active_task_list_snapshot(limit).await?;
     serialize_success(
         tool_name,
         &ListTasksResult {
-            total_active,
-            returned: tasks.len(),
+            total_active: read.total_active,
+            returned: read.entries.len(),
             limit,
-            tasks,
+            tasks: read.entries,
         },
     )
 }

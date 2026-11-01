@@ -79,6 +79,7 @@ impl AgentProvider for DelayedTextProvider {
     async fn complete_turn(&self, _request: ProviderTurnRequest) -> Result<ProviderTurnResponse> {
         sleep(Duration::from_millis(250)).await;
         Ok(ProviderTurnResponse {
+            material: Default::default(),
             blocks: vec![ModelBlock::Text {
                 text: "Made changes in worktree".into(),
             }],
@@ -100,6 +101,7 @@ impl AgentProvider for SlowTextProvider {
     async fn complete_turn(&self, _request: ProviderTurnRequest) -> Result<ProviderTurnResponse> {
         sleep(Duration::from_secs(2)).await;
         Ok(ProviderTurnResponse {
+            material: Default::default(),
             blocks: vec![ModelBlock::Text {
                 text: "Slow worktree result".into(),
             }],
@@ -330,18 +332,137 @@ async fn wt203_task_stop_retains_deleted_child_worktree_for_review() -> Result<(
         )
         .await?;
     let expected_worktree = wait_for_worktree(&runtime, &workspace, &task.id).await?;
+    let incarnation = runtime.agent_summary().await?.identity.incarnation;
+    let mut audit_cursor = runtime.storage().latest_event_seq()?.unwrap_or(0);
 
     let stopped = runtime
         .stop_task(&task.id, &AuthorityClass::OperatorInstruction)
         .await?;
     assert_eq!(stopped.status, TaskStatus::Cancelled);
+    let association = &stopped.detail.as_ref().expect("original task detail")["worktree"];
+    assert_eq!(association["original_cwd"], workspace.to_str().unwrap());
+    assert_eq!(association["projection_kind"], "git_worktree_root");
+    assert!(association["original_branch"].is_string());
+
+    // The initial ACK freezes the Task; cleanup lives in the original Stop.
+    let db = rusqlite::Connection::open_with_flags(
+        host.runtime_db().path(),
+        rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
+    )?;
+    let read_stop = || -> Result<serde_json::Value> {
+        let mut query = db.prepare(
+            "SELECT json_object(
+                'effect_seq', effect_seq, 'command_nonce', command_nonce,
+                'identity_incarnation', identity_incarnation,
+                'task_created_at', task_created_at,
+                'generation_digest', generation_digest, 'intent_digest', intent_digest,
+                'ack_task_digest', ack_task_digest, 'ack_task', json(ack_task_json),
+                'intent', json(intent_json), 'progress', json(progress_json))
+             FROM task_stop_effects
+             WHERE agent_id = ?1 AND identity_incarnation = ?2 AND task_id = ?3
+             LIMIT 2",
+        )?;
+        let rows = query
+            .query_map(rusqlite::params!["default", incarnation, task.id], |row| {
+                row.get::<_, String>(0)
+            })?
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+        anyhow::ensure!(
+            rows.len() == 1,
+            "expected exactly one original Stop: {rows:?}"
+        );
+        Ok(serde_json::from_str(&rows[0])?)
+    };
+    let original = read_stop()?;
+    assert_eq!(original["ack_task"], serde_json::to_value(&stopped)?);
+    assert_eq!(original["identity_incarnation"], incarnation);
+    assert_eq!(
+        original["intent"]["created_at"],
+        serde_json::to_value(task.created_at)?
+    );
+    assert_eq!(original["intent"]["task"]["key"]["id"], task.id);
+    assert_eq!(
+        original["intent"]["worktree"]["path"],
+        expected_worktree.to_str().unwrap()
+    );
+    assert_eq!(
+        original["intent"]["worktree"]["branch"],
+        format!("task-{}", task.id)
+    );
+    wait_until_async(|| async {
+        let current = read_stop()?;
+        Ok(["physical", "child", "worktree", "result"]
+            .iter()
+            .all(|phase| {
+                current["progress"][*phase]
+                    .as_str()
+                    .is_some_and(|state| state != "pending")
+            }))
+    })
+    .await
+    .map_err(|error| error.context(format!("original Stop did not settle: {:?}", read_stop())))?;
+    let settled = read_stop()?;
+    for field in [
+        "effect_seq",
+        "command_nonce",
+        "identity_incarnation",
+        "task_created_at",
+        "generation_digest",
+        "intent_digest",
+        "ack_task_digest",
+        "ack_task",
+        "intent",
+    ] {
+        assert_eq!(
+            settled[field], original[field],
+            "Stop binding changed: {field}"
+        );
+    }
+    assert_eq!(settled["progress"]["child"], "retired_joined", "{settled}");
+    assert_eq!(settled["progress"]["worktree"], "retained", "{settled}");
+    assert_eq!(settled["progress"]["result"], "completed", "{settled}");
+
+    let audit_head = runtime.storage().latest_event_seq()?.unwrap_or(0);
+    let mut retained = Vec::new();
+    loop {
+        let page = host.runtime_db().audit_events().range(
+            Some("default"),
+            audit_head.checked_add(1),
+            Some(audit_cursor),
+            false,
+            100,
+        )?;
+        let Some(last) = page.last() else {
+            break;
+        };
+        audit_cursor = last.event_seq;
+        retained.extend(page.into_iter().filter(|event| {
+            event.kind == "task_worktree_cleanup_retained"
+                && event.data["task_id"] == task.id
+                && event.data["cleanup_trigger"] == "task_stop"
+        }));
+    }
+    assert_eq!(
+        retained.len(),
+        1,
+        "exact original cleanup audit: {retained:?}"
+    );
+    assert_eq!(retained[0].data["reason"], "agent_deleted");
+    let metadata = &retained[0].data["worktree"];
+    assert_eq!(
+        metadata["worktree_path"],
+        expected_worktree.to_str().unwrap()
+    );
+    assert_eq!(metadata["worktree_branch"], format!("task-{}", task.id));
+    assert_eq!(metadata["original_cwd"], association["original_cwd"]);
+    assert_eq!(metadata["original_branch"], association["original_branch"]);
+    assert_eq!(metadata["projection_kind"], association["projection_kind"]);
     assert!(expected_worktree.exists());
     assert!(!git(
         &workspace,
         &["branch", "--list", &format!("task-{}", task.id)]
     )?
     .is_empty());
-    let metadata = task_worktree_metadata(&runtime, &task.id)?;
     assert_eq!(metadata["cleanup_status"].as_str(), Some("retained"));
     assert_eq!(metadata["cleanup_reason"].as_str(), Some("agent_deleted"));
     assert_eq!(

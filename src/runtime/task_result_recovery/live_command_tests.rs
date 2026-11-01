@@ -111,10 +111,7 @@ async fn completed_command_with_delivery(
     let record = latest(runtime, &result.id);
     assert_eq!(record.state, TaskResultSettlementState::PersistedPending);
     assert_eq!(record.recovery_attempts, 0);
-    assert_eq!(
-        record.parent_turn_id,
-        task.rejoin_fence().unwrap().parent_turn_id
-    );
+    assert_eq!(record.source, task.rejoin_fence().unwrap().source);
     assert_eq!(record.task_id, created.id);
     if !keep_original_delivery {
         // Lose only the original queue delivery. No turn has admitted its content.
@@ -155,7 +152,7 @@ async fn exact_wait_for_owner(
         // wait normally persisted by that turn's WaitFor settlement.
         if let Some(owner) = owner {
             let owner = runtime.latest_work_item(owner).await.unwrap().unwrap();
-            seed_waiting_work_execution(runtime.storage(), &owner, wait_condition_id);
+            seed_live_waiting_work_execution(runtime, &owner, wait_condition_id).await;
         }
     }
     outcome
@@ -235,12 +232,14 @@ async fn revoke_promise(
                 .runtime_db()
                 .transaction(|tx| {
                     tx.execute(
-                        "UPDATE wait_conditions SET payload_json = ?2, expires_at = ?3
+                        "UPDATE wait_conditions SET payload_json = ?2, expires_at = ?3,
+                         cancelled_at = ?4
                          WHERE wait_condition_id = ?1",
                         rusqlite::params![
                             wait.id,
                             serde_json::to_string(&wait)?,
                             wait.expires_at.map(|expires| expires.to_rfc3339()),
+                            wait.cancelled_at.map(|cancelled| cancelled.to_rfc3339()),
                         ],
                     )?;
                     Ok(())
@@ -301,7 +300,7 @@ async fn assert_first_admission_for_owner(
     let owner_id = owner.as_ref().map(|owner| owner.id.as_str());
     let (task, result) =
         completed_command_for_owner(runtime, owner.as_ref(), "first-admission-evidence").await;
-    harness.advance(Duration::from_secs(30)).await;
+    advance_to_result_due(&harness, &result).await;
     let scanner_source = if scanner_first {
         assert!(runtime.emit_due_task_result_recovery().await.unwrap());
         Some(recovery_sources(runtime).remove(0).id)
@@ -364,14 +363,15 @@ async fn assert_first_admission_for_owner(
         };
         let prior_activation_id = activation_id.clone();
         Box::pin(
-            runtime.begin_interactive_turn_with_provenance(
-                Some(&source),
+            runtime.begin_dispatch_turn(
+                &source,
                 None,
                 None,
                 scheduled
                     .dispatch_plan
                     .execution_admission_provenance
                     .clone(),
+                &scheduled.dispatch_plan.prior_closure,
             ),
         )
         .await
@@ -385,13 +385,13 @@ async fn assert_first_admission_for_owner(
             if let Some(revoke) = revoke {
                 revoke_promise(runtime, owner_id, &wait_condition_id, &source, revoke).await;
             }
-            let report = runtime
-                .runtime_db()
-                .recover_interrupted_runtime_state_at_startup()
-                .unwrap();
+            crate::runtime::tests::support::finish_claimed_test_run(runtime).await;
+            let (recovered, report) = Box::pin(harness.recover_daemon_startup()).await;
+            harness = recovered;
             assert_eq!(report.interrupted_execution_attempts, 1);
+        } else {
+            harness.restart();
         }
-        harness.restart();
         let runtime = harness.runtime();
         if daemon_startup {
             if let Some(revoke) = revoke {
@@ -519,7 +519,15 @@ async fn assert_first_admission_for_owner(
             assert_eq!(provider.requests.lock().await.len(), 1);
             return;
         }
-        assert!(runtime.emit_due_task_result_recovery().await.unwrap());
+        let recovery_before = latest(runtime, &result.id);
+        let emitted = runtime.emit_due_task_result_recovery().await.unwrap();
+        assert!(
+            emitted,
+            "exact recovery not emitted: now={}, before={recovery_before:?}, after={:?}, state={:?}",
+            runtime.now(),
+            latest(runtime, &result.id),
+            runtime.agent_state().await.unwrap(),
+        );
         let successor = recovery_sources(runtime)
             .into_iter()
             .find(|source| source.id != recovery_message_id)
@@ -749,23 +757,17 @@ async fn assert_fifth_root_startup_replay(retain_provider_handoff: bool) {
     let provider = Arc::new(FifthRootBarrierProvider::default());
     provider.failure.failures.store(4, Ordering::SeqCst);
     let mut harness = LifecycleHarness::with_provider(provider.clone());
-    // Initial snapshots use wall time, while startup replay uses the test clock.
-    // Start just before wall time; the five retries advance beyond it for replay.
-    let offset = Utc::now()
-        .signed_duration_since(harness.now())
-        .to_std()
-        .unwrap_or_default();
-    harness
-        .advance(offset.saturating_sub(Duration::from_secs(60)))
-        .await;
     let runtime = harness.runtime();
     let owner = ready_owner(runtime).await;
     let (_, result) = completed_command(runtime, &owner, "fifth-root-startup").await;
     let mut roots = BTreeSet::new();
+    let mut retained_handoff = None;
     for attempt in 1..=4 {
-        harness
-            .advance(Duration::from_secs(if attempt == 1 { 30 } else { 600 }))
-            .await;
+        if attempt == 1 {
+            advance_to_result_due(&harness, &result).await;
+        } else {
+            harness.advance(Duration::from_secs(600)).await;
+        }
         assert!(runtime.emit_due_task_result_recovery().await.unwrap());
         let scheduled = Box::pin(claim_model(runtime)).await;
         process(runtime, scheduled).await;
@@ -785,9 +787,21 @@ async fn assert_fifth_root_startup_replay(retain_provider_handoff: bool) {
                 .find(crate::runtime::turn::TurnModelSelection::message_has_provider_recovery_provenance)
                 .expect("fourth root left a real provider handoff");
             assert_eq!(handoff.priority, Priority::Next);
-            // Retain the durable handoff for startup to restore alongside the
-            // interrupted fifth root, without letting it run before the crash.
-            remove_source(runtime, &handoff, QueueEntryStatus::Queued).await;
+            assert_eq!(handoff.work_item_id.as_deref(), Some(owner.id.as_str()));
+            assert_eq!(
+                runtime
+                    .runtime_db()
+                    .queue_entries()
+                    .latest(&handoff.id)
+                    .unwrap()
+                    .unwrap()
+                    .status,
+                QueueEntryStatus::Queued
+            );
+            assert_eq!(provider.requests.load(Ordering::SeqCst), 4);
+            // Keep the real handoff published; the scheduler must select the
+            // fresh same-owner recovery root first.
+            retained_handoff = Some(handoff.id);
         } else {
             discard_provider_handoffs(runtime).await;
         }
@@ -803,6 +817,24 @@ async fn assert_fifth_root_startup_replay(retain_provider_handoff: bool) {
         _ = &mut processing => panic!("fifth root must reach the provider barrier"),
         _ = provider.entered.notified() => {}
     }
+    if let Some(handoff_id) = &retained_handoff {
+        let agent = runtime.inner.agent.lock().await;
+        assert!(agent
+            .queue
+            .shared_messages()
+            .any(|message| &message.id == handoff_id));
+        assert_eq!(agent.state.pending, agent.queue.len());
+        assert_eq!(
+            runtime
+                .runtime_db()
+                .queue_entries()
+                .latest(handoff_id)
+                .unwrap()
+                .unwrap()
+                .status,
+            QueueEntryStatus::Queued
+        );
+    }
     let before = latest(runtime, &result.id);
     assert_recovery_snapshot(runtime, &before);
     assert_eq!(before.recovery_attempts, 5);
@@ -814,12 +846,9 @@ async fn assert_fifth_root_startup_replay(retain_provider_handoff: bool) {
     // Dropping the in-flight provider future simulates the process ending at
     // this exact durable boundary, then runs the real daemon startup repair.
     drop(processing);
-    let report = runtime
-        .runtime_db()
-        .recover_interrupted_runtime_state_at_startup()
-        .unwrap();
+    let (recovered, report) = Box::pin(harness.recover_daemon_startup()).await;
+    harness = recovered;
     assert_eq!(report.interrupted_execution_attempts, 1);
-    harness.restart();
     let runtime = harness.runtime();
     Box::pin(runtime.recover_scheduler_bootstrap_claims())
         .await
@@ -913,6 +942,7 @@ async fn real_command_live_provider_owner_excludes_scanner_and_second_exact_admi
     let runtime = harness.runtime();
     let owner = ready_owner(runtime).await;
     let (task, result) = completed_command(runtime, &owner, "live-owner-evidence").await;
+    advance_to_result_due(&harness, &result).await;
     assert!(matches!(
         exact_wait(runtime, &owner.id, &task.id).await,
         WaitForRegistrationOutcome::TaskResultRecoveryQueued { .. }
@@ -965,6 +995,20 @@ async fn real_command_live_provider_owner_excludes_scanner_and_second_exact_admi
     ));
 }
 
+async fn advance_to_result_due(harness: &LifecycleHarness, result: &MessageEnvelope) {
+    let deadline = latest(harness.runtime(), &result.id)
+        .next_recheck_at
+        .expect("pending real command has a recheck deadline");
+    harness
+        .advance(
+            deadline
+                .signed_duration_since(harness.now())
+                .to_std()
+                .unwrap_or_default(),
+        )
+        .await;
+}
+
 async fn exhaust_real_command(
     harness: &LifecycleHarness,
     provider: &FailureProvider,
@@ -974,9 +1018,11 @@ async fn exhaust_real_command(
     provider.failures.store(5, Ordering::SeqCst);
     let mut roots = BTreeSet::new();
     for attempt in 1..=5 {
-        harness
-            .advance(Duration::from_secs(if attempt == 1 { 30 } else { 600 }))
-            .await;
+        if attempt == 1 {
+            advance_to_result_due(harness, result).await;
+        } else {
+            harness.advance(Duration::from_secs(600)).await;
+        }
         assert!(runtime.emit_due_task_result_recovery().await.unwrap());
         assert_eq!(latest(runtime, &result.id).recovery_attempts, attempt - 1);
         let scheduled = Box::pin(claim_model(runtime)).await;
@@ -1060,7 +1106,7 @@ async fn real_command_paused_obligation_does_not_starve_same_owner_fresh_result(
     let (_, exhausted) = completed_command(runtime, &owner, "exhausted-real-evidence").await;
     let paused = Box::pin(exhaust_real_command(&harness, &provider, &exhausted)).await;
     let (_, fresh) = completed_command(runtime, &owner, "fresh-real-evidence").await;
-    harness.advance(Duration::from_secs(30)).await;
+    advance_to_result_due(&harness, &fresh).await;
     assert!(runtime.emit_due_task_result_recovery().await.unwrap());
     let scheduled = Box::pin(claim_model(runtime)).await;
     let source_id = scheduled.message.id.clone();

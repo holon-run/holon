@@ -53,6 +53,7 @@ impl AgentProvider for BlockingCompletionProvider {
         self.entered.notify_one();
         self.release.notified().await;
         Ok(ProviderTurnResponse {
+            material: Default::default(),
             blocks: vec![holon::provider::ModelBlock::Text {
                 text: "active execution released".into(),
             }],
@@ -159,6 +160,8 @@ pub async fn create_command_task_route_rejects_continue_on_result_field() -> Res
 pub async fn create_command_task_route_accepts_integration_authority() -> Result<()> {
     let (host, base, server) = spawn_server().await?;
     let client = reqwest::Client::new();
+    let runtime = host.default_runtime().await?;
+    let mut cursor = runtime.storage().latest_event_seq()?.unwrap_or(0);
 
     let response = client
         .post(format!("{base}/api/control/agents/default/tasks"))
@@ -170,17 +173,45 @@ pub async fn create_command_task_route_accepts_integration_authority() -> Result
         .send()
         .await?;
     assert!(response.status().is_success());
+    let task: TaskRecord = response.json().await?;
 
-    let runtime = host.default_runtime().await?;
+    let mut observed = Vec::new();
     wait_until(|| {
-        let events = runtime.storage().read_recent_events(20)?;
-        Ok(events.iter().any(|event| {
+        observed = host
+            .runtime_db()
+            .audit_events()
+            .range(Some("default"), None, Some(cursor), false, 20)?;
+        if let Some(event) = observed.last() {
+            cursor = event.event_seq;
+        }
+        Ok(observed.iter().any(|event| {
             event.kind == "task_create_requested"
+                && event.data["task_id"] == task.id
                 && event.data["provided_trust"] == "integration_signal"
                 && event.data["effective_trust"] == "integration_signal"
         }))
     })
-    .await?;
+    .await
+    .map_err(|error| {
+        let events = observed
+            .iter()
+            .map(|event| {
+                serde_json::json!({
+                    "id": event.id,
+                    "seq": event.event_seq,
+                    "kind": event.kind,
+                    "target_agent_id": event.data["target_agent_id"],
+                    "provided_trust": event.data["provided_trust"],
+                    "effective_trust": event.data["effective_trust"],
+                    "task_id": event.data["task_id"],
+                })
+            })
+            .collect::<Vec<_>>();
+        error.context(format!(
+            "task_create_requested observation failed: task_id={}, cursor={cursor}, events={events:?}",
+            task.id
+        ))
+    })?;
 
     server.abort();
     Ok(())
@@ -909,7 +940,6 @@ pub async fn complete_work_item_route_rejects_active_execution_bound_target() ->
         AdmissionContext::ControlAuthenticated,
     );
     message.work_item_id = Some(target.id.clone());
-    let runtime_task = tokio::spawn(runtime.clone().run());
     runtime.enqueue(message).await?;
     tokio::time::timeout(
         std::time::Duration::from_secs(5),
@@ -932,8 +962,9 @@ pub async fn complete_work_item_route_rejects_active_execution_bound_target() ->
         }))
         .send()
         .await?;
-    assert_eq!(response.status(), reqwest::StatusCode::CONFLICT);
+    let status = response.status();
     let body: serde_json::Value = response.json().await?;
+    assert_eq!(status, reqwest::StatusCode::CONFLICT, "{body}");
     assert_eq!(body["code"], "work_item_execution_active", "{body}");
     assert_eq!(runtime.agent_state().await?, state_before);
     assert_eq!(
@@ -945,7 +976,6 @@ pub async fn complete_work_item_route_rejects_active_execution_bound_target() ->
     );
 
     provider.release.notify_one();
-    runtime_task.abort();
     harness.abort();
     Ok(())
 }
@@ -996,8 +1026,13 @@ pub async fn timer_cancel_route_is_idempotent_and_updates_projection() -> Result
         .json(&serde_json::json!({"authority_class": "integration_signal"}))
         .send()
         .await?;
-    assert_eq!(cancelled_response.status(), reqwest::StatusCode::OK);
+    let cancelled_status = cancelled_response.status();
     let cancelled_body = cancelled_response.text().await?;
+    assert_eq!(
+        cancelled_status,
+        reqwest::StatusCode::OK,
+        "{cancelled_body}"
+    );
     let cancelled: serde_json::Value = serde_json::from_str(&cancelled_body)?;
     assert_eq!(cancelled["id"], timer.id);
     assert_eq!(cancelled["status"], "cancelled");

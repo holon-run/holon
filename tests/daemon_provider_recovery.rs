@@ -898,7 +898,10 @@ impl Fixture {
     }
 
     fn wait_input_completed(&self, message_id: &str) {
-        let deadline = Instant::now() + DEADLINE;
+        self.wait_input_completed_until(message_id, Instant::now() + DEADLINE);
+    }
+
+    fn wait_input_completed_until(&self, message_id: &str, deadline: Instant) {
         loop {
             let completed: i64 = self
                 .database()
@@ -910,12 +913,38 @@ impl Fixture {
                     |row| row.get(0),
                 )
                 .unwrap();
-            if completed > 0 {
+            let status: String = self
+                .database()
+                .query_row(
+                    "SELECT status FROM queue_entries WHERE agent_id = ?1 AND message_id = ?2",
+                    [AGENT_ID, message_id],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            if completed > 0 && status == "processed" {
                 assert_eq!(completed, 1, "input must complete only once");
                 self.assert_source_processed(message_id);
                 return;
             }
-            assert!(Instant::now() < deadline, "input did not complete");
+            if Instant::now() >= deadline {
+                let db = self.database();
+                let mut query = db
+                    .prepare(
+                        "SELECT turn_id, terminal_kind FROM turn_records
+                         WHERE agent_id = ?1 AND trigger_message_id = ?2",
+                    )
+                    .unwrap();
+                let turns = query
+                    .query_map([AGENT_ID, message_id], |row| {
+                        Ok((row.get::<_, String>(0)?, row.get::<_, Option<String>>(1)?))
+                    })
+                    .unwrap()
+                    .collect::<Result<Vec<_>, _>>()
+                    .unwrap();
+                panic!(
+                    "input did not complete: source={message_id}, completed_turns={completed}, queue_status={status}, turns={turns:?}"
+                );
+            }
             thread::sleep(Duration::from_millis(100));
         }
     }
@@ -1084,14 +1113,49 @@ impl Fixture {
     }
 
     fn assert_primary_override(&self, address: &str) {
-        let status = self
-            .try_get(
-                address,
-                &format!("/api/agents/{AGENT_ID}/status?detail=full"),
+        let path = format!("/api/agents/{AGENT_ID}/status?detail=full");
+        let diagnostics = || {
+            self.processes
+                .iter()
+                .map(|process| process.diagnostics().replace(TOKEN, "[redacted]"))
+                .collect::<Vec<_>>()
+                .join("\n")
+        };
+        let response = self
+            .client
+            .get(format!("http://{address}{path}"))
+            .bearer_auth(TOKEN)
+            .send()
+            .unwrap_or_else(|error| {
+                panic!("GET {path} transport error: {error}\n{}", diagnostics())
+            });
+        let http_status = response.status();
+        let body = response.text().unwrap_or_else(|error| {
+            panic!(
+                "GET {path} status={http_status}, body read error: {error}\n{}",
+                diagnostics()
             )
-            .unwrap();
-        assert_eq!(status["model"]["source"], "agent_override");
-        assert_eq!(status["agent"]["model_override"], "openai@default/gpt-5.4");
+        });
+        let safe_body = body.replace(TOKEN, "[redacted]");
+        assert!(
+            http_status.is_success(),
+            "GET {path} status={http_status}, body={safe_body}\n{}",
+            diagnostics()
+        );
+        let status: Value = serde_json::from_str(&body).unwrap_or_else(|error| {
+            panic!(
+                "GET {path} status={http_status}, JSON error: {error}, body={safe_body}\n{}",
+                diagnostics()
+            )
+        });
+        assert_eq!(
+            status["model"]["source"], "agent_override",
+            "GET {path} status={http_status}, body={safe_body}"
+        );
+        assert_eq!(
+            status["agent"]["model_override"], "openai@default/gpt-5.4",
+            "GET {path} status={http_status}, body={safe_body}"
+        );
         let persisted: String = self
             .database()
             .query_row(
@@ -1123,12 +1187,44 @@ impl Fixture {
     }
 
     fn events(&self, address: &str) -> Vec<Value> {
-        let page = self
-            .try_get(
-                address,
-                &format!("/api/agents/{AGENT_ID}/events?limit=256&order=desc"),
-            )
-            .expect("HTTP event page must be available");
+        let response = self
+            .client
+            .get(format!(
+                "http://{address}/api/agents/{AGENT_ID}/events?limit=256&order=desc"
+            ))
+            .bearer_auth(TOKEN)
+            .send()
+            .expect("HTTP event page request must succeed");
+        let status = response.status();
+        let body = response.text().expect("HTTP event page body");
+        if !status.is_success() {
+            let db = self.database();
+            let mut query = db
+                .prepare(
+                    "SELECT e.event_seq, e.kind, q.qualification_state
+                     FROM audit_events e
+                     LEFT JOIN current_read_qualification q
+                       ON q.agent_id=e.agent_id AND q.family='event'
+                      AND q.record_id=e.audit_event_id
+                     WHERE e.agent_id=?1 ORDER BY e.event_seq DESC LIMIT 32",
+                )
+                .expect("event qualification diagnostic");
+            let events = query
+                .query_map([AGENT_ID], |row| {
+                    Ok((
+                        row.get::<_, u64>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, Option<String>>(2)?,
+                    ))
+                })
+                .expect("event qualification rows")
+                .collect::<Result<Vec<_>, _>>()
+                .expect("event qualification values");
+            panic!(
+                "HTTP event page unavailable: {status}: {body}; event qualifications: {events:?}"
+            );
+        }
+        let page: Value = serde_json::from_str(&body).expect("HTTP event page JSON");
         let events = page["events"]
             .as_array()
             .expect("HTTP event page must contain events");
@@ -1597,7 +1693,9 @@ fn cooldown_park_survives_sigkill_and_resumes_on_schedule_without_new_input() {
     fixture.assert_park_retained(&parked);
     // No new message is submitted: recovery must be driven by the persisted
     // park deadline alone.
+    let recovery_deadline = Instant::now() + DEADLINE;
     wait_for_brief_marker(&fixture, &address, "primary-recovered-final", DEADLINE);
+    fixture.wait_input_completed_until(&parked.message_id, recovery_deadline);
     let final_dispatch_at = primary
         .last_success_at()
         .expect("recovered dispatch must reach the provider");

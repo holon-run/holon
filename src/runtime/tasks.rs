@@ -1,3 +1,7 @@
+#[path = "tasks/work_planning.rs"]
+mod work_planning;
+use work_planning::{WorkCommandRead, WorkCommandReadMode};
+
 use super::message_dispatch::message_text;
 use super::waiting::WorkItemBlockerClearance;
 use super::{task_state_reducer, *};
@@ -14,9 +18,9 @@ use crate::types::{
     FailureArtifactCategory, TaskInputResult, TaskKind, TaskListEntry, TaskOutputResult,
     TaskOutputRetrievalStatus, TaskOutputSnapshot, TaskStatusSnapshot, TodoItem, ToolArtifactRef,
     WaitConditionRecord, WaitConditionStatus, WorkItemCompletionIntent, WorkItemContinuationFrame,
-    WorkItemContinuationReturnPolicy, WorkItemContinuationState, WorkItemDelegationRecord,
-    WorkItemDelegationState, WorkItemPlanStatus, WorkItemReadiness, WorkItemRecord, WorkItemState,
-    AGENT_MESSAGE_WAIT_TASK_KIND, CHILD_AGENT_TASK_KIND,
+    WorkItemContinuationReturnPolicy, WorkItemContinuationState, WorkItemPlanStatus,
+    WorkItemReadiness, WorkItemRecord, WorkItemState, AGENT_MESSAGE_WAIT_TASK_KIND,
+    CHILD_AGENT_TASK_KIND,
 };
 use schemars::JsonSchema;
 use serde::Serialize;
@@ -28,8 +32,11 @@ pub(super) enum ReplyReconciliation {
     WaitingForReceipt,
 }
 
+#[path = "task_output.rs"]
+mod output;
+pub(crate) use output::{RunOnceTaskOutputRetention, RunOnceTaskOutputs, TaskOutputResultRead};
+
 const TASK_OUTPUT_POLL_INTERVAL_MS: u64 = 100;
-const TASK_OUTPUT_MESSAGE_SCAN_LIMIT: usize = 200;
 const TASK_OUTPUT_PREVIEW_CHAR_BUDGET: usize = 8_000;
 const SPAWN_AGENT_TASK_LABEL_CHAR_BUDGET: usize = 120;
 
@@ -211,21 +218,23 @@ fn child_agent_task_detail(workspace_mode: ChildAgentWorkspaceMode) -> serde_jso
 const REJOIN_OBLIGATION_ID_DETAIL: &str = "rejoin_obligation_id";
 const REJOIN_GENERATION_DETAIL: &str = "rejoin_generation";
 const PARENT_TURN_ID_DETAIL: &str = "parent_turn_id";
+const COMMAND_CREATION_ID_DETAIL: &str = "command_creation_id";
+const RESULT_EXECUTION_TURN_ID_DETAIL: &str = "result_execution_turn_id";
 
 fn copy_task_rejoin_contract(task: &TaskRecord, detail: &mut serde_json::Value) {
     let Some(target) = detail.as_object_mut() else {
         return;
     };
-    let Some(source) = task.detail.as_ref().and_then(serde_json::Value::as_object) else {
-        return;
-    };
+    let source = task.detail.as_ref().and_then(serde_json::Value::as_object);
     for key in [
         REJOIN_OBLIGATION_ID_DETAIL,
         REJOIN_GENERATION_DETAIL,
         PARENT_TURN_ID_DETAIL,
+        COMMAND_CREATION_ID_DETAIL,
     ] {
-        if let Some(value) = source.get(key) {
-            target.entry(key).or_insert_with(|| value.clone());
+        target.remove(key);
+        if let Some(value) = source.and_then(|source| source.get(key)) {
+            target.insert(key.into(), value.clone());
         }
     }
 }
@@ -234,6 +243,22 @@ pub(super) fn task_rejoin_fence(
     task: &TaskRecord,
 ) -> Result<crate::domain::execution_protocol::RejoinFence> {
     task.rejoin_fence().map_err(anyhow::Error::msg)
+}
+
+/// The real creator may allocate obligation/generation before any parent Turn.
+/// This shape carries no rejoin permission and borrows without allocation.
+pub(super) fn unbound_task_rejoin_generation(task: &TaskRecord) -> Option<u64> {
+    let detail = task.detail.as_ref()?.as_object()?;
+    if detail.contains_key(PARENT_TURN_ID_DETAIL)
+        || detail.contains_key(COMMAND_CREATION_ID_DETAIL)
+        || detail.get(REJOIN_OBLIGATION_ID_DETAIL)?.as_str()? != task.id
+    {
+        return None;
+    }
+    detail
+        .get(REJOIN_GENERATION_DETAIL)?
+        .as_u64()
+        .filter(|generation| *generation > 0)
 }
 
 pub(super) fn spawn_agent_task_label(initial_message: &str) -> String {
@@ -302,30 +327,53 @@ fn task_with_status(
     }
 }
 
-pub(super) fn task_with_result_message(
+fn task_result_detail(
     task: &TaskRecord,
-    status: TaskStatus,
-    mut detail: Option<serde_json::Value>,
-    result_message: &MessageEnvelope,
-) -> TaskRecord {
-    {
-        let detail = detail.get_or_insert_with(|| serde_json::json!({}));
-        copy_task_rejoin_contract(task, detail);
-        if let (Some(detail), Some(parent_turn_id)) =
-            (detail.as_object_mut(), result_message.turn_id.as_ref())
-        {
-            detail
-                .entry(PARENT_TURN_ID_DETAIL)
-                .or_insert_with(|| serde_json::json!(parent_turn_id));
+    detail: Option<serde_json::Value>,
+    result_turn_id: Option<&str>,
+) -> serde_json::Value {
+    let mut detail = detail.unwrap_or_else(|| serde_json::json!({}));
+    copy_task_rejoin_contract(task, &mut detail);
+    if let Some(detail) = detail.as_object_mut() {
+        detail.remove(RESULT_EXECUTION_TURN_ID_DETAIL);
+        if let Some(result_turn_id) = result_turn_id {
+            detail.insert(
+                RESULT_EXECUTION_TURN_ID_DETAIL.into(),
+                serde_json::json!(result_turn_id),
+            );
         }
     }
-    let mut terminal_task = task_with_status(task, status, detail);
+    detail
+}
+
+pub(in crate::runtime) fn task_with_result_message(
+    task: &TaskRecord,
+    status: TaskStatus,
+    detail: Option<serde_json::Value>,
+    result_message: &MessageEnvelope,
+) -> TaskRecord {
+    let detail = task_result_detail(task, detail, result_message.turn_id.as_deref());
+    let mut terminal_task = task_with_status(task, status, Some(detail));
     terminal_task.parent_message_id = Some(result_message.id.clone());
     terminal_task
 }
 
 pub(super) fn restart_task_result_message_id(task_id: &str) -> String {
     format!("message:task-restart:{task_id}")
+}
+
+// Interruption observes the original Task. A Result's own synthetic Turn must
+// not promote a real creator's parent-less obligation into a rejoin fence.
+fn task_with_original_interrupted_result(
+    task: &TaskRecord,
+    result_message: &MessageEnvelope,
+) -> TaskRecord {
+    task_with_result_message(
+        task,
+        TaskStatus::Interrupted,
+        task.detail.clone(),
+        result_message,
+    )
 }
 
 fn interrupted_task_result_message(
@@ -342,20 +390,22 @@ fn interrupted_task_result_message(
         })
         .and_then(|value| value.as_str())
         .unwrap_or("running");
+    let result_turn_id = crate::ids::turn_id();
+    let detail = task_result_detail(task, task.detail.clone(), Some(&result_turn_id));
     let mut message = MessageEnvelope {
         id: if interrupted_reason == "runtime_restarted" {
             restart_task_result_message_id(&task.id)
         } else {
             crate::ids::message_id()
         },
-        turn_id: Some(crate::ids::turn_id()),
+        turn_id: Some(result_turn_id),
         work_item_id: task.effective_work_item_id().map(ToString::to_string),
         metadata: Some(serde_json::json!({
             "task_id": task.id,
             "task_kind": task.kind,
             "task_status": "interrupted",
             "task_summary": task.summary,
-            "task_detail": task.detail,
+            "task_detail": detail,
             "task_recovery": task.recovery,
             "work_item_id": task.effective_work_item_id(),
             "status_before_restart": status_before,
@@ -388,6 +438,45 @@ fn interrupted_task_result_message(
     };
     message.task_id = Some(task.id.clone());
     message
+}
+
+/// Freeze all nondeterminism before the Control transaction; no cleanup/IO.
+pub(super) fn prepare_lifecycle_stop_task_result(
+    task: &TaskRecord,
+    prepared_at: chrono::DateTime<chrono::Utc>,
+) -> Result<crate::runtime_db::control_transition::ControlTaskResult> {
+    let prior_status = task_status_name(&task.status);
+    let mut detail = task.detail.clone().unwrap_or_else(|| serde_json::json!({}));
+    let detail_map = detail
+        .as_object_mut()
+        .ok_or_else(|| anyhow!("Task detail must be an object for lifecycle Stop"))?;
+    detail_map.insert("status_before_stop".into(), serde_json::json!(prior_status));
+    detail_map.insert("task_status".into(), serde_json::json!("interrupted"));
+    detail_map.insert(
+        "interrupted_reason".into(),
+        serde_json::json!("agent_stopped"),
+    );
+    detail_map.insert("interrupted_at".into(), to_json_value(&prepared_at));
+    let interrupted = TaskRecord {
+        status: TaskStatus::Interrupted,
+        updated_at: prepared_at,
+        parent_message_id: None,
+        detail: Some(detail),
+        ..task.clone()
+    };
+    let mut message = interrupted_task_result_message(&interrupted, "agent_stopped");
+    message.created_at = prepared_at;
+    let mut terminal = task_with_result_message(
+        &interrupted,
+        TaskStatus::Interrupted,
+        interrupted.detail.clone(),
+        &message,
+    );
+    terminal.updated_at = prepared_at;
+    Ok(crate::runtime_db::control_transition::ControlTaskResult {
+        task: terminal,
+        message,
+    })
 }
 
 impl RuntimeHandle {
@@ -590,6 +679,11 @@ impl RuntimeHandle {
         let runtime = self.clone();
         let task_record = queued_task.clone();
         let task_id = queued_task.id.clone();
+        let _registration = self
+            .admit_control_task_handle_registration(&task_record)
+            .await?;
+        let control_lease = self.inner.control_cancellations.task(&task_record);
+        let control_lease_for_cleanup = control_lease.clone();
         let mut task_handles = self.inner.task_handles.lock().await;
         let handle = tokio::spawn(async move {
             let _ = runtime
@@ -602,11 +696,16 @@ impl RuntimeHandle {
                     recovered,
                 )
                 .await;
-            runtime.release_completed_task_handle(&task_id).await;
+            runtime
+                .release_completed_task_handle_exact(&task_id, control_lease_for_cleanup.lease_id())
+                .await;
         });
+        control_lease.attach(handle);
         task_handles.insert(
             queued_task.id.clone(),
-            command_task::ManagedTaskHandle::Async(handle),
+            command_task::ManagedTaskHandle::Async(
+                super::control_cancellation::SharedControlTaskHandle(control_lease),
+            ),
         );
         Ok(queued_task)
     }
@@ -632,10 +731,40 @@ impl RuntimeHandle {
         task_detail: serde_json::Value,
         recovered: bool,
     ) -> Result<TaskRecord> {
-        let mut task_handles = self.inner.task_handles.lock().await;
-        if matches!(task_handles.get(&task.id), Some(command_task::ManagedTaskHandle::Async(handle)) if !handle.is_finished())
-        {
-            return Ok(self.task_record(&task.id).await?.unwrap_or(task));
+        let existing = {
+            let task_handles = self.inner.task_handles.lock().await;
+            task_handles
+                .get(&task.id)
+                .and_then(|handle| handle.control_lease())
+        };
+        let latest = self
+            .task_record(&task.id)
+            .await?
+            .unwrap_or_else(|| task.clone());
+        if task_state_reducer::is_terminal_task_status(&latest.status) {
+            return Ok(latest);
+        }
+        if let Some(lease) = existing {
+            if let Some(original) = lease
+                .original_child()?
+                .filter(|source| source.has_terminal_responsibility())
+            {
+                original.source_view()?.validate_generation(&latest)?;
+                if original.observed_terminal().is_some() {
+                    // The physical result is already retained. Resume that same
+                    // capsule, never a new monitor, source, observation or lease.
+                    self.continue_original_child_terminal(original).await?;
+                } else {
+                    anyhow::ensure!(
+                        !lease.is_finished(),
+                        "original monitor still owns an unfinished Running stage; recovery cannot replace its lease"
+                    );
+                }
+                return Ok(self.task_record(&task.id).await?.unwrap_or(latest));
+            }
+            if !lease.is_finished() {
+                return Ok(latest);
+            }
         }
         let queued_task = TaskRecord {
             updated_at: Utc::now(),
@@ -648,6 +777,8 @@ impl RuntimeHandle {
         ))
         .await?;
 
+        let (_registration, control_lease, producer) =
+            self.admit_original_child_monitor(&queued_task).await?;
         let runtime = self.clone();
         let task_record = queued_task.clone();
         let task_id = queued_task.id.clone();
@@ -662,10 +793,29 @@ impl RuntimeHandle {
             }) => *lifecycle_disposition,
             _ => AgentLifecycleDisposition::Retain,
         };
+        // Its invocation/delivery already exists in the canonical Task. Save
+        // the actual monitor parameters before the Async lease can be aborted.
+        producer.retain_monitor_stage(
+            task_record.clone(),
+            authority_class.clone(),
+            worktree,
+            recovered,
+            lifecycle_disposition,
+            child_agent_id.clone(),
+            child_turn_baseline,
+            delivery_id.clone(),
+            task_detail.clone(),
+        )?;
+        let mut task_handles = self.inner.task_handles.lock().await;
+        let runner_material = producer.runner_material()?;
         let handle = tokio::spawn(async move {
-            if runtime
+            let _runner_material = runner_material;
+            #[cfg(test)]
+            let clock_monitor_observation = producer.clone();
+            if let Err(error) = runtime
                 .monitor_spawned_child_agent_task(
                     task_record,
+                    producer,
                     authority_class,
                     worktree,
                     recovered,
@@ -676,15 +826,18 @@ impl RuntimeHandle {
                     task_detail,
                 )
                 .await
-                .is_err()
             {
-                tracing::error!("supervised invocation monitor exited with a storage failure; active task remains recoverable");
+                #[cfg(test)]
+                clock_monitor_observation.record_clock_monitor_failure_for_test(&error);
+                tracing::warn!(task_id=%task_id,error=%error,"original child monitor stage remains retained");
             }
-            runtime.release_completed_task_handle(&task_id).await;
         });
+        control_lease.attach(handle);
         task_handles.insert(
             queued_task.id.clone(),
-            command_task::ManagedTaskHandle::Async(handle),
+            command_task::ManagedTaskHandle::Async(
+                super::control_cancellation::SharedControlTaskHandle(control_lease),
+            ),
         );
         Ok(queued_task)
     }
@@ -791,6 +944,11 @@ impl RuntimeHandle {
         let runtime = self.clone();
         let task_record = task.clone();
         let task_id = task.id.clone();
+        let _registration = self
+            .admit_control_task_handle_registration(&task_record)
+            .await?;
+        let control_lease = self.inner.control_cancellations.task(&task_record);
+        let control_lease_for_cleanup = control_lease.clone();
         let mut task_handles = self.inner.task_handles.lock().await;
         let handle = tokio::spawn(async move {
             let running_message = MessageEnvelope {
@@ -878,9 +1036,20 @@ impl RuntimeHandle {
                 );
             }
 
-            runtime.release_completed_task_handle(&task_record.id).await;
+            runtime
+                .release_completed_task_handle_exact(
+                    &task_record.id,
+                    control_lease_for_cleanup.lease_id(),
+                )
+                .await;
         });
-        task_handles.insert(task_id, command_task::ManagedTaskHandle::Async(handle));
+        control_lease.attach(handle);
+        task_handles.insert(
+            task_id,
+            command_task::ManagedTaskHandle::Async(
+                super::control_cancellation::SharedControlTaskHandle(control_lease),
+            ),
+        );
         drop(task_handles);
 
         Ok(task)
@@ -1066,11 +1235,15 @@ impl RuntimeHandle {
             return Ok(task);
         }
 
+        let (_registration, control_lease, producer) =
+            self.admit_original_child_monitor(&task).await?;
         let runtime = self.clone();
         let task_record = task.clone();
         let task_id = task.id.clone();
         let mut task_handles = self.inner.task_handles.lock().await;
+        let runner_material = producer.runner_material()?;
         let handle = tokio::spawn(async move {
+            let _runner_material = runner_material;
             let subagent_result = runtime
                 .run_subagent_prompt_in_dedicated_worktree(
                     &agent_id,
@@ -1080,13 +1253,27 @@ impl RuntimeHandle {
                 )
                 .await;
 
-            let (mut text, status, mut task_detail, worktree_path): (
+            let (text, status, mut task_detail, worktree_path): (
                 String,
                 TaskStatus,
                 serde_json::Value,
                 Option<(PathBuf, String, Vec<String>)>,
             ) = match subagent_result {
                 Ok(result) => {
+                    if let Ok(completion) = producer.completion_material() {
+                        completion.observe_material(
+                            super::input_evidence_budget::serialized_bytes(&(
+                                &result.text,
+                                &result.worktree_path,
+                                &result.worktree_branch,
+                                &result.changed_files,
+                            ))
+                            .unwrap_or(u64::MAX)
+                            .saturating_mul(8),
+                            1024,
+                        );
+                    }
+
                     let worktree_path = result.worktree_path.clone();
                     let worktree_branch = result.worktree_branch.clone();
                     let changed_files = result.changed_files.clone();
@@ -1125,19 +1312,8 @@ impl RuntimeHandle {
                 ),
             };
 
-            if let Some((path, _, _)) = worktree_path {
-                if let Ok(Some(cleanup)) = runtime
-                    .cleanup_task_owned_worktree_in_detail(
-                        &task_record.id,
-                        &mut task_detail,
-                        "terminal_task_result",
-                    )
-                    .await
-                {
-                    append_task_owned_worktree_cleanup_note(&mut text, &cleanup, &path);
-                }
-            }
-
+            // Actual cleanup is performed by the retained owned completion.
+            let _original_worktree_path = worktree_path;
             task_detail["output_summary"] = serde_json::json!(text.clone());
             let status_label = task_status_label(&status);
             let mut metadata = serde_json::json!({
@@ -1173,25 +1349,32 @@ impl RuntimeHandle {
             let terminal_task =
                 task_with_result_message(&task_record, status, Some(task_detail), &result_message);
             if let Err(error) = runtime
-                .commit_terminal_task_result(&terminal_task, "task_status_updated", &result_message)
+                .complete_observed_child_monitor(
+                    producer,
+                    terminal_task,
+                    result_message,
+                    None,
+                    None,
+                    true,
+                )
                 .await
             {
-                tracing::warn!(
-                    task_id = %terminal_task.id,
-                    error = %error,
-                    "failed to persist terminal task status before task result"
-                );
+                tracing::warn!(task_id=%task_record.id,error=%error,"original worktree child terminal remains retained");
             }
-
-            runtime.release_completed_task_handle(&task_record.id).await;
         });
-        task_handles.insert(task_id, command_task::ManagedTaskHandle::Async(handle));
+        control_lease.attach(handle);
+        task_handles.insert(
+            task_id,
+            command_task::ManagedTaskHandle::Async(
+                super::control_cancellation::SharedControlTaskHandle(control_lease),
+            ),
+        );
         drop(task_handles);
 
         Ok(task)
     }
 
-    async fn spawn_child_agent_task(
+    pub(in crate::runtime) async fn spawn_child_agent_task(
         &self,
         task_record: TaskRecord,
         prompt: String,
@@ -1202,7 +1385,7 @@ impl RuntimeHandle {
         let Some(bridge) = self.inner.host_bridge.clone() else {
             return Err(anyhow!("child agent runtime requires a host bridge"));
         };
-        let agent_id = self.agent_id().await?;
+        let _agent_id = self.agent_id().await?;
         let lifecycle_disposition = match task_record.recovery.as_ref() {
             Some(TaskRecoverySpec::ChildAgentTask {
                 lifecycle_disposition,
@@ -1211,193 +1394,65 @@ impl RuntimeHandle {
             _ => AgentLifecycleDisposition::DeleteOnTerminal,
         };
 
-        let existing_detail = task_record.detail.clone();
-        let existing_child_id = detail_string(&existing_detail, "child_agent_id");
+        let (_registration, control_lease, producer) =
+            self.admit_original_child_monitor(&task_record).await?;
         let inherited_model_resolution =
-            inherited_spawn_model_resolution(&self.model_state_for(&self.agent_state().await?));
+            inherited_spawn_model_resolution(&self.model_state_for(&_registration.state));
+        producer.retain_original_child_spawn(
+            task_record,
+            prompt,
+            authority_class,
+            worktree,
+            recovered,
+            lifecycle_disposition,
+            inherited_model_resolution,
+            self.now(),
+        )?;
         let runtime = self.clone();
-        let task_id = task_record.id.clone();
-        let task_id_for_cleanup = task_id.clone();
-        let mut task_handles = self.inner.task_handles.lock().await;
+        let task_id = producer.address().admitted.key.id.clone();
+        // Attach before the cancellable map wait. The barrier still prevents
+        // any Host registration until the exact handle is published.
+        let original = producer.clone();
+        let (published, publication) = tokio::sync::oneshot::channel::<()>();
         let handle = tokio::spawn(async move {
-            let spawned = async {
-                if let Some(child_agent_id) = existing_child_id {
-                    if bridge.reusable_agent_exists(&child_agent_id).await? {
-                        let child_turn_baseline = match existing_detail
-                            .as_ref()
-                            .and_then(|detail| detail.get("child_turn_baseline"))
-                            .and_then(|value| value.as_u64())
-                        {
-                            Some(value) => value,
-                            None => 0,
-                        };
-                        Ok::<(String, u64, serde_json::Value), anyhow::Error>((
-                            child_agent_id,
-                            child_turn_baseline,
-                            existing_detail.unwrap_or_else(|| serde_json::json!({})),
-                        ))
-                    } else {
-                        let spawned = bridge
-                            .spawn_child_task(
-                                runtime.clone(),
-                                &task_record,
-                                prompt,
-                                authority_class.clone(),
-                                worktree,
-                                None,
-                                inherited_model_resolution.clone(),
-                            )
-                            .await?;
-                        Ok((
-                            spawned.child_agent_id,
-                            spawned.child_turn_baseline,
-                            spawned.task_detail,
-                        ))
-                    }
-                } else {
-                    let spawned = bridge
-                        .spawn_child_task(
-                            runtime.clone(),
-                            &task_record,
-                            prompt,
-                            authority_class.clone(),
-                            worktree,
-                            None,
-                            inherited_model_resolution.clone(),
-                        )
-                        .await?;
-                    Ok((
-                        spawned.child_agent_id,
-                        spawned.child_turn_baseline,
-                        spawned.task_detail,
-                    ))
-                }
+            let result = async {
+                publication
+                    .await
+                    .context("original child handle publication stopped")?;
+                runtime
+                    .continue_original_child_spawn(original.clone())
+                    .await?;
+                runtime
+                    .continue_original_child_terminal(original.clone())
+                    .await
             }
             .await;
-
-            let (child_agent_id, child_turn_baseline, task_detail) = match spawned {
-                Ok(spawned) => spawned,
-                Err(err) => {
-                    let failed_child_agent_id = err
-                        .downcast_ref::<crate::host::ChildTaskSpawnFailure>()
-                        .map(|failure| failure.child_agent_id().to_string());
-                    let mut failed_task_detail = task_record
-                        .detail
-                        .clone()
-                        .unwrap_or_else(|| serde_json::json!({}));
-                    if let Some(child_agent_id) = failed_child_agent_id.as_ref() {
-                        failed_task_detail["child_agent_id"] = serde_json::json!(child_agent_id);
-                    }
-                    if let Some(failure) = err.downcast_ref::<crate::host::ChildTaskSpawnFailure>()
-                    {
-                        failed_task_detail["target"] = serde_json::json!(failure.target());
-                    }
-                    let result_message = MessageEnvelope {
-                        turn_id: Some(crate::ids::turn_id()),
-                        metadata: Some(serde_json::json!({
-                            "task_id": task_record.id,
-                            "task_kind": task_record.kind,
-                            "task_status": "failed",
-                            "task_summary": task_record.summary,
-                            "task_detail": failed_task_detail,
-                            "task_recovery": task_record.recovery,
-                            "work_item_id": task_record.work_item_id.clone(),
-                        })),
-                        ..MessageEnvelope::new(
-                            agent_id.clone(),
-                            MessageKind::TaskResult,
-                            MessageOrigin::Task {
-                                task_id: task_record.id.clone(),
-                            },
-                            AuthorityClass::RuntimeInstruction,
-                            Priority::Next,
-                            MessageBody::Text {
-                                text: format!("child agent failed: {err:#}"),
-                            },
-                        )
-                        .with_admission(
-                            MessageDeliverySurface::TaskRejoin,
-                            AdmissionContext::RuntimeOwned,
-                        )
-                    };
-                    let failed_task = task_with_result_message(
-                        &task_record,
-                        TaskStatus::Failed,
-                        Some(failed_task_detail),
-                        &result_message,
-                    );
-                    let agent_deletion =
-                        failed_child_agent_id.as_ref().and_then(|child_agent_id| {
-                            (lifecycle_disposition == AgentLifecycleDisposition::DeleteOnTerminal)
-                                .then(|| {
-                                    crate::runtime_db::repositories::AgentDeletionRequest {
-                                agent_id: child_agent_id.clone(),
-                                admission: crate::runtime_db::repositories::
-                                    AgentDeletionAdmission::TerminalEphemeralChild {
-                                        parent_agent_id: agent_id.clone(),
-                                        task_id: failed_task.id.clone(),
-                                    },
-                                requested_by: "parent_task_spawn_failed".into(),
-                                cascade_private_children: false,
-                            }
-                                })
-                        });
-                    match runtime
-                        .commit_terminal_child_task_result(
-                            &failed_task,
-                            "task_status_updated",
-                            &result_message,
-                            agent_deletion,
-                        )
-                        .await
-                    {
-                        Ok(true) => {
-                            if let Some(child_agent_id) = failed_child_agent_id.as_deref() {
-                                if let Err(error) =
-                                    bridge.activate_agent_deletion(child_agent_id).await
-                                {
-                                    tracing::warn!(
-                                        task_id = %failed_task.id,
-                                        child_agent_id,
-                                        error = %error,
-                                        "failed child deletion job persisted but coordinator activation failed"
-                                    );
-                                }
-                            }
-                        }
-                        Ok(false) => {}
-                        Err(error) => tracing::warn!(
-                            task_id = %failed_task.id,
-                            error = %error,
-                            "failed to persist terminal task status before task result"
-                        ),
-                    }
-
-                    runtime
-                        .release_completed_task_handle(&task_id_for_cleanup)
-                        .await;
-                    return;
-                }
-            };
-            let _ = runtime
-                .monitor_spawned_child_agent_task(
-                    task_record,
-                    authority_class,
-                    worktree,
-                    recovered,
-                    lifecycle_disposition,
-                    child_agent_id,
-                    child_turn_baseline,
-                    None,
-                    task_detail,
-                )
-                .await;
-            runtime
-                .release_completed_task_handle(&task_id_for_cleanup)
-                .await;
+            if let Err(error) = result {
+                tracing::warn!(task_id=%original.address().admitted.key.id,error=%error,"original owned child spawn/monitor remains retained");
+            }
         });
-        task_handles.insert(task_id, command_task::ManagedTaskHandle::Async(handle));
+        control_lease.attach(handle);
+        // If the caller is cancelled at this await, dropping the publication
+        // sender finishes the attached observer without starting any Host kernel.
+        let mut task_handles = self.inner.task_handles.lock().await;
+        task_handles.insert(
+            task_id,
+            command_task::ManagedTaskHandle::Async(
+                super::control_cancellation::SharedControlTaskHandle(control_lease),
+            ),
+        );
+        let _ = published.send(());
         drop(task_handles);
+        // This registration waits only for the existing Host registry fence,
+        // never for the finite kernel or a parent mutation owner.
+        let registered = bridge
+            .start_original_child_spawn(self.clone(), producer.clone())
+            .await;
+        if let Err(error) = registered {
+            if error.downcast_ref::<super::child_task_terminal::OriginalChildMonitorCancellationPending>().is_none() {
+                producer.record_original_child_spawn_completion(Err(error))?;
+            }
+        }
         Ok(())
     }
 
@@ -1417,6 +1472,7 @@ impl RuntimeHandle {
         let running_message = MessageEnvelope {
             metadata: Some(serde_json::json!({
                 "task_id": task_record.id,
+                "task_created_at": task_record.created_at,
                 "task_kind": task_record.kind,
                 "task_status": "running",
                 "task_summary": task_record.summary,
@@ -1512,17 +1568,58 @@ impl RuntimeHandle {
     pub(super) async fn finish_agent_message_wait(
         &self,
         task: &TaskRecord,
+        status: TaskStatus,
+        detail: serde_json::Value,
+        failure_text: String,
+    ) -> Result<()> {
+        self.finish_agent_message_wait_with_material(task, status, detail, failure_text, (0, 0))
+            .await
+    }
+
+    async fn finish_agent_message_wait_with_material(
+        &self,
+        task: &TaskRecord,
         mut status: TaskStatus,
         mut detail: serde_json::Value,
         mut failure_text: String,
+        retained_material: (u64, usize),
     ) -> Result<()> {
-        let task = self
-            .task_record(&task.id)
-            .await?
-            .unwrap_or_else(|| task.clone());
-        if task_state_reducer::is_terminal_task_status(&task.status) {
+        // A fenced projection can leave a Known recovery ticket that only the
+        // standard owner reconciliation may resolve; finish never skips checks.
+        let selected = match self.capture_current_task_record(&task.id) {
+            Ok(selected) => selected,
+            Err(error) => {
+                let needs_reconcile = error
+                    .downcast_ref::<super::mutation_owner::MutationOwnerError>()
+                    .is_some_and(|error| {
+                        matches!(
+                            error,
+                            super::mutation_owner::MutationOwnerError::NeedsReconcile(_)
+                        )
+                    });
+                if !needs_reconcile {
+                    return Err(error);
+                }
+                self.reconcile_posture_observation().await?;
+                self.capture_current_task_record(&task.id)?
+            }
+        };
+        let current = selected
+            .record()
+            .ok_or_else(|| task_not_found_error(&task.id))?;
+        self.validate_agent_message_wait_task(task, current)?;
+        if task_state_reducer::is_terminal_task_status(&current.status) {
             return Ok(());
         }
+        let _projection = self.agent_message_wait_projection_budget(
+            &selected,
+            &detail,
+            &failure_text,
+            retained_material,
+        )?;
+        // Covers the short-lived owned fences returned by the canonical API too.
+        self.validate_agent_message_wait_generation(task, current)?;
+        let task = current;
         for key in [
             "target",
             "request_delivery_id",
@@ -1612,7 +1709,25 @@ impl RuntimeHandle {
             "task_summary": task.summary, "task_recovery": task.recovery,
             "work_item_id": task.work_item_id, "task_detail": detail,
         }));
-        let terminal = task_with_result_message(&task, status, Some(detail), &message);
+        let mut terminal = task_with_result_message(&task, status, Some(detail), &message);
+        if unbound_task_rejoin_generation(task).is_some() {
+            // The actual qualified Task had no parent. The Result's own Turn is
+            // source provenance, not authority to bind this existing obligation.
+            let original = task
+                .detail
+                .as_ref()
+                .and_then(serde_json::Value::as_object)
+                .expect("validated original unbound contract");
+            let detail = terminal
+                .detail
+                .as_mut()
+                .and_then(serde_json::Value::as_object_mut)
+                .expect("message Wait terminal detail object");
+            for key in [REJOIN_OBLIGATION_ID_DETAIL, REJOIN_GENERATION_DETAIL] {
+                detail.insert(key.into(), original[key].clone());
+            }
+            detail.remove(PARENT_TURN_ID_DETAIL);
+        }
         message.metadata.as_mut().expect("task result metadata")["task_detail"] =
             serde_json::to_value(&terminal.detail)?;
         self.commit_terminal_task_result(&terminal, "task_agent_message_wait_completed", &message)
@@ -1627,57 +1742,83 @@ impl RuntimeHandle {
         if !crate::wake_contract::is_agent_message(message) {
             return Ok(ReplyReconciliation::Ready);
         }
-        let db = self.inner.runtime_db.clone();
-        let message_id = message.id.clone();
-        let agent_id = message.agent_id.clone();
-        let (replies, outcome) = tokio::task::spawn_blocking(move || {
-            let mut replies = Vec::new();
-            let outcome = (|| -> Result<ReplyReconciliation> {
-                let Some(delivery) = db
-                    .agent_message_deliveries()
-                    .latest_for_message(&message_id)?
-                else {
-                    return Ok(ReplyReconciliation::Ready);
-                };
-                for task in db.tasks().active_for_agent(&agent_id, i64::MAX as usize)? {
-                    let Some(TaskRecoverySpec::AgentMessageWait {
-                        target_agent_id,
-                        after_delivery_rowid,
-                        ..
-                    }) = &task.recovery
-                    else {
-                        continue;
-                    };
-                    if delivery.caller.caller_agent_id.as_deref() != Some(target_agent_id.as_str())
-                    {
-                        continue;
-                    }
-                    let Some(_boundary) = after_delivery_rowid else {
-                        // Invoke has accepted the request but has not attached its receipt yet.
-                        return Ok(ReplyReconciliation::WaitingForReceipt);
-                    };
-                    if let Some(reply) = db
-                        .agent_message_deliveries()
-                        .resolve_message_wait(&task.id)?
-                    {
-                        replies.push((task, reply));
-                    }
-                }
-                Ok(ReplyReconciliation::Ready)
-            })();
-            // Earlier matches still settle before a later read error or missing receipt.
-            (replies, outcome)
-        })
-        .await?;
+        anyhow::ensure!(
+            message.agent_id == self.inner.mutation_owner.agent_id(),
+            "AgentMessageWait reply target differs from runtime scope"
+        );
+        let Some(delivery) = self
+            .inner
+            .runtime_db
+            .agent_message_deliveries()
+            .latest_for_message_async(&message.id)
+            .await?
+        else {
+            return Ok(ReplyReconciliation::Ready);
+        };
         let mut changed = false;
-        for (task, reply) in replies {
+        // Select the complete current set once. Borrow Task bodies in their
+        // original order and keep selected Arcs/reference slots across each ACK.
+        let active = self
+            .capture_task_read(&super::task_reads::active_task_request())
+            .await?;
+        let _active_references = self.agent_message_wait_reference_budget(&active.tasks)?;
+        for task in super::task_reads::active_task_records(&active.tasks)? {
             let Some(TaskRecoverySpec::AgentMessageWait {
-                after_delivery_rowid: Some(boundary),
+                target_agent_id,
+                after_delivery_rowid,
                 ..
             }) = &task.recovery
             else {
-                unreachable!("reply snapshot requires an attached receipt");
+                continue;
             };
+            if delivery.caller.caller_agent_id.as_deref() != Some(target_agent_id.as_str()) {
+                continue;
+            }
+            let Some(boundary) = after_delivery_rowid else {
+                return Ok(ReplyReconciliation::WaitingForReceipt);
+            };
+            let Some(reply) = self
+                .inner
+                .runtime_db
+                .agent_message_deliveries()
+                .resolve_message_wait(&task.id)?
+            else {
+                continue;
+            };
+            let _reply_budget = self.inner.input_evidence_budget.register_owned_bytes(
+                &active.tasks.scope,
+                super::input_evidence_budget::InputMemoryCategory::Candidate,
+                super::input_evidence_budget::OwnedBytesEstimate {
+                    payload_bytes: super::input_evidence_budget::serialized_bytes(&reply)?
+                        .checked_mul(8)
+                        .context("message Wait outcome material overflow")?,
+                    metadata_estimate_bytes: u64::try_from(std::mem::size_of_val(&reply))?
+                        .checked_mul(8)
+                        .context("message Wait outcome metadata overflow")?,
+                },
+            )?;
+            let (response_delivery_id, response_message_id) = match &reply.reply {
+                crate::runtime_db::agent_message_delivery::MessageWaitReply::Explicit {
+                    delivery_id,
+                    message_id,
+                } => (delivery_id.as_str(), Some(message_id.as_str())),
+                crate::runtime_db::agent_message_delivery::MessageWaitReply::FinalBrief {
+                    message_id,
+                    ..
+                } => ("", Some(message_id.as_str())),
+                crate::runtime_db::agent_message_delivery::MessageWaitReply::ReplyTimeout {
+                    ..
+                } => ("", None),
+            };
+            let (_detail_budget, retained_material) = self.agent_message_wait_reply_detail_budget(
+                &active.tasks,
+                task,
+                target_agent_id,
+                &message.agent_id,
+                response_delivery_id,
+                response_message_id,
+                *boundary,
+            )?;
             let mut detail = task.detail.clone().unwrap_or_else(|| serde_json::json!({}));
             let result = reply.terminal_result(&self.inner.storage, *boundary)?;
             detail
@@ -1691,12 +1832,15 @@ impl RuntimeHandle {
                         .ok_or_else(|| anyhow!("invalid message wait outcome detail"))?
                         .clone(),
                 );
-            self.finish_agent_message_wait(&task, result.status, detail, result.text)
-                .await?;
+            self.finish_agent_message_wait_with_material(
+                task,
+                result.status,
+                detail,
+                result.text,
+                retained_material,
+            )
+            .await?;
             changed = true;
-        }
-        if matches!(outcome?, ReplyReconciliation::WaitingForReceipt) {
-            return Ok(ReplyReconciliation::WaitingForReceipt);
         }
         Ok(if changed {
             ReplyReconciliation::Changed
@@ -1712,6 +1856,7 @@ impl RuntimeHandle {
         reason: crate::host::ChildInvocationReason,
         stage: ChildInvocationRecoveryStage,
         retry_attempt: u32,
+        original: Option<&Arc<super::OriginalChildTaskProducer>>,
     ) -> Result<()> {
         let Some(mut task) = self.task_record(task_id).await? else {
             return Ok(());
@@ -1724,7 +1869,7 @@ impl RuntimeHandle {
             Some(bridge) => bridge.supervised_invocation_observation(&task).await?,
             None => serde_json::Value::Null,
         };
-        let diagnostic = serde_json::json!({
+        let mut diagnostic = serde_json::json!({
             "supervision_task_id": task.id,
             "parent_agent_id": task.agent_id,
             "parent_work_item_id": task.work_item_id,
@@ -1736,6 +1881,14 @@ impl RuntimeHandle {
             "retry_attempt": retry_attempt,
             "canonical_observation": observation,
         });
+        if let Some(source) = original {
+            source.source_view()?.validate_generation(&task)?;
+            let frozen = source
+                .frozen_terminal()?
+                .context("original terminal diagnostic lacks frozen result")?;
+            diagnostic["original_mutation_nonce"] = serde_json::json!(frozen.nonce);
+            diagnostic["original_lease_id"] = serde_json::json!(source.address().lease_id);
+        }
         let mut detail = task.detail.clone().unwrap_or_else(|| serde_json::json!({}));
         if detail.get("recovery_diagnostic") == Some(&diagnostic) {
             return Ok(());
@@ -1743,16 +1896,134 @@ impl RuntimeHandle {
         detail["recovery_diagnostic"] = diagnostic;
         task.detail = Some(detail);
         task.updated_at = self.now();
-        self.apply_task_transition(task_state_reducer::TaskTransition::new(
+        let mut transition = task_state_reducer::TaskTransition::new(
             &task,
             "supervised_child_task_recovery_diagnostic",
-        ))
-        .await
+        );
+        if let Some(source) = original {
+            transition = transition.with_original_child_diagnostic(source);
+        }
+        self.apply_task_transition(transition).await
+    }
+
+    async fn await_supervised_child_monitor_result(
+        &self,
+        task: &TaskRecord,
+        child_agent_id: &str,
+        child_turn_baseline: u64,
+        delivery_id: Option<&str>,
+        worktree: bool,
+    ) -> Result<Option<Result<crate::host::ChildTaskTerminalResult>>> {
+        use crate::host::{ChildInvocationReason, ChildInvocationResolution};
+        let bridge = self
+            .inner
+            .host_bridge
+            .as_ref()
+            .context("child agent runtime requires a host bridge")?;
+        if delivery_id.is_some() {
+            return Ok(Some(
+                bridge
+                    .await_agent_invocation_terminal_result(
+                        child_agent_id,
+                        child_turn_baseline,
+                        delivery_id,
+                        &task.id,
+                        worktree,
+                    )
+                    .await,
+            ));
+        }
+        let request = super::resident_task::TaskCaptureRequest {
+            include_active: false,
+            include_unsettled: false,
+            terminal_limit: 0,
+            recovery_source_ids: Default::default(),
+            required_keys: std::collections::BTreeSet::from([super::resident_task::TaskKey::new(
+                super::resident_task::TaskFamily::Task,
+                &task.id,
+            )]),
+        };
+        let mut last_diagnostic = None;
+        let mut diagnostic_write_failed = false;
+        let mut poll_interval = Duration::from_millis(100);
+        let mut task_roles = Vec::new();
+        loop {
+            let read = match self.capture_task_read(&request).await {
+                Ok(read) => read,
+                Err(error)
+                    if error
+                        .downcast_ref::<crate::runtime_db::RuntimeDbRetryableError>()
+                        .is_some() =>
+                {
+                    tokio::time::sleep(poll_interval).await;
+                    continue;
+                }
+                Err(error) => return Err(error),
+            };
+            let current = super::task_reads::task_record(&read.tasks, &task.id)?.unwrap_or(task);
+            if task_state_reducer::is_terminal_task_status(&current.status) {
+                return Ok(None);
+            }
+            let (state, reason) = match bridge
+                .resolve_supervised_invocation_with_roles(
+                    current,
+                    child_agent_id,
+                    worktree,
+                    &mut task_roles,
+                )
+                .await
+            {
+                Ok(ChildInvocationResolution::Ready(result)) => return Ok(Some(Ok(result))),
+                Ok(ChildInvocationResolution::Pending(reason)) => {
+                    (ChildInvocationRecoveryState::Pending, reason)
+                }
+                Ok(ChildInvocationResolution::RecoveryBlocked(reason)) => {
+                    (ChildInvocationRecoveryState::RecoveryBlocked, reason)
+                }
+                Err(_) => (
+                    ChildInvocationRecoveryState::RecoveryBlocked,
+                    ChildInvocationReason::StorageUnavailable,
+                ),
+            };
+            if last_diagnostic != Some((state, reason)) {
+                if self
+                    .persist_child_invocation_diagnostic(
+                        &task.id,
+                        state,
+                        reason,
+                        ChildInvocationRecoveryStage::Resolve,
+                        0,
+                        None,
+                    )
+                    .await
+                    .is_ok()
+                {
+                    last_diagnostic = Some((state, reason));
+                    diagnostic_write_failed = false;
+                } else if !diagnostic_write_failed {
+                    diagnostic_write_failed = true;
+                    tracing::error!(
+                        task_id = %task.id,
+                        child_agent_id,
+                        reason = ?reason,
+                        "could not persist supervised invocation diagnostic; original monitor retains recovery responsibility"
+                    );
+                }
+            }
+            poll_interval =
+                Duration::from_millis(if state == ChildInvocationRecoveryState::Pending {
+                    100
+                } else {
+                    1000
+                });
+            tokio::time::sleep(poll_interval).await;
+        }
     }
 
     pub(super) async fn monitor_spawned_child_agent_task(
         &self,
         task_record: TaskRecord,
+        producer: Arc<super::OriginalChildTaskProducer>,
         authority_class: AuthorityClass,
         worktree: bool,
         recovered: bool,
@@ -1762,327 +2033,360 @@ impl RuntimeHandle {
         delivery_id: Option<String>,
         task_detail: serde_json::Value,
     ) -> Result<()> {
-        let mut retry_attempt = 0u32;
-        loop {
-            if self
-                .monitor_spawned_child_agent_task_once(
-                    task_record.clone(),
-                    authority_class.clone(),
-                    worktree,
-                    recovered,
-                    lifecycle_disposition,
-                    child_agent_id.clone(),
-                    child_turn_baseline,
-                    delivery_id.clone(),
-                    task_detail.clone(),
-                )
-                .await
-                .is_ok()
-            {
+        producer.retain_monitor_stage(
+            task_record,
+            authority_class,
+            worktree,
+            recovered,
+            lifecycle_disposition,
+            child_agent_id,
+            child_turn_baseline,
+            delivery_id,
+            task_detail,
+        )?;
+        self.continue_original_child_monitor(producer).await
+    }
+    pub(in crate::runtime) fn continue_original_child_monitor(
+        &self,
+        producer: Arc<super::OriginalChildTaskProducer>,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<()>> + Send + '_>> {
+        Box::pin(async move {
+            let _worker = producer.monitor_worker.lock().await;
+            if producer.is_durable_finished() {
                 return Ok(());
             }
-            retry_attempt = retry_attempt.saturating_add(1).min(5);
-            if self
-                .persist_child_invocation_diagnostic(
-                    &task_record.id,
-                    ChildInvocationRecoveryState::RecoveryBlocked,
-                    crate::host::ChildInvocationReason::StorageUnavailable,
-                    ChildInvocationRecoveryStage::Resolve,
-                    retry_attempt,
-                )
-                .await
-                .is_err()
-                && retry_attempt == 1
-            {
-                tracing::error!(
-                    task_id = %task_record.id,
-                    parent_agent_id = %task_record.agent_id,
-                    child_agent_id = %child_agent_id,
-                    reason = "storage_unavailable",
-                    stage = "monitor",
-                    "supervised invocation storage failed; monitor retains recovery responsibility"
-                );
+            if producer.observed_terminal().is_some() {
+                return self
+                    .continue_original_child_terminal(producer.clone())
+                    .await;
             }
-            tokio::time::sleep(Duration::from_secs(1u64 << retry_attempt)).await;
-        }
-    }
+            let original_lease = producer.original_lease().context("monitor_phase=lease")?;
+            if original_lease.cancellation_requested() {
+                return self
+                    .finish_original_child_monitor_cancellation(&producer)
+                    .await;
+            }
+            let stage = producer
+                .monitor_stage()
+                .context("original child monitor stage absent")?;
+            let task_record = stage.task.clone();
+            let authority_class = stage.authority.clone();
+            let worktree = stage.worktree;
+            let recovered = stage.recovered;
+            let lifecycle_disposition = stage.lifecycle;
+            let child_agent_id = stage.child.clone();
+            let child_turn_baseline = stage.baseline;
+            let delivery_id = stage.delivery.clone();
+            let task_detail = stage.detail.clone();
 
-    async fn monitor_spawned_child_agent_task_once(
-        &self,
-        task_record: TaskRecord,
-        _authority_class: AuthorityClass,
-        worktree: bool,
-        recovered: bool,
-        lifecycle_disposition: AgentLifecycleDisposition,
-        child_agent_id: String,
-        child_turn_baseline: u64,
-        delivery_id: Option<String>,
-        task_detail: serde_json::Value,
-    ) -> Result<()> {
-        let Some(bridge) = self.inner.host_bridge.clone() else {
-            return Err(anyhow!("child agent runtime requires a host bridge"));
-        };
-        let agent_id = self.agent_id().await?;
+            if self.inner.host_bridge.is_none() {
+                return Err(anyhow!("child agent runtime requires a host bridge"));
+            }
+            let agent_id = producer.address().scope.agent_id.clone();
 
-        // Project running state directly: a queued TaskStatus snapshot could
-        // otherwise overwrite a newer recovery diagnostic or source binding.
-        let latest = self
-            .task_record(&task_record.id)
-            .await?
-            .unwrap_or_else(|| task_record.clone());
-        if task_state_reducer::is_terminal_task_status(&latest.status) {
-            return Ok(());
-        }
-        let running = TaskRecord {
-            status: TaskStatus::Running,
-            updated_at: self.now(),
-            ..latest
-        };
-        self.apply_task_transition(task_state_reducer::TaskTransition::new(
-            &running,
-            if recovered {
-                "supervised_child_task_monitor_reattached"
-            } else {
-                "task_status_updated"
-            },
-        ))
-        .await?;
-
-        let task_detail_for_result = task_detail.clone();
-        let result = if delivery_id.is_some() {
-            bridge
-                .await_agent_invocation_terminal_result(
-                    &child_agent_id,
-                    child_turn_baseline,
-                    delivery_id.as_deref(),
-                    &task_record.id,
-                    worktree,
-                )
-                .await
-        } else {
-            use crate::host::{ChildInvocationReason, ChildInvocationResolution};
-            let mut last_diagnostic = None;
-            let mut diagnostic_write_failed = false;
-            let mut poll_interval = Duration::from_millis(100);
-            loop {
-                let mut bound_task = task_record.clone();
-                bound_task.detail = Some(task_detail_for_result.clone());
-                match self.task_record(&task_record.id).await {
-                    Ok(Some(latest)) => {
-                        if task_state_reducer::is_terminal_task_status(&latest.status) {
-                            return Ok(());
-                        }
-                        bound_task = latest;
-                    }
-                    Ok(None) => {}
-                    Err(error)
-                        if error
-                            .downcast_ref::<crate::runtime_db::RuntimeDbRetryableError>()
-                            .is_some() =>
-                    {
-                        // A fresh canonical snapshot is required before resolution.
-                        tokio::time::sleep(poll_interval).await;
-                        continue;
-                    }
-                    Err(error) => return Err(error),
-                }
-                let (state, reason) = match bridge
-                    .resolve_supervised_invocation(&bound_task, &child_agent_id, worktree)
+            self.bind_original_child_monitor_target(
+                &producer,
+                &child_agent_id,
+                delivery_id.as_deref(),
+                child_turn_baseline,
+            )
+            .context("monitor_phase=bind_target")?;
+            anyhow::ensure!(
+                self.continue_original_child_monitor_binding(producer.clone())
                     .await
-                {
-                    Ok(ChildInvocationResolution::Ready(result)) => break Ok(result),
-                    Ok(ChildInvocationResolution::Pending(reason)) => {
-                        (ChildInvocationRecoveryState::Pending, reason)
-                    }
-                    Ok(ChildInvocationResolution::RecoveryBlocked(reason)) => {
-                        (ChildInvocationRecoveryState::RecoveryBlocked, reason)
-                    }
-                    Err(_) => (
-                        ChildInvocationRecoveryState::RecoveryBlocked,
-                        ChildInvocationReason::StorageUnavailable,
-                    ),
+                    .context("monitor_phase=binding_whole_ack")?,
+                "original child binding owner unavailable; monitor responsibility remains retained"
+            );
+
+            if producer.frozen_running()?.is_none() {
+                let mut running_message = MessageEnvelope {
+                    metadata: Some(serde_json::json!({
+                        "task_id": task_record.id,
+                        "task_created_at":task_record.created_at,
+                        "task_kind": task_record.kind,
+                        "task_status": "running",
+                        "task_summary": task_record.summary,
+                        "task_recovery": task_record.recovery,
+                        "work_item_id": task_record.work_item_id.clone(),
+                        "task_detail": self.task_detail_preserving_rejoin_contract(&task_record, task_detail.clone()),
+                    })),
+                    ..MessageEnvelope::new(
+                        agent_id.clone(),
+                        MessageKind::TaskStatus,
+                        MessageOrigin::Task {
+                            task_id: task_record.id.clone(),
+                        },
+                        authority_class.clone(),
+                        Priority::Background,
+                        MessageBody::Text {
+                            text: if recovered {
+                                format!(
+                                    "{} restarted after recovery: {}",
+                                    if worktree {
+                                        "worktree child agent"
+                                    } else {
+                                        "child agent"
+                                    },
+                                    task_record.summary.clone().unwrap_or_default()
+                                )
+                            } else {
+                                format!(
+                                    "{} started: {}",
+                                    if worktree {
+                                        "worktree child agent"
+                                    } else {
+                                        "child agent"
+                                    },
+                                    task_record.summary.clone().unwrap_or_default()
+                                )
+                            },
+                        },
+                    )
+                    .with_admission(
+                        MessageDeliverySurface::TaskRejoin,
+                        AdmissionContext::RuntimeOwned,
+                    )
                 };
-                if last_diagnostic != Some((state, reason)) {
-                    if self
-                        .persist_child_invocation_diagnostic(
-                            &task_record.id,
-                            state,
-                            reason,
-                            ChildInvocationRecoveryStage::Resolve,
-                            0,
-                        )
-                        .await
-                        .is_ok()
+                running_message.normalize_admission_fields();
+                // Freeze the same original fields enqueue would otherwise allocate.
+                // Only the canonical DB sequence is assigned after this producer seal.
+                if running_message.turn_id.is_none() {
+                    running_message.turn_id = Some(crate::ids::turn_id());
+                }
+                if running_message.trace_context.is_none() {
+                    running_message.trace_context =
+                        Some(crate::observability::TraceContext::new_root(true));
+                }
+                // Binding ACK already completed. Qualify the Running input from
+                // the current Task so staged detail cannot overwrite a newer
+                // binding or diagnostic. Birth clock stays on the message;
+                // absent rejoin/worktree facets are copied, never replaced.
+                let latest = self
+                    .task_record(&task_record.id)
+                    .await
+                    .context("monitor_phase=running_read")?
+                    .unwrap_or_else(|| task_record.clone());
+                if task_state_reducer::is_terminal_task_status(&latest.status) {
+                    return Ok(());
+                }
+                if let Some(metadata) = running_message.metadata.as_mut() {
+                    let staged = metadata
+                        .get("task_detail")
+                        .cloned()
+                        .unwrap_or_else(|| serde_json::json!({}));
+                    let mut detail = self.task_detail_preserving_rejoin_contract(
+                        &latest,
+                        latest.detail.clone().unwrap_or_else(|| staged.clone()),
+                    );
+                    if let (Some(detail), Some(staged)) =
+                        (detail.as_object_mut(), staged.as_object())
                     {
-                        last_diagnostic = Some((state, reason));
-                        diagnostic_write_failed = false;
-                    } else if !diagnostic_write_failed {
-                        diagnostic_write_failed = true;
-                        tracing::error!(task_id = %task_record.id, parent_agent_id = %task_record.agent_id, child_agent_id = %child_agent_id, reason = ?reason, "could not persist supervised invocation diagnostic; monitor retains recovery responsibility");
+                        for key in ["worktree", "workspace_mode", "wait_policy"] {
+                            if !detail.contains_key(key) {
+                                if let Some(value) = staged.get(key) {
+                                    detail.insert(key.to_string(), value.clone());
+                                }
+                            }
+                        }
+                    }
+                    metadata["task_detail"] = detail;
+                    if let Some(work_item_id) = latest.work_item_id.clone() {
+                        metadata["work_item_id"] = serde_json::json!(work_item_id);
+                    }
+                    if latest.recovery.is_some() {
+                        metadata["task_recovery"] = serde_json::to_value(&latest.recovery)?;
                     }
                 }
-                poll_interval =
-                    Duration::from_millis(if state == ChildInvocationRecoveryState::Pending {
-                        100
-                    } else {
-                        1000
-                    });
-                tokio::time::sleep(poll_interval).await;
+                producer
+                    .freeze_original_running_status(&latest, &running_message)
+                    .context("monitor_phase=running_seal")?;
             }
-        };
-        let (mut text, status, mut task_detail) = match result {
-            Ok(result) => {
-                let mut detail = task_detail_for_result.clone();
-                if let Some(result_detail) = result.task_detail {
-                    if let (Some(detail), Some(result_detail)) =
-                        (detail.as_object_mut(), result_detail.as_object())
-                    {
-                        detail.extend(result_detail.clone());
-                    } else {
-                        detail = result_detail;
-                    }
-                }
-                (result.text, result.status, detail)
+            if !producer.running_confirmed() {
+                let mut pending = producer.running_prepared.lock().await;
+                self.inner
+                    .host_bridge
+                    .as_ref()
+                    .context("Running requires its Host")?
+                    .commit_original_child_task_running(&producer, &mut pending)
+                    .await
+                    .context("monitor_phase=running_whole_ack")?;
+                producer.confirm_running();
+                pending.take();
             }
-            Err(error)
-                if error
-                    .downcast_ref::<crate::runtime_db::RuntimeDbRetryableError>()
-                    .is_some() =>
-            {
-                return Err(error);
-            }
-            Err(err) => (
-                format!("child agent failed: {err:#}"),
-                TaskStatus::Failed,
-                task_detail_for_result.clone(),
-            ),
-        };
-        if let Some(detail) = task_detail.as_object_mut() {
-            detail.remove("recovery_diagnostic");
-        }
-        if worktree && task_detail.get("worktree").is_none() {
-            if let Some(worktree_detail) = task_detail_for_result.get("worktree").cloned() {
-                task_detail["worktree"] = worktree_detail;
-            }
-        }
-        if task_detail.get("workspace_mode").is_none() {
-            if let Some(workspace_mode) = task_detail_for_result.get("workspace_mode").cloned() {
-                task_detail["workspace_mode"] = workspace_mode;
-            }
-        }
-        if task_detail.get("wait_policy").is_none() {
-            if let Some(wait_policy) = task_detail_for_result.get("wait_policy").cloned() {
-                task_detail["wait_policy"] = wait_policy;
-            }
-        }
 
-        let storage = self.inner.storage.clone();
-        let read_child_agent_id = child_agent_id.clone();
-        let delegation = tokio::task::spawn_blocking(move || {
-            storage.open_work_item_delegation_for_child(&read_child_agent_id)
-        })
-        .await??;
-
-        if worktree {
-            if let Some(worktree) = task_detail.get("worktree").cloned() {
-                let worktree_path = worktree
-                    .get("worktree_path")
-                    .and_then(|value| value.as_str())
-                    .map(PathBuf::from);
-                let worktree_branch = worktree
-                    .get("worktree_branch")
-                    .and_then(|value| value.as_str())
-                    .map(str::to_owned);
-                let changed_files = worktree
-                    .get("changed_files")
-                    .and_then(|value| value.as_array())
-                    .map(|entries| {
-                        entries
-                            .iter()
-                            .filter_map(|entry| entry.as_str().map(str::to_owned))
-                            .collect::<Vec<_>>()
-                    })
-                    .unwrap_or_default();
-
-                if let (Some(path), Some(branch)) = (worktree_path, worktree_branch) {
-                    text = worktree::format_worktree_task_result(&WorktreeSubagentResult {
-                        text,
-                        worktree_path: path.clone(),
-                        worktree_branch: branch.clone(),
-                        changed_files: changed_files.clone(),
-                        failed: status == TaskStatus::Failed,
-                    });
-                    if let Ok(Some(cleanup)) = self
-                        .cleanup_task_owned_worktree_in_detail(
-                            &task_record.id,
-                            &mut task_detail,
-                            "terminal_task_result",
-                        )
-                        .await
-                    {
-                        append_task_owned_worktree_cleanup_note(&mut text, &cleanup, &path);
-                    }
-                }
-            }
-        }
-
-        if let Some(delegation) = delegation.as_ref() {
-            let completed = WorkItemDelegationRecord {
-                state: WorkItemDelegationState::Completed,
-                result_summary: Some(text.clone()),
-                updated_at: Utc::now(),
-                ..delegation.clone()
-            };
-            self.inner.storage.append_work_item_delegation(&completed)?;
-            self.inner.storage.append_event(&AuditEvent::legacy(
-                "work_item_delegation_completed",
-                serde_json::to_value(&completed)?,
-            ))?;
-        }
-
-        let status_label = task_status_label(&status);
-        let mut metadata = serde_json::json!({
-            "task_id": task_record.id,
-            "task_kind": task_record.kind,
-            "task_status": status_label,
-            "task_summary": task_record.summary,
-            "task_recovery": task_record.recovery,
-            "work_item_id": task_record.work_item_id.clone(),
-            "task_detail": task_detail.clone(),
-        });
-        if let Some(delegation) = delegation.as_ref() {
-            metadata["delegation_id"] = serde_json::json!(delegation.delegation_id.clone());
-            metadata["work_item_id"] = serde_json::json!(delegation.parent_work_item_id.clone());
-            metadata["child_work_item_id"] =
-                serde_json::json!(delegation.child_work_item_id.clone());
-        }
-        if let Some(worktree) = metadata["task_detail"].get("worktree").cloned() {
-            metadata["worktree"] = worktree;
-        }
-        task_detail["output_summary"] = serde_json::json!(text.clone());
-        let result_message = MessageEnvelope {
-            id: format!("message:child-invocation-result:{}", task_record.id),
-            turn_id: Some(format!("turn:child-invocation-result:{}", task_record.id)),
-            created_at: task_record.created_at,
-            metadata: Some(metadata),
-            ..MessageEnvelope::new(
-                agent_id.clone(),
-                MessageKind::TaskResult,
-                MessageOrigin::Task {
-                    task_id: task_record.id.clone(),
+            let task_detail_for_result = task_detail.clone();
+            let result = tokio::select! {
+                biased;
+                _=original_lease.cancellation_observation().cancelled()=>{
+                    return self.finish_original_child_monitor_cancellation(&producer).await;
                 },
-                AuthorityClass::RuntimeInstruction,
-                Priority::Next,
-                MessageBody::Text { text },
-            )
-            .with_admission(
-                MessageDeliverySurface::TaskRejoin,
-                AdmissionContext::RuntimeOwned,
-            )
-        };
-        let terminal_task =
-            task_with_result_message(&task_record, status, Some(task_detail), &result_message);
-        let agent_deletion = (lifecycle_disposition
+                result=self.await_supervised_child_monitor_result(
+                    &task_record, &child_agent_id, child_turn_baseline,
+                    delivery_id.as_deref(), worktree)=>result.context("monitor_phase=await_result")?,
+            };
+            let Some(result) = result else {
+                return Ok(());
+            };
+            let (mut text, status, mut task_detail) = match result {
+                Ok(result) => {
+                    let completion = producer.completion_material()?;
+                    let nodes = super::child_task_terminal::completion_value_nodes(
+                        result.task_detail.as_ref(),
+                    )
+                    .unwrap_or(usize::MAX);
+                    completion.observe_material(
+                        super::input_evidence_budget::serialized_bytes(&(
+                            &result.text,
+                            &result.task_detail,
+                        ))
+                        .unwrap_or(u64::MAX)
+                        .saturating_mul(8),
+                        u64::try_from(nodes)
+                            .unwrap_or(u64::MAX)
+                            .saturating_add(1024)
+                            .saturating_mul(8 * 256),
+                    );
+
+                    let mut detail = task_detail_for_result.clone();
+                    if let Some(result_detail) = result.task_detail {
+                        if let (Some(detail), Some(result_detail)) =
+                            (detail.as_object_mut(), result_detail.as_object())
+                        {
+                            detail.extend(result_detail.clone());
+                        } else {
+                            detail = result_detail;
+                        }
+                    }
+                    (result.text, result.status, detail)
+                }
+                Err(error)
+                    if error
+                        .downcast_ref::<crate::runtime_db::RuntimeDbRetryableError>()
+                        .is_some() =>
+                {
+                    return Err(error);
+                }
+                Err(err) => (
+                    format!("child agent failed: {err:#}"),
+                    TaskStatus::Failed,
+                    task_detail_for_result.clone(),
+                ),
+            };
+            if let Some(detail) = task_detail.as_object_mut() {
+                detail.remove("recovery_diagnostic");
+            }
+            if worktree && task_detail.get("worktree").is_none() {
+                if let Some(worktree_detail) = task_detail_for_result.get("worktree").cloned() {
+                    task_detail["worktree"] = worktree_detail;
+                }
+            }
+            if task_detail.get("workspace_mode").is_none() {
+                if let Some(workspace_mode) = task_detail_for_result.get("workspace_mode").cloned()
+                {
+                    task_detail["workspace_mode"] = workspace_mode;
+                }
+            }
+            if task_detail.get("wait_policy").is_none() {
+                if let Some(wait_policy) = task_detail_for_result.get("wait_policy").cloned() {
+                    task_detail["wait_policy"] = wait_policy;
+                }
+            }
+
+            let storage = self.inner.storage.clone();
+            let read_child_agent_id = child_agent_id.clone();
+            let delegation = tokio::task::spawn_blocking(move || {
+                storage.open_work_item_delegation_for_child(&read_child_agent_id)
+            })
+            .await??;
+
+            if worktree {
+                if let Some(worktree) = task_detail.get("worktree").cloned() {
+                    let worktree_path = worktree
+                        .get("worktree_path")
+                        .and_then(|value| value.as_str())
+                        .map(PathBuf::from);
+                    let worktree_branch = worktree
+                        .get("worktree_branch")
+                        .and_then(|value| value.as_str())
+                        .map(str::to_owned);
+                    let changed_files = worktree
+                        .get("changed_files")
+                        .and_then(|value| value.as_array())
+                        .map(|entries| {
+                            entries
+                                .iter()
+                                .filter_map(|entry| entry.as_str().map(str::to_owned))
+                                .collect::<Vec<_>>()
+                        })
+                        .unwrap_or_default();
+
+                    if let (Some(path), Some(branch)) = (worktree_path, worktree_branch) {
+                        text = worktree::format_worktree_task_result(&WorktreeSubagentResult {
+                            text,
+                            worktree_path: path.clone(),
+                            worktree_branch: branch.clone(),
+                            changed_files: changed_files.clone(),
+                            failed: status == TaskStatus::Failed,
+                        });
+                    }
+                }
+            }
+
+            if let Some(delegation) = delegation.as_ref() {
+                let completed = crate::types::WorkItemDelegationRecord {
+                    state: crate::types::WorkItemDelegationState::Completed,
+                    result_summary: Some(text.clone()),
+                    updated_at: self.now(),
+                    ..delegation.clone()
+                };
+                self.inner.storage.append_work_item_delegation(&completed)?;
+                self.inner.storage.append_event(&AuditEvent::legacy(
+                    "work_item_delegation_completed",
+                    serde_json::to_value(&completed)?,
+                ))?;
+            }
+            let status_label = task_status_label(&status);
+            let mut metadata = serde_json::json!({
+                "task_id": task_record.id,
+                "task_kind": task_record.kind,
+                "task_status": status_label,
+                "task_summary": task_record.summary,
+                "task_recovery": task_record.recovery,
+                "work_item_id": task_record.work_item_id.clone(),
+                "task_detail": task_detail.clone(),
+            });
+            if let Some(delegation) = delegation.as_ref() {
+                metadata["delegation_id"] = serde_json::json!(delegation.delegation_id);
+                metadata["work_item_id"] = serde_json::json!(delegation.parent_work_item_id);
+                metadata["child_work_item_id"] = serde_json::json!(delegation.child_work_item_id);
+            }
+            if let Some(worktree) = metadata["task_detail"].get("worktree").cloned() {
+                metadata["worktree"] = worktree;
+            }
+            task_detail["output_summary"] = serde_json::json!(text.clone());
+            let result_message = MessageEnvelope {
+                id: format!("message:child-invocation-result:{}", task_record.id),
+                turn_id: Some(format!("turn:child-invocation-result:{}", task_record.id)),
+                created_at: task_record.created_at,
+                metadata: Some(metadata),
+                ..MessageEnvelope::new(
+                    agent_id.clone(),
+                    MessageKind::TaskResult,
+                    MessageOrigin::Task {
+                        task_id: task_record.id.clone(),
+                    },
+                    AuthorityClass::RuntimeInstruction,
+                    Priority::Next,
+                    MessageBody::Text { text },
+                )
+                .with_admission(
+                    MessageDeliverySurface::TaskRejoin,
+                    AdmissionContext::RuntimeOwned,
+                )
+            };
+            let terminal_task =
+                task_with_result_message(&task_record, status, Some(task_detail), &result_message);
+            let agent_deletion = (lifecycle_disposition
             == AgentLifecycleDisposition::DeleteOnTerminal)
             .then(|| crate::runtime_db::repositories::AgentDeletionRequest {
                 agent_id: child_agent_id.clone(),
@@ -2094,55 +2398,88 @@ impl RuntimeHandle {
                 requested_by: "parent_task_terminal".into(),
                 cascade_private_children: false,
             });
-        let mut retry_attempt = 0u32;
-        loop {
-            if self
-                .task_record(&task_record.id)
-                .await?
-                .is_some_and(|latest| task_state_reducer::is_terminal_task_status(&latest.status))
-            {
-                return Ok(());
-            }
-            match self
-                .commit_terminal_child_task_result(
-                    &terminal_task,
-                    "task_status_updated",
-                    &result_message,
-                    agent_deletion.clone(),
+            let outcome = self
+                .complete_observed_child_monitor(
+                    producer.clone(),
+                    terminal_task,
+                    result_message,
+                    Some(child_agent_id),
+                    agent_deletion,
+                    worktree,
                 )
-                .await
+                .await;
+            if outcome.is_err() {
+                let _ = self
+                    .persist_child_invocation_diagnostic(
+                        &task_record.id,
+                        ChildInvocationRecoveryState::RecoveryBlocked,
+                        crate::host::ChildInvocationReason::MonitorCommitFailed,
+                        ChildInvocationRecoveryStage::Commit,
+                        if outcome.as_ref().err().is_some_and(|error| {
+                            error
+                                .downcast_ref::<task_state_reducer::TaskTransitionRetryExhausted>()
+                                .is_some()
+                        }) {
+                            task_state_reducer::TASK_TRANSITION_MAX_ATTEMPTS as u32
+                        } else {
+                            1
+                        },
+                        Some(&producer),
+                    )
+                    .await;
+            }
+            outcome
+        })
+    }
+
+    async fn finish_original_child_monitor_cancellation(
+        &self,
+        source: &Arc<super::OriginalChildTaskProducer>,
+    ) -> Result<()> {
+        let limits = self.inner.input_evidence_budget.limits();
+        let request = crate::runtime_db::task_snapshot::TaskDomainLoadRequest {
+            recovery_at: None,
+            query: Default::default(),
+            capture: super::resident_task::TaskCaptureRequest::current(),
+            record_limit: usize::try_from(limits.record_limit)?,
+            byte_limit: usize::try_from(
+                limits
+                    .history_per_agent_bytes
+                    .checked_add(limits.pending_per_agent_bytes)
+                    .context("child Stop transfer limits overflow")?,
+            )?,
+        };
+        let proof = self.inner.runtime_db.transaction(|tx| {
+            crate::runtime_db::child_task_terminal::observe_original_child_monitor_stop_handoff_tx(
+                tx,
+                source,
+                &request,
+                &self.inner.input_evidence_budget,
+            )
+        })?;
+        if let Some(proof) = proof {
+            source.acknowledge_monitor_stop_handoff(&proof)?;
+        } else {
+            let Some(bridge) = self.inner.host_bridge.as_ref() else {
+                return Err(
+                    super::child_task_terminal::OriginalChildMonitorCancellationPending.into(),
+                );
+            };
+            if !bridge
+                .handoff_original_child_monitor_recovery(source, &request)
+                .await?
             {
-                Ok(deletion_requested) => {
-                    if deletion_requested
-                        && bridge
-                            .activate_agent_deletion(&child_agent_id)
-                            .await
-                            .is_err()
-                    {
-                        tracing::warn!("terminal child deletion job is durable but coordinator activation failed");
-                    }
-                    return Ok(());
-                }
-                Err(_) => {
-                    retry_attempt = retry_attempt.saturating_add(1).min(5);
-                    if self
-                        .persist_child_invocation_diagnostic(
-                            &task_record.id,
-                            ChildInvocationRecoveryState::RecoveryBlocked,
-                            crate::host::ChildInvocationReason::MonitorCommitFailed,
-                            ChildInvocationRecoveryStage::Commit,
-                            retry_attempt,
-                        )
-                        .await
-                        .is_err()
-                        && retry_attempt == 1
-                    {
-                        tracing::error!("supervised invocation commit and diagnostic storage failed; monitor retains recovery responsibility");
-                    }
-                    tokio::time::sleep(Duration::from_secs(1u64 << retry_attempt)).await;
-                }
+                return Err(
+                    super::child_task_terminal::OriginalChildMonitorCancellationPending.into(),
+                );
             }
         }
+        self.release_completed_task_handle_exact(
+            &source.address().admitted.key.id,
+            &source.address().lease_id,
+        )
+        .await;
+        Ok(())
     }
 
     pub(super) async fn settle_deleted_task_targets(
@@ -2184,9 +2521,12 @@ impl RuntimeHandle {
                             .clone(),
                     );
             }
-            let _ = self
-                .retain_task_owned_worktree_for_target_deletion_in_detail(&task.id, &mut detail)
-                .await?;
+            {
+                let mut mutation = self.begin_mutation().await?;
+                mutation
+                    .retain_task_owned_worktree_for_target_deletion_in_detail(&task.id, &mut detail)
+                    .await?;
+            }
             if task.kind == TaskKind::AgentMessageWait {
                 self.finish_agent_message_wait(&task, result.status, detail, result.text)
                     .await?;
@@ -2318,14 +2658,15 @@ impl RuntimeHandle {
                 match recovery {
                     Ok(_) => reattached.push(task),
                     Err(error) => {
-                        self.inner.storage.append_event(&AuditEvent::legacy(
+                        self.append_original_audit_event(AuditEvent::legacy(
                             "agent_message_wait_recovery_failed",
                             serde_json::json!({
                                 "task_id": task.id,
                                 "target_agent_id": target_agent_id,
                                 "error": error.to_string(),
                             }),
-                        ))?;
+                        ))
+                        .await?;
                         remaining.push(task);
                     }
                 }
@@ -2412,14 +2753,15 @@ impl RuntimeHandle {
             match recovery_result {
                 Ok(()) => reattached.push(task),
                 Err(error) => {
-                    self.inner.storage.append_event(&AuditEvent::legacy(
+                    self.append_original_audit_event(AuditEvent::legacy(
                         "supervised_child_task_recovery_failed",
                         serde_json::json!({
                             "task_id": task.id,
                             "target_agent_id": target_agent_id,
                             "error": error.to_string(),
                         }),
-                    ))?;
+                    ))
+                    .await?;
                     remaining.push(task);
                 }
             }
@@ -2436,9 +2778,7 @@ impl RuntimeHandle {
     }
 
     pub async fn latest_task_list_entries(&self) -> Result<Vec<TaskListEntry>> {
-        let agent_id = self.agent_id().await?;
-        self.latest_task_list_entries_for_agent(&agent_id, usize::MAX)
-            .await
+        Ok(self.active_task_list_snapshot(usize::MAX).await?.entries)
     }
 
     pub async fn latest_task_list_entries_for_agent(
@@ -2446,29 +2786,43 @@ impl RuntimeHandle {
         agent_id: &str,
         limit: usize,
     ) -> Result<Vec<TaskListEntry>> {
-        let db = self.inner.runtime_db.clone();
-        let agent_id = agent_id.to_owned();
-        let tasks =
-            tokio::task::spawn_blocking(move || db.tasks().active_for_agent(&agent_id, limit))
-                .await??;
-        Ok(tasks
+        anyhow::ensure!(
+            agent_id == self.inner.mutation_owner.agent_id(),
+            "Task list agent differs from resident scope"
+        );
+        let read = self.active_task_list_snapshot(limit).await?;
+        Ok(read.entries)
+    }
+
+    pub(crate) async fn active_task_list_snapshot(
+        &self,
+        limit: usize,
+    ) -> Result<super::task_reads::TaskListRead> {
+        let read = self
+            .capture_task_read(&super::task_reads::active_task_request())
+            .await?;
+        let active = super::task_reads::active_task_records(&read.tasks)?;
+        let total_active = active.len();
+        let selected = active.into_iter().take(limit).collect::<Vec<_>>();
+        let owned_budget = self.task_projection_budget(&read.tasks, &selected, 2)?;
+        let entries = selected
             .into_iter()
-            .map(|task| {
-                let wait_policy = task.wait_policy();
-                let command = CommandTaskStatusSnapshot::identity_from_task_record(&task);
-                let target = task.target();
-                TaskListEntry {
-                    id: task.id,
-                    kind: task.kind.as_str().to_string(),
-                    status: task.status,
-                    summary: task.summary,
-                    updated_at: task.updated_at,
-                    wait_policy,
-                    command,
-                    target,
-                }
+            .map(|task| TaskListEntry {
+                id: task.id.clone(),
+                kind: task.kind.as_str().to_string(),
+                status: task.status.clone(),
+                summary: task.summary.clone(),
+                updated_at: task.updated_at,
+                wait_policy: task.wait_policy(),
+                command: CommandTaskStatusSnapshot::identity_from_task_record(task),
+                target: task.target(),
             })
-            .collect())
+            .collect();
+        Ok(super::task_reads::TaskListRead {
+            total_active,
+            entries,
+            _owned_budget: owned_budget,
+        })
     }
 
     async fn persist_task_status_direct(
@@ -2511,12 +2865,8 @@ impl RuntimeHandle {
             };
             let result_message =
                 interrupted_task_result_message(&interrupted_task, "runtime_restarted");
-            let interrupted_task = task_with_result_message(
-                &interrupted_task,
-                TaskStatus::Interrupted,
-                interrupted_task.detail.clone(),
-                &result_message,
-            );
+            let interrupted_task =
+                task_with_original_interrupted_result(&interrupted_task, &result_message);
             self.commit_terminal_task_result(
                 &interrupted_task,
                 "task_interrupted_on_restart",
@@ -2569,13 +2919,18 @@ impl RuntimeHandle {
                 detail_map.insert("interrupted_at".into(), to_json_value(&Utc::now()));
             }
             if task.is_worktree_child_agent_task() {
-                let _ = self
-                    .cleanup_task_owned_worktree_in_detail(
-                        &task.id,
-                        &mut detail,
-                        "agent_lifecycle_stop",
-                    )
-                    .await;
+                // Parent monitor cancellation does not prove original child exit.
+                if let Some(worktree) = detail
+                    .get_mut("worktree")
+                    .and_then(serde_json::Value::as_object_mut)
+                {
+                    worktree.insert("cleanup_status".into(), serde_json::json!("retained"));
+                    worktree.insert(
+                        "cleanup_reason".into(),
+                        serde_json::json!("original_child_exit_unproven"),
+                    );
+                    worktree.insert("retained_for_review".into(), serde_json::json!(true));
+                }
             }
 
             let interrupted_task = TaskRecord {
@@ -2593,12 +2948,8 @@ impl RuntimeHandle {
             };
             let result_message =
                 interrupted_task_result_message(&interrupted_task, "agent_stopped");
-            let interrupted_task = task_with_result_message(
-                &interrupted_task,
-                TaskStatus::Interrupted,
-                interrupted_task.detail.clone(),
-                &result_message,
-            );
+            let interrupted_task =
+                task_with_original_interrupted_result(&interrupted_task, &result_message);
             self.commit_terminal_task_result(
                 &interrupted_task,
                 "task_interrupted_on_agent_stop",
@@ -2621,185 +2972,15 @@ impl RuntimeHandle {
     }
 
     pub async fn task_status_snapshot(&self, task_id: &str) -> Result<TaskStatusSnapshot> {
-        let task = self
-            .task_record(task_id)
-            .await?
-            .ok_or_else(|| task_not_found_error(task_id))?;
-        let mut snapshot = TaskStatusSnapshot::from_task_record(&task);
-
-        if task.is_child_agent_task()
-            && matches!(
-                task.status,
-                TaskStatus::Queued
-                    | TaskStatus::Running
-                    | TaskStatus::Cancelling
-                    | TaskStatus::Interrupted
-            )
-        {
-            if let (Some(bridge), Some(child_agent_id)) = (
-                self.inner.host_bridge.as_ref(),
-                snapshot.child_agent_id.as_deref(),
-            ) {
-                if let Some(observability) = bridge.child_observability(child_agent_id).await? {
-                    snapshot.child_observability = Some(observability);
-                }
-            }
-        }
+        let read = self.task_status_read(task_id).await?;
+        let mut snapshot = read.snapshot.clone();
         if let Some(projection) = snapshot.child_supervision.take() {
             snapshot.child_supervision = Some(self.task_child_supervision(projection).await?);
         }
-
         Ok(snapshot)
     }
 
-    pub async fn task_output(
-        &self,
-        task_id: &str,
-        block: bool,
-        timeout_ms: u64,
-    ) -> Result<TaskOutputResult> {
-        let started_at = tokio::time::Instant::now();
-        let timeout = Duration::from_millis(timeout_ms);
-        loop {
-            let task = self
-                .task_record(task_id)
-                .await?
-                .ok_or_else(|| task_not_found_error(task_id))?;
-            let status = self.task_output_status(&task).await?;
-            let ready = task_output_ready(&task, &status);
-
-            if !ready && block {
-                let elapsed = started_at.elapsed();
-                if elapsed < timeout {
-                    let remaining = timeout.saturating_sub(elapsed);
-                    let poll_interval =
-                        Duration::from_millis(TASK_OUTPUT_POLL_INTERVAL_MS).min(remaining);
-                    tokio::time::sleep(poll_interval).await;
-                    continue;
-                }
-            }
-
-            let retrieval_status = if ready {
-                TaskOutputRetrievalStatus::Success
-            } else {
-                if block {
-                    TaskOutputRetrievalStatus::Timeout
-                } else {
-                    TaskOutputRetrievalStatus::NotReady
-                }
-            };
-            let snapshot = self.task_output_snapshot(task).await?;
-
-            return Ok(TaskOutputResult {
-                retrieval_status,
-                task: snapshot,
-            });
-        }
-    }
-
-    async fn task_output_snapshot(&self, task: TaskRecord) -> Result<TaskOutputSnapshot> {
-        let latest_message = self.latest_task_message(&task.id).await?;
-        let status = effective_task_output_status(&task.status, latest_message.as_ref());
-        let summary = task.summary.clone();
-
-        let (full_output, output_path, result_summary, exit_status) = if task.kind
-            == TaskKind::CommandTask
-        {
-            let output_path = detail_string(&task.detail, "output_path");
-            let (output, output_path) = self
-                .read_command_task_output(&task, output_path.as_deref())
-                .await?;
-            let result_summary = detail_string(&task.detail, "output_summary")
-                .or_else(|| latest_message.as_ref().map(|message| message.text.clone()));
-            let exit_status = task
-                .detail
-                .as_ref()
-                .and_then(|detail| detail.get("exit_status"))
-                .and_then(|value| value.as_i64())
-                .and_then(|value| i32::try_from(value).ok());
-            (output, output_path, result_summary, exit_status)
-        } else if task.kind == TaskKind::AgentMessageWait
-            && task.status == TaskStatus::Completed
-            && detail_string(&task.detail, "message_id").is_some()
-        {
-            let reply_id =
-                detail_string(&task.detail, "message_id").expect("checked reply reference");
-            let storage = self.inner.storage.clone();
-            let reply = tokio::task::spawn_blocking(move || storage.read_message_by_id(&reply_id))
-                .await??
-                .filter(|message| message.agent_id == task.agent_id)
-                .ok_or_else(|| anyhow!("agent reply output evidence is missing"))?;
-            // Retrieval dereferences the original evidence; it does not
-            // publish a second copy into the runtime message stream.
-            (
-                render_task_message_body(&reply.body),
-                None,
-                detail_string(&task.detail, "output_summary"),
-                None,
-            )
-        } else {
-            let output = latest_message
-                .as_ref()
-                .map(|message| message.text.clone())
-                .or_else(|| detail_string(&task.detail, "output_summary"))
-                .unwrap_or_else(|| summary.clone().unwrap_or_default());
-            let result_summary = if output.trim().is_empty() {
-                None
-            } else {
-                Some(output.clone())
-            };
-            (output, None, result_summary, None)
-        };
-        let (output_preview, output_truncated) =
-            truncate_output_to_char_budget(&full_output, TASK_OUTPUT_PREVIEW_CHAR_BUDGET);
-        let (artifacts, output_artifact) = task_output_artifacts(output_path.as_deref());
-        let failure_artifact = task_failure_artifact(
-            &task,
-            &status,
-            full_output.as_str(),
-            output_path.as_deref(),
-            exit_status,
-        );
-
-        let child_supervision = if let Some(projection) =
-            crate::types::ChildSupervisionProjection::from_task_record(&task)
-        {
-            Some(self.task_child_supervision(projection).await?)
-        } else {
-            None
-        };
-
-        let token_usage = task
-            .detail
-            .as_ref()
-            .and_then(|detail| detail.get("token_usage"))
-            .and_then(|value| serde_json::from_value(value.clone()).ok());
-        let output_capture = task
-            .detail
-            .as_ref()
-            .and_then(|detail| detail.get("output_capture"))
-            .cloned()
-            .and_then(|value| serde_json::from_value(value).ok());
-
-        Ok(TaskOutputSnapshot {
-            task_id: task.id,
-            kind: task.kind.as_str().to_string(),
-            status,
-            summary,
-            output_preview,
-            output_truncated,
-            artifacts,
-            output_artifact,
-            result_summary,
-            exit_status,
-            output_capture,
-            failure_artifact,
-            child_supervision,
-            token_usage,
-        })
-    }
-
-    async fn task_child_supervision(
+    pub(in crate::runtime) async fn task_child_supervision(
         &self,
         projection: crate::types::ChildSupervisionProjection,
     ) -> Result<crate::types::ChildSupervisionProjection> {
@@ -2816,222 +2997,16 @@ impl RuntimeHandle {
         .await?)
     }
 
-    async fn latest_task_message(&self, task_id: &str) -> Result<Option<TaskMessageSnapshot>> {
-        let storage = self.inner.storage.clone();
-        let task_id = task_id.to_owned();
-        tokio::task::spawn_blocking(move || {
-            let recent_messages = storage.read_recent_messages(TASK_OUTPUT_MESSAGE_SCAN_LIMIT)?;
-            if let Some(snapshot) = latest_task_message_in(recent_messages, &task_id) {
-                return Ok(Some(snapshot));
-            }
-            Ok(latest_task_message_in(
-                storage.read_all_messages()?,
-                &task_id,
-            ))
-        })
-        .await?
-    }
-
-    async fn task_output_status(&self, task: &TaskRecord) -> Result<TaskStatus> {
-        let latest_message = self.latest_task_message(&task.id).await?;
-        Ok(effective_task_output_status(
-            &task.status,
-            latest_message.as_ref(),
-        ))
-    }
-
-    async fn read_command_task_output(
-        &self,
-        task: &TaskRecord,
-        output_path: Option<&str>,
-    ) -> Result<(String, Option<String>)> {
-        let max_output_tokens = task
-            .detail
-            .as_ref()
-            .and_then(|detail| detail.get("max_output_tokens"))
-            .and_then(|value| value.as_u64())
-            .map(|value| value as usize);
-        let fallback = detail_string(&task.detail, "initial_output")
-            .or_else(|| detail_string(&task.detail, "output_summary"))
-            .unwrap_or_default();
-        let fallback =
-            crate::tool::helpers::truncate_output_for_tokens(&fallback, max_output_tokens);
-
-        let Some(path) = output_path else {
-            return Ok((fallback, None));
-        };
-
-        match tokio::fs::read(path).await {
-            Ok(content) if !content.is_empty() || fallback.is_empty() => {
-                let content = String::from_utf8_lossy(&content);
-                Ok((
-                    crate::tool::helpers::truncate_output_for_tokens(&content, max_output_tokens),
-                    Some(path.to_string()),
-                ))
-            }
-            Ok(_) => Ok((fallback, Some(path.to_string()))),
-            Err(_) => Ok((fallback, None)),
-        }
-    }
-
     pub async fn stop_task(
         &self,
         task_id: &str,
-        authority_class: &AuthorityClass,
+        _authority_class: &AuthorityClass,
     ) -> Result<TaskRecord> {
-        let existing = self.task_record(task_id).await?;
-        let is_command_task = existing
-            .as_ref()
-            .is_some_and(|task| task.kind == TaskKind::CommandTask);
-        let mut force_stop_requested = false;
-        let mut command_handle_missing = false;
-        if is_command_task {
-            let mut handles = self.inner.task_handles.lock().await;
-            match handles.get_mut(task_id) {
-                Some(command_task::ManagedTaskHandle::Command(handle)) => {
-                    if let Some(cancel_tx) = handle.cancel_tx.take() {
-                        let _ = cancel_tx.send(());
-                    } else if let Some(force_stop_tx) = handle.force_stop_tx.take() {
-                        let _ = force_stop_tx.send(());
-                        force_stop_requested = true;
-                    } else {
-                        force_stop_requested = true;
-                    }
-                }
-                Some(command_task::ManagedTaskHandle::Async(_)) => {
-                    return Err(RuntimeError::new(
-                        RuntimeErrorDomain::Task,
-                        "task_handle_type_mismatch",
-                        format!("task {task_id} has an unexpected async handle"),
-                    )
-                    .with_safe_context("task_id", task_id)
-                    .into());
-                }
-                None => {
-                    command_handle_missing = true;
-                    force_stop_requested = true;
-                }
-            }
-            drop(handles);
-        } else {
-            let mut handles = self.inner.task_handles.lock().await;
-            match handles.remove(task_id) {
-                Some(handle) => {
-                    drop(handles);
-                    match handle {
-                        command_task::ManagedTaskHandle::Async(handle) => {
-                            handle.abort();
-                        }
-                        command_task::ManagedTaskHandle::Command(mut handle) => {
-                            if let Some(cancel_tx) = handle.cancel_tx.take() {
-                                let _ = cancel_tx.send(());
-                            }
-                            if let Some(force_stop_tx) = handle.force_stop_tx.take() {
-                                let _ = force_stop_tx.send(());
-                            }
-                        }
-                    }
-                }
-                None => {
-                    drop(handles);
-                    let can_cleanup_interrupted_child = existing.as_ref().is_some_and(|task| {
-                        task.is_child_agent_task()
-                            && matches!(task.status, TaskStatus::Interrupted)
-                            && detail_string(&task.detail, "child_agent_id").is_some()
-                    });
-                    if !can_cleanup_interrupted_child {
-                        return Err(RuntimeError::validation(
-                            "task_not_running",
-                            format!("task {task_id} is not currently running"),
-                        )
-                        .with_safe_context("task_id", task_id)
-                        .into());
-                    }
-                }
-            }
-        }
-
-        if let Some(child_agent_id) = existing
-            .as_ref()
-            .and_then(|task| detail_string(&task.detail, "child_agent_id"))
-        {
-            if let Some(bridge) = self.inner.host_bridge.as_ref() {
-                let _ = bridge.stop_private_agent(&child_agent_id).await;
-            }
-        }
-
-        let agent_id = self.agent_id().await?;
-        let status = if is_command_task {
-            if command_handle_missing {
-                TaskStatus::Cancelled
-            } else {
-                TaskStatus::Cancelling
-            }
-        } else {
-            TaskStatus::Cancelled
-        };
-        let status_text = match status {
-            TaskStatus::Cancelling => "cancelling",
-            TaskStatus::Cancelled => "cancelled",
-            _ => unreachable!("stop_task only emits cancelling or cancelled"),
-        };
-        let stopped_kind = existing.as_ref().map(|task| task.kind).ok_or_else(|| {
-            RuntimeError::validation(
-                "task_not_running",
-                format!("task {task_id} is not currently running"),
-            )
-            .with_safe_context("task_id", task_id)
-        })?;
-        let mut detail = existing.as_ref().and_then(|task| task.detail.clone());
-        if let Some(detail_map) = detail.as_mut().and_then(|value| value.as_object_mut()) {
-            detail_map.insert("task_status".into(), serde_json::json!(status_text));
-            if is_command_task {
-                detail_map.insert("cancel_requested".into(), serde_json::json!(true));
-                detail_map.insert("accepts_input".into(), serde_json::json!(false));
-                detail_map.insert("input_target".into(), serde_json::json!(null));
-            }
-            if force_stop_requested {
-                detail_map.insert("force_stop_requested".into(), serde_json::json!(true));
-            }
-        }
-        if existing
-            .as_ref()
-            .is_some_and(|task| task.is_worktree_child_agent_task())
-        {
-            if let Some(detail) = detail.as_mut() {
-                let _ = self
-                    .cleanup_task_owned_worktree_in_detail(task_id, detail, "task_stop")
-                    .await;
-            }
-        }
-
-        let stopped = TaskRecord {
-            id: task_id.to_string(),
-            agent_id: agent_id.clone(),
-            kind: stopped_kind,
-            status,
-            created_at: existing
-                .as_ref()
-                .map(|task| task.created_at)
-                .unwrap_or_else(Utc::now),
-            updated_at: Utc::now(),
-            parent_message_id: None,
-            work_item_id: existing.as_ref().and_then(|task| task.work_item_id.clone()),
-            summary: existing
-                .as_ref()
-                .and_then(|task| task.summary.clone())
-                .or_else(|| Some(format!("task {status_text}"))),
-            detail,
-            recovery: existing.as_ref().and_then(|task| task.recovery.clone()),
-        };
-        self.persist_task_status_direct(&stopped, "task_status_updated")
-            .await?;
-        if stopped.kind != TaskKind::CommandTask {
-            return self
-                .finish_stopped_task(agent_id, stopped, authority_class)
-                .await;
-        }
-        Ok(stopped)
+        let original = self
+            .start_original_task_stop_owned(task_id)?
+            .await
+            .context("owned TaskStop worker stopped before its initial reply")??;
+        Ok(original.task)
     }
 
     pub async fn task_input(&self, task_id: &str, input: &str) -> Result<TaskInputResult> {
@@ -3199,7 +3174,7 @@ impl RuntimeHandle {
             .as_ref()
             .and_then(|value| value.input_target.clone())
             .unwrap_or_else(|| "stdin".into());
-        self.inner.storage.append_event(&AuditEvent::legacy(
+        self.append_original_audit_event(AuditEvent::legacy(
             "task_input_delivered",
             serde_json::json!({
                 "task_id": task.id,
@@ -3207,7 +3182,8 @@ impl RuntimeHandle {
                 "bytes_written": bytes_written,
                 "input_target": input_target,
             }),
-        ))?;
+        ))
+        .await?;
 
         Ok(TaskInputResult {
             task: snapshot,
@@ -3266,7 +3242,7 @@ impl RuntimeHandle {
 
         let bytes_written = input.len() as u64;
         let input_target = "child_followup";
-        self.inner.storage.append_event(&AuditEvent::legacy(
+        self.append_original_audit_event(AuditEvent::legacy(
             "task_input_delivered",
             serde_json::json!({
                 "task_id": task.id,
@@ -3275,7 +3251,8 @@ impl RuntimeHandle {
                 "bytes_written": bytes_written,
                 "input_target": input_target,
             }),
-        ))?;
+        ))
+        .await?;
 
         Ok(TaskInputResult {
             task: snapshot,
@@ -3287,44 +3264,6 @@ impl RuntimeHandle {
                 child_agent_id, task.id
             )),
         })
-    }
-
-    async fn finish_stopped_task(
-        &self,
-        agent_id: String,
-        stopped: TaskRecord,
-        _authority_class: &AuthorityClass,
-    ) -> Result<TaskRecord> {
-        if stopped.kind != TaskKind::CommandTask {
-            let message = MessageEnvelope {
-                metadata: Some(serde_json::json!({
-                    "task_id": stopped.id,
-                    "task_kind": stopped.kind,
-                    "task_status": "cancelled",
-                    "task_summary": stopped.summary,
-                    "task_detail": stopped.detail,
-                    "task_recovery": stopped.recovery,
-                })),
-                ..MessageEnvelope::new(
-                    agent_id,
-                    MessageKind::TaskResult,
-                    MessageOrigin::Task {
-                        task_id: stopped.id.clone(),
-                    },
-                    AuthorityClass::RuntimeInstruction,
-                    Priority::Next,
-                    MessageBody::Text {
-                        text: "task cancelled by operator".into(),
-                    },
-                )
-                .with_admission(
-                    MessageDeliverySurface::TaskRejoin,
-                    AdmissionContext::RuntimeOwned,
-                )
-            };
-            self.enqueue(message).await?;
-        }
-        Ok(stopped)
     }
 
     pub async fn create_work_item(
@@ -3340,11 +3279,9 @@ impl RuntimeHandle {
         if let Some(plan_status) = plan_status {
             record.plan_status = plan_status;
         }
-        record.plan_artifact = Some(crate::work_item_plan::ensure_plan_artifact(
-            self.agent_home().as_path(),
-            &record,
-            plan.as_deref(),
-        )?);
+        let (_, plan_preparation) = self
+            .prepare_work_plan_file(&mut record, plan.as_deref())
+            .await?;
         record.todo_list = todo_list;
         record.workspace_id = self
             .agent_state()
@@ -3353,21 +3290,33 @@ impl RuntimeHandle {
             .map(|entry| entry.workspace_id)
             .unwrap_or_else(|| crate::types::AGENT_HOME_WORKSPACE_ID.to_string());
         let execution_protocol = self.plan_work_item_execution_create(&record)?;
-        let commit = self.commit_work_item_transition_with_execution(
-            &crate::runtime_db::transitions::WorkItemTransitionCommand {
-                agent_id,
-                mutation: crate::runtime_db::transitions::WorkItemMutation::Insert {
-                    record: record.clone(),
-                },
-                agent_state: None,
-                brief_evidence: Vec::new(),
-                audit_events: vec![self.work_item_written_event("created", &record, Value::Null)],
-                index_changes: self.inner.storage.index_changes_for_work_item(&record)?,
-                notify_scheduler: true,
-                fault: self.take_transition_fault(),
-            },
-            &execution_protocol,
-        )?;
+        let commit = {
+            let mut mutation = self.begin_mutation().await?;
+            mutation.attach_plan_preparation(plan_preparation)?;
+            mutation
+                .commit_work_transition(
+                    crate::ids::audit_event_id(),
+                    crate::runtime_db::transitions::WorkItemTransitionCommand {
+                        agent_id,
+                        mutation: crate::runtime_db::transitions::WorkItemMutation::Insert {
+                            record: record.clone(),
+                        },
+                        agent_state: None,
+                        brief_evidence: Vec::new(),
+                        audit_events: vec![self.work_item_written_event(
+                            "created",
+                            &record,
+                            Value::Null,
+                        )],
+                        index_changes: self.inner.storage.index_changes_for_work_item(&record)?,
+                        notify_scheduler: true,
+                        fault: self.take_transition_fault(),
+                    },
+                    execution_protocol,
+                    true,
+                )
+                .await
+        }?;
         self.apply_transition_commit(commit).await;
         Ok(record)
     }
@@ -3545,6 +3494,7 @@ impl RuntimeHandle {
         &self,
         record: &WorkItemRecord,
         wait_conditions: &[crate::types::WaitConditionRecord],
+        read: &WorkCommandRead,
     ) -> Result<crate::runtime_db::transitions::ExecutionProtocolTransition> {
         use crate::domain::execution_protocol::{
             AdvanceWorkItemSourceRevision, ExecutionProtocolCommand, ExecutionProtocolState,
@@ -3552,11 +3502,7 @@ impl RuntimeHandle {
             WorkItemExecutionState,
         };
 
-        let existing = self
-            .inner
-            .runtime_db
-            .transitions()
-            .load_execution_protocol_state_if_initialized(&record.agent_id)?;
+        let existing = read.protocol.as_ref();
         let Some(authoritative) = existing
             .as_ref()
             .and_then(|state| state.work_items.get(&record.id))
@@ -3658,16 +3604,15 @@ impl RuntimeHandle {
         &self,
         parent: &WorkItemRecord,
         continuation: &WorkItemContinuationFrame,
+        read: &WorkCommandRead,
     ) -> Result<Option<crate::domain::execution_protocol::ExecutionProtocolCommand>> {
         use crate::domain::execution_protocol::{
             ExecutionProtocolCommand, SuspendWorkItemContinuation,
         };
 
-        let state = self
-            .inner
-            .runtime_db
-            .transitions()
-            .load_execution_protocol_state_if_initialized(&parent.agent_id)?
+        let state = read
+            .protocol
+            .as_ref()
             .ok_or_else(|| anyhow!("continuation suspension requires canonical execution state"))?;
         let authoritative = state
             .work_items
@@ -3690,30 +3635,25 @@ impl RuntimeHandle {
 
     fn plan_work_item_execution_continuation_resume(
         &self,
-        agent_id: &str,
         continuation: &WorkItemContinuationFrame,
         command_reason: &str,
         projected_parent: Option<&WorkItemRecord>,
         projected_wait_conditions: &[WaitConditionRecord],
+        read: &WorkCommandRead,
     ) -> Result<Option<crate::domain::execution_protocol::ExecutionProtocolCommand>> {
         use crate::domain::execution_protocol::{
             ExecutionProtocolCommand, ResumeWorkItemContinuation,
         };
 
-        let state = self
-            .inner
-            .runtime_db
-            .transitions()
-            .load_execution_protocol_state_if_initialized(agent_id)?
+        let state = read
+            .protocol
+            .as_ref()
             .ok_or_else(|| anyhow!("continuation resume requires canonical execution state"))?;
         let authoritative = state
             .work_items
             .get(&continuation.suspended_work_item_id)
             .ok_or_else(|| anyhow!("continuation resume parent execution state is missing"))?;
-        let (source, outcome) = work_item_continuation_resume_source(
-            &self.inner.storage,
-            &self.inner.runtime_db,
-            agent_id,
+        let (source, outcome) = read.continuation_resume_source(
             &continuation.suspended_work_item_id,
             projected_parent,
             projected_wait_conditions,
@@ -3756,12 +3696,6 @@ impl RuntimeHandle {
     ) -> Result<PickedWorkItem> {
         let _admission = self.execution_admission_lease()?;
         let agent_id = self.agent_id().await?;
-        let state = self.agent_state().await?;
-        let current_id = state.current_work_item_id.clone();
-        let previous = match current_id.as_deref() {
-            Some(id) => self.inner.runtime_db.work_items().latest(id)?,
-            None => None,
-        };
         let mut record = self.validate_owned_work_item(&agent_id, &work_item_id)?;
         if record.state != WorkItemState::Open {
             return Err(RuntimeError::validation(
@@ -3771,6 +3705,17 @@ impl RuntimeHandle {
             .with_safe_context("work_item_id", work_item_id)
             .into());
         }
+        let read = self
+            .prepare_work_command_read(&record, WorkCommandReadMode::Focus { clear_blocker })
+            .await?;
+        let state = read.state.as_ref().clone();
+        let current_id = state.current_work_item_id.clone();
+        let previous = current_id
+            .as_deref()
+            .map(|id| read.work.work_item(id))
+            .transpose()?
+            .flatten()
+            .cloned();
         let normalized_reason = reason.and_then(|value| {
             let trimmed = value.trim();
             (!trimmed.is_empty()).then(|| trimmed.to_string())
@@ -3784,6 +3729,7 @@ impl RuntimeHandle {
             self.clear_work_item_blocker_for_pick(
                 &agent_id,
                 record,
+                &read.work,
                 normalized_reason
                     .as_deref()
                     .expect("clear_blocker reason validated"),
@@ -3803,7 +3749,10 @@ impl RuntimeHandle {
         } = blocker_clearance;
         record = work_item;
         let switching = current_id.as_deref().is_some_and(|id| id != record.id);
-        let work_queue = self.inner.storage.work_queue_prompt_projection()?;
+        let work_queue = read
+            .queue
+            .as_ref()
+            .context("Focus command queue projection missing")?;
         let previous_readiness = previous.as_ref().map(|record| {
             work_queue
                 .items
@@ -3827,10 +3776,11 @@ impl RuntimeHandle {
         let mut continuation_resolved = None;
         let mut continuation_expectations = Vec::new();
         let mut continuation_records = Vec::new();
-        let active_continuations = self
-            .inner
-            .storage
-            .latest_active_work_item_continuations_for_agent(&agent_id)?;
+        let active_continuations = read
+            .active_frames()?
+            .into_iter()
+            .cloned()
+            .collect::<Vec<_>>();
         let by_suspended = active_continuations_by_suspended(&active_continuations)?;
         let target_was_yielded = by_suspended.contains_key(record.id.as_str());
         if target_was_yielded {
@@ -3942,10 +3892,9 @@ impl RuntimeHandle {
                 });
         let records_continuation = yield_current && !terminal_transition;
         if yield_current {
-            if let Some(existing) = self
-                .inner
-                .storage
-                .latest_active_work_item_continuation_for_active(&agent_id, &record.id)?
+            if let Some(existing) = active_continuations
+                .iter()
+                .find(|frame| frame.active_work_item_id == record.id)
             {
                 return Err(anyhow!(
                     "cannot yield to work item {} because continuation {} already uses it as active work item",
@@ -4046,7 +3995,7 @@ impl RuntimeHandle {
             })
             .unwrap_or_default();
         let mut execution_protocol = if blocker_cleared {
-            self.plan_work_item_execution_clear_blocker(&record, &wait_conditions)?
+            self.plan_work_item_execution_clear_blocker(&record, &wait_conditions, &read)?
         } else {
             Default::default()
         };
@@ -4060,11 +4009,11 @@ impl RuntimeHandle {
                 WorkItemContinuationState::Active => unreachable!(),
             };
             if let Some(command) = self.plan_work_item_execution_continuation_resume(
-                &agent_id,
                 continuation,
                 command_reason,
                 (record.id == continuation.suspended_work_item_id).then_some(&record),
                 &wait_conditions,
+                &read,
             )? {
                 execution_protocol.commands.push(command);
             }
@@ -4082,38 +4031,51 @@ impl RuntimeHandle {
                 })
                 .expect("yielding current focus creates an active continuation");
             if let Some(command) =
-                self.plan_work_item_execution_continuation_suspend(previous, continuation)?
+                self.plan_work_item_execution_continuation_suspend(previous, continuation, &read)?
             {
                 execution_protocol.commands.push(command);
             }
         }
-        let commit = self.commit_work_item_focus_transition_with_execution(
-            &crate::runtime_db::transitions::WorkItemFocusTransitionCommand {
-                agent_id: agent_id.clone(),
-                work_items,
-                wait_conditions,
-                active_continuation_expectations: Some(active_continuations),
-                continuation_expectations,
-                continuations: continuation_records,
-                agent_state: crate::runtime_db::transitions::AgentStateMutation {
-                    expected: Some(Box::new(state)),
-                    record: Box::new(next_state),
-                },
-                brief_evidence: Vec::new(),
-                audit_events,
-                index_changes,
-                notify_scheduler: true,
-                fault: self.take_transition_fault(),
-            },
-            &execution_protocol,
-        )?;
-        if blocker_cleared {
-            self.inner
-                .runtime_db
-                .task_result_settlements()
-                .wake_deferred_for_owner(&record.agent_id, &record.id, self.now())?;
-        }
+        let commit = {
+            let mut mutation = self.begin_mutation().await?;
+            mutation
+                .commit_focus_transition(
+                    crate::ids::audit_event_id(),
+                    crate::runtime_db::transitions::WorkItemFocusTransitionCommand {
+                        agent_id: agent_id.clone(),
+                        work_items,
+                        wait_conditions,
+                        active_continuation_expectations: Some(active_continuations),
+                        continuation_expectations,
+                        continuations: continuation_records,
+                        agent_state: crate::runtime_db::transitions::AgentStateMutation {
+                            expected: Some(Box::new(state)),
+                            record: Box::new(next_state),
+                        },
+                        brief_evidence: Vec::new(),
+                        audit_events,
+                        index_changes,
+                        notify_scheduler: true,
+                        fault: self.take_transition_fault(),
+                    },
+                    execution_protocol,
+                    true,
+                    None,
+                )
+                .await
+        }?;
         self.apply_transition_commit(commit).await;
+        if blocker_cleared {
+            let wake_at = self.now();
+            self.apply_task_result_operation((&record.id, wake_at), || {
+                crate::runtime_db::transitions::TaskResultOperation::Wake {
+                    work_item_id: record.id.clone(),
+                    at: wake_at,
+                }
+            })
+            .await?
+            .count()?;
+        }
         Ok(PickedWorkItem {
             previous_work_item: previous,
             current_work_item: record,
@@ -4215,10 +4177,8 @@ impl RuntimeHandle {
             wrote_item = true;
         }
         if wrote_item {
-            let plan_artifact_changed = crate::work_item_plan::refresh_plan_artifact_metadata(
-                self.agent_home().as_path(),
-                &mut record,
-            )?;
+            let (plan_artifact_changed, plan_preparation) =
+                self.prepare_work_plan_file(&mut record, None).await?;
             record.revision = existing.revision + 1;
             let mut audit_events = Vec::new();
             if plan_artifact_changed && record.plan_artifact != existing.plan_artifact {
@@ -4270,29 +4230,45 @@ impl RuntimeHandle {
             }
             let execution_protocol =
                 self.plan_work_item_execution_update(&record, readiness_mutation)?;
-            let commit = self.commit_work_item_transition_with_execution(
-                &crate::runtime_db::transitions::WorkItemTransitionCommand {
-                    agent_id,
-                    mutation: crate::runtime_db::transitions::WorkItemMutation::Update {
-                        record: record.clone(),
-                        expected_revision: existing.revision,
-                    },
-                    agent_state,
-                    brief_evidence: Vec::new(),
-                    audit_events,
-                    index_changes: self.inner.storage.index_changes_for_work_item(&record)?,
-                    notify_scheduler: true,
-                    fault: self.take_transition_fault(),
-                },
-                &execution_protocol,
-            )?;
-            if clear_blocker {
-                self.inner
-                    .runtime_db
-                    .task_result_settlements()
-                    .wake_deferred_for_owner(&record.agent_id, &record.id, self.now())?;
-            }
+            let commit = {
+                let mut mutation = self.begin_mutation().await?;
+                mutation.attach_plan_preparation(plan_preparation)?;
+                mutation
+                    .commit_work_transition(
+                        crate::ids::audit_event_id(),
+                        crate::runtime_db::transitions::WorkItemTransitionCommand {
+                            agent_id,
+                            mutation: crate::runtime_db::transitions::WorkItemMutation::Update {
+                                record: record.clone(),
+                                expected_revision: existing.revision,
+                            },
+                            agent_state,
+                            brief_evidence: Vec::new(),
+                            audit_events,
+                            index_changes: self
+                                .inner
+                                .storage
+                                .index_changes_for_work_item(&record)?,
+                            notify_scheduler: true,
+                            fault: self.take_transition_fault(),
+                        },
+                        execution_protocol,
+                        true,
+                    )
+                    .await
+            }?;
             self.apply_transition_commit(commit).await;
+            if clear_blocker {
+                let wake_at = self.now();
+                self.apply_task_result_operation((&record.id, wake_at), || {
+                    crate::runtime_db::transitions::TaskResultOperation::Wake {
+                        work_item_id: record.id.clone(),
+                        at: wake_at,
+                    }
+                })
+                .await?
+                .count()?;
+            }
         }
         Ok(record)
     }
@@ -4326,10 +4302,8 @@ impl RuntimeHandle {
             updated_at: consumed_at,
             ..existing
         };
-        let plan_artifact_changed = crate::work_item_plan::refresh_plan_artifact_metadata(
-            self.agent_home().as_path(),
-            &mut record,
-        )?;
+        let (plan_artifact_changed, plan_preparation) =
+            self.prepare_work_plan_file(&mut record, None).await?;
         let mut audit_events = Vec::new();
         if plan_artifact_changed {
             if let Some(event) = self.work_item_plan_artifact_refreshed_event(&record) {
@@ -4345,21 +4319,30 @@ impl RuntimeHandle {
                 "recheck_consumed_at": record.recheck_consumed_at,
             }),
         ));
-        let commit = self.commit_work_item_transition(
-            &crate::runtime_db::transitions::WorkItemTransitionCommand {
-                agent_id,
-                mutation: crate::runtime_db::transitions::WorkItemMutation::Update {
-                    record: record.clone(),
-                    expected_revision: existing.revision,
-                },
-                agent_state: None,
-                brief_evidence: Vec::new(),
-                audit_events,
-                index_changes: self.inner.storage.index_changes_for_work_item(&record)?,
-                notify_scheduler: true,
-                fault: self.take_transition_fault(),
-            },
-        )?;
+        let commit = {
+            let mut mutation = self.begin_mutation().await?;
+            mutation.attach_plan_preparation(plan_preparation)?;
+            mutation
+                .commit_work_transition(
+                    crate::ids::audit_event_id(),
+                    crate::runtime_db::transitions::WorkItemTransitionCommand {
+                        agent_id,
+                        mutation: crate::runtime_db::transitions::WorkItemMutation::Update {
+                            record: record.clone(),
+                            expected_revision: existing.revision,
+                        },
+                        agent_state: None,
+                        brief_evidence: Vec::new(),
+                        audit_events,
+                        index_changes: self.inner.storage.index_changes_for_work_item(&record)?,
+                        notify_scheduler: true,
+                        fault: self.take_transition_fault(),
+                    },
+                    crate::runtime_db::transitions::ExecutionProtocolTransition::default(),
+                    true,
+                )
+                .await
+        }?;
         self.apply_transition_commit(commit).await;
         Ok(Some(record))
     }
@@ -4388,7 +4371,10 @@ impl RuntimeHandle {
                 continuation_resumed: None,
             });
         }
-        let state = self.agent_state().await?;
+        let read = self
+            .prepare_work_command_read(&existing, WorkCommandReadMode::CompletionIntent)
+            .await?;
+        let state = read.state.as_ref().clone();
         let mut next_state = state.clone();
         let now = Utc::now();
         let execution_binding = state.current_execution_binding.clone();
@@ -4427,22 +4413,18 @@ impl RuntimeHandle {
             updated_at: now,
             ..existing
         };
-        let plan_artifact_changed = crate::work_item_plan::refresh_plan_artifact_metadata(
-            self.agent_home().as_path(),
-            &mut record,
-        )?;
+        let (plan_artifact_changed, plan_preparation) =
+            self.prepare_work_plan_file(&mut record, None).await?;
         let mut audit_events = Vec::new();
         if plan_artifact_changed {
             if let Some(event) = self.work_item_plan_artifact_refreshed_event(&record) {
                 audit_events.push(event);
             }
         }
-        let active_waits = self
-            .inner
-            .storage
-            .raw_active_wait_conditions_for_agent(&agent_id)?
+        let active_waits = read
+            .active_waits_for(&record.id)?
             .into_iter()
-            .filter(|condition| condition.work_item_id.as_deref() == Some(record.id.as_str()))
+            .cloned()
             .collect::<Vec<_>>();
         let mut wait_conditions = Vec::with_capacity(active_waits.len());
         let mut cancelled_wait_condition_ids = Vec::with_capacity(active_waits.len());
@@ -4495,28 +4477,40 @@ impl RuntimeHandle {
                 "completion_intent": record.completion_intent,
             }),
         ));
-        let commit = self.commit_work_item_focus_transition(
-            &crate::runtime_db::transitions::WorkItemFocusTransitionCommand {
-                agent_id,
-                work_items: vec![crate::runtime_db::transitions::WorkItemMutation::Update {
-                    record: record.clone(),
-                    expected_revision: existing.revision,
-                }],
-                wait_conditions,
-                active_continuation_expectations: None,
-                continuation_expectations: Vec::new(),
-                continuations: Vec::new(),
-                agent_state: crate::runtime_db::transitions::AgentStateMutation {
-                    expected: Some(Box::new(state)),
-                    record: Box::new(next_state),
-                },
-                brief_evidence: Vec::new(),
-                audit_events,
-                index_changes: self.inner.storage.index_changes_for_work_item(&record)?,
-                notify_scheduler: true,
-                fault: self.take_transition_fault(),
-            },
-        )?;
+        let commit = {
+            let mut mutation = self.begin_mutation().await?;
+            mutation.attach_plan_preparation(plan_preparation)?;
+            mutation
+                .commit_focus_transition(
+                    crate::ids::audit_event_id(),
+                    crate::runtime_db::transitions::WorkItemFocusTransitionCommand {
+                        agent_id,
+                        work_items: vec![
+                            crate::runtime_db::transitions::WorkItemMutation::Update {
+                                record: record.clone(),
+                                expected_revision: existing.revision,
+                            },
+                        ],
+                        wait_conditions,
+                        active_continuation_expectations: None,
+                        continuation_expectations: Vec::new(),
+                        continuations: Vec::new(),
+                        agent_state: crate::runtime_db::transitions::AgentStateMutation {
+                            expected: Some(Box::new(state)),
+                            record: Box::new(next_state),
+                        },
+                        brief_evidence: Vec::new(),
+                        audit_events,
+                        index_changes: self.inner.storage.index_changes_for_work_item(&record)?,
+                        notify_scheduler: true,
+                        fault: self.take_transition_fault(),
+                    },
+                    Default::default(),
+                    true,
+                    None,
+                )
+                .await
+        }?;
         self.apply_transition_commit(commit).await;
         Ok(CompletedWorkItem {
             work_item: record,
@@ -4641,7 +4635,41 @@ impl RuntimeHandle {
         ))
     }
 
-    pub(crate) async fn prepare_work_item_completion_with_report(
+    #[inline(never)]
+    pub(crate) fn prepare_work_item_completion_with_report<'a>(
+        &'a self,
+        work_item_id: String,
+        authority: WorkItemCompletionAuthority,
+        report_text: String,
+        citations: Vec<crate::types::Citation>,
+        source_turn_index: Option<u64>,
+        source_round: Option<usize>,
+        source_turn_id: Option<String>,
+        source_message_id: Option<String>,
+        source_assistant_round_id: Option<String>,
+        source_tool_call_id: Option<String>,
+        report_source: &'static str,
+        warnings: Vec<serde_json::Value>,
+    ) -> std::pin::Pin<
+        Box<impl std::future::Future<Output = Result<WorkItemCompletionDispatch>> + Send + 'a>,
+    > {
+        Box::pin(self.prepare_work_item_completion_with_report_inner(
+            work_item_id,
+            authority,
+            report_text,
+            citations,
+            source_turn_index,
+            source_round,
+            source_turn_id,
+            source_message_id,
+            source_assistant_round_id,
+            source_tool_call_id,
+            report_source,
+            warnings,
+        ))
+    }
+
+    async fn prepare_work_item_completion_with_report_inner(
         &self,
         work_item_id: String,
         authority: WorkItemCompletionAuthority,
@@ -4749,9 +4777,10 @@ impl RuntimeHandle {
             .with_safe_context("work_item_id", work_item_id)
             .into());
         }
-        let settlement = self
-            .work_item_completion_settlement(&existing, authority)
+        let read = self
+            .prepare_work_command_read(&existing, WorkCommandReadMode::Completion)
             .await?;
+        let settlement = self.work_item_completion_settlement(&existing, authority, &read)?;
         let WorkItemCompletionAuthority::AgentExecution { binding, .. } = authority else {
             return Ok((existing.revision, settlement));
         };
@@ -4784,18 +4813,14 @@ impl RuntimeHandle {
         Ok((existing.revision, settlement))
     }
 
-    async fn work_item_completion_settlement(
+    fn work_item_completion_settlement(
         &self,
         existing: &WorkItemRecord,
         authority: &WorkItemCompletionAuthority,
+        read: &WorkCommandRead,
     ) -> Result<WorkItemCompletionSettlement> {
-        let agent_id = self.agent_id().await?;
-        let state = self.agent_state().await?;
-        let protocol_state = self
-            .inner
-            .runtime_db
-            .transitions()
-            .load_execution_protocol_state_if_initialized(&agent_id)?;
+        let state = read.state.as_ref();
+        let protocol_state = read.protocol.as_ref();
         if protocol_state.as_ref().is_some_and(|protocol| {
             protocol.work_items.get(&existing.id).is_some_and(|record| {
                 matches!(
@@ -4884,10 +4909,8 @@ impl RuntimeHandle {
             }
         };
 
-        let matching_continuations = self
-            .inner
-            .storage
-            .latest_active_work_item_continuations_for_agent(&agent_id)?
+        let matching_continuations = read
+            .active_frames()?
             .into_iter()
             .filter(|frame| frame.active_work_item_id == existing.id)
             .collect::<Vec<_>>();
@@ -5068,37 +5091,43 @@ impl RuntimeHandle {
                 .await?;
             let execution_protocol =
                 if prepared.settlement == WorkItemCompletionSettlement::Detached {
-                    execution_protocol_detached_completion_transition_from_prepared(
-                        &self.inner.storage,
-                        &self.inner.runtime_db,
-                        &prepared,
-                    )?
+                    execution_protocol_detached_completion_transition_from_prepared(&prepared)?
                 } else {
                     crate::runtime_db::transitions::ExecutionProtocolTransition::default()
                 };
-            let commit = self.commit_work_item_focus_transition_with_execution(
-                &crate::runtime_db::transitions::WorkItemFocusTransitionCommand {
-                    agent_id: record.agent_id.clone(),
-                    work_items: vec![crate::runtime_db::transitions::WorkItemMutation::Update {
-                        record: record.clone(),
-                        expected_revision: record.revision - 1,
-                    }],
-                    wait_conditions: prepared.wait_conditions,
-                    active_continuation_expectations: None,
-                    continuation_expectations: prepared.continuation_expectations,
-                    continuations: prepared.continuations,
-                    agent_state: crate::runtime_db::transitions::AgentStateMutation {
-                        expected: Some(Box::new(prepared.expected_agent_state)),
-                        record: Box::new(prepared.committed_agent_state),
-                    },
-                    brief_evidence: vec![prepared.brief],
-                    audit_events: prepared.audit_events,
-                    index_changes: prepared.index_changes,
-                    notify_scheduler: true,
-                    fault: self.take_transition_fault(),
-                },
-                &execution_protocol,
-            );
+            let commit = {
+                let mut mutation = self.begin_mutation().await?;
+                mutation
+                    .commit_focus_transition(
+                        crate::ids::audit_event_id(),
+                        crate::runtime_db::transitions::WorkItemFocusTransitionCommand {
+                            agent_id: record.agent_id.clone(),
+                            work_items: vec![
+                                crate::runtime_db::transitions::WorkItemMutation::Update {
+                                    record: record.clone(),
+                                    expected_revision: record.revision - 1,
+                                },
+                            ],
+                            wait_conditions: prepared.wait_conditions,
+                            active_continuation_expectations: None,
+                            continuation_expectations: prepared.continuation_expectations,
+                            continuations: prepared.continuations,
+                            agent_state: crate::runtime_db::transitions::AgentStateMutation {
+                                expected: Some(Box::new(prepared.expected_agent_state)),
+                                record: Box::new(prepared.committed_agent_state),
+                            },
+                            brief_evidence: vec![prepared.brief],
+                            audit_events: prepared.audit_events,
+                            index_changes: prepared.index_changes,
+                            notify_scheduler: true,
+                            fault: self.take_transition_fault(),
+                        },
+                        execution_protocol,
+                        true,
+                        None,
+                    )
+                    .await
+            };
             match commit {
                 Ok(commit) => {
                     self.apply_transition_commit(commit).await;
@@ -5109,11 +5138,8 @@ impl RuntimeHandle {
                 }
                 Err(error)
                     if attempt + 1 < MAX_ATTEMPTS
-                        && error
-                            .downcast_ref::<crate::runtime_db::RuntimeStateTransitionConflict>()
-                            .is_some_and(
-                                crate::runtime_db::RuntimeStateTransitionConflict::retryable,
-                            ) =>
+                        && crate::runtime_db::retryable_state_transition_conflict(&error)
+                            .is_some() =>
                 {
                     continue;
                 }
@@ -5133,11 +5159,8 @@ impl RuntimeHandle {
         );
         let record = prepared.record.clone();
         let continuation_resumed = prepared.continuation_resumed.clone();
-        let execution_protocol = execution_protocol_detached_completion_transition_from_prepared(
-            &self.inner.storage,
-            &self.inner.runtime_db,
-            &prepared,
-        )?;
+        let execution_protocol =
+            execution_protocol_detached_completion_transition_from_prepared(&prepared)?;
         let tool_execution = prepared.tool_execution.clone();
         let command = crate::runtime_db::transitions::WorkItemFocusTransitionCommand {
             agent_id: record.agent_id.clone(),
@@ -5160,13 +5183,37 @@ impl RuntimeHandle {
             fault: self.take_transition_fault(),
         };
         let commit = if let Some(tool_execution) = tool_execution.as_ref() {
-            self.commit_work_item_focus_transition_with_execution_and_completion_tool(
-                &command,
-                &execution_protocol,
-                tool_execution,
-            )?
+            {
+                let mut mutation = self.begin_mutation().await?;
+                if let Some(preparation) = &prepared.plan_preparation {
+                    mutation.attach_plan_preparation(preparation.clone())?;
+                }
+                mutation
+                    .commit_focus_transition(
+                        crate::ids::audit_event_id(),
+                        command,
+                        execution_protocol,
+                        true,
+                        Some(tool_execution.clone()),
+                    )
+                    .await
+            }?
         } else {
-            self.commit_work_item_focus_transition_with_execution(&command, &execution_protocol)?
+            {
+                let mut mutation = self.begin_mutation().await?;
+                if let Some(preparation) = &prepared.plan_preparation {
+                    mutation.attach_plan_preparation(preparation.clone())?;
+                }
+                mutation
+                    .commit_focus_transition(
+                        crate::ids::audit_event_id(),
+                        command,
+                        execution_protocol,
+                        true,
+                        None,
+                    )
+                    .await
+            }?
         };
         self.apply_transition_commit(commit).await;
         Ok(CompletedWorkItem {
@@ -5175,7 +5222,31 @@ impl RuntimeHandle {
         })
     }
 
-    async fn plan_work_item_completion_with_brief_mode(
+    #[inline(never)]
+    fn plan_work_item_completion_with_brief_mode<'a>(
+        &'a self,
+        work_item_id: &'a str,
+        authority: Option<&'a WorkItemCompletionAuthority>,
+        brief: &'a BriefRecord,
+        binding_event: AuditEvent,
+        require_open: bool,
+        require_completion_commit_attempt: bool,
+    ) -> std::pin::Pin<
+        Box<
+            impl std::future::Future<Output = Result<Option<PreparedWorkItemCompletion>>> + Send + 'a,
+        >,
+    > {
+        Box::pin(self.plan_work_item_completion_with_brief_mode_inner(
+            work_item_id,
+            authority,
+            brief,
+            binding_event,
+            require_open,
+            require_completion_commit_attempt,
+        ))
+    }
+
+    async fn plan_work_item_completion_with_brief_mode_inner(
         &self,
         work_item_id: &str,
         authority: Option<&WorkItemCompletionAuthority>,
@@ -5202,13 +5273,13 @@ impl RuntimeHandle {
                 expected_state,
             ));
         }
+        let read = self
+            .prepare_work_command_read(&existing, WorkCommandReadMode::Completion)
+            .await?;
         let now = Utc::now();
-        let mut state = self.agent_state().await?;
+        let mut state = read.state.as_ref().clone();
         let settlement = match authority {
-            Some(authority) => {
-                self.work_item_completion_settlement(&existing, authority)
-                    .await?
-            }
+            Some(authority) => self.work_item_completion_settlement(&existing, authority, &read)?,
             None => {
                 let intent = existing.completion_intent.as_ref().ok_or_else(|| {
                     anyhow!("completion brief binding requires a completion intent")
@@ -5223,10 +5294,7 @@ impl RuntimeHandle {
         let expected_execution_protocol_state = if require_completion_commit_attempt
             || settlement == WorkItemCompletionSettlement::Detached
         {
-            self.inner
-                .runtime_db
-                .transitions()
-                .load_execution_protocol_state_if_initialized(&agent_id)?
+            read.protocol.clone()
         } else {
             None
         };
@@ -5238,15 +5306,10 @@ impl RuntimeHandle {
                     WaitReference, WorkItemExecutionRecord, WorkItemExecutionState,
                 };
 
-                let active_wait_ids = self
-                    .inner
-                    .storage
-                    .raw_active_wait_conditions_for_agent(&agent_id)?
+                let active_wait_ids = read
+                    .active_waits_for(&existing.id)?
                     .into_iter()
-                    .filter(|condition| {
-                        condition.work_item_id.as_deref() == Some(existing.id.as_str())
-                    })
-                    .map(|condition| condition.id)
+                    .map(|condition| condition.id.clone())
                     .collect::<Vec<_>>();
                 let generation = existing.revision.max(1);
                 let state = match active_wait_ids.as_slice() {
@@ -5446,17 +5509,13 @@ impl RuntimeHandle {
             updated_at: now,
             ..existing
         };
-        let plan_artifact_changed = crate::work_item_plan::refresh_plan_artifact_metadata(
-            self.agent_home().as_path(),
-            &mut record,
-        )?;
+        let (plan_artifact_changed, plan_preparation) =
+            self.prepare_work_plan_file(&mut record, None).await?;
 
-        let active_waits = self
-            .inner
-            .storage
-            .raw_active_wait_conditions_for_agent(&agent_id)?
+        let active_waits = read
+            .active_waits_for(&record.id)?
             .into_iter()
-            .filter(|condition| condition.work_item_id.as_deref() == Some(record.id.as_str()))
+            .cloned()
             .collect::<Vec<_>>();
         let mut wait_conditions = Vec::with_capacity(active_waits.len());
         let mut cancelled_wait_condition_ids = Vec::with_capacity(active_waits.len());
@@ -5519,21 +5578,27 @@ impl RuntimeHandle {
         let mut continuation_expectations = Vec::new();
         let mut continuation_records = Vec::new();
         let mut continuation_resumed = None;
-        if let Some(frame) = self
-            .inner
-            .storage
-            .latest_active_work_item_continuation_for_active(&agent_id, &record.id)?
+        let mut continuation_resumes = BTreeMap::new();
+        if let Some(frame) = read
+            .active_frames()?
+            .into_iter()
+            .find(|frame| frame.active_work_item_id == record.id)
+            .cloned()
         {
             continuation_expectations.push(frame.clone());
-            let suspended = self
-                .inner
-                .runtime_db
-                .work_items()
-                .latest(&frame.suspended_work_item_id)?;
+            let suspended = read.work.work_item(&frame.suspended_work_item_id)?.cloned();
             match suspended {
                 Some(suspended)
                     if suspended.agent_id == agent_id && suspended.state == WorkItemState::Open =>
                 {
+                    continuation_resumes.insert(
+                        frame.id.clone(),
+                        read.continuation_resume_source(
+                            &frame.suspended_work_item_id,
+                            None,
+                            &wait_conditions,
+                        )?,
+                    );
                     let resumed = frame.resume("active_work_item_completed");
                     let summary = continuation_summary(&resumed, "active_work_item_completed");
                     state.current_work_item_id = Some(suspended.id.clone());
@@ -5613,10 +5678,13 @@ impl RuntimeHandle {
             continuation_expectations,
             continuations: continuation_records,
             continuation_resumed,
+            continuation_resumes,
             audit_events,
             index_changes,
             tool_execution: None,
             transcript_entries: Vec::new(),
+            _work_read_budget: Some(read.owned.clone()),
+            plan_preparation: Some(plan_preparation),
         }))
     }
 
@@ -5629,7 +5697,7 @@ impl RuntimeHandle {
         source_round: Option<usize>,
     ) -> Result<()> {
         let agent_id = self.agent_id().await?;
-        self.inner.storage.append_event(&AuditEvent::legacy(
+        self.append_original_audit_event(AuditEvent::legacy(
             "work_item_completion_warning",
             serde_json::json!({
                 "agent_id": agent_id,
@@ -5639,7 +5707,8 @@ impl RuntimeHandle {
                 "source_turn_index": source_turn_index,
                 "source_round": source_round,
             }),
-        ))?;
+        ))
+        .await?;
         Ok(())
     }
 
@@ -5719,7 +5788,7 @@ fn task_status_name(state: &TaskStatus) -> &'static str {
     }
 }
 
-fn append_task_owned_worktree_cleanup_note(
+pub(super) fn append_task_owned_worktree_cleanup_note(
     text: &mut String,
     cleanup: &worktree::TaskOwnedWorktreeCleanup,
     worktree_path: &PathBuf,
@@ -5788,12 +5857,13 @@ pub(super) fn task_from_message(message: &MessageEnvelope, agent_id: &str) -> Re
         .or_else(|| Some(message_text(&message.body)));
 
     let mut detail = metadata.and_then(|value| value.get("task_detail")).cloned();
-    if let Some(parent_turn_id) = message.turn_id.as_ref() {
+    if let Some(result_turn_id) = message.turn_id.as_ref() {
         let detail = detail.get_or_insert_with(|| serde_json::json!({}));
         if let Some(detail) = detail.as_object_mut() {
-            detail
-                .entry("parent_turn_id")
-                .or_insert_with(|| serde_json::json!(parent_turn_id));
+            detail.insert(
+                RESULT_EXECUTION_TURN_ID_DETAIL.into(),
+                serde_json::json!(result_turn_id),
+            );
         }
     }
     if message.correlation_id.is_some() || message.causation_id.is_some() {
@@ -5829,6 +5899,7 @@ pub(super) fn task_from_message(message: &MessageEnvelope, agent_id: &str) -> Re
         detail,
         recovery: metadata
             .and_then(|value| value.get("task_recovery"))
+            .filter(|value| !value.is_null())
             .cloned()
             .map(serde_json::from_value)
             .transpose()?,
@@ -5841,41 +5912,6 @@ fn detail_string(detail: &Option<serde_json::Value>, key: &str) -> Option<String
         .and_then(|value| value.get(key))
         .and_then(|value| value.as_str())
         .map(ToString::to_string)
-}
-
-fn latest_task_message_in(
-    messages: Vec<MessageEnvelope>,
-    task_id: &str,
-) -> Option<TaskMessageSnapshot> {
-    let mut status_candidate = None;
-
-    for message in messages.into_iter().rev() {
-        if !matches!(&message.origin, MessageOrigin::Task { .. }) {
-            continue;
-        }
-        let metadata = match &message.metadata {
-            Some(metadata)
-                if metadata.get("task_id").and_then(|value| value.as_str()) == Some(task_id) =>
-            {
-                metadata
-            }
-            _ => continue,
-        };
-
-        let snapshot = TaskMessageSnapshot {
-            state: task_status_from_message(&message, metadata),
-            text: render_task_message_body(&message.body),
-        };
-
-        if message.kind == MessageKind::TaskResult {
-            return Some(snapshot);
-        }
-        if status_candidate.is_none() {
-            status_candidate = Some(snapshot);
-        }
-    }
-
-    status_candidate
 }
 
 fn effective_task_output_status(
@@ -6044,7 +6080,8 @@ fn task_failure_artifact(
         source_chain,
         context: Box::new(RuntimeErrorContext {
             message_id: task.parent_message_id.clone(),
-            turn_id: detail_string(&task.detail, "parent_turn_id"),
+            turn_id: detail_string(&task.detail, RESULT_EXECUTION_TURN_ID_DETAIL)
+                .or_else(|| detail_string(&task.detail, PARENT_TURN_ID_DETAIL)),
             work_item_id: task.work_item_id.clone(),
             task_id: Some(task.id.clone()),
             correlation_id: detail_string(&task.detail, "correlation_id"),
@@ -6088,20 +6125,161 @@ fn render_task_message_body(body: &MessageBody) -> String {
 }
 
 fn task_status_from_message(message: &MessageEnvelope, metadata: &serde_json::Value) -> TaskStatus {
-    match metadata
-        .get("task_status")
-        .and_then(|value| value.as_str())
-        .unwrap_or(match message.kind {
-            MessageKind::TaskStatus => "running",
-            MessageKind::TaskResult => "completed",
-            _ => "queued",
-        }) {
-        "running" => TaskStatus::Running,
-        "cancelling" => TaskStatus::Cancelling,
-        "completed" => TaskStatus::Completed,
-        "failed" => TaskStatus::Failed,
-        "cancelled" => TaskStatus::Cancelled,
-        "interrupted" => TaskStatus::Interrupted,
-        _ => TaskStatus::Queued,
+    super::resident_task::task_output_status_from_message(message, metadata)
+}
+
+#[cfg(test)]
+mod control_task_result_tests {
+    use super::*;
+
+    fn running_task(detail: serde_json::Value) -> TaskRecord {
+        let now = Utc::now();
+        TaskRecord {
+            id: "control-task".into(),
+            agent_id: "control-agent".into(),
+            kind: TaskKind::ActorInvocation,
+            status: TaskStatus::Running,
+            created_at: now,
+            updated_at: now,
+            parent_message_id: None,
+            work_item_id: Some("work-item".into()),
+            summary: Some("original task".into()),
+            detail: Some(detail),
+            recovery: None,
+        }
+    }
+
+    #[test]
+    fn stop_result_preserves_rejoin_generation_and_freezes_consistent_message_detail() {
+        let task = running_task(serde_json::json!({
+            "rejoin_obligation_id": "control-task", "rejoin_generation": 7,
+            "parent_turn_id": "original-turn", "custom": "preserved"
+        }));
+        let prepared_at = task.created_at + chrono::Duration::seconds(1);
+        let result = prepare_lifecycle_stop_task_result(&task, prepared_at).unwrap();
+        assert_eq!(
+            result.task.rejoin_fence().unwrap(),
+            task.rejoin_fence().unwrap()
+        );
+        assert_eq!(result.task.status, TaskStatus::Interrupted);
+        assert_eq!(result.task.updated_at, prepared_at);
+        assert_eq!(result.message.created_at, prepared_at);
+        assert_eq!(
+            result.task.parent_message_id.as_deref(),
+            Some(result.message.id.as_str())
+        );
+        assert_eq!(
+            result.message.metadata.as_ref().unwrap()["task_detail"],
+            result.task.detail.clone().unwrap()
+        );
+        assert_eq!(result.message.task_id.as_deref(), Some(task.id.as_str()));
+        assert_eq!(result.task.detail.as_ref().unwrap()["custom"], "preserved");
+        assert_eq!(task.status, TaskStatus::Running);
+    }
+
+    #[test]
+    fn missing_creation_source_is_not_repaired_from_stop_result_turn() {
+        let task = running_task(serde_json::json!({
+            "rejoin_obligation_id": "control-task", "rejoin_generation": 1
+        }));
+        let result = prepare_lifecycle_stop_task_result(&task, task.created_at).unwrap();
+        assert!(result
+            .task
+            .detail
+            .as_ref()
+            .unwrap()
+            .get(PARENT_TURN_ID_DETAIL)
+            .is_none());
+        assert_eq!(
+            result.message.metadata.as_ref().unwrap()["task_detail"],
+            result.task.detail.clone().unwrap()
+        );
+        assert!(result.task.rejoin_fence().is_err());
+        assert_eq!(unbound_task_rejoin_generation(&result.task), Some(1));
+    }
+
+    #[test]
+    fn command_creation_source_survives_stop_restart_cancel_and_message_projection() {
+        let mut task = running_task(serde_json::json!({
+            "rejoin_obligation_id": "control-task", "rejoin_generation": 7,
+            "command_creation_id": "control-task", "custom": "preserved"
+        }));
+        task.kind = TaskKind::CommandTask;
+        let source = task.rejoin_fence().unwrap();
+        assert!(unbound_task_rejoin_generation(&task).is_none());
+        let stopped = prepare_lifecycle_stop_task_result(&task, task.updated_at).unwrap();
+        assert_eq!(stopped.task.rejoin_fence().unwrap(), source);
+        assert_eq!(
+            stopped.message.metadata.as_ref().unwrap()["task_detail"],
+            stopped.task.detail.clone().unwrap()
+        );
+        for reason in ["runtime_restarted", "agent_stopped"] {
+            let message = interrupted_task_result_message(&task, reason);
+            let interrupted = task_with_original_interrupted_result(&task, &message);
+            assert_eq!(interrupted.rejoin_fence().unwrap(), source);
+            assert_eq!(
+                message.metadata.as_ref().unwrap()["task_detail"],
+                interrupted.detail.clone().unwrap()
+            );
+            let projected = task_from_message(&message, &task.agent_id).unwrap();
+            assert_eq!(projected.rejoin_fence().unwrap(), source);
+            for status in [TaskStatus::Cancelled, TaskStatus::Interrupted] {
+                let terminal = task_with_result_message(
+                    &task,
+                    status,
+                    Some(serde_json::json!({
+                        "parent_turn_id": "foreign-turn", "command_creation_id": "foreign-command",
+                        "rejoin_obligation_id": "foreign-task", "rejoin_generation": 99
+                    })),
+                    &message,
+                );
+                assert_eq!(terminal.rejoin_fence().unwrap(), source);
+                let detail = terminal.detail.as_ref().unwrap();
+                assert!(detail.get(PARENT_TURN_ID_DETAIL).is_none());
+                assert_eq!(
+                    detail[RESULT_EXECUTION_TURN_ID_DETAIL],
+                    message.turn_id.as_deref().unwrap()
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn original_interruption_preserves_unbound_bound_and_invalid_parent_contracts() {
+        for parent in [
+            None,
+            Some(serde_json::Value::Null),
+            Some(serde_json::json!("original-parent")),
+        ] {
+            let mut task = running_task(serde_json::json!({
+                "rejoin_obligation_id":"control-task", "rejoin_generation":1, "custom":"preserved"
+            }));
+            if let Some(parent) = &parent {
+                task.detail.as_mut().unwrap()[PARENT_TURN_ID_DETAIL] = parent.clone();
+            }
+            let result = interrupted_task_result_message(&task, "agent_stopped");
+            let frozen = serde_json::to_value(&result).unwrap();
+            let normalized = task_with_original_interrupted_result(&task, &result);
+            let mut expected = task_with_result_message(
+                &task,
+                TaskStatus::Interrupted,
+                task.detail.clone(),
+                &result,
+            );
+            if parent.is_none() {
+                expected
+                    .detail
+                    .as_mut()
+                    .unwrap()
+                    .as_object_mut()
+                    .unwrap()
+                    .remove(PARENT_TURN_ID_DETAIL);
+                assert_eq!(unbound_task_rejoin_generation(&normalized), Some(1));
+                assert!(normalized.rejoin_fence().is_err());
+            }
+            expected.updated_at = normalized.updated_at;
+            assert_eq!(normalized, expected);
+            assert_eq!(serde_json::to_value(&result).unwrap(), frozen);
+        }
     }
 }

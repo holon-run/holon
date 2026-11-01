@@ -37,6 +37,7 @@ impl AgentProvider for RepairProvider {
                 .join("\n"),
         );
         Ok(ProviderTurnResponse {
+            material: request.material,
             blocks: vec![ModelBlock::Text {
                 text: "done".into(),
             }],
@@ -185,7 +186,7 @@ async fn register_repair(
     };
     let waiter = runtime.latest_work_item(&waiter.id).await.unwrap().unwrap();
     // Registration outside a live execution has no yielding attempt to settle.
-    seed_waiting_work_execution(runtime.storage(), &waiter, &wait_condition_id);
+    seed_live_waiting_work_execution(runtime, &waiter, &wait_condition_id).await;
     (wait_condition_id, recovery_message_id)
 }
 
@@ -542,6 +543,11 @@ async fn exact_repair_rejects_forged_or_stale_grants_at_canonical_admission() {
         assert!(runtime
             .idle_reply_recovery_source_valid(&anchor, &binding)
             .unwrap());
+        let canonical_anchor = runtime
+            .storage()
+            .read_message_by_id(&anchor.id)
+            .unwrap()
+            .unwrap();
         let mut invalid = anchor.clone();
         if failure == "hint_only" {
             invalid
@@ -573,6 +579,21 @@ async fn exact_repair_rejects_forged_or_stale_grants_at_canonical_admission() {
                     };
                 }
             }
+            // First reject only the forged request against untouched evidence.
+            assert!(
+                !runtime
+                    .idle_reply_recovery_source_valid(&invalid, &binding)
+                    .unwrap(),
+                "{failure}: forged request"
+            );
+            assert_eq!(
+                runtime
+                    .storage()
+                    .read_message_by_id(&anchor.id)
+                    .unwrap()
+                    .unwrap(),
+                canonical_anchor,
+            );
             runtime
                 .inner
                 .runtime_db
@@ -641,25 +662,75 @@ async fn exact_repair_rejects_forged_or_stale_grants_at_canonical_admission() {
                 .connection()
                 .unwrap()
                 .execute(
-                    "UPDATE wait_conditions SET payload_json = ?1, status = ?2
-                 WHERE wait_condition_id = ?3",
+                    "UPDATE wait_conditions SET payload_json = ?1, status = ?2,
+                     work_item_id = ?3, trigger_message_id = ?4, wake_sources_json = ?5
+                     WHERE wait_condition_id = ?6",
                     rusqlite::params![
                         serde_json::to_string(&wait).unwrap(),
                         serde_json::to_value(&wait.status)
                             .unwrap()
                             .as_str()
                             .unwrap(),
+                        wait.work_item_id,
+                        wait.trigger_message_id,
+                        serde_json::to_string(&wait.wake_sources).unwrap(),
                         wait.id,
                     ],
                 )
                 .unwrap();
         }
-        assert!(
-            !runtime
+        if matches!(
+            failure,
+            "missing_wait" | "wrong_generation" | "wrong_identity" | "wrong_source"
+        ) {
+            // A live raw rewrite is a separate integrity failure, not a
+            // semantic false or permission to requalify the forged source.
+            let error = runtime
+                .idle_reply_recovery_source_valid(&anchor, &binding)
+                .unwrap_err();
+            assert!(
+                matches!(
+                    error.downcast_ref::<crate::runtime_db::input_evidence_snapshot::InputEvidenceSnapshotError>(),
+                    Some(crate::runtime_db::input_evidence_snapshot::InputEvidenceSnapshotError::ProjectionChanged(id))
+                        if id == &anchor.id
+                ),
+                "{failure}: {error:#}"
+            );
+        } else if failure == "stale_task_generation" {
+            let error = runtime
                 .idle_reply_recovery_source_valid(&invalid, &binding)
-                .unwrap(),
-            "{failure}"
-        );
+                .unwrap_err();
+            assert!(
+                matches!(
+                    error.downcast_ref::<crate::runtime_db::task_snapshot::TaskSnapshotError>(),
+                    Some(crate::runtime_db::task_snapshot::TaskSnapshotError::CanonicalChanged(key))
+                        if key.family == crate::runtime::resident_task::TaskFamily::Task
+                            && key.id == task.id
+                ),
+                "{failure}: {error:#}"
+            );
+        } else if failure == "wrong_attempt" {
+            // A live raw rewrite cannot replace the qualified Attempt identity.
+            // Canonical admission below must still reject the forged grant
+            // without rebinding or charging its pending Result.
+            let error = runtime
+                .idle_reply_recovery_source_valid(&invalid, &binding)
+                .unwrap_err();
+            assert_eq!(
+                error.downcast_ref::<crate::runtime_db::input_evidence_snapshot::InputEvidenceSnapshotError>(),
+                Some(&crate::runtime_db::input_evidence_snapshot::InputEvidenceSnapshotError::ProjectionChanged(
+                    activation.to_string()
+                )),
+                "{failure}: {error:#}"
+            );
+        } else {
+            assert!(
+                !runtime
+                    .idle_reply_recovery_source_valid(&invalid, &binding)
+                    .unwrap(),
+                "{failure}"
+            );
+        }
         if failure != "hint_only" {
             assert!(
                 repository

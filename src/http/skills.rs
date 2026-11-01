@@ -46,7 +46,14 @@ pub async fn install_skill(
     let agent_home = runtime.agent_home();
     let user_home = effective_user_home_dir(&state).map_err(error_response)?;
     let kind = request.kind.clone();
+    let writer = state
+        .host
+        .context_resources()
+        .begin_write()
+        .map_err(error_response)?;
     let skill_name = tokio::task::spawn_blocking(move || {
+        writer.enter_physical();
+        let _writer = writer;
         crate::skills::install_skill_with_user_home(&agent_home, Some(&user_home), &kind)
     })
     .await
@@ -61,6 +68,7 @@ pub async fn install_skill(
                 "kind": request.kind,
             }),
         )
+        .await
         .map_err(error_response)?;
     Ok(Json(json!({
         "ok": true,
@@ -77,7 +85,14 @@ pub async fn add_skill_to_catalog(
 ) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
     authorize_control(&headers, &state).map_err(authentication_error_response)?;
     let user_home = effective_user_home_dir(&state).map_err(error_response)?;
+    let writer = state
+        .host
+        .context_resources()
+        .begin_write()
+        .map_err(error_response)?;
     let skill_name = tokio::task::spawn_blocking(move || {
+        writer.enter_physical();
+        let _writer = writer;
         crate::skills::add_library_skill(&user_home, &request.kind)
     })
     .await
@@ -97,6 +112,11 @@ pub async fn remove_skill_from_catalog(
 ) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
     authorize_control(&headers, &state).map_err(authentication_error_response)?;
     let user_home = effective_user_home_dir(&state).map_err(error_response)?;
+    let _writer = state
+        .host
+        .context_resources()
+        .begin_write()
+        .map_err(error_response)?;
     crate::skills::remove_library_skill(&user_home, &request.name).map_err(error_response)?;
     Ok(Json(json!({
         "ok": true,
@@ -112,6 +132,11 @@ pub async fn reconcile_skill_catalog(
 ) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
     authorize_control(&headers, &state).map_err(authentication_error_response)?;
     let user_home = effective_user_home_dir(&state).map_err(error_response)?;
+    let _writer = state
+        .host
+        .context_resources()
+        .begin_write()
+        .map_err(error_response)?;
     let result = crate::skills::reconcile_library_skills(&user_home, request.name.as_deref())
         .map_err(error_response)?;
     Ok(Json(json!({
@@ -126,6 +151,11 @@ pub async fn refresh_skill_catalog(
     headers: HeaderMap,
 ) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
     authorize_control(&headers, &state).map_err(authentication_error_response)?;
+    let _writer = state
+        .host
+        .context_resources()
+        .begin_write()
+        .map_err(error_response)?;
     let user_home = effective_user_home_dir(&state).map_err(error_response)?;
     let roots = crate::skills::existing_skill_roots(
         Some(&user_home),
@@ -193,6 +223,11 @@ pub async fn enable_skill(
         .map_err(agent_access_error)?;
     let agent_home = runtime.agent_home();
     let user_home = effective_user_home_dir(&state).map_err(error_response)?;
+    let _writer = state
+        .host
+        .context_resources()
+        .begin_write()
+        .map_err(error_response)?;
     let skill_name = crate::skills::enable_agent_skill(
         &agent_home,
         Some(&user_home),
@@ -209,6 +244,7 @@ pub async fn enable_skill(
                 "mode": request.mode,
             }),
         )
+        .await
         .map_err(error_response)?;
     Ok(Json(json!({
         "ok": true,
@@ -230,6 +266,11 @@ pub async fn uninstall_skill(
         .await
         .map_err(agent_access_error)?;
     let agent_home = runtime.agent_home();
+    let _writer = state
+        .host
+        .context_resources()
+        .begin_write()
+        .map_err(error_response)?;
     crate::skills::uninstall_skill(&agent_home, &request.name).map_err(error_response)?;
     runtime
         .append_audit_event(
@@ -239,6 +280,7 @@ pub async fn uninstall_skill(
                 "skill_name": request.name,
             }),
         )
+        .await
         .map_err(error_response)?;
     Ok(Json(json!({
         "ok": true,
@@ -261,6 +303,11 @@ pub async fn disable_skill(
         .await
         .map_err(agent_access_error)?;
     let agent_home = runtime.agent_home();
+    let _writer = state
+        .host
+        .context_resources()
+        .begin_write()
+        .map_err(error_response)?;
     crate::skills::disable_agent_skill(&agent_home, &request.name).map_err(error_response)?;
     runtime
         .append_audit_event(
@@ -270,6 +317,7 @@ pub async fn disable_skill(
                 "skill_name": request.name,
             }),
         )
+        .await
         .map_err(error_response)?;
     Ok(Json(json!({
         "ok": true,
@@ -405,7 +453,7 @@ async fn agent_scoped_skill_detail(
         .map_err(agent_access_error)?;
     let Some(skill) = skills
         .discoverable_skills
-        .into_iter()
+        .iter()
         .find(|entry| entry.skill_id == skill_id)
     else {
         return Err(not_found(format!("skill {skill_id} not found")));

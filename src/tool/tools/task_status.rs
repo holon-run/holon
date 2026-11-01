@@ -38,10 +38,9 @@ pub(crate) async fn execute(
 ) -> Result<crate::tool::ToolResult> {
     let args: TaskStatusArgs = parse_tool_args(NAME, input)?;
     let task_id = validate_non_empty(args.task_id, NAME, "task_id")?;
-    let snapshot = runtime
-        .managed_tasks()
-        .task_status_snapshot(&task_id)
-        .await?;
+    let read = runtime.managed_tasks().task_status_read(&task_id).await?;
+    // The remaining read carrier keeps pins through synchronous serialization.
+    let snapshot = read.snapshot;
     serialize_success(
         NAME,
         &TaskStatusResult {

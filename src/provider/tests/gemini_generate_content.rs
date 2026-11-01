@@ -9,13 +9,13 @@ use crate::provider::{
     budget::estimate_context_budget,
     provider_error_code, provider_transport_diagnostics,
     retry::{classify_provider_error, ProviderFailureKind, RetryDisposition},
-    ModelToolCallKind, ProviderBlockData,
+    ModelToolCallKind, ProviderBlockData, ProviderImageData,
 };
 use axum::{routing::post, Json, Router};
 use base64::Engine;
 use serde_json::{json, Value};
 
-fn gemini_image_fixture(format: image::ImageFormat) -> (String, String) {
+fn gemini_image_fixture(format: image::ImageFormat) -> (String, ProviderImageData) {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("image");
     image::RgbImage::from_pixel(2, 1, image::Rgb([24, 64, 128]))
@@ -24,7 +24,9 @@ fn gemini_image_fixture(format: image::ImageFormat) -> (String, String) {
     let image = crate::tool::tools::view_image::read_visual_reference(&path).unwrap();
     (
         image.visual_reference.mime,
-        base64::engine::general_purpose::STANDARD.encode(image.bytes),
+        base64::engine::general_purpose::STANDARD
+            .encode(image.bytes)
+            .into(),
     )
 }
 
@@ -374,6 +376,39 @@ async fn gemini_request_lowers_png_jpeg_and_image_only_turns() {
 }
 
 #[tokio::test]
+async fn gemini_required_unsupported_images_fail_fast_instead_of_becoming_text_only() {
+    for prompt in ["inspect this", ""] {
+        let (body, response) = gemini_request_with_budget(
+            ProviderTurnRequest::plain(
+                "system",
+                vec![ConversationMessage::UserImage {
+                    prompt: prompt.into(),
+                    media_type: "application/pdf".into(),
+                    data_base64: String::from("sensitive-image-data").into(),
+                    optional_history: false,
+                }],
+                Vec::new(),
+            ),
+            None,
+            8192,
+        )
+        .await;
+        let error = response.expect_err("required images cannot be silently discarded");
+        assert!(body.is_none());
+        assert_eq!(provider_error_code(&error), Some("image_input_invalid"));
+        assert_eq!(
+            classify_provider_error(&error).disposition,
+            RetryDisposition::FailFast
+        );
+        assert_eq!(
+            provider_transport_diagnostics(&error).unwrap().stage,
+            "request_preflight"
+        );
+        assert!(!error.to_string().contains("sensitive-image-data"));
+    }
+}
+
+#[tokio::test]
 async fn gemini_request_preserves_image_text_and_tool_history_order() {
     let (png_type, png_data) = gemini_image_fixture(image::ImageFormat::Png);
     let (jpeg_type, jpeg_data) = gemini_image_fixture(image::ImageFormat::Jpeg);
@@ -470,7 +505,7 @@ async fn gemini_required_invalid_images_fail_fast_without_leaking_payloads() {
                     vec![ConversationMessage::UserImage {
                         prompt: prompt.into(),
                         media_type: media_type.into(),
-                        data_base64: data_base64.into(),
+                        data_base64: String::from(data_base64).into(),
                         optional_history: false,
                     }],
                     Vec::new(),
@@ -504,7 +539,7 @@ async fn gemini_required_oversized_image_is_rejected_before_http() {
             vec![ConversationMessage::UserImage {
                 prompt: "inspect this".into(),
                 media_type: "image/png".into(),
-                data_base64: "A".repeat(max_bytes.div_ceil(3) * 4 + 4),
+                data_base64: "A".repeat(max_bytes.div_ceil(3) * 4 + 4).into(),
                 optional_history: false,
             }],
             Vec::new(),
@@ -529,7 +564,7 @@ async fn gemini_optional_invalid_history_is_explicitly_omitted() {
         vec![ConversationMessage::UserImage {
             prompt: "historical image".into(),
             media_type: "application/pdf".into(),
-            data_base64: "sensitive-image-data".into(),
+            data_base64: String::from("sensitive-image-data").into(),
             optional_history: true,
         }],
         Vec::new(),

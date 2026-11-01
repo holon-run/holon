@@ -156,7 +156,7 @@ fn image_message(fixture: &Fixture, label: &str, optional_history: bool) -> Conv
         // Never disclose the randomly selected answers in text or filenames.
         prompt: format!("Image {label}. Inspect its visible colored shapes."),
         media_type: "image/png".into(),
-        data_base64: fixture.data_base64.clone(),
+        data_base64: fixture.data_base64.clone().into(),
         optional_history,
     }
 }

@@ -1,5 +1,6 @@
 use super::*;
 use crate::runtime::tests::support::LifecycleHarness;
+use crate::runtime_db::input_evidence_writes::acknowledge_input_evidence_tx;
 use crate::runtime_db::task_result_settlement::{
     charge_recovery_admission_tx, TaskResultSettlementState,
 };
@@ -9,7 +10,7 @@ use crate::types::{
     WakeSource, WorkItemRecord,
 };
 
-fn pending_command_result(
+async fn pending_command_result(
     runtime: &RuntimeHandle,
     task_id: &str,
     now: DateTime<Utc>,
@@ -46,31 +47,117 @@ fn pending_command_result(
         })),
         recovery: None,
     };
-    runtime.runtime_db().tasks().upsert(&task).unwrap();
-    runtime.storage().append_message(&signal).unwrap();
     runtime
-        .runtime_db()
-        .task_result_settlements()
-        .ensure_pending(&task, &signal, now)
+        .persist_task_transition_with_message(&task, "task_status_updated", &signal)
+        .await
+        .unwrap();
+    let signal = runtime
+        .storage()
+        .read_message_by_id(&signal.id)
         .unwrap()
+        .unwrap();
+    assert!(signal.message_seq.is_some());
+    runtime
+        .apply_task_result_operation((&task.id, &signal, now), || {
+            crate::runtime_db::transitions::TaskResultOperation::EnsurePending {
+                task_id: task.id.clone(),
+                message: Box::new(signal.clone()),
+                at: now,
+            }
+        })
+        .await
         .unwrap()
+        .record()
+        .unwrap()
+        .as_ref()
+        .unwrap()
+        .clone()
 }
 
-fn exhaust(runtime: &RuntimeHandle, record: &TaskResultSettlementRecord) {
+// Legacy fixture fields have no equivalent native operation (including None).
+async fn owned_settlement_write(
+    runtime: &RuntimeHandle,
+    result_identity: &str,
+    write: impl FnMut(&rusqlite::Transaction<'_>) -> anyhow::Result<()> + Send + 'static,
+) {
+    use crate::runtime::resident_task::{TaskFamily, TaskKey};
+    owned_task_fixture_write(
+        runtime,
+        std::collections::BTreeSet::from([TaskKey::new(
+            TaskFamily::ResultSettlement,
+            result_identity,
+        )]),
+        write,
+    )
+    .await;
+}
+
+pub(in crate::runtime) async fn owned_task_fixture_write(
+    runtime: &RuntimeHandle,
+    keys: std::collections::BTreeSet<crate::runtime::resident_task::TaskKey>,
+    mut write: impl FnMut(&rusqlite::Transaction<'_>) -> anyhow::Result<()> + Send + 'static,
+) {
+    use crate::runtime::resident_task::TaskCaptureRequest;
+    use crate::runtime_db::task_snapshot::{
+        prepare_task_write_tx, register_task_writes_with_budget_tx, TaskDomainLoadRequest,
+    };
+
+    let mut mutation = runtime.begin_mutation().await.unwrap();
+    let (_, record_limit, byte_limit) = mutation.context_input_evidence_policy().unwrap();
+    let load = TaskDomainLoadRequest {
+        recovery_at: None,
+        query: Default::default(),
+        capture: TaskCaptureRequest {
+            include_active: false,
+            include_unsettled: false,
+            terminal_limit: 0,
+            required_keys: keys.clone(),
+            recovery_source_ids: Default::default(),
+        },
+        record_limit,
+        byte_limit,
+    };
+    mutation
+        .prepare_owner_task_domain_request(&load)
+        .await
+        .unwrap();
+    let db = runtime.inner.runtime_db.clone();
+    let ledger = runtime.inner.input_evidence_budget.clone();
+    mutation
+        .commit_input_evidence(crate::ids::audit_event_id(), move |scope| {
+            db.transaction(|tx| {
+                let proof = prepare_task_write_tx(tx, scope, &keys)?;
+                write(tx)?;
+                let state =
+                    crate::runtime_db::context_inputs::ContextDurableRead::new(tx, &scope.agent_id)
+                        .scope_facts()?
+                        .state
+                        .context("settlement fixture has no canonical State")?;
+                let facts =
+                    register_task_writes_with_budget_tx(tx, &proof, &keys, &state, &load, &ledger)?;
+                let mut acknowledged = acknowledge_input_evidence_tx(tx, scope, (), &[])?;
+                acknowledged.task_delta = Some(facts.delta);
+                Ok(acknowledged)
+            })
+        })
+        .await
+        .unwrap();
+}
+
+async fn exhaust(runtime: &RuntimeHandle, record: &TaskResultSettlementRecord) {
     let mut now = record.next_recheck_at.unwrap();
     for attempt in 1..=5 {
-        runtime
-            .runtime_db()
-            .transaction(|tx| {
-                assert!(charge_recovery_admission_tx(
-                    tx,
-                    &record.result_identity,
-                    &format!("root-{attempt}"),
-                    now,
-                )?);
-                Ok(())
-            })
-            .unwrap();
+        let result_identity = record.result_identity.clone();
+        owned_settlement_write(runtime, &record.result_identity, move |tx| {
+            assert!(charge_recovery_admission_tx(
+                tx,
+                &result_identity,
+                &format!("root-{attempt}"),
+                now,
+            )?);
+            Ok(())
+        })
+        .await;
         now = runtime
             .runtime_db()
             .task_result_settlements()
@@ -83,6 +170,63 @@ fn exhaust(runtime: &RuntimeHandle, record: &TaskResultSettlementRecord) {
 }
 
 #[tokio::test(start_paused = true)]
+async fn paused_diagnostic_preserves_unit_result_through_runtime_write_and_noop() {
+    let harness = LifecycleHarness::new();
+    let runtime = harness.runtime();
+    let record = pending_command_result(
+        runtime,
+        "paused-unit-result",
+        harness.now() - chrono::Duration::seconds(2000),
+    )
+    .await;
+    exhaust(runtime, &record).await;
+    runtime
+        .publish_paused_task_result_diagnostics("default")
+        .await
+        .unwrap();
+    let marked = runtime
+        .runtime_db()
+        .task_result_settlements()
+        .latest_for_message(&record.message_id)
+        .unwrap()
+        .unwrap();
+    assert_eq!(marked.recovery_diagnostic_at, Some(harness.now()));
+    assert_eq!(marked.state, TaskResultSettlementState::PersistedPending);
+    assert_eq!(marked.recovery_attempts, 5);
+    for epoch in [marked.recovery_epoch, marked.recovery_epoch + 1] {
+        let now = harness.now() + chrono::Duration::seconds(1);
+        runtime
+            .apply_task_result_operation((&record.result_identity, epoch, now), || {
+                crate::runtime_db::transitions::TaskResultOperation::MarkRecoveryDiagnostic {
+                    result_identity: record.result_identity.clone(),
+                    epoch,
+                    now,
+                }
+            })
+            .await
+            .unwrap()
+            .unit()
+            .unwrap();
+    }
+    runtime
+        .publish_paused_task_result_diagnostics("default")
+        .await
+        .unwrap();
+    let unchanged = runtime
+        .runtime_db()
+        .task_result_settlements()
+        .latest_for_message(&record.message_id)
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        unchanged.recovery_diagnostic_at,
+        marked.recovery_diagnostic_at
+    );
+    assert_eq!(unchanged.updated_at, marked.updated_at);
+    assert_eq!(runtime.storage().read_recent_briefs(20).unwrap().len(), 1);
+}
+
+#[tokio::test(start_paused = true)]
 async fn paused_scanner_reports_once_without_queueing_or_exposing_result_content() {
     let harness = LifecycleHarness::new();
     let runtime = harness.runtime();
@@ -90,8 +234,9 @@ async fn paused_scanner_reports_once_without_queueing_or_exposing_result_content
         &runtime,
         "paused-task",
         harness.now() - chrono::Duration::seconds(2000),
-    );
-    exhaust(&runtime, &record);
+    )
+    .await;
+    exhaust(&runtime, &record).await;
     assert!(!runtime.emit_due_task_result_recovery().await.unwrap());
     assert!(!runtime.emit_due_task_result_recovery().await.unwrap());
     let briefs = runtime.storage().read_recent_briefs(20).unwrap();
@@ -118,19 +263,18 @@ async fn paused_scanner_reports_once_without_queueing_or_exposing_result_content
     assert!(paused.recovery_diagnostic_at.is_some());
     // Simulate a crash after the Brief/event committed, before its report marker.
     paused.recovery_diagnostic_at = None;
-    runtime
-        .runtime_db()
-        .connection()
-        .unwrap()
-        .execute(
+    owned_settlement_write(runtime, &record.result_identity, move |tx| {
+        tx.execute(
             "UPDATE task_result_settlements SET recovery_diagnostic_at = NULL, payload_json = ?2
          WHERE result_identity = ?1",
             rusqlite::params![
                 paused.result_identity,
                 serde_json::to_string(&paused).unwrap()
             ],
-        )
-        .unwrap();
+        )?;
+        Ok(())
+    })
+    .await;
     assert!(!runtime.emit_due_task_result_recovery().await.unwrap());
     assert_eq!(runtime.storage().read_recent_briefs(20).unwrap().len(), 1);
     let report =
@@ -154,8 +298,9 @@ async fn paused_diagnostic_preserves_deferred_reason_with_legacy_budget_default(
             &runtime,
             "paused-task",
             harness.now() - chrono::Duration::seconds(2000),
-        );
-        exhaust(&runtime, &record);
+        )
+        .await;
+        exhaust(&runtime, &record).await;
         let mut paused = runtime
             .runtime_db()
             .task_result_settlements()
@@ -163,21 +308,23 @@ async fn paused_diagnostic_preserves_deferred_reason_with_legacy_budget_default(
             .unwrap()
             .unwrap();
         paused.deferred_reason = reason.map(str::to_owned);
-        runtime
-            .runtime_db()
-            .connection()
-            .unwrap()
-            .execute(
-                "UPDATE task_result_settlements SET payload_json = ?2 WHERE result_identity = ?1",
+        owned_settlement_write(runtime, &record.result_identity, move |tx| {
+            tx.execute(
+                "UPDATE task_result_settlements SET payload_json = ?2, deferred_reason = ?3
+                 WHERE result_identity = ?1",
                 rusqlite::params![
                     paused.result_identity,
-                    serde_json::to_string(&paused).unwrap()
+                    serde_json::to_string(&paused).unwrap(),
+                    paused.deferred_reason,
                 ],
-            )
-            .unwrap();
+            )?;
+            Ok(())
+        })
+        .await;
 
         runtime
             .publish_paused_task_result_diagnostics("default")
+            .await
             .unwrap();
         let briefs = runtime.storage().read_recent_briefs(20).unwrap();
         assert_eq!(briefs.len(), 1);
@@ -198,8 +345,9 @@ async fn paused_diagnostics_drain_beyond_scanner_batch_without_a_timer() {
             runtime,
             &format!("paused-{index}"),
             harness.now() - chrono::Duration::seconds(2000),
-        );
-        exhaust(runtime, &record);
+        )
+        .await;
+        exhaust(runtime, &record).await;
     }
     assert!(!runtime.emit_due_task_result_recovery().await.unwrap());
     assert_eq!(
@@ -225,9 +373,9 @@ async fn paused_result_does_not_block_same_owner_new_results_or_charge_scanner_p
     let harness = LifecycleHarness::new();
     let runtime = harness.runtime();
     let now = harness.now() - chrono::Duration::seconds(2000);
-    let paused = pending_command_result(&runtime, "paused-task", now);
-    exhaust(&runtime, &paused);
-    let fresh = pending_command_result(&runtime, "fresh-task", now);
+    let paused = pending_command_result(&runtime, "paused-task", now).await;
+    exhaust(&runtime, &paused).await;
+    let fresh = pending_command_result(&runtime, "fresh-task", now).await;
     assert!(runtime.emit_due_task_result_recovery().await.unwrap());
     assert!(!runtime.emit_due_task_result_recovery().await.unwrap());
     let fresh = runtime
@@ -255,7 +403,8 @@ async fn scanner_defers_obligation_claimed_by_another_waiter_without_charging() 
         runtime,
         "claimed-task",
         harness.now() - chrono::Duration::seconds(2000),
-    );
+    )
+    .await;
     let waiter = WorkItemRecord::new("default", "claim task result", WorkItemState::Open);
     runtime.storage().append_work_item(&waiter).unwrap();
     runtime
@@ -322,7 +471,8 @@ async fn scanner_uses_obligation_classification_instead_of_queue_progress() {
             runtime,
             "queue-progress-task",
             harness.now() - chrono::Duration::seconds(2000),
-        );
+        )
+        .await;
         runtime
             .runtime_db()
             .queue_entries()

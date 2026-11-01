@@ -1,13 +1,14 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use super::{
-    timestamp, update_tx, TaskResultSettlementRecord, TaskResultSettlementRepository,
-    TaskResultSettlementState,
+    update_tx, SourceBody, TaskResultSettlementRecord, TaskResultSettlementRepository,
+    TaskResultSettlementState, TaskResultSourceRead,
 };
-use anyhow::Result;
+use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
 use rusqlite::{params, OptionalExtension, Transaction};
 
+use crate::domain::execution_protocol::TaskRejoinSource;
 use crate::types::{
     AdmissionContext, AgentMessageDeliveryOutcome, AgentMessageDeliveryRecord,
     AgentMessageDeliveryState, AuthorityClass, MessageDeliverySurface, MessageEnvelope,
@@ -136,102 +137,12 @@ impl TaskResultSettlementRepository<'_> {
         message_id: &str,
         now: DateTime<Utc>,
     ) -> Result<Option<String>> {
-        self.db.transaction(|tx| {
-            let Some(record) = super::latest_for_message_tx(tx, message_id)? else {
-                return Ok(None);
-            };
-            if record.agent_id != agent_id
-                || record.state != TaskResultSettlementState::CallerAdmitted
-            {
-                return Ok(None);
-            }
-            let Some(activation_id) = record.activation_id.as_deref() else {
-                return Ok(None);
-            };
-            let Some(attempt) = super::reply_admission_attempt_tx(tx, agent_id, activation_id)?
-            else {
-                return Ok(None);
-            };
-            if attempt.state
-                != crate::domain::execution_protocol::ExecutionAttemptState::Interrupted
-            {
-                return Ok(None);
-            }
-            let Some(turn) = attached_turn_for_activation_tx(tx, &attempt, true)? else {
-                return Ok(None);
-            };
-            let Some(anchor) = attempt.source_message_id.as_deref() else {
-                return Ok(None);
-            };
-            if turn.terminal.as_ref().map(|terminal| terminal.kind)
-                != Some(crate::types::TurnTerminalKind::Interrupted)
-                || turn.idle_input_batch.as_ref().is_none_or(|batch| {
-                    batch.activation_id.as_deref() != Some(activation_id)
-                        || batch.anchor_message_id != anchor
-                })
-                || !tx.query_row(
-                    "SELECT EXISTS(SELECT 1 FROM queue_entries
-                     WHERE agent_id = ?1 AND message_id = ?2 AND status = 'interrupted')",
-                    params![agent_id, anchor],
-                    |row| row.get::<_, bool>(0),
-                )?
-            {
-                return Ok(None);
-            }
-            let recovery = RecoverySources {
-                predecessor_turn_id: turn.turn_id.clone(),
-                activation_turns: BTreeMap::from([(
-                    activation_id.to_owned(),
-                    turn.turn_id.clone(),
-                )]),
-            };
-            let live: Vec<_> = turn
-                .live_input_batches
-                .iter()
-                .filter(|batch| {
-                    batch
-                        .items
-                        .iter()
-                        .any(|item| item.message_id == record.message_id)
-                })
-                .collect();
-            let valid = if let Some(batch) = live.first() {
-                live.len() == 1
-                    && turn.input_message_ids.contains(&record.message_id)
-                    && batch.activation_id == activation_id
-                    && batch.result_identities.contains(&record.result_identity)
-                    && batch.items.iter().any(|item| {
-                        item.message_id == record.message_id
-                            && item.source_ref == format!("message:{}", record.message_id)
-                    })
-                    && source_is_live_tx(
-                        tx,
-                        &record,
-                        agent_id,
-                        &turn.turn_id,
-                        Some(activation_id),
-                        now,
-                        Some(&recovery),
-                    )?
-            } else {
-                // Initial results live in the admission ledger, not ordinary input IDs.
-                turn.idle_input_batch
-                    .as_ref()
-                    .is_some_and(|batch| record.created_at <= batch.cutoff)
-                    && initial_source_is_recoverable_tx(
-                        tx,
-                        &record,
-                        &attempt,
-                        activation_id,
-                        now,
-                        &recovery,
-                    )?
-            };
-            Ok(valid.then(|| anchor.to_owned()))
-        })
+        self.db
+            .transaction(|tx| interrupted_admitted_result_anchor_tx(tx, agent_id, message_id, now))
     }
 
     /// Discovery is not a grant. The attachment transaction rechecks every identity.
+    #[cfg(test)]
     pub(crate) fn same_turn_candidates(
         &self,
         agent_id: &str,
@@ -239,29 +150,8 @@ impl TaskResultSettlementRepository<'_> {
         cutoff: DateTime<Utc>,
         limit: usize,
     ) -> Result<Vec<TaskResultSettlementRecord>> {
-        self.db.transaction(|tx| {
-            let records = super::records_tx(
-                tx,
-                "SELECT payload_json FROM task_result_settlements
-                 WHERE agent_id = ?1 AND parent_turn_id = ?2
-                   AND state = 'persisted_pending' AND activation_id IS NULL
-                   AND created_at <= ?3
-                 ORDER BY created_at ASC, result_identity ASC LIMIT ?4",
-                params![
-                    agent_id,
-                    turn_id,
-                    timestamp(cutoff),
-                    limit.min(LIVE_TASK_RESULT_CANDIDATE_LIMIT) as i64
-                ],
-            )?;
-            let mut candidates = Vec::new();
-            for record in records {
-                if source_is_live_tx(tx, &record, agent_id, turn_id, None, cutoff, None)? {
-                    candidates.push(record);
-                }
-            }
-            Ok(candidates)
-        })
+        self.db
+            .transaction(|tx| same_turn_candidates_tx(tx, agent_id, turn_id, cutoff, limit))
     }
 
     /// A settlement's anchor turn is live only while its turn record is still
@@ -469,12 +359,15 @@ pub(crate) fn recover_live_task_results_tx(
             recovery
                 .activation_turns
                 .values()
-                .any(|turn| turn == &record.parent_turn_id)
+                .any(|turn| Some(turn.as_str()) == record.source.parent_turn_id())
                 && source_is_live_tx(
                     tx,
                     record,
                     agent_id,
-                    &record.parent_turn_id,
+                    record
+                        .source
+                        .parent_turn_id()
+                        .context("same-Turn result has no parent Turn")?,
                     Some(predecessor_activation_id),
                     now,
                     Some(&recovery),
@@ -585,8 +478,24 @@ pub(crate) fn attached_turn_for_activation_tx(
     attempt: &crate::domain::execution_protocol::ExecutionAttempt,
     include_idle: bool,
 ) -> Result<Option<TurnRecord>> {
+    attached_turn_for_activation_read(
+        &TaskResultSourceRead::new(tx, &attempt.agent_id),
+        attempt,
+        include_idle,
+    )?
+    .map(SourceBody::into_owned)
+    .transpose()
+}
+
+fn attached_turn_for_activation_read(
+    read: &TaskResultSourceRead<'_, '_>,
+    attempt: &crate::domain::execution_protocol::ExecutionAttempt,
+    include_idle: bool,
+) -> Result<Option<SourceBody<TurnRecord>>> {
+    read.validate_cut(read.tx, &attempt.agent_id)?;
+    let tx = read.tx;
     let mut statement = tx.prepare(
-        "SELECT turn_id, payload_json FROM turn_records
+        "SELECT turn_id FROM turn_records
          WHERE agent_id = ?1 AND (EXISTS(
            SELECT 1 FROM json_each(turn_records.payload_json, '$.live_input_batches') batch
            WHERE json_extract(batch.value, '$.activation_id') = ?2)
@@ -598,8 +507,12 @@ pub(crate) fn attached_turn_for_activation_tx(
         return Ok(None);
     };
     let turn_id: String = row.get(0)?;
-    let payload: String = row.get(1)?;
-    let turn: TurnRecord = serde_json::from_str(&payload)?;
+    if rows.next()?.is_some() {
+        return Ok(None);
+    }
+    let Some(turn) = read.turn(&turn_id)? else {
+        return Ok(None);
+    };
     let live_witness = turn
         .live_input_batches
         .iter()
@@ -613,8 +526,7 @@ pub(crate) fn attached_turn_for_activation_tx(
                         && item.source_ref == format!("message:{}", batch.anchor_message_id)
                 })
         });
-    if rows.next()?.is_some()
-        || turn.turn_id != turn_id
+    if turn.turn_id != turn_id
         || !turn_matches_attempt_source(&turn, attempt)
         || !(live_witness || idle_witness)
     {
@@ -718,11 +630,34 @@ fn source_is_live_tx(
     }
 }
 
+// Same-Turn grants must never borrow a turnless Command creation.
 fn result_source_matches_tx(
     tx: &Transaction<'_>,
     record: &TaskResultSettlementRecord,
     agent_id: &str,
     turn_id: &str,
+    activation_id: Option<&str>,
+    cutoff: DateTime<Utc>,
+    recovering: bool,
+) -> Result<bool> {
+    result_typed_source_matches_tx(
+        tx,
+        record,
+        agent_id,
+        &TaskRejoinSource::ParentTurn {
+            parent_turn_id: turn_id.to_owned(),
+        },
+        activation_id,
+        cutoff,
+        recovering,
+    )
+}
+
+fn result_typed_source_matches_tx(
+    tx: &Transaction<'_>,
+    record: &TaskResultSettlementRecord,
+    agent_id: &str,
+    source: &TaskRejoinSource,
     activation_id: Option<&str>,
     cutoff: DateTime<Utc>,
     recovering: bool,
@@ -733,7 +668,7 @@ fn result_source_matches_tx(
         (TaskResultSettlementState::PersistedPending, None)
     };
     if record.agent_id != agent_id
-        || record.parent_turn_id != turn_id
+        || &record.source != source
         || record.created_at > cutoff
         || record.state != expected_state
         || record.activation_id.as_deref() != expected_activation
@@ -754,7 +689,8 @@ fn result_source_matches_tx(
         "SELECT EXISTS(SELECT 1 FROM task_result_settlements
          WHERE result_identity = ?1 AND agent_id = ?2 AND task_id = ?3
            AND message_id = ?4 AND work_item_id IS ?5 AND rejoin_generation = ?6
-           AND parent_turn_id = ?7 AND state = ?8 AND activation_id IS ?9)",
+           AND parent_turn_id = ?7 AND state = ?8 AND activation_id IS ?9
+           AND command_creation_id IS ?10)",
         params![
             record.result_identity,
             record.agent_id,
@@ -762,11 +698,19 @@ fn result_source_matches_tx(
             record.message_id,
             record.work_item_id,
             generation,
-            record.parent_turn_id,
+            record.source.parent_turn_id().unwrap_or(""),
             expected_state.as_str(),
             expected_activation,
+            record.source.command_creation_id(),
         ],
         |row| row.get::<_, bool>(0),
+    )? || !super::super::command_task_creation::current_source_exists_tx(
+        tx,
+        agent_id,
+        &record.task_id,
+        record.rejoin_generation,
+        source,
+        record.work_item_id.as_deref(),
     )? {
         return Ok(false);
     }
@@ -790,7 +734,7 @@ fn result_source_matches_tx(
         || message.id != record.message_id
         || expected.result_identity != record.result_identity
         || expected.rejoin_generation != record.rejoin_generation
-        || expected.parent_turn_id != turn_id
+        || &expected.source != source
         || expected.task_status != record.task_status
         || expected.work_item_id != record.work_item_id
         || task.parent_message_id.as_deref() != Some(record.message_id.as_str())
@@ -814,10 +758,10 @@ fn result_source_matches_tx(
             .get("rejoin_generation")
             .and_then(serde_json::Value::as_u64)
             != Some(record.rejoin_generation)
-        || detail
-            .get("parent_turn_id")
-            .and_then(serde_json::Value::as_str)
-            != Some(turn_id)
+        || serde_json::from_value::<TaskRejoinSource>(detail.clone())
+            .ok()
+            .as_ref()
+            != Some(source)
     {
         return Ok(false);
     }
@@ -834,11 +778,11 @@ fn initial_source_is_recoverable_tx(
 ) -> Result<bool> {
     use crate::domain::execution_protocol::ExecutionBinding;
 
-    if !result_source_matches_tx(
+    if !result_typed_source_matches_tx(
         tx,
         record,
         &current.agent_id,
-        &record.parent_turn_id,
+        &record.source,
         Some(predecessor_activation_id),
         now,
         true,
@@ -883,16 +827,21 @@ fn initial_source_is_recoverable_tx(
         TaskKind::CommandTask | TaskKind::ChildAgentTask => {
             Ok(crate::wake_contract::agent_message_reply_reference(&message).is_none())
         }
-        TaskKind::AgentMessageWait if task.status == TaskStatus::Completed => reply_is_live_tx(
-            tx,
-            &task,
-            &message,
-            &record.parent_turn_id,
-            Some(predecessor_activation_id),
-            now,
-            Some(recovery),
-            true,
-        ),
+        TaskKind::AgentMessageWait if task.status == TaskStatus::Completed => {
+            let Some(parent_turn_id) = record.source.parent_turn_id() else {
+                return Ok(false);
+            };
+            reply_is_live_tx(
+                tx,
+                &task,
+                &message,
+                parent_turn_id,
+                Some(predecessor_activation_id),
+                now,
+                Some(recovery),
+                true,
+            )
+        }
         _ => Ok(false),
     }
 }
@@ -1145,12 +1094,13 @@ fn reply_is_live_tx(
 
 /// Followers stay interjected: only a completed canonical attachment proves
 /// their content was consumed. Queue state alone never grants another waiter.
-pub(super) fn reply_source_queue_is_consumed_tx(
-    tx: &Transaction<'_>,
-    agent_id: &str,
+pub(super) fn reply_source_queue_is_consumed_read(
+    read: &TaskResultSourceRead<'_, '_>,
     reply_id: &str,
     response: &AgentMessageDeliveryRecord,
 ) -> Result<bool> {
+    let tx = read.tx;
+    let agent_id = read.agent_id;
     let status: Option<String> = tx
         .query_row(
             "SELECT status FROM queue_entries WHERE agent_id = ?1 AND message_id = ?2",
@@ -1164,17 +1114,18 @@ pub(super) fn reply_source_queue_is_consumed_tx(
     if status.as_deref() != Some("interjected") {
         return Ok(false);
     }
-    Ok(completed_reply_attachment_tx(tx, agent_id, reply_id, response)?.is_some())
+    Ok(completed_reply_attachment_read(read, reply_id, response)?.is_some())
 }
 
-fn completed_reply_attachment_tx(
-    tx: &Transaction<'_>,
-    agent_id: &str,
+fn completed_reply_attachment_read(
+    read: &TaskResultSourceRead<'_, '_>,
     reply_id: &str,
     response: &AgentMessageDeliveryRecord,
-) -> Result<Option<TurnRecord>> {
+) -> Result<Option<SourceBody<TurnRecord>>> {
     use crate::domain::execution_protocol::ExecutionAttemptState;
 
+    let tx = read.tx;
+    let agent_id = read.agent_id;
     if response.state != AgentMessageDeliveryState::Consumed
         || response.outcome != AgentMessageDeliveryOutcome::Accepted
         || response.target_agent_id != agent_id
@@ -1186,7 +1137,7 @@ fn completed_reply_attachment_tx(
     // not an arbitrary completed turn with a compatible owner. Interrupted
     // predecessors are not consumption witnesses; their completed replay is.
     let mut statement = tx.prepare(
-        "SELECT turn_id, payload_json FROM turn_records
+        "SELECT turn_id FROM turn_records
          WHERE agent_id = ?1 AND terminal_kind = 'completed'
            AND (trigger_message_id = ?2 OR EXISTS(
              SELECT 1 FROM json_each(turn_records.payload_json, '$.input_message_ids') input
@@ -1199,12 +1150,20 @@ fn completed_reply_attachment_tx(
         return Ok(None);
     };
     let turn_id: String = row.get(0)?;
-    let payload: String = row.get(1)?;
-    let Ok(turn) = serde_json::from_str::<TurnRecord>(&payload) else {
+    if rows.next()?.is_some() {
         return Ok(None);
+    }
+    let turn = match read.turn(&turn_id) {
+        Ok(Some(turn)) => turn,
+        Ok(None) => return Ok(None),
+        Err(error)
+            if read.resolver.is_none() && error.downcast_ref::<serde_json::Error>().is_some() =>
+        {
+            return Ok(None)
+        }
+        Err(error) => return Err(error),
     };
-    if rows.next()?.is_some()
-        || turn.turn_id != turn_id
+    if turn.turn_id != turn_id
         || turn.agent_id != agent_id
         || !turn
             .terminal
@@ -1252,7 +1211,7 @@ fn completed_reply_attachment_tx(
     {
         return Ok(None);
     }
-    let Some(attempt) = super::reply_admission_attempt_tx(tx, agent_id, activation_id)? else {
+    let Some(attempt) = read.attempt(activation_id)? else {
         return Ok(None);
     };
     if attempt.attempt_id != *activation_id
@@ -1261,7 +1220,7 @@ fn completed_reply_attachment_tx(
     {
         return Ok(None);
     }
-    Ok(attached_turn_for_activation_tx(tx, &attempt, true)?
+    Ok(attached_turn_for_activation_read(read, &attempt, true)?
         .filter(|attached| attached.turn_id == turn_id))
 }
 
@@ -1269,11 +1228,20 @@ pub(super) fn closed_admitted_reply_owner_tx(
     tx: &Transaction<'_>,
     record: &TaskResultSettlementRecord,
 ) -> Result<Option<crate::types::TurnOwner>> {
+    closed_admitted_reply_owner_read(&TaskResultSourceRead::new(tx, &record.agent_id), record)
+}
+
+pub(super) fn closed_admitted_reply_owner_read(
+    read: &TaskResultSourceRead<'_, '_>,
+    record: &TaskResultSettlementRecord,
+) -> Result<Option<crate::types::TurnOwner>> {
     use crate::domain::execution_protocol::ExecutionAttemptState;
     use crate::types::TurnTerminalKind;
 
+    read.validate_cut(read.tx, &record.agent_id)?;
+    let tx = read.tx;
     if record.state != TaskResultSettlementState::CallerAdmitted
-        || !super::record_matches_durable_task_tx(tx, record)?
+        || !super::record_matches_durable_task_read(read, record)?
         || super::latest_for_message_tx(tx, &record.message_id)?.as_ref() != Some(record)
     {
         return Ok(None);
@@ -1281,7 +1249,7 @@ pub(super) fn closed_admitted_reply_owner_tx(
     let Some(id) = record.activation_id.as_deref() else {
         return Ok(None);
     };
-    let Some(attempt) = super::reply_admission_attempt_tx(tx, &record.agent_id, id)? else {
+    let Some(attempt) = read.attempt(id)? else {
         return Ok(None);
     };
     if !matches!(
@@ -1290,21 +1258,13 @@ pub(super) fn closed_admitted_reply_owner_tx(
     ) {
         return Ok(None);
     }
-    let payload: Option<String> = tx
-        .query_row(
-            "SELECT payload_json FROM messages WHERE message_id = ?1",
-            [&record.message_id],
-            |row| row.get(0),
-        )
-        .optional()?;
-    let Some(payload) = payload else {
+    let Some(result) = read.message(&record.message_id)? else {
         return Ok(None);
     };
-    let result: MessageEnvelope = serde_json::from_str(&payload)?;
     let Some(reply_id) = crate::wake_contract::agent_message_reply_reference(&result) else {
         return Ok(None);
     };
-    let turn = if let Some(turn) = attached_turn_for_activation_tx(tx, &attempt, true)? {
+    let turn = if let Some(turn) = attached_turn_for_activation_read(read, &attempt, true)? {
         turn
     } else {
         // Batchless initial reply anchors are identified by their canonical
@@ -1314,21 +1274,17 @@ pub(super) fn closed_admitted_reply_owner_tx(
         {
             return Ok(None);
         }
-        let payload: Option<String> = tx
-            .query_row(
-                "SELECT payload_json FROM turn_records WHERE agent_id = ?1 AND turn_id = ?2",
-                params![record.agent_id, attempt.turn_id],
-                |row| row.get(0),
-            )
-            .optional()?;
-        let Some(payload) = payload else {
+        let Some(turn_id) = attempt.turn_id.as_deref() else {
             return Ok(None);
         };
-        serde_json::from_str::<TurnRecord>(&payload)?
+        let Some(turn) = read.turn(turn_id)? else {
+            return Ok(None);
+        };
+        turn
     };
     Ok((turn_matches_attempt_source(&turn, &attempt)
         && (turn.input_message_ids.iter().any(|id| id == reply_id)
-            || admitted_recovery_snapshot_matches_tx(tx, record, &attempt, &turn)?)
+            || admitted_recovery_snapshot_matches_read(read, record, &attempt, &turn)?)
         && turn.terminal.as_ref().is_some_and(|terminal| {
             matches!(
                 terminal.kind,
@@ -1349,14 +1305,29 @@ fn admitted_recovery_snapshot_matches_tx(
     attempt: &crate::domain::execution_protocol::ExecutionAttempt,
     turn: &TurnRecord,
 ) -> Result<bool> {
+    admitted_recovery_snapshot_matches_read(
+        &TaskResultSourceRead::new(tx, &record.agent_id),
+        record,
+        attempt,
+        turn,
+    )
+}
+
+fn admitted_recovery_snapshot_matches_read(
+    read: &TaskResultSourceRead<'_, '_>,
+    record: &TaskResultSettlementRecord,
+    attempt: &crate::domain::execution_protocol::ExecutionAttempt,
+    turn: &TurnRecord,
+) -> Result<bool> {
     use crate::domain::execution_protocol::{
         ExecutionAttemptState, ExecutionSourceIdentity, ExecutionWaitIngress,
     };
 
+    let tx = read.tx;
     let Some(source_id) = attempt.source_message_id.as_deref() else {
         return Ok(false);
     };
-    let Some(source) = message_tx(tx, source_id)? else {
+    let Some(source) = read.message(source_id)? else {
         return Ok(false);
     };
     let canonical_source = match &attempt.source.identity {
@@ -1387,10 +1358,12 @@ fn admitted_recovery_snapshot_matches_tx(
     let Some(anchor) = super::latest_for_message_tx(tx, selector)? else {
         return Ok(false);
     };
-    if !super::record_matches_durable_task_tx(tx, &anchor)?
+    if !super::record_matches_durable_task_read(read, &anchor)?
         || anchor.agent_id != record.agent_id
         || source.source_refs.get("task_result_identity") != Some(&anchor.result_identity)
-        || source.source_refs.get("task_result_parent_turn_id") != Some(&anchor.parent_turn_id)
+        || !anchor
+            .source
+            .matches_result_source_refs(&source.source_refs)
         || source.source_refs.get("task_result_rejoin_generation")
             != Some(&anchor.rejoin_generation.to_string())
         || (anchor.result_identity != record.result_identity
@@ -1399,33 +1372,32 @@ fn admitted_recovery_snapshot_matches_tx(
     {
         return Ok(false);
     }
-    let mut root = attempt.clone();
-    let mut seen = BTreeSet::from([root.attempt_id.clone()]);
-    while let Some(prior_id) = root.recovery_of_attempt_id.as_deref() {
-        let Some(prior) = super::reply_admission_attempt_tx(tx, &record.agent_id, prior_id)? else {
+    let mut root_id = attempt.attempt_id.clone();
+    let mut prior_id = attempt.recovery_of_attempt_id.clone();
+    let mut seen = BTreeSet::from([root_id.clone()]);
+    while let Some(id) = prior_id {
+        let Some(prior) = read.attempt(&id)? else {
             return Ok(false);
         };
-        if prior.source_message_id != root.source_message_id {
+        // Every accepted ancestor retains the initial source and binding.
+        if prior.source_message_id != attempt.source_message_id {
             break;
         }
         if seen.len() >= 64
             || !seen.insert(prior.attempt_id.clone())
-            || prior.binding != root.binding
+            || prior.binding != attempt.binding
             || prior.state != ExecutionAttemptState::Interrupted
         {
             return Ok(false);
         }
-        root = prior;
+        root_id = prior.attempt_id.clone();
+        prior_id = prior.recovery_of_attempt_id.clone();
     }
     // Rearming resets the budget epoch, not the last admitted snapshot's grant.
     tx.query_row(
         "SELECT EXISTS(SELECT 1 FROM task_result_recovery_admissions
          WHERE result_identity = ?1 AND root_attempt_id = ?2 AND recovery_epoch <= ?3)",
-        params![
-            record.result_identity,
-            root.attempt_id,
-            record.recovery_epoch
-        ],
+        params![record.result_identity, root_id, record.recovery_epoch],
         |row| row.get(0),
     )
     .map_err(Into::into)
@@ -1484,51 +1456,59 @@ pub(super) fn consumed_reply_owner_matches_tx(
     reply_id: &str,
     response: &AgentMessageDeliveryRecord,
 ) -> Result<bool> {
+    consumed_reply_owner_matches_read(
+        &TaskResultSourceRead::new(tx, &task.agent_id),
+        task,
+        reply_id,
+        response,
+    )
+}
+
+pub(super) fn consumed_reply_owner_matches_read(
+    read: &TaskResultSourceRead<'_, '_>,
+    task: &TaskRecord,
+    reply_id: &str,
+    response: &AgentMessageDeliveryRecord,
+) -> Result<bool> {
+    read.validate_cut(read.tx, &task.agent_id)?;
+    let tx = read.tx;
     if response.state != AgentMessageDeliveryState::Consumed
-        || !reply_source_queue_is_consumed_tx(tx, &task.agent_id, reply_id, response)?
+        || !reply_source_queue_is_consumed_read(read, reply_id, response)?
     {
         return Ok(false);
     }
-    let witness_turn_id = if let Some(turn) =
-        completed_reply_attachment_tx(tx, &task.agent_id, reply_id, response)?
+    let witness_turn = if let Some(turn) =
+        completed_reply_attachment_read(read, reply_id, response)?
     {
-        turn.turn_id
+        turn
     } else if let Some(activation_id) = response.activation_id.as_deref() {
-        let Some(attempt) = super::reply_admission_attempt_tx(tx, &task.agent_id, activation_id)?
-        else {
+        let Some(attempt) = read.attempt(activation_id)? else {
             return Ok(false);
         };
         if attempt.attempt_id != activation_id || attempt.agent_id != task.agent_id {
             return Ok(false);
         }
-        let turn =
-            if let Some(turn) = attached_turn_for_activation_tx(tx, &attempt, true)? {
-                turn
-            } else {
-                // A P1 anchor can have no batch. Its consumed delivery must name
-                // the exact completed turn whose canonical source is this reply.
-                let Some(turn_id) = response.turn_id.as_deref() else {
-                    return Ok(false);
-                };
-                let payload: Option<String> = tx.query_row(
-                "SELECT payload_json FROM turn_records WHERE agent_id = ?1 AND turn_id = ?2",
-                params![task.agent_id, turn_id],
-                |row| row.get(0),
-            ).optional()?;
-                let Some(payload) = payload else {
-                    return Ok(false);
-                };
-                let turn: TurnRecord = serde_json::from_str(&payload)?;
-                if turn.turn_id != turn_id
-                    || !turn_matches_attempt_source(&turn, &attempt)
-                    || attempt.source_message_id.as_deref() != Some(reply_id)
-                    || !turn.live_input_batches.is_empty()
-                    || turn.idle_input_batch.is_some()
-                {
-                    return Ok(false);
-                }
-                turn
+        let turn = if let Some(turn) = attached_turn_for_activation_read(read, &attempt, true)? {
+            turn
+        } else {
+            // A P1 anchor can have no batch. Its consumed delivery must name
+            // the exact completed turn whose canonical source is this reply.
+            let Some(turn_id) = response.turn_id.as_deref() else {
+                return Ok(false);
             };
+            let Some(turn) = read.turn(turn_id)? else {
+                return Ok(false);
+            };
+            if turn.turn_id != turn_id
+                || !turn_matches_attempt_source(&turn, &attempt)
+                || attempt.source_message_id.as_deref() != Some(reply_id)
+                || !turn.live_input_batches.is_empty()
+                || turn.idle_input_batch.is_some()
+            {
+                return Ok(false);
+            }
+            turn
+        };
         let batch_admits_reply = turn.live_input_batches.iter().any(|batch| {
             batch.activation_id == activation_id
                 && batch.items.iter().any(|item| {
@@ -1548,7 +1528,7 @@ pub(super) fn consumed_reply_owner_matches_tx(
         {
             return Ok(false);
         }
-        turn.turn_id
+        turn
     } else {
         return Ok(false);
     };
@@ -1576,7 +1556,7 @@ pub(super) fn consumed_reply_owner_matches_tx(
             reply_id,
             task.work_item_id,
             task.id,
-            witness_turn_id,
+            witness_turn.turn_id,
         ],
         |row| row.get(0),
     )?)
@@ -1598,4 +1578,143 @@ fn delivery_tx(
             .ok()
             .map(|delivery| (rowid, delivery))
     }))
+}
+
+pub(crate) fn interrupted_admitted_result_anchor_tx(
+    tx: &Transaction<'_>,
+    agent_id: &str,
+    message_id: &str,
+    now: DateTime<Utc>,
+) -> Result<Option<String>> {
+    let Some(record) = super::latest_for_message_tx(tx, message_id)? else {
+        return Ok(None);
+    };
+    if record.agent_id != agent_id || record.state != TaskResultSettlementState::CallerAdmitted {
+        return Ok(None);
+    }
+    let Some(activation_id) = record.activation_id.as_deref() else {
+        return Ok(None);
+    };
+    let Some(attempt) = super::reply_admission_attempt_tx(tx, agent_id, activation_id)? else {
+        return Ok(None);
+    };
+    if attempt.state != crate::domain::execution_protocol::ExecutionAttemptState::Interrupted {
+        return Ok(None);
+    }
+    let Some(turn) = attached_turn_for_activation_tx(tx, &attempt, true)? else {
+        return Ok(None);
+    };
+    let Some(anchor) = attempt.source_message_id.as_deref() else {
+        return Ok(None);
+    };
+    if turn.terminal.as_ref().map(|terminal| terminal.kind)
+        != Some(crate::types::TurnTerminalKind::Interrupted)
+        || turn.idle_input_batch.as_ref().is_none_or(|batch| {
+            batch.activation_id.as_deref() != Some(activation_id)
+                || batch.anchor_message_id != anchor
+        })
+        || !tx.query_row(
+            "SELECT EXISTS(SELECT 1 FROM queue_entries
+             WHERE agent_id = ?1 AND message_id = ?2 AND status = 'interrupted')",
+            params![agent_id, anchor],
+            |row| row.get::<_, bool>(0),
+        )?
+    {
+        return Ok(None);
+    }
+    let recovery = RecoverySources {
+        predecessor_turn_id: turn.turn_id.clone(),
+        activation_turns: BTreeMap::from([(activation_id.to_owned(), turn.turn_id.clone())]),
+    };
+    let live: Vec<_> = turn
+        .live_input_batches
+        .iter()
+        .filter(|batch| {
+            batch
+                .items
+                .iter()
+                .any(|item| item.message_id == record.message_id)
+        })
+        .collect();
+    let valid = if let Some(batch) = live.first() {
+        live.len() == 1
+            && turn.input_message_ids.contains(&record.message_id)
+            && batch.activation_id == activation_id
+            && batch.result_identities.contains(&record.result_identity)
+            && batch.items.iter().any(|item| {
+                item.message_id == record.message_id
+                    && item.source_ref == format!("message:{}", record.message_id)
+            })
+            && source_is_live_tx(
+                tx,
+                &record,
+                agent_id,
+                &turn.turn_id,
+                Some(activation_id),
+                now,
+                Some(&recovery),
+            )?
+    } else {
+        // Initial results live in the admission ledger, not ordinary input IDs.
+        turn.idle_input_batch
+            .as_ref()
+            .is_some_and(|batch| record.created_at <= batch.cutoff)
+            && initial_source_is_recoverable_tx(
+                tx,
+                &record,
+                &attempt,
+                activation_id,
+                now,
+                &recovery,
+            )?
+    };
+    Ok(valid.then(|| anchor.to_owned()))
+}
+
+pub(crate) const SAME_TURN_CANDIDATE_IDS_SQL: &str =
+    "SELECT result_identity AS id FROM task_result_settlements
+     WHERE agent_id = ?1 AND parent_turn_id = ?2
+       AND state = 'persisted_pending' AND activation_id IS NULL
+       AND created_at <= ?3
+     ORDER BY created_at ASC, result_identity ASC LIMIT ?4";
+
+pub(crate) fn same_turn_candidate_is_live_tx(
+    tx: &Transaction<'_>,
+    record: &TaskResultSettlementRecord,
+    agent_id: &str,
+    turn_id: &str,
+    cutoff: DateTime<Utc>,
+) -> Result<bool> {
+    source_is_live_tx(tx, record, agent_id, turn_id, None, cutoff, None)
+}
+
+#[cfg(test)]
+pub(crate) fn same_turn_candidates_tx(
+    tx: &Transaction<'_>,
+    agent_id: &str,
+    turn_id: &str,
+    cutoff: DateTime<Utc>,
+    limit: usize,
+) -> Result<Vec<TaskResultSettlementRecord>> {
+    let records = super::records_tx(
+        tx,
+        &format!(
+            "SELECT payload_json FROM task_result_settlements
+             WHERE result_identity IN ({SAME_TURN_CANDIDATE_IDS_SQL})
+             ORDER BY created_at ASC, result_identity ASC"
+        ),
+        params![
+            agent_id,
+            turn_id,
+            super::timestamp(cutoff),
+            limit.min(LIVE_TASK_RESULT_CANDIDATE_LIMIT) as i64
+        ],
+    )?;
+    let mut candidates = Vec::new();
+    for record in records {
+        if source_is_live_tx(tx, &record, agent_id, turn_id, None, cutoff, None)? {
+            candidates.push(record);
+        }
+    }
+    Ok(candidates)
 }

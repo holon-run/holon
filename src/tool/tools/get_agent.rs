@@ -70,6 +70,7 @@ pub(crate) async fn execute(
             runtime.agent_summary_for(&requested_id).await?
         }
     };
+    let (summary, _material) = summary.into_parts();
     let response = match args.detail.unwrap_or_default() {
         GetAgentDetail::Compact => GetAgentResponse::Compact(GetAgentCompactResult {
             agent: SlimAgentDto::from(&summary),
@@ -80,5 +81,7 @@ pub(crate) async fn execute(
             subagent_cleanup,
         }),
     };
-    serialize_success(NAME, &response)
+    let serialized = serialize_success(NAME, &response);
+    drop(_material);
+    serialized
 }

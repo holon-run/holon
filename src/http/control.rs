@@ -725,6 +725,11 @@ pub async fn runtime_config_update(
         .any(|result| result.effect == RuntimeConfigUpdateEffect::AcceptedRequiresRestart);
 
     if changed {
+        let _writer = state
+            .host
+            .context_resources()
+            .begin_write()
+            .map_err(error_response)?;
         save_persisted_config_at(&config.config_file_path, &candidate).map_err(error_response)?;
         let generation = state
             .host
@@ -763,13 +768,11 @@ pub async fn runtime_config_migrate_model_routes(
     ApiJson(request): ApiJson<ModelConfigMigrationRequest>,
 ) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
     authorize_control(&headers, &state).map_err(authentication_error_response)?;
-    let config = state.host.config();
-    let report = crate::model_config_migration::migrate_model_config_routes(
-        &config.config_file_path,
-        state.host.runtime_db(),
-        request.write,
-    )
-    .map_err(error_response)?;
+    let report = state
+        .host
+        .migrate_model_config_routes(request.write)
+        .await
+        .map_err(error_response)?;
     if request.write && report.ok && report.config.changed {
         state
             .host
@@ -1046,9 +1049,8 @@ pub async fn create_agent(
     );
     if let Err(error) = state
         .host
-        .runtime_db()
-        .audit_events()
-        .append(Some(&agent_id), &audit)
+        .append_agent_creation_audit(&agent_id, created.identity.incarnation, audit)
+        .await
     {
         tracing::warn!(
             agent_id,
@@ -1077,12 +1079,16 @@ pub async fn agent_tree(
     headers: HeaderMap,
 ) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
     authorize_control(&headers, &state).map_err(authentication_error_response)?;
-    Ok(Json(
-        state
-            .host
-            .operator_agent_tree()
-            .await
-            .map_err(error_response)?,
+    let bytes = state
+        .host
+        .operator_agent_tree()
+        .await
+        .map_err(error_response)?
+        .into_json_bytes()
+        .map_err(error_response)?;
+    Ok((
+        [(axum::http::header::CONTENT_TYPE, "application/json")],
+        bytes,
     ))
 }
 
@@ -1206,6 +1212,7 @@ pub async fn control(
                 "boundary": boundary,
             }),
         )
+        .await
         .map_err(error_response)?;
     Ok(Json(json!({ "ok": true })))
 }
@@ -1288,6 +1295,7 @@ pub async fn attach_workspace(
                 "boundary": boundary,
             }),
         )
+        .await
         .map_err(error_response)?;
     Ok(Json(json!({
         "ok": true,
@@ -1325,6 +1333,7 @@ pub async fn exit_workspace(
                 "boundary": boundary,
             }),
         )
+        .await
         .map_err(error_response)?;
     Ok(Json(json!({
         "ok": true,
@@ -1365,6 +1374,7 @@ pub async fn detach_workspace(
                 "boundary": boundary,
             }),
         )
+        .await
         .map_err(error_response)?;
     Ok(Json(json!({
         "ok": true,
@@ -1428,6 +1438,7 @@ pub async fn set_agent_timezone(
                 "provided_trust": provided_trust,
             }),
         )
+        .await
         .map_err(error_response)?;
     Ok(Json(
         json!({"ok": true, "agent_id": agent_id, "timezone_override": agent.timezone_override, "effective_timezone": timezone.name()}),
@@ -1467,6 +1478,7 @@ pub async fn clear_agent_timezone(
                 "provided_trust": provided_trust,
             }),
         )
+        .await
         .map_err(error_response)?;
     Ok(Json(
         json!({"ok": true, "agent_id": agent_id, "timezone_override": null, "effective_timezone": timezone.name()}),
@@ -2609,6 +2621,7 @@ pub async fn control_wake(
                 "admission_context": admission_context,
             }),
         )
+        .await
         .map_err(error_response)?;
     Ok(Json(WakeResponse {
         ok: true,

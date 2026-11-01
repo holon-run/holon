@@ -87,7 +87,13 @@ impl RuntimeRef {
                 validation_error: "missing source_ref identifier",
             });
         }
-        if !valid_source_ref_segment(suffix) {
+        let valid_identifier = match prefix {
+            "brief" | "message" | "turn" | "episode" | "work_item" | "task" => {
+                valid_record_identifier(suffix)
+            }
+            _ => valid_source_ref_segment(suffix),
+        };
+        if !valid_identifier {
             return Err(RuntimeRefParseError {
                 validation_error:
                     "source_ref identifier must be an opaque id, not a path, URL, or query",
@@ -223,6 +229,15 @@ fn parse_batch_item_index(index: &str) -> Result<usize, RuntimeRefParseError> {
         })
 }
 
+// Canonical record IDs may themselves contain namespaces (for example
+// `turn:agent-message-wait:task_123`). Preserve the complete ID after the
+// source-ref namespace; none of these components may denote a path or selector.
+fn valid_record_identifier(identifier: &str) -> bool {
+    identifier
+        .split(':')
+        .all(|segment| valid_source_ref_segment(segment) && !matches!(segment, "." | ".."))
+}
+
 fn valid_source_ref_segment(segment: &str) -> bool {
     !segment.is_empty()
         && segment
@@ -262,6 +277,40 @@ mod tests {
     }
 
     #[test]
+    fn canonical_namespaced_record_ids_preserve_the_exact_source_identity() {
+        for (source_ref, expected) in [
+            (
+                "turn:turn:agent-message-wait:task_123",
+                RuntimeRef::Turn {
+                    id: "turn:agent-message-wait:task_123".into(),
+                },
+            ),
+            (
+                "message:message:agent-message-wait:task_123",
+                RuntimeRef::Message {
+                    id: "message:agent-message-wait:task_123".into(),
+                },
+            ),
+            (
+                "message:message:task-restart:task_123",
+                RuntimeRef::Message {
+                    id: "message:task-restart:task_123".into(),
+                },
+            ),
+            (
+                "message:agent_bootstrap_message:child_123",
+                RuntimeRef::Message {
+                    id: "agent_bootstrap_message:child_123".into(),
+                },
+            ),
+        ] {
+            let parsed = RuntimeRef::parse(source_ref).unwrap();
+            assert_eq!(parsed, expected);
+            assert_eq!(parsed.source_ref(), source_ref);
+        }
+    }
+
+    #[test]
     fn runtime_ref_rejects_paths_urls_and_unknown_prefixes() {
         for source_ref in [
             "/Users/jolestar/.agents/skills/agentinbox/SKILL.md",
@@ -272,6 +321,19 @@ mod tests {
             "brief:/Users/jolestar/project/README.md",
             "brief:https://example.com/memory",
             "turn:../ledger/turn-1",
+            "turn:turn:../ledger/turn-1",
+            "turn:turn:..:turn-1",
+            "turn:turn:.:turn-1",
+            "turn:turn::turn-1",
+            "turn::turn-1",
+            "turn:turn:turn-1:",
+            "message:message:https://example.com/input",
+            "message:message:C:\\input",
+            "turn:turn:turn-1?raw=true",
+            "turn:turn:turn-1#fragment",
+            "turn:turn:%2Fledger",
+            "agent_memory:namespace:name",
+            "workspace_profile:namespace:workspace",
             "episode:../ledger/episode-1",
             "work_item:work_123?raw=true",
             "tool_execution:tool-123",

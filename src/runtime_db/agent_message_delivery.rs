@@ -3,11 +3,21 @@
 use anyhow::{Context, Result};
 use chrono::Utc;
 use rusqlite::{params, OptionalExtension, Transaction};
+use std::{collections::BTreeSet, sync::Arc};
 
+use super::task_snapshot as tasks;
 use crate::{
     domain::execution_protocol::{
         ExecutionAttempt, ExecutionAttemptState, ExecutionBinding, WorkItemExecutionRecord,
         WorkItemExecutionState,
+    },
+    runtime::{
+        input_evidence_budget::{
+            serialized_bytes, BudgetViewGuard, InputEvidenceBudgetLedger, InputMemoryCategory,
+            OwnedBytesEstimate,
+        },
+        resident_input_evidence::InputEvidenceScope,
+        resident_task::{CommittedTaskDelta, TaskCaptureRequest, TaskFamily, TaskKey},
     },
     runtime_db::agent_relations::canonical_relations_from_connection,
     runtime_db::AgentMessageDeliveryRepository,
@@ -630,19 +640,43 @@ impl AgentMessageDeliveryRepository<'_> {
         &self,
         message_id: &str,
     ) -> Result<Option<AgentMessageDeliveryRecord>> {
-        self.db.with_read(|connection| {
-            connection
-                .query_row(
-                    "SELECT payload_json
-                     FROM agent_message_deliveries
-                     WHERE message_id = ?1",
-                    [message_id],
-                    |row| row.get::<_, String>(0),
-                )
-                .optional()?
-                .map(|payload| decode_delivery(&payload))
-                .transpose()
-        })
+        self.db
+            .with_read(|connection| Self::latest_for_message_on(connection, message_id))
+    }
+
+    pub(crate) async fn latest_for_message_async(
+        &self,
+        message_id: &str,
+    ) -> Result<Option<AgentMessageDeliveryRecord>> {
+        let message_id = message_id.to_owned();
+        self.db
+            .with_read_async(move |connection| Self::latest_for_message_on(connection, &message_id))
+            .await
+    }
+
+    pub(crate) fn latest_for_message_preparation(
+        &self,
+        message_id: &str,
+    ) -> Result<Option<AgentMessageDeliveryRecord>> {
+        self.db
+            .read_for_preparation(|tx| Self::latest_for_message_on(tx, message_id))
+    }
+
+    fn latest_for_message_on(
+        connection: &rusqlite::Connection,
+        message_id: &str,
+    ) -> Result<Option<AgentMessageDeliveryRecord>> {
+        connection
+            .query_row(
+                "SELECT payload_json
+                 FROM agent_message_deliveries
+                 WHERE message_id = ?1",
+                [message_id],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()?
+            .map(|payload| decode_delivery(&payload))
+            .transpose()
     }
 
     pub fn receipt(&self, delivery_id: &str) -> Result<Option<AgentMessageDeliveryReceipt>> {
@@ -1017,9 +1051,10 @@ pub(crate) fn persist_completed_admission_tx(
     }
 }
 
-pub(crate) fn persist_queued_admission_tx(
+pub(in crate::runtime_db) fn persist_queued_admission_tx(
     tx: &Transaction<'_>,
     decision: &AgentMessageDeliveryAdmissionDecision,
+    binding: Option<&PreparedMessageWaitTaskWrite>,
 ) -> Result<()> {
     let AgentMessageDeliveryAdmissionDecision::Queue {
         record,
@@ -1033,41 +1068,232 @@ pub(crate) fn persist_queued_admission_tx(
     } else {
         insert_delivery_tx(tx, record)?;
     }
-    bind_message_wait_tx(tx, record)
+    bind_message_wait_tx(tx, record, binding)
 }
 
-/// Acceptance must not outlive the parent-owned generation/cursor binding.
-/// The target may be purged before this parent's monitor is started or recovered.
-fn bind_message_wait_tx(tx: &Transaction<'_>, delivery: &AgentMessageDeliveryRecord) -> Result<()> {
-    use crate::types::{MessageOrigin, TaskKind, TaskRecoverySpec, TaskTargetKind, TaskTargetRef};
+pub(in crate::runtime_db) struct MessageWaitTaskWriteBudget<'a> {
+    pub owner_scope: Option<InputEvidenceScope>,
+    pub request: &'a tasks::TaskDomainLoadRequest,
+    pub ledger: &'a InputEvidenceBudgetLedger,
+    pub memory: Option<&'a mut super::dispatch_memory::DispatchMemoryTransactionBudget>,
+}
+
+pub(in crate::runtime_db) struct PreparedMessageWaitTaskWrite {
+    proof: tasks::TaskWriteProof,
+    keys: BTreeSet<TaskKey>,
+    request: tasks::TaskDomainLoadRequest,
+    original_material: tasks::TaskMaintenanceMaterial,
+    admitted_material: tasks::TaskMaintenanceMaterial,
+    state_bytes: usize,
+    guards: Vec<Arc<BudgetViewGuard>>,
+}
+
+fn message_wait_task_tx<'a>(
+    tx: &Transaction<'_>,
+    delivery: &'a AgentMessageDeliveryRecord,
+) -> Result<Option<(&'a str, &'a str)>> {
     let (Some(task_id), Some(owner)) = (
         delivery.caller.current_task_id.as_deref(),
         delivery.caller.caller_agent_id.as_deref(),
     ) else {
-        return Ok(());
+        return Ok(None);
     };
     if !matches!(&delivery.caller.origin, MessageOrigin::Task { task_id: origin } if origin == task_id)
     {
-        return Ok(());
+        return Ok(None);
     }
-    let payload: Option<String> = tx
+    let kind = tx
         .query_row(
-            "SELECT payload_json FROM tasks WHERE task_id = ?1 AND owner_agent_id = ?2",
+            "SELECT kind, json_extract(payload_json, '$.kind') FROM tasks
+             WHERE task_id = ?1 AND owner_agent_id = ?2",
             params![task_id, owner],
-            |row| row.get(0),
+            |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
         )
         .optional()?;
-    let Some(payload) = payload else {
-        return Ok(());
+    let Some((normalized, payload)) = kind else {
+        return Ok(None);
     };
-    let mut task = super::repositories::decode_task_payload(&payload)?;
-    if task.kind != TaskKind::AgentMessageWait {
-        return Ok(());
-    }
     anyhow::ensure!(
-        super::repositories::is_active_task_status(&task.status),
+        normalized == payload,
+        "message wait Task kind projection differs"
+    );
+    Ok((normalized == "agent_message_wait").then_some((task_id, owner)))
+}
+
+fn message_wait_state_bytes_tx(tx: &Transaction<'_>, scope: &InputEvidenceScope) -> Result<usize> {
+    tx.query_row(
+        "SELECT COALESCE((SELECT length(CAST(payload_json AS BLOB))
+         FROM agent_states WHERE agent_id = ?1), 0)",
+        [&scope.agent_id],
+        |row| row.get(0),
+    )
+    .map_err(Into::into)
+}
+
+/// The caller's Task belongs to its own scope, not the target queue's scope.
+pub(in crate::runtime_db) fn prepare_message_wait_task_write_tx(
+    tx: &Transaction<'_>,
+    decision: Option<&AgentMessageDeliveryAdmissionDecision>,
+    budget: Option<&mut MessageWaitTaskWriteBudget<'_>>,
+) -> Result<Option<PreparedMessageWaitTaskWrite>> {
+    let Some(AgentMessageDeliveryAdmissionDecision::Queue { record, .. }) = decision else {
+        return Ok(None);
+    };
+    let Some((task_id, owner)) = message_wait_task_tx(tx, record)? else {
+        return Ok(None);
+    };
+    let budget = budget.context("message wait binding requires the original Task writer budget")?;
+    let scope = budget
+        .owner_scope
+        .as_ref()
+        .context("message wait binding requires its original reserved owner scope")?
+        .clone();
+    super::input_evidence_writes::validate_input_evidence_scope_tx(tx, &scope, owner)?;
+    let keys = BTreeSet::from([TaskKey::new(TaskFamily::Task, task_id)]);
+    let mut capture = TaskCaptureRequest::current();
+    capture.required_keys = keys.clone();
+    let request = tasks::TaskDomainLoadRequest {
+        recovery_at: None,
+        query: Default::default(),
+        capture,
+        byte_limit: budget.request.byte_limit,
+        record_limit: budget.request.record_limit,
+    };
+    let before = tasks::task_maintenance_material_tx(tx, &scope, &keys)?;
+    let state_bytes = message_wait_state_bytes_tx(tx, &scope)?;
+    let target_identity_bytes: usize = tx.query_row(
+        "SELECT length(CAST(payload_json AS BLOB))
+         FROM agent_identities WHERE agent_id = ?1",
+        [&record.target_agent_id],
+        |row| row.get(0),
+    )?;
+    let delivery_bytes = usize::try_from(serialized_bytes(record)?)?;
+    let extra_bytes = state_bytes
+        .checked_add(target_identity_bytes)
+        .and_then(|n| n.checked_add(delivery_bytes))
+        .context("message wait writer material overflow")?;
+    let mut material =
+        tasks::read_preparation::TaskReadMaterial::new(&scope, &request, Some(budget.ledger))
+            .with_memory_budget(budget.memory.as_deref_mut());
+    material.charge(before.bytes, before.records, 1, false)?;
+    material.charge(extra_bytes, 3, 8, false)?;
+    let admitted_material = material.material_estimate();
+    let guards = material.into_guards();
+    let proof = tasks::prepare_task_write_tx(tx, &scope, &keys)?;
+    let task = proof.task_before(task_id)?;
+    anyhow::ensure!(
+        task.kind == crate::types::TaskKind::AgentMessageWait
+            && super::repositories::is_active_task_status(&task.status),
         "message wait is no longer active"
     );
+    tasks::preflight_task_write_snapshot_with_memory_budget_tx(
+        tx,
+        &proof,
+        &request,
+        budget.ledger,
+        budget.memory.as_deref_mut(),
+    )?
+    .require_current()?;
+    Ok(Some(PreparedMessageWaitTaskWrite {
+        proof,
+        keys,
+        request,
+        original_material: before,
+        admitted_material,
+        state_bytes,
+        guards,
+    }))
+}
+
+impl PreparedMessageWaitTaskWrite {
+    pub(in crate::runtime_db) fn task_write_keys(&self) -> &BTreeSet<TaskKey> {
+        &self.keys
+    }
+
+    pub(in crate::runtime_db) fn finish(
+        mut self,
+        tx: &Transaction<'_>,
+        budget: &mut MessageWaitTaskWriteBudget<'_>,
+    ) -> Result<(CommittedTaskDelta, Vec<Arc<BudgetViewGuard>>)> {
+        let scope = self.proof.scope();
+        let after = tasks::task_maintenance_material_tx(tx, scope, &self.keys)?;
+        let state_growth = message_wait_state_bytes_tx(tx, scope)?
+            .saturating_sub(self.state_bytes)
+            .checked_mul(8)
+            .context("message wait final State material overflow")?;
+        let extra_bytes = after
+            .bytes
+            .saturating_sub(self.original_material.bytes)
+            .checked_add(state_growth)
+            .context("message wait final material overflow")?;
+        let mut material = tasks::read_preparation::TaskReadMaterial::new(
+            scope,
+            &self.request,
+            Some(budget.ledger),
+        )
+        .with_memory_budget(budget.memory.as_deref_mut())
+        .with_admitted_material(self.admitted_material)?;
+        material.charge(
+            extra_bytes,
+            after.records.saturating_sub(self.original_material.records),
+            1,
+            false,
+        )?;
+        let state = super::context_inputs::ContextDurableRead::new(tx, &scope.agent_id)
+            .scope_facts()?
+            .state
+            .context("message wait finalizer requires actual final State")?;
+        let facts = tasks::register_original_task_writes_using_material_tx(
+            tx,
+            &self.proof,
+            &self.keys,
+            &state,
+            &self.request,
+            budget.ledger,
+            &mut material,
+        )?;
+        self.guards.extend(material.into_guards());
+        self.guards.push(budget.ledger.register_task_view(
+            scope,
+            InputMemoryCategory::Candidate,
+            facts.delta.records.iter(),
+        )?);
+        self.guards.push(budget.ledger.register_task_stop_view(
+            scope,
+            InputMemoryCategory::Candidate,
+            facts.delta.stop_records.iter(),
+        )?);
+        self.guards.push(budget.ledger.register_owned_bytes(
+            scope,
+            InputMemoryCategory::Candidate,
+            OwnedBytesEstimate {
+                payload_bytes: 0,
+                metadata_estimate_bytes: serialized_bytes(&facts.delta.coverage)?,
+            },
+        )?);
+        Ok((facts.delta, self.guards))
+    }
+}
+
+/// Acceptance must not outlive the parent-owned generation/cursor binding.
+/// The target may be purged before this parent's monitor is started or recovered.
+fn bind_message_wait_tx(
+    tx: &Transaction<'_>,
+    delivery: &AgentMessageDeliveryRecord,
+    binding: Option<&PreparedMessageWaitTaskWrite>,
+) -> Result<()> {
+    use crate::types::{TaskRecoverySpec, TaskTargetKind, TaskTargetRef};
+    let Some((task_id, owner)) = message_wait_task_tx(tx, delivery)? else {
+        anyhow::ensure!(binding.is_none(), "prepared message wait Task disappeared");
+        return Ok(());
+    };
+    let binding = binding.context("message wait binding omitted original Task proof")?;
+    anyhow::ensure!(
+        binding.proof.scope().agent_id == owner,
+        "message wait Task proof owner differs"
+    );
+    binding.proof.validate_task_before_tx(tx, task_id)?;
+    let mut task = binding.proof.task_before(task_id)?.clone();
     let identity: String = tx.query_row(
         "SELECT payload_json FROM agent_identities WHERE agent_id = ?1",
         [&delivery.target_agent_id],
@@ -1359,7 +1585,7 @@ mod tests {
         ))?;
         let mut state = AgentState::new("target-agent");
         state.status = status;
-        db.agent_states().upsert(&state)
+        db.agent_states().upsert_for_fixture(&state)
     }
 
     fn caller() -> AgentMessageCallerContext {
@@ -1486,7 +1712,7 @@ mod tests {
             work_item_id: None,
             claimed_work_revision: None,
         });
-        db.agent_states().upsert(&state)
+        db.agent_states().upsert_for_fixture(&state)
     }
 
     fn seed_reply_turn(
@@ -1523,7 +1749,8 @@ mod tests {
             None,
             None,
         ))?;
-        db.agent_states().upsert(&AgentState::new("caller-agent"))?;
+        db.agent_states()
+            .upsert_for_fixture(&AgentState::new("caller-agent"))?;
         let mut inputs = Vec::new();
         for (index, sender) in senders.iter().enumerate() {
             let mut message = MessageEnvelope::new(
@@ -2222,7 +2449,7 @@ mod tests {
                 "stop" => {
                     let mut state = db.agent_states().latest("caller-agent")?.unwrap();
                     state.status = AgentStatus::Stopped;
-                    db.agent_states().upsert(&state)?;
+                    db.agent_states().upsert_for_fixture(&state)?;
                 }
                 "identity" => {
                     let mut identity = db.agent_identities().latest("caller-agent")?.unwrap();
@@ -2235,7 +2462,7 @@ mod tests {
                         Some(TurnOwner::WorkItem {
                             work_item_id: "other-work".into(),
                         });
-                    db.agent_states().upsert(&state)?;
+                    db.agent_states().upsert_for_fixture(&state)?;
                 }
                 "source" => {
                     inputs[0].routing_context.as_mut().unwrap().correlation_id =
@@ -2874,7 +3101,7 @@ mod tests {
         let id = inputs[0].id.clone();
         let mut state = db.agent_states().latest("caller-agent")?.unwrap();
         state.pending += 1;
-        db.agent_states().upsert(&state)?;
+        db.agent_states().upsert_for_fixture(&state)?;
         assert!(prepare_reply(&db, "sender-a", Some(&id), false, "after-persist").is_ok());
         Ok(())
     }
@@ -3151,14 +3378,20 @@ mod tests {
         Ok(())
     }
 
-    #[test]
-    fn message_wait_binding_commits_atomically_with_delivery_and_survives_purge() -> Result<()> {
+    fn seed_message_wait_task(
+        db: &RuntimeDb,
+    ) -> Result<(crate::types::TaskRecord, InputEvidenceScope)> {
+        seed_message_wait_task_for(db, "caller-agent")
+    }
+
+    fn seed_message_wait_task_for(
+        db: &RuntimeDb,
+        owner: &str,
+    ) -> Result<(crate::types::TaskRecord, InputEvidenceScope)> {
         use crate::types::{TaskKind, TaskRecord, TaskRecoverySpec, TaskStatus};
-        let (dir, db) = runtime_db()?;
-        seed_target(&db, AgentStatus::AwakeIdle)?;
         let task = TaskRecord {
             id: "task-delivery".into(),
-            agent_id: "caller-agent".into(),
+            agent_id: owner.into(),
             kind: TaskKind::AgentMessageWait,
             status: TaskStatus::Queued,
             created_at: Utc::now(),
@@ -3178,7 +3411,58 @@ mod tests {
                 requester_incarnation: None,
             }),
         };
-        db.tasks().upsert(&task)?;
+        let identity = if let Some(identity) = db.agent_identities().latest(owner)? {
+            identity
+        } else {
+            let identity = AgentIdentityRecord::new(
+                owner,
+                AgentKind::Named,
+                AgentVisibility::Public,
+                AgentOwnership::SelfOwned,
+                AgentProfilePreset::PublicNamed,
+                None,
+                None,
+            );
+            db.agent_identities().upsert(&identity)?;
+            identity
+        };
+        let state = db
+            .agent_states()
+            .latest(owner)?
+            .unwrap_or_else(|| AgentState::new(owner));
+        let scope = InputEvidenceScope {
+            agent_id: identity.agent_id,
+            identity_incarnation: identity.incarnation,
+        };
+        db.transaction(|tx| {
+            super::super::evidence::upsert_agent_state_tx(tx, &state)?;
+            let keys = BTreeSet::from([TaskKey::new(TaskFamily::Task, &task.id)]);
+            let proof = tasks::prepare_task_write_tx(tx, &scope, &keys)?;
+            super::super::repositories::upsert_task_tx(tx, &task)?;
+            tasks::register_task_writes_tx(
+                tx,
+                &proof,
+                &keys,
+                &state,
+                &tasks::TaskDomainLoadRequest {
+                    recovery_at: None,
+                    query: Default::default(),
+                    capture: TaskCaptureRequest::current(),
+                    byte_limit: 64 * 1024 * 1024,
+                    record_limit: 65_536,
+                },
+            )?;
+            Ok(())
+        })?;
+        Ok((task, scope))
+    }
+
+    #[test]
+    fn message_wait_binding_commits_atomically_with_delivery_and_survives_purge() -> Result<()> {
+        use crate::types::TaskRecoverySpec;
+        let (dir, db) = runtime_db()?;
+        seed_target(&db, AgentStatus::AwakeIdle)?;
+        let (task, _) = seed_message_wait_task(&db)?;
         let prepared = prepare("atomic-wait", "request")?;
         let mut command = admission_command(&prepared);
         command.fault =
@@ -3233,6 +3517,194 @@ mod tests {
     }
 
     #[test]
+    fn message_wait_binding_advances_canonical_alias_and_keeps_strict_reads() -> Result<()> {
+        let (_dir, db) = runtime_db()?;
+        seed_target(&db, AgentStatus::AwakeIdle)?;
+        let (task, scope) = seed_message_wait_task(&db)?;
+        let mut capture = TaskCaptureRequest::current();
+        capture
+            .required_keys
+            .insert(TaskKey::new(TaskFamily::Task, &task.id));
+        let request = tasks::TaskDomainLoadRequest {
+            recovery_at: None,
+            query: Default::default(),
+            capture,
+            byte_limit: 64 * 1024 * 1024,
+            record_limit: 65_536,
+        };
+        let revision = db.transaction(|tx| {
+            // The fixture registered current coverage without this named selector.
+            let error = tasks::load_task_domain_snapshot_tx(tx, &scope, &request).unwrap_err();
+            assert!(
+                error
+                    .to_string()
+                    .contains("Task coverage needs explicit preparation at unchanged revision"),
+                "{error:#}"
+            );
+            Ok(
+                tasks::prepare_task_domain_snapshot_tx(tx, &scope, &request)?
+                    .require_current()?
+                    .resident
+                    .coverage()
+                    .revision,
+            )
+        })?;
+        let prepared = prepare("qualified-wait", "request")?;
+        let command = admission_command(&prepared);
+        let commit = db
+            .transitions()
+            .commit_delivery_admission(&command, &prepared.record)?;
+        let [delta] = commit.effects.related_task_deltas.as_slice() else {
+            anyhow::bail!("binding omitted the caller's canonical Task delta");
+        };
+        assert!(commit.effects.task_write_keys.is_empty());
+        assert_eq!(delta.scope, scope);
+        assert_eq!(delta.base_revision, revision);
+        assert!(delta.revision > revision);
+        db.transaction(|tx| {
+            let snapshot =
+                tasks::load_task_domain_snapshot_tx(tx, &scope, &request)?.require_current()?;
+            assert_eq!(snapshot.resident.coverage().revision, delta.revision);
+            let proof = tasks::prepare_task_write_tx(
+                tx,
+                &scope,
+                &BTreeSet::from([TaskKey::new(TaskFamily::Task, &task.id)]),
+            )?;
+            assert_eq!(
+                proof.task_before(&task.id)?.detail.as_ref().unwrap()["request_delivery_id"],
+                prepared.record.delivery_id,
+            );
+            Ok(())
+        })?;
+        let replay = db
+            .transitions()
+            .commit_delivery_admission(&command, &prepared.record)?;
+        assert!(replay.effects.related_task_deltas.is_empty());
+        db.transaction(|tx| {
+            tx.execute(
+                "UPDATE tasks SET summary = 'raw drift',
+                 payload_json = json_set(payload_json, '$.summary', 'raw drift')
+                 WHERE task_id = ?1",
+                [&task.id],
+            )?;
+            let error = tasks::load_task_domain_snapshot_tx(tx, &scope, &request).unwrap_err();
+            assert!(
+                matches!(
+                    error.downcast_ref::<tasks::TaskSnapshotError>(),
+                    Some(tasks::TaskSnapshotError::CanonicalChanged(_)),
+                ),
+                "{error:#}"
+            );
+            Ok(())
+        })?;
+        Ok(())
+    }
+
+    #[test]
+    fn message_wait_binding_for_same_owner_uses_primary_task_delta_and_replays_once() -> Result<()>
+    {
+        let (_dir, db) = runtime_db()?;
+        seed_target(&db, AgentStatus::AwakeIdle)?;
+        let (task, scope) = seed_message_wait_task_for(&db, "target-agent")?;
+        let mut source = caller();
+        source.caller_agent_id = Some(task.agent_id.clone());
+        let prepared =
+            AgentMessageDeliveryService::prepare(request("same-owner-wait", "request"), source)?;
+        let command = admission_command(&prepared);
+        let mut capture = TaskCaptureRequest::current();
+        let key = TaskKey::new(TaskFamily::Task, &task.id);
+        capture.required_keys.insert(key.clone());
+        let request = tasks::TaskDomainLoadRequest {
+            recovery_at: None,
+            query: Default::default(),
+            capture,
+            byte_limit: 64 * 1024 * 1024,
+            record_limit: 65_536,
+        };
+        let before = db.transaction(|tx| {
+            // Adding required_keys is explicit preparation, not a strict read.
+            Ok(
+                tasks::prepare_task_domain_snapshot_tx(tx, &scope, &request)?
+                    .require_current()?
+                    .resident,
+            )
+        })?;
+        let commit = db
+            .transitions()
+            .commit_delivery_admission(&command, &prepared.record)?;
+        assert!(commit.effects.related_task_deltas.is_empty());
+        assert!(commit.effects.task_delta_requires_prepared_domain);
+        assert_eq!(
+            commit.effects.task_write_keys,
+            BTreeSet::from([key.clone()])
+        );
+        let delta = commit.effects.task_delta.as_ref().unwrap();
+        assert_eq!(delta.scope, scope);
+        assert_eq!(delta.base_revision, before.coverage().revision);
+        assert!(delta.revision > delta.base_revision);
+        assert!(delta.records.iter().any(|record| record.locator.key == key));
+        let installed = before.with_committed(delta)?;
+        db.transaction(|tx| {
+            let current =
+                tasks::load_task_domain_snapshot_tx(tx, &scope, &request)?.require_current()?;
+            assert_eq!(
+                current.resident.coverage().revision,
+                installed.coverage().revision
+            );
+            let proof = tasks::prepare_task_write_tx(tx, &scope, &BTreeSet::from([key.clone()]))?;
+            assert_eq!(
+                proof.task_before(&task.id)?.detail.as_ref().unwrap()["request_delivery_id"],
+                prepared.record.delivery_id,
+            );
+            Ok(())
+        })?;
+        let replay = db
+            .transitions()
+            .commit_delivery_admission(&command, &prepared.record)?;
+        assert!(replay.effects.task_delta.is_none());
+        assert!(replay.effects.related_task_deltas.is_empty());
+        assert!(replay.effects.task_write_keys.is_empty());
+        Ok(())
+    }
+
+    #[test]
+    fn message_wait_binding_rejects_missing_or_exhausted_original_budget_before_writes(
+    ) -> Result<()> {
+        let (_dir, db) = runtime_db()?;
+        seed_target(&db, AgentStatus::AwakeIdle)?;
+        let (task, scope) = seed_message_wait_task(&db)?;
+        let prepared = prepare("budgeted-wait", "request")?;
+        let ledger = InputEvidenceBudgetLedger::new(crate::config::StateMemoryLimits::default())?;
+        let request = tasks::TaskDomainLoadRequest {
+            recovery_at: None,
+            query: Default::default(),
+            capture: TaskCaptureRequest::current(),
+            byte_limit: 1,
+            record_limit: 1,
+        };
+        db.transaction(|tx| {
+            let decision = prepare_delivery_admission_tx(tx, &prepared.record)?;
+            assert!(prepare_message_wait_task_write_tx(tx, Some(&decision), None).is_err());
+            let mut budget = MessageWaitTaskWriteBudget {
+                owner_scope: Some(scope.clone()),
+                request: &request,
+                ledger: &ledger,
+                memory: None,
+            };
+            assert!(
+                prepare_message_wait_task_write_tx(tx, Some(&decision), Some(&mut budget)).is_err()
+            );
+            Ok(())
+        })?;
+        assert_eq!(db.tasks().latest(&task.id)?, Some(task));
+        assert!(db
+            .agent_message_deliveries()
+            .latest(&prepared.record.delivery_id)?
+            .is_none());
+        Ok(())
+    }
+
+    #[test]
     fn accepted_delivery_is_idempotent_and_survives_restart() -> Result<()> {
         let (dir, db) = runtime_db()?;
         seed_target(&db, AgentStatus::AwakeIdle)?;
@@ -3240,6 +3712,14 @@ mod tests {
         assert_eq!(prepared.message.turn_id, None);
         assert_eq!(prepared.message.task_id, None);
         assert_eq!(prepared.message.work_item_id, None);
+        assert!(db
+            .queue_entries()
+            .latest_for_preparation(&prepared.message.id)?
+            .is_none());
+        assert!(db
+            .agent_message_deliveries()
+            .latest_for_message_preparation(&prepared.message.id)?
+            .is_none());
         let first = db
             .transitions()
             .commit_delivery_admission(&admission_command(&prepared), &prepared.record)?;
@@ -3256,6 +3736,23 @@ mod tests {
         assert_eq!(replay.delivery_id, first.delivery_id);
         assert!(replay.idempotent_replay);
         assert_eq!(db.queue_entries().latest_all()?.len(), 1);
+        assert_eq!(
+            serde_json::to_value(
+                db.queue_entries()
+                    .latest_for_preparation(&prepared.message.id)?
+            )?,
+            serde_json::to_value(db.queue_entries().latest(&prepared.message.id)?)?
+        );
+        assert_eq!(
+            serde_json::to_value(
+                db.agent_message_deliveries()
+                    .latest_for_message_preparation(&prepared.message.id)?
+            )?,
+            serde_json::to_value(
+                db.agent_message_deliveries()
+                    .latest_for_message(&prepared.message.id)?
+            )?
+        );
 
         let stored = db
             .agent_message_deliveries()
@@ -3500,7 +3997,7 @@ mod tests {
             .latest("target-agent")?
             .context("missing target state")?;
         state.status = AgentStatus::AwakeIdle;
-        db.agent_states().upsert(&state)?;
+        db.agent_states().upsert_for_fixture(&state)?;
         let retry = prepare("retry-key", "retry me")?;
         let accepted = db
             .transitions()

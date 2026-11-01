@@ -101,7 +101,7 @@ async fn issue_3773_task_result_settles_pending_when_execution_not_runnable() {
     runtime.pick_work_item(owner.id.clone()).await.unwrap();
     let message_id = publish_owner_terminal_result(runtime, &owner.id, "issue-3773-result").await;
     let owner_latest = runtime.latest_work_item(&owner.id).await.unwrap().unwrap();
-    seed_paused_work_execution(runtime.storage(), &owner_latest, "issue-3773 lane paused");
+    seed_live_paused_work_execution(runtime, &owner_latest, "issue-3773 lane paused").await;
 
     let scheduled = match scheduler_executor::SchedulerDecisionExecutor::new(runtime)
         .poll()
@@ -233,13 +233,13 @@ async fn issue_3773_internal_followup_defers_without_drop_or_starvation() {
         .await
         .unwrap()
         .unwrap();
-    seed_paused_work_execution(runtime.storage(), &blocked_latest, "issue-3773 lane paused");
+    seed_live_paused_work_execution(runtime, &blocked_latest, "issue-3773 lane paused").await;
     let runnable_latest = runtime
         .latest_work_item(&runnable.id)
         .await
         .unwrap()
         .unwrap();
-    seed_runnable_work_execution(runtime.storage(), &runnable_latest);
+    seed_live_runnable_work_execution(runtime, &runnable_latest).await;
 
     // The deferred followup is skipped within the same poll and the later
     // legal input still advances.
@@ -302,7 +302,7 @@ async fn issue_3773_deferred_followup_survives_restart_and_claims_when_runnable(
     runtime.pick_work_item(owner.id.clone()).await.unwrap();
     let followup_id = bound_internal_followup(runtime, &owner.id).await;
     let owner_latest = runtime.latest_work_item(&owner.id).await.unwrap().unwrap();
-    seed_paused_work_execution(runtime.storage(), &owner_latest, "issue-3773 lane paused");
+    seed_live_paused_work_execution(runtime, &owner_latest, "issue-3773 lane paused").await;
     assert!(matches!(
         scheduler_executor::SchedulerDecisionExecutor::new(runtime)
             .poll()
@@ -322,7 +322,7 @@ async fn issue_3773_deferred_followup_survives_restart_and_claims_when_runnable(
     // Once the canonical execution is runnable again the retained input
     // claims through its original path.
     let owner_latest = runtime.latest_work_item(&owner.id).await.unwrap().unwrap();
-    seed_runnable_work_execution(runtime.storage(), &owner_latest);
+    seed_live_runnable_work_execution(runtime, &owner_latest).await;
     let scheduled = match scheduler_executor::SchedulerDecisionExecutor::new(runtime)
         .poll()
         .await

@@ -123,7 +123,28 @@ pub(crate) async fn execute(
     .await
 }
 
-pub(crate) async fn complete_with_report_candidate(
+#[inline(never)]
+pub(crate) fn complete_with_report_candidate<'a>(
+    runtime: &'a RuntimeHandle,
+    work_item_id: String,
+    authority: WorkItemCompletionAuthority,
+    candidate: Option<&'a CompletionReportCandidate>,
+    warnings: Vec<WorkItemCompletionWarning>,
+    report_source: &'static str,
+) -> std::pin::Pin<
+    Box<impl std::future::Future<Output = Result<crate::tool::ToolResult>> + Send + 'a>,
+> {
+    Box::pin(complete_with_report_candidate_inner(
+        runtime,
+        work_item_id,
+        authority,
+        candidate,
+        warnings,
+        report_source,
+    ))
+}
+
+async fn complete_with_report_candidate_inner(
     runtime: &RuntimeHandle,
     work_item_id: String,
     authority: WorkItemCompletionAuthority,

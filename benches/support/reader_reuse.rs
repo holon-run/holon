@@ -125,7 +125,7 @@ fn run_workload(repetitions: usize, workload: Workload) -> Result<Vec<Value>> {
             .collect();
         for id in &ids {
             let storage = AppStorage::new_for_agent(root.path(), id, db.clone())?;
-            storage.write_agent(&AgentState::new(id))?;
+            storage.write_agent_for_fixture(&AgentState::new(id))?;
             let mut item = WorkItemRecord::new(id, "synthetic work", WorkItemState::Open);
             item.id = format!("item-{id}");
             storage.append_work_item(&item)?;
