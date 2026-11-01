@@ -1,0 +1,25 @@
+[[skills]]
+kind = "github"
+repo = "holon-run/sview"
+path = "skills/sview"
+
+[[skills]]
+kind = "github"
+repo = "holon-run/holon"
+path = "skills/xlsx"
+
+[[skills]]
+kind = "github"
+repo = "holon-run/holon"
+path = "skills/pdf"
+
+[[skills]]
+kind = "github"
+repo = "holon-run/agentinbox"
+path = "skills/agentinbox"
+
+[[skills]]
+kind = "github"
+repo = "kaichen/amap-skill"
+path = "skills/amap"
+ref = "6742ab64925f24a82612bfa62bbf72e97406c52a"
