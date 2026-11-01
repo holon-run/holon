@@ -1,5 +1,8 @@
 use super::*;
-use crate::{runtime_db::current_query::prepare_event_page, storage::EventLogPageOrder};
+use crate::{
+    runtime_db::current_query::{prepare, prepare_event_page, CurrentSelection},
+    storage::EventLogPageOrder,
+};
 
 fn append(f: &Fixture, ledger: &InputEvidenceBudgetLedger, index: usize) -> Result<()> {
     let mut event = AuditEvent::legacy(
@@ -105,6 +108,94 @@ fn finite_event_history_rejects_raw_changed_foreign_incarnation_and_overflow() -
             .context("digest must fail")?
     )
     .contains("Current body needs original writer preparation"));
+    assert_eq!(ledger.report()?.observed_bytes, 0);
+    Ok(())
+}
+
+#[test]
+fn finite_event_history_accepts_only_exact_archive_acks() -> Result<()> {
+    let f = Fixture::new()?;
+    let ledger = InputEvidenceBudgetLedger::new(Default::default())?;
+    // An original non-Active writer appends its observation Event with an
+    // archive history ACK in the same transaction.
+    let mut event = AuditEvent::legacy("offline_observation", serde_json::json!({"index": 0}));
+    event.id = "offline-observed-0".into();
+    let scope = f.scope.clone();
+    f.db.transaction(|tx| {
+        let (actual, _) = append_audit_event_tx(tx, Some(&scope.agent_id), &event)?;
+        crate::runtime_db::current_read_writes::append_event_history_ack_tx(
+            tx, &scope, &actual.id,
+        )?;
+        Ok(())
+    })?;
+    f.db.transaction(|tx| {
+        // The finite history page reads the archived body through its ACK.
+        let page = prepare_event_page(
+            tx,
+            &f.scope,
+            &ledger,
+            None,
+            Some(0),
+            10,
+            EventLogPageOrder::Asc,
+            |_| true,
+        )?;
+        let ids = page
+            .events()
+            .map(|event| event.id.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(ids, vec!["offline-observed-0"]);
+        drop(page);
+        // A live Current selection still refuses the same archived address.
+        let live = CurrentSelection {
+            events_after: Some(0),
+            ..Default::default()
+        };
+        assert!(prepare(tx, &f.scope, Some(&live), &ledger, (1024 * 1024, 1024)).is_err());
+        Ok(())
+    })?;
+    // A tampered body is rejected by its frozen digest.
+    f.db.connection()?.execute(
+        "UPDATE audit_events SET data_json=json_set(data_json,'$.data.index',999)
+         WHERE audit_event_id='offline-observed-0'",
+        [],
+    )?;
+    f.db.transaction(|tx| {
+        assert!(prepare_event_page(
+            tx,
+            &f.scope,
+            &ledger,
+            None,
+            Some(0),
+            10,
+            EventLogPageOrder::Asc,
+            |_| true
+        )
+        .is_err());
+        Ok(())
+    })?;
+    // A foreign incarnation cannot borrow the archive ACK.
+    let mut foreign = f.scope.clone();
+    foreign.identity_incarnation += 1;
+    f.db.connection()?.execute(
+        "UPDATE audit_events SET data_json=json_set(data_json,'$.data.index',0)
+         WHERE audit_event_id='offline-observed-0'",
+        [],
+    )?;
+    f.db.transaction(|tx| {
+        assert!(prepare_event_page(
+            tx,
+            &foreign,
+            &ledger,
+            None,
+            Some(0),
+            10,
+            EventLogPageOrder::Asc,
+            |_| true
+        )
+        .is_err());
+        Ok(())
+    })?;
     assert_eq!(ledger.report()?.observed_bytes, 0);
     Ok(())
 }

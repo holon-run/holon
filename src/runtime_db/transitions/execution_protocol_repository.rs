@@ -1533,7 +1533,6 @@ fn validate_admission_authority_tx(
 
 impl RuntimeTransitionRepository<'_> {
     /// Read historical canonical evidence without loading the execution partition.
-    #[cfg(test)]
     pub(crate) fn execution_attempt_by_id(
         &self,
         agent_id: &str,

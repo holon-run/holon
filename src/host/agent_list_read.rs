@@ -147,6 +147,16 @@ impl RuntimeHost {
         &self,
         parent_agent_id: Option<&str>,
     ) -> Result<OwnedAgentListRead> {
+        self.list_agent_entries_for_parent_in(parent_agent_id, self.runtime_db())
+            .await
+    }
+
+    pub(crate) async fn list_agent_entries_for_parent_in(
+        &self,
+        parent_agent_id: Option<&str>,
+        db: &RuntimeDb,
+    ) -> Result<OwnedAgentListRead> {
+        db.check_read_scope()?;
         let identities = self.inner.registry.agent_identity_reads(
             &self.inner.input_evidence_budget,
             |record| {
@@ -163,8 +173,9 @@ impl RuntimeHost {
         )?;
         let mut entries = Vec::new();
         for (identity, material) in identities {
+            db.check_read_scope()?;
             let runtime = {
-                let registry = self.inner.runtimes.read().await;
+                let registry = db.wait_for_memory_lock(self.inner.runtimes.read()).await?;
                 registry
                     .agents
                     .get(&identity.agent_id)
@@ -172,8 +183,9 @@ impl RuntimeHost {
                     .map(|entry| entry.runtime.clone())
             };
             let entry = self
-                .agent_list_entry_with_material(&identity, &material, runtime)
+                .agent_list_entry_with_material_in(&identity, &material, runtime, db)
                 .await?;
+            db.check_read_scope()?;
             material.read(|| {
                 crate::runtime_db::repositories::reserve_source_vec_slot(&mut entries)?;
                 entries.push(OwnedAgentListEntry {
@@ -184,6 +196,7 @@ impl RuntimeHost {
             })?;
         }
         // Inventory is already ordered by its unique canonical ID.
+        db.check_read_scope()?;
         Ok(OwnedAgentListRead { entries })
     }
 
@@ -193,8 +206,19 @@ impl RuntimeHost {
         material: &ResourceReadMaterial,
         runtime: Option<RuntimeHandle>,
     ) -> Result<AgentListEntry> {
+        self.agent_list_entry_with_material_in(identity, material, runtime, self.runtime_db())
+            .await
+    }
+
+    async fn agent_list_entry_with_material_in(
+        &self,
+        identity: &AgentIdentityRecord,
+        material: &ResourceReadMaterial,
+        runtime: Option<RuntimeHandle>,
+        db: &RuntimeDb,
+    ) -> Result<AgentListEntry> {
         if let Some(runtime) = runtime {
-            runtime.agent_list_entry_read(identity, material).await
+            runtime.agent_list_entry_read(identity, material, db).await
         } else {
             material.read(|| self.agent_list_entry_from_storage(identity))
         }

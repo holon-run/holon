@@ -51,7 +51,7 @@ async fn fleet_loaded_entry_uses_one_ready_cut_without_state_lock_body_sql_or_ro
     let denied = crate::diagnostics::io_probe::DenyResourceReaders::new();
     let actual = tokio::time::timeout(
         std::time::Duration::from_secs(5),
-        runtime.agent_list_entry_read(&identity, &phase),
+        runtime.agent_list_entry_read(&identity, &phase, &runtime.inner.runtime_db),
     )
     .await??;
     assert_eq!(denied.attempts(), 0);
@@ -60,9 +60,66 @@ async fn fleet_loaded_entry_uses_one_ready_cut_without_state_lock_body_sql_or_ro
     let mut foreign = identity.as_ref().clone();
     foreign.incarnation += 1;
     assert!(runtime
-        .agent_list_entry_read(&foreign, &phase)
+        .agent_list_entry_read(&foreign, &phase, &runtime.inner.runtime_db)
         .await
         .is_err());
+    Ok(())
+}
+
+#[tokio::test]
+async fn fleet_loaded_entry_owner_wait_observes_cancellation_and_deadline() -> Result<()> {
+    use crate::{diagnostics::resource_io::ResourceReadMaterial, runtime_db::RuntimeDbReadScope};
+    use std::{future::poll_fn, future::Future, task::Poll, time::Duration};
+
+    let harness = LifecycleHarness::new();
+    let runtime = harness.runtime();
+    runtime.await_initial_resources().await;
+    let _refresh = runtime.hold_resource_refresh_for_test().await?;
+    drop(runtime.agent_summary().await?);
+    let root = runtime.inner.mutation_owner.capture()?.unwrap();
+    let identity = root
+        .current
+        .as_ref()
+        .unwrap()
+        .query
+        .as_ref()
+        .unwrap()
+        .identity
+        .clone();
+    drop(root);
+    let phase = ResourceReadMaterial::current_or_new_for_identity(
+        &runtime.inner.input_evidence_budget,
+        &identity.agent_id,
+        identity.incarnation,
+    )?;
+    let owner = runtime.inner.mutation_owner.reserve().await?;
+    for cancel in [true, false] {
+        let budget = if cancel {
+            Duration::from_secs(30)
+        } else {
+            Duration::from_millis(100)
+        };
+        let scope = RuntimeDbReadScope::new(std::time::Instant::now() + budget);
+        let db = runtime.runtime_db().with_read_scope(scope.clone());
+        let mut read = Box::pin(runtime.agent_list_entry_read(&identity, &phase, &db));
+        poll_fn(|cx| {
+            assert!(read.as_mut().poll(cx).is_pending());
+            Poll::Ready(())
+        })
+        .await;
+        if cancel {
+            scope.cancel();
+        }
+        assert!(tokio::time::timeout(Duration::from_secs(5), read)
+            .await?
+            .is_err());
+        assert!(scope.is_cancelled());
+    }
+    // Neither interruption needs the unrelated writer to publish or release.
+    drop(owner);
+    runtime
+        .agent_list_entry_read(&identity, &phase, runtime.runtime_db())
+        .await?;
     Ok(())
 }
 

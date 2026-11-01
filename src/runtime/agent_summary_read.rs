@@ -274,18 +274,21 @@ impl RuntimeHandle {
         &self,
         expected_identity: &crate::types::AgentIdentityRecord,
         material: &crate::diagnostics::resource_io::ResourceReadMaterial,
+        db: &RuntimeDb,
     ) -> Result<crate::types::AgentListEntry> {
+        db.check_read_scope()?;
         anyhow::ensure!(
             expected_identity.agent_id == self.inner.mutation_owner.agent_id()
                 && expected_identity.incarnation == self.inner.identity_incarnation,
             "roster identity differs from loaded owner"
         );
-        let mut reservations = super::mutation_owner::MutationOwner::reserve_all(vec![self
-            .inner
-            .mutation_owner
-            .clone()])
-        .await?;
+        let mut reservations = db
+            .wait_for_memory_lock(super::mutation_owner::MutationOwner::reserve_all(vec![
+                self.inner.mutation_owner.clone(),
+            ]))
+            .await??;
         self.reconcile_reserved_mutations(&mut reservations).await?;
+        db.check_read_scope()?;
         let root = self
             .inner
             .mutation_owner
@@ -299,8 +302,9 @@ impl RuntimeHandle {
         {
             drop(root);
             drop(reservations);
-            let mut owner = self.begin_mutation().await?;
+            let mut owner = self.begin_scoped_projection_preparation(db).await?;
             owner.prepare_current_query(None).await?;
+            db.check_read_scope()?;
             material.read(|| {
                 self.roster_scheduler_from_root(owner.capture_published_root()?.as_ref())
             })?

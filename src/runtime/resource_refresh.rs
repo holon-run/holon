@@ -425,6 +425,10 @@ impl RuntimeHandle {
             notified.await;
         }
     }
+    #[cfg(test)]
+    pub(crate) async fn await_initial_resources_for_test(&self) {
+        self.await_initial_resources().await;
+    }
     /// Explicit refresh/event worker only; no mutation owner survives the I/O.
     #[cfg(test)]
     pub(crate) async fn refresh_context_resources(&self) -> Result<Arc<ResourceObservation>> {

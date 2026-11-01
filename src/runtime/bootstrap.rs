@@ -2318,6 +2318,46 @@ fn append_bootstrap_audit_event(
     Ok(())
 }
 
+struct StaleExecutionBinding {
+    attempt_id: String,
+    turn_id: String,
+    reason: &'static str,
+}
+
+/// A recovered binding names a live execution only while its attempt is still
+/// Open. The previous release could persist a binding whose attempt already
+/// settled, was interrupted, or disappeared; keeping it would demand attempt
+/// input qualification the legacy upgrade never granted.
+fn stale_execution_binding_on(
+    runtime_db: &RuntimeDb,
+    agent_id: &str,
+    binding: &crate::types::WorkItemExecutionBinding,
+) -> Result<Option<StaleExecutionBinding>> {
+    let Some(attempt_id) = binding.activation_id.as_deref() else {
+        return Ok(None);
+    };
+    let attempt_state = runtime_db
+        .transitions()
+        .execution_attempt_by_id(agent_id, attempt_id)?
+        .map(|attempt| attempt.state);
+    let reason = match attempt_state {
+        Some(crate::domain::execution_protocol::ExecutionAttemptState::Open) => return Ok(None),
+        Some(crate::domain::execution_protocol::ExecutionAttemptState::Settled) => {
+            "attempt_settled"
+        }
+        Some(crate::domain::execution_protocol::ExecutionAttemptState::Interrupted) => {
+            "attempt_interrupted"
+        }
+        Some(_) => "attempt_protocol_violation",
+        None => "attempt_missing",
+    };
+    Ok(Some(StaleExecutionBinding {
+        attempt_id: attempt_id.to_string(),
+        turn_id: binding.turn_id.clone(),
+        reason,
+    }))
+}
+
 fn prepare_runtime_storage_owned(
     setup: RuntimeStorageSetup,
     mut reservation: Option<&mut super::mutation_owner::MutationReservation>,
@@ -2599,6 +2639,32 @@ fn prepare_runtime_storage_owned(
         .retain(|skill| matches!(skill.activation_state, SkillActivationState::SessionActive));
     for skill in &mut state.active_skills {
         skill.activation_source = SkillActivationSource::Restored;
+    }
+    // A recovered binding may name an execution the previous release already
+    // settled, interrupted, or dropped. Only an Open attempt is a live
+    // mandatory input; a stale binding would demand qualification the legacy
+    // upgrade never granted for that attempt.
+    if let Some(binding) = state.current_execution_binding.clone() {
+        if let Some(stale) = stale_execution_binding_on(&runtime_db, &agent_id, &binding)? {
+            append_bootstrap_audit_event(
+                &storage,
+                &runtime_db,
+                &input_scope,
+                &audit_facts,
+                input_budget,
+                reservation.as_deref_mut(),
+                AuditEvent::legacy(
+                    "stale_execution_binding_cleared",
+                    serde_json::json!({
+                        "agent_id": agent_id,
+                        "attempt_id": stale.attempt_id,
+                        "turn_id": stale.turn_id,
+                        "reason": stale.reason,
+                    }),
+                ),
+            )?;
+            state.current_execution_binding = None;
+        }
     }
     if let Some(legacy_fallback) = state.pending_fallback_model.take() {
         append_bootstrap_audit_event(
@@ -4119,6 +4185,111 @@ mod mutation_bootstrap_tests {
         .unwrap();
         assert_eq!(runtime.agent_state().await.unwrap().pending, 1);
         assert!(runtime.inner.mutation_owner.capture().unwrap().is_some());
+    }
+
+    #[tokio::test]
+    async fn stale_settled_execution_binding_is_cleared_during_preparation() {
+        use crate::domain::execution_protocol::{
+            AdmittedFences, ExecutionAttempt, ExecutionBinding, ExecutionOrigin, ExecutionPriority,
+            ExecutionProvenance, ExecutionSource, ExecutionSourceIdentity, ExecutionTrust,
+        };
+        let home = tempfile::tempdir().unwrap();
+        let workspace = tempfile::tempdir().unwrap();
+        let host = retry_host(home.path());
+        let agent_id = "stale-binding";
+        let data_dir = home.path().join(agent_id);
+        let runtime = build_for_retry(
+            &host,
+            data_dir.clone(),
+            workspace.path().to_path_buf(),
+            agent_id,
+        )
+        .unwrap();
+        let mut state = runtime.agent_state().await.unwrap();
+        let source_message_id = format!("agent_bootstrap_message:{agent_id}:1");
+        let attempt_id = format!("activation:message:{source_message_id}");
+        state.current_execution_binding = Some(crate::types::WorkItemExecutionBinding {
+            activation_id: Some(attempt_id.clone()),
+            admission_provenance: None,
+            source_message_id: source_message_id.clone(),
+            turn_id: "turn_stale".into(),
+            owner: None,
+            work_item_id: None,
+            claimed_work_revision: None,
+        });
+        runtime.storage().write_agent_for_fixture(&state).unwrap();
+        drop(runtime);
+        let attempt = ExecutionAttempt {
+            input_projection: None,
+            attempt_id: attempt_id.clone(),
+            agent_id: agent_id.to_string(),
+            source_message_id: Some(source_message_id.clone()),
+            source: ExecutionSource {
+                identity: ExecutionSourceIdentity::QueueMessage {
+                    message_id: source_message_id.clone(),
+                },
+                generation: 1,
+            },
+            binding: ExecutionBinding::AgentLifecycle {
+                agent_id: agent_id.to_string(),
+            },
+            provenance: ExecutionProvenance {
+                origin: ExecutionOrigin::System,
+                trust: ExecutionTrust::RuntimeInstruction,
+                priority: ExecutionPriority::Normal,
+                correlation_id: None,
+                causation_id: None,
+            },
+            admitted_fences: AdmittedFences {
+                source_revision: 1,
+                work_item_source_revision: None,
+                work_item_generation: None,
+                rejoin: None,
+                agent_control_revision: 1,
+                host_registry_revision: 1,
+            },
+            state: crate::domain::execution_protocol::ExecutionAttemptState::Settled,
+            run_id: None,
+            turn_id: Some("turn_stale".into()),
+            recovery_of_attempt_id: None,
+            terminal_outcome_id: Some(format!("outcome:message:{source_message_id}")),
+            admitted_at: "2026-11-01T00:00:00Z".into(),
+            terminal_at: Some("2026-11-01T00:00:01Z".into()),
+        };
+        host.runtime_db()
+            .transaction(|tx| {
+                tx.execute(
+                    "INSERT INTO execution_protocol_attempts
+                     (agent_id,attempt_id,lifecycle_state,source_identity_json,source_generation,
+                      recovery_of_attempt_id,terminal_outcome_id,payload_json)
+                     VALUES(?1,?2,'settled',?3,1,NULL,?4,?5)",
+                    rusqlite::params![
+                        agent_id,
+                        attempt_id,
+                        serde_json::to_string(&attempt.source.identity).unwrap(),
+                        attempt.terminal_outcome_id,
+                        serde_json::to_string(&attempt).unwrap(),
+                    ],
+                )?;
+                Ok(())
+            })
+            .unwrap();
+        let connection = host.runtime_db().connection().unwrap();
+        let runtime =
+            build_for_retry(&host, data_dir, workspace.path().to_path_buf(), agent_id).unwrap();
+        let recovered = runtime.agent_state().await.unwrap();
+        assert!(
+            recovered.current_execution_binding.is_none(),
+            "a settled attempt binding must not survive preparation"
+        );
+        let cleared: usize = connection
+            .query_row(
+                "SELECT COUNT(*) FROM audit_events WHERE kind='stale_execution_binding_cleared'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(cleared, 1);
     }
 
     #[tokio::test]

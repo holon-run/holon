@@ -2,7 +2,7 @@ use super::*;
 use crate::{
     runtime::input_evidence_budget::InputEvidenceBudgetLedger,
     runtime_db::{
-        current_query::{prepare, CurrentSelection},
+        current_query::{prepare, prepare_event_page, CurrentSelection},
         current_read_writes,
         evidence::{
             append_audit_event_tx, append_message_tx, upsert_agent_identity_tx,
@@ -173,6 +173,89 @@ fn current_upgrade_adopts_only_fixed_pending_queues_and_no_event_history() -> Re
     }
     apply_migration(&mut connection, current_migration())?;
     assert_eq!(qualified_count(&connection)?, 1);
+    Ok(())
+}
+
+#[test]
+fn current_upgrade_freezes_event_history_acks_for_the_finite_history_page() -> Result<()> {
+    let (mut connection, _messages) = legacy(1)?;
+    // Give the legacy database real Events before the Current cut.
+    {
+        let tx = connection.transaction()?;
+        for index in 0..3 {
+            let mut event =
+                AuditEvent::legacy("legacy_history", serde_json::json!({"index": index}));
+            event.id = format!("legacy-event-{index}");
+            append_audit_event_tx(&tx, Some(AGENT), &event)?;
+        }
+        tx.commit()?;
+    }
+    let expected_ids = {
+        let mut statement = connection.prepare(
+            "SELECT audit_event_id FROM audit_events WHERE agent_id=?1 ORDER BY event_seq",
+        )?;
+        let ids = statement
+            .query_map([AGENT], |row| row.get::<_, String>(0))?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        ids
+    };
+    migrate_to(&mut connection, current_read_writes::VERSION)?;
+    let scope = InputEvidenceScope {
+        agent_id: AGENT.into(),
+        identity_incarnation: 1,
+    };
+    let ledger = InputEvidenceBudgetLedger::new(Default::default())?;
+    let acked: usize = connection.query_row(
+        "SELECT COUNT(*) FROM event_history_acks WHERE audit_event_id LIKE 'legacy-event-%'",
+        [],
+        |row| row.get(0),
+    )?;
+    assert_eq!(acked, 3);
+    {
+        let tx = connection.transaction()?;
+        // Live Current selection still refuses the legacy Event window.
+        let history = CurrentSelection {
+            events_after: Some(0),
+            ..Default::default()
+        };
+        assert!(prepare(&tx, &scope, Some(&history), &ledger, (1024 * 1024, 1024)).is_err());
+        // The finite history page reads the archived bodies through the ACKs.
+        let page = prepare_event_page(
+            &tx,
+            &scope,
+            &ledger,
+            None,
+            Some(0),
+            10,
+            crate::storage::EventLogPageOrder::Asc,
+            |_| true,
+        )?;
+        let ids = page
+            .events()
+            .map(|event| event.id.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(ids, expected_ids);
+        drop(page);
+        // A tampered archived body is rejected by its frozen digest.
+        tx.execute(
+            "UPDATE audit_events SET data_json=json_set(data_json,'$.data.index',999)
+             WHERE audit_event_id='legacy-event-1'",
+            [],
+        )?;
+        let refused = prepare_event_page(
+            &tx,
+            &scope,
+            &ledger,
+            None,
+            Some(0),
+            10,
+            crate::storage::EventLogPageOrder::Asc,
+            |_| true,
+        )
+        .err()
+        .context("tampered archive must fail")?;
+        assert!(format!("{refused:#}").contains("needs original writer preparation"));
+    }
     Ok(())
 }
 

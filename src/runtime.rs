@@ -2783,7 +2783,7 @@ pub fn apply_scheduler_recovery_plan_with_maintenance(
 }
 
 fn apply_scheduler_recovery_plan_with_options(
-    storage: &AppStorage,
+    _storage: &AppStorage,
     runtime_db: &RuntimeDb,
     agent_id: &str,
     report: &SchedulerRecoveryReport,
@@ -3006,7 +3006,9 @@ fn apply_scheduler_recovery_plan_with_options(
         }
     }
     // Offline recovery observation, not an Active-runtime body admission.
-    storage.append_event(&AuditEvent::legacy(
+    // The append still attaches its archive history ACK: the finite history
+    // page must read this Event after the upgrade without live authority.
+    let recovery_applied = AuditEvent::legacy(
         "scheduler_recovery_applied",
         serde_json::json!({
             "agent_id": agent_id,
@@ -3022,7 +3024,8 @@ fn apply_scheduler_recovery_plan_with_options(
                 .filter(|candidate| candidate.eligible)
                 .count(),
         }),
-    ))?;
+    );
+    runtime_db.append_offline_observation_event(agent_id, &recovery_applied)?;
     Ok((usize::from(applied), backup_path))
 }
 
