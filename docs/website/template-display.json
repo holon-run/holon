@@ -143,6 +143,13 @@
         "summary": "持续维护产品定位、内容计划、文案草稿、审查记录和可审阅的营销活动简报；不发布内容或支出费用。"
       }
     },
+    "meeting-steward": {
+      "category": "operations",
+      "zh-CN": {
+        "name": "会议协调管家",
+        "summary": "持续维护已授权会议的参会人、未确认占位、准备材料、会后行动与冲突；默认不发邀请、不改远端日历。"
+      }
+    },
     "office-assistant": {
       "category": "productivity",
       "featuredRank": 3,
