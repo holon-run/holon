@@ -91,6 +91,76 @@ def kill_child(child):
         pass
 
 
+def _wait_for_child(process, state, poll_interval=1.0,
+                    watcher_failure_grace=30.0):
+    """Wait for the child without an unbounded wait.
+
+    A bare ``process.wait()`` cannot notice that the watchdog died: the
+    watcher may fail before the child handle was even published, and the
+    kill it attempted then had nothing to kill. The main thread would
+    then block forever, which is exactly the unbounded wait this watchdog
+    exists to prevent.
+
+    So the wait polls instead. If the child finishes, its exit status is
+    the result. If the watchdog has died and the child is still running,
+    the child is killed here and the wait ends.
+    """
+    deadline = None
+    while True:
+        try:
+            returncode = process.wait(timeout=poll_interval)
+        except subprocess.TimeoutExpired:
+            returncode = None
+        except TypeError as error:
+            # A harness stand-in without a timeout kwarg. Waiting on it
+            # unbounded is exactly what this function exists to prevent,
+            # so the wait is not retried without a bound.
+            if "timeout" not in str(error):
+                raise
+            state["wait_timed_out"] = poll_interval
+            kill_child(process)
+            return -1
+        if returncode is not None:
+            return returncode
+        if state["watcher_failed"] is not None:
+            # The watchdog is gone, so nobody else will kill the child.
+            kill_child(process)
+            try:
+                return process.wait(timeout=5)
+            except Exception:  # noqa: BLE001 - the child is already killed
+                return -1
+        if deadline is None:
+            deadline = time.monotonic() + watcher_failure_grace
+        elif time.monotonic() >= deadline:
+            # The watchdog neither reported a failure nor killed the
+            # child. Treat that as a failed watchdog: kill and report
+            # rather than wait forever.
+            state["wait_timed_out"] = watcher_failure_grace
+            kill_child(process)
+            try:
+                return process.wait(timeout=5)
+            except Exception:  # noqa: BLE001 - the child is already killed
+                return -1
+
+
+def published_child(holder, timeout=10.0):
+    """Return the started child, waiting briefly for it to be published.
+
+    The watcher and the main thread both need the child handle. The
+    watcher starts after the handle is published, so this normally
+    returns immediately; the wait only covers the case where the
+    watcher races the publication.
+    """
+    deadline = time.monotonic() + timeout
+    while True:
+        child = holder.get("process")
+        if child is not None:
+            return child
+        if time.monotonic() >= deadline:
+            return None
+        threading.Event().wait(0.05)
+
+
 def monitor_xcodebuild(command, env, idle_budget, subprocess_module=None,
                         heartbeat_interval=60):
     """Run xcodebuild with a visible progress signal and an idle-timeout.
@@ -121,6 +191,7 @@ def monitor_xcodebuild(command, env, idle_budget, subprocess_module=None,
         subprocess_module = subprocess
     state = {"last_growth": time.monotonic(), "size": 0, "stalled": False}
     state["watcher_failed"] = None
+    state["wait_timed_out"] = None
     done = threading.Event()
     holder = {}
 
@@ -140,12 +211,13 @@ def monitor_xcodebuild(command, env, idle_budget, subprocess_module=None,
                     continue
                 if now - state["last_growth"] >= idle_budget:
                     state["stalled"] = True
-                    report(f"::warning title=iOS UI stall::xcodebuild produced no "
-                           f"output for {idle_budget:.0f}s and was killed")
                     # Kill the stalled child now: waiting for the job's
                     # timeout-minutes backstop is what made this failure slow
-                    # and silent.
-                    kill_child(holder.get("process"))
+                    # and silent. Kill first: a blocked stdout would delay
+                    # the kill, which is the outcome this branch exists for.
+                    kill_child(published_child(holder))
+                    report(f"::warning title=iOS UI stall::xcodebuild produced no "
+                           f"output for {idle_budget:.0f}s and was killed")
                     return
                 if now - last_heartbeat >= heartbeat_interval:
                     last_heartbeat = now
@@ -157,14 +229,13 @@ def monitor_xcodebuild(command, env, idle_budget, subprocess_module=None,
             # Stop the child first: the report must not be able to prevent
             # the kill, otherwise a failing stdout would leave the very
             # unbounded wait this watchdog exists to prevent.
-            kill_child(holder.get("process"))
+            kill_child(published_child(holder))
             report(f"::warning title=iOS UI watchdog failed::the stall "
                    f"watchdog stopped ({error!r}); the build is killed")
 
     watcher = threading.Thread(target=watch, daemon=True)
     with tempfile.TemporaryDirectory(prefix="holon-ios-ui-log-") as log_dir:
         captured = pathlib.Path(log_dir) / "xcodebuild.log"
-        watcher.start()
         try:
             with captured.open("w") as log:
                 try:
@@ -178,7 +249,12 @@ def monitor_xcodebuild(command, env, idle_budget, subprocess_module=None,
                         command, env=env, stdout=log,
                         stderr=subprocess_module.STDOUT)
                 holder["process"] = process
-                returncode = process.wait()
+                # The watcher starts only once the child handle is
+                # published. A watcher that died before that would have
+                # had nothing to kill, and the main thread would then
+                # block on an unbounded wait.
+                watcher.start()
+                returncode = _wait_for_child(process, state)
         finally:
             done.set()
             watcher.join(timeout=5)
@@ -200,6 +276,10 @@ def monitor_xcodebuild(command, env, idle_budget, subprocess_module=None,
     if state["watcher_failed"] is not None:
         raise UIStallTimeout(
             f"xcodebuild watchdog failed: {state['watcher_failed']!r}")
+    if state["wait_timed_out"]:
+        raise UIStallTimeout(
+            f"xcodebuild watchdog did not report back within "
+            f"{state['wait_timed_out']:.0f}s")
     return returncode
 
 
