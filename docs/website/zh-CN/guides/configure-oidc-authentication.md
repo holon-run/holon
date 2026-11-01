@@ -13,7 +13,7 @@ order: 180
 ## 前置条件
 
 - 运行中且用户可访问的 Holon 实例（例如通过 `--access tunnel`、`--access tailnet` 或反向代理对外提供服务）。
-- 兼容 OIDC 规范的身份提供商，例如 Keycloak、Okta、Authentik、[Google Workspace](./google-workspace-oidc-authentication.md)、[自托管 GitLab CE](./gitlab-ce-oidc-authentication.md) 或 Microsoft Entra ID。
+- 兼容 OIDC 规范的身份提供商，例如 [自托管 Keycloak](./keycloak-oidc-authentication.md)、Okta、Authentik、[Google Workspace](./google-workspace-oidc-authentication.md)、[自托管 GitLab CE](./gitlab-ce-oidc-authentication.md) 或 Microsoft Entra ID。
 - 在 IdP 中具有注册新客户端应用的管理员权限。
 
 > **安全注意：** Holon 要求 OIDC 发行者 URL（issuer URL）与回调端点必须使用 HTTPS。仅当主机名严格为 `localhost` 时，回调地址才允许使用 HTTP；发行者 URL 必须始终使用 HTTPS。
@@ -25,6 +25,7 @@ order: 180
 > **特定 IdP 指南：**
 > - 如果你的组织使用 Google Workspace 作为身份提供商，请参阅专用的[用 Google Workspace 配置 OIDC 单点登录](./google-workspace-oidc-authentication.md)，获取关于 Internal 用户类型、组织准入收敛与实测注意事项的详细说明。
 > - 如果你希望在私有环境完全不依赖外部账号，请参阅专用的[用自托管 GitLab CE 配置 OIDC 单点登录](./gitlab-ce-oidc-authentication.md)，涵盖 Docker 部署、Let's Encrypt 证书挂载、confidential 客户端与实测注意事项。
+> - 如果你希望使用专职开源身份平台作为统一单点登录入口，请参阅专用的[用自托管 Keycloak 配置 OIDC 单点登录](./keycloak-oidc-authentication.md)，涵盖 Docker 部署、realm/client 创建、凭据与端到端实测注意事项。
 
 在身份提供商中创建新的 OpenID Connect 应用：
 

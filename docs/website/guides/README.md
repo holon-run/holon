@@ -104,6 +104,10 @@ Use [Reference](../reference/) for complete command syntax and schemas.
   Deploy a self-hosted GitLab CE instance, register an OAuth application, configure Holon's OIDC authentication, and verify end-to-end single sign-on without external accounts.
   <!-- mdorigin:index kind=article -->
 
+- [Configure OIDC Single Sign-On with Self-Hosted Keycloak](./keycloak-oidc-authentication.md)
+  Deploy a self-hosted Keycloak instance with Docker, configure realms and clients, set up Holon's OIDC authentication, and verify end-to-end single sign-on without external accounts.
+  <!-- mdorigin:index kind=article -->
+
 - [Share AI assistants with your team](./share-with-your-team.md)
   Deploy Holon on a shared server, enable team sign-in, assign tasks to common assistants, and track progress together.
   <!-- mdorigin:index kind=article -->
