@@ -89,6 +89,7 @@ const PRIVATE_TABLES: &[(&str, &str)] = &[
     // Domain projections are private content, not retained identity fences.
     ("current_read_qualification", "agent_id"),
     ("current_read_revisions", "agent_id"),
+    ("event_history_acks", "agent_id"),
     ("input_query_birth_members", "agent_id"),
     ("input_query_birth_cursors", "agent_id"),
     ("input_evidence_execution_current_sources", "agent_id"),
@@ -1481,6 +1482,24 @@ mod tests {
         Ok(())
     }
 
+    fn history_ack(db: &RuntimeDb, agent: &str) -> Result<()> {
+        db.transaction(|tx| {
+            let (event, _) = super::super::evidence::append_audit_event_tx(
+                tx,
+                Some(agent),
+                &AuditEvent::legacy("deletion_history", serde_json::json!({"agent_id": agent})),
+            )?;
+            super::super::current_read_writes::append_event_history_ack_tx(
+                tx,
+                &crate::runtime::resident_input_evidence::InputEvidenceScope {
+                    agent_id: agent.into(),
+                    identity_incarnation: identity_tx(tx, agent)?.incarnation,
+                },
+                &event.id,
+            )
+        })
+    }
+
     fn attempt(db: &RuntimeDb) -> Result<()> {
         let attempt = ExecutionAttempt {
             input_projection: None,
@@ -2464,13 +2483,30 @@ mod tests {
         for agent in ["a", "b"] {
             message(&db, agent, &format!("message-{agent}"))?;
             task(&db, agent, &format!("task-{agent}"), None)?;
+            history_ack(&db, agent)?;
         }
         memory(&db)?;
+        db.transaction(|tx| {
+            tx.execute_batch(
+                "CREATE TRIGGER require_history_ack_cleanup BEFORE DELETE ON audit_events
+                 WHEN EXISTS(SELECT 1 FROM event_history_acks
+                             WHERE agent_id=OLD.agent_id AND audit_event_id=OLD.audit_event_id)
+                 BEGIN SELECT RAISE(ABORT,'history ACKs must be cleared before Events'); END;",
+            )?;
+            Ok(())
+        })?;
+        let foreign_before = private_rows(&db, "b")?;
         fence(&db)?;
         settle_execution(&db, "a", 1, Utc::now())?;
         purge_private_history(&db, "a", 1, Utc::now())?;
+        assert_eq!(private_rows(&db, "b")?, foreign_before);
         db.transaction(|tx| {
             assert_private_history_cleared_tx(tx, "a")?;
+            assert!(exists(
+                tx,
+                "SELECT EXISTS(SELECT 1 FROM event_history_acks WHERE agent_id = ?1)",
+                "b"
+            )?);
             assert_eq!(identity_tx(tx, "a")?.incarnation, 1);
             for table in ["memory_documents_fts", "memory_documents_fts_rows"] {
                 let count: i64 =
@@ -2518,6 +2554,7 @@ mod tests {
     fn purge_fault_rolls_back_sources_fts_and_proof() -> Result<()> {
         let (_dir, db) = fixture()?;
         message(&db, "a", "message-a")?;
+        history_ack(&db, "a")?;
         memory(&db)?;
         db.turn_records()
             .upsert(&TurnRecord::new("a", "operation-turn", 1))?;
@@ -2532,6 +2569,7 @@ mod tests {
         })?;
         fence(&db)?;
         settle_execution(&db, "a", 1, Utc::now())?;
+        let before = private_rows(&db, "a")?;
         db.transaction(|tx| {
             tx.execute_batch(
                 "CREATE TRIGGER fail_purge BEFORE DELETE ON messages
@@ -2541,8 +2579,14 @@ mod tests {
         })?;
         let error = purge_private_history(&db, "a", 1, Utc::now()).unwrap_err();
         assert!(format!("{error:#}").contains("injected purge failure"));
+        assert_eq!(private_rows(&db, "a")?, before);
         db.transaction(|tx| {
             assert!(!proof_tx(tx, "a")?.unwrap().purged);
+            assert!(exists(
+                tx,
+                "SELECT EXISTS(SELECT 1 FROM event_history_acks WHERE agent_id = ?1)",
+                "a"
+            )?);
             let fences: i64 = tx.query_row(
                 "SELECT COUNT(*) FROM runtime_metadata
                  WHERE key LIKE 'destructive_operation_closed:%'",

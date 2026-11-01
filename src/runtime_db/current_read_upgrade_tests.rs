@@ -177,6 +177,31 @@ fn current_upgrade_adopts_only_fixed_pending_queues_and_no_event_history() -> Re
 }
 
 #[test]
+fn offline_event_before_history_schema_is_adopted_by_original_upgrade() -> Result<()> {
+    let (mut connection, _messages) = legacy(1)?;
+    let scope = InputEvidenceScope {
+        agent_id: AGENT.into(),
+        identity_incarnation: 1,
+    };
+    let event = AuditEvent::legacy("offline-before-history", serde_json::json!({}));
+    {
+        let tx = connection.transaction()?;
+        append_audit_event_tx(&tx, Some(AGENT), &event)?;
+        current_read_writes::append_event_history_ack_tx(&tx, &scope, &event.id)?;
+        tx.commit()?;
+    }
+    migrate_to(&mut connection, current_read_writes::VERSION)?;
+    let acked: usize = connection.query_row(
+        "SELECT COUNT(*) FROM event_history_acks
+         WHERE agent_id=?1 AND identity_incarnation=?2 AND audit_event_id=?3",
+        params![scope.agent_id, scope.identity_incarnation, event.id],
+        |row| row.get(0),
+    )?;
+    assert_eq!(acked, 1);
+    Ok(())
+}
+
+#[test]
 fn current_upgrade_freezes_event_history_acks_for_the_finite_history_page() -> Result<()> {
     let (mut connection, _messages) = legacy(1)?;
     // Give the legacy database real Events before the Current cut.
