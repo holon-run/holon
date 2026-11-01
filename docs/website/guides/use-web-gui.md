@@ -224,6 +224,9 @@ and **Source** modes; text files support syntax highlighting.
 Files are resolved against registered workspaces and execution roots. Path
 traversal and symlink escapes are blocked. Text previews are capped at 1 MB;
 downloads can retrieve the complete file.
+Workspace files use explicit reads only. When a WorkItem plan artifact changes
+on disk, the browser surfaces a reload prompt rather than overwriting open
+preview state in the background.
 
 #### Optional Finder integration (macOS)
 
@@ -316,10 +319,12 @@ When viewing an agent or the Dashboard, the right panel shows:
 - **Active children** — spawned child agents and their status.
 - **Tool latency** — per-tool call count and total duration.
 
-The right panel also hosts contextual detail views. For example, clicking
-a task in the Dashboard opens a **Task Detail** panel showing status,
-kind, command, workdir, and output right alongside the main view. For delegated
-child agents, click the conversation button to switch into the subagent view
+Overview timers and expanded recent tasks refresh through a shared scheduler
+with identity fences, pausing background reads whenever the section collapses
+or the side panel closes. When inspecting a specific Task or WorkItem, the
+panel revalidates live details in place and surfaces refresh feedback in the
+header. For delegated child agents, click the conversation button to switch
+into the subagent view
 without a full-page reload, then use the return link to resume the parent.
 
 Expand the right panel when you need more room to read a detail view.
@@ -362,6 +367,13 @@ instead of blocking the request:
   running job, with success or error feedback when it finishes.
 - **Job API** — the runtime exposes the job read model at
   `/api/jobs/{job_id}` for status, phase, and progress items.
+
+### Brief Cursor Decoupling and Debouncing
+
+Brief read status queries run through a reader connection pool instead of
+competing with write transactions. The Web GUI debounces cursor-advance updates
+into quiet windows, eliminating polling contention during active multi-client
+or multi-tab sessions.
 
 ## Verify your session
 
