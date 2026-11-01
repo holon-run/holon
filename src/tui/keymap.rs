@@ -101,6 +101,7 @@ pub(super) enum OverlayShortcutTarget {
     Help,
     Agents,
     Tasks,
+    TurnDetails,
     AgentState,
     Transcript,
     Events,
@@ -301,6 +302,9 @@ pub(super) fn resolve_overlay_shortcut_key(key: KeyEvent) -> TuiKeyAction {
         }
         KeyCode::Char('t') | KeyCode::Char('T') => {
             TuiKeyAction::OpenOverlay(OverlayShortcutTarget::Tasks)
+        }
+        KeyCode::Char('d') | KeyCode::Char('D') => {
+            TuiKeyAction::OpenOverlay(OverlayShortcutTarget::TurnDetails)
         }
         KeyCode::Char('s') | KeyCode::Char('S') => {
             TuiKeyAction::OpenOverlay(OverlayShortcutTarget::AgentState)

@@ -48,6 +48,7 @@ pub(crate) mod projection;
 mod render;
 mod runtime;
 mod state;
+mod tool_details;
 mod view_model;
 
 use app::TuiApp;

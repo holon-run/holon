@@ -216,11 +216,37 @@ control-plane inspection; they are not default conversation navigation entries.
 The TUI has one conversation page rather than separate result and execution
 pages or an operator-selected display level. Historical turns load summaries
 and canonical Briefs without replaying verbose event history. Active turns
-load bounded activity and receive live changes. A canonical terminal execution
-state removes that turn's activity from the page while preserving operator
-inputs, Briefs, and a safe typed result/terminal status when no Brief is
-available. A Brief arriving during execution does not collapse an active turn.
-Later result delivery still updates a terminal summary.
+load bounded activity and receive live changes. Working belongs to the turn,
+not each activity: there is one running header and static assistant/tool rows.
+A canonical terminal execution state stops Working immediately, independently
+of result hydration. Retain already visible details while awaiting a readable
+Brief; expose result loading/failure as static status. When the Brief body is
+available, display it outside the detail group and fold that group in the same
+draw. Do not wait for `settled`, delete details at execution stop, or fold an
+active turn merely because an early Brief exists. Explicit no-result outcomes
+retain typed terminal notices rather than an indefinite result wait.
+
+`Ctrl+O D` opens a turn/task-result inspector. Manual expansion takes precedence
+over automatic folding, including while reading the inspector. Historical
+navigation still reads summaries/Briefs only; details and tool execution DTOs
+are fetched on demand, not through an N+1 historical prefetch. Retain at most
+16 detail turns (live turns are not evicted), 300 activities per turn and 128
+tool records. Tool records are keyed by execution identity and activity revision.
+Agent/snapshot/runtime-scope resets discard cached detail and fence responses.
+Command, batch and patch details have dedicated bounded presentation; other
+tools expose curated input/output/error. Preview truncation and artifacts are
+explicit; tool success is not proof that a background command completed.
+
+Task-result inputs use the typed task presentation, not a dump of command or
+child-result envelopes. Queue consumption state is separate from task status;
+the inspector preserves access to the original child reply or task output.
+Reading mode is controlled by user scrolling. Stable input/turn/activity/Brief
+identities and a visual subrow anchor preserve history through append, prepend,
+hydration, folding and resize, falling back to the same turn when a child folds.
+Layout changes never implicitly reenable tail-follow. Use normal terminal diff
+draws, not screen clearing or alternate-screen transitions during updates.
+Narrow status lines prioritize agent/model/connection state and visibly elide
+lower-priority context without increasing the fixed status-bar height.
 
 Input previews decode serialized message bodies, including bounded text
 previews. Pending inputs retain queue-time ordering and assignment state.

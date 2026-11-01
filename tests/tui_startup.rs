@@ -180,7 +180,9 @@ fn termios(file: &File) -> libc::termios {
 }
 
 fn assert_cooked_unchanged(child: &PtyChild) {
-    let current = termios(&child.slave);
+    // macOS revokes the slave when its controlling session exits; the master
+    // still exposes the terminal attributes, including any unrestored raw mode.
+    let current = termios(&child.master);
     assert_eq!(current.c_iflag, child.original.c_iflag);
     assert_eq!(current.c_oflag, child.original.c_oflag);
     assert_eq!(current.c_cflag, child.original.c_cflag);

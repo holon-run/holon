@@ -483,6 +483,7 @@ impl TuiApp {
         self.conversation_generation = self.conversation_generation.saturating_add(1);
         self.conversation = None;
         self.conversation_history_tx = None;
+        self.chat_scroll.follow_tail();
         self.chat_text_cache.borrow_mut().take();
         self.optimistic_operator_messages.clear();
         self.tasks.clear();
@@ -512,7 +513,8 @@ impl TuiApp {
         }
         self.conversation_generation = self.conversation_generation.saturating_add(1);
         self.conversation = None;
-        let (history_tx, history_rx) = mpsc::channel(1);
+        self.chat_scroll.follow_tail();
+        let (history_tx, history_rx) = mpsc::channel(16);
         self.conversation_history_tx = Some(history_tx);
         self.conversation_task = Some(tokio::spawn(super::conversation::observe(
             self.client.clone(),
@@ -873,6 +875,7 @@ impl TuiApp {
                     if generation == self.conversation_generation {
                         if reset {
                             self.conversation = None;
+                            self.chat_scroll.follow_tail();
                             self.chat_text_cache.borrow_mut().take();
                         }
                         self.status_line = format!("Conversation reconnecting: {error}");
@@ -968,7 +971,7 @@ impl TuiApp {
                 self.chat_scroll
                     .prepare_for_history_prepend(self.chat_max_scroll);
                 if let Some(tx) = &self.conversation_history_tx {
-                    let _ = tx.try_send(());
+                    let _ = tx.try_send(super::conversation::ConversationRequest::Older);
                 }
             }
             return;

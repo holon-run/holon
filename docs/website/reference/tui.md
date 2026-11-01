@@ -159,9 +159,11 @@ The agent picker lists public agents, like the Web GUI. Private subagents are
 not fetched as part of the default roster.
 
 One conversation page combines operator inputs, Briefs, and the current turn's
-execution activity. While a turn is running, its details update live. Once the
-turn reaches a terminal state, those details disappear and the result Briefs
-remain. A Brief received before execution finishes does not hide active work.
+execution activity. A running turn has one Working header, with bounded tool
+parameters/results below it. Execution stop removes the running indicator but
+keeps static details until the Brief body is readable; then details fold while
+the Brief remains outside the fold. A Brief received before execution finishes
+does not hide active work.
 Turns without a Brief show a safe result/status notice instead of an invented
 response.
 
@@ -169,6 +171,15 @@ Briefs and terminal status notices are static, not "Working" indicators.
 If execution finishes before result delivery, the page keeps an awaiting-result
 notice. Failed Brief reads retry with capped backoff even when the stream is
 otherwise idle.
+
+Press `Ctrl+O`, then `D` to inspect turns, tool records and task results.
+Use `↑`/`↓` to select a turn, `Enter` to fold/unfold or retry, and
+`PgUp`/`PgDn` to scroll details. Manual expansion is preserved.
+Historical details load on demand; task cards distinguish completed work from
+results queued for consumption and retain access to the original child reply.
+Scrolling into history keeps a stable reading position during updates; `Ctrl+End`
+resumes tail-follow. Narrow status lines use visible ellipses, with full
+workspace/model details available in `Ctrl+O S`.
 
 History loads turn summaries rather than verbose event history. Use `/events`
 for separate raw-event inspection. There is no `/display` command or verbosity
@@ -217,6 +228,7 @@ target key to open the corresponding overlay:
 | `H` | Help |
 | `A` | Agent picker |
 | `T` | Tasks |
+| `D` | Turn/tool details and task results |
 | `S` | Agent state |
 | `C` | Transcript |
 | `E` | Event log |

@@ -1148,6 +1148,52 @@ impl TuiApp {
         let overlay = std::mem::replace(&mut self.overlay, OverlayState::None);
         match overlay {
             OverlayState::None => self.handle_main_key(key).await,
+            OverlayState::TurnDetails {
+                mut selected_id,
+                mut detail_scroll,
+            } => {
+                if key.code == KeyCode::Esc {
+                    return Ok(());
+                }
+                let entries = super::overlay::turn_detail_entries(self);
+                let index = entries
+                    .iter()
+                    .position(|(id, _)| Some(id) == selected_id.as_ref())
+                    .unwrap_or(0);
+                let mut request = false;
+                if key.code == KeyCode::Enter {
+                    if let Some(id) = entries.get(index).map(|(id, _)| id.clone()) {
+                        self.request_turn_details(&id, true);
+                    }
+                } else {
+                    match resolve_key(KeyContext::EventsOverlay, key) {
+                        TuiKeyAction::OverlayMoveUp | TuiKeyAction::OverlayMoveDown => {
+                            let next = if key.code == KeyCode::Up {
+                                index.saturating_sub(1)
+                            } else {
+                                (index + 1).min(entries.len().saturating_sub(1))
+                            };
+                            selected_id = entries.get(next).map(|(id, _)| id.clone());
+                            detail_scroll = 0;
+                            request = true;
+                        }
+                        TuiKeyAction::OverlayScroll(action) => {
+                            detail_scroll = adjust_scroll_for_action(detail_scroll, action);
+                        }
+                        _ => {}
+                    }
+                }
+                if request {
+                    if let Some(id) = &selected_id {
+                        self.request_turn_details(id, false);
+                    }
+                }
+                self.overlay = OverlayState::TurnDetails {
+                    selected_id,
+                    detail_scroll,
+                };
+                Ok(())
+            }
             OverlayState::Agents { selected } => {
                 self.handle_agents_overlay_key(key, selected).await
             }
@@ -1615,7 +1661,10 @@ impl TuiApp {
             return Ok(());
         }
 
-        if matches!(key.code, KeyCode::PageUp | KeyCode::PageDown) {
+        if matches!(key.code, KeyCode::PageUp | KeyCode::PageDown)
+            || (key.modifiers.contains(KeyModifiers::CONTROL)
+                && matches!(key.code, KeyCode::Home | KeyCode::End))
+        {
             if self.composer_edit_mode == ComposerEditMode::VimNormal {
                 self.vim_pending_command = None;
             }
@@ -1637,7 +1686,7 @@ impl TuiApp {
             TuiKeyAction::BeginOverlayShortcut => {
                 self.overlay_shortcut_pending = true;
                 self.status_line =
-                    "Overlay shortcut: H help, A agents, T tasks, S state, C conversation, E events, M model, K skills".into();
+                    "Overlay shortcut: D turn details, H help, A agents, T tasks, S state, C conversation, E events, M model, K skills".into();
             }
             TuiKeyAction::OpenHelp if self.composer.is_empty() => {
                 self.open_overlay_shortcut(OverlayShortcutTarget::Help)
@@ -1712,7 +1761,7 @@ impl TuiApp {
                 self.vim_pending_command = None;
                 self.overlay_shortcut_pending = true;
                 self.status_line =
-                    "Overlay shortcut: H help, A agents, T tasks, S state, C conversation, E events, M model, K skills".into();
+                    "Overlay shortcut: D turn details, H help, A agents, T tasks, S state, C conversation, E events, M model, K skills".into();
                 true
             }
             TuiKeyAction::OpenHelp if self.composer.is_empty() => {
@@ -2029,6 +2078,46 @@ impl TuiApp {
         }
     }
 
+    fn request_turn_details(&mut self, id: &str, toggle: bool) {
+        use super::conversation::ConversationRequest;
+        let Some(model) = &self.conversation else {
+            return;
+        };
+        let request = if let Some(id) = id.strip_prefix("pending:") {
+            let Some(result) = model
+                .inputs
+                .get(id)
+                .and_then(|input| input.task_result.as_ref())
+            else {
+                return;
+            };
+            ConversationRequest::TaskResult {
+                task_id: result.task_id.clone(),
+                message_id: result.response_message_id.clone(),
+            }
+        } else {
+            let Some(turn) = model.turns.get(id) else {
+                return;
+            };
+            let retry = model.detail_errors.contains_key(id)
+                || !model.tool_errors.is_empty()
+                || turn
+                    .inputs
+                    .iter()
+                    .filter_map(|input| input.task_result.as_ref())
+                    .any(|result| model.task_result_errors.contains_key(&result.task_id));
+            ConversationRequest::Details {
+                turn_id: id.to_owned(),
+                expanded: !toggle || retry || !model.details_expanded(turn),
+            }
+        };
+        if let Some(tx) = &self.conversation_history_tx {
+            if tx.try_send(request).is_err() {
+                self.status_line = "Detail request queue busy; retry".into();
+            }
+        }
+    }
+
     async fn open_overlay_shortcut(&mut self, target: OverlayShortcutTarget) -> Result<()> {
         self.vim_pending_command = None;
         match target {
@@ -2048,6 +2137,20 @@ impl TuiApp {
                     detail_scroll: 0,
                 };
                 self.status_line = "Opened tasks overlay".into();
+            }
+            OverlayShortcutTarget::TurnDetails => {
+                let selected_id = super::overlay::turn_detail_entries(self)
+                    .first()
+                    .map(|(id, _)| id.clone());
+                if let Some(id) = &selected_id {
+                    self.request_turn_details(id, false);
+                }
+                self.overlay = OverlayState::TurnDetails {
+                    selected_id,
+                    detail_scroll: 0,
+                };
+                self.status_line =
+                    "Turn details: Up/Down select, Enter fold/unfold, PgUp/PgDn scroll".into();
             }
             OverlayShortcutTarget::AgentState => {
                 self.overlay = OverlayState::AgentState { scroll: 0 };

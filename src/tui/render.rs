@@ -50,7 +50,13 @@ fn draw_chat(frame: &mut Frame<'_>, area: Rect, app: &mut TuiApp) {
     let max_scroll = paragraph_max_scroll_unframed(&body, area);
     app.chat_max_scroll = max_scroll;
     app.chat_scroll.apply_history_prepend_adjustment(max_scroll);
-    let scroll = app.chat_scroll.effective_scroll(max_scroll);
+    let rows = app
+        .chat_text_cache
+        .borrow()
+        .as_ref()
+        .map(|cache| cache.rows.clone())
+        .unwrap_or_default();
+    let scroll = app.chat_scroll.resolve_rows(&rows, max_scroll);
     let paragraph = Paragraph::new(body)
         .scroll((scroll, 0))
         .wrap(Wrap { trim: false });
@@ -94,7 +100,7 @@ fn draw_prompt_pane(frame: &mut Frame<'_>, area: Rect, app: &TuiApp, slash_menu:
 }
 
 fn draw_status_bar(frame: &mut Frame<'_>, area: Rect, app: &TuiApp, slash_visible: bool) {
-    let view_model = StatusbarViewModel::from_app(app, slash_visible);
+    let view_model = StatusbarViewModel::for_width(app, slash_visible, area.width);
     let text = format!("{}\n{}", view_model.context_line, view_model.status_line);
     let paragraph = Paragraph::new(text).block(Block::default().borders(Borders::TOP));
     frame.render_widget(paragraph, area);
