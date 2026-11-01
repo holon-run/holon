@@ -227,7 +227,7 @@ pub(super) fn project_model(model_ref: &ModelRef, model: &ModelsDevModel) -> Bui
 
     let capabilities = project_capabilities(model);
 
-    let reasoning_effort_options = project_reasoning_effort_options(model);
+    let reasoning_effort_options = project_reasoning_effort_options(model_ref, model);
 
     BuiltInModelMetadata {
         model_ref: model_ref.clone(),
@@ -279,7 +279,14 @@ fn project_capabilities(model: &ModelsDevModel) -> ModelCapabilityFlags {
     }
 }
 
-fn project_reasoning_effort_options(model: &ModelsDevModel) -> Vec<String> {
+fn project_reasoning_effort_options(model_ref: &ModelRef, model: &ModelsDevModel) -> Vec<String> {
+    // OpenRouter's endpoint enum differs from the upstream provider metadata.
+    if model_ref.provider.as_str() == "openrouter"
+        && model_ref.model == "mistralai/mistral-large-4-0"
+    {
+        return vec!["none".into(), "high".into()];
+    }
+
     model
         .reasoning_options
         .iter()
@@ -349,6 +356,41 @@ mod tests {
             let metadata = project_model(&ModelRef::parse(model_ref).unwrap(), &model);
             assert_eq!(metadata.default_max_output_tokens, Some(1_048_576));
             assert_eq!(metadata.max_output_tokens_upper_limit, Some(1_048_576));
+        }
+    }
+
+    #[test]
+    fn openrouter_mistral_large_4_efforts_preserve_endpoint_contract() {
+        let model: ModelsDevModel = serde_json::from_str(
+            r#"{
+                "id":"mistralai/mistral-large-4-0",
+                "reasoning":true,
+                "reasoning_options":[{"type":"effort","values":["low","medium","high"]}],
+                "limit":{"context":1048576,"output":262144}
+            }"#,
+        )
+        .unwrap();
+        let metadata = project_model(
+            &ModelRef::parse("openrouter/mistralai/mistral-large-4-0").unwrap(),
+            &model,
+        );
+        assert_eq!(metadata.reasoning_effort_options, vec!["none", "high"]);
+        assert!(metadata.capabilities.supports_reasoning);
+        assert_eq!(metadata.context_window_tokens, Some(1_048_576));
+        assert_eq!(metadata.default_max_output_tokens, Some(262_144));
+        assert_eq!(metadata.max_output_tokens_upper_limit, Some(262_144));
+
+        for model_ref in [
+            "kilo/mistralai/mistral-large-4-0",
+            "mistral/mistral-large-4-0",
+            "openrouter/mistralai/mistral-large-4-0-8",
+        ] {
+            let metadata = project_model(&ModelRef::parse(model_ref).unwrap(), &model);
+            assert_eq!(
+                metadata.reasoning_effort_options,
+                vec!["low", "medium", "high"],
+                "{model_ref}"
+            );
         }
     }
 

@@ -5,6 +5,49 @@ unchanged catalog facts are preserved, not newly certified as vendor hard
 limits. An upstream candidate is evidence to review, not permission to change
 an endpoint, region, subscription entitlement, or runtime output policy.
 
+## Incremental review: 2026-11-02
+
+The frozen models.dev payload is
+`a2e417bd2a17eb0839af84dcc16280542da492809502f2faedf86ba0a52cc911`.
+The [official OpenRouter listing](https://openrouter.ai/api/v1/models),
+sampled on November 1 at 20:42 UTC, independently confirms two changed
+provider output ceilings:
+
+| OpenRouter model ID | Previous projection | New projection |
+| --- | ---: | ---: |
+| `openai/gpt-oss-20b` | 32,768 | 117,964 |
+| `~deepseek/deepseek-v4-flash-latest` | 131,072 | 943,718 |
+
+The existing remote projection uses each ceiling as both its default and
+upper bound; this cycle does not introduce a new defaulting policy or
+certify an omitted-request default. Model-level context fields, static
+route budgets, aliases and preferred mappings remain unchanged.
+
+The same listing explicitly gives `mistralai/mistral-large-4-0` the effort
+set `high/none`. The frozen upstream instead changed its effort values
+from `none/high` to `low/medium/high`. Preserve the endpoint's reviewed
+`none/high` contract at the shared projection boundary, for this exact
+OpenRouter model only. Do not mutate the raw payload or infer a native
+Mistral, other-gateway, or future-version contract from this exception.
+
+Independent native Mistral evidence partly recovered through a browser
+transport while all 14 local Mistral URL reads reset. The
+[native reasoning reference](https://docs.mistral.ai/studio/conversations/reasoning)
+gives Large 4 `low/medium/high` and Small 4 `none/high`; neither overrides
+the separately sampled OpenRouter contract. The
+[Large 4 family card](https://docs.mistral.ai/models/mistral-large-4-0)
+does not establish the exact `mistral-large-4-0-8` binding or its output
+default/ceiling. Keep that candidate gated and the raw snapshot intact.
+Browser excerpt hashes attest only to the saved excerpts, not complete
+upstream response bytes. No new native Mistral capacity is certified here.
+
+The immutable [Codex model catalog](https://github.com/openai/codex/blob/126a0ee92ed2c5e73cd8a8f7e37563e8527552d7/codex-rs/models-manager/models.json)
+remains byte-identical, with 12 slugs. DeepSeek's
+[pricing](https://api-docs.deepseek.com/quick_start/pricing/) and
+[Responses guide](https://api-docs.deepseek.com/guides/responses_api)
+have unchanged extracted public text. No generic API field is copied to
+Codex or an unrelated protocol, region or subscription endpoint.
+
 ## Incremental review: 2026-11-01
 
 The frozen models.dev payload is
