@@ -20,6 +20,7 @@ mod fallback;
 mod http_trace;
 pub mod image_delivery;
 pub mod image_generation;
+mod material;
 pub mod media;
 mod quota;
 mod registry;
@@ -43,6 +44,7 @@ pub(crate) use diagnostics::{
     resolved_model_providers_from_availability_for_runtime,
 };
 pub use http_trace::ProviderHttpTraceDiagnostics;
+pub use material::ProviderRequestMaterial;
 #[cfg(test)]
 pub(crate) use registry::ProviderCatalogRegistration;
 pub(crate) use registry::{
@@ -110,6 +112,7 @@ pub trait ProviderDispatchGuard: Send + Sync + std::fmt::Debug {
 #[derive(Debug, Clone)]
 pub struct ProviderTurnRequest {
     pub dispatch_guard: Option<std::sync::Arc<dyn ProviderDispatchGuard>>,
+    pub material: ProviderRequestMaterial,
     pub continuation_scope_id: Option<ContinuationScopeId>,
     pub prompt_frame: ProviderPromptFrame,
     pub conversation: Vec<ConversationMessage>,
@@ -126,6 +129,7 @@ impl ProviderTurnRequest {
     ) -> Self {
         Self {
             dispatch_guard: None,
+            material: Default::default(),
             continuation_scope_id: None,
             prompt_frame: ProviderPromptFrame::plain(system_prompt),
             conversation,
@@ -138,6 +142,7 @@ impl ProviderTurnRequest {
 
 #[derive(Debug, Clone)]
 pub struct ProviderTurnResponse {
+    pub material: ProviderRequestMaterial,
     pub blocks: Vec<ModelBlock>,
     pub stop_reason: Option<String>,
     pub input_tokens: u64,
@@ -148,7 +153,7 @@ pub struct ProviderTurnResponse {
     pub request_diagnostics: Option<ProviderRequestDiagnostics>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize)]
 pub struct ProviderGenerateImageRequest {
     pub prompt: String,
     pub size: Option<String>,
@@ -156,11 +161,13 @@ pub struct ProviderGenerateImageRequest {
     pub resolution: Option<String>,
     pub background: Option<String>,
     pub output_format: Option<String>,
+    #[serde(skip)]
+    pub material: ProviderRequestMaterial,
 }
 
 #[derive(Debug, Clone)]
 pub struct ProviderGeneratedImage {
-    pub bytes: Vec<u8>,
+    pub bytes: tokio_util::bytes::Bytes,
     pub mime: Option<String>,
 }
 
@@ -522,6 +529,9 @@ pub enum ProviderPromptCapability {
     ContextManagement,
 }
 
+mod image_data;
+pub use image_data::ProviderImageData;
+
 #[derive(Debug, Clone)]
 pub enum ConversationMessage {
     UserText(String),
@@ -529,7 +539,7 @@ pub enum ConversationMessage {
     UserImage {
         prompt: String,
         media_type: String,
-        data_base64: String,
+        data_base64: ProviderImageData,
         /// Only runtime-classified historical attachments may be omitted on overflow.
         optional_history: bool,
     },
@@ -730,6 +740,7 @@ pub(crate) fn builtin_web_search_probe_turn_request(
 ) -> ProviderTurnRequest {
     ProviderTurnRequest {
         dispatch_guard: None,
+        material: Default::default(),
         continuation_scope_id: None,
         prompt_frame: ProviderPromptFrame::plain("Reply with exactly OK."),
         conversation: vec![ConversationMessage::UserText(
@@ -758,6 +769,7 @@ impl StubProvider {
 impl AgentProvider for StubProvider {
     async fn complete_turn(&self, _request: ProviderTurnRequest) -> Result<ProviderTurnResponse> {
         Ok(ProviderTurnResponse {
+            material: Default::default(),
             blocks: vec![ModelBlock::Text {
                 text: self.reply.clone(),
             }],

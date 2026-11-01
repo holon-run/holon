@@ -32,6 +32,7 @@ impl ScriptedProviderStep {
 
     pub fn response_blocks(blocks: Vec<ModelBlock>) -> Self {
         Self::Response(ProviderTurnResponse {
+            material: Default::default(),
             blocks,
             stop_reason: None,
             input_tokens: 0,

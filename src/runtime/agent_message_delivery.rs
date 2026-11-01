@@ -221,6 +221,21 @@ pub(crate) fn isolate_legacy_cross_agent_execution_bindings(
     message: &mut MessageEnvelope,
     delivery: &AgentMessageDeliveryRecord,
 ) -> bool {
+    if delivery.state != AgentMessageDeliveryState::Queued
+        || !legacy_cross_agent_caller_bindings_match(message, delivery)
+    {
+        return false;
+    }
+    message.turn_id = None;
+    message.task_id = None;
+    message.work_item_id = None;
+    true
+}
+
+pub(crate) fn legacy_cross_agent_caller_bindings_match(
+    message: &MessageEnvelope,
+    delivery: &AgentMessageDeliveryRecord,
+) -> bool {
     let Some(caller_agent_id) = delivery.caller.caller_agent_id.as_deref() else {
         return false;
     };
@@ -228,7 +243,6 @@ pub(crate) fn isolate_legacy_cross_agent_execution_bindings(
         || delivery.target_agent_id != message.agent_id
         || delivery.message_id.as_deref() != Some(message.id.as_str())
         || delivery.outcome != AgentMessageDeliveryOutcome::Accepted
-        || delivery.state != AgentMessageDeliveryState::Queued
     {
         return false;
     }
@@ -240,14 +254,7 @@ pub(crate) fn isolate_legacy_cross_agent_execution_bindings(
     let bindings_match = message.turn_id == caller.current_turn_id
         && message.task_id == caller.current_task_id
         && message.work_item_id == caller.current_work_item_id;
-    if !has_source_binding || !bindings_match {
-        return false;
-    }
-
-    message.turn_id = None;
-    message.task_id = None;
-    message.work_item_id = None;
-    true
+    has_source_binding && bindings_match
 }
 
 #[cfg(test)]
@@ -367,14 +374,17 @@ mod tests {
             bail!("expected scheduled agent message");
         };
         runtime
-            .begin_interactive_turn_with_provenance(
-                Some(&scheduled.message),
+            .begin_dispatch_turn(
+                &scheduled.message,
                 None,
                 None,
                 scheduled.dispatch_plan.execution_admission_provenance,
+                &scheduled.dispatch_plan.prior_closure,
             )
             .await?;
-        runtime.record_incoming_transcript_entry(&scheduled.message)?;
+        runtime
+            .record_incoming_transcript_entry(&scheduled.message)
+            .await?;
         Ok(scheduled.message)
     }
 
@@ -716,12 +726,57 @@ mod tests {
             }
         }
 
+        async fn wait_for_provider(
+            runtime: &RuntimeHandle,
+            started: &Notify,
+            stage: &str,
+        ) -> Result<()> {
+            if let Err(error) =
+                tokio::time::timeout(Duration::from_secs(2), started.notified()).await
+            {
+                let state = runtime.agent_state().await.map(|state| {
+                    (
+                        state.status,
+                        state.pending,
+                        state.current_turn_id,
+                        state.current_execution_binding,
+                    )
+                });
+                let events = runtime.storage().read_recent_events(8).map(|events| {
+                    events
+                        .into_iter()
+                        .map(|event| {
+                            let diagnostic = serde_json::json!({
+                                "code": event.data.get("code"),
+                                "reason": event.data.get("reason"),
+                                "error": event.data.get("error"),
+                            });
+                            (
+                                event.kind,
+                                crate::runtime_error::sanitize_runtime_error_text(
+                                    &diagnostic.to_string(),
+                                ),
+                            )
+                        })
+                        .collect::<Vec<_>>()
+                });
+                return Err(error).with_context(|| {
+                    format!(
+                        "{stage} provider did not start; state={state:?}; recent_events={events:?}"
+                    )
+                });
+            }
+            Ok(())
+        }
+
         let home = tempdir()?;
         std::fs::write(
             home.path().join("config.json"),
             r#"{"model":{"default":"openai/gpt-5.4"}}"#,
         )?;
-        let config = AppConfig::load_with_home(Some(home.path().to_path_buf()))?;
+        let mut config = AppConfig::load_with_home(Some(home.path().to_path_buf()))?;
+        // Reply routing must not load the host user's guidance or skill catalogue.
+        config.user_home_dir = None;
         let provider = Arc::new(ReplySelectorProvider {
             started: Notify::new(),
         });
@@ -751,7 +806,7 @@ mod tests {
             .await?;
         // The host owns scheduling; park each admitted turn in the provider
         // instead of racing its run loop with a second scheduler poll.
-        tokio::time::timeout(Duration::from_secs(2), provider.started.notified()).await?;
+        wait_for_provider(&sender, &provider.started, "sender operator admission").await?;
         let sender_state = sender.agent_state().await?;
         let operator_input = sender
             .storage()
@@ -787,7 +842,7 @@ mod tests {
                 },
             )
             .await?;
-        tokio::time::timeout(Duration::from_secs(2), provider.started.notified()).await?;
+        wait_for_provider(&target, &provider.started, "peer agent-message admission").await?;
         let target_state = target.agent_state().await?;
         let anchor = target
             .storage()
@@ -945,42 +1000,32 @@ mod tests {
             input.requested_priority = Some(Priority::Normal);
             input.correlation_id = Some(format!("correlation-{index}"));
             let prepared = AgentMessageDeliveryService::prepare(input, source)?;
-            ids.push(
+            let receipt = if null_ingress_turn && index == 0 {
+                // Exercise the original writer with a pre-assignment envelope;
+                // do not rewrite a Message after its Native/Current ACK.
+                assert!(prepared.message.turn_id.is_none());
+                let commit = target
+                    .enqueue_attempt(&prepared.message, Some(&prepared.record), None, None)
+                    .await?;
+                let receipt = commit
+                    .delivery_receipt
+                    .clone()
+                    .context("accepted pre-assignment delivery")?;
+                target.apply_transition_commit(commit).await;
+                receipt
+            } else {
                 target
                     .agent_message_delivery_service()
                     .deliver(&prepared)
                     .await?
-                    .message_id
-                    .context("accepted message")?,
-            );
+            };
+            ids.push(receipt.message_id.context("accepted message")?);
         }
         let original_follower = target
             .storage()
             .read_message_by_id(&ids[1])?
             .context("durable follower")?;
         assert!(original_follower.turn_id.is_some());
-        if null_ingress_turn {
-            // Restore a persisted pre-assignment input before real admission;
-            // never assign or rewrite the canonical attempt's turn.
-            let mut guard = target.inner.agent.lock().await;
-            guard
-                .queue
-                .pop_next_matching(|message| message.id == ids[0])
-                .context("queued pre-assignment anchor")?;
-            let mut message = target
-                .storage()
-                .read_message_by_id(&ids[0])?
-                .context("persisted pre-assignment anchor")?;
-            message.turn_id = None;
-            target.inner.runtime_db.transaction(|tx| {
-                crate::runtime_db::evidence::insert_message_evidence_tx(tx, &message)
-            })?;
-            let message = target
-                .storage()
-                .read_message_by_id(&message.id)?
-                .context("persisted pre-assignment anchor")?;
-            guard.queue.push_front(message);
-        }
         let original_anchor = target
             .storage()
             .read_message_by_id(&ids[0])?
@@ -991,8 +1036,13 @@ mod tests {
 
         for replay in [false, true] {
             if replay {
-                drop(target);
-                target = new_target()?;
+                crate::runtime::tests::support::finish_claimed_test_run(&target).await;
+                (target, _) = crate::runtime::tests::support::recover_quiescent_startup_fixture(
+                    target,
+                    &state_root,
+                    &workspace,
+                )
+                .await;
                 target.recover_scheduler_bootstrap_claims().await?;
             }
             let anchor = start_reply_selector_turn(&target).await?;

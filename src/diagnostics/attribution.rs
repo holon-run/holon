@@ -91,6 +91,9 @@ macro_rules! stages {
 }
 
 stages! {
+    CONTEXT_ACQUIRE => "context.snapshot.storage_acquisition",
+    CONTEXT_RENDER => "context.snapshot.render",
+    CONTEXT_HISTORY_PREPARE => "context.snapshot.scoped_history_acquisition",
     CONNECTION => "db.connection.attempt",
     SIDECAR => "db.connection.sidecar_check",
     SQLITE_OPEN => "db.connection.sqlite_open",

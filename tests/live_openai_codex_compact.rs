@@ -66,6 +66,7 @@ async fn live_openai_codex_remote_compact_route_probe() -> Result<()> {
     let output = provider
         .complete_turn(ProviderTurnRequest {
             dispatch_guard: None,
+            material: Default::default(),
             continuation_scope_id: ContinuationScopeId::new("live-openai-codex-compact-probe"),
             prompt_frame: ProviderPromptFrame::structured(
                 "Reply briefly. Do not include private information.",

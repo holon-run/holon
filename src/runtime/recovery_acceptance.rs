@@ -16,7 +16,10 @@ pub(super) struct Fence {
     result_message_id: String,
     result_identity: String,
     rejoin_generation: u64,
-    parent_turn_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    parent_turn_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    command_creation_id: Option<String>,
     recovery_epoch: u64,
 }
 
@@ -68,7 +71,8 @@ fn matches(control: &Control, record: &TaskResultSettlementRecord) -> bool {
             fence.result_message_id == record.message_id
                 && fence.result_identity == record.result_identity
                 && fence.rejoin_generation == record.rejoin_generation
-                && fence.parent_turn_id == record.parent_turn_id
+                && fence.parent_turn_id.as_deref() == record.source.parent_turn_id()
+                && fence.command_creation_id.as_deref() == record.source.command_creation_id()
                 && fence.recovery_epoch == record.recovery_epoch
         })
 }
@@ -96,7 +100,8 @@ fn evidence(
             "result_message_id": record.message_id,
             "result_identity": record.result_identity,
             "rejoin_generation": record.rejoin_generation,
-            "parent_turn_id": record.parent_turn_id,
+            "parent_turn_id": record.source.parent_turn_id(),
+            "command_creation_id": record.source.command_creation_id(),
             "recovery_epoch": record.recovery_epoch,
         },
         "recovery_attempts": record.recovery_attempts,
@@ -222,8 +227,7 @@ pub(super) async fn service(runtime: &RuntimeHandle) -> Result<(Option<Control>,
             && task.effective_work_item_id() == record.work_item_id.as_deref()
             && super::task_state_reducer::is_terminal_task_status(&task.status)
             && task.rejoin_fence().is_ok_and(|fence| {
-                fence.generation == record.rejoin_generation
-                    && fence.parent_turn_id == record.parent_turn_id
+                fence.generation == record.rejoin_generation && fence.source == record.source
             }),
         "sixth recovery source task/result fence mismatch"
     );

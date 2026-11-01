@@ -971,7 +971,7 @@ fn discover_local_templates(
     source: AgentTemplateSourceKind,
     use_absolute_selector: bool,
 ) -> Vec<AgentTemplateCatalogEntry> {
-    let Ok(read_dir) = fs::read_dir(root) else {
+    let Ok(read_dir) = crate::diagnostics::io_probe::read_dir(root) else {
         return Vec::new();
     };
     let mut entries = Vec::new();
@@ -987,7 +987,7 @@ fn discover_local_templates(
             continue;
         }
         let agents_md_path = path.join(TEMPLATE_AGENTS_FILENAME);
-        let Ok(agents_md) = fs::read_to_string(&agents_md_path) else {
+        let Ok(agents_md) = crate::diagnostics::io_probe::read_to_string(&agents_md_path) else {
             continue;
         };
         if agents_md.trim().is_empty() {
@@ -1522,6 +1522,7 @@ fn trim_leading_html_comments<'a>(mut trimmed: &'a str, in_comment: &mut bool) -
 
 /// Parse a `template.toml` manifest string (e.g., from a builtin template).
 fn parse_template_manifest(content: &str) -> Option<TemplateManifest> {
+    let _parse_budget = crate::diagnostics::resource_io::template_parse(content).ok()?;
     toml::from_str(content)
         .map_err(|error| {
             tracing::warn!(%error, "failed to parse template.toml manifest");
@@ -1532,7 +1533,7 @@ fn parse_template_manifest(content: &str) -> Option<TemplateManifest> {
 /// Parse `template.toml` from a local template directory.
 fn parse_local_template_manifest(template_dir: &Path) -> Option<TemplateManifest> {
     let manifest_path = template_dir.join(TEMPLATE_MANIFEST_FILENAME);
-    fs::read_to_string(&manifest_path)
+    crate::diagnostics::io_probe::read_to_string(&manifest_path)
         .ok()
         .and_then(|content| parse_template_manifest(&content))
 }
@@ -2073,8 +2074,10 @@ fn parse_skill_refs(path: PathBuf) -> Result<Vec<TemplateSkillRef>> {
     if !path.exists() {
         return Ok(Vec::new());
     }
-    let content =
-        fs::read_to_string(&path).with_context(|| format!("failed to read {}", path.display()))?;
+    let content = crate::diagnostics::io_probe::read_to_string(&path);
+    crate::diagnostics::resource_io::check_active_budget()?;
+    let content = content.with_context(|| format!("failed to read {}", path.display()))?;
+    let _parse_budget = crate::diagnostics::resource_io::template_parse(&content)?;
     let manifest: TemplateSkillsManifest =
         toml::from_str(&content).with_context(|| format!("failed to parse {}", path.display()))?;
     let skill_refs: Vec<TemplateSkillRef> = manifest
@@ -3545,6 +3548,229 @@ mod tests {
         seed_builtin_templates_for_home(home.path()).unwrap();
 
         assert!(!templates.exists());
+    }
+
+    #[test]
+    fn template_parse_read_rejection_does_not_allocate_path_context() {
+        use crate::{
+            diagnostics::resource_io::ResourceReadMaterial,
+            runtime::{
+                input_evidence_budget::InputEvidenceBudgetLedger,
+                resident_input_evidence::InputEvidenceScope,
+            },
+        };
+        let home = tempdir().unwrap();
+        let path = home.path().join(TEMPLATE_SKILLS_FILENAME);
+        fs::write(&path, "skills=[]").unwrap();
+        let scope = InputEvidenceScope {
+            agent_id: "parse-read".into(),
+            identity_incarnation: 1,
+        };
+        let header = (scope.agent_id.len() as u64 + 256) * 8;
+        let path_bytes = (path.as_os_str().len() as u64 * 4 + 512) * 8;
+        // Reject either the pathname itself or the following body admission.
+        for admitted_path in [0, path_bytes] {
+            let ledger = InputEvidenceBudgetLedger::new(Default::default()).unwrap();
+            let phase = ResourceReadMaterial::with_test_limits(
+                &ledger,
+                &scope,
+                header + admitted_path,
+                1024,
+            )
+            .unwrap();
+            let io = phase.enter();
+            let error = parse_skill_refs(path.clone()).unwrap_err();
+            assert!(error.is::<crate::runtime_error::RuntimeError>());
+            assert_eq!(error.chain().count(), 1);
+            assert!(!error.to_string().contains("failed to read"));
+            assert!(phase.finish().is_err());
+            assert_eq!(
+                ledger.report().unwrap().observed_bytes,
+                header + admitted_path
+            );
+            drop(io);
+            drop(phase);
+            assert_eq!(ledger.report().unwrap().observed_bytes, 0);
+        }
+
+        fs::write(&path, [0xff]).unwrap();
+        let ledger = InputEvidenceBudgetLedger::new(Default::default()).unwrap();
+        let phase = ResourceReadMaterial::new(&ledger, &scope).unwrap();
+        let _io = phase.enter();
+        let expected = crate::diagnostics::io_probe::read_to_string(&path)
+            .with_context(|| format!("failed to read {}", path.display()))
+            .unwrap_err();
+        assert!(expected
+            .to_string()
+            .starts_with(&format!("failed to read {}", path.display())));
+        let error = parse_skill_refs(path).unwrap_err();
+        assert_eq!(format!("{error:#}"), format!("{expected:#}"));
+        phase.finish().unwrap();
+    }
+
+    #[test]
+    fn template_parse_catalog_sequential_scratch_keeps_all_metadata_and_skills() {
+        use crate::{
+            diagnostics::resource_io::ResourceReadMaterial,
+            runtime::{
+                input_evidence_budget::InputEvidenceBudgetLedger,
+                resident_input_evidence::InputEvidenceScope,
+            },
+        };
+        let home = tempdir().unwrap();
+        let agent_home = tempdir().unwrap();
+        for index in 0..17 {
+            let root = templates_root_for_home(home.path()).join(format!("template-{index}"));
+            fs::create_dir_all(&root).unwrap();
+            fs::write(
+                root.join(TEMPLATE_AGENTS_FILENAME),
+                "# Test\n\nCatalog summary.",
+            )
+            .unwrap();
+            fs::write(root.join(TEMPLATE_MANIFEST_FILENAME), format!(
+                "schema='1'\nid='template-{index}'\nname='Template {index}'\nsummary='Description {index}'\n"
+            )).unwrap();
+            let mut skills = (0..6)
+                .map(|skill| {
+                    format!(
+                "[[skills]]\nkind='github'\nrepo='owner/repo'\npath='skills/skill-{skill}'\n"
+            )
+                })
+                .collect::<String>();
+            // Exercise the observed largest normal manifest, without HOME mutation.
+            if index == 16 {
+                skills.push('#');
+                skills.extend(std::iter::repeat_n('a', 1138 - skills.len()));
+            }
+            fs::write(root.join(TEMPLATE_SKILLS_FILENAME), skills).unwrap();
+        }
+        let ledger = InputEvidenceBudgetLedger::new(Default::default()).unwrap();
+        let scope = InputEvidenceScope {
+            agent_id: "catalog".into(),
+            identity_incarnation: 1,
+        };
+        let phase = ResourceReadMaterial::after(&ledger, &scope, (0, 1472)).unwrap();
+        let _io = phase.enter();
+        let catalog = discover_agent_templates_catalog(Some(home.path()), agent_home.path());
+        phase.finish().unwrap();
+        assert_eq!(catalog.len(), 17);
+        for entry in &catalog {
+            assert_eq!(entry.included_skills.len(), 6);
+            assert!(entry.description.starts_with("Description "));
+        }
+        let retained = phase.guard().unwrap();
+        drop(catalog);
+        drop(_io);
+        drop(phase);
+        assert!(ledger.report().unwrap().observed_bytes > 0);
+        drop(retained);
+        assert_eq!(ledger.report().unwrap().observed_bytes, 0);
+    }
+
+    #[test]
+    fn template_parse_retains_unknown_field_error_key_paths() {
+        use crate::{
+            diagnostics::resource_io::{self, ResourceReadMaterial},
+            runtime::{
+                input_evidence_budget::InputEvidenceBudgetLedger,
+                resident_input_evidence::InputEvidenceScope,
+            },
+        };
+        let dotted = std::iter::repeat_n("a", 70).collect::<Vec<_>>().join(".");
+        let input = format!(
+            "[[skills]]\nkind='local'\npath='x'\n{dotted}={{{dotted}={{z=18446744073709551616}}}}\n"
+        );
+        let expected = toml::from_str::<TemplateSkillsManifest>(&input).unwrap_err();
+        assert_eq!(
+            expected.message(),
+            "invalid type: integer `18446744073709551616` as i128, expected any value"
+        );
+        // The locked parser's Debug exposes the escaping key path. Its Vec
+        // needs at least 256 slots even though this input has only five '='.
+        assert!(format!("{expected:?}").matches("\"a\"").count() >= 140);
+        let ledger = InputEvidenceBudgetLedger::new(Default::default()).unwrap();
+        let scope = InputEvidenceScope {
+            agent_id: "parse".into(),
+            identity_incarnation: 1,
+        };
+        let phase = ResourceReadMaterial::new(&ledger, &scope).unwrap();
+        let io = phase.enter();
+        let before = phase.finish().unwrap();
+        let scratch = resource_io::template_parse(&input).unwrap().unwrap();
+        let actual = toml::from_str::<TemplateSkillsManifest>(&input).unwrap_err();
+        assert_eq!(actual, expected);
+        drop(scratch);
+        assert!(phase.finish().unwrap().1 - before.1 >= 256);
+        let retained = phase.guard().unwrap();
+        drop(io);
+        drop(phase);
+        assert!(ledger.report().unwrap().observed_bytes > 0);
+        drop(actual);
+        drop(retained);
+        assert_eq!(ledger.report().unwrap().observed_bytes, 0);
+    }
+
+    #[test]
+    fn template_parse_public_layouts_fit_slot_allowance() {
+        assert!(std::mem::size_of::<toml::de::DeValue<'_>>() <= 128);
+        assert!(std::mem::size_of::<TemplateManifest>() <= 128);
+        assert!(std::mem::size_of::<TemplateSkillFileRef>() <= 128);
+        assert!(std::mem::size_of::<TemplateSkillRef>() <= 128);
+        let spanned_value = toml::de::DeValue::parse("[]").unwrap();
+        let spanned_table = toml::de::DeTable::parse("").unwrap();
+        assert!(std::mem::size_of_val(&spanned_value) <= 128);
+        assert!(std::mem::size_of_val(&spanned_table) <= 128);
+    }
+
+    #[test]
+    fn template_parse_budget_preserves_stock_success_and_error_diagnostics() {
+        use crate::{
+            diagnostics::resource_io::ResourceReadMaterial,
+            runtime::{
+                input_evidence_budget::InputEvidenceBudgetLedger,
+                resident_input_evidence::InputEvidenceScope,
+            },
+        };
+        let home = tempdir().unwrap();
+        let path = home.path().join(TEMPLATE_SKILLS_FILENAME);
+        let mut inputs = vec![
+            "skills=[]".to_owned(),
+            "[[skills]]\nkind='local'\npath='a.b/ü'\nunknown={x=[1,2,3]}".to_owned(),
+            "[[skills]]\nkind='github'\nuses='owner/repo/skills/demo@main'".to_owned(),
+            "[[skills]]\nkind='unknown'\nunknown={x=[{y=1}]}".to_owned(),
+            "[[skills]]\nkind='local'\nkind='github'\n".to_owned(),
+            "skills=[{kind='local',path=\"\\x\"}]".to_owned(),
+            "skills=[{kind='local',path='a'}".to_owned(),
+            "skills=[{path='missing tag'}]".to_owned(),
+            "ignored=1979-05-27T07:32:00Z\nskills=[]".to_owned(),
+        ];
+        inputs.push(format!(
+            "{}=1",
+            (0..81).map(|_| "a").collect::<Vec<_>>().join(".")
+        ));
+        inputs.push(format!("ignored=[{}]\nskills=[]", "1 ".repeat(128)));
+        for input in inputs {
+            fs::write(&path, &input).unwrap();
+            let expected = parse_skill_refs(path.clone())
+                .map(|refs| format!("{refs:?}"))
+                .map_err(|error| format!("{error:#}"));
+            let ledger = InputEvidenceBudgetLedger::new(Default::default()).unwrap();
+            let scope = InputEvidenceScope {
+                agent_id: "parse".into(),
+                identity_incarnation: 1,
+            };
+            let phase = ResourceReadMaterial::new(&ledger, &scope).unwrap();
+            let _io = phase.enter();
+            let actual = parse_skill_refs(path.clone())
+                .map(|refs| format!("{refs:?}"))
+                .map_err(|error| format!("{error:#}"));
+            phase.finish().unwrap();
+            assert_eq!(actual, expected, "{input}");
+            drop(actual);
+            drop(_io);
+            drop(phase);
+            assert_eq!(ledger.report().unwrap().observed_bytes, 0);
+        }
     }
 
     #[test]

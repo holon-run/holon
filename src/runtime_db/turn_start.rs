@@ -6,16 +6,36 @@ use rusqlite::{params, OptionalExtension, Transaction};
 use crate::domain::execution_protocol::{
     ExecutionAttempt, ExecutionAttemptState, ExecutionBinding,
 };
+use crate::runtime::resident_input_evidence::InputEvidenceScope;
 use crate::types::{
     AgentIdentityRecord, AgentRegistryStatus, AgentState, ExecutionAdmissionProvenance, TurnOwner,
     TurnRecord,
 };
 
+#[cfg(test)]
 use super::evidence::upsert_agent_state_tx;
+#[cfg(test)]
 use super::repositories::{upsert_turn_record_tx, validate_turn_record_identity};
 use super::{RuntimeStateTransitionConflict, TurnRecordRepository};
 
 impl TurnRecordRepository<'_> {
+    /// Only the allocation scalar is read; retained Turn bodies are not inputs.
+    pub(crate) fn prepare_next_index(
+        &self,
+        scope: &InputEvidenceScope,
+        current_index: u64,
+    ) -> Result<u64> {
+        self.db.read_for_preparation(|tx| {
+            super::input_evidence_writes::validate_input_evidence_scope_tx(
+                tx,
+                scope,
+                &scope.agent_id,
+            )?;
+            next_turn_index_tx(tx, &scope.agent_id, current_index)
+        })
+    }
+
+    #[cfg(test)]
     pub(crate) fn start(
         &self,
         expected: Option<&AgentState>,
@@ -79,30 +99,12 @@ impl TurnRecordRepository<'_> {
                 )
                 .into());
             }
-            let retained: Option<i64> = tx.query_row(
-                "SELECT MAX(turn_index) FROM turn_records WHERE agent_id = ?1",
-                [&state.id],
-                |row| row.get(0),
-            )?;
-            let persisted: Option<i64> = tx
-                .query_row(
-                    "SELECT turn_index FROM agent_states WHERE agent_id = ?1",
-                    [&state.id],
-                    |row| row.get(0),
-                )
-                .optional()?;
-            let high_water = retained.unwrap_or(0).max(persisted.unwrap_or(0));
-            let next = high_water
-                .checked_add(1)
-                .filter(|next| *next > 0)
-                .ok_or_else(|| anyhow!("turn index exceeds SQLite integer range"))?;
+            let next = next_turn_index_tx(tx, &state.id, 0)?;
             ensure!(
-                actual
-                    .as_ref()
-                    .is_none_or(|state| state.turn_index < next as u64),
+                actual.as_ref().is_none_or(|state| state.turn_index < next),
                 "persisted turn counter is outside its canonical integer range"
             );
-            state.turn_index = next as u64;
+            state.turn_index = next;
             record.turn_index = state.turn_index;
             upsert_agent_state_tx(tx, &state)?;
             // Includes input assignment and conversation revisions in this transaction.
@@ -112,7 +114,58 @@ impl TurnRecordRepository<'_> {
     }
 }
 
-fn validate_start_admission_tx(
+fn next_turn_index_tx(tx: &Transaction<'_>, agent_id: &str, current_index: u64) -> Result<u64> {
+    let current = i64::try_from(current_index)
+        .map_err(|_| anyhow!("turn index exceeds SQLite integer range"))?;
+    let retained: Option<i64> = tx.query_row(
+        "SELECT MAX(turn_index) FROM turn_records WHERE agent_id = ?1",
+        [agent_id],
+        |row| row.get(0),
+    )?;
+    let persisted: Option<i64> = tx
+        .query_row(
+            "SELECT turn_index FROM agent_states WHERE agent_id = ?1",
+            [agent_id],
+            |row| row.get(0),
+        )
+        .optional()?;
+    retained
+        .unwrap_or(0)
+        .max(persisted.unwrap_or(0))
+        .max(current)
+        .checked_add(1)
+        .filter(|next| *next > 0)
+        .map(|next| next as u64)
+        .ok_or_else(|| anyhow!("turn index exceeds SQLite integer range"))
+}
+
+/// The prepared State, Turn and dispatch memory share an index before commit.
+/// A concurrent history advance must reject that command, never renumber it.
+pub(super) fn validate_prepared_turn_index_tx(
+    tx: &Transaction<'_>,
+    record: &TurnRecord,
+) -> Result<()> {
+    let existing: Option<(String, i64)> = tx
+        .query_row(
+            "SELECT agent_id, turn_index FROM turn_records WHERE turn_id = ?1",
+            [&record.turn_id],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .optional()?;
+    let matches = match existing {
+        Some((agent_id, index)) => {
+            agent_id == record.agent_id && u64::try_from(index) == Ok(record.turn_index)
+        }
+        None => record.turn_index == next_turn_index_tx(tx, &record.agent_id, 0)?,
+    };
+    ensure!(
+        matches,
+        RuntimeStateTransitionConflict::concurrent_mutation("turn index", &record.turn_id)
+    );
+    Ok(())
+}
+
+pub(super) fn validate_start_admission_tx(
     tx: &Transaction<'_>,
     state: &AgentState,
     record: &TurnRecord,
@@ -275,7 +328,7 @@ mod tests {
             if let Some(counter) = counter {
                 let mut state = AgentState::new("a");
                 state.turn_index = counter;
-                db.agent_states().upsert(&state)?;
+                db.agent_states().upsert_for_fixture(&state)?;
             }
             for (i, index) in history.iter().enumerate() {
                 db.turn_records()
@@ -412,10 +465,10 @@ mod tests {
         let fixture = TempRuntimeDb::new()?;
         let db = &fixture.db;
         let expected = AgentState::new("a");
-        db.agent_states().upsert(&expected)?;
+        db.agent_states().upsert_for_fixture(&expected)?;
         let mut actual = expected.clone();
         actual.pending = 1;
-        db.agent_states().upsert(&actual)?;
+        db.agent_states().upsert_for_fixture(&actual)?;
         let (state, record) = candidate("a", "one");
         assert!(db
             .turn_records()

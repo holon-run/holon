@@ -1,0 +1,2920 @@
+use super::*;
+use crate::{
+    runtime_db::{
+        evidence::{upsert_agent_identity_tx, upsert_agent_state_tx},
+        input_mutation_receipts::ReceiptError,
+    },
+    types::{
+        AgentIdentityRecord, AgentKind, AgentOwnership, AgentProfilePreset, AgentState,
+        AgentVisibility, AuthorityClass, MessageBody, MessageKind, MessageOrigin, Priority,
+    },
+};
+
+struct Fixture {
+    _directory: tempfile::TempDir,
+    db: RuntimeDb,
+    scope: InputEvidenceScope,
+    at: chrono::DateTime<Utc>,
+}
+impl Fixture {
+    fn new() -> Result<Self> {
+        let directory = tempfile::tempdir()?;
+        let db = RuntimeDb::open_and_migrate(
+            directory.path().join("runtime.sqlite"),
+            directory.path().join("runtime.lock"),
+        )?;
+        let scope = InputEvidenceScope {
+            agent_id: "prepared-input".into(),
+            identity_incarnation: 1,
+        };
+        db.transaction(|tx| {
+            upsert_agent_identity_tx(
+                tx,
+                &AgentIdentityRecord::new(
+                    &scope.agent_id,
+                    AgentKind::Named,
+                    AgentVisibility::Public,
+                    AgentOwnership::SelfOwned,
+                    AgentProfilePreset::PublicNamed,
+                    None,
+                    None,
+                ),
+            )?;
+            upsert_agent_state_tx(tx, &AgentState::new(&scope.agent_id))
+        })?;
+        Ok(Self {
+            _directory: directory,
+            db,
+            scope,
+            at: "2026-10-13T00:00:00.123456789Z".parse()?,
+        })
+    }
+    fn state(&self) -> Result<AgentState> {
+        self.db
+            .agent_states()
+            .latest(&self.scope.agent_id)?
+            .context("fixture State missing")
+    }
+    fn posture(
+        &self,
+        state: AgentState,
+        fault: Option<TransitionFaultPoint>,
+    ) -> Result<AgentPostureTransitionCommand> {
+        Ok(AgentPostureTransitionCommand {
+            agent_id: self.scope.agent_id.clone(),
+            expected_incarnation: Some(1),
+            agent_state: AgentStateMutation {
+                expected: Some(Box::new(self.state()?)),
+                record: Box::new(state),
+            },
+            audit_events: Vec::new(),
+            fault,
+        })
+    }
+    fn queue(&self) -> Result<PreparedQueueTransition> {
+        let mut message = MessageEnvelope::new(
+            &self.scope.agent_id,
+            MessageKind::OperatorPrompt,
+            MessageOrigin::Operator {
+                actor_id: None,
+                actor_display_name: None,
+            },
+            AuthorityClass::OperatorInstruction,
+            Priority::Normal,
+            MessageBody::Text {
+                text: "original frozen input".into(),
+            },
+        );
+        message.id = "message:prepared-input".into();
+        message.created_at = self.at;
+        let mut state = self.state()?;
+        state.pending = 1;
+        Ok(PreparedQueueTransition::new(QueueTransitionCommand {
+            agent_id: self.scope.agent_id.clone(),
+            operation: QueueOperation::Admit,
+            mutation: QueueMutation::Upsert(QueueEntryRecord {
+                message_id: message.id.clone(),
+                agent_id: self.scope.agent_id.clone(),
+                priority: message.priority.clone(),
+                status: QueueEntryStatus::Queued,
+                created_at: self.at,
+                updated_at: self.at,
+            }),
+            scheduler_claim_work_item: None,
+            agent_state: Some(AgentStateMutation {
+                expected: Some(Box::new(self.state()?)),
+                record: Box::new(state),
+            }),
+            message_evidence: vec![message],
+            transcript_entries: Vec::new(),
+            turn_record: None,
+            audit_events: Vec::new(),
+            notify_scheduler: true,
+            fault: None,
+            brief_evidence: Vec::new(),
+        }))
+    }
+    fn receipt_count(&self) -> Result<i64> {
+        Ok(self.db.connection()?.query_row(
+            "SELECT COUNT(*) FROM input_mutation_receipts",
+            [],
+            |r| r.get(0),
+        )?)
+    }
+}
+
+#[test]
+fn interrupted_queue_writer_ack_does_not_require_a_wake_or_removal_notification() -> Result<()> {
+    use crate::runtime_db::current_read_writes::CurrentFamily;
+    let f = Fixture::new()?;
+    let queue = f.queue()?;
+    let QueueMutation::Upsert(expected) = queue.command.mutation.clone() else {
+        unreachable!()
+    };
+    let admitted =
+        PreparedInputTransition::queue(f.scope.clone(), "retained-admit".into(), f.at, queue)?;
+    f.db.transitions_in_scope(&f.scope)
+        .commit_prepared_transition(&admitted)?;
+    let mut queue = f.queue()?;
+    let mut expected = expected;
+    expected.status = QueueEntryStatus::Dequeued;
+    queue.command.operation = QueueOperation::Claim;
+    queue.command.mutation = QueueMutation::Consume(expected.clone());
+    queue.command.agent_state = None;
+    queue.command.message_evidence.clear();
+    let claimed = PreparedInputTransition::queue(
+        f.scope.clone(),
+        "retained-claim".into(),
+        f.at,
+        PreparedQueueTransition::new(queue.command.clone()),
+    )?;
+    f.db.transitions_in_scope(&f.scope)
+        .commit_prepared_transition(&claimed)?;
+    let mut record = expected.clone();
+    record.status = QueueEntryStatus::Interrupted;
+    queue.command.operation = QueueOperation::Settle;
+    queue.command.mutation = QueueMutation::CompareAndSet { expected, record };
+    queue.command.agent_state = None;
+    queue.command.message_evidence.clear();
+    queue.command.notify_scheduler = false;
+    let mut failing = PreparedQueueTransition::new(queue.command.clone());
+    failing.command.fault = Some(TransitionFaultPoint::AfterCanonicalWrites);
+    let failed =
+        PreparedInputTransition::queue(f.scope.clone(), "retained-fault".into(), f.at, failing)?;
+    assert!(f
+        .db
+        .transitions_in_scope(&f.scope)
+        .commit_prepared_transition(&failed)
+        .is_err());
+    let prepared = PreparedInputTransition::queue(
+        f.scope.clone(),
+        "retained-settle".into(),
+        f.at,
+        PreparedQueueTransition::new(queue.command.clone()),
+    )?;
+    let InputMutationExecution::Committed { value, .. } =
+        f.db.transitions_in_scope(&f.scope)
+            .commit_prepared_transition(&prepared)?
+    else {
+        bail!("original retained Queue write must commit")
+    };
+    assert!(value.applied, "fault must have rolled back the first CAS");
+    assert!(value.effects.queued_messages.is_empty());
+    assert!(value.effects.removed_queue_message_ids.is_empty());
+    assert!(!value.effects.notify_scheduler);
+    assert_eq!(
+        value.effects.current_queue_write_ids,
+        vec!["message:prepared-input"]
+    );
+    assert!(value
+        .effects
+        .current_read_writes
+        .as_ref()
+        .context("retained Queue omitted Current ACK")?
+        .qualifies(&(CurrentFamily::Queue, "message:prepared-input".into())));
+    let stale =
+        PreparedInputTransition::queue(f.scope.clone(), "retained-stale".into(), f.at, queue)?;
+    let InputMutationExecution::Committed { value, .. } =
+        f.db.transitions_in_scope(&f.scope)
+            .commit_prepared_transition(&stale)?
+    else {
+        bail!("stale CAS must produce its own no-op receipt")
+    };
+    assert!(!value.applied);
+    assert!(value.effects.current_queue_write_ids.is_empty());
+    Ok(())
+}
+
+#[test]
+fn inactive_queue_memory_requires_original_interruption_not_a_live_or_foreign_claim() -> Result<()>
+{
+    use crate::domain::execution_protocol::{ExecutionProtocolCommand, InterruptExecution};
+    let f = Fixture::new()?;
+    let mut queue = f.queue()?;
+    let QueueMutation::Upsert(mut expected) = queue.command.mutation else {
+        unreachable!()
+    };
+    expected.status = QueueEntryStatus::Dequeued;
+    let mut record = expected.clone();
+    record.status = QueueEntryStatus::Interrupted;
+    queue.command.operation = QueueOperation::Settle;
+    queue.command.mutation = QueueMutation::CompareAndSet { expected, record };
+    queue.command.agent_state = None;
+    queue.command.message_evidence.clear();
+    queue.execution_protocol.commands =
+        vec![ExecutionProtocolCommand::Interrupt(InterruptExecution {
+            attempt_id: "original-attempt".into(),
+            outcome_id: "original-outcome".into(),
+            reason: "bootstrap".into(),
+            interrupted_at: f.at.to_rfc3339(),
+        })];
+    let prepared =
+        PreparedInputTransition::queue(f.scope.clone(), "inactive-source".into(), f.at, queue)?;
+    let mut state = f.state()?;
+    state.current_turn_id = Some("actual-started-turn".into());
+    state.current_execution_binding = Some(crate::types::WorkItemExecutionBinding {
+        activation_id: Some("original-attempt".into()),
+        admission_provenance: None,
+        source_message_id: "message:prepared-input".into(),
+        turn_id: "actual-started-turn".into(),
+        owner: None,
+        work_item_id: None,
+        claimed_work_revision: None,
+    });
+    assert_eq!(
+        prepared.inactive_queue_memory_turn_id(&state),
+        Some("actual-started-turn")
+    );
+    state.current_run_id = Some("live-run".into());
+    assert!(prepared.inactive_queue_memory_turn_id(&state).is_none());
+    state.current_run_id = None;
+    state
+        .current_execution_binding
+        .as_mut()
+        .unwrap()
+        .source_message_id = "another-source".into();
+    assert!(prepared.inactive_queue_memory_turn_id(&state).is_none());
+    state
+        .current_execution_binding
+        .as_mut()
+        .unwrap()
+        .source_message_id = "message:prepared-input".into();
+    state
+        .current_execution_binding
+        .as_mut()
+        .unwrap()
+        .activation_id = Some("another-attempt".into());
+    assert!(prepared.inactive_queue_memory_turn_id(&state).is_none());
+    state
+        .current_execution_binding
+        .as_mut()
+        .unwrap()
+        .activation_id = Some("original-attempt".into());
+    state.current_turn_id = Some("another-turn".into());
+    assert!(prepared.inactive_queue_memory_turn_id(&state).is_none());
+    Ok(())
+}
+
+#[test]
+fn posture_noop_has_committed_receipt_and_replays_before_later_occ() -> Result<()> {
+    let f = Fixture::new()?;
+    let original = f.state()?;
+    let prepared = PreparedInputTransition::posture(
+        f.scope.clone(),
+        "noop-original".into(),
+        f.at,
+        f.posture(original.clone(), None)?,
+        None,
+    )?;
+    let receipt = match f
+        .db
+        .transitions_in_scope(&f.scope)
+        .commit_prepared_transition(&prepared)?
+    {
+        InputMutationExecution::Committed { value, receipt } => {
+            assert!(!value.applied);
+            assert!(!receipt.outcome.applied);
+            receipt
+        }
+        _ => panic!("first no-op must commit its original receipt"),
+    };
+    let mut later = original;
+    later.pending = 9;
+    f.db.agent_states().upsert_for_fixture(&later)?;
+    match f
+        .db
+        .transitions_in_scope(&f.scope)
+        .commit_prepared_transition(&prepared)?
+    {
+        InputMutationExecution::Replayed {
+            receipt: replay, ..
+        } => assert_eq!(replay, receipt),
+        _ => panic!("stale original expected State must not run again"),
+    }
+    assert_eq!(f.state()?, later);
+    assert_eq!(f.receipt_count()?, 1);
+    Ok(())
+}
+
+#[test]
+fn queue_receipt_follows_exact_count_and_replay_carries_no_old_installation() -> Result<()> {
+    let f = Fixture::new()?;
+    let prepared =
+        PreparedInputTransition::queue(f.scope.clone(), "admit-original".into(), f.at, f.queue()?)?;
+    let ledger =
+        crate::runtime::input_evidence_budget::InputEvidenceBudgetLedger::new(Default::default())?;
+    let (input_owner, query_request) =
+        crate::runtime_db::input_evidence_snapshot::prepare_complete_query_for_fixture(
+            &f.db, &f.scope, &ledger,
+        )?;
+    let old_capture = input_owner.capture_for_request(&query_request)?;
+    let query_source = input_owner
+        .original_query_source()?
+        .context("queue source")?;
+    let work_request = crate::runtime_db::work_snapshot::WorkDomainLoadRequest {
+        capture: crate::runtime::resident_work::WorkCaptureRequest::current(),
+        record_limit: 65_536,
+        byte_limit: 64 * 1024 * 1024,
+    };
+    let task_request = crate::runtime_db::task_snapshot::TaskDomainLoadRequest {
+        recovery_at: None,
+        query: Default::default(),
+        capture: crate::runtime::resident_task::TaskCaptureRequest::current(),
+        record_limit: work_request.record_limit,
+        byte_limit: work_request.byte_limit,
+    };
+    let original = match f
+        .db
+        .transitions_in_scope(&f.scope)
+        .commit_prepared_transition_with_input_query(
+            &prepared,
+            &work_request,
+            &ledger,
+            &task_request,
+            Some(&query_source),
+            None,
+        )? {
+        InputMutationExecution::Committed { value, receipt } => {
+            let input = &value.effects.input_evidence_delta;
+            input
+                .query_advance
+                .as_ref()
+                .context("queue omitted its original Native Input advance")?
+                .validate_delta(&f.scope, &input.records)?;
+            let current = value
+                .effects
+                .current_read_writes
+                .as_ref()
+                .context("queue omitted original Current ACK")?;
+            current.validate_binding(&f.scope, &ledger)?;
+            assert_eq!(current.revision, current.base_revision + 1);
+            assert!(current.qualifies(&(
+                crate::runtime_db::current_read_writes::CurrentFamily::Queue,
+                value.effects.messages[0].id.clone(),
+            )));
+            let birth: u64 = f.db.connection()?.query_row(
+                "SELECT birth_seq FROM input_query_birth_members WHERE agent_id=?1 AND identity_incarnation=?2 AND family='message' AND record_id=?3",
+                params![f.scope.agent_id, f.scope.identity_incarnation, value.effects.messages[0].id],
+                |row| row.get(0),
+            )?;
+            assert_eq!(birth, 1);
+            let next_input = input_owner
+                .with_committed(input, Default::default())?
+                .context("queue publication")?;
+            let capture = next_input.capture_for_request(&query_request)?;
+            let key = crate::runtime::resident_input_evidence::InputEvidenceKey::new(
+                crate::runtime::resident_input_evidence::InputEvidenceFamily::Message,
+                &value.effects.messages[0].id,
+            );
+            assert_eq!(capture.query.as_ref().unwrap().birth_cursor, birth);
+            assert_eq!(
+                capture.query.as_ref().unwrap().born,
+                BTreeMap::from([(birth, key.clone())]),
+            );
+            assert!(capture.lookup(&key)?.is_some());
+            assert_eq!(old_capture.query.as_ref().unwrap().birth_cursor, 0);
+            assert!(old_capture.records.is_empty());
+            assert!(value.applied);
+            assert_eq!(
+                value
+                    .effects
+                    .agent_state
+                    .unwrap()
+                    .record
+                    .total_message_count,
+                1
+            );
+            assert_eq!(value.effects.messages[0].message_seq, Some(1));
+            assert_eq!(value.effects.queued_messages[0].message_seq, Some(1));
+            assert!(receipt.outcome.scopes[0].notify_memory_index);
+            receipt
+        }
+        _ => panic!("original queue commit missing"),
+    };
+    let mut later = f.state()?;
+    later.pending = 4;
+    f.db.agent_states().upsert_for_fixture(&later)?;
+    match f
+        .db
+        .transitions_in_scope(&f.scope)
+        .commit_prepared_transition(&prepared)?
+    {
+        InputMutationExecution::Replayed { receipt, .. } => assert_eq!(receipt, original),
+        _ => panic!("replay cannot return a stale TransitionCommit"),
+    }
+    assert_eq!(f.state()?, later);
+    assert_eq!(f.receipt_count()?, 1);
+    Ok(())
+}
+
+#[test]
+fn started_posture_receipt_and_turn_assignment_roll_back_with_canonical_failure() -> Result<()> {
+    let f = Fixture::new()?;
+    f.db.turn_records()
+        .upsert(&TurnRecord::new(&f.scope.agent_id, "turn:retained", 22))?;
+    f.db.turn_records()
+        .upsert(&TurnRecord::new("another-agent", "turn:foreign", 900))?;
+    let mut queue = f.queue()?;
+    let message = queue.command.message_evidence.remove(0);
+    let message =
+        f.db.messages()
+            .append_with_index_changes_in_scope(&f.scope, &message, &[])?
+            .record;
+    let before = f.state()?;
+    let mut next = before.clone();
+    next.current_turn_id = Some("turn:prepared".into());
+    next.turn_index =
+        f.db.turn_records()
+            .prepare_next_index(&f.scope, next.turn_index)?;
+    assert_eq!(next.turn_index, 23);
+    let mut turn = TurnRecord::new(&f.scope.agent_id, "turn:prepared", next.turn_index);
+    turn.input_message_ids.push(message.id.clone());
+    let failed = PreparedInputTransition::posture(
+        f.scope.clone(),
+        "started-failed".into(),
+        f.at,
+        f.posture(
+            next.clone(),
+            Some(TransitionFaultPoint::AfterCanonicalWrites),
+        )?,
+        Some(turn.clone()),
+    )?;
+    assert!(f
+        .db
+        .transitions_in_scope(&f.scope)
+        .commit_prepared_transition(&failed)
+        .is_err());
+    assert_eq!(f.state()?, before);
+    assert_eq!(f.receipt_count()?, 0);
+    assert!(f
+        .db
+        .turn_records()
+        .by_id(Some(&f.scope.agent_id), &turn.turn_id)?
+        .is_none());
+    let prepared = PreparedInputTransition::posture(
+        f.scope.clone(),
+        "started-original".into(),
+        f.at,
+        f.posture(next, None)?,
+        Some(turn.clone()),
+    )?;
+    let InputMutationExecution::Committed { value, .. } =
+        f.db.transitions_in_scope(&f.scope)
+            .commit_prepared_transition(&prepared)?
+    else {
+        panic!("original started commit missing")
+    };
+    assert_eq!(f.state()?.turn_index, 23);
+    assert_eq!(
+        value
+            .effects
+            .agent_state
+            .as_ref()
+            .unwrap()
+            .record
+            .turn_index,
+        23
+    );
+    assert_eq!(value.effects.turns, vec![turn]);
+    assert_eq!(
+        value.effects.input_evidence_delta.message_turn_keys[&message.id],
+        Some("turn:prepared".into())
+    );
+    assert_eq!(f.receipt_count()?, 1);
+    Ok(())
+}
+
+#[test]
+fn started_posture_rejects_low_or_concurrently_advanced_history_index() -> Result<()> {
+    for advance_history in [false, true] {
+        let f = Fixture::new()?;
+        f.db.turn_records()
+            .upsert(&TurnRecord::new(&f.scope.agent_id, "turn:retained", 22))?;
+        let before = f.state()?;
+        let mut next = before.clone();
+        next.current_turn_id = Some("turn:prepared".into());
+        let allocated =
+            f.db.turn_records()
+                .prepare_next_index(&f.scope, next.turn_index)?;
+        assert_eq!(allocated, 23);
+        next.turn_index = if advance_history { allocated } else { 1 };
+        let turn = TurnRecord::new(&f.scope.agent_id, "turn:prepared", next.turn_index);
+        let prepared = PreparedInputTransition::posture(
+            f.scope.clone(),
+            "started-stale-index".into(),
+            f.at,
+            f.posture(next, None)?,
+            Some(turn.clone()),
+        )?;
+        if advance_history {
+            f.db.turn_records().upsert(&TurnRecord::new(
+                &f.scope.agent_id,
+                "turn:concurrent",
+                allocated,
+            ))?;
+        }
+        let error =
+            f.db.transitions_in_scope(&f.scope)
+                .commit_prepared_transition(&prepared)
+                .unwrap_err();
+        assert!(error
+            .downcast_ref::<crate::runtime_db::RuntimeStateTransitionConflict>()
+            .is_some());
+        assert_eq!(f.state()?, before);
+        assert_eq!(f.receipt_count()?, 0);
+        assert!(f
+            .db
+            .turn_records()
+            .by_id(Some(&f.scope.agent_id), &turn.turn_id)?
+            .is_none());
+    }
+    Ok(())
+}
+
+#[test]
+fn started_posture_revalidates_canonical_admission_before_writing() -> Result<()> {
+    use crate::domain::scheduler::SchedulerScenarioClass;
+    use crate::types::{
+        ExecutionAdmissionProvenance, TurnTriggerSummary, WorkItemExecutionBinding,
+    };
+
+    for invalid_source in [true, false] {
+        let f = Fixture::new()?;
+        let mut queue = f.queue()?;
+        let message = queue.command.message_evidence.remove(0);
+        let message =
+            f.db.messages()
+                .append_with_index_changes_in_scope(&f.scope, &message, &[])?
+                .record;
+        let before = f.state()?;
+        let mut next = before.clone();
+        next.turn_index =
+            f.db.turn_records()
+                .prepare_next_index(&f.scope, before.turn_index)?;
+        next.current_turn_id = Some("turn:invalid-admission".into());
+        next.current_execution_binding = Some(WorkItemExecutionBinding {
+            activation_id: Some("changed-activation".into()),
+            admission_provenance: Some(ExecutionAdmissionProvenance::Canonical {
+                scenario_class: SchedulerScenarioClass::ExplicitlyBoundOperatorInput,
+                activation_id: "admitted-activation".into(),
+            }),
+            source_message_id: if invalid_source {
+                "another-message".into()
+            } else {
+                message.id.clone()
+            },
+            turn_id: "turn:invalid-admission".into(),
+            owner: None,
+            work_item_id: None,
+            claimed_work_revision: None,
+        });
+        let mut turn =
+            TurnRecord::new(&f.scope.agent_id, "turn:invalid-admission", next.turn_index);
+        turn.trigger = Some(TurnTriggerSummary::from_message(&message));
+        turn.input_message_ids.push(message.id);
+        let prepared = PreparedInputTransition::posture(
+            f.scope.clone(),
+            "started-invalid-admission".into(),
+            f.at,
+            f.posture(next, None)?,
+            Some(turn.clone()),
+        )?;
+        let error =
+            f.db.transitions_in_scope(&f.scope)
+                .commit_prepared_transition(&prepared)
+                .unwrap_err();
+        assert!(
+            error.to_string().contains(if invalid_source {
+                "turn start execution binding does not match its input"
+            } else {
+                "turn start activation mismatch"
+            }),
+            "{error:#}"
+        );
+        assert_eq!(f.state()?, before);
+        assert_eq!(f.receipt_count()?, 0);
+        assert!(f
+            .db
+            .turn_records()
+            .by_id(Some(&f.scope.agent_id), &turn.turn_id)?
+            .is_none());
+    }
+    Ok(())
+}
+
+#[test]
+fn receipt_insert_rejection_rolls_back_entire_original_queue_transaction() -> Result<()> {
+    let f = Fixture::new()?;
+    let before = f.state()?;
+    f.db.connection()?.execute_batch("CREATE TRIGGER reject_original_receipt BEFORE INSERT ON input_mutation_receipts BEGIN SELECT RAISE(IGNORE); END;")?;
+    let prepared = PreparedInputTransition::queue(
+        f.scope.clone(),
+        "rejected-receipt".into(),
+        f.at,
+        f.queue()?,
+    )?;
+    assert!(f
+        .db
+        .transitions_in_scope(&f.scope)
+        .commit_prepared_transition(&prepared)
+        .is_err());
+    assert_eq!(f.state()?, before);
+    assert_eq!(f.receipt_count()?, 0);
+    for table in [
+        "messages",
+        "queue_entries",
+        "input_evidence_current",
+        "runtime_index_outbox",
+    ] {
+        let count: i64 =
+            f.db.connection()?
+                .query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |r| r.get(0))?;
+        assert_eq!(count, 0, "{table} escaped original rollback");
+    }
+    Ok(())
+}
+
+#[test]
+fn prepared_digest_covers_queue_options_and_started_turn_but_excludes_fault() -> Result<()> {
+    let f = Fixture::new()?;
+    let first =
+        PreparedInputTransition::queue(f.scope.clone(), "digest-queue".into(), f.at, f.queue()?)?;
+    let mut options = f.queue()?;
+    options.timer_wake_claim = Some(TimerWakeClaim {
+        timer_id: "timer:original".into(),
+        message_id: "message:prepared-input".into(),
+        fire_count: 3,
+    });
+    let second =
+        PreparedInputTransition::queue(f.scope.clone(), "digest-queue".into(), f.at, options)?;
+    assert_ne!(
+        first.descriptor().command_digest(),
+        second.descriptor().command_digest()
+    );
+    let mut command = f.posture(f.state()?, None)?;
+    let first = PreparedInputTransition::posture(
+        f.scope.clone(),
+        "digest-posture".into(),
+        f.at,
+        command.clone(),
+        None,
+    )?;
+    command.fault = Some(TransitionFaultPoint::BeforeCommit);
+    let second = PreparedInputTransition::posture(
+        f.scope.clone(),
+        "digest-posture".into(),
+        f.at,
+        command,
+        None,
+    )?;
+    assert_eq!(first.descriptor(), second.descriptor());
+    Ok(())
+}
+
+#[test]
+fn same_nonce_changed_typed_command_is_rejected_instead_of_running_again() -> Result<()> {
+    let f = Fixture::new()?;
+    let first = PreparedInputTransition::posture(
+        f.scope.clone(),
+        "same-original".into(),
+        f.at,
+        f.posture(f.state()?, None)?,
+        None,
+    )?;
+    f.db.transitions_in_scope(&f.scope)
+        .commit_prepared_transition(&first)?;
+    let mut next = f.state()?;
+    next.pending = 2;
+    let second = PreparedInputTransition::posture(
+        f.scope.clone(),
+        "same-original".into(),
+        f.at,
+        f.posture(next, None)?,
+        None,
+    )?;
+    let error =
+        f.db.transitions_in_scope(&f.scope)
+            .commit_prepared_transition(&second)
+            .unwrap_err();
+    assert!(
+        matches!(
+            error.downcast_ref::<ReceiptError>(),
+            Some(ReceiptError::CommandConflict)
+        ),
+        "{error:#}"
+    );
+    assert_eq!(f.state()?.pending, 0);
+    assert_eq!(f.receipt_count()?, 1);
+    Ok(())
+}
+
+#[test]
+fn terminal_original_result_replays_after_later_canonical_posture() -> Result<()> {
+    let f = Fixture::new()?;
+    let mut running = f.state()?;
+    running.current_turn_id = Some("turn:terminal".into());
+    running.turn_index = 1;
+    let mut turn = TurnRecord::new(&f.scope.agent_id, "turn:terminal", 1);
+    turn.created_at = f.at;
+    let started = PreparedInputTransition::posture(
+        f.scope.clone(),
+        "terminal-start".into(),
+        f.at,
+        f.posture(running, None)?,
+        Some(turn.clone()),
+    )?;
+    f.db.transitions_in_scope(&f.scope)
+        .commit_prepared_transition(&started)?;
+    let mut state = f.state()?;
+    state.current_turn_id = None;
+    let mut terminal = turn;
+    terminal.terminal = Some(TurnTerminalSummary {
+        kind: TurnTerminalKind::Completed,
+        reason: None,
+        no_brief_reason: None,
+        completed_at: f.at,
+        duration_ms: 0,
+    });
+    let prepared = PreparedInputTransition::terminal(
+        f.scope.clone(),
+        "terminal-original".into(),
+        f.at,
+        TurnTerminalTransitionCommand {
+            agent_id: f.scope.agent_id.clone(),
+            agent_state: AgentStateMutation {
+                expected: Some(Box::new(f.state()?)),
+                record: Box::new(state),
+            },
+            turn_record: terminal.clone(),
+            terminal_tool_executions: Vec::new(),
+            audit_events: Vec::new(),
+            fault: None,
+        },
+    )?;
+    assert!(matches!(
+        f.db.transitions_in_scope(&f.scope)
+            .commit_prepared_transition(&prepared)?,
+        InputMutationExecution::Committed { .. }
+    ));
+    let mut later = f.state()?;
+    later.pending = 8;
+    f.db.agent_states().upsert_for_fixture(&later)?;
+    assert!(matches!(
+        f.db.transitions_in_scope(&f.scope)
+            .commit_prepared_transition(&prepared)?,
+        InputMutationExecution::Replayed { .. }
+    ));
+    assert_eq!(f.state()?, later);
+    assert_eq!(
+        f.db.turn_records()
+            .by_id(Some(&f.scope.agent_id), &terminal.turn_id)?,
+        Some(terminal)
+    );
+    Ok(())
+}
+
+#[test]
+fn full_scope_group_receipt_is_sorted_and_keeps_primary_effects_only() -> Result<()> {
+    let f = Fixture::new()?;
+    let secondary = InputEvidenceScope {
+        agent_id: "aaa-related-owner".into(),
+        identity_incarnation: 1,
+    };
+    f.db.transaction(|tx| {
+        upsert_agent_identity_tx(
+            tx,
+            &AgentIdentityRecord::new(
+                &secondary.agent_id,
+                AgentKind::Named,
+                AgentVisibility::Public,
+                AgentOwnership::SelfOwned,
+                AgentProfilePreset::PublicNamed,
+                None,
+                None,
+            ),
+        )?;
+        upsert_agent_state_tx(tx, &AgentState::new(&secondary.agent_id))
+    })?;
+    let prepared =
+        PreparedInputTransition::queue(f.scope.clone(), "group-original".into(), f.at, f.queue()?)?;
+    let digest = prepared.descriptor().command_digest().to_owned();
+    let old_scope_digest = prepared.descriptor().scope_digest().to_owned();
+    let prepared = prepared.with_scope_group(vec![f.scope.clone(), secondary.clone()])?;
+    assert_eq!(prepared.descriptor().command_nonce(), "group-original");
+    assert_eq!(prepared.descriptor().prepared_at(), f.at);
+    assert_eq!(prepared.descriptor().command_digest(), digest);
+    assert_ne!(prepared.descriptor().scope_digest(), old_scope_digest);
+    assert_eq!(
+        prepared.descriptor().scopes(),
+        &[secondary.clone(), f.scope.clone()]
+    );
+    let receipt = match f
+        .db
+        .transitions_in_scope(&f.scope)
+        .commit_prepared_transition(&prepared)?
+    {
+        InputMutationExecution::Committed { receipt, .. } => receipt,
+        _ => panic!("original group missing"),
+    };
+    assert_eq!(receipt.outcome.scopes.len(), 2);
+    assert_eq!(receipt.outcome.scopes[0].scope, secondary);
+    assert!(receipt.outcome.scopes[0].audit_events.is_empty());
+    assert!(!receipt.outcome.scopes[0].notify_memory_index);
+    assert!(!receipt.outcome.scopes[0].notify_scheduler);
+    assert!(receipt.outcome.scopes[1].notify_memory_index);
+    assert!(receipt.outcome.scopes[1].notify_scheduler);
+    assert!(matches!(
+        f.db.transitions_in_scope(&f.scope)
+            .commit_prepared_transition(&prepared)?,
+        InputMutationExecution::Replayed { .. }
+    ));
+    f.db.transaction(|tx| {
+        let mut identity = AgentIdentityRecord::new(
+            &secondary.agent_id,
+            AgentKind::Named,
+            AgentVisibility::Public,
+            AgentOwnership::SelfOwned,
+            AgentProfilePreset::PublicNamed,
+            None,
+            None,
+        );
+        identity.incarnation = 2;
+        upsert_agent_identity_tx(tx, &identity)
+    })?;
+    assert!(f
+        .db
+        .transitions_in_scope(&f.scope)
+        .commit_prepared_transition(&prepared)
+        .is_err());
+    assert_eq!(f.receipt_count()?, 1);
+    Ok(())
+}
+
+#[test]
+fn scope_group_cannot_omit_primary_or_repeat_a_scope() -> Result<()> {
+    let f = Fixture::new()?;
+    let prepare = || {
+        PreparedInputTransition::queue(f.scope.clone(), "invalid-group".into(), f.at, f.queue()?)
+    };
+    assert!(prepare()?.with_scope_group(Vec::new()).is_err());
+    assert!(prepare()?
+        .with_scope_group(vec![InputEvidenceScope {
+            agent_id: "other".into(),
+            identity_incarnation: 1
+        }])
+        .is_err());
+    assert!(prepare()?
+        .with_scope_group(vec![f.scope.clone(), f.scope.clone()])
+        .is_err());
+    assert_eq!(f.receipt_count()?, 0);
+    Ok(())
+}
+
+// These shape/namespace fixtures never admit a live task result.
+fn pending_obligation(agent: &str, message: &MessageEnvelope) -> WaitTaskResultObligation {
+    WaitTaskResultObligation {
+        expected: serde_json::from_value(serde_json::json!({
+            "result_identity": format!("result:{}", message.id),
+            "agent_id": agent,
+            "task_id": format!("task:{}", message.id),
+            "message_id": message.id,
+            "rejoin_generation": 1,
+            "parent_turn_id": "turn:parent",
+            "task_status": "completed",
+            "state": "persisted_pending",
+            "created_at": message.created_at,
+            "updated_at": message.created_at,
+        }))
+        .expect("structural task-result fixture"),
+        current_activation_id: None,
+        waiter_work_item_id: None,
+        canonical_recovery: false,
+        source_message_id: message.id.clone(),
+        source_queue: None,
+        wait_witness: WaitTaskResultWitness {
+            scope: InputEvidenceScope {
+                agent_id: agent.into(),
+                identity_incarnation: 1,
+            },
+            work_revision: 0,
+            live_waits: Vec::new(),
+            exact_waits: Vec::new(),
+        },
+    }
+}
+
+fn pending_wait(agent: &str, message: MessageEnvelope) -> WaitTransitionCommand {
+    WaitTransitionCommand {
+        agent_id: agent.into(),
+        work_items: Vec::new(),
+        expected_wait_conditions: Vec::new(),
+        wait_conditions: Vec::new(),
+        timer_wake: None,
+        task_result_admission: Some(WaitTaskResultAdmission {
+            record: QueueEntryRecord {
+                message_id: message.id.clone(),
+                agent_id: message.agent_id.clone(),
+                priority: message.priority.clone(),
+                status: QueueEntryStatus::Queued,
+                created_at: message.created_at,
+                updated_at: message.created_at,
+            },
+            expected: None,
+            obligation: pending_obligation(agent, &message),
+            message,
+        }),
+        agent_state: None,
+        audit_events: Vec::new(),
+        index_changes: Vec::new(),
+        notify_scheduler: true,
+        fault: None,
+    }
+}
+
+#[test]
+fn pending_messages_enumerates_queue_and_wait_frozen_bodies_once() -> Result<()> {
+    let f = Fixture::new()?;
+    let mut queue = f.queue()?;
+    let primary = queue.command.message_evidence[0].clone();
+    let mut task_result = primary.clone();
+    task_result.id = "message:wait-result".into();
+    queue.wait_registration = Some(pending_wait(&f.scope.agent_id, task_result.clone()));
+    let prepared =
+        PreparedInputTransition::queue(f.scope.clone(), "pending-original".into(), f.at, queue)?;
+    let pending = prepared.pending_messages()?;
+    assert_eq!(pending.len(), 2);
+    assert_eq!(pending[0], &primary);
+    assert_eq!(pending[1], &task_result);
+    let mut queue = f.queue()?;
+    queue.wait_registration = Some(pending_wait(&f.scope.agent_id, primary.clone()));
+    let prepared =
+        PreparedInputTransition::queue(f.scope.clone(), "pending-dedup".into(), f.at, queue)?;
+    assert_eq!(prepared.pending_messages()?, vec![&primary]);
+    let mut queue = f.queue()?;
+    let QueueMutation::Upsert(record) = &mut queue.command.mutation else {
+        unreachable!()
+    };
+    record.status = QueueEntryStatus::Interrupted;
+    let prepared =
+        PreparedInputTransition::queue(f.scope.clone(), "pending-interrupted".into(), f.at, queue)?;
+    assert_eq!(prepared.pending_messages()?.len(), 1);
+    Ok(())
+}
+
+#[test]
+fn pending_messages_rejects_missing_foreign_and_conflicting_bodies_before_sql() -> Result<()> {
+    let f = Fixture::new()?;
+    let mut queue = f.queue()?;
+    queue.command.message_evidence.clear();
+    let prepared =
+        PreparedInputTransition::queue(f.scope.clone(), "pending-missing".into(), f.at, queue)?;
+    assert!(prepared.pending_messages().is_err());
+    let mut queue = f.queue()?;
+    let mut foreign = queue.command.message_evidence[0].clone();
+    foreign.id = "foreign:wait".into();
+    foreign.agent_id = "other-agent".into();
+    queue.wait_registration = Some(pending_wait(&f.scope.agent_id, foreign));
+    let prepared =
+        PreparedInputTransition::queue(f.scope.clone(), "pending-foreign".into(), f.at, queue)?;
+    assert!(prepared.pending_messages().is_err());
+    let mut queue = f.queue()?;
+    let mut conflicting = queue.command.message_evidence[0].clone();
+    conflicting.body = MessageBody::Text {
+        text: "changed body".into(),
+    };
+    queue.wait_registration = Some(pending_wait(&f.scope.agent_id, conflicting));
+    let prepared =
+        PreparedInputTransition::queue(f.scope.clone(), "pending-conflicting".into(), f.at, queue)?;
+    assert!(prepared.pending_messages().is_err());
+    assert_eq!(f.receipt_count()?, 0);
+    Ok(())
+}
+
+#[test]
+fn consuming_queue_and_posture_have_no_new_pending_body() -> Result<()> {
+    let f = Fixture::new()?;
+    let mut queue = f.queue()?;
+    let QueueMutation::Upsert(mut record) = queue.command.mutation else {
+        unreachable!()
+    };
+    record.status = QueueEntryStatus::Dequeued;
+    queue.command.operation = QueueOperation::Claim;
+    queue.command.mutation = QueueMutation::Consume(record);
+    queue.command.message_evidence.clear();
+    let prepared =
+        PreparedInputTransition::queue(f.scope.clone(), "pending-consume".into(), f.at, queue)?;
+    assert!(prepared.pending_messages()?.is_empty());
+    let prepared = PreparedInputTransition::posture(
+        f.scope.clone(),
+        "pending-posture".into(),
+        f.at,
+        f.posture(f.state()?, None)?,
+        None,
+    )?;
+    assert!(prepared.pending_messages()?.is_empty());
+    Ok(())
+}
+
+impl Fixture {
+    fn deleting(&self) -> Result<()> {
+        let mut identity = self
+            .db
+            .agent_identities()
+            .latest(&self.scope.agent_id)?
+            .unwrap();
+        identity.status = crate::types::AgentRegistryStatus::Deleting;
+        self.db.agent_identities().upsert(&identity)
+    }
+    fn admitted_cleanup(&self) -> Result<PreparedQueueTransition> {
+        let queue = self.queue()?;
+        let original = queue.command.mutation.clone();
+        let admitted = PreparedInputTransition::queue(
+            self.scope.clone(),
+            "admitted-before-deletion".into(),
+            self.at,
+            queue,
+        )?;
+        self.db
+            .transitions_in_scope(&self.scope)
+            .commit_prepared_transition(&admitted)?;
+        let before = self.state()?;
+        let mut after = before.clone();
+        after.pending = 0;
+        let QueueMutation::Upsert(expected) = original else {
+            unreachable!()
+        };
+        let mut record = expected.clone();
+        record.status = QueueEntryStatus::Dropped;
+        let mut brief = crate::types::BriefRecord::new(
+            &self.scope.agent_id,
+            crate::types::BriefKind::Failure,
+            "original admitted run interrupted",
+            Some(record.message_id.clone()),
+            None,
+        );
+        brief.id = "brief:cleanup-derived".into();
+        brief.created_at = self.at;
+        let mut trace = crate::types::TranscriptEntry::new(
+            &self.scope.agent_id,
+            crate::types::TranscriptEntryKind::RuntimeFailure,
+            None,
+            Some(record.message_id.clone()),
+            serde_json::json!({"reason":"daemon_shutdown"}),
+        );
+        trace.id = "transcript:cleanup-derived".into();
+        trace.created_at = self.at;
+        Ok(PreparedQueueTransition::new(QueueTransitionCommand {
+            agent_id: self.scope.agent_id.clone(),
+            operation: QueueOperation::Settle,
+            mutation: QueueMutation::CompareAndSet { expected, record },
+            scheduler_claim_work_item: None,
+            agent_state: Some(AgentStateMutation {
+                expected: Some(Box::new(before)),
+                record: Box::new(after),
+            }),
+            message_evidence: Vec::new(),
+            transcript_entries: vec![trace],
+            turn_record: None,
+            audit_events: vec![crate::types::brief_created_event_for(&brief)?],
+            notify_scheduler: true,
+            fault: None,
+            brief_evidence: vec![brief],
+        }))
+    }
+}
+
+#[test]
+fn deleting_admitted_cleanup_commits_new_trace_and_brief_with_original_receipt() -> Result<()> {
+    let f = Fixture::new()?;
+    let queue = f.admitted_cleanup()?;
+    f.deleting()?;
+    let original =
+        PreparedInputTransition::queue(f.scope.clone(), "deleting-cleanup".into(), f.at, queue)?;
+    let committed = match f
+        .db
+        .transitions_in_scope(&f.scope)
+        .commit_prepared_transition(&original)?
+    {
+        InputMutationExecution::Committed { value, receipt } => {
+            assert!(value.applied);
+            assert_eq!(value.effects.transcript_entries[0].transcript_seq, Some(1));
+            assert!(value.effects.briefs[0].created_event_seq.is_some());
+            assert!(value
+                .effects
+                .input_evidence_delta
+                .records
+                .iter()
+                .any(|record| record.locator.key.id == "brief:cleanup-derived"));
+            receipt
+        }
+        _ => panic!("first cleanup must commit"),
+    };
+    assert_eq!(f.state()?.pending, 0);
+    assert!(
+        matches!(f.db.transitions_in_scope(&f.scope).commit_prepared_transition(&original)?,
+        InputMutationExecution::Replayed { receipt, .. } if receipt == committed)
+    );
+    Ok(())
+}
+
+#[test]
+fn deleting_cleanup_rolls_back_all_derived_facts_and_receipt_on_precommit_fault() -> Result<()> {
+    let f = Fixture::new()?;
+    let mut queue = f.admitted_cleanup()?;
+    let state = f.state()?;
+    queue.command.fault = Some(TransitionFaultPoint::BeforeCommit);
+    f.deleting()?;
+    let original = PreparedInputTransition::queue(
+        f.scope.clone(),
+        "failed-deleting-cleanup".into(),
+        f.at,
+        queue,
+    )?;
+    assert!(f
+        .db
+        .transitions_in_scope(&f.scope)
+        .commit_prepared_transition(&original)
+        .is_err());
+    assert_eq!(f.state()?, state);
+    assert_eq!(f.receipt_count()?, 1);
+    for table in ["transcript_entries", "briefs"] {
+        assert_eq!(
+            f.db.connection()?
+                .query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |r| r
+                    .get::<_, i64>(0))?,
+            0
+        );
+    }
+    Ok(())
+}
+
+#[test]
+fn deleting_cleanup_requires_original_qualified_source_and_cannot_admit_or_start() -> Result<()> {
+    let f = Fixture::new()?;
+    let queue = f.admitted_cleanup()?;
+    f.deleting()?;
+    f.db.connection()?.execute("UPDATE input_evidence_current SET availability='pruned' WHERE agent_id=?1 AND family='message'", [&f.scope.agent_id])?;
+    let original =
+        PreparedInputTransition::queue(f.scope.clone(), "pruned-cleanup".into(), f.at, queue)?;
+    assert!(f
+        .db
+        .transitions_in_scope(&f.scope)
+        .commit_prepared_transition(&original)
+        .is_err());
+    let new = PreparedInputTransition::queue(
+        f.scope.clone(),
+        "new-deleting-admit".into(),
+        f.at,
+        f.queue()?,
+    )?;
+    assert!(f
+        .db
+        .transitions_in_scope(&f.scope)
+        .commit_prepared_transition(&new)
+        .is_err());
+    let mut next = f.state()?;
+    next.current_run_id = Some("invented-run".into());
+    next.status = crate::types::AgentStatus::AwakeRunning;
+    let new = PreparedInputTransition::posture(
+        f.scope.clone(),
+        "new-deleting-posture".into(),
+        f.at,
+        f.posture(next, None)?,
+        None,
+    )?;
+    assert!(f
+        .db
+        .transitions_in_scope(&f.scope)
+        .commit_prepared_transition(&new)
+        .is_err());
+    let mut next = f.state()?;
+    next.current_turn_id = Some("turn:new-during-deleting".into());
+    next.turn_index = 1;
+    let new = PreparedInputTransition::posture(
+        f.scope.clone(),
+        "new-deleting-turn".into(),
+        f.at,
+        f.posture(next, None)?,
+        Some(TurnRecord::new(
+            &f.scope.agent_id,
+            "turn:new-during-deleting",
+            1,
+        )),
+    )?;
+    assert!(f
+        .db
+        .transitions_in_scope(&f.scope)
+        .commit_prepared_transition(&new)
+        .is_err());
+    let mut brief = crate::types::BriefRecord::new(
+        &f.scope.agent_id,
+        crate::types::BriefKind::Failure,
+        "generic standalone is not cleanup",
+        Some("message:prepared-input".into()),
+        None,
+    );
+    brief.id = "brief:standalone-deleting".into();
+    assert!(f
+        .db
+        .evidence()
+        .append_brief_in_scope(&f.scope, &brief, &[])
+        .is_err());
+    assert_eq!(f.receipt_count()?, 1);
+    Ok(())
+}
+
+#[test]
+fn cleanup_cannot_recreate_deleted_derived_body_with_pruned_alias() -> Result<()> {
+    use crate::{
+        runtime::resident_input_evidence::{InputEvidenceFamily, InputEvidenceKey},
+        runtime_db::input_evidence_snapshot::register_pruned_input_evidence_tx,
+    };
+    for family in [InputEvidenceFamily::Brief, InputEvidenceFamily::Transcript] {
+        let f = Fixture::new()?;
+        let queue = f.admitted_cleanup()?;
+        let (id, table) = match family {
+            InputEvidenceFamily::Brief => {
+                let brief = &queue.command.brief_evidence[0];
+                f.db.evidence()
+                    .append_brief_in_scope(&f.scope, brief, &[])?;
+                (brief.id.clone(), "briefs")
+            }
+            InputEvidenceFamily::Transcript => {
+                let trace = &queue.command.transcript_entries[0];
+                f.db.evidence()
+                    .append_transcript_entry_in_scope(&f.scope, trace)?;
+                (trace.id.clone(), "transcript_entries")
+            }
+            _ => unreachable!(),
+        };
+        let key = InputEvidenceKey::new(family, &id);
+        f.db.transaction(|tx| {
+            assert_eq!(
+                tx.execute(
+                    &format!("DELETE FROM {table} WHERE agent_id=?1 AND evidence_id=?2"),
+                    rusqlite::params![f.scope.agent_id, id],
+                )?,
+                1
+            );
+            let removal = register_pruned_input_evidence_tx(tx, &f.scope, &[key.clone()])?;
+            assert_eq!(removal.removals.len(), 1);
+            Ok(())
+        })?;
+        // The common prewrite guard also protects ordinary Active writers.
+        let error = match family {
+            InputEvidenceFamily::Brief => {
+                f.db.evidence()
+                    .append_brief_in_scope(&f.scope, &queue.command.brief_evidence[0], &[])
+                    .unwrap_err()
+            }
+            InputEvidenceFamily::Transcript => f
+                .db
+                .evidence()
+                .append_transcript_entry_in_scope(&f.scope, &queue.command.transcript_entries[0])
+                .unwrap_err(),
+            _ => unreachable!(),
+        };
+        assert!(format!("{error:#}").contains("pruned evidence ID"));
+        let before = f.state()?;
+        f.deleting()?;
+        let original = PreparedInputTransition::queue(
+            f.scope.clone(),
+            format!("new-cleanup-nonce-{family:?}"),
+            f.at,
+            queue,
+        )?;
+        let error =
+            f.db.transitions_in_scope(&f.scope)
+                .commit_prepared_transition(&original)
+                .unwrap_err();
+        assert!(format!("{error:#}").contains("pruned evidence ID"));
+        assert_eq!(f.state()?, before);
+        assert_eq!(f.receipt_count()?, 1);
+        let connection = f.db.connection()?;
+        assert_eq!(
+            connection.query_row(
+                &format!("SELECT COUNT(*) FROM {table} WHERE evidence_id=?1"),
+                [&id],
+                |row| row.get::<_, i64>(0),
+            )?,
+            0
+        );
+        assert_eq!(connection.query_row(
+            "SELECT availability FROM input_evidence_current WHERE agent_id=?1 AND identity_incarnation=?2 AND family=?3 AND record_id=?4",
+            rusqlite::params![f.scope.agent_id, f.scope.identity_incarnation, family.as_str(), id],
+            |row| row.get::<_, String>(0),
+        )?, "pruned");
+    }
+    Ok(())
+}
+
+impl Fixture {
+    fn admit_for_progress(&self) -> Result<()> {
+        let admission = PreparedInputTransition::queue(
+            self.scope.clone(),
+            "progress-admission".into(),
+            self.at,
+            self.queue()?,
+        )?;
+        assert!(matches!(
+            self.db
+                .transitions_in_scope(&self.scope)
+                .commit_prepared_transition(&admission)?,
+            InputMutationExecution::Committed { .. }
+        ));
+        Ok(())
+    }
+    fn progress_command(&self, max_attempts: u32) -> Result<QueueHeadNoProgressCommand> {
+        let expected = self
+            .db
+            .queue_entries()
+            .latest("message:prepared-input")?
+            .unwrap();
+        let mut quarantined = expected.clone();
+        quarantined.status = QueueEntryStatus::Quarantined;
+        quarantined.updated_at = self.at + chrono::Duration::seconds(1);
+        let state = self.state()?;
+        let mut next = state.clone();
+        next.pending = 0;
+        Ok(QueueHeadNoProgressCommand {
+            agent_id: self.scope.agent_id.clone(),
+            expected,
+            quarantined,
+            agent_state: AgentStateMutation {
+                expected: Some(Box::new(state)),
+                record: Box::new(next),
+            },
+            reason: "canonical_claim_replan_exhausted".into(),
+            scenario_class: Some("lifecycle_external_nudge".into()),
+            max_attempts,
+            fault: None,
+        })
+    }
+    fn progress_rows(&self) -> Result<i64> {
+        Ok(self.db.connection()?.query_row(
+            "SELECT COUNT(*) FROM queue_head_no_progress",
+            [],
+            |row| row.get(0),
+        )?)
+    }
+}
+
+fn progress_result(
+    receipt: &crate::runtime_db::input_mutation_receipts::InputMutationReceipt,
+) -> Option<QueueHeadNoProgressOutcome> {
+    match &receipt.outcome.result {
+        crate::runtime_db::input_mutation_receipts::InputMutationResult::QueueHeadNoProgress {
+            outcome,
+        } => *outcome,
+        _ => panic!("wrong original result family"),
+    }
+}
+
+#[test]
+fn prepared_queue_progress_freezes_clock_and_replays_original_bounded_disposition() -> Result<()> {
+    use crate::runtime_db::input_mutation_receipts::{
+        with_fresh_input_mutation_resolution, InputMutationResolution, OriginalInputMutationAttempt,
+    };
+    let f = Fixture::new()?;
+    f.admit_for_progress()?;
+    let command = f.progress_command(3)?;
+    let first = PreparedInputTransition::queue_head_no_progress(
+        f.scope.clone(),
+        "progress-first".into(),
+        f.at,
+        command.clone(),
+    )?;
+    assert!(first.pending_messages()?.is_empty());
+    let attempt = OriginalInputMutationAttempt::new(first.descriptor().clone());
+    let original = match f
+        .db
+        .transitions_in_scope(&f.scope)
+        .commit_prepared_transition(&first)?
+    {
+        InputMutationExecution::Committed { value, receipt } => {
+            assert!(value.applied);
+            assert!(value.effects.agent_state.is_none());
+            let audit = &value.effects.audit_events[0];
+            assert_eq!(audit.id, "queue-progress:progress-first");
+            assert_eq!(audit.created_at, f.at);
+            assert!(audit.event_seq > 0);
+            assert_eq!(
+                progress_result(&receipt),
+                Some(QueueHeadNoProgressOutcome::BoundedDefer {
+                    attempt: 1,
+                    max_attempts: 3
+                })
+            );
+            receipt
+        }
+        _ => panic!("first attempt must commit"),
+    };
+    attempt.finish_original_attempt();
+    for n in 2..=3 {
+        let next = PreparedInputTransition::queue_head_no_progress(
+            f.scope.clone(),
+            format!("progress-{n}"),
+            f.at + chrono::Duration::seconds(i64::from(n)),
+            command.clone(),
+        )?;
+        let InputMutationExecution::Committed { value, receipt } =
+            f.db.transitions_in_scope(&f.scope)
+                .commit_prepared_transition(&next)?
+        else {
+            panic!("each newly prepared attempt commits once")
+        };
+        let expected = if n == 3 {
+            QueueHeadNoProgressOutcome::Quarantined {
+                attempt: n,
+                max_attempts: 3,
+            }
+        } else {
+            QueueHeadNoProgressOutcome::BoundedDefer {
+                attempt: n,
+                max_attempts: 3,
+            }
+        };
+        assert_eq!(progress_result(&receipt), Some(expected));
+        assert_eq!(
+            value.effects.removed_queue_message_ids,
+            if n == 3 {
+                vec![command.expected.message_id.clone()]
+            } else {
+                vec![]
+            }
+        );
+        assert_eq!(value.effects.agent_state.is_some(), n == 3);
+    }
+    assert_eq!(f.state()?.pending, 0);
+    assert_eq!(
+        f.db.queue_entries()
+            .latest(&command.expected.message_id)?
+            .unwrap(),
+        command.quarantined
+    );
+    let InputMutationExecution::Replayed { receipt, .. } =
+        f.db.transitions_in_scope(&f.scope)
+            .commit_prepared_transition(&first)?
+    else {
+        panic!("later quarantine must not rerun the first reducer")
+    };
+    assert_eq!(receipt, original);
+    with_fresh_input_mutation_resolution(&mut f.db.connection()?, &attempt, |_, resolution| {
+        assert_eq!(resolution, InputMutationResolution::Present(original));
+        Ok(())
+    })?;
+    let (attempts, first_at, updated_at): (u32, String, String) = f.db.connection()?.query_row(
+        "SELECT attempts,first_deferred_at,updated_at FROM queue_head_no_progress",
+        [],
+        |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+    )?;
+    assert_eq!(attempts, 3);
+    assert_eq!(first_at, f.at.to_rfc3339());
+    assert_eq!(
+        updated_at,
+        (f.at + chrono::Duration::seconds(3)).to_rfc3339()
+    );
+    assert_eq!(f.receipt_count()?, 4);
+    Ok(())
+}
+
+#[test]
+fn prepared_queue_progress_successful_none_has_receipt_and_cannot_later_apply() -> Result<()> {
+    let f = Fixture::new()?;
+    f.admit_for_progress()?;
+    let mut command = f.progress_command(1)?;
+    command.expected.updated_at += chrono::Duration::seconds(1);
+    let first = PreparedInputTransition::queue_head_no_progress(
+        f.scope.clone(),
+        "stale-progress".into(),
+        f.at,
+        command.clone(),
+    )?;
+    let original = match f
+        .db
+        .transitions_in_scope(&f.scope)
+        .commit_prepared_transition(&first)?
+    {
+        InputMutationExecution::Committed { value, receipt } => {
+            assert!(!value.applied);
+            assert!(value.effects.audit_events.is_empty());
+            assert_eq!(progress_result(&receipt), None);
+            receipt
+        }
+        _ => panic!("successful stale disposition must commit a no-op receipt"),
+    };
+    assert_eq!(f.progress_rows()?, 0);
+    f.db.queue_entries().upsert(&command.expected)?;
+    assert!(
+        matches!(f.db.transitions_in_scope(&f.scope).commit_prepared_transition(&first)?,
+        InputMutationExecution::Replayed { receipt, .. } if receipt == original)
+    );
+    assert_eq!(f.progress_rows()?, 0);
+    assert_eq!(f.state()?.pending, 1);
+    assert_eq!(f.receipt_count()?, 2);
+    Ok(())
+}
+
+#[test]
+fn prepared_queue_progress_rolls_back_counter_state_queue_audit_and_receipt() -> Result<()> {
+    use crate::runtime_db::input_mutation_receipts::{
+        with_fresh_input_mutation_resolution, InputMutationResolution, OriginalInputMutationAttempt,
+    };
+    for fault in [
+        TransitionFaultPoint::AfterValidation,
+        TransitionFaultPoint::AfterCanonicalWrites,
+        TransitionFaultPoint::AfterAuditWrites,
+        TransitionFaultPoint::BeforeCommit,
+    ] {
+        let f = Fixture::new()?;
+        f.admit_for_progress()?;
+        let before = f.state()?;
+        let mut command = f.progress_command(1)?;
+        command.fault = Some(fault);
+        let expected = command.expected.clone();
+        let prepared = PreparedInputTransition::queue_head_no_progress(
+            f.scope.clone(),
+            format!("failed-progress-{fault:?}"),
+            f.at,
+            command,
+        )?;
+        let attempt = OriginalInputMutationAttempt::new(prepared.descriptor().clone());
+        assert!(f
+            .db
+            .transitions_in_scope(&f.scope)
+            .commit_prepared_transition(&prepared)
+            .is_err());
+        attempt.finish_original_attempt();
+        with_fresh_input_mutation_resolution(
+            &mut f.db.connection()?,
+            &attempt,
+            |_, resolution| {
+                assert_eq!(resolution, InputMutationResolution::Absent);
+                Ok(())
+            },
+        )?;
+        assert_eq!(f.state()?, before);
+        assert_eq!(
+            f.db.queue_entries().latest(&expected.message_id)?,
+            Some(expected)
+        );
+        assert_eq!(f.progress_rows()?, 0);
+        assert_eq!(f.receipt_count()?, 1);
+        assert_eq!(
+            f.db.connection()?
+                .query_row("SELECT COUNT(*) FROM audit_events", [], |row| row
+                    .get::<_, i64>(0))?,
+            0
+        );
+    }
+    // Even a business no-op must roll back its own receipt on precommit failure.
+    let f = Fixture::new()?;
+    f.admit_for_progress()?;
+    let mut command = f.progress_command(1)?;
+    command.expected.updated_at += chrono::Duration::seconds(1);
+    command.fault = Some(TransitionFaultPoint::BeforeCommit);
+    let prepared = PreparedInputTransition::queue_head_no_progress(
+        f.scope.clone(),
+        "failed-noop-progress".into(),
+        f.at,
+        command,
+    )?;
+    assert!(f
+        .db
+        .transitions_in_scope(&f.scope)
+        .commit_prepared_transition(&prepared)
+        .is_err());
+    assert_eq!(f.receipt_count()?, 1);
+    Ok(())
+}
+
+#[test]
+fn prepared_queue_progress_binds_group_payload_and_clock_before_replay() -> Result<()> {
+    let f = Fixture::new()?;
+    f.admit_for_progress()?;
+    let secondary = InputEvidenceScope {
+        agent_id: "progress-related".into(),
+        identity_incarnation: 1,
+    };
+    f.db.transaction(|tx| {
+        upsert_agent_identity_tx(
+            tx,
+            &AgentIdentityRecord::new(
+                &secondary.agent_id,
+                AgentKind::Named,
+                AgentVisibility::Public,
+                AgentOwnership::SelfOwned,
+                AgentProfilePreset::PublicNamed,
+                None,
+                None,
+            ),
+        )
+    })?;
+    let command = f.progress_command(3)?;
+    let grouped = PreparedInputTransition::queue_head_no_progress(
+        f.scope.clone(),
+        "grouped-progress".into(),
+        f.at,
+        command.clone(),
+    )?
+    .with_scope_group(vec![secondary.clone(), f.scope.clone()])?;
+    let InputMutationExecution::Committed { receipt, .. } =
+        f.db.transitions_in_scope(&f.scope)
+            .commit_prepared_transition(&grouped)?
+    else {
+        panic!()
+    };
+    assert_eq!(receipt.outcome.scopes.len(), 2);
+    let empty = receipt
+        .outcome
+        .scopes
+        .iter()
+        .find(|outcome| outcome.scope == secondary)
+        .unwrap();
+    assert!(empty.audit_events.is_empty());
+    assert!(!empty.notify_scheduler);
+    for changed_clock in [false, true] {
+        let mut changed = command.clone();
+        if !changed_clock {
+            changed.reason.push_str("-changed");
+        }
+        let conflict = PreparedInputTransition::queue_head_no_progress(
+            f.scope.clone(),
+            "grouped-progress".into(),
+            f.at + chrono::Duration::seconds(i64::from(changed_clock)),
+            changed,
+        )?
+        .with_scope_group(vec![f.scope.clone(), secondary.clone()])?;
+        assert!(matches!(
+            f.db.transitions_in_scope(&f.scope)
+                .commit_prepared_transition(&conflict)
+                .unwrap_err()
+                .downcast_ref::<ReceiptError>(),
+            Some(ReceiptError::CommandConflict)
+        ));
+    }
+    let missing_group = PreparedInputTransition::queue_head_no_progress(
+        f.scope.clone(),
+        "grouped-progress".into(),
+        f.at,
+        command,
+    )?;
+    assert!(matches!(
+        f.db.transitions_in_scope(&f.scope)
+            .commit_prepared_transition(&missing_group)
+            .unwrap_err()
+            .downcast_ref::<ReceiptError>(),
+        Some(ReceiptError::GroupConflict)
+    ));
+    assert_eq!(f.progress_rows()?, 1);
+    assert_eq!(f.receipt_count()?, 2);
+    Ok(())
+}
+
+fn namespace_rows(fixture: &Fixture) -> Result<BTreeMap<String, Vec<String>>> {
+    let connection = fixture.db.connection()?;
+    let mut snapshot = BTreeMap::new();
+    for table in [
+        "agent_identities",
+        "agent_states",
+        "messages",
+        "queue_entries",
+        "work_items",
+        "wait_conditions",
+        "work_item_continuations",
+        "turn_records",
+        "runtime_index_outbox",
+        "audit_events",
+        "input_mutation_receipts",
+        "input_evidence_current",
+        "runtime_sequences",
+        "work_domain_current",
+        "work_domain_records",
+        "work_domain_result_heads",
+    ] {
+        let mut statement = connection.prepare(&format!("SELECT * FROM {table}"))?;
+        let columns = statement.column_count();
+        let mut rows = statement
+            .query_map([], |row| {
+                (0..columns)
+                    .map(|column| row.get::<_, rusqlite::types::Value>(column))
+                    .collect::<rusqlite::Result<Vec<_>>>()
+                    .map(|values| format!("{values:?}"))
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        rows.sort();
+        snapshot.insert(table.into(), rows);
+    }
+    Ok(snapshot)
+}
+
+fn absent_secondary() -> InputEvidenceScope {
+    InputEvidenceScope {
+        agent_id: "cold-child".into(),
+        identity_incarnation: 1,
+    }
+}
+
+#[test]
+fn readonly_secondary_cannot_receive_queue_or_state_writes() -> Result<()> {
+    for target in [
+        "queue-upsert",
+        "queue-consume",
+        "queue-expected",
+        "queue-record",
+        "state-record",
+        "state-expected",
+    ] {
+        let f = Fixture::new()?;
+        let secondary = absent_secondary();
+        let before = namespace_rows(&f)?;
+        let mut queue = f.queue()?;
+        let mut record = queue_mutation_record(&queue.command.mutation).clone();
+        match target {
+            "queue-upsert" | "queue-consume" => {
+                record.agent_id = secondary.agent_id.clone();
+                queue.command.agent_state = None;
+                queue.command.message_evidence.clear();
+                if target == "queue-upsert" {
+                    // The original regression: Settle has no pending body, so
+                    // pending_messages() cannot certify its write namespace.
+                    record.status = QueueEntryStatus::Processed;
+                    queue.command.operation = QueueOperation::Settle;
+                    queue.command.mutation = QueueMutation::Upsert(record);
+                } else {
+                    record.status = QueueEntryStatus::Dequeued;
+                    queue.command.operation = QueueOperation::Claim;
+                    queue.command.mutation = QueueMutation::Consume(record);
+                }
+            }
+            "queue-expected" | "queue-record" => {
+                queue.command.operation = QueueOperation::Settle;
+                queue.command.agent_state = None;
+                queue.command.message_evidence.clear();
+                let mut expected = record.clone();
+                record.status = QueueEntryStatus::Dropped;
+                if target == "queue-expected" {
+                    expected.agent_id = secondary.agent_id.clone();
+                } else {
+                    record.agent_id = secondary.agent_id.clone();
+                }
+                queue.command.mutation = QueueMutation::CompareAndSet { expected, record };
+            }
+            "state-record" => {
+                queue.command.agent_state = Some(AgentStateMutation {
+                    expected: None,
+                    record: Box::new(AgentState::new(&secondary.agent_id)),
+                });
+            }
+            "state-expected" => {
+                queue.command.agent_state.as_mut().unwrap().expected =
+                    Some(Box::new(AgentState::new(&secondary.agent_id)));
+            }
+            _ => unreachable!(),
+        }
+        let prepared = PreparedInputTransition::queue(
+            f.scope.clone(),
+            format!("foreign-{target}"),
+            f.at,
+            queue,
+        )?
+        .with_scope_group(vec![secondary, f.scope.clone()])?;
+        if target == "queue-upsert" {
+            assert!(prepared.pending_messages()?.is_empty());
+        }
+        let error =
+            f.db.transitions_in_scope(&f.scope)
+                .commit_prepared_transition(&prepared)
+                .unwrap_err();
+        assert!(
+            format!("{error:#}").contains("primary namespace"),
+            "{target}: {error:#}"
+        );
+        assert_eq!(namespace_rows(&f)?, before, "{target}");
+    }
+    Ok(())
+}
+
+fn namespace_wait(agent: &str, at: chrono::DateTime<Utc>) -> WaitConditionRecord {
+    WaitConditionRecord {
+        id: "wait:namespace".into(),
+        agent_id: agent.into(),
+        work_item_id: None,
+        status: WaitConditionStatus::Active,
+        kind: crate::types::WaitConditionKind::External,
+        source: None,
+        subject_ref: None,
+        waiting_for: "namespace fixture".into(),
+        wake_sources: Vec::new(),
+        continuation: None,
+        created_at: at,
+        updated_at: at,
+        expires_at: None,
+        resolved_at: None,
+        cancelled_at: None,
+        turn_id: None,
+        trigger_message_id: None,
+        triggered_at: None,
+    }
+}
+
+#[test]
+fn readonly_secondary_cannot_receive_nested_wait_work_or_index_writes() -> Result<()> {
+    for target in [
+        "extra-wait",
+        "registered-wait",
+        "registration-agent",
+        "wait-expected",
+        "wait-record",
+        "wait-result-expected",
+        "wait-result-record",
+        "wait-result-message",
+        "wait-state",
+        "wait-work",
+        "wait-index",
+    ] {
+        let f = Fixture::new()?;
+        let secondary = absent_secondary();
+        let before = namespace_rows(&f)?;
+        let mut queue = f.queue()?;
+        let message = queue.command.message_evidence[0].clone();
+        let mut registration = pending_wait(&f.scope.agent_id, message.clone());
+        match target {
+            "extra-wait" => {
+                queue
+                    .extra_wait_conditions
+                    .push(namespace_wait(&secondary.agent_id, f.at));
+            }
+            "registered-wait" => {
+                registration
+                    .wait_conditions
+                    .push(namespace_wait(&secondary.agent_id, f.at));
+            }
+            "registration-agent" => registration.agent_id = secondary.agent_id.clone(),
+            "wait-expected" | "wait-record" => {
+                let mut wait = namespace_wait(&f.scope.agent_id, f.at);
+                let mut expected = WaitConditionExpectation {
+                    id: wait.id.clone(),
+                    agent_id: wait.agent_id.clone(),
+                    status: wait.status.clone(),
+                    updated_at: wait.updated_at,
+                };
+                if target == "wait-expected" {
+                    expected.agent_id = secondary.agent_id.clone();
+                } else {
+                    wait.agent_id = secondary.agent_id.clone();
+                }
+                queue.wait_transition = Some(QueueWaitTransition {
+                    expected,
+                    record: wait,
+                    work_item: None,
+                    index_changes: Vec::new(),
+                });
+            }
+            "wait-result-expected" => {
+                let admission = registration.task_result_admission.as_mut().unwrap();
+                let mut expected = admission.record.clone();
+                expected.agent_id = secondary.agent_id.clone();
+                admission.expected = Some(expected);
+            }
+            "wait-result-record" => {
+                registration
+                    .task_result_admission
+                    .as_mut()
+                    .unwrap()
+                    .record
+                    .agent_id = secondary.agent_id.clone();
+            }
+            "wait-result-message" => {
+                registration
+                    .task_result_admission
+                    .as_mut()
+                    .unwrap()
+                    .message
+                    .agent_id = secondary.agent_id.clone();
+            }
+            "wait-state" => {
+                registration.agent_state = Some(AgentStateMutation {
+                    expected: None,
+                    record: Box::new(AgentState::new(&secondary.agent_id)),
+                });
+            }
+            "wait-work" => {
+                registration.work_items.push(WorkItemMutation::Insert {
+                    record: WorkItemRecord::new(
+                        &secondary.agent_id,
+                        "foreign work",
+                        WorkItemState::Open,
+                    ),
+                });
+            }
+            "wait-index" => {
+                let mut change = RuntimeIndexChange::for_message(&message);
+                change.agent_id = secondary.agent_id.clone();
+                registration.index_changes.push(change);
+            }
+            _ => unreachable!(),
+        }
+        queue.wait_registration = Some(registration);
+        let prepared = PreparedInputTransition::queue(
+            f.scope.clone(),
+            format!("foreign-{target}"),
+            f.at,
+            queue,
+        )?
+        .with_scope_group(vec![f.scope.clone(), secondary])?;
+        let error =
+            f.db.transitions_in_scope(&f.scope)
+                .commit_prepared_transition(&prepared)
+                .unwrap_err();
+        assert!(
+            format!("{error:#}").contains("primary namespace"),
+            "{target}: {error:#}"
+        );
+        assert_eq!(namespace_rows(&f)?, before, "{target}");
+    }
+    Ok(())
+}
+
+#[test]
+fn primary_queue_commit_preserves_truly_readonly_absent_secondary() -> Result<()> {
+    let f = Fixture::new()?;
+    let secondary = absent_secondary();
+    let prepared = PreparedInputTransition::queue(
+        f.scope.clone(),
+        "primary-with-absent-secondary".into(),
+        f.at,
+        f.queue()?,
+    )?
+    .with_scope_group(vec![secondary.clone(), f.scope.clone()])?;
+    let InputMutationExecution::Committed { value, receipt } =
+        f.db.transitions_in_scope(&f.scope)
+            .commit_prepared_transition(&prepared)?
+    else {
+        panic!("primary queue should commit with a truly readonly absent owner");
+    };
+    assert!(value.applied);
+    assert_eq!(f.state()?.pending, 1);
+    assert_eq!(f.db.queue_entries().latest_all()?.len(), 1);
+    let outcome = receipt
+        .outcome
+        .scopes
+        .iter()
+        .find(|outcome| outcome.scope == secondary)
+        .unwrap();
+    assert!(outcome.audit_events.is_empty());
+    assert_eq!(outcome.install_keys, Default::default());
+    assert!(!outcome.notify_scheduler);
+    assert!(!outcome.notify_memory_index);
+    let child_rows: i64 = f.db.connection()?.query_row(
+        "SELECT (SELECT COUNT(*) FROM agent_identities WHERE agent_id=?1)
+              + (SELECT COUNT(*) FROM agent_states WHERE agent_id=?1)
+              + (SELECT COUNT(*) FROM queue_entries WHERE agent_id=?1)
+              + (SELECT COUNT(*) FROM input_evidence_current WHERE agent_id=?1)",
+        [&secondary.agent_id],
+        |row| row.get(0),
+    )?;
+    assert_eq!(child_rows, 0);
+    assert!(matches!(
+        f.db.transitions_in_scope(&f.scope).commit_prepared_transition(&prepared)?,
+        InputMutationExecution::Replayed { receipt: original, .. } if original == receipt
+    ));
+    assert_eq!(f.db.queue_entries().latest_all()?.len(), 1);
+    Ok(())
+}
+
+#[test]
+fn primary_payload_cannot_reassign_existing_foreign_queue_work_or_wait() -> Result<()> {
+    for target in ["queue", "work", "wait"] {
+        let f = Fixture::new()?;
+        let foreign = InputEvidenceScope {
+            agent_id: "existing-foreign".into(),
+            identity_incarnation: 1,
+        };
+        let mut command = f.queue()?;
+        let mut foreign_queue = queue_mutation_record(&command.command.mutation).clone();
+        foreign_queue.agent_id = foreign.agent_id.clone();
+        foreign_queue.message_id = "message:existing-foreign".into();
+        let foreign_work =
+            WorkItemRecord::new(&foreign.agent_id, "foreign work", WorkItemState::Open);
+        let foreign_wait = namespace_wait(&foreign.agent_id, f.at);
+        f.db.transaction(|tx| {
+            upsert_agent_identity_tx(
+                tx,
+                &AgentIdentityRecord::new(
+                    &foreign.agent_id,
+                    AgentKind::Named,
+                    AgentVisibility::Public,
+                    AgentOwnership::SelfOwned,
+                    AgentProfilePreset::PublicNamed,
+                    None,
+                    None,
+                ),
+            )?;
+            upsert_agent_state_tx(tx, &AgentState::new(&foreign.agent_id))?;
+            match target {
+                "queue" => {
+                    let mut message = command.command.message_evidence[0].clone();
+                    message.id = foreign_queue.message_id.clone();
+                    message.agent_id = foreign.agent_id.clone();
+                    append_message_tx(tx, &message)?;
+                    upsert_queue_entry_tx(tx, &foreign_queue)?;
+                }
+                "work" => {
+                    insert_new_work_item_tx(tx, &foreign_work)?;
+                }
+                "wait" => {
+                    upsert_wait_condition_tx(tx, &foreign_wait)?;
+                }
+                _ => unreachable!(),
+            }
+            Ok(())
+        })?;
+        let expected_table = match target {
+            "queue" => {
+                let mut record = foreign_queue;
+                record.agent_id = f.scope.agent_id.clone();
+                record.status = QueueEntryStatus::Processed;
+                record.updated_at = f.at + chrono::Duration::milliseconds(1);
+                command.command.operation = QueueOperation::Settle;
+                command.command.mutation = QueueMutation::Upsert(record);
+                command.command.agent_state = None;
+                command.command.message_evidence.clear();
+                "queue_entries"
+            }
+            "work" => {
+                let mut record = foreign_work;
+                record.agent_id = f.scope.agent_id.clone();
+                record.revision = 2;
+                let mut wait = pending_wait(
+                    &f.scope.agent_id,
+                    command.command.message_evidence[0].clone(),
+                );
+                wait.task_result_admission = None;
+                wait.work_items.push(WorkItemMutation::Update {
+                    record,
+                    expected_revision: 1,
+                });
+                command.wait_registration = Some(wait);
+                "work_items"
+            }
+            "wait" => {
+                let mut record = foreign_wait;
+                record.agent_id = f.scope.agent_id.clone();
+                record.status = WaitConditionStatus::Resolved;
+                record.updated_at = f.at + chrono::Duration::milliseconds(1);
+                record.resolved_at = Some(record.updated_at);
+                command.extra_wait_conditions.push(record);
+                "wait_conditions"
+            }
+            _ => unreachable!(),
+        };
+        let prepared = PreparedInputTransition::queue(
+            f.scope.clone(),
+            format!("existing-foreign-{target}"),
+            f.at,
+            command,
+        )?
+        .with_scope_group(vec![foreign, f.scope.clone()])?;
+        // All frozen payload namespaces are primary. The collision is only
+        // visible from the actual canonical row selected by its global ID.
+        prepared.validate_primary_namespace()?;
+        let before = namespace_rows(&f)?;
+        let error =
+            f.db.transitions_in_scope(&f.scope)
+                .commit_prepared_transition(&prepared)
+                .unwrap_err();
+        assert!(
+            format!("{error:#}").contains(&format!(
+                "stored {expected_table} target differs from primary namespace"
+            )),
+            "{target}: {error:#}"
+        );
+        assert_eq!(namespace_rows(&f)?, before, "{target}");
+        assert_eq!(f.receipt_count()?, 0, "{target}");
+    }
+    Ok(())
+}
+
+#[test]
+fn exact_receipt_replay_precedes_later_existing_target_namespace_check() -> Result<()> {
+    let f = Fixture::new()?;
+    let prepared = PreparedInputTransition::queue(
+        f.scope.clone(),
+        "before-target-owner-changed".into(),
+        f.at,
+        f.queue()?,
+    )?;
+    let InputMutationExecution::Committed { receipt, .. } =
+        f.db.transitions_in_scope(&f.scope)
+            .commit_prepared_transition(&prepared)?
+    else {
+        panic!("first original command must commit");
+    };
+    // Simulate a restored conflicting row directly; ordinary queue writes
+    // preserve conversation ownership and reject this restoration. An exact
+    // ACK replay must not run its old command or overwrite the later row.
+    let mut later_record = queue_mutation_record(&f.queue()?.command.mutation).clone();
+    later_record.agent_id = "later-foreign".into();
+    later_record.updated_at = f.at + chrono::Duration::milliseconds(1);
+    f.db.transaction(|tx| {
+        assert_eq!(tx.execute(
+            "UPDATE queue_entries SET agent_id=?1, updated_at=?2, payload_json=?3 WHERE message_id=?4",
+            rusqlite::params![
+                later_record.agent_id,
+                later_record.updated_at.timestamp_millis(),
+                serde_json::to_string(&later_record)?,
+                later_record.message_id,
+            ],
+        )?, 1);
+        Ok(())
+    })?;
+    let before = namespace_rows(&f)?;
+    let InputMutationExecution::Replayed {
+        receipt: replay, ..
+    } =
+        f.db.transitions_in_scope(&f.scope)
+            .commit_prepared_transition(&prepared)?
+    else {
+        panic!("exact receipt must replay before reading changed business targets");
+    };
+    assert_eq!(replay, receipt);
+    assert_eq!(namespace_rows(&f)?, before);
+    Ok(())
+}
+
+fn original_work_command(
+    f: &Fixture,
+    fault: Option<TransitionFaultPoint>,
+) -> WorkItemTransitionCommand {
+    let mut work = WorkItemRecord::new(
+        &f.scope.agent_id,
+        "original Work receipt",
+        WorkItemState::Open,
+    );
+    work.id = "original-work".into();
+    work.created_at = f.at;
+    work.updated_at = f.at;
+    WorkItemTransitionCommand {
+        agent_id: f.scope.agent_id.clone(),
+        mutation: WorkItemMutation::Insert { record: work },
+        agent_state: None,
+        brief_evidence: Vec::new(),
+        audit_events: Vec::new(),
+        index_changes: Vec::new(),
+        notify_scheduler: true,
+        fault,
+    }
+}
+#[test]
+fn context_budget_recovery_receipts_preserve_rejection_and_publish_original_input() -> Result<()> {
+    use super::super::execution_protocol_repository::ExecutionProtocolRecoveryCommitOutcome;
+    use crate::domain::execution_protocol::{
+        ContextBudgetStop, ExecutionProtocolCommand, ExecutionProtocolState,
+        RecheckContextBudgetStop, RegisterWorkItemExecution, WorkItemExecutionRecord,
+        WorkItemExecutionState,
+    };
+
+    for configured_estimated_tokens in [4096, 8192] {
+        let f = Fixture::new()?;
+        let mut work = original_work_command(&f, None);
+        let WorkItemMutation::Insert { record } = &mut work.mutation else {
+            unreachable!()
+        };
+        record.plan_status = crate::types::WorkItemPlanStatus::Ready;
+        let work_id = record.id.clone();
+        let expected = WorkItemExecutionRecord {
+            source_revision: record.revision,
+            state: WorkItemExecutionState::Paused {
+                generation: 5,
+                reason: ContextBudgetStop {
+                    source_revision: record.revision,
+                    source_turn_id: "original-budget-stop".into(),
+                    configured_estimated_tokens: 4096,
+                }
+                .policy()?,
+            },
+        };
+        let seed = PreparedInputTransition::work(
+            f.scope.clone(),
+            "context-recovery-seed".into(),
+            f.at,
+            work,
+            ExecutionProtocolTransition {
+                bootstrap: Some(ExecutionProtocolState::empty(&f.scope.agent_id)),
+                commands: vec![ExecutionProtocolCommand::RegisterWorkItem(Box::new(
+                    RegisterWorkItemExecution {
+                        work_item_id: work_id.clone(),
+                        record: expected.clone(),
+                    },
+                ))],
+            },
+            false,
+        )?;
+        f.db.transitions_in_scope(&f.scope)
+            .commit_prepared_transition(&seed)?;
+        let original_state = f.state()?;
+        let prepared = PreparedInputTransition::context_budget_stop_recovery(
+            f.scope.clone(),
+            "context-recovery-original".into(),
+            f.at,
+            RecheckContextBudgetStop {
+                command_id: "context-recovery-command".into(),
+                work_item_id: work_id.clone(),
+                expected: expected.clone(),
+                configured_estimated_tokens,
+            },
+            vec![AuditEvent::legacy(
+                "context_budget_stop_recheck",
+                serde_json::json!({}),
+            )],
+        )?;
+        let InputMutationExecution::Committed { value, receipt } =
+            f.db.transitions_in_scope(&f.scope)
+                .commit_prepared_transition(&prepared)?
+        else {
+            panic!("original recovery must commit its own receipt")
+        };
+        let applied = configured_estimated_tokens == 8192;
+        assert_eq!(value.applied, applied);
+        assert_eq!(value.effects.audit_events.len(), usize::from(applied));
+        if applied {
+            assert!(!value.effects.input_evidence_delta.records.is_empty());
+        }
+        let InputMutationResult::ContextBudgetStopRecovery { outcome } = &receipt.outcome.result
+        else {
+            panic!("recovery receipt omitted its original disposition")
+        };
+        assert!(matches!(
+            (applied, outcome),
+            (true, ExecutionProtocolRecoveryCommitOutcome::Applied(true))
+                | (
+                    false,
+                    ExecutionProtocolRecoveryCommitOutcome::Rejected { .. }
+                )
+        ));
+        let protocol =
+            f.db.transitions()
+                .load_execution_protocol_state_if_initialized(&f.scope.agent_id)?
+                .unwrap();
+        if applied {
+            assert!(matches!(
+                protocol.work_items[&work_id].state,
+                WorkItemExecutionState::Runnable { generation: 6, .. }
+            ));
+        } else {
+            assert_eq!(protocol.work_items[&work_id], expected);
+        }
+        assert_eq!(f.state()?, original_state);
+        let before_replay = namespace_rows(&f)?;
+        let InputMutationExecution::Replayed {
+            receipt: replay, ..
+        } =
+            f.db.transitions_in_scope(&f.scope)
+                .commit_prepared_transition(&prepared)?
+        else {
+            panic!("exact recovery replay cannot return historical publication effects")
+        };
+        assert_eq!(replay, receipt);
+        assert_eq!(namespace_rows(&f)?, before_replay);
+        assert_eq!(f.receipt_count()?, 2);
+    }
+    Ok(())
+}
+
+fn original_focus_command(
+    f: &Fixture,
+    changed: bool,
+    fault: Option<TransitionFaultPoint>,
+) -> Result<WorkItemFocusTransitionCommand> {
+    let old = f.state()?;
+    let mut next = old.clone();
+    if changed {
+        next.last_wake_reason = Some("original-focus-receipt".into());
+    }
+    Ok(WorkItemFocusTransitionCommand {
+        agent_id: f.scope.agent_id.clone(),
+        work_items: Vec::new(),
+        wait_conditions: Vec::new(),
+        active_continuation_expectations: Some(Vec::new()),
+        continuation_expectations: Vec::new(),
+        continuations: Vec::new(),
+        agent_state: AgentStateMutation {
+            expected: Some(Box::new(old)),
+            record: Box::new(next),
+        },
+        brief_evidence: Vec::new(),
+        audit_events: Vec::new(),
+        index_changes: Vec::new(),
+        notify_scheduler: true,
+        fault,
+    })
+}
+fn original_wait_command(
+    f: &Fixture,
+    fault: Option<TransitionFaultPoint>,
+) -> Result<WaitTransitionCommand> {
+    let wait: WaitConditionRecord = serde_json::from_value(serde_json::json!({
+        "id":"original-wait", "agent_id":f.scope.agent_id, "status":"active", "kind":"operator",
+        "waiting_for":"original input", "created_at":f.at,"updated_at":f.at,
+    }))?;
+    Ok(WaitTransitionCommand {
+        agent_id: f.scope.agent_id.clone(),
+        work_items: Vec::new(),
+        expected_wait_conditions: Vec::new(),
+        wait_conditions: vec![wait],
+        timer_wake: None,
+        task_result_admission: None,
+        agent_state: None,
+        audit_events: Vec::new(),
+        index_changes: Vec::new(),
+        notify_scheduler: true,
+        fault,
+    })
+}
+fn prepared_work_family(
+    f: &Fixture,
+    family: &str,
+    fault: Option<TransitionFaultPoint>,
+) -> Result<PreparedInputTransition> {
+    match family {
+        "work" => PreparedInputTransition::work(
+            f.scope.clone(),
+            "work-original".into(),
+            f.at,
+            original_work_command(f, fault),
+            Default::default(),
+            false,
+        ),
+        "focus" => PreparedInputTransition::focus(
+            f.scope.clone(),
+            "focus-original".into(),
+            f.at,
+            original_focus_command(f, false, fault)?,
+            Default::default(),
+            false,
+            None,
+        ),
+        "wait" => PreparedInputTransition::wait(
+            f.scope.clone(),
+            "wait-original".into(),
+            f.at,
+            original_wait_command(f, fault)?,
+            Default::default(),
+            None,
+        ),
+        _ => unreachable!(),
+    }
+}
+
+#[test]
+fn original_work_focus_wait_receipts_replay_before_later_occ_and_target_reads() -> Result<()> {
+    for family in ["work", "focus", "wait"] {
+        let f = Fixture::new()?;
+        let prepared = prepared_work_family(&f, family, None)?;
+        let InputMutationExecution::Committed { value, receipt } =
+            f.db.transitions_in_scope(&f.scope)
+                .commit_prepared_transition(&prepared)?
+        else {
+            panic!("first original command must commit");
+        };
+        assert_eq!(
+            value.applied,
+            family != "focus",
+            "equal Focus is a durable receipt no-op"
+        );
+        assert_eq!(receipt.outcome.applied, value.applied);
+        if family == "work" {
+            assert!(receipt.outcome.scopes[0]
+                .install_keys
+                .work_items
+                .contains("original-work"));
+        }
+        if family == "wait" {
+            assert!(receipt.outcome.scopes[0]
+                .install_keys
+                .wait_conditions
+                .contains("original-wait"));
+        }
+        // Deliberate conflicting restore after an ACK. Ordinary writers reject
+        // owner reassignment; exact replay must not revisit the old targets.
+        let mut later = f.state()?;
+        later.last_wake_reason = Some("later-canonical-state".into());
+        f.db.transaction(|tx| {
+            if family == "work" { tx.execute("UPDATE work_items SET agent_id='restored-foreign' WHERE work_item_id='original-work'", [])?; }
+            if family == "wait" { tx.execute("UPDATE wait_conditions SET agent_id='restored-foreign' WHERE wait_condition_id='original-wait'", [])?; }
+            upsert_agent_state_tx(tx, &later)
+        })?;
+        let before = namespace_rows(&f)?;
+        let InputMutationExecution::Replayed {
+            receipt: replay, ..
+        } =
+            f.db.transitions_in_scope(&f.scope)
+                .commit_prepared_transition(&prepared)?
+        else {
+            panic!("original receipt must precede later Work/Wait/OCC checks");
+        };
+        assert_eq!(replay, receipt);
+        assert_eq!(namespace_rows(&f)?, before);
+    }
+    Ok(())
+}
+
+#[test]
+fn original_work_focus_wait_faults_roll_back_business_and_whole_receipt() -> Result<()> {
+    for family in ["work", "focus", "wait"] {
+        let f = Fixture::new()?;
+        let fault = Some(TransitionFaultPoint::AfterCanonicalWrites);
+        let prepared = if family == "focus" {
+            PreparedInputTransition::focus(
+                f.scope.clone(),
+                "focus-fault".into(),
+                f.at,
+                original_focus_command(&f, true, fault)?,
+                Default::default(),
+                false,
+                None,
+            )?
+        } else {
+            prepared_work_family(&f, family, fault)?
+        };
+        let before = namespace_rows(&f)?;
+        let error =
+            f.db.transitions_in_scope(&f.scope)
+                .commit_prepared_transition(&prepared)
+                .unwrap_err();
+        assert!(
+            format!("{error:#}").contains("injected runtime transition fault"),
+            "{family}: {error:#}"
+        );
+        assert_eq!(namespace_rows(&f)?, before, "{family}");
+        assert_eq!(f.receipt_count()?, 0);
+    }
+    Ok(())
+}
+
+#[test]
+fn original_work_flags_and_wait_admission_body_are_frozen_before_sql() -> Result<()> {
+    let f = Fixture::new()?;
+    let plain = PreparedInputTransition::work(
+        f.scope.clone(),
+        "flags".into(),
+        f.at,
+        original_work_command(&f, None),
+        Default::default(),
+        false,
+    )?;
+    let synchronized = PreparedInputTransition::work(
+        f.scope.clone(),
+        "flags".into(),
+        f.at,
+        original_work_command(&f, None),
+        Default::default(),
+        true,
+    )?;
+    assert_ne!(
+        plain.descriptor().command_digest(),
+        synchronized.descriptor().command_digest()
+    );
+    let fault_only = PreparedInputTransition::work(
+        f.scope.clone(),
+        "flags".into(),
+        f.at,
+        original_work_command(&f, Some(TransitionFaultPoint::BeforeCommit)),
+        Default::default(),
+        false,
+    )?;
+    assert_eq!(
+        plain.descriptor().command_digest(),
+        fault_only.descriptor().command_digest()
+    );
+    let queue = f.queue()?;
+    let body = queue.command.message_evidence[0].clone();
+    let record = queue_mutation_record(&queue.command.mutation).clone();
+    let mut wait = original_wait_command(&f, None)?;
+    wait.task_result_admission = Some(WaitTaskResultAdmission {
+        obligation: pending_obligation(&f.scope.agent_id, &body),
+        message: body.clone(),
+        expected: None,
+        record,
+    });
+    let prepared = PreparedInputTransition::wait(
+        f.scope.clone(),
+        "pending-wait".into(),
+        f.at,
+        wait.clone(),
+        Default::default(),
+        None,
+    )?;
+    assert_eq!(prepared.pending_messages()?, vec![&body]);
+    wait.task_result_admission
+        .as_mut()
+        .unwrap()
+        .message
+        .agent_id = "foreign".into();
+    let foreign = PreparedInputTransition::wait(
+        f.scope.clone(),
+        "pending-foreign".into(),
+        f.at,
+        wait,
+        Default::default(),
+        None,
+    )?;
+    assert!(foreign.pending_messages().is_err());
+    let old_keys =
+        serde_json::json!({"work_items":[],"tasks":[],"timers":[],"external_triggers":[]});
+    let keys: crate::runtime_db::input_recovery_install::InputMutationInstallKeys =
+        serde_json::from_value(old_keys.clone())?;
+    assert_eq!(
+        serde_json::to_value(keys)?,
+        old_keys,
+        "empty new install fields preserve original receipt checksum bytes"
+    );
+    assert_eq!(
+        f.receipt_count()?,
+        0,
+        "body reservation extraction performs no SQL writes"
+    );
+    Ok(())
+}
+
+fn commit_original_wait(f: &Fixture, id: &str) -> Result<TransitionCommit> {
+    let mut command = original_wait_command(f, None)?;
+    command.wait_conditions[0].id = id.into();
+    let prepared = PreparedInputTransition::wait(
+        f.scope.clone(),
+        format!("receipt:{id}"),
+        f.at,
+        command,
+        Default::default(),
+        None,
+    )?;
+    let InputMutationExecution::Committed { value, .. } =
+        f.db.transitions_in_scope(&f.scope)
+            .commit_prepared_transition(&prepared)?
+    else {
+        panic!("first Wait must commit");
+    };
+    Ok(value)
+}
+
+#[test]
+fn original_queue_finalizes_all_nested_waits_after_implicit_cancellations() -> Result<()> {
+    use crate::runtime::resident_work::{CanonicalWorkRecord, WorkFamily, WorkKey};
+    let f = Fixture::new()?;
+    let first = commit_original_wait(&f, "old-active-wait")?;
+    let prior_revision = first.effects.work_delta.as_ref().unwrap().revision;
+    let mut queue = f.queue()?;
+    let mut registration = original_wait_command(&f, None)?;
+    registration.wait_conditions[0].id = "nested-registration".into();
+    let mut extra = registration.wait_conditions[0].clone();
+    extra.id = "nested-extra".into();
+    queue.wait_registration = Some(registration);
+    queue.extra_wait_conditions.push(extra);
+    let prepared = PreparedInputTransition::queue(
+        f.scope.clone(),
+        "nested-final-coverage".into(),
+        f.at,
+        queue,
+    )?;
+    let InputMutationExecution::Committed { value, receipt } =
+        f.db.transitions_in_scope(&f.scope)
+            .commit_prepared_transition(&prepared)?
+    else {
+        panic!("first Queue must commit");
+    };
+    let delta = value
+        .effects
+        .work_delta
+        .as_ref()
+        .context("Queue must publish final Work facts")?;
+    assert_eq!(delta.base_revision, prior_revision);
+    assert_eq!(
+        delta.revision,
+        prior_revision + 1,
+        "one original transaction has one final Work revision"
+    );
+    assert_eq!(
+        delta.coverage.unresolved_wait_ids,
+        BTreeSet::from(["nested-extra".into()])
+    );
+    for (id, expected) in [
+        ("old-active-wait", WaitConditionStatus::Cancelled),
+        ("nested-registration", WaitConditionStatus::Cancelled),
+        ("nested-extra", WaitConditionStatus::Active),
+    ] {
+        assert!(value.effects.wait_condition_writes.wait_ids.contains(id));
+        assert!(receipt.outcome.scopes[0]
+            .install_keys
+            .wait_conditions
+            .contains(id));
+        let record = delta
+            .records
+            .iter()
+            .find(|record| record.key == WorkKey::new(WorkFamily::Wait, id))
+            .context("actual implicit write omitted")?;
+        let CanonicalWorkRecord::Wait(wait) = &record.record else {
+            panic!("Wait key needs Wait body");
+        };
+        assert_eq!(
+            wait.status, expected,
+            "only final canonical rows belong in ACK facts"
+        );
+    }
+    assert_eq!(f.state()?.pending, 1);
+    assert_eq!(f.state()?.total_message_count, 1);
+    let before = namespace_rows(&f)?;
+    assert!(matches!(
+        f.db.transitions_in_scope(&f.scope)
+            .commit_prepared_transition(&prepared)?,
+        InputMutationExecution::Replayed { .. }
+    ));
+    assert_eq!(
+        namespace_rows(&f)?,
+        before,
+        "receipt replay must not retrigger or finalize again"
+    );
+    Ok(())
+}
+
+#[test]
+fn original_work_finalizer_failure_rolls_back_queue_wait_audit_and_receipt() -> Result<()> {
+    let f = Fixture::new()?;
+    let mut original = original_wait_command(&f, None)?;
+    original.wait_conditions[0].id = "old-active-wait".into();
+    original.wait_conditions[0].wake_sources = vec![crate::types::WakeSource::OperatorInput];
+    let original = PreparedInputTransition::wait(
+        f.scope.clone(),
+        "receipt:old-active-wait".into(),
+        f.at,
+        original,
+        Default::default(),
+        None,
+    )?;
+    f.db.transitions_in_scope(&f.scope)
+        .commit_prepared_transition(&original)?;
+    // The Queue really triggers the old OperatorInput wait, appends its audit,
+    // then a new wait implicitly cancels it. Final coverage advances even when
+    // an unchanged alias is skipped; preflight never writes that revision.
+    f.db.transaction(|tx| { tx.execute_batch("CREATE TRIGGER fail_final_work_coverage BEFORE UPDATE ON work_domain_current WHEN NEW.revision > OLD.revision BEGIN SELECT RAISE(ABORT,'final Work coverage fault'); END;")?; Ok(()) })?;
+    let before = namespace_rows(&f)?;
+    let mut queue = f.queue()?;
+    let mut newer = original_wait_command(&f, None)?.wait_conditions.remove(0);
+    newer.id = "new-after-trigger".into();
+    queue.extra_wait_conditions.push(newer);
+    let prepared =
+        PreparedInputTransition::queue(f.scope.clone(), "finalizer-failure".into(), f.at, queue)?;
+    let error =
+        f.db.transitions_in_scope(&f.scope)
+            .commit_prepared_transition(&prepared)
+            .unwrap_err();
+    assert!(
+        format!("{error:#}").contains("final Work coverage fault"),
+        "{error:#}"
+    );
+    assert_eq!(
+        namespace_rows(&f)?,
+        before,
+        "the finalizer cannot leave a partial business commit"
+    );
+    assert_eq!(f.receipt_count()?, 1, "only original Wait receipt survives");
+    Ok(())
+}
+
+#[test]
+fn original_work_budget_is_checked_before_business_and_against_final_size() -> Result<()> {
+    use crate::runtime::{
+        resident_work::WorkCaptureRequest, resident_work::WorkFamily, resident_work::WorkKey,
+    };
+    let f = Fixture::new()?;
+    for (nonce, id) in [("one", "work-one"), ("two", "work-two")] {
+        let mut command = original_work_command(&f, None);
+        let WorkItemMutation::Insert { record } = &mut command.mutation else {
+            unreachable!()
+        };
+        record.id = id.into();
+        let prepared = PreparedInputTransition::work(
+            f.scope.clone(),
+            nonce.into(),
+            f.at,
+            command,
+            Default::default(),
+            false,
+        )?;
+        f.db.transitions_in_scope(&f.scope)
+            .commit_prepared_transition(&prepared)?;
+    }
+    f.db.transaction(|tx| { tx.execute_batch("CREATE TRIGGER business_must_not_run BEFORE INSERT ON work_items BEGIN SELECT RAISE(ABORT,'business attempted after failed preflight'); END;")?; Ok(()) })?;
+    let prepared = prepared_work_family(&f, "work", None)?;
+    let request = crate::runtime_db::work_snapshot::WorkDomainLoadRequest {
+        capture: WorkCaptureRequest::current(),
+        record_limit: 1,
+        byte_limit: 1024 * 1024,
+    };
+    let before = namespace_rows(&f)?;
+    let error =
+        f.db.transitions_in_scope(&f.scope)
+            .commit_prepared_transition_with_work_request(&prepared, &request)
+            .unwrap_err();
+    assert!(
+        error
+            .downcast_ref::<crate::runtime_db::work_snapshot::WorkSnapshotError>()
+            .is_some(),
+        "{error:#}"
+    );
+    assert!(!format!("{error:#}").contains("business attempted"));
+    assert_eq!(namespace_rows(&f)?, before);
+    f.db.transaction(|tx| {
+        tx.execute_batch("DROP TRIGGER business_must_not_run")?;
+        Ok(())
+    })?;
+    let request = crate::runtime_db::work_snapshot::WorkDomainLoadRequest {
+        record_limit: 2,
+        ..request
+    };
+    let error =
+        f.db.transitions_in_scope(&f.scope)
+            .commit_prepared_transition_with_work_request(&prepared, &request)
+            .unwrap_err();
+    assert!(
+        error
+            .downcast_ref::<crate::runtime_db::work_snapshot::WorkSnapshotError>()
+            .is_some(),
+        "{error:#}"
+    );
+    assert_eq!(
+        namespace_rows(&f)?,
+        before,
+        "new final coverage over budget rolls back whole original transaction"
+    );
+    assert!(!before["work_domain_records"]
+        .iter()
+        .any(|row| row.contains(&WorkKey::new(WorkFamily::Work, "original-work").id)));
+    Ok(())
+}
+
+#[test]
+fn original_deleting_no_turn_work_cleanup_qualifies_result_without_new_activation() -> Result<()> {
+    use crate::runtime::{
+        resident_input_evidence::{InputEvidenceFamily, InputEvidenceKey},
+        resident_work::CanonicalWorkRecord,
+    };
+    let f = Fixture::new()?;
+    let first = prepared_work_family(&f, "work", None)?;
+    f.db.transitions_in_scope(&f.scope)
+        .commit_prepared_transition(&first)?;
+    let mut work =
+        f.db.work_items()
+            .latest_all()?
+            .into_iter()
+            .find(|work| work.id == "original-work")
+            .unwrap();
+    let expected_revision = work.revision;
+    work.objective = "already admitted Work cleanup".into();
+    work.revision += 1;
+    work.updated_at = f.at + chrono::Duration::seconds(1);
+    let mut brief = BriefRecord::new(
+        &f.scope.agent_id,
+        crate::types::BriefKind::Result,
+        "original admitted result",
+        None,
+        None,
+    );
+    brief.id = "brief:no-turn-work-result".into();
+    brief.work_item_id = Some(work.id.clone());
+    brief.created_at = work.updated_at;
+    let command = WorkItemTransitionCommand {
+        agent_id: f.scope.agent_id.clone(),
+        mutation: WorkItemMutation::Update {
+            record: work.clone(),
+            expected_revision,
+        },
+        agent_state: None,
+        brief_evidence: vec![brief.clone()],
+        audit_events: vec![crate::types::brief_created_event_for(&brief)?],
+        index_changes: Vec::new(),
+        notify_scheduler: true,
+        fault: None,
+    };
+    f.deleting()?;
+    let prepared = PreparedInputTransition::work(
+        f.scope.clone(),
+        "no-turn-original-cleanup".into(),
+        f.at,
+        command,
+        Default::default(),
+        false,
+    )?;
+    let InputMutationExecution::Committed { value, receipt } =
+        f.db.transitions_in_scope(&f.scope)
+            .commit_prepared_transition(&prepared)?
+    else {
+        panic!("admitted cleanup must commit");
+    };
+    let delta = value.effects.work_delta.as_ref().unwrap();
+    assert!(delta.records.iter().any(
+        |record| matches!(&record.record, CanonicalWorkRecord::Work(actual) if actual == &work)
+    ));
+    assert_eq!(
+        delta.coverage.latest_results[&work.id]
+            .as_ref()
+            .unwrap()
+            .brief_id,
+        brief.id
+    );
+    assert!(receipt.outcome.scopes[0]
+        .install_keys
+        .completion_brief_ids
+        .contains(&brief.id));
+    assert!(
+        !receipt.outcome.scopes[0]
+            .install_keys
+            .input_roots
+            .contains(&InputEvidenceKey::new(
+                InputEvidenceFamily::Brief,
+                &brief.id
+            )),
+        "a latest head alone is not an independent owning root"
+    );
+    assert!(value.effects.briefs[0].created_event_seq.is_some());
+    assert!(f.state()?.current_run_id.is_none());
+    assert!(f.state()?.current_turn_id.is_none());
+    let connection = f.db.connection()?;
+    let turns: i64 = connection.query_row(
+        "SELECT COUNT(*) FROM turn_records WHERE agent_id=?1",
+        [&f.scope.agent_id],
+        |row| row.get(0),
+    )?;
+    assert_eq!(
+        turns, 0,
+        "NoTurn cleanup must not invent a dispatch or memory phase"
+    );
+    let before = namespace_rows(&f)?;
+    let mut new_command = original_work_command(&f, None);
+    let WorkItemMutation::Insert { record } = &mut new_command.mutation else {
+        unreachable!()
+    };
+    record.id = "new-work-after-deleting".into();
+    let new_work = PreparedInputTransition::work(
+        f.scope.clone(),
+        "new-deleting-work".into(),
+        f.at,
+        new_command,
+        Default::default(),
+        false,
+    )?;
+    assert!(f
+        .db
+        .transitions_in_scope(&f.scope)
+        .commit_prepared_transition(&new_work)
+        .is_err());
+    assert_eq!(namespace_rows(&f)?, before, "Deleting admits no new Work");
+    Ok(())
+}
+
+#[path = "prepared_task_tests.rs"]
+mod task_tests;
+
+#[path = "prepared_task_domain_tests.rs"]
+mod task_domain_tests;
+
+#[path = "prepared_task_result_tests.rs"]
+mod task_result_writer_tests;
+
+#[path = "wait_task_result_witness_tests.rs"]
+mod wait_task_result_witness_tests;
+
+#[path = "prepared_task_stop_tests.rs"]
+mod prepared_task_stop_tests;
+
+#[path = "prepared_task_stop_phase_tests.rs"]
+mod prepared_task_stop_phase_tests;
+
+#[path = "prepared_task_stop_result_tests.rs"]
+mod prepared_task_stop_result_tests;
+
+#[path = "prepared_audit_tests.rs"]
+mod prepared_audit_tests;
+
+#[path = "prepared_live_input_tests.rs"]
+mod prepared_live_input_tests;

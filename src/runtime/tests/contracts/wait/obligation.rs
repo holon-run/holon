@@ -87,17 +87,17 @@ async fn queue_progress_repairs_one_canonical_wake_without_replaying_result() {
             };
             harness.assert_unchanged(&before);
             let prepared = result.prepared_wait_for.as_ref().unwrap();
-            let commit = harness
-                .runtime()
-                .inner
-                .runtime_db
-                .transitions()
-                .commit_wait_with_execution_protocol_and_task_expectation(
-                    &prepared.command,
-                    &prepared.execution_protocol,
-                    prepared.expected_task.as_ref(),
+            let mut mutation = harness.runtime().begin_mutation().await.unwrap();
+            let commit = mutation
+                .commit_wait_transition(
+                    crate::ids::audit_event_id(),
+                    prepared.command.clone(),
+                    prepared.execution_protocol.clone(),
+                    prepared.expected_task.clone(),
                 )
+                .await
                 .unwrap();
+            drop(mutation);
             harness.runtime().apply_transition_commit(commit).await;
             let data = result.envelope.result.as_ref().unwrap();
             assert_eq!(data["continuation"], "yield_and_reenter");
@@ -208,6 +208,13 @@ async fn wait_snapshot_keeps_submillisecond_precision_and_rejects_stale_payloads
             .find(|wait| wait.work_item_id.as_deref() == Some(owner.id.as_str()))
             .unwrap();
         assert_ne!(wait.updated_at.timestamp_subsec_nanos() % 1_000_000, 0);
+        let raw_wait = wait.clone();
+        let canonical_wait = repository
+            .latest_for_agent("default")
+            .unwrap()
+            .into_iter()
+            .find(|candidate| candidate.id == wait.id)
+            .unwrap();
         let input = serde_json::json!({
             "wake": "task_result",
             "resource": task.id,
@@ -231,8 +238,18 @@ async fn wait_snapshot_keeps_submillisecond_precision_and_rejects_stale_payloads
                 .as_ref()
                 .unwrap()
                 .obligation
-                .wait_conditions,
-            vec![wait.clone()],
+                .wait_witness
+                .live_waits,
+            vec![canonical_wait],
+        );
+        assert_eq!(
+            repository
+                .snapshot_for_agent("default")
+                .unwrap()
+                .into_iter()
+                .find(|candidate| candidate.id == raw_wait.id)
+                .unwrap(),
+            raw_wait,
         );
         if concurrent_mutation {
             wait.updated_at += chrono::Duration::nanoseconds(1);

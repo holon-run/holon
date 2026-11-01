@@ -1496,13 +1496,13 @@ async fn history_image_preflight(
             ConversationMessage::UserImage {
                 prompt: "historical image".into(),
                 media_type: "image/png".into(),
-                data_base64: "A".repeat(40_000),
+                data_base64: "A".repeat(40_000).into(),
                 optional_history,
             },
             ConversationMessage::UserImage {
                 prompt: "current image".into(),
                 media_type: "image/png".into(),
-                data_base64: "Y3VycmVudA==".into(),
+                data_base64: String::from("Y3VycmVudA==").into(),
                 optional_history: false,
             },
         ],

@@ -5,8 +5,12 @@ use std::sync::{Arc, Mutex as StdMutex, RwLock as StdRwLock};
 use anyhow::{anyhow, Result};
 use arc_swap::ArcSwap;
 
+#[cfg(test)]
+#[path = "host_registry/model_catalog_tests.rs"]
+mod model_catalog_tests;
+
 use crate::{
-    config::AppConfig,
+    config::{AppConfig, RuntimeModelCatalog},
     ids,
     runtime_db::{agent_relations::independent_creation_records, RuntimeDb},
     storage::AppStorage,
@@ -35,25 +39,54 @@ impl Drop for WorkspaceCleanupLeaseGuard {
 }
 
 struct RuntimeRegistryInner {
-    config: ArcSwap<AppConfig>,
+    config: ArcSwap<RegistryConfigSnapshot>,
     host_storage: AppStorage,
     agent_identities: StdRwLock<HashMap<String, AgentIdentityRecord>>,
     workspace_cleanup_leases: StdMutex<HashSet<String>>,
 }
 
+struct RegistryConfigSnapshot {
+    config: Arc<AppConfig>,
+    models: Arc<RuntimeModelCatalog>,
+}
+
+impl RegistryConfigSnapshot {
+    fn new(config: AppConfig) -> Self {
+        let models = Arc::new(RuntimeModelCatalog::from_config(&config));
+        Self {
+            config: Arc::new(config),
+            models,
+        }
+    }
+}
+
 impl RuntimeRegistry {
     pub(crate) fn new(config: AppConfig, runtime_db: RuntimeDb) -> Result<Self> {
+        AppStorage::validate_sqlite_layout(&config.home_dir.join("host"), None, &runtime_db)?;
         let host_storage =
             AppStorage::new_global(config.home_dir.join("host"), runtime_db.clone())?;
-        host_storage.legacy_importer().import_host_domains()?;
-        let agent_identities = host_storage
-            .latest_agent_identities()?
+        let identities = host_storage.latest_agent_identities()?;
+        let sqlite_scopes = runtime_db.agent_states().startup_mutation_agent_ids()?;
+        // Check every fixed registered scope before initializing global domains.
+        // Lazy activation still rejects an unregistered file-only scope.
+        for agent_id in std::iter::once(config.default_agent_id.as_str())
+            .chain(sqlite_scopes.iter().map(String::as_str))
+        {
+            validate_agent_id_format(agent_id)?;
+            AppStorage::validate_sqlite_layout(
+                &config.agent_root_dir().join(agent_id),
+                Some(agent_id),
+                &runtime_db,
+            )?;
+        }
+        runtime_db.initialize_sqlite_storage_domains()?;
+        let agent_identities = identities
             .into_iter()
             .map(|record| (record.agent_id.clone(), record))
             .collect();
         Ok(Self {
             inner: Arc::new(RuntimeRegistryInner {
-                config: ArcSwap::from_pointee(config),
+                config: ArcSwap::from_pointee(RegistryConfigSnapshot::new(config)),
                 host_storage,
                 agent_identities: StdRwLock::new(agent_identities),
                 workspace_cleanup_leases: StdMutex::new(HashSet::new()),
@@ -62,11 +95,17 @@ impl RuntimeRegistry {
     }
 
     pub(crate) fn config(&self) -> Arc<AppConfig> {
-        self.inner.config.load_full()
+        self.inner.config.load().config.clone()
+    }
+
+    pub(crate) fn model_catalog(&self) -> Arc<RuntimeModelCatalog> {
+        self.inner.config.load().models.clone()
     }
 
     pub(crate) fn replace_config(&self, config: AppConfig) {
-        self.inner.config.store(Arc::new(config));
+        self.inner
+            .config
+            .store(Arc::new(RegistryConfigSnapshot::new(config)));
     }
 
     /// Host-scoped storage backing shared, non-agent-scoped indexes.
@@ -131,6 +170,57 @@ impl RuntimeRegistry {
         Ok(records)
     }
 
+    pub(crate) fn child_identity_reads(
+        &self,
+        parent_agent_id: &str,
+        ledger: &crate::runtime::input_evidence_budget::InputEvidenceBudgetLedger,
+    ) -> Result<
+        Vec<(
+            AgentIdentityRecord,
+            crate::diagnostics::resource_io::ResourceReadMaterial,
+        )>,
+    > {
+        self.agent_identity_reads(ledger, |record| {
+            record.status == crate::types::AgentRegistryStatus::Active
+                && record.kind == crate::types::AgentKind::Child
+                && record.parent_agent_id.as_deref() == Some(parent_agent_id)
+        })
+    }
+
+    pub(crate) fn agent_identity_reads(
+        &self,
+        ledger: &crate::runtime::input_evidence_budget::InputEvidenceBudgetLedger,
+        selected: impl Fn(&AgentIdentityRecord) -> bool,
+    ) -> Result<
+        Vec<(
+            AgentIdentityRecord,
+            crate::diagnostics::resource_io::ResourceReadMaterial,
+        )>,
+    > {
+        use crate::diagnostics::resource_io::{self, ResourceReadMaterial};
+        let identities = self
+            .inner
+            .agent_identities
+            .read()
+            .expect("agent identities cache poisoned");
+        let mut records = Vec::new();
+        for record in identities.values().filter(|record| selected(record)) {
+            let material = ResourceReadMaterial::current_or_new_for_identity(
+                ledger,
+                &record.agent_id,
+                record.incarnation,
+            )?;
+            material.read(|| {
+                resource_io::admit_cloned_value(record)?;
+                crate::runtime_db::repositories::reserve_source_vec_slot(&mut records)?;
+                records.push((record.clone(), material.clone()));
+                Ok(())
+            })?;
+        }
+        records.sort_unstable_by(|left, right| left.0.agent_id.cmp(&right.0.agent_id));
+        Ok(records)
+    }
+
     #[cfg(test)]
     pub(crate) fn append_agent_identity(&self, record: &AgentIdentityRecord) -> Result<()> {
         self.inner.host_storage.append_agent_identity(record)?;
@@ -144,6 +234,20 @@ impl RuntimeRegistry {
             .expect("agent identities cache poisoned")
             .insert(record.agent_id.clone(), record.clone());
         Ok(())
+    }
+
+    pub(crate) fn forget_agent_identity(&self, agent_id: &str, incarnation: u64) {
+        let mut identities = self
+            .inner
+            .agent_identities
+            .write()
+            .expect("agent identities cache poisoned");
+        if identities
+            .get(agent_id)
+            .is_some_and(|identity| identity.incarnation <= incarnation)
+        {
+            identities.remove(agent_id);
+        }
     }
 
     pub(crate) fn workspace_entries(&self) -> Result<Vec<WorkspaceEntry>> {
@@ -391,7 +495,7 @@ impl RuntimeRegistry {
             .runtime_db()?
             .expect("host storage always has a runtime database")
             .agent_identities()
-            .create_with_relations(&record, &relations)?;
+            .create_legacy_materialized_with_relations(&record, &relations)?;
         self.cache_agent_identity(&record)?;
         Ok(record)
     }
@@ -441,7 +545,7 @@ mod tests {
     use crate::runtime_db::RuntimeDb;
     use tempfile::tempdir;
 
-    fn test_registry() -> (tempfile::TempDir, RuntimeRegistry) {
+    fn test_sqlite_startup() -> (tempfile::TempDir, AppConfig, RuntimeDb) {
         let home = tempdir().unwrap();
         std::fs::write(
             home.path().join("config.json"),
@@ -452,8 +556,80 @@ mod tests {
         let runtime_db =
             RuntimeDb::open_and_migrate(config.runtime_db_path(), config.runtime_db_lock_path())
                 .unwrap();
+        (home, config, runtime_db)
+    }
+
+    fn test_registry() -> (tempfile::TempDir, RuntimeRegistry) {
+        let (home, config, runtime_db) = test_sqlite_startup();
         let registry = RuntimeRegistry::new(config, runtime_db).unwrap();
         (home, registry)
+    }
+
+    #[test]
+    fn sqlite_only_startup_rejects_default_file_before_initializing_domains() {
+        let (_home, config, db) = test_sqlite_startup();
+        let path = config
+            .agent_root_dir()
+            .join(&config.default_agent_id)
+            .join(".holon/state/agent.json");
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, b"\xffunreadable legacy state").unwrap();
+        let error = RuntimeRegistry::new(config, db.clone()).err().unwrap();
+        assert!(
+            error.to_string().contains("no longer supported"),
+            "{error:#}"
+        );
+        assert!(db.storage_domains().unwrap().is_empty());
+        assert_eq!(std::fs::read(path).unwrap(), b"\xffunreadable legacy state");
+    }
+
+    #[test]
+    fn sqlite_only_startup_checks_nondefault_state_scope_before_global_cutover() {
+        let (_home, config, db) = test_sqlite_startup();
+        let state = crate::types::AgentState::new("old-nondefault");
+        db.agent_states().upsert_for_fixture(&state).unwrap();
+        let path = config
+            .agent_root_dir()
+            .join(&state.id)
+            .join(".holon/ledger/messages.jsonl");
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, "unimported legacy messages").unwrap();
+        let error = RuntimeRegistry::new(config, db.clone()).err().unwrap();
+        assert!(
+            error.to_string().contains("no longer supported"),
+            "{error:#}"
+        );
+        assert!(db.storage_domains().unwrap().is_empty());
+        assert_eq!(db.agent_states().latest(&state.id).unwrap(), Some(state));
+        assert_eq!(
+            std::fs::read_to_string(path).unwrap(),
+            "unimported legacy messages"
+        );
+    }
+
+    #[test]
+    fn sqlite_only_startup_reopens_current_database_without_legacy_body_replay() {
+        let (_home, config, db) = test_sqlite_startup();
+        let state = crate::types::AgentState::new(&config.default_agent_id);
+        db.agent_states().upsert_for_fixture(&state).unwrap();
+        drop(RuntimeRegistry::new(config.clone(), db.clone()).unwrap());
+        let before = db.storage_domains().unwrap();
+        let path = config
+            .agent_root_dir()
+            .join(&state.id)
+            .join(".holon/state/agent.json");
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, b"\xffignored old state").unwrap();
+        let reopened =
+            RuntimeDb::open_and_migrate(config.runtime_db_path(), config.runtime_db_lock_path())
+                .unwrap();
+        RuntimeRegistry::new(config, reopened.clone()).unwrap();
+        assert_eq!(reopened.storage_domains().unwrap(), before);
+        assert_eq!(
+            reopened.agent_states().latest(&state.id).unwrap(),
+            Some(state)
+        );
+        assert_eq!(std::fs::read(path).unwrap(), b"\xffignored old state");
     }
 
     #[test]

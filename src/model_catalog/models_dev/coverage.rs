@@ -250,10 +250,11 @@ pub fn generate_coverage(
             8_192,
             Some(&route.endpoint),
         );
-        let policy = &resolved.policy;
+        let default_max_output_tokens = resolved.effective_default_max_output_tokens;
+        let policy = resolved.into_policy();
         let effective = RuntimeFacts {
             context_window_tokens: policy.context_window_tokens,
-            default_max_output_tokens: resolved.catalog_entry.default_max_output_tokens,
+            default_max_output_tokens,
             max_output_tokens_upper_limit: policy.max_output_tokens_upper_limit,
             prompt_budget_estimated_tokens: policy.prompt_budget_estimated_tokens,
             runtime_max_output_tokens: policy.runtime_max_output_tokens,

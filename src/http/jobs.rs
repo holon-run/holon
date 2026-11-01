@@ -156,6 +156,7 @@ async fn create_skill_install_job(
 
     let jobs = state.jobs.clone();
     let skill_library_write_jobs = state.skill_library_write_jobs.clone();
+    let resource_gate = state.host.context_resources();
     let user_home = effective_user_home_dir(&state).map_err(error_response)?;
     let job_id = id.clone();
     tokio::spawn(async move {
@@ -192,7 +193,20 @@ async fn create_skill_install_job(
             }
         };
         let kind = request.kind.clone();
+        let writer = match resource_gate.begin_write() {
+            Ok(writer) => writer,
+            Err(error) => {
+                jobs.update(&job_id, |job| {
+                    job.status = JobStatus::Failed;
+                    job.phase = "failed".into();
+                    job.error = Some(error.to_string());
+                });
+                return;
+            }
+        };
         let result = tokio::task::spawn_blocking(move || {
+            writer.enter_physical();
+            let _writer = writer;
             let _permit = permit;
             crate::skills::add_library_skill(&user_home, &kind)
         })
@@ -283,6 +297,7 @@ pub(super) async fn create_skill_update_job(
 
     let jobs = state.jobs.clone();
     let skill_library_write_jobs = state.skill_library_write_jobs.clone();
+    let resource_gate = state.host.context_resources();
     let user_home = effective_user_home_dir(&state).map_err(error_response)?;
     let job_id = id.clone();
     tokio::spawn(async move {
@@ -308,7 +323,20 @@ pub(super) async fn create_skill_update_job(
         let progress_jobs = jobs.clone();
         let progress_job_id = job_id.clone();
         let name = request.name.clone();
+        let writer = match resource_gate.begin_write() {
+            Ok(writer) => writer,
+            Err(error) => {
+                jobs.update(&job_id, |job| {
+                    job.status = JobStatus::Failed;
+                    job.phase = "failed".into();
+                    job.error = Some(error.to_string());
+                });
+                return;
+            }
+        };
         let result = tokio::task::spawn_blocking(move || {
+            writer.enter_physical();
+            let _writer = writer;
             let _permit = permit;
             crate::skills::update_library_skills_with_progress(
                 &user_home,
@@ -441,6 +469,7 @@ pub(super) async fn create_template_remote_source_sync_job(
 
     let jobs = state.jobs.clone();
     let sync_jobs = state.template_remote_source_sync_jobs.clone();
+    let resource_gate = state.host.context_resources();
     let db = state.host.runtime_db().clone();
     let configured_sources = crate::agent_template::effective_agent_template_remote_sources(
         &state.host.config().stored_config.agent_templates,
@@ -532,6 +561,29 @@ pub(super) async fn create_template_remote_source_sync_job(
             }
         };
 
+        // This detached job, not its HTTP waiter, owns the async downloads and
+        // synchronous template/registry writes through their actual completion.
+        let writer = if selected_sources.is_empty() {
+            Ok(None)
+        } else {
+            resource_gate.begin_write().map(Some)
+        };
+        let _writer = match writer {
+            Ok(writer) => writer,
+            Err(error) => {
+                jobs.update(&job_id, |job| {
+                    job.status = JobStatus::Failed;
+                    job.phase = "failed".into();
+                    job.summary = "Remote source sync failed".into();
+                    job.error = Some(error.to_string());
+                    for item in &mut job.items {
+                        item.status = JobStatus::Failed;
+                        item.error = job.error.clone();
+                    }
+                });
+                return;
+            }
+        };
         let mut completed = 0usize;
         let mut failed = 0usize;
         let mut source_results = Vec::new();
@@ -978,3 +1030,7 @@ pub(super) fn spawn_agent_bootstrap_job(
     });
     id
 }
+
+#[cfg(test)]
+#[path = "jobs/resource_writer_tests.rs"]
+mod resource_writer_tests;

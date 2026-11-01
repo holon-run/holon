@@ -12,7 +12,8 @@ use serde_json::Value;
 
 use crate::{
     config::{load_persisted_config_at, HolonConfigFile, ModelRouteRef},
-    runtime_db::RuntimeDb,
+    runtime_db::{RuntimeDb, RuntimeStateTransitionConflict},
+    types::AgentState,
 };
 
 const AGENT_MODEL_ROUTE_FIELDS: [&str; 4] = [
@@ -70,6 +71,7 @@ struct ConfigInspection {
 #[derive(Debug)]
 struct AgentStateMutation {
     agent_id: String,
+    expected_payload_json: String,
     payload_json: String,
 }
 
@@ -79,36 +81,93 @@ struct AgentStateInspection {
     report: ModelConfigMigrationStoreReport,
 }
 
+/// A fresh plan is prepared after the Host has reserved every affected owner.
+/// The configuration file and SQLite remain separate stores, as before.
+pub(crate) struct PreparedModelConfigMigration {
+    config_file_path: PathBuf,
+    runtime_db_path: PathBuf,
+    config: ConfigInspection,
+    agent_state: AgentStateInspection,
+}
+
+impl PreparedModelConfigMigration {
+    pub(crate) fn affected_agent_ids(&self) -> Vec<String> {
+        self.agent_state
+            .mutations
+            .iter()
+            .map(|mutation| mutation.agent_id.clone())
+            .collect()
+    }
+
+    pub(crate) fn ok(&self) -> bool {
+        all_fields_valid(&self.config.report) && all_fields_valid(&self.agent_state.report)
+    }
+
+    pub(crate) fn candidate_states(&self) -> Result<Vec<AgentState>> {
+        self.agent_state
+            .mutations
+            .iter()
+            .map(|mutation| {
+                serde_json::from_str(&mutation.payload_json)
+                    .with_context(|| format!("decoding migrated state for {}", mutation.agent_id))
+            })
+            .collect()
+    }
+
+    pub(crate) fn write_config(&mut self) -> Result<()> {
+        if self.ok() && self.config.report.changed {
+            let backup_path = backup_config_once(&self.config_file_path)?;
+            write_config_atomically(&self.config_file_path, &self.config.config)?;
+            self.config.report.backup_path = backup_path;
+        }
+        Ok(())
+    }
+
+    pub(crate) fn commit_agent_states(&self, runtime_db: &RuntimeDb) -> Result<()> {
+        if self.ok() && self.agent_state.report.changed {
+            write_agent_state_mutations(runtime_db, &self.agent_state.mutations)?;
+        }
+        Ok(())
+    }
+
+    pub(crate) fn into_report(self, write: bool) -> ModelConfigMigrationReport {
+        ModelConfigMigrationReport {
+            ok: self.ok(),
+            write,
+            changed: self.config.report.changed || self.agent_state.report.changed,
+            config_file_path: self.config_file_path,
+            runtime_db_path: self.runtime_db_path,
+            config: self.config.report,
+            agent_state: self.agent_state.report,
+        }
+    }
+}
+
+pub(crate) fn prepare_model_config_migration(
+    config_file_path: &Path,
+    runtime_db: &RuntimeDb,
+) -> Result<PreparedModelConfigMigration> {
+    Ok(PreparedModelConfigMigration {
+        config_file_path: config_file_path.to_path_buf(),
+        runtime_db_path: runtime_db.path().to_path_buf(),
+        config: inspect_config(config_file_path)?,
+        agent_state: inspect_agent_state(runtime_db)?,
+    })
+}
+
+/// Offline callers hold the daemon maintenance lock before applying this plan.
+/// Online callers use RuntimeHost::migrate_model_config_routes instead.
 pub fn migrate_model_config_routes(
     config_file_path: &Path,
     runtime_db: &RuntimeDb,
     write: bool,
 ) -> Result<ModelConfigMigrationReport> {
-    let mut config = inspect_config(config_file_path)?;
-    let agent_state = inspect_agent_state(runtime_db)?;
-    let ok = all_fields_valid(&config.report) && all_fields_valid(&agent_state.report);
-
-    if write && ok {
-        if config.report.changed {
-            let backup_path = backup_config_once(config_file_path)?;
-            write_config_atomically(config_file_path, &config.config)?;
-            config.report.backup_path = backup_path;
-        }
-        if agent_state.report.changed {
-            write_agent_state_mutations(runtime_db, &agent_state.mutations)?;
-        }
+    let mut prepared = prepare_model_config_migration(config_file_path, runtime_db)?;
+    if write && prepared.ok() {
+        prepared.write_config()?;
+        prepared.commit_agent_states(runtime_db)?;
     }
-
-    let changed = config.report.changed || agent_state.report.changed;
-    Ok(ModelConfigMigrationReport {
-        ok,
-        write,
-        changed,
-        config_file_path: config_file_path.to_path_buf(),
-        runtime_db_path: runtime_db.path().to_path_buf(),
-        config: config.report,
-        agent_state: agent_state.report,
-    })
+    Ok(prepared.into_report(write))
 }
 
 fn inspect_config(path: &Path) -> Result<ConfigInspection> {
@@ -295,6 +354,7 @@ fn inspect_agent_state(runtime_db: &RuntimeDb) -> Result<AgentStateInspection> {
         if row_changed {
             mutations.push(AgentStateMutation {
                 agent_id,
+                expected_payload_json: payload_json,
                 payload_json: serde_json::to_string(&payload)?,
             });
         }
@@ -379,10 +439,15 @@ fn write_agent_state_mutations(
 ) -> Result<()> {
     runtime_db.transaction(|transaction| {
         for mutation in mutations {
-            transaction.execute(
-                "UPDATE agent_states SET payload_json = ?1 WHERE agent_id = ?2",
-                params![mutation.payload_json, mutation.agent_id],
+            let changed = transaction.execute(
+                "UPDATE agent_states SET payload_json = ?1 WHERE agent_id = ?2 AND payload_json = ?3",
+                params![mutation.payload_json, mutation.agent_id, mutation.expected_payload_json],
             )?;
+            if changed != 1 {
+                return Err(RuntimeStateTransitionConflict::concurrent_mutation(
+                    "agent_state", &mutation.agent_id,
+                ).into());
+            }
         }
         Ok(())
     })
@@ -420,7 +485,7 @@ mod tests {
         fn insert_agent_payload(&self, agent_id: &str, model: &str) -> Result<String> {
             self.runtime_db
                 .agent_states()
-                .upsert(&AgentState::new(agent_id))?;
+                .upsert_for_fixture(&AgentState::new(agent_id))?;
             let mut payload = serde_json::to_value(AgentState::new(agent_id))?;
             payload["model_override"] = json!(model);
             payload["pending_fallback_model"] = json!(model);
@@ -574,6 +639,30 @@ mod tests {
         assert!(error.to_string().contains("reject agent-b migration"));
         assert_eq!(fixture.agent_payload("agent-a")?, original_a);
         assert_eq!(fixture.agent_payload("agent-b")?, original_b);
+        Ok(())
+    }
+    #[test]
+    fn prepared_agent_batch_rejects_a_concurrently_changed_payload() -> Result<()> {
+        let fixture = Fixture::new(&HolonConfigFile::default())?;
+        fixture.insert_agent_payload("agent-a", "openai/gpt-5.4")?;
+        fixture.insert_agent_payload("agent-b", "openai/gpt-5.4")?;
+        let prepared = prepare_model_config_migration(&fixture.config_path, &fixture.runtime_db)?;
+        let original_a = fixture.agent_payload("agent-a")?;
+        let mut newer: Value = serde_json::from_str(&fixture.agent_payload("agent-b")?)?;
+        newer["turn_index"] = json!(29);
+        let newer = serde_json::to_string(&newer)?;
+        fixture.runtime_db.connection()?.execute(
+            "UPDATE agent_states SET payload_json = ?1 WHERE agent_id = ?2",
+            params![newer, "agent-b"],
+        )?;
+        let error = prepared
+            .commit_agent_states(&fixture.runtime_db)
+            .expect_err("stale batch must fail");
+        assert!(error
+            .downcast_ref::<RuntimeStateTransitionConflict>()
+            .is_some());
+        assert_eq!(fixture.agent_payload("agent-a")?, original_a);
+        assert_eq!(fixture.agent_payload("agent-b")?, newer);
         Ok(())
     }
 }

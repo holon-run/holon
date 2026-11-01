@@ -2,6 +2,7 @@ use std::io::Cursor;
 
 use base64::{engine::general_purpose::STANDARD, Engine};
 use image::{ImageReader, Limits};
+#[cfg(test)]
 use serde_json::Value;
 
 // Heuristic fallbacks for missing dimensions/model rules, not universal maxima.
@@ -168,6 +169,7 @@ pub(crate) fn estimate_text_tokens(text: &str) -> usize {
     bytes.saturating_add(3) / 4
 }
 
+#[cfg(test)]
 pub(crate) fn estimate_json_tokens(value: &Value) -> usize {
     match serde_json::to_string(value) {
         Ok(json) => estimate_text_tokens(&json),

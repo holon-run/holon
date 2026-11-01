@@ -556,7 +556,41 @@ impl RuntimeDb {
         plan_path: &Path,
         diagnostic_sample_limit: usize,
         backup_path: Option<PathBuf>,
+        progress: impl FnMut(&WaitFinalBriefPublicationRepairProgress),
+    ) -> Result<WaitFinalBriefPublicationRepairReport> {
+        self.apply_wait_final_brief_publication_repair_plan_inner(
+            plan_path,
+            diagnostic_sample_limit,
+            backup_path,
+            progress,
+            None,
+        )
+    }
+
+    pub fn apply_wait_final_brief_publication_repair_plan_with_maintenance(
+        &self,
+        plan_path: &Path,
+        diagnostic_sample_limit: usize,
+        backup_path: Option<PathBuf>,
+        progress: impl FnMut(&WaitFinalBriefPublicationRepairProgress),
+        maintenance: &crate::runtime_db::OfflineInputMaintenance<'_>,
+    ) -> Result<WaitFinalBriefPublicationRepairReport> {
+        self.apply_wait_final_brief_publication_repair_plan_inner(
+            plan_path,
+            diagnostic_sample_limit,
+            backup_path,
+            progress,
+            Some(maintenance),
+        )
+    }
+
+    fn apply_wait_final_brief_publication_repair_plan_inner(
+        &self,
+        plan_path: &Path,
+        diagnostic_sample_limit: usize,
+        backup_path: Option<PathBuf>,
         mut progress: impl FnMut(&WaitFinalBriefPublicationRepairProgress),
+        maintenance: Option<&crate::runtime_db::OfflineInputMaintenance<'_>>,
     ) -> Result<WaitFinalBriefPublicationRepairReport> {
         let plan = Connection::open(plan_path)?;
         validate_complete_plan(self, &plan)?;
@@ -734,7 +768,12 @@ impl RuntimeDb {
                     "Brief {} changed after repair preflight",
                     current.brief.id
                 );
+                use crate::runtime::resident_input_evidence::{InputEvidenceFamily as Family, InputEvidenceKey as Key};
+                let input = crate::runtime_db::input_evidence_snapshot::maintenance::prepare_offline_input_repair_tx(
+                    tx, self, agent_id, &[Key::new(Family::Brief, brief_id), Key::new(Family::Turn, turn_id)], &[], maintenance,
+                )?;
                 repair_candidate(tx, &current)?;
+                input.finish_tx(tx)?;
                 report.repaired_briefs += 1;
                 progress(&WaitFinalBriefPublicationRepairProgress {
                     phase: WaitFinalBriefPublicationRepairPhase::Apply,
@@ -1250,6 +1289,150 @@ mod tests {
             triggered_at: None,
         })?;
         Ok(())
+    }
+
+    fn assert_qualified_brief_repair(deleting: bool, rollback: bool) -> Result<()> {
+        use crate::runtime::resident_input_evidence::{
+            InputEvidenceFamily as Family, InputEvidenceKey as Key, InputEvidenceScope,
+        };
+        use crate::runtime_db::input_evidence_snapshot::{
+            register_committed_input_evidence_tx, CanonicalInputEvidence as Fact,
+            ExistingAdmissionInputProof,
+        };
+        let directory = tempdir()?;
+        let db = RuntimeDb::open_and_migrate(
+            directory.path().join("runtime.sqlite"),
+            directory.path().join("runtime.lock"),
+        )?;
+        insert_repairable_candidate(&db, "qualified", 1)?;
+        let scope = InputEvidenceScope {
+            agent_id: "agent-a".into(),
+            identity_incarnation: 1,
+        };
+        db.transaction(|tx| {
+            let identity = crate::types::AgentIdentityRecord::new(
+                "agent-a",
+                crate::types::AgentKind::Named,
+                crate::types::AgentVisibility::Public,
+                crate::types::AgentOwnership::SelfOwned,
+                crate::types::AgentProfilePreset::PublicNamed,
+                None,
+                None,
+            );
+            crate::runtime_db::evidence::upsert_agent_identity_tx(tx, &identity)?;
+            let brief: crate::types::BriefRecord =
+                serde_json::from_str(&tx.query_row::<String, _, _>(
+                    "SELECT payload_json FROM briefs WHERE evidence_id='brief-qualified'",
+                    [],
+                    |r| r.get(0),
+                )?)?;
+            let turn: TurnRecord = serde_json::from_str(&tx.query_row::<String, _, _>(
+                "SELECT payload_json FROM turn_records WHERE turn_id='turn-qualified'",
+                [],
+                |r| r.get(0),
+            )?)?;
+            register_committed_input_evidence_tx(
+                tx,
+                &scope,
+                &[Fact::Brief(brief), Fact::Turn(turn)],
+            )?;
+            Ok(())
+        })?;
+        if deleting {
+            db.transaction(|tx| {
+                let mut identity: crate::types::AgentIdentityRecord =
+                    serde_json::from_str(&tx.query_row::<String, _, _>(
+                        "SELECT payload_json FROM agent_identities WHERE agent_id='agent-a'",
+                        [],
+                        |r| r.get(0),
+                    )?)?;
+                identity.status = crate::types::AgentRegistryStatus::Deleting;
+                crate::runtime_db::evidence::upsert_agent_identity_tx(tx, &identity)
+            })?;
+        }
+        let read_original = || {
+            db.transaction(|tx| {
+            let brief: (String, Option<String>, Option<i64>) = tx.query_row(
+                "SELECT payload_json,content_hash,created_event_seq FROM briefs WHERE evidence_id='brief-qualified'", [],
+                |r| Ok((r.get(0)?,r.get(1)?,r.get(2)?)),
+            )?;
+            let turn: (String, String) = tx.query_row(
+                "SELECT payload_json,COALESCE((SELECT CAST(summary_revision AS TEXT)||':'||CAST(detail_revision AS TEXT)||':'||CAST(result_settled AS TEXT) FROM conversation_turn_revisions v WHERE v.agent_id=r.agent_id AND v.turn_id=r.turn_id),'legacy') FROM turn_records r WHERE turn_id='turn-qualified'", [],
+                |r| Ok((r.get(0)?,r.get(1)?)),
+            )?;
+            let aliases: Vec<(String, i64, String)> = tx.prepare(
+                "SELECT family,revision,fingerprint_json FROM input_evidence_current WHERE agent_id='agent-a' ORDER BY family,record_id",
+            )?.query_map([], |r| Ok((r.get(0)?,r.get(1)?,r.get(2)?)))?.collect::<rusqlite::Result<_>>()?;
+            let events: i64 = tx.query_row("SELECT count(*) FROM audit_events WHERE agent_id='agent-a'", [], |r| r.get(0))?;
+            Ok((brief,turn,aliases,events))
+        })
+        };
+        let original = read_original()?;
+        if rollback {
+            db.transaction(|tx| {
+                tx.execute_batch("CREATE TRIGGER fail_qualified_brief_repair BEFORE INSERT ON input_evidence_current WHEN NEW.agent_id='agent-a' AND NEW.family='brief' BEGIN SELECT RAISE(ABORT,'fail after canonical Brief repair'); END")?;
+                Ok(())
+            })?;
+        }
+        let plan = directory.path().join("plan.sqlite");
+        db.prepare_wait_final_brief_publication_repair(Some(&plan), false, None, 10, |_| {})?;
+        let path = directory.path().join("runtime-maintenance.lock");
+        let lease = crate::runtime_db::RuntimeDbLock::try_lock(&path)?;
+        let authority =
+            crate::runtime_db::OfflineInputMaintenance::for_database(&db, &lease, &path)?;
+        let result = db.apply_wait_final_brief_publication_repair_plan_with_maintenance(
+            &plan,
+            10,
+            None,
+            |_| {},
+            &authority,
+        );
+        if rollback {
+            assert!(result
+                .unwrap_err()
+                .to_string()
+                .contains("fail after canonical Brief repair"));
+            assert_eq!(read_original()?, original);
+            return Ok(());
+        }
+        assert_eq!(result?.repaired_briefs, 1);
+        db.transaction(|tx| {
+            ExistingAdmissionInputProof::prepare_tx(
+                tx,
+                &scope,
+                [
+                    Key::new(Family::Brief, "brief-qualified"),
+                    Key::new(Family::Turn, "turn-qualified"),
+                ]
+                .into_iter()
+                .collect(),
+                Default::default(),
+            )?;
+            let (payload, hash): (String, String) = tx.query_row(
+                "SELECT payload_json,content_hash FROM briefs WHERE evidence_id='brief-qualified'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )?;
+            assert_eq!(hash, crate::runtime_db::evidence::content_hash(&payload));
+            Ok(())
+        })?;
+        Ok(())
+    }
+
+    #[test]
+    fn qualified_brief_repair_refreshes_linkage_hash_and_turn_revision_atomically() -> Result<()> {
+        assert_qualified_brief_repair(false, false)
+    }
+
+    #[test]
+    fn deleting_brief_repair_refreshes_original_qualified_scope() -> Result<()> {
+        assert_qualified_brief_repair(true, false)
+    }
+
+    #[test]
+    fn deleting_brief_repair_rolls_back_body_event_and_aliases_on_qualification_failure(
+    ) -> Result<()> {
+        assert_qualified_brief_repair(true, true)
     }
 
     #[test]

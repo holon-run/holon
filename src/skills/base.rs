@@ -77,8 +77,13 @@ pub fn load_skills_runtime_view(
 
     discoverable_skills = retain_highest_precedence_skills(discoverable_skills);
     discoverable_skills.sort_by(|left, right| left.skill_id.cmp(&right.skill_id));
+    let active_skills = retain_active_skills_for_catalog(&discoverable_skills, active_skills)?;
+    crate::diagnostics::resource_io::charge_owned_metadata(
+        std::mem::size_of::<Vec<SkillCatalogEntry>>() as u64 + 128,
+        1,
+    )?;
+    let discoverable_skills = std::sync::Arc::new(discoverable_skills);
     let attached_skills = discoverable_skills.clone();
-    let active_skills = retain_active_skills_for_catalog(&discoverable_skills, active_skills);
 
     Ok(SkillsRuntimeView {
         agent_templates_catalog: Vec::new(),
@@ -159,7 +164,7 @@ pub(crate) fn load_catalog_for_root(
     root_id: String,
 ) -> Result<Vec<SkillCatalogEntry>> {
     let mut entries = Vec::new();
-    let read_dir = match fs::read_dir(root) {
+    let read_dir = match crate::diagnostics::io_probe::read_dir(root) {
         Ok(read_dir) => read_dir,
         Err(error) => {
             warn!("skipping unreadable skill root {}: {error}", root.display());
@@ -196,7 +201,7 @@ pub(crate) fn load_catalog_for_root(
         if !skill_path.is_file() {
             continue;
         }
-        let content = match fs::read_to_string(&skill_path) {
+        let content = match crate::diagnostics::io_probe::read_to_string(&skill_path) {
             Ok(content) => content,
             Err(error) => {
                 warn!(
@@ -211,6 +216,7 @@ pub(crate) fn load_catalog_for_root(
         let description = parsed
             .description
             .unwrap_or_else(|| first_body_paragraph(&content));
+        crate::diagnostics::resource_io::charge_owned_metadata(1024, 12)?;
         entries.push(SkillCatalogEntry {
             skill_id: format!("{root_id}:{skill_name}"),
             root_id: root_id.clone(),
@@ -262,45 +268,63 @@ pub fn skills_runtime_view_from_catalog(
     mut catalog: Vec<SkillCatalogEntry>,
     roots: &[SkillRootRegistration],
     active_skills: &[ActiveSkillRecord],
-) -> SkillsRuntimeView {
+) -> Result<SkillsRuntimeView> {
     catalog.sort_by(|left, right| {
         left.name
             .cmp(&right.name)
             .then_with(|| left.skill_id.cmp(&right.skill_id))
             .then_with(|| left.path.cmp(&right.path))
     });
-    let active_skills = retain_active_skills_for_catalog(&catalog, active_skills);
-    SkillsRuntimeView {
+    let active_skills = retain_active_skills_for_catalog(&catalog, active_skills)?;
+    crate::diagnostics::resource_io::charge_owned_metadata(
+        std::mem::size_of::<Vec<SkillCatalogEntry>>() as u64 + 128,
+        1,
+    )?;
+    let catalog = std::sync::Arc::new(catalog);
+    Ok(SkillsRuntimeView {
         agent_templates_catalog: Vec::new(),
-        discovered_roots: collect_discovered_roots_from_registrations(roots),
+        discovered_roots: collect_discovered_roots_from_registrations(roots)?,
         discoverable_skills: catalog.clone(),
         attached_skills: catalog,
         active_skills,
-    }
+    })
 }
 
 fn collect_discovered_roots_from_registrations(
     registrations: &[SkillRootRegistration],
-) -> Vec<SkillRootView> {
-    let mut roots = registrations
-        .iter()
-        .filter(|registration| registration.root_path.is_dir())
-        .map(|registration| SkillRootView {
+) -> Result<Vec<SkillRootView>> {
+    // Admit an upper bound before probing directories or cloning their paths.
+    let bytes = registrations.iter().fold(
+        registrations
+            .len()
+            .saturating_mul(std::mem::size_of::<SkillRootView>()),
+        |bytes, registration| bytes.saturating_add(registration.root_path.as_os_str().len()),
+    );
+    crate::diagnostics::resource_io::charge_owned_metadata(
+        u64::try_from(bytes)?,
+        registrations.len().saturating_mul(2),
+    )?;
+    let mut roots = Vec::with_capacity(registrations.len());
+    for registration in registrations {
+        if !registration.root_path.is_dir() {
+            continue;
+        }
+        roots.push(SkillRootView {
             scope: match registration.source_kind {
                 SkillRootSourceKind::UserGlobal => SkillScope::UserGlobal,
                 SkillRootSourceKind::AgentHome => SkillScope::Agent,
                 SkillRootSourceKind::Workspace => SkillScope::Workspace,
             },
             path: registration.root_path.clone(),
-        })
-        .collect::<Vec<_>>();
+        });
+    }
     roots.sort_by(|left, right| {
         skill_scope_precedence(right.scope)
             .cmp(&skill_scope_precedence(left.scope))
             .then_with(|| left.path.cmp(&right.path))
     });
     roots.dedup_by(|left, right| left.scope == right.scope && left.path == right.path);
-    roots
+    Ok(roots)
 }
 
 pub fn skill_root_registration(
@@ -365,23 +389,44 @@ fn retain_highest_precedence_skills(skills: Vec<SkillCatalogEntry>) -> Vec<Skill
 fn retain_active_skills_for_catalog(
     catalog: &[SkillCatalogEntry],
     active_skills: &[ActiveSkillRecord],
-) -> Vec<ActiveSkillRecord> {
-    active_skills
-        .iter()
-        .filter_map(|record| {
+) -> Result<Vec<ActiveSkillRecord>> {
+    let selected = || {
+        active_skills.iter().filter_map(|record| {
             catalog
                 .iter()
                 .find(|entry| entry.skill_id == record.skill_id)
-                .map(|entry| {
-                    let mut record = record.clone();
-                    record.skill_id = entry.skill_id.clone();
-                    record.name = entry.name.clone();
-                    record.path = entry.path.clone();
-                    record.scope = entry.scope;
-                    record
-                })
+                .map(|entry| (record, entry))
         })
-        .collect()
+    };
+    let (count, bytes) = selected().fold((0usize, 0usize), |(count, bytes), (record, entry)| {
+        (
+            count.saturating_add(1),
+            bytes
+                .saturating_add(std::mem::size_of::<ActiveSkillRecord>())
+                .saturating_add(entry.skill_id.len())
+                .saturating_add(entry.name.len())
+                .saturating_add(entry.path.as_os_str().len())
+                .saturating_add(record.agent_id.len()),
+        )
+    });
+    crate::diagnostics::resource_io::charge_owned_metadata(
+        u64::try_from(bytes)?,
+        count.saturating_mul(5),
+    )?;
+    let mut active = Vec::with_capacity(count);
+    for (record, entry) in selected() {
+        active.push(ActiveSkillRecord {
+            skill_id: entry.skill_id.clone(),
+            name: entry.name.clone(),
+            path: entry.path.clone(),
+            scope: entry.scope,
+            agent_id: record.agent_id.clone(),
+            activation_source: record.activation_source,
+            activation_state: record.activation_state,
+            activated_at_turn: record.activated_at_turn,
+        });
+    }
+    Ok(active)
 }
 
 pub(crate) fn skill_wins_catalog_selection(
@@ -1759,7 +1804,9 @@ fn materialize_copied_skill_ref(skills_root: &Path, path: &Path) -> Result<PathB
 
 fn copy_dir_all(src: &Path, dst: &Path) -> Result<()> {
     fs::create_dir_all(dst).with_context(|| format!("failed to create {}", dst.display()))?;
-    for entry in fs::read_dir(src).with_context(|| format!("failed to read {}", src.display()))? {
+    for entry in crate::diagnostics::io_probe::read_dir(src)
+        .with_context(|| format!("failed to read {}", src.display()))?
+    {
         let entry = entry?;
         let file_type = entry.file_type()?;
         let src_path = entry.path();
@@ -1802,7 +1849,8 @@ fn record_install_metadata(destination: &Path, install_mode: &str) -> Result<()>
 }
 
 fn read_install_metadata(skill_dir: &Path) -> Option<SkillInstallMetadata> {
-    let content = fs::read(skill_dir.join(INSTALL_METADATA_FILENAME)).ok()?;
+    let content =
+        crate::diagnostics::io_probe::read(skill_dir.join(INSTALL_METADATA_FILENAME)).ok()?;
     serde_json::from_slice(&content).ok()
 }
 
@@ -2460,15 +2508,17 @@ fn hash_skill_folder(skill_dir: &Path) -> Result<String> {
     for (relative_path, path) in files {
         hasher.update(relative_path.to_string_lossy().as_bytes());
         hasher.update([0]);
-        hasher
-            .update(fs::read(&path).with_context(|| format!("failed to read {}", path.display()))?);
+        hasher.update(
+            crate::diagnostics::io_probe::read(&path)
+                .with_context(|| format!("failed to read {}", path.display()))?,
+        );
         hasher.update([0]);
     }
     Ok(format!("{:x}", hasher.finalize()))
 }
 
 fn collect_skill_files(root: &Path, dir: &Path, files: &mut Vec<(PathBuf, PathBuf)>) -> Result<()> {
-    let mut entries = fs::read_dir(dir)
+    let mut entries = crate::diagnostics::io_probe::read_dir(dir)
         .with_context(|| format!("failed to read {}", dir.display()))?
         .collect::<std::result::Result<Vec<_>, _>>()?;
     entries.sort_by_key(|entry| entry.path());
@@ -2589,7 +2639,8 @@ fn read_skill_lock(user_home: &Path) -> Result<serde_json::Value> {
         }));
     }
     let value: serde_json::Value = serde_json::from_slice(
-        &fs::read(&path).with_context(|| format!("failed to read {}", path.display()))?,
+        &crate::diagnostics::io_probe::read(&path)
+            .with_context(|| format!("failed to read {}", path.display()))?,
     )
     .with_context(|| format!("failed to parse {}", path.display()))?;
     match value {
@@ -2684,7 +2735,7 @@ fn library_skill_dirs(
     name_filter: Option<&str>,
 ) -> Result<BTreeMap<String, PathBuf>> {
     let mut skills = BTreeMap::new();
-    let read_dir = match fs::read_dir(skills_root) {
+    let read_dir = match crate::diagnostics::io_probe::read_dir(skills_root) {
         Ok(read_dir) => read_dir,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(skills),
         Err(error) => {
@@ -2721,7 +2772,7 @@ pub fn list_installed_skills(agent_home: &Path) -> Result<Vec<InstalledSkillView
     let mut entries = Vec::new();
     for skills_root in existing_skill_roots(Some(agent_home), &SKILL_ROOT_SUFFIXES) {
         let root_id = skill_root_id_for_scope(SkillScope::Agent, &skills_root);
-        let read_dir = match fs::read_dir(&skills_root) {
+        let read_dir = match crate::diagnostics::io_probe::read_dir(&skills_root) {
             Ok(read_dir) => read_dir,
             Err(error) => {
                 warn!(
@@ -2740,9 +2791,10 @@ pub fn list_installed_skills(agent_home: &Path) -> Result<Vec<InstalledSkillView
             let skill_name = child.file_name().to_string_lossy().to_string();
             let skill_path = child.path().join(SKILL_ENTRYPOINT);
             let catalog = if skill_path.is_file() {
-                let content = fs::read_to_string(&skill_path).with_context(|| {
-                    format!("failed to read installed skill {}", skill_path.display())
-                })?;
+                let content = crate::diagnostics::io_probe::read_to_string(&skill_path)
+                    .with_context(|| {
+                        format!("failed to read installed skill {}", skill_path.display())
+                    })?;
                 let parsed = parse_skill_metadata(&content);
                 SkillCatalogEntry {
                     skill_id: format!("{root_id}:{skill_name}"),
@@ -3091,6 +3143,100 @@ mod tests {
         assert!(format!("{error:#}").contains("archive fetch"));
     }
 
+    #[test]
+    fn catalog_runtime_view_admits_root_and_active_projections_before_owning() -> Result<()> {
+        use crate::{
+            config::StateMemoryLimits,
+            diagnostics::resource_io::ResourceReadMaterial,
+            runtime::{
+                input_evidence_budget::InputEvidenceBudgetLedger,
+                resident_input_evidence::InputEvidenceScope,
+            },
+        };
+        let home = tempdir()?;
+        let roots = vec![skill_root_registration(
+            SkillRootSourceKind::AgentHome,
+            Some("default".into()),
+            home.path().to_path_buf(),
+        )];
+        let catalog = vec![SkillCatalogEntry {
+            skill_id: "visible".into(),
+            root_id: "root".into(),
+            skill_dir: "demo".into(),
+            name: "canonical".into(),
+            description: "description".into(),
+            path: home.path().join("SKILL.md"),
+            scope: SkillScope::Agent,
+        }];
+        let active = vec![ActiveSkillRecord {
+            skill_id: "visible".into(),
+            name: "stale".repeat(8192),
+            path: home.path().join("stale"),
+            scope: SkillScope::Workspace,
+            agent_id: "default".into(),
+            activation_source: SkillActivationSource::Explicit,
+            activation_state: SkillActivationState::SessionActive,
+            activated_at_turn: 7,
+        }];
+        let project = |root_projection: bool| -> Result<()> {
+            if root_projection {
+                let output = collect_discovered_roots_from_registrations(&roots)?;
+                assert_eq!(output.len(), 1);
+                assert_eq!(output[0].path, roots[0].root_path);
+            } else {
+                let output = retain_active_skills_for_catalog(&catalog, &active)?;
+                assert_eq!(output.len(), 1);
+                assert_eq!(output[0].name, catalog[0].name);
+                assert_eq!(output[0].path, catalog[0].path);
+                assert_eq!(output[0].scope, SkillScope::Agent);
+                assert_eq!(output[0].activated_at_turn, 7);
+            }
+            Ok(())
+        };
+        let ledger = InputEvidenceBudgetLedger::new(StateMemoryLimits::default())?;
+        let scope = InputEvidenceScope {
+            agent_id: "default".into(),
+            identity_incarnation: 1,
+        };
+        for root_projection in [true, false] {
+            let phase = ResourceReadMaterial::with_test_limits(&ledger, &scope, 1 << 20, 8192)?;
+            {
+                let _active = phase.enter();
+                project(root_projection)?;
+            }
+            let (bytes, records) = phase.finish()?;
+            drop(phase);
+            assert_eq!(ledger.report()?.observed_bytes, 0);
+            for (byte_limit, record_limit) in [(bytes - 1, 8192), (1 << 20, records - 1)] {
+                let phase = ResourceReadMaterial::with_test_limits(
+                    &ledger,
+                    &scope,
+                    byte_limit,
+                    record_limit,
+                )?;
+                {
+                    let _active = phase.enter();
+                    let error = project(root_projection).unwrap_err();
+                    assert!(format!("{error:#}").contains("ResourceExhausted"));
+                    assert!(project(root_projection).is_err(), "rejection stays latched");
+                }
+                assert!(phase.finish().is_err());
+                drop(phase);
+                assert_eq!(ledger.report()?.observed_bytes, 0);
+            }
+        }
+        let view = skills_runtime_view_from_catalog(catalog, &roots, &active)?;
+        assert!(std::sync::Arc::ptr_eq(
+            &view.discoverable_skills,
+            &view.attached_skills,
+        ));
+        let wire = serde_json::to_value(view)?;
+        assert!(wire["discoverable_skills"].is_array());
+        assert_eq!(wire["discoverable_skills"], wire["attached_skills"]);
+        Ok(())
+    }
+
+    // Serve real HTTP responses without contacting GitHub or reading credentials.
     fn github_mock_with_base(
         responses: Vec<(u16, &'static str, String)>,
         auth: GitHubAuth,
@@ -3759,6 +3905,7 @@ mod tests {
             ],
         );
 
+        let view = view.unwrap();
         assert_eq!(view.discoverable_skills.len(), 1);
         assert_eq!(view.active_skills.len(), 1);
         assert_eq!(view.active_skills[0].skill_id, "agent_home:test-root:demo");

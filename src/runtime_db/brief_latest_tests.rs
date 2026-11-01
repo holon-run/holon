@@ -6,6 +6,11 @@ use anyhow::{ensure, Result};
 use rusqlite::{params, Connection, StatementStatus};
 use serde_json::{json, Value};
 
+use crate::types::{
+    AgentIdentityRecord, AgentKind, AgentOwnership, AgentProfilePreset, AgentRegistryStatus,
+    AgentVisibility,
+};
+
 use super::{
     connection::{
         configure_new_database_auto_vacuum, configure_persistent_database, open_connection,
@@ -35,11 +40,38 @@ fn seed_rows(connection: &Connection, hot_history: usize) -> Result<()> {
         ("hidden", "private", "active"),
         ("deleted", "public", "deleted"),
     ] {
+        let mut identity = AgentIdentityRecord::new(
+            id,
+            AgentKind::Named,
+            if visibility == "private" {
+                AgentVisibility::Private
+            } else {
+                AgentVisibility::Public
+            },
+            AgentOwnership::SelfOwned,
+            AgentProfilePreset::PublicNamed,
+            None,
+            None,
+        );
+        identity.created_at = DATE.parse()?;
+        identity.updated_at = identity.created_at;
+        if status == "deleted" {
+            identity.status = AgentRegistryStatus::Deleted;
+            identity.deleted_at = Some(identity.created_at);
+        }
         connection.execute(
             "INSERT INTO agent_identities
-                 (agent_id, kind, visibility, status, created_at, updated_at, payload_json)
-                 VALUES (?1, 'named', ?2, ?3, ?4, ?4, '{}')",
-            params![id, visibility, status, DATE],
+                 (agent_id, kind, visibility, ownership, profile_preset, status,
+                  created_at, updated_at, archived_at, payload_json)
+                 VALUES (?1, 'named', ?2, 'self_owned', 'public_named', ?3, ?4, ?4, ?5, ?6)",
+            params![
+                id,
+                visibility,
+                status,
+                DATE,
+                identity.deleted_at.map(|_| DATE),
+                serde_json::to_string(&identity)?,
+            ],
         )?;
         let count = match id {
             "hot" => hot_history,

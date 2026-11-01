@@ -2,6 +2,11 @@ use crate::types::{
     AuditEvent, BriefRecord, ClosureDecision, ClosureOutcome, RuntimePosture, TurnTerminalKind,
     WaitingReason, WorkItemSchedulingState, WorkReactivationSignal,
 };
+use chrono::{DateTime, Utc};
+
+#[cfg(test)]
+#[path = "closure_material_tests.rs"]
+mod material_tests;
 
 #[derive(Debug, Clone, Default)]
 pub(super) struct ClosureFacts {
@@ -19,70 +24,112 @@ pub(super) struct ClosureFacts {
     pub(super) runtime_posture: Option<RuntimePosture>,
 }
 
-pub(super) fn derive_closure_decision(facts: &ClosureFacts) -> ClosureDecision {
+/// Admit the exact formatted string and its Vec slot before either allocation.
+fn push_evidence(evidence: &mut Vec<String>, value: std::fmt::Arguments<'_>) -> anyhow::Result<()> {
+    struct Length(usize);
+    impl std::fmt::Write for Length {
+        fn write_str(&mut self, value: &str) -> std::fmt::Result {
+            self.0 = self.0.checked_add(value.len()).ok_or(std::fmt::Error)?;
+            Ok(())
+        }
+    }
+    let mut length = Length(0);
+    std::fmt::write(&mut length, value)?;
+    crate::diagnostics::resource_io::charge_owned_metadata(u64::try_from(length.0)?, 1)?;
+    crate::runtime_db::repositories::reserve_source_vec_slot(evidence)?;
+    let mut string = String::with_capacity(length.0);
+    std::fmt::write(&mut string, value)?;
+    anyhow::ensure!(string.len() == length.0, "closure evidence size changed");
+    evidence.push(string);
+    Ok(())
+}
+
+pub(super) fn derive_closure_decision(facts: ClosureFacts) -> anyhow::Result<ClosureDecision> {
+    crate::diagnostics::resource_io::charge_owned_metadata(
+        u64::try_from(std::mem::size_of::<ClosureDecision>())?,
+        1,
+    )?;
     let runtime_posture = facts.runtime_posture.unwrap_or(RuntimePosture::Awake);
     let mut evidence = Vec::new();
     if facts.runtime_error {
-        evidence.push("runtime_error".to_string());
+        push_evidence(&mut evidence, format_args!("{}", "runtime_error"))?;
     }
     if facts.awaiting_operator_input {
-        evidence.push("awaiting_operator_input_signal".to_string());
+        push_evidence(
+            &mut evidence,
+            format_args!("{}", "awaiting_operator_input_signal"),
+        )?;
     }
     if facts.active_blocking_tasks > 0 {
-        evidence.push(format!(
-            "active_blocking_tasks={}",
-            facts.active_blocking_tasks
-        ));
+        push_evidence(
+            &mut evidence,
+            format_args!("active_blocking_tasks={}", facts.active_blocking_tasks),
+        )?;
     }
     if facts.active_waiting_intents > 0 {
-        evidence.push(format!(
-            "active_waiting_intents={}",
-            facts.active_waiting_intents
-        ));
+        push_evidence(
+            &mut evidence,
+            format_args!("active_waiting_intents={}", facts.active_waiting_intents),
+        )?;
     }
     if facts.active_agent_waiting_intents > 0 {
-        evidence.push(format!(
-            "active_agent_waiting_intents={}",
-            facts.active_agent_waiting_intents
-        ));
+        push_evidence(
+            &mut evidence,
+            format_args!(
+                "active_agent_waiting_intents={}",
+                facts.active_agent_waiting_intents
+            ),
+        )?;
     }
     if facts.active_timers > 0 {
-        evidence.push(format!("active_timers={}", facts.active_timers));
+        push_evidence(
+            &mut evidence,
+            format_args!("active_timers={}", facts.active_timers),
+        )?;
     }
     if let Some(state) = facts.waiting_work_item_scheduling_state {
-        evidence.push(format!("work_item_scheduling_state={state:?}"));
+        push_evidence(
+            &mut evidence,
+            format_args!("work_item_scheduling_state={state:?}"),
+        )?;
     }
     if let Some(work_signal) = facts.work_signal.as_ref() {
-        evidence.push(format!(
-            "work_reactivation_mode={:?}",
-            work_signal.reactivation_mode
-        ));
-        evidence.push(format!("work_item_state={:?}", work_signal.state));
-        evidence.push(format!("work_item_id={}", work_signal.work_item_id));
+        push_evidence(
+            &mut evidence,
+            format_args!("work_reactivation_mode={:?}", work_signal.reactivation_mode),
+        )?;
+        push_evidence(
+            &mut evidence,
+            format_args!("work_item_state={:?}", work_signal.state),
+        )?;
+        push_evidence(
+            &mut evidence,
+            format_args!("work_item_id={}", work_signal.work_item_id),
+        )?;
     }
     if runtime_posture == RuntimePosture::Sleeping {
-        evidence.push("runtime_sleeping".to_string());
+        push_evidence(&mut evidence, format_args!("{}", "runtime_sleeping"))?;
     }
 
     if facts.runtime_error {
-        return ClosureDecision {
+        return Ok(ClosureDecision {
             outcome: ClosureOutcome::Failed,
             waiting_reason: None,
             work_signal: None,
             runtime_posture,
             evidence,
-        };
+        });
     }
 
     if facts.turn_in_progress {
-        evidence.push("turn_in_progress".to_string());
-        return ClosureDecision {
+        push_evidence(&mut evidence, format_args!("{}", "turn_in_progress"))?;
+        return Ok(ClosureDecision {
             outcome: ClosureOutcome::Waiting,
             waiting_reason: Some(WaitingReason::AwaitingExternalChange),
             work_signal: None,
             runtime_posture,
             evidence,
-        };
+        });
     }
 
     if let Some(kind) = facts.turn_terminal_kind {
@@ -97,129 +144,129 @@ pub(super) fn derive_closure_decision(facts: &ClosureFacts) -> ClosureDecision {
                 }
                 TurnTerminalKind::Completed => unreachable!("completed is not a failure"),
             };
-            evidence.push(marker.to_string());
-            return ClosureDecision {
+            push_evidence(&mut evidence, format_args!("{}", marker))?;
+            return Ok(ClosureDecision {
                 outcome: ClosureOutcome::Failed,
                 waiting_reason: None,
                 work_signal: None,
                 runtime_posture,
                 evidence,
-            };
+            });
         }
     }
 
     if facts.turn_started && facts.turn_terminal_kind.is_none() {
-        evidence.push("turn_terminal_missing".to_string());
-        return ClosureDecision {
+        push_evidence(&mut evidence, format_args!("{}", "turn_terminal_missing"))?;
+        return Ok(ClosureDecision {
             outcome: ClosureOutcome::Waiting,
             waiting_reason: Some(WaitingReason::AwaitingExternalChange),
             work_signal: None,
             runtime_posture,
             evidence,
-        };
+        });
     }
 
-    if let Some(work_signal) = facts.work_signal.clone() {
-        evidence.push("runnable_work_present".to_string());
-        return ClosureDecision {
+    if let Some(work_signal) = facts.work_signal {
+        push_evidence(&mut evidence, format_args!("{}", "runnable_work_present"))?;
+        return Ok(ClosureDecision {
             outcome: ClosureOutcome::Continuable,
             waiting_reason: None,
             work_signal: Some(work_signal),
             runtime_posture,
             evidence,
-        };
+        });
     }
 
     if facts.awaiting_operator_input {
-        return ClosureDecision {
+        return Ok(ClosureDecision {
             outcome: ClosureOutcome::Waiting,
             waiting_reason: Some(WaitingReason::AwaitingOperatorInput),
             work_signal: None,
             runtime_posture,
             evidence,
-        };
+        });
     }
 
     if facts.active_agent_waiting_intents > 0 {
-        return ClosureDecision {
+        return Ok(ClosureDecision {
             outcome: ClosureOutcome::Waiting,
             waiting_reason: Some(WaitingReason::AwaitingExternalChange),
             work_signal: None,
             runtime_posture,
             evidence,
-        };
+        });
     }
 
     if facts.active_timers > 0 {
-        return ClosureDecision {
+        return Ok(ClosureDecision {
             outcome: ClosureOutcome::Waiting,
             waiting_reason: Some(WaitingReason::AwaitingTimer),
             work_signal: None,
             runtime_posture,
             evidence,
-        };
+        });
     }
 
     match facts.waiting_work_item_scheduling_state {
         Some(WorkItemSchedulingState::WaitingTask) => {
-            return ClosureDecision {
+            return Ok(ClosureDecision {
                 outcome: ClosureOutcome::Waiting,
                 waiting_reason: Some(WaitingReason::AwaitingTaskResult),
                 work_signal: None,
                 runtime_posture,
                 evidence,
-            };
+            });
         }
         Some(WorkItemSchedulingState::WaitingExternal) => {
-            return ClosureDecision {
+            return Ok(ClosureDecision {
                 outcome: ClosureOutcome::Waiting,
                 waiting_reason: Some(WaitingReason::AwaitingExternalChange),
                 work_signal: None,
                 runtime_posture,
                 evidence,
-            };
+            });
         }
         Some(WorkItemSchedulingState::WaitingTimer) => {
-            return ClosureDecision {
+            return Ok(ClosureDecision {
                 outcome: ClosureOutcome::Waiting,
                 waiting_reason: Some(WaitingReason::AwaitingTimer),
                 work_signal: None,
                 runtime_posture,
                 evidence,
-            };
+            });
         }
         Some(WorkItemSchedulingState::WaitingOperator) => {
-            return ClosureDecision {
+            return Ok(ClosureDecision {
                 outcome: ClosureOutcome::Waiting,
                 waiting_reason: Some(WaitingReason::AwaitingOperatorInput),
                 work_signal: None,
                 runtime_posture,
                 evidence,
-            };
+            });
         }
         Some(WorkItemSchedulingState::WaitingSystem) => {
-            return ClosureDecision {
+            return Ok(ClosureDecision {
                 outcome: ClosureOutcome::Waiting,
                 waiting_reason: Some(WaitingReason::AwaitingExternalChange),
                 work_signal: None,
                 runtime_posture,
                 evidence,
-            };
+            });
         }
         _ => {}
     }
 
     if matches!(facts.turn_terminal_kind, Some(TurnTerminalKind::Completed)) {
-        evidence.push("turn_terminal_completed".to_string());
+        push_evidence(&mut evidence, format_args!("{}", "turn_terminal_completed"))?;
     }
-    evidence.push("no_waiting_condition".to_string());
-    ClosureDecision {
+    push_evidence(&mut evidence, format_args!("{}", "no_waiting_condition"))?;
+    Ok(ClosureDecision {
         outcome: ClosureOutcome::Completed,
         waiting_reason: None,
         work_signal: None,
         runtime_posture,
         evidence,
-    }
+    })
 }
 
 pub(crate) fn runtime_error_active(events: &[AuditEvent], briefs: &[BriefRecord]) -> bool {
@@ -228,6 +275,13 @@ pub(crate) fn runtime_error_active(events: &[AuditEvent], briefs: &[BriefRecord]
         .filter(|event| event.kind == "runtime_error")
         .map(|event| event.created_at)
         .max();
+    runtime_error_active_at(latest_runtime_error, briefs)
+}
+
+pub(crate) fn runtime_error_active_at(
+    latest_runtime_error: Option<DateTime<Utc>>,
+    briefs: &[BriefRecord],
+) -> bool {
     let latest_success_result_brief = briefs
         .iter()
         .filter(|brief| brief.kind.is_success())
@@ -253,7 +307,7 @@ mod tests {
 
     #[test]
     fn runtime_error_overrides_every_waiting_condition() {
-        let decision = derive_closure_decision(&ClosureFacts {
+        let decision = derive_closure_decision(ClosureFacts {
             runtime_error: true,
             awaiting_operator_input: true,
             active_blocking_tasks: 1,
@@ -262,7 +316,8 @@ mod tests {
             turn_in_progress: true,
             runtime_posture: Some(RuntimePosture::Sleeping),
             ..facts()
-        });
+        })
+        .unwrap();
 
         assert_eq!(decision.outcome, ClosureOutcome::Failed);
         assert_eq!(decision.waiting_reason, None);
@@ -271,13 +326,14 @@ mod tests {
 
     #[test]
     fn awaiting_operator_input_wins_over_other_waiting_conditions() {
-        let decision = derive_closure_decision(&ClosureFacts {
+        let decision = derive_closure_decision(ClosureFacts {
             awaiting_operator_input: true,
             active_blocking_tasks: 1,
             active_waiting_intents: 1,
             active_timers: 1,
             ..facts()
-        });
+        })
+        .unwrap();
 
         assert_eq!(decision.outcome, ClosureOutcome::Waiting);
         assert_eq!(
@@ -288,10 +344,11 @@ mod tests {
 
     #[test]
     fn blocking_tasks_are_metadata_not_waiting_reason() {
-        let decision = derive_closure_decision(&ClosureFacts {
+        let decision = derive_closure_decision(ClosureFacts {
             active_blocking_tasks: 2,
             ..facts()
-        });
+        })
+        .unwrap();
 
         assert_eq!(decision.outcome, ClosureOutcome::Completed);
         assert_eq!(decision.waiting_reason, None);
@@ -303,11 +360,12 @@ mod tests {
 
     #[test]
     fn waiting_intents_map_to_awaiting_external_change() {
-        let decision = derive_closure_decision(&ClosureFacts {
+        let decision = derive_closure_decision(ClosureFacts {
             active_waiting_intents: 1,
             active_agent_waiting_intents: 1,
             ..facts()
-        });
+        })
+        .unwrap();
 
         assert_eq!(decision.outcome, ClosureOutcome::Waiting);
         assert_eq!(
@@ -318,10 +376,11 @@ mod tests {
 
     #[test]
     fn timers_map_to_awaiting_timer() {
-        let decision = derive_closure_decision(&ClosureFacts {
+        let decision = derive_closure_decision(ClosureFacts {
             active_timers: 1,
             ..facts()
-        });
+        })
+        .unwrap();
 
         assert_eq!(decision.outcome, ClosureOutcome::Waiting);
         assert_eq!(decision.waiting_reason, Some(WaitingReason::AwaitingTimer));
@@ -329,16 +388,18 @@ mod tests {
 
     #[test]
     fn sleeping_posture_is_preserved_independently_from_outcome() {
-        let waiting = derive_closure_decision(&ClosureFacts {
+        let waiting = derive_closure_decision(ClosureFacts {
             active_timers: 1,
             runtime_posture: Some(RuntimePosture::Sleeping),
             ..facts()
-        });
-        let completed = derive_closure_decision(&ClosureFacts {
+        })
+        .unwrap();
+        let completed = derive_closure_decision(ClosureFacts {
             turn_terminal_kind: Some(TurnTerminalKind::Completed),
             runtime_posture: Some(RuntimePosture::Sleeping),
             ..facts()
-        });
+        })
+        .unwrap();
 
         assert_eq!(waiting.runtime_posture, RuntimePosture::Sleeping);
         assert_eq!(completed.runtime_posture, RuntimePosture::Sleeping);
@@ -346,10 +407,11 @@ mod tests {
 
     #[test]
     fn aborted_turn_maps_to_failed_closure() {
-        let decision = derive_closure_decision(&ClosureFacts {
+        let decision = derive_closure_decision(ClosureFacts {
             turn_terminal_kind: Some(TurnTerminalKind::Aborted),
             ..facts()
-        });
+        })
+        .unwrap();
 
         assert_eq!(decision.outcome, ClosureOutcome::Failed);
         assert_eq!(decision.waiting_reason, None);
@@ -357,10 +419,11 @@ mod tests {
 
     #[test]
     fn baseline_over_budget_turn_maps_to_failed_closure() {
-        let decision = derive_closure_decision(&ClosureFacts {
+        let decision = derive_closure_decision(ClosureFacts {
             turn_terminal_kind: Some(TurnTerminalKind::BaselineOverBudget),
             ..facts()
-        });
+        })
+        .unwrap();
 
         assert_eq!(decision.outcome, ClosureOutcome::Failed);
         assert_eq!(decision.waiting_reason, None);
@@ -372,10 +435,11 @@ mod tests {
 
     #[test]
     fn completed_turn_with_no_waiting_conditions_maps_to_completed_closure() {
-        let decision = derive_closure_decision(&ClosureFacts {
+        let decision = derive_closure_decision(ClosureFacts {
             turn_terminal_kind: Some(TurnTerminalKind::Completed),
             ..facts()
-        });
+        })
+        .unwrap();
 
         assert_eq!(decision.outcome, ClosureOutcome::Completed);
         assert_eq!(decision.waiting_reason, None);
@@ -387,7 +451,7 @@ mod tests {
 
     #[test]
     fn runnable_active_work_maps_to_continuable_closure() {
-        let decision = derive_closure_decision(&ClosureFacts {
+        let decision = derive_closure_decision(ClosureFacts {
             work_signal: Some(WorkReactivationSignal {
                 work_item_id: "work-1".into(),
                 state: WorkItemState::Open,
@@ -395,7 +459,8 @@ mod tests {
             }),
             turn_terminal_kind: Some(TurnTerminalKind::Completed),
             ..facts()
-        });
+        })
+        .unwrap();
 
         assert_eq!(decision.outcome, ClosureOutcome::Continuable);
         assert_eq!(decision.waiting_reason, None);
@@ -411,7 +476,7 @@ mod tests {
 
     #[test]
     fn runnable_work_overrides_unrelated_agent_waiting_intent() {
-        let decision = derive_closure_decision(&ClosureFacts {
+        let decision = derive_closure_decision(ClosureFacts {
             active_waiting_intents: 1,
             active_agent_waiting_intents: 1,
             work_signal: Some(WorkReactivationSignal {
@@ -420,7 +485,8 @@ mod tests {
                 reactivation_mode: WorkReactivationMode::ContinueActive,
             }),
             ..facts()
-        });
+        })
+        .unwrap();
 
         assert_eq!(decision.outcome, ClosureOutcome::Continuable);
         assert_eq!(decision.waiting_reason, None);
@@ -435,7 +501,7 @@ mod tests {
 
     #[test]
     fn blocking_tasks_do_not_override_runnable_work() {
-        let decision = derive_closure_decision(&ClosureFacts {
+        let decision = derive_closure_decision(ClosureFacts {
             active_blocking_tasks: 1,
             work_signal: Some(WorkReactivationSignal {
                 work_item_id: "work-1".into(),
@@ -443,7 +509,8 @@ mod tests {
                 reactivation_mode: WorkReactivationMode::ContinueActive,
             }),
             ..facts()
-        });
+        })
+        .unwrap();
 
         assert_eq!(decision.outcome, ClosureOutcome::Continuable);
         assert_eq!(decision.waiting_reason, None);
@@ -455,11 +522,12 @@ mod tests {
 
     #[test]
     fn started_turn_without_terminal_record_maps_to_waiting() {
-        let decision = derive_closure_decision(&ClosureFacts {
+        let decision = derive_closure_decision(ClosureFacts {
             turn_started: true,
             turn_terminal_kind: None,
             ..facts()
-        });
+        })
+        .unwrap();
 
         assert_eq!(decision.outcome, ClosureOutcome::Waiting);
         assert_eq!(

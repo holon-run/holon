@@ -609,6 +609,7 @@ pub(crate) struct ReadImage {
 }
 
 pub(crate) fn read_visual_reference(path: &Path) -> Result<ReadImage> {
+    crate::diagnostics::resource_io::admit_path(path)?;
     let file_metadata = fs::metadata(path).map_err(|error| {
         invalid_tool_input(
             NAME,
@@ -658,10 +659,13 @@ pub(crate) fn read_visual_reference(path: &Path) -> Result<ReadImage> {
         }))
         .with_recovery_hint("provide a readable local image file path")
     })?;
-    let mut bytes = Vec::with_capacity(byte_count as usize);
-    file.by_ref()
-        .take(MAX_IMAGE_BYTES + 1)
-        .read_to_end(&mut bytes)
+    crate::diagnostics::resource_io::admit_file_bytes(file.metadata()?.len())?;
+    #[cfg(test)]
+    crate::diagnostics::resource_io::run_after_file_metadata();
+    let mut bytes = Vec::new();
+    let mut reader = file.by_ref().take(MAX_IMAGE_BYTES + 1);
+    crate::diagnostics::resource_io::read_to_end(&mut reader, &mut bytes)
+        .unwrap_or_else(|| reader.read_to_end(&mut bytes))
         .map_err(|error| {
             ToolError::new(
                 "image_read_failed",
@@ -717,6 +721,8 @@ pub(crate) fn read_visual_reference(path: &Path) -> Result<ReadImage> {
             ));
         }
     }
+    crate::diagnostics::resource_io::admit_cloned_value(&path)?;
+    crate::diagnostics::resource_io::charge_owned_metadata(1024, 12)?;
     let sha256 = format!("{:x}", Sha256::digest(&bytes));
     let visual_reference = ViewImageVisualReference {
         kind: "visual_reference".to_string(),

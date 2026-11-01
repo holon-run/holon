@@ -173,7 +173,7 @@ async fn runtime_startup_migrates_legacy_agent_home_attachment_alias() {
         occupancy_id: None,
         projection_metadata: None,
     });
-    storage.write_agent(&state).unwrap();
+    storage.write_agent_for_fixture(&state).unwrap();
 
     let runtime = RuntimeHandle::new(
         agent_id,
@@ -224,7 +224,7 @@ async fn detach_workspace_allows_only_redundant_legacy_agent_home_alias() {
             AGENT_HOME_WORKSPACE_ID.to_string(),
             canonical_agent_home_id.clone(),
         ];
-        runtime.inner.storage.write_agent(&guard.state).unwrap();
+        guard.persist_state(&runtime.inner.storage).unwrap();
     }
 
     runtime
@@ -263,7 +263,7 @@ async fn detach_workspace_rejects_canonical_agent_home_when_inactive() {
             occupancy_id: None,
             projection_metadata: None,
         });
-        runtime.inner.storage.write_agent(&guard.state).unwrap();
+        guard.persist_state(&runtime.inner.storage).unwrap();
     }
 
     let err = runtime
@@ -529,7 +529,7 @@ async fn current_closure_returns_none_while_foreground_work_remains() {
     {
         let mut guard = runtime.inner.agent.lock().await;
         guard.state.pending = 1;
-        runtime.inner.storage.write_agent(&guard.state).unwrap();
+        guard.persist_state(&runtime.inner.storage).unwrap();
     }
 
     assert!(runtime.current_closure().await.unwrap().is_none());
@@ -537,7 +537,7 @@ async fn current_closure_returns_none_while_foreground_work_remains() {
     {
         let mut guard = runtime.inner.agent.lock().await;
         guard.state.pending = 0;
-        runtime.inner.storage.write_agent(&guard.state).unwrap();
+        guard.persist_state(&runtime.inner.storage).unwrap();
     }
 
     let closure = runtime.current_closure().await.unwrap().unwrap();
@@ -574,7 +574,7 @@ async fn current_closure_returns_none_while_pending_wake_hint_remains() {
             causation_id: None,
             created_at: Utc::now(),
         });
-        runtime.inner.storage.write_agent(&guard.state).unwrap();
+        guard.persist_state(&runtime.inner.storage).unwrap();
     }
 
     assert!(runtime.current_closure().await.unwrap().is_none());
@@ -582,7 +582,7 @@ async fn current_closure_returns_none_while_pending_wake_hint_remains() {
     {
         let mut guard = runtime.inner.agent.lock().await;
         guard.state.pending_wake_hint = None;
-        runtime.inner.storage.write_agent(&guard.state).unwrap();
+        guard.persist_state(&runtime.inner.storage).unwrap();
     }
 
     let closure = runtime.current_closure().await.unwrap().unwrap();
@@ -607,7 +607,7 @@ async fn wait_for_closure_blocks_until_foreground_work_clears() {
     {
         let mut guard = runtime.inner.agent.lock().await;
         guard.state.pending = 1;
-        runtime.inner.storage.write_agent(&guard.state).unwrap();
+        guard.persist_state(&runtime.inner.storage).unwrap();
     }
 
     let wait_runtime = runtime.clone();
@@ -619,7 +619,7 @@ async fn wait_for_closure_blocks_until_foreground_work_clears() {
     {
         let mut guard = runtime.inner.agent.lock().await;
         guard.state.pending = 0;
-        runtime.inner.storage.write_agent(&guard.state).unwrap();
+        guard.persist_state(&runtime.inner.storage).unwrap();
     }
 
     let closure = tokio::time::timeout(std::time::Duration::from_secs(1), waiter)
@@ -644,7 +644,7 @@ async fn prune_removes_workspace_id_missing_from_registry() {
             AGENT_HOME_WORKSPACE_ID.to_string(),
             "ws-stale-not-in-registry".to_string(),
         ];
-        runtime.inner.storage.write_agent(&guard.state).unwrap();
+        guard.persist_state(&runtime.inner.storage).unwrap();
     }
 
     let pruned = runtime.prune_stale_attached_workspaces().await.unwrap();
@@ -672,7 +672,7 @@ async fn prune_removes_workspace_with_deleted_anchor() {
         let mut guard = runtime.inner.agent.lock().await;
         guard.state.attached_workspaces =
             vec![AGENT_HOME_WORKSPACE_ID.to_string(), stale_id.clone()];
-        runtime.inner.storage.write_agent(&guard.state).unwrap();
+        guard.persist_state(&runtime.inner.storage).unwrap();
     }
 
     let pruned = runtime.prune_stale_attached_workspaces().await.unwrap();
@@ -705,7 +705,7 @@ async fn prune_preserves_active_workspace_even_when_stale() {
             occupancy_id: None,
             projection_metadata: None,
         });
-        runtime.inner.storage.write_agent(&guard.state).unwrap();
+        guard.persist_state(&runtime.inner.storage).unwrap();
     }
 
     let pruned = runtime.prune_stale_attached_workspaces().await.unwrap();
@@ -729,7 +729,7 @@ async fn prune_preserves_valid_workspaces() {
         let mut guard = runtime.inner.agent.lock().await;
         guard.state.attached_workspaces =
             vec![AGENT_HOME_WORKSPACE_ID.to_string(), valid_id.clone()];
-        runtime.inner.storage.write_agent(&guard.state).unwrap();
+        guard.persist_state(&runtime.inner.storage).unwrap();
     }
 
     let pruned = runtime.prune_stale_attached_workspaces().await.unwrap();
@@ -751,7 +751,7 @@ async fn prune_emits_audit_events_for_removed_workspaces() {
             "ws-stale-a".to_string(),
             "ws-stale-b".to_string(),
         ];
-        runtime.inner.storage.write_agent(&guard.state).unwrap();
+        guard.persist_state(&runtime.inner.storage).unwrap();
     }
 
     let pruned = runtime.prune_stale_attached_workspaces().await.unwrap();

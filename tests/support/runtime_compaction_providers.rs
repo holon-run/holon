@@ -58,6 +58,7 @@ impl AgentProvider for MaxOutputRecoveryProvider {
                 Log aggregation and analysis support debugging and compliance.";
 
             return Ok(ProviderTurnResponse {
+                material: Default::default(),
                 blocks: vec![ModelBlock::Text {
                     text: extensive_text.into(),
                 }],
@@ -85,6 +86,7 @@ impl AgentProvider for MaxOutputRecoveryProvider {
             );
 
             return Ok(ProviderTurnResponse {
+                material: Default::default(),
                 blocks: vec![ModelBlock::ToolUse {
                     id: "sleep-1".into(),
                     name: "Sleep".into(),
@@ -139,6 +141,7 @@ impl AgentProvider for RepeatedCompactionProvider {
 
         match call_count {
             1 => Ok(ProviderTurnResponse {
+                material: Default::default(),
                 blocks: vec![
                     ModelBlock::Text {
                         text: "Round 1: initial reconnaissance. ".repeat(140),
@@ -163,6 +166,7 @@ impl AgentProvider for RepeatedCompactionProvider {
                 request_diagnostics: None,
             }),
             2 => Ok(ProviderTurnResponse {
+                material: Default::default(),
                 blocks: vec![
                     ModelBlock::Text {
                         text: "Round 2: follow-up probing continues. ".repeat(140),
@@ -187,6 +191,7 @@ impl AgentProvider for RepeatedCompactionProvider {
                 request_diagnostics: None,
             }),
             3 => Ok(ProviderTurnResponse {
+                material: Default::default(),
                 blocks: vec![
                     ModelBlock::Text {
                         text: "Round 3: checkpoint anchor remains unchanged. ".repeat(140),
@@ -211,6 +216,7 @@ impl AgentProvider for RepeatedCompactionProvider {
                 request_diagnostics: None,
             }),
             4 => Ok(ProviderTurnResponse {
+                material: Default::default(),
                 blocks: vec![ModelBlock::Text {
                     text: "Round 4: checkpoint-ready continuation with deterministic next step. "
                         .repeat(140),
@@ -224,6 +230,7 @@ impl AgentProvider for RepeatedCompactionProvider {
                 request_diagnostics: None,
             }),
             _ => Ok(ProviderTurnResponse {
+                material: Default::default(),
                 blocks: vec![ModelBlock::Text {
                     text: "Checkpointed review complete; carry the current discovery forward."
                         .into(),
@@ -271,6 +278,7 @@ impl AgentProvider for MaxOutputThenCompactionProvider {
 
         match call_count {
             1 => Ok(ProviderTurnResponse {
+                material: Default::default(),
                 blocks: vec![ModelBlock::Text {
                     text: "[analysis] ".repeat(260),
                 }],
@@ -283,6 +291,7 @@ impl AgentProvider for MaxOutputThenCompactionProvider {
                 request_diagnostics: None,
             }),
             2 => Ok(ProviderTurnResponse {
+                material: Default::default(),
                 blocks: vec![
                     ModelBlock::Text {
                         text:
@@ -309,6 +318,7 @@ impl AgentProvider for MaxOutputThenCompactionProvider {
                 request_diagnostics: None,
             }),
             3 => Ok(ProviderTurnResponse {
+                material: Default::default(),
                 blocks: vec![
                     ModelBlock::Text {
                         text: "Round 3: continued verification without dropping context. "
@@ -334,6 +344,7 @@ impl AgentProvider for MaxOutputThenCompactionProvider {
                 request_diagnostics: None,
             }),
             4 => Ok(ProviderTurnResponse {
+                material: Default::default(),
                 blocks: vec![ModelBlock::Text {
                     text: "Round 4: follow-up synthesis for compacted checkpoint continuity."
                         .into(),
@@ -347,6 +358,7 @@ impl AgentProvider for MaxOutputThenCompactionProvider {
                 request_diagnostics: None,
             }),
             _ => Ok(ProviderTurnResponse {
+                material: Default::default(),
                 blocks: vec![ModelBlock::Text {
                     text: "Recovery path complete.".into(),
                 }],
@@ -424,6 +436,7 @@ impl AgentProvider for MultiPassCompactionRecoveryFlowProvider {
 
         match call_index {
             1 => Ok(ProviderTurnResponse {
+                material: Default::default(),
                 blocks: vec![ModelBlock::Text {
                     text: format!(
                         "Round 1 planning {} {}",
@@ -440,6 +453,7 @@ impl AgentProvider for MultiPassCompactionRecoveryFlowProvider {
             request_diagnostics: None
             }),
             2 => Ok(ProviderTurnResponse {
+                material: Default::default(),
                 blocks: vec![
                     ModelBlock::Text {
                         text: format!(
@@ -474,6 +488,7 @@ impl AgentProvider for MultiPassCompactionRecoveryFlowProvider {
                     .clone()
                     .unwrap_or_else(|| "missing-task".into());
                 Ok(ProviderTurnResponse {
+                    material: Default::default(),
                     blocks: vec![
                         ModelBlock::Text {
                             text: format!(
@@ -513,6 +528,7 @@ impl AgentProvider for MultiPassCompactionRecoveryFlowProvider {
                     })
                 }).expect("TaskStatus must confirm the seed task output path");
                 Ok(ProviderTurnResponse {
+                    material: Default::default(),
                 blocks: vec![
                     ModelBlock::Text {
                         text: format!(
@@ -551,6 +567,7 @@ impl AgentProvider for MultiPassCompactionRecoveryFlowProvider {
             })
             },
             _ => Ok(ProviderTurnResponse {
+                material: Default::default(),
                 blocks: vec![ModelBlock::Text {
                     text: "Completed after bounded repeated compaction.".into()
                 }],

@@ -277,7 +277,7 @@ fn seed_scheduler_state(storage: &AppStorage, now: chrono::DateTime<Utc>) -> Res
         })?;
     }
 
-    storage.write_agent(&agent)?;
+    storage.write_agent_for_fixture(&agent)?;
     Ok(runnable_ids)
 }
 

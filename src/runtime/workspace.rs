@@ -274,9 +274,19 @@ pub(crate) fn load_attached_workspace_entries_for(
     attached_workspace_ids: &[String],
     workspace: &WorkspaceView,
 ) -> Result<Vec<(String, PathBuf)>> {
-    let known_entries = load_attached_workspace_entries(storage)?
-        .into_iter()
-        .collect::<HashMap<_, _>>();
+    Ok(select_attached_workspace_entries(
+        &load_attached_workspace_entries(storage)?,
+        attached_workspace_ids,
+        workspace,
+    ))
+}
+
+fn select_attached_workspace_entries(
+    entries: &[(String, PathBuf)],
+    attached_workspace_ids: &[String],
+    workspace: &WorkspaceView,
+) -> Vec<(String, PathBuf)> {
+    let known_entries = entries.iter().cloned().collect::<HashMap<_, _>>();
     let active_workspace_id = workspace.workspace_id().map(ToString::to_string);
     let mut ordered_ids = Vec::new();
 
@@ -303,9 +313,10 @@ pub(crate) fn load_attached_workspace_entries_for(
         }
     }
 
-    Ok(resolved)
+    resolved
 }
 
+#[cfg(test)]
 pub(crate) fn execution_snapshot_for_view(
     profile: ExecutionProfile,
     workspace: &WorkspaceView,
@@ -322,6 +333,84 @@ pub(crate) fn execution_snapshot_for_view(
                     .collect()
             });
 
+    execution_snapshot_with_attached_entries(profile, workspace, attached_workspaces)
+}
+
+/// Pure construction from one already materialized registry view.
+pub(crate) fn execution_snapshot_from_workspace_entries(
+    profile: &ExecutionProfile,
+    workspace: &WorkspaceView,
+    attached_workspace_ids: &[String],
+    mut entries: Vec<WorkspaceEntry>,
+) -> Result<ExecutionSnapshot> {
+    let active_id = workspace.workspace_id().filter(|active| {
+        attached_workspace_ids.is_empty() || attached_workspace_ids.iter().any(|id| id == active)
+    });
+    let capacity = attached_workspace_ids
+        .len()
+        .checked_add(usize::from(active_id.is_some()))
+        .ok_or_else(|| anyhow!("ResourceExhausted: execution workspace slots"))?;
+    let paths = [
+        Some(workspace.workspace_anchor()),
+        Some(workspace.execution_root()),
+        Some(workspace.cwd()),
+        workspace.worktree_root(),
+    ];
+    let bytes = paths
+        .into_iter()
+        .flatten()
+        .map(|path| path.as_os_str().len())
+        .chain(workspace.workspace_id().map(str::len))
+        .chain(workspace.execution_root_id().map(str::len))
+        .chain([std::mem::size_of::<ExecutionSnapshot>()])
+        .try_fold(0usize, usize::checked_add)
+        .and_then(|bytes| {
+            capacity
+                .checked_mul(std::mem::size_of::<(String, PathBuf)>())
+                .and_then(|slots| bytes.checked_add(slots))
+        })
+        .ok_or_else(|| anyhow!("ResourceExhausted: execution workspace material"))?;
+    crate::diagnostics::resource_io::charge_owned_metadata(
+        u64::try_from(bytes)?,
+        capacity
+            .checked_add(8)
+            .ok_or_else(|| anyhow!("ResourceExhausted: execution workspace records"))?,
+    )?;
+    let mut attached = Vec::<(String, PathBuf)>::new();
+    attached
+        .try_reserve_exact(capacity)
+        .map_err(|_| anyhow!("ResourceExhausted: execution workspace allocation"))?;
+    for id in active_id
+        .into_iter()
+        .chain(attached_workspace_ids.iter().map(String::as_str))
+    {
+        if attached.iter().any(|(selected, _)| selected == id) {
+            continue;
+        }
+        // Match the registry's last-value semantics without cloning a map.
+        if let Some(index) = entries.iter().rposition(|entry| entry.workspace_id == id) {
+            let entry = entries.remove(index);
+            attached.push((entry.workspace_id, entry.workspace_anchor));
+        } else if workspace.workspace_id() == Some(id) {
+            crate::diagnostics::resource_io::charge_owned_metadata(
+                u64::try_from(id.len() + workspace.workspace_anchor().as_os_str().len())?,
+                2,
+            )?;
+            attached.push((id.to_owned(), workspace.workspace_anchor().to_path_buf()));
+        }
+    }
+    Ok(execution_snapshot_with_attached_entries(
+        profile.clone(),
+        workspace,
+        attached,
+    ))
+}
+
+fn execution_snapshot_with_attached_entries(
+    profile: ExecutionProfile,
+    workspace: &WorkspaceView,
+    attached_workspaces: Vec<(String, PathBuf)>,
+) -> ExecutionSnapshot {
     ExecutionSnapshot {
         policy: profile.policy_snapshot(),
         profile,

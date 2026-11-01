@@ -118,6 +118,7 @@ impl AgentProvider for ParallelWorktreeProvider {
         sleep(Duration::from_millis(delay as u64)).await;
 
         Ok(ProviderTurnResponse {
+            material: Default::default(),
             blocks: vec![holon::provider::ModelBlock::Text {
                 text: format!("Completed worktree task {}", id),
             }],

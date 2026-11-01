@@ -80,6 +80,8 @@ pub(crate) enum ToolLoopDirective {
 /// Result from executing a tool.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ToolResult {
+    #[serde(skip)]
+    pub(crate) resource_material: Option<crate::diagnostics::resource_io::ResourceReadMaterial>,
     pub envelope: ToolResultEnvelope,
     pub should_sleep: bool,
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
@@ -149,6 +151,7 @@ impl ToolResult {
             prepared_work_item_completion: None,
             prepared_wait_for: None,
             loop_directive: None,
+            resource_material: None,
         }
     }
 
@@ -174,6 +177,7 @@ impl ToolResult {
             prepared_work_item_completion: None,
             prepared_wait_for: None,
             loop_directive: None,
+            resource_material: None,
         }
     }
 
@@ -199,6 +203,7 @@ impl ToolResult {
             prepared_work_item_completion: None,
             prepared_wait_for: None,
             loop_directive: Some(directive),
+            resource_material: None,
         }
     }
 
@@ -219,6 +224,7 @@ impl ToolResult {
             prepared_work_item_completion: None,
             prepared_wait_for: None,
             loop_directive: None,
+            resource_material: None,
         }
     }
 

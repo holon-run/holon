@@ -16,14 +16,33 @@ pub mod agent_message_delivery;
 pub mod agent_relations;
 pub mod audit;
 pub mod authentication;
+pub(crate) mod bootstrap_inputs;
 pub mod brief_publication_repair;
+#[doc(hidden)]
+pub mod cold_fixture;
+pub(crate) mod cold_summary;
 pub mod connection;
 pub mod content_reports;
+pub(crate) mod context_inputs;
+pub(crate) mod control_transition;
 pub mod conversation;
+pub(crate) mod current_query;
+pub(crate) mod current_read_writes;
 pub mod destructive_operations;
+pub(crate) mod dispatch_memory;
+pub(crate) mod episode_memory;
+pub(crate) mod episode_snapshot;
 pub mod evidence;
+pub(crate) mod input_evidence_snapshot;
+pub(crate) mod input_evidence_writes;
+pub(crate) mod input_mutation_receipts;
+pub(crate) mod input_preparation;
+pub(crate) mod input_recovery_install;
 mod legacy_scheduler_wire;
+mod migration_history;
 pub mod migrations;
+pub mod persistence;
+pub(crate) mod prepared_input_evidence;
 pub mod provider_admission;
 pub(crate) mod read_block;
 mod read_scope;
@@ -35,14 +54,27 @@ pub(crate) mod reclamation_reminders;
 pub mod repositories;
 pub mod retention;
 pub mod retired_scheduler_cleanup;
+pub(crate) mod startup_ended_memory;
 pub mod storage_domain;
 pub(crate) mod task_result_settlement;
 pub(crate) mod transitions;
 pub mod turn_settlement_repair;
 mod turn_start;
+pub use input_evidence_snapshot::maintenance::{
+    NeedsOfflineInputMaintenance, OfflineInputMaintenance,
+};
+pub(crate) mod child_task_terminal;
+pub(crate) mod command_task_creation;
+pub(crate) mod command_task_terminal;
+pub(crate) mod scheduling_snapshot;
+pub(crate) mod task_recovery;
+pub(crate) mod task_snapshot;
+pub(crate) mod task_status_metadata;
+pub(crate) mod task_stop;
 pub mod types;
 pub mod unread;
 pub mod work_item_source_revision_repair;
+pub(crate) mod work_snapshot;
 pub mod write_queue;
 
 pub mod observer_sync;
@@ -74,6 +106,10 @@ pub use crate::runtime_db::index_outbox::{
 };
 pub use crate::runtime_db::observer_sync::{
     AgentEventRecoveryWindow, AgentRosterLatestBriefRow, AgentRosterRow, AgentRosterSnapshotRows,
+};
+pub(crate) use crate::runtime_db::persistence::retryable_state_transition_conflict;
+pub use crate::runtime_db::persistence::{
+    persistence_certainty, PersistenceCertainty, PersistenceFailure, PersistenceFailurePhase,
 };
 pub use crate::runtime_db::retention::{
     RuntimeDbCompactReport, RuntimeDbRetentionPolicy, RuntimeDbRetentionReport,
@@ -138,9 +174,7 @@ use crate::runtime_db::migrations::{
     CONVERSATION_INPUT_ASSIGNMENT_REPAIR_VERSION, MIGRATIONS, PUBLISHED_MIGRATION_FLOOR,
     RELEASE_BASELINE_TARGET, RETIRED_SCHEDULER_SCHEMA_PREDECESSOR,
 };
-use crate::runtime_db::storage_domain::{
-    read_storage_domain_connection, upsert_storage_domain, upsert_storage_domain_checkpoint_json,
-};
+use crate::runtime_db::storage_domain::{read_storage_domain_connection, upsert_storage_domain};
 use crate::runtime_db::write_queue::{RuntimeDbWriteContext, RuntimeDbWriter};
 
 pub(crate) const TASK_PAYLOAD_STRING_LIMIT: usize = 2048;
@@ -735,6 +769,15 @@ impl RuntimeDb {
         self.readers.writer_weak()
     }
 
+    /// Short canonical preparation only. The callback must not write, control
+    /// transactions, reenter this writer, or retain the connection across await.
+    pub(crate) fn read_for_preparation<T>(
+        &self,
+        f: impl FnOnce(&rusqlite::Transaction<'_>) -> Result<T>,
+    ) -> Result<T> {
+        self.writer.read_deferred(f)
+    }
+
     pub fn record_provider_quota_failure(
         &self,
         identity_key: &str,
@@ -1030,6 +1073,11 @@ impl RuntimeDb {
         Ok(report)
     }
 
+    /// Run a transaction, retrying body lock errors only after a confirmed rollback.
+    ///
+    /// The callback must not control the transaction or perform external effects:
+    /// it may run more than once. Failure certainty is available through
+    /// [`persistence_certainty`]; an indeterminate result must be reconciled before replay.
     pub fn transaction<T>(&self, f: impl FnMut(&Transaction<'_>) -> Result<T>) -> Result<T> {
         self.writer.append_wait(f)
     }
@@ -1042,10 +1090,14 @@ impl RuntimeDb {
         self.writer.append_wait_with_context(context, f)
     }
 
-    fn transaction_once<T>(&self, f: impl FnOnce(&Transaction<'_>) -> Result<T>) -> Result<T> {
+    pub(crate) fn transaction_once<T>(
+        &self,
+        f: impl FnOnce(&Transaction<'_>) -> Result<T>,
+    ) -> Result<T> {
         self.writer.append_wait_once(f)
     }
 
+    /// Enqueue a background transaction. Success means queue acceptance, not commit.
     pub fn append(
         &self,
         f: impl for<'transaction> Fn(&Transaction<'transaction>) -> Result<()> + Send + 'static,
@@ -1084,12 +1136,31 @@ impl RuntimeDb {
         &self,
         agent_ids: &[String],
     ) -> Result<Vec<RetiredSchedulerFallbackResult>> {
+        self.apply_retired_scheduler_cleanup_fallbacks_inner(agent_ids, None)
+    }
+
+    pub fn apply_retired_scheduler_cleanup_fallbacks_with_maintenance(
+        &self,
+        agent_ids: &[String],
+        maintenance: &OfflineInputMaintenance<'_>,
+    ) -> Result<Vec<RetiredSchedulerFallbackResult>> {
+        self.apply_retired_scheduler_cleanup_fallbacks_inner(agent_ids, Some(maintenance))
+    }
+
+    fn apply_retired_scheduler_cleanup_fallbacks_inner(
+        &self,
+        agent_ids: &[String],
+        maintenance: Option<&OfflineInputMaintenance<'_>>,
+    ) -> Result<Vec<RetiredSchedulerFallbackResult>> {
         self.transaction(|tx| {
             agent_ids
                 .iter()
                 .map(|agent_id| {
                     retired_scheduler_cleanup::apply_retired_scheduler_cleanup_fallback(
-                        tx, agent_id,
+                        tx,
+                        self,
+                        agent_id,
+                        maintenance,
                     )
                 })
                 .collect()
@@ -1401,46 +1472,44 @@ impl RuntimeDb {
         })
     }
 
-    fn run_storage_domain_import(
-        &self,
-        domain: &'static str,
-        importing_source: &'static str,
-        complete_source: &'static str,
-        import: impl FnOnce(&Transaction<'_>) -> Result<serde_json::Value>,
-    ) -> Result<()> {
+    pub(crate) fn has_sqlite_agent_scope(&self, agent_id: &str) -> Result<bool> {
+        let connection = self.connection()?;
+        Ok(connection.query_row(
+            "SELECT EXISTS (SELECT 1 FROM agent_identities WHERE agent_id = ?1)
+                 OR EXISTS (SELECT 1 FROM agent_states WHERE agent_id = ?1)",
+            [agent_id],
+            |row| row.get(0),
+        )?)
+    }
+
+    /// Called only after startup has checked the fixed host/agent file scopes.
+    pub(crate) fn initialize_sqlite_storage_domains(&self) -> Result<()> {
+        anyhow::ensure!(
+            self.pending_legacy_episode_import_agent_ids()?.is_empty(),
+            "legacy JSON/JSONL import is unfinished; automatic legacy import is no longer supported"
+        );
         self.transaction(|tx| {
-            let existing_checkpoint = tx
-                .query_row(
-                    "SELECT source_checkpoint_json FROM storage_domains WHERE domain = ?1",
-                    [domain],
-                    |row| row.get::<_, Option<String>>(0),
-                )
-                .optional()?
-                .flatten();
-            upsert_storage_domain_checkpoint_json(
-                tx,
-                domain,
-                "importing",
-                importing_source,
-                existing_checkpoint,
-            )
-        })?;
-        let result = self.transaction_once(|tx| {
-            let checkpoint = import(tx)?;
-            upsert_storage_domain(tx, domain, "complete", complete_source, Some(checkpoint))?;
+            for expected in Self::expected_storage_domains() {
+                if let Some(existing) = read_storage_domain_connection(tx, expected.domain)? {
+                    anyhow::ensure!(
+                        existing.import_status == "complete"
+                            && existing.canonical_source == expected.canonical_source,
+                        "legacy JSON/JSONL import for {} is unfinished or noncanonical; \
+                         automatic legacy import is no longer supported",
+                        expected.domain
+                    );
+                } else {
+                    upsert_storage_domain(
+                        tx,
+                        expected.domain,
+                        "complete",
+                        expected.canonical_source,
+                        None,
+                    )?;
+                }
+            }
             Ok(())
-        });
-        if let Err(error) = result {
-            let checkpoint = serde_json::json!({
-                "error": error.to_string(),
-                "retry": "restart runtime to retry legacy import",
-            });
-            self.transaction_once(|tx| {
-                upsert_storage_domain(tx, domain, "failed", importing_source, Some(checkpoint))
-            })?;
-            return Err(error).with_context(|| format!("importing legacy storage domain {domain}"));
-        }
-        Ok(())
+        })
     }
 
     pub fn migrate(&self) -> Result<()> {
@@ -1468,6 +1537,8 @@ impl RuntimeDb {
                 max_known_version
             );
         }
+        migration_history::reconcile_feature_history(&mut connection)?;
+        let current_version = current_schema_version(&connection)?;
         if current_version <= PUBLISHED_MIGRATION_FLOOR
             && max_known_version >= RELEASE_BASELINE_TARGET
         {

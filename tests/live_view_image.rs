@@ -91,7 +91,7 @@ async fn live_view_image_vision_adapter_returns_visual_observation_json() -> Res
             vec![ConversationMessage::UserImage {
                 prompt: "Describe the visible logo and any text. Return only the required JSON object.".to_string(),
                 media_type: "image/png".to_string(),
-                data_base64: BASE64_STANDARD.encode(image),
+                data_base64: BASE64_STANDARD.encode(image).into(),
                 optional_history: false,
             }],
             Vec::new(),

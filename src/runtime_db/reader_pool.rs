@@ -357,12 +357,16 @@ impl RuntimeDbReaderPool {
     ) -> Result<T> {
         let admission = attribution::READER_ADMISSION.start();
         let deadline = self.acquisition_deadline();
+        // Read scopes use the real clock; Tokio's clock can have a different
+        // origin (notably after a paused runtime advances). Keep one allowance.
+        let async_deadline =
+            tokio::time::Instant::now() + deadline.saturating_duration_since(Instant::now());
         let scope = self.scope.as_ref().map(RuntimeDbReadScope::child);
         self.shared.control.ensure_protected()?;
         self.check_scope(&scope)?;
         let admitted = tokio::select! {
             result = tokio::time::timeout_at(
-                tokio::time::Instant::from_std(deadline),
+                async_deadline,
                 Arc::clone(&self.shared.admission).acquire_owned(),
             ) => result,
             () = RuntimeDbReadScope::cancelled(&scope) => {
@@ -416,7 +420,7 @@ impl RuntimeDbReaderPool {
         };
         let joined = tokio::select! {
             result = tokio::time::timeout_at(
-                tokio::time::Instant::from_std(deadline), &mut task,
+                async_deadline, &mut task,
             ) => result.ok(),
             () = RuntimeDbReadScope::cancelled(&scope) => None,
         };

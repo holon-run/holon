@@ -23,6 +23,7 @@ impl AgentProvider for Arc<ReplyGateProvider> {
             }
             if self.wait {
                 return Ok(ProviderTurnResponse {
+material: Default::default(),
                     blocks: vec![crate::provider::ModelBlock::ToolUse {
                         id: "reply-fixture-wait".into(),
                         name: "WaitFor".into(),
@@ -410,33 +411,24 @@ async fn agent_message_wait_recovered_outbox_beats_expired_deadline() {
 #[tokio::test]
 async fn agent_message_wait_recovery_keeps_deadline_and_does_not_resend() {
     let (_home, host, parent, peer, gate, receipt) =
-        reply_gate_fixture(0, "late final", false).await;
-    let mut task = parent
+        reply_gate_fixture(1000, "late final", false).await;
+    let task = parent
         .storage()
         .latest_task_record(&receipt.task_handle.task_id)
         .unwrap()
         .unwrap();
     parent.abort_async_task_monitor_for_test(&task.id).await;
-    // Replace the isolated orphan snapshot; production deadlines are immutable.
+    // Recover the original binding after its real deadline, without rewriting it.
     let Some(crate::types::TaskRecoverySpec::AgentMessageWait {
         reply_deadline_at, ..
-    }) = task.recovery.as_mut()
+    }) = task.recovery.as_ref()
     else {
         panic!("expected agent message wait recovery");
     };
-    *reply_deadline_at = Some(Utc::now() - chrono::Duration::seconds(1));
-    host.runtime_db()
-        .transaction(|tx| {
-            assert_eq!(
-                tx.execute(
-                    "UPDATE tasks SET payload_json = ?1 WHERE task_id = ?2",
-                    rusqlite::params![serde_json::to_string(&task)?, task.id],
-                )?,
-                1
-            );
-            Ok(())
-        })
-        .unwrap();
+    let deadline = reply_deadline_at.expect("fixture must have a finite deadline");
+    if let Ok(remaining) = (deadline - Utc::now()).to_std() {
+        tokio::time::sleep(remaining).await;
+    }
     parent
         .recover_supervised_child_tasks(vec![task.clone()])
         .await
@@ -598,6 +590,26 @@ async fn agent_message_wait_durable_outbox_survives_a_real_host_restart_once() {
         "restart must never resend the business request"
     );
     restarted.shutdown().await.unwrap();
+}
+
+#[test]
+fn startup_recovery_admission_keeps_callers_future_bounded() {
+    let home = tempdir().unwrap();
+    write_test_model_config(home.path());
+    let mut config = AppConfig::load_with_home(Some(home.path().to_path_buf())).unwrap();
+    config.user_home_dir = Some(home.path().to_path_buf());
+    let host = RuntimeHost::new_with_provider(config, Arc::new(StubProvider::new("unused"))).unwrap();
+    let observation = crate::startup::StartupObservation::new();
+    let future = host.recover_startup_observed(&observation);
+    assert!(
+        std::mem::size_of_val(&future) <= 4096,
+        "startup admission must not inline the recovery operation"
+    );
+    let wrapper = host.recover_orphaned_queue_claims_at_startup();
+    assert!(
+        std::mem::size_of_val(&wrapper) <= 4096,
+        "startup wrapper must preserve the heap boundary"
+    );
 }
 
 #[tokio::test]

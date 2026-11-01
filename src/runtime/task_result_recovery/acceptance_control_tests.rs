@@ -80,7 +80,7 @@ async fn assert_original_gate_scanner_claim(original_wait: bool) {
         };
         assert_eq!(result_message_id, result.id);
         let owner = runtime.latest_work_item(&owner.id).await.unwrap().unwrap();
-        seed_waiting_work_execution(runtime.storage(), &owner, &wait_condition_id);
+        seed_live_waiting_work_execution(runtime, &owner, &wait_condition_id).await;
     }
     gated_control(runtime, &task, "held", false, true, false, Value::Null);
     assert!(matches!(

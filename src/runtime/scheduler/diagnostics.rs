@@ -5,7 +5,7 @@ use super::*;
 pub(crate) const QUEUE_HEAD_STARVATION_AFTER_MS: i64 = 10 * 60 * 1000;
 const QUEUE_HEAD_STARVED_ADVISORY_INTERVAL_MS: i64 = 10 * 60 * 1000;
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
 pub(crate) struct SchedulingAdvisory {
     pub kind: String,
     pub severity: SchedulingAdvisorySeverity,
@@ -43,7 +43,7 @@ impl SchedulingAdvisory {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
 pub(crate) enum SchedulingAdvisorySeverity {
     Warning,
 }
@@ -69,6 +69,7 @@ pub(crate) fn scheduling_advisories(
     scheduling_advisories_with_queue_len(storage, agent, agent.pending)
 }
 
+#[cfg(test)]
 pub(crate) fn scheduling_advisories_with_queue_len(
     storage: &AppStorage,
     agent: &AgentState,
@@ -192,41 +193,54 @@ pub(crate) fn scheduling_advisory_event(diagnostic: &SchedulingAdvisory) -> Audi
     )
 }
 
+#[cfg(test)]
 pub(crate) fn append_scheduling_advisories(
     storage: &AppStorage,
     agent: &AgentState,
     queue_len: usize,
 ) -> Result<usize> {
     let diagnostics = scheduling_advisories_with_queue_len(storage, agent, queue_len)?;
+    append_prepared_scheduling_advisories(storage, &diagnostics)
+}
+
+#[cfg(test)]
+pub(crate) fn append_prepared_scheduling_advisories(
+    storage: &AppStorage,
+    diagnostics: &[SchedulingAdvisory],
+) -> Result<usize> {
     let recent_events = storage.read_recent_events(64)?;
-    let mut seen_data = Vec::new();
     let mut appended = 0;
-
-    for diagnostic in diagnostics {
-        let event = scheduling_advisory_event(&diagnostic);
-        if seen_data.iter().any(|data| data == &event.data) {
-            continue;
-        }
-        seen_data.push(event.data.clone());
-
-        let duplicate = recent_events
-            .iter()
-            .any(|latest| latest.kind == event.kind && latest.data == event.data);
-        if duplicate {
-            continue;
-        }
+    for event in pending_scheduling_advisory_events(&recent_events, diagnostics) {
         storage.append_event(&event)?;
         appended += 1;
     }
-
     Ok(appended)
 }
 
-pub(crate) fn append_ambiguous_wait_advisory(
-    storage: &AppStorage,
+pub(crate) fn pending_scheduling_advisory_events<'a>(
+    recent: &'a [AuditEvent],
+    diagnostics: &'a [SchedulingAdvisory],
+) -> impl Iterator<Item = AuditEvent> + 'a {
+    diagnostics
+        .iter()
+        .enumerate()
+        .filter_map(move |(index, diagnostic)| {
+            // These fields are exactly the event payload, without copying JSON.
+            if diagnostics[..index].contains(diagnostic) {
+                return None;
+            }
+            let event = scheduling_advisory_event(diagnostic);
+            (!recent
+                .iter()
+                .any(|latest| latest.kind == event.kind && latest.data == event.data))
+            .then_some(event)
+        })
+}
+
+pub(crate) fn ambiguous_wait_advisory_event(
     message: &MessageEnvelope,
     wait_condition_ids: &[String],
-) -> Result<()> {
+) -> AuditEvent {
     let diagnostic = SchedulingAdvisory::warning(
         "ambiguous_canonical_wait_binding",
         "canonical activation input matches multiple active waits and remains queued",
@@ -237,15 +251,7 @@ pub(crate) fn append_ambiguous_wait_advisory(
         "wait_condition_ids={}",
         wait_condition_ids.join(",")
     ));
-    let event = scheduling_advisory_event(&diagnostic);
-    let duplicate = storage
-        .read_recent_events(64)?
-        .iter()
-        .any(|latest| latest.kind == event.kind && latest.data == event.data);
-    if !duplicate {
-        storage.append_event(&event)?;
-    }
-    Ok(())
+    scheduling_advisory_event(&diagnostic)
 }
 
 pub(crate) fn append_deferred_activation_advisory(
@@ -328,20 +334,10 @@ pub(crate) fn append_queue_head_starved_advisory(
     .evidence(format!("queue_len={queue_len}"));
     let event = scheduling_advisory_event(&diagnostic);
     let message_evidence = format!("message_id={message_id}");
-    let duplicate = storage.read_recent_events(64)?.iter().any(|latest| {
-        latest.kind == event.kind
-            && latest
-                .data
-                .get("evidence")
-                .and_then(|evidence| evidence.as_array())
-                .is_some_and(|items| {
-                    items
-                        .iter()
-                        .any(|item| item.as_str() == Some(&message_evidence))
-                })
-            && now.signed_duration_since(latest.created_at)
-                < chrono::Duration::milliseconds(QUEUE_HEAD_STARVED_ADVISORY_INTERVAL_MS)
-    });
+    let duplicate = storage.event_log().has_recent_scheduling_advisory(
+        &message_evidence,
+        now - chrono::Duration::milliseconds(QUEUE_HEAD_STARVED_ADVISORY_INTERVAL_MS),
+    )?;
     if duplicate {
         return Ok(false);
     }

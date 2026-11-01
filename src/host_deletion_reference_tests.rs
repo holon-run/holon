@@ -374,6 +374,7 @@ mod deletion_reference_tests {
             .reincarnate_with_bootstrap_and_relations(
                 SOURCE_CHILD,
                 "deletion-reference-test",
+                &host.inner.input_evidence_budget,
                 |old| {
                     let mut fresh = old.clone();
                     fresh.incarnation = old.incarnation + 1;
@@ -416,7 +417,7 @@ mod deletion_reference_tests {
         });
         host.agent_storage(SOURCE_CHILD)
             .unwrap()
-            .write_agent(&state)
+            .write_agent_for_fixture(&state)
             .unwrap();
         seed_supervised_child_terminal(&host, &task.id, SOURCE_CHILD);
         // The shared seed helper creates a legacy first-generation source. Bind
@@ -517,10 +518,29 @@ mod deletion_reference_tests {
             workspace_mode: ChildAgentWorkspaceMode::Inherit,
             lifecycle_disposition: AgentLifecycleDisposition::Retain,
         });
-        host.agent_storage(&task.agent_id)
-            .unwrap()
-            .append_task(&task)
-            .unwrap();
+        let original_parent = host.default_runtime().await.unwrap();
+        original_parent.wait_for_bootstrap().await.unwrap();
+        crate::runtime::tests::support::persist_task_transition(
+            &original_parent,
+            &task,
+            "purged_child_original_task_fixture",
+        )
+        .await
+        .unwrap();
+        drop(original_parent);
+        host.unload_runtime(&task.agent_id).await;
+        assert!(host
+            .try_get_loaded_runtime(&task.agent_id)
+            .await
+            .is_none());
+        assert_eq!(
+            host.agent_storage(&task.agent_id)
+                .unwrap()
+                .latest_task_record(&task.id)
+                .unwrap()
+                .unwrap(),
+            task,
+        );
         fence_target(&host, SOURCE_CHILD);
         purge_target(&host, SOURCE_CHILD, 1);
 
@@ -602,7 +622,14 @@ mod deletion_reference_tests {
                     reply_deadline_at: None,
                     requester_incarnation: None,
                 });
-                parent.storage().append_task(&task).unwrap();
+                crate::runtime::write_child_task_for_test(&parent, &task)
+                    .await
+                    .unwrap();
+                // Recovery reads the same original Task publication.
+                assert_eq!(
+                    parent.task_status_read(&task.id).await.unwrap().snapshot.status,
+                    task.status,
+                );
                 let job = fence_target(&host, target_id);
                 if phase != "deleting" {
                     host.execute_deletion_job(job).await.unwrap();

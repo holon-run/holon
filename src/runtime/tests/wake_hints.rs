@@ -4,8 +4,9 @@ use crate::ingress::{WakeDisposition, WakeHint};
 
 struct SelectQueuedAutonomousContinuationHook;
 
-impl scheduler::SemanticCandidateSelectionHook for SelectQueuedAutonomousContinuationHook {
-    fn select_autonomous_continuation(
+#[async_trait::async_trait]
+impl scheduler::AsyncSemanticCandidateSelectionHook for SelectQueuedAutonomousContinuationHook {
+    async fn select_autonomous_continuation(
         &self,
         context: &scheduler::AutonomousContinuationSelectionContext,
     ) -> Result<
@@ -47,7 +48,7 @@ async fn runtime_emits_pending_wake_hint_as_system_tick_on_restart() {
         causation_id: None,
         created_at: Utc::now(),
     });
-    storage.write_agent(&agent).unwrap();
+    storage.write_agent_for_fixture(&agent).unwrap();
 
     let runtime = RuntimeHandle::new(
         "default",
@@ -94,7 +95,7 @@ async fn recovered_duplicate_wake_hint_clears_pending_without_new_tick() {
     let mut agent = AgentState::new("default");
     agent.status = AgentStatus::AwakeIdle;
     agent.pending_wake_hint = Some(pending);
-    storage.write_agent(&agent).unwrap();
+    storage.write_agent_for_fixture(&agent).unwrap();
 
     let mut duplicate = MessageEnvelope::new(
         "default",
@@ -208,21 +209,81 @@ async fn triggered_wake_hint_records_scheduler_decision_before_tick() {
     );
 }
 
+// Backlog exists before the release cutover, rather than being inserted into
+// a latest-schema Fresh namespace and adopted by a later ordinary read.
+fn write_original_wake_work_fixture(
+    home: &std::path::Path,
+    works: &[WorkItemRecord],
+    state: &AgentState,
+    runnable_execution: bool,
+) {
+    use crate::domain::execution_protocol::{
+        ExecutionProtocolState, WorkItemExecutionRecord, WorkItemExecutionState,
+    };
+    use crate::runtime_db::{
+        evidence::{upsert_agent_identity_tx, upsert_agent_state_tx},
+        migrations::{apply_migration, ensure_migration_table, MIGRATIONS},
+        repositories::timestamp,
+    };
+    let path = home.join(".holon/state/runtime.sqlite");
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    let mut connection = rusqlite::Connection::open(path).unwrap();
+    ensure_migration_table(&connection).unwrap();
+    for migration in MIGRATIONS
+        .iter()
+        .filter(|migration| migration.version <= 81)
+    {
+        apply_migration(&mut connection, migration).unwrap();
+    }
+    let tx = connection.transaction().unwrap();
+    let identity = crate::types::AgentIdentityRecord::new(
+        "default",
+        crate::types::AgentKind::Named,
+        crate::types::AgentVisibility::Public,
+        crate::types::AgentOwnership::SelfOwned,
+        crate::types::AgentProfilePreset::PublicNamed,
+        None,
+        None,
+    );
+    upsert_agent_identity_tx(&tx, &identity).unwrap();
+    for work in works {
+        tx.execute(
+            "INSERT INTO work_items (work_item_id, agent_id, state, objective, plan_status, revision, current_focus, created_at, updated_at, completed_at, plan_artifact_path, last_turn_id, payload_json) VALUES (?1, ?2, 'open', ?3, ?8, ?4, 0, ?5, ?6, NULL, NULL, NULL, ?7)",
+            rusqlite::params![work.id, work.agent_id, work.objective, work.revision as i64, timestamp(work.created_at), timestamp(work.updated_at), serde_json::to_string(work).unwrap(), crate::runtime_db::repositories::enum_string(&work.plan_status).unwrap()],
+        ).unwrap();
+    }
+    upsert_agent_state_tx(&tx, state).unwrap();
+    if runnable_execution {
+        let mut execution = ExecutionProtocolState::empty("default");
+        for work in works {
+            execution.work_items.insert(
+                work.id.clone(),
+                WorkItemExecutionRecord {
+                    source_revision: work.revision,
+                    state: WorkItemExecutionState::Runnable {
+                        generation: work.revision.max(1),
+                        recovery_ref: None,
+                    },
+                },
+            );
+        }
+        crate::runtime_db::transitions::persist_state_tx(&tx, &execution).unwrap();
+    }
+    tx.commit().unwrap();
+}
+
 #[tokio::test]
 async fn runtime_emits_work_queue_system_tick_for_active_item_on_restart() {
     let dir = tempdir().unwrap();
     let workspace = tempdir().unwrap();
-    let storage = AppStorage::new_for_test(dir.path()).unwrap();
     let active = WorkItemRecord::new(
         "default",
         "continue active runtime cleanup",
         WorkItemState::Open,
     );
-    storage.append_work_item(&active).unwrap();
-    seed_runnable_work_execution(&storage, &active);
     let mut agent = AgentState::new("default");
     agent.current_work_item_id = Some(active.id.clone());
-    storage.write_agent(&agent).unwrap();
+    write_original_wake_work_fixture(dir.path(), std::slice::from_ref(&active), &agent, true);
 
     let runtime = RuntimeHandle::new(
         "default",
@@ -255,20 +316,15 @@ async fn runtime_emits_work_queue_system_tick_for_active_item_on_restart() {
 async fn idle_tick_prefers_current_work_item_over_queued_work_item() {
     let dir = tempdir().unwrap();
     let workspace = tempdir().unwrap();
-    let storage = AppStorage::new_for_test(dir.path()).unwrap();
     let active = WorkItemRecord::new(
         "default",
         "continue active runtime cleanup",
         WorkItemState::Open,
     );
     let queued = WorkItemRecord::new("default", "queued runtime cleanup", WorkItemState::Open);
-    storage.append_work_item(&active).unwrap();
-    storage.append_work_item(&queued).unwrap();
-    seed_runnable_work_execution(&storage, &active);
-    seed_runnable_work_execution(&storage, &queued);
     let mut agent = AgentState::new("default");
     agent.current_work_item_id = Some(active.id.clone());
-    storage.write_agent(&agent).unwrap();
+    write_original_wake_work_fixture(dir.path(), &[active.clone(), queued.clone()], &agent, true);
 
     let runtime = RuntimeHandle::new(
         "default",
@@ -314,22 +370,17 @@ async fn idle_tick_prefers_current_work_item_over_queued_work_item() {
 async fn idle_tick_uses_runtime_autonomous_continuation_hook() {
     let dir = tempdir().unwrap();
     let workspace = tempdir().unwrap();
-    let storage = AppStorage::new_for_test(dir.path()).unwrap();
     let active = WorkItemRecord::new(
         "default",
         "continue active runtime cleanup",
         WorkItemState::Open,
     );
     let queued = WorkItemRecord::new("default", "queued runtime cleanup", WorkItemState::Open);
-    storage.append_work_item(&active).unwrap();
-    storage.append_work_item(&queued).unwrap();
-    seed_runnable_work_execution(&storage, &active);
-    seed_runnable_work_execution(&storage, &queued);
     let mut agent = AgentState::new("default");
     agent.current_work_item_id = Some(active.id.clone());
-    storage.write_agent(&agent).unwrap();
+    write_original_wake_work_fixture(dir.path(), &[active.clone(), queued.clone()], &agent, true);
 
-    let mut runtime = RuntimeHandle::new(
+    let runtime = RuntimeHandle::new(
         "default",
         dir.path().to_path_buf(),
         workspace.path().to_path_buf(),
@@ -339,9 +390,11 @@ async fn idle_tick_uses_runtime_autonomous_continuation_hook() {
         context_config(),
     )
     .unwrap();
-    runtime.set_autonomous_continuation_hook_for_test(Arc::new(
-        SelectQueuedAutonomousContinuationHook,
-    ));
+    *runtime
+        .inner
+        .autonomous_continuation_decision_hook
+        .write()
+        .await = Some(Arc::new(SelectQueuedAutonomousContinuationHook));
 
     assert!(runtime.maybe_emit_pending_system_tick(None).await.unwrap());
 
@@ -369,16 +422,14 @@ async fn idle_tick_uses_runtime_autonomous_continuation_hook() {
 async fn idle_tick_suppresses_continue_active_after_model_reentry_task_result() {
     let dir = tempdir().unwrap();
     let workspace = tempdir().unwrap();
-    let storage = AppStorage::new_for_test(dir.path()).unwrap();
     let active = WorkItemRecord::new(
         "default",
         "continue active runtime cleanup",
         WorkItemState::Open,
     );
-    storage.append_work_item(&active).unwrap();
     let mut agent = AgentState::new("default");
     agent.current_work_item_id = Some(active.id.clone());
-    storage.write_agent(&agent).unwrap();
+    write_original_wake_work_fixture(dir.path(), std::slice::from_ref(&active), &agent, false);
 
     let runtime = RuntimeHandle::new(
         "default",
@@ -446,7 +497,7 @@ async fn idle_tick_prefers_pending_wake_hint_over_work_queue_tick() {
         causation_id: None,
         created_at: Utc::now(),
     });
-    storage.write_agent(&agent).unwrap();
+    storage.write_agent_for_fixture(&agent).unwrap();
 
     let runtime = RuntimeHandle::new(
         "default",
@@ -485,15 +536,18 @@ async fn idle_tick_prefers_pending_wake_hint_over_work_queue_tick() {
 async fn runtime_surfaces_queued_work_item_with_work_queue_system_tick_on_restart() {
     let dir = tempdir().unwrap();
     let workspace = tempdir().unwrap();
-    let storage = AppStorage::new_for_test(dir.path()).unwrap();
     let queued = WorkItemRecord::new(
         "default",
         "surface queued runtime cleanup",
         WorkItemState::Open,
     );
     let queued_id = queued.id.clone();
-    storage.append_work_item(&queued).unwrap();
-    seed_runnable_work_execution(&storage, &queued);
+    write_original_wake_work_fixture(
+        dir.path(),
+        std::slice::from_ref(&queued),
+        &AgentState::new("default"),
+        true,
+    );
 
     let runtime = RuntimeHandle::new(
         "default",
@@ -656,7 +710,7 @@ async fn ordinary_wake_hints_coalesce_across_sources_into_one_pending_check() {
     )
     .unwrap();
     {
-        let mut guard = runtime.inner.agent.lock().await;
+        let mut guard = runtime.begin_mutation().await.unwrap();
         guard.state.status = AgentStatus::AwakeRunning;
         guard.state.current_run_id = Some("run-live".into());
         guard.current_run_abort = Some(CurrentRunAbortHandle {
@@ -664,7 +718,7 @@ async fn ordinary_wake_hints_coalesce_across_sources_into_one_pending_check() {
             token: CancellationToken::new(),
             reason: Arc::new(StdMutex::new("operator_aborted".into())),
         });
-        guard.persist_state(&runtime.inner.storage).unwrap();
+        guard.persist_state(&runtime.inner.storage).await.unwrap();
     }
 
     for index in 0..16 {
@@ -702,11 +756,11 @@ async fn ordinary_wake_hints_coalesce_across_sources_into_one_pending_check() {
     );
 
     {
-        let mut guard = runtime.inner.agent.lock().await;
+        let mut guard = runtime.begin_mutation().await.unwrap();
         guard.state.status = AgentStatus::AwakeIdle;
         guard.state.current_run_id = None;
         guard.current_run_abort = None;
-        guard.persist_state(&runtime.inner.storage).unwrap();
+        guard.persist_state(&runtime.inner.storage).await.unwrap();
     }
     runtime.emit_recovered_pending_wake_hint().await.unwrap();
 
@@ -831,7 +885,7 @@ async fn wake_hint_when_awaiting_task_is_coalesced() {
     {
         let mut guard = runtime.inner.agent.lock().await;
         guard.state.status = AgentStatus::AwaitingTask;
-        runtime.storage().write_agent(&guard.state).unwrap();
+        guard.persist_state(&runtime.inner.storage).unwrap();
     }
 
     let disposition = runtime.submit_wake_hint(wake_hint_smoke()).await.unwrap();
@@ -861,7 +915,7 @@ async fn wake_hint_when_stopped_is_ignored() {
     {
         let mut guard = runtime.inner.agent.lock().await;
         guard.state.status = AgentStatus::Stopped;
-        runtime.storage().write_agent(&guard.state).unwrap();
+        guard.persist_state(&runtime.inner.storage).unwrap();
     }
 
     let disposition = runtime.submit_wake_hint(wake_hint_smoke()).await.unwrap();
@@ -917,7 +971,7 @@ async fn wake_hint_when_awake_idle_with_nonempty_queue_is_coalesced() {
             },
         ));
         guard.state.pending = guard.queue.len();
-        runtime.storage().write_agent(&guard.state).unwrap();
+        guard.persist_state(&runtime.inner.storage).unwrap();
     }
 
     let disposition = runtime.submit_wake_hint(wake_hint_smoke()).await.unwrap();
@@ -962,7 +1016,7 @@ async fn wake_hint_when_asleep_with_nonempty_queue_is_coalesced() {
             },
         ));
         guard.state.pending = guard.queue.len();
-        runtime.storage().write_agent(&guard.state).unwrap();
+        guard.persist_state(&runtime.inner.storage).unwrap();
     }
 
     let disposition = runtime.submit_wake_hint(wake_hint_smoke()).await.unwrap();

@@ -1,0 +1,190 @@
+# Agent state workload (D0)
+
+This optimized, offline harness exercises loaded-runtime preview, Stopped
+admission/discard publication, and actual scheduler-to-provider request construction. It uses a
+scripted provider; it never sends a network request. It is separate from the
+small `context_snapshot` golden fixture and from real-LLM acceptance.
+
+Build once from a frozen worktree, recording the compiler output and flags:
+
+```sh
+cargo bench --locked --bench agent_state_workload --no-run
+```
+
+Use the executable path printed by Cargo. The driver does not build or discover
+an arbitrary cached executable. First run a pilot with the **complete fixture**:
+
+```sh
+python3 benchmarks/agent-state/run.py run \
+  --binary /absolute/target/release/deps/agent_state_workload-HASH \
+  --output /private/tmp/holon-agent-state-d0-pilot --label pilot \
+  --warmup-per-agent 2 --measured-per-agent 10
+```
+
+Then run the frozen sampling policy at least three times per case. The first
+successful full normal pilot produced 40 context samples from 10 responses per
+Agent; the normal gate requires at least 100. Freeze 13 warm/32 measured per
+Agent for normal and 4/8 for pressure, targeting 128 actual context samples per
+run without changing any fixture dimension. The actual sample-count assertion
+remains mandatory. Use the same values for the candidate arm:
+
+```sh
+python3 benchmarks/agent-state/run.py run \
+  --binary /absolute/target/release/deps/agent_state_workload-HASH \
+  --output /private/tmp/holon-agent-state-d0-baseline --label baseline-normal \
+  --cases normal --repeat 3 --warmup-per-agent 13 --measured-per-agent 32
+
+python3 benchmarks/agent-state/run.py run \
+  --binary /absolute/target/release/deps/agent_state_workload-HASH \
+  --output /private/tmp/holon-agent-state-d0-baseline --label baseline-pressure \
+  --cases pressure --repeat 3 --warmup-per-agent 4 --measured-per-agent 8
+```
+
+Each case runs in a fresh process. No fixture dimension can be reduced by an
+environment variable. `normal` has 8 loaded Agents and 4 active request lanes;
+`pressure` has 32 and 16. The two groups run sequentially while the other Agents
+remain loaded and stopped. Each Agent starts with:
+
+| Fixture | Exact quantity |
+| --- | ---: |
+| Historical messages | 100,000 |
+| Linked historical turn/brief/transcript sets | 64 |
+| Historical records in those four families plus the tool record | 100,193 |
+| Accepted queued operator inputs | 100 |
+| Body of each queued input | 16,384 bytes |
+| Synthetic stdout in the latest linked tool record | 10,485,760 bytes |
+| Prompt estimated-token budget | 8,192 |
+
+History messages have short deterministic bodies. This is not 100,000 complete
+turn bundles. Named creation already activates an empty runtime, so setup first
+creates all identities and homes, applies canonical business Stop to each Agent,
+then shuts down and drains that Host before seeding cold storage. Service
+shutdown alone does not imply stopped business State. A fresh Host restores the
+seeded queue; no fixture write races a loaded runtime. Setup records its own
+duration, actual I/O and memory.
+
+History seeding uses the insert-only `ColdFixtureWriter` on a drained, stopped
+scope. Its typed methods derive the current incarnation, reject existing rows,
+and prepare original writer proofs before inserting. Canonical insertion,
+Input qualification/birth, Queue qualification and Work completion heads commit
+in the same `RuntimeDb::transaction`; no late scope adoption or checkpoint reset
+is allowed. Final State uses the Work and Scheduling writer protocols.
+One history message is inserted through the typed repository and validates the
+serialized payload, SHA-256, preview, kind, timestamp and fresh source revision
+template. The remaining messages use bounded 128-record prepared inserts with the same normalized
+columns, monotonically increasing global source activity sequence, revision 1
+and final per-Agent message sequence. Full row counts, normalized IDs/scope/turn
+and work linkage, unique message sequences, source scope/activity/timestamps and
+sequence allocator are checked; four messages also round-trip through the typed
+repository and verify their payload hashes/previews. Linked turn/brief/transcript,
+stdout, queued input and AgentState fixtures use the same typed cold writer.
+Each historical Result Brief explicitly names its Transcript content source.
+SQL is limited to fresh, stopped, cold synthetic history setup; runtime writes and
+measured reads retain their production paths. Prepared inserts avoid repeated
+source `MAX(activity_seq)` scans; each original row still receives canonical D3
+readback and qualification. ACKs merge in insertion order before Native birth
+publication, preserving birth sequences across batch boundaries. State counts
+are synchronized once per batch without changing fixed dimensions.
+Setup timings are only comparable when this seed mode matches; the older D0
+fixture predates these qualification tables, so cross-version setup comparisons
+must disclose the additional candidate writer protocol.
+
+The stdout has a small
+`D0_STDOUT_PREVIEW` summary/preview and a full durable body. Preview and provider
+request assertions reject materializing the full stdout into a request.
+
+One untimed preview round warms each loaded Agent; five rounds are measured.
+Preview includes acquisition and rendering through `RuntimeHandle::preview_prompt`.
+It does not run the dispatch WorkItemScoped adoption or construct a provider
+request. A separate phase submits one new 16 KiB message per stopped Agent.
+The existing runtime contract persists it as Aborted, keeps live `pending=100`
+and retains the original 100 accepted queue members. The ACK diagnostic verifies
+live state plus durable queue disposition/count; it does not directly observe
+live queue allocations or claim the new message was queued. Verification reads
+are outside each operation's timer. Whole-phase wall time and actual SQL/I/O
+counters include verification; the artifact declares these scopes explicitly. Acceptance and backpressure behavior require
+D3's own evidence; dispatch supplies most commit/publication gate samples.
+
+The dispatch phase uses the actual Host Start, scheduler, owner selector,
+context/resource preparation, provider request builder and terminal writes.
+The provider initially returns exactly one visible GetAgent call, restricted to
+that same Agent, with no Text. A subsequent conversation containing its actual
+successful tool result receives deterministic Text, ending the dispatch; a
+possible tool-less delivery round receives Text as well. Initial versus follow-up
+requests are identified from conversation/tool-result anchors. Every request
+checks the current_input section contains this Agent’s pending operator marker. Each Agent's warmup barrier waits inside
+the provider after its request is built. After all lanes arrive, reset the
+probe and release them together. After the measured responses, hold the next
+built request, snapshot metrics, then Stop outside the interval. Warm history
+therefore grows across real scheduler/provider rounds.
+
+Default sampling is `ceil(100 / loaded)` warmup requests and
+`ceil(1000 / loaded)` measured responses **per Agent**: normal 13/125, pressure
+4/32. One additional barrier response is inside the interval; its already-built
+request is excluded. The final held request is counted as constructed but has
+no response. Provider calls and context preparations are different quantities;
+the artifact reports actual timing sample counts. At least two provider rounds occur per admitted dispatch (GetAgent then Text).
+The pilot must verify this policy fits the 100 pending inputs; exhausted input or missing mandatory input
+fails rather than silently changing the workload. Sampling overrides are for
+the pre-freeze pilot; compared artifacts must use the same values.
+
+The opt-in process-wide `IoProbe` starts before Host/RuntimeDb construction.
+SQL counts are executed SQLite statements classified using `stmt_readonly`,
+with transaction-control statements separate. They include business validation
+and commits; they are not automatically context-only attribution. File counters
+cover instrumented AGENTS, curated memory, plan and skill readers/discovery, as
+declared by the probe implementation; they are neither syscalls nor all FS I/O.
+Logical diagnostic stage counters are recorded separately and never renamed as
+SQL/file counts. Actual timing hooks measure context preparation to initial
+request construction, excluding network. `CommitPublication` starts at
+`begin_mutation` entry, before reservation acquisition, and includes owner queue
+wait, candidate preparation, SQL and publication; it is not SQL-ACK-to-publication
+latency.
+
+Memory reports instrumented System-allocator requested live/phase-peak bytes
+and process lifetime peak RSS (`getrusage`). SQLite native allocations and
+allocator overhead are excluded from the former; OS page cache is uncontrolled.
+Resident-domain bytes and snapshot-pinned allocation bytes remain `null` until
+the production state model provides exact accounting. Comparing the instrumented
+System allocator to an uninstrumented production allocator is unsupported.
+
+Compare same-machine, same-toolchain, same-instrumentation runs:
+
+```sh
+python3 benchmarks/agent-state/run.py compare \
+  --baseline /private/tmp/holon-agent-state-d0-baseline \
+  --candidate /private/tmp/holon-agent-state-d0-candidate \
+  --output /private/tmp/holon-agent-state-d0-comparison.json
+```
+
+The normal gate uses the median of independent-run p95 values: context/request
+and commit/publication no more than 1.10 times baseline, constructed-request
+throughput at least 0.95 times baseline. At least three runs and 100 actual
+timing samples per kind per run are required. Workload, sampling, request shape,
+mandatory-root checks and recorded environment must match. Pressure, setup,
+RSS and unavailable resident/pin metrics remain separately reported. Failure,
+timeout or OOM stays in the run manifest; the driver never retries with smaller
+data. Prompt topology/shape is not a full prompt-content golden: retain the
+existing context golden and correctness suites for that contract.
+
+Artifacts contain counters, sizes, IDs, topology hashes and deterministic fixture
+metadata, not provider credentials, full requests or full stdout. Raw stdout,
+stderr, binary SHA-256 and unsuccessful-run information are preserved next to
+successful JSON artifacts. This harness does not establish zero ordinary reads,
+backpressure/pin-release correctness, end-to-end UX or real-provider cost/cache
+acceptance; those require the corresponding later implementation and tests.
+
+The first full-fixture pilot (`pilot-normal-01` and `pilot-pressure-01`) failed
+after seeding its first Agent: named creation had left the empty runtime loaded,
+so activation returned that instance with zero pending inputs. No valid timing
+samples were saved. Its manifest/stdout/stderr remain unchanged; use a new label
+for the corrected cold-setup pilot. The old setup took approximately 124–146
+seconds per Agent; bulk setup acceleration remains unmeasured until that pilot.
+
+The corrected cold-setup pilot (`pilot-cold-v2`) then reached enqueue and failed
+an incorrect `pending=101` assertion. Production explicitly discards new input
+while Stopped, so the next pilot verifies its Aborted disposition and unchanged
+100 pending instead. Original accepted pending fixture dimensions remain fixed.
+The failed cold-v2 artifacts are preserved and supply no valid baseline samples.
+A suspected wait schema issue was withdrawn: current DDL and a read-only SQLite
+`PRAGMA table_info(wait_conditions)` both retain `payload_json`.

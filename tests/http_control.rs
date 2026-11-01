@@ -16,6 +16,7 @@ http_async_tests!(
     control_prompt_is_open_on_loopback_auto_without_token,
     control_prompt_requires_configured_token_on_loopback_auto,
     control_agent_create_returns_degraded_receipt_and_repairs,
+    control_agent_create_qualifies_loaded_creation_audit,
     agent_state_route_returns_aggregated_snapshot,
     unloaded_agent_state_route_uses_storage_without_starting_runtime,
     unloaded_agent_detail_route_uses_storage_without_starting_runtime,

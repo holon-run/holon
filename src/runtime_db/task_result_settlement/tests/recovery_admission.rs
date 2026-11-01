@@ -148,6 +148,251 @@ fn latest(db: &RuntimeDb, record: &TaskResultSettlementRecord) -> TaskResultSett
 }
 
 #[test]
+fn recovery_filter_borrows_unchanged_records_but_preserves_sql_readback() {
+    for snapshot in SNAPSHOTS {
+        let (_dir, db) = runtime_db();
+        let record = result_fixture(&db, snapshot);
+        let records = [record.clone()];
+        let now = record.next_recheck_at.unwrap();
+        let check_borrowed = |activation| {
+            db.transaction(|tx| {
+                let selected = filter_recovery_snapshot_candidates_tx(
+                    tx,
+                    &record.agent_id,
+                    activation,
+                    &records,
+                    now,
+                )?;
+                assert_eq!(selected.len(), 1, "{snapshot:?}");
+                assert!(matches!(&selected[0], std::borrow::Cow::Borrowed(original)
+                    if std::ptr::eq(*original, &records[0])));
+                Ok(())
+            })
+            .unwrap();
+        };
+        check_borrowed("normal-input");
+        let source = recovery_source(&db, "recovery-source");
+        canonical_attempt(&db, &source, "root-a", None);
+        check_borrowed("root-a");
+        let mut stale = record.clone();
+        stale.task_status = "forged".into();
+        let stale = [stale];
+        db.transaction(|tx| {
+            let selected = filter_recovery_snapshot_candidates_tx(
+                tx,
+                &record.agent_id,
+                "root-a",
+                &stale,
+                now,
+            )?;
+            assert_eq!(selected.len(), 1);
+            assert!(matches!(&selected[0], std::borrow::Cow::Owned(current) if current == &record));
+            Ok(())
+        })
+        .unwrap();
+        assert_eq!(latest(&db, &record), record, "filter must not write");
+    }
+}
+
+#[test]
+fn recovery_candidate_identity_scan_keeps_order_and_charges_only_identities() -> Result<()> {
+    use crate::{
+        config::StateMemoryLimits,
+        diagnostics::resource_io::ResourceReadMaterial,
+        runtime::{
+            input_evidence_budget::InputEvidenceBudgetLedger,
+            resident_input_evidence::InputEvidenceScope,
+        },
+    };
+
+    for snapshot in SNAPSHOTS {
+        let (_dir, db) = runtime_db();
+        let record = result_fixture(&db, snapshot);
+        let second = pending_record(1);
+        insert(&db, &second);
+        let source = recovery_source(&db, "recovery-source");
+        let mut prior = canonical_attempt(&db, &source, "root-a", None);
+        prior.state = ExecutionAttemptState::Interrupted;
+        save_attempt(&db, &prior);
+        canonical_attempt(&db, &source, "fallback-a", Some("root-a"));
+        let now = second.next_recheck_at.unwrap();
+        let ledger = InputEvidenceBudgetLedger::new(StateMemoryLimits::default())?;
+        let scope = InputEvidenceScope {
+            agent_id: record.agent_id.clone(),
+            identity_incarnation: 1,
+        };
+        db.transaction(|tx| {
+            let read = RecoverySnapshotRead::new(tx, &record.agent_id, "fallback-a")?;
+            let material = ResourceReadMaterial::new(&ledger, &scope)?;
+            let before = material.finish()?;
+            material.read(|| {
+                let ids = read.candidate_identities(record.work_item_id.as_deref(), now, 64)?;
+                assert_eq!(
+                    ids,
+                    [
+                        record.result_identity.clone(),
+                        second.result_identity.clone()
+                    ]
+                );
+                let after = material.finish()?;
+                assert_eq!(after.1 - before.1, ids.len() * 8);
+                assert_eq!(
+                    after.0 - before.0,
+                    ids.iter()
+                        .map(|id| (id.len() as u64 + 128) * 8)
+                        .sum::<u64>()
+                );
+                assert_eq!(
+                    read.candidate_identities(record.work_item_id.as_deref(), now, 1)?,
+                    [record.result_identity.clone()]
+                );
+                assert!(read
+                    .candidate_identities(Some("other-owner"), now, 64)?
+                    .is_empty());
+                assert!(read
+                    .candidate_identities(record.work_item_id.as_deref(), now, 0)?
+                    .is_empty());
+                Ok(())
+            })?;
+            assert_eq!(
+                read.candidates(record.work_item_id.as_deref(), now, 64)?,
+                [record.clone(), second.clone()]
+            );
+            Ok(())
+        })?;
+        let mut invalid = source;
+        invalid.authority_class = AuthorityClass::ExternalEvidence;
+        db.messages().upsert(&invalid)?;
+        db.transaction(|tx| {
+            let read = RecoverySnapshotRead::new(tx, &record.agent_id, "fallback-a")?;
+            assert!(read
+                .candidate_identities(record.work_item_id.as_deref(), now, 64)?
+                .is_empty());
+            Ok(())
+        })?;
+        assert_eq!(
+            latest(&db, &record),
+            record,
+            "identity selection must not write"
+        );
+        assert_eq!(
+            latest(&db, &second),
+            second,
+            "identity selection must not write"
+        );
+    }
+    Ok(())
+}
+
+#[test]
+fn recovery_snapshot_read_reuses_lineage_and_preserves_result_readback() -> Result<()> {
+    use crate::{
+        config::StateMemoryLimits,
+        diagnostics::resource_io::ResourceReadMaterial,
+        runtime::{
+            input_evidence_budget::InputEvidenceBudgetLedger,
+            resident_input_evidence::InputEvidenceScope,
+        },
+    };
+
+    for snapshot in SNAPSHOTS {
+        let (_dir, db) = runtime_db();
+        let record = result_fixture(&db, snapshot);
+        let source = recovery_source(&db, "recovery-source");
+        let mut prior = canonical_attempt(&db, &source, "root-a", None);
+        prior.state = ExecutionAttemptState::Interrupted;
+        save_attempt(&db, &prior);
+        canonical_attempt(&db, &source, "fallback-a", Some("root-a"));
+        let now = record.next_recheck_at.unwrap();
+        let ledger = InputEvidenceBudgetLedger::new(StateMemoryLimits::default())?;
+        let scope = InputEvidenceScope {
+            agent_id: record.agent_id.clone(),
+            identity_incarnation: 1,
+        };
+        let measure = |shared: bool| -> Result<_> {
+            let material = ResourceReadMaterial::new(&ledger, &scope)?;
+            db.transaction(|tx| {
+                material.read(|| {
+                    if shared {
+                        let read = RecoverySnapshotRead::new(tx, &record.agent_id, "fallback-a")?;
+                        let records = read.candidates(record.work_item_id.as_deref(), now, 64)?;
+                        let selected = read.filter(&records, now)?;
+                        assert_eq!(records, vec![record.clone()]);
+                        assert!(
+                            matches!(selected.as_slice(), [std::borrow::Cow::Borrowed(value)]
+                            if std::ptr::eq(*value, &records[0]))
+                        );
+                    } else {
+                        let records = recovery_snapshot_candidates_for_owner_tx(
+                            tx,
+                            &record.agent_id,
+                            record.work_item_id.as_deref(),
+                            "fallback-a",
+                            now,
+                            64,
+                        )?;
+                        let selected = filter_recovery_snapshot_candidates_tx(
+                            tx,
+                            &record.agent_id,
+                            "fallback-a",
+                            &records,
+                            now,
+                        )?;
+                        assert_eq!(records, vec![record.clone()]);
+                        assert!(
+                            matches!(selected.as_slice(), [std::borrow::Cow::Borrowed(value)]
+                            if std::ptr::eq(*value, &records[0]))
+                        );
+                    }
+                    Ok(())
+                })
+            })?;
+            material.finish()
+        };
+        let separate = measure(false)?;
+        let shared = measure(true)?;
+        assert!(
+            shared.0 < separate.0 && shared.1 < separate.1,
+            "{snapshot:?}"
+        );
+
+        let (_other_dir, other_db) = runtime_db();
+        db.transaction(|tx| {
+            let read = RecoverySnapshotRead::new(tx, &record.agent_id, "fallback-a")?;
+            read.validate_cut(tx, &record.agent_id)?;
+            assert!(read.validate_cut(tx, "another-agent").is_err());
+            other_db.transaction(|other_tx| {
+                assert!(read.validate_cut(other_tx, &record.agent_id).is_err());
+                Ok(())
+            })?;
+            let mut stale = record.clone();
+            stale.task_status = "forged".into();
+            let stale = [stale];
+            let selected = read.filter(&stale, now)?;
+            assert!(
+                matches!(selected.as_slice(), [std::borrow::Cow::Owned(current)]
+                if current == &record),
+                "canonical SQL readback must not be skipped"
+            );
+            Ok(())
+        })?;
+        let mut invalid = source.clone();
+        invalid.authority_class = AuthorityClass::ExternalEvidence;
+        db.messages().upsert(&invalid)?;
+        db.transaction(|tx| {
+            let read = RecoverySnapshotRead::new(tx, &record.agent_id, "fallback-a")?;
+            assert!(read
+                .candidates(record.work_item_id.as_deref(), now, 64)?
+                .is_empty());
+            assert!(read.filter(&[record.clone()], now)?.is_empty());
+            Ok(())
+        })?;
+        assert_eq!(latest(&db, &record), record, "selection must not write");
+    }
+    Ok(())
+}
+
+#[test]
 fn canonical_snapshot_admission_charges_only_selected_results_and_preserves_retry_fields() {
     for snapshot in SNAPSHOTS {
         let (_dir, db) = runtime_db();

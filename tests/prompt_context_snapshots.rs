@@ -120,7 +120,7 @@ fn render_context_snapshot_named(
     continuation: Option<&ContinuationResolution>,
     scenario_name: Option<&str>,
 ) -> Result<String> {
-    storage.write_agent(session)?;
+    storage.write_agent_for_fixture(session)?;
     let mut current_message = current_message.clone();
     current_message.created_at = "2024-01-02T03:04:05.123Z".parse()?;
     let prompt = build_effective_prompt(

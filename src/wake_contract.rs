@@ -1,19 +1,21 @@
+use crate::diagnostics::resource_io::{admit_cloned_value, charge_owned_metadata};
 use crate::types::{
     AdmissionContext, AuthorityClass, MessageDeliverySurface, MessageEnvelope, MessageKind,
     MessageOrigin, WaitConditionKind, WaitConditionRecord, WaitConditionStatus, WakeSource,
 };
+use anyhow::Result;
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct WakeMatch {
-    pub source: String,
-    pub subject_ref: Option<String>,
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct WakeMatch<'a> {
+    pub source: &'static str,
+    pub subject_ref: Option<&'a str>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum WaitTriggerSelection<'a> {
     Match {
         condition: &'a WaitConditionRecord,
-        wake: WakeMatch,
+        wake: WakeMatch<'a>,
     },
     StaleExact {
         wait_id: String,
@@ -62,10 +64,78 @@ pub(crate) fn agent_message_reply_reference(message: &MessageEnvelope) -> Option
 }
 
 pub(crate) fn select_wait_to_trigger<'a>(
-    message: &MessageEnvelope,
+    message: &'a MessageEnvelope,
     conditions: &'a [WaitConditionRecord],
-) -> WaitTriggerSelection<'a> {
-    let candidates = conditions
+) -> Result<WaitTriggerSelection<'a>> {
+    let mut candidates = wait_trigger_candidates(message, conditions);
+    if let Some(wait_id) = authoritative_wait_correlation(message) {
+        return Ok(
+            if let Some((condition, wake)) =
+                candidates.find(|(condition, _)| condition.id == wait_id)
+            {
+                WaitTriggerSelection::Match { condition, wake }
+            } else {
+                admit_cloned_value(&wait_id)?;
+                WaitTriggerSelection::StaleExact {
+                    wait_id: wait_id.to_string(),
+                }
+            },
+        );
+    }
+    let Some(first) = candidates.next() else {
+        return Ok(WaitTriggerSelection::NoMatch);
+    };
+    let Some(second) = candidates.next() else {
+        return Ok(WaitTriggerSelection::Match {
+            condition: first.0,
+            wake: first.1,
+        });
+    };
+    // A task result consumes only one trigger marker per agent (#3124).
+    // Check every candidate before choosing, without a candidate Vec or sort.
+    if message.kind == MessageKind::TaskResult
+        && wait_trigger_candidates(message, conditions).all(|(condition, _)| {
+            condition.kind == WaitConditionKind::Task
+                && condition.wake_sources.iter().any(|source| {
+                    matches!(
+                        source,
+                        WakeSource::TaskResult { task_id }
+                            if Some(task_id.as_str()) == message.task_id.as_deref()
+                    )
+                })
+        })
+    {
+        let (condition, wake) = std::iter::once(first)
+            .chain(std::iter::once(second))
+            .chain(candidates)
+            .min_by(|(left, _), (right, _)| {
+                let left_owner = left.work_item_id.as_deref() == message.work_item_id.as_deref();
+                let right_owner = right.work_item_id.as_deref() == message.work_item_id.as_deref();
+                right_owner
+                    .cmp(&left_owner)
+                    .then_with(|| left.created_at.cmp(&right.created_at))
+                    .then_with(|| left.id.cmp(&right.id))
+            })
+            .expect("two candidates have a deterministic task wait");
+        return Ok(WaitTriggerSelection::Match { condition, wake });
+    }
+    let mut wait_ids = Vec::new();
+    for (condition, _) in std::iter::once(first)
+        .chain(std::iter::once(second))
+        .chain(candidates)
+    {
+        admit_cloned_value(&condition.id)?;
+        charge_owned_metadata(std::mem::size_of::<String>() as u64, 1)?;
+        wait_ids.push(condition.id.clone());
+    }
+    Ok(WaitTriggerSelection::Ambiguous { wait_ids })
+}
+
+fn wait_trigger_candidates<'a>(
+    message: &'a MessageEnvelope,
+    conditions: &'a [WaitConditionRecord],
+) -> impl Iterator<Item = (&'a WaitConditionRecord, WakeMatch<'a>)> {
+    conditions
         .iter()
         .filter(|condition| {
             condition.status == WaitConditionStatus::Active
@@ -82,70 +152,6 @@ pub(crate) fn select_wait_to_trigger<'a>(
         .filter_map(|condition| {
             matching_wake_source(message, condition).map(|wake| (condition, wake))
         })
-        .collect::<Vec<_>>();
-
-    if let Some(wait_id) = authoritative_wait_correlation(message) {
-        return candidates
-            .into_iter()
-            .find(|(condition, _)| condition.id == wait_id)
-            .map_or_else(
-                || WaitTriggerSelection::StaleExact {
-                    wait_id: wait_id.to_string(),
-                },
-                |(condition, wake)| WaitTriggerSelection::Match { condition, wake },
-            );
-    }
-
-    match candidates.as_slice() {
-        [] => WaitTriggerSelection::NoMatch,
-        [(condition, wake)] => WaitTriggerSelection::Match {
-            condition,
-            wake: wake.clone(),
-        },
-        _ => {
-            // One task result message admits only one consumed trigger
-            // marker per agent (wait_conditions UNIQUE(agent_id,
-            // trigger_message_id)). When several same-agent task waits
-            // match the result, the task owner's own wait wins first and
-            // then the earliest wait deterministically; other waiters keep
-            // their unsatisfied waits as durable evidence (#3124).
-            if message.kind == MessageKind::TaskResult
-                && candidates.iter().all(|(condition, _)| {
-                    condition.kind == WaitConditionKind::Task
-                        && condition.wake_sources.iter().any(|source| {
-                            matches!(
-                                source,
-                                WakeSource::TaskResult { task_id }
-                                    if Some(task_id.as_str()) == message.task_id.as_deref()
-                            )
-                        })
-                })
-            {
-                let mut selection = candidates;
-                selection.sort_by(|(left, _), (right, _)| {
-                    let left_owner =
-                        left.work_item_id.as_deref() == message.work_item_id.as_deref();
-                    let right_owner =
-                        right.work_item_id.as_deref() == message.work_item_id.as_deref();
-                    right_owner
-                        .cmp(&left_owner)
-                        .then_with(|| left.created_at.cmp(&right.created_at))
-                        .then_with(|| left.id.cmp(&right.id))
-                });
-                let (condition, wake) = selection
-                    .into_iter()
-                    .next()
-                    .expect("non-empty candidate slice has a deterministic task wait");
-                return WaitTriggerSelection::Match { condition, wake };
-            }
-            WaitTriggerSelection::Ambiguous {
-                wait_ids: candidates
-                    .iter()
-                    .map(|(condition, _)| condition.id.clone())
-                    .collect(),
-            }
-        }
-    }
 }
 
 pub(crate) fn authoritative_wait_correlation(message: &MessageEnvelope) -> Option<&str> {
@@ -173,10 +179,10 @@ pub(crate) fn authoritative_wait_correlation(message: &MessageEnvelope) -> Optio
         .flatten()
 }
 
-pub(crate) fn matching_wake_source(
-    message: &MessageEnvelope,
-    condition: &WaitConditionRecord,
-) -> Option<WakeMatch> {
+pub(crate) fn matching_wake_source<'a>(
+    message: &'a MessageEnvelope,
+    condition: &'a WaitConditionRecord,
+) -> Option<WakeMatch<'a>> {
     // A task result message is addressed to the task's owner, but any
     // WorkItem (or agent lifecycle) inside the same agent may hold the
     // dependency wait (#3124): match task waits by task identity instead of
@@ -197,19 +203,19 @@ pub(crate) fn matching_wake_source(
     {
         return None;
     }
-    let matched = |source: &str, subject_ref: Option<String>| WakeMatch {
-        source: source.to_string(),
+    let matched = |source: &'static str, subject_ref| WakeMatch {
+        source,
         subject_ref,
     };
     if exact_reply {
-        return Some(matched("task_result", condition.subject_ref.clone()));
+        return Some(matched("task_result", condition.subject_ref.as_deref()));
     }
     match (&message.kind, &message.origin) {
         (MessageKind::TaskResult, MessageOrigin::Task { task_id }) => condition
             .wake_sources
             .iter()
             .any(|source| matches!(source, WakeSource::TaskResult { task_id: id } if id == task_id))
-            .then(|| matched("task_result", Some(task_id.clone()))),
+            .then(|| matched("task_result", Some(task_id.as_str()))),
         (MessageKind::CallbackEvent | MessageKind::WebhookEvent | MessageKind::ChannelEvent, _) => {
             let external_trigger_id = message.source_refs.get("external_trigger_id");
             condition
@@ -223,7 +229,7 @@ pub(crate) fn matching_wake_source(
                         .is_none_or(|expected| external_trigger_id == Some(expected)),
                     _ => false,
                 })
-                .then(|| matched("external_ingress", external_trigger_id.cloned()))
+                .then(|| matched("external_ingress", external_trigger_id.map(String::as_str)))
         }
         (MessageKind::TimerTick, MessageOrigin::Timer { timer_id }) => {
             (condition.subject_ref.as_deref() == Some(timer_id.as_str())
@@ -231,16 +237,16 @@ pub(crate) fn matching_wake_source(
                     .wake_sources
                     .iter()
                     .any(|source| matches!(source, WakeSource::Timer { .. })))
-            .then(|| matched("timer", Some(timer_id.clone())))
+            .then(|| matched("timer", Some(timer_id.as_str())))
         }
         (MessageKind::OperatorPrompt, MessageOrigin::Operator { actor_id, .. }) => condition
             .wake_sources
             .iter()
             .any(|source| matches!(source, WakeSource::OperatorInput))
-            .then(|| matched("operator_input", actor_id.clone())),
+            .then(|| matched("operator_input", actor_id.as_deref())),
         (MessageKind::SystemTick, MessageOrigin::System { subsystem }) => {
             if exact_wait_recheck_source(message, condition, subsystem) {
-                return Some(matched("wait_recheck", Some(condition.id.clone())));
+                return Some(matched("wait_recheck", Some(condition.id.as_str())));
             }
             if let Some(external) = matching_wake_hint_external_source(message, condition) {
                 return Some(external);
@@ -249,7 +255,7 @@ pub(crate) fn matching_wake_source(
                 .wake_sources
                 .iter()
                 .any(|source| matches!(source, WakeSource::SystemTick))
-                .then(|| matched("system_tick", Some(subsystem.clone())))
+                .then(|| matched("system_tick", Some(subsystem.as_str())))
         }
         _ => None,
     }
@@ -286,10 +292,10 @@ fn exact_wait_recheck_source(
             == Some(recheck_at)
 }
 
-fn matching_wake_hint_external_source(
-    message: &MessageEnvelope,
+fn matching_wake_hint_external_source<'a>(
+    message: &'a MessageEnvelope,
     condition: &WaitConditionRecord,
-) -> Option<WakeMatch> {
+) -> Option<WakeMatch<'a>> {
     let wake_hint = message.metadata.as_ref()?.get("wake_hint")?;
     let external_trigger_id = wake_hint
         .get("external_trigger_id")
@@ -308,8 +314,8 @@ fn matching_wake_hint_external_source(
             _ => false,
         })
         .then(|| WakeMatch {
-            source: "external_ingress".to_string(),
-            subject_ref: external_trigger_id.map(ToString::to_string),
+            source: "external_ingress",
+            subject_ref: external_trigger_id,
         })
 }
 
@@ -318,6 +324,8 @@ mod tests {
     use super::*;
     use crate::types::{MessageBody, Priority, WaitConditionKind};
     use chrono::Utc;
+
+    mod selector_budget_tests;
 
     fn task_wait(id: &str, work_item_id: Option<&str>, task_id: &str) -> WaitConditionRecord {
         let now = Utc::now();
@@ -373,7 +381,7 @@ mod tests {
         // but any WorkItem in the same agent may hold the dependency wait.
         let message = task_result("task-a", Some("work-b"));
         let wait = task_wait("wait-a", Some("work-a"), "task-a");
-        match select_wait_to_trigger(&message, &[wait]) {
+        match select_wait_to_trigger(&message, &[wait]).unwrap() {
             WaitTriggerSelection::Match { condition, wake } => {
                 assert_eq!(condition.id, "wait-a");
                 assert_eq!(wake.source, "task_result");
@@ -391,7 +399,7 @@ mod tests {
         let owner_wait = task_wait("wait-owner", Some("work-b"), "task-a");
         let mut other_wait = task_wait("wait-other", Some("work-a"), "task-a");
         other_wait.created_at -= chrono::Duration::milliseconds(5);
-        match select_wait_to_trigger(&message, &[other_wait, owner_wait]) {
+        match select_wait_to_trigger(&message, &[other_wait, owner_wait]).unwrap() {
             WaitTriggerSelection::Match { condition, .. } => {
                 assert_eq!(condition.id, "wait-owner");
             }
@@ -409,7 +417,8 @@ mod tests {
                     task_wait("wait-a", Some("work-a"), "task-a"),
                     task_wait("wait-b", Some("work-a"), "task-a"),
                 ],
-            ),
+            )
+            .unwrap(),
             WaitTriggerSelection::Ambiguous {
                 wait_ids: vec!["wait-a".into(), "wait-b".into()],
             }
@@ -426,7 +435,8 @@ mod tests {
             select_wait_to_trigger(
                 &message,
                 &[task_wait("wait-current", Some("work-a"), "task-a")]
-            ),
+            )
+            .unwrap(),
             WaitTriggerSelection::StaleExact {
                 wait_id: "wait-old".into(),
             }
@@ -438,7 +448,8 @@ mod tests {
         let mut message = task_result("task-a", Some("work-a"));
         message.turn_id = Some("turn-wait".into());
         assert_eq!(
-            select_wait_to_trigger(&message, &[task_wait("wait-a", Some("work-a"), "task-a")]),
+            select_wait_to_trigger(&message, &[task_wait("wait-a", Some("work-a"), "task-a")])
+                .unwrap(),
             WaitTriggerSelection::NoMatch
         );
     }

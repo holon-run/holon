@@ -124,7 +124,7 @@ fn canonical_root(db: &RuntimeDb) -> Result<ExecutionAttempt> {
 
     let mut attempt = root();
     db.agent_states()
-        .upsert(&AgentState::new(&attempt.agent_id))?;
+        .upsert_for_fixture(&AgentState::new(&attempt.agent_id))?;
     db.agent_identities().upsert(&AgentIdentityRecord::new(
         &attempt.agent_id,
         AgentKind::Named,
@@ -269,7 +269,7 @@ fn canonical_dispatch_survives_restart_and_benign_control_revision_changes() -> 
     let episode = canonical_episode(&db, &attempt)?;
     let admission = lease(&db, &[transport("canonical")])?;
     db.agent_states()
-        .upsert(&AgentState::new(&attempt.agent_id))?;
+        .upsert_for_fixture(&AgentState::new(&attempt.agent_id))?;
     drop(db);
     let db = reopen(&dir)?;
     assert!(matches!(
@@ -477,7 +477,7 @@ fn stopped_agent_or_invalid_owner_is_denied_without_charging() -> Result<()> {
             "stopped" => {
                 let mut state = AgentState::new(&attempt.agent_id);
                 state.status = AgentStatus::Stopped;
-                db.agent_states().upsert(&state)?;
+                db.agent_states().upsert_for_fixture(&state)?;
             }
             "identity" => {
                 let mut identity = db.agent_identities().latest(&attempt.agent_id)?.unwrap();
@@ -696,17 +696,18 @@ fn dispatch_storage_and_decode_errors_are_not_lifecycle_denials() -> Result<()> 
         let episode = canonical_episode(&db, &attempt)?;
         let admission = lease(&db, &[transport(case)])?;
         db.transaction(|tx| {
+            // Pass JSON storage constraints, then fail typed canonical decoding.
             let sql = match case {
                 "attempt_json" => {
-                    "UPDATE execution_protocol_attempts SET payload_json = '{' WHERE agent_id = 'agent-a'"
+                    "UPDATE execution_protocol_attempts SET payload_json = 'null' WHERE agent_id = 'agent-a'"
                 }
-                "owner_json" => "UPDATE work_items SET payload_json = '{' WHERE work_item_id = 'work-a'",
+                "owner_json" => "UPDATE work_items SET payload_json = 'null' WHERE work_item_id = 'work-a'",
                 "lane_json" => {
-                    "UPDATE execution_protocol_work_items SET payload_json = '{' WHERE agent_id = 'agent-a'"
+                    "UPDATE execution_protocol_work_items SET payload_json = 'null' WHERE agent_id = 'agent-a'"
                 }
-                "episode_json" => "UPDATE provider_recovery_episodes SET binding_json = '{'",
+                "episode_json" => "UPDATE provider_recovery_episodes SET binding_json = 'null'",
                 "authority_status" => "UPDATE agent_states SET status = 'invalid' WHERE agent_id = 'agent-a'",
-                "identity_json" => "UPDATE agent_identities SET payload_json = '{' WHERE agent_id = 'agent-a'",
+                "identity_json" => "UPDATE agent_identities SET payload_json = 'null' WHERE agent_id = 'agent-a'",
                 "authority_sql" => "ALTER TABLE agent_identities RENAME TO unavailable_agent_identities",
                 "identity_overflow" => return Ok(()),
                 _ => unreachable!(),

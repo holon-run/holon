@@ -73,7 +73,8 @@ fn public_named_legacy_identity_maps_to_resolved_independent_projection() {
         None,
     );
     let projection =
-        project_agent_canonical_relations(&identity, AgentCanonicalRecordSet::default(), None);
+        project_agent_canonical_relations(&identity, AgentCanonicalRecordSet::default(), None)
+            .unwrap();
 
     assert_eq!(projection.resolution, AgentCanonicalResolution::Resolved);
     assert_eq!(projection.lineage, None);
@@ -112,7 +113,8 @@ fn private_child_legacy_identity_uses_parent_and_task_evidence() {
         &identity,
         AgentCanonicalRecordSet::default(),
         Some(&task),
-    );
+    )
+    .unwrap();
 
     assert_eq!(projection.resolution, AgentCanonicalResolution::Resolved);
     assert_eq!(
@@ -147,7 +149,8 @@ fn parent_supervised_legacy_identity_without_task_is_not_guessed() {
         Some("missing-task"),
     );
     let projection =
-        project_agent_canonical_relations(&identity, AgentCanonicalRecordSet::default(), None);
+        project_agent_canonical_relations(&identity, AgentCanonicalRecordSet::default(), None)
+            .unwrap();
 
     assert_eq!(
         projection.resolution,
@@ -175,7 +178,8 @@ fn conflicting_legacy_parent_fields_are_reported() {
         &identity,
         AgentCanonicalRecordSet::default(),
         Some(&task),
-    );
+    )
+    .unwrap();
 
     assert_eq!(
         projection.resolution,
@@ -213,7 +217,8 @@ fn canonical_axis_wins_over_legacy_default() {
             ..Default::default()
         },
         None,
-    );
+    )
+    .unwrap();
 
     assert_eq!(projection.durability, Some(canonical_durability));
     assert_eq!(
@@ -238,7 +243,8 @@ fn canonical_projection_round_trips_and_has_json_schema() {
         None,
     );
     let projection =
-        project_agent_canonical_relations(&identity, AgentCanonicalRecordSet::default(), None);
+        project_agent_canonical_relations(&identity, AgentCanonicalRecordSet::default(), None)
+            .unwrap();
     let json = serde_json::to_value(&projection).unwrap();
     assert_eq!(
         serde_json::from_value::<AgentCanonicalRelationsProjection>(json).unwrap(),
@@ -647,6 +653,45 @@ fn backfill_report_does_not_migrate_and_apply_can_record_pre_migration_backup() 
             "DROP TABLE source_revision_repair_block_publications;
              DROP TABLE source_revision_repair_block_sources;
              DROP TABLE source_revision_repair_blocks;
+             DROP TABLE command_task_creation_sources;
+             DROP TABLE current_read_qualification;
+             DROP TABLE current_read_revisions;
+             DROP TABLE input_query_birth_members;
+             DROP TABLE input_query_birth_cursors;
+             DROP INDEX input_native_known_current;
+             DROP INDEX input_native_known_fixed;
+             DROP INDEX input_native_known_recovery;
+             DROP TABLE task_stop_effects;
+             DROP TABLE task_status_child_observers;
+             DROP TABLE task_status_fixed_delegations;
+             DROP TABLE task_status_fixed_controls;
+             DROP TABLE task_status_source_inventory;
+             DROP TABLE task_status_delegation_sources;
+             DROP TABLE task_status_control_sources;
+             DROP TABLE task_query_task_members;
+             DROP TABLE task_query_task_births;
+             DROP TABLE task_query_birth_cursors;
+             DROP TABLE task_query_task_inventory;
+             DROP TABLE task_message_order_headers;
+             DROP TABLE task_message_sources;
+             DROP TABLE task_message_source_inventory;
+             DROP TABLE task_domain_seed_recovery_current;
+             DROP TABLE task_domain_import_inventory;
+             DROP TABLE task_domain_records;
+             DROP TABLE task_domain_current;
+             DROP TABLE task_domain_eligibility;
+             DROP TABLE task_domain_captures;
+             DROP TABLE dispatch_memory_retired_handoffs;
+             DROP TABLE dispatch_memory_auto_commands;
+             DROP TABLE dispatch_memory_checkpoints;
+             DROP TABLE dispatch_memory_legacy_dispatches;
+             DROP TABLE work_domain_seed_recovery_current;
+             DROP TABLE work_domain_wait_edges;
+             DROP TABLE work_domain_result_heads;
+             DROP TABLE work_domain_records;
+             DROP TABLE work_domain_current;
+             DROP TABLE work_domain_eligibility;
+             DROP TABLE work_domain_captures;
              DROP TABLE agent_message_wait_outcomes;
              ALTER TABLE provider_quota_incidents DROP COLUMN cause_json;
              ALTER TABLE provider_quota_incidents DROP COLUMN server_not_before;

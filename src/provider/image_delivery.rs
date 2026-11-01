@@ -5,6 +5,8 @@ use image::{DynamicImage, ImageDecoder, ImageFormat, ImageReader, Limits};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
+use crate::diagnostics::resource_io;
+
 pub const MAX_IMAGE_BYTES: usize = 32 * 1024 * 1024;
 pub const MAX_IMAGE_PIXELS: u64 = 16_777_216;
 const MAX_IMAGE_EDGE: u32 = 8192;
@@ -24,6 +26,10 @@ fn decode_failure(error: image::ImageError) -> ImageDeliveryError {
         "image_decode_failed"
     };
     failure(code, error.to_string())
+}
+
+fn admission_failure(error: io::Error) -> ImageDeliveryError {
+    failure("image_resource_limit", error.to_string())
 }
 
 fn failure(code: &'static str, message: impl Into<String>) -> ImageDeliveryError {
@@ -102,6 +108,8 @@ pub fn deliver_image(bytes: &[u8], target: &str) -> Result<DeliveredImage, Image
             "source exceeds pixel or decoded allocation limits",
         ));
     }
+    resource_io::charge_owned_buffer(decoder.total_bytes()).map_err(admission_failure)?;
+    resource_io::charge_owned_metadata(4096, 32).map_err(admission_failure)?;
     let orientation = decoder.orientation().map_err(|e| {
         failure(
             "image_decode_failed",
@@ -115,6 +123,10 @@ pub fn deliver_image(bytes: &[u8], target: &str) -> Result<DeliveredImage, Image
     let orientation_applied =
         converted && orientation != image::metadata::Orientation::NoTransforms;
     if converted {
+        if orientation_applied {
+            resource_io::charge_owned_buffer(decoded.as_bytes().len() as u64)
+                .map_err(admission_failure)?;
+        }
         decoded.apply_orientation(orientation);
     }
     let (mime, extension, format) = match target {
@@ -137,18 +149,21 @@ pub fn deliver_image(bytes: &[u8], target: &str) -> Result<DeliveredImage, Image
             "conversion would silently discard source bit depth",
         ));
     }
-    if target == "jpeg"
-        && source != "jpeg"
-        && decoded.color().has_alpha()
-        && decoded.to_rgba8().pixels().any(|pixel| pixel[3] != 255)
-    {
-        return Err(failure("image_transparency_not_preserved", "source contains transparency; JPEG conversion requires an explicit compositing contract. Use PNG/WebP or recover the saved original"));
+    if target == "jpeg" && source != "jpeg" && decoded.color().has_alpha() {
+        resource_io::charge_owned_buffer(u64::from(width) * u64::from(height) * 4)
+            .map_err(admission_failure)?;
+        if decoded.to_rgba8().pixels().any(|pixel| pixel[3] != 255) {
+            return Err(failure("image_transparency_not_preserved", "source contains transparency; JPEG conversion requires an explicit compositing contract. Use PNG/WebP or recover the saved original"));
+        }
     }
     let output = if !converted {
+        resource_io::charge_owned_buffer(bytes.len() as u64).map_err(admission_failure)?;
         bytes.to_vec()
     } else {
         let mut output = BoundedOutput(Cursor::new(Vec::new()));
         if format == ImageFormat::Jpeg {
+            resource_io::charge_owned_buffer(u64::from(width) * u64::from(height) * 3)
+                .map_err(admission_failure)?;
             image::codecs::jpeg::JpegEncoder::new_with_quality(&mut output, 90)
                 .encode_image(&decoded.to_rgb8())
                 .map_err(|e| failure("image_conversion_failed", e.to_string()))?;
@@ -245,16 +260,17 @@ struct BoundedOutput(Cursor<Vec<u8>>);
 
 impl Write for BoundedOutput {
     fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
-        if self
+        let end = self
             .0
             .position()
             .checked_add(bytes.len() as u64)
-            .is_none_or(|n| n > MAX_IMAGE_BYTES as u64)
-        {
+            .ok_or_else(|| io::Error::other("encoded image size overflow"))?;
+        if end > MAX_IMAGE_BYTES as u64 {
             return Err(io::Error::other(
                 "encoded image exceeds 32 MiB output limit",
             ));
         }
+        resource_io::charge_owned_buffer(end.saturating_sub(self.0.get_ref().len() as u64))?;
         self.0.write(bytes)
     }
     fn flush(&mut self) -> io::Result<()> {

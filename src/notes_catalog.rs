@@ -49,38 +49,50 @@ pub struct NoteCatalogEntry {
 /// Render the bounded notes catalog section content, or `None` when the
 /// agent home has no `notes/` directory or no readable markdown notes.
 pub fn render_agent_home_notes_catalog_section(agent_home: &Path) -> Option<String> {
-    let entries = scan_agent_home_notes(agent_home)?;
+    render_agent_home_notes_catalog_checked(agent_home)
+        .ok()
+        .flatten()
+}
+
+pub(crate) fn render_agent_home_notes_catalog_checked(
+    agent_home: &Path,
+) -> std::io::Result<Option<String>> {
+    let Some(entries) = scan_agent_home_notes_checked(agent_home)? else {
+        return Ok(None);
+    };
     if entries.is_empty() {
-        return None;
+        return Ok(None);
     }
-    Some(render_notes_catalog(&entries))
+    crate::diagnostics::resource_io::charge_owned_metadata(
+        (MAX_NOTES_CATALOG_CHARS * 8 + 4096) as u64,
+        entries.len() * 16 + 16,
+    )?;
+    Ok(Some(render_notes_catalog(&entries)))
 }
 
 /// Scan `<agent_home>/notes/` for readable `*.md` files and return
 /// their catalog metadata. Returns `None` when the directory is
 /// absent or unreadable so the caller can simply omit the section.
 pub fn scan_agent_home_notes(agent_home: &Path) -> Option<Vec<NoteCatalogEntry>> {
-    let dir = agent_home.join(NOTES_DIRECTORY);
-    if !dir.is_dir() {
-        return None;
-    }
+    scan_agent_home_notes_checked(agent_home).ok().flatten()
+}
 
-    let read_dir = match std::fs::read_dir(&dir) {
+fn scan_agent_home_notes_checked(
+    agent_home: &Path,
+) -> std::io::Result<Option<Vec<NoteCatalogEntry>>> {
+    crate::diagnostics::resource_io::charge_owned_metadata(4096, 32)?;
+    let dir = agent_home.join(NOTES_DIRECTORY);
+    let read_dir = match crate::diagnostics::io_probe::read_dir(&dir) {
         Ok(read_dir) => read_dir,
-        Err(error) => {
-            tracing::debug!(
-                path = %dir.display(),
-                %error,
-                "notes_catalog: failed to read notes directory; omitting section"
-            );
-            return None;
-        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(error),
     };
 
     let mut entries: Vec<NoteCatalogEntry> = Vec::new();
-    for entry in read_dir.flatten() {
+    for entry in read_dir {
+        let entry = entry?;
         let path = entry.path();
-        if !path.is_file() {
+        if !entry.file_type()?.is_file() {
             continue;
         }
         let extension_matches = path
@@ -91,24 +103,19 @@ pub fn scan_agent_home_notes(agent_home: &Path) -> Option<Vec<NoteCatalogEntry>>
         if !extension_matches {
             continue;
         }
+        crate::diagnostics::resource_io::charge_owned_metadata(
+            path.as_os_str().len() as u64 * 8 + 4096,
+            64,
+        )?;
         let relative = path_relative_to_agent_home(agent_home, &path);
-        let content = match std::fs::read_to_string(&path) {
-            Ok(content) => content,
-            Err(error) => {
-                tracing::debug!(
-                    path = %path.display(),
-                    %error,
-                    "notes_catalog: failed to read note file; skipping"
-                );
-                continue;
-            }
-        };
+        let content = crate::diagnostics::io_probe::read_to_string(&path)?;
+        crate::diagnostics::resource_io::charge_structured_text(&content)?;
         entries.push(parse_note_entry(&relative, &content));
     }
 
     entries.sort_by(|left, right| left.relative_path.cmp(&right.relative_path));
     entries.truncate(MAX_NOTES_IN_CATALOG);
-    Some(entries)
+    Ok(Some(entries))
 }
 
 fn path_relative_to_agent_home(agent_home: &Path, path: &Path) -> String {
@@ -181,6 +188,9 @@ fn split_frontmatter(content: &str) -> (Option<Frontmatter>, &str) {
         // A non-blank character right after `---` (without newline)
         // means the fence was a substring; treat the file as no
         // frontmatter to be conservative.
+        return (None, content);
+    }
+    if crate::diagnostics::resource_io::charge_structured_text(block).is_err() {
         return (None, content);
     }
     let parsed = parse_frontmatter_block(block);

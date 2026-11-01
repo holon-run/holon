@@ -1,13 +1,30 @@
 //! Context assembly: builds prompt sections from runtime state.
 mod budget;
+pub(crate) mod inputs;
 mod planner;
 mod render;
 mod replay_reference;
 pub(crate) use budget::{estimate_section_tokens, estimate_text_tokens};
+mod resources;
+mod snapshot;
+use inputs::{ContextHistoryBrief, ContextHistoryMessage, ContextInputs};
 pub(crate) use planner::ContextPlanEvidence;
 pub(crate) use planner::ContextPlanningError;
 pub(crate) use planner::{ContextPlanDecision, ContextPlanOutcome, ContextPlanReason};
 pub(crate) use render::message_reply_expectation_context as render_message_reply_expectation_context;
+use resources::PlanArtifactLookup;
+#[cfg(test)]
+pub(crate) use snapshot::prepare_work_item_scoped_history;
+pub(crate) use snapshot::{
+    acquire_durable_context_with_work_queue, completion_work_item_ids, ContextAdmissionPlan,
+    ContextHistoryPreparation, ContextSnapshotSkills, FilesystemContextResources,
+    PendingTaskResult,
+};
+pub use snapshot::{
+    capture_context_from_storage, ContextAcquisitionReport, ContextReadStage, ContextSnapshot,
+    ContextSourceDescriptor, ContextSourceKind,
+};
+use snapshot::{HistoryObservations, HistorySnapshot, PreparedScopedHistory};
 // Re-import budget helpers for use within this module.
 use budget::truncate_section_content;
 use planner::{
@@ -27,15 +44,16 @@ use std::cmp::Ordering;
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 
+use crate::runtime::input_consumption::projection::ProjectionView;
 use anyhow::Result;
 use serde_json::Value;
 
 use crate::{
-    object_resolver::RuntimeObjectResolver,
     projection_eval::{
         ProjectionEvidenceIndex, ProjectionEvidenceRef, ProjectionEvidenceRole, ProjectionOwner,
     },
     prompt::PromptSection,
+    runtime::resident_input_evidence::ToolContextProjection,
     storage::{is_active_task_status, AppStorage},
     system::{execution_policy_summary_lines, ExecutionSnapshot},
     tool::helpers::truncate_text,
@@ -44,11 +62,14 @@ use crate::{
         CommandTaskStatusSnapshot, ContextEpisodeRecord, ContinuationClass, ContinuationResolution,
         ContinuationTriggerKind, ExternalTriggerRecord, ExternalTriggerScope,
         ExternalTriggerStatus, LiveInputBatchRecord, MessageBody, MessageEnvelope, MessageKind,
-        MessageOrigin, SkillsRuntimeView, TaskRecord, TodoItemState, ToolExecutionRecord,
-        ToolExecutionStatus, TranscriptEntry, TranscriptEntryKind, TurnRecord, WaitConditionRecord,
-        WorkItemRecord, WorkItemRefStatus,
+        MessageOrigin, SkillsRuntimeView, TaskRecord, TodoItemState, ToolExecutionStatus,
+        TranscriptEntry, TranscriptEntryKind, TurnRecord, WaitConditionRecord, WorkItemRecord,
+        WorkItemRefStatus,
     },
 };
+
+#[cfg(test)]
+use crate::types::ToolExecutionRecord;
 
 const ACTIVE_TASKS_CONTEXT_LIMIT: usize = 5;
 const ACTIVE_TASK_SUMMARY_CHAR_BUDGET: usize = 240;
@@ -133,18 +154,21 @@ pub struct BuiltContext {
     pub(crate) plan_evidence: ContextPlanEvidence,
     pub(crate) projection_evidence: ProjectionEvidenceIndex,
     pub(crate) recent_turns_reprojection: Option<RecentTurnsReprojection>,
+    pub(crate) history_policy: ContextHistoryPreparation,
+    pub(crate) projection_budget: usize,
+    pub(crate) recent_message_limit: usize,
 }
 
 #[derive(Debug, Clone)]
 pub(crate) struct RecentTurnsReprojection {
-    turn_records: Vec<TurnRecord>,
-    messages: Vec<MessageEnvelope>,
-    briefs: Vec<BriefRecord>,
-    tools: Vec<ToolExecutionRecord>,
-    transcript: Vec<TranscriptEntry>,
+    history: std::sync::Arc<HistorySnapshot>,
+    agent_history: std::sync::Arc<HistorySnapshot>,
+    agent_evidence: Vec<ProjectionEvidenceRef>,
+    prepared_scoped: Option<PreparedScopedHistory>,
     current_message: MessageEnvelope,
     current_work_item: Option<WorkItemRecord>,
     initial_budget: usize,
+    snapshot_id: u64,
 }
 
 #[derive(Debug, Clone)]
@@ -159,6 +183,10 @@ pub(crate) enum WorkItemScopedReprojection {
 }
 
 impl RecentTurnsReprojection {
+    pub(crate) fn snapshot_id(&self) -> u64 {
+        self.snapshot_id
+    }
+
     pub(crate) fn initial_budget(&self) -> usize {
         self.initial_budget
     }
@@ -169,8 +197,31 @@ impl RecentTurnsReprojection {
         reprojection
     }
 
+    pub(crate) fn select_recent(&self) -> Self {
+        let mut selected = self.clone();
+        selected.history = selected.agent_history.clone();
+        selected
+    }
+
+    pub(crate) fn select_scoped(&self, window: usize) -> Result<Self> {
+        let scope = self.prepared_scoped.as_ref().ok_or_else(|| {
+            anyhow::anyhow!("work-item history requires explicit snapshot preparation")
+        })?;
+        anyhow::ensure!(
+            scope.window_limit == window,
+            "work-item history policy change requires explicit snapshot preparation"
+        );
+        let mut selected = self.clone();
+        selected.history = scope.history.clone();
+        Ok(selected)
+    }
+
+    pub(crate) fn agent_evidence(&self) -> Vec<ProjectionEvidenceRef> {
+        self.agent_evidence.clone()
+    }
+
     pub(crate) fn turn_count(&self) -> usize {
-        self.turn_records.len()
+        self.history.turn_records.len()
     }
 }
 
@@ -189,17 +240,17 @@ fn history_turns_without_current_input(
 }
 
 pub(crate) fn reproject_recent_turns(
-    storage: &AppStorage,
     reprojection: &RecentTurnsReprojection,
     budget: usize,
 ) -> Option<PromptSection> {
-    render_recent_turns_with_budget(
-        storage,
-        &reprojection.turn_records,
-        &reprojection.messages,
-        &reprojection.briefs,
-        &reprojection.tools,
-        &reprojection.transcript,
+    let history = &reprojection.history;
+    render_recent_turns_with_budget_from_snapshot(
+        &history.observations,
+        &history.turn_records,
+        &history.messages,
+        &history.briefs,
+        &history.tools,
+        &history.transcript,
         &reprojection.current_message,
         reprojection.current_work_item.as_ref(),
         budget,
@@ -208,7 +259,6 @@ pub(crate) fn reproject_recent_turns(
 }
 
 pub(crate) fn reproject_work_item_scoped_with_limit(
-    storage: &AppStorage,
     reprojection: &RecentTurnsReprojection,
     budget: usize,
     window_limit: usize,
@@ -216,50 +266,18 @@ pub(crate) fn reproject_work_item_scoped_with_limit(
     let Some(work_item) = reprojection.current_work_item.as_ref() else {
         return Ok(WorkItemScopedReprojection::NoCurrentWorkItem);
     };
-    let owner = crate::types::TurnOwner::WorkItem {
-        work_item_id: work_item.id.clone(),
-    };
-    let mut turn_records = history_turns_without_current_input(
-        storage.read_recent_turns_for_owner(&owner, window_limit.saturating_add(1))?,
-        &reprojection.current_message.id,
-        window_limit,
-    );
-    if let Some(source) = crate::runtime::provider_recovery::resolve_for_context(
-        storage,
-        &reprojection.current_message,
-    )? {
-        if !turn_records
-            .iter()
-            .any(|record| record.turn_id == source.source_turn().turn_id)
-        {
-            turn_records.push(source.source_turn().clone());
-        }
-    }
-    if turn_records.is_empty() {
+    let selected = reprojection.select_scoped(window_limit)?;
+    let history = &selected.history;
+    if history.turn_records.is_empty() {
         return Ok(WorkItemScopedReprojection::NoOwnedTurnRecords);
     }
-    let mut messages = Vec::new();
-    let mut briefs = Vec::new();
-    let mut tools = Vec::new();
-    hydrate_recent_turn_references(
-        storage,
-        &turn_records,
-        &mut messages,
-        &mut briefs,
-        &mut tools,
-    )?;
-    let turn_ids = turn_records
-        .iter()
-        .map(|record| record.turn_id.clone())
-        .collect::<Vec<_>>();
-    let transcript = storage.read_transcript_for_turns(&turn_ids)?;
-    let Some(content) = render_turn_records_with_budget(
-        storage,
-        &turn_records,
-        &messages,
-        &briefs,
-        &tools,
-        &transcript,
+    let Some(content) = render_turn_records_with_budget_from_snapshot(
+        &history.observations,
+        &history.turn_records,
+        &history.messages,
+        &history.briefs,
+        &history.tools,
+        &history.transcript,
         &reprojection.current_message,
         Some(work_item),
         budget,
@@ -267,10 +285,11 @@ pub(crate) fn reproject_work_item_scoped_with_limit(
         return Ok(WorkItemScopedReprojection::NoOwnedTurnRecords);
     };
     let evidence = build_recent_turn_projection_evidence(
-        &turn_records,
-        &messages,
-        &briefs,
-        &tools,
+        &history.observations,
+        &history.turn_records,
+        &history.messages,
+        &history.briefs,
+        &history.tools,
         ProjectionOwner::WorkItem {
             work_item_id: work_item.id.clone(),
         },
@@ -278,7 +297,7 @@ pub(crate) fn reproject_work_item_scoped_with_limit(
     Ok(WorkItemScopedReprojection::Rendered {
         section: turn_section("recent_turns", content),
         evidence,
-        turns_loaded: turn_records.len(),
+        turns_loaded: history.turn_records.len(),
     })
 }
 
@@ -359,7 +378,7 @@ pub fn build_context_with_default_external_ingress(
     agent_home: &Path,
     default_external_ingress_override: Option<&ExternalTriggerRecord>,
 ) -> Result<BuiltContext> {
-    Ok(build_context_inner(
+    let snapshot = capture_context_from_storage(
         storage,
         agent,
         execution,
@@ -369,12 +388,19 @@ pub fn build_context_with_default_external_ingress(
         config,
         agent_home,
         default_external_ingress_override,
-        false,
-    )?
-    .0)
+    )?;
+    build_context_from_snapshot(&snapshot, config.prompt_budget_estimated_tokens)
 }
 
-/// Reserve existing pinned truth before selecting a new source representation.
+pub fn build_context_from_snapshot(
+    snapshot: &ContextSnapshot,
+    budget: usize,
+) -> Result<BuiltContext> {
+    Ok(build_context_inner(snapshot, budget, false)?.0)
+}
+
+/// Compatibility acquisition for callers without an already prepared snapshot.
+#[cfg(test)]
 pub(crate) fn input_admission_tokens(
     storage: &AppStorage,
     agent: &AgentState,
@@ -386,7 +412,7 @@ pub(crate) fn input_admission_tokens(
     agent_home: &Path,
     default_external_ingress_override: Option<&ExternalTriggerRecord>,
 ) -> Result<usize> {
-    Ok(build_context_inner(
+    let snapshot = capture_context_from_storage(
         storage,
         agent,
         execution,
@@ -396,97 +422,75 @@ pub(crate) fn input_admission_tokens(
         config,
         agent_home,
         default_external_ingress_override,
-        true,
-    )?
-    .1)
+    )?;
+    input_admission_tokens_from_snapshot(&snapshot, config.prompt_budget_estimated_tokens)
+}
+
+/// Reserve pinned evidence before admitting a new representation, without I/O.
+pub(crate) fn input_admission_tokens_from_snapshot(
+    snapshot: &ContextSnapshot,
+    budget: usize,
+) -> Result<usize> {
+    Ok(build_context_inner(snapshot, budget, true)?.1)
 }
 
 fn build_context_inner(
-    storage: &AppStorage,
-    agent: &AgentState,
-    execution: &ExecutionSnapshot,
-    skills: &SkillsRuntimeView,
-    current_message: &MessageEnvelope,
-    continuation: Option<&ContinuationResolution>,
-    config: &ContextConfig,
-    agent_home: &Path,
-    default_external_ingress_override: Option<&ExternalTriggerRecord>,
+    snapshot: &ContextSnapshot,
+    budget: usize,
     input_admission: bool,
 ) -> Result<(BuiltContext, usize)> {
-    let mut messages = Vec::new();
-    let recovery_source =
-        crate::runtime::provider_recovery::resolve_for_context(storage, current_message)?;
-    // The continuation anchor needs at most one historical message: the latest
-    // trusted operator input. A trusted operator current input is used
-    // directly, so only other paths read history, via a targeted query.
-    let continuation_anchor_operator =
-        if recovery_source.is_some() || is_trusted_operator_input(current_message) {
-            None
-        } else {
-            storage.read_latest_trusted_operator_message()?
-        };
-    let mut briefs = storage.read_recent_briefs(config.recent_briefs)?;
-    let mut tools = storage.read_recent_tool_executions(config.recent_messages)?;
-    let mut turn_records = history_turns_without_current_input(
-        storage.read_recent_turns(config.recent_messages.saturating_add(1))?,
-        &current_message.id,
-        config.recent_messages,
+    anyhow::ensure!(
+        input_admission || !snapshot.data.admission_planning,
+        "admission planning snapshots cannot be used as an execution prompt"
     );
-    if let Some(source) = recovery_source.as_ref() {
-        if !turn_records
-            .iter()
-            .any(|record| record.turn_id == source.source_turn().turn_id)
-        {
-            turn_records.push(source.source_turn().clone());
-        }
-    }
-    hydrate_recent_turn_references(
-        storage,
-        &turn_records,
-        &mut messages,
-        &mut briefs,
-        &mut tools,
-    )?;
-    let mut transcript = storage.read_recent_transcript(config.recent_messages)?;
-    if let Some(source) = recovery_source.as_ref() {
-        for entry in storage.read_transcript_for_turns(&[source.source_turn().turn_id.clone()])? {
-            if !transcript.iter().any(|existing| existing == &entry) {
-                transcript.push(entry);
-            }
-        }
-    }
-    let active_wait_conditions = storage
-        .active_wait_conditions_for_agent(&agent.id)?
-        .into_iter()
-        .filter(|condition| condition.work_item_id.is_some())
-        .collect::<Vec<_>>();
-    let episodes = storage.read_recent_context_episodes(config.recent_episode_candidates)?;
-    let work_queue_projection = storage.work_queue_prompt_projection()?;
-    let execution_work_item_id = agent
-        .current_execution_binding
-        .as_ref()
-        .and_then(|binding| binding.work_item_id.as_deref());
-    let execution_work_item = execution_work_item_id
-        .map(|work_item_id| storage.latest_work_item(work_item_id))
-        .transpose()?
-        .flatten();
-    let current_work_item =
-        if agent.current_execution_binding.is_some() || recovery_source.is_some() {
-            execution_work_item.as_ref()
-        } else {
-            work_queue_projection.current.as_ref()
-        };
-
+    anyhow::ensure!(
+        budget <= snapshot.data.config.prompt_budget_estimated_tokens,
+        "context budget expansion requires a newly prepared snapshot"
+    );
+    let mut config = snapshot.data.config.clone();
+    config.prompt_budget_estimated_tokens = budget;
+    let config = &config;
+    let _timer = crate::diagnostics::attribution::CONTEXT_RENDER.start();
+    let data = &snapshot.data;
+    let agent = data.agent.as_ref();
+    let execution = &data.execution;
+    let skills = data.skills.view();
+    let current_message = &data.current_message;
+    let continuation = data.continuation.as_ref();
+    let recovery_source = data.recovery_source.as_ref();
+    let continuation_anchor_messages = &data.continuation_anchor_messages;
+    let continuation_anchor_operator =
+        latest_trusted_operator_input(continuation_anchor_messages, current_message);
+    let HistorySnapshot {
+        turn_records,
+        messages,
+        briefs,
+        tools,
+        transcript,
+        observations,
+    } = data.history.as_ref();
+    let active_wait_conditions = &data.active_wait_conditions;
+    let episodes = &data.episodes;
+    let work_queue_projection = &data.work_queue_projection;
+    let current_work_item = data.current_work_item.as_ref();
+    let default_ingress = data.default_ingress.as_ref();
+    let active_task_count = data.active_task_count;
+    let active_tasks = &data.active_tasks;
+    let plan_observations = &data.resource_views;
+    let notes_content = data.resource_views.notes();
+    let completion_reports = &data.completion_reports;
+    let pending_task_results = &data.pending_task_results;
+    let current_turn = data.current_turn.as_deref();
+    let mut seen_messages: BTreeSet<_> = recovery_source
+        .iter()
+        .map(|source| source.root_message.id.clone())
+        .collect();
     let mut candidates = Vec::new();
     candidates.push(context_candidate(
         section("agent", format!("Agent id: {}", agent.id)),
         None,
         false,
     ));
-    let default_ingress = match default_external_ingress_override {
-        Some(record) => Some(record.clone()),
-        None => default_external_ingress(storage, &agent.id)?,
-    };
     if let Some(default_ingress) = default_ingress {
         candidates.push(context_candidate(
             section(
@@ -510,10 +514,7 @@ fn build_context_inner(
         None,
         false,
     ));
-    let active_task_count = storage.active_task_count_for_agent(&agent.id)?;
     if active_task_count > 0 {
-        let active_tasks =
-            storage.latest_active_task_records_for_agent(&agent.id, ACTIVE_TASKS_CONTEXT_LIMIT)?;
         candidates.push(context_candidate(
             section(
                 "active_tasks",
@@ -528,7 +529,7 @@ fn build_context_inner(
         candidates.push(context_candidate(
             turn_section(
                 "current_work_item",
-                render_current_work_item(work_item, storage.data_dir(), &active_wait_conditions),
+                render_current_work_item(work_item, plan_observations, active_wait_conditions),
             ),
             Some(turn_section(
                 "current_work_item",
@@ -579,9 +580,8 @@ fn build_context_inner(
     if let Some(content) = render_work_item_candidates(
         &work_queue_projection,
         current_work_item.map(|item| item.id.as_str()),
-        storage,
-        &agent.id,
-        storage.data_dir(),
+        completion_reports,
+        plan_observations,
     )? {
         candidates.push(context_candidate(
             turn_section("queued_blocked_work_items", content),
@@ -707,11 +707,9 @@ fn build_context_inner(
         ));
     }
 
-    if let Some(notes_content) =
-        crate::notes_catalog::render_agent_home_notes_catalog_section(agent_home)
-    {
+    if let Some(notes_content) = notes_content {
         candidates.push(context_candidate(
-            section("agent_home_notes_catalog", notes_content),
+            section("agent_home_notes_catalog", notes_content.clone()),
             None,
             false,
         ));
@@ -764,14 +762,14 @@ fn build_context_inner(
             true,
         ));
     } else if let Some(anchor) = render_continuation_anchor(
-        continuation_anchor_operator.as_ref(),
+        continuation_anchor_operator,
         current_message,
         continuation,
         current_work_item,
         config.prompt_budget_estimated_tokens,
     ) {
         let compact_anchor = render_continuation_anchor(
-            continuation_anchor_operator.as_ref(),
+            continuation_anchor_operator,
             current_message,
             continuation,
             current_work_item,
@@ -789,19 +787,32 @@ fn build_context_inner(
         .prompt_budget_estimated_tokens
         .min(config.turn_projection_budget());
     let recent_turns_compact_budget = recent_turns_budget.min(128);
+    let projection_evidence = build_projection_evidence(
+        &snapshot.data.history.observations,
+        agent,
+        current_message,
+        current_work_item,
+        &turn_records,
+        &messages,
+        &briefs,
+        &tools,
+    );
     let mut recent_turns_reprojection =
         (!turn_records.is_empty()).then(|| RecentTurnsReprojection {
-            turn_records: turn_records.clone(),
-            messages: messages.clone(),
-            briefs: briefs.clone(),
-            tools: tools.clone(),
-            transcript: transcript.clone(),
+            history: snapshot.data.history.clone(),
+            agent_history: snapshot.data.history.clone(),
+            agent_evidence: projection_evidence
+                .get("recent_turns")
+                .cloned()
+                .unwrap_or_default(),
+            prepared_scoped: snapshot.data.scoped_history.clone(),
             current_message: current_message.clone(),
             current_work_item: current_work_item.cloned(),
             initial_budget: recent_turns_budget,
+            snapshot_id: snapshot.id(),
         });
-    if let Some(content) = render_recent_turns_with_budget(
-        storage,
+    if let Some(content) = render_recent_turns_with_budget_from_snapshot(
+        observations,
         &turn_records,
         &messages,
         &briefs,
@@ -811,8 +822,8 @@ fn build_context_inner(
         current_work_item,
         recent_turns_budget,
     ) {
-        let compact = render_recent_turns_with_budget(
-            storage,
+        let compact = render_recent_turns_with_budget_from_snapshot(
+            observations,
             &turn_records,
             &messages,
             &briefs,
@@ -845,36 +856,15 @@ fn build_context_inner(
     let wake_hint_fallback = (!continuation_present)
         .then(|| render_wake_hint_context(current_message))
         .flatten();
-    let current_turn = agent
-        .current_turn_id
-        .as_deref()
-        .map(|turn_id| storage.read_turn_by_id(turn_id))
-        .transpose()?
-        .flatten();
-    let input_turns: Vec<_> = current_turn
-        .iter()
-        .chain(
-            recovery_source
-                .iter()
-                .flat_map(|source| &source.source_turns),
-        )
-        .collect();
-    let mut seen_messages: BTreeSet<_> = recovery_source
-        .iter()
-        .map(|source| source.root_message.id.clone())
-        .collect();
-    if let Some(content) = render_pending_task_results_for_turns(
-        storage,
-        agent,
+    if let Some(content) = render_pending_task_results_excluding(
+        pending_task_results,
         current_message,
-        &input_turns,
-        seen_messages.clone(),
-    )? {
+        &data.pending_excluded_messages,
+    ) {
         let section = turn_section("pending_task_results", content);
         candidates.push(context_candidate(section.clone(), Some(section), true));
     }
     let batch = current_turn
-        .as_ref()
         .and_then(|turn| turn.idle_input_batch.as_ref())
         .filter(|batch| batch.anchor_message_id == current_message.id);
     let (current_input_full, current_input_compact) = if let Some(batch) = batch {
@@ -888,11 +878,7 @@ fn build_context_inner(
         );
         // Already admitted evidence cannot be dropped to make room for new input.
         (section.clone(), section)
-    } else if let Some(item) = crate::runtime::input_consumption::projection::admitted_item(
-        storage,
-        &agent.id,
-        &current_message.id,
-    )? {
+    } else if let Some(item) = data.current_input_projection.as_ref() {
         seen_messages.insert(current_message.id.clone());
         let section = turn_section(
             "current_input",
@@ -924,7 +910,8 @@ fn build_context_inner(
     if let Some(source) = recovery_source.as_ref() {
         let mut parts = Vec::new();
         for turn in &source.source_turns {
-            if let Some(content) = render_recovery_input_batches(storage, turn, &mut seen_messages)?
+            if let Some(content) =
+                render_recovery_input_batches(&data.operator_inputs, turn, &mut seen_messages)?
             {
                 parts.push(content);
             }
@@ -934,20 +921,20 @@ fn build_context_inner(
             candidates.push(context_candidate(section.clone(), Some(section), true));
         }
     }
-    if let Some(turn) = current_turn.as_ref() {
+    if let Some(turn) = current_turn {
         if let Some(content) =
             render_live_input_batches(&turn.live_input_batches, &mut seen_messages)
         {
             let section = turn_section("current_live_input_batches", content);
             candidates.push(context_candidate(section.clone(), Some(section), true));
         }
-        if let Some(content) = crate::runtime::input_consumption::render_recovered_operator_inputs(
-            storage,
-            turn,
-            &mut seen_messages,
-        )? {
-            let section = turn_section("recovered_operator_inputs", content);
-            candidates.push(context_candidate(section.clone(), Some(section), true));
+        if turn.replay.is_some() {
+            if let Some(content) =
+                render_operator_inputs(&data.operator_inputs, turn, &mut seen_messages)?
+            {
+                let section = turn_section("recovered_operator_inputs", content);
+                candidates.push(context_candidate(section.clone(), Some(section), true));
+            }
         }
     }
 
@@ -990,17 +977,12 @@ fn build_context_inner(
 
     Ok((
         BuiltContext {
+            history_policy: data.history_policy,
+            projection_budget: data.config.turn_projection_budget(),
+            recent_message_limit: data.config.recent_messages,
             sections: plan.sections,
             plan_evidence: plan.evidence,
-            projection_evidence: build_projection_evidence(
-                agent,
-                current_message,
-                current_work_item,
-                &turn_records,
-                &messages,
-                &briefs,
-                &tools,
-            ),
+            projection_evidence,
             recent_turns_reprojection,
         },
         admission_tokens,
@@ -1008,13 +990,14 @@ fn build_context_inner(
 }
 
 fn build_projection_evidence(
+    observations: &HistoryObservations,
     agent: &AgentState,
     current_message: &MessageEnvelope,
     current_work_item: Option<&WorkItemRecord>,
-    turn_records: &[TurnRecord],
-    messages: &[MessageEnvelope],
-    briefs: &[BriefRecord],
-    tools: &[ToolExecutionRecord],
+    turn_records: &[impl std::borrow::Borrow<TurnRecord>],
+    messages: &[impl std::borrow::Borrow<MessageEnvelope>],
+    briefs: &[impl std::borrow::Borrow<BriefRecord>],
+    tools: &[impl std::borrow::Borrow<ToolContextProjection>],
 ) -> ProjectionEvidenceIndex {
     let mut evidence = ProjectionEvidenceIndex::new();
     let current_owner = agent
@@ -1059,10 +1042,12 @@ fn build_projection_evidence(
 
     let turn_owners = turn_records
         .iter()
+        .map(std::borrow::Borrow::<TurnRecord>::borrow)
         .map(|turn| (turn.turn_id.as_str(), turn.effective_owner()))
         .collect::<BTreeMap<_, _>>();
     let mut recent_turn_refs = turn_records
         .iter()
+        .map(std::borrow::Borrow::<TurnRecord>::borrow)
         .map(|turn| {
             ProjectionEvidenceRef::new(
                 format!("turn:{}", turn.turn_id),
@@ -1073,12 +1058,15 @@ fn build_projection_evidence(
         .collect::<Vec<_>>();
     let direct_predecessor_id = messages
         .iter()
+        .map(std::borrow::Borrow::<MessageEnvelope>::borrow)
         .max_by(|left, right| compare_message_recency(left, right))
         .map(|message| message.id.as_str());
-    for message in messages {
-        let owner = message
-            .turn_id
-            .as_deref()
+    for message in messages
+        .iter()
+        .map(std::borrow::Borrow::<MessageEnvelope>::borrow)
+    {
+        let owner = observations
+            .assigned_turn_for_message(&message.id)
             .and_then(|turn_id| turn_owners.get(turn_id))
             .map(ProjectionOwner::from)
             .unwrap_or_else(|| projection_owner(message.work_item_id.as_deref(), &agent.id));
@@ -1093,6 +1081,7 @@ fn build_projection_evidence(
         ));
     }
     for brief in briefs {
+        let brief: &BriefRecord = brief.borrow();
         let owner = brief
             .turn_id
             .as_deref()
@@ -1106,6 +1095,7 @@ fn build_projection_evidence(
         ));
     }
     for tool in tools {
+        let tool: &ToolContextProjection = tool.borrow();
         let owner = tool
             .turn_id
             .as_deref()
@@ -1126,14 +1116,16 @@ fn build_projection_evidence(
 }
 
 fn build_recent_turn_projection_evidence(
-    turn_records: &[TurnRecord],
-    messages: &[MessageEnvelope],
-    briefs: &[BriefRecord],
-    tools: &[ToolExecutionRecord],
+    observations: &HistoryObservations,
+    turn_records: &[impl std::borrow::Borrow<TurnRecord>],
+    messages: &[impl std::borrow::Borrow<MessageEnvelope>],
+    briefs: &[impl std::borrow::Borrow<BriefRecord>],
+    tools: &[impl std::borrow::Borrow<ToolContextProjection>],
     fallback_owner: ProjectionOwner,
 ) -> Vec<ProjectionEvidenceRef> {
     let turn_owners = turn_records
         .iter()
+        .map(std::borrow::Borrow::<TurnRecord>::borrow)
         .map(|turn| (turn.turn_id.as_str(), turn.effective_owner()))
         .collect::<BTreeMap<_, _>>();
     let owner_for_turn = |turn_id: Option<&str>| {
@@ -1144,6 +1136,7 @@ fn build_recent_turn_projection_evidence(
     };
     let mut evidence = turn_records
         .iter()
+        .map(std::borrow::Borrow::<TurnRecord>::borrow)
         .map(|turn| {
             ProjectionEvidenceRef::new(
                 format!("turn:{}", turn.turn_id),
@@ -1154,33 +1147,49 @@ fn build_recent_turn_projection_evidence(
         .collect::<Vec<_>>();
     let direct_predecessor_id = messages
         .iter()
+        .map(std::borrow::Borrow::<MessageEnvelope>::borrow)
         .max_by(|left, right| compare_message_recency(left, right))
         .map(|message| message.id.as_str());
-    evidence.extend(messages.iter().map(|message| {
-        ProjectionEvidenceRef::new(
-            format!("message:{}", message.id),
-            if direct_predecessor_id == Some(message.id.as_str()) {
-                ProjectionEvidenceRole::DirectPredecessor
-            } else {
-                ProjectionEvidenceRole::Input
-            },
-            owner_for_turn(message.turn_id.as_deref()),
-        )
-    }));
-    evidence.extend(briefs.iter().map(|brief| {
-        ProjectionEvidenceRef::new(
-            format!("brief:{}", brief.id),
-            ProjectionEvidenceRole::Result,
-            owner_for_turn(brief.turn_id.as_deref()),
-        )
-    }));
-    evidence.extend(tools.iter().map(|tool| {
-        ProjectionEvidenceRef::new(
-            format!("tool_execution:{}", tool.id),
-            ProjectionEvidenceRole::ToolResult,
-            owner_for_turn(tool.turn_id.as_deref()),
-        )
-    }));
+    evidence.extend(
+        messages
+            .iter()
+            .map(std::borrow::Borrow::<MessageEnvelope>::borrow)
+            .map(|message| {
+                ProjectionEvidenceRef::new(
+                    format!("message:{}", message.id),
+                    if direct_predecessor_id == Some(message.id.as_str()) {
+                        ProjectionEvidenceRole::DirectPredecessor
+                    } else {
+                        ProjectionEvidenceRole::Input
+                    },
+                    owner_for_turn(observations.assigned_turn_for_message(&message.id)),
+                )
+            }),
+    );
+    evidence.extend(
+        briefs
+            .iter()
+            .map(std::borrow::Borrow::<BriefRecord>::borrow)
+            .map(|brief| {
+                ProjectionEvidenceRef::new(
+                    format!("brief:{}", brief.id),
+                    ProjectionEvidenceRole::Result,
+                    owner_for_turn(brief.turn_id.as_deref()),
+                )
+            }),
+    );
+    evidence.extend(
+        tools
+            .iter()
+            .map(std::borrow::Borrow::<ToolContextProjection>::borrow)
+            .map(|tool| {
+                ProjectionEvidenceRef::new(
+                    format!("tool_execution:{}", tool.id),
+                    ProjectionEvidenceRole::ToolResult,
+                    owner_for_turn(tool.turn_id.as_deref()),
+                )
+            }),
+    );
     evidence.sort();
     evidence.dedup();
     evidence
@@ -1197,18 +1206,20 @@ fn projection_owner(work_item_id: Option<&str>, agent_id: &str) -> ProjectionOwn
 }
 
 fn hydrate_recent_turn_references(
-    storage: &AppStorage,
-    turn_records: &[TurnRecord],
-    messages: &mut Vec<MessageEnvelope>,
-    briefs: &mut Vec<BriefRecord>,
-    tools: &mut Vec<ToolExecutionRecord>,
+    storage: &impl ContextInputs,
+    turn_records: &[impl std::borrow::Borrow<TurnRecord>],
+    messages: &mut Vec<ContextHistoryMessage>,
+    briefs: &mut Vec<ContextHistoryBrief>,
+    tools: &mut Vec<inputs::ContextHistoryTool>,
 ) -> Result<()> {
     let mut message_ids = messages
         .iter()
+        .map(std::borrow::Borrow::<MessageEnvelope>::borrow)
         .map(|message| message.id.clone())
         .collect::<BTreeSet<_>>();
     let mut brief_ids = briefs
         .iter()
+        .map(std::borrow::Borrow::<BriefRecord>::borrow)
         .map(|brief| brief.id.clone())
         .collect::<BTreeSet<_>>();
     let mut tool_ids = tools
@@ -1218,6 +1229,7 @@ fn hydrate_recent_turn_references(
     let mut diagnosed_references = BTreeSet::new();
 
     for record in turn_records {
+        let record: &TurnRecord = record.borrow();
         let trigger_message_id = record
             .trigger
             .as_ref()
@@ -1233,7 +1245,7 @@ fn hydrate_recent_turn_references(
             {
                 continue;
             }
-            if let Some(message) = storage.read_message_by_id(message_id)? {
+            if let Some(message) = storage.history_message_by_id(message_id)? {
                 match classify_message_reference(storage, record, &message)? {
                     MessageReferenceClass::OwnedByTurn => {
                         message_ids.insert(message.id.clone());
@@ -1277,7 +1289,7 @@ fn hydrate_recent_turn_references(
             if brief_ids.contains(brief_id) {
                 continue;
             }
-            if let Some(brief) = storage.read_brief_by_id(brief_id)? {
+            if let Some(brief) = storage.history_brief_by_id(brief_id)? {
                 if turn_record_owns_object(record, brief.turn_id.as_deref()) {
                     brief_ids.insert(brief.id.clone());
                     briefs.push(brief);
@@ -1302,7 +1314,7 @@ fn hydrate_recent_turn_references(
             if tool_ids.contains(tool_id) {
                 continue;
             }
-            if let Some(tool) = storage.read_tool_execution_by_id(tool_id)? {
+            if let Some(tool) = storage.history_tool_by_id(tool_id)? {
                 if turn_record_owns_object(record, tool.turn_id.as_deref()) {
                     tool_ids.insert(tool.id.clone());
                     tools.push(tool);
@@ -1344,11 +1356,11 @@ fn hydrate_recent_turn_references(
 }
 
 fn default_external_ingress(
-    storage: &AppStorage,
+    storage: &impl ContextInputs,
     agent_id: &str,
 ) -> Result<Option<ExternalTriggerRecord>> {
     Ok(storage
-        .latest_external_triggers()?
+        .external_triggers()?
         .into_iter()
         .filter(|record| {
             record.target_agent_id == agent_id
@@ -1476,176 +1488,456 @@ fn render_active_tasks(tasks: &[TaskRecord], total_count: usize) -> String {
     lines.join("\n")
 }
 
-pub(crate) fn render_pending_task_results(
-    storage: &AppStorage,
-    agent: &AgentState,
+#[cfg(test)]
+pub(crate) fn render_pending_task_results_from_snapshot(
+    pending: &[PendingTaskResult],
     current_message: &MessageEnvelope,
-) -> Result<Option<String>> {
-    let turn = agent
-        .current_turn_id
-        .as_deref()
-        .map(|turn_id| storage.read_turn_by_id(turn_id))
-        .transpose()?
-        .flatten();
-    let turns: Vec<_> = turn.iter().collect();
-    render_pending_task_results_for_turns(storage, agent, current_message, &turns, BTreeSet::new())
+) -> Option<String> {
+    render_pending_task_results_excluding(pending, current_message, &BTreeSet::new())
 }
 
-fn render_pending_task_results_for_turns(
-    storage: &AppStorage,
-    agent: &AgentState,
+fn render_pending_task_results_excluding(
+    pending: &[PendingTaskResult],
     current_message: &MessageEnvelope,
-    turns: &[&TurnRecord],
-    mut seen_messages: BTreeSet<String>,
-) -> Result<Option<String>> {
-    let Some(activation_id) = agent
-        .current_execution_binding
-        .as_ref()
-        .and_then(|binding| binding.activation_id.as_deref())
-    else {
-        return Ok(None);
-    };
-    let Some(runtime_db) = storage.runtime_db()? else {
-        return Ok(None);
-    };
-    let mut records = runtime_db
-        .task_result_settlements()
-        .admitted_for_activation(&agent.id, activation_id)?;
-    let live_identities: BTreeSet<_> = turns
-        .iter()
-        .flat_map(|turn| &turn.live_input_batches)
-        .flat_map(|batch| &batch.result_identities)
-        .collect();
-    records.retain(|record| !live_identities.contains(&record.result_identity));
-    seen_messages.extend(
-        turns
-            .iter()
-            .flat_map(|turn| &turn.live_input_batches)
-            .flat_map(|batch| &batch.items)
-            .map(|item| item.message_id.clone()),
-    );
-    for batch in turns
-        .iter()
-        .filter_map(|turn| turn.idle_input_batch.as_ref())
-    {
-        seen_messages.extend(batch.items.iter().map(|item| item.message_id.clone()));
-    }
-    render_pending_task_result_records_excluding(storage, current_message, &records, seen_messages)
-}
-
-pub(crate) fn render_pending_task_result_records(
-    storage: &AppStorage,
-    current_message: &MessageEnvelope,
-    records: &[crate::runtime_db::task_result_settlement::TaskResultSettlementRecord],
-) -> Result<Option<String>> {
-    render_pending_task_result_records_excluding(storage, current_message, records, BTreeSet::new())
-}
-
-fn render_pending_task_result_records_excluding(
-    storage: &AppStorage,
-    current_message: &MessageEnvelope,
-    records: &[crate::runtime_db::task_result_settlement::TaskResultSettlementRecord],
-    mut seen_messages: BTreeSet<String>,
-) -> Result<Option<String>> {
-    let mut pending = Vec::new();
-    let mut seen_identities = BTreeSet::new();
-    for record in records {
-        if record.message_id == current_message.id
-            || !seen_identities.insert(&record.result_identity)
-        {
-            continue;
-        }
-        let message = storage.read_message_by_id(&record.message_id)?;
-        pending.push((record, message));
-    }
+    excluded_messages: &BTreeSet<String>,
+) -> Option<String> {
     if pending.is_empty() {
-        return Ok(None);
+        return None;
+    }
+    let previews = pending
+        .iter()
+        .map(|entry| {
+            pending_task_result_preview(
+                &entry.record,
+                entry.message.as_deref(),
+                entry.reply.as_deref(),
+            )
+        })
+        .collect::<Vec<_>>();
+    let mut rendered = String::new();
+    write_pending_task_result_previews(
+        &mut rendered,
+        previews.iter(),
+        pending.len(),
+        current_message,
+        excluded_messages,
+    )
+    .expect("String formatting cannot fail");
+    Some(rendered)
+}
+
+pub(crate) const PENDING_TASK_RESULT_PREVIEW_LINES: usize = 11;
+
+/// Immutable bounded text, shared by the prompt and idle capacity trials.
+pub(crate) struct PendingTaskResultPreview {
+    lines: Vec<String>,
+    result_identity: String,
+    source_id: Option<String>,
+    source_lines: std::ops::Range<usize>,
+    reply_id: Option<String>,
+    reply_lines: std::ops::Range<usize>,
+}
+
+struct PendingTaskResultInline<'a>(&'a str);
+
+impl std::fmt::Display for PendingTaskResultInline<'_> {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let mut words = self.0.split_whitespace();
+        if let Some(first) = words.next() {
+            formatter.write_str(first)?;
+            for word in words {
+                formatter.write_str(" ")?;
+                formatter.write_str(word)?;
+            }
+        }
+        Ok(())
+    }
+}
+
+fn write_pending_task_result_header(
+    record: &crate::runtime_db::task_result_settlement::TaskResultSettlementRecord,
+    mut line: impl FnMut(std::fmt::Arguments<'_>) -> std::fmt::Result,
+) -> std::fmt::Result {
+    line(format_args!(
+        "- result_identity: {}",
+        PendingTaskResultInline(&record.result_identity)
+    ))?;
+    line(format_args!(
+        "  task_id: {}",
+        PendingTaskResultInline(&record.task_id)
+    ))?;
+    line(format_args!(
+        "  task_status: {}",
+        PendingTaskResultInline(&record.task_status)
+    ))?;
+    if let Some(id) = record.work_item_id.as_deref() {
+        line(format_args!("  owner: work_item:{id}"))
+    } else {
+        line(format_args!("  owner: agent_lifecycle"))
+    }
+}
+
+fn write_pending_task_result_projection_header(
+    record: &crate::runtime_db::task_result_settlement::TaskResultSettlementRecord,
+    mut line: impl FnMut(std::fmt::Arguments<'_>) -> std::fmt::Result,
+) -> std::fmt::Result {
+    use crate::domain::execution_protocol::TaskRejoinSource;
+    let (source_key, source_id) = match &record.source {
+        TaskRejoinSource::ParentTurn { parent_turn_id } => ("parent_turn_id", parent_turn_id),
+        TaskRejoinSource::CommandCreation {
+            command_creation_id,
+        } => ("command_creation_id", command_creation_id),
+    };
+    line(format_args!(
+        "  {source_key}: {}",
+        PendingTaskResultInline(source_id)
+    ))?;
+    line(format_args!(
+        "  rejoin_generation: {}",
+        record.rejoin_generation
+    ))
+}
+
+#[derive(Clone, Copy)]
+enum PendingTaskResultPreviewEntry<'a> {
+    Retained(&'a PendingTaskResultPreview),
+    Projected {
+        record: &'a crate::runtime_db::task_result_settlement::TaskResultSettlementRecord,
+        source: ProjectionView<'a>,
+        reply: Option<ProjectionView<'a>>,
+    },
+}
+
+impl<'a> PendingTaskResultPreviewEntry<'a> {
+    fn result_identity(self) -> &'a str {
+        match self {
+            Self::Retained(preview) => &preview.result_identity,
+            Self::Projected { record, .. } => &record.result_identity,
+        }
     }
 
-    let mut lines = vec![
-        "Previously received terminal task results admitted to this execution (each result identity appears once):".to_string()
-    ];
-    seen_messages.insert(current_message.id.clone());
-    for (record, message) in &pending {
-        lines.push(format!(
-            "- result_identity: {}",
-            sanitize_inline(&record.result_identity)
-        ));
-        lines.push(format!("  task_id: {}", sanitize_inline(&record.task_id)));
-        lines.push(format!(
-            "  task_status: {}",
-            sanitize_inline(&record.task_status)
-        ));
-        lines.push(format!(
-            "  owner: {}",
-            record
-                .work_item_id
-                .as_deref()
-                .map(|work_item_id| format!("work_item:{work_item_id}"))
-                .unwrap_or_else(|| "agent_lifecycle".to_string())
-        ));
-        if let Some(projection) = record.source_projection.as_ref() {
-            lines.push(format!(
-                "  parent_turn_id: {}",
-                sanitize_inline(&record.parent_turn_id)
-            ));
-            lines.push(format!("  rejoin_generation: {}", record.rejoin_generation));
-            if seen_messages.insert(projection.message_id.clone()) {
-                lines.push(projection.rendered.clone());
-            }
-            if let Some(reply) = record.reply_projection.as_ref() {
-                if seen_messages.insert(reply.message_id.clone()) {
-                    lines.push(reply.rendered.clone());
-                }
-            }
-            continue;
+    fn source_id(self) -> Option<&'a str> {
+        match self {
+            Self::Retained(preview) => preview.source_id.as_deref(),
+            Self::Projected { source, .. } => Some(source.message_id),
         }
-        if let Some(message) = message {
-            if let Some(reply_id) = crate::wake_contract::agent_message_reply_reference(message) {
-                lines.push(format!(
-                    "  reply_source_ref: message:{}",
-                    sanitize_inline(reply_id)
-                ));
-                if seen_messages.insert(reply_id.to_owned()) {
-                    if let Some(reply) = storage.read_message_by_id(reply_id)? {
-                        lines.push(format!(
-                            "  received_agent_message: {}",
-                            message_header(&reply)
-                        ));
-                        if let Some(route) = message_routing_context(&reply) {
-                            lines.push(route);
-                        }
-                        lines.push(format!(
-                            "  reply_preview: {}",
-                            sanitize_inline(&body_preview(&reply.body))
-                        ));
+    }
+
+    fn reply_id(self) -> Option<&'a str> {
+        match self {
+            Self::Retained(preview) => preview.reply_id.as_deref(),
+            Self::Projected { reply, .. } => reply.map(|reply| reply.message_id),
+        }
+    }
+
+    fn write(
+        self,
+        writer: &mut impl std::fmt::Write,
+        show_source: bool,
+        show_reply: bool,
+    ) -> std::fmt::Result {
+        match self {
+            Self::Retained(preview) => {
+                for (index, line) in preview.lines.iter().enumerate() {
+                    if (show_reply || !preview.reply_lines.contains(&index))
+                        && (show_source || !preview.source_lines.contains(&index))
+                    {
+                        write!(writer, "\n{line}")?;
                     }
                 }
             }
-            if seen_messages.insert(message.id.clone()) {
-                lines.push(format!(
-                    "  summary: {}",
-                    sanitize_inline(&body_preview(&message.body))
-                ));
-            }
-            if let Some(output_ref) = message
-                .source_refs
-                .get("output_ref")
-                .or_else(|| message.source_refs.get("stdout_ref"))
-            {
-                lines.push(format!("  output_ref: {}", sanitize_inline(output_ref)));
+            Self::Projected {
+                record,
+                source,
+                reply,
+            } => {
+                let mut line = |line: std::fmt::Arguments<'_>| write!(writer, "\n{line}");
+                write_pending_task_result_header(record, &mut line)?;
+                write_pending_task_result_projection_header(record, &mut line)?;
+                if show_source {
+                    line(format_args!("{}", source.rendered))?;
+                }
+                if let Some(reply) = reply.filter(|_| show_reply) {
+                    line(format_args!("{}", reply.rendered))?;
+                }
             }
         }
-        lines.push(format!(
-            "  retrieval: use TaskStatus with task_id={} for exact lifecycle/result evidence; read only confirmed output refs/files boundedly",
-            sanitize_inline(&record.task_id)
-        ));
+        Ok(())
     }
-    Ok(Some(lines.join("\n")))
+}
+
+pub(crate) fn pending_task_result_preview(
+    record: &crate::runtime_db::task_result_settlement::TaskResultSettlementRecord,
+    message: Option<&MessageEnvelope>,
+    reply: Option<&MessageEnvelope>,
+) -> PendingTaskResultPreview {
+    pending_task_result_preview_with_projections(
+        record,
+        message,
+        reply,
+        record.source_projection.as_ref(),
+        record.reply_projection.as_ref(),
+    )
+}
+
+pub(crate) fn pending_task_result_preview_with_projections(
+    record: &crate::runtime_db::task_result_settlement::TaskResultSettlementRecord,
+    message: Option<&MessageEnvelope>,
+    reply: Option<&MessageEnvelope>,
+    source_projection: Option<&crate::types::IdleInputBatchItem>,
+    reply_projection: Option<&crate::types::IdleInputBatchItem>,
+) -> PendingTaskResultPreview {
+    // All optional fields fit this fixed shape; no growth copies prior lines.
+    let mut lines = Vec::with_capacity(PENDING_TASK_RESULT_PREVIEW_LINES);
+    write_pending_task_result_header(record, |line| {
+        lines.push(line.to_string());
+        Ok(())
+    })
+    .expect("String formatting cannot fail");
+    if let Some(projection) = source_projection {
+        write_pending_task_result_projection_header(record, |line| {
+            lines.push(line.to_string());
+            Ok(())
+        })
+        .expect("String formatting cannot fail");
+        let source_start = lines.len();
+        lines.push(projection.rendered.clone());
+        let source_lines = source_start..lines.len();
+        let reply_start = lines.len();
+        if let Some(reply) = reply_projection {
+            lines.push(reply.rendered.clone());
+        }
+        let reply_lines = reply_start..lines.len();
+        return PendingTaskResultPreview {
+            lines,
+            result_identity: record.result_identity.clone(),
+            source_id: Some(projection.message_id.clone()),
+            source_lines,
+            reply_id: reply_projection.map(|reply| reply.message_id.clone()),
+            reply_lines,
+        };
+    }
+    let mut reply_lines = 0..0;
+    let reply_id = message.and_then(crate::wake_contract::agent_message_reply_reference);
+    if let Some(id) = reply_id {
+        lines.push(format!(
+            "  reply_source_ref: message:{}",
+            sanitize_inline(id)
+        ));
+        let start = lines.len();
+        if let Some(reply) = reply {
+            lines.push(format!(
+                "  received_agent_message: {}",
+                message_header(reply)
+            ));
+            if let Some(route) = message_routing_context(reply) {
+                lines.push(route);
+            }
+            lines.push(format!(
+                "  reply_preview: {}",
+                sanitize_inline(&body_preview(&reply.body))
+            ));
+        }
+        reply_lines = start..lines.len();
+    }
+    let source_start = lines.len();
+    if let Some(message) = message {
+        lines.push(format!(
+            "  summary: {}",
+            sanitize_inline(&body_preview(&message.body))
+        ));
+        if let Some(output_ref) = message
+            .source_refs
+            .get("output_ref")
+            .or_else(|| message.source_refs.get("stdout_ref"))
+        {
+            lines.push(format!("  output_ref: {}", sanitize_inline(output_ref)));
+        }
+    }
+    let source_lines = source_start..lines.len();
+    lines.push(format!(
+        "  retrieval: use TaskStatus with task_id={} for exact lifecycle/result evidence; read only confirmed output refs/files boundedly",
+        sanitize_inline(&record.task_id)
+    ));
+    PendingTaskResultPreview {
+        lines,
+        result_identity: record.result_identity.clone(),
+        source_id: message.map(|message| message.id.clone()),
+        source_lines,
+        reply_id: reply_id.map(str::to_owned),
+        reply_lines,
+    }
+}
+
+fn write_pending_task_result_previews<'a>(
+    writer: &mut impl std::fmt::Write,
+    pending: impl Iterator<Item = &'a PendingTaskResultPreview> + Clone,
+    count: usize,
+    current_message: &MessageEnvelope,
+    excluded_messages: &BTreeSet<String>,
+) -> std::fmt::Result {
+    write_pending_task_result_preview_entries(
+        writer,
+        pending.map(PendingTaskResultPreviewEntry::Retained),
+        count,
+        current_message,
+        excluded_messages,
+    )
+}
+
+fn write_pending_task_result_preview_entries<'a>(
+    writer: &mut impl std::fmt::Write,
+    pending: impl Iterator<Item = PendingTaskResultPreviewEntry<'a>> + Clone,
+    count: usize,
+    current_message: &MessageEnvelope,
+    excluded_messages: &BTreeSet<String>,
+) -> std::fmt::Result {
+    if count == 0 {
+        return Ok(());
+    }
+    write!(writer, "Previously received terminal task results admitted to this execution (each result identity appears once):")?;
+    // Revisit borrowed fragments instead of allocating dedup trees for each
+    // capacity trial. Duplicate identities must not introduce new Message IDs.
+    let unique = pending.clone().enumerate().filter(|(index, entry)| {
+        !pending
+            .clone()
+            .take(*index)
+            .any(|prior| prior.result_identity() == entry.result_identity())
+    });
+    for (index, entry) in unique.clone() {
+        let seen = |id: &str| {
+            pending
+                .clone()
+                .take(index)
+                .enumerate()
+                .any(|(prior_index, prior)| {
+                    (prior.source_id() == Some(id) || prior.reply_id() == Some(id))
+                        && !pending
+                            .clone()
+                            .take(prior_index)
+                            .any(|first| first.result_identity() == prior.result_identity())
+                })
+        };
+        let show_source = entry.source_id().is_some_and(|id| {
+            id != current_message.id && !excluded_messages.contains(id) && !seen(id)
+        });
+        let show_reply = entry.reply_id().is_some_and(|id| {
+            id != current_message.id
+                && !excluded_messages.contains(id)
+                && !seen(id)
+                && !(show_source && entry.source_id() == Some(id))
+        });
+        entry.write(writer, show_source, show_reply)?;
+    }
+    Ok(())
+}
+
+pub(crate) fn render_pending_task_result_previews<'a>(
+    pending: impl ExactSizeIterator<Item = &'a PendingTaskResultPreview> + Clone,
+    current_message: &MessageEnvelope,
+) -> Option<String> {
+    let count = pending.len();
+    if count == 0 {
+        return None;
+    }
+    let mut rendered = String::new();
+    write_pending_task_result_previews(
+        &mut rendered,
+        pending,
+        count,
+        current_message,
+        &BTreeSet::new(),
+    )
+    .expect("String formatting cannot fail");
+    Some(rendered)
+}
+
+pub(crate) fn pending_task_results_preview_bytes<'a>(
+    pending: impl ExactSizeIterator<Item = &'a PendingTaskResultPreview> + Clone,
+    current_message: &MessageEnvelope,
+) -> usize {
+    pending_task_results_preview_measure(pending, current_message).0
+}
+
+/// Exact bytes and Unicode scalar count from the final prompt formatter.
+pub(crate) fn pending_task_results_preview_measure<'a>(
+    pending: impl Iterator<Item = &'a PendingTaskResultPreview> + Clone,
+    current_message: &MessageEnvelope,
+) -> (usize, usize) {
+    pending_task_result_preview_entries_measure(
+        pending.map(PendingTaskResultPreviewEntry::Retained),
+        current_message,
+    )
+}
+
+/// Trial one projected candidate without materializing its retained preview.
+#[cfg(test)]
+pub(crate) fn pending_task_results_preview_measure_with_projected_candidate<'a>(
+    pending: impl Iterator<Item = &'a PendingTaskResultPreview> + Clone,
+    current_message: &MessageEnvelope,
+    candidate: &'a crate::runtime_db::task_result_settlement::TaskResultSettlementRecord,
+    source_projection: &'a crate::types::IdleInputBatchItem,
+    reply_projection: Option<&'a crate::types::IdleInputBatchItem>,
+) -> (usize, usize) {
+    pending_task_results_preview_measure_with_projection_views(
+        pending,
+        current_message,
+        candidate,
+        source_projection.into(),
+        reply_projection.map(ProjectionView::from),
+    )
+}
+
+pub(crate) fn pending_task_results_preview_measure_with_projection_views<'a>(
+    pending: impl Iterator<Item = &'a PendingTaskResultPreview> + Clone,
+    current_message: &MessageEnvelope,
+    candidate: &'a crate::runtime_db::task_result_settlement::TaskResultSettlementRecord,
+    source_projection: ProjectionView<'a>,
+    reply_projection: Option<ProjectionView<'a>>,
+) -> (usize, usize) {
+    pending_task_result_preview_entries_measure(
+        pending
+            .map(PendingTaskResultPreviewEntry::Retained)
+            .chain(std::iter::once(PendingTaskResultPreviewEntry::Projected {
+                record: candidate,
+                source: source_projection,
+                reply: reply_projection,
+            })),
+        current_message,
+    )
+}
+
+fn pending_task_result_preview_entries_measure<'a>(
+    pending: impl Iterator<Item = PendingTaskResultPreviewEntry<'a>> + Clone,
+    current_message: &MessageEnvelope,
+) -> (usize, usize) {
+    struct TextCount(usize, usize);
+    impl std::fmt::Write for TextCount {
+        fn write_str(&mut self, value: &str) -> std::fmt::Result {
+            self.0 = self.0.checked_add(value.len()).ok_or(std::fmt::Error)?;
+            self.1 = self
+                .1
+                .checked_add(value.chars().count())
+                .ok_or(std::fmt::Error)?;
+            Ok(())
+        }
+    }
+    let count = pending.clone().count();
+    let mut text = TextCount(0, 0);
+    match write_pending_task_result_preview_entries(
+        &mut text,
+        pending,
+        count,
+        current_message,
+        &BTreeSet::new(),
+    ) {
+        Ok(()) => (text.0, text.1),
+        Err(_) => (usize::MAX, usize::MAX),
+    }
 }
 
 fn render_recovery_input_batches(
-    storage: &AppStorage,
+    operator_inputs: &BTreeMap<String, Vec<snapshot::RecoveredOperatorInput>>,
     turn: &TurnRecord,
     seen_messages: &mut BTreeSet<String>,
 ) -> Result<Option<String>> {
@@ -1662,11 +1954,7 @@ fn render_recovery_input_batches(
     if let Some(content) = render_live_input_batches(&turn.live_input_batches, seen_messages) {
         parts.push(content);
     }
-    if let Some(content) = crate::runtime::input_consumption::render_admitted_operator_inputs(
-        storage,
-        turn,
-        seen_messages,
-    )? {
+    if let Some(content) = render_operator_inputs(operator_inputs, turn, seen_messages)? {
         parts.push(content);
     }
     Ok((!parts.is_empty()).then(|| {
@@ -1676,6 +1964,31 @@ fn render_recovery_input_batches(
             parts.join("\n")
         )
     }))
+}
+
+fn render_operator_inputs(
+    operator_inputs: &BTreeMap<String, Vec<snapshot::RecoveredOperatorInput>>,
+    turn: &TurnRecord,
+    seen_messages: &mut BTreeSet<String>,
+) -> Result<Option<String>> {
+    let Some(inputs) = operator_inputs.get(&turn.turn_id) else {
+        return Ok(None);
+    };
+    let parts = inputs
+        .iter()
+        .filter(|input| seen_messages.insert(input.id.clone()))
+        .map(|message| {
+            let mut provenance = serde_json::to_value(&**message)?;
+            provenance.as_object_mut().expect("message envelope is an object").remove("body");
+            Ok(format!(
+                "Recovered operator interjection (original admission and provenance):\nsource_ref: message:{}\nprovenance: {}\nbody:\n{}\n",
+                message.id,
+                serde_json::to_string(&provenance)?,
+                message_body_text(&message.body),
+            ))
+        })
+        .collect::<Result<Vec<_>>>()?;
+    Ok((!parts.is_empty()).then(|| parts.join("\n")))
 }
 
 fn render_live_input_batches(
@@ -1742,7 +2055,7 @@ fn render_active_task_command(lines: &mut Vec<String>, command: &CommandTaskStat
 
 fn render_current_work_item(
     work_item: &WorkItemRecord,
-    agent_home: &std::path::Path,
+    plan_observations: &impl PlanArtifactLookup,
     active_wait_conditions: &[WaitConditionRecord],
 ) -> String {
     let scheduling = crate::work_item_scheduling::derive_work_item_scheduling(
@@ -1768,7 +2081,9 @@ fn render_current_work_item(
         ),
     ];
     lines.extend(render_work_item_plan_artifact_lines(
-        work_item, agent_home, "- ",
+        work_item,
+        plan_observations,
+        "- ",
     ));
     if !work_item.todo_list.is_empty() {
         lines.push("- Todo list:".to_string());
@@ -1873,14 +2188,15 @@ fn work_item_plan_status_label(status: crate::types::WorkItemPlanStatus) -> &'st
 
 fn render_current_work_item_process_trace(
     work_item: &WorkItemRecord,
-    briefs: &[BriefRecord],
-    tools: &[ToolExecutionRecord],
-    transcript: &[TranscriptEntry],
+    briefs: &[impl std::borrow::Borrow<BriefRecord>],
+    tools: &[impl std::borrow::Borrow<ToolContextProjection>],
+    transcript: &[impl std::borrow::Borrow<TranscriptEntry>],
 ) -> Option<String> {
     let mut lines = vec!["Recent current WorkItem process trace:".to_string()];
     let mut added = 0usize;
     for brief in briefs
         .iter()
+        .map(std::borrow::Borrow::<BriefRecord>::borrow)
         .rev()
         .filter(|brief| brief.agent_id == work_item.agent_id)
         .filter(|brief| brief.work_item_id.as_deref() == Some(work_item.id.as_str()))
@@ -1895,6 +2211,7 @@ fn render_current_work_item_process_trace(
     }
     for tool in tools
         .iter()
+        .map(std::borrow::Borrow::<ToolContextProjection>::borrow)
         .rev()
         .filter(|tool| tool.agent_id == work_item.agent_id)
         .filter(|tool| tool.work_item_id.as_deref() == Some(work_item.id.as_str()))
@@ -1909,6 +2226,7 @@ fn render_current_work_item_process_trace(
     }
     for entry in transcript
         .iter()
+        .map(std::borrow::Borrow::<TranscriptEntry>::borrow)
         .rev()
         .filter(|entry| entry.agent_id == work_item.agent_id)
         .filter(|entry| entry.kind == TranscriptEntryKind::AssistantRound)
@@ -1958,75 +2276,73 @@ fn is_projectable_assistant_round(entry: &TranscriptEntry) -> bool {
 fn render_work_item_candidates(
     projection: &crate::storage::WorkQueueReadModel,
     displayed_work_item_id: Option<&str>,
-    storage: &AppStorage,
-    agent_id: &str,
-    agent_home: &std::path::Path,
+    completion_reports: &BTreeMap<String, CompletionReportProjection>,
+    plan_observations: &impl PlanArtifactLookup,
 ) -> Result<Option<String>> {
-    let completion_reports = latest_completion_report_by_work_item(storage, agent_id)?;
     let mut lines = vec!["Work item candidates by scheduler ranking:".to_string()];
     append_candidate_group(
         &mut lines,
         "Triggered work items:",
         &projection.triggered_blocked,
         displayed_work_item_id,
-        &completion_reports,
-        agent_home,
+        completion_reports,
+        plan_observations,
     )?;
     append_candidate_group(
         &mut lines,
         "Focused runnable work items:",
         projection.current_runnable.as_slice(),
         displayed_work_item_id,
-        &completion_reports,
-        agent_home,
+        completion_reports,
+        plan_observations,
     )?;
     append_candidate_group(
         &mut lines,
         "Queued runnable work items:",
         &projection.queued_runnable,
         displayed_work_item_id,
-        &completion_reports,
-        agent_home,
+        completion_reports,
+        plan_observations,
     )?;
     append_candidate_group(
         &mut lines,
         "Parked/Yielded work items:",
         &projection.yielded,
         displayed_work_item_id,
-        &completion_reports,
-        agent_home,
+        completion_reports,
+        plan_observations,
     )?;
     append_candidate_group(
         &mut lines,
         "Waiting for operator:",
         &projection.waiting_for_operator,
         displayed_work_item_id,
-        &completion_reports,
-        agent_home,
+        completion_reports,
+        plan_observations,
     )?;
     append_candidate_group(
         &mut lines,
         "Blocked work items:",
         &projection.blocked,
         displayed_work_item_id,
-        &completion_reports,
-        agent_home,
+        completion_reports,
+        plan_observations,
     )?;
     append_candidate_group(
         &mut lines,
         "Completing work items:",
         &projection.completing,
         displayed_work_item_id,
-        &completion_reports,
-        agent_home,
+        completion_reports,
+        plan_observations,
     )?;
     append_candidate_group(
         &mut lines,
         "Recently completed work items:",
         &projection.completed_recent,
         displayed_work_item_id,
-        &completion_reports,
-        agent_home,
+        completion_reports,
+        plan_observations,
     )?;
     if lines.len() == 1 {
         return Ok(None);
@@ -2040,7 +2356,7 @@ fn append_candidate_group(
     items: &[crate::storage::WorkItemSchedulingProjection],
     displayed_work_item_id: Option<&str>,
     completion_reports: &BTreeMap<String, CompletionReportProjection>,
-    agent_home: &std::path::Path,
+    plan_observations: &impl PlanArtifactLookup,
 ) -> Result<()> {
     if items.is_empty() {
         return Ok(());
@@ -2098,7 +2414,7 @@ fn append_candidate_group(
                 truncate_text(&report.text.replace('\n', " "), 160)
             ));
         }
-        if let Some(plan_ref) = render_work_item_plan_ref(record, agent_home) {
+        if let Some(plan_ref) = render_work_item_plan_ref(record, plan_observations) {
             lines.push(format!("  - {plan_ref}"));
         }
     }
@@ -2120,6 +2436,7 @@ fn completion_report_for_work_item(
         return Some(CompletionReportProjection {
             text: summary.clone(),
             brief_id: None,
+            source_brief: None,
         });
     }
     None
@@ -2129,42 +2446,56 @@ fn completion_report_for_work_item(
 struct CompletionReportProjection {
     text: String,
     brief_id: Option<String>,
+    source_brief: Option<BriefRecord>,
 }
 
 fn latest_completion_report_by_work_item(
-    storage: &AppStorage,
+    inputs: &impl ContextInputs,
     agent_id: &str,
+    work_item_ids: &BTreeSet<String>,
 ) -> Result<BTreeMap<String, CompletionReportProjection>> {
+    crate::diagnostics::resource_io::check_active_budget()?;
     let mut summaries = BTreeMap::new();
-    for brief in storage
-        .read_recent_briefs(usize::MAX)?
-        .into_iter()
-        .rev()
-        .filter(|brief| brief.agent_id == agent_id)
-        .filter(|brief| brief.kind == crate::types::BriefKind::Result)
-        .filter(|brief| !brief.text.is_empty())
-    {
-        if let Some(work_item_id) = brief.work_item_id.as_ref() {
-            summaries
-                .entry(work_item_id.clone())
-                .or_insert_with(|| CompletionReportProjection {
-                    text: resolved_brief_text(storage, &brief),
+    for work_item_id in work_item_ids {
+        if let Some(input) = inputs.latest_completion_brief_for_work_item(work_item_id)? {
+            anyhow::ensure!(
+                input.brief.agent_id == agent_id
+                    && input.brief.work_item_id.as_deref() == Some(work_item_id),
+                "completion report scope mismatch"
+            );
+            crate::diagnostics::resource_io::admit_cloned_value(&(work_item_id, &input.brief.id))?;
+            let text = resolved_brief_text_from_values(
+                &input.brief,
+                input.content_source.as_deref(),
+                input.source_message.as_deref(),
+            )?;
+            let brief = input.into_brief()?;
+            summaries.insert(
+                work_item_id.clone(),
+                CompletionReportProjection {
+                    text,
                     brief_id: Some(brief.id.clone()),
-                });
+                    source_brief: Some(brief),
+                },
+            );
         }
     }
-    for summary in storage
-        .read_recent_delivery_summaries(usize::MAX)?
-        .into_iter()
-        .rev()
-        .filter(|summary| summary.agent_id == agent_id)
-        .filter(|summary| !summary.text.is_empty())
-    {
+    let missing = work_item_ids
+        .iter()
+        .filter(|id| !summaries.contains_key(*id))
+        .map(String::as_str);
+    let deliveries = inputs.completion_delivery_summaries(missing)?;
+    for summary in deliveries.into_iter().rev().filter(|summary| {
+        summary.agent_id == agent_id
+            && work_item_ids.contains(&summary.work_item_id)
+            && !summary.text.is_empty()
+    }) {
         summaries
             .entry(summary.work_item_id)
             .or_insert_with(|| CompletionReportProjection {
                 text: summary.text,
                 brief_id: None,
+                source_brief: None,
             });
     }
     Ok(summaries)
@@ -2172,11 +2503,10 @@ fn latest_completion_report_by_work_item(
 
 fn render_work_item_plan_artifact_lines(
     work_item: &WorkItemRecord,
-    agent_home: &std::path::Path,
+    plan_observations: &impl PlanArtifactLookup,
     prefix: &str,
 ) -> Vec<String> {
-    let plan_artifact =
-        crate::work_item_plan::ensure_plan_artifact(agent_home, work_item, None).ok();
+    let plan_artifact = plan_observations.plan(&work_item.id);
     let Some(plan_artifact) = plan_artifact else {
         return Vec::new();
     };
@@ -2202,14 +2532,14 @@ fn render_work_item_plan_artifact_lines(
 
 fn render_work_item_plan_ref(
     work_item: &WorkItemRecord,
-    agent_home: &std::path::Path,
+    plan_observations: &impl PlanArtifactLookup,
 ) -> Option<String> {
     if let Some(artifact) = work_item.plan_artifact.as_ref() {
         return Some(format!("Plan ref: {}", artifact.path.display()));
     }
 
-    crate::work_item_plan::ensure_plan_artifact(agent_home, work_item, None)
-        .ok()
+    plan_observations
+        .plan(&work_item.id)
         .map(|artifact| format!("Plan ref: {}", artifact.path.display()))
 }
 
@@ -2404,8 +2734,8 @@ enum RecentTurnProjectionMode {
     Older,
 }
 
-fn render_recent_turn_brief_line(
-    storage: &AppStorage,
+fn render_recent_turn_brief_line_from_snapshot(
+    observations: &HistoryObservations,
     brief: &BriefRecord,
     mode: RecentTurnProjectionMode,
     budget: usize,
@@ -2415,7 +2745,7 @@ fn render_recent_turn_brief_line(
     }
 
     let brief_ref = format!("brief:{}", sanitize_inline(&brief.id));
-    let brief_text = resolved_brief_text(storage, brief);
+    let brief_text = observations.brief_text(brief);
     match mode {
         RecentTurnProjectionMode::Continuity => {
             render_continuity_brief_line(brief, &brief_text, &brief_ref, budget)
@@ -2469,10 +2799,82 @@ fn render_continuity_brief_line(
     }
 }
 
-fn resolved_brief_text(storage: &AppStorage, brief: &BriefRecord) -> String {
-    RuntimeObjectResolver::new(storage)
-        .resolve_brief_content(brief)
-        .unwrap_or_else(|_| brief.text.clone())
+#[cfg(test)]
+fn resolved_brief_text_from_inputs(
+    inputs: &impl ContextInputs,
+    brief: &BriefRecord,
+) -> Result<String> {
+    inputs.resolved_brief_text(brief)
+}
+
+fn resolved_brief_text_from_owned_inputs(
+    inputs: &(impl ContextInputs + ?Sized),
+    brief: &BriefRecord,
+) -> Result<String> {
+    let crate::types::BriefContentSource::TranscriptEntry { entry_id, .. } = &brief.content_source
+    else {
+        return resolved_brief_text_from_values(brief, None, None);
+    };
+    let entry = inputs.transcript_by_id(entry_id)?;
+    let message = match &entry {
+        Some(entry) if entry.kind == TranscriptEntryKind::IncomingMessage => entry
+            .related_message_id
+            .as_deref()
+            .map(|id| inputs.message_by_id(id))
+            .transpose()?
+            .flatten(),
+        _ => None,
+    };
+    resolved_brief_text_from_values(brief, entry.as_ref(), message.as_ref())
+}
+
+/// Explicitly missing/pruned source keeps the persisted Brief fallback. An
+/// unprepared source is an acquisition error, never silently treated as absent.
+fn resolved_brief_text_from_values(
+    brief: &BriefRecord,
+    entry: Option<&TranscriptEntry>,
+    message: Option<&MessageEnvelope>,
+) -> Result<String> {
+    let resolved = if let Some(entry) = entry {
+        if entry.kind == TranscriptEntryKind::IncomingMessage {
+            if let Some(message) = message {
+                let text = match &message.body {
+                    MessageBody::Text { text } | MessageBody::Brief { text, .. } => {
+                        if text.trim().is_empty() {
+                            None
+                        } else {
+                            crate::diagnostics::resource_io::admit_cloned_value(text)?;
+                            Some(text.clone())
+                        }
+                    }
+                    MessageBody::Json { value } => {
+                        crate::diagnostics::resource_io::admit_cloned_value(value)?;
+                        serde_json::to_string(value).ok()
+                    }
+                };
+                return match text {
+                    Some(text) => Ok(text),
+                    None => resolved_brief_text_from_values(brief, None, None),
+                };
+            }
+        }
+        match crate::object_resolver::transcript_text_projection(entry) {
+            Some(projection) => {
+                crate::diagnostics::resource_io::admit_cloned_value(&projection)?;
+                Some(projection.into_text())
+            }
+            None => None,
+        }
+    } else {
+        None
+    };
+    match resolved {
+        Some(text) => Ok(text),
+        None => {
+            crate::diagnostics::resource_io::admit_cloned_value(&brief.text)?;
+            Ok(brief.text.clone())
+        }
+    }
 }
 
 fn render_current_input_body_with_budget(
@@ -2634,7 +3036,7 @@ fn continuation_needs_full_anchor(continuation: Option<&ContinuationResolution>)
 }
 
 fn latest_trusted_operator_input<'a>(
-    messages: &'a [MessageEnvelope],
+    messages: &'a [impl std::borrow::Borrow<MessageEnvelope>],
     current_message: &'a MessageEnvelope,
 ) -> Option<&'a MessageEnvelope> {
     if is_trusted_operator_input(current_message) {
@@ -2643,6 +3045,7 @@ fn latest_trusted_operator_input<'a>(
 
     messages
         .iter()
+        .map(std::borrow::Borrow::<MessageEnvelope>::borrow)
         .filter(|message| is_trusted_operator_input(message) && message.message_seq.is_some())
         .max_by(|left, right| compare_message_recency(left, right))
 }
@@ -2898,19 +3301,19 @@ fn truncate_continuation_body(text: &str) -> String {
     }
 }
 
-fn render_recent_turns_with_budget(
-    storage: &AppStorage,
-    turn_records: &[TurnRecord],
-    messages: &[MessageEnvelope],
-    briefs: &[BriefRecord],
-    tools: &[ToolExecutionRecord],
-    transcript: &[TranscriptEntry],
+fn render_recent_turns_with_budget_from_snapshot(
+    observations: &HistoryObservations,
+    turn_records: &[impl std::borrow::Borrow<TurnRecord>],
+    messages: &[impl std::borrow::Borrow<MessageEnvelope>],
+    briefs: &[impl std::borrow::Borrow<BriefRecord>],
+    tools: &[impl std::borrow::Borrow<ToolContextProjection>],
+    transcript: &[impl std::borrow::Borrow<TranscriptEntry>],
     current_message: &MessageEnvelope,
     current_work_item: Option<&WorkItemRecord>,
     budget: usize,
 ) -> Option<String> {
-    render_turn_records_with_budget(
-        storage,
+    render_turn_records_with_budget_from_snapshot(
+        observations,
         turn_records,
         messages,
         briefs,
@@ -2922,13 +3325,13 @@ fn render_recent_turns_with_budget(
     )
 }
 
-fn render_turn_records_with_budget(
-    storage: &AppStorage,
-    turn_records: &[TurnRecord],
-    messages: &[MessageEnvelope],
-    briefs: &[BriefRecord],
-    tools: &[ToolExecutionRecord],
-    transcript: &[TranscriptEntry],
+fn render_turn_records_with_budget_from_snapshot(
+    observations: &HistoryObservations,
+    turn_records: &[impl std::borrow::Borrow<TurnRecord>],
+    messages: &[impl std::borrow::Borrow<MessageEnvelope>],
+    briefs: &[impl std::borrow::Borrow<BriefRecord>],
+    tools: &[impl std::borrow::Borrow<ToolContextProjection>],
+    transcript: &[impl std::borrow::Borrow<TranscriptEntry>],
     current_message: &MessageEnvelope,
     current_work_item: Option<&WorkItemRecord>,
     budget: usize,
@@ -2946,11 +3349,13 @@ fn render_turn_records_with_budget(
         .and_then(|operator| {
             turn_records
                 .iter()
-                .find(|record| turn_record_matches_message(record, operator))
+                .map(std::borrow::Borrow::<TurnRecord>::borrow)
+                .find(|record| observations.message_belongs_to_turn(record, &operator.id))
         })
         .map(|record| record.turn_id.clone());
     let latest_previous_turn_id = turn_records
         .iter()
+        .map(std::borrow::Borrow::<TurnRecord>::borrow)
         .rev()
         .map(|record| record.turn_id.clone())
         .next();
@@ -2961,6 +3366,7 @@ fn render_turn_records_with_budget(
     });
     let nearby_turn_ids = turn_records
         .iter()
+        .map(std::borrow::Borrow::<TurnRecord>::borrow)
         .rev()
         .filter(|record| continuity_turn_id.as_deref() != Some(record.turn_id.as_str()))
         .take(2)
@@ -2969,6 +3375,7 @@ fn render_turn_records_with_budget(
 
     let mut rendered_turns = turn_records
         .iter()
+        .map(std::borrow::Borrow::<TurnRecord>::borrow)
         .filter(|record| continuation_turn_id.as_deref() != Some(record.turn_id.as_str()))
         .filter_map(|record| {
             let mode = recent_turn_projection_mode(
@@ -2976,8 +3383,16 @@ fn render_turn_records_with_budget(
                 continuity_turn_id.as_deref(),
                 &nearby_turn_ids,
             );
-            render_turn_record_projection_with_transcript(
-                storage, record, messages, briefs, tools, transcript, None, mode, budget,
+            render_turn_record_projection_with_transcript_from_snapshot(
+                observations,
+                record,
+                messages,
+                briefs,
+                tools,
+                transcript,
+                None,
+                mode,
+                budget,
             )
         })
         .collect::<Vec<_>>();
@@ -2985,10 +3400,11 @@ fn render_turn_records_with_budget(
     if let Some(operator) = latest_operator_for_continuation {
         if let Some(record) = turn_records
             .iter()
-            .find(|record| turn_record_matches_message(record, operator))
+            .map(std::borrow::Borrow::<TurnRecord>::borrow)
+            .find(|record| observations.message_belongs_to_turn(record, &operator.id))
         {
-            if let Some(rendered) = render_current_continuation_turn_record_projection(
-                storage,
+            if let Some(rendered) = render_current_continuation_turn_record_projection_from_snapshot(
+                observations,
                 record,
                 current_message,
                 operator,
@@ -3025,54 +3441,44 @@ fn recent_turn_projection_mode(
     }
 }
 
-fn render_turn_record_projection_with_transcript(
-    storage: &AppStorage,
+fn render_turn_record_projection_with_transcript_from_snapshot(
+    observations: &HistoryObservations,
     record: &TurnRecord,
-    messages: &[MessageEnvelope],
-    briefs: &[BriefRecord],
-    tools: &[ToolExecutionRecord],
-    transcript: &[TranscriptEntry],
+    messages: &[impl std::borrow::Borrow<MessageEnvelope>],
+    briefs: &[impl std::borrow::Borrow<BriefRecord>],
+    tools: &[impl std::borrow::Borrow<ToolContextProjection>],
+    transcript: &[impl std::borrow::Borrow<TranscriptEntry>],
     continuation: Option<&MessageEnvelope>,
     mode: RecentTurnProjectionMode,
     budget: usize,
 ) -> Option<String> {
-    let trigger_message = record
-        .input_message_ids
-        .iter()
-        .find_map(|id| {
-            messages.iter().find(|message| {
-                message.id == *id && turn_record_owns_object(record, message.turn_id.as_deref())
-            })
-        })
-        .or_else(|| {
-            record
-                .trigger
-                .as_ref()
-                .and_then(|trigger| trigger.message_id.as_ref())
-                .and_then(|id| {
-                    messages.iter().find(|message| {
-                        message.id == *id
-                            && turn_record_owns_object(record, message.turn_id.as_deref())
-                    })
-                })
-        });
-    let trigger_summary_is_valid = record
+    let trigger_message_id = record
         .trigger
         .as_ref()
-        .and_then(|trigger| trigger.message_id.as_ref())
-        .is_none_or(|message_id| match storage.read_message_by_id(message_id) {
-            Ok(Some(message)) => turn_record_owns_object(record, message.turn_id.as_deref()),
-            Ok(None) => true,
-            Err(error) => {
-                tracing::warn!(
-                    turn_id = %record.turn_id,
-                    message_id = %message_id,
-                    %error,
-                    "recent_turns could not validate persisted trigger summary"
-                );
-                false
-            }
-        });
+        .and_then(|trigger| trigger.message_id.as_ref());
+    let find_owned_message = |id: &String| {
+        messages
+            .iter()
+            .map(std::borrow::Borrow::<MessageEnvelope>::borrow)
+            .find(|message| {
+                message.id == *id && observations.message_belongs_to_turn(record, &message.id)
+            })
+    };
+    let trigger_message = match trigger_message_id {
+        Some(id) => find_owned_message(id),
+        // Legacy records lack an explicit anchor; live followers are never triggers.
+        None => record
+            .input_message_ids
+            .iter()
+            .filter(|id| {
+                !record
+                    .live_input_batches
+                    .iter()
+                    .flat_map(|batch| &batch.items)
+                    .any(|item| item.message_id == **id)
+            })
+            .find_map(find_owned_message),
+    };
     let mut lines = vec![format!(
         "- Turn {}:",
         if record.turn_index != 0 {
@@ -3099,7 +3505,7 @@ fn render_turn_record_projection_with_transcript(
             "  - trigger: {}",
             turn_trigger_label(trigger_message)
         ));
-    } else if trigger_summary_is_valid {
+    } else if observations.trigger_summary_valid(record) {
         if let Some(trigger) = &record.trigger {
             lines.push(format!(
                 "  - trigger: {}",
@@ -3147,11 +3553,16 @@ fn render_turn_record_projection_with_transcript(
     let mut related_briefs = Vec::new();
     let mut brief_budget = budget.saturating_sub(estimate_text_tokens(&lines.join("\n")));
     for brief in record.produced_brief_ids.iter().filter_map(|id| {
-        briefs.iter().find(|brief| {
-            brief.id == *id && turn_record_owns_object(record, brief.turn_id.as_deref())
-        })
+        briefs
+            .iter()
+            .map(std::borrow::Borrow::<BriefRecord>::borrow)
+            .find(|brief| {
+                brief.id == *id && turn_record_owns_object(record, brief.turn_id.as_deref())
+            })
     }) {
-        if let Some(rendered) = render_recent_turn_brief_line(storage, brief, mode, brief_budget) {
+        if let Some(rendered) =
+            render_recent_turn_brief_line_from_snapshot(observations, brief, mode, brief_budget)
+        {
             brief_budget = brief_budget.saturating_sub(estimate_text_tokens(&rendered));
             related_briefs.push(rendered);
         }
@@ -3163,6 +3574,7 @@ fn render_turn_record_projection_with_transcript(
         } else {
             let sequence_brief_ids = transcript
                 .iter()
+                .map(std::borrow::Borrow::<TranscriptEntry>::borrow)
                 .filter(|entry| {
                     entry.agent_id == record.agent_id
                         && entry
@@ -3175,6 +3587,7 @@ fn render_turn_record_projection_with_transcript(
                 .filter_map(|entry| {
                     briefs
                         .iter()
+                        .map(std::borrow::Borrow::<BriefRecord>::borrow)
                         .find(|brief| {
                             brief.finalizes_assistant_round_id.as_deref() == Some(entry.id.as_str())
                                 && turn_record_owns_object(record, brief.turn_id.as_deref())
@@ -3185,7 +3598,12 @@ fn render_turn_record_projection_with_transcript(
             let fallback_refs = record
                 .produced_brief_ids
                 .iter()
-                .filter_map(|id| briefs.iter().find(|brief| &brief.id == id))
+                .filter_map(|id| {
+                    briefs
+                        .iter()
+                        .map(std::borrow::Borrow::<BriefRecord>::borrow)
+                        .find(|brief| &brief.id == id)
+                })
                 .filter(|brief| {
                     turn_record_owns_object(record, brief.turn_id.as_deref())
                         && !sequence_brief_ids.contains(brief.id.as_str())
@@ -3208,9 +3626,12 @@ fn render_turn_record_projection_with_transcript(
         .tool_execution_ids
         .iter()
         .filter_map(|id| {
-            tools.iter().find(|tool| {
-                tool.id == *id && turn_record_owns_object(record, tool.turn_id.as_deref())
-            })
+            tools
+                .iter()
+                .map(std::borrow::Borrow::<ToolContextProjection>::borrow)
+                .find(|tool| {
+                    tool.id == *id && turn_record_owns_object(record, tool.turn_id.as_deref())
+                })
         })
         .collect::<Vec<_>>();
     if !related_tools.is_empty() && !has_execution_sequence {
@@ -3227,21 +3648,25 @@ fn render_turn_record_projection_with_transcript(
 
 fn render_turn_execution_sequence(
     record: &TurnRecord,
-    briefs: &[BriefRecord],
-    tools: &[ToolExecutionRecord],
-    transcript: &[TranscriptEntry],
+    briefs: &[impl std::borrow::Borrow<BriefRecord>],
+    tools: &[impl std::borrow::Borrow<ToolContextProjection>],
+    transcript: &[impl std::borrow::Borrow<TranscriptEntry>],
     mode: RecentTurnProjectionMode,
 ) -> (Vec<String>, bool) {
     let mut rendered = Vec::new();
     let mut rendered_tool_ids = BTreeSet::new();
-    for entry in transcript.iter().filter(|entry| {
-        entry.agent_id == record.agent_id
-            && entry
-                .data
-                .get("turn_id")
-                .and_then(Value::as_str)
-                .is_some_and(|turn_id| turn_id == record.turn_id)
-    }) {
+    for entry in transcript
+        .iter()
+        .map(std::borrow::Borrow::<TranscriptEntry>::borrow)
+        .filter(|entry| {
+            entry.agent_id == record.agent_id
+                && entry
+                    .data
+                    .get("turn_id")
+                    .and_then(Value::as_str)
+                    .is_some_and(|turn_id| turn_id == record.turn_id)
+        })
+    {
         match entry.kind {
             TranscriptEntryKind::AssistantRound if is_projectable_assistant_round(&entry) => {
                 if let Some(text) = assistant_round_text_preview(&entry) {
@@ -3252,6 +3677,7 @@ fn render_turn_execution_sequence(
                     };
                     let brief_ref = briefs
                         .iter()
+                        .map(std::borrow::Borrow::<BriefRecord>::borrow)
                         .find(|brief| {
                             brief.finalizes_assistant_round_id.as_deref() == Some(entry.id.as_str())
                                 && turn_record_owns_object(record, brief.turn_id.as_deref())
@@ -3284,10 +3710,14 @@ fn render_turn_execution_sequence(
                             .filter(|id| !id.trim().is_empty())
                     });
                 for tool_id in tool_ids {
-                    let Some(tool) = tools.iter().find(|tool| {
-                        tool.id == tool_id
-                            && turn_record_owns_object(record, tool.turn_id.as_deref())
-                    }) else {
+                    let Some(tool) = tools
+                        .iter()
+                        .map(std::borrow::Borrow::<ToolContextProjection>::borrow)
+                        .find(|tool| {
+                            tool.id == tool_id
+                                && turn_record_owns_object(record, tool.turn_id.as_deref())
+                        })
+                    else {
                         continue;
                     };
                     if !rendered_tool_ids.insert(tool.id.as_str()) {
@@ -3312,11 +3742,14 @@ fn render_turn_execution_sequence(
             .tool_execution_ids
             .iter()
             .filter_map(|id| {
-                tools.iter().find(|tool| {
-                    tool.id == *id
-                        && turn_record_owns_object(record, tool.turn_id.as_deref())
-                        && !rendered_tool_ids.contains(tool.id.as_str())
-                })
+                tools
+                    .iter()
+                    .map(std::borrow::Borrow::<ToolContextProjection>::borrow)
+                    .find(|tool| {
+                        tool.id == *id
+                            && turn_record_owns_object(record, tool.turn_id.as_deref())
+                            && !rendered_tool_ids.contains(tool.id.as_str())
+                    })
             })
             .collect::<Vec<_>>();
         rendered.extend(unsequenced_tools.into_iter().map(|tool| {
@@ -3336,20 +3769,20 @@ fn render_turn_execution_sequence(
     (rendered, has_execution_sequence)
 }
 
-fn render_current_continuation_turn_record_projection(
-    storage: &AppStorage,
+fn render_current_continuation_turn_record_projection_from_snapshot(
+    observations: &HistoryObservations,
     record: &TurnRecord,
     current_message: &MessageEnvelope,
     operator: &MessageEnvelope,
-    messages: &[MessageEnvelope],
-    briefs: &[BriefRecord],
-    tools: &[ToolExecutionRecord],
-    transcript: &[TranscriptEntry],
+    messages: &[impl std::borrow::Borrow<MessageEnvelope>],
+    briefs: &[impl std::borrow::Borrow<BriefRecord>],
+    tools: &[impl std::borrow::Borrow<ToolContextProjection>],
+    transcript: &[impl std::borrow::Borrow<TranscriptEntry>],
     current_work_item: Option<&WorkItemRecord>,
     budget: usize,
 ) -> Option<String> {
-    let mut rendered = render_turn_record_projection_with_transcript(
-        storage,
+    let mut rendered = render_turn_record_projection_with_transcript_from_snapshot(
+        observations,
         record,
         messages,
         briefs,
@@ -3376,7 +3809,7 @@ fn render_current_continuation_turn_record_projection(
             sanitize_inline(&truncate_text(&work_item.objective, 160))
         ));
     }
-    if !turn_record_matches_message(record, operator) {
+    if !observations.message_belongs_to_turn(record, &operator.id) {
         lines.push(format!(
             "  - continues input id: {}",
             sanitize_inline(&operator.id)
@@ -3387,6 +3820,7 @@ fn render_current_continuation_turn_record_projection(
     Some(rendered)
 }
 
+#[cfg(test)]
 fn turn_record_matches_message(record: &TurnRecord, message: &MessageEnvelope) -> bool {
     turn_record_owns_object(record, message.turn_id.as_deref())
 }
@@ -3430,7 +3864,23 @@ fn turn_trigger_summary_label(trigger: &crate::types::TurnTriggerSummary) -> &'s
     }
 }
 
-fn command_output_refs(record: &ToolExecutionRecord, batch_item_index: Option<usize>) -> String {
+fn command_output_refs(record: &ToolContextProjection) -> String {
+    if record.tool_name != "ExecCommand" || !record.command.has_output_evidence {
+        return String::new();
+    }
+    format!(
+        " stdout_ref={} stderr_ref={} output_ref={}",
+        crate::tool::helpers::command_output_source_ref(&record.id, None, "stdout"),
+        crate::tool::helpers::command_output_source_ref(&record.id, None, "stderr"),
+        crate::tool::helpers::command_output_source_ref(&record.id, None, "output")
+    )
+}
+
+#[cfg(test)]
+fn legacy_command_output_refs(
+    record: &ToolExecutionRecord,
+    batch_item_index: Option<usize>,
+) -> String {
     let output = match (record.tool_name.as_str(), batch_item_index) {
         ("ExecCommand", None) => tool_result_payload(record),
         ("ExecCommandBatch", Some(index)) => match tool_result_payload(record)
@@ -3463,6 +3913,7 @@ fn command_output_refs(record: &ToolExecutionRecord, batch_item_index: Option<us
     )
 }
 
+#[cfg(test)]
 fn tool_result_payload(record: &ToolExecutionRecord) -> &Value {
     record
         .output
@@ -3476,7 +3927,7 @@ fn tool_result_payload(record: &ToolExecutionRecord) -> &Value {
         .unwrap_or(&record.output)
 }
 
-fn tool_execution_rollup_ref(record: &ToolExecutionRecord) -> String {
+fn tool_execution_rollup_ref(record: &ToolContextProjection) -> String {
     crate::tool::helpers::command_output_source_ref(&record.id, None, "output")
 }
 
@@ -3489,75 +3940,41 @@ fn status_label(status: &ToolExecutionStatus) -> &'static str {
     }
 }
 
-fn command_disposition(record: &ToolExecutionRecord) -> Option<&str> {
-    tool_result_payload(record)
-        .get("disposition")
-        .and_then(Value::as_str)
+fn command_disposition(record: &ToolContextProjection) -> Option<&str> {
+    record.command.disposition.as_deref()
 }
 
-fn command_task_id(record: &ToolExecutionRecord) -> Option<&str> {
-    tool_result_payload(record)
-        .get("task_handle")
-        .and_then(|handle| handle.get("task_id"))
-        .and_then(Value::as_str)
+fn command_task_id(record: &ToolContextProjection) -> Option<&str> {
+    record.command.task_id.as_deref()
 }
 
-fn command_exit_status(record: &ToolExecutionRecord) -> Option<i64> {
-    tool_result_payload(record)
-        .get("exit_status")
-        .or_else(|| tool_result_payload(record).get("exit_code"))
-        .and_then(Value::as_i64)
+fn command_exit_status(record: &ToolContextProjection) -> Option<i64> {
+    record.command.exit_status
 }
 
-fn command_has_nonzero_exit_status(record: &ToolExecutionRecord) -> bool {
+fn command_has_nonzero_exit_status(record: &ToolContextProjection) -> bool {
     command_exit_status(record).is_some_and(|status| status != 0)
 }
 
-fn value_has_artifact(value: &Value) -> bool {
-    value
-        .get("artifacts")
-        .and_then(Value::as_array)
-        .is_some_and(|artifacts| !artifacts.is_empty())
-        || [
-            "artifact",
-            "stdout_artifact",
-            "stderr_artifact",
-            "output_artifact",
-        ]
-        .iter()
-        .any(|key| value.get(key).is_some())
-}
-
-fn value_is_truncated(value: &Value) -> bool {
-    [
-        "truncated",
-        "initial_output_truncated",
-        "stdout_truncated",
-        "stderr_truncated",
-        "output_truncated",
-    ]
-    .iter()
-    .any(|key| value.get(key).and_then(Value::as_bool).unwrap_or(false))
-}
-
-fn tool_execution_needs_old_turn_alert(record: &ToolExecutionRecord) -> bool {
+fn tool_execution_needs_old_turn_alert(record: &ToolContextProjection) -> bool {
     matches!(record.status, ToolExecutionStatus::Error)
         || command_has_nonzero_exit_status(record)
-        || (record.tool_name == "ExecCommandBatch" && batch_item_counts(record).failed > 0)
+        || (record.tool_name == "ExecCommandBatch" && record.batch_failed > 0)
         || matches!(
             command_disposition(record),
             Some("promoted_to_task" | "already_running")
         )
-        || value_is_truncated(tool_result_payload(record))
-        || value_has_artifact(tool_result_payload(record))
+        || record.command.truncated
+        || record.command.has_artifact
 }
 
-fn tool_execution_needs_old_turn_failure_count(record: &ToolExecutionRecord) -> bool {
+fn tool_execution_needs_old_turn_failure_count(record: &ToolContextProjection) -> bool {
     matches!(record.status, ToolExecutionStatus::Error)
         || command_has_nonzero_exit_status(record)
-        || (record.tool_name == "ExecCommandBatch" && batch_item_counts(record).failed > 0)
+        || (record.tool_name == "ExecCommandBatch" && record.batch_failed > 0)
 }
 
+#[cfg(test)]
 #[derive(Default)]
 struct BatchItemCounts {
     succeeded: usize,
@@ -3566,7 +3983,8 @@ struct BatchItemCounts {
     unknown: usize,
 }
 
-fn batch_item_counts(record: &ToolExecutionRecord) -> BatchItemCounts {
+#[cfg(test)]
+fn legacy_batch_item_counts(record: &ToolExecutionRecord) -> BatchItemCounts {
     let total = record
         .input
         .get("items")
@@ -3602,7 +4020,7 @@ fn batch_item_counts(record: &ToolExecutionRecord) -> BatchItemCounts {
     counts
 }
 
-fn render_recent_tool_execution_rollup(records: &[&ToolExecutionRecord]) -> Vec<String> {
+fn render_recent_tool_execution_rollup(records: &[&ToolContextProjection]) -> Vec<String> {
     let total = records.len();
     let success = records
         .iter()
@@ -3642,7 +4060,7 @@ fn render_recent_tool_execution_rollup(records: &[&ToolExecutionRecord]) -> Vec<
     lines
 }
 
-fn render_recent_tool_execution_alert(record: &ToolExecutionRecord) -> String {
+fn render_recent_tool_execution_alert(record: &ToolContextProjection) -> String {
     let mut parts = vec![
         format!(
             "- alert: {} status={} tool_execution_id={}",
@@ -3669,15 +4087,12 @@ fn render_recent_tool_execution_alert(record: &ToolExecutionRecord) -> String {
             "cmd_ref={}",
             crate::tool::helpers::command_receipt_source_ref(&record.id, None)
         ));
-        let output_refs = command_output_refs(record, None);
+        let output_refs = command_output_refs(record);
         if !output_refs.is_empty() {
             parts.push(output_refs.trim().to_string());
         }
-        if let Some(cmd) = record.input.get("cmd").and_then(Value::as_str) {
-            parts.push(format!(
-                "cmd_preview={}",
-                crate::tool::helpers::command_preview(cmd)
-            ));
+        if let Some(preview) = record.command.command_preview.as_deref() {
+            parts.push(format!("cmd_preview={preview}"));
         }
     }
     parts.join(" ")
@@ -3685,6 +4100,8 @@ fn render_recent_tool_execution_alert(record: &ToolExecutionRecord) -> String {
 
 #[cfg(test)]
 fn render_recent_tool_execution(record: &ToolExecutionRecord) -> String {
+    let projection = crate::runtime::resident_input_evidence::project_tool_record(record)
+        .expect("valid fixture tool projection");
     let prefix = format!(
         "- [{}][{}] {} {}",
         trust_label(&record.authority_class),
@@ -3702,8 +4119,8 @@ fn render_recent_tool_execution(record: &ToolExecutionRecord) -> String {
                     "{prefix} tool_execution_id={} cmd_ref={}{}{} cmd_preview={}",
                     record.id,
                     crate::tool::helpers::command_receipt_source_ref(&record.id, None),
-                    command_output_refs(record, None),
-                    command_task_id(record)
+                    legacy_command_output_refs(record, None),
+                    command_task_id(&projection)
                         .map(|task_id| format!(" task_id={}", sanitize_inline(task_id)))
                         .unwrap_or_default(),
                     crate::tool::helpers::command_preview(cmd)
@@ -3714,7 +4131,7 @@ fn render_recent_tool_execution(record: &ToolExecutionRecord) -> String {
             let Some(items) = record.input.get("items").and_then(Value::as_array) else {
                 return format!("{prefix} tool_execution_id={}", record.id);
             };
-            let counts = batch_item_counts(record);
+            let counts = legacy_batch_item_counts(record);
             let refs = items
                 .iter()
                 .enumerate()
@@ -3724,7 +4141,7 @@ fn render_recent_tool_execution(record: &ToolExecutionRecord) -> String {
                     Some(format!(
                         "{{index={index}, cmd_ref={},{} cmd_preview={}}}",
                         crate::tool::helpers::command_receipt_source_ref(&record.id, Some(index)),
-                        command_output_refs(record, Some(index)),
+                        legacy_command_output_refs(record, Some(index)),
                         crate::tool::helpers::command_preview(cmd)
                     ))
                 })
@@ -3825,7 +4242,7 @@ struct EpisodeSelectionAnchor<'a> {
 }
 
 fn build_relevant_episode_memory_section(
-    episodes: &[ContextEpisodeRecord],
+    episodes: &[impl std::borrow::Borrow<ContextEpisodeRecord>],
     _agent: &AgentState,
     current_work_item: Option<&WorkItemRecord>,
     current_message: &MessageEnvelope,
@@ -3889,6 +4306,7 @@ fn build_relevant_episode_memory_section(
     let episode_count = episodes.len();
     let mut ranked = episodes
         .iter()
+        .map(std::borrow::Borrow::borrow)
         .enumerate()
         .filter(|(_, episode)| {
             episode_is_before_recent_turn_window(episode, recent_turn_window_start)
@@ -3934,9 +4352,10 @@ fn build_relevant_episode_memory_section(
     ))
 }
 
-fn recent_turn_window_start(turn_records: &[crate::types::TurnRecord]) -> Option<u64> {
+fn recent_turn_window_start(turn_records: &[impl std::borrow::Borrow<TurnRecord>]) -> Option<u64> {
     turn_records
         .iter()
+        .map(std::borrow::Borrow::<TurnRecord>::borrow)
         .filter_map(|turn| (turn.turn_index != 0).then_some(turn.turn_index))
         .min()
 }
@@ -4150,6 +4569,140 @@ fn normalize_text(text: &str) -> String {
 }
 
 #[cfg(test)]
+fn render_turn_records_with_budget(
+    storage: &AppStorage,
+    turn_records: &[impl std::borrow::Borrow<TurnRecord>],
+    messages: &[impl std::borrow::Borrow<MessageEnvelope>],
+    briefs: &[BriefRecord],
+    tools: &[ToolExecutionRecord],
+    transcript: &[TranscriptEntry],
+    current_message: &MessageEnvelope,
+    current_work_item: Option<&WorkItemRecord>,
+    budget: usize,
+) -> Option<String> {
+    let tools = tools
+        .iter()
+        .map(crate::runtime::resident_input_evidence::project_tool_record)
+        .collect::<Result<Vec<_>>>()
+        .expect("valid fixture tool projections");
+    let observations = HistoryObservations::capture(storage, turn_records, briefs, messages);
+    render_turn_records_with_budget_from_snapshot(
+        &observations,
+        turn_records,
+        messages,
+        briefs,
+        &tools,
+        transcript,
+        current_message,
+        current_work_item,
+        budget,
+    )
+}
+
+#[cfg(test)]
+fn render_turn_record_projection_with_transcript(
+    storage: &AppStorage,
+    record: &TurnRecord,
+    messages: &[impl std::borrow::Borrow<MessageEnvelope>],
+    briefs: &[BriefRecord],
+    tools: &[ToolExecutionRecord],
+    transcript: &[TranscriptEntry],
+    continuation: Option<&MessageEnvelope>,
+    mode: RecentTurnProjectionMode,
+    budget: usize,
+) -> Option<String> {
+    let tools = tools
+        .iter()
+        .map(crate::runtime::resident_input_evidence::project_tool_record)
+        .collect::<Result<Vec<_>>>()
+        .expect("valid fixture tool projections");
+    let observations =
+        HistoryObservations::capture(storage, std::slice::from_ref(record), briefs, messages);
+    render_turn_record_projection_with_transcript_from_snapshot(
+        &observations,
+        record,
+        messages,
+        briefs,
+        &tools,
+        transcript,
+        continuation,
+        mode,
+        budget,
+    )
+}
+
+#[cfg(test)]
+pub(crate) fn render_pending_task_result_records(
+    storage: &AppStorage,
+    message: &MessageEnvelope,
+    records: &[crate::runtime_db::TaskResultSettlementRecord],
+) -> Result<Option<String>> {
+    let mut identities = BTreeSet::new();
+    let pending = records
+        .iter()
+        .filter(|record| {
+            record.message_id != message.id && identities.insert(&record.result_identity)
+        })
+        .map(|record| {
+            let original = storage.read_message_by_id(&record.message_id)?;
+            let reply = original
+                .as_ref()
+                .and_then(crate::wake_contract::agent_message_reply_reference)
+                .map(|id| storage.read_message_by_id(id))
+                .transpose()?
+                .flatten();
+            Ok(PendingTaskResult {
+                record: record.clone(),
+                message: original
+                    .map(inputs::ContextHistoryMessage::owned)
+                    .transpose()?,
+                reply: reply
+                    .map(inputs::ContextHistoryMessage::owned)
+                    .transpose()?,
+            })
+        })
+        .collect::<Result<Vec<_>>>()?;
+    Ok(render_pending_task_results_from_snapshot(&pending, message))
+}
+
+#[cfg(test)]
+pub(crate) fn render_pending_task_results(
+    storage: &AppStorage,
+    agent: &AgentState,
+    message: &MessageEnvelope,
+) -> Result<Option<String>> {
+    let current_turn = agent
+        .current_turn_id
+        .as_deref()
+        .map(|id| storage.read_turn_by_id(id))
+        .transpose()?
+        .flatten();
+    let mut pending = snapshot::load_pending_task_results(storage, agent, message)?;
+    let live_identities = current_turn
+        .iter()
+        .flat_map(|turn| &turn.live_input_batches)
+        .flat_map(|batch| &batch.result_identities)
+        .collect::<BTreeSet<_>>();
+    pending.retain(|entry| !live_identities.contains(&entry.record.result_identity));
+    let excluded = current_turn
+        .iter()
+        .flat_map(|turn| {
+            turn.idle_input_batch
+                .iter()
+                .flat_map(|batch| &batch.items)
+                .chain(
+                    turn.live_input_batches
+                        .iter()
+                        .flat_map(|batch| &batch.items),
+                )
+        })
+        .map(|item| item.message_id.clone())
+        .collect();
+    Ok(render_pending_task_results_excluding(
+        &pending, message, &excluded,
+    ))
+}
+#[cfg(test)]
 mod tests {
     use serde_json::json;
     use std::path::PathBuf;
@@ -4223,6 +4776,218 @@ mod tests {
             storage.data_dir(),
         )
         .unwrap()
+    }
+
+    #[test]
+    fn immutable_snapshot_renders_after_storage_and_resources_are_removed() {
+        let dir = tempdir().unwrap();
+        let storage = AppStorage::new_for_test(dir.path()).unwrap();
+        let mut agent = AgentState::new("default");
+        let work = WorkItemRecord::new("default", "frozen objective", WorkItemState::Open);
+        storage.append_work_item(&work).unwrap();
+        agent.current_work_item_id = Some(work.id.clone());
+        storage.write_agent_for_fixture(&agent).unwrap();
+        let artifact = crate::work_item_plan::ensure_plan_artifact(
+            storage.data_dir(),
+            &work,
+            Some("frozen plan sentinel_7742"),
+        )
+        .unwrap();
+        std::fs::create_dir_all(dir.path().join("notes")).unwrap();
+        std::fs::write(dir.path().join("notes/observed.md"),
+            "---\ntitle: frozen note sentinel_7742\nsummary: prepared resource\n---\nprivate body\n").unwrap();
+        let mut source = MessageEnvelope::new(
+            "default",
+            MessageKind::OperatorPrompt,
+            MessageOrigin::Operator {
+                actor_id: Some("snapshot-test".into()),
+                actor_display_name: None,
+            },
+            AuthorityClass::OperatorInstruction,
+            Priority::Normal,
+            MessageBody::Text {
+                text: "frozen historical input".into(),
+            },
+        )
+        .with_admission(
+            MessageDeliverySurface::CliPrompt,
+            AdmissionContext::LocalProcess,
+        );
+        source.turn_id = Some("turn_frozen_snapshot".into());
+        source.work_item_id = Some(work.id.clone());
+        source
+            .source_refs
+            .insert("causation".into(), "message:original_source".into());
+        source
+            .source_refs
+            .insert("opaque_receipt".into(), "receipt with spaces".into());
+        storage.append_message(&source).unwrap();
+        let entry = TranscriptEntry::new(
+            "default",
+            TranscriptEntryKind::AssistantRound,
+            Some(1),
+            None,
+            json!({"blocks": [{"type":"text", "text":"frozen resolved brief sentinel_7742"}]}),
+        );
+        storage.append_transcript_entry(&entry).unwrap();
+        let mut brief = BriefRecord::new(
+            "default",
+            BriefKind::Result,
+            "preview only",
+            Some(source.id.clone()),
+            None,
+        );
+        brief.turn_id = source.turn_id.clone();
+        brief.content_source = BriefContentSource::TranscriptEntry {
+            entry_id: entry.id.clone(),
+            relation: BriefContentSourceRelation::DerivedFrom,
+        };
+        storage.append_brief(&brief).unwrap();
+        let mut turn = TurnRecord::new("default", "turn_frozen_snapshot", 1);
+        turn.input_message_ids = vec![source.id.clone()];
+        turn.produced_brief_ids = vec![brief.id.clone()];
+        turn.trigger = Some(crate::types::TurnTriggerSummary::from_message(&source));
+        storage.append_turn(&turn).unwrap();
+        let current = MessageEnvelope::new(
+            "default",
+            MessageKind::OperatorPrompt,
+            source.origin.clone(),
+            AuthorityClass::OperatorInstruction,
+            Priority::Normal,
+            MessageBody::Text {
+                text: "frozen current request".into(),
+            },
+        );
+        let execution = execution_snapshot_for(&agent);
+        let skills = SkillsRuntimeView::default();
+        let config = ContextConfig {
+            prompt_budget_estimated_tokens: 8192,
+            ..ContextConfig::default()
+        };
+        let capture = |storage: &AppStorage| {
+            capture_context_from_storage(
+                storage,
+                &agent,
+                &execution,
+                &skills,
+                &current,
+                None,
+                &config,
+                dir.path(),
+                None,
+            )
+            .unwrap()
+        };
+        let snapshot = capture(&storage);
+        let shared = snapshot.clone();
+        assert!(std::sync::Arc::ptr_eq(&snapshot.data, &shared.data));
+        let full = build_context_from_snapshot(&snapshot, 8192).unwrap();
+        let smaller = build_context_from_snapshot(&snapshot, 4096).unwrap();
+        let sections = serde_json::to_value(&full.sections).unwrap();
+        let smaller_sections = serde_json::to_value(&smaller.sections).unwrap();
+        let text = full
+            .sections
+            .iter()
+            .map(|section| section.content.as_str())
+            .collect::<Vec<_>>()
+            .join("\n");
+        for expected in [
+            "frozen plan sentinel_7742",
+            "frozen note sentinel_7742",
+            "frozen resolved brief sentinel_7742",
+            "frozen current request",
+        ] {
+            assert!(text.contains(expected), "missing {expected}");
+        }
+        let descriptor = snapshot
+            .descriptors()
+            .iter()
+            .find(|item| item.reference == format!("message:{}", source.id))
+            .unwrap();
+        assert_eq!(
+            descriptor.authority_class,
+            Some(AuthorityClass::OperatorInstruction)
+        );
+        assert_eq!(descriptor.origin, Some(source.origin.clone()));
+        assert_eq!(
+            descriptor.admission_context,
+            Some(AdmissionContext::LocalProcess)
+        );
+        assert_eq!(descriptor.provenance_refs, source.source_refs);
+        assert_eq!(descriptor.source_refs, vec!["message:original_source"]);
+        let brief_descriptor = snapshot
+            .descriptors()
+            .iter()
+            .find(|item| item.reference == format!("brief:{}", brief.id))
+            .unwrap();
+        assert_eq!(
+            brief_descriptor.content_source,
+            Some(brief.content_source.clone())
+        );
+        let work_descriptor = snapshot
+            .descriptors()
+            .iter()
+            .find(|item| item.reference == format!("work_item:{}", work.id))
+            .unwrap();
+        assert_eq!(work_descriptor.revision, Some(work.revision));
+        assert_eq!(
+            work_descriptor.body_locator,
+            Some(artifact.path.display().to_string())
+        );
+        assert!(snapshot
+            .descriptors()
+            .iter()
+            .all(|item| crate::memory::refs::RuntimeRef::parse(&item.reference).is_ok()));
+        let acquired = serde_json::to_value(snapshot.acquisition()).unwrap();
+        // Reopening the same persisted facts preserves the rendered input.
+        drop(storage);
+        let reopened = AppStorage::new_for_test(dir.path()).unwrap();
+        assert_eq!(
+            sections,
+            serde_json::to_value(
+                build_context_from_snapshot(&capture(&reopened), 8192)
+                    .unwrap()
+                    .sections
+            )
+            .unwrap()
+        );
+        let late = MessageEnvelope::new(
+            "default",
+            MessageKind::OperatorPrompt,
+            source.origin.clone(),
+            AuthorityClass::OperatorInstruction,
+            Priority::Normal,
+            MessageBody::Text {
+                text: "late input must not enter captured context".into(),
+            },
+        );
+        append_turn_for_message(&reopened, &late, "turn_after_snapshot", 2);
+        std::fs::write(&artifact.path, "late plan must not enter captured context").unwrap();
+        drop(reopened);
+        std::fs::remove_dir_all(dir.path()).unwrap();
+        assert_eq!(
+            sections,
+            serde_json::to_value(build_context_from_snapshot(&shared, 8192).unwrap().sections)
+                .unwrap()
+        );
+        assert_eq!(
+            smaller_sections,
+            serde_json::to_value(build_context_from_snapshot(&shared, 4096).unwrap().sections)
+                .unwrap()
+        );
+        assert_eq!(snapshot.id(), shared.id());
+        assert_eq!(
+            acquired,
+            serde_json::to_value(shared.acquisition()).unwrap()
+        );
+        assert_eq!(
+            full.recent_turns_reprojection
+                .as_ref()
+                .unwrap()
+                .snapshot_id(),
+            snapshot.id()
+        );
+        assert!(build_context_from_snapshot(&snapshot, 8193).is_err());
     }
 
     #[test]
@@ -4384,22 +5149,24 @@ mod tests {
                 text: "continue current work item".into(),
             },
         );
+        let history = std::sync::Arc::new(HistorySnapshot::default());
         let reprojection = RecentTurnsReprojection {
-            turn_records: storage.read_recent_turns(12).unwrap(),
-            messages: Vec::new(),
-            briefs: Vec::new(),
-            tools: Vec::new(),
-            transcript: Vec::new(),
+            history: history.clone(),
+            agent_history: history,
+            agent_evidence: Vec::new(),
+            prepared_scoped: None,
             current_message,
             current_work_item: Some(work_item),
             initial_budget: 64_000,
+            snapshot_id: 1,
         };
+        let reprojection = prepare_work_item_scoped_history(&storage, &reprojection, 64).unwrap();
 
         let WorkItemScopedReprojection::Rendered {
             section,
             evidence,
             turns_loaded,
-        } = reproject_work_item_scoped_with_limit(&storage, &reprojection, 64_000, 64).unwrap()
+        } = reproject_work_item_scoped_with_limit(&reprojection, 64_000, 64).unwrap()
         else {
             panic!("owner-scoped projection should render");
         };
@@ -4490,7 +5257,9 @@ mod tests {
     fn recent_turns_prefers_db_turn_records_when_available() {
         let dir = tempdir().unwrap();
         let storage = AppStorage::new_for_agent_for_test(dir.path(), "default").unwrap();
-        storage.write_agent(&AgentState::new("default")).unwrap();
+        storage
+            .write_agent_for_fixture(&AgentState::new("default"))
+            .unwrap();
         let _runtime_db = RuntimeDb::open_and_migrate(
             storage.runtime_dir().join("state/runtime.sqlite"),
             storage.runtime_dir().join("state/runtime.lock"),
@@ -4579,8 +5348,30 @@ mod tests {
         storage: &AppStorage,
         attempt: &crate::domain::execution_protocol::ExecutionAttempt,
     ) {
+        use crate::domain::execution_protocol::{
+            ExecutionAttemptState, ExecutionOutcome, ExecutionOutcomeRecord, WorkItemOutcome,
+        };
+
+        let outcome = ExecutionOutcomeRecord {
+            outcome_id: attempt.terminal_outcome_id.clone().unwrap(),
+            attempt_id: attempt.attempt_id.clone(),
+            outcome: ExecutionOutcome::WorkItem(match attempt.state {
+                ExecutionAttemptState::Interrupted => WorkItemOutcome::Interrupted {
+                    reason: "interrupted_queue_claim_reentry".into(),
+                },
+                ExecutionAttemptState::Settled => WorkItemOutcome::Continue,
+                state => panic!("unexpected replay fixture attempt state: {state:?}"),
+            }),
+            created_at: attempt.terminal_at.clone().unwrap(),
+        };
         let db = storage.runtime_db().unwrap().unwrap();
         db.transaction(|tx| {
+            tx.execute(
+                "INSERT INTO execution_protocol_partitions (agent_id, updated_at)
+                 VALUES (?1, ?2)
+                 ON CONFLICT(agent_id) DO UPDATE SET updated_at = excluded.updated_at",
+                rusqlite::params![attempt.agent_id, outcome.created_at],
+            )?;
             tx.execute(
                 "INSERT INTO execution_protocol_attempts (
                    agent_id, attempt_id, lifecycle_state, source_identity_json,
@@ -4590,6 +5381,7 @@ mod tests {
                    lifecycle_state = excluded.lifecycle_state,
                    source_identity_json = excluded.source_identity_json,
                    recovery_of_attempt_id = excluded.recovery_of_attempt_id,
+                   terminal_outcome_id = excluded.terminal_outcome_id,
                    payload_json = excluded.payload_json",
                 rusqlite::params![
                     attempt.agent_id,
@@ -4602,6 +5394,20 @@ mod tests {
                     serde_json::to_string(attempt)?,
                 ],
             )?;
+            tx.execute(
+                "INSERT INTO execution_protocol_outcomes (
+                   agent_id, outcome_id, attempt_id, payload_json
+                 ) VALUES (?1, ?2, ?3, ?4)
+                 ON CONFLICT(agent_id, outcome_id) DO UPDATE SET
+                   attempt_id = excluded.attempt_id,
+                   payload_json = excluded.payload_json",
+                rusqlite::params![
+                    attempt.agent_id,
+                    outcome.outcome_id,
+                    outcome.attempt_id,
+                    serde_json::to_string(&outcome)?,
+                ],
+            )?;
             Ok(())
         })
         .unwrap();
@@ -4610,7 +5416,9 @@ mod tests {
     fn replay_reference_fixture(restarts: usize) -> ReplayReferenceFixture {
         let dir = tempdir().unwrap();
         let storage = AppStorage::new_for_agent_for_test(dir.path(), "default").unwrap();
-        storage.write_agent(&AgentState::new("default")).unwrap();
+        storage
+            .write_agent_for_fixture(&AgentState::new("default"))
+            .unwrap();
         let make_message = |id: &str| {
             let mut message = MessageEnvelope::new(
                 "default",
@@ -4711,6 +5519,8 @@ mod tests {
                 "recovery_of_attempt_id": index.checked_sub(1)
                     .map(|index| format!("activation-replay-{index}")),
                 "admitted_at": anchor.created_at.to_rfc3339(),
+                "terminal_outcome_id": format!("outcome-replay-{index}"),
+                "terminal_at": anchor.created_at.to_rfc3339(),
             }))
             .unwrap();
             save_replay_reference_attempt(&storage, &attempt);
@@ -5133,7 +5943,9 @@ mod tests {
     fn recent_turns_marks_replay_provenance_without_treating_source_as_continuation() {
         let dir = tempdir().unwrap();
         let storage = AppStorage::new_for_agent_for_test(dir.path(), "default").unwrap();
-        storage.write_agent(&AgentState::new("default")).unwrap();
+        storage
+            .write_agent_for_fixture(&AgentState::new("default"))
+            .unwrap();
         let mut source = MessageEnvelope::new(
             "default",
             MessageKind::OperatorPrompt,
@@ -5149,6 +5961,19 @@ mod tests {
         );
         source.turn_id = Some("turn-replay-source".into());
         storage.append_message(&source).unwrap();
+        // A payload hint is not ownership. Persist the actual original Turn
+        // before the replay so its source assignment remains historical.
+        let mut source_turn = TurnRecord::new("default", "turn-replay-source", 7);
+        source_turn.input_message_ids = vec![source.id.clone()];
+        source_turn.trigger = Some(crate::types::TurnTriggerSummary::from_message(&source));
+        source_turn.terminal = Some(crate::types::TurnTerminalSummary {
+            kind: crate::types::TurnTerminalKind::Interrupted,
+            reason: Some("fixture interrupted original dispatch".into()),
+            no_brief_reason: Some(crate::types::TurnNoBriefReason::Interrupted),
+            completed_at: chrono::Utc::now(),
+            duration_ms: 1,
+        });
+        storage.append_turn(&source_turn).unwrap();
 
         let mut replay = TurnRecord::new("default", "turn-replay-attempt", 8);
         replay.input_message_ids = vec![source.id.clone()];
@@ -5157,9 +5982,13 @@ mod tests {
             source_message_id: source.id.clone(),
             source_turn_id: "turn-replay-source".into(),
             reason: "interrupted_queue_claim_reentry".into(),
-            prior_terminal: None,
+            prior_terminal: source_turn.terminal.clone(),
         });
         storage.append_turn(&replay).unwrap();
+        let assigned: String = storage.runtime_db().unwrap().unwrap().connection().unwrap()
+            .query_row("SELECT turn_id FROM conversation_input_assignments WHERE agent_id=?1 AND message_id=?2",
+                rusqlite::params!["default", source.id], |row| row.get(0)).unwrap();
+        assert_eq!(assigned, source_turn.turn_id);
 
         let current_message = MessageEnvelope::new(
             "default",
@@ -5181,7 +6010,12 @@ mod tests {
             &SkillsRuntimeView::default(),
             &current_message,
             None,
-            &ContextConfig::default(),
+            &ContextConfig {
+                // Select only the replay projection: rendering the source Turn
+                // itself would legitimately show its own original input body.
+                recent_messages: 1,
+                ..ContextConfig::default()
+            },
             dir.path(),
         )
         .unwrap();
@@ -5192,11 +6026,14 @@ mod tests {
             .expect("recent_turns section")
             .content
             .clone();
+        assert!(recent_turns.contains("  - turn_id: turn-replay-attempt"));
+        assert!(!recent_turns.contains("  - turn_id: turn-replay-source"));
         assert!(recent_turns.contains("source_turn_id=turn-replay-source"));
         assert!(recent_turns.contains(
             "projection advisory: replay provenance is historical evidence, not continuation identity"
         ));
         assert!(!recent_turns.contains("Historical input must not become current continuation."));
+        assert!(!recent_turns.contains("  - continues input:"));
     }
 
     #[test]
@@ -5222,6 +6059,14 @@ mod tests {
         cross_turn_message.turn_id = Some("turn-other".into());
         cross_turn_message.message_seq = Some(turn_index);
         storage.append_message(&cross_turn_message).unwrap();
+        // Freeze a real foreign assignment before the corrupt references below;
+        // Message.turn_id alone is only an untrusted preallocation/replay hint.
+        let mut other_turn = TurnRecord::new("default", "turn-other", turn_index - 1);
+        other_turn.input_message_ids = vec![cross_turn_message.id.clone()];
+        other_turn.trigger = Some(crate::types::TurnTriggerSummary::from_message(
+            &cross_turn_message,
+        ));
+        storage.append_turn(&other_turn).unwrap();
 
         let mut owned_brief = BriefRecord::new(
             "default",
@@ -5275,8 +6120,42 @@ mod tests {
         turn.produced_brief_ids = vec![owned_brief.id.clone(), cross_turn_brief.id.clone()];
         turn.tool_execution_ids = vec![owned_tool.id.clone(), cross_turn_tool.id.clone()];
         storage.append_turn(&turn).unwrap();
+        let assigned: String = storage.runtime_db().unwrap().unwrap().connection().unwrap()
+            .query_row("SELECT turn_id FROM conversation_input_assignments WHERE agent_id=?1 AND message_id=?2",
+                rusqlite::params!["default", cross_turn_message.id], |row| row.get(0)).unwrap();
+        assert_eq!(assigned, other_turn.turn_id);
 
-        let context = context_for_storage(&storage, "default");
+        let current_message = MessageEnvelope::new(
+            "default",
+            MessageKind::OperatorPrompt,
+            MessageOrigin::Operator {
+                actor_id: None,
+                actor_display_name: None,
+            },
+            AuthorityClass::OperatorInstruction,
+            Priority::Normal,
+            MessageBody::Text {
+                text: "Continue".into(),
+            },
+        );
+        let state = AgentState::new("default");
+        let context = build_context(
+            &storage,
+            &state,
+            &execution_snapshot_for(&state),
+            &SkillsRuntimeView::default(),
+            &current_message,
+            None,
+            &ContextConfig {
+                // Test the owned Turn's references, not the foreign Turn's
+                // legitimate standalone history projection.
+                recent_messages: 1,
+                recent_briefs: 4,
+                ..ContextConfig::default()
+            },
+            storage.data_dir(),
+        )
+        .unwrap();
         let recent_turns = context
             .sections
             .iter()
@@ -5285,6 +6164,8 @@ mod tests {
             .content
             .clone();
 
+        assert!(recent_turns.contains("  - turn_id: turn-owned"));
+        assert!(!recent_turns.contains("  - turn_id: turn-other"));
         assert!(recent_turns.contains("  - trigger: unavailable"));
         assert!(recent_turns.contains("owned result remains visible"));
         assert!(recent_turns.contains("tool_execution:tool-owned:output"));
@@ -5540,11 +6421,228 @@ mod tests {
         assert!(rendered.contains("result fallback: brief_ref=brief:brief-fallback"));
     }
 
+    fn recent_turn_live_follower_fixture() -> (TurnRecord, MessageEnvelope, MessageEnvelope) {
+        let mut anchor = MessageEnvelope::new(
+            "default",
+            MessageKind::OperatorPrompt,
+            MessageOrigin::Operator {
+                actor_id: None,
+                actor_display_name: None,
+            },
+            AuthorityClass::OperatorInstruction,
+            Priority::Normal,
+            MessageBody::Text {
+                text: "canonical trigger body".into(),
+            },
+        );
+        anchor.turn_id = Some("ancestor-turn".into());
+        let mut follower = anchor.clone();
+        follower.id = "owned-live-follower".into();
+        follower.turn_id = Some("replayed-turn".into());
+        follower.body = MessageBody::Text {
+            text: "owned-live-follower-body".into(),
+        };
+        let mut turn = TurnRecord::new("default", "replayed-turn", 2);
+        turn.trigger = Some(crate::types::TurnTriggerSummary::from_message(&anchor));
+        turn.input_message_ids = vec![anchor.id.clone(), follower.id.clone()];
+        turn.replay = Some(crate::types::TurnReplayProvenance {
+            source_message_id: anchor.id.clone(),
+            source_turn_id: "ancestor-turn".into(),
+            reason: "interrupted_queue_claim_reentry".into(),
+            prior_terminal: None,
+        });
+        let mut batch = LiveInputBatchRecord {
+            activation_id: "replayed-activation".into(),
+            safe_point: crate::types::LiveInputSafePoint::new("original-activation", 2),
+            cutoff: chrono::Utc::now(),
+            max_items: 8,
+            max_bytes: 24 * 1024,
+            rendered_bytes: 0,
+            result_identities: Vec::new(),
+            ordinary_message_ids: vec![follower.id.clone()],
+            items: vec![crate::types::IdleInputBatchItem {
+                message_id: follower.id.clone(),
+                source_ref: format!("message:{}", follower.id),
+                rendered: "owned-live-follower-body\n".into(),
+            }],
+        };
+        batch.rendered_bytes = batch.rendered_text().len();
+        turn.live_input_batches.push(batch);
+        (turn, anchor, follower)
+    }
+
+    #[test]
+    fn recent_turns_replay_keeps_live_follower_only_in_current_live_inputs() {
+        let dir = tempdir().unwrap();
+        let storage = AppStorage::new_for_test(dir.path()).unwrap();
+        let (turn, anchor, follower) = recent_turn_live_follower_fixture();
+        append_turn_for_message(&storage, &anchor, "ancestor-turn", 1);
+        storage.append_message(&follower).unwrap();
+        storage.append_turn(&turn).unwrap();
+        let mut agent = AgentState::new("default");
+        agent.current_turn_id = Some(turn.turn_id.clone());
+        // Keep replay history distinct from the current-input exclusion.
+        let current_message = MessageEnvelope::new(
+            "default",
+            MessageKind::OperatorPrompt,
+            MessageOrigin::Operator {
+                actor_id: None,
+                actor_display_name: None,
+            },
+            AuthorityClass::OperatorInstruction,
+            Priority::Normal,
+            MessageBody::Text {
+                text: "Continue with the replayed turn.".into(),
+            },
+        );
+        let built = build_context(
+            &storage,
+            &agent,
+            &execution_snapshot_for(&agent),
+            &SkillsRuntimeView::default(),
+            &current_message,
+            None,
+            &ContextConfig {
+                prompt_budget_estimated_tokens: 16 * 1024,
+                ..ContextConfig::default()
+            },
+            storage.data_dir(),
+        )
+        .unwrap();
+        let live = built
+            .sections
+            .iter()
+            .find(|section| section.name == "current_live_input_batches")
+            .expect("current live evidence");
+        assert_eq!(live.content.matches("owned-live-follower-body").count(), 1);
+        let recent = built
+            .sections
+            .iter()
+            .find(|section| section.name == "recent_turns")
+            .expect("recent turn evidence");
+        assert!(recent.content.contains("  - trigger: unavailable"));
+        assert!(!recent.content.contains("owned-live-follower"));
+        assert!(recent.content.contains("source_turn_id=ancestor-turn"));
+        assert_eq!(recent.content.matches("canonical trigger body").count(), 1);
+        let content = built
+            .sections
+            .iter()
+            .map(|section| section.content.as_str())
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert_eq!(content.matches("owned-live-follower-body").count(), 1);
+        assert_eq!(
+            storage
+                .read_message_by_id(&anchor.id)
+                .unwrap()
+                .unwrap()
+                .turn_id,
+            anchor.turn_id
+        );
+        assert_eq!(turn.live_input_batches[0].items.len(), 1);
+    }
+
+    #[test]
+    fn recent_turns_explicit_foreign_or_missing_trigger_never_uses_owned_follower() {
+        for missing in [false, true] {
+            let dir = tempdir().unwrap();
+            let storage = AppStorage::new_for_test(dir.path()).unwrap();
+            let (turn, anchor, follower) = recent_turn_live_follower_fixture();
+            let mut messages = vec![follower];
+            if !missing {
+                messages.push(anchor);
+            }
+            let rendered = render_turn_record_projection_with_transcript(
+                &storage,
+                &turn,
+                &messages,
+                &[],
+                &[],
+                &[],
+                None,
+                RecentTurnProjectionMode::Continuity,
+                20_000,
+            )
+            .unwrap();
+            if missing {
+                assert!(
+                    rendered.contains("  - trigger: trusted operator input"),
+                    "{rendered}"
+                );
+            } else {
+                assert!(rendered.contains("  - trigger: unavailable"), "{rendered}");
+            }
+            assert!(!rendered.contains("owned-live-follower"));
+            assert!(!rendered.contains("canonical trigger body"));
+        }
+    }
+
+    #[test]
+    fn recent_turns_explicit_owned_trigger_wins_over_earlier_live_follower() {
+        let dir = tempdir().unwrap();
+        let storage = AppStorage::new_for_test(dir.path()).unwrap();
+        let (mut turn, mut anchor, follower) = recent_turn_live_follower_fixture();
+        anchor.turn_id = Some(turn.turn_id.clone());
+        turn.replay = None;
+        turn.input_message_ids = vec![follower.id.clone(), anchor.id.clone()];
+        let rendered = render_turn_record_projection_with_transcript(
+            &storage,
+            &turn,
+            &[follower, anchor],
+            &[],
+            &[],
+            &[],
+            None,
+            RecentTurnProjectionMode::Continuity,
+            20_000,
+        )
+        .unwrap();
+        assert!(rendered.contains("canonical trigger body"));
+        assert!(!rendered.contains("owned-live-follower"));
+        assert!(!rendered.contains("  - trigger: unavailable"));
+    }
+
+    #[test]
+    fn recent_turns_legacy_trigger_fallback_excludes_live_batch_items() {
+        for summary_without_id in [false, true] {
+            let dir = tempdir().unwrap();
+            let storage = AppStorage::new_for_test(dir.path()).unwrap();
+            let (mut turn, mut anchor, follower) = recent_turn_live_follower_fixture();
+            anchor.turn_id = Some(turn.turn_id.clone());
+            turn.replay = None;
+            if summary_without_id {
+                turn.trigger.as_mut().unwrap().message_id = None;
+            } else {
+                turn.trigger = None;
+            }
+            turn.input_message_ids = vec![follower.id.clone(), anchor.id.clone()];
+            // Item identity, not optional ordinary-message metadata, excludes live inputs.
+            turn.live_input_batches[0].ordinary_message_ids.clear();
+            let rendered = render_turn_record_projection_with_transcript(
+                &storage,
+                &turn,
+                &[follower, anchor],
+                &[],
+                &[],
+                &[],
+                None,
+                RecentTurnProjectionMode::Continuity,
+                20_000,
+            )
+            .unwrap();
+            assert!(rendered.contains("canonical trigger body"));
+            assert!(!rendered.contains("owned-live-follower"));
+            assert!(!rendered.contains("  - trigger: unavailable"));
+        }
+    }
+
     #[test]
     fn recent_turns_keeps_db_turn_when_trigger_message_is_outside_window() {
         let dir = tempdir().unwrap();
         let storage = AppStorage::new_for_agent_for_test(dir.path(), "default").unwrap();
-        storage.write_agent(&AgentState::new("default")).unwrap();
+        storage
+            .write_agent_for_fixture(&AgentState::new("default"))
+            .unwrap();
         let _runtime_db = RuntimeDb::open_and_migrate(
             storage.runtime_dir().join("state/runtime.sqlite"),
             storage.runtime_dir().join("state/runtime.lock"),
@@ -5619,7 +6717,9 @@ mod tests {
     fn recent_turns_hydrates_turn_record_references_outside_recent_windows() {
         let dir = tempdir().unwrap();
         let storage = AppStorage::new_for_agent_for_test(dir.path(), "default").unwrap();
-        storage.write_agent(&AgentState::new("default")).unwrap();
+        storage
+            .write_agent_for_fixture(&AgentState::new("default"))
+            .unwrap();
         let _runtime_db = RuntimeDb::open_and_migrate(
             storage.runtime_dir().join("state/runtime.sqlite"),
             storage.runtime_dir().join("state/runtime.lock"),
@@ -6651,7 +7751,12 @@ mod tests {
             summary: "sleep promoted to task".into(),
             invocation_surface: None,
         };
-        let records = vec![&success, &failed, &promoted];
+        let projected = [&success, &failed, &promoted]
+            .into_iter()
+            .map(crate::runtime::resident_input_evidence::project_tool_record)
+            .collect::<Result<Vec<_>>>()
+            .unwrap();
+        let records = projected.iter().collect::<Vec<_>>();
         let rendered = render_recent_tool_execution_rollup(&records).join("\n");
 
         assert!(rendered.contains("total=3 success=2 error=1 promoted=1"));
@@ -7404,8 +8509,9 @@ mod tests {
                     path: PathBuf::from("/tmp/workspace/.agents/skills/other/SKILL.md"),
                     scope: crate::types::SkillScope::Workspace,
                 },
-            ],
-            attached_skills: Vec::new(),
+            ]
+            .into(),
+            attached_skills: Default::default(),
             active_skills: vec![crate::types::ActiveSkillRecord {
                 skill_id: "agent:demo".into(),
                 name: "demo".into(),
@@ -7796,7 +8902,7 @@ mod tests {
 
         let mut agent = AgentState::new("default");
         agent.current_work_item_id = Some(active.id.clone());
-        storage.write_agent(&agent).unwrap();
+        storage.write_agent_for_fixture(&agent).unwrap();
         let built = build_context(
             &storage,
             &agent,
@@ -7914,7 +9020,7 @@ mod tests {
             work_item_id: Some(execution_owner.id.clone()),
             claimed_work_revision: Some(execution_owner.revision),
         });
-        storage.write_agent(&agent).unwrap();
+        storage.write_agent_for_fixture(&agent).unwrap();
 
         let current_message = MessageEnvelope::new(
             "default",
@@ -7991,7 +9097,7 @@ mod tests {
             work_item_id: None,
             claimed_work_revision: None,
         });
-        storage.write_agent(&agent).unwrap();
+        storage.write_agent_for_fixture(&agent).unwrap();
 
         let current_message = MessageEnvelope::new(
             "default",
@@ -8014,7 +9120,7 @@ mod tests {
             },
         ] {
             agent.current_execution_binding.as_mut().unwrap().owner = Some(owner);
-            storage.write_agent(&agent).unwrap();
+            storage.write_agent_for_fixture(&agent).unwrap();
             for blocked_by in [None, Some("focused background waits for CI")] {
                 focused.blocked_by = blocked_by.map(str::to_owned);
                 focused.revision += 1;
@@ -8055,7 +9161,7 @@ mod tests {
 
         // Legacy contexts without an execution binding still use global focus.
         agent.current_execution_binding = None;
-        storage.write_agent(&agent).unwrap();
+        storage.write_agent_for_fixture(&agent).unwrap();
         let built = build_context(
             &storage,
             &agent,
@@ -8099,7 +9205,7 @@ mod tests {
             },
         );
         let agent = AgentState::new("default");
-        storage.write_agent(&agent).unwrap();
+        storage.write_agent_for_fixture(&agent).unwrap();
 
         let built = build_context(
             &storage,
@@ -8128,6 +9234,57 @@ mod tests {
         assert!(section
             .content
             .contains("No focused WorkItem is attached to this turn."));
+    }
+
+    #[test]
+    fn completion_cold_adapters_keep_latest_result_delivery_and_work_summary_precedence() {
+        let dir = tempfile::tempdir().unwrap();
+        let storage = AppStorage::new_for_test(dir.path()).unwrap();
+        storage
+            .write_agent_for_fixture(&AgentState::new("default"))
+            .unwrap();
+        let mut work = WorkItemRecord::new(
+            "default",
+            "cold precedence",
+            crate::types::WorkItemState::Completed,
+        );
+        work.result_summary = Some("WORK_FALLBACK".into());
+        let ids = BTreeSet::from([work.id.clone()]);
+        let report = |reports: &BTreeMap<String, CompletionReportProjection>| {
+            completion_report_for_work_item(reports, &work)
+                .unwrap()
+                .text
+        };
+        assert_eq!(report(&BTreeMap::new()), "WORK_FALLBACK");
+        storage
+            .append_delivery_summary(&crate::types::DeliverySummaryRecord::new(
+                "default",
+                &work.id,
+                "DELIVERY_BEFORE_WORK_FALLBACK",
+                None,
+                None,
+            ))
+            .unwrap();
+        let summaries = latest_completion_report_by_work_item(&storage, "default", &ids).unwrap();
+        assert_eq!(report(&summaries), "DELIVERY_BEFORE_WORK_FALLBACK");
+        let mut pinned =
+            BriefRecord::new("default", BriefKind::Result, "PINNED_RESULT", None, None);
+        pinned.work_item_id = Some(work.id.clone());
+        work.result_brief_id = Some(pinned.id.clone());
+        storage.append_brief(&pinned).unwrap();
+        let mut latest = pinned.clone();
+        latest.id = "later-result".into();
+        latest.created_at += chrono::Duration::seconds(1);
+        latest.text = "LATEST_RESULT_NOT_PINNED_BINDING".into();
+        storage.append_brief(&latest).unwrap();
+        let summaries = latest_completion_report_by_work_item(&storage, "default", &ids).unwrap();
+        assert_eq!(summaries[&work.id].text, latest.text);
+        let db = storage.runtime_db().unwrap().unwrap();
+        let mut connection = db.connection().unwrap();
+        let tx = connection.transaction().unwrap();
+        let durable = crate::runtime_db::context_inputs::ContextDurableRead::new(&tx, "default");
+        let same_view = latest_completion_report_by_work_item(&durable, "default", &ids).unwrap();
+        assert_eq!(same_view[&work.id].text, latest.text);
     }
 
     #[test]
@@ -8513,6 +9670,17 @@ mod tests {
         let rendered = render_pending_task_results(&storage, &agent, &current_message)
             .unwrap()
             .expect("pending task result context");
+        let pending =
+            snapshot::load_pending_task_results(&storage, &agent, &current_message).unwrap();
+        for entry in &pending {
+            let preview = pending_task_result_preview(
+                &entry.record,
+                entry.message.as_deref(),
+                entry.reply.as_deref(),
+            );
+            assert!(preview.lines.len() <= PENDING_TASK_RESULT_PREVIEW_LINES);
+            assert_eq!(preview.lines.capacity(), PENDING_TASK_RESULT_PREVIEW_LINES);
+        }
         assert!(rendered.contains("result_identity:"));
         assert!(rendered.contains("task_id: task-pending"));
         assert!(rendered.contains("summary: completed verification"));
@@ -8561,6 +9729,505 @@ mod tests {
                 .is_none(),
             "live evidence must not also appear in cumulative pending results"
         );
+    }
+
+    #[test]
+    fn pending_preview_borrowed_dedup_matches_original_formatter() {
+        let previews = (0..12)
+            .map(|index| PendingTaskResultPreview {
+                lines: vec![
+                    format!("result-{index}: é\n你好"),
+                    format!("source-body-{index}"),
+                    format!("reply-body-{index}"),
+                ],
+                result_identity: format!("result-{}", index % 8),
+                source_id: Some(format!("message-{}", index % 3)),
+                source_lines: 1..2,
+                reply_id: Some(format!("message-{}", index % 2)),
+                reply_lines: 2..3,
+            })
+            .collect::<Vec<_>>();
+        let mut current = MessageEnvelope::new(
+            "default",
+            MessageKind::OperatorPrompt,
+            MessageOrigin::Operator {
+                actor_id: None,
+                actor_display_name: None,
+            },
+            AuthorityClass::OperatorInstruction,
+            Priority::Normal,
+            MessageBody::Text {
+                text: "current".into(),
+            },
+        );
+        for anchor in ["unrelated", "message-0", "message-1"] {
+            current.id = anchor.into();
+            for excluded in [BTreeSet::new(), BTreeSet::from(["message-2".into()])] {
+                for count in [0, 1, 2, 8, 12] {
+                    let pending = &previews[..count];
+                    let mut expected = String::new();
+                    let mut seen = BTreeSet::new();
+                    let mut identities = BTreeSet::new();
+                    if count != 0 {
+                        expected.push_str("Previously received terminal task results admitted to this execution (each result identity appears once):");
+                    }
+                    for entry in pending {
+                        if !identities.insert(entry.result_identity.as_str()) {
+                            continue;
+                        }
+                        let source = entry.source_id.as_deref().is_some_and(|id| {
+                            id != current.id && !excluded.contains(id) && seen.insert(id)
+                        });
+                        let reply = entry.reply_id.as_deref().is_some_and(|id| {
+                            id != current.id && !excluded.contains(id) && seen.insert(id)
+                        });
+                        for (index, line) in entry.lines.iter().enumerate() {
+                            if (source || !entry.source_lines.contains(&index))
+                                && (reply || !entry.reply_lines.contains(&index))
+                            {
+                                expected.push('\n');
+                                expected.push_str(line);
+                            }
+                        }
+                    }
+                    let mut rendered = String::new();
+                    write_pending_task_result_previews(
+                        &mut rendered,
+                        pending.iter(),
+                        count,
+                        &current,
+                        &excluded,
+                    )
+                    .unwrap();
+                    assert_eq!(rendered, expected);
+                    if excluded.is_empty() {
+                        assert_eq!(
+                            pending_task_results_preview_measure(pending.iter(), &current),
+                            (expected.len(), expected.chars().count())
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    fn projected_pending_preview_fixture(
+        index: usize,
+    ) -> (
+        crate::runtime_db::task_result_settlement::TaskResultSettlementRecord,
+        MessageEnvelope,
+        crate::types::IdleInputBatchItem,
+        crate::types::IdleInputBatchItem,
+    ) {
+        let task = active_task(
+            &format!("projected-task-{index}"),
+            "default",
+            TaskStatus::Completed,
+            Some(json!({
+                "rejoin_obligation_id": format!("projected-task-{index}"),
+                "rejoin_generation": 1,
+                "parent_turn_id": "parent-turn",
+            })),
+        );
+        let mut message = MessageEnvelope::new(
+            "default",
+            MessageKind::TaskResult,
+            MessageOrigin::Task {
+                task_id: task.id.clone(),
+            },
+            AuthorityClass::RuntimeInstruction,
+            Priority::Normal,
+            MessageBody::Text {
+                text: format!("legacy-source-{index}"),
+            },
+        );
+        message.id = format!("projected-source-{index}");
+        message.work_item_id = task.work_item_id.clone();
+        let record =
+            crate::runtime_db::task_result_settlement::TaskResultSettlementRecord::pending(
+                &task,
+                &message,
+                chrono::Utc::now(),
+            )
+            .unwrap()
+            .unwrap();
+        let source = crate::types::IdleInputBatchItem {
+            message_id: message.id.clone(),
+            source_ref: format!("message:{}", message.id),
+            rendered: format!("projected-source-body-{index}\nsecond source line\n"),
+        };
+        let reply = crate::types::IdleInputBatchItem {
+            message_id: format!("projected-reply-{index}"),
+            source_ref: format!("message:projected-reply-{index}"),
+            rendered: format!("projected-reply-body-{index}\nsecond reply line\n"),
+        };
+        (record, message, source, reply)
+    }
+
+    fn assert_projected_pending_preview_equivalent(
+        pending: &[PendingTaskResultPreview],
+        current: &MessageEnvelope,
+        candidate: &crate::runtime_db::task_result_settlement::TaskResultSettlementRecord,
+        source: &crate::types::IdleInputBatchItem,
+        reply: Option<&crate::types::IdleInputBatchItem>,
+    ) -> String {
+        let retained = pending_task_result_preview_with_projections(
+            candidate,
+            None,
+            None,
+            Some(source),
+            reply,
+        );
+        let mut expected = String::new();
+        write_pending_task_result_previews(
+            &mut expected,
+            pending.iter().chain(std::iter::once(&retained)),
+            pending.len() + 1,
+            current,
+            &BTreeSet::new(),
+        )
+        .unwrap();
+        let mut borrowed = String::new();
+        write_pending_task_result_preview_entries(
+            &mut borrowed,
+            pending
+                .iter()
+                .map(PendingTaskResultPreviewEntry::Retained)
+                .chain(std::iter::once(PendingTaskResultPreviewEntry::Projected {
+                    record: candidate,
+                    source: source.into(),
+                    reply: reply.map(ProjectionView::from),
+                })),
+            pending.len() + 1,
+            current,
+            &BTreeSet::new(),
+        )
+        .unwrap();
+        assert_eq!(borrowed, expected);
+        // Filter deliberately removes ExactSizeIterator, as in selection trials.
+        assert_eq!(
+            pending_task_results_preview_measure_with_projected_candidate(
+                pending.iter().filter(|_| true),
+                current,
+                candidate,
+                source,
+                reply,
+            ),
+            (expected.len(), expected.chars().count())
+        );
+        expected
+    }
+
+    #[test]
+    fn pending_projected_candidate_measure_matches_retained_formatter() {
+        use crate::domain::execution_protocol::TaskRejoinSource;
+        let (mut record, mut current, source, reply) = projected_pending_preview_fixture(0);
+        current.id = "unrelated-anchor".into();
+        for command in [false, true] {
+            record.source = if command {
+                TaskRejoinSource::CommandCreation {
+                    command_creation_id: "command-creation".into(),
+                }
+            } else {
+                TaskRejoinSource::ParentTurn {
+                    parent_turn_id: "parent-turn".into(),
+                }
+            };
+            for owner in [None, Some("work-current".to_string())] {
+                record.work_item_id = owner;
+                for reply in [None, Some(&reply)] {
+                    let rendered = assert_projected_pending_preview_equivalent(
+                        &[],
+                        &current,
+                        &record,
+                        &source,
+                        reply,
+                    );
+                    let source_header = if command {
+                        "command_creation_id: command-creation"
+                    } else {
+                        "parent_turn_id: parent-turn"
+                    };
+                    let owner = record
+                        .work_item_id
+                        .as_ref()
+                        .map(|id| format!("work_item:{id}"))
+                        .unwrap_or_else(|| "agent_lifecycle".into());
+                    assert_eq!(
+                        rendered,
+                        format!(
+                            "Previously received terminal task results admitted to this execution (each result identity appears once):\n- result_identity: {}\n  task_id: {}\n  task_status: completed\n  owner: {owner}\n  {source_header}\n  rejoin_generation: 1\n{}{}",
+                            record.result_identity,
+                            record.task_id,
+                            source.rendered,
+                            reply.map(|reply| format!("\n{}", reply.rendered)).unwrap_or_default(),
+                        )
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn pending_projected_candidate_measure_matches_mixed_preview_paths() {
+        let (legacy, message, _, _) = projected_pending_preview_fixture(0);
+        let (projected, _, prior_source, prior_reply) = projected_pending_preview_fixture(1);
+        let (mut candidate, mut current, source, reply) = projected_pending_preview_fixture(2);
+        current.id = "unrelated-anchor".into();
+        // Explicit trial projections, not stale projections on the Result, win.
+        candidate.source_projection = Some(prior_source.clone());
+        candidate.reply_projection = Some(prior_reply.clone());
+        let pending = [
+            pending_task_result_preview_with_projections(&legacy, Some(&message), None, None, None),
+            pending_task_result_preview_with_projections(
+                &projected,
+                None,
+                None,
+                Some(&prior_source),
+                Some(&prior_reply),
+            ),
+        ];
+        let rendered = assert_projected_pending_preview_equivalent(
+            &pending,
+            &current,
+            &candidate,
+            &source,
+            Some(&reply),
+        );
+        assert!(rendered.contains("summary: legacy-source-0"));
+        assert!(rendered.contains("retrieval: use TaskStatus"));
+        assert!(
+            rendered.find(&prior_reply.rendered).unwrap()
+                < rendered.find(&source.rendered).unwrap()
+        );
+        assert!(rendered.find(&source.rendered).unwrap() < rendered.find(&reply.rendered).unwrap());
+    }
+
+    #[test]
+    fn pending_projected_candidate_measure_preserves_identity_dedup() {
+        let (mut candidate, mut current, source, reply) = projected_pending_preview_fixture(0);
+        current.id = "unrelated-anchor".into();
+        let pending = [
+            PendingTaskResultPreview {
+                lines: vec!["retained-result".into()],
+                result_identity: candidate.result_identity.clone(),
+                source_id: None,
+                source_lines: 0..0,
+                reply_id: None,
+                reply_lines: 0..0,
+            },
+            PendingTaskResultPreview {
+                lines: vec!["suppressed-duplicate".into()],
+                result_identity: candidate.result_identity.clone(),
+                source_id: Some(source.message_id.clone()),
+                source_lines: 0..0,
+                reply_id: Some(reply.message_id.clone()),
+                reply_lines: 0..0,
+            },
+        ];
+        let duplicate = assert_projected_pending_preview_equivalent(
+            &pending,
+            &current,
+            &candidate,
+            &source,
+            Some(&reply),
+        );
+        assert!(!duplicate.contains("suppressed-duplicate"));
+        assert!(!duplicate.contains(&source.rendered));
+        assert_eq!(
+            pending_task_results_preview_measure_with_projected_candidate(
+                pending.iter(),
+                &current,
+                &candidate,
+                &source,
+                Some(&reply),
+            ),
+            pending_task_results_preview_measure(pending.iter(), &current)
+        );
+        candidate.result_identity.push_str("-distinct");
+        let distinct = assert_projected_pending_preview_equivalent(
+            &pending,
+            &current,
+            &candidate,
+            &source,
+            Some(&reply),
+        );
+        assert!(
+            distinct.contains(&source.rendered),
+            "duplicate identities cannot reserve Message IDs"
+        );
+        assert!(distinct.contains(&reply.rendered));
+    }
+
+    #[test]
+    fn pending_projected_candidate_measure_preserves_shared_messages_and_order() {
+        let (prior, _, mut prior_source, mut prior_reply) = projected_pending_preview_fixture(0);
+        let (candidate, mut current, source, mut reply) = projected_pending_preview_fixture(1);
+        current.id = "unrelated-anchor".into();
+        for share_source in [false, true] {
+            for share_reply in [false, true] {
+                prior_source.message_id = if share_source {
+                    source.message_id.clone()
+                } else {
+                    "prior-only-source".into()
+                };
+                prior_reply.message_id = if share_reply {
+                    reply.message_id.clone()
+                } else {
+                    "prior-only-reply".into()
+                };
+                let pending = [pending_task_result_preview_with_projections(
+                    &prior,
+                    None,
+                    None,
+                    Some(&prior_source),
+                    Some(&prior_reply),
+                )];
+                let rendered = assert_projected_pending_preview_equivalent(
+                    &pending,
+                    &current,
+                    &candidate,
+                    &source,
+                    Some(&reply),
+                );
+                assert_eq!(rendered.contains(&source.rendered), !share_source);
+                assert_eq!(rendered.contains(&reply.rendered), !share_reply);
+            }
+        }
+        // Cross-role dedup and same-entry source-before-reply are unchanged.
+        prior_reply.message_id = source.message_id.clone();
+        prior_source.message_id = reply.message_id.clone();
+        let pending = [pending_task_result_preview_with_projections(
+            &prior,
+            None,
+            None,
+            Some(&prior_source),
+            Some(&prior_reply),
+        )];
+        let rendered = assert_projected_pending_preview_equivalent(
+            &pending,
+            &current,
+            &candidate,
+            &source,
+            Some(&reply),
+        );
+        assert!(!rendered.contains(&source.rendered));
+        assert!(!rendered.contains(&reply.rendered));
+        reply.message_id = source.message_id.clone();
+        let rendered = assert_projected_pending_preview_equivalent(
+            &[],
+            &current,
+            &candidate,
+            &source,
+            Some(&reply),
+        );
+        assert!(rendered.contains(&source.rendered));
+        assert!(!rendered.contains(&reply.rendered));
+    }
+
+    #[test]
+    fn pending_projected_candidate_measure_preserves_anchor_and_exclusions() {
+        let (record, mut current, source, reply) = projected_pending_preview_fixture(0);
+        let retained = pending_task_result_preview_with_projections(
+            &record,
+            None,
+            None,
+            Some(&source),
+            Some(&reply),
+        );
+        for anchor in ["unrelated-anchor", &source.message_id, &reply.message_id] {
+            current.id = anchor.into();
+            let rendered = assert_projected_pending_preview_equivalent(
+                &[],
+                &current,
+                &record,
+                &source,
+                Some(&reply),
+            );
+            assert_eq!(
+                rendered.contains(&source.rendered),
+                anchor != source.message_id
+            );
+            assert_eq!(
+                rendered.contains(&reply.rendered),
+                anchor != reply.message_id
+            );
+            for excluded in [
+                BTreeSet::new(),
+                BTreeSet::from([source.message_id.clone()]),
+                BTreeSet::from([reply.message_id.clone()]),
+            ] {
+                let mut expected = String::new();
+                write_pending_task_result_previews(
+                    &mut expected,
+                    std::iter::once(&retained),
+                    1,
+                    &current,
+                    &excluded,
+                )
+                .unwrap();
+                let mut borrowed = String::new();
+                write_pending_task_result_preview_entries(
+                    &mut borrowed,
+                    std::iter::once(PendingTaskResultPreviewEntry::Projected {
+                        record: &record,
+                        source: (&source).into(),
+                        reply: Some((&reply).into()),
+                    }),
+                    1,
+                    &current,
+                    &excluded,
+                )
+                .unwrap();
+                assert_eq!(borrowed, expected);
+            }
+        }
+    }
+
+    #[test]
+    fn pending_projected_candidate_measure_preserves_unicode_inline_sanitization() {
+        use crate::domain::execution_protocol::TaskRejoinSource;
+        for value in [
+            "",
+            " \t\r\n",
+            "plain",
+            "  é\u{a0}你好\u{2003}🙂\r\n  fin  ",
+            "\u{85}a\u{b}\u{c}b\u{2028}c\u{2029}",
+            "a\u{200b}b\0c",
+        ] {
+            assert_eq!(
+                PendingTaskResultInline(value).to_string(),
+                sanitize_inline(value)
+            );
+        }
+        let (mut record, mut current, mut source, mut reply) = projected_pending_preview_fixture(0);
+        current.id = "unrelated-anchor".into();
+        record.result_identity = "  résultat\u{a0}你好\n🙂  ".into();
+        record.task_id = "\t任务\r\né\u{2003}🙂 ".into();
+        record.task_status = "  完成\u{2028}é ".into();
+        record.work_item_id = Some("  任务\n原样  ".into());
+        record.source = TaskRejoinSource::CommandCreation {
+            command_creation_id: "  création\u{85}你好\n🙂 ".into(),
+        };
+        record.rejoin_generation = u64::MAX;
+        source.rendered = "  source: é\u{a0}你好\n🙂\tkeep whitespace\r\n".into();
+        reply.rendered = "\nréponse: 你好🙂\n".into();
+        let rendered = assert_projected_pending_preview_equivalent(
+            &[],
+            &current,
+            &record,
+            &source,
+            Some(&reply),
+        );
+        assert!(rendered.contains("- result_identity: résultat 你好 🙂\n"));
+        assert!(rendered.contains("  task_id: 任务 é 🙂\n"));
+        assert!(rendered.contains("  task_status: 完成 é\n"));
+        assert!(rendered.contains("  owner: work_item:  任务\n原样  \n"));
+        assert!(rendered.contains("  command_creation_id: création 你好 🙂\n"));
+        assert!(rendered.contains("  rejoin_generation: 18446744073709551615\n"));
+        assert!(rendered.contains(&source.rendered));
+        assert!(rendered.contains(&reply.rendered));
+        assert!(rendered.len() > rendered.chars().count());
     }
 
     #[test]
@@ -8713,9 +10380,7 @@ mod tests {
         ];
         let mut seen =
             BTreeSet::from(["root".into(), "current-input".into(), "current-idle".into()]);
-        let dir = tempdir().unwrap();
-        let storage = AppStorage::new_for_test(dir.path()).unwrap();
-        let rendered = render_recovery_input_batches(&storage, &source, &mut seen)
+        let rendered = render_recovery_input_batches(&BTreeMap::new(), &source, &mut seen)
             .unwrap()
             .unwrap();
         assert!(rendered.contains("source turn validated-source-turn (original provenance)"));
@@ -9887,7 +11552,9 @@ mod tests {
     fn resume_override_anchor_ignores_legacy_operator_without_message_seq() {
         let dir = tempdir().unwrap();
         let storage = AppStorage::new_for_agent_for_test(dir.path(), "default").unwrap();
-        storage.write_agent(&AgentState::new("default")).unwrap();
+        storage
+            .write_agent_for_fixture(&AgentState::new("default"))
+            .unwrap();
         let runtime_db = RuntimeDb::open_and_migrate(
             storage.runtime_dir().join("state/runtime.sqlite"),
             storage.runtime_dir().join("state/runtime.lock"),
@@ -10015,7 +11682,7 @@ mod tests {
         storage.append_work_item(&active).unwrap();
         let mut agent = AgentState::new("default");
         agent.current_work_item_id = Some(active.id.clone());
-        storage.write_agent(&agent).unwrap();
+        storage.write_agent_for_fixture(&agent).unwrap();
 
         let mut system_tick = MessageEnvelope::new(
             "default",
@@ -10109,7 +11776,7 @@ mod tests {
         storage.append_work_item(&active).unwrap();
         let mut agent = AgentState::new("default");
         agent.current_work_item_id = Some(active.id.clone());
-        storage.write_agent(&agent).unwrap();
+        storage.write_agent_for_fixture(&agent).unwrap();
 
         let mut system_tick = MessageEnvelope::new(
             "default",
@@ -10852,7 +12519,7 @@ mod tests {
             working_set_files: vec!["src/runtime.rs".into()],
             ..WorkingMemorySnapshot::default()
         };
-        storage.write_agent(&agent).unwrap();
+        storage.write_agent_for_fixture(&agent).unwrap();
 
         storage
             .append_context_episode(&ContextEpisodeRecord {
@@ -11012,7 +12679,7 @@ mod tests {
                     "/very/long/path/to/a/skill/catalog/entry/that/keeps/repeating/to/exhaust/the/budget/SKILL.md",
                 ),
                 scope: crate::types::SkillScope::Workspace,
-            }],
+            }].into(),
             active_skills: vec![crate::types::ActiveSkillRecord {
                 skill_id: "skill/active-large-entry".into(),
                 name: "Active Large Entry".into(),
@@ -11277,7 +12944,7 @@ mod tests {
         assert_eq!(resolved.id, "msg-historical");
     }
 
-    fn execution_snapshot_for(session: &AgentState) -> ExecutionSnapshot {
+    pub(super) fn execution_snapshot_for(session: &AgentState) -> ExecutionSnapshot {
         let workspace_anchor = PathBuf::from("/workspace");
         let execution_root = session
             .worktree_session
@@ -11600,7 +13267,7 @@ mod tests {
         storage.append_work_item(&work_item).unwrap();
         let mut session = AgentState::new("default");
         session.current_work_item_id = Some(work_item.id.clone());
-        storage.write_agent(&session).unwrap();
+        storage.write_agent_for_fixture(&session).unwrap();
         let built = build_context(
             &storage,
             &session,

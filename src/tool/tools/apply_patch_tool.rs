@@ -77,23 +77,54 @@ pub(crate) async fn execute(
     input: &Value,
 ) -> Result<crate::tool::ToolResult> {
     let surface = runtime.current_apply_patch_surface().await;
-    let patch_input = extract_patch_input(input, surface)?;
+    let input_material = runtime.context_resource_material()?;
+    let patch_input = {
+        let _io = input_material.enter();
+        crate::diagnostics::resource_io::charge_owned_metadata(
+            crate::runtime::input_evidence_budget::serialized_bytes(input)?
+                .checked_mul(4)
+                .ok_or_else(|| anyhow::anyhow!("patch input material overflow"))?
+                + 8192,
+            128,
+        )?;
+        extract_patch_input(input, surface)?
+    };
     let contains_replacement_character = patch_input.contains('\u{FFFD}');
     let execution = runtime
         .effective_execution(ExecutionScopeKind::AgentTurn)
         .await?;
-    let mut outcome =
-        apply_patch::apply_patch(execution.workspace.execution_root(), &patch_input, surface)
-            .await
-            .map_err(|error| {
-                if contains_replacement_character {
-                    anyhow::Error::new(add_replacement_character_recovery_hint(
-                        ToolError::from_anyhow(&error),
-                    ))
-                } else {
-                    error
-                }
-            })?;
+    let admission = runtime.execution_admission_lease()?;
+    let writer = runtime.begin_context_resource_write()?;
+    let (send, receive) = tokio::sync::oneshot::channel();
+    runtime.spawn_owned_mutation(async move {
+        let result = tokio::task::spawn_blocking(move || {
+            let _admission = admission;
+            let _writer = writer;
+            _writer.enter_physical();
+            let outcome = apply_patch::apply_patch_with_material(
+                execution.workspace.execution_root(),
+                &patch_input,
+                surface,
+                &input_material,
+            );
+            (outcome, input_material)
+        })
+        .await;
+        let _ = send.send(result);
+    })?;
+    let (outcome, _input_material) = receive
+        .await
+        .map_err(|error| anyhow::anyhow!("patch physical worker ended before returning: {error}"))?
+        .map_err(|error| anyhow::anyhow!("patch physical worker failed: {error}"))?;
+    let mut outcome = outcome.map_err(|error| {
+        if contains_replacement_character {
+            anyhow::Error::new(add_replacement_character_recovery_hint(
+                ToolError::from_anyhow(&error),
+            ))
+        } else {
+            error
+        }
+    })?;
     if contains_replacement_character {
         outcome.diagnostics.push(replacement_character_diagnostic());
     }

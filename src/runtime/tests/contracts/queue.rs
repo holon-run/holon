@@ -134,7 +134,7 @@ async fn queue_post_commit_fault_keeps_terminal_settlement_after_restart() {
         processed.updated_at = now + chrono::Duration::seconds(1);
         harness.arm_fault(fault);
 
-        assert!(harness
+        let result = harness
             .runtime()
             .commit_queue_settlement(
                 processed.clone(),
@@ -144,10 +144,10 @@ async fn queue_post_commit_fault_keeps_terminal_settlement_after_restart() {
                 )],
                 true,
             )
-            .await
-            .unwrap());
-
-        harness.assert_post_commit_warning(expected_effect);
+            .await;
+        if let Some(applied) = harness.assert_post_commit_result(result, fault, expected_effect) {
+            assert!(applied);
+        }
         assert_eq!(harness.snapshot().queue_entries, vec![processed.clone()]);
         let committed = harness.snapshot();
 

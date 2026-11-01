@@ -6,6 +6,250 @@ use crate::types::{
     WorkItemReadiness, WorkItemSchedulingState, AGENT_HOME_WORKSPACE_ID,
 };
 
+// Fixtures use the same qualified writer and owner publication as runtime
+// changes; a raw Wait append cannot update the resident Work projection.
+async fn publish_fixture_wait(
+    runtime: &RuntimeHandle,
+    wait: WaitConditionRecord,
+    waiting_execution: bool,
+) {
+    use crate::domain::execution_protocol::{
+        ExecutionProtocolCommand, SetWorkItemWaiting, WaitReference, WorkItemExecutionRecord,
+        WorkItemExecutionState,
+    };
+    let mut work_items = Vec::new();
+    let execution_protocol = if waiting_execution {
+        let id = wait.work_item_id.as_ref().unwrap();
+        let state = runtime
+            .inner
+            .runtime_db
+            .transitions()
+            .load_execution_protocol_state_if_initialized("default")
+            .unwrap()
+            .unwrap();
+        let expected = state.work_items[id].clone();
+        let mut work = runtime.storage().latest_work_item(id).unwrap().unwrap();
+        let expected_revision = work.revision;
+        work.revision += 1;
+        work.updated_at = wait.updated_at;
+        let source_revision = work.revision;
+        work_items.push(crate::runtime_db::transitions::WorkItemMutation::Update {
+            record: work,
+            expected_revision,
+        });
+        crate::runtime_db::transitions::ExecutionProtocolTransition {
+            bootstrap: None,
+            commands: vec![ExecutionProtocolCommand::SetWorkItemWaiting(Box::new(
+                SetWorkItemWaiting {
+                    command_id: crate::ids::audit_event_id(),
+                    work_item_id: id.clone(),
+                    record: WorkItemExecutionRecord {
+                        source_revision,
+                        state: WorkItemExecutionState::Waiting {
+                            generation: expected.generation() + 1,
+                            wait: WaitReference {
+                                wait_id: wait.id.clone(),
+                            },
+                        },
+                    },
+                    expected: Some(expected),
+                },
+            ))],
+        }
+    } else {
+        Default::default()
+    };
+    let commit = {
+        let mut owner = runtime.begin_mutation().await.unwrap();
+        owner
+            .commit_wait_transition(
+                crate::ids::audit_event_id(),
+                crate::runtime_db::transitions::WaitTransitionCommand {
+                    agent_id: "default".into(),
+                    work_items,
+                    expected_wait_conditions: Vec::new(),
+                    wait_conditions: vec![wait],
+                    timer_wake: None,
+                    task_result_admission: None,
+                    agent_state: None,
+                    audit_events: Vec::new(),
+                    index_changes: Vec::new(),
+                    notify_scheduler: true,
+                    fault: None,
+                },
+                execution_protocol,
+                None,
+            )
+            .await
+            .unwrap()
+    };
+    runtime.apply_transition_commit(commit).await;
+}
+
+fn write_original_v81_work_fixture(
+    home: &std::path::Path,
+    work: &WorkItemRecord,
+    state: &AgentState,
+) {
+    write_original_v81_work_wait_fixture(home, std::slice::from_ref(work), &[], state);
+}
+
+fn write_original_v81_work_wait_fixture(
+    home: &std::path::Path,
+    works: &[WorkItemRecord],
+    waits: &[WaitConditionRecord],
+    state: &AgentState,
+) {
+    use crate::runtime_db::{
+        evidence::{upsert_agent_identity_tx, upsert_agent_state_tx},
+        migrations::{apply_migration, ensure_migration_table, MIGRATIONS},
+        repositories::timestamp,
+    };
+    let path = home.join(".holon/state/runtime.sqlite");
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    let mut connection = rusqlite::Connection::open(path).unwrap();
+    ensure_migration_table(&connection).unwrap();
+    for migration in MIGRATIONS
+        .iter()
+        .filter(|migration| migration.version <= 81)
+    {
+        apply_migration(&mut connection, migration).unwrap();
+    }
+    let tx = connection.transaction().unwrap();
+    let identity = crate::types::AgentIdentityRecord::new(
+        "default",
+        crate::types::AgentKind::Named,
+        crate::types::AgentVisibility::Public,
+        crate::types::AgentOwnership::SelfOwned,
+        crate::types::AgentProfilePreset::PublicNamed,
+        None,
+        None,
+    );
+    upsert_agent_identity_tx(&tx, &identity).unwrap();
+    for work in works {
+        tx.execute("INSERT INTO work_items (work_item_id, agent_id, state, objective, plan_status, revision, current_focus, created_at, updated_at, completed_at, plan_artifact_path, last_turn_id, payload_json) VALUES (?1, ?2, 'open', ?3, ?8, ?4, 0, ?5, ?6, NULL, NULL, NULL, ?7)", rusqlite::params![work.id, work.agent_id, work.objective, work.revision as i64, timestamp(work.created_at), timestamp(work.updated_at), serde_json::to_string(work).unwrap(), crate::runtime_db::repositories::enum_string(&work.plan_status).unwrap()]).unwrap();
+    }
+    for wait in waits {
+        use crate::runtime_db::repositories::enum_string;
+        tx.execute("INSERT INTO wait_conditions (wait_condition_id,agent_id,work_item_id,status,kind,source,subject_ref,waiting_for,created_at,updated_at,expires_at,resolved_at,cancelled_at,last_turn_id,trigger_message_id,triggered_at,payload_json) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17)", rusqlite::params![wait.id,wait.agent_id,wait.work_item_id,enum_string(&wait.status).unwrap(),enum_string(&wait.kind).unwrap(),wait.source,wait.subject_ref,wait.waiting_for,timestamp(wait.created_at),timestamp(wait.updated_at),wait.expires_at.map(timestamp),wait.resolved_at.map(timestamp),wait.cancelled_at.map(timestamp),wait.turn_id,wait.trigger_message_id,wait.triggered_at.map(timestamp),serde_json::to_string(wait).unwrap()]).unwrap();
+    }
+    upsert_agent_state_tx(&tx, state).unwrap();
+    tx.commit().unwrap();
+}
+
+// Hold the original claim's physical completion until the tool assertion ends.
+// Source, assignment, started Turn and binding come from the production writers.
+fn start_work_tool_execution_fixture<'a>(
+    runtime: &'a RuntimeHandle,
+    message_id: &'a str,
+    turn_id: &'a str,
+    work_item_id: Option<&'a str>,
+    lifecycle: bool,
+) -> std::pin::Pin<
+    Box<dyn std::future::Future<Output = scheduler_executor::ScheduledMessage> + Send + 'a>,
+> {
+    Box::pin(async move {
+        let mut message = if lifecycle {
+            MessageEnvelope::new(
+                "default",
+                MessageKind::SystemTick,
+                MessageOrigin::System {
+                    subsystem: "work_tool_fixture".into(),
+                },
+                AuthorityClass::RuntimeInstruction,
+                Priority::Normal,
+                MessageBody::Text {
+                    text: "continue lifecycle for tool assertion".into(),
+                },
+            )
+            .with_admission(
+                MessageDeliverySurface::RuntimeSystem,
+                AdmissionContext::RuntimeOwned,
+            )
+        } else {
+            MessageEnvelope::new(
+                "default",
+                MessageKind::OperatorPrompt,
+                MessageOrigin::Operator {
+                    actor_id: Some("test".into()),
+                    actor_display_name: None,
+                },
+                AuthorityClass::OperatorInstruction,
+                Priority::Normal,
+                MessageBody::Text {
+                    text: "execute Work tool assertion".into(),
+                },
+            )
+            .with_admission(
+                MessageDeliverySurface::HttpControlPrompt,
+                AdmissionContext::ControlAuthenticated,
+            )
+        };
+        message.id = message_id.into();
+        message.turn_id = Some(turn_id.into());
+        message.work_item_id = work_item_id.map(ToString::to_string);
+        let admitted = runtime.enqueue(message).await.unwrap();
+        let scheduled = match scheduler_executor::SchedulerDecisionExecutor::new(runtime)
+            .poll()
+            .await
+            .unwrap()
+        {
+            scheduler_executor::RunLoopPoll::Message(scheduled) => scheduled,
+            _ => panic!("fixture source was not claimed"),
+        };
+        assert_eq!(scheduled.message.id, admitted.id);
+        runtime
+            .begin_dispatch_turn(
+                &scheduled.message,
+                None,
+                None,
+                scheduled
+                    .dispatch_plan
+                    .execution_admission_provenance
+                    .clone(),
+                &scheduled.dispatch_plan.prior_closure,
+            )
+            .await
+            .unwrap();
+        {
+            let mutation = runtime.begin_mutation().await.unwrap();
+            let binding = mutation.state.current_execution_binding.as_ref().unwrap();
+            assert_eq!(binding.source_message_id, admitted.id);
+            assert_eq!(binding.turn_id, turn_id);
+            assert!(binding.activation_id.is_some());
+            let captured = mutation.capture_input_evidence().unwrap();
+            assert_eq!(
+                captured.message_turn_keys.get(&admitted.id),
+                Some(&Some(turn_id.into()))
+            );
+            let source = provider_recovery::captured_message(&captured, &admitted.id)
+                .unwrap()
+                .unwrap();
+            assert!(source.message_seq.is_some_and(|seq| seq > 0));
+            assert_eq!(
+                source,
+                runtime
+                    .storage()
+                    .read_message_by_id(&admitted.id)
+                    .unwrap()
+                    .unwrap()
+            );
+            assert_eq!(source.id, admitted.id);
+            let turn = provider_recovery::captured_turn(&captured, turn_id)
+                .unwrap()
+                .unwrap();
+            assert_eq!(turn.run_id, mutation.state.current_run_id);
+            assert_eq!(
+                turn.trigger
+                    .as_ref()
+                    .and_then(|trigger| trigger.message_id.as_deref()),
+                Some(admitted.id.as_str())
+            );
+        }
+        scheduled
+    })
+}
+
 fn legacy_blocking_payload_task_for_work_item(
     task_id: &str,
     work_item_id: Option<&str>,
@@ -131,6 +375,7 @@ impl AgentProvider for UpdateThenCompleteWorkItemProvider {
         }
         assert!(!blocks.is_empty(), "unexpected provider call {call}");
         Ok(ProviderTurnResponse {
+            material: request.material,
             blocks,
             stop_reason: None,
             input_tokens: 10,
@@ -280,6 +525,7 @@ impl AgentProvider for CompleteWorkItemReportProvider {
             }]
         };
         Ok(ProviderTurnResponse {
+            material: Default::default(),
             blocks,
             stop_reason: None,
             input_tokens: 10,
@@ -330,6 +576,7 @@ impl AgentProvider for DetachedCompletionThenWaitProvider {
             call => panic!("unexpected provider call {call}"),
         };
         Ok(ProviderTurnResponse {
+            material: Default::default(),
             blocks,
             stop_reason: None,
             input_tokens: 10,
@@ -706,24 +953,21 @@ async fn detached_completion_rolls_back_work_item_brief_and_tool_evidence_togeth
         .create_work_item("detached target".into(), None, None, Vec::new())
         .await
         .unwrap();
-    let binding = WorkItemExecutionBinding {
-        activation_id: Some("activation-active".into()),
-        admission_provenance: None,
-        source_message_id: "message-active".into(),
-        turn_id: "turn-active".into(),
-        owner: None,
-        work_item_id: Some(active.id.clone()),
-        claimed_work_revision: Some(active.revision),
-    };
-    {
-        let mut guard = runtime.inner.agent.lock().await;
-        guard.state.status = AgentStatus::AwakeRunning;
-        guard.state.current_run_id = Some("run-active".into());
-        guard.state.current_work_item_id = Some(active.id.clone());
-        guard.state.current_turn_work_item_id = Some(active.id.clone());
-        guard.state.current_execution_binding = Some(binding.clone());
-        guard.persist_state(&runtime.inner.storage).unwrap();
-    }
+    let _scheduled = start_work_tool_execution_fixture(
+        &runtime,
+        "message-active",
+        "turn-active",
+        Some(&active.id),
+        false,
+    )
+    .await;
+    let binding = runtime
+        .agent_state()
+        .await
+        .unwrap()
+        .current_execution_binding
+        .unwrap();
+    assert_eq!(binding.work_item_id.as_deref(), Some(active.id.as_str()));
     let candidate = crate::tool::spec::CompletionReportCandidate {
         text: "Detached target is complete.".into(),
         citations: Vec::new(),
@@ -823,6 +1067,7 @@ impl AgentProvider for AbandonCompletionReportProvider {
         }
         *calls += 1;
         Ok(ProviderTurnResponse {
+            material: Default::default(),
             blocks: vec![ModelBlock::ToolUse {
                 id: format!("complete-work-{}", *calls),
                 name: "CompleteWorkItem".into(),
@@ -1020,6 +1265,7 @@ impl AgentProvider for CompletionReportCleanupProvider {
             call => panic!("unexpected provider call {call}"),
         };
         Ok(ProviderTurnResponse {
+            material: Default::default(),
             blocks,
             stop_reason: None,
             input_tokens: 10,
@@ -1064,6 +1310,7 @@ impl AgentProvider for RevisionChangeCompletionReportProvider {
             }]
         };
         Ok(ProviderTurnResponse {
+            material: Default::default(),
             blocks,
             stop_reason: None,
             input_tokens: 10,
@@ -1117,6 +1364,7 @@ impl AgentProvider for CompleteThenExecProvider {
             }]
         };
         Ok(ProviderTurnResponse {
+            material: Default::default(),
             blocks,
             stop_reason: None,
             input_tokens: 10,
@@ -1167,6 +1415,7 @@ impl AgentProvider for StaleTextThenCompleteProvider {
             }]
         };
         Ok(ProviderTurnResponse {
+            material: Default::default(),
             blocks,
             stop_reason: None,
             input_tokens: 10,
@@ -1215,6 +1464,7 @@ impl AgentProvider for MultiCompleteWorkItemReportProvider {
             }]
         };
         Ok(ProviderTurnResponse {
+            material: Default::default(),
             blocks,
             stop_reason: None,
             input_tokens: 10,
@@ -1443,11 +1693,46 @@ async fn work_item_mutations_atomically_track_execution_readiness() {
             wait_id: "wait-active".into(),
         },
     };
-    runtime
-        .inner
-        .runtime_db
-        .transaction(|tx| crate::runtime_db::transitions::persist_state_tx(tx, &waiting_execution))
-        .unwrap();
+    {
+        use crate::runtime_db::{
+            input_evidence_snapshot::{
+                register_committed_input_evidence_tx, CanonicalInputEvidence as Fact,
+            },
+            transitions::{execution_protocol_repository, PostCommitEffects, TransitionCommit},
+        };
+        let mut mutation = runtime.begin_mutation().await.unwrap();
+        mutation
+            .commit_transition(crate::ids::audit_event_id(), |scope| {
+                runtime.inner.runtime_db.transaction(|tx| {
+                    let previous = execution_protocol_repository::load_state_tx(tx, "default")?;
+                    execution_protocol_repository::persist_repaired_state_tx(
+                        tx,
+                        &previous,
+                        &waiting_execution,
+                    )?;
+                    let actual = execution_protocol_repository::load_state_tx(tx, "default")?;
+                    let input_evidence_delta = register_committed_input_evidence_tx(
+                        tx,
+                        scope,
+                        &[Fact::WorkExecution {
+                            work_item_id: work.id.clone(),
+                            record: actual.work_items[&work.id].clone(),
+                        }],
+                    )?;
+                    Ok(TransitionCommit {
+                        applied: true,
+                        effects: Box::new(PostCommitEffects {
+                            execution_protocol: Some(actual),
+                            input_evidence_delta,
+                            ..Default::default()
+                        }),
+                        ..Default::default()
+                    })
+                })
+            })
+            .await
+            .unwrap();
+    }
     let error = runtime
         .update_work_item_fields(
             work.id.clone(),
@@ -1473,16 +1758,6 @@ async fn runtime_wakes_itself_for_blocked_work_item_recheck_deadline() {
     let dir = tempdir().unwrap();
     let workspace = tempdir().unwrap();
     let clock = controlled_clock();
-    let storage = AppStorage::new_for_test(dir.path()).unwrap();
-    let mut blocked = WorkItemRecord::new(
-        "default",
-        "blocked work with fallback recheck",
-        WorkItemState::Open,
-    );
-    blocked.blocked_by = Some("waiting for external wake".into());
-    blocked.recheck_at = Some(clock.now() + chrono::Duration::milliseconds(50));
-    storage.append_work_item(&blocked).unwrap();
-
     let runtime = RuntimeHandle::new_with_clock(
         "default",
         dir.path().to_path_buf(),
@@ -1494,6 +1769,27 @@ async fn runtime_wakes_itself_for_blocked_work_item_recheck_deadline() {
         clock.clone(),
     )
     .unwrap();
+    let blocked = runtime
+        .create_work_item(
+            "blocked work with fallback recheck".into(),
+            None,
+            None,
+            Vec::new(),
+        )
+        .await
+        .unwrap();
+    let blocked = runtime
+        .update_work_item_fields_with_recheck(
+            blocked.id,
+            None,
+            None,
+            None,
+            None,
+            Some(Some("waiting for external wake".into())),
+            Some(50),
+        )
+        .await
+        .unwrap();
     let runtime_task = tokio::spawn(runtime.clone().run());
     advance_lifecycle_time(&clock, std::time::Duration::from_millis(50)).await;
     wait_for_audit_events(
@@ -1504,6 +1800,13 @@ async fn runtime_wakes_itself_for_blocked_work_item_recheck_deadline() {
                 event.kind == "system_tick_emitted"
                     && event.data.get("subsystem").and_then(|value| value.as_str())
                         == Some("work_item_recheck")
+            }) && events.iter().any(|event| {
+                event.kind == "work_item_recheck_consumed"
+                    && event
+                        .data
+                        .get("work_item_id")
+                        .and_then(|value| value.as_str())
+                        == Some(blocked.id.as_str())
             })
         },
         "work item recheck tick",
@@ -1539,7 +1842,8 @@ async fn blocked_recheck_turn_binds_target_work_item_without_switching_focus() {
     let dir = tempdir().unwrap();
     let workspace = tempdir().unwrap();
     let clock = controlled_clock();
-    let storage = AppStorage::new_for_test(dir.path()).unwrap();
+    // This case covers the pre-protocol fallback, whose original Work has no
+    // execution registration. Seed it before the real v81->current cutover.
     let mut blocked = WorkItemRecord::new(
         "default",
         "blocked work awaiting recheck",
@@ -1547,16 +1851,17 @@ async fn blocked_recheck_turn_binds_target_work_item_without_switching_focus() {
     );
     blocked.blocked_by = Some("waiting for external wake".into());
     blocked.recheck_at = Some(clock.now() + chrono::Duration::milliseconds(50));
-    storage.append_work_item(&blocked).unwrap();
-
-    // A distinct pre-existing persistent focus must survive the recheck turn.
     let mut focus =
         WorkItemRecord::new("default", "existing persistent focus", WorkItemState::Open);
     focus.blocked_by = Some("focus blocker".into());
-    // Not due, so the focus stays non-runnable while remaining the current WorkItem.
     focus.recheck_at = Some(clock.now() + chrono::Duration::hours(1));
-    storage.append_work_item(&focus).unwrap();
-
+    let state = AgentState::new("default");
+    write_original_v81_work_wait_fixture(
+        dir.path(),
+        &[blocked.clone(), focus.clone()],
+        &[],
+        &state,
+    );
     let runtime = RuntimeHandle::new_with_clock(
         "default",
         dir.path().to_path_buf(),
@@ -1568,10 +1873,15 @@ async fn blocked_recheck_turn_binds_target_work_item_without_switching_focus() {
         clock.clone(),
     )
     .unwrap();
+    // Match the original fixture timing: the old unregistered Work rows are
+    // imported before focus is published through the current State owner.
     {
-        let mut guard = runtime.inner.agent.lock().await;
-        guard.state.current_work_item_id = Some(focus.id.clone());
-        guard.persist_state(&runtime.inner.storage).unwrap();
+        let mut mutation = runtime.begin_mutation().await.unwrap();
+        mutation.state.current_work_item_id = Some(focus.id.clone());
+        mutation
+            .persist_state(&runtime.inner.storage)
+            .await
+            .unwrap();
     }
     let runtime_task = tokio::spawn(runtime.clone().run());
     advance_lifecycle_time(&clock, std::time::Duration::from_millis(50)).await;
@@ -1626,10 +1936,7 @@ async fn wait_bound_blocked_recheck_turn_runs_without_switching_focus() {
     let dir = tempdir().unwrap();
     let workspace = tempdir().unwrap();
     let clock = controlled_clock();
-    let storage = AppStorage::new_for_test(dir.path()).unwrap();
-    // A `WaitFor`-bound WorkItem keeps both an active wait condition and
-    // record-level `blocked_by` + `recheck_at`, so its scheduling state is
-    // `WaitingOperator`. Its expired fallback recheck must still run a turn.
+    // The old fallback wait and unregistered Work are genuine pre-cutover facts.
     let mut waiting = WorkItemRecord::new(
         "default",
         "operator wait awaiting fallback recheck",
@@ -1637,30 +1944,35 @@ async fn wait_bound_blocked_recheck_turn_runs_without_switching_focus() {
     );
     waiting.blocked_by = Some("waiting for operator input".into());
     waiting.recheck_at = Some(clock.now() + chrono::Duration::milliseconds(50));
-    storage.append_work_item(&waiting).unwrap();
-    storage
-        .append_wait_condition(&WaitConditionRecord {
-            id: "wait-bound-recheck".into(),
-            agent_id: "default".into(),
-            work_item_id: Some(waiting.id.clone()),
-            status: WaitConditionStatus::Active,
-            kind: WaitConditionKind::Operator,
-            source: None,
-            subject_ref: None,
-            waiting_for: "operator input".into(),
-            wake_sources: vec![],
-            continuation: None,
-            created_at: clock.now(),
-            updated_at: clock.now(),
-            expires_at: None,
-            resolved_at: None,
-            cancelled_at: None,
-            turn_id: None,
-            trigger_message_id: None,
-            triggered_at: None,
-        })
-        .unwrap();
-
+    let mut wait = WaitConditionRecord {
+        id: "wait-bound-recheck".into(),
+        agent_id: "default".into(),
+        work_item_id: Some(waiting.id.clone()),
+        status: WaitConditionStatus::Active,
+        kind: WaitConditionKind::Operator,
+        source: None,
+        subject_ref: None,
+        waiting_for: "operator input".into(),
+        wake_sources: vec![],
+        continuation: None,
+        created_at: clock.now(),
+        updated_at: clock.now(),
+        expires_at: None,
+        resolved_at: None,
+        cancelled_at: None,
+        turn_id: None,
+        trigger_message_id: None,
+        triggered_at: None,
+    };
+    wait.created_at =
+        chrono::DateTime::from_timestamp_millis(wait.created_at.timestamp_millis()).unwrap();
+    wait.updated_at = wait.created_at;
+    write_original_v81_work_wait_fixture(
+        dir.path(),
+        std::slice::from_ref(&waiting),
+        &[wait],
+        &AgentState::new("default"),
+    );
     let runtime = RuntimeHandle::new_with_clock(
         "default",
         dir.path().to_path_buf(),
@@ -1977,9 +2289,9 @@ async fn work_item_query_tools_return_current_open_done_views() {
     );
 
     let now = Utc::now();
-    runtime
-        .storage()
-        .append_wait_condition(&WaitConditionRecord {
+    publish_fixture_wait(
+        &runtime,
+        WaitConditionRecord {
             id: "weak-external-wait".into(),
             agent_id: "default".into(),
             work_item_id: Some(active.id.clone()),
@@ -2004,8 +2316,10 @@ async fn work_item_query_tools_return_current_open_done_views() {
             turn_id: None,
             trigger_message_id: None,
             triggered_at: None,
-        })
-        .unwrap();
+        },
+        false,
+    )
+    .await;
 
     let (active_wait_result, _) = registry
         .execute(
@@ -2029,6 +2343,7 @@ async fn work_item_query_tools_return_current_open_done_views() {
         Some("sub_1")
     );
 
+    runtime.refresh_context_resources().await.unwrap();
     let (agent_result, _) = registry
         .execute(
             &runtime,
@@ -2347,9 +2662,9 @@ async fn work_item_query_tools_return_readiness_views() {
         .await
         .unwrap();
     let now = Utc::now();
-    runtime
-        .storage()
-        .append_wait_condition(&WaitConditionRecord {
+    publish_fixture_wait(
+        &runtime,
+        WaitConditionRecord {
             id: "wait-external-only".into(),
             agent_id: "default".into(),
             work_item_id: Some(wait_condition_blocked.id.clone()),
@@ -2371,8 +2686,10 @@ async fn work_item_query_tools_return_readiness_views() {
             turn_id: None,
             trigger_message_id: None,
             triggered_at: None,
-        })
-        .unwrap();
+        },
+        false,
+    )
+    .await;
 
     let registry = crate::tool::ToolRegistry::new(runtime.workspace_root());
     let list = |filter: &'static str| {
@@ -2859,6 +3176,17 @@ async fn turn_end_refreshes_changed_work_item_plan_artifact_snapshot() {
 
     assert_eq!(committed.id, work.id);
     assert_eq!(committed.revision, work.revision + 1);
+    let execution = runtime
+        .inner
+        .runtime_db
+        .transitions()
+        .load_execution_protocol_state_if_initialized("default")
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        execution.work_items[&committed.id].source_revision,
+        committed.revision
+    );
     assert_eq!(committed.plan_status, WorkItemPlanStatus::Ready);
     assert_ne!(
         committed.plan_artifact.as_ref().unwrap().hash,
@@ -3988,48 +4316,15 @@ async fn conversation_update_then_complete_work_item_discards_report_before_upda
 async fn lifecycle_completion_registers_missing_legacy_work_item_execution() {
     let dir = tempdir().unwrap();
     let workspace = tempdir().unwrap();
-    let seed_runtime = RuntimeHandle::new(
+    let mut work_item = WorkItemRecord::new(
         "default",
-        dir.path().to_path_buf(),
-        workspace.path().to_path_buf(),
-        "http://127.0.0.1:7878".into(),
-        Arc::new(StubProvider::new("done")),
-        "default".into(),
-        context_config(),
-    )
-    .unwrap();
-    let work_item = seed_runtime
-        .create_work_item(
-            "complete pre-execution-protocol work".into(),
-            Some(WorkItemPlanStatus::NeedsInput),
-            None,
-            Vec::new(),
-        )
-        .await
-        .unwrap();
-    seed_runtime
-        .pick_work_item(work_item.id.clone())
-        .await
-        .unwrap();
-    seed_runtime
-        .inner
-        .runtime_db
-        .transaction(|tx| {
-            tx.execute(
-                "DELETE FROM execution_protocol_work_items
-                 WHERE agent_id = ?1 AND work_item_id = ?2",
-                ["default", work_item.id.as_str()],
-            )?;
-            tx.execute(
-                "DELETE FROM execution_protocol_command_results
-                 WHERE agent_id = ?1
-                   AND command_kind = 'register_work_item_execution'
-                   AND command_identity = ?2",
-                ["default", work_item.id.as_str()],
-            )?;
-            Ok(())
-        })
-        .unwrap();
+        "complete pre-execution-protocol work",
+        WorkItemState::Open,
+    );
+    work_item.plan_status = WorkItemPlanStatus::NeedsInput;
+    let mut state = AgentState::new("default");
+    state.current_work_item_id = Some(work_item.id.clone());
+    write_original_v81_work_fixture(dir.path(), &work_item, &state);
 
     let provider = Arc::new(CompleteWorkItemReportProvider {
         work_item_id: work_item.id.clone(),
@@ -4371,9 +4666,9 @@ async fn lifecycle_execution_can_complete_without_borrowing_work_item_authority(
         claimed_work_revision: None,
     };
     {
-        let mut guard = runtime.inner.agent.lock().await;
+        let mut guard = runtime.begin_mutation().await.unwrap();
         guard.state.current_execution_binding = Some(execution_binding.clone());
-        guard.persist_state(&runtime.inner.storage).unwrap();
+        guard.persist_state(&runtime.inner.storage).await.unwrap();
     }
 
     let completed = runtime
@@ -4430,7 +4725,7 @@ async fn control_completion_ignores_unrelated_execution_binding() {
         .await
         .unwrap();
     {
-        let mut guard = runtime.inner.agent.lock().await;
+        let mut guard = runtime.begin_mutation().await.unwrap();
         guard.state.status = AgentStatus::AwakeRunning;
         guard.state.current_run_id = Some("run-active".into());
         guard.state.current_work_item_id = Some(active.id.clone());
@@ -4444,7 +4739,7 @@ async fn control_completion_ignores_unrelated_execution_binding() {
             work_item_id: Some(active.id.clone()),
             claimed_work_revision: Some(active.revision),
         });
-        guard.persist_state(&runtime.inner.storage).unwrap();
+        guard.persist_state(&runtime.inner.storage).await.unwrap();
     }
 
     let completed = runtime
@@ -4522,13 +4817,13 @@ async fn work_item_execution_completes_an_unrelated_work_item_detached() {
         claimed_work_revision: Some(active.revision),
     };
     {
-        let mut guard = runtime.inner.agent.lock().await;
+        let mut guard = runtime.begin_mutation().await.unwrap();
         guard.state.status = AgentStatus::AwakeRunning;
         guard.state.current_run_id = Some("run-active".into());
         guard.state.current_work_item_id = Some(active.id.clone());
         guard.state.current_turn_work_item_id = Some(active.id.clone());
         guard.state.current_execution_binding = Some(execution_binding.clone());
-        guard.persist_state(&runtime.inner.storage).unwrap();
+        guard.persist_state(&runtime.inner.storage).await.unwrap();
     }
 
     let completed = runtime
@@ -4612,13 +4907,13 @@ async fn control_completion_rejects_an_active_execution_bound_target_without_sid
         claimed_work_revision: Some(target.revision),
     };
     {
-        let mut guard = runtime.inner.agent.lock().await;
+        let mut guard = runtime.begin_mutation().await.unwrap();
         guard.state.status = AgentStatus::AwakeRunning;
         guard.state.current_run_id = Some("run-active".into());
         guard.state.current_work_item_id = Some(target.id.clone());
         guard.state.current_turn_work_item_id = Some(target.id.clone());
         guard.state.current_execution_binding = Some(binding);
-        guard.persist_state(&runtime.inner.storage).unwrap();
+        guard.persist_state(&runtime.inner.storage).await.unwrap();
     }
     let before_state = runtime.agent_state().await.unwrap();
     let before_target = runtime.latest_work_item(&target.id).await.unwrap().unwrap();
@@ -4680,9 +4975,9 @@ async fn completion_retry_rejects_replaced_execution_binding() {
         claimed_work_revision: Some(target.revision),
     };
     {
-        let mut guard = runtime.inner.agent.lock().await;
+        let mut guard = runtime.begin_mutation().await.unwrap();
         guard.state.current_execution_binding = Some(execution_binding.clone());
-        guard.persist_state(&runtime.inner.storage).unwrap();
+        guard.persist_state(&runtime.inner.storage).await.unwrap();
     }
     runtime.inject_completion_binding_replacement_before_commit(WorkItemExecutionBinding {
         activation_id: Some("activation-replacement".into()),
@@ -4904,6 +5199,42 @@ async fn followup_final_report_completes_child_and_resumes_caller() {
     );
 }
 
+// These completion cases require an actual dispatch for automatic Memory.
+// Keep its original physical completion guard until the original settlement.
+fn start_completion_test_source(
+    runtime: &RuntimeHandle,
+    message: MessageEnvelope,
+) -> std::pin::Pin<
+    Box<dyn std::future::Future<Output = scheduler_executor::ScheduledMessage> + Send + '_>,
+> {
+    Box::pin(async move {
+        let source = runtime.enqueue(message).await.unwrap();
+        let scheduler_executor::RunLoopPoll::Message(scheduled) =
+            scheduler_executor::SchedulerDecisionExecutor::new(runtime)
+                .poll()
+                .await
+                .unwrap()
+        else {
+            panic!("completion fixture source must be claimed");
+        };
+        assert_eq!(scheduled.message.id, source.id);
+        runtime
+            .begin_dispatch_turn(
+                &scheduled.message,
+                None,
+                None,
+                scheduled
+                    .dispatch_plan
+                    .execution_admission_provenance
+                    .clone(),
+                &scheduled.dispatch_plan.prior_closure,
+            )
+            .await
+            .unwrap();
+        scheduled
+    })
+}
+
 #[tokio::test]
 async fn completion_intent_does_not_borrow_mismatched_execution_identity() {
     let dir = tempdir().unwrap();
@@ -4946,10 +5277,7 @@ async fn completion_intent_does_not_borrow_mismatched_execution_identity() {
         },
     );
     message.turn_id = Some("turn-active-execution".into());
-    runtime
-        .begin_interactive_turn(Some(&message), None, None)
-        .await
-        .unwrap();
+    let _scheduled = start_completion_test_source(&runtime, message).await;
 
     let completed = runtime
         .complete_work_item(unrelated.id.clone(), Vec::new())
@@ -5002,11 +5330,10 @@ async fn turn_end_marks_unbound_completion_report_missing_and_persists_restart()
             text: "complete without reporting".into(),
         },
     );
+    message.work_item_id = Some(work_item.id.clone());
     message.turn_id = Some("turn-missing-completion-report".into());
-    runtime
-        .begin_interactive_turn(Some(&message), None, None)
-        .await
-        .unwrap();
+    let scheduled = start_completion_test_source(&runtime, message).await;
+    let message = scheduled.message.clone();
 
     let completed = runtime
         .complete_work_item(work_item.id.clone(), Vec::new())
@@ -5020,8 +5347,17 @@ async fn turn_end_marks_unbound_completion_report_missing_and_persists_restart()
             .report_state,
         CompletionReportState::Pending
     );
+    let execution_before_missing = runtime
+        .inner
+        .runtime_db
+        .transitions()
+        .load_execution_protocol_state_if_initialized("default")
+        .unwrap()
+        .unwrap()
+        .work_items[&work_item.id]
+        .clone();
     {
-        let mut guard = runtime.inner.agent.lock().await;
+        let mut guard = runtime.begin_mutation().await.unwrap();
         guard.state.last_turn_terminal = Some(TurnTerminalRecord {
             turn_id: message.turn_id.clone().unwrap(),
             turn_index: guard.state.turn_index,
@@ -5033,7 +5369,7 @@ async fn turn_end_marks_unbound_completion_report_missing_and_persists_restart()
             completed_at: Utc::now(),
             duration_ms: 10,
         });
-        guard.persist_state(&runtime.inner.storage).unwrap();
+        guard.persist_state(&runtime.inner.storage).await.unwrap();
     }
 
     assert!(
@@ -5050,6 +5386,18 @@ async fn turn_end_marks_unbound_completion_report_missing_and_persists_restart()
         .unwrap()
         .unwrap();
     assert_eq!(missing.result_brief_id, None);
+    let execution_after_missing = runtime
+        .inner
+        .runtime_db
+        .transitions()
+        .load_execution_protocol_state_if_initialized("default")
+        .unwrap()
+        .unwrap();
+    assert_eq!(missing.state, WorkItemState::Completing);
+    assert_eq!(
+        execution_after_missing.work_items[&work_item.id], execution_before_missing,
+        "report metadata on Completing Work must preserve the execution record"
+    );
     assert_eq!(
         missing
             .completion_intent
@@ -5058,6 +5406,35 @@ async fn turn_end_marks_unbound_completion_report_missing_and_persists_restart()
             .report_state,
         CompletionReportState::Missing
     );
+
+    // All Missing/Completing assertions above retain the original purpose.
+    // Close the actual dispatch before testing durable metadata on restart.
+    finish_claimed_test_run(&runtime).await;
+    let mut terminal = terminal_transition_from_started_turn(&runtime, &message);
+    terminal.terminal.kind = TurnTerminalKind::Aborted;
+    terminal.terminal.reason = Some("completion report missing".into());
+    terminal.terminal.no_brief_reason = Some(crate::types::TurnNoBriefReason::Aborted);
+    terminal.turn_record.terminal = Some(crate::types::TurnTerminalSummary::from_terminal(
+        &terminal.terminal,
+    ));
+    runtime
+        .commit_queue_terminal_settlement(
+            QueueEntryRecord {
+                message_id: message.id.clone(),
+                agent_id: message.agent_id.clone(),
+                priority: message.priority.clone(),
+                status: QueueEntryStatus::Aborted,
+                created_at: message.created_at,
+                updated_at: Utc::now(),
+            },
+            Vec::new(),
+            true,
+            Some(&terminal),
+        )
+        .await
+        .unwrap();
+    drop(scheduled);
+    drop(runtime);
 
     let restarted = RuntimeHandle::new(
         "default",
@@ -6682,21 +7059,22 @@ async fn operator_prompt_completion_uses_pre_tool_effective_work_item_as_bound_t
         .await
         .unwrap();
     runtime.pick_work_item(work_item.id.clone()).await.unwrap();
-    {
-        let mut guard = runtime.inner.agent.lock().await;
-        guard.state.status = AgentStatus::AwakeRunning;
-        guard.state.current_run_id = Some("run-operator-prompt".into());
-        guard.state.current_execution_binding = Some(WorkItemExecutionBinding {
-            activation_id: Some("activation-operator-prompt".into()),
-            admission_provenance: None,
-            source_message_id: "message-operator-prompt".into(),
-            turn_id: "turn-operator-prompt".into(),
-            owner: None,
-            work_item_id: None,
-            claimed_work_revision: None,
-        });
-        guard.persist_state(&runtime.inner.storage).unwrap();
-    }
+    let _scheduled = start_work_tool_execution_fixture(
+        &runtime,
+        "message-operator-prompt",
+        "turn-operator-prompt",
+        None,
+        false,
+    )
+    .await;
+    assert!(runtime
+        .agent_state()
+        .await
+        .unwrap()
+        .current_execution_binding
+        .unwrap()
+        .work_item_id
+        .is_none());
 
     let registry = crate::tool::ToolRegistry::new(runtime.workspace_root());
     let (result, _) = registry
@@ -6789,19 +7167,14 @@ async fn complete_work_item_with_unfinished_todos_returns_structured_warning() {
         .await
         .unwrap()
         .unwrap();
-    {
-        let mut guard = runtime.inner.agent.lock().await;
-        guard.state.current_execution_binding = Some(WorkItemExecutionBinding {
-            activation_id: Some("activation-complete-with-warning".into()),
-            admission_provenance: None,
-            source_message_id: "message-complete-with-warning".into(),
-            turn_id: "turn-complete-with-warning".into(),
-            owner: None,
-            work_item_id: Some(work_item.id.clone()),
-            claimed_work_revision: Some(work_item.revision),
-        });
-        guard.persist_state(&runtime.inner.storage).unwrap();
-    }
+    let _scheduled = start_work_tool_execution_fixture(
+        &runtime,
+        "message-complete-with-warning",
+        "turn-complete-with-warning",
+        Some(&work_item.id),
+        false,
+    )
+    .await;
 
     let registry = crate::tool::ToolRegistry::new(runtime.workspace_root());
     let (result, _) = registry
@@ -6915,8 +7288,25 @@ async fn runtime_sleeps_after_processing() {
             text: "hello".into(),
         },
     );
+    let message_id = message.id.clone();
     runtime.enqueue(message).await.unwrap();
-    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+    wait_for_audit_events(
+        &runtime,
+        100,
+        |events| {
+            events.iter().any(|settled| {
+                settled.kind == "queue_entry_settled"
+                    && settled.data["message_id"].as_str() == Some(message_id.as_str())
+                    && events.iter().any(|event| {
+                        event.event_seq > settled.event_seq
+                            && event.kind == "agent_state_changed"
+                            && event.data["status"].as_str() == Some("asleep")
+                    })
+            })
+        },
+        "sleep after message processing",
+    )
+    .await;
 
     let state = runtime.agent_state().await.unwrap();
     assert_eq!(state.status, AgentStatus::Asleep);
@@ -6980,7 +7370,7 @@ async fn turn_end_work_item_commit_ignores_unfinished_turn_binding() {
         guard.state.turn_index = 7;
         guard.state.current_turn_work_item_id = Some(work.id.clone());
         guard.state.last_turn_terminal = None;
-        runtime.inner.storage.write_agent(&guard.state).unwrap();
+        guard.persist_state(&runtime.inner.storage).unwrap();
     }
 
     let committed = runtime
@@ -7037,7 +7427,7 @@ async fn turn_end_work_item_commit_keeps_failed_turn_open_without_blocker() {
             completed_at: Utc::now(),
             duration_ms: 42,
         });
-        runtime.inner.storage.write_agent(&guard.state).unwrap();
+        guard.persist_state(&runtime.inner.storage).unwrap();
     }
 
     let committed = runtime
@@ -7086,7 +7476,7 @@ async fn turn_end_work_item_commit_preserves_existing_blocker_on_failed_turn() {
             completed_at: Utc::now(),
             duration_ms: 42,
         });
-        runtime.inner.storage.write_agent(&guard.state).unwrap();
+        guard.persist_state(&runtime.inner.storage).unwrap();
     }
 
     let committed = runtime
@@ -7396,17 +7786,17 @@ async fn agent_scoped_wake_hint_binds_unique_wildcard_external_wait() {
     )
     .unwrap();
     {
-        let mut guard = runtime.inner.agent.lock().await;
+        let mut guard = runtime.begin_mutation().await.unwrap();
         guard.state.status = AgentStatus::Asleep;
-        guard.persist_state(&runtime.inner.storage).unwrap();
+        guard.persist_state(&runtime.inner.storage).await.unwrap();
     }
     let work = runtime
         .create_work_item("wait for callback".into(), None, None, Vec::new())
         .await
         .unwrap();
-    runtime
-        .storage()
-        .append_wait_condition(&WaitConditionRecord {
+    publish_fixture_wait(
+        &runtime,
+        WaitConditionRecord {
             id: "wait-any-external".into(),
             agent_id: "default".into(),
             work_item_id: Some(work.id.clone()),
@@ -7427,8 +7817,10 @@ async fn agent_scoped_wake_hint_binds_unique_wildcard_external_wait() {
             turn_id: None,
             trigger_message_id: None,
             triggered_at: None,
-        })
-        .unwrap();
+        },
+        false,
+    )
+    .await;
     let capability = runtime
         .create_external_trigger(
             "resume callback wait".into(),
@@ -7488,9 +7880,9 @@ async fn agent_scoped_wake_hint_does_not_bind_ambiguous_wildcard_external_waits(
             )
             .await
             .unwrap();
-        runtime
-            .storage()
-            .append_wait_condition(&WaitConditionRecord {
+        publish_fixture_wait(
+            &runtime,
+            WaitConditionRecord {
                 id: format!("wait-any-external-{sequence}"),
                 agent_id: "default".into(),
                 work_item_id: Some(work.id),
@@ -7511,9 +7903,19 @@ async fn agent_scoped_wake_hint_does_not_bind_ambiguous_wildcard_external_waits(
                 turn_id: None,
                 trigger_message_id: None,
                 triggered_at: None,
-            })
-            .unwrap();
+            },
+            false,
+        )
+        .await;
     }
+
+    let read = runtime.capture_scheduler_projection().await.unwrap();
+    assert_eq!(
+        read.active_waits.len(),
+        2,
+        "both qualified wildcard waits must be observed"
+    );
+    drop(read);
 
     assert_eq!(
         runtime
@@ -7686,13 +8088,28 @@ async fn external_wake_records_wait_reconciliation_and_resolves_wait() {
     bind_autonomous_work_queue_tick(&mut wait_message, &work, "continue_active");
     wait_message.turn_id = Some("turn-wait-for-ci".into());
     let wait_message = runtime.enqueue(wait_message).await.unwrap();
-    assert!(matches!(
+    let scheduler_executor::RunLoopPoll::Message(wait_scheduled) =
         scheduler_executor::SchedulerDecisionExecutor::new(&runtime)
             .poll()
             .await
-            .unwrap(),
-        scheduler_executor::RunLoopPoll::Message(_)
-    ));
+            .unwrap()
+    else {
+        panic!("external wait source must be claimed");
+    };
+    assert_eq!(wait_scheduled.message.id, wait_message.id);
+    runtime
+        .begin_dispatch_turn(
+            &wait_scheduled.message,
+            None,
+            None,
+            wait_scheduled
+                .dispatch_plan
+                .execution_admission_provenance
+                .clone(),
+            &wait_scheduled.dispatch_plan.prior_closure,
+        )
+        .await
+        .unwrap();
     let wait = runtime
         .register_wait_for(
             "default",
@@ -7713,7 +8130,7 @@ async fn external_wake_records_wait_reconciliation_and_resolves_wait() {
         "external wait should bind the active default ingress"
     );
     finish_claimed_test_run(&runtime).await;
-    let terminal = terminal_transition(&wait_message, Some(&work.id));
+    let terminal = terminal_transition_from_started_turn(&runtime, &wait_scheduled.message);
     runtime
         .commit_queue_terminal_settlement(
             QueueEntryRecord {
@@ -7730,6 +8147,7 @@ async fn external_wake_records_wait_reconciliation_and_resolves_wait() {
         )
         .await
         .unwrap();
+    drop(wait_scheduled);
     let settled = runtime
         .inner
         .runtime_db
@@ -7917,11 +8335,9 @@ async fn completing_work_item_does_not_revoke_agent_external_trigger() {
         .await
         .unwrap();
 
-    let descriptor = runtime
-        .latest_external_triggers()
-        .await
-        .unwrap()
-        .into_iter()
+    let descriptors = runtime.latest_external_triggers().await.unwrap();
+    let descriptor = descriptors
+        .iter()
         .find(|record| record.external_trigger_id == capability.external_trigger_id)
         .expect("external trigger descriptor should exist");
     assert_eq!(descriptor.status, ExternalTriggerStatus::Active);
@@ -8004,23 +8420,16 @@ async fn creating_agent_trigger_is_idempotent_for_source_and_delivery_mode() {
 async fn default_external_ingress_ignores_legacy_active_trigger_without_url() {
     let dir = tempdir().unwrap();
     let workspace = tempdir().unwrap();
-    let runtime = RuntimeHandle::new(
-        "default",
-        dir.path().to_path_buf(),
-        workspace.path().to_path_buf(),
-        "http://127.0.0.1:7878".into(),
-        Arc::new(StubProvider::new("done")),
-        "default".into(),
-        context_config(),
-    )
-    .unwrap();
+    // The SQLite upgrade checkpoint, not a file import, owns this historical row.
+    write_original_v81_work_wait_fixture(dir.path(), &[], &[], &AgentState::new("default"));
+    let mut connection =
+        rusqlite::Connection::open(dir.path().join(".holon/state/runtime.sqlite")).unwrap();
+    let tx = connection.transaction().unwrap();
     let now = Utc::now();
     let legacy_trigger_id = "legacy-missing-url-trigger".to_string();
-    runtime
-        .inner
-        .runtime_db
-        .external_triggers()
-        .upsert(&ExternalTriggerRecord {
+    crate::runtime_db::repositories::upsert_external_trigger_tx(
+        &tx,
+        &ExternalTriggerRecord {
             external_trigger_id: legacy_trigger_id.clone(),
             target_agent_id: "default".into(),
             scope: ExternalTriggerScope::Agent,
@@ -8032,8 +8441,21 @@ async fn default_external_ingress_ignores_legacy_active_trigger_without_url() {
             revoked_at: None,
             last_delivered_at: None,
             delivery_count: 0,
-        })
-        .unwrap();
+        },
+    )
+    .unwrap();
+    tx.commit().unwrap();
+    drop(connection);
+    let runtime = RuntimeHandle::new(
+        "default",
+        dir.path().to_path_buf(),
+        workspace.path().to_path_buf(),
+        "http://127.0.0.1:7878".into(),
+        Arc::new(StubProvider::new("done")),
+        "default".into(),
+        context_config(),
+    )
+    .unwrap();
 
     let capability = runtime
         .ensure_default_external_ingress(CallbackDeliveryMode::WakeHint)
@@ -8243,19 +8665,6 @@ async fn current_closure_ignores_other_agent_timers() {
 async fn current_closure_reports_continuable_for_current_work_item() {
     let dir = tempdir().unwrap();
     let workspace = tempdir().unwrap();
-    let storage = AppStorage::new_for_test(dir.path()).unwrap();
-    let active = WorkItemRecord::new(
-        "default",
-        "continue active runtime cleanup",
-        WorkItemState::Open,
-    );
-    let active_id = active.id.clone();
-    storage.append_work_item(&active).unwrap();
-    seed_runnable_work_execution(&storage, &active);
-    let mut agent = AgentState::new("default");
-    agent.current_work_item_id = Some(active_id.clone());
-    storage.write_agent(&agent).unwrap();
-
     let runtime = RuntimeHandle::new(
         "default",
         dir.path().to_path_buf(),
@@ -8266,6 +8675,17 @@ async fn current_closure_reports_continuable_for_current_work_item() {
         context_config(),
     )
     .unwrap();
+    let active = runtime
+        .create_work_item(
+            "continue active runtime cleanup".into(),
+            Some(WorkItemPlanStatus::Ready),
+            None,
+            Vec::new(),
+        )
+        .await
+        .unwrap();
+    let active_id = active.id.clone();
+    runtime.pick_work_item(active_id.clone()).await.unwrap();
 
     let closure = runtime.current_closure_decision().await.unwrap();
     assert_eq!(closure.outcome, ClosureOutcome::Continuable);
@@ -8283,19 +8703,6 @@ async fn current_closure_reports_continuable_for_current_work_item() {
 async fn current_needs_input_work_item_waits_for_operator_without_work_signal() {
     let dir = tempdir().unwrap();
     let workspace = tempdir().unwrap();
-    let storage = AppStorage::new_for_test(dir.path()).unwrap();
-    let mut active = WorkItemRecord::new(
-        "default",
-        "choose implementation direction",
-        WorkItemState::Open,
-    );
-    active.plan_status = WorkItemPlanStatus::NeedsInput;
-    let active_id = active.id.clone();
-    storage.append_work_item(&active).unwrap();
-    let mut agent = AgentState::new("default");
-    agent.current_work_item_id = Some(active_id.clone());
-    storage.write_agent(&agent).unwrap();
-
     let runtime = RuntimeHandle::new(
         "default",
         dir.path().to_path_buf(),
@@ -8306,6 +8713,17 @@ async fn current_needs_input_work_item_waits_for_operator_without_work_signal() 
         context_config(),
     )
     .unwrap();
+    let active = runtime
+        .create_work_item(
+            "choose implementation direction".into(),
+            Some(WorkItemPlanStatus::NeedsInput),
+            None,
+            Vec::new(),
+        )
+        .await
+        .unwrap();
+    let active_id = active.id.clone();
+    runtime.pick_work_item(active_id.clone()).await.unwrap();
 
     let closure = runtime.current_closure_decision().await.unwrap();
     assert_eq!(closure.outcome, ClosureOutcome::Waiting);
@@ -8330,22 +8748,41 @@ async fn current_needs_input_work_item_waits_for_operator_without_work_signal() 
 async fn current_external_wait_does_not_suppress_queued_runnable_work_item() {
     let dir = tempdir().unwrap();
     let workspace = tempdir().unwrap();
-    let storage = AppStorage::new_for_test(dir.path()).unwrap();
-    let current = WorkItemRecord::new(
+    let runtime = RuntimeHandle::new(
         "default",
-        "waiting for external review",
-        WorkItemState::Open,
-    );
+        dir.path().to_path_buf(),
+        workspace.path().to_path_buf(),
+        "http://127.0.0.1:7878".into(),
+        Arc::new(StubProvider::new("tick done")),
+        "default".into(),
+        context_config(),
+    )
+    .unwrap();
+    let current = runtime
+        .create_work_item(
+            "waiting for external review".into(),
+            Some(WorkItemPlanStatus::Ready),
+            None,
+            Vec::new(),
+        )
+        .await
+        .unwrap();
     let current_id = current.id.clone();
-    storage.append_work_item(&current).unwrap();
-    let queued = WorkItemRecord::new("default", "queued follow-up work", WorkItemState::Open);
+    let queued = runtime
+        .create_work_item(
+            "queued follow-up work".into(),
+            Some(WorkItemPlanStatus::Ready),
+            None,
+            Vec::new(),
+        )
+        .await
+        .unwrap();
     let queued_id = queued.id.clone();
-    storage.append_work_item(&queued).unwrap();
-    seed_waiting_work_execution(&storage, &current, "wait-current");
-    seed_runnable_work_execution(&storage, &queued);
+    runtime.pick_work_item(current_id.clone()).await.unwrap();
     let now = Utc::now();
-    storage
-        .append_wait_condition(&WaitConditionRecord {
+    publish_fixture_wait(
+        &runtime,
+        WaitConditionRecord {
             id: "wait-current".into(),
             agent_id: "default".into(),
             work_item_id: Some(current_id.clone()),
@@ -8366,22 +8803,10 @@ async fn current_external_wait_does_not_suppress_queued_runnable_work_item() {
             turn_id: None,
             trigger_message_id: None,
             triggered_at: None,
-        })
-        .unwrap();
-    let mut agent = AgentState::new("default");
-    agent.current_work_item_id = Some(current_id);
-    storage.write_agent(&agent).unwrap();
-
-    let runtime = RuntimeHandle::new(
-        "default",
-        dir.path().to_path_buf(),
-        workspace.path().to_path_buf(),
-        "http://127.0.0.1:7878".into(),
-        Arc::new(StubProvider::new("tick done")),
-        "default".into(),
-        context_config(),
+        },
+        true,
     )
-    .unwrap();
+    .await;
 
     let closure = runtime.current_closure_decision().await.unwrap();
     assert_eq!(closure.outcome, ClosureOutcome::Continuable);
@@ -8402,16 +8827,6 @@ async fn current_external_wait_does_not_suppress_queued_runnable_work_item() {
 async fn current_closure_reports_continuable_for_queued_work_item_without_active_item() {
     let dir = tempdir().unwrap();
     let workspace = tempdir().unwrap();
-    let storage = AppStorage::new_for_test(dir.path()).unwrap();
-    let queued = WorkItemRecord::new(
-        "default",
-        "surface queued runtime cleanup",
-        WorkItemState::Open,
-    );
-    let queued_id = queued.id.clone();
-    storage.append_work_item(&queued).unwrap();
-    seed_runnable_work_execution(&storage, &queued);
-
     let runtime = RuntimeHandle::new(
         "default",
         dir.path().to_path_buf(),
@@ -8422,6 +8837,16 @@ async fn current_closure_reports_continuable_for_queued_work_item_without_active
         context_config(),
     )
     .unwrap();
+    let queued = runtime
+        .create_work_item(
+            "surface queued runtime cleanup".into(),
+            Some(WorkItemPlanStatus::Ready),
+            None,
+            Vec::new(),
+        )
+        .await
+        .unwrap();
+    let queued_id = queued.id.clone();
 
     let closure = runtime.current_closure_decision().await.unwrap();
     assert_eq!(closure.outcome, ClosureOutcome::Continuable);
@@ -8584,16 +9009,17 @@ async fn commit_prepared_wait_for(runtime: &RuntimeHandle, result: &crate::tool:
         .prepared_wait_for
         .as_ref()
         .expect("WaitFor should prepare canonical settlement");
-    let commit = runtime
-        .inner
-        .runtime_db
-        .transitions()
-        .commit_wait_with_execution_protocol_and_task_expectation(
-            &prepared.command,
-            &prepared.execution_protocol,
-            prepared.expected_task.as_ref(),
+    let mut mutation = runtime.begin_mutation().await.unwrap();
+    let commit = mutation
+        .commit_wait_transition(
+            crate::ids::audit_event_id(),
+            prepared.command.clone(),
+            prepared.execution_protocol.clone(),
+            prepared.expected_task.clone(),
         )
+        .await
         .unwrap();
+    drop(mutation);
     runtime.apply_transition_commit(commit).await;
 }
 
@@ -8681,19 +9107,22 @@ async fn wait_for_falls_back_to_current_focus_for_lifecycle_execution() {
         .await
         .unwrap();
     runtime.pick_work_item(work.id.clone()).await.unwrap();
-    {
-        let mut guard = runtime.inner.agent.lock().await;
-        guard.state.current_execution_binding = Some(WorkItemExecutionBinding {
-            activation_id: Some("activation-lifecycle".into()),
-            admission_provenance: None,
-            source_message_id: "message-lifecycle".into(),
-            turn_id: "turn-lifecycle".into(),
-            owner: None,
-            work_item_id: None,
-            claimed_work_revision: None,
-        });
-        guard.persist_state(&runtime.inner.storage).unwrap();
-    }
+    let _scheduled = start_work_tool_execution_fixture(
+        &runtime,
+        "message-lifecycle",
+        "turn-lifecycle",
+        None,
+        true,
+    )
+    .await;
+    assert!(runtime
+        .agent_state()
+        .await
+        .unwrap()
+        .current_execution_binding
+        .unwrap()
+        .work_item_id
+        .is_none());
 
     let registry = crate::tool::ToolRegistry::new(runtime.workspace_root());
     let (result, _) = registry
@@ -8750,19 +9179,20 @@ async fn wait_for_uses_lifecycle_owner_without_any_work_item_binding_or_focus() 
         context_config(),
     )
     .unwrap();
-    {
-        let mut guard = runtime.inner.agent.lock().await;
-        guard.state.current_execution_binding = Some(WorkItemExecutionBinding {
-            activation_id: Some("activation-lifecycle".into()),
-            admission_provenance: None,
-            source_message_id: "message-lifecycle".into(),
-            turn_id: "turn-lifecycle".into(),
-            owner: None,
-            work_item_id: None,
-            claimed_work_revision: None,
-        });
-        guard.persist_state(&runtime.inner.storage).unwrap();
-    }
+    let _scheduled = start_work_tool_execution_fixture(
+        &runtime,
+        "message-lifecycle",
+        "turn-lifecycle",
+        None,
+        true,
+    )
+    .await;
+    assert!(runtime
+        .agent_state()
+        .await
+        .unwrap()
+        .current_work_item_id
+        .is_none());
 
     let registry = crate::tool::ToolRegistry::new(runtime.workspace_root());
     let (result, _) = registry
@@ -8817,12 +9247,20 @@ async fn wait_for_tool_uses_bound_turn_work_item_without_durable_focus() {
         .create_work_item("bound turn wait".into(), None, None, Vec::new())
         .await
         .unwrap();
-    {
-        let mut guard = runtime.inner.agent.lock().await;
-        guard.state.current_work_item_id = None;
-        guard.state.current_turn_work_item_id = Some(work.id.clone());
-        guard.persist_state(&runtime.inner.storage).unwrap();
-    }
+    let _scheduled = start_work_tool_execution_fixture(
+        &runtime,
+        "message-bound-turn-wait",
+        "turn-bound-turn-wait",
+        Some(&work.id),
+        false,
+    )
+    .await;
+    let state = runtime.agent_state().await.unwrap();
+    assert!(state.current_work_item_id.is_none());
+    assert_eq!(
+        state.current_turn_work_item_id.as_deref(),
+        Some(work.id.as_str())
+    );
 
     let registry = crate::tool::ToolRegistry::new(runtime.workspace_root());
     let (result, _) = registry
@@ -9569,10 +10007,13 @@ fn rebase_completion_accepts_diverged_baseline_after_concurrent_persist() {
         continuation_expectations: Vec::new(),
         continuations: Vec::new(),
         continuation_resumed: None,
+        continuation_resumes: Default::default(),
         audit_events: Vec::new(),
         index_changes: Vec::new(),
         tool_execution: None,
         transcript_entries: Vec::new(),
+        _work_read_budget: None,
+        plan_preparation: None,
     };
 
     let rebased = crate::runtime::rebase_prepared_completion_agent_state(&prepared, &baseline)
@@ -9615,12 +10056,18 @@ fn rebase_completion_rejects_mismatched_agent_id() {
         continuation_expectations: Vec::new(),
         continuations: Vec::new(),
         continuation_resumed: None,
+        continuation_resumes: Default::default(),
         audit_events: Vec::new(),
         index_changes: Vec::new(),
         tool_execution: None,
         transcript_entries: Vec::new(),
+        _work_read_budget: None,
+        plan_preparation: None,
     };
 
     let result = crate::runtime::rebase_prepared_completion_agent_state(&prepared, &baseline);
     assert!(result.is_err(), "mismatched agent id must be rejected");
 }
+
+#[path = "work_result_phase_tests.rs"]
+mod work_result_phase_tests;

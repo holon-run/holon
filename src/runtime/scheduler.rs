@@ -1,7 +1,7 @@
 use super::*;
 use crate::domain::execution_protocol::WorkItemExecutionState;
 use crate::domain::scheduler::{SchedulerOwner, SchedulerScenarioClass};
-use crate::runtime::closure::runtime_error_active;
+use crate::runtime::closure::runtime_error_active_at;
 use crate::storage::{AppStorage, WorkQueueReadModel};
 use crate::types::{
     AdmissionContext, AgentPostureProjection, AgentSchedulingPosture, AgentStatus, AuthorityClass,
@@ -13,6 +13,29 @@ use crate::types::{
 use anyhow::bail;
 use chrono::{DateTime, Utc};
 use std::{collections::HashMap, fmt};
+
+/// The ordinary closure policy has always observed the latest 64 Briefs.
+pub(crate) const SCHEDULER_BRIEF_LIMIT: usize = 64;
+
+/// Initialization/planning only; prompt rendering keeps its frozen own policy.
+pub(crate) fn include_scheduler_brief_window(
+    windows: &mut Vec<crate::runtime_db::input_evidence_snapshot::InputWindowRequest>,
+) {
+    use crate::runtime::resident_input_evidence::InputWindowSelector;
+    if let Some(window) = windows
+        .iter_mut()
+        .find(|window| window.selector == InputWindowSelector::RecentBriefs)
+    {
+        window.limit = window.limit.max(SCHEDULER_BRIEF_LIMIT);
+    } else {
+        windows.push(
+            crate::runtime_db::input_evidence_snapshot::InputWindowRequest {
+                selector: InputWindowSelector::RecentBriefs,
+                limit: SCHEDULER_BRIEF_LIMIT,
+            },
+        );
+    }
+}
 
 #[cfg(test)]
 pub(crate) const REDUCER_ONLY_CANDIDATES_SCENARIO: SchedulerScenarioClass =
@@ -172,29 +195,32 @@ mod diagnostics;
 mod projection;
 mod semantic_selection;
 
+pub(crate) use diagnostics::append_deferred_activation_advisory;
+#[cfg(test)]
+pub(crate) use diagnostics::append_scheduling_advisories;
+pub(crate) use diagnostics::scheduling_advisories_for_facts;
+pub(super) use diagnostics::{ambiguous_wait_advisory_event, pending_scheduling_advisory_events};
 pub(crate) use diagnostics::{
-    append_ambiguous_wait_advisory, append_deferred_activation_advisory,
     append_interrupted_replay_source_advisory, append_queue_head_starved_advisory,
-    append_scheduling_advisories, QUEUE_HEAD_STARVATION_AFTER_MS,
+    QUEUE_HEAD_STARVATION_AFTER_MS,
 };
 // Preserve the pre-split scheduler facade even when the current crate has no callers.
 #[cfg(test)]
-pub(crate) use diagnostics::{
-    scheduling_advisories, scheduling_advisories_for_facts, scheduling_advisories_with_queue_len,
-};
+pub(crate) use diagnostics::{scheduling_advisories, scheduling_advisories_with_queue_len};
 #[allow(unused_imports)]
 pub(crate) use diagnostics::{
     scheduling_advisory_event, SchedulingAdvisory, SchedulingAdvisorySeverity,
 };
 use projection::CanonicalWorkExecutionState;
-pub(crate) use projection::{SchedulerAgentSnapshot, SchedulerProjection};
-#[cfg(test)]
-pub(crate) use semantic_selection::AutonomousContinuationSnapshotIdentity;
+pub(crate) use projection::{SchedulerAgentSnapshot, SchedulerObservations, SchedulerProjection};
 pub(crate) use semantic_selection::{
-    resolve_autonomous_continuation_work_item, select_autonomous_continuation,
-    select_autonomous_continuation_with_async_hook, select_autonomous_continuation_with_hook,
-    AsyncSemanticCandidateSelectionHook, SemanticCandidateSelectionHook,
-    StaticSemanticCandidateSelectionHook,
+    resolve_autonomous_continuation_work_item, select_autonomous_continuation_with_async_hook,
+    select_autonomous_continuation_with_hook, AsyncSemanticCandidateSelectionHook,
+    SemanticCandidateSelectionHook, StaticSemanticCandidateSelectionHook,
+};
+#[cfg(test)]
+pub(crate) use semantic_selection::{
+    select_autonomous_continuation, AutonomousContinuationSnapshotIdentity,
 };
 pub(crate) use semantic_selection::{
     AutonomousContinuationCandidate, AutonomousContinuationProposal,
@@ -600,6 +626,7 @@ pub(crate) fn scheduler_decision_events(
     ])
 }
 
+#[cfg(test)]
 pub(crate) fn append_scheduler_decision(
     storage: &AppStorage,
     agent_id: &str,
@@ -615,7 +642,7 @@ pub(crate) fn append_scheduler_decision(
     Ok(true)
 }
 
-fn recent_scheduler_decision_is_duplicate(
+pub(super) fn recent_scheduler_decision_is_duplicate(
     recent_events: &[AuditEvent],
     legacy_event: &AuditEvent,
 ) -> bool {
@@ -1444,7 +1471,7 @@ pub(crate) fn wait_decision_for_projection(
     if projection.has_interrupted_replay {
         return None;
     }
-    if projection.work_reactivation_signal().is_some() {
+    if projection.work_reactivation_work_item().is_some() {
         return None;
     }
     if projection.active_agent_waiting_intents > 0 {
@@ -1595,6 +1622,7 @@ pub(crate) fn apply_message_wake_projection(state: &mut AgentState) -> bool {
     false
 }
 
+#[cfg(test)]
 pub(crate) fn apply_start_projection(state: &mut AgentState) {
     state.status = AgentStatus::AwakeIdle;
     state.current_run_id = None;

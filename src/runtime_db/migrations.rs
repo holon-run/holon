@@ -4,6 +4,7 @@ use anyhow::{bail, Context, Result};
 use chrono::Utc;
 use rusqlite::{params, Connection, OptionalExtension, Transaction};
 use std::collections::BTreeSet;
+use std::sync::{Mutex, OnceLock};
 use std::time::Instant;
 
 use crate::domain::{
@@ -4315,6 +4316,82 @@ CREATE TABLE source_revision_repair_block_publications (
 );
 "#,
     },
+    Migration {
+        version: 93,
+        name: "episode_memory_results",
+        sql: r#"
+CREATE TABLE IF NOT EXISTS episode_memory_results (
+  agent_id TEXT NOT NULL,
+  identity_incarnation INTEGER NOT NULL CHECK (identity_incarnation > 0),
+  turn_id TEXT NOT NULL,
+  phase_version TEXT NOT NULL,
+  command_digest TEXT NOT NULL,
+  invocation_json TEXT NOT NULL,
+  finalized_episode_id TEXT,
+  result_json TEXT NOT NULL,
+  committed_at TEXT NOT NULL,
+  PRIMARY KEY (agent_id, identity_incarnation, turn_id, phase_version)
+);
+CREATE INDEX IF NOT EXISTS idx_episode_memory_results_episode_scope
+  ON episode_memory_results(agent_id, identity_incarnation, finalized_episode_id)
+  WHERE finalized_episode_id IS NOT NULL;
+"#,
+    },
+    Migration {
+        version: 94,
+        name: "explicit_episode_continuity",
+        sql: super::episode_snapshot::EPISODE_CONTINUITY_SCHEMA,
+    },
+    Migration {
+        version: 95,
+        name: "control_command_receipts_and_cancellation_obligations",
+        sql: include_str!("control_transition/schema.sql"),
+    },
+    Migration {
+        version: 96,
+        name: "qualified_input_evidence",
+        sql: super::input_evidence_snapshot::INPUT_EVIDENCE_SCHEMA,
+    },
+    Migration {
+        version: 97,
+        name: "original_input_mutation_receipts",
+        sql: super::input_mutation_receipts::INPUT_MUTATION_RECEIPT_SCHEMA,
+    },
+    Migration {
+        version: 98,
+        name: "qualified_work_wait_continuation",
+        sql: super::work_snapshot::WORK_DOMAIN_SCHEMA,
+    },
+    Migration {
+        version: 99,
+        name: "actual_dispatch_memory_responsibility",
+        sql: super::dispatch_memory::DISPATCH_MEMORY_SCHEMA,
+    },
+    Migration {
+        version: super::task_snapshot::TASK_DOMAIN_VERSION,
+        name: "qualified_task_result_domain",
+        sql: super::task_snapshot::TASK_DOMAIN_SCHEMA,
+    },
+    Migration {
+        version: 101,
+        name: "qualified_scheduling_domain",
+        sql: super::scheduling_snapshot::SCHEDULING_SCHEMA,
+    },
+    Migration {
+        version: super::input_evidence_snapshot::native_birth::VERSION,
+        name: "original_input_birth_frontier",
+        sql: super::input_evidence_snapshot::native_birth::SCHEMA,
+    },
+    Migration {
+        version: super::current_read_writes::VERSION,
+        name: "original_current_read_qualification",
+        sql: super::current_read_writes::SCHEMA,
+    },
+    Migration {
+        version: super::command_task_creation::VERSION,
+        name: "original_turnless_command_creation",
+        sql: super::command_task_creation::SCHEMA,
+    },
 ];
 
 pub(crate) fn ensure_migration_table(connection: &Connection) -> Result<()> {
@@ -4358,7 +4435,7 @@ pub(crate) fn apply_release_baseline(connection: &mut Connection) -> Result<()> 
         apply_migration_transaction(&transaction, migration)?;
     }
     for sql in final_schema {
-        transaction.execute_batch(&sql)?;
+        transaction.execute_batch(sql)?;
     }
     ensure_execution_protocol_authority_columns(&transaction)?;
     transaction.execute_batch(
@@ -4425,7 +4502,43 @@ INSERT INTO scheduler_rollout_retirement (
     Ok(())
 }
 
-fn release_baseline_final_schema() -> Result<Vec<String>> {
+// Only immutable SQL derived from the compiled migration set is shared, never a
+// connection or a target database's migration state. Failed builds stay retryable.
+struct ReleaseBaselineSchema {
+    schema: OnceLock<Vec<String>>,
+    initialization: Mutex<()>,
+}
+
+impl ReleaseBaselineSchema {
+    const fn new() -> Self {
+        Self {
+            schema: OnceLock::new(),
+            initialization: Mutex::new(()),
+        }
+    }
+
+    fn get_or_build(&self, build: impl FnOnce() -> Result<Vec<String>>) -> Result<&[String]> {
+        if let Some(schema) = self.schema.get() {
+            return Ok(schema);
+        }
+        let _initialization = self
+            .initialization
+            .lock()
+            .map_err(|_| anyhow::anyhow!("release baseline schema initialization poisoned"))?;
+        if let Some(schema) = self.schema.get() {
+            return Ok(schema);
+        }
+        let schema = build()?;
+        Ok(self.schema.get_or_init(|| schema))
+    }
+}
+
+fn release_baseline_final_schema() -> Result<&'static [String]> {
+    static SCHEMA: ReleaseBaselineSchema = ReleaseBaselineSchema::new();
+    SCHEMA.get_or_build(build_release_baseline_final_schema)
+}
+
+fn build_release_baseline_final_schema() -> Result<Vec<String>> {
     let mut scratch = Connection::open_in_memory()?;
     ensure_migration_table(&scratch)?;
     for migration in MIGRATIONS
@@ -4466,6 +4579,10 @@ fn release_baseline_final_schema() -> Result<Vec<String>> {
         })
         .collect())
 }
+
+#[cfg(test)]
+#[path = "release_baseline_schema_tests.rs"]
+mod release_baseline_schema_tests;
 
 fn schema_object_keys(connection: &Connection) -> Result<BTreeSet<(String, String)>> {
     let mut statement = connection.prepare(
@@ -4671,6 +4788,29 @@ fn apply_migration_transaction(transaction: &Transaction<'_>, migration: &Migrat
         ensure_destructive_operation_command_digest_schema(transaction)?;
     }
     transaction.execute_batch(migration.sql)?;
+    if migration.name == "explicit_episode_continuity" {
+        super::episode_snapshot::capture_episode_continuity_upgrade_tx(transaction, Utc::now())?;
+    }
+    if migration.name == "qualified_input_evidence" {
+        super::input_evidence_snapshot::capture_input_evidence_upgrade_tx(transaction, Utc::now())?;
+    }
+    if migration.name == "qualified_work_wait_continuation" {
+        super::work_snapshot::capture_work_domain_upgrade_tx(transaction)?;
+    }
+    if migration.name == "qualified_task_result_domain" {
+        transaction.execute_batch(super::task_stop::TASK_STOP_SCHEMA)?;
+        super::task_snapshot::capture_task_domain_upgrade_tx(transaction)?;
+        super::task_snapshot::capture_status_sources_upgrade_tx(transaction)?;
+    }
+    if migration.name == "qualified_scheduling_domain" {
+        super::scheduling_snapshot::consume_scheduling_upgrade_tx(transaction)?;
+    }
+    if migration.name == "original_current_read_qualification" {
+        super::episode_snapshot::current_upgrade::capture_tx(transaction)?;
+    }
+    if migration.name == "actual_dispatch_memory_responsibility" {
+        super::dispatch_memory::capture_legacy_dispatches_at_upgrade_tx(transaction)?;
+    }
     if migration.name == "execution_protocol_authority" {
         backfill_execution_protocol_authority(transaction)?;
     }
@@ -6517,7 +6657,9 @@ fn migration_task_rejoin_fence(task: &TaskRecord) -> Result<RejoinFence> {
     Ok(RejoinFence {
         obligation_id: obligation_id.to_string(),
         generation,
-        parent_turn_id: parent_turn_id.to_string(),
+        source: execution_protocol::TaskRejoinSource::ParentTurn {
+            parent_turn_id: parent_turn_id.to_string(),
+        },
     })
 }
 

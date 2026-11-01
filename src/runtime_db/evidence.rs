@@ -6,6 +6,7 @@ use chrono::{DateTime, Utc};
 use rusqlite::{params, OptionalExtension, Transaction};
 use serde::Serialize;
 use sha2::{Digest, Sha256};
+use std::borrow::Cow;
 
 use crate::runtime_db::conversation::{
     assigned_turn_id_tx, bump_source_revision_tx, bump_turn_revision_tx, settle_turn_result_tx,
@@ -15,7 +16,7 @@ use crate::runtime_db::index_outbox::RuntimeIndexChange;
 use crate::runtime_db::EVIDENCE_PREVIEW_LIMIT;
 use crate::types::AgentRegistryStatus;
 use crate::types::{
-    AgentDeletionJob, AgentIdentityRecord, AgentState, AuditEvent, BriefRecord,
+    AgentDeletionJob, AgentIdentityRecord, AgentKind, AgentState, AuditEvent, BriefRecord,
     DeliverySummaryRecord, ExecutionRootEntry, MessageEnvelope, ToolExecutionRecord,
     TranscriptEntry, WorkspaceEntry, WorkspaceOccupancyRecord,
 };
@@ -24,12 +25,45 @@ pub(crate) const AUDIT_EVENT_SEQUENCE_DOMAIN: &str = "audit_event";
 pub(crate) const MESSAGE_SEQUENCE_DOMAIN: &str = "message";
 pub(crate) const TRANSCRIPT_SEQUENCE_DOMAIN: &str = "transcript";
 
+#[cfg(test)]
+#[path = "evidence/audit_sql_budget_tests.rs"]
+mod audit_sql_budget_tests;
+
+#[cfg(test)]
+mod registry_incarnation_budget_tests;
+
+#[cfg(test)]
+mod registry_post_write_budget_tests;
+
+#[cfg(test)]
+mod registry_enum_tests;
+
+#[cfg(test)]
+mod registry_name_key_budget_tests;
+
+#[cfg(test)]
+mod registry_timestamp_budget_tests;
+
+#[cfg(test)]
+mod registry_clock_budget_tests;
+
 pub(crate) fn agent_sequence_scope(agent_id: &str) -> String {
     format!("agent:{agent_id}")
 }
 
 pub(crate) fn audit_event_sequence_scope(agent_id: Option<&str>) -> String {
     agent_id.map_or_else(|| "host".to_string(), agent_sequence_scope)
+}
+
+fn audit_write_sequence_scope(agent_id: Option<&str>) -> Result<Cow<'static, str>> {
+    let Some(agent_id) = agent_id else {
+        return Ok(Cow::Borrowed("host"));
+    };
+    crate::diagnostics::resource_io::charge_owned_metadata(
+        ("agent:".len() + agent_id.len() + std::mem::size_of::<String>()) as u64,
+        1,
+    )?;
+    Ok(Cow::Owned(agent_sequence_scope(agent_id)))
 }
 
 pub(crate) fn allocate_runtime_sequence_tx(
@@ -118,6 +152,147 @@ pub struct EvidenceRow {
 #[derive(Debug, Clone)]
 pub struct EvidencePayloadRow {
     pub payload_json: String,
+}
+
+/// Canonical message-to-turn link; replay may keep the source Turn as owner.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CommittedTurnInputAssignment {
+    pub agent_id: String,
+    pub message_id: String,
+    pub turn_id: String,
+    pub revision: u64,
+    pub assigned_at: DateTime<Utc>,
+}
+
+/// Exact final source projection read in the canonical writer transaction.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CommittedConversationSourceRevision {
+    pub agent_id: String,
+    pub source_kind: String,
+    pub source_id: String,
+    pub turn_id: Option<String>,
+    pub revision: u64,
+    pub activity_seq: Option<u64>,
+    pub updated_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CommittedConversationTurnRevision {
+    pub agent_id: String,
+    pub turn_id: String,
+    pub revision: super::conversation::ConversationTurnRevision,
+    pub updated_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct CommittedTurnRecord {
+    pub record: crate::types::TurnRecord,
+    pub input_assignments: Vec<CommittedTurnInputAssignment>,
+    pub revision: super::conversation::ConversationTurnRevision,
+    /// Includes unchanged input sources so replay can install exact facts idempotently.
+    pub affected_source_revisions: Vec<CommittedConversationSourceRevision>,
+    /// Requested Turn plus actual input assignment targets, each once by ID.
+    pub affected_turn_revisions: Vec<CommittedConversationTurnRevision>,
+}
+
+pub(crate) fn committed_evidence_record_tx<T: serde::de::DeserializeOwned>(
+    tx: &Transaction<'_>,
+    kind: EvidenceKind,
+    agent_id: &str,
+    id: &str,
+) -> Result<T> {
+    let payload: String = tx
+        .query_row(
+            &format!(
+                "SELECT payload_json FROM {} WHERE agent_id = ?1 AND evidence_id = ?2",
+                kind.table_name()
+            ),
+            params![agent_id, id],
+            |row| row.get(0),
+        )
+        .with_context(|| {
+            format!(
+                "reading committed {} {id} for agent {agent_id}",
+                kind.table_name()
+            )
+        })?;
+    serde_json::from_str(&payload).context("decoding committed evidence")
+}
+
+pub(crate) fn committed_message_tx(
+    tx: &Transaction<'_>,
+    agent_id: &str,
+    id: &str,
+) -> Result<MessageEnvelope> {
+    let record: MessageEnvelope =
+        committed_evidence_record_tx(tx, EvidenceKind::Message, agent_id, id)?;
+    let sequence: Option<i64> = tx.query_row(
+        "SELECT message_seq FROM messages WHERE agent_id = ?1 AND evidence_id = ?2",
+        params![agent_id, id],
+        |row| row.get(0),
+    )?;
+    anyhow::ensure!(
+        record.id == id
+            && record.agent_id == agent_id
+            && record.message_seq == sequence.map(u64::try_from).transpose()?,
+        "committed message payload/sequence projection mismatch for {id}"
+    );
+    Ok(record)
+}
+
+pub(crate) fn committed_transcript_tx(
+    tx: &Transaction<'_>,
+    agent_id: &str,
+    id: &str,
+) -> Result<TranscriptEntry> {
+    let record: TranscriptEntry =
+        committed_evidence_record_tx(tx, EvidenceKind::TranscriptEntry, agent_id, id)?;
+    let sequence: Option<i64> = tx.query_row(
+        "SELECT transcript_seq FROM transcript_entries WHERE agent_id = ?1 AND evidence_id = ?2",
+        params![agent_id, id],
+        |row| row.get(0),
+    )?;
+    anyhow::ensure!(
+        record.id == id
+            && record.agent_id == agent_id
+            && record.transcript_seq == sequence.map(u64::try_from).transpose()?,
+        "committed transcript payload/sequence projection mismatch for {id}"
+    );
+    Ok(record)
+}
+
+pub(crate) fn committed_tool_tx(
+    tx: &Transaction<'_>,
+    agent_id: &str,
+    id: &str,
+) -> Result<ToolExecutionRecord> {
+    let record: ToolExecutionRecord =
+        committed_evidence_record_tx(tx, EvidenceKind::ToolExecution, agent_id, id)?;
+    anyhow::ensure!(
+        record.id == id && record.agent_id == agent_id,
+        "committed tool scope mismatch for {id}"
+    );
+    Ok(record)
+}
+
+pub(crate) fn committed_brief_tx(
+    tx: &Transaction<'_>,
+    agent_id: &str,
+    id: &str,
+) -> Result<BriefRecord> {
+    let record: BriefRecord = committed_evidence_record_tx(tx, EvidenceKind::Brief, agent_id, id)?;
+    let event_seq: Option<i64> = tx.query_row(
+        "SELECT created_event_seq FROM briefs WHERE agent_id = ?1 AND evidence_id = ?2",
+        params![agent_id, id],
+        |row| row.get(0),
+    )?;
+    anyhow::ensure!(
+        record.id == id
+            && record.agent_id == agent_id
+            && record.created_event_seq == event_seq.map(u64::try_from).transpose()?,
+        "committed brief payload/event projection mismatch for {id}"
+    );
+    Ok(record)
 }
 
 pub(crate) struct EvidenceInsert<'a> {
@@ -260,7 +435,10 @@ pub(crate) fn append_message_tx(
         &agent_sequence_scope(&message.agent_id),
     )?);
     upsert_message_tx(tx, &message)?;
-    Ok((message, true))
+    Ok((
+        committed_message_tx(tx, &message.agent_id, &message.id)?,
+        true,
+    ))
 }
 
 pub(crate) fn insert_transcript_evidence_tx(
@@ -291,16 +469,36 @@ pub(crate) fn append_transcript_entry_tx(
         &agent_sequence_scope(&entry.agent_id),
     )?);
     upsert_transcript_entry_tx(tx, &entry)?;
-    Ok((entry, true))
+    Ok((
+        committed_transcript_tx(tx, &entry.agent_id, &entry.id)?,
+        true,
+    ))
 }
 
 pub(crate) fn upsert_agent_state_tx(tx: &Transaction<'_>, record: &AgentState) -> Result<()> {
+    upsert_agent_state_at_tx(tx, record, Utc::now())
+}
+
+pub(crate) fn upsert_agent_state_at_tx(
+    tx: &Transaction<'_>,
+    record: &AgentState,
+    updated_at: DateTime<Utc>,
+) -> Result<()> {
     if record.current_run_id.is_some() || record.status == crate::types::AgentStatus::AwakeRunning {
         super::reclamation::ensure_work_admission_tx(tx, &record.id)?;
     }
+    crate::diagnostics::resource_io::admit_serialized_value(record)?;
     let payload_json = serde_json::to_string(record)?;
-    let status = enum_string(&record.status)?;
-    let now = timestamp(Utc::now());
+    let status = match record.status {
+        crate::types::AgentStatus::Booting => "booting",
+        crate::types::AgentStatus::AwakeIdle => "awake_idle",
+        crate::types::AgentStatus::AwakeRunning => "awake_running",
+        crate::types::AgentStatus::AwaitingTask => "awaiting_task",
+        crate::types::AgentStatus::Asleep => "asleep",
+        crate::types::AgentStatus::Stopped => "stopped",
+    };
+    crate::diagnostics::resource_io::admit_serialized_value(&updated_at)?;
+    let now = timestamp(updated_at);
     tx.execute(
         "INSERT INTO agent_states (
             agent_id, status, turn_index, current_run_id, current_work_item_id,
@@ -486,7 +684,7 @@ pub(crate) fn reserve_agent_identity_tx(
             |row| row.get(0),
         )
         .optional()?;
-    let now = Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
+    let now = Utc::now();
     if retired == Some(true) {
         if record.status != AgentRegistryStatus::Deleted {
             return Err(anyhow!(
@@ -499,6 +697,7 @@ pub(crate) fn reserve_agent_identity_tx(
         // registry write below remains an idempotent stale-safe no-op.
         return Ok(());
     }
+    let now = registry_timestamp(now)?;
     if record.status == AgentRegistryStatus::Deleted {
         tx.execute(
             "INSERT INTO agent_identity_reservations (agent_id, reservation_state, reserved_at, retired_at, source)
@@ -528,7 +727,7 @@ pub(crate) fn release_agent_identity_reservation_tx(
     tx: &Transaction<'_>,
     agent_id: &str,
 ) -> Result<()> {
-    let now = Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
+    let now = registry_timestamp(Utc::now())?;
     let released = tx.execute(
         "UPDATE agent_identity_reservations
          SET reservation_state = 'active',
@@ -545,24 +744,73 @@ pub(crate) fn release_agent_identity_reservation_tx(
     Ok(())
 }
 
+fn registry_agent_name_key(name: &str) -> Result<String> {
+    use unicode_casefold::UnicodeCaseFold;
+
+    let bytes =
+        name.case_fold()
+            .try_fold(std::mem::size_of::<String>() as u64, |bytes, character| {
+                bytes
+                    .checked_add(character.len_utf8() as u64)
+                    .ok_or_else(|| anyhow!("ResourceExhausted: registry name key"))
+            })?;
+    crate::diagnostics::resource_io::charge_owned_metadata(bytes, 1)?;
+    Ok(crate::types::agent_name_key(name))
+}
+
+fn registry_timestamp(value: chrono::DateTime<Utc>) -> Result<String> {
+    let year = chrono::Datelike::year(&value);
+    let year_bytes = if (0..=9999).contains(&year) {
+        4
+    } else {
+        (year.unsigned_abs().ilog10() as usize + 1).max(4) + 1
+    };
+    // UTC RFC3339 milliseconds: year plus "-MM-DDTHH:MM:SS.sssZ".
+    crate::diagnostics::resource_io::charge_owned_metadata(
+        (year_bytes + 20 + std::mem::size_of::<String>()) as u64,
+        1,
+    )?;
+    Ok(timestamp(value))
+}
+
 pub(crate) fn upsert_agent_identity_tx(
     tx: &Transaction<'_>,
     record: &AgentIdentityRecord,
 ) -> Result<()> {
+    let previous_incarnation = {
+        let mut statement =
+            tx.prepare("SELECT payload_json FROM agent_identities WHERE agent_id = ?1")?;
+        let mut rows = statement.query([&record.agent_id])?;
+        if let Some(row) = rows.next()? {
+            let payload = row.get_ref(0)?.as_str()?;
+            crate::diagnostics::resource_io::admit_json_payload(payload)?;
+            Some(serde_json::from_str::<AgentIdentityRecord>(payload)?.incarnation)
+        } else {
+            None
+        }
+    };
     // The reservation guard runs before the registry write so a retired id
     // can never regain availability, not even through a stale replay.
     reserve_agent_identity_tx(tx, record)?;
     let payload_json = serde_json::to_string(record)?;
-    let name_key = record.name.as_deref().map(crate::types::agent_name_key);
-    let kind = enum_string(&record.kind)?;
-    let visibility = enum_string(&record.visibility)?;
-    let ownership = record.ownership.as_ref().map(enum_string).transpose()?;
-    let profile_preset = record
-        .profile_preset
-        .as_ref()
-        .map(enum_string)
+    let name_key = record
+        .name
+        .as_deref()
+        .map(registry_agent_name_key)
         .transpose()?;
-    let status = enum_string(&record.status)?;
+    let kind = match record.kind {
+        AgentKind::Default => "default",
+        AgentKind::Named => "named",
+        AgentKind::Child => "child",
+    };
+    let visibility = record.visibility.label();
+    let ownership = record.ownership.map(|value| value.label());
+    let profile_preset = record.profile_preset.map(|value| value.label());
+    let status = match record.status {
+        AgentRegistryStatus::Active => "active",
+        AgentRegistryStatus::Deleting => "deleting",
+        AgentRegistryStatus::Deleted => "deleted",
+    };
     tx.execute(
         "INSERT INTO agent_identities (
             agent_id, name, name_key, kind, visibility, ownership, profile_preset, status,
@@ -597,12 +845,30 @@ pub(crate) fn upsert_agent_identity_tx(
             record.parent_agent_id,
             record.lineage_parent_agent_id,
             record.delegated_from_task_id,
-            timestamp(record.created_at),
-            timestamp(record.updated_at),
-            record.deleted_at.map(timestamp),
+            registry_timestamp(record.created_at)?,
+            registry_timestamp(record.updated_at)?,
+            record.deleted_at.map(registry_timestamp).transpose()?,
             payload_json,
         ],
     )?;
+    if previous_incarnation != Some(record.incarnation) {
+        let matches_record = {
+            let mut statement =
+                tx.prepare("SELECT payload_json FROM agent_identities WHERE agent_id = ?1")?;
+            let mut rows = statement.query([&record.agent_id])?;
+            let row = rows.next()?.ok_or(rusqlite::Error::QueryReturnedNoRows)?;
+            let payload = row.get_ref(0)?.as_str()?;
+            crate::diagnostics::resource_io::admit_json_payload(payload)?;
+            serde_json::from_str::<AgentIdentityRecord>(payload)? == *record
+        };
+        if matches_record {
+            super::episode_snapshot::ensure_fresh_episode_continuity_tx(
+                tx,
+                record,
+                record.updated_at,
+            )?;
+        }
+    }
     Ok(())
 }
 
@@ -811,6 +1077,22 @@ pub(crate) fn insert_runtime_index_changes_tx(
     tx: &Transaction<'_>,
     changes: &[RuntimeIndexChange],
 ) -> Result<()> {
+    insert_runtime_index_changes_with_time_tx(tx, changes, None)
+}
+
+pub(crate) fn insert_runtime_index_changes_at_tx(
+    tx: &Transaction<'_>,
+    changes: &[RuntimeIndexChange],
+    created_at: DateTime<Utc>,
+) -> Result<()> {
+    insert_runtime_index_changes_with_time_tx(tx, changes, Some(created_at))
+}
+
+fn insert_runtime_index_changes_with_time_tx(
+    tx: &Transaction<'_>,
+    changes: &[RuntimeIndexChange],
+    created_at: Option<DateTime<Utc>>,
+) -> Result<()> {
     let mut agent_ids = Vec::new();
     for change in changes {
         // Outbox inserts and the produced watermark advance below share one
@@ -828,7 +1110,7 @@ pub(crate) fn insert_runtime_index_changes_tx(
                 change.operation.as_str(),
                 change.source_updated_at.map(timestamp),
                 change.reason,
-                timestamp(Utc::now()),
+                timestamp(created_at.unwrap_or_else(Utc::now)),
             ],
         )?;
         if !agent_ids.contains(&change.agent_id) {
@@ -836,7 +1118,11 @@ pub(crate) fn insert_runtime_index_changes_tx(
         }
     }
     for agent_id in &agent_ids {
-        update_runtime_index_outbox_watermark_tx(tx, agent_id)?;
+        update_runtime_index_outbox_watermark_at_tx(
+            tx,
+            agent_id,
+            created_at.unwrap_or_else(Utc::now),
+        )?;
     }
     Ok(())
 }
@@ -844,7 +1130,11 @@ pub(crate) fn insert_runtime_index_changes_tx(
 /// Advance the agent's monotonic produced watermark to the highest appended
 /// `change_seq`. Deleting consumed outbox rows never lowers this value, which
 /// keeps `produced - applied` meaningful after the outbox is drained.
-fn update_runtime_index_outbox_watermark_tx(tx: &Transaction<'_>, agent_id: &str) -> Result<()> {
+fn update_runtime_index_outbox_watermark_at_tx(
+    tx: &Transaction<'_>,
+    agent_id: &str,
+    updated_at: DateTime<Utc>,
+) -> Result<()> {
     let produced: i64 = tx.query_row(
         "SELECT COALESCE(MAX(change_seq), 0) FROM runtime_index_outbox WHERE agent_id = ?1",
         params![agent_id],
@@ -860,7 +1150,7 @@ fn update_runtime_index_outbox_watermark_tx(tx: &Transaction<'_>, agent_id: &str
                 excluded.produced_change_seq
             ),
             updated_at = excluded.updated_at",
-        params![agent_id, produced, timestamp(Utc::now())],
+        params![agent_id, produced, timestamp(updated_at)],
     )?;
     Ok(())
 }
@@ -974,13 +1264,15 @@ pub(crate) fn upsert_brief_with_created_event_seq_tx(
             event_seq
         );
         existing.created_event_seq = Some(event_seq);
+        let payload = full_payload_json(&existing)?;
         tx.execute(
-            "UPDATE briefs SET payload_json = ?1, created_event_seq = ?2
+            "UPDATE briefs SET payload_json = ?1, created_event_seq = ?2, content_hash = ?4
              WHERE evidence_id = ?3",
             params![
-                full_payload_json(&existing)?,
+                payload,
                 i64::try_from(event_seq).ok(),
-                &brief.id
+                &brief.id,
+                content_hash(&payload),
             ],
         )?;
         if let Some(turn_id) = existing.turn_id.as_deref() {
@@ -1035,6 +1327,7 @@ pub(crate) fn append_brief_with_created_event_tx(
     let (event, event_inserted) = append_audit_event_tx(tx, agent_id, event)?;
     let brief = upsert_brief_with_created_event_seq_tx(tx, brief, event.event_seq)?;
     insert_runtime_index_changes_tx(tx, index_changes)?;
+    let brief = committed_brief_tx(tx, &brief.agent_id, &brief.id)?;
     Ok(BriefCreatedCommit {
         brief,
         event,
@@ -1049,7 +1342,7 @@ pub(crate) fn append_brief_with_created_event_tx(
 pub(crate) fn link_transition_brief_created_events_tx(
     tx: &Transaction<'_>,
     brief_evidence: &[BriefRecord],
-    committed_events: &[AuditEvent],
+    committed_events: &[super::transitions::AuditEventAck],
 ) -> Result<()> {
     const BRIEF_CREATED_WIRE_NAME: &str = "brief_created";
     for brief in brief_evidence {
@@ -1113,69 +1406,58 @@ pub(crate) fn append_audit_event_tx(
     agent_id: Option<&str>,
     event: &AuditEvent,
 ) -> Result<(AuditEvent, bool)> {
-    if let Some((existing_agent_id, payload)) = tx
-        .query_row(
-            "SELECT agent_id, data_json FROM audit_events WHERE audit_event_id = ?1",
-            [&event.id],
-            |row| Ok((row.get::<_, Option<String>>(0)?, row.get::<_, String>(1)?)),
-        )
-        .optional()?
-    {
-        anyhow::ensure!(
-            existing_agent_id.as_deref() == agent_id,
-            "conflicting audit event agent identity for audit_event_id {}",
-            event.id
-        );
-        let existing: AuditEvent = serde_json::from_str(&payload)?;
+    if let Some(existing) = audit_event_by_id_tx(tx, agent_id, &event.id)? {
         ensure_same_audit_event_content(&existing, event, "audit_event_id")?;
         return Ok((existing, false));
     }
+    crate::diagnostics::resource_io::admit_cloned_value(event)?;
     let mut event = event.clone();
-    event.event_log_epoch = event_log_epoch_tx(tx)?;
+    event.event_log_epoch = event_log_epoch_tx(tx, None)?.into_owned();
     event.event_seq = allocate_runtime_sequence_tx(
         tx,
         AUDIT_EVENT_SEQUENCE_DOMAIN,
-        &audit_event_sequence_scope(agent_id),
+        &audit_write_sequence_scope(agent_id)?,
     )?;
     insert_audit_event_with_sequence_tx(tx, agent_id, &event)?;
     Ok((event, true))
 }
 
+/// Capture material only at the canonical writer/decoder, not from a later
+/// ambient phase or an arbitrary owned event. This carries no Current authority.
+pub(crate) fn append_audit_event_ack_tx(
+    tx: &Transaction<'_>,
+    agent_id: Option<&str>,
+    event: &AuditEvent,
+) -> Result<(super::transitions::AuditEventAck, bool)> {
+    let (event, inserted) = append_audit_event_tx(tx, agent_id, event)?;
+    let material = crate::diagnostics::resource_io::ResourceReadMaterial::active_guard()?;
+    Ok((
+        super::transitions::AuditEventAck::with_original_material(event, material)?,
+        inserted,
+    ))
+}
+
+// Historical SQL replay fixtures; runtime writers use append_audit_event_tx.
+#[cfg(test)]
 pub(crate) fn import_audit_event_tx(
     tx: &Transaction<'_>,
     agent_id: Option<&str>,
     event: &AuditEvent,
 ) -> Result<()> {
-    let current_epoch = event_log_epoch_tx(tx)?;
+    let current_epoch = event_log_epoch_tx(
+        tx,
+        (!event.event_log_epoch.is_empty()).then_some(event.event_log_epoch.as_str()),
+    )?;
+    crate::diagnostics::resource_io::admit_cloned_value(event)?;
     let mut event = event.clone();
-    if event.event_log_epoch.is_empty() {
+    if let Cow::Owned(current_epoch) = current_epoch {
         event.event_log_epoch = current_epoch;
-    } else {
-        anyhow::ensure!(
-            event.event_log_epoch == current_epoch,
-            "audit event event-log epoch {} does not match runtime epoch {}",
-            event.event_log_epoch,
-            current_epoch
-        );
     }
     if event.event_seq == 0 {
         append_audit_event_tx(tx, agent_id, &event)?;
         return Ok(());
     }
-    if let Some((existing_agent_id, payload)) = tx
-        .query_row(
-            "SELECT agent_id, data_json FROM audit_events WHERE audit_event_id = ?1",
-            [&event.id],
-            |row| Ok((row.get::<_, Option<String>>(0)?, row.get::<_, String>(1)?)),
-        )
-        .optional()?
-    {
-        anyhow::ensure!(
-            existing_agent_id.as_deref() == agent_id,
-            "conflicting audit event agent identity for audit_event_id {}",
-            event.id
-        );
-        let existing: AuditEvent = serde_json::from_str(&payload)?;
+    if let Some(existing) = audit_event_by_id_tx(tx, agent_id, &event.id)? {
         anyhow::ensure!(
             existing.event_seq == event.event_seq,
             "conflicting audit event sequence for audit_event_id {}",
@@ -1186,16 +1468,14 @@ pub(crate) fn import_audit_event_tx(
     }
     let event_seq = i64::try_from(event.event_seq)
         .context("audit event sequence exceeds SQLite integer range")?;
-    if let Some(payload) = tx
-        .query_row(
-            "SELECT data_json FROM audit_events
-             WHERE agent_id IS ?1 AND event_seq = ?2",
-            params![agent_id, event_seq],
-            |row| row.get::<_, String>(0),
-        )
-        .optional()?
-    {
-        let existing: AuditEvent = serde_json::from_str(&payload)?;
+    let mut statement =
+        tx.prepare("SELECT data_json FROM audit_events WHERE agent_id IS ?1 AND event_seq = ?2")?;
+    let existing = statement
+        .query(params![agent_id, event_seq])?
+        .next()?
+        .map(|row| decode_audit_event_row(row, 0))
+        .transpose()?;
+    if let Some(existing) = existing {
         ensure_same_audit_event_identity_content(&existing, &event)?;
         return Ok(());
     }
@@ -1203,18 +1483,64 @@ pub(crate) fn import_audit_event_tx(
     observe_runtime_sequence_tx(
         tx,
         AUDIT_EVENT_SEQUENCE_DOMAIN,
-        &audit_event_sequence_scope(agent_id),
+        &audit_write_sequence_scope(agent_id)?,
         event.event_seq,
     )
 }
 
-fn event_log_epoch_tx(tx: &Transaction<'_>) -> Result<String> {
-    tx.query_row(
-        "SELECT value FROM runtime_metadata WHERE key = 'event_log_epoch'",
-        [],
-        |row| row.get(0),
-    )
-    .context("runtime event-log epoch is missing")
+fn audit_event_by_id_tx(
+    tx: &Transaction<'_>,
+    agent_id: Option<&str>,
+    event_id: &str,
+) -> Result<Option<AuditEvent>> {
+    let mut statement =
+        tx.prepare("SELECT agent_id, data_json FROM audit_events WHERE audit_event_id = ?1")?;
+    let existing = statement
+        .query([event_id])?
+        .next()?
+        .map(|row| {
+            let identity = row.get_ref(0)?;
+            let existing_agent_id = match identity {
+                rusqlite::types::ValueRef::Null => None,
+                value => Some(value.as_str()?),
+            };
+            anyhow::ensure!(
+                existing_agent_id == agent_id,
+                "conflicting audit event agent identity for audit_event_id {}",
+                event_id
+            );
+            decode_audit_event_row(row, 1)
+        })
+        .transpose();
+    existing
+}
+
+fn decode_audit_event_row(row: &rusqlite::Row<'_>, column: usize) -> Result<AuditEvent> {
+    let payload = row.get_ref(column)?.as_str()?;
+    crate::diagnostics::resource_io::admit_json_payload(payload)?;
+    serde_json::from_str(payload).map_err(Into::into)
+}
+
+fn event_log_epoch_tx<'a>(tx: &Transaction<'_>, expected: Option<&'a str>) -> Result<Cow<'a, str>> {
+    let mut statement =
+        tx.prepare("SELECT value FROM runtime_metadata WHERE key = 'event_log_epoch'")?;
+    let mut rows = statement.query([])?;
+    let row = rows.next()?.context("runtime event-log epoch is missing")?;
+    let current = row.get_ref(0)?.as_str()?;
+    if let Some(expected) = expected {
+        anyhow::ensure!(
+            expected == current,
+            "audit event event-log epoch {} does not match runtime epoch {}",
+            expected,
+            current
+        );
+        return Ok(Cow::Borrowed(expected));
+    }
+    crate::diagnostics::resource_io::charge_owned_metadata(
+        (current.len() + std::mem::size_of::<String>()) as u64,
+        1,
+    )?;
+    Ok(Cow::Owned(current.to_owned()))
 }
 
 fn ensure_same_audit_event_content(
@@ -1235,6 +1561,7 @@ fn ensure_same_audit_event_content(
     Ok(())
 }
 
+#[cfg(test)]
 fn ensure_same_audit_event_identity_content(
     existing: &AuditEvent,
     incoming: &AuditEvent,
@@ -1257,18 +1584,15 @@ fn insert_audit_event_with_sequence_tx(
 ) -> Result<()> {
     let event_seq = i64::try_from(event.event_seq)
         .context("audit event sequence exceeds SQLite integer range")?;
+    crate::diagnostics::resource_io::admit_serialized_value(&event.created_at)?;
+    let created_at = timestamp(event.created_at);
+    crate::diagnostics::resource_io::admit_serialized_value(event)?;
+    let data_json = serde_json::to_string(event)?;
     let inserted = tx.execute(
         "INSERT INTO audit_events (
             audit_event_id, event_seq, agent_id, kind, created_at, data_json
          ) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-        params![
-            event.id,
-            event_seq,
-            agent_id,
-            event.kind,
-            timestamp(event.created_at),
-            serde_json::to_string(event)?,
-        ],
+        params![event.id, event_seq, agent_id, event.kind, created_at, data_json,],
     )?;
     anyhow::ensure!(
         inserted == 1,
@@ -1278,34 +1602,6 @@ fn insert_audit_event_with_sequence_tx(
     );
     crate::runtime_db::observer_sync::record_appended_event_projection_effect(tx, event)?;
     Ok(())
-}
-
-pub(crate) fn normalize_legacy_message_value(
-    mut raw_message: serde_json::Value,
-) -> Result<Option<MessageEnvelope>> {
-    let Some(object) = raw_message.as_object_mut() else {
-        return Ok(None);
-    };
-    let has_turn_id = object
-        .get("turn_id")
-        .and_then(serde_json::Value::as_str)
-        .is_some_and(|value| !value.trim().is_empty());
-    if !has_turn_id {
-        let Some(turn_index) = object
-            .get("turn_index")
-            .or_else(|| object.get("message_seq"))
-            .and_then(serde_json::Value::as_u64)
-        else {
-            return Ok(None);
-        };
-        object.insert(
-            "turn_id".to_string(),
-            serde_json::Value::String(format!("legacy-turn-{turn_index}")),
-        );
-    }
-    serde_json::from_value(raw_message)
-        .map(Some)
-        .map_err(Into::into)
 }
 
 pub(crate) fn push_optional_clause(
@@ -1370,3 +1666,7 @@ fn enum_string<T: serde::Serialize>(value: &T) -> Result<String> {
 fn timestamp(value: chrono::DateTime<chrono::Utc>) -> String {
     value.to_rfc3339_opts(chrono::SecondsFormat::Millis, true)
 }
+
+#[cfg(test)]
+#[path = "standalone_evidence_tests.rs"]
+mod standalone_evidence_tests;

@@ -21,3 +21,4 @@ mod workspace;
 mod workspace_control;
 
 mod deletion_worktree;
+mod prestart_terminal;

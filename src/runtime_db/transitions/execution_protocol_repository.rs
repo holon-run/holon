@@ -1,14 +1,16 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use anyhow::{anyhow, bail, Context, Result};
 use chrono::Utc;
-use rusqlite::{params, OptionalExtension, Transaction};
+use rusqlite::{params, Connection, OptionalExtension, Transaction};
 use serde::de::DeserializeOwned;
 use sha2::{Digest, Sha256};
 
+#[cfg(test)]
+use crate::domain::execution_protocol::ExecutionAttempt;
 use crate::domain::execution_protocol::{
-    self, ExecutionAttempt, ExecutionOutcomeRecord, ExecutionProtocolCommand,
-    ExecutionProtocolState, ExecutionTransition, WorkItemExecutionState,
+    self, ExecutionOutcomeRecord, ExecutionProtocolCommand, ExecutionProtocolState,
+    ExecutionTransition, WorkItemExecutionState,
 };
 use crate::{
     runtime_db::transitions::{
@@ -17,19 +19,26 @@ use crate::{
     types::{AgentIdentityRecord, AgentRegistryStatus, AgentStatus},
 };
 
-pub(super) struct PreparedExecutionProtocolCommands {
+pub(crate) struct PreparedExecutionProtocolCommands {
     state: ExecutionProtocolState,
+    touched_keys: BTreeSet<crate::runtime::resident_input_evidence::InputEvidenceKey>,
     initialized_partition: bool,
     results: Vec<PreparedCommandResult>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub(crate) enum ExecutionProtocolRecoveryCommitOutcome {
     Applied(bool),
     Rejected { reason: String },
 }
 
 impl PreparedExecutionProtocolCommands {
+    pub(crate) fn input_keys(
+        &self,
+    ) -> Vec<crate::runtime::resident_input_evidence::InputEvidenceKey> {
+        self.touched_keys.iter().cloned().collect()
+    }
+
     pub(super) fn has_writes(&self) -> bool {
         self.initialized_partition || !self.results.is_empty()
     }
@@ -42,7 +51,7 @@ struct PreparedCommandResult {
     references: Vec<String>,
 }
 
-pub(super) fn validate_execution_commands_tx(
+pub(crate) fn validate_execution_commands_tx(
     tx: &Transaction<'_>,
     agent_id: &str,
     bootstrap: Option<&ExecutionProtocolState>,
@@ -69,6 +78,7 @@ pub(super) fn validate_execution_commands_tx(
         load_state_tx(tx, agent_id)?
     };
     let mut results = Vec::new();
+    let mut touched_keys = BTreeSet::new();
 
     for command in commands {
         let (command_kind, command_identity) = command_identity(command);
@@ -154,6 +164,24 @@ pub(super) fn validate_execution_commands_tx(
         }
         let transition = reduce(&state, command)
             .map_err(|error| anyhow!("execution protocol command rejected: {error}"))?;
+        use crate::runtime::resident_input_evidence::{
+            InputEvidenceFamily as Family, InputEvidenceKey as Key,
+        };
+        for (id, record) in &transition.state.attempts {
+            if state.attempts.get(id) != Some(record) {
+                touched_keys.insert(Key::new(Family::Attempt, id));
+            }
+        }
+        for (id, record) in &transition.state.outcomes {
+            if state.outcomes.get(id) != Some(record) {
+                touched_keys.insert(Key::new(Family::Outcome, id));
+            }
+        }
+        for (id, record) in &transition.state.work_items {
+            if state.work_items.get(id) != Some(record) {
+                touched_keys.insert(Key::new(Family::WorkExecution, id));
+            }
+        }
         state = transition.state;
         results.push(PreparedCommandResult {
             command_kind,
@@ -193,6 +221,7 @@ pub(super) fn validate_execution_commands_tx(
 
     Ok(Some(PreparedExecutionProtocolCommands {
         state,
+        touched_keys,
         initialized_partition,
         results,
     }))
@@ -459,14 +488,20 @@ pub(super) fn synchronize_work_item_revisions_opt(
     Ok(synchronized)
 }
 
-pub(super) fn persist_execution_commands_tx(
+pub(crate) fn persist_execution_commands_tx(
     tx: &Transaction<'_>,
     prepared: Option<PreparedExecutionProtocolCommands>,
 ) -> Result<()> {
     let Some(prepared) = prepared else {
         return Ok(());
     };
-    persist_state_tx(tx, &prepared.state)?;
+    if prepared.initialized_partition {
+        persist_state_tx(tx, &prepared.state)?;
+    } else {
+        // These keys come from the actual before/reducer-state diff above,
+        // rather than from command arguments. Unchanged legacy bytes stay put.
+        persist_state_inner_tx(tx, &prepared.state, None, Some(&prepared.touched_keys))?;
+    }
     for result in prepared.results {
         tx.execute(
             "INSERT INTO execution_protocol_command_results (
@@ -484,6 +519,114 @@ pub(super) fn persist_execution_commands_tx(
         )?;
     }
     Ok(())
+}
+
+/// Returns the canonical aggregate from the same transaction after persistence.
+/// The prepared reducer state is an input, not proof of the rows SQL retained.
+pub(super) fn persist_execution_commands_with_facts_tx(
+    tx: &Transaction<'_>,
+    prepared: Option<PreparedExecutionProtocolCommands>,
+) -> Result<Option<ExecutionProtocolState>> {
+    let agent_id = prepared
+        .as_ref()
+        .map(|prepared| prepared.state.agent_id.clone());
+    persist_execution_commands_tx(tx, prepared)?;
+    agent_id
+        .map(|agent_id| load_state_tx(tx, &agent_id))
+        .transpose()
+}
+
+pub(crate) fn persist_execution_commands_with_input_facts_tx(
+    tx: &Transaction<'_>,
+    prepared: Option<PreparedExecutionProtocolCommands>,
+    scope: Option<&crate::runtime::resident_input_evidence::InputEvidenceScope>,
+) -> Result<(
+    Option<ExecutionProtocolState>,
+    crate::runtime::resident_input_evidence::CommittedInputEvidenceDelta,
+)> {
+    persist_execution_commands_with_cleanup_input_facts_tx(tx, prepared, scope, None)
+}
+
+pub(super) fn persist_execution_commands_with_cleanup_input_facts_tx(
+    tx: &Transaction<'_>,
+    prepared: Option<PreparedExecutionProtocolCommands>,
+    scope: Option<&crate::runtime::resident_input_evidence::InputEvidenceScope>,
+    cleanup: Option<&crate::runtime_db::input_evidence_snapshot::ExistingAdmissionInputProof>,
+) -> Result<(
+    Option<ExecutionProtocolState>,
+    crate::runtime::resident_input_evidence::CommittedInputEvidenceDelta,
+)> {
+    let (state, facts) = persist_execution_commands_with_touched_facts_tx(tx, prepared)?;
+    let Some(scope) = scope else {
+        return Ok((state, Default::default()));
+    };
+    if let Some(proof) = cleanup {
+        proof.validate_scope_tx(tx, scope)?;
+    } else if let Some(actual) = &state {
+        super::super::input_evidence_writes::validate_input_evidence_scope_tx(
+            tx,
+            scope,
+            &actual.agent_id,
+        )?;
+    }
+    let delta = if let Some(proof) = cleanup {
+        crate::runtime_db::input_evidence_snapshot::register_committed_cleanup_input_evidence_tx(
+            tx, scope, &facts, proof,
+        )?
+    } else {
+        crate::runtime_db::input_evidence_snapshot::register_committed_input_evidence_tx(
+            tx, scope, &facts,
+        )?
+    };
+    Ok((state, delta))
+}
+
+pub(crate) fn persist_execution_commands_with_touched_facts_tx(
+    tx: &Transaction<'_>,
+    prepared: Option<PreparedExecutionProtocolCommands>,
+) -> Result<(
+    Option<ExecutionProtocolState>,
+    Vec<crate::runtime_db::input_evidence_snapshot::CanonicalInputEvidence>,
+)> {
+    use crate::runtime::resident_input_evidence::InputEvidenceFamily as Family;
+    use crate::runtime_db::input_evidence_snapshot::CanonicalInputEvidence as Fact;
+    let touched = prepared
+        .as_ref()
+        .map(|prepared| prepared.touched_keys.clone())
+        .unwrap_or_default();
+    let state = persist_execution_commands_with_facts_tx(tx, prepared)?;
+    let Some(actual) = state.as_ref() else {
+        return Ok((state, Vec::new()));
+    };
+    let mut facts = Vec::new();
+    for key in touched {
+        facts.push(match key.family {
+            Family::Attempt => Fact::Attempt(
+                actual
+                    .attempts
+                    .get(&key.id)
+                    .context("committed touched attempt disappeared")?
+                    .clone(),
+            ),
+            Family::Outcome => Fact::Outcome(
+                actual
+                    .outcomes
+                    .get(&key.id)
+                    .context("committed touched outcome disappeared")?
+                    .clone(),
+            ),
+            Family::WorkExecution => Fact::WorkExecution {
+                work_item_id: key.id.clone(),
+                record: actual
+                    .work_items
+                    .get(&key.id)
+                    .context("committed touched work execution disappeared")?
+                    .clone(),
+            },
+            _ => bail!("non-protocol touched execution key"),
+        });
+    }
+    Ok((state, facts))
 }
 
 fn reduce(
@@ -1392,6 +1535,7 @@ fn validate_admission_authority_tx(
 
 impl RuntimeTransitionRepository<'_> {
     /// Read historical canonical evidence without loading the execution partition.
+    #[cfg(test)]
     pub(crate) fn execution_attempt_by_id(
         &self,
         agent_id: &str,
@@ -1418,13 +1562,8 @@ impl RuntimeTransitionRepository<'_> {
         &self,
         agent_id: &str,
     ) -> Result<ExecutionAuthorityFences> {
-        self.db.with_read(|connection| {
-            let transaction =
-                Transaction::new_unchecked(connection, rusqlite::TransactionBehavior::Deferred)?;
-            let fences = authority_fences_tx(&transaction, agent_id)?;
-            transaction.commit()?;
-            Ok(fences)
-        })
+        self.db
+            .read_for_preparation(|tx| authority_fences_tx(tx, agent_id))
     }
 
     pub(crate) fn load_execution_protocol_state_if_initialized(
@@ -1444,14 +1583,64 @@ impl RuntimeTransitionRepository<'_> {
         })
     }
 
-    pub(crate) fn commit_execution_protocol_recovery_plan(
+    pub(crate) fn commit_execution_protocol_recovery_plan_with_maintenance(
         &self,
         agent_id: &str,
         commands: &[ExecutionProtocolCommand],
         audit_events: &[crate::types::AuditEvent],
+        maintenance: Option<&crate::runtime_db::OfflineInputMaintenance<'_>>,
     ) -> Result<ExecutionProtocolRecoveryCommitOutcome> {
+        Ok(self
+            .commit_execution_protocol_recovery_plan_inner(
+                agent_id,
+                None,
+                commands,
+                audit_events,
+                maintenance,
+            )?
+            .1)
+    }
+
+    fn commit_execution_protocol_recovery_plan_inner(
+        &self,
+        agent_id: &str,
+        scope: Option<&crate::runtime::resident_input_evidence::InputEvidenceScope>,
+        commands: &[ExecutionProtocolCommand],
+        audit_events: &[crate::types::AuditEvent],
+        maintenance: Option<&crate::runtime_db::OfflineInputMaintenance<'_>>,
+    ) -> Result<(
+        super::TransitionCommit,
+        ExecutionProtocolRecoveryCommitOutcome,
+    )> {
+        self.db.transaction(|tx| {
+            self.commit_execution_protocol_recovery_plan_tx(
+                tx,
+                agent_id,
+                scope,
+                commands,
+                audit_events,
+                maintenance,
+            )
+        })
+    }
+
+    pub(super) fn commit_execution_protocol_recovery_plan_tx(
+        &self,
+        tx: &Transaction<'_>,
+        agent_id: &str,
+        scope: Option<&crate::runtime::resident_input_evidence::InputEvidenceScope>,
+        commands: &[ExecutionProtocolCommand],
+        audit_events: &[crate::types::AuditEvent],
+        maintenance: Option<&crate::runtime_db::OfflineInputMaintenance<'_>>,
+    ) -> Result<(
+        super::TransitionCommit,
+        ExecutionProtocolRecoveryCommitOutcome,
+    )> {
         if commands.is_empty() {
-            return Ok(ExecutionProtocolRecoveryCommitOutcome::Applied(false));
+            return Ok((
+                Default::default(),
+                ExecutionProtocolRecoveryCommitOutcome::Applied(false),
+            ));
         }
         if commands.iter().any(|command| {
             !matches!(
@@ -1464,27 +1653,68 @@ impl RuntimeTransitionRepository<'_> {
         }) {
             bail!("execution protocol recovery plan contains a non-recovery command");
         }
-        self.db.transaction(|tx| {
-            let prepared =
-                match validate_execution_commands_tx(tx, agent_id, None, commands, &[], &[], &[]) {
-                    Ok(prepared) => prepared,
-                    Err(error) => {
-                        return Ok(ExecutionProtocolRecoveryCommitOutcome::Rejected {
+        if let Some(scope) = scope {
+            crate::runtime_db::input_evidence_writes::validate_input_evidence_scope_tx(
+                tx, scope, agent_id,
+            )?;
+        }
+        let prepared =
+            match validate_execution_commands_tx(tx, agent_id, None, commands, &[], &[], &[]) {
+                Ok(prepared) => prepared,
+                Err(error) => {
+                    return Ok((
+                        Default::default(),
+                        ExecutionProtocolRecoveryCommitOutcome::Rejected {
                             reason: error.to_string(),
-                        });
-                    }
-                };
-            let changed = prepared
-                .as_ref()
-                .is_some_and(PreparedExecutionProtocolCommands::has_writes);
-            persist_execution_commands_tx(tx, prepared)?;
-            if changed {
-                for event in audit_events {
-                    crate::runtime_db::evidence::append_audit_event_tx(tx, Some(agent_id), event)?;
+                        },
+                    ));
                 }
+            };
+        let input = if scope.is_none() {
+            let keys = prepared
+                .as_ref()
+                .map(|x| x.input_keys())
+                .unwrap_or_default();
+            Some(crate::runtime_db::input_evidence_snapshot::maintenance::prepare_offline_input_repair_tx(
+                tx, self.db, agent_id, &keys, commands, maintenance,
+            )?)
+        } else {
+            None
+        };
+        let changed = prepared
+            .as_ref()
+            .is_some_and(PreparedExecutionProtocolCommands::has_writes);
+        let (_, input_delta) = persist_execution_commands_with_input_facts_tx(tx, prepared, scope)?;
+        let mut events = Vec::new();
+        if changed {
+            super::AuditEventAck::admit_slots(audit_events.len())?;
+            events.reserve(audit_events.len());
+            for event in audit_events {
+                events.push(
+                    crate::runtime_db::evidence::append_audit_event_ack_tx(
+                        tx,
+                        Some(agent_id),
+                        event,
+                    )?
+                    .0,
+                );
             }
-            Ok(ExecutionProtocolRecoveryCommitOutcome::Applied(changed))
-        })
+        }
+        if let Some(input) = input {
+            input.finish_tx(tx)?;
+        }
+        Ok((
+            super::TransitionCommit {
+                applied: changed,
+                effects: Box::new(super::PostCommitEffects {
+                    audit_events: events,
+                    input_evidence_delta: input_delta,
+                    ..Default::default()
+                }),
+                ..Default::default()
+            },
+            ExecutionProtocolRecoveryCommitOutcome::Applied(changed),
+        ))
     }
 }
 
@@ -1508,8 +1738,43 @@ fn stored_command_hash_tx(
 }
 
 pub(crate) fn persist_state_tx(tx: &Transaction<'_>, state: &ExecutionProtocolState) -> Result<()> {
+    persist_state_inner_tx(tx, state, None, None)
+}
+
+/// A repair loaded this complete prior aggregate in the same transaction. Keep
+/// unchanged canonical bytes intact, including legal legacy/default encodings.
+pub(crate) fn persist_repaired_state_tx(
+    tx: &Transaction<'_>,
+    previous: &ExecutionProtocolState,
+    state: &ExecutionProtocolState,
+) -> Result<()> {
+    anyhow::ensure!(
+        previous.agent_id == state.agent_id
+            && previous
+                .attempts
+                .keys()
+                .all(|id| state.attempts.contains_key(id))
+            && previous
+                .work_items
+                .keys()
+                .all(|id| state.work_items.contains_key(id))
+            && previous
+                .outcomes
+                .keys()
+                .all(|id| state.outcomes.contains_key(id)),
+        "execution repair cannot remove or replace a partition"
+    );
+    persist_state_inner_tx(tx, state, Some(previous), None)
+}
+
+fn persist_state_inner_tx(
+    tx: &Transaction<'_>,
+    state: &ExecutionProtocolState,
+    previous: Option<&ExecutionProtocolState>,
+    touched: Option<&BTreeSet<crate::runtime::resident_input_evidence::InputEvidenceKey>>,
+) -> Result<()> {
     crate::runtime_db::reclamation::ensure_work_admission_tx(tx, &state.agent_id)?;
-    persist_state_rows_tx(tx, state)
+    persist_state_rows_tx(tx, state, previous, touched)
 }
 
 pub(super) fn validate_agent_deletion_retirement_tx(
@@ -1607,11 +1872,19 @@ pub(crate) fn retire_agent_execution_tx(tx: &Transaction<'_>, agent_id: &str) ->
     }
     // This path can only retire already persisted records after deletion
     // admission. Ordinary protocol writes still enforce the admission fence.
-    persist_state_rows_tx(tx, &state)?;
+    persist_state_rows_tx(tx, &state, None, None)?;
     Ok(true)
 }
 
-fn persist_state_rows_tx(tx: &Transaction<'_>, state: &ExecutionProtocolState) -> Result<()> {
+fn persist_state_rows_tx(
+    tx: &Transaction<'_>,
+    state: &ExecutionProtocolState,
+    previous: Option<&ExecutionProtocolState>,
+    touched: Option<&BTreeSet<crate::runtime::resident_input_evidence::InputEvidenceKey>>,
+) -> Result<()> {
+    use crate::runtime::resident_input_evidence::{
+        InputEvidenceFamily as Family, InputEvidenceKey as Key,
+    };
     execution_protocol::assert_invariants(state)
         .map_err(|error| anyhow!("invalid execution protocol state: {error}"))?;
     tx.execute(
@@ -1621,6 +1894,12 @@ fn persist_state_rows_tx(tx: &Transaction<'_>, state: &ExecutionProtocolState) -
         params![state.agent_id, Utc::now().to_rfc3339()],
     )?;
     for (work_item_id, work_record) in &state.work_items {
+        if touched
+            .is_some_and(|keys| !keys.contains(&Key::new(Family::WorkExecution, work_item_id)))
+            || previous.is_some_and(|prior| prior.work_items.get(work_item_id) == Some(work_record))
+        {
+            continue;
+        }
         tx.execute(
             "INSERT INTO execution_protocol_work_items (
                agent_id, work_item_id, source_revision, generation,
@@ -1642,6 +1921,13 @@ fn persist_state_rows_tx(tx: &Transaction<'_>, state: &ExecutionProtocolState) -
         )?;
     }
     for attempt in state.attempts.values() {
+        if touched
+            .is_some_and(|keys| !keys.contains(&Key::new(Family::Attempt, &attempt.attempt_id)))
+            || previous
+                .is_some_and(|prior| prior.attempts.get(&attempt.attempt_id) == Some(attempt))
+        {
+            continue;
+        }
         tx.execute(
             "INSERT INTO execution_protocol_attempts (
                agent_id, attempt_id, lifecycle_state,
@@ -1665,6 +1951,13 @@ fn persist_state_rows_tx(tx: &Transaction<'_>, state: &ExecutionProtocolState) -
         )?;
     }
     for outcome in state.outcomes.values() {
+        if touched
+            .is_some_and(|keys| !keys.contains(&Key::new(Family::Outcome, &outcome.outcome_id)))
+            || previous
+                .is_some_and(|prior| prior.outcomes.get(&outcome.outcome_id) == Some(outcome))
+        {
+            continue;
+        }
         let payload = serde_json::to_string(outcome)?;
         let existing = tx
             .query_row(
@@ -1713,30 +2006,10 @@ pub(crate) fn load_state_unchecked_tx(
     tx: &Transaction<'_>,
     agent_id: &str,
 ) -> Result<ExecutionProtocolState> {
-    Ok(ExecutionProtocolState {
-        agent_id: agent_id.to_owned(),
-        attempts: load_payload_map(
-            tx,
-            "SELECT attempt_id, payload_json
-             FROM execution_protocol_attempts WHERE agent_id = ?1",
-            agent_id,
-        )?,
-        work_items: load_payload_map(
-            tx,
-            "SELECT work_item_id, payload_json
-             FROM execution_protocol_work_items WHERE agent_id = ?1",
-            agent_id,
-        )?,
-        outcomes: load_payload_map(
-            tx,
-            "SELECT outcome_id, payload_json
-             FROM execution_protocol_outcomes WHERE agent_id = ?1",
-            agent_id,
-        )?,
-    })
+    load_state_unchecked_on(tx, agent_id)
 }
 
-pub(super) fn load_state_tx(
+pub(crate) fn load_state_tx(
     tx: &Transaction<'_>,
     agent_id: &str,
 ) -> Result<ExecutionProtocolState> {
@@ -1750,23 +2023,28 @@ pub(super) fn load_state_tx(
 }
 
 fn load_payload_map<T: DeserializeOwned>(
-    tx: &Transaction<'_>,
+    tx: &Connection,
     sql: &str,
     agent_id: &str,
 ) -> Result<BTreeMap<String, T>> {
     let mut statement = tx.prepare(sql)?;
-    let records = statement
-        .query_map([agent_id], |row| {
-            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
-        })?
-        .map(|row| {
-            let (id, payload) = row?;
-            let value = serde_json::from_str(&payload)
-                .with_context(|| format!("decoding execution protocol record {id}"))?;
-            Ok((id, value))
-        })
-        .collect();
-    records
+    let mut rows = statement.query([agent_id])?;
+    let mut records = BTreeMap::new();
+    while let Some(row) = rows.next()? {
+        let id = crate::runtime_db::repositories::borrowed_sql_text(row, 0)?;
+        let payload = crate::runtime_db::repositories::borrowed_sql_text(row, 1)?;
+        let metadata = id
+            .len()
+            .checked_add(std::mem::size_of::<(String, T)>())
+            .and_then(|bytes| bytes.checked_add(64))
+            .context("execution source map metadata overflow")?;
+        crate::diagnostics::resource_io::charge_owned_metadata(u64::try_from(metadata)?, 1)?;
+        crate::diagnostics::resource_io::admit_json_payload(payload)?;
+        let value = serde_json::from_str(payload)
+            .with_context(|| format!("decoding execution protocol record {id}"))?;
+        records.insert(id.to_owned(), value);
+    }
+    Ok(records)
 }
 
 fn enum_token<T: serde::Serialize>(value: &T) -> Result<String> {
@@ -1835,7 +2113,8 @@ mod tests {
     }
 
     fn setup_agent(db: &RuntimeDb, agent_id: &str) -> Result<()> {
-        db.agent_states().upsert(&AgentState::new(agent_id))?;
+        db.agent_states()
+            .upsert_for_fixture(&AgentState::new(agent_id))?;
         let mut identity = AgentIdentityRecord::new(
             agent_id,
             AgentKind::Named,
@@ -2435,7 +2714,8 @@ mod tests {
 
         // Simulate a concurrent persist_state() that increments control_revision
         // (e.g. wake_hint coalescing setting pending_wake_hint).
-        db.agent_states().upsert(&AgentState::new(agent_id))?;
+        db.agent_states()
+            .upsert_for_fixture(&AgentState::new(agent_id))?;
 
         // The current control_revision should now differ from the admitted one.
         let current = db.transitions().load_execution_authority_fences(agent_id)?;
@@ -2477,7 +2757,7 @@ mod tests {
         // Stop the agent.
         let mut stopped = AgentState::new(agent_id);
         stopped.status = crate::types::AgentStatus::Stopped;
-        db.agent_states().upsert(&stopped)?;
+        db.agent_states().upsert_for_fixture(&stopped)?;
 
         let connection = db.connection()?;
         let tx = Transaction::new_unchecked(&connection, rusqlite::TransactionBehavior::Deferred)?;
@@ -2505,4 +2785,49 @@ mod tests {
         );
         Ok(())
     }
+}
+
+fn load_state_unchecked_on(
+    connection: &Connection,
+    agent_id: &str,
+) -> Result<ExecutionProtocolState> {
+    Ok(ExecutionProtocolState {
+        agent_id: agent_id.to_owned(),
+        attempts: load_payload_map(
+            connection,
+            "SELECT attempt_id, payload_json
+             FROM execution_protocol_attempts WHERE agent_id = ?1",
+            agent_id,
+        )?,
+        work_items: load_payload_map(
+            connection,
+            "SELECT work_item_id, payload_json
+             FROM execution_protocol_work_items WHERE agent_id = ?1",
+            agent_id,
+        )?,
+        outcomes: load_payload_map(
+            connection,
+            "SELECT outcome_id, payload_json
+             FROM execution_protocol_outcomes WHERE agent_id = ?1",
+            agent_id,
+        )?,
+    })
+}
+
+pub(crate) fn context_execution_protocol_on(
+    connection: &Connection,
+    agent_id: &str,
+) -> Result<Option<ExecutionProtocolState>> {
+    let initialized: bool = connection.query_row(
+        "SELECT EXISTS(SELECT 1 FROM execution_protocol_partitions WHERE agent_id = ?1)",
+        [agent_id],
+        |row| row.get(0),
+    )?;
+    if !initialized {
+        return Ok(None);
+    }
+    let state = load_state_unchecked_on(connection, agent_id)?;
+    execution_protocol::assert_invariants(&state)
+        .map_err(|error| anyhow!("stored execution protocol state is invalid: {error}"))?;
+    Ok(Some(state))
 }

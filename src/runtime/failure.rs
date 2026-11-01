@@ -362,11 +362,12 @@ impl RuntimeHandle {
         self.persist_brief(&artifacts.brief).await?;
         terminal.no_brief_reason = None;
         self.persist_turn_record(&terminal).await?;
-        self.persist_transcript_evidence(&artifacts.transcript)?;
+        self.persist_transcript_evidence(&artifacts.transcript)
+            .await?;
         {
-            let mut guard = self.inner.agent.lock().await;
+            let mut guard = self.begin_mutation().await?;
             guard.state.last_runtime_failure = Some(artifacts.failure_summary);
-            guard.persist_state(&self.inner.storage)?;
+            guard.persist_state(&self.inner.storage).await?;
         }
         Ok(())
     }

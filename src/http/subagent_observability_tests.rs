@@ -316,8 +316,15 @@ async fn task_targets_are_pinned_and_shared_by_state_list_and_detail() {
     // A projection-only record keeps the assertion independent of child completion.
     record.id = "pinned-projection".into();
     record.status = TaskStatus::Running;
+    record.detail.as_mut().unwrap()["rejoin_obligation_id"] = json!(record.id);
     let task_id = &record.id;
-    parent.storage().append_task(&record).unwrap();
+    crate::runtime::tests::support::persist_task_transition(
+        &parent,
+        &record,
+        "http_pinned_task_fixture",
+    )
+    .await
+    .unwrap();
     // Simulate a later identity with the same id; historical tasks must not re-resolve it.
     identity.incarnation += 1;
     identity.revision += 1;
@@ -325,6 +332,8 @@ async fn task_targets_are_pinned_and_shared_by_state_list_and_detail() {
         .agent_identities()
         .upsert(&identity)
         .unwrap();
+    // Publish the replacement to the host registry as well as SQL.
+    host.append_agent_identity(&identity).unwrap();
     let app = router(AppState::for_tcp(host.clone()));
     let list = json_body(
         app.clone()
@@ -341,13 +350,14 @@ async fn task_targets_are_pinned_and_shared_by_state_list_and_detail() {
             .unwrap()["target"],
         expected
     );
-    let detail = json_body(
-        app.clone()
-            .oneshot(get(&format!("/api/agents/{parent_id}/tasks/{task_id}")))
-            .await
-            .unwrap(),
-    )
-    .await;
+    let response = app
+        .clone()
+        .oneshot(get(&format!("/api/agents/{parent_id}/tasks/{task_id}")))
+        .await
+        .unwrap();
+    let status = response.status();
+    let detail = json_body(response).await;
+    assert_eq!(status, StatusCode::OK, "TaskStatus response: {detail}");
     assert_eq!(detail["target"], expected);
     // Read the persisted projection without a live runtime cache or activation.
     host.unload_runtime(&parent_id).await;
@@ -412,7 +422,13 @@ async fn terminal_task_list_is_scoped_recent_and_bounded() {
             detail: None,
             recovery: None,
         };
-        parent.storage().append_task(&task).unwrap();
+        crate::runtime::tests::support::persist_task_transition(
+            &parent,
+            &task,
+            "http_terminal_task_fixture",
+        )
+        .await
+        .unwrap();
         host.runtime_db()
             .tasks()
             .upsert(&TaskRecord {

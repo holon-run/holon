@@ -77,6 +77,7 @@ fn tool(id: impl Into<String>, name: &str, input: serde_json::Value) -> ModelBlo
 #[async_trait]
 impl AgentProvider for LiveProvider {
     async fn complete_turn(&self, request: ProviderTurnRequest) -> Result<ProviderTurnResponse> {
+        let material = request.material.clone();
         let round = {
             let mut requests = self.requests.lock().await;
             requests.push(request);
@@ -278,6 +279,7 @@ impl AgentProvider for LiveProvider {
             runtime.inject_next_transition_fault(fault);
         }
         Ok(ProviderTurnResponse {
+            material,
             blocks,
             stop_reason: None,
             input_tokens: 10,
@@ -339,6 +341,7 @@ async fn fixture() -> (TempDir, TempDir, RuntimeHandle, Arc<LiveProvider>) {
         live_context_config(),
     )
     .unwrap();
+    isolate_test_user_home(&runtime);
     *provider.runtime.lock().await = Some(runtime.clone());
     (data, workspace, runtime, provider)
 }
@@ -405,6 +408,12 @@ async fn message(
     let mut prepared = prepare_message("default", sender, key, body);
     prepared.message.work_item_id = owner.map(str::to_owned);
     prepared.message.created_at = runtime.now();
+    if !valid_sender {
+        // This input never had an accepted sender route. Publish it once,
+        // rather than corrupting the evidence of an accepted delivery.
+        prepared.message.routing_context = None;
+        return runtime.enqueue(prepared.message).await.unwrap();
+    }
     let id = runtime
         .agent_message_delivery_service()
         .deliver(&prepared)
@@ -412,25 +421,7 @@ async fn message(
         .unwrap()
         .message_id
         .unwrap();
-    let mut delivered = runtime.storage().read_message_by_id(&id).unwrap().unwrap();
-    if !valid_sender {
-        // Keep the accepted delivery but invalidate its source/sender binding.
-        let mut guard = runtime.inner.agent.lock().await;
-        guard
-            .queue
-            .pop_next_matching(|candidate| candidate.id == id)
-            .unwrap();
-        delivered.routing_context = None;
-        runtime
-            .inner
-            .runtime_db
-            .transaction(|tx| {
-                crate::runtime_db::evidence::insert_message_evidence_tx(tx, &delivered)
-            })
-            .unwrap();
-        guard.queue.push(delivered.clone());
-    }
-    delivered
+    runtime.storage().read_message_by_id(&id).unwrap().unwrap()
 }
 
 async fn task_result(
@@ -576,7 +567,7 @@ async fn claim(runtime: &RuntimeHandle) -> scheduler_executor::ScheduledMessage 
         Box::pin(process(runtime, scheduled)).await;
     }
     panic!(
-        "expected canonical model reentry; queue: {:?}; execution: {:?}",
+        "expected canonical model reentry; queue: {:?}; execution: {:?}; rejection events: {:?}",
         runtime
             .inner
             .runtime_db
@@ -589,6 +580,16 @@ async fn claim(runtime: &RuntimeHandle) -> scheduler_executor::ScheduledMessage 
             .transitions()
             .load_execution_protocol_state_if_initialized("default")
             .unwrap(),
+        runtime
+            .storage()
+            .read_recent_events(200)
+            .unwrap()
+            .into_iter()
+            .filter(|event| matches!(
+                event.kind.as_str(),
+                "scheduler_authority_input_rejected" | "brief_created" | "runtime_error"
+            ))
+            .collect::<Vec<_>>(),
     );
 }
 
@@ -885,6 +886,7 @@ async fn restart_live_runtime(
         live_context_config(),
     )
     .unwrap();
+    isolate_test_user_home(&runtime);
     *provider.runtime.lock().await = Some(runtime.clone());
     assert_eq!(
         Box::pin(runtime.recover_scheduler_bootstrap_claims())
@@ -919,6 +921,216 @@ async fn p2_batchless_ancestor_survives_live_attachment_and_another_restart() {
 async fn p2_batchless_ancestor_requires_exact_replay_source() {
     for defect in ["source_turn", "source_message"] {
         assert_batchless_ancestor_restart(Some(defect)).await;
+    }
+}
+
+// Fixture-only rewrite of an already registered Turn. The canonical input
+// evidence must be acknowledged in the same transaction that writes the body,
+// otherwise later preparation correctly rejects the unregistered change.
+async fn store_qualified_turn(runtime: &RuntimeHandle, turn: &TurnRecord) {
+    let mut mutation = runtime.begin_mutation().await.unwrap();
+    mutation
+        .commit_input_evidence(crate::ids::audit_event_id(), |scope| {
+            runtime
+                .inner
+                .runtime_db
+                .turn_records()
+                .upsert_in_scope(scope, turn)
+        })
+        .await
+        .unwrap();
+}
+
+// Import malformed persisted replay evidence for this negative fixture only.
+// Normal Turn writes still reject the immutable identity change; the fixture
+// publishes the exact corrupted body and its qualification in one transaction.
+async fn store_qualified_replay_defect(runtime: &RuntimeHandle, turn: &TurnRecord) {
+    use crate::runtime::resident_input_evidence::{InputEvidenceFamily, InputEvidenceKey};
+    use crate::runtime_db::input_evidence_snapshot::{
+        validate_existing_input_evidence_tx, CanonicalInputEvidence,
+    };
+    use crate::runtime_db::input_evidence_writes::{
+        acknowledge_input_evidence_tx, validate_input_evidence_scope_tx,
+    };
+    use crate::runtime_db::repositories::{
+        committed_turn_record_tx, validate_turn_record_identity,
+    };
+
+    let mut mutation = runtime.begin_mutation().await.unwrap();
+    mutation
+        .commit_input_evidence(crate::ids::audit_event_id(), |scope| {
+            runtime.inner.runtime_db.transaction(|tx| {
+                validate_input_evidence_scope_tx(tx, scope, &turn.agent_id)?;
+                validate_existing_input_evidence_tx(
+                    tx,
+                    scope,
+                    &InputEvidenceKey::new(InputEvidenceFamily::Turn, &turn.turn_id),
+                )?;
+                let original = committed_turn_record_tx(tx, &turn.agent_id, &turn.turn_id)?;
+                let mut restored = turn.clone();
+                restored.replay = original.record.replay.clone();
+                anyhow::ensure!(
+                    restored == original.record
+                        && validate_turn_record_identity(&original.record, turn).is_err(),
+                    "negative fixture must change only immutable replay provenance"
+                );
+                anyhow::ensure!(
+                    tx.execute(
+                        "UPDATE turn_records
+                         SET replay_source_turn_id = ?1, payload_json = ?2
+                         WHERE agent_id = ?3 AND turn_id = ?4",
+                        rusqlite::params![
+                            turn.replay
+                                .as_ref()
+                                .map(|replay| replay.source_turn_id.as_str()),
+                            serde_json::to_string(turn)?,
+                            turn.agent_id,
+                            turn.turn_id,
+                        ],
+                    )? == 1,
+                    "negative fixture Turn disappeared"
+                );
+                let actual = committed_turn_record_tx(tx, &turn.agent_id, &turn.turn_id)?;
+                let facts = [CanonicalInputEvidence::Turn(actual.record.clone())];
+                acknowledge_input_evidence_tx(tx, scope, actual, &facts)
+            })
+        })
+        .await
+        .unwrap();
+}
+
+fn assert_batchless_recovery_claim(
+    runtime: &RuntimeHandle,
+    anchor: &MessageEnvelope,
+    predecessor: &TurnRecord,
+) {
+    use crate::domain::execution_protocol::ExecutionAttemptState;
+
+    let execution = runtime
+        .inner
+        .runtime_db
+        .transitions()
+        .load_execution_protocol_state_if_initialized(&anchor.agent_id)
+        .unwrap()
+        .unwrap();
+    let prior_id = &predecessor
+        .live_input_batches
+        .first()
+        .expect("batchless predecessor live attachment")
+        .activation_id;
+    let prior = execution
+        .attempts
+        .get(prior_id)
+        .expect("batchless recovery predecessor attempt");
+    let actual_turn = runtime
+        .inner
+        .runtime_db
+        .transaction(|tx| {
+            crate::runtime_db::task_result_settlement::canonical_live_turn_id_tx(tx, prior)
+        })
+        .unwrap();
+    assert_eq!(actual_turn.as_deref(), Some(predecessor.turn_id.as_str()));
+    assert_eq!(prior.state, ExecutionAttemptState::Interrupted);
+    let open: Vec<_> = execution
+        .attempts
+        .values()
+        .filter(|attempt| {
+            attempt.state == ExecutionAttemptState::Open
+                && attempt.source_message_id.as_deref() == Some(anchor.id.as_str())
+        })
+        .collect();
+    assert_eq!(open.len(), 1, "batchless recovery needs one open attempt");
+    assert_eq!(
+        open[0].recovery_of_attempt_id.as_deref(),
+        Some(prior.attempt_id.as_str()),
+        "batchless recovery must claim the immediate predecessor",
+    );
+}
+
+async fn assert_batchless_replay_source(
+    runtime: &RuntimeHandle,
+    anchor: &MessageEnvelope,
+    predecessor: &TurnRecord,
+    provenance: Option<&ExecutionAdmissionProvenance>,
+) {
+    use crate::domain::execution_protocol::{ExecutionAttemptState, ExecutionBinding};
+    use crate::runtime::resident_input_evidence::{
+        InputEvidenceFamily as Family, InputEvidenceKey as Key,
+    };
+    let Some(ExecutionAdmissionProvenance::Canonical { activation_id, .. }) = provenance else {
+        panic!("batchless recovery must have canonical admission");
+    };
+    let mut mutation = runtime.begin_mutation().await.unwrap();
+    mutation
+        .prepare_owner_inputs(
+            std::collections::BTreeSet::from([
+                Key::new(Family::Message, &anchor.id),
+                Key::new(Family::Attempt, activation_id),
+                Key::new(
+                    Family::Turn,
+                    anchor
+                        .source_refs
+                        .get("replay_source_turn_id")
+                        .expect("batchless predecessor hint"),
+                ),
+            ]),
+            Default::default(),
+        )
+        .await
+        .unwrap();
+    let inputs = mutation.capture_input_evidence().unwrap();
+    let protocol = inputs.execution_state_if_initialized().unwrap().unwrap();
+    assert!(predecessor.idle_input_batch.is_none());
+    assert!(!predecessor.live_input_batches.is_empty());
+    let selected = RuntimeHandle::canonical_idle_batch_replay_source(
+        &inputs,
+        Some(&protocol),
+        anchor,
+        provenance,
+    )
+    .unwrap()
+    .unwrap();
+    assert_eq!(selected.0, predecessor.turn_id);
+    let prior_id = protocol.attempts[activation_id]
+        .recovery_of_attempt_id
+        .as_ref()
+        .unwrap();
+    for fault in 0..7 {
+        let mut changed = protocol.clone();
+        let prior = changed.attempts.get_mut(prior_id).unwrap();
+        match fault {
+            0 => prior.state = ExecutionAttemptState::Open,
+            1 => prior.source_message_id = Some("unrelated-source".into()),
+            2 => prior.agent_id = "another-agent".into(),
+            3 => {
+                prior.binding = ExecutionBinding::AgentLifecycle {
+                    agent_id: "another-owner".into(),
+                }
+            }
+            4 => prior.attempt_id = "unrelated-activation".into(),
+            5 => {
+                prior.binding = ExecutionBinding::WorkItem {
+                    work_item_id: "unrelated-owner".into(),
+                };
+                changed.attempts.get_mut(activation_id).unwrap().binding = prior.binding.clone();
+            }
+            6 => {
+                changed.attempts.get_mut(activation_id).unwrap().state =
+                    ExecutionAttemptState::Interrupted
+            }
+            _ => unreachable!(),
+        }
+        assert!(
+            RuntimeHandle::canonical_idle_batch_replay_source(
+                &inputs,
+                Some(&changed),
+                anchor,
+                provenance,
+            )
+            .unwrap()
+            .is_none(),
+            "live-only replay accepted fault {fault}"
+        );
     }
 }
 
@@ -960,11 +1172,42 @@ async fn assert_batchless_ancestor_restart(defect: Option<&str>) {
     for index in 0..3 {
         if index > 0 {
             runtime = restart_live_runtime(&data, &workspace, runtime, &provider).await;
+            if index == 1 {
+                let predecessor = predecessors.last_mut().unwrap();
+                *predecessor = runtime
+                    .storage()
+                    .read_turn_by_id(&predecessor.turn_id)
+                    .unwrap()
+                    .unwrap();
+                assert_eq!(
+                    predecessor.terminal.as_ref().unwrap().kind,
+                    TurnTerminalKind::Interrupted,
+                );
+                // Let bootstrap end the original dispatch before modeling a
+                // pre-batch P1 turn; an administrative terminal is not proof.
+                predecessor.idle_input_batch = None;
+                store_qualified_turn(&runtime, predecessor).await;
+            }
         }
         let scheduled = Box::pin(claim(&runtime)).await;
         assert_eq!(scheduled.message.id, anchor.id);
         if index == 2 {
             let predecessor = predecessors.last().unwrap();
+            assert_batchless_recovery_claim(&runtime, &anchor, predecessor);
+            assert_eq!(
+                scheduled.message.source_refs.get("replay_source_turn_id"),
+                Some(&predecessor.turn_id),
+            );
+            Box::pin(assert_batchless_replay_source(
+                &runtime,
+                &scheduled.message,
+                predecessor,
+                scheduled
+                    .dispatch_plan
+                    .execution_admission_provenance
+                    .as_ref(),
+            ))
+            .await;
             let result_id = &provider.sources.lock().await[0];
             original_settlement = runtime
                 .inner
@@ -981,26 +1224,13 @@ async fn assert_batchless_ancestor_restart(defect: Option<&str>) {
                 let replay = invalid.replay.as_mut().unwrap();
                 match defect {
                     "source_turn" => replay.source_turn_id = "unrelated-turn".into(),
-                    "source_message" => replay.source_message_id = "unrelated-message".into(),
+                    "source_message" => {
+                        assert_ne!(result_id, &anchor.id);
+                        replay.source_message_id = result_id.clone();
+                    }
                     _ => unreachable!(),
                 }
-                runtime
-                    .inner
-                    .runtime_db
-                    .transaction(|tx| {
-                        assert_eq!(
-                            tx.execute(
-                                "UPDATE turn_records SET payload_json = ?2 WHERE turn_id = ?1",
-                                rusqlite::params![
-                                    invalid.turn_id,
-                                    serde_json::to_string(&invalid)?
-                                ],
-                            )?,
-                            1
-                        );
-                        Ok(())
-                    })
-                    .unwrap();
+                store_qualified_replay_defect(&runtime, &invalid).await;
             }
         }
         let source = scheduled.message.clone();
@@ -1035,6 +1265,14 @@ async fn assert_batchless_ancestor_restart(defect: Option<&str>) {
                 original_settlement,
             );
             assert!(latest_turn(&runtime).live_input_batches.is_empty());
+            assert_eq!(
+                latest_turn(&runtime)
+                    .replay
+                    .as_ref()
+                    .unwrap()
+                    .source_turn_id,
+                predecessors.last().unwrap().turn_id,
+            );
             assert_eq!(provider.requests.lock().await.len(), 4);
             return;
         } else {
@@ -1042,19 +1280,9 @@ async fn assert_batchless_ancestor_restart(defect: Option<&str>) {
             Box::pin(settle(&runtime, source, &terminal)).await;
         }
         drop(processing);
-        let mut turn = latest_turn(&runtime);
+        let turn = latest_turn(&runtime);
         assert_eq!(turn.live_input_batches.len(), usize::from(index > 0));
-        if index == 0 {
-            // Simulate a persisted pre-batch P1 turn, without changing its
-            // source, owner, attempt, queue claim, or transcript evidence.
-            turn.idle_input_batch = None;
-            runtime
-                .inner
-                .runtime_db
-                .turn_records()
-                .upsert(&turn)
-                .unwrap();
-        } else {
+        if index > 0 {
             assert!(turn.idle_input_batch.is_none());
             assert_eq!(turn.effective_owner(), predecessors[0].effective_owner());
             assert_eq!(
@@ -1075,7 +1303,10 @@ async fn assert_batchless_ancestor_restart(defect: Option<&str>) {
         .unwrap();
     let original = original_settlement.unwrap();
     assert_eq!(settled.result_identity, original.result_identity);
-    assert_eq!(settled.parent_turn_id, predecessors[1].turn_id);
+    assert_eq!(
+        settled.source.parent_turn_id().unwrap(),
+        predecessors[1].turn_id
+    );
     assert_eq!(settled.work_item_id, original.work_item_id);
     assert_eq!(settled.state, TaskResultSettlementState::Settled);
     assert_eq!(
@@ -1116,10 +1347,29 @@ async fn p2_mixed_operator_recovery_requires_admission_evidence() {
         "wrong_authority",
     ] {
         Box::pin(assert_mixed_operator_live_restart(Some(defect), false)).await;
+        if defect != "queued" {
+            Box::pin(assert_mixed_operator_live_restart_with_evidence(
+                Some(defect),
+                false,
+                true,
+            ))
+            .await;
+        }
     }
 }
 
 async fn assert_mixed_operator_live_restart(defect: Option<&str>, repeated: bool) {
+    Box::pin(assert_mixed_operator_live_restart_with_evidence(
+        defect, repeated, false,
+    ))
+    .await;
+}
+
+async fn assert_mixed_operator_live_restart_with_evidence(
+    defect: Option<&str>,
+    repeated: bool,
+    qualified_tamper: bool,
+) {
     let (data, workspace, runtime, provider) = fixture().await;
     let producer = owner(&runtime, "p2 mixed original task owner").await;
     // Bound WorkItem claims retain their one-replay poison-message fence.
@@ -1227,31 +1477,193 @@ async fn assert_mixed_operator_live_restart(defect: Option<&str>, repeated: bool
         1
     );
     let runtime = restart_live_runtime(&data, &workspace, runtime, &provider).await;
-    let scheduled = Box::pin(claim(&runtime)).await;
-    assert_eq!(scheduled.message.id, anchor.id);
+    // Claim before corrupting Queue selection; keep the admitted recovery anchor.
+    let scheduled = if qualified_tamper || defect == Some("queued") {
+        Some(Box::pin(claim(&runtime)).await)
+    } else {
+        None
+    };
+    let transcript_id: String = runtime
+        .inner
+        .runtime_db
+        .connection()
+        .unwrap()
+        .query_row(
+            "SELECT evidence_id FROM transcript_entries
+             WHERE message_id = ?1 AND kind = 'incoming_message'",
+            [operator_id],
+            |row| row.get(0),
+        )
+        .unwrap();
+    let mut historical_home = None;
     if let Some(defect) = defect {
-        runtime.inner.runtime_db.transaction(|tx| {
+        let amend = |tx: &rusqlite::Transaction<'_>| -> Result<()> {
             match defect {
                 "missing_transcript" => {
-                    tx.execute("DELETE FROM transcript_entries WHERE message_id = ?1", [operator_id])?;
+                    tx.execute(
+                        "DELETE FROM transcript_entries WHERE message_id = ?1",
+                        [operator_id],
+                    )?;
                 }
                 "foreign_transcript" => {
-                    tx.execute("UPDATE transcript_entries SET turn_id = 'unrelated-turn' WHERE message_id = ?1", [operator_id])?;
+                    let payload: String = tx.query_row(
+                        "SELECT payload_json FROM transcript_entries WHERE evidence_id = ?1",
+                        [&transcript_id],
+                        |row| row.get(0),
+                    )?;
+                    let mut entry: crate::types::TranscriptEntry = serde_json::from_str(&payload)?;
+                    entry.data["turn_id"] = serde_json::json!("unrelated-turn");
+                    let payload = serde_json::to_string(&entry)?;
+                    // Historical evidence must be canonical before migration;
+                    // live tamper intentionally retains its old qualification.
+                    let hash = if qualified_tamper {
+                        tx.query_row(
+                            "SELECT content_hash FROM transcript_entries WHERE evidence_id = ?1",
+                            [&transcript_id],
+                            |row| row.get::<_, String>(0),
+                        )?
+                    } else {
+                        crate::runtime_db::evidence::content_hash(&payload)
+                    };
+                    assert_eq!(
+                        tx.execute(
+                            "UPDATE transcript_entries SET turn_id = ?1, payload_json = ?2,
+                                                           content_hash = ?4
+                             WHERE evidence_id = ?3",
+                            rusqlite::params!["unrelated-turn", payload, transcript_id, hash,],
+                        )?,
+                        1
+                    );
                 }
                 "queued" => {
-                    tx.execute("UPDATE queue_entries SET status = 'queued' WHERE message_id = ?1", [operator_id])?;
+                    let mut payload: String = tx.query_row(
+                        "SELECT payload_json FROM queue_entries WHERE message_id = ?1",
+                        [operator_id],
+                        |row| row.get(0),
+                    )?;
+                    if !qualified_tamper {
+                        let mut queue: QueueEntryRecord = serde_json::from_str(&payload)?;
+                        queue.status = QueueEntryStatus::Queued;
+                        payload = serde_json::to_string(&queue)?;
+                    }
+                    assert_eq!(
+                        tx.execute(
+                            "UPDATE queue_entries SET status = 'queued', payload_json = ?2
+                             WHERE message_id = ?1",
+                            rusqlite::params![operator_id, payload],
+                        )?,
+                        1
+                    );
                 }
                 "wrong_authority" => {
                     let mut invalid = operator.clone();
                     invalid.authority_class = AuthorityClass::ExternalEvidence;
-                    tx.execute("UPDATE messages SET payload_json = ?2 WHERE message_id = ?1",
-                        rusqlite::params![operator_id, serde_json::to_string(&invalid)?])?;
+                    let payload = serde_json::to_string(&invalid)?;
+                    let hash = if qualified_tamper {
+                        tx.query_row(
+                            "SELECT content_hash FROM messages WHERE message_id = ?1",
+                            [operator_id],
+                            |row| row.get::<_, String>(0),
+                        )?
+                    } else {
+                        crate::runtime_db::evidence::content_hash(&payload)
+                    };
+                    tx.execute(
+                        "UPDATE messages SET payload_json = ?2, content_hash = ?3
+                         WHERE message_id = ?1",
+                        rusqlite::params![operator_id, payload, hash],
+                    )?;
                 }
                 _ => unreachable!(),
             }
             Ok(())
-        }).unwrap();
+        };
+        if qualified_tamper {
+            // Deliberately bypass the qualified writer: this negative fixture
+            // tests the captured reader's rejection of unacknowledged drift.
+            let connection = runtime.inner.runtime_db.connection().unwrap();
+            let tx = connection.unchecked_transaction().unwrap();
+            amend(&tx).unwrap();
+            tx.commit().unwrap();
+        } else {
+            historical_home = Some(
+                super::input_consumption_p1::legacy_recovery_home(
+                    &runtime.inner.runtime_db,
+                    "default-state",
+                    "default-workspace",
+                    amend,
+                )
+                .unwrap(),
+            );
+        }
     }
+    let runtime = if let Some(home) = historical_home.as_ref() {
+        // Migrate an independent malformed history; never re-ACK live tamper.
+        let in_flight = if scheduled.is_some() {
+            Some(runtime.agent_state().await.unwrap())
+        } else {
+            None
+        };
+        *provider.runtime.lock().await = None;
+        drop(runtime);
+        let runtime = RuntimeHandle::new(
+            "default",
+            home.path().join("default-state"),
+            home.path().join("default-workspace"),
+            "http://127.0.0.1:7878".into(),
+            provider.clone(),
+            "default".into(),
+            live_context_config(),
+        )
+        .unwrap();
+        isolate_test_user_home(&runtime);
+        *provider.runtime.lock().await = Some(runtime.clone());
+        if let Some(in_flight) = in_flight {
+            // Bootstrap clears posture, not this already-admitted claim.
+            let mut mutation = runtime.begin_mutation().await.unwrap();
+            assert_eq!(in_flight.status, AgentStatus::AwakeRunning);
+            assert!(in_flight.current_run_id.is_some());
+            assert_eq!(
+                mutation.state.current_execution_binding,
+                in_flight.current_execution_binding
+            );
+            assert_eq!(mutation.state.current_turn_id, in_flight.current_turn_id);
+            assert!(mutation.state.current_run_id.is_none());
+            mutation.state.status = in_flight.status;
+            mutation.state.current_run_id = in_flight.current_run_id;
+            mutation.persist_state(runtime.storage()).await.unwrap();
+        }
+        runtime
+    } else {
+        runtime
+    };
+    let scheduled = match scheduled {
+        Some(scheduled) => scheduled,
+        None => Box::pin(claim(&runtime)).await,
+    };
+    assert_eq!(scheduled.message.id, anchor.id);
+    let state = runtime.agent_state().await.unwrap();
+    assert_eq!(state.status, AgentStatus::AwakeRunning);
+    assert!(state.current_run_id.is_some());
+    let execution = runtime
+        .inner
+        .runtime_db
+        .transitions()
+        .load_execution_protocol_state_if_initialized("default")
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        execution
+            .attempts
+            .values()
+            .filter(|attempt| {
+                attempt.state == crate::domain::execution_protocol::ExecutionAttemptState::Open
+                    && attempt.source_message_id.as_deref() == Some(anchor.id.as_str())
+            })
+            .count(),
+        1,
+        "the final runtime must own the recovery claim"
+    );
     let recovered_source = scheduled.message.clone();
     let mut processing = Box::pin(runtime.process_message_with_plan_deferred(
         scheduled.message,
@@ -1260,10 +1672,34 @@ async fn assert_mixed_operator_live_restart(defect: Option<&str>, repeated: bool
     ));
     if defect.is_some() {
         let error = processing.await.unwrap_err();
-        assert!(
-            error.to_string().contains("live input recovery"),
-            "{error:#}"
-        );
+        if qualified_tamper {
+            use crate::runtime_db::input_evidence_snapshot::InputEvidenceSnapshotError;
+            let expected = match defect.unwrap() {
+                "missing_transcript" => InputEvidenceSnapshotError::NeedsPreparation(format!(
+                    "transcript:{transcript_id} unavailable without tombstone"
+                )),
+                "foreign_transcript" => {
+                    InputEvidenceSnapshotError::ProjectionChanged(transcript_id)
+                }
+                "wrong_authority" => {
+                    InputEvidenceSnapshotError::ProjectionChanged(operator_id.clone())
+                }
+                _ => unreachable!(),
+            };
+            assert_eq!(
+                error.downcast_ref::<InputEvidenceSnapshotError>(),
+                Some(&expected),
+                "{error:#}"
+            );
+        } else {
+            assert_eq!(
+                error.to_string(),
+                "live input recovery does not match canonical predecessor evidence",
+                "{defect:?}: {error:#}"
+            );
+            assert!(!error
+                .is::<crate::runtime_db::input_evidence_snapshot::InputEvidenceSnapshotError>());
+        }
         let unchanged = runtime
             .inner
             .runtime_db
@@ -1340,7 +1776,10 @@ async fn assert_mixed_operator_live_restart(defect: Option<&str>, repeated: bool
         .unwrap()
         .unwrap();
     assert_eq!(settled.work_item_id, original_settlement.work_item_id);
-    assert_eq!(settled.parent_turn_id, predecessor.turn_id);
+    assert_eq!(
+        settled.source.parent_turn_id().unwrap(),
+        predecessor.turn_id
+    );
     assert_eq!(settled.result_identity, original_settlement.result_identity);
     assert_eq!(settled.state, TaskResultSettlementState::Settled);
     assert_eq!(
@@ -1410,8 +1849,11 @@ async fn assert_restart_reuses_local_round_two(result_kind: Option<TaskKind>) {
     );
     let runtime = restart_live_runtime(&data, &workspace, runtime, &provider).await;
     let scheduled = Box::pin(claim(&runtime)).await;
+    let _provider_admission = runtime
+        .activate_provider_admission(scheduled.dispatch_plan.provider_admission.clone())
+        .unwrap();
     let mut processing = Box::pin(
-        runtime.process_interactive_message_deferred_with_cleanup(
+        runtime.process_interactive_dispatch_with_cleanup(
             &scheduled.message,
             scheduled.dispatch_plan.continuation_resolution.as_ref(),
             scheduled
@@ -1422,6 +1864,7 @@ async fn assert_restart_reuses_local_round_two(result_kind: Option<TaskKind>) {
                 max_tool_rounds: Some(2),
             },
             None,
+            Some(&scheduled.dispatch_plan.prior_closure),
         ),
     );
     let ready = workspace.path().join("p2-tool-ready");
@@ -1514,7 +1957,7 @@ async fn assert_restart_reuses_local_round_two(result_kind: Option<TaskKind>) {
             .unwrap()
             .unwrap();
         assert_eq!(settled.work_item_id.as_deref(), Some(receiver.as_str()));
-        assert_eq!(settled.parent_turn_id, current.turn_id);
+        assert_eq!(settled.source.parent_turn_id().unwrap(), current.turn_id);
         assert_eq!(settled.state, TaskResultSettlementState::Settled);
         assert_eq!(
             settled.disposition,
@@ -1611,6 +2054,7 @@ async fn p2_same_attempt_safe_point_rejects_runtime_and_database_readmission() {
             expected: Some(Box::new(state.clone())),
             record: Box::new(state),
         },
+        audit_event_id: crate::ids::audit_event_id(),
         fault: None,
     };
     assert!(
@@ -1745,7 +2189,27 @@ async fn p2_repeated_restart_preserves_cumulative_live_budgets() {
         let requests = provider.requests.lock().await;
         assert_eq!(requests.len(), 10);
         for body in source_bodies(&runtime, &admitted) {
-            assert_eq!(visible(&requests[9]).matches(&body).count(), 1);
+            assert_eq!(
+                visible(&requests[9]).matches(&body).count(),
+                1,
+                "live body must appear once; count={count}, body_bytes={body_bytes}, \
+                 source_prefix={:?}, context_occurrences={}, conversation_occurrences={}",
+                body.chars().take(64).collect::<String>(),
+                requests[9]
+                    .prompt_frame
+                    .context_blocks
+                    .iter()
+                    .map(|block| block.text.matches(&body).count())
+                    .sum::<usize>(),
+                requests[9]
+                    .conversation
+                    .iter()
+                    .filter_map(|message| match message {
+                        ConversationMessage::UserText(text) => Some(text.matches(&body).count()),
+                        _ => None,
+                    })
+                    .sum::<usize>(),
+            );
         }
     }
 }
@@ -1795,6 +2259,13 @@ async fn p2_interrupted_restart_recovers_nine_live_results_without_identity_migr
         true,
     )
     .await;
+    let mut initial_parent = TurnRecord::new("default", "p2-initial-parent", 0);
+    initial_parent.created_at = runtime.now();
+    initial_parent.current_work_item_id = Some(receiver.clone());
+    initial_parent.owner = Some(crate::types::TurnOwner::WorkItem {
+        work_item_id: receiver.clone(),
+    });
+    store_qualified_turn(&runtime, &initial_parent).await;
     let initial_result = Box::pin(task_result(
         &runtime,
         Some(&receiver),
@@ -1862,7 +2333,10 @@ async fn p2_interrupted_restart_recovers_nine_live_results_without_identity_migr
         initial_before.work_item_id.as_deref(),
         Some(receiver.as_str())
     );
-    assert_eq!(initial_before.parent_turn_id, "p2-initial-parent");
+    assert_eq!(
+        initial_before.source.parent_turn_id(),
+        Some("p2-initial-parent")
+    );
     assert_eq!(
         runtime
             .inner
@@ -1898,7 +2372,10 @@ async fn p2_interrupted_restart_recovers_nine_live_results_without_identity_migr
     for settlement in &before {
         assert_eq!(settlement.state, TaskResultSettlementState::CallerAdmitted);
         assert_eq!(settlement.work_item_id.as_deref(), Some(producer.as_str()));
-        assert_eq!(settlement.parent_turn_id, predecessor.turn_id);
+        assert_eq!(
+            settlement.source.parent_turn_id().unwrap(),
+            predecessor.turn_id
+        );
         assert_eq!(settlement.rejoin_generation, 1);
     }
     assert_eq!(
@@ -1918,6 +2395,7 @@ async fn p2_interrupted_restart_recovers_nine_live_results_without_identity_migr
         live_context_config(),
     )
     .unwrap();
+    isolate_test_user_home(&runtime);
     *provider.runtime.lock().await = Some(runtime.clone());
     assert_eq!(
         Box::pin(runtime.recover_scheduler_bootstrap_claims())
@@ -2072,7 +2550,7 @@ async fn p2_interrupted_restart_recovers_nine_live_results_without_identity_migr
     );
     assert_eq!(initial_after.task_id, initial_before.task_id);
     assert_eq!(initial_after.work_item_id, initial_before.work_item_id);
-    assert_eq!(initial_after.parent_turn_id, initial_before.parent_turn_id);
+    assert_eq!(initial_after.source, initial_before.source);
     assert_eq!(
         initial_after.rejoin_generation,
         initial_before.rejoin_generation
@@ -2094,7 +2572,7 @@ async fn p2_interrupted_restart_recovers_nine_live_results_without_identity_migr
         assert_eq!(settled.result_identity, original.result_identity);
         assert_eq!(settled.task_id, original.task_id);
         assert_eq!(settled.work_item_id, original.work_item_id);
-        assert_eq!(settled.parent_turn_id, original.parent_turn_id);
+        assert_eq!(settled.source, original.source);
         assert_eq!(settled.rejoin_generation, original.rejoin_generation);
         assert_eq!(settled.state, TaskResultSettlementState::Settled);
         assert_eq!(
@@ -2224,6 +2702,7 @@ fn assert_provider_result_handoff(
             },
         )
         .unwrap();
+        isolate_test_user_home(&runtime);
         *provider.runtime.lock().await = Some(runtime.clone());
         let receiver = owner(&runtime, "p2 fallback receiver").await;
         let mut first_inputs = vec![result(Some(&receiver), TaskKind::CommandTask, true, 9)];
@@ -2322,16 +2801,23 @@ fn assert_provider_result_handoff(
                 _ => panic!("fallback claim must carry its canonical activation"),
             };
             if check != ProviderHandoffCheck::RestartClaimOnly {
-                Box::pin(runtime.begin_interactive_turn_with_provenance(
-                    Some(&scheduled.message),
-                    None,
-                    None,
-                    scheduled.dispatch_plan.execution_admission_provenance,
-                ))
+                Box::pin(
+                    runtime.begin_dispatch_turn(
+                        &scheduled.message,
+                        None,
+                        None,
+                        scheduled
+                            .dispatch_plan
+                            .execution_admission_provenance
+                            .clone(),
+                        &scheduled.dispatch_plan.prior_closure,
+                    ),
+                )
                 .await
                 .unwrap();
                 runtime
                     .record_incoming_transcript_entry(&scheduled.message)
+                    .await
                     .unwrap();
             }
             if check == ProviderHandoffCheck::Atomic {
@@ -2504,6 +2990,7 @@ fn assert_provider_result_handoff(
                 live_context_config(),
             )
             .unwrap();
+            isolate_test_user_home(&reopened);
             *provider.runtime.lock().await = Some(reopened.clone());
             assert_eq!(
                 Box::pin(reopened.recover_scheduler_bootstrap_claims())
@@ -2653,6 +3140,7 @@ async fn p2_provider_fallback_restart_preserves_operator_without_live_batches() 
         },
     )
     .unwrap();
+    isolate_test_user_home(&runtime);
     *provider.runtime.lock().await = Some(runtime.clone());
     let receiver = owner(&runtime, "p2 batchless fallback operator").await;
     *provider.steps.lock().await = vec![
@@ -2720,6 +3208,7 @@ async fn p2_provider_fallback_restart_preserves_operator_without_live_batches() 
         },
     )
     .unwrap();
+    isolate_test_user_home(&reopened);
     *provider.runtime.lock().await = Some(reopened.clone());
     assert_eq!(
         Box::pin(reopened.recover_scheduler_bootstrap_claims())
@@ -2785,6 +3274,7 @@ async fn p2_compaction_keeps_multiple_live_batches_reachable_once() {
         },
     )
     .unwrap();
+    isolate_test_user_home(&runtime);
     *provider.runtime.lock().await = Some(runtime.clone());
     let receiver = owner(&runtime, "p2 compaction receiver").await;
     *provider.steps.lock().await = vec![
@@ -2894,7 +3384,7 @@ async fn p2_compaction_keeps_multiple_live_batches_reachable_once() {
             settlement.activation_id.as_deref(),
             Some(batches[0].activation_id.as_str())
         );
-        assert_eq!(settlement.parent_turn_id, turn.turn_id);
+        assert_eq!(settlement.source.parent_turn_id().unwrap(), turn.turn_id);
         assert_eq!(settlement.work_item_id.as_deref(), Some(receiver.as_str()));
         assert_eq!(settlement.state, TaskResultSettlementState::Settled);
         assert_eq!(
@@ -3178,6 +3668,19 @@ async fn attachment_fault_case(kind: TaskKind, reply: Reply, fault: TransitionFa
         .await
         .unwrap();
     assert_eq!(attached.len(), 1, "{fault:?}/{kind:?}");
+    {
+        let mutation = runtime.begin_mutation().await.unwrap();
+        assert_eq!(mutation.state.pending, mutation.queue.len());
+        for source in &sources {
+            assert!(
+                mutation
+                    .queue
+                    .peek_next_matching(|message| &message.id == source)
+                    .is_none(),
+                "attached source remains in the runtime queue: {source}"
+            );
+        }
+    }
     let committed = attachment_snapshot(&runtime, &sources).await;
     assert!(
         Box::pin(runtime.attach_live_inputs("default", 2, 24 * 1024, results_only))
@@ -3493,16 +3996,18 @@ async fn p2_round_limit_refuses_sources_without_an_available_next_request() {
     .await;
     let scheduled = Box::pin(claim(&runtime)).await;
     runtime
-        .begin_interactive_turn_with_provenance(
-            Some(&scheduled.message),
+        .begin_dispatch_turn(
+            &scheduled.message,
             None,
             None,
             scheduled.dispatch_plan.execution_admission_provenance,
+            &scheduled.dispatch_plan.prior_closure,
         )
         .await
         .unwrap();
     runtime
         .record_incoming_transcript_entry(&scheduled.message)
+        .await
         .unwrap();
     let outcome = Box::pin(runtime.run_agent_loop(
         "default",
