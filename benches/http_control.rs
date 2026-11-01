@@ -183,7 +183,11 @@ async fn build_fixture() -> Result<HttpFixture> {
         home.path().join("config.json"),
         r#"{"model":{"default":"openai/gpt-5.4"}}"#,
     )?;
-    let config = AppConfig::load_with_home(Some(home.path().to_path_buf()))?;
+    let mut config = AppConfig::load_with_home(Some(home.path().to_path_buf()))?;
+    // Measure the fixed control-plane fixture, not the operator's resource catalog.
+    config.user_home_dir = None;
+    config.workspace_dir = home.path().join("workspace");
+    std::fs::create_dir_all(&config.workspace_dir)?;
     let host = RuntimeHost::new_with_provider(config, Arc::new(StubProvider::new("done")))?;
 
     for index in 0..EXTRA_AGENTS {
@@ -397,12 +401,13 @@ async fn request_json(app: &Router, uri: &str) -> Result<Value> {
         .oneshot(Request::builder().uri(uri).body(Body::empty())?)
         .await
         .expect("axum router is infallible");
-    anyhow::ensure!(
-        response.status() == StatusCode::OK,
-        "{uri} returned {}",
-        response.status()
-    );
+    let status = response.status();
     let body = to_bytes(response.into_body(), usize::MAX).await?;
+    anyhow::ensure!(
+        status == StatusCode::OK,
+        "{uri} returned {status}: {}",
+        String::from_utf8_lossy(&body)
+    );
     serde_json::from_slice(&body).with_context(|| format!("parsing JSON response from {uri}"))
 }
 

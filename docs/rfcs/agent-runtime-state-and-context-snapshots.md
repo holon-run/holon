@@ -3115,13 +3115,24 @@ original queue. Waiting selection still follows the original items order,
 independently of duplicate payload IDs. Output Vec allocation, borrowed record
 copies, observation/error order, Scheduling holder and material-phase gaps
 remain unchanged; the responses no longer clone every nested display group first.
-Loaded scheduler planning and dispatch-memory final closure use the same borrowed
-derivation while retaining the original queue for advisories, the prepared read
-or memory derivation. They no longer clone every display group into a temporary
-owned queue before selecting scheduler fields. Original observations and error
-order, canonical authority, conservative Pins estimates and final holders remain
-unchanged. Retained Work clones, output Vec/map capacity and pre-allocation
-material admission remain separate unaccepted boundaries.
+Loaded scheduler planning ranks the complete qualified Work inventory by borrowing
+its bodies. It retains only the current, original five runnable candidates and
+first eligible waiting Work body, with the original items order and posture
+windows. Waiting selection reuses the active-Wait flag derived during ranking,
+without re-scanning the complete Wait/Work inventory for each candidate.
+Advisories still inspect the complete inventory; an exact canonical claim
+derives its qualified Work/Wait projection independently of candidate windows.
+The prepared read retains its selected bodies, trigger ownership and Pins guards.
+The scheduler projection consumes the selected bodies; the prepared read keeps no
+second selection copy, and retained-body accounting charges that one owner.
+Selection clones, rank/output slots and exact claim material use the same
+acquisition allowance; no display inventory is cloned to make a scheduler choice.
+Dispatch-memory final closure and cold adapters retain their existing full-queue
+ownership contracts. Loaded operator and lightweight State surfaces explicitly
+materialize their full queues from the same qualified capture and acquisition;
+the full result retains its own Pins guard, independently of the scheduler's
+limited selection. This does not grant raw SQL fallback or new scheduling,
+source, wait, incarnation or canonical activation authority.
 Host detail assembly likewise consumes its owned identity through the existing
 identity view constructor, after producing the outer name/display name and
 timestamps. Public/operator detail and rename retain their validation, SQL/error
@@ -3847,6 +3858,15 @@ through the same original acquisition. Cold list entries preserve their
 existing stopped/unknown placeholder behavior and read order; their material
 wrapper does not turn raw facts or placeholders into a qualified cold domain.
 
+Roster posture uses the same precedence rules without materializing unused
+scheduler products. After validating the original Root's Current binding and
+identity, stopped lifecycle, an active turn, or queued input already determines
+posture from that Root's State/Current. Those cases admit only their final
+posture and entry fields; they do not clone the whole WorkItem queue merely to
+discard it. A posture that depends on Work still uses the full qualified
+scheduler capture. Original acquisitions, refusal limits and retirement
+fences are unchanged.
+
 Wire serialization charges each entry against its own remaining acquisition,
 including framing and shared holder metadata, before allocating the exact
 output buffer. The JSON array and public filtering contract remain unchanged.
@@ -4193,6 +4213,21 @@ Loaded Context consumes its already prepared Work queue projection instead of
 constructing the same owning display a second time. The owner reservation,
 exact State and Work/Scheduling scope/revision checks bind that one-shot handoff;
 its original acquisition follows the Context and Prompt through the last holder.
+That handoff uses `ContextWorkQueue`, which contains only the existing current
+record and ranked candidate display windows, not the general queue's complete
+`items` and `queued_blocked` inventories. Selection borrows every qualified Work
+fact and active wait/continuation relation, sharing the full queue's scheduling
+classification and total ordering; only selected records and wait summaries
+are cloned, with admission before each allocation. The full queue API and
+scheduler selection remain unchanged. This is source selection, not truncation
+after an owning inventory has already been allocated. Both material axes, the
+original factor and all refusal/lifetime rules still apply.
+Request-scoped Input capture consumes its fully validated temporary selection
+domain instead of cloning its coverage again. The selected record Arcs and owned
+scope, execution frontier, windows and relation metadata move into the capture;
+new Vec/Arc slots still require admission. Selection closure, qualification,
+protocol validation and independent pin/metadata guards remain unchanged.
+Capturing a retained resident domain still admits its separate owning clones.
 The loaded execution snapshot moves its admitted workspace/path allocations into
 Context; borrowed cold inputs retain their pre-clone admission. The explicit
 resource preparation barrier may wait for active Host writers only after its

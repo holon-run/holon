@@ -1225,6 +1225,70 @@ impl ResidentInputEvidence {
         }
         Ok(captured)
     }
+    /// Request selection already owns a validated temporary domain. Move its
+    /// metadata instead of cloning a second coverage before dropping the first.
+    fn into_capture(self) -> Result<CapturedInputEvidence> {
+        let selected = self.validated_required_keys()?;
+        ensure!(
+            self.records.keys().all(|key| selected.contains(key)),
+            "input capture contains unselected records"
+        );
+        let metadata_estimate_bytes = self.metadata_estimate_bytes()?;
+        let count = self.records.len();
+        crate::diagnostics::resource_io::charge_owned_metadata(
+            u64::try_from(
+                count
+                    .checked_mul(std::mem::size_of::<Arc<QualifiedInputEvidence>>())
+                    .and_then(|bytes| {
+                        bytes.checked_add(
+                            std::mem::size_of::<Vec<Arc<QualifiedInputEvidence>>>()
+                                + 2 * std::mem::size_of::<usize>(),
+                        )
+                    })
+                    .context("input capture slots overflow")?,
+            )?,
+            count
+                .checked_add(1)
+                .context("input capture slots overflow")?,
+        )?;
+        let mut records = Vec::with_capacity(count);
+        records.extend(self.records.into_values());
+        let mut captured = CapturedInputEvidence {
+            query: self.query,
+            query_acquisition: self.query_acquisition,
+            #[cfg(test)]
+            selected_completion_brief_ids: self.coverage.selected_completion_brief_ids,
+            #[cfg(test)]
+            completion_source_observations: self.coverage.completion_source_observations,
+            recovery_source_absences: self.coverage.recovery_source_absences,
+            execution: self.coverage.execution,
+            scope: self.scope,
+            budget: self.budget,
+            budget_views: self.query_material,
+            windows: self.coverage.windows,
+            records,
+            unavailable: self.coverage.unavailable,
+            turn_transcript_keys: self.coverage.turn_transcript_keys,
+            message_turn_keys: Arc::new(self.coverage.message_turn_keys),
+        };
+        captured.protocol_state()?;
+        if let Some(budget) = &captured.budget {
+            captured.budget_views.push(budget.register_view(
+                &captured.scope,
+                InputMemoryCategory::Pins,
+                &captured.records,
+            )?);
+            captured.budget_views.push(budget.register_owned_bytes(
+                &captured.scope,
+                InputMemoryCategory::Pins,
+                OwnedBytesEstimate {
+                    payload_bytes: 0,
+                    metadata_estimate_bytes,
+                },
+            )?);
+        }
+        Ok(captured)
+    }
     /// A request owns only its selected closure. Resident mandatory roots also
     /// contain other accepted inputs and must not be pinned by every prompt.
     pub(crate) fn capture_for_request(
@@ -1665,10 +1729,10 @@ impl ResidentInputEvidence {
             has_query.then(|| self.query_acquisition.clone()).flatten(),
         )?;
         selected_domain.budget = self.budget.clone();
-        let captured = match material {
-            Some(material) => selected_domain.capture_with_material(material)?,
-            None => selected_domain.capture()?,
-        };
+        if let Some(material) = material {
+            selected_domain.validate_capture_material(material)?;
+        }
+        let captured = selected_domain.into_capture()?;
         for source in &request.interrupted_sources {
             captured.execution_interrupted_attempts_for_source(source)?;
         }
@@ -2510,6 +2574,8 @@ fn compare_record_order(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    mod capture_transfer_tests;
 
     #[test]
     fn captured_query_shares_only_immutable_metadata_until_last_holder() -> Result<()> {

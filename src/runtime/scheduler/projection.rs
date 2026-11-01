@@ -1,6 +1,16 @@
 use super::*;
 use std::borrow::Cow;
 
+/// Exact owned Work bodies used by a scheduler decision, not a display inventory.
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
+pub(crate) struct SchedulerWorkSelection {
+    pub current: Option<WorkItemRecord>,
+    pub current_scheduling_state: Option<WorkItemSchedulingState>,
+    pub queued_runnable: Vec<WorkItemRecord>,
+    pub waiting: Option<WorkItemRecord>,
+    pub waiting_scheduling_state: Option<WorkItemSchedulingState>,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct SchedulerProjection {
     /// Captured once per scheduling decision and included in derived equality.
@@ -409,6 +419,57 @@ impl SchedulerProjection {
         observations: SchedulerObservations<'_>,
         now: DateTime<Utc>,
     ) -> Self {
+        let current_scheduling_state = work_queue
+            .items
+            .iter()
+            .find(|item| item.is_current)
+            .map(|item| item.scheduling_state);
+        let waiting_index = Self::waiting_work_item_index(&work_queue);
+        let waiting_scheduling_state =
+            waiting_index.map(|index| work_queue.items[index].scheduling_state);
+        let (current, queued_runnable, waiting) = match work_queue {
+            Cow::Owned(mut queue) => {
+                let waiting = waiting_index.map(|index| queue.items.swap_remove(index).work_item);
+                let mut runnable = Vec::with_capacity(queue.queued_runnable.len());
+                for item in queue.queued_runnable {
+                    runnable.push(item.work_item);
+                }
+                (queue.current, runnable, waiting)
+            }
+            Cow::Borrowed(queue) => {
+                let mut runnable = Vec::with_capacity(queue.queued_runnable.len());
+                for item in &queue.queued_runnable {
+                    runnable.push(item.work_item.clone());
+                }
+                (
+                    queue.current.clone(),
+                    runnable,
+                    waiting_index.map(|index| queue.items[index].work_item.clone()),
+                )
+            }
+        };
+        Self::from_selected_observations(
+            snapshot,
+            queue_len,
+            SchedulerWorkSelection {
+                current,
+                current_scheduling_state,
+                queued_runnable,
+                waiting,
+                waiting_scheduling_state,
+            },
+            observations,
+            now,
+        )
+    }
+
+    pub(crate) fn from_selected_observations(
+        snapshot: SchedulerAgentSnapshot,
+        queue_len: usize,
+        work: SchedulerWorkSelection,
+        observations: SchedulerObservations<'_>,
+        now: DateTime<Utc>,
+    ) -> Self {
         let SchedulerObservations {
             active_tasks,
             has_interrupted_replay,
@@ -419,14 +480,6 @@ impl SchedulerProjection {
             runtime_error,
         } = observations;
         let has_blocking_active_tasks = active_tasks.iter().any(TaskRecord::is_blocking);
-        let current_work_item_scheduling_state = work_queue
-            .items
-            .iter()
-            .find(|item| item.is_current)
-            .map(|item| item.scheduling_state);
-        let waiting_work_item_index = Self::waiting_work_item_index(&work_queue);
-        let waiting_work_item_scheduling_state =
-            waiting_work_item_index.map(|index| work_queue.items[index].scheduling_state);
         let canonical_work_states = Some(
             execution_snapshot
                 .map(|snapshot| {
@@ -469,30 +522,13 @@ impl SchedulerProjection {
                 )
             })
             .count();
-        let (current_work_item, queued_runnable_work_items, waiting_work_item) = match work_queue {
-            Cow::Owned(mut queue) => {
-                // No remaining consumer observes items or their order.
-                let waiting =
-                    waiting_work_item_index.map(|index| queue.items.swap_remove(index).work_item);
-                // Keep the output allocation sized to records, not the larger
-                // projection buffer an in-place collect could reuse.
-                let mut runnable = Vec::with_capacity(queue.queued_runnable.len());
-                for item in queue.queued_runnable {
-                    runnable.push(item.work_item);
-                }
-                (queue.current, runnable, waiting)
-            }
-            Cow::Borrowed(queue) => {
-                let current = queue.current.clone();
-                let mut runnable = Vec::with_capacity(queue.queued_runnable.len());
-                for item in &queue.queued_runnable {
-                    runnable.push(item.work_item.clone());
-                }
-                let waiting =
-                    waiting_work_item_index.map(|index| queue.items[index].work_item.clone());
-                (current, runnable, waiting)
-            }
-        };
+        let SchedulerWorkSelection {
+            current: current_work_item,
+            current_scheduling_state: current_work_item_scheduling_state,
+            queued_runnable: queued_runnable_work_items,
+            waiting: waiting_work_item,
+            waiting_scheduling_state: waiting_work_item_scheduling_state,
+        } = work;
         let turn_in_progress = snapshot.active_run_id.is_some();
         Self {
             now,

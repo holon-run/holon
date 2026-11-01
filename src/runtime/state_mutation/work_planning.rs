@@ -2,10 +2,12 @@
 use super::*;
 use crate::runtime::resident_scheduling::CapturedScheduling;
 use crate::runtime_db::repositories::scheduler_latest_runtime_error_on;
+use crate::types::{AgentRegistryStatus, WaitConditionKind};
 use crate::{
     runtime::{
         input_evidence_budget::{
-            serialized_bytes, BudgetViewGuard, InputMemoryCategory, OwnedBytesEstimate,
+            serialized_bytes, BudgetViewGuard, InputEvidenceBudgetLedger, InputMemoryCategory,
+            OwnedBytesEstimate,
         },
         resident_input_evidence::{
             InputEvidenceFamily as Family, InputEvidenceKey as Key, InputWindowSelector,
@@ -14,23 +16,22 @@ use crate::{
         resident_work::{
             CanonicalWorkRecord, CapturedWork, WorkCaptureRequest, WorkFamily, WorkKey,
         },
-        scheduler::{SchedulerAgentSnapshot, SchedulerObservations, SchedulerProjection},
+        scheduler::{
+            SchedulerAgentSnapshot, SchedulerObservations, SchedulerProjection,
+            SchedulerWorkSelection,
+        },
         task_reads::active_task_records,
     },
     runtime_db::{
         context_inputs::ContextDurableRead, input_evidence_snapshot::InputEvidenceLoadRequest,
     },
 };
-use crate::{
-    storage::WorkQueueReadModel,
-    types::{AgentRegistryStatus, WaitConditionKind},
-};
 use std::collections::{BTreeMap, BTreeSet};
 
 pub(crate) struct PreparedSchedulerRead {
     pub state: Arc<AgentState>,
     pub projection: SchedulerProjection,
-    pub work_queue: WorkQueueReadModel,
+    pub(in crate::runtime) triggers: super::super::scheduling_reads::OwnedSchedulingTriggers,
     pub work: CapturedWork,
     pub inputs: super::super::resident_input_evidence::CapturedInputEvidence,
     pub scheduling: super::super::resident_scheduling::CapturedScheduling,
@@ -59,6 +60,47 @@ pub(crate) struct ColdSchedulerFacts {
 }
 
 impl PreparedSchedulerRead {
+    /// State surfaces retain the full queue, not the scheduler candidate window.
+    pub(in crate::runtime) fn full_state_work_queue(
+        &self,
+        ledger: &InputEvidenceBudgetLedger,
+    ) -> Result<(
+        crate::work_item_scheduling::WorkQueueReadModel,
+        Arc<BudgetViewGuard>,
+    )> {
+        self.acquisition.read(|| {
+            let queue = self.work.work_queue_with_material(
+                &self.state,
+                &self.triggers.records,
+                &self.acquisition,
+            )?;
+            let bytes = serialized_bytes(&(
+                &queue.current,
+                &queue.queued_blocked,
+                &queue.items,
+                &queue.current_runnable,
+                &queue.triggered_blocked,
+                &queue.queued_runnable,
+                &queue.yielded,
+                &queue.waiting_for_operator,
+                &queue.blocked,
+                &queue.completing,
+                &queue.completed_recent,
+            ))?;
+            let budget = ledger.register_owned_bytes(
+                &self.work.scope,
+                InputMemoryCategory::Pins,
+                OwnedBytesEstimate {
+                    payload_bytes: bytes.saturating_mul(2),
+                    metadata_estimate_bytes: std::mem::size_of::<
+                        crate::work_item_scheduling::WorkQueueReadModel,
+                    >() as u64,
+                },
+            )?;
+            Ok((queue, budget))
+        })
+    }
+
     pub(crate) fn into_cold_facts(self) -> Result<(ColdSchedulerFacts, CapturedScheduling)> {
         let guards = self.acquisition.read(|| {
             let mut guards = Vec::new();
@@ -819,7 +861,8 @@ pub(crate) fn derive_scheduler_read(
         .max();
     let runtime_error =
         latest_error.is_some_and(|at| latest_success.is_none_or(|success| at > success));
-    let work_queue = work.work_queue(&state, triggers.records)?;
+    let ranked_work = work.queue_work_ranks(&state, &triggers.records)?;
+    let work_selection = work.scheduler_work_selection(&state, &ranked_work)?;
     let recheck_refs = work.due_work_rechecks(now)?;
     crate::diagnostics::resource_io::admit_cloned_value(&recheck_refs)?;
     let due_rechecks = recheck_refs.into_iter().cloned().collect::<Vec<_>>();
@@ -834,21 +877,20 @@ pub(crate) fn derive_scheduler_read(
     // latest_for_agent orders the canonical activation set by ID.
     activation_waits.sort_by(|left, right| left.id.cmp(&right.id));
     let mut owned = scheduler_owned_bytes(
-        &work_queue,
+        &work_selection,
         &active_waits,
         &activation_waits,
         &due_rechecks,
         &execution_snapshot,
     )?;
     let scheduling_posture =
-        crate::storage::derive_agent_posture(&state, has_queued_input, &work_queue, &active_waits)?;
-    SchedulerProjection::admit_retained_work(&std::borrow::Cow::Borrowed(&work_queue), material)?;
+        work.scheduler_work_posture(&state, has_queued_input, &ranked_work, &active_waits)?;
     SchedulerProjection::admit_canonical_slots(execution_snapshot.as_ref(), material)?;
     crate::diagnostics::resource_io::admit_cloned_value(&(&state.id, &state.current_run_id))?;
-    let projection = SchedulerProjection::from_borrowed_observations(
+    let projection = SchedulerProjection::from_selected_observations(
         SchedulerAgentSnapshot::from_state(&state),
         queue_len,
-        &work_queue,
+        work_selection,
         SchedulerObservations {
             active_tasks,
             has_interrupted_replay,
@@ -860,11 +902,11 @@ pub(crate) fn derive_scheduler_read(
         },
         now,
     );
-    let advisories = super::super::scheduler::scheduling_advisories_for_facts(
+    let advisories = super::super::scheduler::scheduling_advisories_for_selected_facts(
         &state,
         &projection,
         &scheduling_posture,
-        &work_queue,
+        work.scheduler_blocked_work(&ranked_work),
         &active_waits,
     );
     // Keep the retained Active Wait Vec and derived owned DTOs visible;
@@ -895,7 +937,7 @@ pub(crate) fn derive_scheduler_read(
     Ok(PreparedSchedulerRead {
         state,
         projection,
-        work_queue,
+        triggers,
         work,
         inputs,
         scheduling,
@@ -915,30 +957,16 @@ pub(crate) fn derive_scheduler_read(
 }
 
 fn scheduler_owned_bytes(
-    queue: &WorkQueueReadModel,
+    selection: &SchedulerWorkSelection,
     active_waits: &[WaitConditionRecord],
     waits: &[WaitConditionRecord],
     due: &[WorkItemRecord],
     execution: &Option<crate::domain::execution_protocol::ExecutionProtocolState>,
 ) -> Result<OwnedBytesEstimate> {
-    let queue_bytes = serialized_bytes(&(
-        &queue.current,
-        &queue.queued_blocked,
-        &queue.items,
-        &queue.current_runnable,
-        &queue.triggered_blocked,
-        &queue.queued_runnable,
-        &queue.yielded,
-        &queue.waiting_for_operator,
-        &queue.blocked,
-        &queue.completing,
-        &queue.completed_recent,
-    ))?;
-    // The projection clones only a subset of queue records; twice the complete
-    // queue is an explicit conservative estimate, not allocator/RSS accounting.
-    let payload_bytes = queue_bytes
-        .saturating_mul(2)
-        .saturating_add(serialized_bytes(&(active_waits, waits, due, execution))?);
+    let queue_bytes = serialized_bytes(selection)?;
+    // The scheduler consumes the selection and retains these Work bodies once.
+    let payload_bytes =
+        queue_bytes.saturating_add(serialized_bytes(&(active_waits, waits, due, execution))?);
     Ok(OwnedBytesEstimate {
         payload_bytes,
         metadata_estimate_bytes: (std::mem::size_of::<PreparedSchedulerRead>() as u64)

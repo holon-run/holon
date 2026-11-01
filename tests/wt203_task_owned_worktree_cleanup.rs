@@ -2,13 +2,13 @@ use std::path::Path;
 use std::process::Command;
 use std::sync::Arc;
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use async_trait::async_trait;
 use holon::{
     host::RuntimeHost,
     provider::{AgentProvider, ModelBlock, ProviderTurnRequest, ProviderTurnResponse},
     system::{WorkspaceAccessMode, WorkspaceProjectionKind},
-    types::{AuthorityClass, TaskStatus},
+    types::{AgentRegistryStatus, AuthorityClass, TaskStatus},
 };
 use tokio::time::{sleep, Duration};
 
@@ -94,25 +94,12 @@ impl AgentProvider for DelayedTextProvider {
     }
 }
 
-struct SlowTextProvider;
+struct PendingTextProvider;
 
 #[async_trait]
-impl AgentProvider for SlowTextProvider {
+impl AgentProvider for PendingTextProvider {
     async fn complete_turn(&self, _request: ProviderTurnRequest) -> Result<ProviderTurnResponse> {
-        sleep(Duration::from_secs(2)).await;
-        Ok(ProviderTurnResponse {
-            material: Default::default(),
-            blocks: vec![ModelBlock::Text {
-                text: "Slow worktree result".into(),
-            }],
-            stop_reason: None,
-            input_tokens: 100,
-            output_tokens: 50,
-            cache_usage: None,
-            provider_message_id: None,
-            provider_request_id: None,
-            request_diagnostics: None,
-        })
+        std::future::pending().await
     }
 }
 
@@ -313,13 +300,23 @@ async fn wt203_task_owned_cleanup_records_branch_mismatch_without_blocking() -> 
 }
 
 #[tokio::test]
+async fn wt203_task_stop_removes_original_active_child_worktree_and_branch() -> Result<()> {
+    assert_task_stop_child_worktree_cleanup(false).await
+}
+
+#[tokio::test]
 async fn wt203_task_stop_retains_deleted_child_worktree_for_review() -> Result<()> {
+    assert_task_stop_child_worktree_cleanup(true).await
+}
+
+async fn assert_task_stop_child_worktree_cleanup(deleted_before_stop: bool) -> Result<()> {
     let config = test_config();
     let workspace = config.workspace_dir().to_path_buf();
     std::fs::create_dir_all(&workspace)?;
     init_git_repo(&workspace)?;
 
-    let host = RuntimeHost::new_with_provider(config.config().clone(), Arc::new(SlowTextProvider))?;
+    let host =
+        RuntimeHost::new_with_provider(config.config().clone(), Arc::new(PendingTextProvider))?;
     attach_default_workspace(&host).await?;
     let runtime = host.default_runtime().await?;
 
@@ -332,9 +329,50 @@ async fn wt203_task_stop_retains_deleted_child_worktree_for_review() -> Result<(
         )
         .await?;
     let expected_worktree = wait_for_worktree(&runtime, &workspace, &task.id).await?;
+    wait_for_task_status(&runtime, &task.id, TaskStatus::Running).await?;
+    let running = runtime
+        .storage()
+        .latest_task_records()?
+        .into_iter()
+        .find(|record| record.id == task.id)
+        .context("original running task")?;
+    assert_eq!(running.status, TaskStatus::Running);
+    let target = running.target().context("original child target")?;
+    let identities = host.runtime_db().agent_identities();
+    let child = identities
+        .latest(&target.agent_id)?
+        .context("original child identity")?;
+    assert_eq!(child.status, AgentRegistryStatus::Active);
+    assert_eq!(Some(child.incarnation), target.incarnation);
     let incarnation = runtime.agent_summary().await?.identity.incarnation;
+    assert!(expected_worktree.exists());
+    assert!(!git(
+        &workspace,
+        &["branch", "--list", &format!("task-{}", task.id)]
+    )?
+    .is_empty());
     let mut audit_cursor = runtime.storage().latest_event_seq()?.unwrap_or(0);
-
+    if deleted_before_stop {
+        // Reuse the Host AlreadyDeletedChild fixture's native identity writer.
+        identities.tombstone_with_closed_supervision(&child.agent_id)?;
+    }
+    let before_stop = identities
+        .latest(&child.agent_id)?
+        .context("child identity before Stop")?;
+    assert_eq!(
+        before_stop.status,
+        if deleted_before_stop {
+            AgentRegistryStatus::Deleted
+        } else {
+            AgentRegistryStatus::Active
+        }
+    );
+    assert_eq!(before_stop.incarnation, child.incarnation);
+    if deleted_before_stop {
+        assert!(before_stop.revision > child.revision);
+    } else {
+        assert_eq!(before_stop.revision, child.revision);
+    }
     let stopped = runtime
         .stop_task(&task.id, &AuthorityClass::OperatorInstruction)
         .await?;
@@ -382,6 +420,14 @@ async fn wt203_task_stop_retains_deleted_child_worktree_for_review() -> Result<(
     );
     assert_eq!(original["intent"]["task"]["key"]["id"], task.id);
     assert_eq!(
+        original["intent"]["child"]["scope"]["agent_id"],
+        child.agent_id
+    );
+    assert_eq!(
+        original["intent"]["child"]["scope"]["identity_incarnation"],
+        child.incarnation
+    );
+    assert_eq!(
         original["intent"]["worktree"]["path"],
         expected_worktree.to_str().unwrap()
     );
@@ -419,11 +465,34 @@ async fn wt203_task_stop_retains_deleted_child_worktree_for_review() -> Result<(
         );
     }
     assert_eq!(settled["progress"]["child"], "retired_joined", "{settled}");
-    assert_eq!(settled["progress"]["worktree"], "retained", "{settled}");
+    assert_eq!(
+        settled["progress"]["worktree"],
+        if deleted_before_stop {
+            "retained"
+        } else {
+            "removed"
+        },
+        "{settled}"
+    );
     assert_eq!(settled["progress"]["result"], "completed", "{settled}");
+    let after_stop = identities
+        .latest(&child.agent_id)?
+        .context("child identity after Stop")?;
+    assert_eq!(after_stop.status, AgentRegistryStatus::Deleted);
+    assert_eq!(after_stop.incarnation, before_stop.incarnation);
+    if deleted_before_stop {
+        assert_eq!(after_stop.revision, before_stop.revision);
+    } else {
+        assert!(after_stop.revision > before_stop.revision);
+    }
 
     let audit_head = runtime.storage().latest_event_seq()?.unwrap_or(0);
-    let mut retained = Vec::new();
+    let cleanup_kind = if deleted_before_stop {
+        "task_worktree_cleanup_retained"
+    } else {
+        "worktree_auto_cleaned_up"
+    };
+    let mut cleanup = Vec::new();
     loop {
         let page = host.runtime_db().audit_events().range(
             Some("default"),
@@ -436,41 +505,108 @@ async fn wt203_task_stop_retains_deleted_child_worktree_for_review() -> Result<(
             break;
         };
         audit_cursor = last.event_seq;
-        retained.extend(page.into_iter().filter(|event| {
-            event.kind == "task_worktree_cleanup_retained"
+        cleanup.extend(page.into_iter().filter(|event| {
+            event.kind == cleanup_kind
                 && event.data["task_id"] == task.id
-                && event.data["cleanup_trigger"] == "task_stop"
+                && if deleted_before_stop {
+                    event.data["cleanup_trigger"] == "task_stop"
+                } else {
+                    event.data["reason"] == "task_stop"
+                }
         }));
     }
     assert_eq!(
-        retained.len(),
+        cleanup.len(),
         1,
-        "exact original cleanup audit: {retained:?}"
+        "exact original cleanup audit: {cleanup:?}"
     );
-    assert_eq!(retained[0].data["reason"], "agent_deleted");
-    let metadata = &retained[0].data["worktree"];
-    assert_eq!(
-        metadata["worktree_path"],
-        expected_worktree.to_str().unwrap()
-    );
-    assert_eq!(metadata["worktree_branch"], format!("task-{}", task.id));
-    assert_eq!(metadata["original_cwd"], association["original_cwd"]);
-    assert_eq!(metadata["original_branch"], association["original_branch"]);
-    assert_eq!(metadata["projection_kind"], association["projection_kind"]);
-    assert!(expected_worktree.exists());
-    assert!(!git(
+    let branch = git(
         &workspace,
-        &["branch", "--list", &format!("task-{}", task.id)]
-    )?
-    .is_empty());
-    assert_eq!(metadata["cleanup_status"].as_str(), Some("retained"));
-    assert_eq!(metadata["cleanup_reason"].as_str(), Some("agent_deleted"));
+        &["branch", "--list", &format!("task-{}", task.id)],
+    )?;
+    if deleted_before_stop {
+        assert_eq!(
+            cleanup[0].data["reason"],
+            "original_child_teardown_unproven"
+        );
+        let metadata = &cleanup[0].data["worktree"];
+        assert_eq!(
+            metadata["worktree_path"],
+            expected_worktree.to_str().unwrap()
+        );
+        assert_eq!(metadata["worktree_branch"], format!("task-{}", task.id));
+        assert_eq!(metadata["original_cwd"], association["original_cwd"]);
+        assert_eq!(metadata["original_branch"], association["original_branch"]);
+        assert_eq!(metadata["projection_kind"], association["projection_kind"]);
+        assert!(expected_worktree.exists());
+        assert!(!branch.is_empty());
+        assert_eq!(metadata["cleanup_status"].as_str(), Some("retained"));
+        assert_eq!(
+            metadata["cleanup_reason"].as_str(),
+            Some("original_child_teardown_unproven")
+        );
+        assert_eq!(
+            metadata["cleanup_owner_task_id"].as_str(),
+            Some(task.id.as_str())
+        );
+        assert_eq!(metadata["retained_for_review"].as_bool(), Some(true));
+        assert_eq!(metadata["auto_cleaned_up"].as_bool(), Some(false));
+    } else {
+        assert_eq!(
+            cleanup[0].data["worktree_path"],
+            expected_worktree.to_str().unwrap()
+        );
+        assert_eq!(
+            cleanup[0].data["worktree_branch"],
+            format!("task-{}", task.id)
+        );
+        assert_eq!(cleanup[0].data["branch_cleanup_status"], "deleted");
+        assert!(!expected_worktree.exists());
+        assert!(branch.is_empty());
+    }
+
+    let read_cleanup_receipts = || -> Result<Vec<(String, String)>> {
+        let mut query = db.prepare(
+            "SELECT command_nonce, outcome_json FROM input_mutation_receipts
+             WHERE command_nonce LIKE 'stop-worktree-%' ORDER BY command_nonce",
+        )?;
+        let receipts = query
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+        Ok(receipts)
+    };
+    let receipts = read_cleanup_receipts()?;
+    assert_eq!(receipts.len(), 1, "one original worktree phase receipt");
+    // A terminal retry cannot mint another Stop or repeat its FS cleanup.
+    let marker = expected_worktree.join("successor-marker");
+    if !deleted_before_stop {
+        std::fs::create_dir(&expected_worktree)?;
+        std::fs::write(&marker, "preserve")?;
+    }
+    assert!(runtime
+        .stop_task(&task.id, &AuthorityClass::OperatorInstruction)
+        .await
+        .is_err());
+    assert_eq!(read_stop()?, settled);
+    assert_eq!(read_cleanup_receipts()?, receipts);
+    let cleanup_audits: u64 = db.query_row(
+        "SELECT COUNT(*) FROM audit_events
+         WHERE kind = ?1 AND json_extract(data_json, '$.data.task_id') = ?2",
+        rusqlite::params![cleanup_kind, task.id],
+        |row| row.get(0),
+    )?;
+    assert_eq!(cleanup_audits, 1, "terminal retry repeated cleanup audit");
+    assert!(expected_worktree.exists());
+    if !deleted_before_stop {
+        assert_eq!(std::fs::read_to_string(&marker)?, "preserve");
+    }
     assert_eq!(
-        metadata["cleanup_owner_task_id"].as_str(),
-        Some(task.id.as_str())
+        git(
+            &workspace,
+            &["branch", "--list", &format!("task-{}", task.id)]
+        )?,
+        branch
     );
-    assert_eq!(metadata["retained_for_review"].as_bool(), Some(true));
-    assert_eq!(metadata["auto_cleaned_up"].as_bool(), Some(false));
 
     Ok(())
 }

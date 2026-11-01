@@ -2274,7 +2274,7 @@ fn is_projectable_assistant_round(entry: &TranscriptEntry) -> bool {
 }
 
 fn render_work_item_candidates(
-    projection: &crate::storage::WorkQueueReadModel,
+    projection: &crate::work_item_scheduling::ContextWorkQueue,
     displayed_work_item_id: Option<&str>,
     completion_reports: &BTreeMap<String, CompletionReportProjection>,
     plan_observations: &impl PlanArtifactLookup,

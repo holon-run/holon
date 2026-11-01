@@ -17,6 +17,73 @@ async fn roster_request(state: Arc<AppState>) -> Response {
     .await
 }
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn newly_bootstrapped_roster_keeps_runtime_admission_open() {
+    let home = tempfile::tempdir().unwrap();
+    std::fs::write(
+        home.path().join("config.json"),
+        r#"{"model":{"default":"openai/gpt-5.4"}}"#,
+    )
+    .unwrap();
+    let mut config =
+        crate::config::AppConfig::load_with_home(Some(home.path().to_path_buf())).unwrap();
+    // Keep the benchmark-sized fixture independent of the machine's resources.
+    config.user_home_dir = None;
+    config.workspace_dir = home.path().join("workspace");
+    std::fs::create_dir_all(&config.workspace_dir).unwrap();
+    config.control_token = Some("secret".into());
+    config.control_auth_mode = crate::config::ControlAuthMode::Required;
+    let host = crate::host::RuntimeHost::new_with_provider(
+        config,
+        Arc::new(crate::provider::StubProvider::new("done")),
+    )
+    .unwrap();
+    for index in 0..100 {
+        host.create_public_named_agent(&format!("roster-bootstrap-{index:03}"), None, None, None)
+            .await
+            .unwrap();
+    }
+    let runtime = host.default_runtime().await.unwrap();
+    let default_agent_id = runtime.agent_state().await.unwrap().id;
+    for index in 0..200 {
+        let result = runtime
+            .create_work_item(format!("roster work item {index}"), None, None, Vec::new())
+            .await;
+        assert!(
+            result.is_ok(),
+            "work item {index}: {result:?}; recent events: {:?}",
+            runtime.storage().event_log().recent(8)
+        );
+    }
+    let state = Arc::new(AppState::for_tcp(host.clone()));
+    let response = roster_request(state.clone()).await;
+    let status = response.status();
+    let bytes = axum::body::to_bytes(response.into_body(), 1024 * 1024)
+        .await
+        .unwrap();
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "{}; recent events: {:?}",
+        String::from_utf8_lossy(&bytes),
+        runtime.storage().event_log().recent(8)
+    );
+    let entries: Vec<crate::types::AgentListEntry> = serde_json::from_slice(&bytes).unwrap();
+    assert_eq!(entries.len(), 100);
+    assert_eq!(
+        entries
+            .iter()
+            .find(|entry| entry.identity.agent_id == default_agent_id)
+            .unwrap()
+            .scheduling_posture
+            .posture,
+        crate::types::AgentSchedulingPosture::HasQueuedInput
+    );
+    assert!(runtime.accepts_execution_admission());
+    state.projection_gate.close_and_drain().await;
+    host.shutdown().await.unwrap();
+}
+
 #[tokio::test(flavor = "current_thread")]
 async fn unloaded_roster_acquisition_does_not_read_on_the_async_worker() {
     let (_home, host) = control_token_test_host();

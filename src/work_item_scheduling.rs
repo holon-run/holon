@@ -6,6 +6,9 @@ use std::{
     ops::{Deref, DerefMut},
 };
 
+mod context_queue;
+pub(crate) use context_queue::ContextWorkQueue;
+
 use chrono::{DateTime, Utc};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -90,25 +93,28 @@ impl WorkItemSchedulingProjection {
     }
 
     pub(crate) fn posture_reason_display(&self) -> impl std::fmt::Display + '_ {
-        WorkItemPostureReason(self)
+        WorkItemPostureReason {
+            id: &self.work_item.id,
+            is_current: self.is_current,
+            scheduling_state: self.scheduling_state,
+        }
     }
 }
 
-struct WorkItemPostureReason<'a>(&'a WorkItemSchedulingProjection);
+pub(crate) struct WorkItemPostureReason<'a> {
+    pub id: &'a str,
+    pub is_current: bool,
+    pub scheduling_state: WorkItemSchedulingState,
+}
 
 impl std::fmt::Display for WorkItemPostureReason<'_> {
     fn fmt(&self, output: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let item = self.0;
-        let label = if item.is_current {
+        let label = if self.is_current {
             "current WorkItem"
         } else {
             "queued WorkItem"
         };
-        write!(
-            output,
-            "{label} {} is {:?}",
-            item.work_item.id, item.scheduling_state
-        )
+        write!(output, "{label} {} is {:?}", self.id, self.scheduling_state)
     }
 }
 
@@ -272,6 +278,22 @@ pub(crate) fn derive_queue_work_item_scheduling(
     active_wait_conditions: &[WaitConditionRecord],
     trigger_delivery: &impl Fn(&str) -> Option<DateTime<Utc>>,
 ) -> anyhow::Result<WorkItemSchedulingProjection> {
+    derive_borrowed_queue_work_item_scheduling(
+        work_item,
+        is_current,
+        is_yielded,
+        active_wait_conditions.iter(),
+        trigger_delivery,
+    )
+}
+
+pub(crate) fn derive_borrowed_queue_work_item_scheduling<'a>(
+    work_item: WorkItemRecord,
+    is_current: bool,
+    is_yielded: bool,
+    active_wait_conditions: impl Iterator<Item = &'a WaitConditionRecord> + Clone,
+    trigger_delivery: &impl Fn(&str) -> Option<DateTime<Utc>>,
+) -> anyhow::Result<WorkItemSchedulingProjection> {
     use anyhow::Context;
 
     if let Some(todo) = current_todo_ref(&work_item) {
@@ -281,7 +303,7 @@ pub(crate) fn derive_queue_work_item_scheduling(
     let mut wait_states = ActiveWaitConditionStates::default();
     let mut has_waits = false;
     for wait in active_wait_conditions
-        .iter()
+        .clone()
         .filter(|wait| wait.work_item_id.as_deref() == Some(work_item.id.as_str()))
     {
         has_waits = true;
@@ -312,15 +334,15 @@ pub(crate) fn derive_queue_work_item_scheduling(
     ))
 }
 
-fn queue_wait_summaries(
+fn queue_wait_summaries<'a>(
     work_item_id: &str,
-    conditions: &[WaitConditionRecord],
+    conditions: impl Iterator<Item = &'a WaitConditionRecord> + Clone,
     trigger_delivery: &impl Fn(&str) -> Option<DateTime<Utc>>,
 ) -> anyhow::Result<(ActiveWaitConditionStates, Vec<WaitConditionSummary>)> {
     use anyhow::Context;
 
     let count = conditions
-        .iter()
+        .clone()
         .filter(|wait| wait.work_item_id.as_deref() == Some(work_item_id))
         .count();
     let mut ordered = Vec::new();
@@ -333,7 +355,7 @@ fn queue_wait_summaries(
         count,
         "queue wait references admission",
     )?;
-    for (ordinal, wait) in conditions.iter().enumerate() {
+    for (ordinal, wait) in conditions.enumerate() {
         if wait.work_item_id.as_deref() == Some(work_item_id) {
             ordered.push((ordinal, wait));
         }
@@ -450,6 +472,53 @@ fn derive_work_item_scheduling_with_summaries(
     let mut diagnostics = Vec::with_capacity(messages.iter().flatten().count());
     diagnostics.extend(messages.into_iter().flatten().map(str::to_owned));
 
+    let SchedulingHeader {
+        scheduling_state,
+        reason_code,
+        readiness,
+        is_current,
+        focus,
+        has_triggered_waits,
+        candidate_class,
+    } = scheduling_header(&work_item, is_current, is_yielded, &wait_states);
+
+    let current_todo = current_todo(&work_item);
+    WorkItemSchedulingProjection {
+        current_todo,
+        work_item: work_item.into_owned(),
+        scheduling_state,
+        readiness,
+        candidate_class,
+        focus,
+        is_current,
+        is_runnable: readiness == WorkItemReadiness::Runnable,
+        has_active_waits: !summaries.is_empty(),
+        has_active_task_waits: wait_states.task,
+        has_triggered_waits,
+        last_triggered_at: wait_states.last_triggered_at,
+        active_wait_conditions: summaries,
+        reason_code,
+        diagnostics,
+    }
+}
+
+#[derive(Clone, Copy)]
+struct SchedulingHeader {
+    scheduling_state: WorkItemSchedulingState,
+    reason_code: WorkItemSchedulingReasonCode,
+    readiness: WorkItemReadiness,
+    is_current: bool,
+    focus: WorkItemFocus,
+    has_triggered_waits: bool,
+    candidate_class: WorkItemCandidateClass,
+}
+
+fn scheduling_header(
+    work_item: &WorkItemRecord,
+    is_current: bool,
+    is_yielded: bool,
+    wait_states: &ActiveWaitConditionStates,
+) -> SchedulingHeader {
     let (scheduling_state, reason_code) = if work_item.state == WorkItemState::Completed {
         (
             WorkItemSchedulingState::Completed,
@@ -531,23 +600,14 @@ fn derive_work_item_scheduling_with_summaries(
         WorkItemCandidateClass::Blocked
     };
 
-    let current_todo = current_todo(&work_item);
-    WorkItemSchedulingProjection {
-        current_todo,
-        work_item: work_item.into_owned(),
+    SchedulingHeader {
         scheduling_state,
-        readiness,
-        candidate_class,
-        focus,
-        is_current,
-        is_runnable: readiness == WorkItemReadiness::Runnable,
-        has_active_waits: !summaries.is_empty(),
-        has_active_task_waits: wait_states.task,
-        has_triggered_waits,
-        last_triggered_at: wait_states.last_triggered_at,
-        active_wait_conditions: summaries,
         reason_code,
-        diagnostics,
+        readiness,
+        is_current,
+        focus,
+        has_triggered_waits,
+        candidate_class,
     }
 }
 
@@ -599,6 +659,57 @@ pub fn readiness_for_scheduling_state(state: WorkItemSchedulingState) -> WorkIte
 pub fn compare_scheduling_projection_order(
     left: &WorkItemSchedulingProjection,
     right: &WorkItemSchedulingProjection,
+) -> std::cmp::Ordering {
+    compare_queue_work_rank(
+        &QueueWorkRank {
+            work_item: &left.work_item,
+            candidate_class: left.candidate_class,
+            scheduling_state: left.scheduling_state,
+            has_active_waits: left.has_active_waits,
+            last_triggered_at: left.last_triggered_at,
+        },
+        &QueueWorkRank {
+            work_item: &right.work_item,
+            candidate_class: right.candidate_class,
+            scheduling_state: right.scheduling_state,
+            has_active_waits: right.has_active_waits,
+            last_triggered_at: right.last_triggered_at,
+        },
+    )
+}
+
+pub(crate) struct QueueWorkRank<'a> {
+    pub work_item: &'a WorkItemRecord,
+    pub candidate_class: WorkItemCandidateClass,
+    pub scheduling_state: WorkItemSchedulingState,
+    pub has_active_waits: bool,
+    pub last_triggered_at: Option<DateTime<Utc>>,
+}
+
+pub(crate) fn queue_work_rank<'a>(
+    work_item: &'a WorkItemRecord,
+    is_current: bool,
+    is_yielded: bool,
+    waits: impl Iterator<Item = &'a WaitConditionRecord>,
+    trigger_delivery: &impl Fn(&str) -> Option<DateTime<Utc>>,
+) -> QueueWorkRank<'a> {
+    let mut states = ActiveWaitConditionStates::default();
+    for wait in waits.filter(|wait| wait.work_item_id.as_deref() == Some(work_item.id.as_str())) {
+        states.record(wait, trigger_delivery);
+    }
+    let header = scheduling_header(work_item, is_current, is_yielded, &states);
+    QueueWorkRank {
+        work_item,
+        candidate_class: header.candidate_class,
+        scheduling_state: header.scheduling_state,
+        has_active_waits: states.scheduling_state().is_some(),
+        last_triggered_at: states.last_triggered_at,
+    }
+}
+
+pub(crate) fn compare_queue_work_rank(
+    left: &QueueWorkRank<'_>,
+    right: &QueueWorkRank<'_>,
 ) -> std::cmp::Ordering {
     candidate_class_rank(left.candidate_class)
         .cmp(&candidate_class_rank(right.candidate_class))

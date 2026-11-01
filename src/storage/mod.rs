@@ -53,8 +53,9 @@ pub(crate) use events::{EventBus, EventLogPageOrder, PublishedAuditEvent};
 pub use index_outbox::RuntimeIndexOutbox;
 pub use read_models::RuntimeReadModels;
 pub(crate) use read_models::{
-    clone_queue_work_item_key, derive_agent_posture, derive_context_work_queue,
-    filter_context_active_waits, QueueLatestWork, QueueWorkBuilder, WORK_QUEUE_NON_OPEN_WINDOW,
+    clone_queue_work_item_key, derive_agent_posture, derive_agent_posture_from_selected_work,
+    derive_agent_posture_from_state, derive_context_work_queue, filter_context_active_waits,
+    QueueLatestWork, QueueWorkBuilder, WORK_QUEUE_NON_OPEN_WINDOW,
 };
 pub use recovery::RecoverySnapshot;
 pub use store::RuntimeStore;

@@ -156,6 +156,8 @@ impl RuntimeHandle {
             resource_io::admit_cloned_value(&(identity, read.state.as_ref()))?;
             let identity = AgentIdentityView::from_record(identity, &self.inner.default_agent_id);
             let state = read.state.as_ref().clone();
+            let (work_queue, work_budget) =
+                read.full_state_work_queue(&self.inner.input_evidence_budget)?;
             let closure = Self::closure_decision_from_projection(
                 &state,
                 &read.projection,
@@ -194,13 +196,13 @@ impl RuntimeHandle {
                 model,
                 closure,
                 active_children: Vec::new(),
-                work_queue: read.work_queue,
+                work_queue,
                 _work_budget: None,
                 _scheduling_material: None,
             };
             let material = StateProjectionMaterial {
                 acquisition: acquisition.clone(),
-                _work: Some(read._owned_budget),
+                _work: Some(work_budget),
                 _tasks: Some(read._task_owned_budget),
                 _scheduling: Some(scheduling_material),
                 _children: Vec::new(),

@@ -2,7 +2,6 @@ use super::message_dispatch::MessageDispatchPlan;
 use super::*;
 use crate::domain::execution_protocol::ExecutionBinding;
 use crate::runtime_db::RuntimeStateTransitionConflict;
-use crate::storage::WorkQueueReadModel;
 use crate::types::ExecutionAdmissionProvenance;
 
 const QUEUE_HEAD_NO_PROGRESS_MAX_ATTEMPTS: u32 = 3;
@@ -1207,18 +1206,21 @@ impl<'a> SchedulerDecisionExecutor<'a> {
             },
         );
         let mut claim_observation = CanonicalClaimObservation::default();
-        let mut canonical_claim = match self.canonical_activation_plan(
-            projection,
-            &persisted_message,
-            &dispatch_plan,
-            continuation_decision.model_reentry,
-            &mut claim_observation,
-            inputs,
-            &read.work,
-            &read.work_queue,
-            &read.tasks,
-            &read.recovered_replies,
-        ) {
+        let mut canonical_claim = match read.acquisition.read(|| {
+            self.canonical_activation_plan(
+                projection,
+                &persisted_message,
+                &dispatch_plan,
+                continuation_decision.model_reentry,
+                &mut claim_observation,
+                inputs,
+                &read.work,
+                &read.state,
+                &read.triggers.records,
+                &read.tasks,
+                &read.recovered_replies,
+            )
+        }) {
             Ok(CanonicalClaimOutcome::ReduceOnly) => None,
             Ok(CanonicalClaimOutcome::ConsumeSettledRecoverySource) => {
                 drop(planning_guard.take());
@@ -2232,7 +2234,8 @@ impl<'a> SchedulerDecisionExecutor<'a> {
         observation: &mut CanonicalClaimObservation,
         inputs: &super::resident_input_evidence::CapturedInputEvidence,
         captured_work: &super::resident_work::CapturedWork,
-        work_queue: &WorkQueueReadModel,
+        state: &AgentState,
+        triggers: &[ExternalTriggerRecord],
         captured_tasks: &super::resident_task::CapturedTasks,
         recovered_replies: &std::collections::BTreeSet<String>,
     ) -> Result<CanonicalClaimOutcome> {
@@ -2554,10 +2557,8 @@ impl<'a> SchedulerDecisionExecutor<'a> {
                 });
             }
         }
-        let Some(work_projection) = work_queue
-            .items
-            .iter()
-            .find(|candidate| candidate.id == work_item.id)
+        let Some(work_projection) =
+            captured_work.scheduler_work_projection(state, triggers, &work_item.id)?
         else {
             return Ok(canonical_claim_hard_blocker(
                 scenario_class,
