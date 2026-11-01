@@ -100,6 +100,10 @@ Use [Reference](../reference/) for complete command syntax and schemas.
   Create an OAuth client in Google Cloud, configure Google Workspace as Holon's identity provider, enforce organization access boundaries, and verify single sign-on.
   <!-- mdorigin:index kind=article -->
 
+- [Configure OIDC Single Sign-On with Self-Hosted GitLab CE](./gitlab-ce-oidc-authentication.md)
+  Deploy a self-hosted GitLab CE instance, register an OAuth application, configure Holon's OIDC authentication, and verify end-to-end single sign-on without external accounts.
+  <!-- mdorigin:index kind=article -->
+
 - [Share AI assistants with your team](./share-with-your-team.md)
   Deploy Holon on a shared server, enable team sign-in, assign tasks to common assistants, and track progress together.
   <!-- mdorigin:index kind=article -->
