@@ -46,6 +46,83 @@ pub(crate) use lifecycle::{
     TERMINAL_PRE_COMMIT_FAULTS,
 };
 
+/// Seed Queue progress through the original writer, including its Current ACK.
+pub(crate) async fn persist_native_queue_fixture(
+    runtime: &RuntimeHandle,
+    record: crate::types::QueueEntryRecord,
+) {
+    use crate::runtime_db::transitions::{
+        PreparedQueueTransition, QueueMutation, QueueOperation, QueueTransitionCommand,
+    };
+    let statuses = match record.status {
+        QueueEntryStatus::Dequeued | QueueEntryStatus::Interjected => {
+            vec![QueueEntryStatus::Queued, record.status.clone()]
+        }
+        _ => vec![record.status.clone()],
+    };
+    for status in statuses {
+        let mut entry = record.clone();
+        entry.status = status;
+        let (operation, mutation) = match entry.status {
+            QueueEntryStatus::Queued => (QueueOperation::Admit, QueueMutation::Upsert(entry)),
+            QueueEntryStatus::Dequeued => (QueueOperation::Claim, QueueMutation::Consume(entry)),
+            QueueEntryStatus::Interjected => {
+                (QueueOperation::Interject, QueueMutation::Consume(entry))
+            }
+            QueueEntryStatus::Processed => (QueueOperation::Settle, QueueMutation::Upsert(entry)),
+            _ => panic!("unsupported native Queue fixture status"),
+        };
+        let commit = {
+            let mut mutation_guard = runtime.begin_mutation().await.unwrap();
+            if matches!(operation, QueueOperation::Admit) {
+                let (_, record_limit, byte_limit) =
+                    mutation_guard.context_input_evidence_policy().unwrap();
+                let request =
+                    crate::runtime_db::input_evidence_snapshot::InputEvidenceLoadRequest {
+                        query: None,
+                        windows: Vec::new(),
+                        mandatory_roots: std::collections::BTreeSet::from([
+                            crate::runtime::resident_input_evidence::InputEvidenceKey::new(
+                                crate::runtime::resident_input_evidence::InputEvidenceFamily::Message,
+                                &record.message_id,
+                            ),
+                        ]),
+                        interrupted_sources: Default::default(),
+                        selected_completion_brief_ids: Default::default(),
+                        record_limit,
+                        byte_limit,
+                    };
+                mutation_guard
+                    .prepare_owner_input_request(&request, 0)
+                    .await
+                    .unwrap();
+            }
+            mutation_guard
+                .commit_prepared_queue(
+                    crate::ids::audit_event_id(),
+                    PreparedQueueTransition::new(QueueTransitionCommand {
+                        agent_id: record.agent_id.clone(),
+                        operation,
+                        mutation,
+                        scheduler_claim_work_item: None,
+                        agent_state: None,
+                        message_evidence: Vec::new(),
+                        transcript_entries: Vec::new(),
+                        turn_record: None,
+                        audit_events: Vec::new(),
+                        notify_scheduler: false,
+                        fault: None,
+                        brief_evidence: Vec::new(),
+                    }),
+                )
+                .await
+                .unwrap()
+        };
+        assert!(commit.applied);
+        runtime.apply_transition_commit(commit).await;
+    }
+}
+
 /// Prompt budget estimated from the live PublicNamed tool registry, matching
 /// `context_config()`. Tool descriptions drift over time and shift this
 /// budget, so tests with size-sensitive fixtures should scale their fixtures

@@ -19,18 +19,18 @@ async fn pending_result(
     let message = late_task_result_message(&running.id, &owner.id);
     let terminal = terminal_task_with_result(&running, &message, harness.now());
     persist_unqueued_terminal_result(harness, &terminal, &message).await;
-    harness
-        .runtime()
-        .storage()
-        .append_queue_entry(&QueueEntryRecord {
+    persist_native_queue_fixture(
+        harness.runtime(),
+        QueueEntryRecord {
             message_id: message.id.clone(),
             agent_id: message.agent_id.clone(),
             priority: message.priority.clone(),
             status,
             created_at: message.created_at,
             updated_at: harness.now(),
-        })
-        .unwrap();
+        },
+    )
+    .await;
     (owner, terminal, message)
 }
 

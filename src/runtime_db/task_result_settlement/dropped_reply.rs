@@ -3,23 +3,21 @@
 use anyhow::Result;
 use rusqlite::{params, OptionalExtension, Transaction};
 
-use super::{
-    record_matches_durable_task_tx, TaskResultSettlementRecord, TaskResultSettlementRepository,
-};
+use super::{record_matches_durable_task_tx, TaskResultSettlementRecord};
 use crate::types::{
     AgentMessageDeliveryOutcome, AgentMessageDeliveryRecord, AgentMessageDeliveryState,
     MessageEnvelope, QueueEntryRecord, QueueEntryStatus, TaskKind, TaskRecord, TaskStatus,
 };
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
 pub(crate) struct DroppedReplySource {
-    task: TaskRecord,
-    result: MessageEnvelope,
-    reply: MessageEnvelope,
-    queue: QueueEntryRecord,
-    delivery: AgentMessageDeliveryRecord,
-    rejection_id: String,
-    rejection_data: serde_json::Value,
+    pub(super) task: TaskRecord,
+    pub(super) result: MessageEnvelope,
+    pub(super) reply: MessageEnvelope,
+    pub(super) queue: QueueEntryRecord,
+    pub(super) delivery: AgentMessageDeliveryRecord,
+    pub(super) rejection_id: String,
+    pub(super) rejection_data: serde_json::Value,
 }
 
 pub(super) const CANONICAL_REJECTION_SQL: &str =
@@ -31,24 +29,6 @@ pub(super) const CANONICAL_REJECTION_SQL: &str =
                'canonical_internal_followup_work_item_not_runnable'
            AND json_extract(data_json, '$.data.queue_disposition') = 'dropped'
          ORDER BY rowid DESC LIMIT 1";
-
-impl TaskResultSettlementRepository<'_> {
-    pub(crate) fn dropped_reply_source(
-        &self,
-        record: &TaskResultSettlementRecord,
-    ) -> Result<Option<DroppedReplySource>> {
-        self.db
-            .transaction(|tx| dropped_reply_source_tx(tx, record))
-    }
-
-    /// Only an independently validated exact wait may use this unconsumed source.
-    pub(crate) fn reply_source_is_available_for_exact_wait(
-        &self,
-        record: &TaskResultSettlementRecord,
-    ) -> Result<bool> {
-        Ok(self.reply_source_is_consumed(record)? || self.dropped_reply_source(record)?.is_some())
-    }
-}
 
 fn load<T: serde::de::DeserializeOwned>(
     tx: &Transaction<'_>,
@@ -212,6 +192,7 @@ pub(super) fn source_matches(
 }
 
 /// Recheck the terminal source in the transaction that admits rendered bytes.
+#[cfg(test)]
 pub(super) fn terminal_source_admits_tx(
     tx: &Transaction<'_>,
     record: &TaskResultSettlementRecord,

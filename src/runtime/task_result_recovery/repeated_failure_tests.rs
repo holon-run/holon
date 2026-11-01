@@ -619,7 +619,10 @@ async fn remove_source(
 
     assert!(matches!(
         status,
-        QueueEntryStatus::Processed | QueueEntryStatus::Dropped
+        QueueEntryStatus::Processed
+            | QueueEntryStatus::Dropped
+            | QueueEntryStatus::Aborted
+            | QueueEntryStatus::Quarantined
     ));
     let (entry, commit) = {
         let mut mutation = runtime.begin_mutation().await.unwrap();
@@ -802,6 +805,9 @@ fn assert_recovery_snapshot(runtime: &RuntimeHandle, record: &TaskResultSettleme
 }
 
 async fn reply_result(runtime: &RuntimeHandle, owner: &WorkItemRecord) -> (TaskRecord, String) {
+    persist_completed_task_parent_fixture(runtime, "repeated-reply-parent", Some(&owner.id))
+        .await
+        .unwrap();
     let mut prepared =
         crate::runtime::agent_message_delivery::AgentMessageDeliveryService::prepare(
             AgentMessageSendRequest {

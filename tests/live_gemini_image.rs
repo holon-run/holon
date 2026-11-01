@@ -216,7 +216,7 @@ fn image_message(image: &Fixture) -> ConversationMessage {
     ConversationMessage::UserImage {
         prompt: "Inspect this image; its surrounding text assigns its output key.".into(),
         media_type: "image/png".into(),
-        data_base64: BASE64_STANDARD.encode(&image.bytes),
+        data_base64: BASE64_STANDARD.encode(&image.bytes).into(),
         optional_history: false,
     }
 }
@@ -469,7 +469,7 @@ impl AgentProvider for ObservedProvider {
                 .map(|(label, data, optional_history)| {
                     Ok(Attachment {
                         label,
-                        decoded_bytes: BASE64_STANDARD.decode(&data)?.len(),
+                        decoded_bytes: BASE64_STANDARD.decode(data.as_bytes())?.len(),
                         optional_history,
                     })
                 })

@@ -321,6 +321,7 @@ fn resolved_exact_result_claim_survives_history_window_without_body_decode() -> 
         current_activation_id: None,
         waiter_work_item_id: Some("work:other-waiter".into()),
         canonical_recovery: false,
+        dropped_reply_source: None,
         source_queue: None,
         wait_witness: capture(&f, vec![], vec![])?,
     };

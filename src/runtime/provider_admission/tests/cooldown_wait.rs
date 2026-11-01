@@ -192,7 +192,7 @@ async fn cooling_replan_case(case: ReplanCase) {
                     is_continuation_input_changed(&latest),
                     matches!(denial, LocalDispatchDenial::InputChanged)
                 );
-                let described = runtime.local_provider_dispatch_error(latest);
+                let described = runtime.local_provider_dispatch_error(latest).await;
                 let descriptor = crate::runtime_error::describe_runtime_error(&described);
                 assert_eq!(descriptor.code, "provider_dispatch_rejected");
                 assert_eq!(
@@ -241,12 +241,8 @@ async fn cooling_replan_case(case: ReplanCase) {
                 }
                 assert_eq!(server.calls.load(Ordering::SeqCst), 0);
                 assert_eq!(admission.episode().unwrap().total_requests, before);
-                let wait = runtime
-                    .agent_summary()
-                    .await
-                    .unwrap()
-                    .provider_cooldown_wait
-                    .unwrap();
+                let summary = runtime.agent_summary().await.unwrap();
+                let wait = summary.provider_cooldown_wait.as_ref().unwrap();
                 assert!(wait.not_before >= cooling_until);
                 assert_eq!(
                     wait.not_before,

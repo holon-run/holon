@@ -569,10 +569,18 @@ async fn shared_reply_source_predicates_borrow_one_qualified_body_cut() -> Resul
         let turn = read.shared_turn(&turn_id)?.unwrap();
         let message_address = &*message as *const MessageEnvelope;
         let turn_address = &*turn as *const crate::types::TurnRecord;
+        // Exclude the exact-wait API's Dropped alternative: only consumption
+        // of this original source may satisfy the assertions below.
+        assert_ne!(
+            read.queue(&original.id)?
+                .context("original reply Queue missing")?
+                .status,
+            QueueEntryStatus::Dropped,
+        );
         let before_delivery = material.finish()?;
         assert!(read.source_matches(&records[0], true)?);
         assert!(read.reply_source_recoverable(&records[0])?);
-        assert!(read.reply_source_consumed(&records[0])?);
+        assert!(read.reply_source_available_for_exact_wait(&records[0])?);
         let admitted_delivery = material.finish()?;
         assert!(
             admitted_delivery.0 > before_delivery.0,
@@ -586,7 +594,7 @@ async fn shared_reply_source_predicates_borrow_one_qualified_body_cut() -> Resul
             let before = material.finish()?;
             assert!(read.source_matches(record, true)?);
             assert!(read.reply_source_recoverable(record)?);
-            assert!(read.reply_source_consumed(record)?);
+            assert!(read.reply_source_available_for_exact_wait(record)?);
             let after = material.finish()?;
             assert_eq!(
                 after, before,
@@ -639,9 +647,15 @@ async fn shared_reply_source_predicates_borrow_one_qualified_body_cut() -> Resul
                 "each independent material phase pays for source records",
             );
             read.prepare_reply_source_work_records([&record])?;
+            assert_ne!(
+                read.queue(&original.id)?
+                    .context("original reply Queue missing")?
+                    .status,
+                QueueEntryStatus::Dropped,
+            );
             assert!(read.source_matches(&record, true)?);
             assert!(read.reply_source_recoverable(&record)?);
-            assert!(read.reply_source_consumed(&record)?);
+            assert!(read.reply_source_available_for_exact_wait(&record)?);
             Ok(())
         })?;
         let usage = material.finish()?;
@@ -2287,67 +2301,24 @@ async fn p2_shared_reply_cross_parent_exact_wait_does_not_release_foreign_siblin
     let runtime = &runtime;
     let receiver = owner(runtime, "live reply consuming owner").await;
     let captured = owner(runtime, "foreign waiter owner").await;
-    let mut blocked = runtime.latest_work_item(&captured).await.unwrap().unwrap();
-    blocked.blocked_by = Some("independent business gate".into());
-    blocked.revision += 1;
-    {
-        use crate::runtime::resident_work::{WorkCaptureRequest, WorkFamily, WorkKey};
-        use crate::runtime_db::{
-            transitions::{PostCommitEffects, TransitionCommit},
-            work_snapshot::{
-                prepare_work_write_tx, register_work_writes_tx, WorkDomainLoadRequest,
-            },
-        };
-        let mut mutation = runtime.begin_mutation().await.unwrap();
-        let keys = BTreeSet::from([WorkKey::new(WorkFamily::Work, &blocked.id)]);
-        let (_, record_limit, byte_limit) = mutation.context_input_evidence_policy().unwrap();
-        let request = WorkDomainLoadRequest {
-            capture: WorkCaptureRequest::current(),
-            record_limit,
-            byte_limit,
-        };
-        let final_state = mutation.state.clone();
-        mutation
-            .commit_transition(crate::ids::audit_event_id(), |scope| {
-                runtime.runtime_db().transaction(|tx| {
-                    let proof = prepare_work_write_tx(tx, scope, &keys)?;
-                    anyhow::ensure!(
-                        tx.execute(
-                            "UPDATE work_items SET blocked_by=?1, revision=?2, payload_json=?3 \
-                             WHERE agent_id=?4 AND work_item_id=?5 AND revision=?6",
-                            rusqlite::params![
-                                blocked.blocked_by,
-                                blocked.revision,
-                                serde_json::to_string(&blocked)?,
-                                blocked.agent_id,
-                                blocked.id,
-                                blocked.revision - 1,
-                            ],
-                        )? == 1,
-                        "foreign waiter's original Work revision changed"
-                    );
-                    let facts = register_work_writes_tx(
-                        tx,
-                        &proof,
-                        &keys,
-                        &Default::default(),
-                        &final_state,
-                        &request,
-                    )?;
-                    Ok(TransitionCommit {
-                        applied: true,
-                        effects: Box::new(PostCommitEffects {
-                            work_delta: Some(facts.delta),
-                            work_delta_requires_prepared_domain: true,
-                            ..Default::default()
-                        }),
-                        ..Default::default()
-                    })
-                })
-            })
-            .await
-            .unwrap();
-    }
+    // Publish the blocker through the native Work transition so its execution
+    // source revision remains qualified; this is not a source-repair test.
+    runtime
+        .update_work_item_fields(
+            captured.clone(),
+            None,
+            None,
+            None,
+            None,
+            Some(Some("independent business gate".into())),
+        )
+        .await
+        .unwrap();
+    assert!(runtime
+        .runtime_db()
+        .source_revision_drifts("default")
+        .unwrap()
+        .is_empty());
     runtime.pick_work_item(receiver.clone()).await.unwrap();
     let promised = live_shared_waiter(
         runtime,
@@ -2420,7 +2391,11 @@ async fn p2_shared_reply_cross_parent_exact_wait_does_not_release_foreign_siblin
     }
     assert!(
         all_settled(runtime, std::slice::from_ref(&promised_source)),
-        "the exact cross-owner waiter must consume its shared reply without changing its captured owner"
+        "the exact cross-owner waiter must consume its shared reply without changing its captured owner;          result={:?}; wait={:?}; original_queue={:?}; events={:?}",
+        repository.latest_for_message(&promised_source).unwrap(),
+        runtime.runtime_db().wait_conditions().latest_for_agent("default").unwrap(),
+        runtime.runtime_db().queue_entries().latest(&original.id).unwrap(),
+        runtime.storage().read_recent_events(12).unwrap(),
     );
     advance_lifecycle_time(&clock, std::time::Duration::from_secs(31)).await;
     assert!(!runtime.emit_due_task_result_recovery().await.unwrap());

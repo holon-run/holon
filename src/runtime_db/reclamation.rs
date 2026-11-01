@@ -315,7 +315,7 @@ mod tests {
         ] {
             let state = settled(agent_id, status, kind);
             let diagnostic = state.last_runtime_failure.clone();
-            db.agent_states().upsert(&state).unwrap();
+            db.agent_states().upsert_for_fixture(&state).unwrap();
             assert_eq!(blockers(&db, agent_id), (None, None, None), "{agent_id}");
             assert_eq!(
                 db.agent_states()
@@ -333,7 +333,7 @@ mod tests {
             AgentStatus::AwakeRunning,
             TurnTerminalKind::Aborted,
         );
-        db.agent_states().upsert(&running).unwrap();
+        db.agent_states().upsert_for_fixture(&running).unwrap();
         assert_eq!(
             blockers(&db, "running").0.as_deref(),
             Some("runtime_execution_or_wake")
@@ -342,7 +342,7 @@ mod tests {
         running.id = "run-id".into();
         running.status = AgentStatus::AwakeIdle;
         running.current_run_id = Some("run-1".into());
-        db.agent_states().upsert(&running).unwrap();
+        db.agent_states().upsert_for_fixture(&running).unwrap();
         assert_eq!(
             blockers(&db, "run-id").0.as_deref(),
             Some("runtime_execution_or_wake")
@@ -350,7 +350,7 @@ mod tests {
 
         let mut pending = settled("pending", AgentStatus::Asleep, TurnTerminalKind::Aborted);
         pending.pending = 1;
-        db.agent_states().upsert(&pending).unwrap();
+        db.agent_states().upsert_for_fixture(&pending).unwrap();
         assert_eq!(
             blockers(&db, "pending").0.as_deref(),
             Some("runtime_execution_or_wake")
@@ -358,7 +358,7 @@ mod tests {
 
         let mut sleeping = settled("sleeping", AgentStatus::Stopped, TurnTerminalKind::Aborted);
         sleeping.sleeping_until = Some(Utc::now());
-        db.agent_states().upsert(&sleeping).unwrap();
+        db.agent_states().upsert_for_fixture(&sleeping).unwrap();
         assert_eq!(
             blockers(&db, "sleeping").0.as_deref(),
             Some("runtime_execution_or_wake")
@@ -378,7 +378,7 @@ mod tests {
             causation_id: None,
             created_at: Utc::now(),
         });
-        db.agent_states().upsert(&hinted).unwrap();
+        db.agent_states().upsert_for_fixture(&hinted).unwrap();
         assert_eq!(
             blockers(&db, "hinted").0.as_deref(),
             Some("runtime_execution_or_wake")
@@ -389,7 +389,7 @@ mod tests {
             AgentStatus::AwakeIdle,
             TurnTerminalKind::Aborted,
         );
-        db.agent_states().upsert(&retained).unwrap();
+        db.agent_states().upsert_for_fixture(&retained).unwrap();
         db.work_items()
             .insert_new(&WorkItemRecord::new(
                 "retained",
@@ -407,7 +407,7 @@ mod tests {
             AgentStatus::AwakeIdle,
             TurnTerminalKind::Aborted,
         );
-        db.agent_states().upsert(&live).unwrap();
+        db.agent_states().upsert_for_fixture(&live).unwrap();
         let now = Utc::now();
         let task = TaskRecord {
             id: "live-task-1".into(),
@@ -430,7 +430,7 @@ mod tests {
         );
 
         let queued_agent = settled("queued", AgentStatus::Asleep, TurnTerminalKind::Aborted);
-        db.agent_states().upsert(&queued_agent).unwrap();
+        db.agent_states().upsert_for_fixture(&queued_agent).unwrap();
         let queued = QueueEntryRecord {
             message_id: "queued-1".into(),
             agent_id: "queued".into(),

@@ -25644,7 +25644,10 @@ mod tests {
             failure_artifact: None,
         });
         let diagnostic = state.last_runtime_failure.clone();
-        host.runtime_db().agent_states().upsert(&state).unwrap();
+        host.runtime_db()
+            .agent_states()
+            .upsert_for_fixture(&state)
+            .unwrap();
         let job = host
             .begin_parent_agent_deletion(&parent, &child.agent_id, child.incarnation)
             .await
@@ -25675,7 +25678,10 @@ mod tests {
             .unwrap()
             .unwrap();
         state.last_runtime_failure = diagnostic;
-        host.runtime_db().agent_states().upsert(&state).unwrap();
+        host.runtime_db()
+            .agent_states()
+            .upsert_for_fixture(&state)
+            .unwrap();
         let task = test_child_supervision_task(&child.agent_id, "cleanup-failure-active-task");
         host.runtime_db().tasks().upsert(&task).unwrap();
         assert!(host

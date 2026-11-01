@@ -115,17 +115,18 @@ async fn mark_notification_processed(runtime: &RuntimeHandle, message_id: &str) 
         .read_message_by_id(message_id)
         .unwrap()
         .unwrap();
-    runtime
-        .storage()
-        .append_queue_entry(&QueueEntryRecord {
+    persist_native_queue_fixture(
+        runtime,
+        QueueEntryRecord {
             message_id: message.id,
             agent_id: message.agent_id,
             priority: message.priority,
             status: QueueEntryStatus::Processed,
             created_at: message.created_at,
             updated_at: runtime.now(),
-        })
-        .unwrap();
+        },
+    )
+    .await;
 }
 
 async fn command_result(

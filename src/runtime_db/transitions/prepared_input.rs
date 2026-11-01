@@ -1596,7 +1596,8 @@ impl PreparedInputTransition {
                 }
                 if let Some(expectation) = &command.scheduler_claim_work_item {
                     let record = match expectation {
-                        SchedulerClaimWorkItemExpectation::Runnable(record)
+                        SchedulerClaimWorkItemExpectation::Snapshot(record)
+                        | SchedulerClaimWorkItemExpectation::Runnable(record)
                         | SchedulerClaimWorkItemExpectation::BlockedRecheck { record, .. } => {
                             record
                         }
@@ -4185,6 +4186,7 @@ impl PreparedInputTransition {
                         Command::RegisterWorkItem(_)
                         | Command::Admit(_)
                         | Command::AdvanceWorkItemSourceRevision(_)
+                        | Command::ReconcileWorkItemSourceRevision(_)
                         | Command::RecheckContextBudgetStop(_)
                         | Command::RecoverInterruptedTaskResultClaim(_)
                         | Command::RecoverUnadvancedTaskResultClaim(_) => {

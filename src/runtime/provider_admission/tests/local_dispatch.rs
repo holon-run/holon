@@ -162,21 +162,28 @@ async fn operator_claim_revision_race_scenario() {
     let work_id = work.id.clone();
     *runtime.inner.claim_snapshot_before_commit.lock().unwrap() =
         Some(Box::new(move |runtime, admission| {
-            let admission = admission.expect("provider guard must precede the claim");
-            *captured_admission.lock().unwrap() = Some(Arc::downgrade(admission));
-            let mut updated = runtime.runtime_db().work_items().latest(&work_id)?.unwrap();
-            let expected_revision = updated.revision;
-            assert_eq!(
-                admission.attempt.admitted_fences.work_item_source_revision,
-                Some(expected_revision)
-            );
-            updated.revision += 1;
-            updated.objective = "legitimate concurrent writer".into();
-            assert!(runtime
-                .runtime_db()
-                .work_items()
-                .update_expected(&updated, expected_revision)?);
-            Ok(())
+            Box::pin(async move {
+                let admission = admission.expect("provider guard must precede the claim");
+                *captured_admission.lock().unwrap() = Some(Arc::downgrade(&admission));
+                let work = runtime.runtime_db().work_items().latest(&work_id)?.unwrap();
+                let expected_revision = work.revision;
+                assert_eq!(
+                    admission.attempt.admitted_fences.work_item_source_revision,
+                    Some(expected_revision)
+                );
+                let updated = runtime
+                    .update_work_item_fields(
+                        work_id,
+                        Some("legitimate concurrent writer".into()),
+                        None,
+                        None,
+                        None,
+                        None,
+                    )
+                    .await?;
+                assert_eq!(updated.revision, expected_revision + 1);
+                Ok(())
+            })
         }));
     let RunLoopPoll::Message(scheduled) = SchedulerDecisionExecutor::new(&runtime)
         .poll()
@@ -222,7 +229,12 @@ async fn operator_claim_revision_race_scenario() {
         .await;
     assert!(result.is_ok(), "{result:?}");
     runtime
-        .settle_processed_message(scheduled.message, result, started)
+        .finish_scheduled_message_processing(
+            &scheduled.message,
+            scheduled.running_state.current_run_id.as_deref().unwrap(),
+            started,
+            result,
+        )
         .await
         .unwrap();
     assert_eq!(server.calls.load(Ordering::SeqCst), 1);

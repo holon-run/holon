@@ -633,7 +633,7 @@ async fn cancelled_timer_preserves_missing_terminal_and_drifted_registration_bou
                 "{boundary} must fail closed: {error}"
             );
             assert_eq!(
-                runtime.latest_timer(&timer.id).await.unwrap().unwrap(),
+                *runtime.latest_timer(&timer.id).await.unwrap().unwrap(),
                 timer
             );
             assert_eq!(
@@ -1200,7 +1200,7 @@ async fn cancelled_timer_wait_write_failure_rolls_back_every_domain() {
             .to_string()
             .contains("injected wait cancellation failure"));
         assert_eq!(
-            runtime.latest_timer(&timer.id).await.unwrap().unwrap(),
+            *runtime.latest_timer(&timer.id).await.unwrap().unwrap(),
             timer
         );
         assert_eq!(
@@ -2913,15 +2913,17 @@ async fn terminal_timer_drop_releases_pending_for_next_fire() {
             unreachable!();
         };
         record.status = status;
-        assert!(
-            runtime
-                .inner
-                .runtime_db
-                .transitions()
-                .commit_queue(&command)
-                .unwrap()
-                .applied
-        );
+        let mut mutation = runtime.begin_mutation().await.unwrap();
+        let commit = mutation
+            .commit_prepared_queue(
+                crate::ids::audit_event_id(),
+                crate::runtime_db::transitions::PreparedQueueTransition::new(command),
+            )
+            .await
+            .unwrap();
+        assert!(commit.applied);
+        drop(mutation);
+        runtime.apply_transition_commit(commit).await;
         assert!(runtime
             .inner
             .runtime_db
@@ -3026,5 +3028,297 @@ async fn terminal_timer_retirement_rolls_back_with_queue_transition() {
             .transitions()
             .commit_queue(&command);
         assert_eq!(timer_retirement_events(&runtime).len(), 1);
+    }
+}
+
+// Exercise the real Timer writer with a non-empty, persisted State, rather
+// than importing a failed run's SQLite files or changing its read budgets.
+#[tokio::test(start_paused = true)]
+async fn timer_fire_with_persisted_working_memory_keeps_exact_wait_and_acks() {
+    use crate::types::{ActiveEpisodeBuilder, WorkItemPlanStatus, WorkingMemorySnapshot};
+    use sha2::{Digest, Sha256};
+
+    let home = tempdir().unwrap();
+    let workspace = tempdir().unwrap();
+    let clock = controlled_clock();
+    let open_runtime = || {
+        RuntimeHandle::new_with_clock(
+            "default",
+            home.path().to_path_buf(),
+            workspace.path().to_path_buf(),
+            "http://127.0.0.1:7878".into(),
+            Arc::new(StubProvider::new("must not run")),
+            "default".into(),
+            context_config(),
+            clock.clone(),
+        )
+        .unwrap()
+    };
+    let runtime = open_runtime();
+    let work = runtime
+        .create_work_item(
+            "Dispatch the same repeating Timer twice, then cancel it".into(),
+            Some(WorkItemPlanStatus::Ready),
+            None,
+            vec![
+                TodoItem {
+                    text: "timer-dispatch-1".into(),
+                    state: TodoItemState::Pending,
+                },
+                TodoItem {
+                    text: "timer-dispatch-2".into(),
+                    state: TodoItemState::Pending,
+                },
+            ],
+        )
+        .await
+        .expect("native Work creation");
+    runtime.pick_work_item(work.id.clone()).await.unwrap();
+    let mut timer = runtime
+        .schedule_timer(30_000, Some(30_000), Some("exact Timer dispatch".into()))
+        .await
+        .expect("native Timer creation");
+    let registration = runtime
+        .register_wait_for(
+            "default",
+            Some(work.id.clone()),
+            WaitForWakeKind::Timer,
+            Some(timer.id.clone()),
+            "exact timer admission dispatch 1".into(),
+            None,
+        )
+        .await
+        .expect("native exact wait");
+    assert_eq!(registration.condition.status, WaitConditionStatus::Active);
+
+    // Stop only the local producer, not the canonical Timer or its wait.
+    // The reopened runtime below invokes the original fire entry exactly once.
+    runtime
+        .inner
+        .control_cancellations
+        .cancel_local_timer_loops();
+    yield_timer_loop().await;
+    {
+        let mut mutation = runtime.begin_mutation().await.unwrap();
+        let snapshot = WorkingMemorySnapshot {
+            current_work_item_id: Some(work.id.clone()),
+            objective: Some(work.objective.clone()),
+            work_summary: Some(
+                "First exact wait persisted; both Timer dispatches remain pending.".into(),
+            ),
+            scope_hints: [
+                "Same WorkItem for both ticks.",
+                "Same Timer across restart.",
+                "Only the exact Timer may wake.",
+                "Keep todos pending until tick.",
+                "Cancel only after tick 2.",
+                "Reject unrelated wake sources.",
+            ]
+            .into_iter()
+            .map(str::to_owned)
+            .collect(),
+            plan: Some(
+                "First tick: complete todo 1 and wait again. Second tick: complete todo 2, cancel Timer, complete WorkItem.".into(),
+            ),
+            todo_list: work.todo_list.clone(),
+            working_set_files: [
+                "src/runtime/waiting.rs",
+                "src/runtime/timer_mutation_reads.rs",
+                "src/runtime_db/transitions/prepared_timer.rs",
+                "src/runtime_db/repositories.rs",
+                "src/runtime_db/transitions/prepared_input.rs",
+                "src/runtime_db/current_read_writes.rs",
+            ]
+            .into_iter()
+            .map(str::to_owned)
+            .collect(),
+            recent_decisions: [
+                "Use a native ready WorkItem.",
+                "Use the original repeating Timer writer.",
+                "Persist the exact wait before restarting.",
+                "Keep the normal shared read allowance.",
+                "Do not mint historical execution provenance.",
+                "Keep original Work ownership.",
+                "Retain the pending wake.",
+                "Require writer acknowledgements.",
+            ]
+            .into_iter()
+            .map(str::to_owned)
+            .collect(),
+            pending_followups: vec![
+                "timer-dispatch-1".into(),
+                "timer-dispatch-2".into(),
+                "register exact wait 2".into(),
+                "cancel the Timer".into(),
+                "complete the WorkItem".into(),
+            ],
+            waiting_on: vec![
+                format!("exact timer admission dispatch 1 on {}", timer.id),
+                "runtime: awaiting_timer".into(),
+            ],
+        };
+        let mut episode = ActiveEpisodeBuilder::new(&mutation.state, &snapshot, 0);
+        episode.started_at = clock.now();
+        mutation.state.working_memory.current_working_memory = snapshot;
+        mutation.state.working_memory.active_episode_id = Some(episode.id.clone());
+        mutation.state.working_memory.active_episode_builder = Some(episode);
+        mutation
+            .persist_state(runtime.storage())
+            .await
+            .expect("native non-empty State write");
+    }
+    let memory_before = runtime.agent_state().await.unwrap().working_memory;
+    drop(runtime);
+
+    let runtime = open_runtime();
+    let state_before_fire = runtime.agent_state().await.unwrap();
+    assert_eq!(
+        state_before_fire.working_memory, memory_before,
+        "restart must retain the real persisted memory"
+    );
+    assert!(state_before_fire
+        .working_memory
+        .active_episode_builder
+        .is_some());
+    assert_eq!(
+        state_before_fire
+            .working_memory
+            .current_working_memory
+            .todo_list
+            .len(),
+        2
+    );
+    let (state_json, state_bytes, state_nodes): (String, usize, usize) = runtime
+        .inner
+        .runtime_db
+        .connection()
+        .unwrap()
+        .query_row(
+            "SELECT payload_json, length(CAST(payload_json AS BLOB)),
+                    (SELECT COUNT(*) FROM json_tree(payload_json))
+             FROM agent_states WHERE agent_id='default'",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )
+        .unwrap();
+    assert_eq!(
+        state_before_fire,
+        serde_json::from_str::<AgentState>(&state_json).unwrap(),
+        "the rich State must be both installed and persisted before fire"
+    );
+    // The e2e reference was 3077 bytes / 107 json_tree nodes. Keep a real
+    // nested memory fixture in that neighborhood, not an empty State or padding.
+    assert!(
+        (2800..=3700).contains(&state_bytes),
+        "State bytes: {state_bytes}"
+    );
+    assert!(
+        (100..=120).contains(&state_nodes),
+        "State nodes: {state_nodes}"
+    );
+    assert_eq!(timer.fire_count, 0);
+    assert!(runtime
+        .inner
+        .runtime_db
+        .timers()
+        .pending_wake(&timer.id)
+        .unwrap()
+        .is_none());
+
+    // The writer clones this full State for expected_ack and the old State.
+    // Keep both clones on the real default read budget, not a test allowance.
+    clock.advance(std::time::Duration::from_secs(30));
+    runtime
+        .fire_timer_record(&mut timer)
+        .await
+        .expect("real fire_timer_record / PreparedInputTransition with default read budgets");
+    let db = &runtime.inner.runtime_db;
+    let persisted_timer = db.timers().latest(&timer.id).unwrap().unwrap();
+    assert_eq!(
+        serde_json::to_value(&timer).unwrap(),
+        serde_json::to_value(&persisted_timer).unwrap()
+    );
+    assert_eq!(timer.fire_count, 1);
+    assert_eq!(timer.status, TimerStatus::Active);
+    let wake = db.timers().pending_wake(&timer.id).unwrap().unwrap();
+    assert_eq!(wake.timer_id, timer.id);
+    assert_eq!(wake.fire_count, 1);
+    assert_eq!(wake.status, crate::runtime_db::TimerWakeStatus::Pending);
+    let message = runtime
+        .storage()
+        .read_message_by_id(&wake.message_id)
+        .unwrap()
+        .unwrap();
+    assert_eq!(message.agent_id, "default");
+    assert_eq!(message.work_item_id.as_deref(), Some(work.id.as_str()));
+    assert!(matches!(&message.origin, MessageOrigin::Timer { timer_id } if timer_id == &timer.id));
+    assert_eq!(message.source_refs.get("timer_id"), Some(&timer.id));
+    assert_eq!(message.metadata.as_ref().unwrap()["timer_fire_count"], 1);
+    let wait = runtime
+        .storage()
+        .latest_wait_conditions()
+        .unwrap()
+        .into_iter()
+        .find(|wait| wait.id == registration.condition.id)
+        .unwrap();
+    assert_eq!(wait.work_item_id.as_deref(), Some(work.id.as_str()));
+    assert_eq!(wait.subject_ref.as_deref(), Some(timer.id.as_str()));
+    assert_eq!(wait.status, WaitConditionStatus::Triggered);
+    assert_eq!(wait.trigger_message_id(), Some(wake.message_id.as_str()));
+    let queue = db
+        .queue_entries()
+        .latest(&wake.message_id)
+        .unwrap()
+        .unwrap();
+    assert_eq!(queue.status, QueueEntryStatus::Queued);
+    let state = runtime.agent_state().await.unwrap();
+    assert_eq!(state.pending, 1);
+    assert_eq!(state.working_memory, memory_before);
+    let connection = db.connection().unwrap();
+    let state_json: String = connection
+        .query_row(
+            "SELECT payload_json FROM agent_states WHERE agent_id='default'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(
+        state,
+        serde_json::from_str::<AgentState>(&state_json).unwrap(),
+        "installed State ACK must equal the committed original writer result"
+    );
+    let (qualification, digest, payload): (String, String, String) = connection
+        .query_row(
+            "SELECT q.qualification_state,q.content_digest,c.payload_json
+         FROM current_read_qualification q JOIN queue_entries c
+           ON c.message_id=q.record_id AND c.agent_id=q.agent_id
+         WHERE q.agent_id='default' AND q.identity_incarnation=?1
+           AND q.family='queue' AND q.record_id=?2",
+            rusqlite::params![runtime.inner.identity_incarnation, wake.message_id],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )
+        .unwrap();
+    assert_eq!(qualification, "qualified");
+    assert_eq!(digest, format!("{:x}", Sha256::digest(payload.as_bytes())));
+    for (family, id) in [
+        ("timer", timer.id.clone()),
+        (
+            "timer_wake",
+            serde_json::to_string(&[&timer.id, &wake.message_id]).unwrap(),
+        ),
+    ] {
+        let present: bool = connection
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM scheduling_domain_records r
+             JOIN scheduling_domain_current d USING(agent_id,identity_incarnation)
+             WHERE r.agent_id='default' AND r.identity_incarnation=?1
+               AND r.family=?2 AND r.record_id=?3 AND r.availability='present'
+               AND r.content_digest IS NOT NULL AND r.projection_digest IS NOT NULL
+               AND r.revision<=d.revision)",
+                rusqlite::params![runtime.inner.identity_incarnation, family, id],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert!(present, "original Scheduling ACK missing for {family}");
     }
 }

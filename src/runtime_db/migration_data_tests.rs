@@ -1,3 +1,4 @@
+use super::{FIRST_FEATURE_VERSION, LAST_FEATURE_VERSION};
 use crate::{
     runtime_db::{
         evidence::{append_message_tx, upsert_agent_identity_tx, upsert_agent_state_tx},

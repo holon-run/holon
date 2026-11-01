@@ -3505,7 +3505,12 @@ async fn exact_timer_first_dispatch_preserves_same_attempt_revision_advances() {
         assert!(result.is_ok(), "{result:?}");
         assert_eq!(fixture.provider.call_count().await, 1);
         runtime
-            .settle_processed_message(scheduled.message, result, started)
+            .finish_scheduled_message_processing(
+                &scheduled.message,
+                scheduled.running_state.current_run_id.as_deref().unwrap(),
+                started,
+                result,
+            )
             .await
             .unwrap();
         assert_eq!(fixture.provider.call_count().await, 1);

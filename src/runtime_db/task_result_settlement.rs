@@ -3612,6 +3612,68 @@ impl<'a, 'connection> TaskResultSourceRead<'a, 'connection> {
         Ok(true)
     }
 
+    /// Capture a writer guard only from the same qualified selection cut.
+    pub(crate) fn dropped_reply_source(
+        &self,
+        record: &TaskResultSettlementRecord,
+        queue: &crate::types::QueueEntryRecord,
+    ) -> Result<Option<DroppedReplySource>> {
+        if !self.dropped_reply_source_matches(record, queue)? {
+            return Ok(None);
+        }
+        let task = self
+            .task(&record.task_id)?
+            .context("validated dropped Task missing")?;
+        let result = self
+            .message(&record.message_id)?
+            .context("validated result missing")?;
+        let reply_id = crate::wake_contract::agent_message_reply_reference(&result)
+            .context("validated dropped reply reference missing")?;
+        let reply = self
+            .message(reply_id)?
+            .context("validated dropped reply missing")?;
+        let delivery_id = reply
+            .metadata
+            .as_ref()
+            .and_then(|metadata| metadata.get("agent_message_delivery"))
+            .and_then(|delivery| delivery.get("delivery_id"))
+            .and_then(serde_json::Value::as_str)
+            .context("validated dropped Delivery identity missing")?;
+        let delivery = self
+            .delivery_with_state(delivery_id, reply_id, "failed")?
+            .context("validated dropped Delivery missing")?;
+        let mut statement = self
+            .tx
+            .prepare_cached(dropped_reply::CANONICAL_REJECTION_SQL)?;
+        let mut rows = statement.query(params![record.agent_id, reply_id])?;
+        let row = rows
+            .next()?
+            .context("validated dropped rejection missing")?;
+        let rejection_id = row.get_ref(0)?.as_str()?;
+        let payload = row.get_ref(1)?.as_str()?;
+        self.admit_fresh_payload(rejection_id)?;
+        self.admit_fresh_payload(payload)?;
+        let rejection_data: serde_json::Value = serde_json::from_str(payload)?;
+        resource_io::admit_cloned_value(&(
+            &*task,
+            &*result,
+            &*reply,
+            queue,
+            delivery.as_ref(),
+            rejection_id,
+        ))?;
+        self.validate_cut(self.tx, &record.agent_id)?;
+        Ok(Some(DroppedReplySource {
+            task: (*task).clone(),
+            result: (*result).clone(),
+            reply: (*reply).clone(),
+            queue: queue.clone(),
+            delivery: (*delivery).clone(),
+            rejection_id: rejection_id.to_owned(),
+            rejection_data,
+        }))
+    }
+
     pub(crate) fn exact_waiter_candidate(
         &self,
         waiter_work_item_id: Option<&str>,

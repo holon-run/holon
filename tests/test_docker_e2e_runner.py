@@ -405,7 +405,7 @@ class DockerE2ERunnerTests(unittest.TestCase):
     def provider_retry_snapshot(*, recovered: bool = False) -> dict:
         root = {
             "id": "root", "agent_id": "main", "work_item_id": "work-1",
-            "kind": "system_tick",
+            "kind": "system_tick", "turn_id": "turn-root",
             "origin": {"kind": "system", "subsystem": "work_queue"},
             "authority_class": "runtime_instruction",
             "metadata": {"work_queue": {
@@ -443,7 +443,7 @@ class DockerE2ERunnerTests(unittest.TestCase):
             "messages": [
                 {
                     "message_id": message["id"], "agent_id": "main",
-                    "work_item_id": "work-1", "turn_id": f"turn-{message['id']}",
+                    "work_item_id": "work-1", "turn_id": message.get("turn_id"),
                     "payload_json": json.dumps(message),
                 } for message in (root, parked)
             ],
@@ -460,6 +460,7 @@ class DockerE2ERunnerTests(unittest.TestCase):
                 "turn_id": "turn-root", "agent_id": "main",
                 "owner_kind": "work_item", "owner_id": "work-1",
                 "trigger_message_id": "root", "terminal_kind": "deferred_to_fallback",
+                "payload_json": json.dumps({"input_message_ids": ["root"]}),
             }],
             "audit_events": [
                 audit("provider_attempt_failed", {
@@ -481,6 +482,8 @@ class DockerE2ERunnerTests(unittest.TestCase):
                 "turn_id": "turn-parked", "agent_id": "main",
                 "owner_kind": "work_item", "owner_id": "work-1",
                 "trigger_message_id": "parked", "terminal_kind": "completed",
+                "payload_json": json.dumps(
+                    {"input_message_ids": ["parked", "root"]}),
             })
         for mid in ("root", "parked") if recovered else ("root",):
             attempt_id = f"activation:message:{mid}"
@@ -494,7 +497,8 @@ class DockerE2ERunnerTests(unittest.TestCase):
                         "work_item_continuation" if mid == "root" else "runtime_recovery"
                     )}},
                     "binding": {"kind": "work_item", "work_item_id": "work-1"},
-                    "turn_id": f"turn-{mid}",
+                    # Runtime-owned recovery envelopes carry no turn hint.
+                    "turn_id": "turn-root" if mid == "root" else None,
                     "recovery_of_attempt_id": (
                         None if mid == "root" else "activation:message:root"
                     ),
@@ -633,18 +637,28 @@ class DockerE2ERunnerTests(unittest.TestCase):
 
     def test_provider_retry_recovery_rejects_replacement_foreign_root_or_owner(self) -> None:
         parking = self.provider_retry_parking(self.provider_retry_snapshot())
-        for evidence in ("replacement", "foreign_root", "foreign_owner", "unprocessed"):
+        for evidence in (
+            "replacement", "foreign_root", "foreign_owner", "unprocessed",
+            "unconsumed", "stale_hint",
+        ):
             with self.subTest(evidence=evidence):
                 snapshot = self.provider_retry_snapshot(recovered=True)
                 if evidence == "replacement":
                     snapshot["messages"][1]["message_id"] = "replacement"
                 elif evidence == "unprocessed":
                     snapshot["queue_entries"][1]["status"] = "queued"
+                elif evidence == "unconsumed":
+                    row = snapshot["turn_records"][1]
+                    payload = json.loads(row["payload_json"])
+                    payload["input_message_ids"] = ["root"]
+                    row["payload_json"] = json.dumps(payload)
                 else:
                     row = snapshot["execution_protocol_attempts"][1]
                     payload = json.loads(row["payload_json"])
                     if evidence == "foreign_root":
                         payload["recovery_of_attempt_id"] = "foreign-attempt"
+                    elif evidence == "stale_hint":
+                        payload["turn_id"] = "turn-root"
                     else:
                         payload["binding"]["work_item_id"] = "foreign-work"
                     row["payload_json"] = json.dumps(payload)
@@ -681,9 +695,12 @@ class DockerE2ERunnerTests(unittest.TestCase):
                 harness.event_cursor.return_value = 0
                 harness.events.return_value = [
                     {"type": "message_admitted", "payload": {
-                        "message_id": mid, "work_item_id": "work-1",
-                    }} for mid in ("root", "parked")
+                        "message_id": "root", "work_item_id": "work-1",
+                    }},
                 ] + [
+                    {"type": "provider_queue_parked", "payload": {
+                        "message_id": "foreign-parked", "reason": "chain_cooling",
+                    }},
                     {"type": "provider_queue_parked", "payload": {
                         "message_id": "parked", "reason": "chain_cooling",
                     }},
@@ -695,8 +712,16 @@ class DockerE2ERunnerTests(unittest.TestCase):
                         "turn_id": "turn-parked", "tool_name": tool, "status": "success",
                     }} for tool in ("ListWorkItems", "CompleteWorkItem")
                 ]
+                failed = self.provider_retry_snapshot()
+                failed["messages"].append({
+                    "message_id": "foreign-parked", "agent_id": "main",
+                    "work_item_id": "work-other",
+                    "payload_json": json.dumps({
+                        "metadata": {"provider_recovery": {"root_message_id": "root"}},
+                    }),
+                })
                 harness.runtime_db_snapshot.side_effect = [
-                    self.provider_retry_snapshot(),
+                    failed,
                     self.provider_retry_snapshot(recovered=True),
                 ]
                 harness.wait_work_item.return_value = {"result_brief_id": "brief-result"}

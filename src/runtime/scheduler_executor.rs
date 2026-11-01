@@ -7097,7 +7097,8 @@ mod tests {
                         &candidate,
                         &incoming,
                         crate::domain::scheduler::SchedulerScenarioClass::Delivery,
-                        "canonical_provider_recovery_source_invalid"
+                        "canonical_provider_recovery_source_invalid",
+                        &CanonicalClaimObservation::default(),
                     )
                     .await?
             );

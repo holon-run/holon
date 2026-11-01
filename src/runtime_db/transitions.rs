@@ -4549,6 +4549,17 @@ impl RuntimeTransitionRepository<'_> {
                 messages: command.message_evidence.clone(),
                 execution_protocol,
                 input_evidence_delta,
+                current_queue_write_ids: command
+                    .message_evidence
+                    .iter()
+                    .map(|message| message.id.clone())
+                    .chain(
+                        command
+                            .queue_entry
+                            .iter()
+                            .map(|entry| entry.message_id.clone()),
+                    )
+                    .collect(),
                 queued_messages: command
                     .queue_entry
                     .as_ref()
@@ -5184,14 +5195,7 @@ fn materialize_committed_input_facts_tx(
 }
 
 pub(super) fn agent_state_tx(tx: &Transaction<'_>, agent_id: &str) -> Result<Option<AgentState>> {
-    let mut statement = tx.prepare("SELECT payload_json FROM agent_states WHERE agent_id = ?1")?;
-    let mut rows = statement.query([agent_id])?;
-    let Some(row) = rows.next()? else {
-        return Ok(None);
-    };
-    let payload = row.get_ref(0)?.as_str()?;
-    crate::diagnostics::resource_io::admit_json_payload(payload)?;
-    Ok(Some(serde_json::from_str(payload)?))
+    super::context_inputs::ContextDurableRead::new(tx, agent_id).owned_state()
 }
 
 fn validate_agent_state_mutation_tx(
@@ -8571,7 +8575,8 @@ mod tests {
     fn queue_claim_wait_resolution_advances_execution_registration() -> Result<()> {
         let (_dir, db) = runtime_db()?;
         let now = Utc::now();
-        db.agent_states().upsert(&AgentState::new("agent-a"))?;
+        db.agent_states()
+            .upsert_for_fixture(&AgentState::new("agent-a"))?;
         db.agent_identities().upsert(&active_agent("agent-a"))?;
         let open = work_item("work-claim-wait");
         db.transitions()
@@ -8675,12 +8680,34 @@ mod tests {
             },
             &ExecutionProtocolTransition::default(),
         )?;
-        db.transitions().commit_queue_with_execution_protocol(
-            &QueueTransitionCommand {
+        let scope = InputEvidenceScope {
+            agent_id: "agent-a".into(),
+            identity_incarnation: 1,
+        };
+        let mut trigger_message = MessageEnvelope::new(
+            "agent-a",
+            crate::types::MessageKind::TaskResult,
+            crate::types::MessageOrigin::Task {
+                task_id: "task-claim-wait".into(),
+            },
+            AuthorityClass::RuntimeInstruction,
+            Priority::Normal,
+            crate::types::MessageBody::Text {
+                text: "task result triggers the registered wait".into(),
+            },
+        );
+        trigger_message.id = "message-claim-trigger".into();
+        trigger_message.task_id = Some("task-claim-wait".into());
+        trigger_message.created_at = now;
+        let trigger_admission = PreparedInputTransition::queue(
+            scope.clone(),
+            "admit-claim-trigger".into(),
+            now,
+            PreparedQueueTransition::new(QueueTransitionCommand {
                 agent_id: "agent-a".into(),
                 operation: QueueOperation::Admit,
                 mutation: QueueMutation::Upsert(QueueEntryRecord {
-                    message_id: "message-claim-trigger".into(),
+                    message_id: trigger_message.id.clone(),
                     agent_id: "agent-a".into(),
                     priority: Priority::Normal,
                     status: QueueEntryStatus::Queued,
@@ -8689,16 +8716,17 @@ mod tests {
                 }),
                 scheduler_claim_work_item: None,
                 agent_state: None,
-                message_evidence: Vec::new(),
+                message_evidence: vec![trigger_message],
                 transcript_entries: Vec::new(),
                 turn_record: None,
                 audit_events: Vec::new(),
                 notify_scheduler: false,
                 fault: None,
                 brief_evidence: Vec::new(),
-            },
-            &ExecutionProtocolTransition::default(),
+            }),
         )?;
+        db.transitions_in_scope(&scope)
+            .commit_prepared_transition(&trigger_admission)?;
         // The claim resolves the triggered wait and unblocks the WorkItem
         // (revision 1 -> 2) without carrying a WorkItem-bound Admit command.
         let mut resolved = triggered.clone();
@@ -8730,26 +8758,29 @@ mod tests {
             fault: None,
             brief_evidence: Vec::new(),
         };
-        db.transitions()
-            .commit_queue_with_execution_protocol_and_wait_transition(
-                &claim,
-                &ExecutionProtocolTransition::default(),
-                Some(&QueueWaitTransition {
-                    expected: WaitConditionExpectation {
-                        id: triggered.id.clone(),
-                        agent_id: "agent-a".into(),
-                        status: triggered.status.clone(),
-                        updated_at: triggered.updated_at,
-                    },
-                    record: resolved,
-                    work_item: Some(WorkItemMutation::Update {
-                        record: unblocked.clone(),
-                        expected_revision: open.revision,
-                    }),
-                    index_changes: vec![index_change("work_item", &open.id)],
-                }),
-                None,
-            )?;
+        let mut claim = PreparedQueueTransition::new(claim);
+        claim.wait_transition = Some(QueueWaitTransition {
+            expected: WaitConditionExpectation {
+                id: triggered.id.clone(),
+                agent_id: "agent-a".into(),
+                status: triggered.status.clone(),
+                updated_at: triggered.updated_at,
+            },
+            record: resolved,
+            work_item: Some(WorkItemMutation::Update {
+                record: unblocked.clone(),
+                expected_revision: open.revision,
+            }),
+            index_changes: vec![index_change("work_item", &open.id)],
+        });
+        let claim = PreparedInputTransition::queue(
+            scope.clone(),
+            "claim-trigger-with-wait-resolution".into(),
+            now + chrono::Duration::seconds(2),
+            claim,
+        )?;
+        db.transitions_in_scope(&scope)
+            .commit_prepared_transition(&claim)?;
         assert_eq!(
             db.work_items()
                 .latest(&open.id)?
@@ -8818,7 +8849,7 @@ mod tests {
         let mut initial_state = AgentState::new("agent-a");
         initial_state.current_work_item_id = Some(completed_item.id.clone());
         initial_state.current_turn_work_item_id = Some(completed_item.id.clone());
-        db.agent_states().upsert(&initial_state)?;
+        db.agent_states().upsert_for_fixture(&initial_state)?;
         let queued = QueueEntryRecord {
             message_id: "message-completion-cotouch".into(),
             agent_id: "agent-a".into(),
@@ -9040,7 +9071,8 @@ mod tests {
     fn settlement_rejects_preexisting_durable_ahead_drift() -> Result<()> {
         let (dir, db) = runtime_db()?;
         let now = Utc::now();
-        db.agent_states().upsert(&AgentState::new("agent-a"))?;
+        db.agent_states()
+            .upsert_for_fixture(&AgentState::new("agent-a"))?;
         db.agent_identities().upsert(&active_agent("agent-a"))?;
         let open = work_item("work-drift");
         db.transitions()

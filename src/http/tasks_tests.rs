@@ -169,7 +169,10 @@ async fn work_queue_http_incarnation_binding_preserves_legacy_reads_without_runt
     host.runtime_db().work_items().insert_new(&second).unwrap();
     let mut agent = AgentState::new("queue-agent");
     agent.current_work_item_id = Some(item.id.clone());
-    host.runtime_db().agent_states().upsert(&agent).unwrap();
+    host.runtime_db()
+        .agent_states()
+        .upsert_for_fixture(&agent)
+        .unwrap();
     let storage = host.operator_agent_read_storage("queue-agent").unwrap();
     let legacy = storage.work_queue_read_model().unwrap();
     let events_before = storage.read_recent_events(100).unwrap();
