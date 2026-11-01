@@ -7,7 +7,9 @@ use super::lifecycle::{
 };
 use super::logging::DaemonLogHealth;
 use super::state::{
-    persist_last_runtime_failure, DAEMON_LOG_TAIL_LINE_CHAR_LIMIT, DAEMON_LOG_TAIL_READ_BYTE_LIMIT,
+    persist_last_runtime_failure, DaemonFailureDiagnostics, DaemonFailureDiagnosticsScope,
+    DaemonFailureDiagnosticsStatus, DaemonFailureDiagnosticsUnavailableReason,
+    DAEMON_LOG_TAIL_LINE_CHAR_LIMIT, DAEMON_LOG_TAIL_READ_BYTE_LIMIT,
 };
 use super::{
     clear_persisted_daemon_lifecycle_failures, config_fingerprint, daemon_log_hint, daemon_logs,
@@ -1044,6 +1046,23 @@ fn daemon_logs_tail_does_not_read_a_rotated_inode_twice() {
 
     assert_eq!(daemon_logs(&config, 10).unwrap().tail, ["older", "newest"]);
 }
+fn available_persisted_daemon_diagnostics() -> DaemonFailureDiagnostics {
+    DaemonFailureDiagnostics {
+        scope: DaemonFailureDiagnosticsScope::PersistedDaemonOnly,
+        status: DaemonFailureDiagnosticsStatus::Available,
+        reason: None,
+    }
+}
+
+fn unavailable_persisted_daemon_diagnostics(
+    reason: DaemonFailureDiagnosticsUnavailableReason,
+) -> DaemonFailureDiagnostics {
+    DaemonFailureDiagnostics {
+        scope: DaemonFailureDiagnosticsScope::PersistedDaemonOnly,
+        status: DaemonFailureDiagnosticsStatus::Unavailable,
+        reason: Some(reason),
+    }
+}
 
 #[tokio::test]
 async fn daemon_status_surfaces_persisted_last_failure_when_runtime_stopped() {
@@ -1059,10 +1078,14 @@ async fn daemon_status_surfaces_persisted_last_failure_when_runtime_stopped() {
     let status = daemon_status(&config).await.unwrap();
     assert_eq!(status.state, DaemonLifecycleState::Stopped);
     assert_eq!(status.last_failure, Some(failure));
+    assert_eq!(
+        status.failure_diagnostics,
+        Some(available_persisted_daemon_diagnostics())
+    );
 }
 
 #[tokio::test]
-async fn daemon_status_surfaces_db_only_public_agent_runtime_failure_when_stopped() {
+async fn daemon_status_reports_persisted_daemon_scope_without_db_agent_aggregation() {
     let config = test_config();
     let runtime_db =
         RuntimeDb::open_and_migrate(config.runtime_db_path(), config.runtime_db_lock_path())
@@ -1092,7 +1115,155 @@ async fn daemon_status_surfaces_db_only_public_agent_runtime_failure_when_stoppe
 
     let status = daemon_status(&config).await.unwrap();
     assert_eq!(status.state, DaemonLifecycleState::Stopped);
-    assert_eq!(status.last_failure, Some(failure));
+    // Default status reports only daemon-persisted failures: the agent's
+    // DB-recorded failure must not be aggregated, and the diagnostics object
+    // declares the persisted_daemon_only scope explicitly.
+    assert_eq!(status.last_failure, None);
+    assert_eq!(
+        status.failure_diagnostics,
+        Some(available_persisted_daemon_diagnostics())
+    );
+    let encoded = serde_json::to_value(&status).unwrap();
+    assert_eq!(
+        encoded["failure_diagnostics"]["scope"],
+        "persisted_daemon_only"
+    );
+    assert_eq!(encoded["failure_diagnostics"]["status"], "available");
+    // The DB still records the failure, proving the fixture is live while the
+    // default status path simply never aggregates it.
+    assert_eq!(
+        crate::daemon::state::latest_known_runtime_failure(&config).unwrap(),
+        Some(failure)
+    );
+}
+
+#[tokio::test]
+async fn daemon_status_reports_diagnostics_degradation_for_persisted_failure_files() {
+    let config = test_config();
+    let paths = daemon_paths(&config);
+    fs::create_dir_all(config.run_dir()).unwrap();
+
+    fs::write(&paths.last_failure_path, b"{broken").unwrap();
+    let status = daemon_status(&config).await.unwrap();
+    assert_eq!(status.state, DaemonLifecycleState::Stopped);
+    assert_eq!(status.last_failure, None);
+    assert_eq!(
+        status.failure_diagnostics,
+        Some(unavailable_persisted_daemon_diagnostics(
+            DaemonFailureDiagnosticsUnavailableReason::InvalidData
+        ))
+    );
+
+    // One byte past the 64 KiB bound: never truncate into a fake summary.
+    fs::write(&paths.last_failure_path, vec![b' '; 64 * 1024 + 1]).unwrap();
+    let status = daemon_status(&config).await.unwrap();
+    assert_eq!(status.last_failure, None);
+    assert_eq!(
+        status.failure_diagnostics,
+        Some(unavailable_persisted_daemon_diagnostics(
+            DaemonFailureDiagnosticsUnavailableReason::TooLarge
+        ))
+    );
+
+    fs::remove_file(&paths.last_failure_path).unwrap();
+    fs::create_dir(&paths.last_failure_path).unwrap();
+    let status = daemon_status(&config).await.unwrap();
+    assert_eq!(status.last_failure, None);
+    assert_eq!(
+        status.failure_diagnostics,
+        Some(unavailable_persisted_daemon_diagnostics(
+            DaemonFailureDiagnosticsUnavailableReason::NotRegularFile
+        ))
+    );
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn daemon_status_reports_read_error_for_unreadable_persisted_failure_file() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let config = test_config();
+    let paths = daemon_paths(&config);
+    fs::create_dir_all(config.run_dir()).unwrap();
+    fs::write(&paths.last_failure_path, b"{}").unwrap();
+    fs::set_permissions(&paths.last_failure_path, fs::Permissions::from_mode(0o000)).unwrap();
+
+    let status = daemon_status(&config).await.unwrap();
+    assert_eq!(status.last_failure, None);
+    assert_eq!(
+        status.failure_diagnostics,
+        Some(unavailable_persisted_daemon_diagnostics(
+            DaemonFailureDiagnosticsUnavailableReason::ReadError
+        ))
+    );
+}
+
+#[tokio::test]
+async fn daemon_status_creates_no_runtime_db_and_leaves_corrupt_db_untouched() {
+    let config = test_config();
+    let status = daemon_status(&config).await.unwrap();
+    assert_eq!(status.state, DaemonLifecycleState::Stopped);
+    assert!(!config.runtime_db_path().exists());
+    assert!(!config.runtime_db_lock_path().exists());
+    assert_eq!(
+        status.failure_diagnostics,
+        Some(available_persisted_daemon_diagnostics())
+    );
+
+    // A pre-existing corrupt DB must not be migrated, repaired, or rewritten.
+    let db_path = config.runtime_db_path();
+    let db_dir = db_path.parent().unwrap();
+    fs::create_dir_all(db_dir).unwrap();
+    let corrupt = b"not a sqlite database at all".to_vec();
+    fs::write(&db_path, &corrupt).unwrap();
+    let status = daemon_status(&config).await.unwrap();
+    assert_eq!(status.state, DaemonLifecycleState::Stopped);
+    assert_eq!(fs::read(config.runtime_db_path()).unwrap(), corrupt);
+}
+
+#[tokio::test]
+async fn daemon_status_bounds_tcp_fallback_when_socket_missing_and_pid_alive() {
+    // Socket missing, metadata records a live PID (this process), and the TCP
+    // fallback target accepts connections but never responds. The shared
+    // probe budget must bound the whole status call.
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = listener.local_addr().unwrap();
+    std::thread::spawn(move || {
+        for stream in listener.incoming() {
+            let _ = stream;
+        }
+    });
+    let mut config = test_config();
+    config.http_addr = addr.to_string();
+    config.callback_base_url = format!("http://{addr}");
+    fs::create_dir_all(config.run_dir()).unwrap();
+    let mut metadata = replacement_metadata(
+        &config,
+        std::process::id(),
+        std::env::current_exe().unwrap(),
+    );
+    // The helper's defaults describe an incompatible daemon; this fallback
+    // anchors on metadata of a daemon compatible with the current client.
+    metadata.control_protocol_version = crate::daemon::DAEMON_CONTROL_PROTOCOL_VERSION;
+    fs::write(
+        config.run_dir().join("daemon.json"),
+        serde_json::to_vec(&metadata).unwrap(),
+    )
+    .unwrap();
+
+    let started = std::time::Instant::now();
+    let status = daemon_status_with_probe_timeout(&config, std::time::Duration::from_millis(100))
+        .await
+        .unwrap();
+    let elapsed = started.elapsed();
+    assert!(
+        elapsed < std::time::Duration::from_secs(1),
+        "status took {elapsed:?}"
+    );
+    // The metadata anchor keeps the daemon reported as running (degraded), and
+    // the bounded probe never turns into a hang or a false stopped state.
+    assert_eq!(status.state, DaemonLifecycleState::Degraded);
+    assert!(!status.healthy);
 }
 
 #[test]

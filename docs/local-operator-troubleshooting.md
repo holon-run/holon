@@ -91,7 +91,15 @@ Use `daemon status` to answer:
 - is there a healthy runtime for this `HOLON_HOME`
 - is it `idle`, `waiting`, or `processing`
 - how many public agents and tasks are active
-- is there a recent startup, shutdown, or runtime-turn failure summary
+- is there a recent daemon-persisted startup, shutdown, or runtime-turn failure
+  summary
+
+`daemon status` never opens the runtime database or scans agent directories, so
+lock contention on `state/runtime.sqlite` cannot stall it. Its `last_failure`
+field covers only failures the daemon persisted locally (`failure_diagnostics`
+reports `persisted_daemon_only` scope and availability); it is not a guarantee
+that no public agent failed. Use `daemon logs` or `agent status` for full
+failure diagnostics.
 
 Interpretation:
 

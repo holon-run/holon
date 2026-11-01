@@ -1719,3 +1719,84 @@ fn idempotent_start_and_rejected_mismatch_or_foreign_runtime_do_not_rewrite_prof
     fixture.assert_no_secrets();
     foreign.assert_no_secrets();
 }
+
+#[test]
+fn daemon_status_stays_bounded_under_db_write_and_migration_lock_contention() {
+    let _guard = server_lock();
+    let mut fixture = Fixture::new();
+    let address = free_address();
+    let started = fixture.start(&address);
+    assert_eq!(started["state"], "running", "{started}");
+
+    let runtime_db = fixture.path("state/runtime.sqlite");
+    assert!(
+        runtime_db.exists(),
+        "daemon must have created {runtime_db:?}"
+    );
+
+    // Writer contention: hold a SQLite write transaction on the runtime DB
+    // while `daemon status` runs against a healthy daemon. The default status
+    // path must never open the DB, so the CLI subprocess stays fast and
+    // consistent with readiness instead of busy-waiting on the lock.
+    {
+        let writer =
+            rusqlite::Connection::open(&runtime_db).expect("open runtime db for writer contention");
+        writer
+            .execute_batch("BEGIN IMMEDIATE;")
+            .expect("acquire sqlite write lock");
+        let started_at = Instant::now();
+        let status = fixture.success(&["daemon", "status"]);
+        let elapsed = started_at.elapsed();
+        assert!(
+            elapsed < Duration::from_secs(1),
+            "daemon status took {elapsed:?} under sqlite writer contention: {status}"
+        );
+        assert_eq!(status["state"], "running", "{status}");
+        assert_eq!(status["healthy"], true, "{status}");
+        assert_eq!(
+            status["failure_diagnostics"]["scope"], "persisted_daemon_only",
+            "{status}"
+        );
+        writer
+            .execute_batch("ROLLBACK;")
+            .expect("release sqlite write lock");
+    }
+
+    // Migration-lock contention: hold an exclusive flock on the runtime DB
+    // migration lock. The old status path took this lock via
+    // `RuntimeDb::open_and_migrate`; the default status path must not need it.
+    {
+        let lock_path = fixture.path("state/runtime.lock");
+        let lock_file = File::open(&lock_path)
+            .or_else(|error| {
+                // The daemon may not have persisted the lock file yet; an
+                // exclusive holder is what matters, not pre-existence.
+                if error.kind() == std::io::ErrorKind::NotFound {
+                    File::create(&lock_path)
+                } else {
+                    Err(error)
+                }
+            })
+            .expect("open runtime db migration lock");
+        lock_file
+            .lock_exclusive()
+            .expect("hold runtime db migration lock");
+        let started_at = Instant::now();
+        let status = fixture.success(&["daemon", "status"]);
+        let elapsed = started_at.elapsed();
+        assert!(
+            elapsed < Duration::from_secs(1),
+            "daemon status took {elapsed:?} under migration lock contention: {status}"
+        );
+        assert_eq!(status["state"], "running", "{status}");
+        assert_eq!(status["healthy"], true, "{status}");
+        assert_eq!(
+            status["failure_diagnostics"]["status"], "available",
+            "{status}"
+        );
+        drop(lock_file);
+    }
+
+    fixture.stop();
+    fixture.assert_no_secrets();
+}

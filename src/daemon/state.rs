@@ -49,6 +49,60 @@ pub enum DaemonLifecycleOwner {
     Standalone,
 }
 
+/// Scope of the failure diagnostics attached to `holon daemon status`.
+///
+/// The default status path reports only failures the daemon persisted locally;
+/// it never scans the runtime DB or agent directories.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum DaemonFailureDiagnosticsScope {
+    PersistedDaemonOnly,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum DaemonFailureDiagnosticsStatus {
+    Available,
+    Unavailable,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum DaemonFailureDiagnosticsUnavailableReason {
+    ReadError,
+    InvalidData,
+    TooLarge,
+    NotRegularFile,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct DaemonFailureDiagnostics {
+    pub scope: DaemonFailureDiagnosticsScope,
+    pub status: DaemonFailureDiagnosticsStatus,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<DaemonFailureDiagnosticsUnavailableReason>,
+}
+
+impl DaemonFailureDiagnostics {
+    fn persisted_daemon_only(
+        status: DaemonFailureDiagnosticsStatus,
+        reason: Option<DaemonFailureDiagnosticsUnavailableReason>,
+    ) -> Self {
+        Self {
+            scope: DaemonFailureDiagnosticsScope::PersistedDaemonOnly,
+            status,
+            reason,
+        }
+    }
+}
+
+/// Result of the bounded read of the daemon-persisted failure summary.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PersistedDaemonFailure {
+    pub failure: Option<RuntimeFailureSummary>,
+    pub diagnostics: DaemonFailureDiagnostics,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(tag = "source", rename_all = "snake_case")]
 pub enum DaemonDesiredServe {
@@ -95,6 +149,11 @@ pub struct DaemonStatusView {
     pub activity: Option<RuntimeActivitySummary>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_failure: Option<RuntimeFailureSummary>,
+    /// Coverage of `last_failure` on the default status path: persisted
+    /// daemon-side summaries only. Absent on lifecycle views that do not read
+    /// the persisted diagnostics source.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub failure_diagnostics: Option<DaemonFailureDiagnostics>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub stale_files: Vec<PathBuf>,
     pub message: String,
@@ -293,6 +352,69 @@ pub fn load_last_runtime_failure(config: &AppConfig) -> Result<Option<RuntimeFai
         return Ok(None);
     }
     load_runtime_failure_file(&path)
+}
+
+/// Upper bound for reading the daemon-persisted failure summary. Oversized or
+/// unreadable files are reported as unavailable instead of being truncated or
+/// silently treated as "no failure".
+const PERSISTED_FAILURE_READ_LIMIT: u64 = 64 * 1024;
+
+/// Bounded read of the daemon-persisted failure summary (`last_failure.json`).
+///
+/// This never opens the runtime DB, so lock contention cannot stall the default
+/// `holon daemon status` path. A missing file is an available empty source.
+pub fn read_persisted_daemon_failure(config: &AppConfig) -> PersistedDaemonFailure {
+    let path = daemon_paths(config).last_failure_path;
+    let unavailable = |reason| PersistedDaemonFailure {
+        failure: None,
+        diagnostics: DaemonFailureDiagnostics::persisted_daemon_only(
+            DaemonFailureDiagnosticsStatus::Unavailable,
+            Some(reason),
+        ),
+    };
+    if !path.exists() {
+        return PersistedDaemonFailure {
+            failure: None,
+            diagnostics: DaemonFailureDiagnostics::persisted_daemon_only(
+                DaemonFailureDiagnosticsStatus::Available,
+                None,
+            ),
+        };
+    }
+    let Ok(metadata) = fs::metadata(&path) else {
+        return unavailable(DaemonFailureDiagnosticsUnavailableReason::ReadError);
+    };
+    if !metadata.is_file() {
+        return unavailable(DaemonFailureDiagnosticsUnavailableReason::NotRegularFile);
+    }
+    if metadata.len() > PERSISTED_FAILURE_READ_LIMIT {
+        return unavailable(DaemonFailureDiagnosticsUnavailableReason::TooLarge);
+    }
+    let Ok(file) = fs::File::open(&path) else {
+        return unavailable(DaemonFailureDiagnosticsUnavailableReason::ReadError);
+    };
+    // Read one byte past the limit so growth between the metadata check and
+    // the read is still classified as too_large instead of being truncated.
+    let mut bytes = Vec::new();
+    let read = file
+        .take(PERSISTED_FAILURE_READ_LIMIT + 1)
+        .read_to_end(&mut bytes);
+    if read.is_err() {
+        return unavailable(DaemonFailureDiagnosticsUnavailableReason::ReadError);
+    }
+    if bytes.len() as u64 > PERSISTED_FAILURE_READ_LIMIT {
+        return unavailable(DaemonFailureDiagnosticsUnavailableReason::TooLarge);
+    }
+    match serde_json::from_slice(&bytes) {
+        Ok(failure) => PersistedDaemonFailure {
+            failure: Some(failure),
+            diagnostics: DaemonFailureDiagnostics::persisted_daemon_only(
+                DaemonFailureDiagnosticsStatus::Available,
+                None,
+            ),
+        },
+        Err(_) => unavailable(DaemonFailureDiagnosticsUnavailableReason::InvalidData),
+    }
 }
 
 pub(crate) fn persist_last_runtime_failure(
