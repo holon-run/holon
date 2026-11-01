@@ -94,6 +94,10 @@ order: 30
   配置 OpenID Connect 单点登录、团队共享运行时提示词审计与会话超时策略。
   <!-- mdorigin:index kind=article -->
 
+- [用 Google Workspace 配置 OIDC 单点登录](./google-workspace-oidc-authentication.md)
+  在 Google Cloud 中创建 OAuth 客户端，把 Google Workspace 作为 Holon 的身份提供商，并完成组织准入、配置与验证。
+  <!-- mdorigin:index kind=article -->
+
 - [与团队共用 AI 助手](./share-with-your-team.md)
   在共享服务器部署 Holon、配置团队单点登录，全组协同交办任务给同一个长期 AI 助手并跟踪进度。
   <!-- mdorigin:index kind=article -->

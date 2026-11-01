@@ -19,7 +19,7 @@ session timeouts, and verifying logins.
 ## Prerequisites
 
 - A running Holon instance reachable by your users (for example via `--access tunnel`, `--access tailnet`, or a reverse proxy).
-- An OIDC-compliant identity provider, such as Keycloak, Okta, Authentik, Google Workspace, or Microsoft Entra ID.
+- An OIDC-compliant identity provider, such as Keycloak, Okta, Authentik, [Google Workspace](./google-workspace-oidc-authentication.md), or Microsoft Entra ID.
 - Administrative access in your IdP to register a new client application.
 
 > **Security note:** Holon requires HTTPS for the OIDC issuer URL and callback
@@ -32,6 +32,9 @@ does not create a sandbox or imply per-user workspace isolation. See
 [Security and execution boundaries](../concepts/security-and-execution-boundaries.md).
 
 ## Step 1: Register Holon in your IdP
+
+> **Provider-Specific Guide:**
+> If your team uses Google Workspace, see the dedicated walkthrough: [Configure OIDC Single Sign-On with Google Workspace](./google-workspace-oidc-authentication.md), which covers Internal user type enforcement, admin access controls, and verified test scopes.
 
 Create a new OpenID Connect application in your identity provider:
 

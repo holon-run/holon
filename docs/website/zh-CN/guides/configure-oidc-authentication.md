@@ -13,7 +13,7 @@ order: 180
 ## 前置条件
 
 - 运行中且用户可访问的 Holon 实例（例如通过 `--access tunnel`、`--access tailnet` 或反向代理对外提供服务）。
-- 兼容 OIDC 规范的身份提供商，例如 Keycloak、Okta、Authentik、Google Workspace 或 Microsoft Entra ID。
+- 兼容 OIDC 规范的身份提供商，例如 Keycloak、Okta、Authentik、[Google Workspace](./google-workspace-oidc-authentication.md) 或 Microsoft Entra ID。
 - 在 IdP 中具有注册新客户端应用的管理员权限。
 
 > **安全注意：** Holon 要求 OIDC 发行者 URL（issuer URL）与回调端点必须使用 HTTPS。仅当主机名严格为 `localhost` 时，回调地址才允许使用 HTTP；发行者 URL 必须始终使用 HTTPS。
@@ -21,6 +21,9 @@ order: 180
 修改认证配置时请保持对运行时主机的运维通道畅通，以便在配置出错时及时修正。OIDC 仅用于识别登录用户身份；它不会建立底层沙箱，也不代表实现了用户间的文件系统或工作区隔离。具体请参阅[安全与执行边界](../concepts/security-and-execution-boundaries.md)。
 
 ## 第 1 步：在 IdP 中注册 Holon 客户端
+
+> **特定 IdP 指南：**
+> 如果你的组织使用 Google Workspace 作为身份提供商，请参阅专用的[用 Google Workspace 配置 OIDC 单点登录](./google-workspace-oidc-authentication.md)，获取关于 Internal 用户类型、组织准入收敛与实测注意事项的详细说明。
 
 在身份提供商中创建新的 OpenID Connect 应用：
 
