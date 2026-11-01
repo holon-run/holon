@@ -347,10 +347,10 @@ jobs:
     name: iOS daemon, simulator and UI gates
     runs-on: macos-latest
     # The non-UI steps of this job take up to 25 minutes on a contended
-    # runner, and the UI sweep itself takes up to 67. The job bound has to
-    # cover both, or it cuts a healthy run short before the step-level
-    # bound can report anything useful.
-    timeout-minutes: 110
+    # runner, and the UI sweep itself takes up to ~80 once case retries
+    # inflate it. The job bound has to cover both, or it cuts a healthy
+    # run short before the step-level bound can report anything useful.
+    timeout-minutes: 130
     needs: changes
     # Tiered iOS gating: iOS-relevant paths (ios_app) and full sweeps run
     # every gate below; Rust-base changes (ios_compat) run only the
@@ -405,9 +405,12 @@ jobs:
         # The bound must clear the slowest healthy sweep. Measured on main,
         # a successful UI step took up to 63 minutes and the slowest
         # observed sweep ran 67 minutes, so a 60 minute bound killed
-        # healthy runs. 70 minutes leaves headroom over that maximum while
-        # still ending a hung sweep far sooner than the job bound.
-        timeout-minutes: 70
+        # healthy runs. A later sweep with two retried cases (adding 13
+        # minutes) was then killed by a 70 minute bound while still
+        # healthy, on pace for ~80. 90 minutes clears that retry-inflated
+        # tail while still ending a hung sweep far sooner than the job
+        # bound.
+        timeout-minutes: 90
         if: needs.changes.outputs.full_sweep == 'true' || needs.changes.outputs.ios_app == 'true'
         run: make ios-ui-test
         env:

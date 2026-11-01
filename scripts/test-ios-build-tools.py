@@ -23,6 +23,7 @@ import time
 import unittest
 import uuid
 from unittest.mock import Mock, call, patch
+from types import SimpleNamespace
 import urllib.error
 import urllib.request
 
@@ -1095,16 +1096,18 @@ class UIFixtureStallDetectionContracts(unittest.TestCase):
         step = step[:end] if end != -1 else step
         # The bound belongs to this step, so it must appear before the next
         # step starts and carry the intended value.
-        self.assertRegex(step, r"timeout-minutes:\s*70\b",
-                         "The UI step must carry a 70 minute bound")
+        self.assertRegex(step, r"timeout-minutes:\s*90\b",
+                         "The UI step must carry a 90 minute bound")
 
     def test_ui_step_bound_clears_the_slowest_observed_sweep(self):
         """The step bound must not kill a sweep that may still be healthy.
 
         Measured on main, a successful UI step took up to 63 minutes and
         the slowest observed sweep — a run that was cancelled, not
-        failed — reached 67 minutes. A bound below that turns a run that
-        might still be healthy into a timeout failure.
+        failed — reached 67 minutes. Case-level retries then inflated a
+        healthy sweep past 70 minutes (two retried cases added 13), on
+        pace for ~80. A bound below that tail turns a run that might
+        still be healthy into a timeout failure.
         """
         workflow = (ROOT / ".github/workflows/ci.yml").read_text()
         marker = "- name: Test isolated simulator UI"
@@ -1114,7 +1117,7 @@ class UIFixtureStallDetectionContracts(unittest.TestCase):
         match = re.search(r"timeout-minutes:\s*(\d+)\b", step)
         self.assertIsNotNone(match, "The UI step must carry a bound")
         bound = int(match.group(1))
-        slowest_observed_minutes = 67
+        slowest_observed_minutes = 80
         self.assertGreater(bound, slowest_observed_minutes,
                            "The UI step bound must clear the slowest "
                            "observed sweep measured on main")
@@ -1240,6 +1243,56 @@ class UIFixtureStallDetectionContracts(unittest.TestCase):
                              "killed with its process group")
         finally:
             shutil.rmtree(marker, ignore_errors=True)
+
+    def test_a_watcher_that_cannot_start_still_kills_the_child(self):
+        """A watcher start() failure must not skip the child cleanup.
+
+        join() on a never-started thread raises RuntimeError. If the
+        cleanup order let that propagate, the orphan kill and the log
+        replay would be skipped, and the join error would mask the
+        original start failure. The kill and the replay must not depend
+        on the watcher's own liveness.
+        """
+        helpers = self.helpers
+        killed = []
+
+        class NeverStartingThread:
+            def __init__(self, target=None, daemon=None):
+                pass
+
+            def start(self):
+                raise RuntimeError("can't start new thread")
+
+            def join(self, timeout=None):
+                # Real semantics: joining a never-started thread raises.
+                raise RuntimeError("cannot join thread before it is started")
+
+        class ThreadlessModule:
+            Event = staticmethod(threading.Event)
+            Thread = NeverStartingThread
+
+        def popen(command, env=None, stdout=None, stderr=None, **keywords):
+            stdout.write("started\n")
+            stdout.flush()
+            return self.SilentProcess(killed)
+
+        standin = SimpleNamespace(Popen=popen, STDOUT=subprocess.STDOUT)
+        original_threading = helpers["threading"]
+        original_sys = helpers["sys"]
+        helpers["threading"] = ThreadlessModule
+        helpers["sys"] = SimpleNamespace(stdout=StringIO())
+        try:
+            with self.assertRaisesRegex(RuntimeError, "can't start new thread"):
+                helpers["monitor_xcodebuild"](
+                    ["/bin/sh", "-c", "echo started"], {}, 1,
+                    subprocess_module=standin)
+            self.assertTrue(killed, "the child must be killed even when "
+                                    "the watcher never started")
+            self.assertIn("started", helpers["sys"].stdout.getvalue(),
+                          "the log replay must not be skipped")
+        finally:
+            helpers["threading"] = original_threading
+            helpers["sys"] = original_sys
 
     def test_a_healthy_build_longer_than_the_grace_period_survives(self):
         """A healthy build must not be killed by the watchdog's grace period.

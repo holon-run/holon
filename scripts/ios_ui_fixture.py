@@ -271,14 +271,20 @@ def monitor_xcodebuild(command, env, idle_budget, subprocess_module=None,
                 returncode = _wait_for_child(process, state, watcher=watcher)
         finally:
             done.set()
-            watcher.join(timeout=5)
             # Never leave the child running: an orphaned xcodebuild would
             # keep the simulator busy for the next attempt and would keep
             # the original silent hang alive. A child that already exited
             # must not be signalled: its result is the case's result.
+            # The kill runs before the join: joining a watcher that never
+            # started raises RuntimeError, and that failure must not skip
+            # the kill or the log replay.
             child = holder.get("process")
             if child is not None and child_is_running(child):
                 kill_child(child)
+            try:
+                watcher.join(timeout=5)
+            except RuntimeError:
+                pass  # the watcher never started; there is nothing to join
             try:
                 sys.stdout.write(captured.read_text(errors="replace"))
                 sys.stdout.flush()
