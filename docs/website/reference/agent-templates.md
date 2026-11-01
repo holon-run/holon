@@ -166,6 +166,17 @@ the operator provides a key and authorizes that lookup. It does not book,
 hold, cancel, pay, send messages, or write remote calendars without explicit
 approval. Visa, insurance, and legal conclusions stay with qualified owners.
 
+## Meeting coordination
+
+`meeting-steward` maintains authorized participants, confirmation status,
+unconfirmed holds, versioned preparation materials, post-meeting actions, and
+conflicts. A calendar search, busy/free result, or draft invitation is a
+candidate, not a sent invitation or a remote calendar write. It does not send
+invitations, book rooms, change remote calendars, or commit on behalf of
+attendees without explicit approval of that exact action. Email threads stay
+with the email assistant; account-specific sales briefs stay with sales
+operations.
+
 ## Marketing operations
 
 `marketing-steward` maintains product-marketing context, content queues,
