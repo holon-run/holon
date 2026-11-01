@@ -92,7 +92,7 @@ def kill_child(child):
 
 
 def _wait_for_child(process, state, poll_interval=1.0,
-                    watcher_failure_grace=30.0):
+                    watcher_failure_grace=30.0, watcher=None):
     """Wait for the child without an unbounded wait.
 
     A bare ``process.wait()`` cannot notice that the watchdog died: the
@@ -104,6 +104,12 @@ def _wait_for_child(process, state, poll_interval=1.0,
     So the wait polls instead. If the child finishes, its exit status is
     the result. If the watchdog has died and the child is still running,
     the child is killed here and the wait ends.
+
+    The grace period is a bound on how long a *dead* watchdog may stay
+    silent, not a bound on how long the child may run. It only advances
+    while the watcher thread is not alive. A healthy watchdog resets it
+    on every poll, so a long but healthy build is never killed by this
+    function: the stall budget in the watcher is what bounds that.
     """
     deadline = None
     while True:
@@ -117,7 +123,7 @@ def _wait_for_child(process, state, poll_interval=1.0,
             # so the wait is not retried without a bound.
             if "timeout" not in str(error):
                 raise
-            state["wait_timed_out"] = poll_interval
+            state["wait_unsupported"] = True
             kill_child(process)
             return -1
         if returncode is not None:
@@ -129,12 +135,19 @@ def _wait_for_child(process, state, poll_interval=1.0,
                 return process.wait(timeout=5)
             except Exception:  # noqa: BLE001 - the child is already killed
                 return -1
+        if watcher is None or watcher.is_alive():
+            # The watchdog is running, so it is the component that owns
+            # the stall budget. Do not arm a deadline against a healthy
+            # watchdog: doing so would cap every build at the grace
+            # period regardless of its progress.
+            deadline = None
+            continue
         if deadline is None:
             deadline = time.monotonic() + watcher_failure_grace
         elif time.monotonic() >= deadline:
-            # The watchdog neither reported a failure nor killed the
-            # child. Treat that as a failed watchdog: kill and report
-            # rather than wait forever.
+            # The watchdog is dead and did not report a failure. Treat
+            # that as a failed watchdog: kill and report rather than wait
+            # forever.
             state["wait_timed_out"] = watcher_failure_grace
             kill_child(process)
             try:
@@ -192,6 +205,7 @@ def monitor_xcodebuild(command, env, idle_budget, subprocess_module=None,
     state = {"last_growth": time.monotonic(), "size": 0, "stalled": False}
     state["watcher_failed"] = None
     state["wait_timed_out"] = None
+    state["wait_unsupported"] = False
     done = threading.Event()
     holder = {}
 
@@ -254,7 +268,7 @@ def monitor_xcodebuild(command, env, idle_budget, subprocess_module=None,
                 # had nothing to kill, and the main thread would then
                 # block on an unbounded wait.
                 watcher.start()
-                returncode = _wait_for_child(process, state)
+                returncode = _wait_for_child(process, state, watcher=watcher)
         finally:
             done.set()
             watcher.join(timeout=5)
@@ -276,6 +290,10 @@ def monitor_xcodebuild(command, env, idle_budget, subprocess_module=None,
     if state["watcher_failed"] is not None:
         raise UIStallTimeout(
             f"xcodebuild watchdog failed: {state['watcher_failed']!r}")
+    if state["wait_unsupported"]:
+        raise UIStallTimeout(
+            "xcodebuild wait is unbounded: process.wait() does not "
+            "support a timeout; the build is killed")
     if state["wait_timed_out"]:
         raise UIStallTimeout(
             f"xcodebuild watchdog did not report back within "

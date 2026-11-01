@@ -1096,12 +1096,13 @@ class UIFixtureStallDetectionContracts(unittest.TestCase):
         self.assertRegex(step, r"timeout-minutes:\s*70\b",
                          "The UI step must carry a 70 minute bound")
 
-    def test_ui_step_bound_clears_the_slowest_healthy_sweep(self):
-        """The step bound must not kill a healthy sweep.
+    def test_ui_step_bound_clears_the_slowest_observed_sweep(self):
+        """The step bound must not kill a sweep that may still be healthy.
 
         Measured on main, a successful UI step took up to 63 minutes and
-        the slowest observed sweep ran 67 minutes. A bound below that
-        turns a healthy run into a timeout failure.
+        the slowest observed sweep — a run that was cancelled, not
+        failed — reached 67 minutes. A bound below that turns a run that
+        might still be healthy into a timeout failure.
         """
         workflow = (ROOT / ".github/workflows/ci.yml").read_text()
         marker = "- name: Test isolated simulator UI"
@@ -1111,10 +1112,10 @@ class UIFixtureStallDetectionContracts(unittest.TestCase):
         match = re.search(r"timeout-minutes:\s*(\d+)\b", step)
         self.assertIsNotNone(match, "The UI step must carry a bound")
         bound = int(match.group(1))
-        slowest_healthy_minutes = 67
-        self.assertGreater(bound, slowest_healthy_minutes,
-                           "The UI step bound must clear the slowest healthy "
-                           "sweep measured on main")
+        slowest_observed_minutes = 67
+        self.assertGreater(bound, slowest_observed_minutes,
+                           "The UI step bound must clear the slowest "
+                           "observed sweep measured on main")
 
     def test_the_ios_job_bound_covers_the_ui_step_bound(self):
         """The job bound must leave room for the UI step to report."""
@@ -1171,19 +1172,37 @@ class UIFixtureStallDetectionContracts(unittest.TestCase):
                          "the execution allowance plus a margin")
         self.assertEqual(len(value.args), 2,
                          "The idle budget must compare exactly two bounds")
-        floor, cover = value.args
-        self.assertIsInstance(floor, ast.Constant)
-        self.assertIsInstance(floor.value, int)
-        self.assertGreaterEqual(floor.value, 900,
+        def is_floor(arg):
+            return (isinstance(arg, ast.Constant)
+                    and isinstance(arg.value, int))
+
+        def is_cover(arg):
+            return isinstance(arg, ast.BinOp) and isinstance(arg.op, ast.Add)
+
+        floors = [arg for arg in value.args if is_floor(arg)]
+        covers = [arg for arg in value.args if is_cover(arg)]
+        # The two bounds are a numeric floor and an allowance plus a
+        # margin. Which one comes first is an implementation detail, so
+        # they are matched semantically rather than by position.
+        self.assertEqual(len(floors), 1,
+                         "The idle budget needs one numeric floor bound")
+        self.assertGreaterEqual(floors[0].value, 900,
                                 "The idle budget floor must leave headroom "
                                 "for a healthy compile")
-        self.assertIsInstance(cover, ast.BinOp)
-        self.assertIsInstance(cover.op, ast.Add)
-        self.assertIsInstance(cover.left, ast.Name)
-        self.assertEqual(cover.left.id, "execution_allowance",
+        self.assertEqual(len(covers), 1,
+                         "The idle budget needs one allowance-plus-margin "
+                         "bound")
+        cover = covers[0]
+        sides = [cover.left, cover.right]
+        allowances = [side for side in sides
+                      if isinstance(side, ast.Name)
+                      and side.id == "execution_allowance"]
+        margins = [side for side in sides
+                   if isinstance(side, ast.Constant)
+                   and side.value == 300]
+        self.assertEqual(len(allowances), 1,
                          "The idle budget must cover the execution allowance")
-        self.assertIsInstance(cover.right, ast.Constant)
-        self.assertEqual(cover.right.value, 300,
+        self.assertEqual(len(margins), 1,
                          "The idle budget must add a margin to the allowance")
 
     def test_the_stall_kill_reaches_the_whole_process_group(self):
@@ -1219,6 +1238,67 @@ class UIFixtureStallDetectionContracts(unittest.TestCase):
                              "killed with its process group")
         finally:
             shutil.rmtree(marker, ignore_errors=True)
+
+    def test_a_healthy_build_longer_than_the_grace_period_survives(self):
+        """A healthy build must not be killed by the watchdog's grace period.
+
+        The grace period bounds how long a *dead* watchdog may stay
+        silent. It is not a cap on how long a build may run: the iOS UI
+        sweep legitimately runs for many minutes while the watchdog
+        happily watches it. A grace that armed against a live watchdog
+        would kill every healthy build.
+        """
+        helpers = self.helpers
+
+        class HealthyProcess:
+            returncode = None
+            pid = None
+
+            def __init__(self):
+                self.killed = False
+
+            def wait(self, timeout=None):
+                # A healthy child that outlives the grace period and then
+                # finishes on its own. subprocess.Popen.wait(timeout=)
+                # raises TimeoutExpired while the child is still running.
+                deadline = time.monotonic() + (timeout or 0)
+                while time.monotonic() < deadline:
+                    threading.Event().wait(0.01)
+                raise subprocess.TimeoutExpired("xcodebuild", timeout)
+
+            def poll(self):
+                return 0
+
+            def kill(self):
+                self.killed = True
+                return None
+
+        process = HealthyProcess()
+        state = {"watcher_failed": None, "wait_timed_out": None}
+
+        class LiveWatcher:
+            """A watcher that is alive and reports nothing."""
+
+            def is_alive(self):
+                return True
+
+        # The child returns once the grace period has passed. A grace
+        # that armed against a live watcher would have killed it by now.
+        def bounded_wait(timeout=None):
+            threading.Event().wait(2.5)
+            return 0
+
+        process.wait = bounded_wait
+        returncode = helpers["_wait_for_child"](
+            process, state, poll_interval=0.2, watcher_failure_grace=1.0,
+            watcher=LiveWatcher())
+        self.assertEqual(returncode, 0,
+                         "A healthy build must not be killed by the grace "
+                         "period")
+        self.assertFalse(process.killed,
+                         "A healthy build must not be killed by the grace "
+                         "period")
+        self.assertIsNone(state["wait_timed_out"])
 
     def test_a_dead_watchdog_cannot_leave_an_unbounded_wait(self):
         """The main thread must not block forever on a dead watchdog.
@@ -1260,6 +1340,211 @@ class UIFixtureStallDetectionContracts(unittest.TestCase):
                 helpers["monitor_xcodebuild"](
                     ["xcodebuild", "build"], {}, 3600,
                     subprocess_module=module, heartbeat_interval=1)
+
+    def test_a_reported_watchdog_failure_is_killed_by_the_main_thread(self):
+        """The main thread must kill the child once the watchdog is gone.
+
+        The watchdog kills the child on its way out, but that kill is
+        best effort. If it did not land, the main thread must stop the
+        child itself instead of waiting on a child nobody watches.
+        """
+        helpers = self.helpers
+        killed_by = []
+
+        class SurvivesWatchdogKill:
+            """A live child whose watchdog already reported its death.
+
+            The child only exits once killed, and ``wait()`` mirrors
+            ``subprocess.Popen.wait(timeout=)``: the timeout is real
+            waiting. An immediate raise would let a broken main loop
+            spin without the grace clock ever advancing, so a regression
+            would hang the suite instead of failing it.
+            """
+
+            returncode = None
+            pid = None
+
+            def __init__(self):
+                self.killed = False
+                self.polls = 0
+
+            def wait(self, timeout=None):
+                self.polls += 1
+                if self.killed:
+                    return 137
+                if timeout is None:
+                    raise AssertionError("the wait must stay bounded")
+                deadline = time.monotonic() + timeout
+                while time.monotonic() < deadline:
+                    threading.Event().wait(0.01)
+                if self.polls > 60:
+                    # Nobody killed the child and no deadline fired; the
+                    # wait is looping forever. Fail instead of hanging.
+                    raise AssertionError(
+                        "a reported watchdog failure must end the wait")
+                raise subprocess.TimeoutExpired("xcodebuild", timeout)
+
+            def poll(self):
+                return 137 if self.killed else None
+
+            def kill(self):
+                self.killed = True
+                killed_by.append(threading.current_thread().name)
+                return None
+
+        dead_watcher = threading.Thread(target=lambda: None)
+        dead_watcher.start()
+        dead_watcher.join()
+
+        process = SurvivesWatchdogKill()
+        state = {"watcher_failed": RuntimeError("watchdog gone"),
+                 "wait_timed_out": None, "wait_unsupported": False}
+        started = time.monotonic()
+        returncode = helpers["_wait_for_child"](
+            process, state, poll_interval=0.1, watcher_failure_grace=0.5,
+            watcher=dead_watcher)
+        elapsed = time.monotonic() - started
+        self.assertEqual(returncode, 137)
+        self.assertEqual(killed_by, ["MainThread"],
+                         "the main thread must kill a child whose watchdog "
+                         "died")
+        self.assertIsNone(state["wait_timed_out"])
+        self.assertLess(elapsed, 0.5,
+                        "a reported failure must not wait out the grace "
+                        "period before killing")
+
+    def test_a_silent_dead_watchdog_is_killed_by_the_main_thread(self):
+        """A watchdog that dies without reporting must not stall the wait.
+
+        The watcher records its death in watcher_failed, but a thread can
+        terminate without running that handler. The main thread must
+        notice a watcher that is no longer alive and kill the child after
+        the grace period, instead of waiting on a child nobody watches.
+        """
+        helpers = self.helpers
+        killed_by = []
+
+        class UnwatchedProcess:
+            returncode = None
+            pid = None
+
+            def __init__(self):
+                self.killed = False
+                self.polls = 0
+
+            def wait(self, timeout=None):
+                self.polls += 1
+                if self.killed:
+                    return 137
+                if timeout is None:
+                    raise AssertionError("the wait must stay bounded")
+                # Mirror subprocess.Popen.wait(timeout=): the timeout is
+                # real waiting, so the grace clock can actually elapse.
+                deadline = time.monotonic() + timeout
+                while time.monotonic() < deadline:
+                    threading.Event().wait(0.01)
+                if self.polls > 60:
+                    # A dead watchdog that never kills the child leaves
+                    # the wait looping forever; fail instead of hanging.
+                    raise AssertionError(
+                        "a dead watchdog must end the wait")
+                raise subprocess.TimeoutExpired("xcodebuild", timeout)
+
+            def poll(self):
+                return 137 if self.killed else None
+
+            def kill(self):
+                self.killed = True
+                killed_by.append(threading.current_thread().name)
+                return None
+
+        dead_watcher = threading.Thread(target=lambda: None)
+        dead_watcher.start()
+        dead_watcher.join()
+
+        process = UnwatchedProcess()
+        state = {"watcher_failed": None, "wait_timed_out": None,
+                 "wait_unsupported": False}
+        started = time.monotonic()
+        returncode = helpers["_wait_for_child"](
+            process, state, poll_interval=0.1, watcher_failure_grace=0.5,
+            watcher=dead_watcher)
+        elapsed = time.monotonic() - started
+        self.assertEqual(returncode, 137)
+        self.assertEqual(killed_by, ["MainThread"],
+                         "the main thread must kill the child once the "
+                         "watcher is dead")
+        self.assertEqual(state["wait_timed_out"], 0.5)
+        self.assertGreaterEqual(elapsed, 0.5,
+                                "the grace must actually elapse before the "
+                                "kill")
+
+    def test_an_unsupported_bounded_wait_fails_closed(self):
+        """A wait() without timeout support must fail closed, not hang.
+
+        The watchdog exists to prevent unbounded waits. If the child's
+        wait() cannot take a timeout at all, retrying it without a bound
+        would reintroduce exactly that, so the child is killed and the
+        case fails.
+        """
+        helpers = self.helpers
+
+        class TimeoutlessProcess:
+            returncode = None
+            pid = None
+
+            def __init__(self):
+                self.killed = False
+
+            def wait(self, timeout=None):
+                raise TypeError(
+                    "wait() got an unexpected keyword argument 'timeout'")
+
+            def poll(self):
+                return None
+
+            def kill(self):
+                self.killed = True
+                return None
+
+        process = TimeoutlessProcess()
+        module = Mock(Popen=Mock(return_value=process),
+                      STDOUT=subprocess.STDOUT)
+        with self.assertRaises(helpers["UIStallTimeout"]) as raised:
+            helpers["monitor_xcodebuild"](
+                ["xcodebuild", "build"], {}, 3600,
+                subprocess_module=module, heartbeat_interval=1)
+        self.assertIn("unbounded", str(raised.exception))
+        self.assertTrue(process.killed)
+
+    def test_a_foreign_type_error_from_wait_is_not_swallowed(self):
+        """A TypeError unrelated to the timeout kwarg must surface.
+
+        The timeout-kwarg fallback is matched on the error message, so a
+        TypeError raised inside a real wait() must propagate rather than
+        be misread as an unsupported wait.
+        """
+        helpers = self.helpers
+
+        class BrokenWaitProcess:
+            returncode = None
+            pid = None
+
+            def wait(self, timeout=None):
+                raise TypeError("waiter exploded")
+
+            def poll(self):
+                return None
+
+            def kill(self):
+                return None
+
+        state = {"watcher_failed": None, "wait_timed_out": None,
+                 "wait_unsupported": False}
+        with self.assertRaises(TypeError):
+            helpers["_wait_for_child"](
+                BrokenWaitProcess(), state, poll_interval=0.1)
+        self.assertFalse(state["wait_unsupported"])
 
     def test_sweep_runs_xcodebuild_through_the_monitored_runner(self):
         """The sweep must not call xcodebuild through an unbounded run()."""
