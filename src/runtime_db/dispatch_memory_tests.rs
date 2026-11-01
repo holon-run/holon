@@ -302,6 +302,30 @@ fn request() -> WorkDomainLoadRequest {
 }
 
 #[test]
+fn unfinished_start_retention_uses_original_turn_and_incarnation() -> Result<()> {
+    let f = Fixture::new(true)?;
+    let check = |scope: &InputEvidenceScope, turn: &str| -> Result<bool> {
+        has_unfinished_dispatch_memory_start_on(&f.db.connection()?, scope, turn)
+    };
+    let turn = &f.start.key().actual_dispatch_turn_id;
+    assert!(check(&f.scope, turn)?);
+    assert!(!check(&f.scope, "another-turn")?);
+    let mut other = f.scope.clone();
+    other.identity_incarnation += 1;
+    assert!(!check(&other, turn)?);
+    other.agent_id = "another-agent".into();
+    other.identity_incarnation = f.scope.identity_incarnation;
+    assert!(!check(&other, turn)?);
+    f.update("retention-pending", 1, false)?;
+    assert!(matches!(
+        f.read()?,
+        Some(DispatchMemoryRecord::Pending { .. })
+    ));
+    assert!(check(&f.scope, turn)?);
+    Ok(())
+}
+
+#[test]
 fn actual_started_turn_owns_seed_but_payload_hint_cannot_install_it() -> Result<()> {
     let f = Fixture::new(true)?;
     assert_eq!(f.read()?.unwrap().start(), Some(&f.start));

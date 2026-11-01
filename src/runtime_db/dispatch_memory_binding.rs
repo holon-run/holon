@@ -20,6 +20,22 @@ use crate::{
     types::{AuditEvent, WaitConditionRecord, WaitConditionStatus},
 };
 
+/// Retention metadata only: a settled activation may still owe its original
+/// dispatch memory finish. Retaining the binding grants no read/finish authority;
+/// startup recovery must still validate the immutable Start and its receipt.
+pub(crate) fn has_unfinished_dispatch_memory_start_on(
+    connection: &rusqlite::Connection,
+    scope: &InputEvidenceScope,
+    turn_id: &str,
+) -> Result<bool> {
+    Ok(connection.query_row(
+        "SELECT EXISTS(SELECT 1 FROM dispatch_memory_checkpoints
+         WHERE agent_id=?1 AND identity_incarnation=?2 AND turn_id=?3 AND state!='done')",
+        params![scope.agent_id, scope.identity_incarnation, turn_id],
+        |row| row.get(0),
+    )?)
+}
+
 /// Addresses a seed, never a latest State or a caller-invented Turn.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]

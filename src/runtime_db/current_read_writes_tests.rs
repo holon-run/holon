@@ -1,6 +1,8 @@
 //! Real Native material and SQLite rollback, not a fabricated Current ACK.
 #[path = "current_read_writes_tests/event_page.rs"]
 mod event_page;
+#[path = "current_read_writes_tests/history_schema.rs"]
+mod history_schema;
 #[path = "current_read_writes_tests/shared_ack.rs"]
 mod shared_ack;
 #[path = "current_read_writes_tests/timer_cancellation.rs"]

@@ -2324,21 +2324,27 @@ struct StaleExecutionBinding {
     reason: &'static str,
 }
 
-/// A recovered binding names a live execution only while its attempt is still
-/// Open. The previous release could persist a binding whose attempt already
-/// settled, was interrupted, or disappeared; keeping it would demand attempt
-/// input qualification the legacy upgrade never granted.
+/// Activation settlement does not finish the actual dispatch. Keep bindings
+/// with an unfinished original Start for startup recovery; clear legacy terminal
+/// bindings only when they have no such outstanding responsibility.
 fn stale_execution_binding_on(
     runtime_db: &RuntimeDb,
-    agent_id: &str,
+    scope: &super::resident_input_evidence::InputEvidenceScope,
     binding: &crate::types::WorkItemExecutionBinding,
 ) -> Result<Option<StaleExecutionBinding>> {
     let Some(attempt_id) = binding.activation_id.as_deref() else {
         return Ok(None);
     };
+    if crate::runtime_db::dispatch_memory::has_unfinished_dispatch_memory_start_on(
+        &runtime_db.connection()?,
+        scope,
+        &binding.turn_id,
+    )? {
+        return Ok(None);
+    }
     let attempt_state = runtime_db
         .transitions()
-        .execution_attempt_by_id(agent_id, attempt_id)?
+        .execution_attempt_by_id(&scope.agent_id, attempt_id)?
         .map(|attempt| attempt.state);
     let reason = match attempt_state {
         Some(crate::domain::execution_protocol::ExecutionAttemptState::Open) => return Ok(None),
@@ -2640,12 +2646,10 @@ fn prepare_runtime_storage_owned(
     for skill in &mut state.active_skills {
         skill.activation_source = SkillActivationSource::Restored;
     }
-    // A recovered binding may name an execution the previous release already
-    // settled, interrupted, or dropped. Only an Open attempt is a live
-    // mandatory input; a stale binding would demand qualification the legacy
-    // upgrade never granted for that attempt.
+    // Do not confuse terminal activation state with completion of the actual
+    // dispatch: its immutable memory Start may still require startup recovery.
     if let Some(binding) = state.current_execution_binding.clone() {
-        if let Some(stale) = stale_execution_binding_on(&runtime_db, &agent_id, &binding)? {
+        if let Some(stale) = stale_execution_binding_on(&runtime_db, &input_scope, &binding)? {
             append_bootstrap_audit_event(
                 &storage,
                 &runtime_db,

@@ -785,6 +785,17 @@ pub(crate) fn append_event_history_ack_tx(
     scope: &InputEvidenceScope,
     event_id: &str,
 ) -> Result<()> {
+    // Offline recovery also writes original Events before this domain exists.
+    // Its later original upgrade cut adopts those Events. Gate on the committed
+    // schema version, not table existence: a missing installed table must fail.
+    let installed: bool = tx.query_row(
+        "SELECT EXISTS(SELECT 1 FROM schema_migrations WHERE version>=?1)",
+        [VERSION],
+        |row| row.get(0),
+    )?;
+    if !installed {
+        return Ok(());
+    }
     let (seq, payload): (i64, String) = tx
         .query_row(
             "SELECT event_seq,data_json FROM audit_events

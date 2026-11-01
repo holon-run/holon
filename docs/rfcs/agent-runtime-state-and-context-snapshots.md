@@ -3742,7 +3742,13 @@ already-persisted Event under the exact agent, incarnation, event id, sequence
 and content digest, and original non-Active Event writers — offline scheduler
 recovery observations, startup interrupted-turn repair and startup
 normalization audits — attach the same ACK
-inside their own append transaction. The ACK is archive-read authority only: a
+inside their own append transaction once the Current schema is committed.
+Offline recovery before that schema leaves the Event for the original upgrade
+cut; an absent ACK table after schema activation is an error, not a bypass.
+Bootstrap retains a terminal activation's execution binding while its original
+dispatch memory Start is unfinished; activation settlement alone does not
+discharge that recovery responsibility.
+The ACK is archive-read authority only: a
 live Current selection address, SSE live notification or Ready publication
 never consumes it, no read path or ordinary startup may create or extend it,
 and a body whose stored digest or sequence differs from its frozen ACK is
