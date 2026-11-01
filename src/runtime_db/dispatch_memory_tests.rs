@@ -302,10 +302,10 @@ fn request() -> WorkDomainLoadRequest {
 }
 
 #[test]
-fn unfinished_start_retention_uses_original_turn_and_incarnation() -> Result<()> {
+fn checkpoint_retention_uses_original_turn_and_incarnation() -> Result<()> {
     let f = Fixture::new(true)?;
     let check = |scope: &InputEvidenceScope, turn: &str| -> Result<bool> {
-        has_unfinished_dispatch_memory_start_on(&f.db.connection()?, scope, turn)
+        has_dispatch_memory_checkpoint_on(&f.db.connection()?, scope, turn)
     };
     let turn = &f.start.key().actual_dispatch_turn_id;
     assert!(check(&f.scope, turn)?);
@@ -515,6 +515,33 @@ fn done_requires_real_original_d1_receipt_and_compacts_the_saved_baseline() -> R
     })?;
     assert!(matches!(done, DispatchMemoryRecord::Done { .. }));
     assert!(done.start().is_none() && done.obligation().is_none());
+    assert!(
+        has_dispatch_memory_checkpoint_on(
+            &f.db.connection()?,
+            &f.scope,
+            &f.start.key().actual_dispatch_turn_id,
+        )?,
+        "a completed memory checkpoint must retain its execution binding until dispatch state advances"
+    );
+    assert!(!has_dispatch_memory_checkpoint_on(
+        &f.db.connection()?,
+        &f.scope,
+        "another-turn",
+    )?);
+    let mut other = f.scope.clone();
+    other.identity_incarnation += 1;
+    assert!(!has_dispatch_memory_checkpoint_on(
+        &f.db.connection()?,
+        &other,
+        &f.start.key().actual_dispatch_turn_id,
+    )?);
+    other.agent_id = "another-agent".into();
+    other.identity_incarnation = f.scope.identity_incarnation;
+    assert!(!has_dispatch_memory_checkpoint_on(
+        &f.db.connection()?,
+        &other,
+        &f.start.key().actual_dispatch_turn_id,
+    )?);
     assert_eq!(
         f.db.transaction(|tx| mark_dispatch_memory_done_tx(
             tx,

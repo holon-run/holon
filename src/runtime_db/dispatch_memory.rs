@@ -986,7 +986,7 @@ pub(crate) use budget::{AdmittedFinalWork, DispatchMemoryTransactionBudget};
 
 pub(crate) use binding::{
     dispatch_memory_retention_roots_in, finish_dispatch_memory_tx,
-    has_unfinished_dispatch_memory_start_on, load_dispatch_memory_binding_by_turn_tx,
+    has_dispatch_memory_checkpoint_on, load_dispatch_memory_binding_by_turn_tx,
     load_dispatch_memory_binding_tx, prepare_dispatch_memory_finish_tx, validate_detached_binding,
     DispatchMemoryBinding, DispatchMemoryCommandPolicy, DispatchMemoryIntent,
     ValidatedDispatchMemoryFinish,
