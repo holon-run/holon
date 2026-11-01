@@ -17,89 +17,110 @@ pub(super) struct LocalCommandOutput {
 fn canonical_conversation_cells(
     model: &super::conversation::ConversationModel,
 ) -> Vec<ConversationCell> {
-    use crate::domain::conversation::{ExecutionState, NoBriefReason, ResultState};
+    use crate::domain::conversation::{
+        ExecutionState, NoBriefReason, PresentationClass, ResultState, TerminalOutcome,
+    };
     let mut cells = Vec::new();
     let mut turns: Vec<_> = model.turns.values().collect();
     turns.sort_by(|a, b| a.key.cmp(&b.key));
     for turn in turns {
         for input in &turn.inputs {
-            if input.presentation_class.unwrap_or(turn.presentation_class)
-                == crate::domain::conversation::PresentationClass::Operator
-            {
-                cells.push(ConversationCell::UserMessage {
+            let class = input.presentation_class.unwrap_or(turn.presentation_class);
+            let cell = if let Some(result) = &input.task_result {
+                canonical_notice(
+                    turn.started_at,
+                    "task result".into(),
+                    task_result_text(result, None),
+                )
+            } else if class == PresentationClass::Operator {
+                ConversationCell::UserMessage {
                     created_at: turn.started_at,
                     body: conversation_input_text(&input.preview),
                     status: None,
-                });
+                }
             } else {
-                cells.push(canonical_notice(
+                canonical_notice(
                     turn.started_at,
-                    format!(
-                        "{:?}",
-                        input.presentation_class.unwrap_or(turn.presentation_class)
-                    )
-                    .to_lowercase(),
+                    format!("{class:?}").to_lowercase(),
                     conversation_input_text(&input.preview),
-                ));
-            }
+                )
+            };
+            cells.push(keyed_cell(
+                &turn.turn_id,
+                &format!("input:{}", input.message_id),
+                cell,
+            ));
         }
-        if matches!(turn.execution, ExecutionState::Active) {
-            cells.push(ConversationCell::ActiveActivity {
+        let header = if matches!(turn.execution, ExecutionState::Active) {
+            ConversationCell::ActiveActivity {
                 created_at: turn.started_at,
                 speaker: "assistant".into(),
-                body: "Working…".into(),
-            });
-            if let Some(activities) = model.activities.get(&turn.turn_id) {
-                for activity in activities {
-                    // Inputs already appear above, not twice in the active details.
-                    if matches!(
-                        activity,
-                        crate::domain::conversation::ConversationActivity::Operator(_)
-                    ) {
-                        continue;
-                    }
-                    let body = conversation_activity_text(activity);
-                    if body.trim().is_empty() {
-                        continue;
-                    }
-                    cells.push(ConversationCell::ActiveActivity {
-                        created_at: turn.started_at,
-                        speaker: match activity {
-                            crate::domain::conversation::ConversationActivity::Tool(_) => "tool",
-                            crate::domain::conversation::ConversationActivity::Error(_) => "error",
-                            _ => "assistant",
-                        }
-                        .into(),
-                        body,
-                    });
+                body: String::new(),
+            }
+        } else {
+            canonical_notice(
+                turn.started_at,
+                "Turn".into(),
+                turn_detail_summary(model, turn),
+            )
+        };
+        cells.push(keyed_cell(&turn.turn_id, "header", header));
+        if model.details_expanded(turn) {
+            for activity in model.activities.get(&turn.turn_id).into_iter().flatten() {
+                use crate::domain::conversation::ConversationActivity;
+                if matches!(activity, ConversationActivity::Operator(_)) {
+                    continue;
                 }
+                let body = activity_detail_text(model, activity, false);
+                if body.trim().is_empty() {
+                    continue;
+                }
+                let speaker = match activity {
+                    ConversationActivity::Tool(_) => "tool",
+                    ConversationActivity::Error(_) => "error",
+                    _ => "assistant",
+                };
+                cells.push(keyed_cell(
+                    &turn.turn_id,
+                    &super::conversation::activity_item(activity).id,
+                    canonical_notice(turn.started_at, speaker.into(), body),
+                ));
+            }
+            if model.truncated_details.contains(&turn.turn_id) {
+                cells.push(keyed_cell(
+                    &turn.turn_id,
+                    "detail-limit",
+                    canonical_notice(
+                        turn.started_at,
+                        "details".into(),
+                        "Earlier activity omitted (300 item limit).".into(),
+                    ),
+                ));
             }
         }
         for id in &turn.brief_ids {
-            if let Some(brief) = model.briefs.get(id) {
-                cells.push(canonical_notice(
-                    brief.created_at,
-                    "Holon".into(),
-                    brief.text.clone(),
-                ));
+            let cell = if let Some(brief) = model.briefs.get(id) {
+                canonical_notice(brief.created_at, "Holon".into(), brief.text.clone())
             } else {
-                cells.push(canonical_notice(
+                canonical_notice(
                     turn.completed_at.unwrap_or(turn.started_at),
                     "system".into(),
                     if model.brief_errors.contains_key(id) {
-                        "Canonical result unavailable; retrying".into()
+                        "Canonical result unavailable; retrying"
                     } else {
-                        "Loading canonical result…".into()
-                    },
-                ));
-            }
+                        "Loading canonical result…"
+                    }
+                    .into(),
+                )
+            };
+            cells.push(keyed_cell(&turn.turn_id, &format!("brief:{id}"), cell));
         }
         if let ExecutionState::Terminal { outcome } = &turn.execution {
             let notice = match (&turn.result, outcome) {
                 (ResultState::Unavailable { .. }, _) => {
                     Some("Canonical result unavailable".to_owned())
                 }
-                (ResultState::Pending, crate::domain::conversation::TerminalOutcome::Completed) => {
+                (ResultState::Pending, TerminalOutcome::Completed) => {
                     Some("Awaiting canonical result".to_owned())
                 }
                 (ResultState::None { reason }, _) => Some(match reason {
@@ -112,14 +133,18 @@ fn canonical_conversation_cells(
                     }
                     NoBriefReason::ToolOnlyWait => "No canonical result: tool-only wait".to_owned(),
                 }),
-                (_, crate::domain::conversation::TerminalOutcome::Completed) => None,
+                (_, TerminalOutcome::Completed) => None,
                 _ => Some(format!("Turn ended: {outcome:?}")),
             };
             if let Some(body) = notice {
-                cells.push(canonical_notice(
-                    turn.completed_at.unwrap_or(turn.started_at),
-                    "system".into(),
-                    body,
+                cells.push(keyed_cell(
+                    &turn.turn_id,
+                    "outcome",
+                    canonical_notice(
+                        turn.completed_at.unwrap_or(turn.started_at),
+                        "system".into(),
+                        body,
+                    ),
                 ));
             }
         }
@@ -133,8 +158,21 @@ fn canonical_conversation_cells(
     for input in pending {
         let created_at = input.created_at.parse().unwrap_or_default();
         let assigning = input.state == crate::domain::conversation::PendingInputState::Assigning;
-        if input.presentation_class == crate::domain::conversation::PresentationClass::Operator {
-            cells.push(ConversationCell::UserMessage {
+        let cell = if let Some(result) = &input.task_result {
+            canonical_notice(
+                created_at,
+                "task result".into(),
+                task_result_text(
+                    result,
+                    Some(if assigning {
+                        "Assigning to turn"
+                    } else {
+                        "Queued for consumption"
+                    }),
+                ),
+            )
+        } else if input.presentation_class == PresentationClass::Operator {
+            ConversationCell::UserMessage {
                 created_at,
                 body: conversation_input_text(&input.preview),
                 status: Some(if assigning {
@@ -142,9 +180,9 @@ fn canonical_conversation_cells(
                 } else {
                     OperatorMessageStatus::Queued
                 }),
-            });
+            }
         } else {
-            cells.push(canonical_notice(
+            canonical_notice(
                 created_at,
                 format!("{:?}", input.presentation_class).to_lowercase(),
                 format!(
@@ -152,10 +190,126 @@ fn canonical_conversation_cells(
                     if assigning { "Assigning" } else { "Queued" },
                     conversation_input_text(&input.preview)
                 ),
-            ));
-        }
+            )
+        };
+        cells.push(keyed_cell("", &format!("input:{}", input.message_id), cell));
     }
     cells
+}
+
+fn keyed_cell(turn_id: &str, key: &str, cell: ConversationCell) -> ConversationCell {
+    ConversationCell::Canonical {
+        key: if key.starts_with("input:") {
+            key.to_owned()
+        } else {
+            format!("{turn_id}/{key}")
+        },
+        turn_id: turn_id.to_owned(),
+        cell: Box::new(cell),
+    }
+}
+
+pub(super) fn task_result_text(
+    result: &crate::domain::conversation::TaskResultPresentation,
+    queue_state: Option<&str>,
+) -> String {
+    let mut body = format!(
+        "{} · {:?}\nTask: {}",
+        result.summary.as_deref().unwrap_or("Task result"),
+        result.status,
+        result.task_id
+    );
+    if let Some(state) = queue_state {
+        body.push_str(&format!("\n{state}"));
+    }
+    let preview = result.preview.trim();
+    // Runtime command envelopes are evidence, not assistant prose.
+    if result.response_message_id.is_none()
+        && !preview.starts_with('{')
+        && !preview.starts_with("command task ")
+        && !preview.contains("output_path:")
+    {
+        let excerpt: String = preview.chars().take(240).collect();
+        if !excerpt.is_empty() {
+            body.push_str(&format!("\n{excerpt}"));
+        }
+        if excerpt.len() < preview.len() {
+            body.push('…');
+        }
+    }
+    if result.runtime_only == Some(true) {
+        body.push_str("\nRuntime-only task evidence");
+    }
+    if let Some(id) = &result.response_message_id {
+        body.push_str(&format!("\nOriginal reply: {id}"));
+    }
+    body.push_str("\nCtrl+O d: inspect turn/task result");
+    body
+}
+
+pub(super) fn turn_detail_summary(
+    model: &super::conversation::ConversationModel,
+    turn: &crate::domain::conversation::ConversationTurnSummary,
+) -> String {
+    let tools: Vec<_> = model
+        .activities
+        .get(&turn.turn_id)
+        .into_iter()
+        .flatten()
+        .filter_map(super::conversation::tool_id)
+        .collect();
+    let errors = tools
+        .iter()
+        .filter(|id| {
+            model.tools.get(**id).is_some_and(|tool| {
+                matches!(
+                    tool.status,
+                    crate::types::ToolExecutionStatus::Error
+                        | crate::types::ToolExecutionStatus::Interrupted
+                )
+            })
+        })
+        .count();
+    format!(
+        "Execution ended · {} · {} tools / {} errors{} · Ctrl+O d: details",
+        if model.details_expanded(turn) {
+            "details retained"
+        } else {
+            "collapsed"
+        },
+        tools.len(),
+        errors,
+        turn.duration_ms
+            .map(|ms| format!(" · {ms}ms"))
+            .unwrap_or_default()
+    )
+}
+
+pub(super) fn activity_detail_text(
+    model: &super::conversation::ConversationModel,
+    activity: &crate::domain::conversation::ConversationActivity,
+    expanded: bool,
+) -> String {
+    if let Some(id) = super::conversation::tool_id(activity) {
+        if let Some(tool) = model.tools.get(id) {
+            let details = super::tool_details::tool_detail_text(tool, expanded);
+            return if model.tool_errors.contains_key(id) {
+                format!("[Record refresh failed; last cached details below; retrying]\n{details}")
+            } else {
+                details
+            };
+        }
+        return format!(
+            "{}\nTool: {id} · {}",
+            conversation_activity_text(activity),
+            if model.tool_errors.contains_key(id) {
+                "details unavailable; retrying"
+            } else {
+                "details not loaded (bounded cache)"
+            }
+        );
+    }
+    conversation_activity_text(activity)
 }
 
 fn canonical_notice(
@@ -174,7 +328,7 @@ fn canonical_notice(
     }
 }
 
-fn conversation_input_text(preview: &str) -> String {
+pub(super) fn conversation_input_text(preview: &str) -> String {
     if let Some(text) = serde_json::from_str::<MessageBody>(preview)
         .ok()
         .and_then(|body| render_operator_message_body(&body))
@@ -248,11 +402,19 @@ fn conversation_activity_text(
         .unwrap_or_default()
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct ChatScrollState {
     follow_tail: bool,
     offset_from_bottom: u16,
     pending_prepend_anchor: Option<HistoryPrependAnchor>,
+    reading_anchor: Option<ChatRowAnchor>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct ChatRowAnchor {
+    key: String,
+    turn_id: String,
+    offset: usize,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -267,6 +429,7 @@ impl ChatScrollState {
             follow_tail: true,
             offset_from_bottom: 0,
             pending_prepend_anchor: None,
+            reading_anchor: None,
         }
     }
 
@@ -274,9 +437,11 @@ impl ChatScrollState {
         self.follow_tail = true;
         self.offset_from_bottom = 0;
         self.pending_prepend_anchor = None;
+        self.reading_anchor = None;
     }
 
     pub(super) fn scroll_with_key(&mut self, key: KeyCode, max_scroll: u16) {
+        self.reading_anchor = None;
         match key {
             KeyCode::Up => self.scroll_away_from_bottom(1),
             KeyCode::PageUp => self.scroll_away_from_bottom(10),
@@ -291,7 +456,7 @@ impl ChatScrollState {
         }
     }
 
-    pub(super) fn effective_scroll(self, max_scroll: u16) -> u16 {
+    pub(super) fn effective_scroll(&self, max_scroll: u16) -> u16 {
         if self.follow_tail {
             max_scroll
         } else {
@@ -299,7 +464,7 @@ impl ChatScrollState {
         }
     }
 
-    pub(super) fn is_at_top(self, max_scroll: u16) -> bool {
+    pub(super) fn is_at_top(&self, max_scroll: u16) -> bool {
         !self.follow_tail && self.effective_scroll(max_scroll) == 0
     }
 
@@ -332,8 +497,36 @@ impl ChatScrollState {
     }
 
     #[cfg(test)]
-    pub(super) fn is_following_tail(self) -> bool {
+    pub(super) fn is_following_tail(&self) -> bool {
         self.follow_tail
+    }
+
+    pub(super) fn resolve_rows(&mut self, rows: &[ChatRowAnchor], max_scroll: u16) -> u16 {
+        if !self.follow_tail {
+            if let Some(anchor) = &self.reading_anchor {
+                // A folded activity falls back to its own turn, never the new tail.
+                let position = rows
+                    .iter()
+                    .position(|row| row.key == anchor.key && row.offset == anchor.offset)
+                    .or_else(|| rows.iter().rposition(|row| row.key == anchor.key))
+                    .or_else(|| {
+                        rows.iter().position(|row| {
+                            !anchor.turn_id.is_empty() && row.turn_id == anchor.turn_id
+                        })
+                    });
+                if let Some(position) = position {
+                    self.offset_from_bottom =
+                        max_scroll.saturating_sub(position.min(max_scroll as usize) as u16);
+                }
+            }
+        }
+        let scroll = self.effective_scroll(max_scroll);
+        self.reading_anchor = if self.follow_tail {
+            None
+        } else {
+            rows.get(scroll as usize).cloned()
+        };
+        scroll
     }
 
     fn scroll_away_from_bottom(&mut self, delta: u16) {
@@ -358,6 +551,11 @@ impl ChatScrollState {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(super) enum ConversationCell {
+    Canonical {
+        key: String,
+        turn_id: String,
+        cell: Box<ConversationCell>,
+    },
     UserMessage {
         created_at: DateTime<chrono::Utc>,
         body: String,
@@ -384,6 +582,7 @@ pub(super) struct CachedChatText {
     pub(super) cells: Vec<ConversationCell>,
     pub(super) width: u16,
     pub(super) text: Text<'static>,
+    pub(super) rows: Vec<ChatRowAnchor>,
 }
 
 pub(super) fn collect_chat_items(app: &TuiApp) -> Vec<ConversationCell> {
@@ -622,8 +821,16 @@ fn normalized_operator_message_body_key(body: &str) -> String {
 }
 
 impl ConversationCell {
+    pub(super) fn unkeyed(&self) -> &Self {
+        match self {
+            Self::Canonical { cell, .. } => cell.unkeyed(),
+            _ => self,
+        }
+    }
+
     pub(super) fn created_at(&self) -> DateTime<chrono::Utc> {
         match self {
+            Self::Canonical { cell, .. } => cell.created_at(),
             Self::UserMessage { created_at, .. }
             | Self::ActiveActivity { created_at, .. }
             | Self::SystemNotice { created_at, .. } => *created_at,
@@ -632,6 +839,7 @@ impl ConversationCell {
 
     fn event_seq(&self) -> u64 {
         match self {
+            Self::Canonical { cell, .. } => cell.event_seq(),
             Self::SystemNotice { event_seq, .. } => *event_seq,
             Self::UserMessage { .. } | Self::ActiveActivity { .. } => 0,
         }
@@ -639,6 +847,7 @@ impl ConversationCell {
 
     fn display_kind(&self) -> ConversationDisplayKind {
         match self {
+            Self::Canonical { cell, .. } => cell.display_kind(),
             Self::UserMessage { .. } => ConversationDisplayKind::Operator,
             Self::ActiveActivity { .. } => ConversationDisplayKind::Activity,
             Self::SystemNotice { display_kind, .. } => *display_kind,
@@ -647,6 +856,7 @@ impl ConversationCell {
 
     fn role(&self) -> CachedChatRole {
         match self {
+            Self::Canonical { cell, .. } => cell.role(),
             Self::UserMessage { .. } => CachedChatRole::Operator,
             Self::ActiveActivity { .. } | Self::SystemNotice { .. } => CachedChatRole::System,
         }
@@ -654,13 +864,15 @@ impl ConversationCell {
 
     fn sort_speaker(&self) -> &str {
         match self {
+            Self::Canonical { cell, .. } => cell.sort_speaker(),
             Self::UserMessage { .. } => "operator",
             Self::ActiveActivity { speaker, .. } | Self::SystemNotice { speaker, .. } => speaker,
         }
     }
 
-    fn sort_body(&self) -> &str {
+    pub(super) fn sort_body(&self) -> &str {
         match self {
+            Self::Canonical { cell, .. } => cell.sort_body(),
             Self::UserMessage { body, .. }
             | Self::ActiveActivity { body, .. }
             | Self::SystemNotice { body, .. } => body,
@@ -669,13 +881,14 @@ impl ConversationCell {
 
     fn header_hint(&self) -> Option<&str> {
         match self {
+            Self::Canonical { cell, .. } => cell.header_hint(),
             Self::SystemNotice { header_hint, .. } => header_hint.as_deref(),
             Self::UserMessage { .. } | Self::ActiveActivity { .. } => None,
         }
     }
 
     fn groups_with_previous(&self, previous: &Self) -> bool {
-        match (previous, self) {
+        match (previous.unkeyed(), self.unkeyed()) {
             (
                 Self::SystemNotice {
                     speaker: previous_speaker,
@@ -703,6 +916,7 @@ impl ConversationCell {
 
     fn render_lines(&self, width: u16, include_header: bool) -> Vec<Line<'static>> {
         match self {
+            Self::Canonical { cell, .. } => cell.render_lines(width, include_header),
             Self::UserMessage {
                 created_at,
                 body,
@@ -757,10 +971,32 @@ pub(super) fn build_chat_text(items: &[ConversationCell]) -> Text<'static> {
     build_chat_text_for_width(items, u16::MAX)
 }
 
+#[cfg(test)]
 pub(super) fn build_chat_text_for_width(items: &[ConversationCell], width: u16) -> Text<'static> {
+    build_chat_layout(items, width).0
+}
+
+fn build_chat_layout(
+    items: &[ConversationCell],
+    width: u16,
+) -> (Text<'static>, Vec<ChatRowAnchor>) {
     let mut text = Text::default();
+    let mut rows = Vec::new();
     for (index, item) in items.iter().enumerate() {
+        let (key, turn_id) = match item {
+            ConversationCell::Canonical { key, turn_id, .. } => (key.clone(), turn_id.clone()),
+            _ => (
+                format!(
+                    "legacy:{}:{}:{}",
+                    item.created_at(),
+                    item.event_seq(),
+                    item.sort_speaker()
+                ),
+                String::new(),
+            ),
+        };
         let grouped_with_previous = index > 0 && item.groups_with_previous(&items[index - 1]);
+        let start = text.lines.len();
         text.lines
             .extend(item.render_lines(width, !grouped_with_previous));
         if index + 1 < items.len() {
@@ -771,9 +1007,22 @@ pub(super) fn build_chat_text_for_width(items: &[ConversationCell], width: u16) 
                 text.lines.push(Line::default());
             }
         }
+        let count: usize = text.lines[start..]
+            .iter()
+            .map(|line| {
+                Paragraph::new(Text::from(line.clone()))
+                    .wrap(Wrap { trim: false })
+                    .line_count(width.max(1))
+            })
+            .sum();
+        rows.extend((0..count).map(|offset| ChatRowAnchor {
+            key: key.clone(),
+            turn_id: turn_id.clone(),
+            offset,
+        }));
     }
 
-    text
+    (text, rows)
 }
 
 #[cfg(test)]
@@ -794,11 +1043,12 @@ pub(super) fn chat_text_for_width(app: &TuiApp, width: u16) -> Text<'static> {
         }
     }
 
-    let text = build_chat_text_for_width(&items, width);
+    let (text, rows) = build_chat_layout(&items, width);
     *app.chat_text_cache.borrow_mut() = Some(CachedChatText {
         cells: items,
         width,
         text: text.clone(),
+        rows,
     });
     text
 }
@@ -1613,6 +1863,76 @@ mod tests {
 
         assert!(!scroll.is_following_tail());
         assert_eq!(scroll.effective_scroll(5), 0);
+    }
+
+    #[test]
+    fn semantic_reading_anchor_survives_append_prepend_reflow_and_fold() {
+        use super::{ChatRowAnchor, ChatScrollState};
+        use crossterm::event::KeyCode;
+        let rows = |prefix: &str, count: usize| {
+            (0..count)
+                .map(|offset| ChatRowAnchor {
+                    key: prefix.into(),
+                    turn_id: prefix.split('/').next().unwrap().into(),
+                    offset,
+                })
+                .collect::<Vec<_>>()
+        };
+        let mut original = rows("old/header", 2);
+        original.extend(rows("old/tool:1", 20));
+        original.extend(rows("new/header", 20));
+        let mut scroll = ChatScrollState::new();
+        scroll.scroll_with_key(KeyCode::PageUp, 32);
+        scroll.scroll_with_key(KeyCode::PageUp, 32);
+        let top = scroll.resolve_rows(&original, 32);
+        let anchor = original[top as usize].clone();
+        assert_eq!(anchor.key, "old/tool:1");
+
+        let mut appended = original.clone();
+        appended.extend(rows("new/tool:2", 30));
+        assert_eq!(scroll.resolve_rows(&appended, 62), top);
+        assert_eq!(scroll.reading_anchor, Some(anchor.clone()));
+
+        let mut prepended = rows("older/brief:1", 7);
+        prepended.extend(appended);
+        assert_eq!(scroll.resolve_rows(&prepended, 69), top + 7);
+        assert_eq!(scroll.reading_anchor, Some(anchor));
+
+        // Reflow can remove a visual subrow; retain the same item at its last row.
+        let mut reflowed = rows("older/brief:1", 7);
+        reflowed.extend(rows("old/header", 2));
+        reflowed.extend(rows("old/tool:1", 3));
+        reflowed.extend(rows("new/header", 60));
+        assert_eq!(scroll.resolve_rows(&reflowed, 62), 11);
+        let mut folded = rows("older/brief:1", 7);
+        folded.extend(rows("old/header", 2));
+        folded.extend(rows("new/header", 60));
+        assert_eq!(scroll.resolve_rows(&folded, 59), 7);
+        assert!(!scroll.is_following_tail());
+        scroll.scroll_with_key(KeyCode::End, 59);
+        assert_eq!(scroll.resolve_rows(&folded, 59), 59);
+        assert!(scroll.is_following_tail());
+    }
+
+    #[test]
+    fn semantic_layout_rows_match_actual_paragraph_wrap_for_unicode() {
+        let items = vec![super::keyed_cell(
+            "turn-1",
+            "tool:1",
+            super::canonical_notice(
+                chrono::Utc::now(),
+                "tool".into(),
+                "中文与 English very-long-path/".repeat(40),
+            ),
+        )];
+        for width in [1, 20, 80, 84, 120] {
+            let (text, rows) = super::build_chat_layout(&items, width);
+            let actual = ratatui::widgets::Paragraph::new(text)
+                .wrap(ratatui::widgets::Wrap { trim: false })
+                .line_count(width);
+            assert_eq!(rows.len(), actual, "width {width}");
+            assert!(rows.iter().all(|row| row.key == "turn-1/tool:1"));
+        }
     }
 
     #[test]

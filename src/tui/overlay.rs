@@ -22,6 +22,10 @@ pub(super) enum OverlayState {
         selected: usize,
         detail_scroll: u16,
     },
+    TurnDetails {
+        selected_id: Option<String>,
+        detail_scroll: u16,
+    },
     SkillCatalog {
         catalog: Vec<SkillCatalogEntry>,
         selected: usize,
@@ -94,6 +98,10 @@ pub(super) fn draw_overlay(frame: &mut Frame<'_>, app: &TuiApp) {
             selected,
             detail_scroll,
         } => draw_tasks_overlay(frame, app, *selected, *detail_scroll),
+        OverlayState::TurnDetails {
+            selected_id,
+            detail_scroll,
+        } => draw_turn_details_overlay(frame, app, selected_id.as_deref(), *detail_scroll),
         OverlayState::SkillCatalog {
             catalog,
             selected,
@@ -395,6 +403,139 @@ fn draw_tasks_overlay(frame: &mut Frame<'_>, app: &TuiApp, selected: usize, deta
         .scroll((detail_scroll, 0))
         .wrap(Wrap { trim: false });
     frame.render_widget(detail, layout[1]);
+}
+
+pub(super) fn turn_detail_entries(app: &TuiApp) -> Vec<(String, String)> {
+    let Some(model) = &app.conversation else {
+        return Vec::new();
+    };
+    let mut turns: Vec<_> = model.turns.values().collect();
+    turns.sort_by(|a, b| b.key.cmp(&a.key));
+    let mut entries: Vec<_> = model
+        .inputs
+        .values()
+        .filter(|input| input.task_result.is_some())
+        .map(|input| {
+            (
+                format!("pending:{}", input.message_id),
+                format!(
+                    "Queued task · {}",
+                    input.task_result.as_ref().unwrap().task_id
+                ),
+            )
+        })
+        .collect();
+    entries.extend(turns.into_iter().map(|turn| {
+        (
+            turn.turn_id.clone(),
+            format!("{} · {:?}", turn.turn_id, turn.execution),
+        )
+    }));
+    entries
+}
+
+fn task_result_detail(
+    model: &super::conversation::ConversationModel,
+    result: &crate::domain::conversation::TaskResultPresentation,
+) -> String {
+    let mut text = super::chat::task_result_text(result, None);
+    if let Some(full) = model.task_results.get(&result.task_id) {
+        text.push_str(&format!("\n\n{full}"));
+    } else if let Some(error) = model.task_result_errors.get(&result.task_id) {
+        text.push_str(&format!("\nResult unavailable: {error}\nEnter to retry"));
+    } else {
+        text.push_str("\nResult not loaded; Enter to load/retry (16-result cache).");
+    }
+    text
+}
+
+fn draw_turn_details_overlay(
+    frame: &mut Frame<'_>,
+    app: &TuiApp,
+    selected_id: Option<&str>,
+    scroll: u16,
+) {
+    let popup = centered_rect(96, 90, frame.area());
+    let layout = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(5),
+            Constraint::Min(0),
+            Constraint::Length(1),
+        ])
+        .split(popup);
+    frame.render_widget(Clear, popup);
+    let entries = turn_detail_entries(app);
+    let selected = entries
+        .iter()
+        .position(|(id, _)| Some(id.as_str()) == selected_id)
+        .unwrap_or(0);
+    let mut state = ListState::default();
+    state.select((!entries.is_empty()).then_some(selected));
+    let list = List::new(
+        entries
+            .iter()
+            .map(|(_, title)| ListItem::new(title.clone())),
+    )
+    .block(
+        Block::default()
+            .title("Turn details / task results")
+            .borders(Borders::ALL),
+    )
+    .highlight_style(Style::default().add_modifier(Modifier::REVERSED))
+    .highlight_symbol("> ");
+    frame.render_stateful_widget(list, layout[0], &mut state);
+    let text = app
+        .conversation
+        .as_ref()
+        .and_then(|model| {
+            let id = &entries.get(selected)?.0;
+            if let Some(id) = id.strip_prefix("pending:") {
+                return Some(task_result_detail(
+                    model,
+                    model.inputs.get(id)?.task_result.as_ref()?,
+                ));
+            }
+            let turn = model.turns.get(id)?;
+            let mut text = format!(
+                "{}\n{:?}\n{}\n\n",
+                turn.turn_id,
+                turn.execution,
+                super::chat::turn_detail_summary(model, turn)
+            );
+            for result in turn
+                .inputs
+                .iter()
+                .filter_map(|input| input.task_result.as_ref())
+            {
+                text.push_str(&task_result_detail(model, result));
+                text.push_str("\n\n");
+            }
+            if let Some(items) = model.activities.get(id) {
+                for activity in items {
+                    text.push_str(&super::chat::activity_detail_text(model, activity, true));
+                    text.push_str("\n\n");
+                }
+            } else if let Some(error) = model.detail_errors.get(id) {
+                text.push_str(&format!("Details unavailable: {error}\nEnter to retry"));
+            } else {
+                text.push_str("Loading details…");
+            }
+            if model.truncated_details.contains(id) {
+                text.push_str("\n[Earlier activities omitted: 300 item limit]");
+            }
+            Some(text)
+        })
+        .unwrap_or_else(|| "No turn selected.".into());
+    let detail = Paragraph::new(text)
+        .block(Block::default().borders(Borders::ALL))
+        .scroll((scroll, 0))
+        .wrap(Wrap { trim: false });
+    frame.render_widget(detail, layout[1]);
+    frame.render_widget(
+        Paragraph::new("Up/Down: turn · Enter: fold/unfold/retry · PgUp/PgDn: details · Esc"),
+        layout[2],
+    );
 }
 
 fn draw_skill_catalog_overlay(
@@ -782,6 +923,7 @@ fn draw_help_overlay(frame: &mut Frame<'_>, scroll: u16) {
         "  Esc closes the current overlay",
         "  Ctrl+O starts overlay shortcuts from the main view",
         "  Ctrl+O H help, A agents, T tasks, S state",
+        "  Ctrl+O D turn/tool details and task results",
         "  Ctrl+O C conversation, E events, M model, K selected-agent skills",
         "",
         "Quick Help",

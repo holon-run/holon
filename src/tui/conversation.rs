@@ -1,5 +1,5 @@
 //! Canonical conversation read model. Batches commit only at checkpoints.
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use anyhow::{bail, ensure, Result};
 use serde::Deserialize;
@@ -11,8 +11,32 @@ use crate::{
         ConversationActivity, ConversationChange, ConversationTurnSummary, ExecutionState,
         PendingInput,
     },
-    types::BriefRecord,
+    types::{BriefRecord, ToolExecutionRecord},
 };
+
+const RETAINED_DETAIL_TURNS: usize = 16;
+const ACTIVITY_LIMIT: usize = 300;
+const TOOL_LIMIT: usize = 128;
+
+#[derive(Clone, Debug)]
+struct ToolRetry {
+    revision: u64,
+    attempt: u32,
+    retry_at: tokio::time::Instant,
+}
+
+#[derive(Debug)]
+pub(super) enum ConversationRequest {
+    Older,
+    Details {
+        turn_id: String,
+        expanded: bool,
+    },
+    TaskResult {
+        task_id: String,
+        message_id: Option<String>,
+    },
+}
 
 #[derive(Debug, thiserror::Error)]
 #[error("{0}")]
@@ -61,6 +85,16 @@ pub(super) struct ConversationModel {
     pub activities: BTreeMap<String, Vec<ConversationActivity>>,
     pub briefs: BTreeMap<String, BriefRecord>,
     pub brief_errors: BTreeMap<String, String>,
+    pub tools: BTreeMap<String, ToolExecutionRecord>,
+    pub tool_errors: BTreeMap<String, String>,
+    pub detail_errors: BTreeMap<String, String>,
+    pub truncated_details: BTreeSet<String>,
+    pub expanded_turns: BTreeMap<String, bool>,
+    pub task_results: BTreeMap<String, String>,
+    pub task_result_errors: BTreeMap<String, String>,
+    tool_revisions: BTreeMap<String, u64>,
+    tool_retries: BTreeMap<String, ToolRetry>,
+    detail_order: Vec<String>,
     removed_inputs: BTreeMap<String, u64>,
     detail_revisions: BTreeMap<String, u64>,
     dirty_details: std::collections::BTreeSet<String>,
@@ -147,14 +181,79 @@ impl ConversationModel {
         {
             return;
         }
-        if !active(&turn) {
-            self.activities.remove(&turn.turn_id);
-            self.detail_revisions.remove(&turn.turn_id);
-            self.dirty_details.remove(&turn.turn_id);
-        } else if !self.activities.contains_key(&turn.turn_id) {
+        if active(&turn) && !self.activities.contains_key(&turn.turn_id) {
             self.dirty_details.insert(turn.turn_id.clone());
+        } else if !active(&turn)
+            && !self.activities.contains_key(&turn.turn_id)
+            && self.expanded_turns.get(&turn.turn_id) != Some(&true)
+        {
+            self.dirty_details.remove(&turn.turn_id);
         }
         self.turns.insert(turn.turn_id.clone(), turn);
+    }
+
+    pub fn details_expanded(&self, turn: &ConversationTurnSummary) -> bool {
+        self.expanded_turns
+            .get(&turn.turn_id)
+            .copied()
+            .unwrap_or_else(|| {
+                active(turn)
+                    || (self.activities.contains_key(&turn.turn_id) && !self.result_readable(turn))
+            })
+    }
+
+    fn result_readable(&self, turn: &ConversationTurnSummary) -> bool {
+        use crate::domain::conversation::ResultState;
+        matches!(turn.result, ResultState::None { .. })
+            || (!turn.brief_ids.is_empty()
+                && turn.brief_ids.iter().all(|id| self.briefs.contains_key(id)))
+    }
+
+    fn wants_details(&self, turn_id: &str) -> bool {
+        self.turns
+            .get(turn_id)
+            .is_some_and(|turn| active(turn) || self.details_expanded(turn))
+    }
+
+    pub fn set_details(&mut self, turn_id: String, expanded: bool) {
+        if !self.turns.contains_key(&turn_id) {
+            return;
+        }
+        self.expanded_turns.insert(turn_id.clone(), expanded);
+        if expanded {
+            for id in self
+                .activities
+                .get(&turn_id)
+                .into_iter()
+                .flatten()
+                .filter_map(tool_id)
+            {
+                self.tool_retries.remove(id);
+            }
+            self.dirty_details.insert(turn_id.clone());
+            self.touch_details(&turn_id);
+        }
+    }
+
+    fn touch_details(&mut self, turn_id: &str) {
+        self.detail_order.retain(|id| id != turn_id);
+        self.detail_order.push(turn_id.to_owned());
+        while self.detail_order.len() > RETAINED_DETAIL_TURNS {
+            let Some(index) = self
+                .detail_order
+                .iter()
+                .position(|id| self.turns.get(id).is_none_or(|turn| !active(turn)))
+            else {
+                break;
+            };
+            let id = self.detail_order.remove(index);
+            self.activities.remove(&id);
+            self.detail_revisions.remove(&id);
+            self.dirty_details.remove(&id);
+            self.detail_errors.remove(&id);
+            self.truncated_details.remove(&id);
+            self.expanded_turns.remove(&id);
+        }
     }
 
     pub fn delta(&mut self, value: Value) -> Result<bool> {
@@ -269,7 +368,7 @@ impl ConversationModel {
                 turn_id,
                 detail_revision,
             } => {
-                if self.turns.get(&turn_id).is_some_and(active)
+                if self.wants_details(&turn_id)
                     && self
                         .detail_revisions
                         .get(&turn_id)
@@ -279,8 +378,9 @@ impl ConversationModel {
                 }
             }
             ConversationChange::ActivityUpsert { turn_id, activity } => {
-                if self.turns.get(&turn_id).is_some_and(active) {
-                    let activities = self.activities.entry(turn_id).or_default();
+                if self.wants_details(&turn_id) {
+                    self.touch_details(&turn_id);
+                    let activities = self.activities.entry(turn_id.clone()).or_default();
                     let item = activity_item(&activity);
                     if let Some(old) = activities
                         .iter_mut()
@@ -293,6 +393,10 @@ impl ConversationModel {
                         activities.push(activity);
                     }
                     activities.sort_by(|a, b| activity_item(a).key.cmp(&activity_item(b).key));
+                    if activities.len() > ACTIVITY_LIMIT {
+                        activities.drain(..activities.len() - ACTIVITY_LIMIT);
+                        self.truncated_details.insert(turn_id);
+                    }
                 }
             }
         }
@@ -301,54 +405,71 @@ impl ConversationModel {
     async fn hydrate(&mut self, client: &LocalClient) -> Result<()> {
         let dirty: Vec<_> = self.dirty_details.iter().cloned().collect();
         for turn_id in dirty {
-            if !self.turns.get(&turn_id).is_some_and(active) {
+            if !self.wants_details(&turn_id) {
+                self.dirty_details.remove(&turn_id);
                 continue;
             }
-            let mut before = None;
-            let mut activities = Vec::new();
-            let mut revision = None;
-            loop {
-                let page: ActivityPage = client
-                    .get_json(&query(
-                        format!("/agents/{}/turns/{turn_id}/activities", self.agent_id),
-                        "before",
-                        before.as_deref(),
-                    ))
-                    .await?;
-                ensure!(
-                    page.schema_version == 2
-                        && page.query_version == 2
-                        && page.turn.turn_id == turn_id
-                        && page.runtime_id == self.runtime_id
-                        && page.event_log_epoch == self.epoch
-                        && page.visibility_scope_id == self.scope,
-                    ReadModelReset("invalid activity binding")
-                );
-                if !active(&page.turn) {
+            let result: Result<()> = async {
+                let mut before = None;
+                let mut activities = Vec::new();
+                let mut revision = None;
+                loop {
+                    let page: ActivityPage = client
+                        .get_json(&query(
+                            format!("/agents/{}/turns/{turn_id}/activities", self.agent_id),
+                            "before",
+                            before.as_deref(),
+                        ))
+                        .await?;
+                    ensure!(
+                        page.schema_version == 2
+                            && page.query_version == 2
+                            && page.turn.turn_id == turn_id
+                            && page.runtime_id == self.runtime_id
+                            && page.event_log_epoch == self.epoch
+                            && page.visibility_scope_id == self.scope,
+                        ReadModelReset("invalid activity binding")
+                    );
                     self.upsert_turn(page.turn);
-                    break;
+                    ensure!(
+                        revision.is_none_or(|revision| revision == page.detail_revision),
+                        ReadModelReset("activity revision changed during pagination")
+                    );
+                    revision = Some(page.detail_revision);
+                    activities.extend(page.activities);
+                    if !page.has_more || activities.len() >= ACTIVITY_LIMIT {
+                        if page.has_more {
+                            self.truncated_details.insert(turn_id.clone());
+                        }
+                        activities.sort_by(|a, b| activity_item(a).key.cmp(&activity_item(b).key));
+                        activities.truncate(ACTIVITY_LIMIT);
+                        self.touch_details(&turn_id);
+                        self.activities.insert(turn_id.clone(), activities);
+                        self.detail_revisions
+                            .insert(turn_id.clone(), page.detail_revision);
+                        break;
+                    }
+                    ensure!(
+                        page.next_before_cursor.is_some() && page.next_before_cursor != before,
+                        "activity pagination did not advance"
+                    );
+                    before = page.next_before_cursor;
                 }
-                ensure!(
-                    revision.is_none_or(|revision| revision == page.detail_revision),
-                    ReadModelReset("activity revision changed during pagination")
-                );
-                revision = Some(page.detail_revision);
-                activities.extend(page.activities);
-                if !page.has_more {
-                    activities.sort_by(|a, b| activity_item(a).key.cmp(&activity_item(b).key));
-                    self.activities.insert(turn_id.clone(), activities);
-                    self.detail_revisions
-                        .insert(turn_id.clone(), page.detail_revision);
-                    break;
-                }
-                ensure!(
-                    page.next_before_cursor.is_some() && page.next_before_cursor != before,
-                    "activity pagination did not advance"
-                );
-                before = page.next_before_cursor;
+                Ok(())
             }
-            self.dirty_details.remove(&turn_id);
+            .await;
+            match result {
+                Ok(()) => {
+                    self.dirty_details.remove(&turn_id);
+                    self.detail_errors.remove(&turn_id);
+                }
+                Err(error) if error.is::<ReadModelReset>() => return Err(error),
+                Err(error) => {
+                    self.detail_errors.insert(turn_id, error.to_string());
+                }
+            }
         }
+        self.hydrate_tools(client).await;
         let ids: Vec<_> = self
             .turns
             .values()
@@ -372,6 +493,185 @@ impl ConversationModel {
             }
         }
         Ok(())
+    }
+
+    fn tool_candidates(&self) -> Vec<(String, String, crate::domain::conversation::ActivityItem)> {
+        let mut requested: Vec<_> = self
+            .activities
+            .iter()
+            .flat_map(|(turn_id, items)| {
+                items.iter().filter_map(move |activity| {
+                    Some((
+                        turn_id.clone(),
+                        tool_id(activity)?.to_owned(),
+                        activity_item(activity).clone(),
+                    ))
+                })
+            })
+            .collect();
+        requested.sort_by_key(|(turn_id, _, item)| {
+            (
+                self.wants_details(turn_id),
+                self.turns.get(turn_id).is_some_and(active),
+                self.detail_order.iter().position(|id| id == turn_id),
+                item.key.clone(),
+            )
+        });
+        requested.reverse();
+        requested.truncate(TOOL_LIMIT);
+        requested
+    }
+
+    fn tool_failed(&mut self, id: String, revision: u64, error: String) {
+        let attempt = self
+            .tool_retries
+            .get(&id)
+            .filter(|retry| retry.revision == revision)
+            .map_or(0, |retry| retry.attempt.saturating_add(1));
+        self.tool_retries.insert(
+            id.clone(),
+            ToolRetry {
+                revision,
+                attempt,
+                retry_at: tokio::time::Instant::now()
+                    + super::runtime::reconnect_delay_for_attempt(attempt),
+            },
+        );
+        self.tool_errors.insert(id, error);
+    }
+
+    async fn hydrate_tools(&mut self, client: &LocalClient) {
+        let requested = self.tool_candidates();
+        let ids: BTreeSet<_> = requested.iter().map(|(_, id, _)| id.clone()).collect();
+        let visible_ids: BTreeSet<_> = requested
+            .iter()
+            .filter(|(turn_id, _, _)| self.wants_details(turn_id))
+            .map(|(_, id, _)| id.clone())
+            .collect();
+        self.tools.retain(|id, _| ids.contains(id));
+        self.tool_revisions.retain(|id, _| ids.contains(id));
+        self.tool_errors.retain(|id, _| visible_ids.contains(id));
+        self.tool_retries.retain(|id, _| visible_ids.contains(id));
+        for (turn_id, id, item) in requested {
+            if !self.wants_details(&turn_id)
+                || self.tool_revisions.get(&id) == Some(&item.revision)
+                || self.tool_retries.get(&id).is_some_and(|retry| {
+                    retry.revision == item.revision && tokio::time::Instant::now() < retry.retry_at
+                })
+            {
+                continue;
+            }
+            match client.tool_execution(&self.agent_id, &id).await {
+                Ok(record)
+                    if record.id == id
+                        && record.agent_id == self.agent_id
+                        && record.turn_id.as_ref().is_none_or(|id| id == &turn_id) =>
+                {
+                    self.tools.insert(id.clone(), record);
+                    self.tool_revisions.insert(id.clone(), item.revision);
+                    self.tool_errors.remove(&id);
+                    self.tool_retries.remove(&id);
+                }
+                Ok(_) => {
+                    self.tool_failed(id, item.revision, "Tool record binding mismatch".into());
+                }
+                Err(error) => {
+                    self.tool_failed(id, item.revision, error.to_string());
+                }
+            }
+        }
+    }
+
+    async fn load_task_result(
+        &mut self,
+        client: &LocalClient,
+        task_id: String,
+        message_id: Option<String>,
+    ) {
+        if self.task_results.contains_key(&task_id) {
+            return;
+        }
+        let selected_task_id = task_id.clone();
+        let result: Result<String> = async {
+            if let Some(id) = message_id {
+                let message = client.agent_message(&self.agent_id, &id).await?;
+                ensure!(
+                    message.id == id && message.agent_id == self.agent_id,
+                    "task reply binding mismatch"
+                );
+                Ok(match message.body {
+                    crate::types::MessageBody::Text { text }
+                    | crate::types::MessageBody::Brief { text, .. } => text,
+                    crate::types::MessageBody::Json { value } => {
+                        super::tool_details::structured_result_text(&value)
+                    }
+                })
+            } else {
+                let result = client
+                    .task_output(&self.agent_id, &task_id, false, None)
+                    .await?;
+                ensure!(
+                    result.task.task_id == task_id,
+                    "task result binding mismatch"
+                );
+                let task = result.task;
+                Ok(format!(
+                    "Task {} · {:?}\n{}\n{}{}\nArtifacts: {}",
+                    task.task_id,
+                    task.status,
+                    task.result_summary.unwrap_or_default(),
+                    task.output_preview,
+                    if task.output_truncated {
+                        "\n[Preview truncated; inspect task artifacts for full output]"
+                    } else {
+                        ""
+                    },
+                    serde_json::to_string_pretty(&task.artifacts)?
+                ))
+            }
+        }
+        .await;
+        match result {
+            Ok(text) => {
+                self.task_result_errors.remove(&task_id);
+                let mut text: String = text
+                    .chars()
+                    .filter(|ch| !ch.is_control() || matches!(ch, '\n' | '\t'))
+                    .collect();
+                let mut end = text.len().min(65_536);
+                while !text.is_char_boundary(end) {
+                    end -= 1;
+                }
+                let truncated = end < text.len();
+                text.truncate(end);
+                if truncated {
+                    text.push_str("\n[Display limit; inspect original task result]");
+                }
+                self.task_results.insert(task_id, text);
+            }
+            Err(error) => {
+                self.task_result_errors.insert(task_id, error.to_string());
+            }
+        }
+        while self.task_results.len() + self.task_result_errors.len() > RETAINED_DETAIL_TURNS {
+            if let Some(id) = self
+                .task_results
+                .keys()
+                .find(|id| *id != &selected_task_id)
+                .cloned()
+            {
+                self.task_results.remove(&id);
+            } else if let Some(id) = self
+                .task_result_errors
+                .keys()
+                .find(|id| *id != &selected_task_id)
+                .cloned()
+            {
+                self.task_result_errors.remove(&id);
+            } else {
+                break;
+            }
+        }
     }
 
     pub async fn load(client: &LocalClient, agent_id: &str) -> Result<Self> {
@@ -421,12 +721,20 @@ pub(super) fn activity_item(
     }
 }
 
+pub(super) fn tool_id(activity: &ConversationActivity) -> Option<&str> {
+    if let ConversationActivity::Tool(item) = activity {
+        item.id.strip_prefix("tool:")
+    } else {
+        None
+    }
+}
+
 pub(super) async fn observe(
     client: LocalClient,
     agent_id: String,
     generation: u64,
     tx: tokio::sync::mpsc::UnboundedSender<super::runtime::TuiRuntimeMessage>,
-    mut history: tokio::sync::mpsc::Receiver<()>,
+    mut history: tokio::sync::mpsc::Receiver<ConversationRequest>,
 ) {
     let mut model: Option<ConversationModel> = None;
     let mut attempt = 0;
@@ -457,13 +765,15 @@ pub(super) async fn observe(
                         let value = event?;
                         if current.delta(value).is_err() { model = None; bail!("conversation stream requires fresh snapshot"); }
                         if current.batch.is_none() {
+                            // Execution stops before slow result/detail hydration finishes.
+                            tx.send(super::runtime::TuiRuntimeMessage::ConversationLoaded { generation, agent_id: agent_id.clone(), model: current.clone() })?;
                             current.hydrate(&client).await?;
                             tx.send(super::runtime::TuiRuntimeMessage::ConversationLoaded { generation, agent_id: agent_id.clone(), model: current.clone() })?;
                             attempt = 0;
                         }
                     }
                     _ = tokio::time::sleep_until(brief_retry_deadline),
-                        if current.batch.is_none() && !current.brief_errors.is_empty() => {
+                        if current.batch.is_none() && (!current.brief_errors.is_empty() || !current.tool_errors.is_empty() || !current.detail_errors.is_empty()) => {
                         current.hydrate(&client).await?;
                         tx.send(super::runtime::TuiRuntimeMessage::ConversationLoaded {
                             generation, agent_id: agent_id.clone(), model: current.clone()
@@ -472,11 +782,28 @@ pub(super) async fn observe(
                         brief_retry_deadline = tokio::time::Instant::now()
                             + super::runtime::reconnect_delay_for_attempt(brief_retry_attempt);
                     }
-                    request = history.recv() => {
-                        if request.is_none() { return Ok(false); }
+                    request = history.recv(), if current.batch.is_none() => {
+                        let Some(request) = request else { return Ok(false); };
                         // Read history only between batches; discard any incomplete batch on reconnect.
                         current.batch = None;
-                        current.older(&client).await?;
+                        match request {
+                            ConversationRequest::Older => current.older(&client).await?,
+                            ConversationRequest::Details { turn_id, expanded } => {
+                                current.set_details(turn_id.clone(), expanded);
+                                tx.send(super::runtime::TuiRuntimeMessage::ConversationLoaded { generation, agent_id: agent_id.clone(), model: current.clone() })?;
+                                current.hydrate(&client).await?;
+                                if expanded {
+                                    let results: Vec<_> = current.turns.get(&turn_id).into_iter()
+                                        .flat_map(|turn| turn.inputs.iter()).filter_map(|input| input.task_result.clone()).collect();
+                                    for result in results {
+                                        current.load_task_result(&client, result.task_id, result.response_message_id).await;
+                                    }
+                                }
+                            }
+                            ConversationRequest::TaskResult { task_id, message_id } => {
+                                current.load_task_result(&client, task_id, message_id).await;
+                            }
+                        }
                         tx.send(super::runtime::TuiRuntimeMessage::ConversationLoaded { generation, agent_id: agent_id.clone(), model: current.clone() })?;
                         return Ok(true);
                     }
@@ -592,12 +919,195 @@ mod tests {
     fn bodies(app: &TuiApp) -> Vec<String> {
         collect_chat_items(app)
             .iter()
-            .map(|cell| match cell {
-                ConversationCell::UserMessage { body, .. }
-                | ConversationCell::ActiveActivity { body, .. }
-                | ConversationCell::SystemNotice { body, .. } => body.clone(),
-            })
+            .filter(|cell| !matches!(cell, ConversationCell::Canonical { key, .. } if key.ends_with("/header")))
+            .map(|cell| cell.sort_body().to_owned())
             .collect()
+    }
+
+    fn readable_brief(id: &str, text: &str) -> BriefRecord {
+        serde_json::from_value(json!({
+            "id": id, "agent_id": "default", "kind": "result",
+            "created_at": "2026-01-01T00:00:01Z", "text": text,
+            "attachments": null, "related_message_id": null, "related_task_id": null
+        }))
+        .unwrap()
+    }
+
+    fn screen(terminal: &ratatui::Terminal<ratatui::backend::TestBackend>) -> String {
+        terminal
+            .backend()
+            .buffer()
+            .content
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect()
+    }
+
+    #[test]
+    fn consecutive_frames_stop_working_keep_details_then_fold_with_readable_brief() {
+        for width in [80, 84, 120] {
+            let mut model = model();
+            model.activities.insert("active".into(), vec![activity()]);
+            let mut app = app(model);
+            app.composer = super::super::composer::ComposerState::from("未发送 draft");
+            let cursor = app.composer.cursor();
+            let mut terminal =
+                ratatui::Terminal::new(ratatui::backend::TestBackend::new(width, 32)).unwrap();
+            terminal
+                .draw(|frame| super::super::render::draw(frame, &mut app))
+                .unwrap();
+            let running = screen(&terminal);
+            assert_eq!(running.matches("Working").count(), 1);
+            assert!(running.contains("tool detail"));
+
+            let model = app.conversation.as_mut().unwrap();
+            model.upsert_turn(turn(
+                "active",
+                2,
+                2,
+                json!({"kind": "terminal", "outcome": "completed"}),
+                vec![],
+            ));
+            terminal
+                .draw(|frame| super::super::render::draw(frame, &mut app))
+                .unwrap();
+            let pending = screen(&terminal);
+            assert!(!pending.contains("Working"));
+            assert!(pending.contains("tool detail"));
+            assert!(pending.contains("Awaiting canonical result"));
+
+            let model = app.conversation.as_mut().unwrap();
+            model.upsert_turn(turn(
+                "active",
+                2,
+                3,
+                json!({"kind": "terminal", "outcome": "completed"}),
+                vec!["brief"],
+            ));
+            model
+                .brief_errors
+                .insert("brief".into(), "slow or failed".into());
+            terminal
+                .draw(|frame| super::super::render::draw(frame, &mut app))
+                .unwrap();
+            let loading = screen(&terminal);
+            assert!(loading.contains("tool detail"));
+            assert!(loading.contains("retrying"));
+            assert!(!loading.contains("Working"));
+
+            app.conversation.as_mut().unwrap().briefs.insert(
+                "brief".into(),
+                readable_brief("brief", "最终 canonical result"),
+            );
+            terminal
+                .draw(|frame| super::super::render::draw(frame, &mut app))
+                .unwrap();
+            let finished = screen(&terminal);
+            assert!(finished.contains("canonical result"), "{finished}");
+            assert!(finished.contains("collapsed"));
+            assert!(!finished.contains("tool detail"));
+            assert!(!finished.contains("Working"));
+            assert_eq!(app.composer.as_str(), "未发送 draft");
+            assert_eq!(app.composer.cursor(), cursor);
+            assert!(app
+                .conversation
+                .as_ref()
+                .unwrap()
+                .activities
+                .contains_key("active"));
+
+            app.conversation
+                .as_mut()
+                .unwrap()
+                .set_details("active".into(), true);
+            terminal
+                .draw(|frame| super::super::render::draw(frame, &mut app))
+                .unwrap();
+            let reopened = screen(&terminal);
+            assert!(reopened.contains("tool detail"));
+            assert!(reopened.contains("canonical result"));
+        }
+    }
+
+    #[test]
+    fn one_working_for_a_hundred_activities_and_manual_expansion_survives_result() {
+        let mut model = model();
+        for index in 0..100 {
+            let mut item = activity_item(&activity()).clone();
+            item.id = format!("activity-{index}");
+            item.key.activity_id = item.id.clone();
+            model.change(ConversationChange::ActivityUpsert {
+                turn_id: "active".into(),
+                activity: ConversationActivity::Tool(item),
+            });
+        }
+        model
+            .briefs
+            .insert("brief".into(), readable_brief("brief", "early result"));
+        model.upsert_turn(turn(
+            "active",
+            2,
+            2,
+            json!({"kind": "active"}),
+            vec!["brief"],
+        ));
+        assert!(model.details_expanded(&model.turns["active"]));
+        let view = app(model.clone());
+        let text = super::super::chat::chat_text_for_width(&view, 100).to_string();
+        assert_eq!(text.matches("Working").count(), 1);
+        assert_eq!(text.matches("tool detail").count(), 100);
+        model.set_details("active".into(), true);
+        model.upsert_turn(turn(
+            "active",
+            2,
+            3,
+            json!({"kind": "terminal", "outcome": "completed"}),
+            vec!["brief"],
+        ));
+        assert!(model.details_expanded(&model.turns["active"]));
+        assert!(!super::super::chat::chat_text_for_width(&app(model), 100)
+            .to_string()
+            .contains("Working"));
+    }
+
+    #[test]
+    fn terminal_detail_cache_is_bounded_and_old_turns_can_be_reopened() {
+        let mut model = model();
+        for index in 0..40 {
+            let id = format!("done-{index}");
+            model.upsert_turn(turn(
+                &id,
+                index + 3,
+                1,
+                json!({"kind": "terminal", "outcome": "completed"}),
+                vec![],
+            ));
+            model.set_details(id.clone(), true);
+            model.activities.insert(id, vec![activity()]);
+        }
+        assert_eq!(model.activities.len(), RETAINED_DETAIL_TURNS);
+        assert!(!model.activities.contains_key("done-0"));
+        model.set_details("done-0".into(), true);
+        assert!(model.dirty_details.contains("done-0"));
+        assert!(model.details_expanded(&model.turns["done-0"]));
+        assert_eq!(model.activities.len(), RETAINED_DETAIL_TURNS - 1);
+    }
+
+    #[test]
+    fn typed_task_result_cards_separate_queue_state_and_keep_original_reply_identity() {
+        let result: crate::domain::conversation::TaskResultPresentation =
+            serde_json::from_value(json!({
+                "task_id": "child-task", "status": "completed", "summary": "Review finished",
+                "preview": "command task completed: output_path: private-envelope",
+                "response_message_id": "reply-123", "runtime_only": false
+            }))
+            .unwrap();
+        let text = super::super::chat::task_result_text(&result, Some("Queued for consumption"));
+        assert!(text.contains("Completed"));
+        assert!(text.contains("Queued for consumption"));
+        assert!(text.contains("reply-123"));
+        assert!(!text.contains("private-envelope"));
+        assert!(!text.contains("Working"));
     }
 
     #[test]
@@ -686,7 +1196,6 @@ mod tests {
         assert!(active(&model.turns["active"]));
         assert_eq!(model.activities["active"].len(), 1);
         let bodies = bodies(&app(model));
-        assert!(bodies.iter().any(|body| body == "Working…"));
         assert!(bodies.iter().any(|body| body == "tool detail"));
         assert!(bodies
             .iter()
@@ -694,7 +1203,7 @@ mod tests {
     }
 
     #[test]
-    fn terminal_clears_details_without_fabricating_a_brief_for_failed_or_cancelled_turns() {
+    fn terminal_retains_details_without_fabricating_a_brief_for_failed_or_cancelled_turns() {
         for outcome in [
             "completed",
             "aborted",
@@ -706,19 +1215,18 @@ mod tests {
             model.delta(begin(10, 12)).unwrap();
             model.delta(json!({"type": "turn_summary_upsert", "turn": turn("active", 2, 2, json!({"kind": "terminal", "outcome": outcome}), vec![])})).unwrap();
             model.delta(checkpoint(12)).unwrap();
-            assert!(model.activities.is_empty());
+            assert_eq!(model.activities["active"].len(), 1);
             assert!(model.briefs.is_empty());
             model.change(ConversationChange::ActivityUpsert {
                 turn_id: "active".into(),
                 activity: activity(),
             });
-            assert!(model.activities.is_empty());
+            assert_eq!(model.activities["active"].len(), 1);
             model.upsert_turn(turn("active", 2, 3, json!({"kind": "active"}), vec![]));
             assert!(!active(&model.turns["active"]));
             let bodies = bodies(&app(model));
-            assert!(!bodies
-                .iter()
-                .any(|body| body == "Working…" || body == "tool detail"));
+            assert!(!bodies.iter().any(|body| body == "Working…"));
+            assert!(bodies.iter().any(|body| body == "tool detail"));
             assert_eq!(
                 bodies
                     .iter()
@@ -792,7 +1300,7 @@ mod tests {
             let input_bodies: Vec<_> = cells
                 .iter()
                 .filter_map(|cell| {
-                    if let ConversationCell::UserMessage { body, .. } = cell {
+                    if let ConversationCell::UserMessage { body, .. } = cell.unkeyed() {
                         Some(body.as_str())
                     } else {
                         None
@@ -818,7 +1326,7 @@ mod tests {
         let app = app(model);
         assert!(collect_chat_items(&app)
             .iter()
-            .all(|cell| matches!(cell, ConversationCell::SystemNotice { .. })));
+            .all(|cell| matches!(cell.unkeyed(), ConversationCell::SystemNotice { .. })));
         let rendered = super::super::chat::chat_text_for_width(&app, 100)
             .lines
             .iter()
@@ -882,7 +1390,7 @@ mod tests {
             terminal.result =
                 serde_json::from_value(json!({"kind": "none", "reason": reason})).unwrap();
             model.upsert_turn(terminal);
-            assert!(model.activities.is_empty());
+            assert_eq!(model.activities["active"].len(), 1);
             assert!(model.briefs.is_empty());
             let app = app(model);
             assert_eq!(bodies(&app), ["operator prompt", notice]);
@@ -954,7 +1462,7 @@ mod tests {
                     body,
                     status: Some(status),
                     ..
-                } = cell
+                } = cell.unkeyed()
                 {
                     Some((body.as_str(), status))
                 } else {
@@ -995,7 +1503,7 @@ mod tests {
                 .insert("active".into(), vec![ConversationActivity::Assistant(item)]);
             let app = app(model);
             let bodies = bodies(&app);
-            let mut expected_bodies = vec!["operator prompt", "Working…"];
+            let mut expected_bodies = vec!["operator prompt"];
             expected_bodies.extend(expected);
             assert_eq!(bodies, expected_bodies);
             assert!(bodies.iter().all(|body| !body.contains("PRIVATE")));
@@ -1131,7 +1639,7 @@ mod tests {
         assert_eq!(bodies[0], "older input");
         assert_eq!(bodies[1], "Awaiting canonical result");
         assert_eq!(bodies[2], "operator prompt");
-        assert_eq!(bodies[3], "Working…");
+        assert_eq!(bodies.len(), 3);
     }
 
     #[cfg(unix)]
@@ -1247,6 +1755,213 @@ mod tests {
         assert_eq!(model.turns.len(), 2);
         assert!(!model.has_older());
         assert_eq!(requests.load(Ordering::SeqCst), 2);
+        server.abort();
+    }
+
+    #[test]
+    fn live_tool_candidates_cannot_be_starved_by_open_or_folded_history() {
+        let mut model = model();
+        let tool = |id: &str, seq: u64| {
+            ConversationActivity::Tool(
+                serde_json::from_value(json!({
+                    "id": format!("tool:{id}"), "key": {"event_seq": seq, "activity_id": id},
+                    "revision": 1, "summary": "tool"
+                }))
+                .unwrap(),
+            )
+        };
+        model
+            .activities
+            .insert("active".into(), vec![tool("live", 1)]);
+        model.upsert_turn(turn(
+            "old",
+            1,
+            1,
+            json!({"kind": "terminal", "outcome": "completed"}),
+            vec![],
+        ));
+        model.set_details("old".into(), true);
+        model.activities.insert(
+            "old".into(),
+            (0..150)
+                .map(|seq| tool(&format!("old-{seq}"), seq))
+                .collect(),
+        );
+        assert_eq!(model.tool_candidates()[0].1, "live");
+        model.set_details("old".into(), false);
+        assert!(!model.wants_details("old"));
+        assert_eq!(model.tool_candidates()[0].1, "live");
+        assert_eq!(model.tool_candidates().len(), TOOL_LIMIT);
+    }
+
+    #[tokio::test]
+    async fn history_details_and_tool_records_are_lazy_revision_keyed_and_bound_to_turn() {
+        use axum::{routing::get, Json, Router};
+        use std::sync::{
+            atomic::{AtomicUsize, Ordering},
+            Arc,
+        };
+        let detail_calls = Arc::new(AtomicUsize::new(0));
+        let tool_calls = Arc::new(AtomicUsize::new(0));
+        let detail_count = detail_calls.clone();
+        let tool_count = tool_calls.clone();
+        let router = Router::new()
+            .route("/api/agents/default/turns/done/activities", get(move || {
+                detail_count.fetch_add(1, Ordering::SeqCst);
+                async { Json(json!({
+                    "schema_version": 2, "query_version": 2, "runtime_id": "runtime",
+                    "event_log_epoch": "epoch", "visibility_scope_id": "public",
+                    "turn": turn("done", 1, 1, json!({"kind": "terminal", "outcome": "completed"}), vec![]),
+                    "detail_revision": 1, "activities": [{
+                        "kind": "tool", "id": "tool:record", "key": {"event_seq": 11, "activity_id": "tool:record"},
+                        "revision": 1, "summary": "ReadFile · success"
+                    }], "has_more": false, "next_before_cursor": null
+                })) }
+            }))
+            .route("/api/agents/default/tool-executions/record", get(move || {
+                let count = tool_count.fetch_add(1, Ordering::SeqCst);
+                async move { Json(json!({
+                    "id": "record", "agent_id": if count < 2 { "default" } else { "foreign" },
+                    "turn_id": "done", "tool_name": "ReadFile", "created_at": "2026-01-01T00:00:00Z",
+                    "authority_class": "runtime_instruction", "status": "success",
+                    "input": {"path": "README.md"}, "output": {"result": {"text": "file contents"}},
+                    "summary": "not parsed"
+                })) }
+            }));
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            axum::serve(listener, router).await.unwrap();
+        });
+        let client = LocalClient::remote(
+            super::super::tests::test_config(),
+            format!("http://{address}"),
+            "test-token",
+        )
+        .unwrap();
+        let mut model = ConversationModel::snapshot(
+            "default".into(),
+            page(
+                vec![turn(
+                    "done",
+                    1,
+                    1,
+                    json!({"kind": "terminal", "outcome": "completed"}),
+                    vec![],
+                )],
+                vec![],
+                None,
+            ),
+        )
+        .unwrap();
+        model.hydrate(&client).await.unwrap();
+        assert_eq!(detail_calls.load(Ordering::SeqCst), 0);
+        model.set_details("done".into(), true);
+        model.hydrate(&client).await.unwrap();
+        assert_eq!(detail_calls.load(Ordering::SeqCst), 1);
+        assert_eq!(model.tools["record"].input["path"], "README.md");
+        model.hydrate(&client).await.unwrap();
+        assert_eq!(tool_calls.load(Ordering::SeqCst), 1);
+        for revision in [2, 3] {
+            let mut item = activity_item(&model.activities["done"][0]).clone();
+            item.revision = revision;
+            model.change(ConversationChange::ActivityUpsert {
+                turn_id: "done".into(),
+                activity: ConversationActivity::Tool(item),
+            });
+            model.hydrate(&client).await.unwrap();
+        }
+        assert_eq!(tool_calls.load(Ordering::SeqCst), 3);
+        assert_eq!(model.tools["record"].agent_id, "default");
+        assert_eq!(model.tool_revisions["record"], 2);
+        assert_eq!(model.tool_errors["record"], "Tool record binding mismatch");
+        for _ in 0..5 {
+            model.hydrate(&client).await.unwrap();
+        }
+        assert_eq!(
+            tool_calls.load(Ordering::SeqCst),
+            3,
+            "same revision respects failure backoff"
+        );
+        model.tool_retries.get_mut("record").unwrap().retry_at = tokio::time::Instant::now();
+        model.hydrate(&client).await.unwrap();
+        assert_eq!(tool_calls.load(Ordering::SeqCst), 4);
+        assert_eq!(model.tool_retries["record"].attempt, 1);
+        let mut item = activity_item(&model.activities["done"][0]).clone();
+        item.revision = 4;
+        model.change(ConversationChange::ActivityUpsert {
+            turn_id: "done".into(),
+            activity: ConversationActivity::Tool(item),
+        });
+        model.hydrate(&client).await.unwrap();
+        assert_eq!(
+            tool_calls.load(Ordering::SeqCst),
+            5,
+            "new revision may retry immediately"
+        );
+        assert_eq!(model.tool_retries["record"].attempt, 0);
+        model.set_details("done".into(), true);
+        assert!(
+            !model.tool_retries.contains_key("record"),
+            "manual retry clears only its turn's backoff"
+        );
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn requested_task_result_survives_full_error_cache_and_unicode_is_bounded() {
+        use axum::{routing::get, Json, Router};
+        let router = Router::new().route("/api/agents/default/tasks/{task_id}/output", get(
+            |axum::extract::Path(id): axum::extract::Path<String>| async move {
+                Json(json!({"retrieval_status": "success", "task": {
+                    "task_id": if id == "mismatch" { "foreign" } else { &id },
+                    "kind": "command_task", "status": "completed", "summary": "Original task result",
+                    "output_preview": if id == "long" { "中文结果".repeat(10_000) } else { "complete task delivery".into() },
+                    "output_truncated": false, "result_summary": null, "exit_status": 0
+                }}))
+            }));
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            axum::serve(listener, router).await.unwrap();
+        });
+        let client = LocalClient::remote(
+            super::super::tests::test_config(),
+            format!("http://{address}"),
+            "test-token",
+        )
+        .unwrap();
+        let mut model = model();
+        for index in 0..RETAINED_DETAIL_TURNS {
+            model
+                .task_result_errors
+                .insert(format!("error-{index}"), "unavailable".into());
+        }
+        model
+            .load_task_result(&client, "a-selected".into(), None)
+            .await;
+        assert!(model.task_results["a-selected"].contains("complete task delivery"));
+        assert_eq!(
+            model.task_results.len() + model.task_result_errors.len(),
+            RETAINED_DETAIL_TURNS
+        );
+        for index in 0..20 {
+            let id = format!("z-{index}");
+            model.load_task_result(&client, id.clone(), None).await;
+            assert!(model.task_results.contains_key(&id));
+        }
+        model
+            .load_task_result(&client, "a-selected".into(), None)
+            .await;
+        assert!(model.task_results.contains_key("a-selected"));
+        model.load_task_result(&client, "long".into(), None).await;
+        assert!(model.task_results["long"].contains("Display limit"));
+        assert!(model.task_results["long"].len() < 66_000);
+        model
+            .load_task_result(&client, "mismatch".into(), None)
+            .await;
+        assert!(!model.task_results.contains_key("mismatch"));
+        assert!(model.task_result_errors["mismatch"].contains("binding mismatch"));
         server.abort();
     }
 

@@ -25,7 +25,8 @@ pub(super) struct TuiApp {
     pub(super) conversation: Option<super::conversation::ConversationModel>,
     pub(super) conversation_task: Option<JoinHandle<()>>,
     pub(super) conversation_generation: u64,
-    pub(super) conversation_history_tx: Option<mpsc::Sender<()>>,
+    pub(super) conversation_history_tx:
+        Option<mpsc::Sender<super::conversation::ConversationRequest>>,
     pub(super) connection_state: TuiConnectionState,
     pub(super) runtime_tx: UnboundedSender<TuiRuntimeMessage>,
     pub(super) runtime_messages: UnboundedReceiver<TuiRuntimeMessage>,
