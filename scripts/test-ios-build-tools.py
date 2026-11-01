@@ -23,6 +23,7 @@ import time
 import unittest
 import uuid
 from unittest.mock import Mock, call, patch
+from types import SimpleNamespace
 import urllib.error
 import urllib.request
 
@@ -1240,6 +1241,56 @@ class UIFixtureStallDetectionContracts(unittest.TestCase):
                              "killed with its process group")
         finally:
             shutil.rmtree(marker, ignore_errors=True)
+
+    def test_a_watcher_that_cannot_start_still_kills_the_child(self):
+        """A watcher start() failure must not skip the child cleanup.
+
+        join() on a never-started thread raises RuntimeError. If the
+        cleanup order let that propagate, the orphan kill and the log
+        replay would be skipped, and the join error would mask the
+        original start failure. The kill and the replay must not depend
+        on the watcher's own liveness.
+        """
+        helpers = self.helpers
+        killed = []
+
+        class NeverStartingThread:
+            def __init__(self, target=None, daemon=None):
+                pass
+
+            def start(self):
+                raise RuntimeError("can't start new thread")
+
+            def join(self, timeout=None):
+                # Real semantics: joining a never-started thread raises.
+                raise RuntimeError("cannot join thread before it is started")
+
+        class ThreadlessModule:
+            Event = staticmethod(threading.Event)
+            Thread = NeverStartingThread
+
+        def popen(command, env=None, stdout=None, stderr=None, **keywords):
+            stdout.write("started\n")
+            stdout.flush()
+            return self.SilentProcess(killed)
+
+        standin = SimpleNamespace(Popen=popen, STDOUT=subprocess.STDOUT)
+        original_threading = helpers["threading"]
+        original_sys = helpers["sys"]
+        helpers["threading"] = ThreadlessModule
+        helpers["sys"] = SimpleNamespace(stdout=StringIO())
+        try:
+            with self.assertRaisesRegex(RuntimeError, "can't start new thread"):
+                helpers["monitor_xcodebuild"](
+                    ["/bin/sh", "-c", "echo started"], {}, 1,
+                    subprocess_module=standin)
+            self.assertTrue(killed, "the child must be killed even when "
+                                    "the watcher never started")
+            self.assertIn("started", helpers["sys"].stdout.getvalue(),
+                          "the log replay must not be skipped")
+        finally:
+            helpers["threading"] = original_threading
+            helpers["sys"] = original_sys
 
     def test_a_healthy_build_longer_than_the_grace_period_survives(self):
         """A healthy build must not be killed by the watchdog's grace period.
