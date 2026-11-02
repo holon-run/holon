@@ -565,6 +565,7 @@ const en = {
     conversationEmpty: "Send the first operator message to start the conversation.",
     send: "Send",
     copyMessage: "Copy message",
+    messageCopied: "Message copied",
     inspectMessage: "Inspect message",
     thinkingLevel: "Thinking level",
     switchModel: "Switch agent model",

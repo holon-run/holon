@@ -566,6 +566,7 @@ const zh: Record<string, any> = {
     conversationEmpty: "发送第一条操作者消息开始对话。",
     send: "发送",
     copyMessage: "复制消息",
+    messageCopied: "已复制消息",
     inspectMessage: "检查消息",
     thinkingLevel: "思考级别",
     switchModel: "切换智能体模型",

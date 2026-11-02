@@ -7,7 +7,7 @@ import {
   type AgentCreationProgress,
   type AgentCreationResult,
 } from "./agent-creation";
-import { hydrateInputActivity } from "./conversation-input";
+import { hydrateInputActivity, inputPresentation } from "./conversation-input";
 import { readPanelPreferences, writePanelPreferences, rememberPanelView } from "./panel-preferences";
 import { panelLayout, PANEL_DEFAULT } from "../features/right-panel/panel-layout";
 import { clearConversationCaches } from "./conversation-cache-lifecycle";
@@ -373,6 +373,8 @@ export interface RuntimeStoreState {
   showTaskDetail: (agentId: string, task: TaskSummary) => void;
   showToolExecutionDetail: (agentId: string, toolExecutionId: string, toolName?: string, relatedStateObjectRef?: TimelineStateObjectRef, fallbackActivity?: AgentTimelineActivity) => void;
   inspectActivity: (agentId: string, activity: AgentTimelineActivity) => void;
+  /** Full display text of one message, beyond the byte-bounded read-model preview. */
+  fetchAgentMessageText: (agentId: string, messageId: string) => Promise<string | null>;
   showFileBrowser: (agentId: string, location: WorkspaceBrowserLocation) => void;
   openResolvedFile: (agentId: string, location: FileOpenTarget) => void;
   resolveFileReferences: (references: FileReference[]) => Promise<ResolveFileReferencesResponse>;
@@ -1971,6 +1973,15 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => {
       };
     });
     hydrateInspectorActivityDetail(get, set, agentId, activity);
+  },
+  fetchAgentMessageText: async (agentId, messageId) => {
+    const request = captureClientRequest();
+    const response = await request.client.getAgentMessagesBatch(agentId, [messageId]);
+    if (!isCurrentClientRequest(request)) return null;
+    const message = response.messages?.find((item) => item.id === messageId);
+    if (!message) return null;
+    const text = inputPresentation(message.body).text;
+    return text.length > 0 ? text : null;
   },
   restoreRightPanelView: (view) => set((state) => ({
     rightPanelOpen: true,
