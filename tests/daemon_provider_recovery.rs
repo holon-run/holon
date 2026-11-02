@@ -1012,7 +1012,7 @@ impl Fixture {
             .env("HOLON_SOCKET_PATH", self.path("run/control.sock"))
             .env("HOLON_AGENT_ID", AGENT_ID)
             .env("HOLON_DAEMON_START_TIMEOUT_SECS", "60")
-            .env("RUST_LOG", "info")
+            .env("RUST_LOG", "info,holon::agent_summary=debug")
             .envs(self.provider_env.iter().cloned())
             .current_dir(self.home.path())
             .stdin(Stdio::null())
@@ -1210,13 +1210,13 @@ impl Fixture {
             .send()
             .expect("set agent model through the production control API");
         assert!(response.status().is_success(), "{:?}", response.text());
-        self.assert_primary_override(address);
+        self.assert_primary_override(address, "after setting override");
     }
 
-    fn assert_primary_override(&self, address: &str) {
+    fn assert_primary_override(&self, address: &str, phase: &str) {
         let status = self.wait_for_agent_status(address, STATUS_PROBE_BUDGET);
-        assert_eq!(status["model"]["source"], "agent_override");
-        assert_eq!(status["agent"]["model_override"], "openai@default/gpt-5.4");
+        assert_eq!(status["model"]["source"], "agent_override", "phase={phase}");
+        assert_eq!(status["agent"]["model_override"], "openai@default/gpt-5.4", "phase={phase}");
         let persisted: String = self
             .database()
             .query_row(
@@ -1455,7 +1455,7 @@ fn payment_required_override_uses_fallback_tools_and_delivers_once() {
         ["claude-sonnet-4-6"; 3],
         "the HTTP model must agree with the admitted fallback route"
     );
-    fixture.assert_primary_override(&address);
+    fixture.assert_primary_override(&address, "after fallback task continuation");
     fixture.assert_one_brief(&address, "payment-fallback-final");
     assert!(fixture.parked_inputs().is_empty());
     assert!(fixture.paused_events(&address).is_empty());
@@ -1593,7 +1593,7 @@ fn payment_required_chain_parks_within_budget_and_restart_preserves_deadline() {
     assert_eq!(snapshot["episode"]["budget_kind"], "operator");
     let turns = fixture.turn_count();
     assert!(turns - initial_turns <= 3);
-    fixture.assert_primary_override(&address);
+    fixture.assert_primary_override(&address, "after payment park");
     thread::sleep(Duration::from_millis(300));
     assert_eq!(fixture.recovery_snapshot(&source), snapshot);
 
@@ -1606,7 +1606,7 @@ fn payment_required_chain_parks_within_budget_and_restart_preserves_deadline() {
             "restart observation must remain before the persisted retry deadline"
         );
         fixture.assert_park_retained(&parked);
-        fixture.assert_primary_override(&address);
+        fixture.assert_primary_override(&address, "after payment restart");
         assert_eq!(
             primary.requested_models().len() + fallback.requested_models().len(),
             2,

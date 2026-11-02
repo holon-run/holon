@@ -768,9 +768,29 @@ impl RuntimeHandle {
 
     async fn build_agent_summary(&self) -> Result<OwnedAgentSummaryRead> {
         let started_at = std::time::Instant::now();
+        tracing::debug!(
+            target: "holon::agent_summary",
+            agent_id = self.inner.mutation_owner.agent_id(),
+            phase = "initial_resources_start",
+            "full agent summary read"
+        );
         self.await_initial_resources().await;
+        tracing::debug!(
+            target: "holon::agent_summary",
+            agent_id = self.inner.mutation_owner.agent_id(),
+            phase = "initial_resources_done",
+            elapsed_ms = started_at.elapsed().as_millis(),
+            "full agent summary read"
+        );
         let mut source_changes = 0usize;
         let (read, identity, metadata, resources) = loop {
+            tracing::debug!(
+                target: "holon::agent_summary",
+                agent_id = self.inner.mutation_owner.agent_id(),
+                phase = "prepare_resources_start",
+                elapsed_ms = started_at.elapsed().as_millis(),
+                "full agent summary read"
+            );
             if let Err(error) = self.prepare_summary_instruction_resources().await {
                 if source_changes < super::resource_refresh::RESOURCE_SOURCE_CHANGE_REPREPARES
                     && super::resource_refresh::is_source_changed_error(&error)
@@ -780,8 +800,24 @@ impl RuntimeHandle {
                 }
                 return Err(error);
             }
+            tracing::debug!(
+                target: "holon::agent_summary",
+                agent_id = self.inner.mutation_owner.agent_id(),
+                phase = "capture_scheduler_start",
+                elapsed_ms = started_at.elapsed().as_millis(),
+                "full agent summary read"
+            );
             match self.capture_summary_scheduler().await {
-                Ok(captured) => break captured,
+                Ok(captured) => {
+                    tracing::debug!(
+                        target: "holon::agent_summary",
+                        agent_id = self.inner.mutation_owner.agent_id(),
+                        phase = "capture_scheduler_done",
+                        elapsed_ms = started_at.elapsed().as_millis(),
+                        "full agent summary read"
+                    );
+                    break captured;
+                }
                 Err(error)
                     if source_changes
                         < super::resource_refresh::RESOURCE_SOURCE_CHANGE_REPREPARES

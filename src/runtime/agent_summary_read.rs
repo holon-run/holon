@@ -203,8 +203,26 @@ impl RuntimeHandle {
         {
             drop(root);
             drop(reservations);
+            tracing::debug!(
+                target: "holon::agent_summary",
+                agent_id = self.inner.mutation_owner.agent_id(),
+                phase = "prepare_current_start",
+                "full agent summary read"
+            );
             let mut owner = self.begin_mutation().await?;
+            tracing::debug!(
+                target: "holon::agent_summary",
+                agent_id = self.inner.mutation_owner.agent_id(),
+                phase = "prepare_current_owner_ready",
+                "full agent summary read"
+            );
             owner.prepare_current_query(None).await?;
+            tracing::debug!(
+                target: "holon::agent_summary",
+                agent_id = self.inner.mutation_owner.agent_id(),
+                phase = "prepare_current_done",
+                "full agent summary read"
+            );
             self.summary_scheduler_from_root(owner.capture_published_root()?.as_ref())
         } else {
             self.summary_scheduler_from_root(&root)

@@ -349,12 +349,35 @@ async fn agent_summary(
         drop(projection);
         return response;
     }
+    tracing::debug!(
+        target: "holon::agent_summary",
+        agent_id = %agent_id,
+        route,
+        phase = "handler_entry",
+        "full agent status read"
+    );
     let agent = state
         .host
         .local_agent_summary(&agent_id)
         .await
         .map_err(agent_access_error)?;
+    tracing::debug!(
+        target: "holon::agent_summary",
+        agent_id = %agent_id,
+        route,
+        phase = "summary_done",
+        elapsed_ms = started_at.elapsed().as_millis(),
+        "full agent status read"
+    );
     let bytes = agent.into_json_bytes().map_err(error_response)?;
+    tracing::debug!(
+        target: "holon::agent_summary",
+        agent_id = %agent_id,
+        route,
+        phase = "serialize_done",
+        elapsed_ms = started_at.elapsed().as_millis(),
+        "full agent status read"
+    );
     Ok(traced_json_bytes(route, started_at, bytes))
 }
 
