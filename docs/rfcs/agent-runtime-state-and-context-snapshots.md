@@ -9,6 +9,19 @@ issue:
 
 # Agent Runtime State and Context Snapshots
 
+## Prompt fingerprint materialization
+
+Fingerprinting borrows section text and streams canonical JSON into SHA-256,
+without retaining a second section-text tree or a full encoded prompt buffer.
+An 8 KiB writer buffer batches small JSON fragments within this one computation.
+Context, cache-scope and diagnostic fingerprints preserve their previous JSON
+bytes and hashes, including object-key order and the TurnScoped exclusion for
+cache scope. This is local materialization only: no fingerprint, source
+qualification or evidence-budget result is cached across reads or publications.
+Current body reads and original-write validation reuse connection-local compiled
+SQL statements only. Parameters, rows, owner/digest qualification, transaction
+binding and resource admission are still evaluated on every execution.
+
 ## Migration lineage compatibility
 
 Published upstream migrations through 90 retain their versions and names. The
@@ -3774,6 +3787,21 @@ Public envelopes borrow selected facts and omit private top-level payload keys
 during serialization rather than copying and removing them. Exact wire buffers
 are admitted before allocation and retain the original query acquisition through
 cached Bytes and the last slice.
+Full State queues retain all qualified WorkItems, not the scheduler candidate
+window. Their record loans share the captured immutable Work bodies and retain
+the original pin guards through the last loan. Queue ordering, scheduling facts,
+complete inventory and display groups remain identical to the owned queue;
+only projection metadata is materialized. Cold adapters transfer already-owned
+records into the same loan shape under the original acquisition. Every record
+loan, resident or cold, retains that acquisition through its last holder as well
+as any source pin guards. The State HTTP DTO borrows those records through
+serialization, including the selected todo, and allocates only its admitted
+container slots and truncated text previews. The known State work-item display
+window is admitted and reserved at its exact selected length, without geometric
+spare slots beyond that original window. Untruncated fields are not copied
+before truncation or serialization; the existing wire schema and preview limits
+remain unchanged.
+This changes ownership, not record qualification, selection limits or budgets.
 The fixed final JSON/SSE buffer is charged at its measured serialized length,
 not the generic decoded/resolver expansion estimate. Owner/container metadata
 and generic payloads keep their conservative multipliers. Repeated buffers

@@ -64,6 +64,68 @@ fn attempt(
 }
 
 #[test]
+fn cached_current_statements_rebind_addresses_and_observe_commits_not_old_results() -> Result<()> {
+    use crate::runtime_db::current_query::{prepare, CurrentSelection};
+
+    let f = Fixture::new()?;
+    let ledger = InputEvidenceBudgetLedger::new(Default::default())?;
+    let a = AuditEvent::legacy("cached-current-a", serde_json::json!({"version": 1}));
+    let b = AuditEvent::legacy("cached-current-b", serde_json::json!({"version": 2}));
+    let keys = [
+        (CurrentFamily::Event, a.id.as_str()),
+        (CurrentFamily::Event, b.id.as_str()),
+    ];
+    let read = || {
+        f.db.transaction(|tx| {
+            let selection = CurrentSelection {
+                events_after: Some(0),
+                ..Default::default()
+            };
+            let query = prepare(
+                tx,
+                &f.scope,
+                Some(&selection),
+                &ledger,
+                (4 * 1024 * 1024, 4096),
+            )?;
+            let captured = query.capture(&selection, &ledger)?;
+            Ok(captured
+                .events()
+                .filter(|event| event.id == a.id || event.id == b.id)
+                .map(|event| (event.id.clone(), event.data.clone()))
+                .collect::<std::collections::BTreeMap<_, _>>())
+        })
+    };
+    assert!(read()?.is_empty());
+    attempt(&f, &ledger, &keys, &keys, |tx| {
+        append_audit_event_tx(tx, Some(&f.scope.agent_id), &a)?;
+        append_audit_event_tx(tx, Some(&f.scope.agent_id), &b)?;
+        Ok(())
+    })?;
+    let first = read()?;
+    assert_eq!(first[&a.id], a.data);
+    assert_eq!(first[&b.id], b.data);
+    attempt(&f, &ledger, &keys[..1], &keys[..1], |tx| {
+        tx.execute(
+            "UPDATE audit_events SET data_json=json_set(data_json,'$.data.version',3) WHERE audit_event_id=?1",
+            [&a.id],
+        )?;
+        Ok(())
+    })?;
+    let next = read()?;
+    assert_eq!(next[&a.id], serde_json::json!({"version": 3}));
+    assert_eq!(next[&b.id], b.data);
+    assert_eq!(first[&a.id], a.data);
+    // A cached SQL program must still reject an unqualified body mutation.
+    f.db.connection()?.execute(
+        "UPDATE audit_events SET data_json=json_set(data_json,'$.data.version',4) WHERE audit_event_id=?1",
+        [&a.id],
+    )?;
+    assert!(read().is_err());
+    Ok(())
+}
+
+#[test]
 fn current_prepared_empty_query_retains_scope_material_until_last_holder() -> Result<()> {
     let f = Fixture::new()?;
     let ledger = InputEvidenceBudgetLedger::new(Default::default())?;

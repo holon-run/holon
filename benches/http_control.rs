@@ -368,12 +368,13 @@ async fn repeat_request(app: &Router, uri: &str, repetitions: usize) -> Result<(
             .oneshot(Request::builder().uri(uri).body(Body::empty())?)
             .await
             .expect("axum router is infallible");
-        anyhow::ensure!(
-            response.status() == StatusCode::OK,
-            "{uri} returned {}",
-            response.status()
-        );
+        let status = response.status();
         let body = to_bytes(response.into_body(), usize::MAX).await?;
+        anyhow::ensure!(
+            status == StatusCode::OK,
+            "{uri} returned {status}: {}",
+            String::from_utf8_lossy(&body)
+        );
         anyhow::ensure!(!body.is_empty(), "{uri} returned an empty body");
         black_box(body);
     }

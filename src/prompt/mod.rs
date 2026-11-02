@@ -4,6 +4,7 @@
 //! - `tools`: Tool-specific prompt guidance (registry-style)
 //! - Top-level: execution-oriented sections and overall assembly
 
+mod fingerprint;
 mod resources;
 pub mod time;
 pub mod tools;
@@ -16,7 +17,6 @@ use std::path::{Path, PathBuf};
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
-use sha2::{Digest, Sha256};
 
 use crate::{
     context::{
@@ -1026,24 +1026,13 @@ fn prompt_cache_scope_fingerprint_for_agent(
     context_sections: &[PromptSection],
     available_tools: &[ToolSpec],
 ) -> String {
-    let stable_system_sections = system_sections
-        .iter()
-        .filter(|section| section.stability != PromptStability::TurnScoped)
-        .collect::<Vec<_>>();
-    let stable_context_sections = context_sections
-        .iter()
-        .filter(|section| section.stability != PromptStability::TurnScoped)
-        .collect::<Vec<_>>();
-    let payload = json!({
-        "agent_id": agent_id,
-        "execution_semantics": execution_semantic_cache_payload(execution),
-        "stable_system_sections": stable_system_sections,
-        "stable_context_sections": stable_context_sections,
-        "tools": available_tools,
-    });
-    let canonical =
-        serde_json::to_vec(&payload).expect("prompt cache scope fingerprint should serialize");
-    format!("{:x}", Sha256::digest(canonical))
+    fingerprint::scope(
+        agent_id,
+        execution,
+        system_sections,
+        context_sections,
+        available_tools,
+    )
 }
 
 fn prompt_context_fingerprint(
@@ -1053,17 +1042,14 @@ fn prompt_context_fingerprint(
     context_sections: &[PromptSection],
     available_tools: &[ToolSpec],
 ) -> String {
-    let payload = json!({
-        "agent_id": session.id,
-        "compression_epoch": session.working_memory.compression_epoch,
-        "execution_semantics": execution_semantic_cache_payload(execution),
-        "system_sections": system_sections,
-        "context_sections": context_sections,
-        "tools": available_tools,
-    });
-    let canonical =
-        serde_json::to_vec(&payload).expect("prompt cache fingerprint should serialize");
-    format!("{:x}", Sha256::digest(canonical))
+    fingerprint::context(
+        &session.id,
+        session.working_memory.compression_epoch,
+        execution,
+        system_sections,
+        context_sections,
+        available_tools,
+    )
 }
 
 fn reprojected_context_fingerprint(
@@ -1073,17 +1059,14 @@ fn reprojected_context_fingerprint(
     context_sections: &[PromptSection],
     available_tools: &[ToolSpec],
 ) -> String {
-    let payload = json!({
-        "agent_id": cache_identity.agent_id,
-        "compression_epoch": cache_identity.compression_epoch,
-        "execution_semantics": execution_semantic_cache_payload(execution),
-        "system_sections": system_sections,
-        "context_sections": context_sections,
-        "tools": available_tools,
-    });
-    let canonical =
-        serde_json::to_vec(&payload).expect("reprojected prompt fingerprint should serialize");
-    format!("{:x}", Sha256::digest(canonical))
+    fingerprint::context(
+        &cache_identity.agent_id,
+        cache_identity.compression_epoch,
+        execution,
+        system_sections,
+        context_sections,
+        available_tools,
+    )
 }
 
 fn prompt_cache_scope_diagnostics(
@@ -1135,9 +1118,7 @@ fn section_chars(sections: &[&PromptSection]) -> usize {
 }
 
 fn section_fingerprint(sections: &[&PromptSection]) -> String {
-    let canonical =
-        serde_json::to_vec(sections).expect("prompt section diagnostics should serialize");
-    format!("{:x}", Sha256::digest(canonical))
+    fingerprint::digest(&sections)
 }
 
 fn execution_semantic_cache_payload(execution: &ExecutionSnapshot) -> serde_json::Value {
@@ -1639,6 +1620,103 @@ mod tests {
             access_mode: Some(crate::system::types::WorkspaceAccessMode::SharedRead),
             worktree_root: None,
             execution_roots: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn streamed_fingerprints_match_legacy_canonical_payloads() {
+        use sha2::{Digest, Sha256};
+
+        for (index, text) in [
+            String::new(),
+            "\"\\\n\t\r\u{0000}".into(),
+            "中文🙂\u{2028}".into(),
+            "long prompt section ".repeat(4096),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let mut session = AgentState::new("agent-\"中文");
+            session.working_memory.compression_epoch = index as u64;
+            let mut execution = sample_execution_snapshot();
+            execution.cwd.push(format!("round-{index}"));
+            let system = vec![
+                section("stable", PromptStability::Stable, text.clone()),
+                section("turn", PromptStability::TurnScoped, text.clone()),
+            ];
+            let context = vec![
+                section("agent", PromptStability::AgentScoped, text.clone()),
+                section("turn", PromptStability::TurnScoped, text),
+            ];
+            let tools = if index == 0 {
+                vec![]
+            } else {
+                vec![ToolSpec {
+                    name: "tool-\"中文".into(),
+                    description: "description\n".into(),
+                    input_schema: json!({"z": [null, true, 1.5], "a": {"z": 2, "a": "中"}}),
+                    freeform_grammar: Some(crate::tool::spec::ToolFreeformGrammar {
+                        syntax: "lark".into(),
+                        definition: "start: \"test\"".into(),
+                    }),
+                }]
+            };
+            let legacy_context = json!({
+                "agent_id": session.id,
+                "compression_epoch": session.working_memory.compression_epoch,
+                "execution_semantics": execution_semantic_cache_payload(&execution),
+                "system_sections": system,
+                "context_sections": context,
+                "tools": tools,
+            });
+            let expected = format!(
+                "{:x}",
+                Sha256::digest(serde_json::to_vec(&legacy_context).unwrap())
+            );
+            assert_eq!(
+                prompt_context_fingerprint(&session, &execution, &system, &context, &tools),
+                expected
+            );
+            let identity = PromptCacheIdentity {
+                agent_id: session.id.clone(),
+                compression_epoch: session.working_memory.compression_epoch,
+                prompt_cache_key: String::new(),
+                context_fingerprint: String::new(),
+            };
+            assert_eq!(
+                reprojected_context_fingerprint(&identity, &execution, &system, &context, &tools),
+                expected
+            );
+            let stable_system = system
+                .iter()
+                .filter(|s| s.stability != PromptStability::TurnScoped)
+                .collect::<Vec<_>>();
+            let stable_context = context
+                .iter()
+                .filter(|s| s.stability != PromptStability::TurnScoped)
+                .collect::<Vec<_>>();
+            let legacy_scope = json!({
+                "agent_id": session.id,
+                "execution_semantics": execution_semantic_cache_payload(&execution),
+                "stable_system_sections": stable_system,
+                "stable_context_sections": stable_context,
+                "tools": tools,
+            });
+            assert_eq!(
+                prompt_cache_scope_fingerprint(&session, &execution, &system, &context, &tools),
+                format!(
+                    "{:x}",
+                    Sha256::digest(serde_json::to_vec(&legacy_scope).unwrap())
+                )
+            );
+            let sections = system.iter().chain(&context).collect::<Vec<_>>();
+            assert_eq!(
+                section_fingerprint(&sections),
+                format!(
+                    "{:x}",
+                    Sha256::digest(serde_json::to_vec(&sections).unwrap())
+                )
+            );
         }
     }
 

@@ -126,7 +126,9 @@ impl RuntimeHost {
             scheduling_posture,
             closure,
             active_children,
-            work_queue,
+            work_queue: work_queue
+                .into_state_queue(&acquisition)
+                .map_err(PublicAgentError::Runtime)?,
             _work_budget: None,
             _scheduling_material: None,
         };
@@ -257,6 +259,17 @@ mod tests {
             .agent_states()
             .upsert_for_fixture(&agent)
             .unwrap();
+        let mut work = crate::types::WorkItemRecord::new(
+            &agent_id,
+            "scoped cold State loan 汉🦀",
+            crate::types::WorkItemState::Open,
+        );
+        work.plan_status = crate::types::WorkItemPlanStatus::Ready;
+        assert!(host
+            .runtime_db()
+            .work_items()
+            .insert_new_qualified_for_fixture(&work, identity.incarnation)
+            .unwrap());
         let db = host.runtime_db().with_read_scope(RuntimeDbReadScope::new(
             std::time::Instant::now() + Duration::from_secs(30),
         ));
@@ -271,6 +284,12 @@ mod tests {
         .unwrap();
         assert_eq!(projection.source, AgentStateProjectionSource::Storage);
         assert_eq!(projection.agent.agent.status, AgentStatus::Asleep);
+        assert_eq!(projection.agent.work_queue.items.len(), 1);
+        assert_eq!(projection.agent.work_queue.items[0].id, work.id);
+        assert_eq!(
+            serde_json::to_value(&projection.agent.work_queue.items[0].work_item).unwrap(),
+            serde_json::to_value(&work).unwrap()
+        );
         assert!(host.try_get_loaded_runtime(&agent_id).await.is_none());
         assert!(!host.agent_data_dir(&agent_id).exists());
         let ordinary = host
@@ -280,6 +299,20 @@ mod tests {
         assert_eq!(
             serde_json::to_value(&projection.agent.agent).unwrap(),
             serde_json::to_value(&ordinary.agent.agent).unwrap()
+        );
+        assert_eq!(
+            serde_json::to_value((
+                &projection.agent.work_queue.items,
+                &projection.agent.work_queue.queued_blocked,
+                &projection.agent.work_queue.queued_runnable,
+            ))
+            .unwrap(),
+            serde_json::to_value((
+                &ordinary.agent.work_queue.items,
+                &ordinary.agent.work_queue.queued_blocked,
+                &ordinary.agent.work_queue.queued_runnable,
+            ))
+            .unwrap()
         );
         host.shutdown().await.unwrap();
     }

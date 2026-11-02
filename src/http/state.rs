@@ -1,6 +1,11 @@
 use super::*;
+use anyhow::Context as _;
 
 const STATE_BOOTSTRAP_FAILURE_ARTIFACT_ENTRY_LIMIT: usize = 16;
+
+#[cfg(test)]
+#[path = "state_work_item_tests.rs"]
+mod work_item_tests;
 
 #[derive(Debug, Clone, Copy, Default, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -400,7 +405,7 @@ fn build_agent_state_projection(
     db: &crate::runtime_db::RuntimeDb,
     handle: &tokio::runtime::Handle,
 ) -> Result<Bytes, ProjectionFailure> {
-    let projection = state
+    let state_projection = state
         .host
         .operator_agent_state_projection_scoped(
             agent_id,
@@ -412,48 +417,43 @@ fn build_agent_state_projection(
         .map_err(agent_access_error)
         .map_err(ProjectionFailure::from)?;
     let workspace_started = std::time::Instant::now();
-    let workspace = state_workspace_snapshot(&projection.agent.agent, db)?;
+    let workspace = state_workspace_snapshot(&state_projection.agent.agent, db)?;
     crate::diagnostics::record_projection_state_workspace(workspace_started.elapsed());
-    let material = projection.material;
+    let material = state_projection.material;
+    let projection = state_projection.agent;
+    let work_queue = &projection.work_queue;
     let snapshot = material
         .acquisition
         .read(|| {
             // These DTO fields clone from selected values; admit before conversion.
             crate::diagnostics::resource_io::admit_cloned_value(&(
-                &projection.agent.agent,
-                &projection.agent.model,
-                &projection.agent.closure,
-                &projection.agent.active_children,
-                &projection.agent.agent.last_turn_terminal,
-                &projection.agent.agent.last_turn_terminal,
-                &projection.agent.agent.last_runtime_failure,
+                &projection.agent,
+                &projection.model,
+                &projection.closure,
+                &projection.active_children,
+                &projection.agent.last_turn_terminal,
+                &projection.agent.last_turn_terminal,
+                &projection.agent.last_runtime_failure,
             ))?;
-            let waits = projection
+            let waits = state_projection
                 .waits
                 .into_iter()
                 .map(crate::http_dto::SlimWaitDto::from)
                 .collect();
-            let source = projection.source;
-            let tasks = projection
+            let source = state_projection.source;
+            let tasks = state_projection
                 .tasks
                 .into_iter()
                 .map(crate::http_dto::SlimTaskDto::from)
                 .collect();
-            let timers = projection.timers;
-            let external_triggers = projection
+            let timers = state_projection.timers;
+            let external_triggers = state_projection
                 .external_triggers
                 .iter()
                 .map(crate::runtime::ExternalTriggerRecordLoan::state_snapshot)
                 .collect::<Result<Vec<_>>>()?;
-            let projection = projection.agent;
             let work_items_started = std::time::Instant::now();
-            let work_items = projection
-                .work_queue
-                .items
-                .into_iter()
-                .take(STATE_BOOTSTRAP_WORK_ITEM_LIMIT)
-                .map(slim_state_work_item_dto)
-                .collect::<Vec<_>>();
+            let work_items = slim_state_work_items(&work_queue.items)?;
             crate::diagnostics::record_projection_state_work_items(work_items_started.elapsed());
             let mut agent_dto = crate::http_dto::SlimAgentDto {
                 identity: projection.identity,
@@ -515,21 +515,75 @@ fn build_agent_state_projection(
     Ok(bytes)
 }
 
-fn slim_state_work_item_dto(
-    projection: crate::work_item_scheduling::WorkItemSchedulingProjection,
-) -> crate::http_dto::SlimWorkItemDto {
-    let mut dto = crate::http_dto::SlimWorkItemDto::from(projection);
-    dto.objective =
-        truncate_state_bootstrap_string(&dto.objective, STATE_BOOTSTRAP_TEXT_PREVIEW_LIMIT);
-    dto.blocked_by = dto
-        .blocked_by
-        .take()
-        .map(|text| truncate_state_bootstrap_string(&text, STATE_BOOTSTRAP_TEXT_PREVIEW_LIMIT));
-    dto.result_summary = dto
-        .result_summary
-        .take()
-        .map(|text| truncate_state_bootstrap_string(&text, STATE_BOOTSTRAP_TEXT_PREVIEW_LIMIT));
-    dto
+type StateWorkItemDto<'a> =
+    crate::http_dto::SlimWorkItemDto<std::borrow::Cow<'a, str>, &'a crate::types::TodoItem>;
+
+fn slim_state_work_items<W: std::borrow::Borrow<WorkItemRecord>>(
+    items: &[crate::work_item_scheduling::WorkItemSchedulingProjection<W>],
+) -> Result<Vec<StateWorkItemDto<'_>>> {
+    let count = items.len().min(STATE_BOOTSTRAP_WORK_ITEM_LIMIT);
+    crate::diagnostics::resource_io::charge_owned_metadata(
+        u64::try_from(count)?
+            .checked_mul(std::mem::size_of::<StateWorkItemDto<'_>>() as u64)
+            .context("State work item capacity overflow")?,
+        count,
+    )?;
+    let mut result = Vec::new();
+    result.try_reserve_exact(count)?;
+    for item in items.iter().take(count) {
+        result.push(slim_state_work_item_dto(item)?);
+    }
+    Ok(result)
+}
+
+fn slim_state_work_item_dto<W: std::borrow::Borrow<WorkItemRecord>>(
+    projection: &crate::work_item_scheduling::WorkItemSchedulingProjection<W>,
+) -> Result<StateWorkItemDto<'_>> {
+    use std::borrow::Cow;
+    let record = projection.record();
+    Ok(crate::http_dto::SlimWorkItemDto {
+        id: Cow::Borrowed(&record.id),
+        agent_id: Cow::Borrowed(&record.agent_id),
+        workspace_id: Cow::Borrowed(&record.workspace_id),
+        revision: record.revision,
+        objective: borrowed_state_bootstrap_string(&record.objective)?,
+        state: record.state.clone(),
+        plan_status: record.plan_status,
+        blocked_by: record
+            .blocked_by
+            .as_deref()
+            .map(borrowed_state_bootstrap_string)
+            .transpose()?,
+        recheck_at: record.recheck_at,
+        result_brief_id: record.result_brief_id.as_deref().map(Cow::Borrowed),
+        result_summary: record
+            .result_summary
+            .as_deref()
+            .map(borrowed_state_bootstrap_string)
+            .transpose()?,
+        created_at: record.created_at,
+        updated_at: record.updated_at,
+        turn_id: record.turn_id.as_deref().map(Cow::Borrowed),
+        scheduling_state: projection.scheduling_state,
+        readiness: projection.readiness,
+        candidate_class: projection.candidate_class,
+        focus: projection.focus,
+        is_current: projection.is_current,
+        is_runnable: projection.is_runnable,
+        current_todo: projection.current_todo.as_ref(),
+        reason_code: projection.reason_code,
+    })
+}
+
+fn borrowed_state_bootstrap_string(text: &str) -> Result<std::borrow::Cow<'_, str>> {
+    let (prefix, suffix) = state_bootstrap_string_parts(text, STATE_BOOTSTRAP_TEXT_PREVIEW_LIMIT);
+    if suffix.is_empty() {
+        return Ok(std::borrow::Cow::Borrowed(prefix));
+    }
+    crate::diagnostics::resource_io::charge_owned_payload(u64::try_from(
+        prefix.len() + suffix.len(),
+    )?)?;
+    Ok(std::borrow::Cow::Owned(format!("{prefix}{suffix}")))
 }
 
 fn slim_state_turn_terminal_record(mut record: TurnTerminalRecord) -> TurnTerminalRecord {
@@ -670,8 +724,13 @@ fn slim_state_json_value(value: Value, string_limit: usize) -> Value {
 }
 
 fn truncate_state_bootstrap_string(text: &str, limit: usize) -> String {
+    let (prefix, suffix) = state_bootstrap_string_parts(text, limit);
+    format!("{prefix}{suffix}")
+}
+
+fn state_bootstrap_string_parts(text: &str, limit: usize) -> (&str, &'static str) {
     if limit == 0 {
-        return String::new();
+        return ("", "");
     }
 
     let truncated_char_limit = limit.saturating_sub(3);
@@ -679,7 +738,7 @@ fn truncate_state_bootstrap_string(text: &str, limit: usize) -> String {
     for (index, (byte_index, _)) in text.char_indices().enumerate() {
         if limit <= 3 {
             if index == limit {
-                return text[..byte_index].to_string();
+                return (&text[..byte_index], "");
             }
         } else {
             if index == truncated_char_limit {
@@ -687,11 +746,11 @@ fn truncate_state_bootstrap_string(text: &str, limit: usize) -> String {
             }
             if index == limit {
                 let byte_index = truncate_at.unwrap_or(byte_index);
-                return format!("{}...", &text[..byte_index]);
+                return (&text[..byte_index], "...");
             }
         }
     }
-    text.to_string()
+    (text, "")
 }
 
 fn state_workspace_snapshot(
@@ -962,10 +1021,26 @@ mod tests {
                 trigger_delivery_by_id: &std::collections::BTreeMap::new(),
             },
         );
-        let slimmed = super::slim_state_work_item_dto(projection);
+        let mut expected = crate::http_dto::SlimWorkItemDto::from(projection.clone());
+        assert_eq!(
+            serde_json::to_value(crate::http_dto::SlimWorkItemDto::from(&projection)).unwrap(),
+            serde_json::to_value(&expected).unwrap()
+        );
+        let slimmed = super::slim_state_work_item_dto(&projection).unwrap();
+        expected.objective = super::truncate_state_bootstrap_string(
+            &expected.objective,
+            STATE_BOOTSTRAP_TEXT_PREVIEW_LIMIT,
+        );
+        expected.blocked_by = expected.blocked_by.map(|text| {
+            super::truncate_state_bootstrap_string(&text, STATE_BOOTSTRAP_TEXT_PREVIEW_LIMIT)
+        });
+        expected.result_summary = expected.result_summary.map(|text| {
+            super::truncate_state_bootstrap_string(&text, STATE_BOOTSTRAP_TEXT_PREVIEW_LIMIT)
+        });
 
         assert!(slimmed.objective.chars().count() <= STATE_BOOTSTRAP_TEXT_PREVIEW_LIMIT);
         let value = serde_json::to_value(&slimmed).expect("serialize slim work item");
+        assert_eq!(value, serde_json::to_value(expected).unwrap());
         assert!(value.get("todo_list").is_none());
         assert!(value.get("work_refs").is_none());
         assert!(value.get("plan_artifact").is_none());

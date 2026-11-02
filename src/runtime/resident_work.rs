@@ -3,6 +3,8 @@
 
 mod context_queue;
 mod scheduler_queue;
+mod state_queue;
+pub(crate) use state_queue::StateWorkQueue;
 
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -1182,6 +1184,7 @@ impl CapturedWork {
     }
     /// The trigger delivery observation remains an explicit D6 adapter; no SQL
     /// or Task/Timer/Trigger authority is hidden inside this pure projection.
+    #[cfg(test)]
     pub(crate) fn work_queue_with_material(
         &self,
         state: &AgentState,
@@ -1259,6 +1262,7 @@ impl CapturedWork {
     }
 }
 
+#[cfg(test)]
 fn clone_context_queue_triggers(
     triggers: &[ExternalTriggerRecord],
 ) -> Result<Vec<ExternalTriggerRecord>> {

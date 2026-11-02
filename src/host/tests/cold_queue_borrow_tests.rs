@@ -1,8 +1,8 @@
 use super::*;
 use crate::types::{TodoItem, TodoItemState, WorkItemPlanStatus, WorkItemRecord, WorkItemState};
 
-fn queue_wire(
-    queue: &crate::work_item_scheduling::WorkQueueReadModel,
+fn queue_wire<W: serde::Serialize>(
+    queue: &crate::work_item_scheduling::WorkQueueReadModel<W>,
 ) -> Result<serde_json::Value> {
     Ok(serde_json::to_value((
         &queue.current,
@@ -103,7 +103,17 @@ async fn cold_borrowed_queue_dual_consumers_match_owned_oracle_and_last_holder()
             host.inner.input_evidence_budget.report()?.observed_bytes,
             held
         );
+        let loan = last.work_queue.items[0].work_item.clone();
         drop(last);
+        let loan_bytes = host.inner.input_evidence_budget.report()?.observed_bytes;
+        assert!(loan_bytes > baseline);
+        let last_loan = loan.clone();
+        drop(loan);
+        assert_eq!(
+            host.inner.input_evidence_budget.report()?.observed_bytes,
+            loan_bytes
+        );
+        drop(last_loan);
         assert_eq!(
             host.inner.input_evidence_budget.report()?.observed_bytes,
             baseline
@@ -129,7 +139,10 @@ async fn cold_borrowed_queue_dual_consumers_match_owned_oracle_and_last_holder()
             host.inner.input_evidence_budget.report()?.observed_bytes,
             held
         );
+        let loan = last.agent.work_queue.items[0].work_item.clone();
         drop(last);
+        assert!(host.inner.input_evidence_budget.report()?.observed_bytes > baseline);
+        drop(loan);
         assert_eq!(
             host.inner.input_evidence_budget.report()?.observed_bytes,
             baseline
@@ -158,7 +171,9 @@ async fn cold_borrowed_queue_dual_consumers_keep_empty_fallback_and_rejection() 
     assert_eq!(light.agent, stopped_unloaded_agent(&identity.agent_id));
     assert_eq!(
         queue_wire(&light.work_queue)?,
-        queue_wire(&Default::default())?
+        queue_wire(&crate::work_item_scheduling::WorkQueueReadModel::<
+            WorkItemRecord,
+        >::default())?
     );
     drop(light);
     assert_eq!(
@@ -172,7 +187,9 @@ async fn cold_borrowed_queue_dual_consumers_keep_empty_fallback_and_rejection() 
     assert_eq!(full.agent.agent, stopped_unloaded_agent(&identity.agent_id));
     assert_eq!(
         queue_wire(&full.agent.work_queue)?,
-        queue_wire(&Default::default())?
+        queue_wire(&crate::work_item_scheduling::WorkQueueReadModel::<
+            WorkItemRecord,
+        >::default())?
     );
     drop(full);
     assert_eq!(
