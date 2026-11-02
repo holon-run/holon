@@ -40,7 +40,7 @@ holon daemon start --access cloudflare --port 8787 \
 
 ## 第 2 步：接入团队单点登录（OIDC）
 
-在团队成员之间私下分发固定的控制 Token 无法做到安全审计。对于团队环境，建议配置 OpenID Connect（OIDC），让成员直接使用公司现有的账号系统登录（如 Google Workspace、Okta、Keycloak、Authentik 或 Microsoft Entra ID）。
+在团队成员之间私下分发固定的控制 Token 无法做到安全审计。对于团队环境，建议配置 OpenID Connect（OIDC），让成员直接使用公司现有的账号系统登录（如 Google Workspace、GitLab CE、Keycloak、Okta、Authentik 或 Microsoft Entra ID）。
 
 开启 OIDC 后：
 - 成员在浏览器中直接使用工作邮箱或单点登录凭据登录 Web GUI；
@@ -55,7 +55,7 @@ holon config set auth.oidc.client_id "holon"
 holon config set auth.oidc.client_secret_env "HOLON_OIDC_CLIENT_SECRET"
 ```
 
-完整的分步注册与会话超时调整指引，请参阅[配置 OIDC 认证](./configure-oidc-authentication.md)。
+完整的分步注册与会话超时调整指引，请参阅[配置 OIDC 认证](./configure-oidc-authentication.md)，或直接参考针对 [Google Workspace](./google-workspace-oidc-authentication.md)、[自托管 GitLab CE](./gitlab-ce-oidc-authentication.md) 与[自托管 Keycloak](./keycloak-oidc-authentication.md) 的专项配置指南。
 
 ## 第 3 步：通过 Web GUI 展开日常协同
 

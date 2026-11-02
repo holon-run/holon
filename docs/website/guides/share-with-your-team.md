@@ -62,8 +62,8 @@ For detailed network configuration and service management, see
 
 Sharing a static control token among teammates makes auditing impossible. For
 team environments, configure OpenID Connect (OIDC) so members log in using
-your organization's existing identity provider (Google Workspace, Okta,
-Keycloak, Authentik, or Microsoft Entra ID).
+your organization's existing identity provider (such as Google Workspace,
+GitLab CE, Keycloak, Okta, Authentik, or Microsoft Entra ID).
 
 With OIDC enabled:
 - Teammates log in via browser using their work accounts.
@@ -80,7 +80,11 @@ holon config set auth.oidc.client_secret_env "HOLON_OIDC_CLIENT_SECRET"
 ```
 
 For step-by-step IdP registration and session tuning, see
-[Configure OIDC authentication](./configure-oidc-authentication.md).
+[Configure OIDC authentication](./configure-oidc-authentication.md) or the
+dedicated provider walkthroughs for
+[Google Workspace](./google-workspace-oidc-authentication.md),
+[self-hosted GitLab CE](./gitlab-ce-oidc-authentication.md), and
+[self-hosted Keycloak](./keycloak-oidc-authentication.md).
 
 ## Step 3: Collaborate through the Web GUI
 
