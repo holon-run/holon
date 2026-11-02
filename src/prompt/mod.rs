@@ -1275,6 +1275,9 @@ fn describe_agents_md_source(
     let Some(source) = source else {
         return match status {
             AgentsMdLoadStatus::Loaded => "loaded (source unavailable)".to_string(),
+            AgentsMdLoadStatus::DuplicateOfAgentScope => {
+                "duplicate of agent scope (guidance included there)".to_string()
+            }
             AgentsMdLoadStatus::NotFound => "not found".to_string(),
             AgentsMdLoadStatus::RootUnavailable => "root unavailable".to_string(),
             AgentsMdLoadStatus::NotEvaluated => "not evaluated".to_string(),
@@ -2781,6 +2784,47 @@ mod tests {
             .contains("agent_home/tmp/` is for short-lived working files"));
         assert!(section.content.contains("Near the end of each turn"));
         assert!(section.content.contains("Do not store transient plans"));
+    }
+
+    #[test]
+    fn real_loader_guidance_is_injected_once_only_for_same_file() {
+        let agent = tempfile::tempdir().unwrap();
+        let workspace = tempfile::tempdir().unwrap();
+        let marker = "unique-agent-workspace-guidance-3889";
+        for root in [agent.path(), workspace.path()] {
+            std::fs::write(root.join("AGENTS.md"), marker).unwrap();
+        }
+
+        for (root, expected_count) in [(agent.path(), 1), (workspace.path(), 2)] {
+            let loaded = crate::agents_md::load_agents_md(None, agent.path(), Some(root)).unwrap();
+            let sections = build_system_sections(
+                &sample_identity(),
+                &sample_message(),
+                agent.path(),
+                &loaded,
+                &LoadedAgentMemory::default(),
+                &SkillsRuntimeView::default(),
+                &[],
+                ToolPromptContext::default(),
+            );
+            let system = render_sections(&sections);
+            assert_eq!(system.matches(marker).count(), expected_count);
+            assert!(sections
+                .iter()
+                .any(|section| section.name == "agent_agents_md"));
+            assert_eq!(
+                sections
+                    .iter()
+                    .any(|section| section.name == "workspace_agents_md"),
+                expected_count == 2
+            );
+            if expected_count == 1 {
+                assert_eq!(
+                    describe_agents_md_source(None, loaded.workspace_status),
+                    "duplicate of agent scope (guidance included there)"
+                );
+            }
+        }
     }
 
     #[test]

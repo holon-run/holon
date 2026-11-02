@@ -1131,6 +1131,7 @@ pub struct AgentsMdSource {
 #[serde(rename_all = "snake_case")]
 pub enum AgentsMdLoadStatus {
     Loaded,
+    DuplicateOfAgentScope,
     NotFound,
     RootUnavailable,
     #[default]
@@ -6664,6 +6665,44 @@ mod tests {
                 .scope,
             AgentsMdScope::UserGlobal
         );
+    }
+
+    #[test]
+    fn agents_md_duplicate_status_round_trips_without_content() {
+        let loaded = LoadedAgentsMd {
+            agent_source: Some(AgentsMdSource {
+                scope: AgentsMdScope::Agent,
+                kind: AgentsMdKind::AgentsMd,
+                path: PathBuf::from("/agent/AGENTS.md"),
+                content: "private guidance".into(),
+            }),
+            agent_status: AgentsMdLoadStatus::Loaded,
+            workspace_status: AgentsMdLoadStatus::DuplicateOfAgentScope,
+            ..LoadedAgentsMd::default()
+        };
+        let view = LoadedAgentsMdView::from(&loaded);
+        assert_eq!(view.agent_status, AgentsMdLoadStatus::Loaded);
+        assert_eq!(
+            view.workspace_status,
+            AgentsMdLoadStatus::DuplicateOfAgentScope
+        );
+        assert!(view.workspace_source.is_none());
+        for json in [
+            serde_json::to_value(&loaded).unwrap(),
+            serde_json::to_value(&view).unwrap(),
+        ] {
+            assert_eq!(json["workspace_status"], "duplicate_of_agent_scope");
+            assert!(!json.to_string().contains("private guidance"));
+            let decoded: LoadedAgentsMd = serde_json::from_value(json.clone()).unwrap();
+            assert_eq!(
+                decoded.workspace_status,
+                AgentsMdLoadStatus::DuplicateOfAgentScope
+            );
+            let decoded: LoadedAgentsMdView = serde_json::from_value(json).unwrap();
+            assert_eq!(decoded, view);
+        }
+        let legacy: LoadedAgentsMdView = serde_json::from_str("{}").unwrap();
+        assert_eq!(legacy.workspace_status, AgentsMdLoadStatus::NotEvaluated);
     }
 
     #[test]

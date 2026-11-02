@@ -228,6 +228,60 @@ async fn detached_agent_does_not_load_workspace_agents_md() {
 }
 
 #[tokio::test]
+async fn detached_agent_home_guidance_is_deduplicated_in_summary_and_preview() {
+    let home = tempdir().unwrap();
+    let path = home.path().join("AGENTS.md");
+    let marker = "detached-agent-unique-guidance-3889";
+    std::fs::write(&path, marker).unwrap();
+    let runtime = RuntimeHandle::new(
+        "default",
+        home.path().to_path_buf(),
+        InitialWorkspaceBinding::Detached,
+        "http://127.0.0.1:7878".into(),
+        Arc::new(StubProvider::new("done")),
+        "default".into(),
+        context_config(),
+    )
+    .unwrap();
+
+    let summary = runtime.agent_summary().await.unwrap();
+    let loaded = &summary.loaded_agents_md;
+    assert_eq!(loaded.agent_source.as_ref().unwrap().path, path);
+    assert_eq!(
+        loaded.agent_status,
+        crate::types::AgentsMdLoadStatus::Loaded
+    );
+    assert!(loaded.workspace_source.is_none());
+    assert_eq!(
+        loaded.workspace_status,
+        crate::types::AgentsMdLoadStatus::DuplicateOfAgentScope
+    );
+    assert!(!serde_json::to_string(&summary).unwrap().contains(marker));
+
+    let preview = runtime
+        .preview_prompt(
+            "inspect guidance".into(),
+            AuthorityClass::OperatorInstruction,
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        crate::types::LoadedAgentsMdView::from(&preview.loaded_agents_md),
+        *loaded
+    );
+    assert_eq!(preview.rendered_system_prompt.matches(marker).count(), 1);
+    assert!(preview
+        .system_sections
+        .iter()
+        .any(|s| s.name == "agent_agents_md"));
+    assert!(!preview
+        .system_sections
+        .iter()
+        .any(|s| s.name == "workspace_agents_md"));
+    assert!(preview.render_dump().contains("duplicate of agent scope"));
+}
+
+#[tokio::test]
 async fn preview_prompt_lowers_apply_patch_contract_for_json_tool_providers() {
     let dir = tempdir().unwrap();
     let workspace = tempdir().unwrap();
