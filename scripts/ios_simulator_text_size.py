@@ -14,6 +14,9 @@ _CONFIGURATION_TIMEOUT = 120
 # The simctl ui service can hang transiently mid-run; runtime control calls
 # retry within a bounded budget instead of failing the whole job on one miss.
 _RUNTIME_RETRY_ATTEMPTS = 3
+# XCTest's HTTP request times out at 40s; setting, readback and backoff share
+# this smaller budget rather than each command owning a fresh retry budget.
+_RUNTIME_REQUEST_TIMEOUT = 35
 _RETRY_BACKOFF_SECONDS = (1.0, 4.0)
 _TEXT_SIZES = {
     "extra-small", "small", "medium", "large", "extra-large",
@@ -57,25 +60,19 @@ def simulator_appearance(simulator, appearance):
         _set_appearance(simulator, original, timeout=_CONFIGURATION_TIMEOUT)
 
 
-def _run_content_size(simulator, arguments, *, timeout, attempts):
+def _run_content_size(simulator, arguments, *, timeout, deadline=None):
     command = ["xcrun", "simctl", "ui", simulator, "content_size", *arguments]
-    for attempt in range(1, attempts + 1):
-        try:
-            return subprocess.run(
-                command, check=True, capture_output=True, text=True, timeout=timeout,
-            )
-        except subprocess.SubprocessError as error:
-            if attempt == attempts:
-                raise
-            backoff = _RETRY_BACKOFF_SECONDS[min(attempt - 1,
-                                                 len(_RETRY_BACKOFF_SECONDS) - 1)]
-            print(f"模拟器 {simulator}：simctl ui content_size 第 {attempt}/{attempts} "
-                  f"次尝试失败（{type(error).__name__}），{backoff:g}s 后重试", flush=True)
-            time.sleep(backoff)
+    if deadline is not None:
+        timeout = min(timeout, deadline - time.monotonic())
+        if timeout <= 0:
+            raise subprocess.TimeoutExpired(command, 0)
+    return subprocess.run(
+        command, check=True, capture_output=True, text=True, timeout=timeout,
+    )
 
 
-def _read_text_size(simulator, *, timeout=15, attempts=1):
-    result = _run_content_size(simulator, [], timeout=timeout, attempts=attempts)
+def _read_text_size(simulator, *, timeout=15, deadline=None):
+    result = _run_content_size(simulator, [], timeout=timeout, deadline=deadline)
     category = result.stdout.strip()
     if category not in _TEXT_SIZES:
         raise RuntimeError(f"无法读取可恢复的模拟器系统字号：{category!r}")
@@ -83,15 +80,44 @@ def _read_text_size(simulator, *, timeout=15, attempts=1):
 
 
 def set_simulator_text_size(simulator, category, phase="运行时切换", *, timeout=15,
-                            attempts=1):
+                            attempts=1, deadline=None):
     if category not in _TEXT_SIZES:
         raise ValueError("不支持的系统字号")
-    _run_content_size(simulator, [category], timeout=timeout, attempts=attempts)
-    actual = _read_text_size(simulator, timeout=timeout, attempts=attempts)
-    print(f"模拟器 {simulator} 系统字号（{phase}）：{actual}", flush=True)
-    if actual != category:
-        raise RuntimeError(f"系统字号核验失败：期望 {category}，实际 {actual}")
-    return actual
+    needs_set = True
+    uncertain_set = False
+    for attempt in range(1, attempts + 1):
+        try:
+            if needs_set:
+                try:
+                    _run_content_size(simulator, [category], timeout=timeout, deadline=deadline)
+                except subprocess.TimeoutExpired:
+                    if attempts == 1:
+                        raise
+                    # Killing simctl does not establish whether its service applied
+                    # the setting. Verify before sending another mutation.
+                    uncertain_set = True
+                    print(f"模拟器 {simulator}：字号设置命令超时，先核验实际系统字号", flush=True)
+                else:
+                    uncertain_set = False
+                needs_set = False
+            actual = _read_text_size(simulator, timeout=timeout, deadline=deadline)
+            print(f"模拟器 {simulator} 系统字号（{phase}）：{actual}", flush=True)
+            if actual == category:
+                return actual
+            failure = RuntimeError(f"系统字号核验失败：期望 {category}，实际 {actual}")
+            if not uncertain_set:
+                raise failure
+            needs_set = True
+        except subprocess.SubprocessError as error:
+            failure = error
+        if attempt == attempts:
+            raise failure
+        backoff = _RETRY_BACKOFF_SECONDS[min(attempt - 1, len(_RETRY_BACKOFF_SECONDS) - 1)]
+        if deadline is not None and time.monotonic() + backoff >= deadline:
+            raise failure
+        print(f"模拟器 {simulator}：simctl ui content_size 第 {attempt}/{attempts} "
+              f"次尝试失败（{type(failure).__name__}），{backoff:g}s 后重试", flush=True)
+        time.sleep(backoff)
 
 
 def initialize_simulator_text_size(simulator):
@@ -131,11 +157,29 @@ def runtime_text_size_control(simulator):
         def log_message(self, *args):
             pass
 
+        def reply(self, status, category=None):
+            try:
+                if status != 200:
+                    self.send_error(
+                        status, "System text-size verification failed" if status == 500 else None)
+                    return
+                body = json.dumps({"category": category}).encode()
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+            except (BrokenPipeError, ConnectionResetError):
+                # Client cancellation must not interrupt draining the operation
+                # or obscure a failed verification with a response-write traceback.
+                print(f"模拟器 {simulator}：字号控制响应 {status} 未送达，客户端已断开", flush=True)
+
         def do_POST(self):
+            deadline = time.monotonic() + _RUNTIME_REQUEST_TIMEOUT
             if self.path != "/content-size" or not secrets.compare_digest(
                 self.headers.get("Authorization", "").encode(), ("Bearer " + token).encode()
             ):
-                self.send_error(403)
+                self.reply(403)
                 return
             try:
                 length = int(self.headers.get("Content-Length", "0"))
@@ -148,20 +192,17 @@ def runtime_text_size_control(simulator):
                 if category not in ("large", MAXIMUM_TEXT_SIZE):
                     raise ValueError()
             except (ValueError, TypeError):
-                self.send_error(400)
+                self.reply(400)
                 return
             try:
                 actual = set_simulator_text_size(
-                    simulator, category, attempts=_RUNTIME_RETRY_ATTEMPTS)
-            except (subprocess.SubprocessError, RuntimeError):
-                self.send_error(500, "System text-size verification failed")
+                    simulator, category, attempts=_RUNTIME_RETRY_ATTEMPTS, deadline=deadline)
+            except (subprocess.SubprocessError, RuntimeError) as error:
+                print(f"模拟器 {simulator}：系统字号切换失败（{type(error).__name__}）：{error}",
+                      flush=True)
+                self.reply(500)
                 return
-            body = json.dumps({"category": actual}).encode()
-            self.send_response(200)
-            self.send_header("Content-Type", "application/json")
-            self.send_header("Content-Length", str(len(body)))
-            self.end_headers()
-            self.wfile.write(body)
+            self.reply(200, actual)
 
     # One request at a time; shutdown waits for the active setter/readback.
     server = http.server.HTTPServer(("127.0.0.1", 0), Control)

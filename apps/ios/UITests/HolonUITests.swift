@@ -59,6 +59,16 @@ final class HolonUITests: XCTestCase {
                        message, file: file, line: line)
     }
 
+    private func waitForHittable(_ element: XCUIElement, timeout: TimeInterval = 10,
+                                 file: StaticString = #filePath, line: UInt = #line) {
+        let ready = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
+            element.exists && element.isEnabled && element.isHittable
+        }, object: nil)
+        XCTAssertEqual(XCTWaiter.wait(for: [ready], timeout: UIWaitScale.scaled(timeout)), .completed,
+                       "The navigation control must be interactable, not merely in the hierarchy",
+                       file: file, line: line)
+    }
+
     private func waitForDisabled(_ element: XCUIElement, timeout: TimeInterval = 10,
                                  message: String = "Element must become disabled",
                                  file: StaticString = #filePath, line: UInt = #line) {
@@ -94,8 +104,34 @@ final class HolonUITests: XCTestCase {
         next.tap()
     }
 
-    private func connectThroughPairing(_ app: XCUIApplication, endpoint: String, payload: String) throws {
-        try enterPairingPayload(app, payload: payload)
+    private func connectThroughPairing(_ app: XCUIApplication, endpoint: String) async throws {
+        // Build/install can outlive the real ticket's two-minute lifetime.
+        // Issue only at login; the app still redeems through shipped UI.
+        let control = try XCTUnwrap(URL(string: required("NODE_CONTROL_URL")))
+        let api = try XCTUnwrap(URL(string: endpoint))
+        guard control.scheme == "http", control.host == "127.0.0.1",
+              api.scheme == control.scheme, api.host == control.host, control.port == api.port,
+              control.path == "/fixture/node-availability",
+              api.path.hasSuffix("/api"), var components = URLComponents(url: api, resolvingAgainstBaseURL: false) else {
+            throw FixtureError.invalidEndpoint
+        }
+        var request = URLRequest(url: control.deletingLastPathComponent().appendingPathComponent("pairing-ticket"))
+        request.httpMethod = "POST"
+        request.timeoutInterval = 10
+        request.setValue("Bearer " + (try required("NODE_CONTROL_TOKEN")), forHTTPHeaderField: "Authorization")
+        let (data, response) = try await URLSession.shared.data(for: request)
+        guard (response as? HTTPURLResponse)?.statusCode == 200 else {
+            XCTFail("The isolated fixture must issue a fresh pairing ticket")
+            throw FixtureError.missingInput
+        }
+        struct PairingTicket: Decodable { let ticket: String }
+        let code = try JSONDecoder().decode(PairingTicket.self, from: data).ticket
+        guard code.count == 64, code.allSatisfy(\.isHexDigit) else {
+            throw FixtureError.missingInput
+        }
+        components.path = String(components.path.dropLast(4)) + "/login"
+        components.fragment = "pair=" + code
+        try enterPairingPayload(app, payload: try XCTUnwrap(components.string))
         let target = app.staticTexts["onboarding.pairingTarget"]
         XCTAssertTrue(target.waitForExistence(timeout: UIWaitScale.scaled(10)))
         XCTAssertEqual(target.label, endpoint + "/")
@@ -132,8 +168,8 @@ final class HolonUITests: XCTestCase {
         waitForValue(consent, "1")
     }
 
-    func testPrivacyConsentCanBeWithdrawnAndExplicitlyRestored() throws {
-        try connectForSharing()
+    func testPrivacyConsentCanBeWithdrawnAndExplicitlyRestored() async throws {
+        try await connectForSharing()
         let app = launch(language: "en", dark: false, large: false)
         openSettings(app)
         let revoke = app.buttons["privacy.revoke"]
@@ -261,11 +297,17 @@ final class HolonUITests: XCTestCase {
     private enum FixtureError: Error { case missingInput, invalidEndpoint }
 
     private func openSettings(_ app: XCUIApplication) {
-        // Bootstrap can briefly expose home before restoring the confirmed Agent.
-        // Wait for that route before looking for the home-only settings control.
-        if app.buttons["conversation.more"].waitForExistence(timeout: UIWaitScale.scaled(30)) {
+        // Accept either ready route instead of spending the whole budget
+        // waiting for a restored conversation when already at home.
+        let home = app.buttons["settings.open"]
+        let conversation = app.buttons["conversation.more"]
+        let route = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
+            (home.exists && home.isHittable) || (conversation.exists && conversation.isHittable)
+        }, object: nil)
+        XCTAssertEqual(XCTWaiter.wait(for: [route], timeout: UIWaitScale.scaled(30)), .completed)
+        if conversation.exists {
             let back = app.navigationBars.buttons.element(boundBy: 0)
-            XCTAssertTrue(back.waitForExistence(timeout: UIWaitScale.scaled(10)))
+            waitForHittable(back)
             back.tap()
         }
         let settings = app.buttons["settings.open"]
@@ -275,7 +317,7 @@ final class HolonUITests: XCTestCase {
             XCTAssertTrue(back.waitForExistence(timeout: UIWaitScale.scaled(10)))
             back.tap()
         }
-        XCTAssertTrue(settings.waitForExistence(timeout: UIWaitScale.scaled(10)))
+        waitForHittable(settings)
         settings.tap()
         XCTAssertTrue(app.buttons["settings.connection"].waitForExistence(timeout: UIWaitScale.scaled(10)),
                       "Settings must finish opening before revealing its controls")
@@ -761,9 +803,8 @@ final class HolonUITests: XCTestCase {
         print("Prepared diagnostics layout control: \(attachment.name)")
     }
 
-    func testAuthenticatedNativeWorkflow() throws {
+    func testAuthenticatedNativeWorkflow() async throws {
         let endpoint = try required("ENDPOINT")
-        let code = try required("PAIRING_CODE")
         let agent = try required("AGENT_ID")
         let work = try required("WORK_ID")
         let task = try required("TASK_ID")
@@ -772,21 +813,13 @@ final class HolonUITests: XCTestCase {
         let taskMarker = try required("TASK_MARKER")
         let fileReference = try required("FILE_REFERENCE")
         let fileMarker = try required("FILE_MARKER")
-        guard endpoint.hasSuffix("/api"),
-              var components = URLComponents(string: endpoint),
-              code.count == 64, code.allSatisfy(\.isHexDigit) else {
-            XCTFail("Fixture endpoint must end /api and pairing code must be 64 hex characters.")
-            throw FixtureError.invalidEndpoint
-        }
-        components.path = String(components.path.dropLast(4)) + "/login"
-        components.fragment = "pair=" + code
         // This case asserts that the app stops at the sharing prompt, so it
         // must start without an earlier approval. The app clears its own
         // state; the case only states the precondition.
         let app = launchClean(language: "en", dark: false, large: false)
         XCTAssertTrue(app.buttons["onboarding.scan"].waitForExistence(timeout: UIWaitScale.scaled(15)))
         XCTAssertFalse(app.tabBars.firstMatch.exists, "Identity must be confirmed before showing tabs")
-        try connectThroughPairing(app, endpoint: endpoint, payload: try XCTUnwrap(components.string))
+        try await connectThroughPairing(app, endpoint: endpoint)
         approveSharingConsent(app)
         XCTAssertFalse(app.tabBars.firstMatch.exists, "Agent home has no global bottom tabs")
         let manage = app.buttons["connection.manage"]
@@ -930,21 +963,12 @@ final class HolonUITests: XCTestCase {
         app.terminate()
     }
 
-    func testRuntimeBrowserWorkflow() throws {
+    func testRuntimeBrowserWorkflow() async throws {
         let endpoint = try required("ENDPOINT")
-        let code = try required("PAIRING_CODE")
         let agent = try required("AGENT_ID")
-        guard endpoint.hasSuffix("/api"),
-              var components = URLComponents(string: endpoint),
-              code.count == 64, code.allSatisfy(\.isHexDigit) else {
-            XCTFail("Fixture endpoint must end /api and pairing code must be 64 hex characters.")
-            throw FixtureError.invalidEndpoint
-        }
-        components.path = String(components.path.dropLast(4)) + "/login"
-        components.fragment = "pair=" + code
         let app = launch(language: "en", dark: false, large: false)
         XCTAssertTrue(app.buttons["onboarding.scan"].waitForExistence(timeout: UIWaitScale.scaled(15)))
-        try connectThroughPairing(app, endpoint: endpoint, payload: try XCTUnwrap(components.string))
+        try await connectThroughPairing(app, endpoint: endpoint)
         approveSharingConsent(app)
         let agentButton = app.buttons["agent." + agent]
         XCTAssertTrue(agentButton.waitForExistence(timeout: UIWaitScale.scaled(30)))
@@ -979,8 +1003,8 @@ final class HolonUITests: XCTestCase {
                       "Closing the runtime browser returns to the conversation")
     }
 
-    private func openContentReport() throws -> XCUIApplication {
-        try connectForSharing()
+    private func openContentReport() async throws -> XCUIApplication {
+        try await connectForSharing()
         let app = launch(language: "en", dark: false, large: false)
         let agent = try required("AGENT_ID")
         let turn = try required("RICH_TURN_ID")
@@ -1021,8 +1045,8 @@ final class HolonUITests: XCTestCase {
         return app
     }
 
-    func testContentReportFullResponseIncludesTail() throws {
-        let app = try openContentReport()
+    func testContentReportFullResponseIncludesTail() async throws {
+        let app = try await openContentReport()
         defer { app.terminate() }
         let full = app.buttons["report.viewFullResponse"]
         reveal(full, in: app); full.tap()
@@ -1036,8 +1060,8 @@ final class HolonUITests: XCTestCase {
         app.buttons["report.dismiss"].tap()
     }
 
-    func testContentReportConfirmationCancelDoesNotPersist() throws {
-        let app = try openContentReport()
+    func testContentReportConfirmationCancelDoesNotPersist() async throws {
+        let app = try await openContentReport()
         defer { app.terminate() }
         let submit = app.buttons["report.submit"]
         reveal(submit, in: app); waitForEnabled(submit); submit.tap()
@@ -1051,8 +1075,8 @@ final class HolonUITests: XCTestCase {
         app.buttons["report.dismiss"].tap()
     }
 
-    func testContentReportInvalidExplanationCannotShowAccepted() throws {
-        let app = try openContentReport()
+    func testContentReportInvalidExplanationCannotShowAccepted() async throws {
+        let app = try await openContentReport()
         defer { app.terminate() }
         let explanation = app.textViews["report.explanation"]
         reveal(explanation, in: app); explanation.tap()
@@ -1066,8 +1090,8 @@ final class HolonUITests: XCTestCase {
         app.buttons["report.dismiss"].tap()
     }
 
-    func testContentReportAcceptedReceiptCannotSubmitTwice() throws {
-        let app = try openContentReport()
+    func testContentReportAcceptedReceiptCannotSubmitTwice() async throws {
+        let app = try await openContentReport()
         defer { app.terminate() }
         let explanation = app.textViews["report.explanation"]
         reveal(explanation, in: app); explanation.tap()
@@ -1203,7 +1227,7 @@ final class HolonUITests: XCTestCase {
     }
 
     func testDirectAgentShareWorkflow() async throws {
-        try connectForSharing()
+        try await connectForSharing()
         let agent = try required("AGENT_ID")
         let probe = XCUIApplication(bundleIdentifier: "run.holon.ios.share-probe")
         probe.launchArguments = ["-AppleLanguages", "(en)", "-AppleLocale", "en_US"]
@@ -1259,11 +1283,8 @@ final class HolonUITests: XCTestCase {
             probe.terminate()
         }
     }
-    private func connectForSharing() throws {
+    private func connectForSharing() async throws {
         let endpoint = try required("ENDPOINT")
-        var components = try XCTUnwrap(URLComponents(string: endpoint))
-        components.path = String(components.path.dropLast(4)) + "/login"
-        components.fragment = "pair=" + (try required("PAIRING_CODE"))
         let app = launch(language: "en", dark: false, large: false)
         if !app.buttons["onboarding.scan"].waitForExistence(timeout: UIWaitScale.scaled(5)) {
             // A full sweep already authenticated through the shipped UI. Restore
@@ -1272,14 +1293,14 @@ final class HolonUITests: XCTestCase {
                           app.buttons["conversation.more"].waitForExistence(timeout: UIWaitScale.scaled(15)))
             app.terminate(); return
         }
-        try connectThroughPairing(app, endpoint: endpoint, payload: try XCTUnwrap(components.string))
+        try await connectThroughPairing(app, endpoint: endpoint)
         approveSharingConsent(app)
         XCTAssertFalse(app.switches["privacy.accept"].exists, "Agreement was completed at the login prompt")
         app.terminate()
     }
 
-    func testLoginConsentRestorationAndWithdrawal() throws {
-        try connectForSharing()
+    func testLoginConsentRestorationAndWithdrawal() async throws {
+        try await connectForSharing()
         let app = launch(language: "en", dark: false, large: false)
         defer { app.terminate() }
         openSettings(app)
@@ -1303,8 +1324,8 @@ final class HolonUITests: XCTestCase {
         XCTAssertFalse(consent.exists, "Explicit approval is persistent for this server")
     }
 
-    func testNetworkManagementWorkflow() throws {
-        try connectForSharing()
+    func testNetworkManagementWorkflow() async throws {
+        try await connectForSharing()
         let app = launch(language: "en", dark: false, large: false)
         defer { app.terminate() }
         if app.buttons["conversation.more"].waitForExistence(timeout: UIWaitScale.scaled(3)) {
@@ -1544,14 +1565,11 @@ final class HolonUITests: XCTestCase {
         app.terminate()
     }
 
-    func testTaskResultProcessWorkflow() throws {
+    func testTaskResultProcessWorkflow() async throws {
         let app = launch(language: "en", dark: false, large: false)
         if app.buttons["onboarding.scan"].waitForExistence(timeout: UIWaitScale.scaled(5)) {
             let endpoint = try required("ENDPOINT")
-            var components = try XCTUnwrap(URLComponents(string: endpoint))
-            components.path = String(components.path.dropLast(4)) + "/login"
-            components.fragment = "pair=" + (try required("PAIRING_CODE"))
-            try connectThroughPairing(app, endpoint: endpoint, payload: try XCTUnwrap(components.string))
+            try await connectThroughPairing(app, endpoint: endpoint)
             approveSharingConsent(app)
         }
         let agent = try required("AGENT_ID")
@@ -1615,7 +1633,7 @@ final class HolonUITests: XCTestCase {
     }
 
     func testVisibleBriefAutomaticallyUpdatesHomeUnreadCount() async throws {
-        try connectForSharing()
+        try await connectForSharing()
         let app = launch(language: "en", dark: false, large: false)
         defer { app.terminate() }
         if app.buttons["conversation.more"].waitForExistence(timeout: UIWaitScale.scaled(5)) {
@@ -1624,12 +1642,9 @@ final class HolonUITests: XCTestCase {
         let agent = app.buttons["agent." + (try required("AGENT_ID"))]
         reveal(agent, in: app); agent.tap()
         XCTAssertTrue(app.buttons["conversation.more"].waitForExistence(timeout: UIWaitScale.scaled(30)))
-        if app.buttons["conversation.latest"].exists {
-            app.buttons["conversation.latest"].tap()
-        }
         let body = app.staticTexts.containing(NSPredicate(
             format: "label CONTAINS %@", "IOS_AUTOMATIC_READ_BRIEF")).firstMatch
-        XCTAssertTrue(body.waitForExistence(timeout: UIWaitScale.scaled(30)), "Load the newest real fixture brief")
+        waitForLatestBrief(body, in: app)
         reveal(body, in: app, fullyVisible: true)
         XCTAssertTrue(body.isHittable)
         // Never invoke manual mark-read. The fixture enqueues a later real result
@@ -1666,10 +1681,9 @@ final class HolonUITests: XCTestCase {
         capture(app, "automatic-read-new-unread")
         reveal(agent, in: app); agent.tap()
         XCTAssertTrue(app.buttons["conversation.more"].waitForExistence(timeout: UIWaitScale.scaled(30)))
-        if app.buttons["conversation.latest"].exists { app.buttons["conversation.latest"].tap() }
         let followup = app.staticTexts.containing(NSPredicate(
             format: "label CONTAINS %@", "IOS_AUTOMATIC_READ_FOLLOWUP_BRIEF")).firstMatch
-        XCTAssertTrue(followup.waitForExistence(timeout: UIWaitScale.scaled(30)))
+        waitForLatestBrief(followup, in: app)
         reveal(followup, in: app, fullyVisible: true)
         XCTAssertTrue(followup.isHittable)
         capture(app, "automatic-read-followup-visible")
@@ -1687,8 +1701,23 @@ final class HolonUITests: XCTestCase {
         capture(app, "automatic-read-home-count")
     }
 
+    private func waitForLatestBrief(_ body: XCUIElement, in app: XCUIApplication,
+                                    file: StaticString = #filePath, line: UInt = #line) {
+        let loaded = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
+            if body.exists { return true }
+            // Restoration and body hydration can settle after the toolbar.
+            // Follow the latest-window control when it actually appears,
+            // instead of making one pre-load existence check.
+            let latest = app.buttons["conversation.latest"]
+            if latest.exists && latest.isEnabled && latest.isHittable { latest.tap() }
+            return body.exists
+        }, object: nil)
+        XCTAssertEqual(XCTWaiter.wait(for: [loaded], timeout: UIWaitScale.scaled(30)), .completed,
+                       "Load the newest real fixture brief", file: file, line: line)
+    }
+
     func testOfflineReadingCacheColdLaunchAndRetry() async throws {
-        try connectForSharing()
+        try await connectForSharing()
         let app = launch(language: "en", dark: false, large: false)
         defer { app.terminate() }
         let agentID = try required("AGENT_ID")
@@ -1773,7 +1802,7 @@ final class HolonUITests: XCTestCase {
     }
 
     func testLiveInterruptionRecoversInPlace() async throws {
-        try connectForSharing()
+        try await connectForSharing()
         let app = launch(language: "en", dark: false, large: false)
         defer { app.terminate() }
         // A preceding sweep case can restore straight into its conversation;
@@ -1820,7 +1849,7 @@ final class HolonUITests: XCTestCase {
     }
 
     func testOfflineReadingCacheSignOutBoundary() async throws {
-        try connectForSharing()
+        try await connectForSharing()
         let app = launch(language: "en", dark: false, large: false)
         defer { app.terminate() }
         if app.buttons["conversation.more"].waitForExistence(timeout: UIWaitScale.scaled(5)) {

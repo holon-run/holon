@@ -14,6 +14,7 @@ from pathlib import Path
 import plistlib
 import re
 import shutil
+import socket
 import subprocess
 import sqlite3
 import struct
@@ -804,7 +805,8 @@ class UIFixtureSetupContracts(unittest.TestCase):
             method = next(argument.rsplit("/", 1)[-1] for argument in command
                           if argument.startswith("-only-testing:"))
             runs.append(method)
-            self.assertEqual(env["TEST_RUNNER_HOLON_UI_PAIRING_CODE"], tickets[-1])
+            self.assertNotIn("TEST_RUNNER_HOLON_UI_PAIRING_CODE", env,
+                             "Build/install must not consume a pre-issued ticket's lifetime")
             if method == methods[0]:
                 self.assertEqual(seeded, [], "Do not evict the earlier onboarding smoke's original latest window")
             else:
@@ -824,7 +826,7 @@ class UIFixtureSetupContracts(unittest.TestCase):
             subprocess=mocked_subprocess(run))
         exec(compile(ast.Module(body=sweep, type_ignores=[]), str(source), "exec"), namespace)
         self.assertEqual(runs, methods)
-        self.assertEqual(len(tickets), 3, "Each independently selectable authenticated case gets a fresh ticket")
+        self.assertEqual(tickets, [], "Only the running UI test may request a fresh ticket")
         self.assertFalse(seed_active.is_set())
 
     def test_offline_history_oracle_survives_preceding_brief_less_turns(self):
@@ -2147,6 +2149,39 @@ class UIFixtureProxyAvailabilityContracts(unittest.TestCase):
         self.assertEqual(status, 200)
         self.assertEqual(json.loads(data), {"available": available})
 
+    def test_pairing_ticket_is_issued_only_on_authenticated_runner_request(self):
+        issue = Mock(side_effect=[
+            {"ticket": "a" * 64, "expires_at": "first-expiration"},
+            {"ticket": "b" * 64, "expires_at": "second-expiration"},
+        ])
+        self.namespace["local"] = issue
+        issue.assert_not_called()  # Building/installing cannot age a ticket.
+        for token in [None, "ordinary-app-session-token"]:
+            self.assertEqual(self.request("POST", "/fixture/pairing-ticket", token=token)[0], 403)
+        issue.assert_not_called()
+        for ticket in ["a" * 64, "b" * 64]:
+            status, data = self.request("POST", "/fixture/pairing-ticket",
+                                        token="fixture-runner-only-control")
+            self.assertEqual(status, 200)
+            self.assertEqual(json.loads(data)["ticket"], ticket)
+        self.assertEqual(issue.call_args_list, [
+            call("POST", "/auth/pairing/issue"),
+            call("POST", "/auth/pairing/issue"),
+        ])
+        self.assertEqual(self.requests, [], "The runner control token must never be forwarded")
+        self.toggle(False)
+        self.assertEqual(self.request("POST", "/fixture/pairing-ticket",
+                                     token="fixture-runner-only-control")[0], 503)
+        self.assertEqual(issue.call_count, 2)
+
+    def test_pairing_issue_failure_does_not_return_or_log_the_control_error(self):
+        issue = Mock(side_effect=RuntimeError("private-pairing-detail"))
+        self.namespace["local"] = issue
+        status, data = self.request("POST", "/fixture/pairing-ticket",
+                                    token="fixture-runner-only-control")
+        self.assertEqual(status, 502)
+        self.assertNotIn(b"private-pairing-detail", data)
+
     def test_unavailability_blocks_reads_and_writes_without_stopping_upstream(self):
         status, data = self.request("GET", "/api/agents")
         self.assertEqual(status, 200)
@@ -2575,8 +2610,10 @@ class SimulatorTextSizeContracts(unittest.TestCase):
             ([subprocess.CalledProcessError(1, ["xcrun"])] * _RUNTIME_RETRY_ATTEMPTS,
              _RUNTIME_RETRY_ATTEMPTS),
             ([self.result(), self.result("large")], 2),
-            ([subprocess.TimeoutExpired(["xcrun"], 15)] * _RUNTIME_RETRY_ATTEMPTS,
-             _RUNTIME_RETRY_ATTEMPTS),
+            ([subprocess.TimeoutExpired(["xcrun"], 15)] * (_RUNTIME_RETRY_ATTEMPTS + 1),
+             _RUNTIME_RETRY_ATTEMPTS + 1),
+            ([subprocess.TimeoutExpired(["xcrun"], 15), self.result("large")]
+             * _RUNTIME_RETRY_ATTEMPTS, _RUNTIME_RETRY_ATTEMPTS * 2),
         ]:
             with self.subTest(responses=responses):
                 with patch("ios_simulator_text_size.subprocess.run",
@@ -2599,15 +2636,154 @@ class SimulatorTextSizeContracts(unittest.TestCase):
             self.assertEqual(run.call_count, 3)
             self.assertEqual(sleep.call_args_list, [call(1.0)])
 
+    def test_runtime_timed_out_set_uses_exact_readback_before_resending(self):
+        responses = [subprocess.TimeoutExpired(["xcrun"], 15),
+                     self.result(MAXIMUM_TEXT_SIZE)]
+        with patch("ios_simulator_text_size.subprocess.run", side_effect=responses) as run, \
+                patch("ios_simulator_text_size.time.sleep") as sleep:
+            self.assertEqual(
+                set_simulator_text_size(UUID, MAXIMUM_TEXT_SIZE,
+                                        attempts=_RUNTIME_RETRY_ATTEMPTS),
+                MAXIMUM_TEXT_SIZE)
+            self.assertEqual([item.args[0][-1] for item in run.call_args_list],
+                             [MAXIMUM_TEXT_SIZE, "content_size"])
+            sleep.assert_not_called()
+
+    def test_runtime_timed_out_set_retries_after_verified_mismatch(self):
+        responses = [subprocess.TimeoutExpired(["xcrun"], 15), self.result("large"),
+                     self.result(), self.result(MAXIMUM_TEXT_SIZE)]
+        with patch("ios_simulator_text_size.subprocess.run", side_effect=responses) as run, \
+                patch("ios_simulator_text_size.time.sleep") as sleep:
+            self.assertEqual(
+                set_simulator_text_size(UUID, MAXIMUM_TEXT_SIZE,
+                                        attempts=_RUNTIME_RETRY_ATTEMPTS),
+                MAXIMUM_TEXT_SIZE)
+            self.assertEqual([item.args[0][-1] for item in run.call_args_list],
+                             [MAXIMUM_TEXT_SIZE, "content_size",
+                              MAXIMUM_TEXT_SIZE, "content_size"])
+            self.assertEqual(sleep.call_args_list, [call(1.0)])
+
+    def test_runtime_failed_readback_retries_read_without_resending_set(self):
+        for setter in (self.result(), subprocess.TimeoutExpired(["xcrun"], 15)):
+            with self.subTest(setter=setter):
+                responses = [setter, subprocess.TimeoutExpired(["xcrun"], 15),
+                             self.result(MAXIMUM_TEXT_SIZE)]
+                with patch("ios_simulator_text_size.subprocess.run",
+                           side_effect=responses) as run, \
+                        patch("ios_simulator_text_size.time.sleep") as sleep:
+                    self.assertEqual(
+                        set_simulator_text_size(UUID, MAXIMUM_TEXT_SIZE,
+                                                attempts=_RUNTIME_RETRY_ATTEMPTS),
+                        MAXIMUM_TEXT_SIZE)
+                    self.assertEqual([item.args[0][-1] for item in run.call_args_list],
+                                     [MAXIMUM_TEXT_SIZE, "content_size", "content_size"])
+                    self.assertEqual(sleep.call_args_list, [call(1.0)])
+
+    def test_runtime_request_shares_budget_across_set_read_and_backoff(self):
+        clock = [100.0]
+
+        def timeout(command, **kwargs):
+            clock[0] += kwargs["timeout"]
+            raise subprocess.TimeoutExpired(command, kwargs["timeout"])
+
+        def sleep(seconds):
+            clock[0] += seconds
+
+        with patch("ios_simulator_text_size.time.monotonic", side_effect=lambda: clock[0]), \
+                patch("ios_simulator_text_size.time.sleep", side_effect=sleep) as backoff, \
+                patch("ios_simulator_text_size.subprocess.run", side_effect=timeout) as run:
+            with runtime_text_size_control(UUID) as control:
+                with self.assertRaises(urllib.error.HTTPError) as failure:
+                    self.request_control(control, {"category": MAXIMUM_TEXT_SIZE})
+                self.assertEqual(failure.exception.code, 500)
+            self.assertEqual(clock[0] - 100.0, 35.0)
+            self.assertEqual([item.kwargs["timeout"] for item in run.call_args_list],
+                             [15, 15, 4])
+            self.assertEqual([item.args[0][-1] for item in run.call_args_list],
+                             [MAXIMUM_TEXT_SIZE, "content_size", "content_size"])
+            self.assertEqual(backoff.call_args_list, [call(1.0)])
+
+    def test_expired_runtime_budget_never_starts_another_command(self):
+        with patch("ios_simulator_text_size.time.monotonic", return_value=100.0), \
+                patch("ios_simulator_text_size.subprocess.run") as run, \
+                patch("ios_simulator_text_size.time.sleep") as sleep:
+            with self.assertRaises(subprocess.TimeoutExpired):
+                set_simulator_text_size(UUID, "large", attempts=_RUNTIME_RETRY_ATTEMPTS,
+                                        deadline=100.0)
+            run.assert_not_called()
+            sleep.assert_not_called()
+
+    def test_runtime_budget_exhausted_after_set_cannot_acknowledge_without_readback(self):
+        clock = [100.0]
+
+        def setter(command, **kwargs):
+            clock[0] += 35
+            return self.result()
+
+        with patch("ios_simulator_text_size.time.monotonic", side_effect=lambda: clock[0]), \
+                patch("ios_simulator_text_size.subprocess.run", side_effect=setter) as run, \
+                patch("ios_simulator_text_size.time.sleep") as sleep:
+            with runtime_text_size_control(UUID) as control:
+                with self.assertRaises(urllib.error.HTTPError) as failure:
+                    self.request_control(control, {"category": MAXIMUM_TEXT_SIZE})
+                self.assertEqual(failure.exception.code, 500)
+            run.assert_called_once()
+            sleep.assert_not_called()
+
+    def test_cancelled_runtime_client_does_not_obscure_verification_or_break_next_request(self):
+        for failed in (False, True):
+            with self.subTest(failed=failed):
+                started, release = threading.Event(), threading.Event()
+
+                def set_size(simulator, category, **kwargs):
+                    started.set()
+                    if not release.wait(5):
+                        raise RuntimeError("Test did not release the cancelled request")
+                    if failed:
+                        raise RuntimeError("系统字号核验失败：期望 large，实际 medium")
+                    return category
+
+                with patch("ios_simulator_text_size.set_simulator_text_size",
+                           side_effect=set_size) as setter, \
+                        patch("ios_simulator_text_size.http.server.HTTPServer.handle_error") as error, \
+                        redirect_stdout(StringIO()) as logs:
+                    with runtime_text_size_control(UUID) as control:
+                        url, token = control
+                        connection = http.client.HTTPConnection(url.split("/")[2], timeout=5)
+                        try:
+                            connection.request(
+                                "POST", "/content-size", json.dumps({"category": "large"}),
+                                {"Authorization": "Bearer " + token,
+                                 "Content-Type": "application/json"})
+                            self.assertTrue(started.wait(5))
+                            connection.sock.setsockopt(
+                                socket.SOL_SOCKET, socket.SO_LINGER, struct.pack("ii", 1, 0))
+                        finally:
+                            connection.close()
+                            release.set()
+                        if failed:
+                            with self.assertRaises(urllib.error.HTTPError) as failure:
+                                self.request_control(control, {"category": "large"})
+                            self.assertEqual(failure.exception.code, 500)
+                        else:
+                            with self.request_control(control, {"category": "large"}) as response:
+                                self.assertEqual(json.load(response), {"category": "large"})
+                        self.assertEqual(setter.call_count, 2)
+                    error.assert_not_called()
+                    self.assertIn(f"字号控制响应 {500 if failed else 200} 未送达",
+                                  logs.getvalue())
+                    if failed:
+                        self.assertIn("期望 large，实际 medium", logs.getvalue())
+
     def test_runtime_transient_set_failure_recovers_with_backoff(self):
-        responses = [subprocess.TimeoutExpired(["xcrun"], 15), self.result(),
+        responses = [subprocess.TimeoutExpired(["xcrun"], 15), self.result("large"), self.result(),
                      self.result(MAXIMUM_TEXT_SIZE)]
         with patch("ios_simulator_text_size.subprocess.run", side_effect=responses) as run, \
                 patch("ios_simulator_text_size.time.sleep") as sleep:
             with runtime_text_size_control(UUID) as control:
                 with self.request_control(control, {"category": MAXIMUM_TEXT_SIZE}) as response:
                     self.assertEqual(json.load(response), {"category": MAXIMUM_TEXT_SIZE})
-            self.assertEqual(run.call_count, 3)
+            self.assertEqual(run.call_count, 4)
             self.assertEqual(sleep.call_args_list, [call(1.0)])
 
     def test_runtime_transient_read_failure_recovers_with_backoff(self):
@@ -2622,7 +2798,7 @@ class SimulatorTextSizeContracts(unittest.TestCase):
             self.assertEqual(sleep.call_args_list, [call(1.0)])
 
     def test_runtime_retry_exhaustion_is_bounded_logged_and_backed_off(self):
-        responses = [subprocess.TimeoutExpired(["xcrun"], 15)] * _RUNTIME_RETRY_ATTEMPTS
+        responses = [subprocess.TimeoutExpired(["xcrun"], 15)] * (_RUNTIME_RETRY_ATTEMPTS + 1)
         with patch("ios_simulator_text_size.subprocess.run", side_effect=responses) as run, \
                 patch("ios_simulator_text_size.time.sleep") as sleep, \
                 redirect_stdout(StringIO()) as logs:
@@ -2630,7 +2806,7 @@ class SimulatorTextSizeContracts(unittest.TestCase):
                 with self.assertRaises(urllib.error.HTTPError) as failure:
                     self.request_control(control, {"category": MAXIMUM_TEXT_SIZE})
                 self.assertEqual(failure.exception.code, 500)
-            self.assertEqual(run.call_count, _RUNTIME_RETRY_ATTEMPTS)
+            self.assertEqual(run.call_count, _RUNTIME_RETRY_ATTEMPTS + 1)
             self.assertEqual([item.args[0] for item in sleep.call_args_list], [1.0, 4.0])
             self.assertEqual(logs.getvalue().count("后重试"), _RUNTIME_RETRY_ATTEMPTS - 1)
 
@@ -2651,12 +2827,14 @@ class SimulatorTextSizeContracts(unittest.TestCase):
         started, release, closing, restored = (threading.Event() for _ in range(4))
         failure = []
 
-        def set_size(simulator, category, phase="运行时切换", *, timeout=15, attempts=1):
+        def set_size(simulator, category, phase="运行时切换", *, timeout=15, attempts=1,
+                     deadline=None):
             self.assertEqual(simulator, UUID)
             self.assertEqual(timeout, 15 if phase == "运行时切换" else 120)
             self.assertEqual(
                 attempts, _RUNTIME_RETRY_ATTEMPTS if phase == "运行时切换" else 1)
             if phase == "运行时切换":
+                self.assertIsNotNone(deadline)
                 started.set()
                 if not release.wait(5):
                     raise RuntimeError("Test did not release the in-flight request")

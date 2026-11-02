@@ -103,7 +103,6 @@ not the forwarding contract. None are passed to the application environment.
 | --- | --- |
 | `TEST_RUNNER_HOLON_UI_CONTENT_SIZE` | Verified simulator system text size: `large` or `accessibility-extra-extra-extra-large`, according to the case |
 | `TEST_RUNNER_HOLON_UI_ENDPOINT` | Complete isolated daemon API URL ending `/api` |
-| `TEST_RUNNER_HOLON_UI_PAIRING_CODE` | Fresh, single-use 64-hex pairing ticket |
 | `TEST_RUNNER_HOLON_UI_AGENT_ID` | Visible test agent with reading snapshot |
 | `TEST_RUNNER_HOLON_UI_WORK_ID` | Visible WorkItem belonging to that agent |
 | `TEST_RUNNER_HOLON_UI_TASK_ID` | Visible task belonging to that agent |
@@ -112,7 +111,7 @@ not the forwarding contract. None are passed to the application environment.
 | `TEST_RUNNER_HOLON_UI_TASK_MARKER` | Literal text in real task output |
 | `TEST_RUNNER_HOLON_UI_FILE_REFERENCE` | Resolvable fixture file reference |
 | `TEST_RUNNER_HOLON_UI_FILE_MARKER` | Literal text in that file's native preview |
-| `TEST_RUNNER_HOLON_UI_NODE_CONTROL_URL` | Loopback fixture proxy `/fixture/node-availability` endpoint; runner only |
+| `TEST_RUNNER_HOLON_UI_NODE_CONTROL_URL` | Loopback fixture proxy `/fixture/node-availability` endpoint; runner only. Sibling `/fixture/pairing-ticket` issues a real single-use ticket immediately before UI login, never before build/install |
 | `TEST_RUNNER_HOLON_UI_NODE_CONTROL_TOKEN` | Fixture control secret; runner only, never app launch arguments/environment or logs |
 | `TEST_RUNNER_HOLON_UI_HISTORY_OLDER_TOP` | Real top turn ID of the older bounded window for history/offline reading |
 | `TEST_RUNNER_HOLON_UI_OFFLINE_BODY_MARKER` | Literal body text from the real historical brief used by the offline case |

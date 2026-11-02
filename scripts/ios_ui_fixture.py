@@ -668,6 +668,25 @@ with fixture_directory(repo) as root:
             self.forward()
 
         def do_POST(self):
+            if self.path == "/fixture/pairing-ticket":
+                if self.headers.get("Authorization") != "Bearer " + proxy_control_token:
+                    self.send_error(403); return
+                if not proxy_available.is_set():
+                    self.send_error(503); return
+                # Xcode may spend longer than the ticket's two-minute lifetime
+                # building/installing. Issue only when the runner starts login;
+                # the app still redeems the real single-use ticket through UI.
+                try:
+                    data = json.dumps(local("POST", "/auth/pairing/issue")).encode()
+                except Exception:
+                    self.send_error(502, "Pairing ticket issue failed"); return
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Cache-Control", "no-store")
+                self.send_header("Content-Length", str(len(data)))
+                self.end_headers()
+                self.wfile.write(data)
+                return
             if self.path in {"/fixture/automatic-read-followup", "/fixture/automatic-read-confirmed"}:
                 if self.headers.get("Authorization") != "Bearer " + proxy_control_token:
                     self.send_error(403); return
@@ -1393,22 +1412,6 @@ with fixture_directory(repo) as root:
                                     time.sleep(.1)
                                 else:
                                     raise RuntimeError("browser workflow link turn never settled")
-                            if method in {"testAuthenticatedNativeWorkflow", "testPrivacyConsentCanBeWithdrawnAndExplicitlyRestored",
-                                          "testDirectAgentShareWorkflow", "testNetworkManagementWorkflow",
-                                          "testOfflineReadingCacheColdLaunchAndRetry",
-                                         "testLiveInterruptionRecoversInPlace",
-                                          "testVisibleBriefAutomaticallyUpdatesHomeUnreadCount",
-                                          "testOfflineReadingCacheSignOutBoundary",
-                                          "testTaskResultProcessWorkflow",
-                                          "testRuntimeBrowserWorkflow",
-                                          "testContentReportFullResponseIncludesTail",
-                                          "testContentReportConfirmationCancelDoesNotPersist",
-                                          "testContentReportInvalidExplanationCannotShowAccepted",
-                                          "testContentReportAcceptedReceiptCannotSubmitTwice"}:
-                                # Tickets expire after two minutes. The preceding cases also
-                                # warm the build; issue only when redemption is about to run.
-                                ticket = local("POST", "/auth/pairing/issue")["ticket"]
-                                test_env["TEST_RUNNER_HOLON_UI_PAIRING_CODE"] = ticket
                             if method in {"testConversationHistoryWindowPosition", "testOfflineReadingCacheColdLaunchAndRetry"}:
                                 # Match ReadingTransport's bounded summary, not the server default.
                                 history = local("GET", f"/agents/{agent}/conversation?limit=60")
