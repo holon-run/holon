@@ -707,3 +707,350 @@ async fn cleanup_repair_repurges_residue_after_completed_purge() {
     let repeated = host.scan_legacy_deletion_residue_batch().await.unwrap();
     assert_eq!(repeated.created, 0);
 }
+
+#[tokio::test]
+async fn daemon_coordinator_paces_legacy_residue_drain() {
+    let (_home, host) = test_host();
+
+    fn residue_cursor(host: &RuntimeHost) -> Option<String> {
+        match host.runtime_db().connection().unwrap().query_row(
+            "SELECT value FROM runtime_metadata WHERE key = 'legacy_deletion_repair_cursor'",
+            [],
+            |row| row.get::<_, String>(0),
+        ) {
+            Ok(value) => Some(value),
+            Err(rusqlite::Error::QueryReturnedNoRows) => None,
+            Err(error) => panic!("failed to read legacy residue cursor: {error}"),
+        }
+    }
+
+    fn consumed_identities(host: &RuntimeHost, cursor: &str) -> i64 {
+        host.runtime_db()
+            .connection()
+            .unwrap()
+            .query_row(
+                "SELECT COUNT(*) FROM agent_identities WHERE agent_id <= ?1",
+                [cursor],
+                |row| row.get::<_, i64>(0),
+            )
+            .unwrap()
+    }
+
+    // Seed enough identities that one scan pass needs several batches, so
+    // the coordinator's drain pacing is observable.
+    for index in 0..256u32 {
+        let identity = AgentIdentityRecord::new(
+            format!("residue-pace-{index:03}"),
+            AgentKind::Default,
+            AgentVisibility::Public,
+            AgentOwnership::SelfOwned,
+            AgentProfilePreset::PublicNamed,
+            None,
+            None,
+        );
+        host.runtime_db()
+            .agent_identities()
+            .upsert(&identity)
+            .unwrap();
+    }
+    for index in 0..48 {
+        retained_cleanup_fixture(&host, &format!("residue-observed-{index:03}"));
+    }
+    // Start from a persisted batch cursor, as after a daemon restart. Surface
+    // fixture/scan errors directly rather than treating them as timing failures.
+    let first = host.scan_legacy_deletion_residue_batch().await.unwrap();
+    assert_eq!(
+        first.scanned,
+        crate::deletion::LEGACY_DELETION_REPAIR_BATCH_LIMIT
+    );
+    assert!(first.cursor.is_some());
+    assert_eq!(residue_cursor(&host), first.cursor);
+    assert_eq!(
+        consumed_identities(&host, first.cursor.as_deref().unwrap()),
+        16
+    );
+    host.spawn_daemon_deletion_coordinator();
+
+    // A paced drain (LEGACY_RESIDUE_DRAIN_INTERVAL = 200ms) must keep the
+    // pass in progress after one second. An unpaced drain re-arming the
+    // shared sweep at ~1ms finishes every batch in milliseconds, clears the
+    // cursor, and burns a core on large databases (#3884).
+    let started = tokio::time::Instant::now();
+    let mut saw_cursor = false;
+    let mut samples = Vec::new();
+    while started.elapsed() < Duration::from_secs(1) {
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        let cursor = residue_cursor(&host);
+        saw_cursor |= cursor.is_some();
+        samples.push((started.elapsed(), cursor));
+    }
+    assert!(
+        saw_cursor,
+        "coordinator lost the legacy residue cursor: {samples:?}; remaining identities={}",
+        consumed_identities(&host, "zzzz")
+    );
+    let cursor =
+        residue_cursor(&host).expect("paced drain must not finish the whole scan pass within 1s");
+    let consumed = consumed_identities(&host, &cursor);
+    assert!(
+        consumed <= 128,
+        "unexpected drain progress after 1s: {consumed} identities"
+    );
+    let observed: i64 = host
+        .runtime_db()
+        .connection()
+        .unwrap()
+        .query_row(
+            "SELECT COUNT(*) FROM subagent_cleanup_observations
+             WHERE child_agent_id LIKE 'residue-observed-%'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(
+        observed, 16,
+        "residue continuation must not repeat responsibility observations"
+    );
+
+    // Check progress with a generous deadline, independently of 1s throughput.
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(20);
+    while residue_cursor(&host).is_some() {
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "paced legacy residue drain never completed the scan pass"
+        );
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    host.shutdown_daemon_deletion_coordinator().await;
+}
+
+#[tokio::test]
+async fn daemon_coordinator_runs_later_residue_without_repeating_maintenance() {
+    let (_home, host) = test_host();
+    for index in 0..48 {
+        let identity = AgentIdentityRecord::new(
+            format!("later-residue-{index:03}"),
+            AgentKind::Default,
+            AgentVisibility::Public,
+            AgentOwnership::SelfOwned,
+            AgentProfilePreset::PublicNamed,
+            None,
+            None,
+        );
+        host.runtime_db()
+            .agent_identities()
+            .upsert(&identity)
+            .unwrap();
+    }
+    let agent_id = "zz-later-residue";
+    let mut deleted = AgentIdentityRecord::new(
+        agent_id,
+        AgentKind::Default,
+        AgentVisibility::Public,
+        AgentOwnership::SelfOwned,
+        AgentProfilePreset::PublicNamed,
+        None,
+        None,
+    );
+    deleted.status = AgentRegistryStatus::Deleted;
+    host.append_agent_identity(&deleted).unwrap();
+    host.runtime_db()
+        .agent_identities()
+        .upsert(&deleted)
+        .unwrap();
+    host.runtime_db()
+        .agent_bootstraps()
+        .upsert(&AgentBootstrapRecord::legacy_ready(agent_id))
+        .unwrap();
+
+    let agents_root = host.config().data_dir.join("agents");
+    let startup_trash = agents_root.join("startup.deleting_trash");
+    fs::create_dir_all(&startup_trash).unwrap();
+    host.spawn_daemon_deletion_coordinator();
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while startup_trash.exists() {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("startup maintenance sweep must run");
+    // Once the startup sweep finishes, continuation batches must not run it
+    // again. The tombstone is beyond the startup batch and needs a new wake.
+    let later_trash = agents_root.join("later.deleting_trash");
+    fs::create_dir_all(&later_trash).unwrap();
+    tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            if host
+                .runtime_db()
+                .agent_deletions()
+                .latest_for_agent(agent_id)
+                .unwrap()
+                .is_some_and(|job| job.status == AgentDeletionStatus::Completed)
+            {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("later residue job must finish without waiting for the 60s sweep");
+    assert!(
+        later_trash.exists(),
+        "residue drain repeated trash maintenance"
+    );
+    assert!(host
+        .runtime_db()
+        .agent_bootstraps()
+        .latest(agent_id)
+        .unwrap()
+        .is_none());
+    host.shutdown_daemon_deletion_coordinator().await;
+}
+
+#[tokio::test]
+async fn daemon_coordinator_notified_before_residue_cursor_commit() {
+    let (_home, host) = test_host();
+    let agent_id = "a-partial-residue";
+    let mut deleted = AgentIdentityRecord::new(
+        agent_id,
+        AgentKind::Default,
+        AgentVisibility::Public,
+        AgentOwnership::SelfOwned,
+        AgentProfilePreset::PublicNamed,
+        None,
+        None,
+    );
+    deleted.status = AgentRegistryStatus::Deleted;
+    host.runtime_db()
+        .agent_identities()
+        .upsert(&deleted)
+        .unwrap();
+    for index in 0..20 {
+        let identity = AgentIdentityRecord::new(
+            format!("z-partial-residue-{index:03}"),
+            AgentKind::Default,
+            AgentVisibility::Public,
+            AgentOwnership::SelfOwned,
+            AgentProfilePreset::PublicNamed,
+            None,
+            None,
+        );
+        host.runtime_db()
+            .agent_identities()
+            .upsert(&identity)
+            .unwrap();
+    }
+    assert!(
+        tokio::time::timeout(
+            Duration::from_millis(10),
+            host.inner.daemon_deletion_notify.notified()
+        )
+        .await
+        .is_err(),
+        "fixture must not leave a deletion wake"
+    );
+    host.runtime_db()
+        .connection()
+        .unwrap()
+        .execute_batch(
+            "CREATE TRIGGER fail_residue_cursor_commit
+             BEFORE INSERT ON runtime_metadata
+             WHEN NEW.key = 'legacy_deletion_repair_cursor'
+             BEGIN SELECT RAISE(ABORT, 'injected legacy residue cursor failure'); END;",
+        )
+        .unwrap();
+
+    let error = host
+        .scan_legacy_deletion_residue_batch()
+        .await
+        .unwrap_err();
+    assert!(
+        format!("{error:#}").contains("injected legacy residue cursor failure"),
+        "{error:#}"
+    );
+    let admitted = host
+        .runtime_db()
+        .agent_deletions()
+        .latest_for_agent(agent_id)
+        .unwrap()
+        .expect("admission must commit before the cursor failure");
+    assert_eq!(admitted.status, AgentDeletionStatus::Pending);
+    tokio::time::timeout(
+        Duration::from_millis(100),
+        host.inner.daemon_deletion_notify.notified(),
+    )
+    .await
+    .expect("committed admission must notify even when the scan later fails");
+}
+
+#[tokio::test]
+async fn daemon_coordinator_defers_failed_residue_scan_to_safety_sweep() {
+    let (_home, host) = test_host();
+    let identity = AgentIdentityRecord::new(
+        "broken-residue",
+        AgentKind::Default,
+        AgentVisibility::Public,
+        AgentOwnership::SelfOwned,
+        AgentProfilePreset::PublicNamed,
+        None,
+        None,
+    );
+    host.runtime_db()
+        .agent_identities()
+        .upsert(&identity)
+        .unwrap();
+    host.runtime_db()
+        .connection()
+        .unwrap()
+        .execute(
+            "UPDATE agent_identities SET payload_json = '{}' WHERE agent_id = ?1",
+            [&identity.agent_id],
+        )
+        .unwrap();
+    assert!(host.scan_legacy_deletion_residue_batch().await.is_err());
+    for index in 0..16 {
+        retained_cleanup_fixture(&host, &format!("failed-scan-observed-{index:03}"));
+    }
+    host.spawn_daemon_deletion_coordinator();
+    tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            let observed: i64 = host
+                .runtime_db()
+                .connection()
+                .unwrap()
+                .query_row(
+                    "SELECT COUNT(*) FROM subagent_cleanup_observations
+                     WHERE child_agent_id LIKE 'failed-scan-observed-%'",
+                    [],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            if observed == 16 {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("scan errors must not prevent responsibility observations");
+    host.runtime_db()
+        .agent_identities()
+        .upsert(&identity)
+        .unwrap();
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    let cursor_count: i64 = host
+        .runtime_db()
+        .connection()
+        .unwrap()
+        .query_row(
+            "SELECT COUNT(*) FROM runtime_metadata WHERE key = 'legacy_deletion_repair_cursor'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(
+        cursor_count, 0,
+        "failed scan must not schedule a drain retry"
+    );
+    host.shutdown_daemon_deletion_coordinator().await;
+}
