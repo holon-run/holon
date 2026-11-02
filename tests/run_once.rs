@@ -1152,7 +1152,11 @@ async fn assert_run_once_waits_for_command_tasks_by_default() -> Result<()> {
 
     let response = run_once_with_host(host, run_request("create a managed command task")).await?;
 
-    assert_eq!(response.final_status, RunFinalStatus::Completed);
+    assert_eq!(
+        response.final_status,
+        RunFinalStatus::Completed,
+        "{response:#?}"
+    );
     assert_eq!(response.tasks.len(), 1);
     assert_eq!(response.tasks[0].task.kind, "command_task");
     assert_eq!(response.tasks[0].task.status, TaskStatus::Completed);
@@ -1291,7 +1295,11 @@ async fn assert_run_once_no_wait_allows_short_command_tasks_to_finish_during_qui
     )
     .await?;
 
-    assert_eq!(response.final_status, RunFinalStatus::Completed);
+    assert_eq!(
+        response.final_status,
+        RunFinalStatus::Completed,
+        "{response:#?}"
+    );
     assert_eq!(response.tasks.len(), 1);
     assert_eq!(response.tasks[0].task.kind, "command_task");
     assert_eq!(response.tasks[0].task.status, TaskStatus::Completed);
@@ -1626,7 +1634,11 @@ async fn assert_run_once_allows_terminal_task_result_turn_at_budget_boundary() -
     )
     .await?;
 
-    assert_eq!(response.final_status, RunFinalStatus::Completed);
+    assert_eq!(
+        response.final_status,
+        RunFinalStatus::Completed,
+        "{response:#?}"
+    );
     assert_eq!(response.final_text, "command task queued");
     assert_eq!(response.tasks.len(), 1);
     assert_eq!(response.tasks[0].task.kind, "command_task");
