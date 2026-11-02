@@ -2067,18 +2067,29 @@ class UIFixtureEvidenceContracts(unittest.TestCase):
                        and any(isinstance(item, ast.Call) and isinstance(item.func, ast.Attribute)
                                and item.func.attr == "terminate"
                                for item in ast.walk(ast.Module(body=node.finalbody, type_ignores=[]))))
-        for fail in (False, True):
+        terminal = ("completed", "failed", "cancelled", "interrupted")
+        cases = [(status, False) for status in terminal + ("queued", "running", "cancelling")]
+        cases.append(("running", True))
+        for status, fail in cases:
             daemon = Mock()
             daemon.wait.side_effect = [subprocess.TimeoutExpired("isolated daemon", 8), None]
             release, proxy, provider = threading.Event(), Mock(), Mock()
+            snapshot = {"status": status}
+            local = Mock(return_value=snapshot)
+            if fail:
+                local.side_effect = [snapshot, RuntimeError("stop failed")]
             namespace = dict(task_id="fixture-task", agent="holon-tester", daemon=daemon,
                              release_held_run=release, proxy=proxy, provider=provider,
-                             subprocess=subprocess, local=Mock(side_effect=RuntimeError("stop failed") if fail else None))
+                             subprocess=subprocess, local=local)
             if fail:
                 with self.assertRaisesRegex(RuntimeError, "stop failed"):
                     self.execute(cleanup, namespace)
             else:
                 self.execute(cleanup, namespace)
+            calls = [call("GET", "/agents/holon-tester/tasks/fixture-task")]
+            if status not in terminal:
+                calls.append(call("POST", "/control/agents/holon-tester/tasks/fixture-task/stop", {}))
+            self.assertEqual(local.call_args_list, calls, (status, fail))
             self.assertTrue(release.is_set())
             for server in (proxy, provider):
                 server.shutdown.assert_called_once()

@@ -1648,7 +1648,10 @@ with fixture_directory(repo) as root:
         finally:
             try:
                 if task_id is not None:
-                    local("POST", f"/control/agents/{agent}/tasks/{task_id}/stop", {})
+                    # UI lifecycle controls may already have interrupted this probe.
+                    task = local("GET", f"/agents/{agent}/tasks/{task_id}")
+                    if task["status"] not in ("completed", "failed", "cancelled", "interrupted"):
+                        local("POST", f"/control/agents/{agent}/tasks/{task_id}/stop", {})
             finally:
                 release_held_run.set()
                 if proxy:

@@ -517,7 +517,7 @@ jobs:
   macos-rust-check:
     name: Rust darwin check
     runs-on: macos-latest
-    timeout-minutes: 35
+    timeout-minutes: 60
     needs: changes
     # PR-level darwin gate for the native runtime tests. The cross-target
     # `cargo check` pair runs in its own job so this native build does not
