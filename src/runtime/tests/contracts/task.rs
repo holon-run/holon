@@ -253,13 +253,28 @@ async fn task_restart_interrupts_inflight_task_once() {
     harness.restart();
     let runtime = harness.runtime().clone();
     let runtime_task = tokio::spawn(runtime.clone().run());
+    // Each interrupted task commits its Interrupted status and its
+    // `task_interrupted_on_restart` audit event in one DB transaction, but the
+    // two tasks commit serially. Waiting for any interruption event lets the
+    // abort land between the two commits on a slow host, leaving the other
+    // task still `Running`. Wait for each task's own event instead: observing
+    // it is the atomic commit of that task's persisted terminal state.
     wait_for_audit_events(
         &runtime,
         100,
         |events| {
-            events
+            ["task-restart-contract", "task-restart-contract-b"]
                 .iter()
-                .any(|event| event.kind == "task_interrupted_on_restart")
+                .all(|task_id| {
+                    events.iter().any(|event| {
+                        event.kind == "task_interrupted_on_restart"
+                            && event
+                                .data
+                                .get("task_id")
+                                .and_then(serde_json::Value::as_str)
+                                == Some(*task_id)
+                    })
+                })
         },
         "task interruption on restart",
     )
