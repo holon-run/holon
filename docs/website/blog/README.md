@@ -53,7 +53,7 @@ order: 4
 <img src="/assets/team-shared-agents-cover.webp" width="1536" height="1024" alt="" loading="lazy" decoding="async">
 <div><span class="blog-category">TEAM STORY</span>
 <h3>From personal AI tools to shared team agents</h3>
-<p>A small team's 77 days of recorded usage, device investigations, and hands-on testing show where shared agents fit—and where people still step in.</p>
+<p>A small team's 131 days of recorded usage, wake-source breakdown, device investigations, and hands-on testing show where shared agents fit—and where people still step in.</p>
 <span class="blog-read">Read the team story <span aria-hidden="true">→</span></span></div>
 </a>
 <a class="blog-story" href="/blog/event-driven-kernel">
@@ -93,7 +93,7 @@ order: 4
   <!-- mdorigin:index kind=article -->
 
 - [From personal AI tools to team collaboration: an agent-native case study](./agents-in-a-small-team.md)
-  How a small team moved from individual AI tools to shared agents, with 77 days of retained usage records, device investigations, and a hands-on test of silent piano keys.
+  How a small team moved from individual AI tools to shared agents, with 131 days of retained usage records, wake-source breakdown, device investigations, and a hands-on test of silent piano keys.
   <!-- mdorigin:index kind=article -->
 
 - [From prompt to finished work: a practical Holon workflow](./from-prompt-to-finished-work.md)

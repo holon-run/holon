@@ -67,4 +67,4 @@ holon config set auth.oidc.client_secret_env "HOLON_OIDC_CLIENT_SECRET"
 4. **审阅完成简报：** 任务闭环后，助手会生成结构化完成简报，列出核心结论、已核验项及需要人工最终确认的决策点。
 
 如需了解实际研发团队在真实项目中如何与 AI 助手协同工作，建议阅读博客实录：
-[一个小团队如何与长期 AI 助手协同工作——77 天真实实践](/zh-CN/blog/agents-in-a-small-team)。
+[一个小团队如何与长期 AI 助手协同工作——131 天真实实践](/zh-CN/blog/agents-in-a-small-team)。

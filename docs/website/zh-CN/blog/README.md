@@ -53,7 +53,7 @@ order: 4
 <img src="/assets/team-shared-agents-cover.webp" width="1536" height="1024" alt="" loading="lazy" decoding="async">
 <div><span class="blog-category">团队案例</span>
 <h3>从个人 AI 工具到团队协作：一个小团队的 Agent Native 实践</h3>
-<p>77 天的留存用量、设备故障调查和真机测试，记录共享 Agent 怎样接入团队分工，以及哪些环节仍需要人。</p>
+<p>131 天的留存用量、运行唤醒结构、设备故障调查和真机测试，记录共享 Agent 怎样接入团队分工，以及哪些环节仍需要人。</p>
 <span class="blog-read">看团队如何协作 <span aria-hidden="true">→</span></span></div>
 </a>
 <a class="blog-story" href="/zh-CN/blog/event-driven-kernel">
@@ -93,7 +93,7 @@ order: 4
   <!-- mdorigin:index kind=article -->
 
 - [从个人 AI 工具到团队协作：一个小团队的 Agent Native 实践](./agents-in-a-small-team.md)
-  从开发者各自使用 AI，到共享 Agent 参与团队分工：用 77 天的留存用量、设备故障调查和琴键无声的实测案例，记录一个小团队的 Agent Native 实践。
+  从开发者各自使用 AI，到共享 Agent 参与团队分工：用 131 天的留存用量、运行唤醒结构、设备故障调查和琴键无声的实测案例，记录一个小团队的 Agent Native 实践。
   <!-- mdorigin:index kind=article -->
 
 - [“从 Prompt 到完成工作：一套可复现的 Holon 工作流”](./from-prompt-to-finished-work.md)

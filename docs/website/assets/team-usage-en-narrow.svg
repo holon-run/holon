@@ -1,43 +1,67 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="480" height="890" viewBox="0 0 480 890" role="img" aria-labelledby="title desc">
-<title id="title">77 days of token usage by role</title><desc id="desc">June 25–September 9, 2026: six shared Agent roles used 7.764 billion tokens, including cached input. The pie chart shows role shares, not cost or outcomes.</desc>
-<defs><marker id="arrow" markerWidth="9" markerHeight="9" refX="8" refY="4.5" orient="auto"><path d="M1 1 L8 4.5 L1 8" fill="none" stroke="#285fa7" stroke-width="1.5"/></marker></defs>
-<rect width="480" height="890" rx="16" fill="#f7faff"/>
+<svg xmlns="http://www.w3.org/2000/svg" width="480" height="1270" viewBox="0 0 480 1270" role="img" aria-labelledby="title desc">
+<title id="title">131 days of token usage by role and runtime turns by wake source</title><desc id="desc">June 25–November 2, 2026: six shared Agent roles used 20.431 billion tokens across 39,809 turns. External webhooks triggered 59.16% of turns, runtime continuation and queue scheduling 36.98%, human prompts 2.88%, and scheduled timers 0.99%.</desc>
+<rect width="480" height="1270" rx="16" fill="#f7faff"/>
 <g font-family="Noto Sans CJK SC, sans-serif" fill="#183457">
-<text x="30" y="48" font-size="26" fill="#183457" font-weight="600" text-anchor="start">77 days of shared Agent usage</text>
-<text x="30" y="82" font-size="22" fill="#536b87" font-weight="400" text-anchor="start">2026.06.25–09.09 · Beijing time</text>
-<text x="30" y="146" font-size="42" fill="#183457" font-weight="600" text-anchor="start">7.764 billion tokens</text>
-<text x="30" y="183" font-size="22" fill="#183457" font-weight="400" text-anchor="start">Input 7.694B · Output 0.070B</text>
-<text x="30" y="215" font-size="22" fill="#536b87" font-weight="400" text-anchor="start">Includes 6.259B cached input tokens</text>
-<path d="M240 395 L240.000 255.000 A140 140 0 1 1 221.062 533.713 Z" fill="#285fa7" stroke="#f7faff" stroke-width="2"/>
-<path d="M240 395 L221.062 533.713 A140 140 0 0 1 101.020 378.128 Z" fill="#398a88" stroke="#f7faff" stroke-width="2"/>
-<path d="M240 395 L101.020 378.128 A140 140 0 0 1 141.406 295.606 Z" fill="#bd8131" stroke="#f7faff" stroke-width="2"/>
-<path d="M240 395 L141.406 295.606 A140 140 0 0 1 171.595 272.850 Z" fill="#56643e" stroke="#f7faff" stroke-width="2"/>
-<path d="M240 395 L171.595 272.850 A140 140 0 0 1 206.750 259.006 Z" fill="#c35672" stroke="#f7faff" stroke-width="2"/>
-<path d="M240 395 L206.750 259.006 A140 140 0 0 1 240.000 255.000 Z" fill="#75579d" stroke="#f7faff" stroke-width="2"/>
-<rect x="30" y="563" width="17" height="17" rx="3" fill="#285fa7" stroke="#285fa7" stroke-width="1.5"/>
-<text x="60" y="580" font-size="22" fill="#183457" font-weight="400" text-anchor="start">Code review</text>
-<text x="325" y="580" font-size="22" fill="#183457" font-weight="400" text-anchor="end">40.50</text>
-<text x="450" y="580" font-size="22" fill="#183457" font-weight="400" text-anchor="end">52.16%</text>
-<rect x="30" y="602" width="17" height="17" rx="3" fill="#398a88" stroke="#398a88" stroke-width="1.5"/>
-<text x="60" y="619" font-size="22" fill="#183457" font-weight="400" text-anchor="start">Investigation</text>
-<text x="325" y="619" font-size="22" fill="#183457" font-weight="400" text-anchor="end">19.23</text>
-<text x="450" y="619" font-size="22" fill="#183457" font-weight="400" text-anchor="end">24.76%</text>
-<rect x="30" y="641" width="17" height="17" rx="3" fill="#bd8131" stroke="#bd8131" stroke-width="1.5"/>
-<text x="60" y="658" font-size="21.45" fill="#183457" font-weight="400" text-anchor="start">Acceptance testing</text>
-<text x="325" y="658" font-size="22" fill="#183457" font-weight="400" text-anchor="end">8.26</text>
-<text x="450" y="658" font-size="22" fill="#183457" font-weight="400" text-anchor="end">10.64%</text>
-<rect x="30" y="680" width="17" height="17" rx="3" fill="#56643e" stroke="#56643e" stroke-width="1.5"/>
-<text x="60" y="697" font-size="22" fill="#183457" font-weight="400" text-anchor="start">Team assistance</text>
-<text x="325" y="697" font-size="22" fill="#183457" font-weight="400" text-anchor="end">3.35</text>
-<text x="450" y="697" font-size="22" fill="#183457" font-weight="400" text-anchor="end">4.31%</text>
-<rect x="30" y="719" width="17" height="17" rx="3" fill="#c35672" stroke="#c35672" stroke-width="1.5"/>
-<text x="60" y="736" font-size="22" fill="#183457" font-weight="400" text-anchor="start">Data analysis</text>
-<text x="325" y="736" font-size="22" fill="#183457" font-weight="400" text-anchor="end">3.35</text>
-<text x="450" y="736" font-size="22" fill="#183457" font-weight="400" text-anchor="end">4.31%</text>
-<rect x="30" y="758" width="17" height="17" rx="3" fill="#75579d" stroke="#75579d" stroke-width="1.5"/>
-<text x="60" y="775" font-size="20.825242718446603" fill="#183457" font-weight="400" text-anchor="start">Product operations</text>
-<text x="325" y="775" font-size="22" fill="#183457" font-weight="400" text-anchor="end">2.96</text>
-<text x="450" y="775" font-size="22" fill="#183457" font-weight="400" text-anchor="end">3.82%</text>
-<text x="30" y="826" font-size="22" fill="#536b87" font-weight="400" text-anchor="start">Legend: 100M tokens / share</text>
-<text x="30" y="866" font-size="19.96559139784946" fill="#536b87" font-weight="400" text-anchor="start">Retained rounds only; not cost or outcomes</text>
+<text x="28" y="46" font-size="25" fill="#183457" font-weight="600">131 days of shared Agent usage</text>
+<text x="28" y="78" font-size="19" fill="#536b87" font-weight="400">2026.06.25–11.02 · Beijing time</text>
+<text x="28" y="136" font-size="38" fill="#183457" font-weight="600">20.431 billion tokens</text>
+<text x="28" y="170" font-size="20" fill="#183457" font-weight="400">Input 20.195B · Output 0.236B</text>
+<text x="28" y="200" font-size="18.5" fill="#536b87" font-weight="400">Includes 17.282B cached input (85.6%)</text>
+<path d="M240 365 L240.000 237.000 A128 128 0 0 1 303.473 476.154 Z" fill="#285fa7" stroke="#f7faff" stroke-width="2"/>
+<path d="M240 365 L303.473 476.154 A128 128 0 0 1 127.059 425.235 Z" fill="#398a88" stroke="#f7faff" stroke-width="2"/>
+<path d="M240 365 L127.059 425.235 A128 128 0 0 1 171.244 257.034 Z" fill="#bd8131" stroke="#f7faff" stroke-width="2"/>
+<path d="M240 365 L171.244 257.034 A128 128 0 0 1 195.670 244.921 Z" fill="#75579d" stroke="#f7faff" stroke-width="2"/>
+<path d="M240 365 L195.670 244.921 A128 128 0 0 1 221.900 238.286 Z" fill="#56643e" stroke="#f7faff" stroke-width="2"/>
+<path d="M240 365 L221.900 238.286 A128 128 0 0 1 240.000 237.000 Z" fill="#c35672" stroke="#f7faff" stroke-width="2"/>
+<text x="28" y="532" font-size="20" fill="#183457" font-weight="600">By role</text>
+<text x="340" y="532" font-size="17" fill="#536b87" font-weight="400" text-anchor="end">Billion</text>
+<text x="452" y="532" font-size="17" fill="#536b87" font-weight="400" text-anchor="end">Share</text>
+<rect x="28" y="554" width="16" height="16" rx="3" fill="#285fa7"/>
+<text x="54" y="570" font-size="19.5" fill="#183457" font-weight="400">Code review</text>
+<text x="340" y="570" font-size="19.5" fill="#183457" font-weight="400" text-anchor="end">8.53B</text>
+<text x="452" y="570" font-size="19.5" fill="#183457" font-weight="400" text-anchor="end">41.74%</text>
+<rect x="28" y="592" width="16" height="16" rx="3" fill="#398a88"/>
+<text x="54" y="608" font-size="19.5" fill="#183457" font-weight="400">Investigation</text>
+<text x="340" y="608" font-size="19.5" fill="#183457" font-weight="400" text-anchor="end">5.20B</text>
+<text x="452" y="608" font-size="19.5" fill="#183457" font-weight="400" text-anchor="end">25.46%</text>
+<rect x="28" y="630" width="16" height="16" rx="3" fill="#bd8131"/>
+<text x="54" y="646" font-size="19.5" fill="#183457" font-weight="400">Acceptance testing</text>
+<text x="340" y="646" font-size="19.5" fill="#183457" font-weight="400" text-anchor="end">4.86B</text>
+<text x="452" y="646" font-size="19.5" fill="#183457" font-weight="400" text-anchor="end">23.77%</text>
+<rect x="28" y="668" width="16" height="16" rx="3" fill="#75579d"/>
+<text x="54" y="684" font-size="19.5" fill="#183457" font-weight="400">Product operations</text>
+<text x="340" y="684" font-size="19.5" fill="#183457" font-weight="400" text-anchor="end">0.69B</text>
+<text x="452" y="684" font-size="19.5" fill="#183457" font-weight="400" text-anchor="end">3.40%</text>
+<rect x="28" y="706" width="16" height="16" rx="3" fill="#56643e"/>
+<text x="54" y="722" font-size="19.5" fill="#183457" font-weight="400">Team assistance</text>
+<text x="340" y="722" font-size="19.5" fill="#183457" font-weight="400" text-anchor="end">0.69B</text>
+<text x="452" y="722" font-size="19.5" fill="#183457" font-weight="400" text-anchor="end">3.37%</text>
+<rect x="28" y="744" width="16" height="16" rx="3" fill="#c35672"/>
+<text x="54" y="760" font-size="19.5" fill="#183457" font-weight="400">Data analysis</text>
+<text x="340" y="760" font-size="19.5" fill="#183457" font-weight="400" text-anchor="end">0.46B</text>
+<text x="452" y="760" font-size="19.5" fill="#183457" font-weight="400" text-anchor="end">2.26%</text>
+<path d="M28 796 H452" fill="none" stroke="#c4d3e6" stroke-width="2"/>
+<text x="28" y="844" font-size="30" fill="#183457" font-weight="600">39,809 runtime turns</text>
+<text x="28" y="876" font-size="18.5" fill="#536b87" font-weight="400">What wakes a turn · 3,986 WorkItems completed</text>
+<text x="28" y="920" font-size="19" fill="#183457" font-weight="600">External webhooks</text>
+<text x="452" y="920" font-size="18.5" fill="#183457" font-weight="600" text-anchor="end">23,551 (59.16%)</text>
+<rect x="28" y="930" width="424" height="13" rx="6.5" fill="#dde8f6"/>
+<rect x="28" y="930" width="250.8" height="13" rx="6.5" fill="#285fa7"/>
+<text x="28" y="962" font-size="16" fill="#536b87" font-weight="400">Batched from 34,876 device log, GitHub &amp; CI callbacks</text>
+<text x="28" y="998" font-size="19" fill="#183457" font-weight="600">Runtime continuation &amp; queue</text>
+<text x="452" y="998" font-size="18.5" fill="#183457" font-weight="600" text-anchor="end">14,720 (36.98%)</text>
+<rect x="28" y="1008" width="424" height="13" rx="6.5" fill="#dde8f6"/>
+<rect x="28" y="1008" width="156.8" height="13" rx="6.5" fill="#398a88"/>
+<text x="28" y="1040" font-size="16" fill="#536b87" font-weight="400">Task results, follow-ups &amp; WorkItem rechecks</text>
+<text x="28" y="1076" font-size="19" fill="#183457" font-weight="600">Human operator prompts</text>
+<text x="452" y="1076" font-size="18.5" fill="#183457" font-weight="600" text-anchor="end">1,145 (2.88%)</text>
+<rect x="28" y="1086" width="424" height="13" rx="6.5" fill="#dde8f6"/>
+<rect x="28" y="1086" width="12.2" height="13" rx="6.5" fill="#bd8131"/>
+<text x="28" y="1118" font-size="16" fill="#536b87" font-weight="400">Across 11 team member &amp; control identities</text>
+<text x="28" y="1154" font-size="19" fill="#183457" font-weight="600">Scheduled timers</text>
+<text x="452" y="1154" font-size="18.5" fill="#183457" font-weight="600" text-anchor="end">393 (0.99%)</text>
+<rect x="28" y="1164" width="424" height="13" rx="6.5" fill="#dde8f6"/>
+<rect x="28" y="1164" width="6.0" height="13" rx="6.5" fill="#75579d"/>
+<text x="28" y="1196" font-size="16" fill="#536b87" font-weight="400">Daily inspections &amp; periodic summaries</text>
+<text x="28" y="1242" font-size="17" fill="#536b87" font-weight="400">Retained records only; not cost or outcomes</text>
 </g></svg>
