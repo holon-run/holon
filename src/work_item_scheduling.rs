@@ -1,7 +1,7 @@
 //! Shared WorkItem scheduling projection and queue read model.
 
 use std::{
-    borrow::Cow,
+    borrow::{Borrow, Cow},
     collections::BTreeMap,
     ops::{Deref, DerefMut},
 };
@@ -60,9 +60,9 @@ pub enum WorkItemSchedulingReasonCode {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct WorkItemSchedulingProjection {
+pub struct WorkItemSchedulingProjection<W = WorkItemRecord> {
     #[serde(flatten)]
-    pub work_item: WorkItemRecord,
+    pub work_item: W,
     pub scheduling_state: WorkItemSchedulingState,
     pub readiness: WorkItemReadiness,
     pub candidate_class: WorkItemCandidateClass,
@@ -83,9 +83,9 @@ pub struct WorkItemSchedulingProjection {
     pub diagnostics: Vec<String>,
 }
 
-impl WorkItemSchedulingProjection {
+impl<W: Borrow<WorkItemRecord>> WorkItemSchedulingProjection<W> {
     pub fn record(&self) -> &WorkItemRecord {
-        &self.work_item
+        self.work_item.borrow()
     }
 
     pub fn posture_reason(&self) -> String {
@@ -94,7 +94,7 @@ impl WorkItemSchedulingProjection {
 
     pub(crate) fn posture_reason_display(&self) -> impl std::fmt::Display + '_ {
         WorkItemPostureReason {
-            id: &self.work_item.id,
+            id: &self.record().id,
             is_current: self.is_current,
             scheduling_state: self.scheduling_state,
         }
@@ -118,11 +118,11 @@ impl std::fmt::Display for WorkItemPostureReason<'_> {
     }
 }
 
-impl Deref for WorkItemSchedulingProjection {
+impl<W: Borrow<WorkItemRecord>> Deref for WorkItemSchedulingProjection<W> {
     type Target = WorkItemRecord;
 
     fn deref(&self) -> &Self::Target {
-        &self.work_item
+        self.record()
     }
 }
 
@@ -132,19 +132,62 @@ impl DerefMut for WorkItemSchedulingProjection {
     }
 }
 
-#[derive(Debug, Clone, Default)]
-pub struct WorkQueueReadModel {
-    pub current: Option<WorkItemRecord>,
-    pub queued_blocked: Vec<WorkItemRecord>,
-    pub items: Vec<WorkItemSchedulingProjection>,
-    pub current_runnable: Option<WorkItemSchedulingProjection>,
-    pub triggered_blocked: Vec<WorkItemSchedulingProjection>,
-    pub queued_runnable: Vec<WorkItemSchedulingProjection>,
-    pub yielded: Vec<WorkItemSchedulingProjection>,
-    pub waiting_for_operator: Vec<WorkItemSchedulingProjection>,
-    pub blocked: Vec<WorkItemSchedulingProjection>,
-    pub completing: Vec<WorkItemSchedulingProjection>,
-    pub completed_recent: Vec<WorkItemSchedulingProjection>,
+#[derive(Debug, Clone)]
+pub struct WorkQueueReadModel<W = WorkItemRecord> {
+    pub current: Option<W>,
+    pub queued_blocked: Vec<W>,
+    pub items: Vec<WorkItemSchedulingProjection<W>>,
+    pub current_runnable: Option<WorkItemSchedulingProjection<W>>,
+    pub triggered_blocked: Vec<WorkItemSchedulingProjection<W>>,
+    pub queued_runnable: Vec<WorkItemSchedulingProjection<W>>,
+    pub yielded: Vec<WorkItemSchedulingProjection<W>>,
+    pub waiting_for_operator: Vec<WorkItemSchedulingProjection<W>>,
+    pub blocked: Vec<WorkItemSchedulingProjection<W>>,
+    pub completing: Vec<WorkItemSchedulingProjection<W>>,
+    pub completed_recent: Vec<WorkItemSchedulingProjection<W>>,
+}
+
+impl<W> Default for WorkQueueReadModel<W> {
+    fn default() -> Self {
+        Self {
+            current: None,
+            queued_blocked: Vec::new(),
+            items: Vec::new(),
+            current_runnable: None,
+            triggered_blocked: Vec::new(),
+            queued_runnable: Vec::new(),
+            yielded: Vec::new(),
+            waiting_for_operator: Vec::new(),
+            blocked: Vec::new(),
+            completing: Vec::new(),
+            completed_recent: Vec::new(),
+        }
+    }
+}
+
+impl<W> WorkItemSchedulingProjection<W> {
+    pub(crate) fn try_map_record<R>(
+        self,
+        map: impl FnOnce(W) -> anyhow::Result<R>,
+    ) -> anyhow::Result<WorkItemSchedulingProjection<R>> {
+        Ok(WorkItemSchedulingProjection {
+            work_item: map(self.work_item)?,
+            scheduling_state: self.scheduling_state,
+            readiness: self.readiness,
+            candidate_class: self.candidate_class,
+            focus: self.focus,
+            is_current: self.is_current,
+            is_runnable: self.is_runnable,
+            has_active_waits: self.has_active_waits,
+            has_active_task_waits: self.has_active_task_waits,
+            has_triggered_waits: self.has_triggered_waits,
+            last_triggered_at: self.last_triggered_at,
+            current_todo: self.current_todo,
+            active_wait_conditions: self.active_wait_conditions,
+            reason_code: self.reason_code,
+            diagnostics: self.diagnostics,
+        })
+    }
 }
 
 impl WorkItemRecord {
@@ -287,16 +330,17 @@ pub(crate) fn derive_queue_work_item_scheduling(
     )
 }
 
-pub(crate) fn derive_borrowed_queue_work_item_scheduling<'a>(
-    work_item: WorkItemRecord,
+pub(crate) fn derive_borrowed_queue_work_item_scheduling<'a, W: Borrow<WorkItemRecord>>(
+    work_item: W,
     is_current: bool,
     is_yielded: bool,
     active_wait_conditions: impl Iterator<Item = &'a WaitConditionRecord> + Clone,
     trigger_delivery: &impl Fn(&str) -> Option<DateTime<Utc>>,
-) -> anyhow::Result<WorkItemSchedulingProjection> {
+) -> anyhow::Result<WorkItemSchedulingProjection<W>> {
     use anyhow::Context;
 
-    if let Some(todo) = current_todo_ref(&work_item) {
+    let record = work_item.borrow();
+    if let Some(todo) = current_todo_ref(record) {
         crate::diagnostics::resource_io::admit_cloned_value(todo)
             .context("queue current todo clone admission")?;
     }
@@ -304,13 +348,13 @@ pub(crate) fn derive_borrowed_queue_work_item_scheduling<'a>(
     let mut has_waits = false;
     for wait in active_wait_conditions
         .clone()
-        .filter(|wait| wait.work_item_id.as_deref() == Some(work_item.id.as_str()))
+        .filter(|wait| wait.work_item_id.as_deref() == Some(record.id.as_str()))
     {
         has_waits = true;
         wait_states.record_kind(&wait.kind);
     }
     let messages =
-        scheduling_diagnostic_messages(&work_item, is_current, is_yielded, has_waits, &wait_states);
+        scheduling_diagnostic_messages(record, is_current, is_yielded, has_waits, &wait_states);
     let count = messages.iter().flatten().count();
     if count != 0 {
         // At most four static messages: one String slot and text allocation each.
@@ -324,9 +368,9 @@ pub(crate) fn derive_borrowed_queue_work_item_scheduling<'a>(
             .context("queue diagnostics admission")?;
     }
     let (wait_states, summaries) =
-        queue_wait_summaries(&work_item.id, active_wait_conditions, trigger_delivery)?;
-    Ok(derive_work_item_scheduling_with_summaries(
-        Cow::Owned(work_item),
+        queue_wait_summaries(&record.id, active_wait_conditions, trigger_delivery)?;
+    Ok(derive_scheduling_with_shared_record(
+        work_item,
         is_current,
         is_yielded,
         wait_states,
@@ -462,8 +506,25 @@ fn derive_work_item_scheduling_with_summaries(
     wait_states: ActiveWaitConditionStates,
     summaries: Vec<WaitConditionSummary>,
 ) -> WorkItemSchedulingProjection {
+    derive_scheduling_with_shared_record(
+        work_item.into_owned(),
+        is_current,
+        is_yielded,
+        wait_states,
+        summaries,
+    )
+}
+
+fn derive_scheduling_with_shared_record<W: Borrow<WorkItemRecord>>(
+    work_item: W,
+    is_current: bool,
+    is_yielded: bool,
+    wait_states: ActiveWaitConditionStates,
+    summaries: Vec<WaitConditionSummary>,
+) -> WorkItemSchedulingProjection<W> {
+    let record = work_item.borrow();
     let messages = scheduling_diagnostic_messages(
-        &work_item,
+        record,
         is_current,
         is_yielded,
         !summaries.is_empty(),
@@ -480,12 +541,12 @@ fn derive_work_item_scheduling_with_summaries(
         focus,
         has_triggered_waits,
         candidate_class,
-    } = scheduling_header(&work_item, is_current, is_yielded, &wait_states);
+    } = scheduling_header(record, is_current, is_yielded, &wait_states);
 
-    let current_todo = current_todo(&work_item);
+    let current_todo = current_todo(record);
     WorkItemSchedulingProjection {
         current_todo,
-        work_item: work_item.into_owned(),
+        work_item,
         scheduling_state,
         readiness,
         candidate_class,

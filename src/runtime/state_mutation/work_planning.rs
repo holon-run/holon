@@ -65,11 +65,11 @@ impl PreparedSchedulerRead {
         &self,
         ledger: &InputEvidenceBudgetLedger,
     ) -> Result<(
-        crate::work_item_scheduling::WorkQueueReadModel,
+        super::super::resident_work::StateWorkQueue,
         Arc<BudgetViewGuard>,
     )> {
         self.acquisition.read(|| {
-            let queue = self.work.work_queue_with_material(
+            let queue = self.work.state_work_queue_with_material(
                 &self.state,
                 &self.triggers.records,
                 &self.acquisition,
@@ -93,7 +93,7 @@ impl PreparedSchedulerRead {
                 OwnedBytesEstimate {
                     payload_bytes: bytes.saturating_mul(2),
                     metadata_estimate_bytes: std::mem::size_of::<
-                        crate::work_item_scheduling::WorkQueueReadModel,
+                        super::super::resident_work::StateWorkQueue,
                     >() as u64,
                 },
             )?;

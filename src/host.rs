@@ -4674,7 +4674,9 @@ impl RuntimeHost {
             model,
             closure,
             active_children,
-            work_queue,
+            work_queue: work_queue
+                .into_state_queue(&acquisition)
+                .map_err(PublicAgentError::Runtime)?,
             _work_budget: None,
             _scheduling_material: Some(scheduling_material),
         })
@@ -5227,7 +5229,9 @@ impl RuntimeHost {
             scheduling_posture,
             closure,
             active_children,
-            work_queue,
+            work_queue: work_queue
+                .into_state_queue(&acquisition)
+                .map_err(PublicAgentError::Runtime)?,
             _work_budget: None,
             _scheduling_material: None,
         };

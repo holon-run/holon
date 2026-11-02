@@ -80,6 +80,26 @@ async fn newly_bootstrapped_roster_keeps_runtime_admission_open() {
         crate::types::AgentSchedulingPosture::HasQueuedInput
     );
     assert!(runtime.accepts_execution_admission());
+    let mut headers = HeaderMap::new();
+    headers.insert(AUTHORIZATION, HeaderValue::from_static("Bearer secret"));
+    let response = crate::http::state::agent_state(
+        axum::extract::Path(default_agent_id),
+        State(state.clone()),
+        headers,
+    )
+    .await;
+    let status = response.status();
+    let bytes = axum::body::to_bytes(response.into_body(), 1024 * 1024)
+        .await
+        .unwrap();
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "{}; recent events: {:?}",
+        String::from_utf8_lossy(&bytes),
+        runtime.storage().event_log().recent(8)
+    );
+    assert!(runtime.accepts_execution_admission());
     state.projection_gate.close_and_drain().await;
     host.shutdown().await.unwrap();
 }

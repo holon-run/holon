@@ -316,7 +316,7 @@ impl<'tx, 'conn> OriginalCurrentWrites<'tx, 'conn> {
         ensure!(!id.is_empty(), "Current original address is empty");
         let tx = self.tx;
         let scope = &self.scope;
-        let mut statement = tx.prepare(family.sql())?;
+        let mut statement = tx.prepare_cached(family.sql())?;
         let mut rows = statement.query([&id])?;
         let original = if let Some(row) = rows.next()? {
             let owner = row.get_ref(0)?;
@@ -634,7 +634,7 @@ impl<'tx, 'conn> OriginalCurrentWrites<'tx, 'conn> {
                 .find(|((f, key), _)| *f == family && key == id)
                 .map(|(_, slot)| slot)
                 .expect("Current actual address slot");
-            let mut statement = self.tx.prepare(family.sql())?;
+            let mut statement = self.tx.prepare_cached(family.sql())?;
             let mut rows = statement.query([id])?;
             let mut body = None;
             let fact = match (slot.original, rows.next()?) {

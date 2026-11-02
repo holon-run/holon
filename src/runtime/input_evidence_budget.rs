@@ -1448,26 +1448,37 @@ impl InputEvidenceBudgetLedger {
                 .or_insert_with(|| empty_scope(&entry.scope));
             add_usage(&mut scope.physical_records, entry.bytes)?;
             add_usage(&mut report.physical_records, entry.bytes)?;
-            let categories = entry.memberships.values().copied().collect::<BTreeSet<_>>();
-            if categories.is_empty() {
+            let mut categories = [false; 5];
+            for category in entry.memberships.values() {
+                let index = match category {
+                    InputMemoryCategory::Current => 0,
+                    InputMemoryCategory::History => 1,
+                    InputMemoryCategory::Candidate => 2,
+                    InputMemoryCategory::Pins => 3,
+                    InputMemoryCategory::PreparedPrompt => 4,
+                };
+                categories[index] = true;
+            }
+            if !categories.iter().any(|present| *present) {
                 add_usage(&mut scope.retained_unclassified, entry.bytes)?;
                 add_usage(&mut report.retained_unclassified, entry.bytes)?;
             }
-            for category in &categories {
-                add_usage(scope.categories.entry(*category).or_default(), entry.bytes)?;
-                add_usage(report.categories.entry(*category).or_default(), entry.bytes)?;
-            }
-            if categories.contains(&InputMemoryCategory::History)
-                && !categories.iter().any(|c| {
-                    matches!(
-                        c,
-                        InputMemoryCategory::Current
-                            | InputMemoryCategory::Candidate
-                            | InputMemoryCategory::Pins
-                            | InputMemoryCategory::PreparedPrompt
-                    )
-                })
+            for (category, present) in [
+                InputMemoryCategory::Current,
+                InputMemoryCategory::History,
+                InputMemoryCategory::Candidate,
+                InputMemoryCategory::Pins,
+                InputMemoryCategory::PreparedPrompt,
+            ]
+            .into_iter()
+            .zip(categories)
             {
+                if present {
+                    add_usage(scope.categories.entry(category).or_default(), entry.bytes)?;
+                    add_usage(report.categories.entry(category).or_default(), entry.bytes)?;
+                }
+            }
+            if categories == [false, true, false, false, false] {
                 add_usage(&mut scope.reclaimable_history, entry.bytes)?;
                 add_usage(&mut report.reclaimable_history, entry.bytes)?;
             }

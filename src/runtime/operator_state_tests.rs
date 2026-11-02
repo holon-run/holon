@@ -4,8 +4,8 @@ use crate::types::WorkItemPlanStatus;
 
 #[tokio::test]
 async fn loaded_state_surfaces_keep_full_queue_beyond_scheduler_candidates() -> Result<()> {
-    fn queue_wire(
-        queue: &crate::work_item_scheduling::WorkQueueReadModel,
+    fn queue_wire<W: serde::Serialize>(
+        queue: &crate::work_item_scheduling::WorkQueueReadModel<W>,
     ) -> Result<serde_json::Value> {
         Ok(serde_json::to_value((
             &queue.current,

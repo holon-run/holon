@@ -2232,11 +2232,6 @@ impl ResidentInputEvidence {
         roots.extend(self.output_recall_roots.iter().cloned());
         roots.extend(
             self.coverage
-                .execution
-                .required_body_keys(&self.coverage.mandatory_roots),
-        );
-        roots.extend(
-            self.coverage
                 .selected_completion_brief_ids
                 .iter()
                 .map(|id| InputEvidenceKey::new(InputEvidenceFamily::Brief, id)),
@@ -2576,6 +2571,7 @@ mod tests {
     use super::*;
 
     mod capture_transfer_tests;
+    mod required_keys_tests;
 
     #[test]
     fn captured_query_shares_only_immutable_metadata_until_last_holder() -> Result<()> {

@@ -238,6 +238,77 @@ fn new_incarnation_does_not_inherit_or_release_old_scope_charges() {
 }
 #[test]
 fn shared_allocations_are_physical_once_categories_overlap_and_pins_prevent_reclaim() {
+    let categories = [
+        InputMemoryCategory::Current,
+        InputMemoryCategory::History,
+        InputMemoryCategory::Candidate,
+        InputMemoryCategory::Pins,
+        InputMemoryCategory::PreparedPrompt,
+    ];
+    for mask in 0..(1 << categories.len()) {
+        let ledger = InputEvidenceBudgetLedger::new(limits()).unwrap();
+        let scope = scope("a", 1);
+        let item = record(&scope, "turn", 90);
+        let initial = ledger
+            .register_view(&scope, InputMemoryCategory::Current, &[item.clone()])
+            .unwrap();
+        drop(initial);
+        let mut guards = Vec::new();
+        for (index, category) in categories.iter().enumerate() {
+            if mask & (1 << index) != 0 {
+                for _ in 0..2 {
+                    guards.push(
+                        ledger
+                            .register_view(&scope, *category, &[item.clone(), item.clone()])
+                            .unwrap(),
+                    );
+                }
+            }
+        }
+        let report = ledger.report().unwrap();
+        let physical = AllocationUsage {
+            allocations: 1,
+            bytes: 90,
+        };
+        assert_eq!(report.physical_records, physical, "mask={mask}");
+        assert_eq!(report.scopes[0].physical_records, physical, "mask={mask}");
+        let expected = categories
+            .iter()
+            .enumerate()
+            .filter(|(index, _)| mask & (1 << index) != 0)
+            .map(|(_, category)| (*category, physical))
+            .collect::<BTreeMap<_, _>>();
+        assert_eq!(report.categories, expected, "mask={mask}");
+        assert_eq!(report.scopes[0].categories, expected, "mask={mask}");
+        let unclassified = if mask == 0 {
+            physical
+        } else {
+            AllocationUsage::default()
+        };
+        let reclaimable = if mask == 2 {
+            physical
+        } else {
+            AllocationUsage::default()
+        };
+        assert_eq!(report.retained_unclassified, unclassified, "mask={mask}");
+        assert_eq!(
+            report.scopes[0].retained_unclassified, unclassified,
+            "mask={mask}"
+        );
+        assert_eq!(report.reclaimable_history, reclaimable, "mask={mask}");
+        assert_eq!(
+            report.scopes[0].reclaimable_history, reclaimable,
+            "mask={mask}"
+        );
+        ledger.check_history_budget().unwrap();
+        drop(guards);
+        assert_eq!(ledger.report().unwrap().retained_unclassified, physical);
+        drop(item);
+        assert_eq!(
+            ledger.report().unwrap().physical_records,
+            AllocationUsage::default()
+        );
+    }
     let ledger = InputEvidenceBudgetLedger::new(limits()).unwrap();
     let scope = scope("a", 1);
     let item = record(&scope, "turn", 90);

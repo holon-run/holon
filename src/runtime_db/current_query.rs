@@ -419,7 +419,7 @@ fn validate_body(
         CurrentRecord::Queue(queue) => &queue.message_id,
         CurrentRecord::Event(event) => &event.id,
     };
-    let mut statement = tx.prepare(family.sql())?;
+    let mut statement = tx.prepare_cached(family.sql())?;
     let mut rows = statement.query([id])?;
     let row = rows.next()?.context("Current accepted body was removed")?;
     ensure!(
@@ -587,7 +587,7 @@ fn load_body(
     material: &mut InputReadMaterial<'_>,
     history: bool,
 ) -> Result<Option<Arc<OwnedCurrentRecord>>> {
-    let mut statement = tx.prepare(family.sql())?;
+    let mut statement = tx.prepare_cached(family.sql())?;
     let mut rows = statement.query([id])?;
     let Some(row) = rows.next()? else {
         let state = tx.query_row(

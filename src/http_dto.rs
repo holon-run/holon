@@ -25,12 +25,12 @@ use crate::{
 };
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq)]
-#[serde(bound(deserialize = "Timer: Deserialize<'de>"))]
+#[serde(bound(deserialize = "Timer: Deserialize<'de>, WorkItem: Deserialize<'de>"))]
 #[schemars(
     rename = "AgentStateSnapshotDto",
-    bound = "Timer: JsonSchema + Serialize"
+    bound = "Timer: JsonSchema + Serialize, WorkItem: JsonSchema + Serialize"
 )]
-pub struct AgentStateSnapshotDto<Timer = TimerRecord> {
+pub struct AgentStateSnapshotDto<Timer = TimerRecord, WorkItem = SlimWorkItemDto> {
     pub agent: SlimAgentDto,
     pub session: StateSessionSnapshotDto,
     pub tasks: Vec<SlimTaskDto>,
@@ -39,7 +39,7 @@ pub struct AgentStateSnapshotDto<Timer = TimerRecord> {
     #[serde(default)]
     pub timers: Vec<Timer>,
     #[serde(default)]
-    pub work_items: Vec<SlimWorkItemDto>,
+    pub work_items: Vec<WorkItem>,
     #[serde(default)]
     pub external_triggers: Vec<ExternalTriggerStateSnapshot>,
     #[serde(default)]
@@ -287,26 +287,28 @@ impl From<TaskRecord> for TaskRecordDto {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
-pub struct SlimWorkItemDto {
-    pub id: String,
-    pub agent_id: String,
-    pub workspace_id: String,
+#[serde(bound(deserialize = "Text: Deserialize<'de>, Todo: Deserialize<'de>"))]
+#[schemars(rename = "SlimWorkItemDto")]
+pub struct SlimWorkItemDto<Text = String, Todo = TodoItem> {
+    pub id: Text,
+    pub agent_id: Text,
+    pub workspace_id: Text,
     pub revision: u64,
-    pub objective: String,
+    pub objective: Text,
     pub state: WorkItemState,
     pub plan_status: WorkItemPlanStatus,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub blocked_by: Option<String>,
+    pub blocked_by: Option<Text>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub recheck_at: Option<DateTime<Utc>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub result_brief_id: Option<String>,
+    pub result_brief_id: Option<Text>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub result_summary: Option<String>,
+    pub result_summary: Option<Text>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub turn_id: Option<String>,
+    pub turn_id: Option<Text>,
     pub scheduling_state: WorkItemSchedulingState,
     pub readiness: WorkItemReadiness,
     pub candidate_class: WorkItemCandidateClass,
@@ -314,7 +316,7 @@ pub struct SlimWorkItemDto {
     pub is_current: bool,
     pub is_runnable: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub current_todo: Option<TodoItem>,
+    pub current_todo: Option<Todo>,
     pub reason_code: WorkItemSchedulingReasonCode,
 }
 
@@ -561,6 +563,38 @@ impl From<WorkItemSchedulingProjection> for SlimWorkItemDto {
             is_current: projection.is_current,
             is_runnable: projection.is_runnable,
             current_todo: projection.current_todo,
+            reason_code: projection.reason_code,
+        }
+    }
+}
+
+impl<W: std::borrow::Borrow<crate::types::WorkItemRecord>> From<&WorkItemSchedulingProjection<W>>
+    for SlimWorkItemDto
+{
+    fn from(projection: &WorkItemSchedulingProjection<W>) -> Self {
+        let record = projection.record();
+        Self {
+            id: record.id.clone(),
+            agent_id: record.agent_id.clone(),
+            workspace_id: record.workspace_id.clone(),
+            revision: record.revision,
+            objective: record.objective.clone(),
+            state: record.state.clone(),
+            plan_status: record.plan_status,
+            blocked_by: record.blocked_by.clone(),
+            recheck_at: record.recheck_at,
+            result_brief_id: record.result_brief_id.clone(),
+            result_summary: record.result_summary.clone(),
+            created_at: record.created_at,
+            updated_at: record.updated_at,
+            turn_id: record.turn_id.clone(),
+            scheduling_state: projection.scheduling_state,
+            readiness: projection.readiness,
+            candidate_class: projection.candidate_class,
+            focus: projection.focus,
+            is_current: projection.is_current,
+            is_runnable: projection.is_runnable,
+            current_todo: projection.current_todo.clone(),
             reason_code: projection.reason_code,
         }
     }

@@ -17,8 +17,6 @@ use crate::{
 #[path = "cold_scheduler_work_phase_tests.rs"]
 mod scheduler_work_tests;
 
-const COLD_DISPATCH_ROUNDS: usize = 24;
-
 #[derive(Default)]
 struct ColdDispatchProvider {
     calls: std::sync::atomic::AtomicUsize,
@@ -29,9 +27,6 @@ impl AgentProvider for ColdDispatchProvider {
     async fn complete_turn(&self, request: ProviderTurnRequest) -> Result<ProviderTurnResponse> {
         use crate::provider::{ConversationMessage, ModelBlock, ModelToolCallKind};
         let call = self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-        if call >= COLD_DISPATCH_ROUNDS * 2 {
-            return std::future::pending().await;
-        }
         if call % 2 == 1 {
             let last = request
                 .conversation
@@ -254,26 +249,19 @@ async fn typed_cold_fixture_requires_business_stop_and_restores_pending_preview(
                 .control_public_agent(agent_id, ControlAction::Start)
                 .await
                 .map_err(anyhow::Error::new)?;
+            // Verify one resumed tool turn, not a fixed dispatch throughput.
+            // The timeout only guards against a stuck functional test.
+            let resumed_id = pending_ids
+                .first()
+                .context("original cold pending message")?;
             let settled = tokio::time::timeout(Duration::from_secs(10), async {
                 loop {
-                    let queue = cold
+                    let entry = cold
                         .runtime_db()
                         .queue_entries()
-                        .recent(Some(agent_id), pending + 1)?;
-                    let entries = pending_ids
-                        .iter()
-                        .take(COLD_DISPATCH_ROUNDS)
-                        .map(|id| {
-                            queue
-                                .iter()
-                                .find(|entry| &entry.message_id == id)
-                                .context("original cold Queue entry")
-                        })
-                        .collect::<Result<Vec<_>>>()?;
-                    if entries
-                        .iter()
-                        .all(|entry| entry.status == QueueEntryStatus::Processed)
-                    {
+                        .latest(resumed_id)?
+                        .context("original cold Queue entry")?;
+                    if entry.status == QueueEntryStatus::Processed {
                         return Ok::<_, anyhow::Error>(());
                     }
                     tokio::time::sleep(Duration::from_millis(10)).await;
@@ -283,7 +271,7 @@ async fn typed_cold_fixture_requires_business_stop_and_restores_pending_preview(
             let state = running.agent_state().await?;
             let queue_statuses = pending_ids
                 .iter()
-                .take(COLD_DISPATCH_ROUNDS + 2)
+                .take(2)
                 .map(|id| {
                     Ok((
                         id,
@@ -318,7 +306,7 @@ async fn typed_cold_fixture_requires_business_stop_and_restores_pending_preview(
             cold.shutdown().await?;
             assert!(
                 settled.is_ok(),
-                "cold consecutive GetAgent/Result dispatches did not commit QueueTerminal: calls={}, queue={queue_statuses:?}, errors={errors:?}, status={:?}, pending={}, turn={:?}, binding={:?}, audits={audit_kinds:?}, execution_protocol={execution_protocol:?}",
+                "cold resumed GetAgent/Result dispatch did not commit QueueTerminal: calls={}, queue={queue_statuses:?}, errors={errors:?}, status={:?}, pending={}, turn={:?}, binding={:?}, audits={audit_kinds:?}, execution_protocol={execution_protocol:?}",
                 provider.calls.load(std::sync::atomic::Ordering::SeqCst),
                 state.status,
                 state.pending,
@@ -326,10 +314,7 @@ async fn typed_cold_fixture_requires_business_stop_and_restores_pending_preview(
                 state.current_execution_binding,
             );
             settled??;
-            assert!(
-                provider.calls.load(std::sync::atomic::Ordering::SeqCst)
-                    >= COLD_DISPATCH_ROUNDS * 2
-            );
+            assert!(provider.calls.load(std::sync::atomic::Ordering::SeqCst) >= 2);
         } else {
             cold.shutdown().await?;
         }
@@ -388,8 +373,8 @@ fn scope(identity: &AgentIdentityRecord) -> InputEvidenceScope {
     }
 }
 
-fn queue_wire(
-    queue: &crate::work_item_scheduling::WorkQueueReadModel,
+fn queue_wire<W: serde::Serialize>(
+    queue: &crate::work_item_scheduling::WorkQueueReadModel<W>,
 ) -> Result<serde_json::Value> {
     Ok(serde_json::to_value((
         &queue.current,
@@ -404,6 +389,64 @@ fn queue_wire(
         &queue.completing,
         &queue.completed_recent,
     ))?)
+}
+
+#[tokio::test]
+async fn cold_state_queue_conversion_keeps_original_allowance_through_last_record() -> Result<()> {
+    let (_home, host, identity, state, storage) = fixture(true)?;
+    let ledger = InputEvidenceBudgetLedger::new(StateMemoryLimits::default())?;
+    let measure = ResourceReadMaterial::new(&ledger, &scope(&identity))?;
+    let owned = measure.read(|| storage.work_queue_with_observed_scheduling(&state, &[]))?;
+    let expected = queue_wire(&owned)?;
+    let source_usage = measure.finish()?;
+    // This call deliberately has no ambient TLS entry: the adapter must enter
+    // the caller's acquisition, rather than silently skipping its charges.
+    let queue = owned.into_state_queue(&measure)?;
+    let total = measure.finish()?;
+    assert!(total.0 > source_usage.0 && total.1 > source_usage.1);
+    assert_eq!(queue_wire(&queue)?, expected);
+    drop(measure);
+    let held = ledger.report()?.observed_bytes;
+    assert!(held > 0);
+    let loan = queue.items[0].work_item.clone();
+    drop(queue);
+    assert_eq!(ledger.report()?.observed_bytes, held);
+    let last = loan.clone();
+    drop(loan);
+    assert_eq!(ledger.report()?.observed_bytes, held);
+    assert_eq!(last.id, "work_cold_queue");
+    drop(last);
+    assert_eq!(ledger.report()?.observed_bytes, 0);
+
+    for (bytes, records, succeeds) in [
+        (total.0, total.1, true),
+        (total.0 - 1, total.1, false),
+        (total.0, total.1 - 1, false),
+    ] {
+        let phase =
+            ResourceReadMaterial::with_test_limits(&ledger, &scope(&identity), bytes, records)?;
+        let owned = phase.read(|| storage.work_queue_with_observed_scheduling(&state, &[]))?;
+        let result = owned.into_state_queue(&phase);
+        if succeeds {
+            let queue = result?;
+            assert_eq!(queue_wire(&queue)?, expected);
+            assert_eq!(phase.finish()?, total);
+        } else {
+            let error = result.unwrap_err();
+            assert_eq!(
+                crate::runtime_error::describe_runtime_error(&error).code,
+                "context_resource_exhausted",
+            );
+            assert!(phase.finish().is_err());
+            assert!(crate::work_item_scheduling::WorkQueueReadModel::default()
+                .into_state_queue(&phase)
+                .is_err());
+        }
+        drop(phase);
+        assert_eq!(ledger.report()?.observed_bytes, 0);
+    }
+    host.shutdown().await?;
+    Ok(())
 }
 
 #[tokio::test]

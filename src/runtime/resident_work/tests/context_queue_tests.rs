@@ -9,6 +9,24 @@ use crate::{
     work_item_scheduling::ContextWorkQueue,
 };
 
+fn queue_wire<W: Serialize>(
+    queue: &crate::work_item_scheduling::WorkQueueReadModel<W>,
+) -> Result<serde_json::Value> {
+    Ok(serde_json::to_value((
+        &queue.current,
+        &queue.queued_blocked,
+        &queue.items,
+        &queue.current_runnable,
+        &queue.triggered_blocked,
+        &queue.queued_runnable,
+        &queue.yielded,
+        &queue.waiting_for_operator,
+        &queue.blocked,
+        &queue.completing,
+        &queue.completed_recent,
+    ))?)
+}
+
 fn capture(records: Vec<CanonicalWorkRecord>) -> Result<CapturedWork> {
     let records = records
         .into_iter()
@@ -135,6 +153,10 @@ fn context_selection_matches_full_queue_for_all_candidate_classes() -> Result<()
             trigger.status = status;
             let triggers = [trigger.clone()];
             let full = captured.work_queue(&state, triggers.to_vec())?;
+            let phase = ResourceReadMaterial::new(&ledger, &scope())?;
+            let shared = captured.state_work_queue_with_material(&state, &triggers, &phase)?;
+            assert_eq!(queue_wire(&shared)?, queue_wire(&full)?);
+            phase.finish()?;
             let expected = ContextWorkQueue::from(full.clone());
             let phase = ResourceReadMaterial::new(&ledger, &scope())?;
             let actual = captured.context_work_queue_with_material(&state, &triggers, &phase)?;
@@ -210,6 +232,74 @@ fn context_selection_matches_full_queue_for_all_candidate_classes() -> Result<()
             }
         }
     }
+    Ok(())
+}
+
+#[test]
+fn state_queue_shares_complete_inventory_and_keeps_pin_until_last_loan() -> Result<()> {
+    let mut captured = capture(
+        (0..200)
+            .map(|index| CanonicalWorkRecord::Work(work(index, WorkItemState::Open)))
+            .collect(),
+    )?;
+    let state = AgentState::new(scope().agent_id);
+    let expected = queue_wire(&captured.work_queue(&state, vec![])?)?;
+    let ledger = InputEvidenceBudgetLedger::new(StateMemoryLimits::default())?;
+    let guard = ledger.register_owned_bytes(
+        &scope(),
+        InputMemoryCategory::Pins,
+        OwnedBytesEstimate {
+            payload_bytes: 123,
+            metadata_estimate_bytes: 0,
+        },
+    )?;
+    let weak = Arc::downgrade(&guard);
+    captured.budget_views.push(guard);
+    let phase = ResourceReadMaterial::new(&ledger, &scope())?;
+    let shared = captured.state_work_queue_with_material(&state, &[], &phase)?;
+    assert_eq!(shared.items.len(), 200);
+    assert_eq!(shared.queued_blocked.len(), 200);
+    assert_eq!(shared.queued_runnable.len(), 5);
+    assert_eq!(queue_wire(&shared)?, expected);
+    let first = &shared.items[0];
+    let original = captured
+        .records
+        .iter()
+        .find_map(|record| match &record.record {
+            CanonicalWorkRecord::Work(work) if work.id == first.id => Some(work),
+            _ => None,
+        })
+        .unwrap();
+    assert!(std::ptr::eq(first.record(), original));
+    let (bytes, records) = phase.finish()?;
+    drop(phase);
+    let exact = ResourceReadMaterial::with_test_limits(&ledger, &scope(), bytes, records)?;
+    let again = captured.state_work_queue_with_material(&state, &[], &exact)?;
+    assert_eq!(queue_wire(&again)?, expected);
+    exact.finish()?;
+    drop((again, exact));
+    for (bytes, records) in [(bytes - 1, records), (bytes, records - 1)] {
+        let phase = ResourceReadMaterial::with_test_limits(&ledger, &scope(), bytes, records)?;
+        let error = captured
+            .state_work_queue_with_material(&state, &[], &phase)
+            .unwrap_err();
+        assert_eq!(
+            crate::runtime_error::describe_runtime_error(&error).code,
+            "context_resource_exhausted",
+        );
+        assert!(phase.finish().is_err());
+    }
+    let loan = shared.items[0].work_item.clone();
+    let held = ledger.report()?.observed_bytes;
+    drop(captured);
+    assert!(weak.upgrade().is_some());
+    drop(shared);
+    assert!(weak.upgrade().is_some());
+    assert_eq!(ledger.report()?.observed_bytes, held);
+    assert_eq!(loan.id, "context-000");
+    drop(loan);
+    assert!(weak.upgrade().is_none());
+    assert_eq!(ledger.report()?.observed_bytes, 0);
     Ok(())
 }
 

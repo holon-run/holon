@@ -1,6 +1,7 @@
 use super::*;
 use std::path::{Path, PathBuf};
 
+use super::resident_work::StateWorkQueue;
 use crate::diagnostics::attribution;
 use crate::runtime::closure::{derive_closure_decision, ClosureFacts};
 #[cfg(test)]
@@ -12,7 +13,6 @@ use crate::types::{
     TaskStatus, TokenUsage, WaitingReason, WorkItemRecord, WorkItemState, WorkspaceOccupancyRecord,
     WorkspaceProjectionMetadata, WorktreeSession,
 };
-use crate::work_item_scheduling::WorkQueueReadModel;
 
 pub(crate) struct LightweightAgentStateProjection {
     pub(crate) identity: AgentIdentityView,
@@ -23,7 +23,7 @@ pub(crate) struct LightweightAgentStateProjection {
     pub(crate) model: AgentModelState,
     pub(crate) closure: ClosureDecision,
     pub(crate) active_children: Vec<ChildAgentSummary>,
-    pub(crate) work_queue: WorkQueueReadModel,
+    pub(crate) work_queue: StateWorkQueue,
     pub(crate) _work_budget: Option<Arc<super::input_evidence_budget::BudgetViewGuard>>,
     pub(crate) _scheduling_material: Option<super::SchedulingReadMaterial>,
 }
