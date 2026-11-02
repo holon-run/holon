@@ -16298,10 +16298,10 @@ async fn already_asleep_lifecycle_sleep_refresh_skips_posture_and_state_changed_
     .unwrap();
     let previous_deadline = Utc::now() + chrono::Duration::seconds(60);
     {
-        let mut guard = runtime.inner.agent.lock().await;
+        let mut guard = runtime.begin_mutation().await.unwrap();
         guard.state.status = AgentStatus::Asleep;
         guard.state.sleeping_until = Some(previous_deadline);
-        guard.persist_state(&runtime.inner.storage).unwrap();
+        guard.persist_state(&runtime.inner.storage).await.unwrap();
     }
 
     runtime.transition_to_sleep(Some(5_000)).await.unwrap();
@@ -16319,6 +16319,50 @@ async fn already_asleep_lifecycle_sleep_refresh_skips_posture_and_state_changed_
     assert!(!events
         .iter()
         .any(|event| event.kind == "agent_state_changed"));
+}
+
+#[tokio::test]
+async fn stopped_lifecycle_sleep_cannot_overwrite_stop_or_spawn_wake() {
+    for duration_ms in [None, Some(60_000)] {
+        let dir = tempdir().unwrap();
+        let workspace = tempdir().unwrap();
+        let runtime = RuntimeHandle::new(
+            "default",
+            dir.path().to_path_buf(),
+            workspace.path().to_path_buf(),
+            "http://127.0.0.1:7878".into(),
+            Arc::new(CountingProvider {
+                calls: Mutex::new(0),
+                reply: "unused",
+            }),
+            "default".into(),
+            context_config(),
+        )
+        .unwrap();
+        runtime
+            .control(crate::types::ControlAction::Stop)
+            .await
+            .unwrap();
+        let stopped = runtime.agent_state().await.unwrap();
+        assert_eq!(stopped.status, AgentStatus::Stopped);
+        let owned_tasks = runtime.inner.owned_task_handles.lock().unwrap().len();
+
+        // A completed turn may reach cleanup after administrative Stop commits.
+        runtime.transition_to_sleep(duration_ms).await.unwrap();
+
+        assert_eq!(runtime.agent_state().await.unwrap(), stopped);
+        assert_eq!(runtime.storage().read_agent().unwrap().unwrap(), stopped);
+        assert_eq!(
+            runtime.inner.owned_task_handles.lock().unwrap().len(),
+            owned_tasks,
+            "rejected sleep must not register a session-owned wake task"
+        );
+        let events = runtime.storage().read_recent_events(usize::MAX).unwrap();
+        assert!(!events.iter().any(|event| {
+            event.kind == "scheduler_posture_decision"
+                && event.data["boundary"] == "lifecycle_sleep"
+        }));
+    }
 }
 
 #[tokio::test]
@@ -17623,7 +17667,7 @@ async fn control_stop_clears_autonomous_sleep_and_wake_posture() {
     )
     .unwrap();
     {
-        let mut guard = runtime.inner.agent.lock().await;
+        let mut guard = runtime.begin_mutation().await.unwrap();
         guard.state.status = AgentStatus::Asleep;
         guard.state.sleeping_until = Some(Utc::now() + chrono::Duration::seconds(60));
         guard.state.pending_wake_hint = Some(PendingWakeHint {
@@ -17639,7 +17683,7 @@ async fn control_stop_clears_autonomous_sleep_and_wake_posture() {
             causation_id: None,
             created_at: Utc::now(),
         });
-        guard.persist_state(&runtime.inner.storage).unwrap();
+        guard.persist_state(&runtime.inner.storage).await.unwrap();
     }
 
     runtime

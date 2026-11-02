@@ -2294,12 +2294,15 @@ impl RuntimeHandle {
                 return Ok(());
             }
         }
-        let transition = super::scheduler_executor::SchedulerDecisionExecutor::new(self)
+        let Some(transition) = super::scheduler_executor::SchedulerDecisionExecutor::new(self)
             .transition_to_sleep(
                 sleeping_until,
                 super::scheduler_executor::SleepTransitionBoundary::LifecycleSleep,
             )
-            .await?;
+            .await?
+        else {
+            return Ok(());
+        };
         if transition.posture_changed {
             self.append_state_changed_events(&transition.state).await?;
         }

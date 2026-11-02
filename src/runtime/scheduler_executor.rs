@@ -815,8 +815,11 @@ impl<'a> SchedulerDecisionExecutor<'a> {
         &self,
         sleeping_until: Option<chrono::DateTime<chrono::Utc>>,
         boundary: SleepTransitionBoundary,
-    ) -> Result<SleepTransition> {
+    ) -> Result<Option<SleepTransition>> {
         let mut guard = self.runtime.begin_mutation().await?;
+        if matches!(guard.state.status, AgentStatus::Stopped) {
+            return Ok(None);
+        }
         let previous_status = guard.state.status.clone();
         let previous_run_id = guard.state.current_run_id.clone();
         let previous_sleeping_until = guard.state.sleeping_until;
@@ -857,10 +860,10 @@ impl<'a> SchedulerDecisionExecutor<'a> {
         if posture_changed || previous_sleeping_until != guard.state.sleeping_until {
             guard.persist_state(&self.runtime.inner.storage).await?;
         }
-        Ok(SleepTransition {
+        Ok(Some(SleepTransition {
             state: guard.state.clone(),
             posture_changed,
-        })
+        }))
     }
 
     pub(super) async fn transition_run_loop_idle_to_sleep(
