@@ -7508,27 +7508,6 @@
       "source": "conservative_builtin"
     },
     {
-      "model_ref": "volcengine/minimax-m3",
-      "display_name": "MiniMax M3",
-      "description": "volcengine coding subscription MiniMax M3; exact token limits unconfirmed.",
-      "context_window_tokens": null,
-      "effective_context_window_percent": 95,
-      "auto_compact_token_limit": null,
-      "default_max_output_tokens": null,
-      "max_output_tokens_upper_limit": null,
-      "default_verbosity": null,
-      "tool_output_truncation_estimated_tokens": 2500,
-      "capabilities": {
-        "agent_turn": true,
-        "parallel_tool_calls": false,
-        "image_input": true,
-        "image_generation": false,
-        "supports_reasoning": true,
-        "interactive_exec": false
-      },
-      "source": "conservative_builtin"
-    },
-    {
       "model_ref": "xai/grok-4.3",
       "display_name": "Grok 4.3",
       "description": "xAI Grok 4.3 runtime defaults aligned with the official model page.",
@@ -14376,16 +14355,6 @@
       }
     },
     {
-      "route_ref": "volcengine@coding/minimax-m3",
-      "policy": {
-        "display_name": null,
-        "description": null,
-        "effective_context_window_percent": null,
-        "capabilities": {},
-        "reasoning_effort_options": null
-      }
-    },
-    {
       "route_ref": "volcengine@default/deepseek-v4-1-flash-260910",
       "policy": {
         "display_name": null,
@@ -14707,16 +14676,6 @@
     },
     {
       "route_ref": "volcengine@plan/minimax-latest",
-      "policy": {
-        "display_name": null,
-        "description": null,
-        "effective_context_window_percent": null,
-        "capabilities": {},
-        "reasoning_effort_options": null
-      }
-    },
-    {
-      "route_ref": "volcengine@plan/minimax-m3",
       "policy": {
         "display_name": null,
         "description": null,
@@ -15630,10 +15589,6 @@
     {
       "alias": "volcengine-agent/minimax-latest",
       "target": "volcengine/minimax-latest"
-    },
-    {
-      "alias": "volcengine-agent/minimax-m3",
-      "target": "volcengine/minimax-m3"
     },
     {
       "alias": "volcengine-coding/ark-code-latest",
@@ -17420,10 +17375,6 @@
     {
       "model_ref": "volcengine/minimax-latest",
       "route_ref": "volcengine@coding/minimax-latest"
-    },
-    {
-      "model_ref": "volcengine/minimax-m3",
-      "route_ref": "volcengine@coding/minimax-m3"
     },
     {
       "model_ref": "xai/grok-4.3",

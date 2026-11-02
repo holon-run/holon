@@ -9,6 +9,119 @@ reviewed routes unless there is affirmative removal evidence. New routes require
 their own endpoint evidence; missing capability flags are conservative omissions,
 not proof that a model lacks the feature.
 
+## 2026-11-03 incremental review
+
+This cycle starts from main `536449d8`; evidence was sampled on November 2
+UTC (November 3 in Beijing). The frozen payload SHA-256 is
+`dbfacaf2b8140dadc0be5a1354bb4a4284c24d01814e3370865817d727e2d76a`.
+The [capacity evidence](metadata-evidence.md#incremental-review-2026-11-03)
+separates the OpenRouter remote record/capacity changes from two affirmative
+Volcengine subscription retirements. No generic API list becomes a plan
+allowlist.
+
+### Independently rechecked first endpoint group
+
+All 15 endpoints and 363 pre-change review records were checked. The only
+required route removals are `volcengine@coding/minimax-m3` and
+`volcengine@plan/minimax-m3`: both independent official shutdown notices
+still say November 2, 2026, 14:00 Beijing time, already past at this sample.
+The remaining 361 records are preserved, not newly certified.
+
+All 61 sources returned HTTP 200 and their raw hashes were verified.
+Content normalization leaves five changed bodies; do not describe the
+whole group as unchanged. Responses/cache guidance and Legal marketing
+copy changes below do not widen model, protocol or plan eligibility.
+Three Xiaomi documentation shells still supply no model-body evidence.
+
+| Registered endpoint | Result and preserved boundary |
+| --- | --- |
+| `dashscope@default` | Messages fields unchanged; navigation changes are not capability evidence. |
+| `dashscope@token-plan` | Personal/team contracts remain independently scoped. |
+| `dashscope@coding-plan` | Domestic eligibility is not inferred from the API. |
+| `dashscope@coding-plan-intl` | International six-model contract independently preserved. |
+| `volcengine@default` | K3.1 output-default conflict remains; cache guidance does not extend plan support. |
+| `volcengine@coding` | Remove only the expired exact M3 route; preserve live aliases and other unknown fields. |
+| `volcengine@plan` | Independent notice confirms the same exact M3 removal; Lite/Mini/DeepSeek remain. |
+| `tencent-tokenhub@default` | Chat model/schema facts unchanged; M3 remains. |
+| `tencent-tokenhub@messages` | Independent Messages schema unchanged; M3 remains. |
+| `tencent-tokenhub@responses` | Independent Responses schema unchanged; M3 remains. |
+| `qianfan@default` | Prior six retirements stay removed; no exact experimental-model retirement. |
+| `bigmodel@default` | Legal enterprise-application copy changed, without exact Messages model eligibility. |
+| `zai@default` | International Legal copy independently changed; do not copy OpenRouter's wire ID. |
+| `xiaomi@default` | Historical field facts retained; shells do not recertify them. |
+| `xiaomi@token-plan` | Token Plan remains separate; historical ultraspeed is not removed by absence. |
+
+Volcengine's revised `prompt_cache_key` guidance keeps keys endpoint/model
+scoped and sessions isolated. The suggested 15 RPM per key is not a hard
+limit or a hit guarantee. Cache example corrections do not certify new
+subscription cache features or change model budgets.
+
+### Independently rechecked second endpoint group
+
+All 15 endpoints and 168 existing review records remain unchanged. The
+27 Go native routes, 57 conservative translated routes and five Kilo auto
+records were compared field by field. The sample selected 84 URL receipts:
+65 HTTP 200 and 19 failures. Two superseded HTTP-200 JavaScript shells were
+archived separately, not used as model evidence. All archived successful
+response hashes were verified; failed reads do not recertify eligibility.
+
+| Registered endpoint | Result and retained boundary |
+| --- | --- |
+| `minimax@default` | International API unchanged; November 18 existing-user retirement remains future. |
+| `minimax-cn@default` | China host/schema independently unchanged. |
+| `minimax@m-plan` | Preview forwarding and plan eligibility remain separate from API retirement. |
+| `minimax-cn@m-plan` | China plan unchanged; unknown output defaults stay unknown. |
+| `moonshot@default` | October 31 is a new-user cutoff, not existing-user EOS; K3 fields unchanged. |
+| `byteplus@default` | No static additions; independent November 11 boundary remains future. |
+| `byteplus@coding` | Six decoded bodies unchanged; replaced JavaScript shells supply no fields. |
+| `stepfun@default` | Ordinary model/schema/effort facts unchanged; no router capacity copied. |
+| `stepfun@plan` | Ambiguous 64K is not an integer; ignored Messages effort remains disabled. |
+| `opencode-go@default` | 17 native and 11 translated routes checked; ten historical absences retained. |
+| `opencode-go@messages` | Five native and 23 translated routes checked; six historical absences retained. |
+| `opencode-go@responses` | Five native and 23 translated routes checked; two historical absences retained. |
+| `kilocode@default` | Five auto records unchanged; non-auto aggregation changes do not propagate. |
+| `together@default` | Five selected cards unchanged; navigation candidates lack independent eligibility proof. |
+| `fireworks@default` | All 329 index IDs and six reviewed fields match; on-demand/serverless stay separate. |
+
+Go's public 28-ID list differs only in `created`; 27 match the three
+registered native protocols. `gemini-4-argon` not matching those native
+protocols is not proof that it is unavailable across all Go transports.
+Native capacities, images, reasoning and efforts are not copied into
+translated routes. DeepSeek monthly ZDR still ends November 30; account
+entitlements, region/privacy switches and quota percentages do not become
+global provider promises or token capacities.
+
+Kilo's non-auto aggregation adds GLM Legal, loses two Hermes records and
+changes Muse/Qwen capacities and Grok parameters. None changes its five
+auto records or certifies another endpoint. Together navigation-only
+discoveries and missing navigation entries neither admit nor retire a
+reviewed model.
+
+This cycle's 11 native Mistral URL reads reset; previously obtained
+family/reasoning evidence is preserved, not re-certified. No new exact
+`mistral-large-4-0-8` wire binding, integer output ceiling/default or Small
+3.5 version evidence was obtained. An empty official Hugging Face result
+is not proof of commercial-API absence. Keep the precise candidate gates,
+existing Large 4 alias fields and the independent OpenRouter effort rule.
+
+### Verification
+
+Initial refresh, validation and the pre-change 656-route metadata gate
+passed. Both exact M3 removal/retention regressions failed on behavior
+before the fix and passed afterward; the builtin snapshot was regenerated.
+Final `cargo test --locked models_dev` passed 72 library and 13 selected
+integration cases. The catalog suite passed 195 with one ignored;
+discovery passed 36, the full adapter suite passed 11, and context-budget
+integration passed one. These command counts overlap, not a unique total.
+
+Artifact/supplement validation (1,074/55 models), the 654-route metadata
+gate, strict complete-object delta review, `cargo fmt --all -- --check`,
+warning-free `cargo check --locked --all-targets`, and all ten frozen-file
+hashes passed. Independent read-only review found no confirmed P1/P2;
+it separately checked both shutdown notices, retained route boundaries,
+raw evidence hashes and the full generated delta. No paid inference or
+account-specific entitlement validation was performed.
+
 ## 2026-11-02 incremental review
 
 This cycle starts from main `bc586ecd`; public evidence was sampled on
