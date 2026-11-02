@@ -430,7 +430,7 @@ jobs:
           name: ios-ui-sweep-telemetry
           # Only the telemetry: the rest of the evidence directory holds the
           # ephemeral pairing payload and must stay on the runner.
-          path: ${{ runner.temp }}/holon-ios-ui-evidence/ui-sweep-telemetry.json
+          path: ${{ runner.temp }}/holon-ios-ui-evidence/evidence/ui-sweep-telemetry.json
           if-no-files-found: ignore
       - name: Preserve application test results
         if: always() && (needs.changes.outputs.full_sweep == 'true' || needs.changes.outputs.ios_app == 'true')
@@ -589,7 +589,7 @@ jobs:
   macos-app:
     name: Build macOS menu app
     runs-on: macos-latest
-    timeout-minutes: 45
+    timeout-minutes: 90
     needs: changes
     # Main pushes run this only for macOS-specific changes; rust-tier main
     # pushes skip it (PRs and nightly/dispatch full sweeps cover it).

@@ -495,6 +495,22 @@ class UIFixtureSetupContracts(unittest.TestCase):
         self.assertIn("UI sweep telemetry:", printed)
         self.assertIn("testAuthenticatedNativeWorkflow", printed)
 
+    def test_ci_uploads_the_telemetry_written_by_the_fixture(self):
+        workflow = (ROOT / ".github/workflows/ci.yml").read_text()
+        step = workflow.split("- name: Preserve the UI sweep telemetry", 1)[1]
+        step = step.split("\n      - name:", 1)[0]
+        upload = re.search(r"^\s+path:\s*(.+)$", step, re.MULTILINE)
+        self.assertIsNotNone(upload)
+        with tempfile.TemporaryDirectory() as temporary:
+            evidence = Path(temporary) / "holon-ios-ui-evidence" / "evidence"
+            evidence.mkdir(parents=True)
+            record = {"cases": 1, "attempts": [{"outcome": "failed"}]}
+            fixture_helpers()["write_fixture_json"](evidence, "ui-sweep-telemetry.json", record)
+            path = Path(upload.group(1).replace("${{ runner.temp }}", temporary))
+            self.assertEqual(path, evidence / "ui-sweep-telemetry.json",
+                             "Upload only the telemetry file, not the private fixture")
+            self.assertEqual(json.loads(path.read_text()), record)
+
     def test_app_side_reset_failure_reaches_the_host(self):
         """A reset that failed in the app process must still fail the case.
 
