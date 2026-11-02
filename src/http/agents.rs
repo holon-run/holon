@@ -612,23 +612,34 @@ pub async fn list_agent_entries(
             deadline,
             budget,
             move |context| async move {
+                let runtime = tokio::runtime::Handle::current();
                 context
                     .blocking(move |scope| {
-                        let db = host.runtime_db().with_read_scope(scope);
-                        let projection_started = std::time::Instant::now();
-                        let agents = host
-                            .list_agent_entries_for_parent_scoped(query.parent.as_deref(), &db)
-                            .map_err(error_response)
-                            .map_err(ProjectionFailure::from)?;
-                        crate::diagnostics::record_projection_agents_list(
-                            projection_started.elapsed(),
-                        );
-                        let bytes = serialize_json("/agents/list", &agents)
-                            .map_err(ProjectionFailure::from)?;
-                        db.check_read_scope()
-                            .map_err(error_response)
-                            .map_err(ProjectionFailure::from)?;
-                        Ok(bytes)
+                        let db = host.runtime_db().with_read_scope(scope.clone());
+                        // Keep nested storage reads on this registered worker;
+                        // owner waits use the same build's cancellation/deadline.
+                        crate::runtime_db::read_block::with_scope(scope, || {
+                            let projection_started = std::time::Instant::now();
+                            let agents =
+                                runtime
+                                    .block_on(host.list_agent_entries_for_parent_in(
+                                        query.parent.as_deref(),
+                                        &db,
+                                    ))
+                                    .map_err(error_response)
+                                    .map_err(ProjectionFailure::from)?;
+                            crate::diagnostics::record_projection_agents_list(
+                                projection_started.elapsed(),
+                            );
+                            let bytes = agents
+                                .into_json_bytes()
+                                .map_err(error_response)
+                                .map_err(ProjectionFailure::from)?;
+                            db.check_read_scope()
+                                .map_err(error_response)
+                                .map_err(ProjectionFailure::from)?;
+                            Ok(bytes)
+                        })
                     })
                     .await?
             },

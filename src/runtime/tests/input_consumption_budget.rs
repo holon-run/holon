@@ -74,6 +74,7 @@ async fn start(runtime: &RuntimeHandle) -> MessageEnvelope {
         .unwrap();
     runtime
         .record_incoming_transcript_entry(&scheduled.message)
+        .await
         .unwrap();
     scheduled.message
 }
@@ -91,6 +92,22 @@ async fn build(
         .skills_runtime_view_for_state(&state, &identity)
         .await
         .unwrap();
+    let scope = crate::runtime::resident_input_evidence::InputEvidenceScope {
+        agent_id: state.id.clone(),
+        identity_incarnation: runtime.inner.identity_incarnation,
+    };
+    let material = crate::diagnostics::resource_io::ResourceReadMaterial::new(
+        &runtime.inner.input_evidence_budget,
+        &scope,
+    )
+    .unwrap();
+    let resources = runtime
+        .capture_context_resources(
+            &state,
+            &runtime.inner.config_snapshot.load_full(),
+            &material,
+        )
+        .unwrap();
     build_effective_prompt_with_apply_patch_surface(
         runtime.storage(),
         &state,
@@ -100,8 +117,8 @@ async fn build(
         &execution.execution_root,
         runtime.agent_home().as_path(),
         &identity,
-        runtime.loaded_agents_md_for_state(&state).unwrap(),
-        runtime.loaded_agent_memory_for_state().unwrap(),
+        resources.body().guidance.clone(),
+        resources.body().memory.clone(),
         &skills,
         &provider.prompt_tool_specs(&tools),
         surface,
@@ -400,8 +417,10 @@ struct InputProjectionProvider {
 #[async_trait]
 impl AgentProvider for InputProjectionProvider {
     async fn complete_turn(&self, request: ProviderTurnRequest) -> Result<ProviderTurnResponse> {
+        let material = request.material.clone();
         self.requests.lock().await.push(request);
         Ok(ProviderTurnResponse {
+            material,
             blocks: vec![ModelBlock::Text {
                 text: "Evidence received.".into(),
             }],
@@ -469,14 +488,38 @@ async fn context_admission_compact_survives_restart_and_reaches_provider_with_or
             .expect("the selected reference must resolve through authorized memory retrieval");
     assert!(original.content.contains(&body));
     finish_claimed_test_run(&runtime).await;
-    let report = runtime
-        .inner
-        .runtime_db
-        .recover_interrupted_runtime_state_at_startup()
+    let database = runtime.runtime_db().clone();
+    let ledger = runtime.inner.input_evidence_budget.clone();
+    runtime
+        .retire_instance_locally("fixture_daemon_restart")
+        .await;
+    runtime.join_retiring_resources().await.unwrap();
+    drop(runtime);
+    // The pre-activation actor owns Attempt/Outcome writes and their source
+    // projection together; the unscoped repair leaves qualified metadata stale.
+    let report = {
+        let path = home.path().join(".holon/state/runtime-maintenance.lock");
+        let lease = crate::runtime_db::RuntimeDbLock::try_lock(&path).unwrap();
+        let handoff = tokio::sync::Mutex::new(());
+        let held = handoff.try_lock().unwrap();
+        let capability = crate::runtime_db::input_evidence_snapshot::legacy_recovery::ExclusiveStartupInputRecovery::for_pre_activation_host(
+            &database, &lease, &path, &held,
+        )
         .unwrap();
+        let scopes = database
+            .startup_input_recovery_scopes(&["budget-target".into()])
+            .unwrap();
+        database
+            .recover_interrupted_runtime_state_at_startup_with_tasks_in_scopes(
+                &scopes,
+                &capability,
+                &ledger,
+            )
+            .unwrap()
+            .report
+    };
     assert_eq!(report.interrupted_execution_attempts, 1);
     assert_eq!(report.interrupted_turns, 1);
-    drop(runtime);
 
     let provider = InputProjectionProvider {
         requests: Arc::new(Mutex::new(Vec::new())),

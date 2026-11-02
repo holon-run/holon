@@ -129,13 +129,15 @@ async fn collect_sse_until_eof(response: reqwest::Response) -> Result<Vec<Parsed
     Ok(events)
 }
 
-fn append_lag_events(runtime: &holon::runtime::RuntimeHandle, count: usize) -> Result<()> {
+async fn append_lag_events(runtime: &holon::runtime::RuntimeHandle, count: usize) -> Result<()> {
     let padding = "x".repeat(64 * 1024);
     for n in 0..count {
-        runtime.storage().append_event(&AuditEvent::legacy(
-            "lag_test_event",
-            serde_json::json!({ "n": n, "padding": padding }),
-        ))?;
+        runtime
+            .append_audit_event_for_fixture(AuditEvent::legacy(
+                "lag_test_event",
+                serde_json::json!({ "n": n, "padding": padding }),
+            ))
+            .await?;
     }
     Ok(())
 }
@@ -162,14 +164,15 @@ async fn assert_lagged_stream_recovers(
         "the lagged stream should close before delivering every event"
     );
 
-    let page: serde_json::Value = client
+    let response = client
         .get(format!(
             "{base}/api/agents/default/events?after_seq={last_contiguous_seq}&limit=512&order=asc"
         ))
         .send()
-        .await?
-        .json()
         .await?;
+    let status = response.status();
+    let page: serde_json::Value = response.json().await?;
+    assert!(status.is_success(), "lag recovery HTTP {status}: {page}");
     let recovered = page["events"]
         .as_array()
         .expect("events")
@@ -189,18 +192,24 @@ pub async fn events_route_supports_cursor_pagination() -> Result<()> {
     let runtime = host.default_runtime().await?;
     let client = reqwest::Client::new();
 
-    runtime.storage().append_event(&AuditEvent::legacy(
-        "test_event",
-        serde_json::json!({ "n": 1 }),
-    ))?;
-    runtime.storage().append_event(&AuditEvent::legacy(
-        "test_event",
-        serde_json::json!({ "n": 2 }),
-    ))?;
-    runtime.storage().append_event(&AuditEvent::legacy(
-        "test_event",
-        serde_json::json!({ "n": 3 }),
-    ))?;
+    runtime
+        .append_audit_event_for_fixture(AuditEvent::legacy(
+            "test_event",
+            serde_json::json!({ "n": 1 }),
+        ))
+        .await?;
+    runtime
+        .append_audit_event_for_fixture(AuditEvent::legacy(
+            "test_event",
+            serde_json::json!({ "n": 2 }),
+        ))
+        .await?;
+    runtime
+        .append_audit_event_for_fixture(AuditEvent::legacy(
+            "test_event",
+            serde_json::json!({ "n": 3 }),
+        ))
+        .await?;
     let latest: serde_json::Value = client
         .get(format!(
             "{base}/api/agents/default/events?limit=2&order=desc"
@@ -209,7 +218,9 @@ pub async fn events_route_supports_cursor_pagination() -> Result<()> {
         .await?
         .json()
         .await?;
-    let latest_events = latest["events"].as_array().expect("events");
+    let latest_events = latest["events"]
+        .as_array()
+        .unwrap_or_else(|| panic!("events page response: {latest}"));
     assert_eq!(latest_events.len(), 2);
     let latest_newest = latest_events[0]["event_seq"].as_u64().expect("newest seq");
     let latest_oldest = latest_events[1]["event_seq"].as_u64().expect("oldest seq");
@@ -309,6 +320,33 @@ pub async fn events_route_supports_cursor_pagination() -> Result<()> {
         empty_cursor_events[1]["event_seq"]
     );
 
+    server.abort();
+    Ok(())
+}
+
+pub async fn events_route_rejects_raw_event_without_original_writer() -> Result<()> {
+    let (host, base, server) = spawn_server().await?;
+    let runtime = host.default_runtime().await?;
+    runtime.storage().append_event(&AuditEvent::legacy(
+        "raw_unqualified_event",
+        serde_json::json!({ "original_writer": false }),
+    ))?;
+    let response = Client::new()
+        .get(format!("{base}/api/agents/default/events"))
+        .send()
+        .await?;
+    assert_eq!(
+        response.status(),
+        reqwest::StatusCode::INTERNAL_SERVER_ERROR
+    );
+    let body: serde_json::Value = response.json().await?;
+    assert_eq!(body["code"], "runtime_error");
+    assert!(
+        body["error"]
+            .as_str()
+            .is_some_and(|error| error.contains("Current body needs original writer preparation")),
+        "raw Event must not acquire body authority through the HTTP read: {body}"
+    );
     server.abort();
     Ok(())
 }
@@ -417,10 +455,12 @@ pub async fn events_stream_receives_live_events_without_polling_replay() -> Resu
         .get(format!("{base}/api/agents/default/events/stream"))
         .send()
         .await?;
-    runtime.storage().append_event(&AuditEvent::legacy(
-        "live_test_event",
-        serde_json::json!({ "live": true }),
-    ))?;
+    runtime
+        .append_audit_event_for_fixture(AuditEvent::legacy(
+            "live_test_event",
+            serde_json::json!({ "live": true }),
+        ))
+        .await?;
 
     let event = next_sse_event_kind(&mut stream, "live_test_event").await?;
     assert_eq!(event.data["agent_id"], "default");
@@ -439,10 +479,12 @@ pub async fn global_events_stream_receives_roster_hints_without_event_payloads()
         .get(format!("{base}/api/events/stream"))
         .send()
         .await?;
-    runtime.storage().append_event(&AuditEvent::legacy(
-        "global_live_test_event",
-        serde_json::json!({ "global": true }),
-    ))?;
+    runtime
+        .append_audit_event_for_fixture(AuditEvent::legacy(
+            "global_live_test_event",
+            serde_json::json!({ "global": true }),
+        ))
+        .await?;
 
     let event = next_sse_event_kind(&mut stream, "agent_roster_hint").await?;
     assert_eq!(event.data["agent_id"], "default");
@@ -463,7 +505,7 @@ pub async fn events_stream_closes_on_lag_and_recovers_from_contiguous_cursor() -
         .get(format!("{base}/api/agents/default/events/stream"))
         .send()
         .await?;
-    append_lag_events(&runtime, 256)?;
+    append_lag_events(&runtime, 256).await?;
     assert_lagged_stream_recovers(&base, &client, stream, 256).await?;
 
     server.abort();
@@ -480,7 +522,7 @@ pub async fn global_events_stream_closes_on_lag_and_recovers_per_agent() -> Resu
         .get(format!("{base}/api/events/stream"))
         .send()
         .await?;
-    append_lag_events(&runtime, 256)?;
+    append_lag_events(&runtime, 256).await?;
     assert_lagged_stream_recovers(&base, &client, stream, 256).await?;
 
     server.abort();
@@ -563,20 +605,22 @@ pub async fn events_route_payload_includes_full_fields() -> Result<()> {
 
     let after_seq = newest_event_seq(&base, &client, None).await?;
 
-    runtime.storage().append_event(&AuditEvent::legacy(
-        "message_admitted",
-        serde_json::json!({
-            "agent_id": "default",
-            "message_id": "msg-stable",
-            "origin": { "kind": "operator" },
-            "authority_class": "operator_instruction",
-            "delivery_surface": "http_control_prompt",
-            "priority": "interject",
-            "summary": "operator prompt admitted",
-            "text_preview": "inspect status",
-            "raw_text": "debug-only prompt body"
-        }),
-    ))?;
+    runtime
+        .append_audit_event_for_fixture(AuditEvent::legacy(
+            "message_admitted",
+            serde_json::json!({
+                "agent_id": "default",
+                "message_id": "msg-stable",
+                "origin": { "kind": "operator" },
+                "authority_class": "operator_instruction",
+                "delivery_surface": "http_control_prompt",
+                "priority": "interject",
+                "summary": "operator prompt admitted",
+                "text_preview": "inspect status",
+                "raw_text": "debug-only prompt body"
+            }),
+        ))
+        .await?;
     let mut brief = BriefRecord::new(
         "default",
         BriefKind::Result,
@@ -586,22 +630,26 @@ pub async fn events_route_payload_includes_full_fields() -> Result<()> {
     );
     brief.work_item_id = Some("work-stable".into());
     let brief_id = brief.id.clone();
-    runtime.storage().append_event(&AuditEvent::legacy(
-        "brief_created",
-        serde_json::to_value(BriefCreatedAuditEvent::from_brief(&brief))?,
-    ))?;
-    runtime.storage().append_event(&AuditEvent::legacy(
-        "task_status_updated",
-        serde_json::json!({
-            "agent_id": "default",
-            "task_id": "task-stable",
-            "status": "completed",
-            "duration_ms": 123,
-            "exit_status": 0,
-            "summary": "cargo check passed",
-            "stdout": "debug-only output"
-        }),
-    ))?;
+    runtime
+        .append_audit_event_for_fixture(AuditEvent::legacy(
+            "brief_created",
+            serde_json::to_value(BriefCreatedAuditEvent::from_brief(&brief))?,
+        ))
+        .await?;
+    runtime
+        .append_audit_event_for_fixture(AuditEvent::legacy(
+            "task_status_updated",
+            serde_json::json!({
+                "agent_id": "default",
+                "task_id": "task-stable",
+                "status": "completed",
+                "duration_ms": 123,
+                "exit_status": 0,
+                "summary": "cargo check passed",
+                "stdout": "debug-only output"
+            }),
+        ))
+        .await?;
 
     let page = fetch_events_page_until(
         &client,
@@ -680,18 +728,22 @@ pub async fn events_route_max_level_filters_with_bounded_visible_pages() -> Resu
             text: "visible operator input".into(),
         },
     );
-    runtime.storage().append_event(&AuditEvent::legacy(
-        "message_enqueued",
-        serde_json::to_value(operator_message)?,
-    ))?;
+    runtime
+        .append_audit_event_for_fixture(AuditEvent::legacy(
+            "message_enqueued",
+            serde_json::to_value(operator_message)?,
+        ))
+        .await?;
     for index in 0..150 {
-        runtime.storage().append_event(&AuditEvent::legacy(
-            "callback_delivered",
-            serde_json::json!({
-                "waiting_intent_id": format!("wait-{index}"),
-                "source": "github"
-            }),
-        ))?;
+        runtime
+            .append_audit_event_for_fixture(AuditEvent::legacy(
+                "callback_delivered",
+                serde_json::json!({
+                    "waiting_intent_id": format!("wait-{index}"),
+                    "source": "github"
+                }),
+            ))
+            .await?;
     }
     let brief = BriefRecord::new(
         "default",
@@ -700,10 +752,12 @@ pub async fn events_route_max_level_filters_with_bounded_visible_pages() -> Resu
         None,
         None,
     );
-    runtime.storage().append_event(&AuditEvent::legacy(
-        "brief_created",
-        serde_json::to_value(BriefCreatedAuditEvent::from_brief(&brief))?,
-    ))?;
+    runtime
+        .append_audit_event_for_fixture(AuditEvent::legacy(
+            "brief_created",
+            serde_json::to_value(BriefCreatedAuditEvent::from_brief(&brief))?,
+        ))
+        .await?;
 
     let page = fetch_events_page_until(
         &client,
@@ -756,18 +810,20 @@ pub async fn events_stream_includes_tool_payload() -> Result<()> {
 
     let after_seq = newest_event_seq(&base, &client, None).await?;
 
-    runtime.storage().append_event(&AuditEvent::legacy(
-        "tool_executed",
-        serde_json::json!({
-            "agent_id": "default",
-            "tool_name": "ExecCommand",
-            "task_id": "task-tool",
-            "exec_command_cmd": "cargo test --lib",
-            "raw_output": "test result: ok",
-            "local_path": "/tmp/output.txt",
-            "artifact_ref": "artifact://test-output"
-        }),
-    ))?;
+    runtime
+        .append_audit_event_for_fixture(AuditEvent::legacy(
+            "tool_executed",
+            serde_json::json!({
+                "agent_id": "default",
+                "tool_name": "ExecCommand",
+                "task_id": "task-tool",
+                "exec_command_cmd": "cargo test --lib",
+                "raw_output": "test result: ok",
+                "local_path": "/tmp/output.txt",
+                "artifact_ref": "artifact://test-output"
+            }),
+        ))
+        .await?;
 
     let mut stream = client
         .get(format!(
@@ -981,33 +1037,35 @@ pub async fn events_stream_includes_assistant_round_payload() -> Result<()> {
 
     let after_seq = newest_event_seq(&base, &client, None).await?;
 
-    runtime.storage().append_event(&AuditEvent::legacy(
-        "assistant_round_recorded",
-        serde_json::json!({
-            "agent_id": "default",
-            "run_id": "run-1",
-            "turn_index": 7,
-            "round": 2,
-            "stop_reason": "tool_use",
-            "text_preview": "I will inspect the files.",
-            "text_block_count": 1,
-            "text_char_count": 25,
-            "tool_call_count": 2,
-            "tool_names": ["ExecCommand", "ReadFile"],
-            "has_text": true,
-            "has_tool_calls": true,
-            "raw_text": "full assistant text included in operator replay",
-            "provider_trace": { "detail": "debug-info" },
-            "prompt_cache_key": "internal-cache-key",
-            "context_fingerprint": "internal-context",
-            "compression_epoch": 4,
-            "provider_request_id": "internal-request",
-            "provider_message_id": "internal-message",
-            "provider_request_diagnostics": { "debug": true },
-            "provider_attempt_timeline": [{ "model": "internal" }],
-            "only_sleep_tools": true
-        }),
-    ))?;
+    runtime
+        .append_audit_event_for_fixture(AuditEvent::legacy(
+            "assistant_round_recorded",
+            serde_json::json!({
+                "agent_id": "default",
+                "run_id": "run-1",
+                "turn_index": 7,
+                "round": 2,
+                "stop_reason": "tool_use",
+                "text_preview": "I will inspect the files.",
+                "text_block_count": 1,
+                "text_char_count": 25,
+                "tool_call_count": 2,
+                "tool_names": ["ExecCommand", "ReadFile"],
+                "has_text": true,
+                "has_tool_calls": true,
+                "raw_text": "full assistant text included in operator replay",
+                "provider_trace": { "detail": "debug-info" },
+                "prompt_cache_key": "internal-cache-key",
+                "context_fingerprint": "internal-context",
+                "compression_epoch": 4,
+                "provider_request_id": "internal-request",
+                "provider_message_id": "internal-message",
+                "provider_request_diagnostics": { "debug": true },
+                "provider_attempt_timeline": [{ "model": "internal" }],
+                "only_sleep_tools": true
+            }),
+        ))
+        .await?;
 
     let mut stream = client
         .get(format!(
@@ -1089,18 +1147,20 @@ pub async fn events_stream_preserves_raw_payload_with_control_auth() -> Result<(
 
     let after_seq = newest_event_seq(&base, &client, Some(&token)).await?;
 
-    runtime.storage().append_event(&AuditEvent::legacy(
-        "workspace_used",
-        serde_json::json!({
-            "agent_id": "default",
-            "workspace_id": "ws-1",
-            "workspace_label": "holon",
-            "workspace_anchor": "/repo/holon",
-            "execution_root": "/repo/holon/worktree",
-            "projection_kind": "worktree",
-            "access_mode": "shared_read"
-        }),
-    ))?;
+    runtime
+        .append_audit_event_for_fixture(AuditEvent::legacy(
+            "workspace_used",
+            serde_json::json!({
+                "agent_id": "default",
+                "workspace_id": "ws-1",
+                "workspace_label": "holon",
+                "workspace_anchor": "/repo/holon",
+                "execution_root": "/repo/holon/worktree",
+                "projection_kind": "worktree",
+                "access_mode": "shared_read"
+            }),
+        ))
+        .await?;
 
     let mut stream = client
         .get(format!(
@@ -1130,22 +1190,24 @@ pub async fn events_page_cursor_seq_seeds_stream_resume() -> Result<()> {
     let runtime = host.default_runtime().await?;
     let client = reqwest::Client::new();
 
-    runtime.storage().append_event(&AuditEvent::legacy(
-        "assistant_round_recorded",
-        serde_json::json!({
-            "agent_id": "default",
-            "run_id": "run-state",
-            "turn_index": 3,
-            "round": 1,
-            "stop_reason": "tool_use",
-            "text_preview": null,
-            "tool_names": ["ExecCommand"],
-            "tool_call_count": 1,
-            "has_text": false,
-            "has_tool_calls": true,
-            "raw_text": "debug-only assistant body"
-        }),
-    ))?;
+    runtime
+        .append_audit_event_for_fixture(AuditEvent::legacy(
+            "assistant_round_recorded",
+            serde_json::json!({
+                "agent_id": "default",
+                "run_id": "run-state",
+                "turn_index": 3,
+                "round": 1,
+                "stop_reason": "tool_use",
+                "text_preview": null,
+                "tool_names": ["ExecCommand"],
+                "tool_call_count": 1,
+                "has_text": false,
+                "has_tool_calls": true,
+                "raw_text": "debug-only assistant body"
+            }),
+        ))
+        .await?;
 
     let page: serde_json::Value = client
         .get(format!(
@@ -1172,14 +1234,16 @@ pub async fn events_page_cursor_seq_seeds_stream_resume() -> Result<()> {
         serde_json::json!(["ExecCommand"])
     );
 
-    runtime.storage().append_event(&AuditEvent::legacy(
-        "tool_executed",
-        serde_json::json!({
-            "agent_id": "default",
-            "tool_name": "ReadFile",
-            "task_id": "task-tail"
-        }),
-    ))?;
+    runtime
+        .append_audit_event_for_fixture(AuditEvent::legacy(
+            "tool_executed",
+            serde_json::json!({
+                "agent_id": "default",
+                "tool_name": "ReadFile",
+                "task_id": "task-tail"
+            }),
+        ))
+        .await?;
 
     let mut stream = client
         .get(format!(
@@ -1348,17 +1412,23 @@ pub async fn events_page_and_stream_emit_matching_projection_effects() -> Result
     // scheduler diagnostic, a display-invalidating brief, and a historical
     // contract-version-2 typed brief that must still classify from the
     // registry.
-    runtime.storage().append_event(&AuditEvent::legacy(
-        "turn_started",
-        serde_json::json!({ "agent_id": "default" }),
-    ))?;
-    runtime.storage().append_event(&typed_event_from_registry(
-        holon::runtime_event::RuntimeEventKind::SchedulerDiagnostic,
-    )?)?;
+    runtime
+        .append_audit_event_for_fixture(AuditEvent::legacy(
+            "turn_started",
+            serde_json::json!({ "agent_id": "default" }),
+        ))
+        .await?;
+    runtime
+        .append_audit_event_for_fixture(typed_event_from_registry(
+            holon::runtime_event::RuntimeEventKind::SchedulerDiagnostic,
+        )?)
+        .await?;
     let mut historical =
         typed_event_from_registry(holon::runtime_event::RuntimeEventKind::BriefCreated)?;
     historical.contract_version = 2;
-    runtime.storage().append_event(&historical)?;
+    runtime
+        .append_audit_event_for_fixture(historical.clone())
+        .await?;
 
     let page: serde_json::Value = client
         .get(format!(
@@ -1455,10 +1525,12 @@ pub async fn projection_effect_capability_gates_envelope_emission() -> Result<()
 
     // Before any unclassifiable event lands, the capability is advertised
     // and envelopes carry the field.
-    runtime.storage().append_event(&AuditEvent::legacy(
-        "turn_started",
-        serde_json::json!({ "agent_id": "default" }),
-    ))?;
+    runtime
+        .append_audit_event_for_fixture(AuditEvent::legacy(
+            "turn_started",
+            serde_json::json!({ "agent_id": "default" }),
+        ))
+        .await?;
     let page: serde_json::Value = client
         .get(format!("{base}/api/agents/default/events?order=asc"))
         .send()
@@ -1475,7 +1547,9 @@ pub async fn projection_effect_capability_gates_envelope_emission() -> Result<()
     let mut future = AuditEvent::legacy("future_kind", serde_json::json!({ "opaque": true }));
     future.contract_version = holon::runtime_event::RUNTIME_EVENT_CONTRACT_VERSION;
     future.payload_schema = "holon.runtime_event.future".into();
-    runtime.storage().append_event(&future)?;
+    runtime
+        .append_audit_event_for_fixture(future.clone())
+        .await?;
 
     host.shutdown().await?;
     server.abort();
@@ -1534,16 +1608,18 @@ pub async fn filtered_event_page_does_not_claim_raw_continuity() -> Result<()> {
             text: "visible operator input".into(),
         },
     );
-    runtime.storage().append_event(&AuditEvent::legacy(
-        "message_enqueued",
-        serde_json::to_value(operator_message)?,
-    ))?;
+    runtime
+        .append_audit_event_for_fixture(AuditEvent::legacy(
+            "message_enqueued",
+            serde_json::to_value(operator_message)?,
+        ))
+        .await?;
     // Non-matching raw events both below and above the visible window.
     for index in 0..5 {
-        runtime.storage().append_event(&AuditEvent::legacy(
+        runtime.append_audit_event_for_fixture(AuditEvent::legacy(
             "callback_delivered",
             serde_json::json!({ "waiting_intent_id": format!("wait-{index}"), "source": "github" }),
-        ))?;
+        )).await?;
     }
 
     let page: serde_json::Value = client

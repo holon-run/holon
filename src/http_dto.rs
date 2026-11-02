@@ -25,14 +25,19 @@ use crate::{
 };
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq)]
-pub struct AgentStateSnapshotDto {
+#[serde(bound(deserialize = "Timer: Deserialize<'de>"))]
+#[schemars(
+    rename = "AgentStateSnapshotDto",
+    bound = "Timer: JsonSchema + Serialize"
+)]
+pub struct AgentStateSnapshotDto<Timer = TimerRecord> {
     pub agent: SlimAgentDto,
     pub session: StateSessionSnapshotDto,
     pub tasks: Vec<SlimTaskDto>,
     #[serde(default)]
     pub waits: Vec<SlimWaitDto>,
     #[serde(default)]
-    pub timers: Vec<TimerRecord>,
+    pub timers: Vec<Timer>,
     #[serde(default)]
     pub work_items: Vec<SlimWorkItemDto>,
     #[serde(default)]
@@ -659,6 +664,8 @@ impl From<SlimChildObservabilityDto> for ChildAgentObservabilitySnapshot {
             work_summary: observability.work_summary,
             last_progress_brief: observability.last_progress_brief,
             last_result_brief: observability.last_result_brief,
+            _read_material: None,
+            _source_material: None,
         }
     }
 }

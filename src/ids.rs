@@ -153,6 +153,24 @@ pub(crate) fn visibility_scope_id(
     authority_entitlement: &str,
     policy_generation: u64,
 ) -> String {
+    let scope = visibility_scope_id_bytes(
+        runtime_id,
+        authority_principal,
+        authority_entitlement,
+        policy_generation,
+    );
+    std::str::from_utf8(&scope)
+        .expect("visibility scope encoding is ASCII")
+        .to_owned()
+}
+
+/// Fixed-size encoding for synchronous verification without an owned String.
+pub(crate) fn visibility_scope_id_bytes(
+    runtime_id: &str,
+    authority_principal: &str,
+    authority_entitlement: &str,
+    policy_generation: u64,
+) -> [u8; 40] {
     let mut hasher = Sha256::new();
     hasher.update(b"holon.visibility-scope.v1\x00");
     hasher.update(runtime_id.as_bytes());
@@ -161,9 +179,27 @@ pub(crate) fn visibility_scope_id(
     hasher.update(b"\x00");
     hasher.update(authority_entitlement.as_bytes());
     hasher.update(b"\x00");
-    hasher.update(policy_generation.to_string().as_bytes());
+    let mut decimal = [0u8; 20];
+    let mut start = decimal.len();
+    let mut remaining = policy_generation;
+    loop {
+        start -= 1;
+        decimal[start] = b'0' + (remaining % 10) as u8;
+        remaining /= 10;
+        if remaining == 0 {
+            break;
+        }
+    }
+    hasher.update(&decimal[start..]);
     let digest = hasher.finalize();
-    format!("vscope1_{}", &hex(&digest[..16]))
+    let mut scope = [0u8; 40];
+    scope[..8].copy_from_slice(b"vscope1_");
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    for (index, byte) in digest[..16].iter().enumerate() {
+        scope[8 + index * 2] = HEX[(byte >> 4) as usize];
+        scope[9 + index * 2] = HEX[(byte & 15) as usize];
+    }
+    scope
 }
 
 fn hex(bytes: &[u8]) -> String {

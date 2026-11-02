@@ -230,14 +230,14 @@ pub fn build_baseline_prompt(spec: &BaselineCaseSpec, budget: usize) -> Effectiv
         agent_home: PathBuf::from("/tmp/baseline-agent"),
         identity: baseline_identity(),
         execution: baseline_execution(),
-        loaded_agents_md: LoadedAgentsMd::default(),
+        loaded_agents_md: LoadedAgentsMd::default().into(),
         cache_identity: PromptCacheIdentity {
             agent_id: "baseline-agent".into(),
             prompt_cache_key: "baseline".into(),
             context_fingerprint: "baseline-fingerprint".into(),
             compression_epoch: 0,
         },
-        loaded_agent_memory: LoadedAgentMemory::default(),
+        loaded_agent_memory: LoadedAgentMemory::default().into(),
         system_sections: vec![system_section],
         context_sections,
         rendered_system_prompt: "Baseline system prompt for projection-eval.".into(),
@@ -248,6 +248,10 @@ pub fn build_baseline_prompt(spec: &BaselineCaseSpec, budget: usize) -> Effectiv
         projection_evidence,
         context_plan_evidence: plan_evidence,
         recent_turns_reprojection: None,
+        frozen_history_policy: crate::context::ContextHistoryPreparation::default(),
+        frozen_projection_budget: None,
+        frozen_recent_message_limit: None,
+        _resource_read_material: None,
     }
 }
 

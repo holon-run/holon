@@ -3,8 +3,8 @@ use super::*;
 use crate::ingress::WakeHint;
 use crate::runtime_error::RuntimeError;
 use crate::types::{
-    WaitConditionKind, WaitConditionRecord, WaitConditionStatus, WaitConditionSummary, WakeSource,
-    WorkItemRecord, WorkItemState,
+    WaitConditionKind, WaitConditionRecord, WaitConditionStatus, WakeSource, WorkItemRecord,
+    WorkItemState,
 };
 use chrono::{DateTime, Utc};
 
@@ -204,6 +204,7 @@ pub(crate) struct PreparedWaitForSettlement {
     pub(crate) tool_execution: Option<crate::types::ToolExecutionRecord>,
     pub(crate) brief: Option<crate::types::BriefRecord>,
     pub(crate) brief_publication_scope: Option<WaitForBriefPublicationScope>,
+    _scheduling_material: Vec<Arc<super::input_evidence_budget::BudgetViewGuard>>,
 }
 
 pub(crate) enum PrepareWaitForOutcome {
@@ -240,11 +241,13 @@ impl RuntimeHandle {
     pub(super) fn wait_resolution_transition_for_message(
         &self,
         message: &MessageEnvelope,
+        work: &super::resident_work::CapturedWork,
     ) -> Result<Option<crate::runtime_db::transitions::QueueWaitTransition>> {
-        let unresolved = self
-            .inner
-            .storage
-            .raw_unresolved_wait_conditions_for_agent(&message.agent_id)?;
+        anyhow::ensure!(
+            work.scope.agent_id == message.agent_id,
+            "Wait resolution Work scope differs"
+        );
+        let unresolved = work.unresolved_wait_conditions()?;
         let Some(condition) = unresolved.into_iter().find(|condition| {
             condition.status == WaitConditionStatus::Triggered
                 && condition.trigger_message_id() == Some(message.id.as_str())
@@ -252,7 +255,7 @@ impl RuntimeHandle {
             return Ok(None);
         };
         let now = self.now();
-        let mut resolved = condition.clone();
+        let mut resolved = (*condition).clone();
         resolved.status = WaitConditionStatus::Resolved;
         resolved.updated_at = now;
         resolved.resolved_at = Some(now);
@@ -260,7 +263,7 @@ impl RuntimeHandle {
         let mut work_item = None;
         let mut index_changes = Vec::new();
         if let Some(work_item_id) = resolved.work_item_id.as_deref() {
-            if let Some(existing) = self.inner.runtime_db.work_items().latest(work_item_id)? {
+            if let Some(existing) = work.work_item(work_item_id)? {
                 // The blocker is cleared only when this wait derived it
                 // (`blocked_by_wait_id`), never by display-text equality: a
                 // same-text independent blocker stays authoritative together
@@ -386,39 +389,47 @@ impl RuntimeHandle {
     ) -> Result<WaitForRegistrationOutcome> {
         let _admission = self.execution_admission_lease()?;
         for attempt in 0..3 {
-            match self
-                .prepare_wait_for_outcome(
+            let mut mutation = self.begin_mutation().await?;
+            match mutation
+                .prepare_wait_for_outcome_with_id(
                     agent_id,
                     work_item_id.clone(),
                     wake,
                     resource.clone(),
                     reason.clone(),
                     recheck_after_ms,
+                    None,
                 )
                 .await?
             {
                 PrepareWaitForOutcome::Immediate(outcome) => return Ok(outcome),
                 PrepareWaitForOutcome::Prepared(prepared) => {
-                    match self
-                        .inner
-                        .runtime_db
-                        .transitions()
-                        .commit_wait_with_execution_protocol_and_task_expectation(
-                            &prepared.command,
-                            &prepared.execution_protocol,
-                            prepared.expected_task.as_ref(),
-                        ) {
+                    let operation_id = prepared
+                        .command
+                        .audit_events
+                        .first()
+                        .map(|event| event.id.clone())
+                        .unwrap_or_else(crate::ids::audit_event_id);
+                    let commit_result = mutation
+                        .commit_wait_transition(
+                            operation_id,
+                            prepared.command.clone(),
+                            prepared.execution_protocol.clone(),
+                            prepared.expected_task.clone(),
+                        )
+                        .await;
+                    drop(mutation);
+                    match commit_result {
                         Ok(commit) => {
                             self.apply_transition_commit(commit).await;
                             return Ok(prepared.outcome());
                         }
                         Err(error)
                             if attempt + 1 < 3
-                                && error
-                                    .downcast_ref::<
-                                        crate::runtime_db::RuntimeStateTransitionConflict,
-                                    >()
-                                    .is_some_and(|conflict| conflict.retryable()) =>
+                                && crate::runtime_db::retryable_state_transition_conflict(
+                                    &error,
+                                )
+                                .is_some() =>
                         {
                             continue;
                         }
@@ -455,7 +466,7 @@ impl RuntimeHandle {
     pub(super) fn prepare_wait_for_outcome_with_id<'a>(
         &'a self,
         agent_id: &'a str,
-        mut work_item_id: Option<String>,
+        work_item_id: Option<String>,
         wake: WaitForWakeKind,
         resource: Option<String>,
         reason: String,
@@ -464,370 +475,347 @@ impl RuntimeHandle {
     ) -> std::pin::Pin<
         Box<impl std::future::Future<Output = Result<PrepareWaitForOutcome>> + Send + 'a>,
     > {
-        // Keep preparation and terminal settlement frames out of wait callers.
         Box::pin(async move {
-            let runtime_agent_id = self.agent_id().await?;
-            if agent_id != runtime_agent_id {
-                return Err(anyhow!("wait_for agent mismatch: {}", agent_id));
-            }
+            let mut mutation = self.begin_mutation().await?;
+            mutation
+                .prepare_wait_for_outcome_with_id(
+                    agent_id,
+                    work_item_id,
+                    wake,
+                    resource,
+                    reason,
+                    recheck_after_ms,
+                    condition_id,
+                )
+                .await
+        })
+    }
 
-            let mut expected_task = None;
-            if wake == WaitForWakeKind::TaskResult {
-                let task_id = wait_resource_required(wake, resource.clone())?;
-                let task = self.task_record(&task_id).await?.ok_or_else(|| {
+    pub(in crate::runtime) async fn prepare_wait_for_outcome_from_owned_read(
+        &self,
+        mutation: &mut super::state_mutation::RuntimeMutation,
+        agent_id: &str,
+        mut work_item_id: Option<String>,
+        wake: WaitForWakeKind,
+        resource: Option<String>,
+        reason: String,
+        recheck_after_ms: Option<u64>,
+        condition_id: Option<String>,
+        scheduling: Option<super::state_mutation::WaitSchedulingRead>,
+    ) -> Result<PrepareWaitForOutcome> {
+        let base_state = mutation.state.clone();
+        let runtime_agent_id = base_state.id.as_str();
+        if agent_id != runtime_agent_id {
+            return Err(anyhow!("wait_for agent mismatch: {}", agent_id));
+        }
+
+        let mut expected_task = None;
+        if wake == WaitForWakeKind::TaskResult {
+            let task_id = wait_resource_required(wake, resource.clone())?;
+            let task = self
+                .inner
+                .runtime_db
+                .tasks()
+                .latest_async(&task_id)
+                .await?
+                .ok_or_else(|| {
                     RuntimeError::not_found(
                         "task_not_found",
                         format!("wait_for task does not exist: {task_id}"),
                     )
                     .with_safe_context("task_id", &task_id)
                 })?;
-                // #3124: the task's captured owner never changes and never
-                // restricts who may wait; an explicit waiter (resolved by the
-                // caller, binding-first) wins. With no explicit waiter, keep the
-                // legacy task-owner attribution so a conversation-scoped wait
-                // still hands off to the WorkItem that owns the task.
-                self.validate_wait_for_task_access(agent_id, &task)?;
-                if work_item_id.is_none() {
-                    work_item_id = task.work_item_id.clone();
-                }
-                if task_state_reducer::is_terminal_task_status(&task.status) {
-                    return self
-                        .prepare_terminal_task_result(task, work_item_id, reason, condition_id)
-                        .await;
-                }
-                expected_task = Some(task_expectation(&task));
+            // #3124: the task's captured owner never changes and never
+            // restricts who may wait; an explicit waiter (resolved by the
+            // caller, binding-first) wins. With no explicit waiter, keep the
+            // legacy task-owner attribution so a conversation-scoped wait
+            // still hands off to the WorkItem that owns the task.
+            self.validate_wait_for_task_access(agent_id, &task)?;
+            if work_item_id.is_none() {
+                work_item_id = task.work_item_id.clone();
             }
-
-            let now = self.now();
-            let mut pending_timer_wake = None;
-            let timer_wake_at = if wake == WaitForWakeKind::Timer {
-                let timer_id = wait_resource_required(wake, resource.clone())?;
-                let storage = self.inner.storage.clone();
-                let read_timer_id = timer_id.clone();
-                let timer = tokio::task::spawn_blocking(move || {
-                    storage.latest_timer_record(&read_timer_id)
-                })
-                .await??
-                .ok_or_else(|| {
-                    RuntimeError::not_found("timer_not_found", "wait_for timer does not exist")
-                })?;
-                if timer.agent_id != agent_id {
-                    return Err(RuntimeError::policy(
-                        "timer_agent_mismatch",
-                        "wait_for timer is not owned by this agent",
+            if task_state_reducer::is_terminal_task_status(&task.status) {
+                return self
+                    .prepare_terminal_task_result(
+                        mutation,
+                        task,
+                        work_item_id,
+                        reason,
+                        condition_id,
                     )
-                    .into());
-                }
-                match timer.status {
-                    TimerStatus::Active => Some(timer.next_fire_at.ok_or_else(|| {
-                        RuntimeError::validation(
-                            "timer_invalid_state",
-                            "wait_for timer has no next fire time",
-                        )
-                    })?),
-                    TimerStatus::Completed => {
-                        let db = self.inner.runtime_db.clone();
-                        let timer_wake = tokio::task::spawn_blocking(move || {
-                            db.timers().pending_wake(&timer_id)
-                        })
-                        .await??
-                        .ok_or_else(|| {
-                            RuntimeError::validation(
-                                "timer_wake_unavailable",
-                                "wait_for timer wake is unavailable",
-                            )
-                        })?;
-                        let wake_at = timer_wake.created_at;
-                        pending_timer_wake = Some(timer_wake);
-                        Some(wake_at)
-                    }
-                    TimerStatus::Cancelled => {
-                        return Err(RuntimeError::validation(
-                            "timer_cancelled",
-                            "wait_for timer is cancelled",
-                        )
-                        .into())
-                    }
-                }
+                    .await;
+            }
+            expected_task = Some(task_expectation(&task));
+        }
+
+        let now = self.now();
+        anyhow::ensure!(
+            scheduling.is_some()
+                == matches!(wake, WaitForWakeKind::Timer | WaitForWakeKind::External),
+            "Wait Scheduling read differs from its original wake family"
+        );
+        let (timer_wake_at, pending_timer_wake, external_trigger_id, scheduling_material) =
+            if let Some(read) = scheduling {
+                let (at, pending, trigger, material) = read.into_parts();
+                (at, pending, trigger, Some(material))
             } else {
-                None
+                (None, None, None, None)
             };
-            let external_trigger_id = if wake == WaitForWakeKind::External {
-                let db = self.inner.runtime_db.clone();
-                let agent_id = agent_id.to_owned();
-                tokio::task::spawn_blocking(move || {
-                    db.external_triggers().active_default_for_agent(&agent_id)
-                })
-                .await??
-                .map(|trigger| trigger.external_trigger_id)
-            } else {
-                None
-            };
-            let (kind, subject_ref, wake_sources) =
-                wait_condition_parts(wake, resource.clone(), timer_wake_at, external_trigger_id)?;
-            let recheck_at = recheck_after_ms.map(|delay| recheck_at_from(now, delay));
-            let mut state = self.agent_state().await?;
-            let expected_state = state.clone();
-            let current_turn_id = state.current_turn_id.clone();
-            let mut work_item = None;
-            let storage = self.inner.storage.clone();
-            let read_agent_id = agent_id.to_owned();
-            let active_waits = tokio::task::spawn_blocking(move || {
-                storage.raw_unresolved_wait_conditions_for_agent(&read_agent_id)
-            })
-            .await??;
-            let active_waits = if let Some(work_item_id) = work_item_id.as_deref() {
-                active_waits
-                    .into_iter()
-                    .filter(|record| record.work_item_id.as_deref() == Some(work_item_id))
-                    .collect::<Vec<_>>()
-            } else {
-                active_waits
-                    .into_iter()
-                    .filter(|record| record.work_item_id.is_none())
-                    .collect()
-            };
-            let replaced = replace_wait_conditions(active_waits, now);
-            let mut wait_conditions = replaced.records;
-            let cancelled_wait_condition_ids = replaced.cancelled_ids;
-            let resolved_after_trigger_wait_condition_ids = replaced.resolved_after_trigger_ids;
-            wait_conditions.reserve(1);
-            let mut work_items = Vec::new();
-            let mut audit_events = Vec::new();
-            let mut index_changes = Vec::new();
-            let mut committed_agent_state = None;
-            let mut condition = WaitConditionRecord {
-                id: condition_id.unwrap_or_else(crate::ids::wait_condition_id),
-                agent_id: agent_id.to_string(),
-                work_item_id: work_item_id.clone(),
-                status: WaitConditionStatus::Active,
-                kind,
-                source: Some("WaitFor".to_string()),
-                subject_ref,
-                waiting_for: reason.clone(),
-                wake_sources,
-                continuation: Some(serde_json::json!({
-                    "created_by": "WaitFor",
-                    "wake": wake,
-                    "resource": resource,
-                    "recheck_after_ms": recheck_after_ms,
-                    "recheck_at": recheck_at,
-                    "recovery": recheck_at.map(|_| serde_json::json!({
-                        "kind": "recoverable",
-                        "recheck_source": "WaitFor",
-                    })),
-                    "clear_blocker_on_task_result": wake == WaitForWakeKind::TaskResult,
+        let (kind, subject_ref, wake_sources) =
+            wait_condition_parts(wake, resource.clone(), timer_wake_at, external_trigger_id)?;
+        let recheck_at = recheck_after_ms.map(|delay| recheck_at_from(now, delay));
+        let mut state = base_state.clone();
+        let expected_state = state.clone();
+        let current_turn_id = state.current_turn_id.clone();
+        let mut work_item = None;
+        let active_waits = self
+            .inner
+            .runtime_db
+            .wait_conditions()
+            .unresolved_for_agent_async(agent_id)
+            .await?
+            .into_iter()
+            .filter(|record| record.work_item_id.as_deref() == work_item_id.as_deref())
+            .collect::<Vec<_>>();
+        let replaced = replace_wait_conditions(active_waits, now);
+        let mut wait_conditions = replaced.records;
+        let cancelled_wait_condition_ids = replaced.cancelled_ids;
+        let resolved_after_trigger_wait_condition_ids = replaced.resolved_after_trigger_ids;
+        wait_conditions.reserve(1);
+        let mut work_items = Vec::new();
+        let mut audit_events = Vec::new();
+        let mut index_changes = Vec::new();
+        let mut committed_agent_state = None;
+        let mut condition = WaitConditionRecord {
+            id: condition_id.unwrap_or_else(crate::ids::wait_condition_id),
+            agent_id: agent_id.to_string(),
+            work_item_id: work_item_id.clone(),
+            status: WaitConditionStatus::Active,
+            kind,
+            source: Some("WaitFor".to_string()),
+            subject_ref,
+            waiting_for: reason.clone(),
+            wake_sources,
+            continuation: Some(serde_json::json!({
+                "created_by": "WaitFor",
+                "wake": wake,
+                "resource": resource,
+                "recheck_after_ms": recheck_after_ms,
+                "recheck_at": recheck_at,
+                "recovery": recheck_at.map(|_| serde_json::json!({
+                    "kind": "recoverable",
+                    "recheck_source": "WaitFor",
                 })),
-                created_at: now,
-                updated_at: now,
-                expires_at: None,
-                resolved_at: None,
-                cancelled_at: None,
-                turn_id: current_turn_id,
-                trigger_message_id: None,
-                triggered_at: None,
-            };
-            if let Some(timer_wake) = pending_timer_wake.as_ref() {
-                condition.mark_triggered(&timer_wake.message_id, now);
-            }
-            if !cancelled_wait_condition_ids.is_empty() {
-                audit_events.push(AuditEvent::legacy(
-                    "wait_conditions_cancelled",
-                    serde_json::json!({
-                        "agent_id": agent_id,
-                        "work_item_id": work_item_id,
-                        "reason": "wait_for_replaced",
-                        "wait_condition_ids": &cancelled_wait_condition_ids,
-                    }),
-                ));
-            }
-            if !resolved_after_trigger_wait_condition_ids.is_empty() {
-                audit_events.push(AuditEvent::legacy(
-                    "wait_conditions_resolved",
-                    serde_json::json!({
-                        "agent_id": agent_id,
-                        "work_item_id": work_item_id,
-                        "reason": "wait_for_replaced_after_trigger",
-                        "wait_condition_ids": &resolved_after_trigger_wait_condition_ids,
-                    }),
-                ));
-            }
-            if let Some(work_item_id) = work_item_id.as_deref() {
-                let existing = self
-                    .validate_wait_for_work_item(agent_id, work_item_id)
-                    .await?;
-                if existing.state != WorkItemState::Open {
-                    return Err(RuntimeError::validation(
-                        "work_item_completed",
-                        format!("cannot wait on completed work item {work_item_id}"),
-                    )
-                    .with_safe_context("work_item_id", work_item_id)
-                    .into());
-                }
-                let preserve_blocker = wake == WaitForWakeKind::TaskResult
-                    && task_wait_preserves_blocker(&existing, &wait_conditions);
-                let mut updated = WorkItemRecord {
-                    revision: existing.revision + 1,
-                    blocked_by: if preserve_blocker {
-                        existing.blocked_by.clone()
-                    } else {
-                        Some(reason.clone())
-                    },
-                    blocked_by_wait_id: if preserve_blocker {
-                        existing.blocked_by_wait_id.clone()
-                    } else {
-                        Some(condition.id.clone())
-                    },
-                    recheck_at: if preserve_blocker {
-                        existing.recheck_at
-                    } else {
-                        recheck_at
-                    },
-                    recheck_consumed_at: if preserve_blocker {
-                        existing.recheck_consumed_at
-                    } else {
-                        None
-                    },
-                    updated_at: now,
-                    ..existing.clone()
-                };
-                let plan_artifact_changed = crate::work_item_plan::refresh_plan_artifact_metadata(
-                    self.agent_home().as_path(),
-                    &mut updated,
-                )?;
-                if plan_artifact_changed {
-                    if let Some(event) = self.work_item_plan_artifact_refreshed_event(&updated) {
-                        audit_events.push(event);
-                    }
-                }
-                let mut projection_waits = wait_conditions
-                    .iter()
-                    .filter(|record| record.status == WaitConditionStatus::Active)
-                    .cloned()
-                    .collect::<Vec<_>>();
-                projection_waits.push(condition.clone());
-                let readiness = crate::work_item_scheduling::readiness_from_facts(
-                    &updated,
-                    false,
-                    &projection_waits,
-                );
-                audit_events.push(self.work_item_written_event_with_readiness(
-                    "wait_for_blocked",
-                    &updated,
-                    readiness,
-                    Value::Null,
-                ));
-                index_changes.extend(self.inner.storage.index_changes_for_work_item(&updated)?);
-                work_items.push(crate::runtime_db::transitions::WorkItemMutation::Update {
-                    record: updated.clone(),
-                    expected_revision: existing.revision,
-                });
-                if state.current_turn_work_item_id.as_deref() == Some(updated.id.as_str()) {
-                    state.current_turn_work_item_id = None;
-                    audit_events.push(AuditEvent::legacy(
-                        "work_item_turn_binding_released",
-                        serde_json::json!({
-                            "agent_id": agent_id,
-                            "work_item_id": updated.id.as_str(),
-                            "reason": "work_item_waiting",
-                            "readiness": readiness,
-                            "revision": updated.revision,
-                        }),
-                    ));
-                    committed_agent_state = Some(state.clone());
-                }
-                if wake == WaitForWakeKind::OperatorInput
-                    && state.current_work_item_id.as_deref() == Some(updated.id.as_str())
-                {
-                    state.current_work_item_id = None;
-                    audit_events.push(AuditEvent::legacy(
-                        "work_item_focus_released",
-                        serde_json::json!({
-                            "agent_id": agent_id,
-                            "work_item_id": updated.id.as_str(),
-                            "reason": "operator_input_wait",
-                            "readiness": readiness,
-                            "revision": updated.revision,
-                        }),
-                    ));
-                    committed_agent_state = Some(state.clone());
-                }
-                work_item = Some(updated);
-            }
-
-            wait_conditions.push(condition.clone());
-            audit_events.extend(
-                self.inner
-                    .storage
-                    .wait_condition_auxiliary_events(&condition),
-            );
+                "clear_blocker_on_task_result": wake == WaitForWakeKind::TaskResult,
+            })),
+            created_at: now,
+            updated_at: now,
+            expires_at: None,
+            resolved_at: None,
+            cancelled_at: None,
+            turn_id: current_turn_id,
+            trigger_message_id: None,
+            triggered_at: None,
+        };
+        if let Some(timer_wake) = pending_timer_wake.as_ref() {
+            condition.mark_triggered(&timer_wake.message_id, now);
+        }
+        if !cancelled_wait_condition_ids.is_empty() {
             audit_events.push(AuditEvent::legacy(
-                "wait_condition_registered",
+                "wait_conditions_cancelled",
                 serde_json::json!({
                     "agent_id": agent_id,
                     "work_item_id": work_item_id,
-                    "wait_condition_id": condition.id,
-                    "source": "WaitFor",
-                    "continuation": WaitForContinuation::YieldAndWait,
-                    "kind": &condition.kind,
-                    "subject_ref": &condition.subject_ref,
-                    "waiting_for": &condition.waiting_for,
-                    "wake_sources": &condition.wake_sources,
-                    "cancelled_wait_condition_ids": &cancelled_wait_condition_ids,
+                    "reason": "wait_for_replaced",
+                    "wait_condition_ids": &cancelled_wait_condition_ids,
                 }),
             ));
-            let execution_protocol = self
-                .execution_wait_settlement_transition(&condition, work_item.as_ref(), now)
-                .await?;
-            let command = crate::runtime_db::transitions::WaitTransitionCommand {
-                task_result_admission: None,
-                agent_id: agent_id.to_string(),
-                work_items,
-                expected_wait_conditions: Vec::new(),
-                wait_conditions,
-                timer_wake: pending_timer_wake.as_ref().map(|wake| {
-                    crate::runtime_db::transitions::TimerWakeClaim {
-                        timer_id: wake.timer_id.clone(),
-                        message_id: wake.message_id.clone(),
-                        fire_count: wake.fire_count,
-                    }
+        }
+        if !resolved_after_trigger_wait_condition_ids.is_empty() {
+            audit_events.push(AuditEvent::legacy(
+                "wait_conditions_resolved",
+                serde_json::json!({
+                    "agent_id": agent_id,
+                    "work_item_id": work_item_id,
+                    "reason": "wait_for_replaced_after_trigger",
+                    "wait_condition_ids": &resolved_after_trigger_wait_condition_ids,
                 }),
-                agent_state: committed_agent_state.map(|record| {
-                    crate::runtime_db::transitions::AgentStateMutation {
-                        expected: Some(Box::new(expected_state)),
-                        record: Box::new(record),
-                    }
-                }),
-                audit_events,
-                index_changes,
-                notify_scheduler: true,
-                fault: self.take_transition_fault(),
-            };
-            Ok(PrepareWaitForOutcome::Prepared(Box::new(
-                PreparedWaitForSettlement {
-                    delivery: crate::tool::tools::wait_for::WaitForDeliveryArg::Silent,
-                    wake,
-                    registration: WaitForRegistration {
-                        scope: if condition.work_item_id.is_some() {
-                            WaitForScope::WorkItem
-                        } else {
-                            WaitForScope::Agent
-                        },
-                        condition,
-                        recheck_after_ms,
-                        recheck_at,
-                        work_item,
-                        cancelled_wait_condition_ids,
-                    },
-                    command,
-                    execution_protocol,
-                    expected_task,
-                    tool_execution: None,
-                    brief: None,
-                    brief_publication_scope: None,
+            ));
+        }
+        if let Some(work_item_id) = work_item_id.as_deref() {
+            let existing = self.validate_owned_work_item(agent_id, work_item_id)?;
+            if existing.state != WorkItemState::Open {
+                return Err(RuntimeError::validation(
+                    "work_item_completed",
+                    format!("cannot wait on completed work item {work_item_id}"),
+                )
+                .with_safe_context("work_item_id", work_item_id)
+                .into());
+            }
+            let preserve_blocker = wake == WaitForWakeKind::TaskResult
+                && task_wait_preserves_blocker(&existing, &wait_conditions);
+            let mut updated = WorkItemRecord {
+                revision: existing.revision + 1,
+                blocked_by: if preserve_blocker {
+                    existing.blocked_by.clone()
+                } else {
+                    Some(reason.clone())
                 },
-            )))
-        })
+                blocked_by_wait_id: if preserve_blocker {
+                    existing.blocked_by_wait_id.clone()
+                } else {
+                    Some(condition.id.clone())
+                },
+                recheck_at: if preserve_blocker {
+                    existing.recheck_at
+                } else {
+                    recheck_at
+                },
+                recheck_consumed_at: if preserve_blocker {
+                    existing.recheck_consumed_at
+                } else {
+                    None
+                },
+                updated_at: now,
+                ..existing.clone()
+            };
+            let plan_artifact_changed = crate::work_item_plan::refresh_plan_artifact_metadata(
+                self.agent_home().as_path(),
+                &mut updated,
+            )?;
+            if plan_artifact_changed {
+                if let Some(event) = self.work_item_plan_artifact_refreshed_event(&updated) {
+                    audit_events.push(event);
+                }
+            }
+            let mut projection_waits = wait_conditions
+                .iter()
+                .filter(|record| record.status == WaitConditionStatus::Active)
+                .cloned()
+                .collect::<Vec<_>>();
+            projection_waits.push(condition.clone());
+            let readiness = crate::work_item_scheduling::readiness_from_facts(
+                &updated,
+                false,
+                &projection_waits,
+            );
+            audit_events.push(self.work_item_written_event_with_readiness(
+                "wait_for_blocked",
+                &updated,
+                readiness,
+                Value::Null,
+            ));
+            index_changes.extend(self.inner.storage.index_changes_for_work_item(&updated)?);
+            work_items.push(crate::runtime_db::transitions::WorkItemMutation::Update {
+                record: updated.clone(),
+                expected_revision: existing.revision,
+            });
+            if state.current_turn_work_item_id.as_deref() == Some(updated.id.as_str()) {
+                state.current_turn_work_item_id = None;
+                audit_events.push(AuditEvent::legacy(
+                    "work_item_turn_binding_released",
+                    serde_json::json!({
+                        "agent_id": agent_id,
+                        "work_item_id": updated.id.as_str(),
+                        "reason": "work_item_waiting",
+                        "readiness": readiness,
+                        "revision": updated.revision,
+                    }),
+                ));
+                committed_agent_state = Some(state.clone());
+            }
+            if wake == WaitForWakeKind::OperatorInput
+                && state.current_work_item_id.as_deref() == Some(updated.id.as_str())
+            {
+                state.current_work_item_id = None;
+                audit_events.push(AuditEvent::legacy(
+                    "work_item_focus_released",
+                    serde_json::json!({
+                        "agent_id": agent_id,
+                        "work_item_id": updated.id.as_str(),
+                        "reason": "operator_input_wait",
+                        "readiness": readiness,
+                        "revision": updated.revision,
+                    }),
+                ));
+                committed_agent_state = Some(state.clone());
+            }
+            work_item = Some(updated);
+        }
+
+        wait_conditions.push(condition.clone());
+        audit_events.extend(
+            self.inner
+                .storage
+                .wait_condition_auxiliary_events(&condition),
+        );
+        audit_events.push(AuditEvent::legacy(
+            "wait_condition_registered",
+            serde_json::json!({
+                "agent_id": agent_id,
+                "work_item_id": work_item_id,
+                "wait_condition_id": condition.id,
+                "source": "WaitFor",
+                "continuation": WaitForContinuation::YieldAndWait,
+                "kind": &condition.kind,
+                "subject_ref": &condition.subject_ref,
+                "waiting_for": &condition.waiting_for,
+                "wake_sources": &condition.wake_sources,
+                "cancelled_wait_condition_ids": &cancelled_wait_condition_ids,
+            }),
+        ));
+        let execution_protocol = self
+            .execution_wait_settlement_transition(&condition, work_item.as_ref(), now)
+            .await?;
+        let command = crate::runtime_db::transitions::WaitTransitionCommand {
+            task_result_admission: None,
+            agent_id: agent_id.to_string(),
+            work_items,
+            expected_wait_conditions: Vec::new(),
+            wait_conditions,
+            timer_wake: pending_timer_wake.as_ref().map(|wake| {
+                crate::runtime_db::transitions::TimerWakeClaim {
+                    timer_id: wake.timer_id.clone(),
+                    message_id: wake.message_id.clone(),
+                    fire_count: wake.fire_count,
+                }
+            }),
+            agent_state: committed_agent_state.map(|record| {
+                crate::runtime_db::transitions::AgentStateMutation {
+                    expected: Some(Box::new(expected_state)),
+                    record: Box::new(record),
+                }
+            }),
+            audit_events,
+            index_changes,
+            notify_scheduler: true,
+            fault: self.take_transition_fault(),
+        };
+        Ok(PrepareWaitForOutcome::Prepared(Box::new(
+            PreparedWaitForSettlement {
+                delivery: crate::tool::tools::wait_for::WaitForDeliveryArg::Silent,
+                wake,
+                registration: WaitForRegistration {
+                    scope: if condition.work_item_id.is_some() {
+                        WaitForScope::WorkItem
+                    } else {
+                        WaitForScope::Agent
+                    },
+                    condition,
+                    recheck_after_ms,
+                    recheck_at,
+                    work_item,
+                    cancelled_wait_condition_ids,
+                },
+                command,
+                execution_protocol,
+                expected_task,
+                tool_execution: None,
+                brief: None,
+                brief_publication_scope: None,
+                _scheduling_material: scheduling_material.into_iter().collect(),
+            },
+        )))
     }
 
     fn validate_wait_for_task_access(&self, agent_id: &str, task: &TaskRecord) -> Result<()> {
@@ -858,6 +846,7 @@ impl RuntimeHandle {
 
     async fn prepare_terminal_task_result(
         &self,
+        mutation: &mut super::state_mutation::RuntimeMutation,
         task: TaskRecord,
         waiter_work_item_id: Option<String>,
         reason: String,
@@ -908,13 +897,48 @@ impl RuntimeHandle {
             .with_safe_context("task_id", &task.id)
             .with_safe_context("result_message_id", &result_message_id)
         })?;
-        let db = self.inner.runtime_db.clone();
-        let read_result_message_id = result_message_id.clone();
-        let settlement_record = tokio::task::spawn_blocking(move || {
-            db.task_result_settlements()
-                .latest_for_message(&read_result_message_id)
-        })
-        .await??;
+        use super::resident_task::{TaskCaptureRequest, TaskFamily, TaskKey, TaskReadError};
+        let request = TaskCaptureRequest {
+            include_active: false,
+            include_unsettled: false,
+            terminal_limit: 0,
+            required_keys: std::collections::BTreeSet::from([TaskKey::new(
+                TaskFamily::Task,
+                &task.id,
+            )]),
+            recovery_source_ids: Default::default(),
+        };
+        mutation.prepare_owner_task_request(&request).await?;
+        let task_read = mutation.capture_task_read(&request)?;
+        let result_ids = task_read
+            .tasks
+            .coverage
+            .task_result_ids
+            .get(&task.id)
+            .ok_or_else(|| {
+                TaskReadError::NeedsPreparation(TaskKey::new(TaskFamily::Task, &task.id))
+            })?;
+        let mut settlement_record = None;
+        for id in result_ids {
+            let metadata = task_read
+                .tasks
+                .coverage
+                .result_metadata
+                .get(id)
+                .ok_or_else(|| {
+                    TaskReadError::NeedsPreparation(TaskKey::new(TaskFamily::ResultSettlement, id))
+                })?;
+            if metadata.message_id == result_message_id {
+                anyhow::ensure!(
+                    settlement_record.is_none(),
+                    "Task result Message is not unique"
+                );
+                settlement_record = Some(super::task_reads::result_record(
+                    &task_read.tasks,
+                    metadata,
+                )?);
+            }
+        }
         let Some(settlement_record) = settlement_record else {
             return Ok(PrepareWaitForOutcome::Immediate(
                 WaitForRegistrationOutcome::TaskResultUnavailable {
@@ -924,7 +948,20 @@ impl RuntimeHandle {
                 },
             ));
         };
-        let state = self.agent_state().await?;
+        let settlement_material = self.inner.input_evidence_budget.register_owned_bytes(
+            &task_read.tasks.scope,
+            super::input_evidence_budget::InputMemoryCategory::Candidate,
+            super::input_evidence_budget::OwnedBytesEstimate {
+                payload_bytes: super::input_evidence_budget::serialized_bytes(settlement_record)?
+                    .checked_mul(8)
+                    .context("Task result admission material overflow")?,
+                metadata_estimate_bytes: u64::try_from(std::mem::size_of_val(settlement_record))?
+                    .checked_mul(8)
+                    .context("Task result admission metadata overflow")?,
+            },
+        )?;
+        let settlement_record = settlement_record.clone();
+        let state = task_read.state.as_ref().clone();
         let current_activation_id = state
             .current_execution_binding
             .as_ref()
@@ -1014,28 +1051,41 @@ impl RuntimeHandle {
             result_message
         };
         let result_message_id = result_message.id.clone();
-        let storage = self.inner.storage.clone();
-        let existing_entry = tokio::task::spawn_blocking(move || storage.latest_queue_entries())
-            .await??
-            .into_iter()
-            .find(|entry| entry.message_id == result_message_id);
+        let source_material =
+            crate::diagnostics::resource_io::ResourceReadMaterial::current_or_new(
+                &self.inner.input_evidence_budget,
+                &task_read.tasks.scope,
+            )?;
+        let (existing_entry, dropped_reply_source, aborted_reply_recoverable) = self
+            .with_idle_read(Some(&state), &source_material, |read| {
+                let queue = read.queue(&result_message_id)?;
+                let dropped = if let Some(queue) = queue
+                    .as_ref()
+                    .filter(|queue| queue.status == QueueEntryStatus::Dropped)
+                {
+                    read.dropped_reply_source(&settlement_record, queue)?
+                } else {
+                    None
+                };
+                let aborted_recoverable = is_agent_reply
+                    && queue
+                        .as_ref()
+                        .is_some_and(|queue| queue.status == QueueEntryStatus::Aborted)
+                    && read.reply_source_recoverable(&settlement_record)?;
+                let queue = queue
+                    .map(|queue| {
+                        crate::diagnostics::resource_io::admit_cloned_value(&*queue)?;
+                        Ok::<_, anyhow::Error>((*queue).clone())
+                    })
+                    .transpose()?;
+                Ok((queue, dropped, aborted_recoverable))
+            })?;
         let source_message_id = result_message_id.clone();
         let source_queue = existing_entry.clone();
-        let repository = self.inner.runtime_db.task_result_settlements();
-        let dropped_reply_source = if source_queue
-            .as_ref()
-            .is_some_and(|entry| entry.status == QueueEntryStatus::Dropped)
-        {
-            repository.dropped_reply_source(&settlement_record)?
-        } else {
-            None
-        };
         let unavailable = match source_queue.as_ref().map(|entry| &entry.status) {
             Some(QueueEntryStatus::Quarantined) => true,
             Some(QueueEntryStatus::Dropped) => dropped_reply_source.is_none(),
-            Some(QueueEntryStatus::Aborted) => {
-                !is_agent_reply || !repository.reply_source_is_recoverable(&settlement_record)?
-            }
+            Some(QueueEntryStatus::Aborted) => !aborted_reply_recoverable,
             None => is_agent_reply,
             _ => false,
         };
@@ -1073,11 +1123,32 @@ impl RuntimeHandle {
             (result_message, existing_entry)
         };
         let result_message_id = result_message.id.clone();
-        let db = self.inner.runtime_db.clone();
-        let agent_id = task.agent_id.clone();
-        let agent_wait_conditions =
-            tokio::task::spawn_blocking(move || db.wait_conditions().snapshot_for_agent(&agent_id))
-                .await??;
+        let mut work_request = super::work_reads::live_work_request();
+        work_request
+            .required_trigger_message_ids
+            .extend([source_message_id.clone(), result_message_id.clone()]);
+        if let Some(id) = condition_id.as_deref() {
+            work_request
+                .mandatory_roots
+                .insert(super::resident_work::WorkKey::new(
+                    super::resident_work::WorkFamily::Wait,
+                    id,
+                ));
+        }
+        mutation.prepare_owner_work_request(&work_request).await?;
+        let work = mutation.capture_work(&work_request)?;
+        let (wait_witness, wait_material) = self.capture_task_result_wait_witness(
+            mutation,
+            &work,
+            condition_id.as_deref(),
+            &[&source_message_id, &result_message_id],
+        )?;
+        let agent_wait_conditions: Vec<_> = wait_witness
+            .live_waits
+            .iter()
+            .chain(&wait_witness.exact_waits)
+            .cloned()
+            .collect();
         let carries_result_trigger = |record: &WaitConditionRecord| {
             matches!(
                 record.status,
@@ -1169,12 +1240,7 @@ impl RuntimeHandle {
                     .insert("wait_id".into(), condition.id.clone());
             }
         }
-        let storage = self.inner.storage.clone();
-        let agent_id = task.agent_id.clone();
-        let unresolved_waits = tokio::task::spawn_blocking(move || {
-            storage.raw_unresolved_wait_conditions_for_agent(&agent_id)
-        })
-        .await??;
+        let unresolved_waits = wait_witness.live_waits.clone();
         let replaced = replace_wait_conditions(
             unresolved_waits
                 .into_iter()
@@ -1317,17 +1383,20 @@ impl RuntimeHandle {
         let execution_protocol = self
             .execution_wait_settlement_transition(&condition, work_item.as_ref(), now)
             .await?;
-        let guard = self.inner.agent.lock().await;
-        let already_in_memory = guard
-            .queue
-            .peek_next_matching(|message| message.id == result_message_id)
-            .is_some();
-        let expected_state = guard.last_persisted_state.clone();
-        let mut committed_state = guard.state.clone();
-        committed_state.pending = guard
-            .queue
-            .len()
-            .saturating_add(usize::from(!already_in_memory));
+        let (already_in_memory, queue_len, expected_state, mut committed_state) = self
+            .read_committed_agent(|guard| {
+                (
+                    guard
+                        .queue
+                        .peek_next_matching(|message| message.id == result_message_id)
+                        .is_some(),
+                    guard.queue.len(),
+                    guard.last_persisted_state.clone(),
+                    guard.state.clone(),
+                )
+            })
+            .await?;
+        committed_state.pending = queue_len.saturating_add(usize::from(!already_in_memory));
         committed_state.last_wake_reason = Some("TaskResult".into());
         let storage = self.inner.storage.clone();
         committed_state.total_message_count =
@@ -1396,7 +1465,7 @@ impl RuntimeHandle {
                                 source_message_id,
                                 source_queue,
                                 dropped_reply_source,
-                                wait_conditions: agent_wait_conditions,
+                                wait_witness,
                             },
                         },
                     ),
@@ -1414,6 +1483,11 @@ impl RuntimeHandle {
                 tool_execution: None,
                 brief: None,
                 brief_publication_scope: None,
+                _scheduling_material: vec![
+                    settlement_material,
+                    wait_material,
+                    source_material.guard()?,
+                ],
             },
         )))
     }
@@ -1518,15 +1592,15 @@ impl RuntimeHandle {
         &self,
         agent_id: &str,
         existing: WorkItemRecord,
+        work: &super::resident_work::CapturedWork,
         reason: &str,
     ) -> Result<WorkItemBlockerClearance> {
         let now = Utc::now();
-        let active_waits = self
-            .inner
-            .storage
-            .raw_unresolved_wait_conditions_for_agent(agent_id)?
+        let active_waits = work
+            .unresolved_wait_conditions()?
             .into_iter()
             .filter(|condition| condition.work_item_id.as_deref() == Some(existing.id.as_str()))
+            .cloned()
             .collect::<Vec<_>>();
         let mut wait_conditions = Vec::with_capacity(active_waits.len());
         let mut cancelled_wait_condition_ids = Vec::with_capacity(active_waits.len());
@@ -1626,24 +1700,24 @@ impl RuntimeHandle {
 
         let mut trigger_now = false;
         let disposition = {
-            let mut guard = self.inner.agent.lock().await;
+            let mut guard = self.begin_mutation().await?;
             match guard.state.status {
                 AgentStatus::Stopped => WakeDisposition::Ignored,
                 AgentStatus::AwakeRunning | AgentStatus::AwaitingTask => {
                     guard.state.pending_wake_hint = Some(pending.clone());
-                    guard.persist_state(&self.inner.storage)?;
+                    guard.persist_state(&self.inner.storage).await?;
                     WakeDisposition::Coalesced
                 }
                 AgentStatus::Booting | AgentStatus::AwakeIdle | AgentStatus::Asleep => {
                     if guard.queue.is_empty() {
                         if guard.state.pending_wake_hint.take().is_some() {
-                            guard.persist_state(&self.inner.storage)?;
+                            guard.persist_state(&self.inner.storage).await?;
                         }
                         trigger_now = true;
                         WakeDisposition::Triggered
                     } else {
                         guard.state.pending_wake_hint = Some(pending.clone());
-                        guard.persist_state(&self.inner.storage)?;
+                        guard.persist_state(&self.inner.storage).await?;
                         WakeDisposition::Coalesced
                     }
                 }
@@ -1655,7 +1729,7 @@ impl RuntimeHandle {
             WakeDisposition::Coalesced => "wake_hint_coalesced",
             WakeDisposition::Ignored => "wake_hint_ignored",
         };
-        self.inner.storage.append_event(&AuditEvent::legacy(
+        self.append_original_audit_event(AuditEvent::legacy(
             event_kind,
             serde_json::json!({
                 "agent_id": runtime_agent_id,
@@ -1671,17 +1745,18 @@ impl RuntimeHandle {
                 "correlation_id": hint.correlation_id,
                 "causation_id": hint.causation_id,
             }),
-        ))?;
+        ))
+        .await?;
 
         if trigger_now {
             if let Err(err) = self
                 .emit_system_tick_from_wake_hint_with_decision(&pending)
                 .await
             {
-                let mut guard = self.inner.agent.lock().await;
+                let mut guard = self.begin_mutation().await?;
                 if guard.state.pending_wake_hint.is_none() {
                     guard.state.pending_wake_hint = Some(pending);
-                    guard.persist_state(&self.inner.storage)?;
+                    guard.persist_state(&self.inner.storage).await?;
                 }
                 return Err(err);
             }
@@ -1698,10 +1773,10 @@ impl RuntimeHandle {
         if let Some(pending) = pending_wake {
             self.emit_system_tick_from_wake_hint_with_decision(&pending)
                 .await?;
-            let mut guard = self.inner.agent.lock().await;
+            let mut guard = self.begin_mutation().await?;
             if guard.state.pending_wake_hint.as_ref() == Some(&pending) {
                 guard.state.pending_wake_hint = None;
-                guard.persist_state(&self.inner.storage)?;
+                guard.persist_state(&self.inner.storage).await?;
             }
         }
         Ok(())
@@ -1713,11 +1788,35 @@ impl RuntimeHandle {
         interval_ms: Option<u64>,
         summary: Option<String>,
     ) -> Result<TimerRecord> {
-        let _admission = self.execution_admission_lease()?;
+        let admission = self.execution_admission_lease()?;
+        let runtime = self.clone();
+        let (result_tx, result_rx) = tokio::sync::oneshot::channel();
+        self.spawn_owned_mutation(async move {
+            let _admission = admission;
+            let result = runtime
+                .schedule_timer_owned(duration_ms, interval_ms, summary)
+                .await;
+            if let Err(error) = &result {
+                tracing::warn!(error = %error, "owned timer scheduling failed");
+            }
+            let _ = result_tx.send(result);
+        })?;
+        result_rx
+            .await
+            .map_err(|_| anyhow!("timer scheduling worker stopped"))?
+    }
+
+    async fn schedule_timer_owned(
+        &self,
+        duration_ms: u64,
+        interval_ms: Option<u64>,
+        summary: Option<String>,
+    ) -> Result<TimerRecord> {
+        let mutation = self.begin_mutation().await?;
         let created_at = self.now();
         let timer = TimerRecord {
             id: crate::ids::timer_id(),
-            agent_id: self.agent_id().await?,
+            agent_id: mutation.state.id.clone(),
             created_at,
             duration_ms,
             interval_ms,
@@ -1729,12 +1828,41 @@ impl RuntimeHandle {
             fire_count: 0,
             calendar: None,
         };
-        self.record_timer_projection(&timer).await?;
-        self.inner
-            .storage
-            .append_event(&AuditEvent::legacy("timer_created", to_json_value(&timer)))?;
-        self.spawn_timer_loop(timer.clone());
+        self.commit_timer_creation_owned(mutation, timer).await
+    }
 
+    async fn commit_timer_creation_owned(
+        &self,
+        mut mutation: super::state_mutation::RuntimeMutation,
+        timer: TimerRecord,
+    ) -> Result<TimerRecord> {
+        let fault = self.take_transition_fault();
+        let prepared = crate::runtime_db::transitions::PreparedInputTransition::timer(
+            mutation.input_evidence_scope(),
+            crate::ids::audit_event_id(),
+            timer.created_at,
+            crate::runtime_db::transitions::PreparedTimerTransition::create(timer.clone(), fault),
+        )?;
+        let committed = mutation.commit_prepared_timer_transition(prepared).await;
+        match committed {
+            Ok((commit, crate::runtime_db::transitions::TimerMutationOutcome::Created { .. })) => {
+                drop(mutation);
+                self.apply_transition_commit(commit).await;
+            }
+            Ok(_) => anyhow::bail!("Timer creation returned another operation"),
+            Err(error) => {
+                if !mutation.reconcile_known_commit().await? {
+                    return Err(error);
+                }
+                drop(mutation);
+            }
+        }
+        let audit = self
+            .append_original_audit_event(AuditEvent::legacy("timer_created", to_json_value(&timer)))
+            .await;
+        // Once creation committed, audit failure must not strand its live timer.
+        self.spawn_timer_loop(timer.clone()).await?;
+        audit?;
         Ok(timer)
     }
 
@@ -1744,15 +1872,38 @@ impl RuntimeHandle {
         timezone: impl Into<String>,
         summary: Option<String>,
     ) -> Result<TimerRecord> {
-        let _admission = self.execution_admission_lease()?;
-        let created_at = self.now();
+        let admission = self.execution_admission_lease()?;
         let calendar = crate::calendar::CalendarSchedule::new(expression, timezone)?;
+        let runtime = self.clone();
+        let (result_tx, result_rx) = tokio::sync::oneshot::channel();
+        self.spawn_owned_mutation(async move {
+            let _admission = admission;
+            let result = runtime
+                .schedule_calendar_timer_owned(calendar, summary)
+                .await;
+            if let Err(error) = &result {
+                tracing::warn!(error = %error, "owned calendar timer scheduling failed");
+            }
+            let _ = result_tx.send(result);
+        })?;
+        result_rx
+            .await
+            .map_err(|_| anyhow!("calendar timer scheduling worker stopped"))?
+    }
+
+    async fn schedule_calendar_timer_owned(
+        &self,
+        calendar: crate::calendar::CalendarSchedule,
+        summary: Option<String>,
+    ) -> Result<TimerRecord> {
+        let mutation = self.begin_mutation().await?;
+        let created_at = self.now();
         let next_fire_at = calendar.next_after(created_at)?.utc;
         let duration_ms = u64::try_from((next_fire_at - created_at).num_milliseconds())
             .context("calendar occurrence is outside supported timer range")?;
         let timer = TimerRecord {
             id: crate::ids::timer_id(),
-            agent_id: self.agent_id().await?,
+            agent_id: mutation.state.id.clone(),
             created_at,
             duration_ms,
             interval_ms: None,
@@ -1764,12 +1915,7 @@ impl RuntimeHandle {
             fire_count: 0,
             calendar: Some(calendar),
         };
-        self.record_timer_projection(&timer).await?;
-        self.inner
-            .storage
-            .append_event(&AuditEvent::legacy("timer_created", to_json_value(&timer)))?;
-        self.spawn_timer_loop(timer.clone());
-        Ok(timer)
+        self.commit_timer_creation_owned(mutation, timer).await
     }
 
     pub async fn cancel_timer(&self, timer_id: &str) -> Result<TimerRecord> {
@@ -1782,17 +1928,23 @@ impl RuntimeHandle {
     ) -> Result<TimerCancellationOutcome> {
         let agent_id = self.agent_id().await?;
         for attempt in 0..super::ENQUEUE_AGENT_STATE_MAX_ATTEMPTS {
-            let expected = self
-                .inner
-                .storage
-                .latest_timer_record(timer_id)?
-                .ok_or_else(|| {
-                    RuntimeError::not_found(
-                        "timer_not_found",
-                        format!("timer {timer_id} not found"),
-                    )
+            let mut guard = self.begin_mutation().await?;
+            let read = match guard.prepare_timer_mutation_read(timer_id, None, false).await {
+                Ok(read) => read,
+                Err(error) if matches!(error.downcast_ref::<crate::runtime_db::scheduling_snapshot::SchedulingSnapshotError>(),
+                    Some(crate::runtime_db::scheduling_snapshot::SchedulingSnapshotError::ForeignRecord(key))
+                    if key.family == super::resident_scheduling::SchedulingFamily::Timer && key.id == timer_id) => None,
+                Err(error) => return Err(error),
+            }.ok_or_else(|| {
+                RuntimeError::not_found("timer_not_found", format!("timer {timer_id} not found"))
                     .with_safe_context("timer_id", timer_id)
-                })?;
+            })?;
+            let super::timer_mutation_reads::TimerMutationRead {
+                timer: expected,
+                pending: pending_wake,
+                material: _route_material,
+                ..
+            } = read;
             if expected.agent_id != agent_id {
                 return Err(RuntimeError::not_found(
                     "timer_not_found",
@@ -1813,13 +1965,12 @@ impl RuntimeHandle {
                 }
                 TimerStatus::Active => {}
             }
+            let first_cancellation = expected.status == TimerStatus::Active;
 
-            let pending_wake = self.inner.runtime_db.timers().pending_wake(timer_id)?;
             let mut timer = expected.clone();
             timer.status = TimerStatus::Cancelled;
             timer.next_fire_at = None;
 
-            let mut guard = self.inner.agent.lock().await;
             let pending_message_in_memory = pending_wake.as_ref().is_some_and(|wake| {
                 guard
                     .queue
@@ -1840,41 +1991,47 @@ impl RuntimeHandle {
                     .as_ref()
                     .map(|_| (expected_state, committed_state.clone())),
             };
-            match self.inner.runtime_db.timers().cancel(&command) {
-                Ok(result)
-                    if result.cancelled || command.expected.status == TimerStatus::Cancelled =>
+            let prepared = crate::runtime_db::transitions::PreparedInputTransition::timer(
+                guard.input_evidence_scope(),
+                crate::ids::audit_event_id(),
+                self.now(),
+                crate::runtime_db::transitions::PreparedTimerTransition::cancel(
+                    command,
+                    pending_wake,
+                    self.take_transition_fault(),
+                ),
+            )?;
+            let result = guard.commit_prepared_timer_transition(prepared).await;
+            let mut timer_result = None;
+            let result = result.map(|(commit, outcome)| {
+                if let crate::runtime_db::transitions::TimerMutationOutcome::Cancelled { result } =
+                    outcome
                 {
-                    if let Some(message_id) = result.dropped_message_id.as_deref() {
-                        guard
-                            .queue
-                            .pop_next_matching(|message| message.id == message_id);
-                    }
-                    if pending_wake.is_some() {
-                        guard.state = committed_state.clone();
-                        guard.last_persisted_state = committed_state;
-                    }
+                    timer_result = Some(result);
+                }
+                commit
+            });
+            match result {
+                Ok(_) if timer_result.as_ref().is_some_and(|result| result.cancelled) => {
+                    let result = timer_result.expect("successful timer cancellation has a result");
                     drop(guard);
-                    self.inner
-                        .projection_cache
-                        .lock()
-                        .await
-                        .upsert_timer(timer.clone());
-                    let blocked_work_item_ids = result
-                        .effects
-                        .work_items
-                        .iter()
-                        .map(|work| work.id.clone())
-                        .collect();
-                    self.apply_transition_commit(TransitionCommit {
-                        applied: true,
-                        effects: result.effects,
-                        ..Default::default()
-                    })
-                    .await;
+                    if first_cancellation {
+                        self.append_original_audit_event(AuditEvent::legacy(
+                            "timer_cancelled",
+                            serde_json::json!({
+                                "timer_id": timer.id,
+                                "status": timer.status,
+                                "fire_count": timer.fire_count,
+                                "dropped_message_id": result.dropped_message_id,
+                            }),
+                        ))
+                        .await?;
+                    }
+                    self.inner.notify.notify_waiters();
                     return Ok(TimerCancellationOutcome {
                         timer,
                         cancelled_wait_condition_ids: result.cancelled_wait_condition_ids,
-                        blocked_work_item_ids,
+                        blocked_work_item_ids: result.blocked_work_item_ids,
                     });
                 }
                 Ok(_) => {
@@ -1895,40 +2052,146 @@ impl RuntimeHandle {
         unreachable!("timer cancellation attempts always return or retry")
     }
 
-    pub(crate) async fn recover_active_timers(&self, timers: Vec<TimerRecord>) -> Result<()> {
-        for timer in timers {
-            if let Err(err) = self.recover_timer(timer.clone()).await {
-                let _ = self.inner.storage.append_event(&AuditEvent::legacy(
-                    "timer_recovery_failed",
-                    serde_json::json!({
-                        "timer_id": timer.id,
-                        "error": err.to_string(),
-                    }),
-                ));
-            }
+    pub(crate) async fn recover_active_timers(
+        &self,
+        timers: super::resident_scheduling::CapturedScheduling,
+    ) -> Result<()> {
+        anyhow::ensure!(
+            timers.coverage.active_timers_complete
+                && timers.scope.agent_id == self.instance_agent_id()
+                && timers.scope.identity_incarnation == self.inner.identity_incarnation,
+            "Timer recovery requires the original complete Scheduling scope"
+        );
+        let count = timers.coverage.active_timers.len();
+        if count == 0 {
+            return Ok(());
+        }
+        let limits = self.inner.input_evidence_budget.limits();
+        let byte_limit = limits
+            .history_per_agent_bytes
+            .checked_add(limits.pending_per_agent_bytes)
+            .context("Timer recovery byte limit overflow")?
+            .min(64 * 1024 * 1024);
+        let record_limit = usize::try_from(limits.record_limit)?.min(65536);
+        let order_bytes = u64::try_from(count)?
+            .checked_mul(std::mem::size_of::<&TimerRecord>() as u64)
+            .and_then(|bytes| bytes.checked_add(512))
+            .context("Timer recovery order overflow")?;
+        let order_records = count
+            .checked_add(1)
+            .context("Timer recovery order count overflow")?;
+        let (retained, retained_records) = timers.selected_material_estimate()?;
+        anyhow::ensure!(
+            retained
+                .checked_add(order_bytes)
+                .is_some_and(|bytes| bytes <= byte_limit)
+                && retained_records
+                    .checked_add(order_records)
+                    .is_some_and(|n| n <= record_limit),
+            super::resident_scheduling::SchedulingReadError::ResourceExhausted(
+                "original Timer recovery order"
+            )
+        );
+        let _order_material = self.inner.input_evidence_budget.register_owned_bytes(
+            &timers.scope,
+            super::input_evidence_budget::InputMemoryCategory::Pins,
+            super::input_evidence_budget::OwnedBytesEstimate {
+                payload_bytes: 0,
+                metadata_estimate_bytes: order_bytes,
+            },
+        )?;
+        let mut active = timers
+            .records
+            .iter()
+            .filter_map(|record| match &record.fact {
+                super::resident_scheduling::CanonicalSchedulingFact::Timer(timer)
+                    if timers.coverage.active_timers.contains(&record.locator.key) =>
+                {
+                    Some(timer)
+                }
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        anyhow::ensure!(
+            active.len() == count,
+            "Timer recovery coverage missing active body"
+        );
+        // Keep the original SQL's created_at DESC / timer_id ASC recovery order.
+        active.sort_unstable_by(|a, b| {
+            b.created_at
+                .timestamp_millis()
+                .cmp(&a.created_at.timestamp_millis())
+                .then_with(|| a.id.cmp(&b.id))
+        });
+        for timer in active {
+            anyhow::ensure!(
+                timer.status == TimerStatus::Active,
+                "Timer recovery live coverage contains a terminal Timer"
+            );
+            let owned = super::timer_producer_reads::OwnedTimerProducerRead::from_selected(
+                &timers,
+                &timer.id,
+                None,
+                &self.inner.input_evidence_budget,
+                record_limit - order_records,
+                usize::try_from(byte_limit - order_bytes)?,
+            )?;
+            self.recover_timer(owned).await?;
         }
         Ok(())
     }
 
-    fn spawn_timer_loop(&self, timer: TimerRecord) {
+    async fn spawn_timer_loop(&self, timer: TimerRecord) -> Result<()> {
+        let _registration = self.begin_mutation().await?;
+        let owned = _registration.capture_timer_producer_read(&timer)?;
+        let current = owned.timer;
+        if !self.accepts_execution_admission()
+            || current.status != TimerStatus::Active
+            || _registration.state.status == AgentStatus::Stopped
+        {
+            return Ok(());
+        }
+        if !self
+            .inner
+            .control_cancellations
+            .timer_for(&timer.id)
+            .is_empty()
+        {
+            return Ok(());
+        }
+        let timer = current;
         let runtime = self.clone();
+        let token = CancellationToken::new();
+        let control_lease = self
+            .inner
+            .control_cancellations
+            .timer(&timer, token.clone());
         let handle = tokio::spawn(async move {
+            let _producer_material = owned.material;
             let mut timer = timer;
             loop {
                 let Some(next_fire_at) = timer.next_fire_at else {
                     break;
                 };
                 if next_fire_at > runtime.now() {
-                    runtime.inner.clock.sleep_until(next_fire_at).await;
+                    tokio::select! {
+                        _ = token.cancelled() => break,
+                        _ = runtime.inner.clock.sleep_until(next_fire_at) => {}
+                    }
+                }
+                if token.is_cancelled() {
+                    break;
                 }
                 if let Err(err) = runtime.fire_timer_record(&mut timer).await {
-                    let _ = runtime.inner.storage.append_event(&AuditEvent::legacy(
-                        "timer_fire_failed",
-                        serde_json::json!({
-                            "timer_id": timer.id,
-                            "error": err.to_string(),
-                        }),
-                    ));
+                    let _ = runtime
+                        .append_original_audit_event(AuditEvent::legacy(
+                            "timer_fire_failed",
+                            serde_json::json!({
+                                "timer_id": timer.id,
+                                "error": err.to_string(),
+                            }),
+                        ))
+                        .await;
                     break;
                 }
                 if timer.status != TimerStatus::Active {
@@ -1936,12 +2199,17 @@ impl RuntimeHandle {
                 }
             }
         });
-        self.track_owned_task(handle);
+        control_lease.attach(handle);
+        Ok(())
     }
 
-    async fn recover_timer(&self, timer: TimerRecord) -> Result<()> {
+    async fn recover_timer(
+        &self,
+        owned: super::timer_producer_reads::OwnedTimerProducerRead,
+    ) -> Result<()> {
+        let _producer_material = owned.material;
         let now = self.now();
-        let timer = normalize_recovered_timer(timer, now)?;
+        let timer = normalize_recovered_timer(owned.timer, now)?;
         if timer
             .next_fire_at
             .is_some_and(|next_fire_at| next_fire_at <= now)
@@ -1949,28 +2217,30 @@ impl RuntimeHandle {
             let mut overdue = timer.clone();
             self.fire_timer_record(&mut overdue).await?;
             if overdue.status == TimerStatus::Active {
-                self.spawn_timer_loop(overdue);
+                self.spawn_timer_loop(overdue).await?;
             }
         } else {
-            self.spawn_timer_loop(timer);
+            self.spawn_timer_loop(timer).await?;
         }
         Ok(())
     }
 
     pub(super) async fn fire_timer_record(&self, timer: &mut TimerRecord) -> Result<()> {
-        let expected = self
-            .inner
-            .storage
-            .latest_timer_record(&timer.id)?
-            .unwrap_or_else(|| timer.clone());
+        let mut first_guard = self.begin_mutation().await?;
+        let first_read = first_guard
+            .prepare_timer_mutation_read(&timer.id, Some(timer), true)
+            .await?
+            .context("original Timer is canonically absent")?;
+        // Keep the first frozen Timer/source copies covered across State OCC retries.
+        let _original_material = first_read.material.clone();
+        let expected = first_read.timer.clone();
         if expected.status != TimerStatus::Active {
             *timer = expected;
             return Ok(());
         }
         let scheduled_fire_at = timer.next_fire_at;
-        let work_item_id = self
-            .wait_condition_work_item_id_for_timer(&timer.id)
-            .await?;
+        let work_item_id = first_read.work_item_id.clone();
+        let mut first = Some((first_guard, first_read));
         let fired_at = self.now();
         let mut record = expected.clone();
         record.last_fired_at = Some(fired_at);
@@ -2022,7 +2292,19 @@ impl RuntimeHandle {
         message.normalize_admission_fields();
 
         for attempt in 0..super::ENQUEUE_AGENT_STATE_MAX_ATTEMPTS {
-            let mut guard = self.inner.agent.lock().await;
+            let (mut guard, route) = if let Some(first) = first.take() {
+                first
+            } else {
+                let mut guard = self.begin_mutation().await?;
+                let route = guard
+                    .prepare_timer_mutation_read(&timer.id, Some(timer), false)
+                    .await?
+                    .context("original Timer disappeared during State OCC retry")?;
+                (guard, route)
+            };
+            let _route_material = route.material;
+            let pending = route.pending;
+
             let expected_state = guard.last_persisted_state.clone();
             let mut committed_state = guard.state.clone();
             committed_state.pending = guard.queue.len().saturating_add(1);
@@ -2030,38 +2312,50 @@ impl RuntimeHandle {
             committed_state.total_message_count =
                 self.inner.storage.count_messages()?.saturating_add(1);
             scheduler::apply_message_wake_projection(&mut committed_state);
-            let result = self.inner.runtime_db.timers().fire_with_wait(
-                &crate::runtime_db::TimerFire {
-                    expected: expected.clone(),
-                    record: record.clone(),
-                    message: message.clone(),
-                    queue_entry: QueueEntryRecord {
-                        message_id: message.id.clone(),
-                        agent_id: message.agent_id.clone(),
-                        priority: message.priority.clone(),
-                        status: QueueEntryStatus::Queued,
-                        created_at: message.created_at,
-                        updated_at: fired_at,
-                    },
-                    agent_state: (expected_state, committed_state.clone()),
+            let command = crate::runtime_db::TimerFire {
+                expected: expected.clone(),
+                record: record.clone(),
+                message: message.clone(),
+                queue_entry: QueueEntryRecord {
+                    message_id: message.id.clone(),
+                    agent_id: message.agent_id.clone(),
+                    priority: message.priority.clone(),
+                    status: QueueEntryStatus::Queued,
+                    created_at: message.created_at,
+                    updated_at: fired_at,
                 },
-                self.take_transition_fault(),
-            );
+                agent_state: (expected_state, committed_state.clone()),
+            };
+            let prepared = crate::runtime_db::transitions::PreparedInputTransition::timer(
+                guard.input_evidence_scope(),
+                crate::ids::audit_event_id(),
+                fired_at,
+                crate::runtime_db::transitions::PreparedTimerTransition::fire(
+                    command,
+                    pending,
+                    self.take_transition_fault(),
+                ),
+            )?;
+            let mut timer_result = None;
+            let result =
+                guard
+                    .commit_prepared_timer_transition(prepared)
+                    .await
+                    .map(|(commit, outcome)| {
+                        if let crate::runtime_db::transitions::TimerMutationOutcome::Fired {
+                            result,
+                        } = outcome
+                        {
+                            timer_result = Some(result);
+                        }
+                        commit
+                    });
             match result {
-                Ok(result) if result.advanced => {
-                    if let Some(message) = result.message {
-                        guard.queue.push(message);
-                        guard.state = committed_state.clone();
-                        guard.last_persisted_state = committed_state;
-                    }
+                Ok(_) if timer_result.as_ref().is_some_and(|result| result.advanced) => {
+                    let result = timer_result.expect("successful timer firing has a result");
                     drop(guard);
-                    self.inner
-                        .projection_cache
-                        .lock()
-                        .await
-                        .upsert_timer(record.clone());
                     *timer = record.clone();
-                    self.inner.storage.append_event(&AuditEvent::legacy(
+                    self.append_original_audit_event(AuditEvent::legacy(
                         "timer_fired",
                         serde_json::json!({
                             "timer_id": timer.id,
@@ -2071,17 +2365,19 @@ impl RuntimeHandle {
                             "next_fire_at": timer.next_fire_at,
                             "wake_created": result.wake_created,
                         }),
-                    ))?;
+                    ))
+                    .await?;
                     if result.wake_created {
                         self.inner.notify.notify_one();
                     }
                     return Ok(());
                 }
                 Ok(_) => {
+                    let current = guard
+                        .capture_timer_mutation_read(&timer.id, Some(timer), false)?
+                        .context("original Timer ACK has no current qualified body")?;
+                    *timer = current.timer;
                     drop(guard);
-                    if let Some(latest) = self.inner.storage.latest_timer_record(&timer.id)? {
-                        *timer = latest;
-                    }
                     return Ok(());
                 }
                 Err(error) => {
@@ -2121,32 +2417,11 @@ impl RuntimeHandle {
         unreachable!("timer fire attempts always return or retry")
     }
 
-    pub async fn latest_external_triggers(&self) -> Result<Vec<ExternalTriggerRecord>> {
-        crate::diagnostics::record_runtime_projection_cache_read();
-        let cached = {
-            self.inner
-                .projection_cache
-                .lock()
-                .await
-                .latest_external_triggers()
-        };
-        if !cached.is_empty() {
-            return Ok(cached);
-        }
-        let agent_id = self.agent_id().await?;
-        let mut records = self
-            .inner
-            .runtime_db
-            .external_triggers()
-            .latest_for_agent(&agent_id)?;
-        if !records.is_empty() {
-            let mut cache = self.inner.projection_cache.lock().await;
-            for record in &records {
-                cache.upsert_external_trigger(record.clone());
-            }
-        }
-        records.sort_by(|left, right| right.created_at.cmp(&left.created_at));
-        Ok(records)
+    pub async fn latest_external_triggers(&self) -> Result<super::OwnedExternalTriggersRead> {
+        Ok(self
+            .capture_scheduling_records_read(0)
+            .await?
+            .into_external_triggers())
     }
 
     pub(super) async fn wake_hint_work_item_id(
@@ -2169,11 +2444,12 @@ impl RuntimeHandle {
         let Some(external_trigger_id) = external_trigger_id else {
             return Ok(None);
         };
-        let agent_id = self.agent_id().await?;
-        let mut work_item_ids = self
-            .inner
-            .storage
-            .active_wait_conditions_for_agent(&agent_id)?
+        let snapshot = self
+            .capture_work_read(&super::work_reads::live_work_request())
+            .await?;
+        let mut work_item_ids = snapshot
+            .work
+            .context_active_wait_conditions()?
             .into_iter()
             .filter(|condition| {
                 condition.wake_sources.iter().any(|source| match source {
@@ -2186,7 +2462,7 @@ impl RuntimeHandle {
                     _ => false,
                 })
             })
-            .filter_map(|condition| condition.work_item_id)
+            .filter_map(|condition| condition.work_item_id.clone())
             .collect::<Vec<_>>();
         work_item_ids.sort();
         work_item_ids.dedup();
@@ -2200,11 +2476,12 @@ impl RuntimeHandle {
         let Some(external_trigger_id) = external_trigger_id else {
             return Ok(None);
         };
-        let agent_id = self.agent_id().await?;
-        let correlations = self
-            .inner
-            .storage
-            .active_wait_conditions_for_agent(&agent_id)?
+        let snapshot = self
+            .capture_work_read(&super::work_reads::live_work_request())
+            .await?;
+        let correlations = snapshot
+            .work
+            .context_active_wait_conditions()?
             .into_iter()
             .filter(|condition| {
                 condition.wake_sources.iter().any(|source| {
@@ -2216,67 +2493,12 @@ impl RuntimeHandle {
                     )
                 })
             })
-            .map(|condition| condition.id)
+            .map(|condition| condition.id.clone())
             .collect::<Vec<_>>();
         let [correlation] = correlations.as_slice() else {
             return Ok(None);
         };
         Ok(Some(correlation.clone()))
-    }
-
-    async fn wait_condition_work_item_id_for_timer(
-        &self,
-        timer_id: &str,
-    ) -> Result<Option<String>> {
-        let agent_id = self.agent_id().await?;
-        let matches = self
-            .inner
-            .storage
-            .active_wait_conditions_for_agent(&agent_id)?
-            .into_iter()
-            .filter(|condition| {
-                condition.kind == WaitConditionKind::Timer
-                    && condition.subject_ref.as_deref() == Some(timer_id)
-            })
-            .collect::<Vec<_>>();
-        Ok((matches.len() == 1)
-            .then(|| matches[0].work_item_id.clone())
-            .flatten())
-    }
-
-    pub(super) async fn active_wait_condition_summaries(
-        &self,
-    ) -> Result<Vec<WaitConditionSummary>> {
-        let agent_id = self.agent_id().await?;
-        Ok(self
-            .inner
-            .storage
-            .active_wait_conditions_for_agent(&agent_id)?
-            .into_iter()
-            .map(WaitConditionSummary::from)
-            .collect())
-    }
-
-    pub(super) async fn active_external_trigger_summaries(
-        &self,
-    ) -> Result<Vec<ExternalTriggerSummary>> {
-        Ok(self
-            .latest_external_triggers()
-            .await?
-            .into_iter()
-            .filter(|record| record.status == ExternalTriggerStatus::Active)
-            .map(|record| ExternalTriggerSummary {
-                external_trigger_id: record.external_trigger_id,
-                target_agent_id: record.target_agent_id,
-                scope: record.scope,
-                delivery_mode: record.delivery_mode,
-                status: record.status,
-                delivery_count: record.delivery_count,
-                created_at: record.created_at,
-                revoked_at: record.revoked_at,
-                last_delivered_at: record.last_delivered_at,
-            })
-            .collect())
     }
 
     pub(super) async fn record_wait_reconciliation_signals(
@@ -2309,10 +2531,11 @@ impl RuntimeHandle {
             if duplicate {
                 continue;
             }
-            self.inner.storage.append_event(&AuditEvent::legacy(
+            self.append_original_audit_event(AuditEvent::legacy(
                 "wait_reconciliation_requested",
                 signal.clone(),
-            ))?;
+            ))
+            .await?;
         }
 
         Ok(())
@@ -2554,7 +2777,7 @@ fn reconciliation_signal_for_condition(
         "wait_condition_id": condition.id,
         "wake_source": wake.source,
         "work_item_id": condition.work_item_id,
-        "subject_ref": wake.subject_ref.or_else(|| condition.subject_ref.clone()),
+        "subject_ref": wake.subject_ref.or(condition.subject_ref.as_deref()),
         "waiting_for": condition.waiting_for,
         "source": condition.source,
     }))
@@ -2627,3 +2850,330 @@ fn normalize_recovered_timer(mut timer: TimerRecord, now: DateTime<Utc>) -> Resu
     }
     Ok(timer)
 }
+
+#[cfg(test)]
+mod mutation_tests {
+    use super::*;
+    use crate::runtime::tests::support::context_config;
+    use tempfile::{tempdir, TempDir};
+
+    async fn timer_runtime() -> (TempDir, TempDir, RuntimeHandle, TimerRecord) {
+        let home = tempdir().unwrap();
+        let workspace = tempdir().unwrap();
+        let runtime = RuntimeHandle::new(
+            "default",
+            home.path().to_path_buf(),
+            workspace.path().to_path_buf(),
+            "http://127.0.0.1:7878".into(),
+            Arc::new(crate::provider::StubProvider::new("unused")),
+            "default".into(),
+            context_config(),
+        )
+        .unwrap();
+        let now = runtime.now();
+        let timer = TimerRecord {
+            calendar: None,
+            id: crate::ids::timer_id(),
+            agent_id: "default".into(),
+            created_at: now,
+            duration_ms: 1_000,
+            interval_ms: Some(1_000),
+            repeat: true,
+            status: TimerStatus::Active,
+            summary: None,
+            next_fire_at: Some(now),
+            last_fired_at: None,
+            fire_count: 0,
+        };
+        crate::runtime::tests::support::persist_timer_creation_for_restart(&runtime, &timer)
+            .await
+            .unwrap();
+        (home, workspace, runtime, timer)
+    }
+
+    #[tokio::test]
+    async fn repeat_timer_cancel_preserves_first_original_audit() {
+        let (_home, _workspace, runtime, timer) = timer_runtime().await;
+        let cancelled = runtime.cancel_timer(&timer.id).await.unwrap();
+        assert_eq!(cancelled.status, TimerStatus::Cancelled);
+        assert!(cancelled.next_fire_at.is_none());
+        let events = runtime.storage().read_recent_events(100).unwrap();
+        let original = events
+            .iter()
+            .find(|event| {
+                event.kind == "timer_cancelled"
+                    && event.data["timer_id"] == serde_json::json!(timer.id)
+                    && event.data.get("fire_count").is_some()
+            })
+            .expect("first cancellation preserves the original audit");
+        assert_eq!(
+            original.data["fire_count"],
+            serde_json::json!(timer.fire_count)
+        );
+        assert_eq!(
+            original.data["status"],
+            serde_json::to_value(TimerStatus::Cancelled).unwrap()
+        );
+        assert!(original.data["dropped_message_id"].is_null());
+        assert_eq!(runtime.cancel_timer(&timer.id).await.unwrap(), cancelled);
+        assert_eq!(runtime.storage().read_recent_events(100).unwrap(), events);
+    }
+
+    async fn cancelled_timer_schedule_finishes_owned_installation(
+        fault: Option<TransitionFaultPoint>,
+    ) {
+        let home = tempdir().unwrap();
+        let workspace = tempdir().unwrap();
+        let runtime = RuntimeHandle::new(
+            "default",
+            home.path().to_path_buf(),
+            workspace.path().to_path_buf(),
+            "http://127.0.0.1:7878".into(),
+            Arc::new(crate::provider::StubProvider::new("unused")),
+            "default".into(),
+            context_config(),
+        )
+        .unwrap();
+        if let Some(fault) = fault {
+            runtime.inject_next_transition_fault(fault);
+        }
+        let installation = runtime.inner.installation_barrier.lock().await;
+        let caller = tokio::spawn({
+            let runtime = runtime.clone();
+            async move {
+                runtime
+                    .schedule_timer(0, None, Some("owned timer".into()))
+                    .await
+            }
+        });
+        let timer = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            loop {
+                if let Some(timer) = runtime.storage().latest_timer_records().unwrap().pop() {
+                    assert!(runtime.inner.mutation_owner.capture().is_err());
+                    break timer;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("creation SQL must finish while installation is blocked");
+        caller.abort();
+        assert!(caller.await.unwrap_err().is_cancelled());
+        drop(installation);
+        tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            runtime.join_idle_owned_tasks(),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        let latest = runtime
+            .storage()
+            .latest_timer_record(&timer.id)
+            .unwrap()
+            .unwrap();
+        assert_eq!(latest.status, TimerStatus::Completed);
+        assert_eq!(latest.fire_count, 1);
+        assert_eq!(runtime.storage().latest_timer_records().unwrap().len(), 1);
+        assert_eq!(runtime.agent_state().await.unwrap().pending, 1);
+        assert_eq!(runtime.inner.agent.lock().await.queue.len(), 1);
+        assert_eq!(
+            runtime
+                .storage()
+                .read_recent_events(64)
+                .unwrap()
+                .iter()
+                .filter(|event| event.kind == "timer_created")
+                .count(),
+            1
+        );
+    }
+
+    #[tokio::test]
+    async fn cancelled_timer_schedule_installs_and_starts_committed_timer() {
+        cancelled_timer_schedule_finishes_owned_installation(None).await;
+    }
+
+    #[tokio::test]
+    async fn cancelled_timer_schedule_recovers_known_fault_without_recreating_timer() {
+        cancelled_timer_schedule_finishes_owned_installation(Some(
+            TransitionFaultPoint::BeforeCacheUpdate,
+        ))
+        .await;
+    }
+
+    #[tokio::test]
+    async fn accepted_timer_blocked_on_owner_remains_active_without_spawning_after_retirement() {
+        let (_home, _workspace, runtime, _) = timer_runtime().await;
+        let owner = runtime.begin_mutation().await.unwrap();
+        let mut caller = Box::pin(runtime.schedule_timer(
+            3_600_000,
+            Some(3_600_000),
+            Some("accepted before retirement".into()),
+        ));
+        assert!(futures_util::poll!(caller.as_mut()).is_pending());
+        runtime.retire_instance_locally("runtime_unloaded").await;
+        runtime.inner.control_cancellations.cancel_local_producers();
+        drop(owner);
+        tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            runtime.join_owned_mutations(),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        runtime.inner.control_cancellations.cancel_local_producers();
+        tokio::time::timeout(
+            std::time::Duration::from_secs(1),
+            runtime.inner.control_cancellations.drain_retiring(),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        let timer = caller.await.unwrap();
+        let saved = runtime
+            .inner
+            .runtime_db
+            .timers()
+            .latest(&timer.id)
+            .unwrap()
+            .unwrap();
+        assert_eq!(saved.status, TimerStatus::Active);
+        assert_eq!(saved.fire_count, 0);
+        assert!(runtime
+            .inner
+            .control_cancellations
+            .timer_for(&timer.id)
+            .is_empty());
+        assert_ne!(
+            runtime.agent_state().await.unwrap().status,
+            AgentStatus::Stopped
+        );
+    }
+
+    #[tokio::test]
+    async fn timer_fire_precommit_failure_keeps_state_and_queue_private() {
+        let (_home, _workspace, runtime, mut timer) = timer_runtime().await;
+        let previous = runtime.agent_state().await.unwrap();
+        runtime.inject_next_transition_fault(TransitionFaultPoint::AfterCanonicalWrites);
+        assert!(runtime.fire_timer_record(&mut timer).await.is_err());
+        assert_eq!(runtime.agent_state().await.unwrap(), previous);
+        assert_eq!(runtime.storage().read_agent().unwrap().unwrap(), previous);
+        assert!(runtime.inner.agent.lock().await.queue.is_empty());
+        assert_eq!(
+            runtime
+                .storage()
+                .latest_timer_record(&timer.id)
+                .unwrap()
+                .unwrap()
+                .fire_count,
+            0
+        );
+        assert!(runtime
+            .inner
+            .runtime_db
+            .timers()
+            .pending_wake(&timer.id)
+            .unwrap()
+            .is_none());
+    }
+
+    #[tokio::test]
+    async fn timer_known_publication_recovery_preserves_compound_queue_and_cancel() {
+        let (_home, _workspace, runtime, mut timer) = timer_runtime().await;
+        let work = Box::pin(runtime.create_work_item(
+            "recover triggered timer Wait".into(),
+            None,
+            None,
+            Vec::new(),
+        ))
+        .await
+        .unwrap();
+        let registration = Box::pin(runtime.register_wait_for(
+            "default",
+            Some(work.id),
+            WaitForWakeKind::Timer,
+            Some(timer.id.clone()),
+            "timer wake".into(),
+            None,
+        ))
+        .await
+        .unwrap();
+        runtime.inject_next_transition_fault(TransitionFaultPoint::BeforeCacheUpdate);
+        assert!(runtime.fire_timer_record(&mut timer).await.is_err());
+        assert!(runtime.inner.mutation_owner.capture().is_err());
+        assert!(runtime.inner.agent.lock().await.queue.is_empty());
+        assert_eq!(
+            runtime
+                .storage()
+                .latest_timer_record(&timer.id)
+                .unwrap()
+                .unwrap()
+                .fire_count,
+            1
+        );
+        let mutation = runtime.begin_mutation().await.unwrap();
+        assert_eq!(mutation.state.pending, 1);
+        assert_eq!(mutation.queue.len(), 1);
+        let message_id = mutation.queue.peek().unwrap().id.clone();
+        let inputs = mutation.capture_input_evidence().unwrap();
+        assert!(inputs
+            .lookup(
+                &crate::runtime::resident_input_evidence::InputEvidenceKey::new(
+                    crate::runtime::resident_input_evidence::InputEvidenceFamily::Message,
+                    &message_id,
+                ),
+            )
+            .unwrap()
+            .is_some());
+        drop(inputs);
+        let work = mutation
+            .capture_work(&super::super::resident_work::WorkCaptureRequest::current())
+            .unwrap();
+        let wait = work
+            .lookup(&super::super::resident_work::WorkKey::new(
+                super::super::resident_work::WorkFamily::Wait,
+                &registration.condition.id,
+            ))
+            .unwrap()
+            .unwrap();
+        assert!(matches!(
+            &wait.record,
+            super::super::resident_work::CanonicalWorkRecord::Wait(wait)
+                if wait.status == WaitConditionStatus::Triggered
+                    && wait.trigger_message_id() == Some(message_id.as_str())
+        ));
+        drop(work);
+        drop(mutation);
+        assert_eq!(
+            runtime
+                .inner
+                .runtime_db
+                .timers()
+                .pending_wake(&timer.id)
+                .unwrap()
+                .unwrap()
+                .message_id,
+            message_id
+        );
+        let cancelled = runtime.cancel_timer(&timer.id).await.unwrap();
+        assert_eq!(cancelled.status, TimerStatus::Cancelled);
+        assert_eq!(runtime.agent_state().await.unwrap().pending, 0);
+        assert!(runtime.inner.agent.lock().await.queue.is_empty());
+        assert_eq!(
+            runtime
+                .inner
+                .runtime_db
+                .queue_entries()
+                .latest(&message_id)
+                .unwrap()
+                .unwrap()
+                .status,
+            QueueEntryStatus::Dropped
+        );
+    }
+}
+
+#[cfg(test)]
+#[path = "timer_producer_reads_tests.rs"]
+mod timer_producer_resident_tests;

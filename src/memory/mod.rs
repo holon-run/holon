@@ -1,4 +1,5 @@
 pub mod episode;
+pub(crate) mod episode_transition;
 pub mod index;
 pub(crate) mod refs;
 pub mod working;

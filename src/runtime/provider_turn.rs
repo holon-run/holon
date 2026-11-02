@@ -24,6 +24,7 @@
 //! - [`build_provider_turn_request`]: Creates the initial provider request
 //! - [`build_continuation_request`]: Creates requests for subsequent turns
 
+use crate::diagnostics::resource_io::{self, ResourceReadMaterial};
 use crate::{
     prompt::{render_section, EffectivePrompt, PromptSection, PromptStability},
     provider::{
@@ -83,6 +84,7 @@ pub fn build_provider_turn_request(
 
     Ok(ProviderTurnRequest {
         dispatch_guard: None,
+        material: Default::default(),
         continuation_scope_id: ContinuationScopeId::new(
             effective_prompt.cache_identity.agent_id.clone(),
         ),
@@ -99,6 +101,7 @@ pub fn build_provider_turn_request(
     })
 }
 
+#[cfg(test)]
 pub fn build_initial_provider_turn_request(
     provider: &dyn AgentProvider,
     effective_prompt: &EffectivePrompt,
@@ -111,6 +114,45 @@ pub fn build_initial_provider_turn_request(
         native_web_search,
         provider.resolved_image_input_support().unwrap_or(true),
     )
+}
+
+/// Runtime entry: the explicit acquisition survives in each encoded image.
+pub(crate) fn build_initial_provider_turn_request_with_material(
+    provider: &dyn AgentProvider,
+    effective_prompt: &EffectivePrompt,
+    available_tools: Vec<ToolSpec>,
+    native_web_search: Option<ProviderNativeWebSearchRequest>,
+    material: &ResourceReadMaterial,
+) -> anyhow::Result<ProviderTurnRequest> {
+    anyhow::ensure!(
+        material.matches_identity(
+            &effective_prompt.identity.agent_id,
+            effective_prompt.identity.incarnation,
+        ),
+        "provider image material differs from the prompt identity"
+    );
+    material.read(|| {
+        let mut request = build_provider_turn_request(
+            effective_prompt,
+            available_tools,
+            native_web_search,
+            false,
+        )?;
+        if provider.resolved_image_input_support().unwrap_or(true) {
+            request
+                .conversation
+                .extend(markdown_image_messages_from_sections_with_material(
+                    &effective_prompt.context_sections,
+                    &effective_prompt.execution,
+                    MAX_INLINE_IMAGES,
+                    MAX_INLINE_IMAGE_BYTES,
+                    Some(material),
+                )?);
+        }
+        request.material =
+            crate::provider::ProviderRequestMaterial::from_images(&request.conversation)?;
+        Ok(request)
+    })
 }
 
 /// Runtime-owned dynamic time follows all materialized input, never the
@@ -136,6 +178,7 @@ pub fn build_continuation_request(
 ) -> ProviderTurnRequest {
     ProviderTurnRequest {
         dispatch_guard: None,
+        material: Default::default(),
         continuation_scope_id,
         prompt_frame,
         conversation,
@@ -181,6 +224,18 @@ fn markdown_image_messages_from_sections(
     max_images: usize,
     max_bytes: u64,
 ) -> anyhow::Result<Vec<ConversationMessage>> {
+    markdown_image_messages_from_sections_with_material(
+        sections, execution, max_images, max_bytes, None,
+    )
+}
+
+fn markdown_image_messages_from_sections_with_material(
+    sections: &[PromptSection],
+    execution: &ExecutionSnapshot,
+    max_images: usize,
+    max_bytes: u64,
+    material: Option<&ResourceReadMaterial>,
+) -> anyhow::Result<Vec<ConversationMessage>> {
     let mut messages = Vec::new();
     let mut paths = HashSet::new();
     let mut hashes = HashSet::new();
@@ -197,6 +252,8 @@ fn markdown_image_messages_from_sections(
             ) == optional_history
         }) {
             for image in markdown_image_refs(&section.content) {
+                resource_io::admit_cloned_value(&(image.alt, image.src))?;
+                resource_io::charge_owned_metadata(1024, 12)?;
                 let Some(path) = resolve_markdown_image_src(image.src, execution) else {
                     continue;
                 };
@@ -267,6 +324,10 @@ fn markdown_image_messages_from_sections(
                 }
                 inline_bytes = next_bytes;
                 hashes.insert(read_image.visual_reference.sha256);
+                resource_io::charge_owned_metadata(
+                    u64::try_from(std::mem::size_of::<ConversationMessage>())?,
+                    1,
+                )?;
                 messages.push(ConversationMessage::UserImage {
                     prompt: if image.alt.trim().is_empty() {
                         format!("Image from {}", image.src)
@@ -274,7 +335,14 @@ fn markdown_image_messages_from_sections(
                         image.alt.trim().to_string()
                     },
                     media_type: read_image.visual_reference.mime,
-                    data_base64: base64::engine::general_purpose::STANDARD.encode(read_image.bytes),
+                    data_base64: match material {
+                        Some(material) => {
+                            crate::provider::ProviderImageData::encode(&read_image.bytes, material)?
+                        }
+                        None => base64::engine::general_purpose::STANDARD
+                            .encode(read_image.bytes)
+                            .into(),
+                    },
                     optional_history,
                 });
             }
@@ -323,40 +391,43 @@ struct MarkdownImageRef<'a> {
     src: &'a str,
 }
 
-fn markdown_image_refs(text: &str) -> Vec<MarkdownImageRef<'_>> {
-    let mut refs = Vec::new();
+fn markdown_image_refs(text: &str) -> impl Iterator<Item = MarkdownImageRef<'_>> {
     let mut offset = 0usize;
-    while offset + 4 <= text.len() {
-        let Some(start) = text[offset..].find("![") else {
-            break;
-        };
-        let alt_start = offset + start + 2;
-        let Some(alt_end_rel) = text[alt_start..].find(']') else {
-            break;
-        };
-        let alt_end = alt_start + alt_end_rel;
-        let src_open = alt_end + 1;
-        if text[src_open..].starts_with('(') {
-            let src_start = src_open + 1;
-            if let Some(src_end_rel) = text[src_start..].find(')') {
-                let src_end = src_start + src_end_rel;
-                let src = text[src_start..src_end]
-                    .split_whitespace()
-                    .next()
-                    .unwrap_or_default();
-                if !src.is_empty() {
-                    refs.push(MarkdownImageRef {
-                        alt: &text[alt_start..alt_end],
-                        src,
-                    });
+    std::iter::from_fn(move || {
+        while offset + 4 <= text.len() {
+            let Some(start) = text[offset..].find("![") else {
+                break;
+            };
+            let alt_start = offset + start + 2;
+            let Some(alt_end_rel) = text[alt_start..].find(']') else {
+                break;
+            };
+            let alt_end = alt_start + alt_end_rel;
+            let src_open = alt_end + 1;
+            if text[src_open..].starts_with('(') {
+                let src_start = src_open + 1;
+                if let Some(src_end_rel) = text[src_start..].find(')') {
+                    let src_end = src_start + src_end_rel;
+                    let src = text[src_start..src_end]
+                        .split_whitespace()
+                        .next()
+                        .unwrap_or_default();
+                    if !src.is_empty() {
+                        let image = MarkdownImageRef {
+                            alt: &text[alt_start..alt_end],
+                            src,
+                        };
+                        offset = src_end + 1;
+                        return Some(image);
+                    }
+                    offset = src_end + 1;
+                    continue;
                 }
-                offset = src_end + 1;
-                continue;
             }
+            offset = alt_end + 1;
         }
-        offset = alt_end + 1;
-    }
-    refs
+        None
+    })
 }
 
 fn resolve_markdown_image_src(src: &str, execution: &ExecutionSnapshot) -> Option<PathBuf> {
@@ -468,6 +539,10 @@ fn mark_last_cache_breakpoint(
         block.cache_breakpoint = true;
     }
 }
+
+#[cfg(test)]
+#[path = "provider_image_material_tests.rs"]
+mod image_material_tests;
 
 #[cfg(test)]
 mod tests {
@@ -810,6 +885,69 @@ mod tests {
     }
 
     #[test]
+    fn initial_material_request_preserves_markdown_image_limits() {
+        let workspace = tempfile::tempdir().unwrap();
+        let mut prompt = image_budget_prompt(workspace.path());
+        let references = write_distinct_budget_images(workspace.path(), MAX_INLINE_IMAGES + 1);
+        for optional_history in [false, true] {
+            prompt.context_sections = vec![image_section(
+                if optional_history {
+                    "recent_turns"
+                } else {
+                    "current_input"
+                },
+                &references.join("\n"),
+            )];
+            let ledger = crate::runtime::input_evidence_budget::InputEvidenceBudgetLedger::new(
+                crate::config::StateMemoryLimits::default(),
+            )
+            .unwrap();
+            let scope = crate::runtime::resident_input_evidence::InputEvidenceScope {
+                agent_id: prompt.identity.agent_id.clone(),
+                identity_incarnation: prompt.identity.incarnation,
+            };
+            let material = ResourceReadMaterial::new(&ledger, &scope).unwrap();
+            let result = build_initial_provider_turn_request_with_material(
+                &crate::runtime::tests::support::StubProvider::new("unused"),
+                &prompt,
+                vec![],
+                None,
+                &material,
+            );
+            if optional_history {
+                let request = result.unwrap();
+                let images = request
+                    .conversation
+                    .iter()
+                    .filter_map(|message| match message {
+                        ConversationMessage::UserImage {
+                            data_base64,
+                            optional_history: true,
+                            ..
+                        } => Some(data_base64),
+                        _ => None,
+                    })
+                    .collect::<Vec<_>>();
+                assert_eq!(images.len(), MAX_INLINE_IMAGES);
+                assert!(images.iter().all(|image| image.material().is_some()));
+                assert!(matches!(
+                    request.conversation.last(),
+                    Some(ConversationMessage::UserText(note))
+                        if note.contains("omitted 1 optional historical")
+                ));
+            } else {
+                let error = result.unwrap_err();
+                let typed = error
+                    .downcast_ref::<crate::provider::ProviderTransportError>()
+                    .unwrap();
+                assert_eq!(typed.code.as_deref(), Some("image_budget_exceeded"));
+                assert_eq!(typed.classification.disposition, RetryDisposition::FailFast);
+            }
+            assert!(material.finish().is_ok());
+        }
+    }
+
+    #[test]
     fn markdown_image_budget_bounds_duplicate_content_reads() {
         let workspace = tempfile::tempdir().unwrap();
         let mut prompt = image_budget_prompt(workspace.path());
@@ -1058,7 +1196,7 @@ mod tests {
         assert_eq!(request.conversation.len(), 1);
     }
 
-    fn fixture_png() -> &'static [u8] {
+    pub(super) fn fixture_png() -> &'static [u8] {
         &[
             0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0x00, 0x00, 0x0d, 0x49, 0x48,
             0x44, 0x52, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01, 0x08, 0x06, 0x00, 0x00,
@@ -1099,7 +1237,7 @@ mod tests {
         config
     }
 
-    fn fixture_prompt() -> EffectivePrompt {
+    pub(super) fn fixture_prompt() -> EffectivePrompt {
         EffectivePrompt {
             identity: AgentIdentityView {
                 agent_id: "default".into(),
@@ -1131,8 +1269,8 @@ mod tests {
                 worktree_root: None,
                 execution_roots: Vec::new(),
             },
-            loaded_agents_md: LoadedAgentsMd::default(),
-            loaded_agent_memory: LoadedAgentMemory::default(),
+            loaded_agents_md: LoadedAgentsMd::default().into(),
+            loaded_agent_memory: LoadedAgentMemory::default().into(),
             cache_identity: PromptCacheIdentity {
                 agent_id: "default".into(),
                 prompt_cache_key: "default".into(),
@@ -1156,6 +1294,10 @@ mod tests {
             projection_evidence: Default::default(),
             context_plan_evidence: Default::default(),
             recent_turns_reprojection: None,
+            frozen_history_policy: crate::context::ContextHistoryPreparation::default(),
+            frozen_projection_budget: None,
+            frozen_recent_message_limit: None,
+            _resource_read_material: None,
         }
     }
 
@@ -1192,8 +1334,8 @@ mod tests {
                 worktree_root: None,
                 execution_roots: Vec::new(),
             },
-            loaded_agents_md: LoadedAgentsMd::default(),
-            loaded_agent_memory: LoadedAgentMemory::default(),
+            loaded_agents_md: LoadedAgentsMd::default().into(),
+            loaded_agent_memory: LoadedAgentMemory::default().into(),
             cache_identity: PromptCacheIdentity {
                 agent_id: "default".into(),
                 prompt_cache_key: "default".into(),
@@ -1244,6 +1386,10 @@ mod tests {
             projection_evidence: Default::default(),
             context_plan_evidence: Default::default(),
             recent_turns_reprojection: None,
+            frozen_history_policy: crate::context::ContextHistoryPreparation::default(),
+            frozen_projection_budget: None,
+            frozen_recent_message_limit: None,
+            _resource_read_material: None,
         };
 
         let request = build_provider_turn_request(&effective_prompt, Vec::new(), None, true)

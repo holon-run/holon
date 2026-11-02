@@ -45,6 +45,7 @@ decision-clef = { version = "0.1.0", path = "crates/decision-clef" }
 decision-jev = { version = "0.1.0", path = "crates/decision-jev" }
 decision-openai = { version = "0.1.0", path = "crates/decision-openai" }
 decision-openai-decisions = { version = "0.1.0", path = "crates/decision-openai-decisions" }
+futures-util = "0.3"
 decision-local-onnx = { version = "0.1.0", path = "crates/decision-local-onnx", optional = true }
 holon-model-client = { version = "0.1.0", path = "crates/holon-model-client" }
 encoding_rs = "0.8"
@@ -65,7 +66,7 @@ portable-pty = "0.9"
 percent-encoding = "2.3"
 mime_guess = "2.0"
 schemars = { version = "0.9", features = ["chrono04"] }
-serde = { version = "1.0", features = ["derive"] }
+serde = { version = "1.0", features = ["derive", "rc"] }
 serde_json = "1.0"
 tar = "0.4"
 tempfile = "3.14"
@@ -95,7 +96,6 @@ local-onnx = ["dep:decision-local-onnx", "decision-local-onnx/onnx"]
 recovery-acceptance = []
 
 [dev-dependencies]
-futures-util = "0.3"
 proptest = "1.6"
 rusqlite = { version = "0.31", features = ["hooks", "trace"] }
 tokio = { version = "1.43", features = ["test-util"] }
@@ -139,4 +139,12 @@ harness = false
 
 [[bench]]
 name = "conversation_read"
+harness = false
+
+[[bench]]
+name = "context_snapshot"
+harness = false
+
+[[bench]]
+name = "agent_state_workload"
 harness = false

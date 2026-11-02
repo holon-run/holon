@@ -5,9 +5,12 @@ use std::{
     time::{Duration, Instant},
 };
 
-use anyhow::{bail, Result};
+use anyhow::{bail, Context, Result};
 use serde::Serialize;
 use tokio::task::JoinHandle;
+
+#[cfg(test)]
+use crate::runtime::task_queries::{exec_command_event_task_id, run_tool_task_id};
 
 use crate::{
     config::{AppConfig, ModelRouteRef},
@@ -18,10 +21,10 @@ use crate::{
     storage::PollActivityMarker,
     system::{WorkspaceAccessMode, WorkspaceProjectionKind},
     types::{
-        AdmissionContext, AgentStatus, AuditEvent, AuthorityClass, ClosureOutcome, ControlAction,
-        FailureArtifact, MessageBody, MessageDeliverySurface, MessageEnvelope, MessageKind,
-        MessageOrigin, Priority, TaskOutputSnapshot, TaskRecord, TaskStatus, TokenUsage,
-        ToolExecutionRecord, ToolExecutionStatus, TurnBudget, WaitingReason,
+        AdmissionContext, AgentStatus, AuditEvent, AuthorityClass, ClosureOutcome, FailureArtifact,
+        MessageBody, MessageDeliverySurface, MessageEnvelope, MessageKind, MessageOrigin, Priority,
+        TaskOutputSnapshot, TaskRecord, TaskStatus, TokenUsage, ToolExecutionRecord,
+        ToolExecutionStatus, TurnBudget, WaitingReason,
     },
 };
 
@@ -111,14 +114,13 @@ pub struct RunOnceResponse {
     pub shell_commands: usize,
     pub exec_command_items: usize,
     pub batched_exec_command_items: usize,
+    #[serde(skip)]
+    _task_retention: Option<std::sync::Arc<crate::runtime::RunOnceTaskOutputRetention>>,
 }
 
 #[derive(Debug, Default)]
 struct RunBaseline {
-    task_ids: HashSet<String>,
-    tool_ids: HashSet<String>,
-    message_ids: HashSet<String>,
-    event_ids: HashSet<String>,
+    task_session: Option<crate::runtime::task_queries::TaskBirthSession>,
     delivery_summary_ids: HashSet<String>,
     brief_ids: HashSet<String>,
     turn_index: u64,
@@ -229,9 +231,14 @@ async fn run_once_with_host_inner(
     request: RunOnceRequest,
 ) -> Result<RunOnceResponse> {
     let session = prepare_run_session(&host, &request).await?;
-    bind_run_workspace(&host, &session.runtime, &request, session.is_persistent).await?;
-    let baseline =
-        capture_baseline(&session.runtime, &session.runtime.agent_state().await?).await?;
+    bind_run_workspace(
+        &host,
+        &session.runtime,
+        &request,
+        session.is_existing_session,
+    )
+    .await?;
+    let baseline = capture_baseline(&session.runtime).await?;
 
     let inbound = InboundRequest {
         agent_id: session.agent_id.clone(),
@@ -273,7 +280,6 @@ async fn run_once_with_host_inner(
     let queued_message = session.runtime.enqueue(message).await?;
 
     let mut candidate_completion: Option<CandidateCompletion> = None;
-    let mut observed_new_task_ids = HashSet::<String>::new();
     let mut observed_terminal_final_text: Option<String> = None;
     let run_started_at = Instant::now();
     let mut timeout_warning_due = false;
@@ -281,31 +287,19 @@ async fn run_once_with_host_inner(
     let mut timeout_warning_turn_index = None;
 
     let final_candidate = loop {
-        let state = session.runtime.agent_state().await?;
         let storage_marker = session.runtime.poll_activity_marker()?;
         let poll_view =
-            collect_run_poll_view(&session.runtime, &baseline, &state, storage_marker.clone())
-                .await?;
-        observed_new_task_ids.extend(poll_view.new_task_ids.iter().cloned());
+            collect_run_poll_view(&session.runtime, &baseline, storage_marker.clone()).await?;
+        let state = poll_view._run_retention.state.clone();
         let active_new_task_ids =
-            active_new_task_ids(&session.runtime, &poll_view.new_task_ids).await?;
+            active_new_task_ids(&poll_view._run_retention, &poll_view.new_task_ids)?;
         let foreground_idle = state.current_run_id.is_none() && state.pending == 0;
         let turns_elapsed = state.turn_index.saturating_sub(baseline.turn_index);
         let max_turns_hit = request.max_turns.is_some_and(|max| turns_elapsed >= max);
         let terminal_within_max_turns = request.max_turns.is_none_or(|max| turns_elapsed <= max);
 
         let terminal_status = if foreground_idle && poll_view.turn_terminal_observed {
-            session.runtime.current_closure().await?.map(|closure| {
-                (
-                    match closure.outcome {
-                        ClosureOutcome::Completed => RunFinalStatus::Completed,
-                        ClosureOutcome::Continuable => RunFinalStatus::Waiting,
-                        ClosureOutcome::Failed => RunFinalStatus::Failed,
-                        ClosureOutcome::Waiting => RunFinalStatus::Waiting,
-                    },
-                    closure.waiting_reason,
-                )
-            })
+            Some(run_terminal_status(&session.runtime).await?)
         } else {
             None
         };
@@ -359,13 +353,16 @@ async fn run_once_with_host_inner(
                 .runtime
                 .enqueue(timeout_message.into_message())
                 .await?;
-            session.runtime.append_audit_event(
-                "solve_timeout_warning_injected",
-                serde_json::json!({
-                    "agent_id": session.agent_id,
-                    "timeout_seconds": request.timeout_seconds,
-                }),
-            )?;
+            session
+                .runtime
+                .append_audit_event(
+                    "solve_timeout_warning_injected",
+                    serde_json::json!({
+                        "agent_id": session.agent_id,
+                        "timeout_seconds": request.timeout_seconds,
+                    }),
+                )
+                .await?;
             timeout_warning_sent = true;
             timeout_warning_turn_index = Some(state.turn_index);
             candidate_completion = None;
@@ -449,28 +446,36 @@ async fn run_once_with_host_inner(
 
     let final_status = final_candidate.state;
     let waiting_reason = final_candidate.waiting_reason;
-    let mut final_state = session.runtime.agent_state().await?;
 
     let pre_cleanup_view = collect_run_poll_view(
         &session.runtime,
         &baseline,
-        &final_state,
         session.runtime.poll_activity_marker()?,
     )
     .await?;
-    observed_new_task_ids.extend(pre_cleanup_view.new_task_ids.iter().cloned());
-    let active_tasks =
-        active_new_task_ids(&session.runtime, &pre_cleanup_view.new_task_ids).await?;
+    let active_tasks = active_new_task_ids(
+        &pre_cleanup_view._run_retention,
+        &pre_cleanup_view.new_task_ids,
+    )?;
     for task_id in &active_tasks {
         let _ = session
             .runtime
             .stop_task(task_id, &request.authority_class)
             .await;
     }
-    settle_stopped_tasks(&session.runtime, &active_tasks, &request.authority_class).await?;
-    final_state = session.runtime.agent_state().await?;
+    settle_stopped_tasks(
+        &session.runtime,
+        baseline
+            .task_session
+            .as_ref()
+            .context("RunOnce Task session missing")?,
+        &active_tasks,
+        &request.authority_class,
+    )
+    .await?;
 
-    let final_view = collect_run_view(&session.runtime, &baseline, &observed_new_task_ids).await?;
+    let final_view = collect_run_view(&session.runtime, &baseline).await?;
+    let final_state = final_view.state.clone();
     let response = build_response(
         &session.runtime,
         &baseline,
@@ -485,13 +490,8 @@ async fn run_once_with_host_inner(
 
     match session.cleanup {
         RunSessionCleanup::Temporary { runtime_task } => {
-            let _ = session.runtime.control(ControlAction::Stop).await;
-            let _ = runtime_task.await;
-            let _ = host.archive_temporary_runtime_identity(&session.agent_id);
-            let data_dir = host.agent_data_dir(&session.agent_id);
-            if data_dir.exists() {
-                let _ = std::fs::remove_dir_all(&data_dir);
-            }
+            host.cleanup_temporary_runtime(session.agent_id, session.runtime, runtime_task)
+                .await?;
         }
         RunSessionCleanup::Persistent => {
             host.unload_runtime(&session.agent_id).await;
@@ -505,7 +505,7 @@ struct RunSession {
     agent_id: String,
     runtime: RuntimeHandle,
     cleanup: RunSessionCleanup,
-    is_persistent: bool,
+    is_existing_session: bool,
 }
 
 enum RunSessionCleanup {
@@ -519,30 +519,34 @@ async fn prepare_run_session(host: &RuntimeHost, request: &RunOnceRequest) -> Re
     }
 
     if let Some(agent_id) = request.agent_id.as_deref() {
-        if request.create_agent {
+        let is_existing_session = if request.create_agent {
             // No default initialization turn here (#2795): a run_once
             // creation is always immediately followed by the user's prompt
             // in this same session, so the conversation is never empty and
             // an intro turn would only compete with the real request.
             // Standalone `holon agent create` goes through the control HTTP
             // path and does request the default turn.
-            host.create_public_named_agent_with_name(
-                agent_id,
-                request.template.as_deref(),
-                None,
-                None,
-                None,
-                AgentBootstrapExecution::Inline,
-                false,
-            )
-            .await?;
-        }
+            let creation = host
+                .create_public_named_agent_with_name(
+                    agent_id,
+                    request.template.as_deref(),
+                    None,
+                    None,
+                    None,
+                    AgentBootstrapExecution::Inline,
+                    false,
+                )
+                .await?;
+            !creation.receipt.created
+        } else {
+            true
+        };
         let runtime = host.get_public_agent_for_external_ingress(agent_id).await?;
         Ok(RunSession {
             agent_id: agent_id.to_string(),
             runtime,
             cleanup: RunSessionCleanup::Persistent,
-            is_persistent: true,
+            is_existing_session,
         })
     } else {
         let (agent_id, runtime, runtime_task) = host.spawn_temporary_runtime("run").await?;
@@ -550,7 +554,7 @@ async fn prepare_run_session(host: &RuntimeHost, request: &RunOnceRequest) -> Re
             agent_id,
             runtime,
             cleanup: RunSessionCleanup::Temporary { runtime_task },
-            is_persistent: false,
+            is_existing_session: false,
         })
     }
 }
@@ -594,32 +598,10 @@ async fn bind_run_workspace(
     Ok(())
 }
 
-async fn capture_baseline(
-    runtime: &RuntimeHandle,
-    state: &crate::types::AgentState,
-) -> Result<RunBaseline> {
+async fn capture_baseline(runtime: &RuntimeHandle) -> Result<RunBaseline> {
+    let (state, task_session) = runtime.begin_task_birth_session().await?;
     Ok(RunBaseline {
-        task_ids: runtime
-            .latest_task_records_snapshot()
-            .await?
-            .into_iter()
-            .map(|item| item.id)
-            .collect(),
-        tool_ids: runtime
-            .all_tool_executions()?
-            .into_iter()
-            .map(|item| item.id)
-            .collect(),
-        message_ids: runtime
-            .all_messages()?
-            .into_iter()
-            .map(|item| item.id)
-            .collect(),
-        event_ids: runtime
-            .all_events()?
-            .into_iter()
-            .map(|item| item.id)
-            .collect(),
+        task_session: Some(task_session),
         delivery_summary_ids: runtime
             .storage()
             .read_recent_delivery_summaries(usize::MAX)?
@@ -640,15 +622,20 @@ async fn capture_baseline(
 }
 
 struct RunView {
+    state: std::sync::Arc<crate::types::AgentState>,
     new_tasks: Vec<TaskRecord>,
     new_tools: Vec<ToolExecutionRecord>,
     new_messages: Vec<MessageEnvelope>,
     new_events: Vec<AuditEvent>,
+    task_outputs: crate::runtime::RunOnceTaskOutputs,
+    _run_retention: crate::runtime::task_queries::RunOnceOwnedRecords,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct PollActivitySignature {
     storage_marker: PollActivityMarker,
+    input_birth_cursor: u64,
+    current_event_cursor: u64,
     agent_status: AgentStatus,
     current_run_id: Option<String>,
     pending: usize,
@@ -679,216 +666,134 @@ impl CandidateCompletion {
     }
 }
 
-#[derive(Clone)]
 struct RunPollView {
     new_task_ids: Vec<String>,
+    _run_retention: crate::runtime::task_queries::RunOnceRead,
+    _event_task_budget: std::sync::Arc<crate::runtime::input_evidence_budget::BudgetViewGuard>,
     turn_terminal_observed: bool,
     operator_visible_assistant_text_observed: bool,
     runtime_error: bool,
     activity_signature: PollActivitySignature,
 }
 
+async fn run_terminal_status(
+    runtime: &RuntimeHandle,
+) -> Result<(RunFinalStatus, Option<WaitingReason>)> {
+    // A scheduler wake hint is not foreground work. Keep the hint intact and
+    // let the run's task policy and quiescence window decide when to exit.
+    let closure = runtime.current_closure_decision().await?;
+    Ok((
+        match closure.outcome {
+            ClosureOutcome::Completed => RunFinalStatus::Completed,
+            ClosureOutcome::Continuable => RunFinalStatus::Waiting,
+            ClosureOutcome::Failed => RunFinalStatus::Failed,
+            ClosureOutcome::Waiting => RunFinalStatus::Waiting,
+        },
+        closure.waiting_reason,
+    ))
+}
+
 async fn collect_run_poll_view(
     runtime: &RuntimeHandle,
     baseline: &RunBaseline,
-    state: &crate::types::AgentState,
     storage_marker: PollActivityMarker,
 ) -> Result<RunPollView> {
-    let events = runtime.all_events()?;
-    let latest_tasks = runtime.latest_task_records_snapshot().await?;
-    let new_tools = runtime
-        .all_tool_executions()?
-        .into_iter()
-        .filter(|tool| !baseline.tool_ids.contains(&tool.id))
-        .collect::<Vec<_>>();
-    let runtime_error = events
-        .iter()
+    let task_session = baseline
+        .task_session
+        .as_ref()
+        .context("RunOnce Task session missing")?;
+    runtime.prepare_run_once_current_query(task_session).await?;
+    let read = runtime
+        .capture_run_once_statuses_after_writer(task_session)
+        .await?;
+    let runtime_error = read
+        .events()
         .rev()
-        .take_while(|event| !baseline.event_ids.contains(&event.id))
         .any(|event| event.kind == "runtime_error");
-    let operator_visible_assistant_text_observed = events
-        .iter()
-        .rev()
-        .take_while(|event| !baseline.event_ids.contains(&event.id))
-        .any(|event| {
-            event.kind == "assistant_round_recorded"
-                && event.data["visibility"] == "operator_visible"
-                && event.data["has_text"].as_bool() == Some(true)
-        });
+    let operator_visible_assistant_text_observed = read.events().rev().any(|event| {
+        event.kind == "assistant_round_recorded"
+            && event.data["visibility"] == "operator_visible"
+            && event.data["has_text"].as_bool() == Some(true)
+    });
 
-    let mut new_task_ids = latest_tasks
-        .iter()
-        .filter(|task| !baseline.task_ids.contains(&task.id))
-        .map(|task| task.id.clone())
-        .collect::<Vec<_>>();
-    new_task_ids.extend(new_tools.iter().filter_map(exec_command_task_id));
-    new_task_ids.extend(
-        events
-            .iter()
-            .filter(|event| !baseline.event_ids.contains(&event.id))
-            .filter_map(run_event_task_id),
-    );
+    // Borrow all extra selectors before their first owned copies. The guard
+    // follows RunPollView through active-task / stop awaits in its caller.
+    let event_task_budget = runtime.task_session_id_budget(
+        task_session,
+        read.task_ids()?.chain(read.referenced_task_ids()),
+    )?;
+    let mut new_task_ids = read.task_ids()?.map(str::to_owned).collect::<Vec<_>>();
+    new_task_ids.extend(read.referenced_task_ids().map(str::to_owned));
     new_task_ids.sort();
     new_task_ids.dedup();
 
     let activity_signature = PollActivitySignature {
         storage_marker,
-        agent_status: state.status.clone(),
-        current_run_id: state.current_run_id.clone(),
-        pending: state.pending,
-        turn_index: state.turn_index,
-        last_terminal_turn_index: state
+        input_birth_cursor: read.inputs.query.birth_cursor,
+        current_event_cursor: read.current.event_cursor,
+        agent_status: read.state.status.clone(),
+        current_run_id: read.state.current_run_id.clone(),
+        pending: read.state.pending,
+        turn_index: read.state.turn_index,
+        last_terminal_turn_index: read
+            .state
             .last_turn_terminal
             .as_ref()
             .map(|record| record.turn_index),
     };
 
+    let turn_terminal_observed = read
+        .state
+        .last_turn_terminal
+        .as_ref()
+        .is_some_and(|record| record.turn_index > baseline.turn_index);
     Ok(RunPollView {
         new_task_ids,
-        turn_terminal_observed: state
-            .last_turn_terminal
-            .as_ref()
-            .is_some_and(|record| record.turn_index > baseline.turn_index),
+        _run_retention: read,
+        _event_task_budget: event_task_budget,
+        turn_terminal_observed,
         operator_visible_assistant_text_observed,
         runtime_error,
         activity_signature,
     })
 }
 
-async fn collect_run_view(
-    runtime: &RuntimeHandle,
-    baseline: &RunBaseline,
-    observed_task_ids: &HashSet<String>,
-) -> Result<RunView> {
-    let new_messages = runtime
-        .all_messages()?
-        .into_iter()
-        .filter(|message| !baseline.message_ids.contains(&message.id))
-        .collect::<Vec<_>>();
-    let new_events = runtime
-        .all_events()?
-        .into_iter()
-        .filter(|event| !baseline.event_ids.contains(&event.id))
-        .collect::<Vec<_>>();
-    let mut task_ids = observed_task_ids.clone();
-    task_ids.extend(new_messages.iter().filter_map(message_task_id));
-
-    let new_tools = runtime
-        .all_tool_executions()?
-        .into_iter()
-        .filter(|tool| !baseline.tool_ids.contains(&tool.id))
-        .collect::<Vec<_>>();
-    task_ids.extend(new_tools.iter().filter_map(exec_command_task_id));
-    task_ids.extend(new_events.iter().filter_map(run_event_task_id));
-
-    let mut tasks_by_id = runtime
-        .latest_task_records_snapshot()
-        .await?
-        .into_iter()
-        .filter(|task| !baseline.task_ids.contains(&task.id) || task_ids.contains(&task.id))
-        .map(|task| (task.id.clone(), task))
-        .collect::<HashMap<_, _>>();
-    for task_id in &task_ids {
-        if baseline.task_ids.contains(task_id) || tasks_by_id.contains_key(task_id) {
-            continue;
-        }
-        if let Some(task) = runtime.task_record(task_id).await? {
-            tasks_by_id.insert(task.id.clone(), task);
-        }
-    }
-    let mut new_tasks = tasks_by_id
-        .into_values()
-        .filter(|task| !baseline.task_ids.contains(&task.id))
-        .collect::<Vec<_>>();
-    new_tasks.sort_by(|left, right| left.created_at.cmp(&right.created_at));
+async fn collect_run_view(runtime: &RuntimeHandle, baseline: &RunBaseline) -> Result<RunView> {
+    let task_session = baseline
+        .task_session
+        .as_ref()
+        .context("RunOnce Task session missing")?;
+    runtime.prepare_run_once_current_query(task_session).await?;
+    let (read, prepared_outputs) = runtime.prepare_run_once_task_outputs(task_session).await?;
+    // Explicit final product-history I/O; polling uses only qualified metadata.
+    // Accepted birth membership, not a LIMIT or a history baseline, selects IDs.
+    let (new_tools, tool_material) = runtime.run_once_tools(&read)?;
+    let state = read.state.clone();
+    let (new_tasks, new_messages, mut run_retention) = runtime.run_once_records(read)?;
+    let new_events = run_retention.events().cloned().collect();
+    run_retention.retain_tools(tool_material);
+    let task_outputs = runtime
+        .render_run_once_task_outputs(prepared_outputs)
+        .await?;
     Ok(RunView {
+        state,
         new_tasks,
         new_tools,
         new_messages,
         new_events,
+        task_outputs,
+        _run_retention: run_retention,
     })
 }
 
-fn message_task_id(message: &MessageEnvelope) -> Option<String> {
-    message.task_id.clone().or_else(|| {
-        message
-            .metadata
-            .as_ref()
-            .and_then(|metadata| metadata.get("task_id"))
-            .and_then(|value| value.as_str())
-            .map(ToString::to_string)
-    })
-}
-
-fn exec_command_task_id(tool: &ToolExecutionRecord) -> Option<String> {
-    if tool.tool_name != "ExecCommand" || tool.status != ToolExecutionStatus::Success {
-        return None;
-    }
-
-    exec_command_result_value(&tool.output)
-        .and_then(|value| value.get("task_handle"))
-        .and_then(|value| value.get("task_id"))
-        .and_then(|value| value.as_str())
-        .map(ToString::to_string)
-}
-
-fn exec_command_event_task_id(event: &AuditEvent) -> Option<String> {
-    if event.kind != "tool_executed"
-        || event.data.get("tool_name").and_then(|value| value.as_str()) != Some("ExecCommand")
-        || event
-            .data
-            .get("status")
-            .and_then(|value| value.as_str())
-            .is_some_and(|status| status != "success")
-    {
-        return None;
-    }
-
-    event
-        .data
-        .get("task_handle")
-        .and_then(|value| value.get("task_id"))
-        .and_then(|value| value.as_str())
-        .map(ToString::to_string)
-}
-
-fn process_execution_event_task_id(event: &AuditEvent) -> Option<String> {
-    if event.kind != "process_execution_requested"
-        || event.data.get("surface").and_then(|value| value.as_str()) != Some("command_task")
-        || event
-            .data
-            .get("promoted_from_exec_command")
-            .and_then(|value| value.as_bool())
-            != Some(true)
-    {
-        return None;
-    }
-
-    event
-        .data
-        .get("task_id")
-        .and_then(|value| value.as_str())
-        .map(ToString::to_string)
-}
-
-fn run_event_task_id(event: &AuditEvent) -> Option<String> {
-    exec_command_event_task_id(event).or_else(|| process_execution_event_task_id(event))
-}
-
-fn exec_command_result_value(output: &serde_json::Value) -> Option<&serde_json::Value> {
-    output
-        .get("result")
-        .or_else(|| output.get("envelope").and_then(|value| value.get("result")))
-}
-
-async fn active_new_task_ids(
-    runtime: &crate::runtime::RuntimeHandle,
+fn active_new_task_ids(
+    read: &crate::runtime::task_queries::RunOnceRead,
     task_ids: &[String],
 ) -> Result<Vec<String>> {
     let mut active = Vec::new();
     for task_id in task_ids {
-        let snapshot = runtime.task_output(task_id, false, 0).await?;
-        if crate::storage::is_active_task_status(&snapshot.task.status) {
+        let status = read.task_output_status(task_id)?;
+        if crate::storage::is_active_task_status(&status) {
             active.push(task_id.clone());
         }
     }
@@ -897,6 +802,7 @@ async fn active_new_task_ids(
 
 async fn settle_stopped_tasks(
     runtime: &crate::runtime::RuntimeHandle,
+    task_session: &crate::runtime::task_queries::TaskBirthSession,
     task_ids: &[String],
     authority_class: &AuthorityClass,
 ) -> Result<()> {
@@ -906,8 +812,10 @@ async fn settle_stopped_tasks(
             let Some(remaining) = deadline.checked_duration_since(Instant::now()) else {
                 break;
             };
-            let snapshot = runtime.task_output(task_id, false, 0).await?;
-            if !crate::storage::is_active_task_status(&snapshot.task.status) {
+            let status = runtime
+                .capture_run_once_statuses(task_session)?
+                .task_output_status(task_id)?;
+            if !crate::storage::is_active_task_status(&status) {
                 break;
             }
 
@@ -923,8 +831,22 @@ async fn settle_stopped_tasks(
                 break;
             }
 
-            let waited = runtime.task_output(task_id, true, remaining_ms).await?;
-            if !crate::storage::is_active_task_status(&waited.task.status) {
+            let wait_started = Instant::now();
+            let waited = loop {
+                let status = runtime
+                    .capture_run_once_statuses(task_session)?
+                    .task_output_status(task_id)?;
+                if !crate::storage::is_active_task_status(&status)
+                    || wait_started.elapsed() >= Duration::from_millis(remaining_ms)
+                {
+                    break status;
+                }
+                tokio::time::sleep(Duration::from_millis(100).min(
+                    Duration::from_millis(remaining_ms).saturating_sub(wait_started.elapsed()),
+                ))
+                .await;
+            };
+            if !crate::storage::is_active_task_status(&waited) {
                 break;
             }
         }
@@ -939,7 +861,7 @@ async fn build_response(
     final_status: RunFinalStatus,
     waiting_reason: Option<WaitingReason>,
     observed_terminal_final_text: Option<String>,
-    final_state: crate::types::AgentState,
+    final_state: std::sync::Arc<crate::types::AgentState>,
     view: RunView,
 ) -> Result<RunOnceResponse> {
     let sleep_reason = view
@@ -970,12 +892,26 @@ async fn build_response(
     let workspace_root = runtime.workspace_root();
     let mut changed_files = changed_files_from_tools(&view.new_tools, &workspace_root);
     let mut task_summaries = Vec::new();
-    for task in &view.new_tasks {
-        let output = runtime.task_output(&task.id, false, 0).await?;
+    let mut task_summary_budgets = Vec::new();
+    let task_session = baseline
+        .task_session
+        .as_ref()
+        .context("RunOnce Task session missing")?;
+    anyhow::ensure!(
+        view.new_tasks.len() == view.task_outputs.snapshots.len(),
+        "RunOnce output Task set differs"
+    );
+    for (task, output) in view.new_tasks.iter().zip(view.task_outputs.snapshots) {
+        anyhow::ensure!(
+            task.id == output.task_id,
+            "RunOnce output Task order differs"
+        );
+        // Remaining carrier fields retain the source/render/file allocations
+        // until the original RunOnce summary guard has taken responsibility.
+        task_summary_budgets.push(runtime.task_session_wire_budget(task_session, &output)?);
         let worktree =
             worktree_summary_for_task(task.id.as_str(), &view.new_messages).or_else(|| {
                 output
-                    .task
                     .child_supervision
                     .as_ref()
                     .and_then(|child| child.worktree.as_ref())
@@ -985,7 +921,7 @@ async fn build_response(
             changed_files.extend(worktree.changed_files.iter().cloned());
         }
         task_summaries.push(RunTaskSummary {
-            task: output.task,
+            task: output,
             worktree,
         });
     }
@@ -1117,6 +1053,7 @@ async fn build_response(
             .count()
             + batched_exec_command_items(&view.new_tools),
         batched_exec_command_items: batched_exec_command_items(&view.new_tools),
+        _task_retention: Some(view.task_outputs.retention),
     })
 }
 
@@ -1500,7 +1437,7 @@ mod tests {
         context::ContextConfig,
         provider::test_support::ScriptedAgentProvider,
         runtime::InitialWorkspaceBinding,
-        types::{AgentState, AuditEvent, TaskKind},
+        types::{AuditEvent, TaskKind},
     };
 
     use super::*;
@@ -1515,6 +1452,39 @@ mod tests {
             "default".into(),
             ContextConfig::default(),
         )
+    }
+
+    #[tokio::test]
+    async fn run_terminal_status_preserves_pending_scheduler_wake() -> Result<()> {
+        let dir = tempdir()?;
+        let runtime = test_runtime(dir.path())?;
+        let hint = crate::types::PendingWakeHint {
+            reason: "task_result".into(),
+            description: None,
+            source: Some("run_once_test".into()),
+            scope: None,
+            external_trigger_id: None,
+            resource: None,
+            body: None,
+            content_type: None,
+            correlation_id: None,
+            causation_id: None,
+            created_at: Utc::now(),
+        };
+        runtime
+            .update_agent_state(|state| {
+                state.pending_wake_hint = Some(hint.clone());
+                Ok(())
+            })
+            .await?;
+
+        assert!(runtime.current_closure().await?.is_none());
+        assert_eq!(
+            run_terminal_status(&runtime).await?,
+            (RunFinalStatus::Completed, None)
+        );
+        assert_eq!(runtime.agent_state().await?.pending_wake_hint, Some(hint));
+        Ok(())
     }
 
     #[test]
@@ -1544,6 +1514,7 @@ mod tests {
             shell_commands: 0,
             exec_command_items: 0,
             batched_exec_command_items: 0,
+            _task_retention: None,
         };
 
         assert_eq!(
@@ -1564,25 +1535,23 @@ mod tests {
     async fn poll_view_keeps_runtime_error_visible_after_many_events() -> Result<()> {
         let dir = tempdir()?;
         let runtime = test_runtime(dir.path())?;
-        let state = AgentState::new("default");
+        let (_, task_session) = runtime.begin_task_birth_session().await?;
+        let baseline = RunBaseline {
+            task_session: Some(task_session),
+            ..Default::default()
+        };
 
         runtime
-            .storage()
-            .append_event(&AuditEvent::legacy("runtime_error", json!({})))?;
+            .append_audit_event("runtime_error", json!({}))
+            .await?;
         for index in 0..129 {
-            runtime.storage().append_event(&AuditEvent::legacy(
-                "state_changed",
-                json!({ "index": index }),
-            ))?;
+            runtime
+                .append_audit_event("state_changed", json!({ "index": index }))
+                .await?;
         }
 
-        let view = collect_run_poll_view(
-            &runtime,
-            &RunBaseline::default(),
-            &state,
-            runtime.poll_activity_marker()?,
-        )
-        .await?;
+        let view =
+            collect_run_poll_view(&runtime, &baseline, runtime.poll_activity_marker()?).await?;
 
         assert!(view.runtime_error);
         Ok(())
@@ -1592,22 +1561,29 @@ mod tests {
     async fn poll_view_keeps_early_task_ids_visible_after_many_task_updates() -> Result<()> {
         let dir = tempdir()?;
         let runtime = test_runtime(dir.path())?;
-        let state = AgentState::new("default");
+        let (_, task_session) = runtime.begin_task_birth_session().await?;
+        let baseline = RunBaseline {
+            task_session: Some(task_session),
+            ..Default::default()
+        };
 
-        runtime.storage().append_task(&task_record("early-task"))?;
-        for index in 0..129 {
-            runtime
-                .storage()
-                .append_task(&task_record(format!("later-task-{index}")))?;
-        }
-
-        let view = collect_run_poll_view(
+        crate::runtime::tests::support::persist_task_transition(
             &runtime,
-            &RunBaseline::default(),
-            &state,
-            runtime.poll_activity_marker()?,
+            &task_record("early-task"),
+            "task_running",
         )
         .await?;
+        for index in 0..129 {
+            crate::runtime::tests::support::persist_task_transition(
+                &runtime,
+                &task_record(format!("later-task-{index}")),
+                "task_running",
+            )
+            .await?;
+        }
+
+        let view =
+            collect_run_poll_view(&runtime, &baseline, runtime.poll_activity_marker()?).await?;
 
         assert!(view.new_task_ids.iter().any(|id| id == "early-task"));
         Ok(())
@@ -1704,7 +1680,12 @@ mod tests {
             invocation_surface: None,
         };
 
-        assert_eq!(exec_command_task_id(&tool), Some("task-promoted".into()));
+        assert_eq!(
+            run_tool_task_id(
+                &crate::runtime::resident_input_evidence::project_tool_record(&tool).unwrap()
+            ),
+            Some("task-promoted")
+        );
     }
 
     #[test]
@@ -1736,7 +1717,12 @@ mod tests {
             invocation_surface: None,
         };
 
-        assert_eq!(exec_command_task_id(&tool), Some("task-promoted".into()));
+        assert_eq!(
+            run_tool_task_id(
+                &crate::runtime::resident_input_evidence::project_tool_record(&tool).unwrap()
+            ),
+            Some("task-promoted")
+        );
     }
 
     #[test]
@@ -1754,10 +1740,7 @@ mod tests {
             }),
         );
 
-        assert_eq!(
-            exec_command_event_task_id(&event),
-            Some("task-promoted".into())
-        );
+        assert_eq!(exec_command_event_task_id(&event), Some("task-promoted"));
     }
 
     #[test]

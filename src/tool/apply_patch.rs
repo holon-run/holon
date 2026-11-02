@@ -4,6 +4,7 @@ use std::path::{Path, PathBuf};
 
 use super::helpers::normalize_path;
 use crate::{
+    diagnostics::resource_io::{self, ResourceReadMaterial},
     tool::ToolError,
     types::{
         ApplyPatchAction, ApplyPatchChangedFile, ApplyPatchDiagnostic, ApplyPatchHunkSummary,
@@ -139,14 +140,18 @@ struct FileState {
 }
 
 impl FileState {
-    fn from_content(content: &str) -> Self {
+    fn from_content(content: &str) -> Result<Self> {
         if content.is_empty() {
-            return Self {
+            return Ok(Self {
                 lines: Vec::new(),
                 trailing_newline: false,
-            };
+            });
         }
 
+        charge_lines(
+            content.len(),
+            content.bytes().filter(|byte| *byte == b'\n').count() + 1,
+        )?;
         let trailing_newline = content.ends_with('\n');
         let mut lines = content
             .split('\n')
@@ -155,26 +160,82 @@ impl FileState {
         if trailing_newline {
             lines.pop();
         }
-        Self {
+        Ok(Self {
             lines,
             trailing_newline,
-        }
+        })
     }
 
-    fn into_content(self) -> String {
+    fn try_clone(&self) -> Result<Self> {
+        charge_lines(self.lines.iter().map(String::len).sum(), self.lines.len())?;
+        Ok(self.clone())
+    }
+
+    fn into_content(self) -> Result<String> {
+        resource_io::charge_owned_payload(
+            self.lines.iter().map(String::len).sum::<usize>() as u64 + self.lines.len() as u64 + 1,
+        )?;
         let mut content = self.lines.join("\n");
         if self.trailing_newline && !content.is_empty() {
             content.push('\n');
         }
-        content
+        Ok(content)
     }
 }
 
+fn charge_lines(bytes: usize, lines: usize) -> Result<()> {
+    resource_io::charge_owned_payload(bytes.try_into()?)?;
+    resource_io::charge_owned_metadata(
+        (lines as u64)
+            .checked_mul(64)
+            .ok_or_else(|| anyhow::anyhow!("patch line material overflow"))?,
+        lines,
+    )?;
+    Ok(())
+}
+
+/// Owned by the original blocking mutation kernel; its TLS never crosses await.
+pub(crate) fn apply_patch_with_material(
+    workspace_root: &Path,
+    input: &str,
+    surface: ApplyPatchSurface,
+    material: &ResourceReadMaterial,
+) -> Result<ApplyPatchOutcome> {
+    let _io = material.enter();
+    let result = apply_patch_sync(workspace_root, input, surface);
+    material.finish()?;
+    result
+}
+
+#[cfg(test)]
 pub(crate) async fn apply_patch(
     workspace_root: &Path,
     input: &str,
     surface: ApplyPatchSurface,
 ) -> Result<ApplyPatchOutcome> {
+    apply_patch_sync(workspace_root, input, surface)
+}
+
+fn apply_patch_sync(
+    workspace_root: &Path,
+    input: &str,
+    surface: ApplyPatchSurface,
+) -> Result<ApplyPatchOutcome> {
+    // Covers the original parser's simultaneous line/path/hunk representations.
+    // File bodies and execution copies are admitted separately from actual data.
+    charge_lines(
+        input
+            .len()
+            .checked_mul(8)
+            .ok_or_else(|| anyhow::anyhow!("patch parser material overflow"))?,
+        input
+            .bytes()
+            .filter(|byte| *byte == b'\n')
+            .count()
+            .saturating_add(1)
+            .checked_mul(8)
+            .ok_or_else(|| anyhow::anyhow!("patch parser records overflow"))?,
+    )?;
     let expected_format = surface.expected_format();
     let patch_bytes = input.len();
     let parse = parse_patch_for_format(input, expected_format);
@@ -219,7 +280,7 @@ pub(crate) async fn apply_patch(
     let file_count = patches.len();
     let hunk_count = patches.iter().map(|patch| patch.hunks.len()).sum::<usize>();
     let (changed_files, touched, ignored_metadata, diagnostics) =
-        apply_file_patches(workspace_root, &patches).await?;
+        apply_file_patches(workspace_root, &patches)?;
     let mut diagnostics = diagnostics;
     if let Some(compatibility) = compatibility {
         let diagnostic = match compatibility {
@@ -991,7 +1052,7 @@ fn parse_range(range: &str, path: Option<&str>) -> Result<(usize, usize)> {
     ))
 }
 
-async fn apply_file_patches(
+fn apply_file_patches(
     workspace_root: &Path,
     patches: &[FilePatch],
 ) -> Result<(
@@ -1001,6 +1062,30 @@ async fn apply_file_patches(
     Vec<ApplyPatchDiagnostic>,
 )> {
     for patch in patches {
+        let path_bytes = patch.old_path.as_workspace_path().map_or(0, str::len)
+            + patch.new_path.as_workspace_path().map_or(0, str::len)
+            + patch.rename_from.as_ref().map_or(0, String::len)
+            + patch.rename_to.as_ref().map_or(0, String::len)
+            + workspace_root.as_os_str().len();
+        let line_bytes = patch
+            .hunks
+            .iter()
+            .flat_map(|hunk| &hunk.lines)
+            .map(|line| line.text.len())
+            .sum::<usize>();
+        let line_count = patch
+            .hunks
+            .iter()
+            .map(|hunk| hunk.lines.len())
+            .sum::<usize>();
+        // Original receipt/diagnostic/diff construction happens before writes.
+        charge_lines(
+            path_bytes
+                .saturating_mul(16)
+                .saturating_add(line_bytes.saturating_mul(4))
+                .saturating_add(8192),
+            line_count.saturating_mul(4).saturating_add(128),
+        )?;
         for path in [
             patch.old_path.as_workspace_path(),
             patch.new_path.as_workspace_path(),
@@ -1027,7 +1112,7 @@ async fn apply_file_patches(
         match patch_operation_kind(patch)? {
             PatchOperationKind::Add { path } => {
                 let target = resolve_patch_path(workspace_root, path)?;
-                let existing = load_state(&target, &mut state, &mut originals).await?;
+                let existing = load_state(&target, &mut state, &mut originals)?;
                 if existing
                     .as_ref()
                     .is_some_and(|state| !state.lines.is_empty())
@@ -1053,8 +1138,7 @@ async fn apply_file_patches(
             }
             PatchOperationKind::Delete { path } => {
                 let target = resolve_patch_path(workspace_root, path)?;
-                let existing = load_state(&target, &mut state, &mut originals)
-                    .await?
+                let existing = load_state(&target, &mut state, &mut originals)?
                     .ok_or_else(|| missing_file("delete", path, &target, workspace_root))?;
                 if !patch.hunks.is_empty() {
                     let _ = apply_hunks(path, existing, &patch.hunks, &mut diagnostics)?;
@@ -1069,7 +1153,7 @@ async fn apply_file_patches(
             }
             PatchOperationKind::Modify { path } => {
                 let target = resolve_patch_path(workspace_root, path)?;
-                let loaded = load_state(&target, &mut state, &mut originals).await?;
+                let loaded = load_state(&target, &mut state, &mut originals)?;
                 // A missing modify target whose hunks are all pure-add
                 // (`@@ -0,0 +1,N @@`, no context/remove lines) is an add by
                 // another spelling; tolerate it instead of hard-failing.
@@ -1113,10 +1197,9 @@ async fn apply_file_patches(
             } => {
                 let source = resolve_patch_path(workspace_root, from)?;
                 let target = resolve_patch_path(workspace_root, to)?;
-                let existing = load_state(&source, &mut state, &mut originals)
-                    .await?
+                let existing = load_state(&source, &mut state, &mut originals)?
                     .ok_or_else(|| missing_file("rename", from, &source, workspace_root))?;
-                let target_existing = load_state(&target, &mut state, &mut originals).await?;
+                let target_existing = load_state(&target, &mut state, &mut originals)?;
                 if target_existing.is_some() {
                     return Err(existing_file(to));
                 }
@@ -1142,14 +1225,15 @@ async fn apply_file_patches(
     let mut changed = BTreeSet::new();
 
     for (path, final_state) in state {
-        let original_state = originals.get(&path).cloned().unwrap_or(None);
+        resource_io::charge_owned_metadata((path.as_os_str().len() as u64 + 256) * 4, 8)?;
+        let original_state = originals.remove(&path).unwrap_or(None);
         match (original_state, final_state) {
             (Some(_), None) => {
                 removals.push(path.clone());
                 changed.insert(path.display().to_string());
             }
             (None, Some(state)) | (Some(_), Some(state)) => {
-                writes.push((path.clone(), state.into_content()));
+                writes.push((path.clone(), state.into_content()?));
                 changed.insert(path.display().to_string());
             }
             (None, None) => {}
@@ -1157,21 +1241,18 @@ async fn apply_file_patches(
     }
 
     for path in &removals {
-        if tokio::fs::try_exists(path).await.unwrap_or(false) {
-            tokio::fs::remove_file(path)
-                .await
+        if path.try_exists().unwrap_or(false) {
+            std::fs::remove_file(path)
                 .with_context(|| format!("failed to remove {}", path.display()))?;
         }
     }
 
     for (path, content) in writes {
         if let Some(parent) = path.parent() {
-            tokio::fs::create_dir_all(parent)
-                .await
+            std::fs::create_dir_all(parent)
                 .with_context(|| format!("failed to create {}", parent.display()))?;
         }
-        tokio::fs::write(&path, content.as_bytes())
-            .await
+        std::fs::write(&path, content.as_bytes())
             .with_context(|| format!("failed to write {}", path.display()))?;
     }
 
@@ -1324,24 +1405,33 @@ fn patch_operation_kind(patch: &FilePatch) -> Result<PatchOperationKind<'_>> {
     }
 }
 
-async fn load_state(
+fn load_state(
     path: &Path,
     state: &mut HashMap<PathBuf, Option<FileState>>,
     originals: &mut HashMap<PathBuf, Option<FileState>>,
 ) -> Result<Option<FileState>> {
     if let Some(existing) = state.get(path) {
-        return Ok(existing.clone());
+        return existing.as_ref().map(FileState::try_clone).transpose();
     }
 
-    let loaded = match tokio::fs::read_to_string(path).await {
-        Ok(content) => Some(FileState::from_content(&content)),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
-        Err(error) => {
-            return Err(error).with_context(|| format!("failed to read {}", path.display()))
-        }
-    };
-    state.insert(path.to_path_buf(), loaded.clone());
-    originals.insert(path.to_path_buf(), loaded.clone());
+    resource_io::admit_path(path)?;
+    let loaded =
+        match resource_io::read_to_string(path).unwrap_or_else(|| std::fs::read_to_string(path)) {
+            Ok(content) => Some(FileState::from_content(&content)?),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+            Err(error) => {
+                return Err(error).with_context(|| format!("failed to read {}", path.display()))
+            }
+        };
+    resource_io::charge_owned_metadata((path.as_os_str().len() as u64 + 256) * 2, 2)?;
+    state.insert(
+        path.to_path_buf(),
+        loaded.as_ref().map(FileState::try_clone).transpose()?,
+    );
+    originals.insert(
+        path.to_path_buf(),
+        loaded.as_ref().map(FileState::try_clone).transpose()?,
+    );
     Ok(loaded)
 }
 
@@ -1406,6 +1496,19 @@ fn apply_hunks(
     diagnostics: &mut Vec<ApplyPatchDiagnostic>,
 ) -> Result<FileState> {
     for hunk in hunks {
+        // Original/alternative blocks, match-index vectors, relaxed-line rebuild,
+        // and splice capacity are admitted from the actual file and hunk sizes.
+        let hunk_bytes = hunk.lines.iter().map(|line| line.text.len()).sum::<usize>();
+        charge_lines(
+            hunk_bytes
+                .checked_mul(16)
+                .ok_or_else(|| anyhow::anyhow!("patch hunk material overflow"))?,
+            hunk.lines
+                .len()
+                .checked_mul(16)
+                .ok_or_else(|| anyhow::anyhow!("patch hunk records overflow"))?,
+        )?;
+        charge_lines(state.lines.iter().map(String::len).sum(), state.lines.len())?;
         let mut effective_lines = hunk.lines.clone();
         let mut old_block = old_block_of(&effective_lines);
         let mut new_block = new_block_of(&effective_lines);
@@ -2146,6 +2249,122 @@ fn resolve_patch_path(workspace_root: &Path, path: &str) -> Result<PathBuf> {
         }
     }
     Ok(normalized_candidate)
+}
+
+#[cfg(test)]
+mod resource_runtime_tests {
+    use super::*;
+    use crate::runtime::{
+        input_evidence_budget::InputEvidenceBudgetLedger,
+        resident_input_evidence::InputEvidenceScope,
+    };
+
+    fn material(bytes: u64) -> ResourceReadMaterial {
+        ResourceReadMaterial::with_test_limits(
+            &InputEvidenceBudgetLedger::new(Default::default()).unwrap(),
+            &InputEvidenceScope {
+                agent_id: "physical-patch".into(),
+                identity_incarnation: 1,
+            },
+            bytes,
+            65_536,
+        )
+        .unwrap()
+    }
+    const PATCH: &str = "--- a/file.txt\n+++ b/file.txt\n@@ -1,1 +1,1 @@\n-old\n+new\n";
+
+    fn assert_resource_exhausted(error: &anyhow::Error) {
+        let descriptor = crate::runtime_error::describe_runtime_error(error);
+        assert_eq!(descriptor.code, "context_resource_exhausted");
+        assert!(descriptor.retryable);
+    }
+
+    #[test]
+    fn actual_patch_short_input_cannot_read_large_old_file_or_delete_earlier_target() -> Result<()>
+    {
+        let home = tempfile::tempdir()?;
+        let original = "old\n".repeat(256 * 1024);
+        std::fs::write(home.path().join("file.txt"), &original)?;
+        std::fs::write(home.path().join("delete.txt"), "retain\n")?;
+        let patch = format!("--- a/delete.txt\n+++ /dev/null\n@@ -1,1 +0,0 @@\n-retain\n{PATCH}");
+        let error = apply_patch_with_material(
+            home.path(),
+            &patch,
+            ApplyPatchSurface::UnifiedDiffJson,
+            &material(512 * 1024),
+        )
+        .unwrap_err();
+        assert_resource_exhausted(&error);
+        assert_eq!(
+            std::fs::read_to_string(home.path().join("file.txt"))?,
+            original
+        );
+        assert_eq!(
+            std::fs::read_to_string(home.path().join("delete.txt"))?,
+            "retain\n"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn actual_patch_read_growth_is_charged_before_buffer_growth_and_never_written() -> Result<()> {
+        use std::io::Write;
+        let home = tempfile::tempdir()?;
+        let path = home.path().join("file.txt");
+        std::fs::write(&path, "old\n")?;
+        let phase = material(512 * 1024);
+        let growing = path.clone();
+        phase.after_file_metadata(move || {
+            std::fs::OpenOptions::new()
+                .append(true)
+                .open(growing)
+                .unwrap()
+                .write_all(&vec![b'x'; 512 * 1024])
+                .unwrap();
+        });
+        let error = apply_patch_with_material(
+            home.path(),
+            PATCH,
+            ApplyPatchSurface::UnifiedDiffJson,
+            &phase,
+        )
+        .unwrap_err();
+        assert_resource_exhausted(&error);
+        let content = std::fs::read_to_string(path)?;
+        assert!(content.starts_with("old\n"));
+        assert_eq!(content.len(), 512 * 1024 + 4);
+        Ok(())
+    }
+
+    #[test]
+    fn actual_patch_copy_and_output_boundary_fails_before_any_write() -> Result<()> {
+        let home = tempfile::tempdir()?;
+        let path = home.path().join("file.txt");
+        std::fs::write(&path, "old\n")?;
+        let phase = material(4 * 1024 * 1024);
+        let result = apply_patch_with_material(
+            home.path(),
+            PATCH,
+            ApplyPatchSurface::UnifiedDiffJson,
+            &phase,
+        )?;
+        assert_eq!(result.changed_files.len(), 1);
+        assert_eq!(std::fs::read_to_string(&path)?, "new\n");
+        let usage = phase.finish()?;
+        drop(phase);
+        std::fs::write(&path, "old\n")?;
+        let exact = material(usage.0 - 1);
+        let error = apply_patch_with_material(
+            home.path(),
+            PATCH,
+            ApplyPatchSurface::UnifiedDiffJson,
+            &exact,
+        )
+        .unwrap_err();
+        assert_resource_exhausted(&error);
+        assert_eq!(std::fs::read_to_string(&path)?, "old\n");
+        Ok(())
+    }
 }
 
 #[cfg(test)]

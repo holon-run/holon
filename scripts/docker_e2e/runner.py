@@ -129,12 +129,18 @@ BEARER_SECRET_PATTERN = re.compile(
 )
 
 
-def redact_evidence(value: Any) -> Any:
+def redact_evidence(value: Any, secrets_to_redact: list[str] | None = None) -> Any:
     if isinstance(value, dict):
-        return {key: redact_evidence(item) for key, item in value.items()}
+        return {
+            key: redact_evidence(item, secrets_to_redact)
+            for key, item in value.items()
+        }
     if isinstance(value, list):
-        return [redact_evidence(item) for item in value]
+        return [redact_evidence(item, secrets_to_redact) for item in value]
     if isinstance(value, str):
+        for secret in secrets_to_redact or []:
+            if len(secret) >= 8:
+                value = value.replace(secret, "<redacted>")
         return CALLBACK_CAPABILITY_PATTERN.sub(r"\1<redacted>", value)
     return value
 
@@ -4050,6 +4056,18 @@ def require_provider_retry_recovery(
         and (row.get("owner_id") == work_item_id
              or row.get("trigger_message_id") in messages)
     ]
+    # ExecutionAttempt.turn_id is only a preallocated hint copied from the
+    # source message; runtime-owned recovery envelopes carry none. The
+    # authoritative completion link is the Turn that consumed the exact
+    # parked source with the original owner.
+    completing = [
+        row for row in turns
+        if row.get("trigger_message_id") == parked["id"]
+        and parked["id"] in (
+            json.loads(row.get("payload_json") or "{}").get("input_message_ids")
+            or []
+        )
+    ]
     require(
         len(turns) == 2
         and {row["trigger_message_id"] for row in turns} == set(messages)
@@ -4057,11 +4075,9 @@ def require_provider_retry_recovery(
             row.get("owner_kind") == "work_item"
             and row.get("owner_id") == work_item_id for row in turns
         )
-        and any(
-            row["turn_id"] == recovered[0].get("turn_id")
-            and row["trigger_message_id"] == parked["id"]
-            and row["terminal_kind"] == "completed" for row in turns
-        ),
+        and len(completing) == 1
+        and completing[0]["terminal_kind"] == "completed"
+        and recovered[0].get("turn_id") in (None, completing[0]["turn_id"]),
         f"recovery did not complete the exact parked source with its owner: {turns}",
     )
     require(
@@ -4074,7 +4090,7 @@ def require_provider_retry_recovery(
         ],
         "provider recovery emitted a runtime_error",
     )
-    return recovered[0]["turn_id"]
+    return completing[0]["turn_id"]
 
 
 def run_scheduler_task_wait_resume_case(
@@ -4385,11 +4401,28 @@ def run_scheduler_provider_failure_retry_case(
         parking_events = [
             event for event in events
             if event["type"] == "provider_queue_parked"
-            and event["payload"].get("message_id") in target_message_ids
             and event["payload"].get("reason") == "chain_cooling"
         ]
         if parking_events:
-            parked_message_id = parking_events[0]["payload"]["message_id"]
+            # Runtime-owned recoveries do not emit message_admitted. Resolve
+            # their owner and original source from the persisted envelope.
+            failed = harness.runtime_db_snapshot("provider-retry-failed")
+            messages = {
+                row["message_id"]: row for row in failed["messages"]
+                if row["agent_id"] == harness.agent_id
+                and row.get("work_item_id") == work_item_id
+            }
+            for event in parking_events:
+                message_id = event["payload"].get("message_id")
+                row = messages.get(message_id)
+                if row is None:
+                    continue
+                message = json.loads(row["payload_json"])
+                recovery = (message.get("metadata") or {}).get("provider_recovery") or {}
+                if recovery.get("root_message_id") in target_message_ids:
+                    parked_message_id = message_id
+                    break
+        if parked_message_id is not None:
             break
         time.sleep(0.1)
     require(
@@ -4399,7 +4432,6 @@ def run_scheduler_provider_failure_retry_case(
     )
     # Observe the first cooldown before shutdown. Agent stop would abort the
     # exact queued source whose restart recovery this case must prove.
-    failed = harness.runtime_db_snapshot("provider-retry-failed")
     parking = require_provider_retry_parking(
         failed, agent_id=harness.agent_id,
         work_item_id=work_item_id,
@@ -6369,7 +6401,10 @@ def run_live_input_batch_case(harness: CaseHarness, case: dict[str, Any]) -> Non
     marker = secrets.token_hex(4)
     sender = copy.copy(harness)
     sender.agent_id = f"batch-sender-{marker}"
-    harness.request("POST", sender.agent_path("create", control=True), {})
+    harness.request(
+        "POST", sender.agent_path("create", control=True), {},
+        expected_status=(200, 202),
+    )
     sender.wait_default_bootstrap_turn_settled()
     gates = [
         harness.workspace_parent / f".{stage}-{marker}"
@@ -7458,7 +7493,9 @@ def main(argv: list[str] | None = None) -> int:
             print(f"PASS {case_id}")
         except Exception as error:
             status = "fail"
-            error_text = f"{type(error).__name__}: {error}"
+            error_text = redact_evidence(
+                f"{type(error).__name__}: {error}", secret_values + control_tokens
+            )
             if isinstance(error, TimeoutError):
                 failure_kind = "case_timeout"
             (harness.evidence / "failure.txt").write_text(error_text + "\n")
@@ -7469,8 +7506,9 @@ def main(argv: list[str] | None = None) -> int:
             try:
                 harness.runtime_db_snapshot("failure-final")
             except Exception as snapshot_error:
-                evidence_collection_error = (
-                    f"{type(snapshot_error).__name__}: {snapshot_error}"
+                evidence_collection_error = redact_evidence(
+                    f"{type(snapshot_error).__name__}: {snapshot_error}",
+                    secret_values + control_tokens,
                 )
                 write_json(
                     harness.evidence / "failure-evidence-collection.json",
@@ -7483,10 +7521,12 @@ def main(argv: list[str] | None = None) -> int:
                 harness.capture_logs()
             except Exception:
                 pass
-            print(f"FAIL {case_id}: {error}", file=sys.stderr)
+            print(f"FAIL {case_id}: {error_text}", file=sys.stderr)
         finally:
             harness.keep = keep_on_failure and status == "fail"
-            cleanup_result = harness.cleanup()
+            cleanup_result = redact_evidence(
+                harness.cleanup(), secret_values + control_tokens
+            )
             if cleanup_result["status"] == "fail":
                 status = "fail"
                 cleanup_error = "; ".join(cleanup_result["errors"])

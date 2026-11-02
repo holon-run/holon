@@ -98,7 +98,7 @@ async fn run_once_returns_completed_text_for_simple_prompt() -> Result<()> {
         .list_agents()
         .await?
         .into_iter()
-        .map(|summary| summary.identity.agent_id)
+        .map(|summary| summary.identity.agent_id.clone())
         .collect::<Vec<_>>();
     assert!(!listed_agents.iter().any(|id| id == &response.agent_id));
     Ok(())
@@ -110,6 +110,7 @@ struct TokenReportingProvider;
 impl AgentProvider for TokenReportingProvider {
     async fn complete_turn(&self, _request: ProviderTurnRequest) -> Result<ProviderTurnResponse> {
         Ok(ProviderTurnResponse {
+            material: Default::default(),
             blocks: vec![ModelBlock::Text {
                 text: "token counted result".into(),
             }],
@@ -136,6 +137,7 @@ impl AgentProvider for DelayedProvider {
             sleep(Duration::from_millis(1_300)).await;
         }
         Ok(ProviderTurnResponse {
+            material: Default::default(),
             blocks: vec![ModelBlock::Text {
                 text: if call == 0 {
                     "initial result".into()
@@ -264,6 +266,7 @@ impl AgentProvider for WorkItemDeliverySummaryProvider {
     async fn complete_turn(&self, request: ProviderTurnRequest) -> Result<ProviderTurnResponse> {
         if request.tools.is_empty() {
             return Ok(ProviderTurnResponse {
+                material: Default::default(),
                 blocks: vec![ModelBlock::Text {
                     text: "Implemented broad prompt/context snapshot coverage, then fixed annotation warnings in a later continuation. Verification: focused tests passed.".into(),
                 }],
@@ -285,6 +288,7 @@ impl AgentProvider for WorkItemDeliverySummaryProvider {
             .expect("test should seed a work item id before provider use");
         if *self.after_completion.lock().await {
             return Ok(ProviderTurnResponse {
+                material: Default::default(),
                 blocks: vec![ModelBlock::Text {
                     text: "Fixed two test annotation issues.".into(),
                 }],
@@ -301,6 +305,7 @@ impl AgentProvider for WorkItemDeliverySummaryProvider {
             *self.complete_next.lock().await = false;
             *self.after_completion.lock().await = true;
             return Ok(ProviderTurnResponse {
+                material: Default::default(),
                 blocks: vec![
                     ModelBlock::Text {
                         text: "Implemented broad prompt/context snapshot coverage".into(),
@@ -349,6 +354,7 @@ impl AgentProvider for WorkItemDeliverySummaryProvider {
         };
 
         Ok(ProviderTurnResponse {
+            material: Default::default(),
             blocks,
             stop_reason: None,
             input_tokens: 100,
@@ -494,6 +500,7 @@ impl AgentProvider for FileEditingProvider {
         *calls += 1;
         if *calls == 1 {
             return Ok(ProviderTurnResponse {
+                material: Default::default(),
                 blocks: vec![
                     ModelBlock::ToolUse {
                         id: "patch-1".into(),
@@ -526,6 +533,7 @@ impl AgentProvider for FileEditingProvider {
         }
 
         Ok(ProviderTurnResponse {
+            material: Default::default(),
             blocks: vec![ModelBlock::Text {
                 text: "file tools complete".into(),
             }],
@@ -584,6 +592,7 @@ impl AgentProvider for MultiMutatingToolsProvider {
         *calls += 1;
         if *calls == 1 {
             return Ok(ProviderTurnResponse {
+                material: Default::default(),
                 blocks: vec![
                     ModelBlock::ToolUse {
                         id: "patch-1".into(),
@@ -624,6 +633,7 @@ impl AgentProvider for MultiMutatingToolsProvider {
         }
 
         Ok(ProviderTurnResponse {
+            material: Default::default(),
             blocks: vec![ModelBlock::Text {
                 text: "multiple mutating tools complete".into(),
             }],
@@ -705,6 +715,7 @@ impl AgentProvider for TerminalDeliveryProvider {
 
         match *calls {
             1 => Ok(ProviderTurnResponse {
+                material: Default::default(),
                 blocks: vec![
                     ModelBlock::ToolUse {
                         id: "patch-1".into(),
@@ -735,6 +746,7 @@ impl AgentProvider for TerminalDeliveryProvider {
             request_diagnostics: None,
             }),
             2 => Ok(ProviderTurnResponse {
+                material: Default::default(),
                 blocks: vec![
                     ModelBlock::Text {
                         text: "Perfect! All tests pass. Let me create a summary document of what was changed:".into(),
@@ -794,6 +806,7 @@ impl AgentProvider for SleepOnlyTerminalProvider {
 
         match *calls {
             1 => Ok(ProviderTurnResponse {
+                material: Default::default(),
                 blocks: vec![ModelBlock::ToolUse {
                     id: "patch-1".into(),
                     name: "ApplyPatch".into(),
@@ -812,6 +825,7 @@ impl AgentProvider for SleepOnlyTerminalProvider {
                 request_diagnostics: None,
             }),
             2 => Ok(ProviderTurnResponse {
+                material: Default::default(),
                 blocks: vec![ModelBlock::ToolUse {
                     id: "sleep-1".into(),
                     name: "Sleep".into(),
@@ -842,6 +856,7 @@ impl AgentProvider for EmptyTerminalDeliveryProvider {
 
         match *calls {
             1 => Ok(ProviderTurnResponse {
+                material: Default::default(),
                 blocks: vec![
                     ModelBlock::ToolUse {
                         id: "patch-1".into(),
@@ -872,6 +887,7 @@ impl AgentProvider for EmptyTerminalDeliveryProvider {
                 request_diagnostics: None,
             }),
             2 => Ok(ProviderTurnResponse {
+                material: Default::default(),
                 blocks: vec![
                     ModelBlock::Text {
                         text: "Verification is done. I'll package the final answer now.".into(),
@@ -995,6 +1011,7 @@ impl AgentProvider for SleepTaskProvider {
             assert!(request.tools.iter().all(|tool| tool.name != "Sleep"));
             assert!(request.tools.iter().any(|tool| tool.name == "WaitFor"));
             return Ok(ProviderTurnResponse {
+                material: Default::default(),
                 blocks: vec![ModelBlock::ToolUse {
                     id: "task-1".into(),
                     name: "Sleep".into(),
@@ -1016,6 +1033,7 @@ impl AgentProvider for SleepTaskProvider {
         }
 
         Ok(ProviderTurnResponse {
+            material: Default::default(),
             blocks: vec![ModelBlock::Text {
                 text: "sleep finished".into(),
             }],
@@ -1076,6 +1094,7 @@ impl AgentProvider for CommandTaskProvider {
         if *calls == 1 {
             assert!(request.tools.iter().any(|tool| tool.name == "ExecCommand"));
             return Ok(ProviderTurnResponse {
+                material: Default::default(),
                 blocks: vec![ModelBlock::ToolUse {
                     id: "task-1".into(),
                     name: "ExecCommand".into(),
@@ -1101,6 +1120,7 @@ impl AgentProvider for CommandTaskProvider {
         }
 
         Ok(ProviderTurnResponse {
+            material: Default::default(),
             blocks: vec![ModelBlock::Text {
                 text: "command task queued".into(),
             }],
@@ -1330,6 +1350,7 @@ impl AgentProvider for DelegatedRunOnceProvider {
         if request.tools.is_empty() {
             sleep(Duration::from_millis(100)).await;
             return Ok(ProviderTurnResponse {
+                material: Default::default(),
                 blocks: vec![ModelBlock::Text {
                     text: "child delegated result".into(),
                 }],
@@ -1347,6 +1368,7 @@ impl AgentProvider for DelegatedRunOnceProvider {
         *parent_calls += 1;
         match *parent_calls {
             1 => Ok(ProviderTurnResponse {
+                material: Default::default(),
                 blocks: vec![ModelBlock::ToolUse {
                     id: "task-1".into(),
                     name: "InvokeAgent".into(),
@@ -1369,6 +1391,7 @@ impl AgentProvider for DelegatedRunOnceProvider {
                 request_diagnostics: None,
             }),
             _ => Ok(ProviderTurnResponse {
+                material: Default::default(),
                 blocks: vec![ModelBlock::Text {
                     text: "parent final result".into(),
                 }],
@@ -1400,6 +1423,7 @@ impl AgentProvider for TwoRoundProvider {
         if *calls == 1 {
             assert!(request.tools.iter().any(|tool| tool.name == "GetAgent"));
             return Ok(ProviderTurnResponse {
+                material: Default::default(),
                 blocks: vec![ModelBlock::ToolUse {
                     id: "tool-1".into(),
                     name: "GetAgent".into(),
@@ -1417,6 +1441,7 @@ impl AgentProvider for TwoRoundProvider {
             });
         }
         Ok(ProviderTurnResponse {
+            material: Default::default(),
             blocks: vec![ModelBlock::Text {
                 text: "two rounds complete".into(),
             }],
@@ -1631,6 +1656,7 @@ impl AgentProvider for BudgetWarningCheckProvider {
             // Round 1: make a no-op tool call so the budget warning is
             // injected on round 2 via the runtime_reminder projection path.
             return Ok(ProviderTurnResponse {
+                material: Default::default(),
                 blocks: vec![ModelBlock::ToolUse {
                     id: "exec-1".into(),
                     name: "ExecCommand".into(),
@@ -1661,6 +1687,7 @@ impl AgentProvider for BudgetWarningCheckProvider {
             "no budget warning"
         };
         Ok(ProviderTurnResponse {
+            material: Default::default(),
             blocks: vec![ModelBlock::Text { text: text.into() }],
             stop_reason: None,
             input_tokens: 50,
@@ -1690,6 +1717,7 @@ impl AgentProvider for WorktreeTaskProvider {
     async fn complete_turn(&self, request: ProviderTurnRequest) -> Result<ProviderTurnResponse> {
         if request.tools.is_empty() {
             return Ok(ProviderTurnResponse {
+                material: Default::default(),
                 blocks: vec![ModelBlock::Text {
                     text: "worktree subagent finished".into(),
                 }],
@@ -1707,6 +1735,7 @@ impl AgentProvider for WorktreeTaskProvider {
         *calls += 1;
         if *calls == 1 {
             return Ok(ProviderTurnResponse {
+                material: Default::default(),
                 blocks: vec![ModelBlock::ToolUse {
                     id: "task-1".into(),
                     name: "InvokeAgent".into(),
@@ -1731,6 +1760,7 @@ impl AgentProvider for WorktreeTaskProvider {
         }
 
         Ok(ProviderTurnResponse {
+            material: Default::default(),
             blocks: vec![ModelBlock::Text {
                 text: "worktree task queued".into(),
             }],
@@ -1746,23 +1776,56 @@ impl AgentProvider for WorktreeTaskProvider {
 }
 
 async fn assert_run_once_includes_worktree_task_metadata() -> Result<()> {
+    support::init_test_tracing();
+    let stage = |phase: &str| {
+        use std::io::Write;
+        // Direct stderr remains visible if libtest is killed before capture ends.
+        let _ = writeln!(
+            std::io::stderr(),
+            "run_once_worktree_metadata stage={phase}"
+        );
+    };
+    stage("fixture_start");
     let test_config = test_config();
     let workspace_dir = test_config.workspace_dir().to_path_buf();
     init_git_repo(&workspace_dir)?;
+    stage("host_start");
     let host = RuntimeHost::new_with_provider(
         test_config.config().clone(),
         Arc::new(WorktreeTaskProvider::new()),
     )?;
 
-    let response = run_once_with_host(host.clone(), run_request("create a worktree task")).await?;
+    stage("run_once_start");
+    let response = run_once_with_host(
+        host.clone(),
+        RunOnceRequest {
+            agent_id: Some("worktree-metadata-owner".into()),
+            create_agent: true,
+            ..run_request("create a worktree task")
+        },
+    )
+    .await?;
+    stage("run_once_done");
 
+    assert_eq!(response.agent_id, "worktree-metadata-owner");
     assert_eq!(response.final_status, RunFinalStatus::Completed);
     assert_eq!(response.tasks.len(), 1);
+    let execution = host
+        .get_public_agent_for_external_ingress(&response.agent_id)
+        .await?
+        .execution_snapshot()
+        .await?;
+    assert_eq!(
+        execution.execution_root, workspace_dir,
+        "new named run_once session should bind the configured workspace: {execution:#?}"
+    );
     assert_eq!(
         response.tasks[0].task.status,
         holon::types::TaskStatus::Completed,
-        "{}",
-        serde_json::to_string(&response.tasks[0]).expect("serialize task summary")
+        "task={}, recent_tool_executions={:#?}",
+        serde_json::to_string(&response.tasks[0]).expect("serialize task summary"),
+        host.agent_storage(&response.agent_id)
+            .and_then(|storage| storage.read_recent_tool_executions(1))
     );
     let worktree = response.tasks[0].worktree.as_ref().unwrap_or_else(|| {
         panic!(
@@ -1775,8 +1838,9 @@ async fn assert_run_once_includes_worktree_task_metadata() -> Result<()> {
         worktree.worktree_branch,
         format!("task-{}", response.tasks[0].task.task_id)
     );
+    stage("child_status_start");
     assert_eq!(
-        host.default_runtime()
+        host.get_public_agent_for_external_ingress(&response.agent_id)
             .await?
             .task_status_snapshot(&response.tasks[0].task.task_id)
             .await?
@@ -1785,6 +1849,7 @@ async fn assert_run_once_includes_worktree_task_metadata() -> Result<()> {
             .map(|child| &child.phase),
         Some(&holon::types::ChildAgentPhase::Terminal)
     );
+    stage("assertions_done");
     Ok(())
 }
 
@@ -1820,13 +1885,21 @@ async fn run_once_can_target_a_persistent_named_agent_session() -> Result<()> {
         .read_agent()?
         .expect("persistent agent state should be stored after the first run");
     assert!(first_state.total_message_count > 0);
+    assert_eq!(
+        first_state
+            .active_workspace_entry
+            .as_ref()
+            .expect("new named run_once should bind a workspace")
+            .execution_root,
+        test_config.workspace_dir()
+    );
 
     let second_host = RuntimeHost::new_with_provider(test_config.config().clone(), provider)?;
     let listed_agents = second_host
         .list_agents()
         .await?
         .into_iter()
-        .map(|summary| summary.identity.agent_id)
+        .map(|summary| summary.identity.agent_id.clone())
         .collect::<Vec<_>>();
     assert!(listed_agents.iter().any(|id| id == "bench-15"));
 

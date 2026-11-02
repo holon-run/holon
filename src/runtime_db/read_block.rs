@@ -139,6 +139,12 @@ impl Drop for ReadScopeGuard {
     }
 }
 
+/// Scope nested synchronous reads inside an already registered blocking worker.
+pub(crate) fn with_scope<T>(scope: RuntimeDbReadScope, work: impl FnOnce() -> T) -> T {
+    let _scope = ReadScopeGuard::enter(scope);
+    work()
+}
+
 fn current_context() -> Option<ReadContext> {
     READ_CONTEXT.with(|slot| *slot.borrow())
 }

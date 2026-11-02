@@ -38,19 +38,25 @@ const HTTP_READ_BLOCK_BUDGET: Duration = Duration::from_secs(10);
 mod activity;
 mod events;
 mod index_outbox;
-mod legacy;
 mod memory;
 pub(crate) mod read_models;
 mod recovery;
+mod sqlite_only;
 mod store;
 mod work_queue;
 
 pub use activity::{FileActivityMarker, PollActivityMarker};
+#[cfg(test)]
+pub(crate) use events::EventLogPage;
 pub use events::RuntimeEventLog;
-pub(crate) use events::{EventBus, EventLogPage, EventLogPageOrder, PublishedAuditEvent};
+pub(crate) use events::{EventBus, EventLogPageOrder, PublishedAuditEvent};
 pub use index_outbox::RuntimeIndexOutbox;
-pub(crate) use legacy::LegacyImporter;
 pub use read_models::RuntimeReadModels;
+pub(crate) use read_models::{
+    clone_queue_work_item_key, derive_agent_posture, derive_agent_posture_from_selected_work,
+    derive_agent_posture_from_state, derive_context_work_queue, filter_context_active_waits,
+    QueueLatestWork, QueueWorkBuilder, WORK_QUEUE_NON_OPEN_WINDOW,
+};
 pub use recovery::RecoverySnapshot;
 pub use store::RuntimeStore;
 pub use work_queue::{WorkItemCandidateClass, WorkItemSchedulingProjection, WorkQueueReadModel};
@@ -273,16 +279,6 @@ impl AppStorage {
         &self.data_dir
     }
 
-    /// Rebuild every read facade over the supplied DB without opening a writer.
-    pub(crate) fn read_only_with_db(&self, runtime_db: RuntimeDb) -> Result<Self> {
-        Self::new_with_scope_options(
-            self.data_dir.clone(),
-            self.agent_id.clone(),
-            StorageOpenMode::ReadOnly,
-            runtime_db,
-        )
-    }
-
     pub fn runtime_dir(&self) -> PathBuf {
         self.data_dir.join(RUNTIME_DIR)
     }
@@ -342,10 +338,6 @@ impl AppStorage {
         self.store.clone()
     }
 
-    pub(crate) fn legacy_importer(&self) -> LegacyImporter<'_> {
-        LegacyImporter::new(self)
-    }
-
     pub fn poll_activity_marker(&self) -> Result<PollActivityMarker> {
         let empty = FileActivityMarker::default();
         Ok(PollActivityMarker {
@@ -375,6 +367,41 @@ impl AppStorage {
 
     pub fn append_events(&self, events: &[AuditEvent]) -> Result<()> {
         self.store.event_log().append_many(events)
+    }
+
+    /// SQL-only commits return canonical facts before any runtime publication.
+    pub fn commit_message_evidence(&self, record: &MessageEnvelope) -> Result<MessageEnvelope> {
+        self.store.commit_message_evidence(record)
+    }
+
+    pub fn commit_transcript_evidence(&self, record: &TranscriptEntry) -> Result<TranscriptEntry> {
+        self.store.commit_transcript_evidence(record)
+    }
+
+    pub fn commit_tool_execution_evidence(
+        &self,
+        record: &ToolExecutionRecord,
+    ) -> Result<ToolExecutionRecord> {
+        self.store.commit_tool_execution_evidence(record)
+    }
+
+    pub fn commit_brief_evidence(&self, record: &BriefRecord) -> Result<BriefRecord> {
+        self.store.commit_brief_evidence(record)
+    }
+
+    pub fn commit_brief_with_created_event(
+        &self,
+        record: &BriefRecord,
+        event: &crate::types::AuditEvent,
+    ) -> Result<crate::runtime_db::evidence::BriefCreatedCommit> {
+        self.store.commit_brief_with_created_event(record, event)
+    }
+
+    pub fn commit_turn_record(
+        &self,
+        record: &TurnRecord,
+    ) -> Result<crate::runtime_db::evidence::CommittedTurnRecord> {
+        self.store.commit_turn_record(record)
     }
 
     pub fn append_brief(&self, brief: &BriefRecord) -> Result<()> {
@@ -522,8 +549,10 @@ impl AppStorage {
             .ok_or_else(|| anyhow::anyhow!("agent-scoped storage operation requires an agent id"))
     }
 
-    pub fn write_agent(&self, agent: &AgentState) -> Result<()> {
-        self.store.write_agent(agent)
+    /// Fixture setup only. Live agents must use their mutation coordinator.
+    #[doc(hidden)]
+    pub fn write_agent_for_fixture(&self, agent: &AgentState) -> Result<()> {
+        self.store.write_agent_for_fixture(agent)
     }
 
     pub fn read_agent(&self) -> Result<Option<AgentState>> {
@@ -556,6 +585,7 @@ impl AppStorage {
             .agent_event_recovery_window(self.agent_id.as_deref())
     }
 
+    #[cfg(test)]
     pub(crate) fn read_event_page_matching<F>(
         &self,
         before_seq: Option<u64>,
@@ -583,6 +613,16 @@ impl AppStorage {
         self.runtime_db
             .evidence()
             .briefs_for_turn(&self.storage_agent_id()?, turn_id)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn summary_record_counts(&self) -> Result<(usize, usize)> {
+        let agent_id = self.storage_agent_id()?;
+        let mut connection = self.runtime_db.connection()?;
+        let tx = connection.transaction_with_behavior(rusqlite::TransactionBehavior::Deferred)?;
+        let counts = crate::runtime_db::current_query::summary_counts(&tx, &agent_id)?;
+        tx.commit()?;
+        Ok(counts)
     }
 
     pub fn read_brief_by_id(&self, brief_id: &str) -> Result<Option<BriefRecord>> {
@@ -1015,6 +1055,19 @@ impl AppStorage {
         self.read_models().work_queue()
     }
 
+    pub(crate) fn work_queue_with_observed_scheduling<'a, I>(
+        &self,
+        state: &AgentState,
+        triggers: I,
+    ) -> Result<WorkQueueReadModel>
+    where
+        I: IntoIterator<Item = &'a ExternalTriggerRecord>,
+        I::IntoIter: Clone,
+    {
+        self.read_models()
+            .work_queue_with_observed_scheduling(state, triggers)
+    }
+
     pub fn work_queue_prompt_projection(&self) -> Result<WorkQueueReadModel> {
         self.read_models().work_queue()
     }
@@ -1224,6 +1277,16 @@ impl AppStorage {
     ) -> Result<Vec<WaitConditionRecord>> {
         let runtime_db = self.runtime_db.clone();
         return runtime_db.wait_conditions().latest_for_agent(agent_id);
+    }
+
+    pub(crate) fn latest_wait_conditions_for_agent_with_material(
+        &self,
+        agent_id: &str,
+        material: &crate::diagnostics::resource_io::ResourceReadMaterial,
+    ) -> Result<Vec<WaitConditionRecord>> {
+        self.runtime_db
+            .wait_conditions()
+            .latest_for_agent_with_material(agent_id, material)
     }
 
     pub fn latest_external_triggers(&self) -> Result<Vec<ExternalTriggerRecord>> {
@@ -1817,13 +1880,7 @@ mod tests {
             storage.runtime_dir().join("state/runtime.lock"),
         )
         .unwrap();
-        runtime_db
-            .audit_events()
-            .import_legacy(
-                Some("agent-test"),
-                storage.read_recent_events(usize::MAX).unwrap(),
-            )
-            .unwrap();
+        runtime_db.initialize_sqlite_storage_domains().unwrap();
         storage
             .enable_audit_event_index(runtime_db.clone(), Some("agent-test".to_string()))
             .unwrap();
@@ -1859,16 +1916,15 @@ mod tests {
     fn audit_events_use_runtime_db_after_cutover_without_live_jsonl_append() {
         let dir = tempdir().unwrap();
         let storage = AppStorage::new_for_agent_for_test(dir.path(), "agent-test").unwrap();
-        storage.write_agent(&AgentState::new("agent-test")).unwrap();
+        storage
+            .write_agent_for_fixture(&AgentState::new("agent-test"))
+            .unwrap();
         let runtime_db = RuntimeDb::open_and_migrate(
             storage.runtime_dir().join("state/runtime.sqlite"),
             storage.runtime_dir().join("state/runtime.lock"),
         )
         .unwrap();
-        runtime_db
-            .audit_events()
-            .import_legacy(Some("agent-test"), Vec::new())
-            .unwrap();
+        runtime_db.initialize_sqlite_storage_domains().unwrap();
         storage
             .enable_audit_event_index(runtime_db.clone(), Some("agent-test".to_string()))
             .unwrap();
@@ -1894,16 +1950,15 @@ mod tests {
     fn audit_events_use_runtime_db_after_cutover_before_sink_is_enabled() {
         let dir = tempdir().unwrap();
         let storage = AppStorage::new_for_agent_for_test(dir.path(), "agent-test").unwrap();
-        storage.write_agent(&AgentState::new("agent-test")).unwrap();
+        storage
+            .write_agent_for_fixture(&AgentState::new("agent-test"))
+            .unwrap();
         let runtime_db = RuntimeDb::open_and_migrate(
             storage.runtime_dir().join("state/runtime.sqlite"),
             storage.runtime_dir().join("state/runtime.lock"),
         )
         .unwrap();
-        runtime_db
-            .audit_events()
-            .import_legacy(Some("agent-test"), Vec::new())
-            .unwrap();
+        runtime_db.initialize_sqlite_storage_domains().unwrap();
 
         storage
             .append_event(&AuditEvent::legacy(
@@ -1931,15 +1986,7 @@ mod tests {
             storage.runtime_dir().join("state/runtime.lock"),
         )
         .unwrap();
-        runtime_db
-            .wait_conditions()
-            .import_legacy(Vec::new())
-            .unwrap();
-        runtime_db
-            .queue_entries()
-            .import_legacy(Vec::new())
-            .unwrap();
-        runtime_db.timers().import_legacy(Vec::new()).unwrap();
+        runtime_db.initialize_sqlite_storage_domains().unwrap();
         let now = truncate_to_millis(Utc::now());
         let wait_condition = WaitConditionRecord {
             id: "wait-1".into(),
@@ -2076,39 +2123,15 @@ mod tests {
     fn runtime_db_state_writes_skip_live_jsonl_after_cutover() {
         let dir = tempdir().unwrap();
         let storage = AppStorage::new_for_agent_for_test(dir.path(), "default").unwrap();
-        storage.write_agent(&AgentState::new("default")).unwrap();
+        storage
+            .write_agent_for_fixture(&AgentState::new("default"))
+            .unwrap();
         let runtime_db = RuntimeDb::open_and_migrate(
             storage.runtime_dir().join("state/runtime.sqlite"),
             storage.runtime_dir().join("state/runtime.lock"),
         )
         .unwrap();
-        runtime_db.tasks().import_legacy(Vec::new()).unwrap();
-        runtime_db.work_items().import_legacy(Vec::new()).unwrap();
-        runtime_db
-            .wait_conditions()
-            .import_legacy(Vec::new())
-            .unwrap();
-        runtime_db
-            .queue_entries()
-            .import_legacy(Vec::new())
-            .unwrap();
-        runtime_db.timers().import_legacy(Vec::new()).unwrap();
-        runtime_db
-            .external_triggers()
-            .import_legacy(Vec::new())
-            .unwrap();
-        runtime_db
-            .workspace_entries()
-            .import_legacy(Vec::new())
-            .unwrap();
-        runtime_db
-            .workspace_occupancies()
-            .import_legacy(Vec::new())
-            .unwrap();
-        runtime_db
-            .agent_identities()
-            .import_legacy(Vec::new())
-            .unwrap();
+        runtime_db.initialize_sqlite_storage_domains().unwrap();
         let now = truncate_to_millis(Utc::now());
         let task = TaskRecord {
             id: "task-db-only".into(),
@@ -2290,7 +2313,9 @@ mod tests {
     fn append_turn_uses_runtime_db_after_cutover_without_turns_jsonl() {
         let dir = tempdir().unwrap();
         let storage = AppStorage::new_for_agent_for_test(dir.path(), "default").unwrap();
-        storage.write_agent(&AgentState::new("default")).unwrap();
+        storage
+            .write_agent_for_fixture(&AgentState::new("default"))
+            .unwrap();
         let runtime_db = RuntimeDb::open_and_migrate(
             storage.runtime_dir().join("state/runtime.sqlite"),
             storage.runtime_dir().join("state/runtime.lock"),
@@ -2580,7 +2605,9 @@ mod tests {
     fn runtime_db_evidence_writes_skip_live_jsonl_after_cutover() {
         let dir = tempdir().unwrap();
         let storage = AppStorage::new_for_agent_for_test(dir.path(), "default").unwrap();
-        storage.write_agent(&AgentState::new("default")).unwrap();
+        storage
+            .write_agent_for_fixture(&AgentState::new("default"))
+            .unwrap();
         let _runtime_db = RuntimeDb::open_and_migrate(
             storage.runtime_dir().join("state/runtime.sqlite"),
             storage.runtime_dir().join("state/runtime.lock"),
@@ -2650,7 +2677,9 @@ mod tests {
     fn runtime_index_outbox_write_does_not_touch_memory_index_db() {
         let dir = tempdir().unwrap();
         let storage = AppStorage::new_for_agent_for_test(dir.path(), "default").unwrap();
-        storage.write_agent(&AgentState::new("default")).unwrap();
+        storage
+            .write_agent_for_fixture(&AgentState::new("default"))
+            .unwrap();
         let _runtime_db = RuntimeDb::open_and_migrate(
             storage.runtime_dir().join("state/runtime.sqlite"),
             storage.runtime_dir().join("state/runtime.lock"),
@@ -2791,113 +2820,6 @@ mod tests {
     }
 
     #[test]
-    fn runtime_db_message_and_transcript_import_is_idempotent() {
-        let dir = tempdir().unwrap();
-        let storage = AppStorage::new_for_test(dir.path()).unwrap();
-        let runtime_db = RuntimeDb::open_and_migrate(
-            storage.runtime_dir().join("state/runtime.sqlite"),
-            storage.runtime_dir().join("state/runtime.lock"),
-        )
-        .unwrap();
-        let mut message = MessageEnvelope::new(
-            "default",
-            MessageKind::OperatorPrompt,
-            MessageOrigin::Operator {
-                actor_id: None,
-                actor_display_name: None,
-            },
-            AuthorityClass::OperatorInstruction,
-            Priority::Normal,
-            MessageBody::Text {
-                text: "legacy message".into(),
-            },
-        );
-        message.message_seq = Some(7);
-        let entry = TranscriptEntry::new(
-            "default",
-            TranscriptEntryKind::IncomingMessage,
-            None,
-            Some(message.id.clone()),
-            serde_json::json!({ "text": "legacy transcript" }),
-        );
-
-        runtime_db
-            .messages()
-            .import_legacy(vec![serde_json::to_value(&message).unwrap()])
-            .unwrap();
-        runtime_db
-            .transcript_entries()
-            .import_legacy(vec![entry.clone()])
-            .unwrap();
-        runtime_db
-            .messages()
-            .import_legacy(vec![serde_json::to_value(&message).unwrap()])
-            .unwrap();
-        runtime_db
-            .transcript_entries()
-            .import_legacy(vec![entry])
-            .unwrap();
-
-        assert_eq!(runtime_db.messages().count(None).unwrap(), 1);
-        assert_eq!(runtime_db.transcript_entries().all(None).unwrap().len(), 1);
-        assert_eq!(
-            runtime_db
-                .storage_domain("messages")
-                .unwrap()
-                .expect("messages storage domain")
-                .canonical_source,
-            "db"
-        );
-        assert_eq!(
-            runtime_db
-                .storage_domain("transcript_entries")
-                .unwrap()
-                .expect("transcript storage domain")
-                .canonical_source,
-            "db"
-        );
-    }
-
-    #[test]
-    fn runtime_db_message_import_failure_records_retryable_domain_state() {
-        let dir = tempdir().unwrap();
-        let storage = AppStorage::new_for_test(dir.path()).unwrap();
-        let runtime_db = RuntimeDb::open_and_migrate(
-            storage.runtime_dir().join("state/runtime.sqlite"),
-            storage.runtime_dir().join("state/runtime.lock"),
-        )
-        .unwrap();
-
-        let error = runtime_db
-            .messages()
-            .import_legacy(vec![serde_json::json!({ "turn_index": 1 })])
-            .unwrap_err();
-        assert!(error
-            .to_string()
-            .contains("importing legacy storage domain messages"));
-        assert_eq!(runtime_db.messages().count(None).unwrap(), 0);
-
-        let failed = runtime_db
-            .storage_domain("messages")
-            .unwrap()
-            .expect("failed messages storage domain");
-        let checkpoint: serde_json::Value = serde_json::from_str(
-            failed
-                .source_checkpoint_json
-                .as_deref()
-                .expect("messages failure checkpoint"),
-        )
-        .unwrap();
-        assert_eq!(failed.import_status, "failed");
-        assert_eq!(failed.canonical_source, "jsonl");
-        assert_eq!(runtime_db.messages().count(None).unwrap(), 0);
-        assert_eq!(
-            checkpoint.get("retry").and_then(serde_json::Value::as_str),
-            Some("restart runtime to retry legacy import")
-        );
-    }
-
-    #[test]
     fn message_sequence_resumes_from_existing_ledger() {
         let dir = tempdir().unwrap();
         let storage = AppStorage::new_for_test(dir.path()).unwrap();
@@ -2947,7 +2869,7 @@ mod tests {
         let storage = AppStorage::new_for_test(dir.path()).unwrap();
         let mut agent = AgentState::new("default");
         agent.status = AgentStatus::Asleep;
-        storage.write_agent(&agent).unwrap();
+        storage.write_agent_for_fixture(&agent).unwrap();
 
         let restored = storage.read_agent().unwrap().unwrap();
         assert_eq!(restored.status, AgentStatus::Asleep);
@@ -2958,14 +2880,16 @@ mod tests {
     fn write_agent_with_runtime_db_writes_db_only() {
         let dir = tempdir().unwrap();
         let storage = AppStorage::new_for_agent_for_test(dir.path(), "default").unwrap();
-        storage.write_agent(&AgentState::new("default")).unwrap();
+        storage
+            .write_agent_for_fixture(&AgentState::new("default"))
+            .unwrap();
         // With DB canonical, agent.json should NOT be created
         assert!(!dir.path().join(".holon/state/agent.json").exists());
 
         let mut agent = AgentState::new("default");
         agent.status = AgentStatus::Stopped;
         agent.turn_index = 7;
-        storage.write_agent(&agent).unwrap();
+        storage.write_agent_for_fixture(&agent).unwrap();
 
         let restored = storage.read_agent().unwrap().unwrap();
         assert_eq!(restored.status, AgentStatus::Stopped);
@@ -2992,78 +2916,15 @@ mod tests {
     }
 
     #[test]
-    fn legacy_importer_maps_paused_agent_status_to_stopped() {
-        let dir = tempdir().unwrap();
-        let storage = AppStorage::new_for_test(dir.path()).unwrap();
-        let mut agent = AgentState::new("default");
-        agent.status = AgentStatus::Stopped;
-        let mut value = serde_json::to_value(&agent).unwrap();
-        value["status"] = serde_json::json!("paused");
-        std::fs::write(
-            dir.path().join(".holon/state/agent.json"),
-            serde_json::to_string_pretty(&value).unwrap(),
-        )
-        .unwrap();
-
-        assert_eq!(storage.read_agent().unwrap(), None);
-        storage.legacy_importer().import_runtime_domains().unwrap();
-        let restored = storage.read_agent().unwrap().unwrap();
-        assert_eq!(restored.status, AgentStatus::Stopped);
-    }
-
-    #[test]
-    fn legacy_importer_does_not_reopen_agent_file_after_cutover() {
-        let dir = tempdir().unwrap();
-        let storage = AppStorage::new_for_test(dir.path()).unwrap();
-        let agent_path = dir.path().join(".holon/state/agent.json");
-        std::fs::write(
-            &agent_path,
-            serde_json::to_string_pretty(&AgentState::new("default")).unwrap(),
-        )
-        .unwrap();
-
-        storage.legacy_importer().import_runtime_domains().unwrap();
-        std::fs::write(&agent_path, "{ invalid legacy state").unwrap();
-
-        storage.legacy_importer().import_runtime_domains().unwrap();
-        assert_eq!(
-            storage.read_agent().unwrap().map(|agent| agent.id),
-            Some("default".into())
-        );
-    }
-
-    #[test]
-    fn legacy_importer_rejects_agent_state_outside_storage_scope() {
-        let dir = tempdir().unwrap();
-        let storage = AppStorage::new_for_agent_for_test(dir.path(), "agent-a").unwrap();
-        std::fs::write(
-            dir.path().join(".holon/state/agent.json"),
-            serde_json::to_string_pretty(&AgentState::new("agent-b")).unwrap(),
-        )
-        .unwrap();
-
-        let error = storage
-            .legacy_importer()
-            .import_runtime_domains()
-            .unwrap_err();
-
-        assert!(
-            error
-                .to_string()
-                .contains("cannot import agent state for `agent-b`"),
-            "{error:#}"
-        );
-        assert_eq!(storage.read_agent().unwrap(), None);
-    }
-
-    #[test]
     fn current_agent_id_is_fixed_at_storage_construction() {
         let dir = tempdir().unwrap();
         let storage = AppStorage::new_for_agent_for_test(dir.path(), "agent-a").unwrap();
 
-        storage.write_agent(&AgentState::new("agent-a")).unwrap();
+        storage
+            .write_agent_for_fixture(&AgentState::new("agent-a"))
+            .unwrap();
         let mismatch = storage
-            .write_agent(&AgentState::new("agent-b"))
+            .write_agent_for_fixture(&AgentState::new("agent-b"))
             .unwrap_err();
 
         assert_eq!(
@@ -3083,7 +2944,9 @@ mod tests {
         let dir = tempdir().unwrap();
         let storage = AppStorage::new_global_for_test(dir.path()).unwrap();
 
-        storage.write_agent(&AgentState::new("default")).unwrap();
+        storage
+            .write_agent_for_fixture(&AgentState::new("default"))
+            .unwrap();
 
         assert_eq!(storage.current_agent_id().unwrap(), None);
     }
@@ -3195,7 +3058,9 @@ mod tests {
     fn mark_memory_index_dirty_does_not_rewrite_existing_marker() {
         let dir = tempdir().unwrap();
         let storage = AppStorage::new_for_agent_for_test(dir.path(), "default").unwrap();
-        storage.write_agent(&AgentState::new("default")).unwrap();
+        storage
+            .write_agent_for_fixture(&AgentState::new("default"))
+            .unwrap();
         let dirty_path = storage.shared_indexes_dir().join("memory.default.dirty");
 
         storage.mark_memory_index_dirty().unwrap();
@@ -4182,7 +4047,7 @@ mod tests {
         agent.status = AgentStatus::Asleep;
         agent.current_work_item_id = Some(current.id.clone());
         storage.append_work_item(&current).unwrap();
-        storage.write_agent(&agent).unwrap();
+        storage.write_agent_for_fixture(&agent).unwrap();
 
         let read_models = storage.read_models();
         let direct_queue = read_models.work_queue().unwrap();
@@ -4240,7 +4105,7 @@ mod tests {
         let now = Utc::now();
         let mut agent = AgentState::new("default");
         agent.status = AgentStatus::Asleep;
-        storage.write_agent(&agent).unwrap();
+        storage.write_agent_for_fixture(&agent).unwrap();
 
         assert_eq!(
             storage.agent_posture_projection(&agent).unwrap().posture,
@@ -4251,7 +4116,7 @@ mod tests {
         blocked.blocked_by = Some("unstructured blocker".into());
         storage.append_work_item(&blocked).unwrap();
         agent.current_work_item_id = Some(blocked.id.clone());
-        storage.write_agent(&agent).unwrap();
+        storage.write_agent_for_fixture(&agent).unwrap();
         assert_eq!(
             storage.agent_posture_projection(&agent).unwrap().posture,
             AgentSchedulingPosture::Blocked
@@ -4287,7 +4152,7 @@ mod tests {
             })
             .unwrap();
         agent.current_work_item_id = Some(external.id.clone());
-        storage.write_agent(&agent).unwrap();
+        storage.write_agent_for_fixture(&agent).unwrap();
         assert_eq!(
             storage.agent_posture_projection(&agent).unwrap().posture,
             AgentSchedulingPosture::WaitingForExternal
@@ -4298,7 +4163,7 @@ mod tests {
         needs_input.updated_at = now + chrono::Duration::seconds(2);
         storage.append_work_item(&needs_input).unwrap();
         agent.current_work_item_id = Some(needs_input.id.clone());
-        storage.write_agent(&agent).unwrap();
+        storage.write_agent_for_fixture(&agent).unwrap();
         assert_eq!(
             storage.agent_posture_projection(&agent).unwrap().posture,
             AgentSchedulingPosture::WaitingForOperator,
@@ -4334,7 +4199,7 @@ mod tests {
             })
             .unwrap();
         agent.current_work_item_id = Some(task_wait.id.clone());
-        storage.write_agent(&agent).unwrap();
+        storage.write_agent_for_fixture(&agent).unwrap();
         let task_projection = storage.agent_posture_projection(&agent).unwrap();
         assert_eq!(
             task_projection.posture,
@@ -4345,7 +4210,7 @@ mod tests {
         let runnable = WorkItemRecord::new("default", "runnable", WorkItemState::Open);
         storage.append_work_item(&runnable).unwrap();
         agent.current_work_item_id = Some(runnable.id.clone());
-        storage.write_agent(&agent).unwrap();
+        storage.write_agent_for_fixture(&agent).unwrap();
         assert_eq!(
             storage.agent_posture_projection(&agent).unwrap().posture,
             AgentSchedulingPosture::HasRunnableWork
@@ -4455,7 +4320,7 @@ mod tests {
         let runnable = WorkItemRecord::new("default", "current runnable", WorkItemState::Open);
         agent.current_work_item_id = Some(runnable.id.clone());
         storage.append_work_item(&runnable).unwrap();
-        storage.write_agent(&agent).unwrap();
+        storage.write_agent_for_fixture(&agent).unwrap();
         assert_eq!(
             posture_for(&storage, &agent),
             AgentSchedulingPosture::HasRunnableWork
@@ -4470,7 +4335,7 @@ mod tests {
         needs_input.plan_status = WorkItemPlanStatus::NeedsInput;
         storage.append_work_item(&needs_input).unwrap();
         agent.current_work_item_id = Some(needs_input.id.clone());
-        storage.write_agent(&agent).unwrap();
+        storage.write_agent_for_fixture(&agent).unwrap();
         assert_eq!(
             posture_for(&storage, &agent),
             AgentSchedulingPosture::WaitingForOperator
@@ -4485,7 +4350,7 @@ mod tests {
         storage.append_work_item(&external).unwrap();
         append_wait_condition(&storage, &external.id, WaitConditionKind::External);
         agent.current_work_item_id = Some(external.id.clone());
-        storage.write_agent(&agent).unwrap();
+        storage.write_agent_for_fixture(&agent).unwrap();
         assert_eq!(
             posture_for(&storage, &agent),
             AgentSchedulingPosture::WaitingForExternal
@@ -4499,7 +4364,7 @@ mod tests {
         blocked.blocked_by = Some("unstructured blocker".into());
         storage.append_work_item(&blocked).unwrap();
         agent.current_work_item_id = Some(blocked.id.clone());
-        storage.write_agent(&agent).unwrap();
+        storage.write_agent_for_fixture(&agent).unwrap();
         assert_eq!(
             posture_for(&storage, &agent),
             AgentSchedulingPosture::Blocked
@@ -4513,7 +4378,7 @@ mod tests {
         storage.append_work_item(&timer_wait).unwrap();
         append_wait_condition(&storage, &timer_wait.id, WaitConditionKind::Timer);
         agent.current_work_item_id = Some(timer_wait.id.clone());
-        storage.write_agent(&agent).unwrap();
+        storage.write_agent_for_fixture(&agent).unwrap();
         assert_eq!(
             posture_for(&storage, &agent),
             AgentSchedulingPosture::Blocked
@@ -4527,7 +4392,7 @@ mod tests {
         storage.append_work_item(&system_wait).unwrap();
         append_wait_condition(&storage, &system_wait.id, WaitConditionKind::System);
         agent.current_work_item_id = Some(system_wait.id.clone());
-        storage.write_agent(&agent).unwrap();
+        storage.write_agent_for_fixture(&agent).unwrap();
         assert_eq!(
             posture_for(&storage, &agent),
             AgentSchedulingPosture::Blocked
@@ -4926,7 +4791,7 @@ mod tests {
         storage.append_work_item(&completed).unwrap();
         let mut agent = AgentState::new("default");
         agent.current_work_item_id = Some(current.id.clone());
-        storage.write_agent(&agent).unwrap();
+        storage.write_agent_for_fixture(&agent).unwrap();
 
         let projection = storage.work_queue_prompt_projection().unwrap();
         assert_eq!(
@@ -4971,7 +4836,9 @@ mod tests {
         for item in queued {
             storage.append_work_item(&item).unwrap();
         }
-        storage.write_agent(&AgentState::new("default")).unwrap();
+        storage
+            .write_agent_for_fixture(&AgentState::new("default"))
+            .unwrap();
 
         let projection = storage.work_queue_prompt_projection().unwrap();
         let rendered = projection
@@ -4989,13 +4856,15 @@ mod tests {
     fn db_backed_work_queue_prompt_projection_filters_by_current_agent() {
         let dir = tempdir().unwrap();
         let storage = AppStorage::new_for_agent_for_test(dir.path(), "default").unwrap();
-        storage.write_agent(&AgentState::new("default")).unwrap();
+        storage
+            .write_agent_for_fixture(&AgentState::new("default"))
+            .unwrap();
         let runtime_db = RuntimeDb::open_and_migrate(
             storage.runtime_dir().join("state/runtime.sqlite"),
             storage.runtime_dir().join("state/runtime.lock"),
         )
         .unwrap();
-        runtime_db.work_items().import_legacy(Vec::new()).unwrap();
+        runtime_db.initialize_sqlite_storage_domains().unwrap();
         let mut current = WorkItemRecord::new("default", "current agent item", WorkItemState::Open);
         current.updated_at = Utc::now();
         let mut other_agent =
@@ -5005,7 +4874,7 @@ mod tests {
         storage.append_work_item(&other_agent).unwrap();
         let mut agent = AgentState::new("default");
         agent.current_work_item_id = Some(current.id.clone());
-        storage.write_agent(&agent).unwrap();
+        storage.write_agent_for_fixture(&agent).unwrap();
         storage.append_work_item(&current).unwrap();
 
         let projection = storage.work_queue_prompt_projection().unwrap();
@@ -5102,7 +4971,7 @@ mod tests {
             .unwrap();
         let mut agent = AgentState::new("default");
         agent.current_work_item_id = Some(current.id.clone());
-        storage.write_agent(&agent).unwrap();
+        storage.write_agent_for_fixture(&agent).unwrap();
 
         let projection = storage.work_queue_prompt_projection().unwrap();
 
@@ -5248,7 +5117,7 @@ mod tests {
         let agent = AgentState::new("default");
 
         // Write agent successfully first
-        storage.write_agent(&agent).unwrap();
+        storage.write_agent_for_fixture(&agent).unwrap();
 
         // Count tmp files (should be 0 after successful write)
         let state_dir = dir.path().join(".holon/state");
@@ -5270,7 +5139,7 @@ mod tests {
         let storage = AppStorage::new_for_agent_for_test(dir.path(), "agent-a").unwrap();
 
         let agent = AgentState::new("agent-b");
-        let result = storage.write_agent(&agent);
+        let result = storage.write_agent_for_fixture(&agent);
 
         assert!(
             result.is_err(),
@@ -5348,7 +5217,7 @@ mod tests {
                 now,
             ))
             .unwrap();
-        storage.write_agent(&agent).unwrap();
+        storage.write_agent_for_fixture(&agent).unwrap();
 
         let posture = storage.agent_posture_projection(&agent).unwrap();
         assert_eq!(posture.posture, AgentSchedulingPosture::WaitingForOperator);
@@ -5376,7 +5245,7 @@ mod tests {
                 now,
             ))
             .unwrap();
-        storage.write_agent(&agent).unwrap();
+        storage.write_agent_for_fixture(&agent).unwrap();
 
         let posture = storage.agent_posture_projection(&agent).unwrap();
         assert_eq!(posture.posture, AgentSchedulingPosture::Idle);
@@ -5404,7 +5273,7 @@ mod tests {
                 now,
             ))
             .unwrap();
-        storage.write_agent(&agent).unwrap();
+        storage.write_agent_for_fixture(&agent).unwrap();
 
         let posture = storage.agent_posture_projection(&agent).unwrap();
         assert_eq!(posture.posture, AgentSchedulingPosture::Idle);
@@ -5432,7 +5301,7 @@ mod tests {
                 now,
             ))
             .unwrap();
-        storage.write_agent(&agent).unwrap();
+        storage.write_agent_for_fixture(&agent).unwrap();
 
         let posture = storage.agent_posture_projection(&agent).unwrap();
         assert_eq!(posture.posture, AgentSchedulingPosture::Idle);
@@ -5461,7 +5330,7 @@ mod tests {
                 now,
             ))
             .unwrap();
-        storage.write_agent(&agent).unwrap();
+        storage.write_agent_for_fixture(&agent).unwrap();
 
         let posture = storage.agent_posture_projection(&agent).unwrap();
         assert_eq!(posture.posture, AgentSchedulingPosture::WaitingForTask);
@@ -5473,7 +5342,7 @@ mod tests {
         let dir = tempdir().unwrap();
         let storage = AppStorage::new_for_test(dir.path()).unwrap();
         let agent = AgentState::new("default");
-        storage.write_agent(&agent).unwrap();
+        storage.write_agent_for_fixture(&agent).unwrap();
 
         let posture = storage.agent_posture_projection(&agent).unwrap();
         assert_eq!(posture.posture, AgentSchedulingPosture::Idle);
@@ -5505,7 +5374,7 @@ mod tests {
                 now,
             ))
             .unwrap();
-        storage.write_agent(&agent).unwrap();
+        storage.write_agent_for_fixture(&agent).unwrap();
 
         let posture = storage.agent_posture_projection(&agent).unwrap();
         assert_eq!(posture.posture, AgentSchedulingPosture::HasRunnableWork);
@@ -5545,5 +5414,80 @@ mod tests {
             b"legacy"
         );
         assert!(legacy.is_dir(), "legacy directory should remain untouched");
+    }
+}
+
+impl AppStorage {
+    pub(crate) fn prepare_input_evidence(
+        &self,
+        scope: crate::runtime::resident_input_evidence::InputEvidenceScope,
+        nonce: String,
+        at: chrono::DateTime<chrono::Utc>,
+        write: crate::runtime_db::prepared_input_evidence::InputEvidenceWrite,
+    ) -> Result<crate::runtime_db::prepared_input_evidence::PreparedInputEvidence> {
+        self.store.prepare_input_evidence(scope, nonce, at, write)
+    }
+    #[cfg(test)]
+    pub(crate) fn commit_prepared_input_evidence(
+        &self,
+        prepared: &crate::runtime_db::prepared_input_evidence::PreparedInputEvidence,
+    ) -> Result<
+        crate::runtime_db::transitions::InputMutationExecution<
+            crate::runtime_db::input_evidence_writes::InputEvidenceCommit<
+                crate::runtime_db::prepared_input_evidence::PreparedEvidenceValue,
+            >,
+        >,
+    > {
+        self.commit_prepared_input_evidence_with_work_request(
+            prepared,
+            &crate::runtime_db::work_snapshot::WorkDomainLoadRequest {
+                capture: crate::runtime::resident_work::WorkCaptureRequest::current(),
+                record_limit: 65_536,
+                byte_limit: 64 * 1024 * 1024,
+            },
+        )
+    }
+    #[cfg(test)]
+    pub(crate) fn commit_prepared_input_evidence_with_work_request(
+        &self,
+        prepared: &crate::runtime_db::prepared_input_evidence::PreparedInputEvidence,
+        work_request: &crate::runtime_db::work_snapshot::WorkDomainLoadRequest,
+    ) -> Result<
+        crate::runtime_db::transitions::InputMutationExecution<
+            crate::runtime_db::input_evidence_writes::InputEvidenceCommit<
+                crate::runtime_db::prepared_input_evidence::PreparedEvidenceValue,
+            >,
+        >,
+    > {
+        self.store
+            .commit_prepared_input_evidence_with_work_request(prepared, work_request)
+    }
+    pub(crate) fn commit_prepared_input_evidence_with_task_budget(
+        &self,
+        prepared: &crate::runtime_db::prepared_input_evidence::PreparedInputEvidence,
+        work_request: &crate::runtime_db::work_snapshot::WorkDomainLoadRequest,
+        task_request: &crate::runtime_db::task_snapshot::TaskDomainLoadRequest,
+        ledger: &crate::runtime::input_evidence_budget::InputEvidenceBudgetLedger,
+        input_query_source: Option<
+            &crate::runtime::resident_input_evidence::OriginalInputQuerySource,
+        >,
+        current_query_source: Option<
+            &std::sync::Arc<crate::runtime_db::current_query::CurrentQuerySource>,
+        >,
+    ) -> Result<
+        crate::runtime_db::transitions::InputMutationExecution<
+            crate::runtime_db::input_evidence_writes::InputEvidenceCommit<
+                crate::runtime_db::prepared_input_evidence::PreparedEvidenceValue,
+            >,
+        >,
+    > {
+        self.store.commit_prepared_input_evidence_with_task_budget(
+            prepared,
+            work_request,
+            task_request,
+            ledger,
+            input_query_source,
+            current_query_source,
+        )
     }
 }

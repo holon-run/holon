@@ -69,6 +69,7 @@ async fn live_xai_responses_uses_incremental_continuation_without_instructions()
     let first = provider
         .complete_turn(ProviderTurnRequest {
             dispatch_guard: None,
+            material: Default::default(),
             continuation_scope_id: Some(scope.clone()),
             prompt_frame: prompt_frame.clone(),
             conversation: vec![first_user.clone()],
@@ -82,6 +83,7 @@ async fn live_xai_responses_uses_incremental_continuation_without_instructions()
     let second = provider
         .complete_turn(ProviderTurnRequest {
             dispatch_guard: None,
+            material: Default::default(),
             continuation_scope_id: Some(scope),
             prompt_frame,
             conversation: vec![

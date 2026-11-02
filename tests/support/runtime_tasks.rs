@@ -13,7 +13,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::Arc;
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use async_trait::async_trait;
 use chrono::Utc;
 use holon::{
@@ -127,7 +127,10 @@ impl TaskResultReentryProvider {
                 .iter()
                 .any(|record| record.tool_name == "WaitFor" && record.input["resource"] == task_id))
         })
-        .await?;
+        .await
+        .with_context(|| {
+            format!("task {task_id}: no exact-handle WaitFor tool execution observed within 30s")
+        })?;
         self.child_release.notify_one();
         wait_until_async_for(Duration::from_secs(30), || {
             let provider = self.clone();
@@ -141,7 +144,13 @@ impl TaskResultReentryProvider {
                         .any(|brief| brief.text == "exact task result observed"))
             }
         })
-        .await?;
+        .await
+        .with_context(|| {
+            format!(
+                "task {task_id}: second provider request and exact-result completion brief \
+                 not both observed within 30s"
+            )
+        })?;
         let requests = self.requests.lock().await;
         let reentry = &requests[1];
         assert!(
@@ -227,6 +236,7 @@ impl AgentProvider for TaskResultReentryProvider {
             _ => anyhow::bail!("unexpected task-result provider call {call}"),
         };
         Ok(ProviderTurnResponse {
+            material: Default::default(),
             blocks,
             stop_reason: None,
             input_tokens: 10,
@@ -266,6 +276,7 @@ impl AgentProvider for SleepThenRecordTaskResultProvider {
 
         match call {
             1 => Ok(ProviderTurnResponse {
+                material: Default::default(),
                 blocks: vec![ModelBlock::ToolUse {
                     id: "sleep-1".into(),
                     name: "Sleep".into(),
@@ -284,6 +295,7 @@ impl AgentProvider for SleepThenRecordTaskResultProvider {
                 request_diagnostics: None,
             }),
             2 => Ok(ProviderTurnResponse {
+                material: Default::default(),
                 blocks: vec![ModelBlock::Text {
                     text: "background command result observed".into(),
                 }],
@@ -491,6 +503,7 @@ impl AgentProvider for FastPathWaitProvider {
         };
         let response = |blocks: Vec<ModelBlock>| {
             Ok(ProviderTurnResponse {
+                material: Default::default(),
                 blocks,
                 stop_reason: None,
                 input_tokens: 10,
@@ -949,7 +962,8 @@ pub async fn file_tools_can_modify_workspace_and_reenter_context() -> Result<()>
         )
         .await?;
     eventually_for(Duration::from_secs(10), || {
-        Ok(workspace.join("notes/result.txt").exists())
+        let path = workspace.join("notes/result.txt");
+        Ok(path.exists() && std::fs::read_to_string(path)? == "hello from holon\n")
     })
     .await?;
 
@@ -2454,7 +2468,11 @@ pub async fn task_output_rejects_message_only_terminal_status_for_running_comman
         output.retrieval_status,
         holon::types::TaskOutputRetrievalStatus::NotReady
     );
-    assert_eq!(output.task.status, holon::types::TaskStatus::Completed);
+    assert_eq!(output.task.status, holon::types::TaskStatus::Running);
+    assert_eq!(
+        runtime.task_record(&task.id).await?.unwrap().status,
+        holon::types::TaskStatus::Running
+    );
 
     runtime
         .stop_task(&task.id, &AuthorityClass::OperatorInstruction)
@@ -2662,11 +2680,11 @@ pub async fn command_task_stop_cancels_running_command() -> Result<()> {
     Ok(())
 }
 
-pub async fn background_command_task_persists_terminal_state_while_runtime_stopped() -> Result<()> {
+pub async fn completed_background_command_task_preserves_terminal_state_after_runtime_stop(
+) -> Result<()> {
     let host =
         RuntimeHost::new_with_provider(test_config(), Arc::new(StubProvider::new("ignored")))?;
     let runtime = host.default_runtime().await?;
-    runtime.control(ControlAction::Stop).await?;
 
     let task = runtime
         .schedule_command_task(
@@ -2694,6 +2712,7 @@ pub async fn background_command_task_persists_terminal_state_while_runtime_stopp
     })
     .await?;
 
+    runtime.control(ControlAction::Stop).await?;
     let output = runtime.task_output(&task.id, false, 0).await?;
     assert_eq!(
         output.retrieval_status,
@@ -2722,7 +2741,6 @@ pub async fn command_task_result_enqueue_retries_stale_agent_state() -> Result<(
     let host =
         RuntimeHost::new_with_provider(test_config(), Arc::new(StubProvider::new("ignored")))?;
     let runtime = host.default_runtime().await?;
-    runtime.control(ControlAction::Stop).await?;
     let gate = tempfile::tempdir()?;
     let release_path = gate.path().join("release");
     let command = format!(
@@ -2762,7 +2780,9 @@ pub async fn command_task_result_enqueue_retries_stale_agent_state() -> Result<(
         .read_agent()?
         .expect("agent state should exist");
     concurrent_state.total_input_tokens = 73;
-    runtime.storage().write_agent(&concurrent_state)?;
+    runtime
+        .storage()
+        .write_agent_for_fixture(&concurrent_state)?;
     std::fs::write(&release_path, b"release")?;
 
     eventually_for(Duration::from_secs(10), || {
@@ -2818,11 +2838,10 @@ pub async fn command_task_result_enqueue_retries_stale_agent_state() -> Result<(
     Ok(())
 }
 
-pub async fn blocking_command_task_clears_active_state_while_runtime_stopped() -> Result<()> {
+pub async fn completed_blocking_command_task_stays_inactive_after_runtime_stop() -> Result<()> {
     let host =
         RuntimeHost::new_with_provider(test_config(), Arc::new(StubProvider::new("ignored")))?;
     let runtime = host.default_runtime().await?;
-    runtime.control(ControlAction::Stop).await?;
 
     let task = runtime
         .schedule_command_task(
@@ -2851,6 +2870,7 @@ pub async fn blocking_command_task_clears_active_state_while_runtime_stopped() -
     })
     .await?;
 
+    runtime.control(ControlAction::Stop).await?;
     let state = runtime.agent_state().await?;
     assert_eq!(state.status, AgentStatus::Stopped);
     assert!(!runtime
@@ -3028,6 +3048,11 @@ pub async fn command_task_runner_failure_marks_task_failed_and_cleans_up() -> Re
     let host =
         RuntimeHost::new_with_provider(test_config(), Arc::new(StubProvider::new("ignored")))?;
     let runtime = host.default_runtime().await?;
+    // Install the output failure before registration can start the runner.
+    std::fs::write(
+        runtime.storage().data_dir().join("task-output"),
+        b"not a directory",
+    )?;
 
     let task = runtime
         .schedule_command_task(
@@ -3046,13 +3071,6 @@ pub async fn command_task_runner_failure_marks_task_failed_and_cleans_up() -> Re
             AuthorityClass::OperatorInstruction,
         )
         .await?;
-    let output_path = runtime
-        .storage()
-        .data_dir()
-        .join("task-output")
-        .join(format!("{}.log", task.id));
-    std::fs::create_dir_all(&output_path)?;
-
     eventually_for(Duration::from_secs(10), || {
         let tasks = runtime.storage().latest_task_records()?;
         Ok(tasks.iter().any(|record| {

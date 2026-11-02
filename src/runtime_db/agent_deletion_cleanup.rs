@@ -22,11 +22,116 @@ use crate::types::{
     WaitConditionRecord, WaitConditionStatus,
 };
 
+#[cfg(test)]
+#[path = "agent_deletion_cleanup/supervised_admission_tests.rs"]
+mod supervised_admission_tests;
+
 const REASON: &str = "agent_deleted";
+
+// Exact sqlite_master SQL for the branch's fixed Scheduling/Task DELETE guards.
+// Only fenced, settled purge may suspend these, inside its existing writer TX.
+const FIXED_DELETE_GUARDS: &[(&str, &str, &str)] = &[
+    (
+        "scheduling_fixed_manifest_delete",
+        "scheduling_fixed_manifests",
+        "CREATE TRIGGER scheduling_fixed_manifest_delete BEFORE DELETE ON scheduling_fixed_manifests WHEN OLD.sealed=1 BEGIN SELECT RAISE(ABORT,'Scheduling fixed manifest immutable'); END",
+    ),
+    (
+        "scheduling_fixed_member_delete",
+        "scheduling_fixed_members",
+        "CREATE TRIGGER scheduling_fixed_member_delete BEFORE DELETE ON scheduling_fixed_members WHEN (SELECT sealed FROM scheduling_fixed_manifests WHERE inventory_id=OLD.inventory_id)=1 BEGIN SELECT RAISE(ABORT,'Scheduling fixed member immutable'); END",
+    ),
+    (
+        "scheduling_capture_delete",
+        "scheduling_domain_captures",
+        "CREATE TRIGGER scheduling_capture_delete BEFORE DELETE ON scheduling_domain_captures BEGIN SELECT RAISE(ABORT,'Scheduling fixed capture immutable'); END",
+    ),
+    (
+        "task_query_fixed_input_delete",
+        "task_query_fixed_input_members",
+        "CREATE TRIGGER task_query_fixed_input_delete BEFORE DELETE ON task_query_fixed_input_members WHEN (SELECT sealed FROM task_query_fixed_manifests WHERE inventory_id=OLD.inventory_id)=1 BEGIN SELECT RAISE(ABORT,'fixed Task output Input members are immutable'); END",
+    ),
+    (
+        "task_query_fixed_manifest_immutable_delete",
+        "task_query_fixed_manifests",
+        "CREATE TRIGGER task_query_fixed_manifest_immutable_delete BEFORE DELETE ON task_query_fixed_manifests WHEN OLD.sealed=1 BEGIN SELECT RAISE(ABORT,'fixed Task query inventory is immutable'); END",
+    ),
+    (
+        "task_query_fixed_task_delete",
+        "task_query_fixed_tasks",
+        "CREATE TRIGGER task_query_fixed_task_delete BEFORE DELETE ON task_query_fixed_tasks WHEN (SELECT sealed FROM task_query_fixed_manifests WHERE inventory_id=OLD.inventory_id)=1 BEGIN SELECT RAISE(ABORT,'fixed Task query members are immutable'); END",
+    ),
+    (
+        "task_query_fixed_result_delete",
+        "task_query_fixed_results",
+        "CREATE TRIGGER task_query_fixed_result_delete BEFORE DELETE ON task_query_fixed_results WHEN (SELECT sealed FROM task_query_fixed_manifests WHERE inventory_id=OLD.inventory_id)=1 BEGIN SELECT RAISE(ABORT,'fixed Task query members are immutable'); END",
+    ),
+    (
+        "task_query_fixed_message_delete",
+        "task_query_fixed_messages",
+        "CREATE TRIGGER task_query_fixed_message_delete BEFORE DELETE ON task_query_fixed_messages WHEN (SELECT sealed FROM task_query_fixed_manifests WHERE inventory_id=OLD.inventory_id)=1 BEGIN SELECT RAISE(ABORT,'fixed Task query members are immutable'); END",
+    ),
+    (
+        "task_status_fixed_controls_immutable_delete",
+        "task_status_fixed_controls",
+        "CREATE TRIGGER task_status_fixed_controls_immutable_delete BEFORE DELETE ON task_status_fixed_controls WHEN EXISTS(SELECT 1 FROM task_status_source_inventory WHERE singleton=1 AND sealed=1) BEGIN SELECT RAISE(ABORT,'fixed TaskStatus source inventory is immutable'); END",
+    ),
+    (
+        "task_status_fixed_delegations_immutable_delete",
+        "task_status_fixed_delegations",
+        "CREATE TRIGGER task_status_fixed_delegations_immutable_delete BEFORE DELETE ON task_status_fixed_delegations WHEN EXISTS(SELECT 1 FROM task_status_source_inventory WHERE singleton=1 AND sealed=1) BEGIN SELECT RAISE(ABORT,'fixed TaskStatus source inventory is immutable'); END",
+    ),
+];
 
 // Child/derived rows precede source rows. Optional memory tables share this DB.
 // Jointly owned records (reports, delegations, workspaces) are not in this list.
 const PRIVATE_TABLES: &[(&str, &str)] = &[
+    // Domain projections are private content, not retained identity fences.
+    ("current_read_qualification", "agent_id"),
+    ("current_read_revisions", "agent_id"),
+    ("event_history_acks", "agent_id"),
+    ("input_query_birth_members", "agent_id"),
+    ("input_query_birth_cursors", "agent_id"),
+    ("input_evidence_execution_current_sources", "agent_id"),
+    ("input_evidence_execution_current_work", "agent_id"),
+    ("input_evidence_current", "agent_id"),
+    ("work_domain_records", "agent_id"),
+    ("work_domain_result_heads", "agent_id"),
+    ("work_domain_wait_edges", "agent_id"),
+    ("work_domain_current", "agent_id"),
+    ("task_domain_records", "agent_id"),
+    ("task_domain_current", "agent_id"),
+    ("task_domain_import_inventory", "agent_id"),
+    ("task_message_sources", "agent_id"),
+    ("task_message_order_headers", "agent_id"),
+    ("task_message_source_inventory", "agent_id"),
+    ("task_output_current_input_relations", "agent_id"),
+    ("task_query_task_members", "agent_id"),
+    ("task_query_task_births", "agent_id"),
+    ("task_query_birth_cursors", "agent_id"),
+    ("task_query_task_inventory", "agent_id"),
+    ("task_status_control_sources", "agent_id"),
+    ("task_status_fixed_controls", "agent_id"),
+    ("task_status_delegation_sources", "child_agent_id"),
+    ("task_status_fixed_delegations", "child_agent_id"),
+    ("task_status_child_observers", "agent_id"),
+    ("scheduling_domain_records", "agent_id"),
+    ("scheduling_domain_current", "agent_id"),
+    ("scheduling_import_inventory", "agent_id"),
+    ("dispatch_memory_checkpoints", "agent_id"),
+    ("dispatch_memory_legacy_dispatches", "agent_id"),
+    ("dispatch_memory_retired_handoffs", "agent_id"),
+    ("episode_memory_results", "agent_id"),
+    ("control_cancellation_obligations", "agent_id"),
+    ("control_command_receipts", "agent_id"),
+    ("task_stop_effects", "agent_id"),
+    ("command_task_creation_sources", "agent_id"),
+    ("provider_queue_parking", "agent_id"),
+    ("agent_episode_continuity", "agent_id"),
+    // All seed children, including unbound legacy cuts, precede these sources.
+    ("episode_continuity_seeds", "agent_id"),
+    ("task_query_fixed_manifests", "agent_id"),
+    ("scheduling_fixed_manifests", "agent_id"),
     ("memory_index_rebuild_seen", "agent_id"),
     ("memory_index_rebuild_jobs", "agent_id"),
     ("memory_index_cursors", "agent_id"),
@@ -123,6 +228,64 @@ const DEPENDENT_TABLES: &[(&str, &str)] = &[
         "scheduler_protocol_command_conflict_attempts",
         "partition_kind = 'agent' AND partition_key = ?1",
     ),
+];
+
+const SEED_OWNER: &str =
+    "seed_id IN (SELECT seed_id FROM episode_continuity_seeds WHERE agent_id = ?1)";
+const TASK_INVENTORY_OWNER: &str =
+    "inventory_id IN (SELECT inventory_id FROM task_query_fixed_manifests WHERE agent_id = ?1)";
+const SCHEDULING_INVENTORY_OWNER: &str =
+    "inventory_id IN (SELECT inventory_id FROM scheduling_fixed_manifests WHERE agent_id = ?1)";
+const RECEIPT_OWNER: &str =
+    "EXISTS(SELECT 1 FROM json_each(scopes_json) s WHERE json_extract(s.value,'$.agent_id') = ?1)";
+
+// Private dependent projections, child-before-source for both archive/purge.
+// Original seed ownership, not today's binding, owns legacy/unbound captures.
+const DOMAIN_DEPENDENT_TABLES: &[(&str, &str)] = &[
+    ("input_evidence_eligibility", SEED_OWNER),
+    ("input_evidence_execution_seed_sources", SEED_OWNER),
+    ("input_evidence_execution_seed_source_recovery", SEED_OWNER),
+    ("input_evidence_execution_seed_work", SEED_OWNER),
+    ("input_evidence_seed_attempt_turns", SEED_OWNER),
+    ("input_evidence_seed_recovery_current", SEED_OWNER),
+    ("input_evidence_captures", SEED_OWNER),
+    ("work_domain_eligibility", SEED_OWNER),
+    ("work_domain_seed_recovery_current", SEED_OWNER),
+    ("work_domain_captures", SEED_OWNER),
+    ("task_domain_eligibility", SEED_OWNER),
+    ("task_domain_seed_recovery_current", SEED_OWNER),
+    ("task_domain_captures", SEED_OWNER),
+    ("scheduling_seed_recovery_current", SEED_OWNER),
+    ("scheduling_domain_captures", SEED_OWNER),
+    ("episode_continuity_members", SEED_OWNER),
+    ("episode_continuity_imports", SEED_OWNER),
+    ("task_query_fixed_tasks", TASK_INVENTORY_OWNER),
+    ("task_query_fixed_results", TASK_INVENTORY_OWNER),
+    ("task_query_fixed_messages", TASK_INVENTORY_OWNER),
+    ("task_query_fixed_input_members", TASK_INVENTORY_OWNER),
+    ("task_output_fixed_input_prunes", TASK_INVENTORY_OWNER),
+    ("scheduling_fixed_members", SCHEDULING_INVENTORY_OWNER),
+    (
+        "task_result_recovery_admissions",
+        "result_identity IN (SELECT result_identity FROM task_result_settlements WHERE agent_id = ?1)",
+    ),
+    (
+        "provider_recovery_requests",
+        "episode_key IN (SELECT episode_key FROM provider_recovery_episodes WHERE json_extract(binding_json,'$.agent_id') = ?1)",
+    ),
+    (
+        "provider_recovery_episodes",
+        "json_extract(binding_json,'$.agent_id') = ?1",
+    ),
+];
+
+// Effects reference original receipts, so these sources are deleted last.
+const COMMAND_DEPENDENT_TABLES: &[(&str, &str)] = &[
+    (
+        "dispatch_memory_auto_commands",
+        "command_nonce IN (SELECT command_nonce FROM input_mutation_receipts WHERE EXISTS(SELECT 1 FROM json_each(scopes_json) s WHERE json_extract(s.value,'$.agent_id') = ?1))",
+    ),
+    ("input_mutation_receipts", RECEIPT_OWNER),
 ];
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -306,6 +469,10 @@ pub(crate) fn purge_private_history(
                 now,
             )?;
         }
+        let guards = checked_fixed_delete_guards_tx(tx)?;
+        for (name, _) in &guards {
+            tx.execute_batch(&format!("DROP TRIGGER {}", quoted(name)))?;
+        }
         for (table, predicate) in private_history_selections_tx(tx)? {
             tx.execute(
                 &format!("DELETE FROM {} WHERE {predicate}", quoted(table)),
@@ -313,9 +480,61 @@ pub(crate) fn purge_private_history(
             )
             .with_context(|| format!("clearing deletion-private table {table}"))?;
         }
+        for (_, sql) in &guards {
+            tx.execute_batch(sql)?;
+        }
+        ensure!(
+            checked_fixed_delete_guards_tx(tx)? == guards,
+            "deletion guards were not restored verbatim"
+        );
         write_proof_tx(tx, agent_id, expected_incarnation, true, now)?;
         assert_private_history_cleared_tx(tx, agent_id)
     })
+}
+
+fn checked_fixed_delete_guards_tx(tx: &Transaction<'_>) -> Result<Vec<(String, String)>> {
+    let mut guards = Vec::new();
+    for &(name, table, expected_sql) in FIXED_DELETE_GUARDS {
+        let actual: Option<(String, String)> = tx
+            .query_row(
+                "SELECT tbl_name,sql FROM sqlite_master WHERE type='trigger' AND name=?1",
+                [name],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .optional()?;
+        let (actual_table, sql) =
+            actual.with_context(|| format!("missing expected deletion guard {name}"))?;
+        ensure!(
+            actual_table == table && sql == expected_sql,
+            "changed deletion guard {name}"
+        );
+        guards.push((name.to_owned(), sql));
+    }
+    let mut statement = tx.prepare(
+        "SELECT name,tbl_name,sql FROM sqlite_master WHERE type='trigger'
+         AND (tbl_name GLOB 'scheduling_*' OR tbl_name GLOB 'task_*')
+         AND tbl_name != 'task_status_source_inventory'",
+    )?;
+    for row in statement.query_map([], |row| {
+        Ok((
+            row.get::<_, String>(0)?,
+            row.get::<_, String>(1)?,
+            row.get::<_, String>(2)?,
+        ))
+    })? {
+        let (name, table, sql) = row?;
+        // Conservative even for DELETE in a body/comment; never interpret
+        // an unfamiliar trigger as a removable fixed guard.
+        if sql.to_ascii_uppercase().contains("DELETE") {
+            ensure!(
+                FIXED_DELETE_GUARDS
+                    .iter()
+                    .any(|(known, _, _)| *known == name),
+                "unknown deletion guard {name} on {table}"
+            );
+        }
+    }
+    Ok(guards)
 }
 
 /// Logical archive of exactly the rows purge owns, without changing the DB.
@@ -375,7 +594,7 @@ pub(crate) fn export_private_history(
 
 fn private_history_selections_tx(tx: &Transaction<'_>) -> Result<Vec<(&'static str, String)>> {
     let mut selections = Vec::new();
-    for &(table, predicate) in DEPENDENT_TABLES {
+    for &(table, predicate) in DOMAIN_DEPENDENT_TABLES.iter().chain(DEPENDENT_TABLES) {
         if table_exists(tx, table)? {
             selections.push((table, predicate.to_owned()));
         }
@@ -383,6 +602,11 @@ fn private_history_selections_tx(tx: &Transaction<'_>) -> Result<Vec<(&'static s
     for &(table, owner) in PRIVATE_TABLES {
         if table_exists(tx, table)? {
             selections.push((table, format!("{} = ?1", quoted(owner))));
+        }
+    }
+    for &(table, predicate) in COMMAND_DEPENDENT_TABLES {
+        if table_exists(tx, table)? {
+            selections.push((table, predicate.to_owned()));
         }
     }
     Ok(selections)
@@ -452,6 +676,24 @@ pub(crate) fn assert_private_history_cleared_tx(
             )?
         {
             bail!("private history remains in {table}");
+        }
+    }
+    for &(table, predicate) in DOMAIN_DEPENDENT_TABLES
+        .iter()
+        .chain(COMMAND_DEPENDENT_TABLES)
+    {
+        if table_exists(tx, table)? {
+            ensure!(
+                !exists(
+                    tx,
+                    &format!(
+                        "SELECT EXISTS(SELECT 1 FROM {} WHERE {predicate})",
+                        quoted(table)
+                    ),
+                    agent_id,
+                )?,
+                "private history remains in {table}"
+            );
         }
     }
     for (table, owner) in [
@@ -614,6 +856,7 @@ fn quoted(identifier: &str) -> String {
 }
 
 fn assert_safe_ownership_tx(tx: &Transaction<'_>, agent_id: &str) -> Result<()> {
+    assert_command_ownership_tx(tx, agent_id)?;
     // These records belong jointly to another principal, not just to this agent.
     for sql in [
         "SELECT EXISTS(SELECT 1 FROM content_reports WHERE agent_id = ?1)",
@@ -627,6 +870,11 @@ fn assert_safe_ownership_tx(tx: &Transaction<'_>, agent_id: &str) -> Result<()> 
     }
     for table in tables(tx)? {
         if PRIVATE_TABLES.iter().any(|(name, _)| *name == table)
+            || DEPENDENT_TABLES
+                .iter()
+                .chain(DOMAIN_DEPENDENT_TABLES)
+                .chain(COMMAND_DEPENDENT_TABLES)
+                .any(|(name, _)| *name == table)
             || RETAINED_TABLES.contains(&table.as_str())
             || matches!(
                 table.as_str(),
@@ -639,7 +887,8 @@ fn assert_safe_ownership_tx(tx: &Transaction<'_>, agent_id: &str) -> Result<()> 
         {
             continue;
         }
-        for owner in columns(tx, &table)?.iter().filter(|column| {
+        let table_columns = columns(tx, &table)?;
+        for owner in table_columns.iter().filter(|column| {
             matches!(
                 column.as_str(),
                 "agent_id"
@@ -664,6 +913,255 @@ fn assert_safe_ownership_tx(tx: &Transaction<'_>, agent_id: &str) -> Result<()> 
                 "unclassified deletion ownership in {table}"
             );
         }
+        // A future ownerless capture must not bypass classification.
+        for (column, predicate) in [
+            ("seed_id", SEED_OWNER),
+            ("inventory_id", TASK_INVENTORY_OWNER),
+            ("inventory_id", SCHEDULING_INVENTORY_OWNER),
+        ] {
+            if table_columns.iter().any(|name| name == column) {
+                ensure!(
+                    !exists(
+                        tx,
+                        &format!(
+                            "SELECT EXISTS(SELECT 1 FROM {} WHERE {predicate})",
+                            quoted(&table)
+                        ),
+                        agent_id,
+                    )?,
+                    "unclassified deletion ownership in {table}"
+                );
+            }
+        }
+    }
+    Ok(())
+}
+
+// No receipt rewrite or per-scope deletion: the accepted child owns the
+// complete, checksum-validated original receipt, including its parent scope.
+fn assert_child_receipt_owner_tx(
+    tx: &Transaction<'_>,
+    purge_agent_id: &str,
+    nonce: &str,
+    descriptor: &str,
+) -> Result<()> {
+    use super::input_mutation_receipts::{
+        lookup_input_mutation_receipt_tx, InputMutationResult, PreparedInputMutation,
+    };
+    use crate::runtime::resident_input_evidence::InputEvidenceScope;
+    use crate::types::{AgentDeletionJob, AgentDeletionMode, AgentKind, TaskKind, TaskTargetKind};
+
+    let prepared: PreparedInputMutation = serde_json::from_str(descriptor)?;
+    ensure!(
+        prepared.command_nonce() == nonce,
+        "receipt nonce differs from descriptor"
+    );
+    // Reuse normalized-column, descriptor, full outcome and result-digest checks.
+    let receipt = lookup_input_mutation_receipt_tx(tx, &prepared)?
+        .context("original shared receipt disappeared")?;
+    let (parent, child, parent_task_id, admission, terminal) = match &receipt.outcome.result {
+        InputMutationResult::ChildTaskTerminal { ack } => {
+            let deletion = ack
+                .deletion
+                .as_ref()
+                .context("child terminal ACK has no deletion")?;
+            (
+                &ack.original.scope,
+                InputEvidenceScope {
+                    agent_id: deletion.identity.agent_id.clone(),
+                    identity_incarnation: deletion.identity.incarnation,
+                },
+                &ack.original.admitted.key.id,
+                None,
+                Some((ack, deletion)),
+            )
+        }
+        InputMutationResult::SupervisedInvocationAdmission { ack } => (
+            &ack.parent_scope,
+            ack.child_scope.clone(),
+            &ack.parent_task_id,
+            Some(ack),
+            None,
+        ),
+        _ => bail!("shared receipt is not an original supervised child ACK"),
+    };
+    ensure!(
+        // Preserve the parent Task source until the child's complete receipt
+        // is purged. Parent-first cleanup must remain fail-closed.
+        child.agent_id == purge_agent_id
+            && parent.agent_id != child.agent_id
+            && prepared.scopes().len() == 2
+            && prepared.scopes().contains(parent)
+            && prepared.scopes().contains(&child),
+        "child receipt is not the exact parent/child group"
+    );
+    let parent_identity = identity_tx(tx, &parent.agent_id)?;
+    let current = fenced_identity_tx(tx, &child.agent_id, child.identity_incarnation)?;
+    ensure!(
+        parent_identity.incarnation == parent.identity_incarnation
+            && current.kind == AgentKind::Child
+            && current.parent_agent_id.as_deref() == Some(parent.agent_id.as_str())
+            && current.delegated_from_task_id.as_deref() == Some(parent_task_id.as_str()),
+        "child receipt lineage differs from the original parent Task"
+    );
+    if let Some((ack, deletion)) = terminal {
+        let raw_job: String = tx.query_row(
+            "SELECT payload_json FROM agent_deletion_jobs WHERE agent_id=?1 AND deletion_id=?2",
+            params![child.agent_id, deletion.job.deletion_id],
+            |row| row.get(0),
+        )?;
+        let job: AgentDeletionJob = serde_json::from_str(&raw_job)?;
+        ensure!(
+            job.agent_id == child.agent_id
+                && job.deletion_id == deletion.job.deletion_id
+                && job.deletion_id == format!("deletion:child-terminal:{}", ack.original.lease_id)
+                && job.mode == AgentDeletionMode::Delete
+                && deletion.job.mode == AgentDeletionMode::Delete
+                && job.expected_identity_revision == deletion.job.expected_identity_revision
+                && job.requested_by == deletion.job.requested_by,
+            "child terminal receipt does not bind the current deletion job"
+        );
+    }
+    let (owner, linked_child, kind, status, payload): (
+        String,
+        Option<String>,
+        String,
+        String,
+        String,
+    ) = tx.query_row(
+        "SELECT owner_agent_id,child_agent_id,kind,status,payload_json FROM tasks WHERE task_id=?1",
+        [parent_task_id],
+        |row| {
+            Ok((
+                row.get(0)?,
+                row.get(1)?,
+                row.get(2)?,
+                row.get(3)?,
+                row.get(4)?,
+            ))
+        },
+    )?;
+    let task = super::repositories::decode_task_payload(&payload)?;
+    let target = task
+        .target()
+        .context("canonical parent terminal Task target is absent or malformed")?;
+    let detail = task.detail.as_ref();
+    let legacy_incarnation = detail.and_then(|d| d.get("target_identity_incarnation"));
+    // An explicit typed target is authoritative; unknown typed incarnation
+    // cannot be filled from legacy fields or the child's current identity.
+    let target_incarnation = if detail.and_then(|d| d.get("target")).is_some() {
+        target.incarnation
+    } else {
+        legacy_incarnation.and_then(serde_json::Value::as_u64)
+    };
+    ensure!(
+        task.id == *parent_task_id
+            && task.agent_id == parent.agent_id
+            && owner == task.agent_id
+            && task.kind.as_str() == kind
+            && serde_json::to_value(&task.status)?.as_str() == Some(status.as_str())
+            // Admission binds ActorInvocation without the legacy creation marker.
+            // Terminal ACKs retain their existing child-task classification.
+            && (task.is_child_agent_task()
+                || (admission.is_some() && task.kind == TaskKind::ActorInvocation))
+            && super::repositories::is_terminal_task_status(&task.status)
+            && linked_child.as_deref() == Some(child.agent_id.as_str())
+            && task
+                .detail
+                .as_ref()
+                .and_then(|d| d.get("child_agent_id"))
+                .and_then(serde_json::Value::as_str)
+                == Some(child.agent_id.as_str())
+            && target.kind == TaskTargetKind::ChildAgent
+            && target.agent_id == child.agent_id
+            && target_incarnation == Some(child.identity_incarnation)
+            && legacy_incarnation
+                .is_none_or(|value| { value.as_u64() == Some(child.identity_incarnation) }),
+        "canonical parent terminal Task differs from the child ACK"
+    );
+    if let Some(admission) = admission {
+        let relations =
+            super::agent_relations::canonical_relations_from_connection(tx, &child.agent_id)?
+                .context("supervised admission child has no canonical relations")?;
+        ensure!(
+            current.visibility == crate::types::AgentVisibility::Private
+                && current.ownership() == crate::types::AgentOwnership::ParentSupervised
+                && relations
+                    .lineage
+                    .as_ref()
+                    .is_some_and(|lineage| lineage.parent_agent_id == parent.agent_id)
+                && relations.supervision.as_ref().is_some_and(|supervision| {
+                    supervision.supervisor_agent_id == parent.agent_id
+                        && supervision.delegated_from_task_id.as_deref()
+                            == Some(parent_task_id.as_str())
+                }),
+            "supervised admission canonical child lineage differs"
+        );
+        ensure!(
+            detail.and_then(|d| d.get("source_message_id"))
+                == Some(&serde_json::Value::String(
+                    admission.source_message_id.clone()
+                ))
+                && detail.and_then(|d| d.get("source_turn_id"))
+                    == Some(&serde_json::to_value(&admission.source_turn_id)?),
+            "canonical parent terminal Task differs from the original admission source"
+        );
+    }
+    // The child terminal producer is not an automatic dispatch writer. Keep
+    // the existing automatic-command selector safe for both scope members.
+    if table_exists(tx, "dispatch_memory_auto_commands")? {
+        ensure!(
+            !exists(
+                tx,
+                "SELECT EXISTS(SELECT 1 FROM dispatch_memory_auto_commands WHERE command_nonce=?1)",
+                nonce
+            )?,
+            "child terminal receipt unexpectedly owns automatic command history"
+        );
+    }
+    Ok(())
+}
+
+fn assert_command_ownership_tx(tx: &Transaction<'_>, agent_id: &str) -> Result<()> {
+    if !table_exists(tx, "input_mutation_receipts")? {
+        return Ok(());
+    }
+    let candidates = {
+        let mut statement = tx.prepare(&format!(
+            "SELECT command_nonce,prepared_json FROM input_mutation_receipts
+             WHERE {RECEIPT_OWNER}
+               AND EXISTS(SELECT 1 FROM json_each(scopes_json) s
+                 WHERE json_type(s.value,'$.agent_id') IS NOT 'text'
+                    OR json_extract(s.value,'$.agent_id') != ?1)"
+        ))?;
+        let rows = statement
+            .query_map([agent_id], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        rows
+    };
+    for (nonce, descriptor) in candidates {
+        assert_child_receipt_owner_tx(tx, agent_id, &nonce, &descriptor)
+            .context("shared command history requires explicit ownership resolution")?;
+    }
+    if table_exists(tx, "dispatch_memory_auto_commands")? {
+        ensure!(
+            !exists(
+                tx,
+                "SELECT EXISTS(SELECT 1 FROM dispatch_memory_auto_commands a
+                 LEFT JOIN input_mutation_receipts r USING(command_nonce)
+                 WHERE (EXISTS(SELECT 1 FROM json_each(a.payload_json,'$.base.scopes') s
+                           WHERE json_extract(s.value,'$.agent_id') = ?1)
+                     OR EXISTS(SELECT 1 FROM json_each(r.scopes_json) s
+                           WHERE json_extract(s.value,'$.agent_id') = ?1))
+                   AND (r.command_nonce IS NULL
+                     OR json(json_extract(a.payload_json,'$.base.scopes')) IS NOT json(r.scopes_json)
+                     OR json(json_extract(a.payload_json,'$.final_descriptor.scopes')) IS NOT json(r.scopes_json)))",
+                agent_id,
+            )?,
+            "automatic command history has no matching original ownership source"
+        );
     }
     Ok(())
 }
@@ -841,6 +1339,101 @@ mod tests {
         Ok(())
     }
 
+    fn legacy_fixture(bound: bool) -> Result<(tempfile::TempDir, RuntimeDb)> {
+        use super::super::{
+            evidence::{append_message_tx, upsert_agent_state_tx},
+            migrations::{apply_migration, ensure_migration_table, MIGRATIONS},
+            repositories::{upsert_task_tx, upsert_timer_tx},
+        };
+        use crate::types::{TimerRecord, TimerStatus};
+
+        let dir = tempfile::tempdir()?;
+        let path = dir.path().join("runtime.sqlite");
+        let mut connection = rusqlite::Connection::open(&path)?;
+        ensure_migration_table(&connection)?;
+        for migration in MIGRATIONS
+            .iter()
+            .filter(|migration| migration.version <= 89)
+        {
+            apply_migration(&mut connection, migration)?;
+        }
+        let a = AgentIdentityRecord::new(
+            "a",
+            AgentKind::Named,
+            AgentVisibility::Public,
+            AgentOwnership::SelfOwned,
+            AgentProfilePreset::PublicNamed,
+            None,
+            None,
+        );
+        let tx = connection.transaction()?;
+        for agent in ["a", "b"] {
+            let mut identity = a.clone();
+            identity.agent_id = agent.into();
+            if bound || agent == "b" {
+                upsert_agent_identity_tx(&tx, &identity)?;
+            }
+            let mut state = AgentState::new(agent);
+            state.status = AgentStatus::Stopped;
+            upsert_agent_state_tx(&tx, &state)?;
+            let mut message = MessageEnvelope::new(
+                agent,
+                MessageKind::OperatorPrompt,
+                MessageOrigin::Operator {
+                    actor_id: None,
+                    actor_display_name: None,
+                },
+                AuthorityClass::OperatorInstruction,
+                Priority::Normal,
+                MessageBody::Text {
+                    text: format!("legacy private content of {agent}"),
+                },
+            );
+            message.id = format!("legacy-message-{agent}");
+            append_message_tx(&tx, &message)?;
+            upsert_task_tx(
+                &tx,
+                &TaskRecord {
+                    id: format!("legacy-task-{agent}"),
+                    agent_id: agent.into(),
+                    kind: TaskKind::CommandTask,
+                    status: TaskStatus::Completed,
+                    created_at: Utc::now(),
+                    updated_at: Utc::now(),
+                    parent_message_id: None,
+                    work_item_id: None,
+                    summary: Some(format!("legacy private result of {agent}")),
+                    detail: None,
+                    recovery: None,
+                },
+            )?;
+            upsert_timer_tx(
+                &tx,
+                &TimerRecord {
+                    id: format!("legacy-timer-{agent}"),
+                    agent_id: agent.into(),
+                    created_at: Utc::now(),
+                    calendar: None,
+                    duration_ms: 1000,
+                    interval_ms: None,
+                    repeat: false,
+                    status: TimerStatus::Completed,
+                    summary: Some(format!("legacy private timer of {agent}")),
+                    next_fire_at: None,
+                    last_fired_at: None,
+                    fire_count: 1,
+                },
+            )?;
+        }
+        tx.commit()?;
+        drop(connection);
+        let db = RuntimeDb::open_and_migrate(path, dir.path().join("runtime.lock"))?;
+        if !bound {
+            db.transaction(|tx| upsert_agent_identity_tx(tx, &a))?;
+        }
+        Ok((dir, db))
+    }
+
     fn message(db: &RuntimeDb, agent: &str, id: &str) -> Result<()> {
         let mut message = MessageEnvelope::new(
             agent,
@@ -887,6 +1480,24 @@ mod tests {
             )],
         )?;
         Ok(())
+    }
+
+    fn history_ack(db: &RuntimeDb, agent: &str) -> Result<()> {
+        db.transaction(|tx| {
+            let (event, _) = super::super::evidence::append_audit_event_tx(
+                tx,
+                Some(agent),
+                &AuditEvent::legacy("deletion_history", serde_json::json!({"agent_id": agent})),
+            )?;
+            super::super::current_read_writes::append_event_history_ack_tx(
+                tx,
+                &crate::runtime::resident_input_evidence::InputEvidenceScope {
+                    agent_id: agent.into(),
+                    identity_incarnation: identity_tx(tx, agent)?.incarnation,
+                },
+                &event.id,
+            )
+        })
     }
 
     fn attempt(db: &RuntimeDb) -> Result<()> {
@@ -1016,6 +1627,335 @@ mod tests {
             }
             Ok(result)
         })
+    }
+
+    fn fixed_delete_guards(db: &RuntimeDb) -> Result<Vec<(String, String)>> {
+        // INSERT/UPDATE and unrelated triggers must survive too.
+        db.transaction(|tx| {
+            let mut statement = tx.prepare(
+                "SELECT name,sql FROM sqlite_master WHERE type='trigger'
+                 ORDER BY name",
+            )?;
+            let guards = statement
+                .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?
+                .collect::<rusqlite::Result<Vec<_>>>()?;
+            Ok(guards)
+        })
+    }
+
+    fn private_rows(db: &RuntimeDb, agent_id: &str) -> Result<Vec<(String, Vec<String>)>> {
+        db.transaction(|tx| {
+            let mut snapshot = Vec::new();
+            for (table, predicate) in private_history_selections_tx(tx)? {
+                let mut statement = tx.prepare(&format!(
+                    "SELECT * FROM {} WHERE {predicate}",
+                    quoted(table)
+                ))?;
+                let count = statement.column_count();
+                let mut rows = statement
+                    .query_map([agent_id], |row| {
+                        (0..count)
+                            .map(|column| row.get::<_, rusqlite::types::Value>(column))
+                            .collect::<rusqlite::Result<Vec<_>>>()
+                    })?
+                    .map(|row| row.map(|values| format!("{values:?}")))
+                    .collect::<rusqlite::Result<Vec<_>>>()?;
+                rows.sort();
+                snapshot.push((table.to_owned(), rows));
+            }
+            Ok(snapshot)
+        })
+    }
+
+    #[test]
+    fn new_domain_schema_has_explicit_deletion_ownership() {
+        // Only the shared cut's counts/digest/observed flags are content-free;
+        // its per-agent fixed rows still require private deletion selectors.
+        for schema in [
+            super::super::episode_snapshot::EPISODE_CONTINUITY_SCHEMA,
+            super::super::input_evidence_snapshot::INPUT_EVIDENCE_SCHEMA,
+            super::super::work_snapshot::WORK_DOMAIN_SCHEMA,
+            super::super::task_snapshot::TASK_DOMAIN_SCHEMA,
+            super::super::scheduling_snapshot::SCHEDULING_SCHEMA,
+            super::super::dispatch_memory::DISPATCH_MEMORY_SCHEMA,
+            super::super::input_mutation_receipts::INPUT_MUTATION_RECEIPT_SCHEMA,
+            super::super::current_read_writes::SCHEMA,
+            super::super::command_task_creation::SCHEMA,
+            super::super::task_stop::TASK_STOP_SCHEMA,
+            include_str!("control_transition/schema.sql"),
+            include_str!("input_native_birth.rs"),
+            include_str!("episode_snapshot_task_queries.rs"),
+        ] {
+            for declaration in schema
+                .lines()
+                .filter_map(|line| line.trim().strip_prefix("CREATE TABLE "))
+            {
+                let name = declaration
+                    .strip_prefix("IF NOT EXISTS ")
+                    .unwrap_or(declaration)
+                    .split_whitespace()
+                    .next()
+                    .unwrap();
+                assert!(
+                    name == "task_status_source_inventory"
+                        || PRIVATE_TABLES
+                            .iter()
+                            .chain(DOMAIN_DEPENDENT_TABLES)
+                            .chain(COMMAND_DEPENDENT_TABLES)
+                            .any(|(table, _)| *table == name),
+                    "unclassified domain table {name}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn legacy_seed_archive_and_purge_clear_bound_and_unbound_domains_without_unsealing(
+    ) -> Result<()> {
+        for bound in [true, false] {
+            let (_dir, db) = legacy_fixture(bound)?;
+            db.transaction(|tx| {
+                let source: String = tx.query_row(
+                    "SELECT source_kind FROM episode_continuity_seeds WHERE agent_id='a'",
+                    [],
+                    |row| row.get(0),
+                )?;
+                assert_eq!(
+                    source,
+                    if bound {
+                        "upgrade_identity"
+                    } else {
+                        "upgrade_unbound"
+                    }
+                );
+                Ok(())
+            })?;
+            fence(&db)?;
+            settle_execution(&db, "a", 1, Utc::now())?;
+            let guards = fixed_delete_guards(&db)?;
+            let foreign = private_rows(&db, "b")?;
+            let before = snapshot(&db)?;
+            let archive = export_private_history(&db, "a", 1)?;
+            assert_eq!(before, snapshot(&db)?, "archive must remain read-only");
+            let exported = archive["tables"].as_object().unwrap();
+            for table in [
+                "episode_continuity_seeds",
+                "input_evidence_captures",
+                "work_domain_captures",
+                "task_domain_captures",
+                "scheduling_domain_captures",
+                "scheduling_fixed_members",
+                "task_query_fixed_tasks",
+                "task_query_fixed_messages",
+            ] {
+                assert!(!exported[table].as_array().unwrap().is_empty(), "{table}");
+            }
+            assert!(serde_json::to_string(&archive)?.contains("legacy private content of a"));
+            assert!(!serde_json::to_string(&archive)?.contains("legacy private content of b"));
+            let counts = db.transaction(|tx| {
+                exported
+                    .iter()
+                    .map(|(table, rows)| {
+                        let count: usize = tx.query_row(
+                            &format!("SELECT COUNT(*) FROM {}", quoted(table)),
+                            [],
+                            |row| row.get(0),
+                        )?;
+                        Ok((table.clone(), count, rows.as_array().unwrap().len()))
+                    })
+                    .collect::<Result<Vec<_>>>()
+            })?;
+            purge_private_history(&db, "a", 1, Utc::now())?;
+            assert_private_history_cleared(&db, "a")?;
+            assert_eq!(guards, fixed_delete_guards(&db)?);
+            assert_eq!(foreign, private_rows(&db, "b")?);
+            db.transaction(|tx| {
+                for (table, before, removed) in &counts {
+                    let remaining: usize = tx.query_row(
+                        &format!("SELECT COUNT(*) FROM {}", quoted(table)),
+                        [],
+                        |row| row.get(0),
+                    )?;
+                    assert_eq!(remaining, before - removed, "{table}");
+                }
+                assert!(
+                    tx.execute(
+                        "DELETE FROM scheduling_fixed_members WHERE inventory_id IN
+                     (SELECT inventory_id FROM scheduling_fixed_manifests WHERE agent_id='b')",
+                        [],
+                    )
+                    .is_err(),
+                    "foreign fixed Scheduling rows must remain sealed"
+                );
+                assert!(
+                    tx.execute(
+                        "DELETE FROM task_query_fixed_tasks WHERE inventory_id IN
+                     (SELECT inventory_id FROM task_query_fixed_manifests WHERE agent_id='b')",
+                        [],
+                    )
+                    .is_err(),
+                    "foreign fixed Task rows must remain sealed"
+                );
+                assert!(
+                    tx.execute(
+                        "DELETE FROM scheduling_domain_captures WHERE seed_id IN
+                     (SELECT seed_id FROM episode_continuity_seeds WHERE agent_id='b')",
+                        [],
+                    )
+                    .is_err(),
+                    "foreign fixed captures must remain immutable"
+                );
+                Ok(())
+            })?;
+            purge_private_history(&db, "a", 1, Utc::now())?;
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn fixed_domain_delete_guards_are_restored_on_purge_failure() -> Result<()> {
+        for fault in ["delete", "proof"] {
+            let (_dir, db) = legacy_fixture(true)?;
+            fence(&db)?;
+            settle_execution(&db, "a", 1, Utc::now())?;
+            let guards = fixed_delete_guards(&db)?;
+            db.transaction(|tx| {
+                let event = if fault == "delete" {
+                    "BEFORE DELETE ON messages"
+                } else {
+                    "BEFORE UPDATE ON runtime_metadata WHEN NEW.key='agent_deletion_cleanup:a'"
+                };
+                tx.execute_batch(&format!(
+                    "CREATE TRIGGER reject_domain_purge {event}
+                     BEGIN SELECT RAISE(ABORT,'domain-purge-fault'); END;"
+                ))?;
+                Ok(())
+            })?;
+            let failure_guards = fixed_delete_guards(&db)?;
+            let own = private_rows(&db, "a")?;
+            let foreign = private_rows(&db, "b")?;
+            let error = purge_private_history(&db, "a", 1, Utc::now()).unwrap_err();
+            assert!(format!("{error:#}").contains("domain-purge-fault"));
+            assert_eq!(failure_guards, fixed_delete_guards(&db)?);
+            assert_eq!(own, private_rows(&db, "a")?);
+            assert_eq!(foreign, private_rows(&db, "b")?);
+            db.transaction(|tx| {
+                assert!(!proof_tx(tx, "a")?.unwrap().purged);
+                assert!(exists(
+                    tx,
+                    "SELECT EXISTS(SELECT 1 FROM episode_continuity_seeds WHERE agent_id=?1)",
+                    "a"
+                )?);
+                assert!(tx
+                    .execute(
+                        "DELETE FROM scheduling_fixed_manifests WHERE agent_id='a'",
+                        []
+                    )
+                    .is_err());
+                tx.execute_batch("DROP TRIGGER reject_domain_purge")?;
+                Ok(())
+            })?;
+            purge_private_history(&db, "a", 1, Utc::now())?;
+            assert_eq!(guards, fixed_delete_guards(&db)?);
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn fixed_domain_delete_guard_schema_drift_rejects_without_partial_purge() -> Result<()> {
+        for drift in ["missing", "changed", "unknown", "unknown_domain"] {
+            let (_dir, db) = legacy_fixture(true)?;
+            fence(&db)?;
+            settle_execution(&db, "a", 1, Utc::now())?;
+            db.transaction(|tx| {
+                match drift {
+                    "missing" => tx.execute_batch("DROP TRIGGER scheduling_capture_delete")?,
+                    "changed" => tx.execute_batch(
+                        "DROP TRIGGER scheduling_capture_delete;
+                         CREATE TRIGGER scheduling_capture_delete
+                         BEFORE DELETE ON scheduling_domain_captures
+                         BEGIN SELECT RAISE(ABORT,'changed-guard'); END;",
+                    )?,
+                    _ => {
+                        let table = if drift == "unknown" {
+                            "scheduling_fixed_members"
+                        } else {
+                            "task_domain_records"
+                        };
+                        tx.execute_batch(&format!(
+                            "CREATE TRIGGER future_fixed_delete BEFORE DELETE ON {table}
+                             BEGIN SELECT RAISE(ABORT,'unknown-guard'); END;"
+                        ))?;
+                    }
+                }
+                Ok(())
+            })?;
+            let guards = fixed_delete_guards(&db)?;
+            let own = private_rows(&db, "a")?;
+            let foreign = private_rows(&db, "b")?;
+            let error = purge_private_history(&db, "a", 1, Utc::now()).unwrap_err();
+            assert!(format!("{error:#}").contains("deletion guard"), "{error:#}");
+            assert_eq!(guards, fixed_delete_guards(&db)?, "{drift}");
+            assert_eq!(own, private_rows(&db, "a")?, "{drift}");
+            assert_eq!(foreign, private_rows(&db, "b")?, "{drift}");
+            db.transaction(|tx| {
+                assert!(!proof_tx(tx, "a")?.unwrap().purged);
+                Ok(())
+            })?;
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn unknown_seed_content_and_shared_command_history_fail_closed() -> Result<()> {
+        for shared in [false, true] {
+            let (_dir, db) = legacy_fixture(true)?;
+            db.transaction(|tx| {
+                if shared {
+                    tx.execute(
+                        "INSERT INTO input_mutation_receipts VALUES(
+                         'shared','queue',1,?1,?1,?2,'now','{}','{}','now',?1)",
+                        params![
+                            "0".repeat(64),
+                            r#"[{"agent_id":"a","identity_incarnation":1},{"agent_id":"b","identity_incarnation":1}]"#,
+                        ],
+                    )?;
+                } else {
+                    tx.execute_batch(
+                        "CREATE TABLE future_seed_history(seed_id TEXT,body TEXT);
+                         INSERT INTO future_seed_history
+                         SELECT seed_id,'unknown seed content' FROM episode_continuity_seeds
+                         WHERE agent_id='a';",
+                    )?;
+                }
+                Ok(())
+            })?;
+            fence(&db)?;
+            settle_execution(&db, "a", 1, Utc::now())?;
+            let guards = fixed_delete_guards(&db)?;
+            let before = snapshot(&db)?;
+            let expected = if shared {
+                "shared command history"
+            } else {
+                "unclassified deletion ownership in future_seed_history"
+            };
+            assert!(
+                format!("{:#}", export_private_history(&db, "a", 1).unwrap_err())
+                    .contains(expected)
+            );
+            assert!(format!(
+                "{:#}",
+                purge_private_history(&db, "a", 1, Utc::now()).unwrap_err()
+            )
+            .contains(expected));
+            assert_eq!(guards, fixed_delete_guards(&db)?);
+            assert_eq!(before, snapshot(&db)?);
+            db.transaction(|tx| {
+                assert!(!proof_tx(tx, "a")?.unwrap().purged);
+                Ok(())
+            })?;
+        }
+        Ok(())
     }
 
     #[test]
@@ -1543,13 +2483,30 @@ mod tests {
         for agent in ["a", "b"] {
             message(&db, agent, &format!("message-{agent}"))?;
             task(&db, agent, &format!("task-{agent}"), None)?;
+            history_ack(&db, agent)?;
         }
         memory(&db)?;
+        db.transaction(|tx| {
+            tx.execute_batch(
+                "CREATE TRIGGER require_history_ack_cleanup BEFORE DELETE ON audit_events
+                 WHEN EXISTS(SELECT 1 FROM event_history_acks
+                             WHERE agent_id=OLD.agent_id AND audit_event_id=OLD.audit_event_id)
+                 BEGIN SELECT RAISE(ABORT,'history ACKs must be cleared before Events'); END;",
+            )?;
+            Ok(())
+        })?;
+        let foreign_before = private_rows(&db, "b")?;
         fence(&db)?;
         settle_execution(&db, "a", 1, Utc::now())?;
         purge_private_history(&db, "a", 1, Utc::now())?;
+        assert_eq!(private_rows(&db, "b")?, foreign_before);
         db.transaction(|tx| {
             assert_private_history_cleared_tx(tx, "a")?;
+            assert!(exists(
+                tx,
+                "SELECT EXISTS(SELECT 1 FROM event_history_acks WHERE agent_id = ?1)",
+                "b"
+            )?);
             assert_eq!(identity_tx(tx, "a")?.incarnation, 1);
             for table in ["memory_documents_fts", "memory_documents_fts_rows"] {
                 let count: i64 =
@@ -1597,6 +2554,7 @@ mod tests {
     fn purge_fault_rolls_back_sources_fts_and_proof() -> Result<()> {
         let (_dir, db) = fixture()?;
         message(&db, "a", "message-a")?;
+        history_ack(&db, "a")?;
         memory(&db)?;
         db.turn_records()
             .upsert(&TurnRecord::new("a", "operation-turn", 1))?;
@@ -1611,6 +2569,7 @@ mod tests {
         })?;
         fence(&db)?;
         settle_execution(&db, "a", 1, Utc::now())?;
+        let before = private_rows(&db, "a")?;
         db.transaction(|tx| {
             tx.execute_batch(
                 "CREATE TRIGGER fail_purge BEFORE DELETE ON messages
@@ -1620,8 +2579,14 @@ mod tests {
         })?;
         let error = purge_private_history(&db, "a", 1, Utc::now()).unwrap_err();
         assert!(format!("{error:#}").contains("injected purge failure"));
+        assert_eq!(private_rows(&db, "a")?, before);
         db.transaction(|tx| {
             assert!(!proof_tx(tx, "a")?.unwrap().purged);
+            assert!(exists(
+                tx,
+                "SELECT EXISTS(SELECT 1 FROM event_history_acks WHERE agent_id = ?1)",
+                "a"
+            )?);
             let fences: i64 = tx.query_row(
                 "SELECT COUNT(*) FROM runtime_metadata
                  WHERE key LIKE 'destructive_operation_closed:%'",

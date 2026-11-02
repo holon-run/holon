@@ -351,6 +351,7 @@ mod tests {
                 .await
                 .push(request.conversation.clone());
             Ok(ProviderTurnResponse {
+                material: Default::default(),
                 blocks: vec![ModelBlock::Text { text: "ok".into() }],
                 stop_reason: None,
                 input_tokens: 0,
@@ -370,6 +371,7 @@ mod tests {
             _request: ProviderTurnRequest,
         ) -> Result<ProviderTurnResponse> {
             Ok(ProviderTurnResponse {
+                material: Default::default(),
                 blocks: vec![ModelBlock::Text { text: "ok".into() }],
                 stop_reason: None,
                 input_tokens: 0,
@@ -407,6 +409,7 @@ mod tests {
                 return Err(anyhow!("forced provider failure"));
             }
             Ok(ProviderTurnResponse {
+                material: Default::default(),
                 blocks: vec![ModelBlock::Text { text: "ok".into() }],
                 stop_reason: None,
                 input_tokens: 1,
@@ -429,6 +432,7 @@ mod tests {
             _request: ProviderTurnRequest,
         ) -> Result<ProviderTurnResponse> {
             Ok(ProviderTurnResponse {
+                material: Default::default(),
                 blocks: vec![ModelBlock::Text { text: "ok".into() }],
                 stop_reason: None,
                 input_tokens: 0,
@@ -455,6 +459,7 @@ mod tests {
             _request: ProviderTurnRequest,
         ) -> Result<ProviderTurnResponse> {
             Ok(ProviderTurnResponse {
+                material: Default::default(),
                 blocks: vec![ModelBlock::Text { text: "ok".into() }],
                 stop_reason: None,
                 input_tokens: 0,
@@ -577,6 +582,7 @@ mod tests {
                     ),
                 ),
                 ScriptedFailure::Succeed => Ok(ProviderTurnResponse {
+                    material: Default::default(),
                     blocks: vec![ModelBlock::Text { text: "ok".into() }],
                     stop_reason: None,
                     input_tokens: 0,
@@ -624,6 +630,7 @@ mod tests {
     fn plain_turn_request() -> ProviderTurnRequest {
         ProviderTurnRequest {
             dispatch_guard: None,
+            material: Default::default(),
             continuation_scope_id: None,
             prompt_frame: ProviderPromptFrame::plain("system"),
             conversation: Vec::new(),
@@ -1115,7 +1122,7 @@ mod tests {
         ConversationMessage::UserImage {
             prompt: "workspace screenshot".into(),
             media_type: "image/png".into(),
-            data_base64: "aGVsbG8=".into(),
+            data_base64: "aGVsbG8=".to_owned().into(),
             optional_history,
         }
     }
@@ -1232,6 +1239,7 @@ mod tests {
 
         let response = provider
             .generate_image(ProviderGenerateImageRequest {
+                material: Default::default(),
                 prompt: "holon".into(),
                 size: None,
                 aspect_ratio: None,
@@ -1360,6 +1368,7 @@ mod tests {
 
         let request = ProviderTurnRequest {
             dispatch_guard: None,
+            material: Default::default(),
             continuation_scope_id: None,
             prompt_frame: ProviderPromptFrame::structured(
                 "base",

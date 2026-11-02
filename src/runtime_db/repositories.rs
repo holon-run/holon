@@ -1,6 +1,6 @@
 //! Domain repository implementations and their transaction helpers.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use anyhow::{anyhow, Context, Result};
 use chrono::{DateTime, Utc};
@@ -24,13 +24,98 @@ use crate::runtime_db::transitions::{
 use crate::runtime_db::types::*;
 use crate::runtime_db::write_queue::RuntimeDbWriteContext;
 use crate::runtime_db::{
-    RuntimeStateTransitionConflict, CONTEXT_EPISODE_ANCHORS_DOMAIN, TASK_PAYLOAD_ARRAY_LIMIT,
-    TASK_PAYLOAD_STRING_LIMIT,
+    RuntimeStateTransitionConflict, TASK_PAYLOAD_ARRAY_LIMIT, TASK_PAYLOAD_STRING_LIMIT,
 };
 use crate::runtime_event::RuntimeEventKind;
 use crate::types::*;
 
-#[derive(Debug, Clone)]
+mod active_wait_material;
+use active_wait_material::active_wait_records;
+
+#[cfg(test)]
+#[path = "repositories/active_wait_material_tests.rs"]
+mod active_wait_material_tests;
+
+#[cfg(test)]
+#[path = "repositories/trigger_body_budget_tests.rs"]
+mod trigger_body_budget_tests;
+
+#[cfg(test)]
+#[path = "repositories/trigger_sql_budget_tests.rs"]
+mod trigger_sql_budget_tests;
+
+#[cfg(test)]
+#[path = "repositories/trigger_read_budget_tests.rs"]
+mod trigger_read_budget_tests;
+
+#[cfg(test)]
+#[path = "repositories/timer_read_budget_tests.rs"]
+mod timer_read_budget_tests;
+
+#[cfg(test)]
+#[path = "repositories/work_queue_material_tests.rs"]
+mod work_queue_material_tests;
+
+#[cfg(test)]
+#[path = "repositories/continuation_material_tests.rs"]
+mod continuation_material_tests;
+
+#[cfg(test)]
+#[path = "repositories/timer_sql_budget_tests.rs"]
+mod timer_sql_budget_tests;
+
+#[cfg(test)]
+#[path = "repositories/state_sql_budget_tests.rs"]
+mod state_sql_budget_tests;
+
+#[cfg(test)]
+#[path = "repositories/occupancy_read_budget_tests.rs"]
+mod occupancy_read_budget_tests;
+
+#[cfg(test)]
+#[path = "repositories/advisory_read_tests.rs"]
+mod advisory_read_tests;
+
+#[cfg(test)]
+#[path = "repositories/wait_sql_budget_tests.rs"]
+mod wait_sql_budget_tests;
+
+#[cfg(test)]
+#[path = "repositories/wait_owner_budget_tests.rs"]
+mod wait_owner_budget_tests;
+
+#[cfg(test)]
+#[path = "repositories/wait_writes_budget_tests.rs"]
+mod wait_writes_budget_tests;
+
+pub(in crate::runtime_db) fn clone_timer_body<T: Clone + serde::Serialize>(value: &T) -> Result<T> {
+    crate::diagnostics::resource_io::admit_cloned_value(value)?;
+    Ok(value.clone())
+}
+
+/// Borrow SQLite text until admission completes, preserving Row::get<String>
+/// conversion errors without allocating the successful column first.
+pub(crate) fn borrowed_sql_text<'a>(
+    row: &'a rusqlite::Row<'_>,
+    index: usize,
+) -> rusqlite::Result<&'a str> {
+    let value = row.get_ref(index)?;
+    value.as_str().map_err(|error| match error {
+        rusqlite::types::FromSqlError::InvalidType => rusqlite::Error::InvalidColumnType(
+            index,
+            row.as_ref().column_name(index).unwrap_or("").to_owned(),
+            value.data_type(),
+        ),
+        rusqlite::types::FromSqlError::Other(error) => {
+            rusqlite::Error::FromSqlConversionFailure(index, value.data_type(), error)
+        }
+        error => {
+            rusqlite::Error::FromSqlConversionFailure(index, value.data_type(), Box::new(error))
+        }
+    })
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
 pub(crate) enum AgentDeletionAdmission {
     ExpectedRevision(u64),
     SupervisingParent {
@@ -44,7 +129,7 @@ pub(crate) enum AgentDeletionAdmission {
     },
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize)]
 pub(crate) struct AgentDeletionRequest {
     pub agent_id: String,
     pub admission: AgentDeletionAdmission,
@@ -67,7 +152,7 @@ pub(crate) struct TerminalChildDeletionAdmissionRejected {
 }
 
 impl TerminalChildDeletionAdmissionRejected {
-    fn new(agent_id: &str, reason: impl Into<String>) -> Self {
+    pub(crate) fn new(agent_id: &str, reason: impl Into<String>) -> Self {
         Self {
             agent_id: agent_id.to_string(),
             reason: reason.into(),
@@ -84,26 +169,41 @@ pub(crate) fn is_terminal_child_deletion_admission_rejected(error: &anyhow::Erro
 }
 
 impl WorkItemRepository<'_> {
-    pub fn import_legacy(&self, records: Vec<WorkItemRecord>) -> Result<()> {
-        if self.db.storage_domain_is_complete("work_items", "db")? {
-            return Ok(());
-        }
-        self.db
-            .run_storage_domain_import("work_items", "jsonl", "db", |tx| {
-                let mut latest = BTreeMap::<String, WorkItemRecord>::new();
-                for record in records {
-                    let should_replace = latest
-                        .get(&record.id)
-                        .is_none_or(|existing| newer_work_item_record(&record, existing));
-                    if should_replace {
-                        latest.insert(record.id.clone(), record);
-                    }
-                }
-                for record in latest.values() {
-                    import_work_item_tx(tx, record)?;
-                }
-                Ok(serde_json::json!({ "imported_records": latest.len() }))
-            })
+    /// Fixture-only use of the original Work writer protocol. A raw insert
+    /// deliberately cannot qualify a body for later domain readers.
+    #[cfg(test)]
+    pub(crate) fn insert_new_qualified_for_fixture(
+        &self,
+        record: &WorkItemRecord,
+        identity_incarnation: u64,
+    ) -> Result<bool> {
+        use crate::runtime::resident_work::{WorkCaptureRequest, WorkFamily, WorkKey};
+        self.db.transaction(|tx| {
+            let scope = crate::runtime::resident_input_evidence::InputEvidenceScope {
+                agent_id: record.agent_id.clone(),
+                identity_incarnation,
+            };
+            let keys = BTreeSet::from([WorkKey::new(WorkFamily::Work, &record.id)]);
+            let proof = super::work_snapshot::prepare_work_write_tx(tx, &scope, &keys)?;
+            let inserted = insert_new_work_item_tx(tx, record)?;
+            let state = super::context_inputs::ContextDurableRead::new(tx, &record.agent_id)
+                .scope_facts()?
+                .state
+                .context("Work fixture requires State")?;
+            super::work_snapshot::register_work_writes_tx(
+                tx,
+                &proof,
+                &keys,
+                &BTreeSet::new(),
+                &state,
+                &super::work_snapshot::WorkDomainLoadRequest {
+                    capture: WorkCaptureRequest::current(),
+                    record_limit: 4096,
+                    byte_limit: 16 * 1024 * 1024,
+                },
+            )?;
+            Ok(inserted)
+        })
     }
 
     pub fn insert_new(&self, record: &WorkItemRecord) -> Result<bool> {
@@ -140,26 +240,30 @@ impl WorkItemRepository<'_> {
         use crate::runtime_db::transitions::{
             ExecutionProtocolTransition, WorkItemMutation, WorkItemTransitionCommand,
         };
-        Ok(self
-            .db
-            .transitions()
-            .commit_work_item_with_execution_protocol(
-                &WorkItemTransitionCommand {
-                    agent_id: record.agent_id.clone(),
-                    mutation: WorkItemMutation::Update {
-                        record: record.clone(),
-                        expected_revision,
+        self.db.transaction(|tx| {
+            Ok(self
+                .db
+                .transitions()
+                .commit_work_item_tx(
+                    tx,
+                    &WorkItemTransitionCommand {
+                        agent_id: record.agent_id.clone(),
+                        mutation: WorkItemMutation::Update {
+                            record: record.clone(),
+                            expected_revision,
+                        },
+                        agent_state: None,
+                        brief_evidence: Vec::new(),
+                        audit_events: Vec::new(),
+                        index_changes: changes.to_vec(),
+                        notify_scheduler: false,
+                        fault: None,
                     },
-                    agent_state: None,
-                    brief_evidence: Vec::new(),
-                    audit_events: Vec::new(),
-                    index_changes: changes.to_vec(),
-                    notify_scheduler: false,
-                    fault: None,
-                },
-                &ExecutionProtocolTransition::default(),
-            )?
-            .applied)
+                    &ExecutionProtocolTransition::default(),
+                    true,
+                )?
+                .applied)
+        })
     }
 
     pub fn latest(&self, work_item_id: &str) -> Result<Option<WorkItemRecord>> {
@@ -189,24 +293,15 @@ impl WorkItemRepository<'_> {
              ORDER BY updated_at DESC, created_at DESC, work_item_id ASC
              LIMIT ?2",
             )?;
-            let rows =
-                statement.query_map(params![agent_id, limit], |row| row.get::<_, String>(0))?;
-            rows.map(|row| decode_work_item_payload(&row?)).collect()
+            work_queue_records(&mut statement, params![agent_id, limit])
         })
     }
 
     /// All open work items for one agent. Open items are scheduler candidates,
     /// so this set is naturally bounded by live scheduling state.
     pub fn open_for_agent(&self, agent_id: &str) -> Result<Vec<WorkItemRecord>> {
-        self.db.with_read(|connection| {
-            let mut statement = connection.prepare(
-                "SELECT payload_json
-             FROM work_items
-             WHERE agent_id = ?1 AND state = 'open'",
-            )?;
-            let rows = statement.query_map([agent_id], |row| row.get::<_, String>(0))?;
-            rows.map(|row| decode_work_item_payload(&row?)).collect()
-        })
+        self.db
+            .with_read(|connection| context_open_work_items_on(&connection, agent_id))
     }
 
     /// Most recent non-open work items for one agent, bounded by `limit`.
@@ -219,39 +314,44 @@ impl WorkItemRepository<'_> {
         if limit == 0 {
             return Ok(Vec::new());
         }
-        let limit = i64::try_from(limit).unwrap_or(i64::MAX);
-        self.db.with_read(|connection| {
-            let mut statement = connection.prepare(
-                "SELECT payload_json
-             FROM work_items
-             WHERE agent_id = ?1 AND state != 'open'
-             ORDER BY updated_at DESC, created_at DESC, work_item_id ASC
-             LIMIT ?2",
-            )?;
-            let rows =
-                statement.query_map(params![agent_id, limit], |row| row.get::<_, String>(0))?;
-            rows.map(|row| decode_work_item_payload(&row?)).collect()
-        })
+        self.db
+            .with_read(|connection| context_non_open_work_items_on(&connection, agent_id, limit))
     }
 
     /// Batched lookup of work items by id, replacing per-id connections on
     /// projection paths. Ids without a row are silently absent.
     pub fn latest_many(&self, work_item_ids: &[String]) -> Result<Vec<WorkItemRecord>> {
-        let mut records = Vec::with_capacity(work_item_ids.len());
+        self.latest_many_by_id(work_item_ids)
+    }
+
+    pub(crate) fn latest_many_borrowed(
+        &self,
+        work_item_ids: &[&str],
+    ) -> Result<Vec<WorkItemRecord>> {
+        self.latest_many_by_id(work_item_ids)
+    }
+
+    fn latest_many_by_id(&self, work_item_ids: &[impl AsRef<str>]) -> Result<Vec<WorkItemRecord>> {
+        let mut records = Vec::new();
         for chunk in work_item_ids.chunks(128) {
-            let placeholders = (0..chunk.len()).map(|_| "?").collect::<Vec<_>>().join(",");
-            let sql = format!(
-                "SELECT payload_json FROM work_items WHERE work_item_id IN ({placeholders})"
-            );
-            let chunk_records = self.db.with_read(|connection| {
-                let mut statement = connection.prepare(&sql)?;
-                let params: Vec<&dyn rusqlite::ToSql> =
-                    chunk.iter().map(|id| id as &dyn rusqlite::ToSql).collect();
-                let rows = statement.query_map(params.as_slice(), |row| row.get::<_, String>(0))?;
-                rows.map(|row| decode_work_item_payload(&row?))
-                    .collect::<Result<Vec<_>>>()
+            const PREFIX: &[u8] = b"SELECT payload_json FROM work_items WHERE work_item_id IN (";
+            let mut sql = [b' '; PREFIX.len() + 128 * 2];
+            sql[..PREFIX.len()].copy_from_slice(PREFIX);
+            for index in 0..chunk.len() {
+                sql[PREFIX.len() + index * 2] = b'?';
+                sql[PREFIX.len() + index * 2 + 1] =
+                    if index + 1 == chunk.len() { b')' } else { b',' };
+            }
+            let sql = std::str::from_utf8(&sql[..PREFIX.len() + chunk.len() * 2])?;
+            self.db.with_read(|connection| {
+                let mut statement = connection.prepare(sql)?;
+                work_queue_records_into(
+                    &mut statement,
+                    params_from_iter(chunk.iter().map(AsRef::as_ref)),
+                    &mut records,
+                )?;
+                Ok(())
             })?;
-            records.extend(chunk_records);
         }
         Ok(records)
     }
@@ -263,10 +363,7 @@ impl WorkItemRepository<'_> {
              FROM work_items
              ORDER BY updated_at DESC, created_at DESC, work_item_id ASC",
             )?;
-            let rows = statement.query_map([], |row| row.get::<_, String>(0))?;
-            let mut records: Vec<_> = rows
-                .map(|row| decode_work_item_payload(&row?))
-                .collect::<Result<_>>()?;
+            let mut records = work_queue_records(&mut statement, [])?;
             records.reverse();
             Ok(records)
         })
@@ -320,21 +417,361 @@ impl WorkItemRepository<'_> {
 }
 
 impl AgentStateRepository<'_> {
-    pub fn import_legacy(&self, record: Option<AgentState>) -> Result<()> {
-        if self.db.storage_domain_is_complete("agent_states", "db")? {
-            return Ok(());
-        }
-        self.db
-            .run_storage_domain_import("agent_states", "json", "db", |tx| {
-                if let Some(record) = record.as_ref() {
-                    upsert_agent_state_tx(tx, record)?;
-                }
-                Ok(serde_json::json!({ "imported_records": usize::from(record.is_some()) }))
-            })
+    /// Includes orphan rows whose agent identity has not been materialized.
+    pub(crate) fn startup_mutation_agent_ids(&self) -> Result<Vec<String>> {
+        let connection = self.db.connection()?;
+        let mut statement = connection.prepare(
+            "SELECT agent_id FROM agent_identities
+             UNION SELECT agent_id FROM agent_states
+             UNION SELECT agent_id FROM queue_entries
+             UNION SELECT agent_id FROM turn_records
+             UNION SELECT agent_id FROM execution_protocol_attempts
+             UNION SELECT agent_id FROM wait_conditions
+             UNION SELECT owner_agent_id FROM tasks
+             UNION SELECT agent_id FROM timers
+             UNION SELECT target_agent_id FROM external_triggers
+             ORDER BY 1",
+        )?;
+        let rows = statement.query_map([], |row| row.get::<_, String>(0))?;
+        rows.collect::<std::result::Result<Vec<_>, _>>()
+            .map_err(Into::into)
     }
 
-    pub fn upsert(&self, record: &AgentState) -> Result<()> {
+    /// The Host reserves all startup scopes and excludes loaded/draining
+    /// runtimes. Stale waits and Stopped timer/queue/state cleanup share one ACK.
+    #[cfg(test)]
+    pub(crate) fn reconcile_stale_waits_at_startup(
+        &self,
+        fault: Option<crate::runtime_db::transitions::TransitionFaultPoint>,
+    ) -> Result<(usize, BTreeMap<String, AgentState>)> {
+        self.reconcile_stale_waits_at_startup_inner(None, None, fault)
+            .map(|(n, states, _)| (n, states))
+    }
+
+    #[cfg(test)]
+    pub(crate) fn reconcile_stale_waits_at_startup_in_scopes(
+        &self,
+        scopes: &[crate::runtime_db::transitions::StartupInputRecoveryScope],
+        admission: &super::input_evidence_snapshot::legacy_recovery::ExclusiveStartupInputRecovery<
+            '_,
+        >,
+        request: &super::work_snapshot::WorkDomainLoadRequest,
+        fault: Option<crate::runtime_db::transitions::TransitionFaultPoint>,
+    ) -> Result<(usize, BTreeMap<String, AgentState>)> {
+        admission.validate_database(self.db)?;
+        self.reconcile_stale_waits_at_startup_inner(Some((scopes, admission, request)), None, fault)
+            .map(|(n, states, _)| (n, states))
+    }
+
+    pub(crate) fn reconcile_stale_waits_at_startup_with_scheduling(
+        &self,
+        scopes: &[crate::runtime_db::transitions::StartupInputRecoveryScope],
+        admission: &super::input_evidence_snapshot::legacy_recovery::ExclusiveStartupInputRecovery<
+            '_,
+        >,
+        work_request: &super::work_snapshot::WorkDomainLoadRequest,
+        scheduling_request: &super::scheduling_snapshot::SchedulingDomainLoadRequest,
+        accounting: &[crate::runtime::resident_input_evidence::InputEvidenceScope],
+        ledger: &crate::runtime::input_evidence_budget::InputEvidenceBudgetLedger,
+        fault: Option<crate::runtime_db::transitions::TransitionFaultPoint>,
+    ) -> Result<(
+        usize,
+        BTreeMap<String, AgentState>,
+        super::scheduling_snapshot::StartupSchedulingAck,
+    )> {
+        admission.validate_database(self.db)?;
+        let (count, states, ack) = self.reconcile_stale_waits_at_startup_inner(
+            Some((scopes, admission, work_request)),
+            Some((scheduling_request, accounting, ledger)),
+            fault,
+        )?;
+        Ok((
+            count,
+            states,
+            ack.context("startup Scheduling ACK missing")?,
+        ))
+    }
+
+    fn reconcile_stale_waits_at_startup_inner(
+        &self,
+        preparation: Option<(
+            &[crate::runtime_db::transitions::StartupInputRecoveryScope],
+            &super::input_evidence_snapshot::legacy_recovery::ExclusiveStartupInputRecovery<'_>,
+            &super::work_snapshot::WorkDomainLoadRequest,
+        )>,
+        scheduling: Option<(
+            &super::scheduling_snapshot::SchedulingDomainLoadRequest,
+            &[crate::runtime::resident_input_evidence::InputEvidenceScope],
+            &crate::runtime::input_evidence_budget::InputEvidenceBudgetLedger,
+        )>,
+        fault: Option<crate::runtime_db::transitions::TransitionFaultPoint>,
+    ) -> Result<(
+        usize,
+        BTreeMap<String, AgentState>,
+        Option<super::scheduling_snapshot::StartupSchedulingAck>,
+    )> {
+        use super::{
+            input_evidence_snapshot::legacy_recovery::legacy_seed_recovery_scope_tx, work_snapshot,
+        };
+        use crate::runtime::resident_input_evidence::InputEvidenceScope;
+        use crate::runtime_db::transitions::{StartupInputRecoveryScope, TransitionFaultPoint};
+
+        self.db.transaction(|tx| {
+            let scheduling_material=if let Some((request,accounting,ledger))=scheduling {
+                let (scopes,admission,_)=preparation.context("Scheduling startup lacks original exclusive actor")?;
+                Some(super::scheduling_snapshot::StartupSchedulingMaterial::prepare_tx(tx,scopes,accounting,request,ledger,admission)?)
+            }else{None};
+            let mut states = {
+                let mut statement = tx.prepare("SELECT payload_json FROM agent_states")?;
+                let records = statement
+                    .query_map([], |row| row.get::<_, String>(0))?
+                    .map(|row| decode_agent_state_payload(&row?))
+                    .collect::<Result<Vec<_>>>()?;
+                records.into_iter().map(|state| (state.id.clone(), state)).collect::<BTreeMap<_, _>>()
+            };
+            let waits = {
+                let mut statement = tx.prepare(
+                    "SELECT wait_condition_id, agent_id, work_item_id, status, kind, source,
+                        subject_ref, waiting_for, created_at, updated_at, expires_at,
+                        resolved_at, cancelled_at, last_turn_id, trigger_message_id, triggered_at,
+                        wake_sources_json, continuation_json
+                     FROM wait_conditions WHERE status IN ('active', 'triggered')",
+                )?;
+                let records = statement.query_map([], |row| {
+                    decode_wait_condition_row(row).map_err(wait_condition_decode_error)
+                })?.collect::<std::result::Result<Vec<_>, _>>()?;
+                records
+            };
+            let tasks = {
+                let mut statement = tx.prepare(if scheduling.is_some(){super::scheduling_snapshot::startup_maintenance::WAIT_TASK_POOL}else{"SELECT payload_json FROM tasks"})?;
+                let records = statement.query_map([], |row| row.get::<_, String>(0))?
+                    .map(|row| decode_task_payload(&row?)).collect::<Result<Vec<_>>>()?;
+                records
+            };
+            let external_triggers = {
+                let mut statement = tx.prepare(if scheduling.is_some(){super::scheduling_snapshot::startup_maintenance::WAIT_TRIGGER_POOL}else{"SELECT payload_json FROM external_triggers"})?;
+                let records = statement.query_map([], |row| row.get::<_, String>(0))?
+                    .map(|row| decode_external_trigger_payload(&row?)).collect::<Result<Vec<_>>>()?;
+                records
+            };
+            let timers = {
+                let mut statement = tx.prepare(if scheduling.is_some(){super::scheduling_snapshot::startup_maintenance::WAIT_TIMER_POOL}else{"SELECT payload_json FROM timers"})?;
+                let records = statement.query_map([], |row| row.get::<_, String>(0))?
+                    .map(|row| decode_timer_payload(&row?)).collect::<Result<Vec<_>>>()?;
+                records
+            };
+            let mut stale_waits = Vec::new();
+            for wait in waits {
+                let stopped = states.get(&wait.agent_id)
+                    .is_some_and(|state| state.status == AgentStatus::Stopped);
+                let task_stale = wait.wake_sources.iter().any(|source| {
+                    let WakeSource::TaskResult { task_id } = source else { return false; };
+                    tasks.iter().find(|task| task.id == *task_id && task.agent_id == wait.agent_id)
+                        .is_none_or(|task| matches!(task.status,
+                            TaskStatus::Completed | TaskStatus::Failed | TaskStatus::Cancelled | TaskStatus::Interrupted))
+                });
+                let external_stale = wait.wake_sources.iter().any(|source| {
+                    let WakeSource::ExternalIngress { external_trigger_id } = source else { return false; };
+                    external_trigger_id.as_ref().is_none_or(|trigger_id| {
+                        !external_triggers.iter().any(|trigger| {
+                            trigger.external_trigger_id == *trigger_id
+                                && trigger.target_agent_id == wait.agent_id
+                                && trigger.status == ExternalTriggerStatus::Active
+                        })
+                    })
+                });
+                let timer_stale = wait.kind == WaitConditionKind::Timer
+                    && wait.subject_ref.as_ref().is_none_or(|timer_id| {
+                        !timers.iter().any(|timer| timer.id == *timer_id
+                            && timer.agent_id == wait.agent_id && timer.status == TimerStatus::Active)
+                    });
+                let wait_recheck_survives_stop =
+                    wait.work_item_id.is_none() && wait.recheck_at().is_some();
+                if (stopped && !wait_recheck_survives_stop) || task_stale || external_stale || timer_stale {
+                    stale_waits.push(wait);
+                }
+            }
+            let mut prepared_bound = BTreeMap::new();
+            let mut prepared_unbound = BTreeMap::new();
+            if let Some((scopes, admission, request)) = preparation {
+                let candidate_ids = stale_waits.iter().fold(BTreeMap::<String,BTreeSet<String>>::new(),|mut ids,wait| {
+                    ids.entry(wait.agent_id.clone()).or_default().insert(wait.id.clone());ids
+                });
+                let mut agents=BTreeSet::new();
+                for authority in scopes {
+                    let agent=authority.agent_id();
+                    anyhow::ensure!(agents.insert(agent.to_owned()),"duplicate startup Wait scope");
+                    let ids=candidate_ids.get(agent).cloned().unwrap_or_default();
+                    match authority {
+                        StartupInputRecoveryScope::Current(scope)=>{
+                            super::input_evidence_writes::validate_input_evidence_scope_tx(tx,scope,agent)?;
+                            if !ids.is_empty() {
+                                prepared_bound.insert(agent.to_owned(),work_snapshot::prepare_existing_work_wait_cleanup_tx(tx,scope,&ids,request,false)?);
+                            }
+                        }
+                        StartupInputRecoveryScope::Unbound(scope)=>{
+                            anyhow::ensure!(legacy_seed_recovery_scope_tx(tx,agent)?==*scope,"startup Wait seed proof changed");
+                            if !ids.is_empty() {
+                                prepared_unbound.insert(agent.to_owned(),work_snapshot::prepare_unbound_work_wait_cleanup_tx(tx,scope,&ids,request,admission)?);
+                            }
+                        }
+                        StartupInputRecoveryScope::Retired{identity_incarnation,status,..}=>{
+                            anyhow::ensure!(*identity_incarnation>0 && *status!=crate::types::AgentRegistryStatus::Active,"invalid retired startup Wait scope");
+                            let (normalized,payload):(String,String)=tx.query_row("SELECT status,payload_json FROM agent_identities WHERE agent_id=?1",[agent],|r|Ok((r.get(0)?,r.get(1)?)))?;
+                            let identity=decode_agent_identity_payload(&payload)?;
+                            anyhow::ensure!(identity.agent_id==agent && identity.incarnation==*identity_incarnation && identity.status==*status
+                                && serde_json::to_value(&identity.status)?.as_str()==Some(normalized.as_str()),"retired startup Wait identity changed");
+                            if *status == crate::types::AgentRegistryStatus::Deleting && !ids.is_empty() {
+                                let scope=InputEvidenceScope{agent_id:agent.into(),identity_incarnation:*identity_incarnation};
+                                prepared_bound.insert(agent.to_owned(),work_snapshot::prepare_existing_work_wait_cleanup_tx(tx,&scope,&ids,request,true)?);
+                            }
+                        }
+                    }
+                }
+                anyhow::ensure!(candidate_ids.keys().all(|agent|agents.contains(agent))
+                    && states.values().filter(|state|state.status==AgentStatus::Stopped).all(|state|agents.contains(&state.id)),
+                    "startup Wait cleanup has an unreserved write scope");
+            }
+            let scheduling_cleanup=if let Some(material)=scheduling_material {
+                let (scopes,admission,_)=preparation.context("Scheduling startup preparation missing")?;
+                let (_,_,ledger)=scheduling.context("Scheduling startup ledger missing")?;
+                Some(material.prepare_stopped_tx(tx,&states,scopes,ledger,admission)?)
+            }else{None};
+            inject_fault(fault, TransitionFaultPoint::AfterValidation)?;
+            let now = Utc::now();
+            let cancelled=stale_waits.len();
+            let mut actual=BTreeMap::<String,WaitConditionWrites>::new();
+            for mut wait in stale_waits {
+                wait.status=WaitConditionStatus::Cancelled;
+                wait.updated_at=now;
+                wait.cancelled_at=Some(now);
+                let writes=upsert_wait_condition_with_writes_tx(tx,&wait)?;
+                actual.entry(wait.agent_id.clone()).or_default().extend(writes)?;
+            }
+            let mut scheduling_actual=BTreeMap::new();
+            for state in states.values_mut().filter(|state| state.status == AgentStatus::Stopped) {
+                let writes=cancel_active_timers_with_writes_tx(tx,&state.id,now)?;
+                scheduling_actual.insert(state.id.clone(),writes);
+                let pending = {
+                    let mut statement = tx.prepare(
+                        "SELECT payload_json FROM queue_entries WHERE agent_id = ?1 AND status IN ('queued', 'interrupted')",
+                    )?;
+                    let records = statement.query_map([&state.id], |row| row.get::<_, String>(0))?
+                        .map(|row| decode_queue_entry_payload(&row?)).collect::<Result<Vec<_>>>()?;
+                    records
+                };
+                for mut entry in pending {
+                    entry.status = QueueEntryStatus::Aborted;
+                    entry.updated_at = now;
+                    upsert_queue_entry_tx(tx, &entry)?;
+                }
+                if state.pending != 0 {
+                    state.pending = 0;
+                    upsert_agent_state_tx(tx, state)?;
+                }
+            }
+            inject_fault(fault, TransitionFaultPoint::AfterCanonicalWrites)?;
+            if let Some((_, _, request)) = preparation {
+                for (agent, proof) in &prepared_bound {
+                    if let Some(writes) = actual.get(agent) {
+                        // Host is preactivation. Preserve exact qualification in
+                        // this ACK; its next bootstrap builds the resident root.
+                        work_snapshot::register_existing_work_wait_cleanup_tx(tx,proof,writes,states.get(agent),request)?;
+                    }
+                }
+                for (agent, proof) in &prepared_unbound {
+                    if let Some(writes) = actual.get(agent) {
+                        work_snapshot::register_unbound_work_wait_cleanup_tx(tx,proof,writes)?;
+                    }
+                }
+            }
+            let scheduling_ack=if let Some(cleanup)=scheduling_cleanup {
+                let (_,admission,_)=preparation.context("Scheduling startup original actor missing")?;
+                let (_,_,ledger)=scheduling.context("Scheduling startup ledger missing")?;
+                Some(cleanup.finish_tx(tx,&scheduling_actual,ledger,admission)?)
+            }else{None};
+            inject_fault(fault, TransitionFaultPoint::BeforeCommit)?;
+            Ok((cancelled, states,scheduling_ack))
+        })
+    }
+
+    /// Fixture setup only: bypasses live runtime mutation ownership.
+    #[doc(hidden)]
+    pub fn upsert_for_fixture(&self, record: &AgentState) -> Result<()> {
         self.db.transaction(|tx| upsert_agent_state_tx(tx, record))
+    }
+
+    /// Fixture setup only: initializes a fresh cold scope, never updates live State.
+    #[doc(hidden)]
+    pub fn initialize_cold_for_fixture(
+        &self,
+        record: &AgentState,
+        identity_incarnation: u64,
+    ) -> Result<()> {
+        use super::scheduling_snapshot::{
+            prepare_scheduling_domain_snapshot_tx, SchedulingDomainLoadRequest,
+        };
+        use crate::runtime::{
+            input_evidence_budget::InputEvidenceBudgetLedger,
+            resident_input_evidence::InputEvidenceScope,
+            resident_scheduling::SchedulingCaptureRequest,
+        };
+
+        let ledger = InputEvidenceBudgetLedger::new(crate::config::StateMemoryLimits::default())?;
+        let limits = ledger.limits();
+        let request = SchedulingDomainLoadRequest {
+            capture: SchedulingCaptureRequest::current(),
+            record_limit: usize::try_from(limits.record_limit)?,
+            byte_limit: usize::try_from(
+                limits
+                    .history_per_agent_bytes
+                    .checked_add(limits.pending_per_agent_bytes)
+                    .context("fixture Scheduling byte limit overflow")?,
+            )?,
+        };
+        let scope = InputEvidenceScope {
+            agent_id: record.id.clone(),
+            identity_incarnation,
+        };
+        self.db.transaction(|tx| {
+            let raw: Option<String> = tx
+                .query_row(
+                    "SELECT payload_json FROM agent_identities WHERE agent_id=?1",
+                    [&record.id],
+                    |row| row.get(0),
+                )
+                .optional()?;
+            let identity = decode_agent_identity_payload(
+                &raw.context("cold fixture requires an existing active identity")?,
+            )?;
+            anyhow::ensure!(
+                identity.agent_id == record.id
+                    && identity.incarnation == identity_incarnation
+                    && identity_incarnation > 0
+                    && identity.status == crate::types::AgentRegistryStatus::Active,
+                "cold fixture identity/incarnation is not active"
+            );
+            let exists: bool = tx.query_row(
+                "SELECT EXISTS(SELECT 1 FROM agent_states WHERE agent_id=?1)
+                 OR EXISTS(SELECT 1 FROM scheduling_domain_current WHERE agent_id=?1)
+                 OR EXISTS(SELECT 1 FROM scheduling_domain_records WHERE agent_id=?1)
+                 OR EXISTS(SELECT 1 FROM scheduling_fixed_manifests WHERE agent_id=?1)
+                 OR EXISTS(SELECT 1 FROM scheduling_import_inventory WHERE agent_id=?1)
+                 OR EXISTS(SELECT 1 FROM episode_continuity_seeds WHERE agent_id=?1)
+                 OR EXISTS(SELECT 1 FROM timers WHERE agent_id=?1)
+                 OR EXISTS(SELECT 1 FROM external_triggers WHERE target_agent_id=?1)",
+                [&record.id],
+                |row| row.get(0),
+            )?;
+            anyhow::ensure!(
+                !exists,
+                "cold fixture scope already has State/Scheduling material"
+            );
+            upsert_agent_state_tx(tx, record)?;
+            prepare_scheduling_domain_snapshot_tx(tx, &scope, &request, &ledger)?
+                .require_current()?;
+            Ok(())
+        })
     }
 
     pub fn latest(&self, agent_id: &str) -> Result<Option<AgentState>> {
@@ -343,10 +780,15 @@ impl AgentStateRepository<'_> {
                 .query_row(
                     "SELECT payload_json FROM agent_states WHERE agent_id = ?1",
                     [agent_id],
-                    |row| row.get::<_, String>(0),
+                    |row| {
+                        Ok((|| {
+                            let payload = borrowed_sql_text(row, 0)?;
+                            crate::diagnostics::resource_io::admit_json_payload(payload)?;
+                            decode_agent_state_payload(payload)
+                        })())
+                    },
                 )
                 .optional()?
-                .map(|payload| decode_agent_state_payload(&payload))
                 .transpose()
         })
     }
@@ -390,23 +832,6 @@ impl AgentStateRepository<'_> {
 }
 
 impl WorkspaceEntryRepository<'_> {
-    pub fn import_legacy(&self, records: Vec<WorkspaceEntry>) -> Result<()> {
-        if self
-            .db
-            .storage_domain_is_complete("workspace_entries", "db")?
-        {
-            return Ok(());
-        }
-        self.db
-            .run_storage_domain_import("workspace_entries", "jsonl", "db", |tx| {
-                let latest = reduce_workspace_entry_records(records);
-                for record in latest.values() {
-                    upsert_workspace_entry_tx(tx, record)?;
-                }
-                Ok(serde_json::json!({ "imported_records": latest.len() }))
-            })
-    }
-
     pub fn upsert(&self, record: &WorkspaceEntry) -> Result<()> {
         self.db
             .transaction(|tx| upsert_workspace_entry_tx(tx, record))
@@ -424,40 +849,17 @@ impl WorkspaceEntryRepository<'_> {
     }
 
     pub fn latest_all(&self) -> Result<Vec<WorkspaceEntry>> {
-        self.db.with_read(|connection| {
-            let mut statement = connection.prepare(
-                "SELECT payload_json
-             FROM workspace_entries
-             ORDER BY updated_at DESC, created_at DESC, workspace_id ASC",
-            )?;
-            let rows = statement.query_map([], |row| row.get::<_, String>(0))?;
-            let mut records: Vec<_> = rows
-                .map(|row| decode_workspace_entry_payload(&row?))
-                .collect::<Result<_>>()?;
-            records.reverse();
-            Ok(records)
-        })
+        self.db
+            .with_read(|connection| context_workspace_entries_on(&connection))
+    }
+
+    pub(crate) fn latest_all_for_preparation(&self) -> Result<Vec<WorkspaceEntry>> {
+        self.db
+            .read_for_preparation(|tx| context_workspace_entries_on(tx))
     }
 }
 
 impl WorkspaceOccupancyRepository<'_> {
-    pub fn import_legacy(&self, records: Vec<WorkspaceOccupancyRecord>) -> Result<()> {
-        if self
-            .db
-            .storage_domain_is_complete("workspace_occupancies", "db")?
-        {
-            return Ok(());
-        }
-        self.db
-            .run_storage_domain_import("workspace_occupancies", "jsonl", "db", |tx| {
-                let latest = reduce_workspace_occupancy_records(records);
-                for record in latest.values() {
-                    upsert_workspace_occupancy_tx(tx, record)?;
-                }
-                Ok(serde_json::json!({ "imported_records": latest.len() }))
-            })
-    }
-
     pub fn upsert(&self, record: &WorkspaceOccupancyRecord) -> Result<()> {
         self.db
             .transaction(|tx| upsert_workspace_occupancy_tx(tx, record))
@@ -470,10 +872,14 @@ impl WorkspaceOccupancyRepository<'_> {
              FROM workspace_occupancies
              ORDER BY acquired_at DESC, occupancy_id ASC",
             )?;
-            let rows = statement.query_map([], |row| row.get::<_, String>(0))?;
-            let mut records: Vec<_> = rows
-                .map(|row| decode_workspace_occupancy_payload(&row?))
-                .collect::<Result<_>>()?;
+            let mut rows = statement.query([])?;
+            let mut records = Vec::new();
+            while let Some(row) = rows.next()? {
+                let payload = borrowed_sql_text(row, 0)?;
+                crate::diagnostics::resource_io::admit_json_payload(payload)?;
+                reserve_source_vec_slot(&mut records)?;
+                records.push(decode_workspace_occupancy_payload(payload)?);
+            }
             records.reverse();
             Ok(records)
         })
@@ -488,18 +894,32 @@ impl ExecutionRootEntryRepository<'_> {
 
     /// Look up an execution root entry by its `execution_root_id`.
     pub fn get(&self, execution_root_id: &str) -> Result<Option<ExecutionRootEntry>> {
-        self.db.with_read(|connection| {
-            connection
-                .query_row(
-                    "SELECT payload_json FROM execution_root_entries
+        self.db
+            .with_read(|connection| Self::get_on(&connection, execution_root_id))
+    }
+
+    pub(crate) fn get_for_preparation(
+        &self,
+        execution_root_id: &str,
+    ) -> Result<Option<ExecutionRootEntry>> {
+        self.db
+            .read_for_preparation(|tx| Self::get_on(tx, execution_root_id))
+    }
+
+    fn get_on(
+        connection: &Connection,
+        execution_root_id: &str,
+    ) -> Result<Option<ExecutionRootEntry>> {
+        connection
+            .query_row(
+                "SELECT payload_json FROM execution_root_entries
                  WHERE execution_root_id = ?1",
-                    [execution_root_id],
-                    |row| row.get::<_, String>(0),
-                )
-                .optional()?
-                .map(|payload| decode_execution_root_entry_payload(&payload))
-                .transpose()
-        })
+                [execution_root_id],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()?
+            .map(|payload| decode_execution_root_entry_payload(&payload))
+            .transpose()
     }
 
     /// Soft-delete: mark an execution root entry as removed.
@@ -535,16 +955,8 @@ impl ExecutionRootEntryRepository<'_> {
 
     /// Return all non-removed entries for a workspace.
     pub fn active_for_workspace(&self, workspace_id: &str) -> Result<Vec<ExecutionRootEntry>> {
-        self.db.with_read(|connection| {
-            let mut statement = connection.prepare(
-                "SELECT payload_json FROM execution_root_entries
-                 WHERE workspace_id = ?1 AND removed_at IS NULL
-                 ORDER BY created_at ASC",
-            )?;
-            let rows = statement.query_map([workspace_id], |row| row.get::<_, String>(0))?;
-            rows.map(|row| decode_execution_root_entry_payload(&row?))
-                .collect()
-        })
+        self.db
+            .with_read(|connection| context_execution_roots_on(&connection, workspace_id))
     }
 
     /// Return all entries, including removed tombstones, in stable order.
@@ -562,23 +974,6 @@ impl ExecutionRootEntryRepository<'_> {
 }
 
 impl AgentIdentityRepository<'_> {
-    pub fn import_legacy(&self, records: Vec<AgentIdentityRecord>) -> Result<()> {
-        if self
-            .db
-            .storage_domain_is_complete("agent_identities", "db")?
-        {
-            return Ok(());
-        }
-        self.db
-            .run_storage_domain_import("agent_identities", "jsonl", "db", |tx| {
-                let latest = reduce_agent_identity_records(records);
-                for record in latest.values() {
-                    upsert_agent_identity_tx(tx, record)?;
-                }
-                Ok(serde_json::json!({ "imported_records": latest.len() }))
-            })
-    }
-
     pub fn upsert(&self, record: &AgentIdentityRecord) -> Result<()> {
         self.db
             .transaction(|tx| upsert_agent_identity_tx(tx, record))
@@ -647,6 +1042,29 @@ impl AgentIdentityRepository<'_> {
         })
     }
 
+    /// Explicit default/standalone legacy bootstrap; ordinary create never consumes a seed.
+    pub(crate) fn create_legacy_materialized_with_relations(
+        &self,
+        identity: &AgentIdentityRecord,
+        relations: &AgentCanonicalRecordSet,
+    ) -> Result<()> {
+        self.db.transaction(|tx| {
+            let exists: bool = tx.query_row(
+                "SELECT EXISTS (SELECT 1 FROM agent_identities WHERE agent_id = ?1)",
+                [&identity.agent_id],
+                |row| row.get(0),
+            )?;
+            anyhow::ensure!(
+                !exists,
+                "agent_identity_conflict: agent {} already exists",
+                identity.agent_id
+            );
+            super::episode_snapshot::bind_unbound_episode_continuity_tx(tx, identity, Utc::now())?;
+            upsert_agent_identity_tx(tx, identity)?;
+            upsert_canonical_record_set_tx(tx, relations)
+        })
+    }
+
     /// Replaces a fully deleted tombstone with a fresh Active identity for
     /// the same agent id: a new incarnation. Requires the latest deletion
     /// job to be `Completed`, flips the identity reservation back to
@@ -657,10 +1075,11 @@ impl AgentIdentityRepository<'_> {
     /// reservation transition; the builder callback receives the tombstone
     /// and must return the fresh Active record with `incarnation` and
     /// `revision` continued monotonically.
-    pub fn reincarnate_with_bootstrap_and_relations(
+    pub(crate) fn reincarnate_with_bootstrap_and_relations(
         &self,
         agent_id: &str,
         requested_by: &str,
+        ledger: &crate::runtime::input_evidence_budget::InputEvidenceBudgetLedger,
         build: impl Fn(
             &AgentIdentityRecord,
         ) -> (
@@ -748,10 +1167,16 @@ impl AgentIdentityRepository<'_> {
             )?;
             upsert_agent_bootstrap_tx(tx, &bootstrap.for_incarnation(identity.incarnation))?;
             upsert_canonical_record_set_tx(tx, &relations)?;
-            append_audit_event_tx(
-                tx,
-                Some(agent_id),
-                &AuditEvent::legacy(
+            let scope = crate::runtime::resident_input_evidence::InputEvidenceScope {
+                agent_id: identity.agent_id.clone(),
+                identity_incarnation: identity.incarnation,
+            };
+            let phase = crate::diagnostics::resource_io::ResourceReadMaterial::new(ledger, &scope)?;
+            phase.read(|| {
+                use super::current_read_writes::{CurrentFamily, OriginalCurrentWrites};
+                use super::input_evidence_snapshot::read_material::InputReadMaterial;
+
+                let event = AuditEvent::legacy(
                     "agent_recreated",
                     serde_json::json!({
                         "agent_id": agent_id,
@@ -760,8 +1185,27 @@ impl AgentIdentityRepository<'_> {
                         "deletion_id": job.deletion_id,
                         "requested_by": requested_by,
                     }),
-                ),
-            )?;
+                );
+                let mut material = InputReadMaterial::new(
+                    &scope,
+                    ledger,
+                    super::input_evidence_snapshot::native_birth::original_material_limits(ledger)?,
+                    None,
+                )?;
+                // The fresh identity is active in this TX; observe the original
+                // Event address before its writer allocates the final sequence.
+                let current = OriginalCurrentWrites::prepare(tx, &scope, &mut material, |visit| {
+                    visit(CurrentFamily::Event, &event.id)
+                })?
+                .context("agent reincarnation requires the Current source")?;
+                let (ack, _) = append_audit_event_ack_tx(tx, Some(agent_id), &event)?;
+                current.finish_with_audit_acks(
+                    &mut material,
+                    std::slice::from_ref(&ack),
+                    |visit| visit(CurrentFamily::Event, &event.id),
+                )?;
+                Ok(())
+            })?;
             Ok(identity)
         })
     }
@@ -912,17 +1356,32 @@ impl AgentIdentityRepository<'_> {
     }
 
     pub fn latest(&self, agent_id: &str) -> Result<Option<AgentIdentityRecord>> {
-        self.db.with_read(|connection| {
-            connection
-                .query_row(
-                    "SELECT payload_json FROM agent_identities WHERE agent_id = ?1",
-                    [agent_id],
-                    |row| row.get::<_, String>(0),
-                )
-                .optional()?
-                .map(|payload| decode_agent_identity_payload(&payload))
-                .transpose()
-        })
+        self.db
+            .with_read(|connection| Self::latest_on(&connection, agent_id))
+    }
+
+    pub(crate) fn latest_for_mutation(
+        &self,
+        agent_id: &str,
+    ) -> Result<Option<AgentIdentityRecord>> {
+        self.db
+            .writer
+            .read_committed(|connection| Self::latest_on(connection, agent_id))
+    }
+
+    fn latest_on(
+        connection: &rusqlite::Connection,
+        agent_id: &str,
+    ) -> Result<Option<AgentIdentityRecord>> {
+        connection
+            .query_row(
+                "SELECT payload_json FROM agent_identities WHERE agent_id = ?1",
+                [agent_id],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()?
+            .map(|payload| decode_agent_identity_payload(&payload))
+            .transpose()
     }
 
     pub fn rename(
@@ -1153,6 +1612,29 @@ pub(crate) fn ensure_agent_deletion_tx(
     tx: &Transaction<'_>,
     request: &AgentDeletionRequest,
 ) -> Result<(AgentIdentityRecord, AgentDeletionJob, bool)> {
+    ensure_agent_deletion_inner_tx(tx, request, None)
+}
+
+/// Freeze the original deletion identity and clock in its enclosing receipt.
+/// The original authorization/idempotent branches remain in the same TX.
+pub(crate) fn ensure_agent_deletion_at_tx(
+    tx: &Transaction<'_>,
+    request: &AgentDeletionRequest,
+    deletion_id: &str,
+    prepared_at: DateTime<Utc>,
+) -> Result<(AgentIdentityRecord, AgentDeletionJob, bool)> {
+    anyhow::ensure!(
+        !deletion_id.trim().is_empty(),
+        "empty original deletion identity"
+    );
+    ensure_agent_deletion_inner_tx(tx, request, Some((deletion_id, prepared_at)))
+}
+
+fn ensure_agent_deletion_inner_tx(
+    tx: &Transaction<'_>,
+    request: &AgentDeletionRequest,
+    creation: Option<(&str, DateTime<Utc>)>,
+) -> Result<(AgentIdentityRecord, AgentDeletionJob, bool)> {
     let agent_id = &request.agent_id;
     let payload = tx
         .query_row(
@@ -1363,11 +1845,11 @@ pub(crate) fn ensure_agent_deletion_tx(
     }
 
     let now = std::cmp::max(
-        Utc::now(),
+        creation.map_or_else(Utc::now, |(_, at)| at),
         identity.updated_at + chrono::Duration::nanoseconds(1),
     );
     let job = AgentDeletionJob {
-        deletion_id: crate::ids::agent_deletion_id(),
+        deletion_id: creation.map_or_else(crate::ids::agent_deletion_id, |(id, _)| id.to_owned()),
         agent_id: agent_id.to_string(),
         mode: if identity.status == AgentRegistryStatus::Deleted {
             AgentDeletionMode::CleanupRepair
@@ -1692,6 +2174,50 @@ impl AgentDeletionRepository<'_> {
         })
     }
 
+    /// Job progress has its own authority. Requeue only the exact Running
+    /// checkpoint; a metadata ACK may already have completed or advanced it.
+    pub(crate) fn requeue_metadata_pending(
+        &self,
+        expected: &AgentDeletionJob,
+        error: &str,
+        now: DateTime<Utc>,
+        next_attempt_at: DateTime<Utc>,
+    ) -> Result<bool> {
+        anyhow::ensure!(
+            expected.status == AgentDeletionStatus::Running,
+            "metadata recovery requires a Running deletion checkpoint"
+        );
+        let expected_payload = serde_json::to_string(expected)?;
+        let mut retry = expected.clone();
+        retry.status = AgentDeletionStatus::RetryableFailed;
+        retry.last_error = Some(error.to_string());
+        retry.updated_at =
+            std::cmp::max(now, expected.updated_at + chrono::Duration::nanoseconds(1));
+        retry.next_attempt_at = Some(next_attempt_at);
+        let retry_payload = serde_json::to_string(&retry)?;
+        self.db.transaction(|tx| {
+            let changed = tx.execute(
+                "UPDATE agent_deletion_jobs
+                 SET status = 'retryable_failed', updated_at = ?1,
+                     next_attempt_at = ?2, payload_json = ?3
+                 WHERE deletion_id = ?4 AND agent_id = ?5
+                   AND status = 'running' AND phase = ?6
+                   AND updated_at = ?7 AND payload_json = ?8",
+                params![
+                    timestamp(retry.updated_at),
+                    timestamp(next_attempt_at),
+                    retry_payload,
+                    expected.deletion_id,
+                    expected.agent_id,
+                    enum_string(&expected.phase)?,
+                    timestamp(expected.updated_at),
+                    expected_payload
+                ],
+            )?;
+            Ok(changed == 1)
+        })
+    }
+
     /// Atomically claim one due job for the process-local coordinator.
     pub fn claim_due(&self, job: &AgentDeletionJob, now: DateTime<Utc>) -> Result<bool> {
         self.db.transaction(|tx| {
@@ -1802,23 +2328,6 @@ impl AgentDeletionRepository<'_> {
 }
 
 impl WorkItemDelegationRepository<'_> {
-    pub fn import_legacy(&self, records: Vec<WorkItemDelegationRecord>) -> Result<()> {
-        if self
-            .db
-            .storage_domain_is_complete("work_item_delegations", "db")?
-        {
-            return Ok(());
-        }
-        self.db
-            .run_storage_domain_import("work_item_delegations", "jsonl", "db", |tx| {
-                let latest = reduce_work_item_delegation_records(records);
-                for record in latest.values() {
-                    upsert_work_item_delegation_tx(tx, record)?;
-                }
-                Ok(serde_json::json!({ "imported_records": latest.len() }))
-            })
-    }
-
     pub fn upsert(&self, record: &WorkItemDelegationRecord) -> Result<()> {
         self.db
             .transaction(|tx| upsert_work_item_delegation_tx(tx, record))
@@ -1911,19 +2420,6 @@ impl WorkItemDelegationRepository<'_> {
 }
 
 impl WorkItemContinuationRepository<'_> {
-    pub fn import_empty(&self) -> Result<()> {
-        if self
-            .db
-            .storage_domain_is_complete("work_item_continuations", "db")?
-        {
-            return Ok(());
-        }
-        self.db
-            .run_storage_domain_import("work_item_continuations", "new-domain", "db", |_tx| {
-                Ok(serde_json::json!({ "imported_records": 0 }))
-            })
-    }
-
     pub fn upsert(&self, record: &WorkItemContinuationFrame) -> Result<()> {
         self.db.transaction(|tx| {
             upsert_work_item_continuation_tx(tx, record)?;
@@ -1980,17 +2476,8 @@ impl WorkItemContinuationRepository<'_> {
     }
 
     pub fn active_for_agent(&self, agent_id: &str) -> Result<Vec<WorkItemContinuationFrame>> {
-        self.db.with_read(|connection| {
-            let mut statement = connection.prepare(
-                "SELECT payload_json
-             FROM work_item_continuations
-             WHERE agent_id = ?1 AND state = 'active'
-             ORDER BY updated_at DESC, created_at DESC, continuation_id ASC",
-            )?;
-            let rows = statement.query_map([agent_id], |row| row.get::<_, String>(0))?;
-            rows.map(|row| decode_work_item_continuation_payload(&row?))
-                .collect()
-        })
+        self.db
+            .with_read(|connection| context_active_continuations_on(&connection, agent_id))
     }
 
     pub fn latest_all(&self) -> Result<Vec<WorkItemContinuationFrame>> {
@@ -2011,23 +2498,6 @@ impl WorkItemContinuationRepository<'_> {
 }
 
 impl ContextEpisodeRepository<'_> {
-    pub fn import_legacy(&self, records: Vec<ContextEpisodeRecord>) -> Result<()> {
-        if self
-            .db
-            .storage_domain_is_complete(CONTEXT_EPISODE_ANCHORS_DOMAIN, "db")?
-        {
-            return Ok(());
-        }
-        self.db
-            .run_storage_domain_import(CONTEXT_EPISODE_ANCHORS_DOMAIN, "jsonl", "db", |tx| {
-                let latest = reduce_context_episode_records(records);
-                for record in latest.values() {
-                    upsert_context_episode_tx(tx, record)?;
-                }
-                Ok(serde_json::json!({ "imported_records": latest.len() }))
-            })
-    }
-
     pub fn upsert(&self, record: &ContextEpisodeRecord) -> Result<()> {
         self.db
             .transaction(|tx| upsert_context_episode_tx(tx, record))
@@ -2094,23 +2564,6 @@ impl ContextEpisodeRepository<'_> {
 }
 
 impl ExternalTriggerRepository<'_> {
-    pub fn import_legacy(&self, records: Vec<ExternalTriggerRecord>) -> Result<()> {
-        if self
-            .db
-            .storage_domain_is_complete("external_triggers", "db")?
-        {
-            return Ok(());
-        }
-        self.db
-            .run_storage_domain_import("external_triggers", "jsonl", "db", |tx| {
-                let latest = reduce_external_trigger_records(records);
-                for record in latest.values() {
-                    upsert_external_trigger_tx(tx, record)?;
-                }
-                Ok(serde_json::json!({ "imported_records": latest.len() }))
-            })
-    }
-
     pub fn upsert(&self, record: &ExternalTriggerRecord) -> Result<()> {
         self.db
             .transaction(|tx| upsert_external_trigger_tx(tx, record))
@@ -2125,36 +2578,15 @@ impl ExternalTriggerRepository<'_> {
         token: String,
     ) -> Result<(ExternalTriggerRecord, Option<ExternalTriggerRecord>, bool)> {
         self.db.transaction(|tx| {
-            if let Some(descriptor) = active_default_for_agent_tx(tx, agent_id)? {
-                if descriptor.token.is_some() {
-                    return Ok((descriptor, None, false));
-                }
-
-                let mut revoked = descriptor;
-                revoked.status = ExternalTriggerStatus::Revoked;
-                revoked.revoked_at = Some(now);
-                upsert_external_trigger_tx(tx, &revoked)?;
-
-                let descriptor = default_external_trigger_record(
-                    agent_id,
-                    delivery_mode.clone(),
-                    now,
-                    external_trigger_id.clone(),
-                    token.clone(),
-                );
-                upsert_external_trigger_tx(tx, &descriptor)?;
-                return Ok((descriptor, Some(revoked), true));
-            }
-
-            let descriptor = default_external_trigger_record(
+            ensure_default_external_trigger_tx(
+                tx,
                 agent_id,
                 delivery_mode.clone(),
                 now,
-                external_trigger_id.clone(),
-                token.clone(),
-            );
-            upsert_external_trigger_tx(tx, &descriptor)?;
-            Ok((descriptor, None, true))
+                &external_trigger_id,
+                &token,
+                &mut BTreeSet::new(),
+            )
         })
     }
 
@@ -2167,54 +2599,31 @@ impl ExternalTriggerRepository<'_> {
         token: String,
     ) -> Result<(ExternalTriggerRecord, Option<ExternalTriggerRecord>)> {
         self.db.transaction(|tx| {
-            let revoked = if let Some(descriptor) = active_default_for_agent_tx(tx, agent_id)? {
-                let mut revoked = descriptor;
-                revoked.status = ExternalTriggerStatus::Revoked;
-                revoked.revoked_at = Some(now);
-                upsert_external_trigger_tx(tx, &revoked)?;
-                Some(revoked)
-            } else {
-                None
-            };
-
-            let descriptor = default_external_trigger_record(
+            reset_default_external_trigger_tx(
+                tx,
                 agent_id,
                 delivery_mode.clone(),
                 now,
-                external_trigger_id.clone(),
-                token.clone(),
-            );
-            upsert_external_trigger_tx(tx, &descriptor)?;
-            Ok((descriptor, revoked))
+                &external_trigger_id,
+                &token,
+                &mut BTreeSet::new(),
+            )
         })
     }
 
     pub fn latest(&self, external_trigger_id: &str) -> Result<Option<ExternalTriggerRecord>> {
         self.db.with_read(|connection| {
-            connection
-                .query_row(
-                    "SELECT payload_json FROM external_triggers WHERE external_trigger_id = ?1",
-                    [external_trigger_id],
-                    |row| row.get::<_, String>(0),
-                )
-                .optional()?
-                .map(|payload| decode_external_trigger_payload(&payload))
-                .transpose()
+            external_trigger_on(
+                &connection,
+                "SELECT payload_json FROM external_triggers WHERE external_trigger_id = ?1",
+                [external_trigger_id],
+            )
         })
     }
 
     pub fn latest_for_agent(&self, agent_id: &str) -> Result<Vec<ExternalTriggerRecord>> {
-        self.db.with_read(|connection| {
-            let mut statement = connection.prepare(
-                "SELECT payload_json
-             FROM external_triggers
-             WHERE target_agent_id = ?1
-             ORDER BY created_at DESC, external_trigger_id ASC",
-            )?;
-            let rows = statement.query_map([agent_id], |row| row.get::<_, String>(0))?;
-            rows.map(|row| decode_external_trigger_payload(&row?))
-                .collect()
-        })
+        self.db
+            .with_read(|connection| context_external_triggers_on(&connection, agent_id))
     }
 
     pub fn latest_for_agent_limit(
@@ -2227,17 +2636,15 @@ impl ExternalTriggerRepository<'_> {
         }
         let limit = i64::try_from(limit).unwrap_or(i64::MAX);
         self.db.with_read(|connection| {
-            let mut statement = connection.prepare(
+            external_trigger_list_on(
+                &connection,
                 "SELECT payload_json
              FROM external_triggers
              WHERE target_agent_id = ?1
              ORDER BY created_at DESC, external_trigger_id ASC
              LIMIT ?2",
-            )?;
-            let rows =
-                statement.query_map(params![agent_id, limit], |row| row.get::<_, String>(0))?;
-            rows.map(|row| decode_external_trigger_payload(&row?))
-                .collect()
+                params![agent_id, limit],
+            )
         })
     }
 
@@ -2246,50 +2653,43 @@ impl ExternalTriggerRepository<'_> {
         agent_id: &str,
     ) -> Result<Option<ExternalTriggerRecord>> {
         self.db.with_read(|connection| {
-            connection
-                .query_row(
-                    "SELECT payload_json
+            external_trigger_on(
+                &connection,
+                "SELECT payload_json
                  FROM external_triggers
                  WHERE target_agent_id = ?1 AND status = 'active'
                  ORDER BY created_at DESC, external_trigger_id ASC
                  LIMIT 1",
-                    [agent_id],
-                    |row| row.get::<_, String>(0),
-                )
-                .optional()?
-                .map(|payload| decode_external_trigger_payload(&payload))
-                .transpose()
+                [agent_id],
+            )
         })
     }
 
+    /// Legacy persistence inspection; this does not authorize runtime ingress or
+    /// grant a qualified Scheduling scope. Runtime and HTTP callback admission
+    /// use the bounded, owner-held token locator and original delivery fences.
     pub fn active_by_token_hash(&self, token_hash: &str) -> Result<Option<ExternalTriggerRecord>> {
         self.db.with_read(|connection| {
-            connection
-                .query_row(
-                    "SELECT payload_json
+            external_trigger_on(
+                &connection,
+                "SELECT payload_json
                  FROM external_triggers
                  WHERE token_hash = ?1 AND status = 'active'
                  LIMIT 1",
-                    [token_hash],
-                    |row| row.get::<_, String>(0),
-                )
-                .optional()?
-                .map(|payload| decode_external_trigger_payload(&payload))
-                .transpose()
+                [token_hash],
+            )
         })
     }
 
     pub fn latest_all(&self) -> Result<Vec<ExternalTriggerRecord>> {
         self.db.with_read(|connection| {
-            let mut statement = connection.prepare(
+            let mut records = external_trigger_list_on(
+                &connection,
                 "SELECT payload_json
              FROM external_triggers
              ORDER BY created_at DESC, external_trigger_id ASC",
+                [],
             )?;
-            let rows = statement.query_map([], |row| row.get::<_, String>(0))?;
-            let mut records: Vec<_> = rows
-                .map(|row| decode_external_trigger_payload(&row?))
-                .collect::<Result<_>>()?;
             records.reverse();
             Ok(records)
         })
@@ -2311,20 +2711,32 @@ impl OperatorNotificationRepository<'_> {
             return Ok(Vec::new());
         }
         let limit = i64::try_from(limit).unwrap_or(i64::MAX);
-        self.db.with_read(|connection| {
-            let mut statement = connection.prepare(
-                "SELECT payload_json
+        self.db
+            .with_read(|connection| read_operator_notifications_on(&connection, agent_id, limit))
+    }
+}
+
+pub(crate) fn read_operator_notifications_on(
+    connection: &rusqlite::Connection,
+    agent_id: &str,
+    limit: i64,
+) -> Result<Vec<OperatorNotificationRecord>> {
+    let mut statement = connection.prepare(
+        "SELECT payload_json
              FROM operator_notifications
              WHERE agent_id = ?1
              ORDER BY created_at DESC, notification_id DESC
              LIMIT ?2",
-            )?;
-            let rows =
-                statement.query_map(params![agent_id, limit], |row| row.get::<_, String>(0))?;
-            rows.map(|row| decode_operator_notification_payload(&row?))
-                .collect()
-        })
+    )?;
+    let mut rows = statement.query(params![agent_id, limit])?;
+    let mut records = Vec::new();
+    while let Some(row) = rows.next()? {
+        let payload = borrowed_sql_text(row, 0)?;
+        reserve_source_vec_slot(&mut records)?;
+        crate::diagnostics::resource_io::admit_json_payload(payload)?;
+        records.push(decode_operator_notification_payload(payload)?);
     }
+    Ok(records)
 }
 
 impl OperatorTransportBindingRepository<'_> {
@@ -2456,27 +2868,6 @@ impl OperatorDeliveryRepository<'_> {
 }
 
 impl TaskRepository<'_> {
-    pub fn import_legacy(&self, records: Vec<TaskRecord>) -> Result<()> {
-        if self.db.storage_domain_is_complete("tasks", "db")? {
-            return Ok(());
-        }
-        self.db
-            .run_storage_domain_import("tasks", "jsonl", "db", |tx| {
-                let latest = reduce_task_records(records);
-                for record in latest.values() {
-                    let _ = upsert_task_tx(tx, record)?;
-                }
-                let active_records = latest
-                    .values()
-                    .filter(|record| is_active_task_status(&record.status))
-                    .count();
-                Ok(serde_json::json!({
-                    "imported_records": latest.len(),
-                    "active_records": active_records,
-                }))
-            })
-    }
-
     pub fn upsert(&self, record: &TaskRecord) -> Result<()> {
         self.db
             .transaction(|tx| upsert_task_tx(tx, record).map(|_| ()))
@@ -2494,17 +2885,27 @@ impl TaskRepository<'_> {
     }
 
     pub fn latest(&self, task_id: &str) -> Result<Option<TaskRecord>> {
-        self.db.with_read(|connection| {
-            connection
-                .query_row(
-                    "SELECT payload_json FROM tasks WHERE task_id = ?1",
-                    [task_id],
-                    |row| row.get::<_, String>(0),
-                )
-                .optional()?
-                .map(|payload| decode_task_payload(&payload))
-                .transpose()
-        })
+        self.db
+            .with_read(|connection| Self::latest_on(connection, task_id))
+    }
+
+    pub(crate) async fn latest_async(&self, task_id: &str) -> Result<Option<TaskRecord>> {
+        let task_id = task_id.to_owned();
+        self.db
+            .with_read_async(move |connection| Self::latest_on(connection, &task_id))
+            .await
+    }
+
+    fn latest_on(connection: &Connection, task_id: &str) -> Result<Option<TaskRecord>> {
+        connection
+            .query_row(
+                "SELECT payload_json FROM tasks WHERE task_id = ?1",
+                [task_id],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()?
+            .map(|payload| decode_task_payload(&payload))
+            .transpose()
     }
 
     pub fn latest_all(&self) -> Result<Vec<TaskRecord>> {
@@ -2527,6 +2928,7 @@ impl TaskRepository<'_> {
         self.query_for_agent(agent_id, "owner_agent_id = ?1", [agent_id], limit)
     }
 
+    #[cfg(test)]
     pub(crate) fn message_waits_for_reply(
         &self,
         agent_id: &str,
@@ -2627,8 +3029,12 @@ impl TaskRepository<'_> {
         params: [&str; 1],
         limit: usize,
     ) -> Result<Vec<TaskRecord>> {
-        self.db
-            .with_read(|connection| query_tasks_for_agent(connection, where_clause, params, limit))
+        if limit == 0 {
+            return Ok(Vec::new());
+        }
+        self.db.with_read(|connection| {
+            context_tasks_query_on(&connection, _agent_id, where_clause, params, limit)
+        })
     }
 }
 
@@ -2652,24 +3058,6 @@ pub(super) fn query_tasks_for_agent(
 }
 
 impl WaitConditionRepository<'_> {
-    pub fn import_legacy(&self, records: Vec<WaitConditionRecord>) -> Result<()> {
-        if self
-            .db
-            .storage_domain_is_complete("wait_conditions", "db")?
-        {
-            return Ok(());
-        }
-        self.db
-            .run_storage_domain_import("wait_conditions", "jsonl", "db", |tx| {
-                let mut imported_ids = BTreeMap::<String, ()>::new();
-                for record in records {
-                    imported_ids.insert(record.id.clone(), ());
-                    let _ = upsert_wait_condition_tx(tx, &record)?;
-                }
-                Ok(serde_json::json!({ "imported_records": imported_ids.len() }))
-            })
-    }
-
     pub fn upsert(&self, record: &WaitConditionRecord) -> Result<()> {
         self.db
             .transaction(|tx| upsert_wait_condition_tx(tx, record).map(|_| ()))
@@ -2698,6 +3086,24 @@ impl WaitConditionRepository<'_> {
     /// `find` selections keep identical semantics while skipping the
     /// full-table decode of every other agent's rows.
     pub fn latest_for_agent(&self, agent_id: &str) -> Result<Vec<WaitConditionRecord>> {
+        self.latest_for_agent_with_optional_material(agent_id, None)
+    }
+
+    /// Cold scheduler source reads keep the caller's original phase and holder.
+    pub(crate) fn latest_for_agent_with_material(
+        &self,
+        agent_id: &str,
+        material: &crate::diagnostics::resource_io::ResourceReadMaterial,
+    ) -> Result<Vec<WaitConditionRecord>> {
+        material.finish()?;
+        self.latest_for_agent_with_optional_material(agent_id, Some(material))
+    }
+
+    fn latest_for_agent_with_optional_material(
+        &self,
+        agent_id: &str,
+        material: Option<&crate::diagnostics::resource_io::ResourceReadMaterial>,
+    ) -> Result<Vec<WaitConditionRecord>> {
         self.db.with_read(|connection| {
             let mut statement = connection.prepare(
                 "SELECT wait_condition_id, agent_id, work_item_id, status, kind, source,
@@ -2708,6 +3114,12 @@ impl WaitConditionRepository<'_> {
              WHERE agent_id = ?1
              ORDER BY wait_condition_id ASC",
             )?;
+            if let Some(material) = material {
+                let _entry = material.enter();
+                // Same columns/decoder as active waits, but decode every status
+                // before the scheduler's original eligibility filter.
+                return active_wait_records(&mut statement, [agent_id]);
+            }
             let rows = statement.query_map([agent_id], |row| {
                 decode_wait_condition_row(row).map_err(wait_condition_decode_error)
             })?;
@@ -2717,6 +3129,7 @@ impl WaitConditionRepository<'_> {
     }
 
     /// Preserve payload timestamp precision for full-record transition guards.
+    #[cfg(test)]
     pub(crate) fn snapshot_for_agent(&self, agent_id: &str) -> Result<Vec<WaitConditionRecord>> {
         self.db.with_read(|connection| {
             let mut statement = connection.prepare(
@@ -2806,41 +3219,43 @@ impl WaitConditionRepository<'_> {
     }
 
     pub fn active_for_agent(&self, agent_id: &str) -> Result<Vec<WaitConditionRecord>> {
-        self.db.with_read(|connection| {
-            let mut statement = connection.prepare(
-                "SELECT wait_condition_id, agent_id, work_item_id, status, kind, source,
-                subject_ref, waiting_for, created_at, updated_at, expires_at,
-                resolved_at, cancelled_at, last_turn_id, trigger_message_id, triggered_at,
-                wake_sources_json, continuation_json
-             FROM wait_conditions
-             WHERE agent_id = ?1 AND status = 'active'
-             ORDER BY updated_at DESC, created_at DESC, wait_condition_id ASC",
-            )?;
-            let rows = statement.query_map([agent_id], |row| {
-                decode_wait_condition_row(row).map_err(wait_condition_decode_error)
-            })?;
-            rows.collect::<std::result::Result<Vec<_>, _>>()
-                .map_err(|e| anyhow::anyhow!("reading wait conditions: {e}"))
-        })
+        self.db
+            .with_read(|connection| context_active_waits_on(&connection, agent_id))
     }
 
     pub fn unresolved_for_agent(&self, agent_id: &str) -> Result<Vec<WaitConditionRecord>> {
-        self.db.with_read(|connection| {
-            let mut statement = connection.prepare(
-                "SELECT wait_condition_id, agent_id, work_item_id, status, kind, source,
+        self.db
+            .with_read(|connection| Self::unresolved_for_agent_on(connection, agent_id))
+    }
+
+    pub(crate) async fn unresolved_for_agent_async(
+        &self,
+        agent_id: &str,
+    ) -> Result<Vec<WaitConditionRecord>> {
+        let agent_id = agent_id.to_owned();
+        self.db
+            .with_read_async(move |connection| Self::unresolved_for_agent_on(connection, &agent_id))
+            .await
+    }
+
+    fn unresolved_for_agent_on(
+        connection: &Connection,
+        agent_id: &str,
+    ) -> Result<Vec<WaitConditionRecord>> {
+        let mut statement = connection.prepare(
+            "SELECT wait_condition_id, agent_id, work_item_id, status, kind, source,
                 subject_ref, waiting_for, created_at, updated_at, expires_at,
                 resolved_at, cancelled_at, last_turn_id, trigger_message_id, triggered_at,
                 wake_sources_json, continuation_json
              FROM wait_conditions
              WHERE agent_id = ?1 AND status IN ('active', 'triggered')
              ORDER BY updated_at DESC, created_at DESC, wait_condition_id ASC",
-            )?;
-            let rows = statement.query_map([agent_id], |row| {
-                decode_wait_condition_row(row).map_err(wait_condition_decode_error)
-            })?;
-            rows.collect::<std::result::Result<Vec<_>, _>>()
-                .map_err(|e| anyhow::anyhow!("reading unresolved wait conditions: {e}"))
-        })
+        )?;
+        let rows = statement.query_map([agent_id], |row| {
+            decode_wait_condition_row(row).map_err(wait_condition_decode_error)
+        })?;
+        rows.collect::<std::result::Result<Vec<_>, _>>()
+            .map_err(|e| anyhow::anyhow!("reading unresolved wait conditions: {e}"))
     }
 
     pub fn active_all(&self) -> Result<Vec<WaitConditionRecord>> {
@@ -2854,11 +3269,7 @@ impl WaitConditionRepository<'_> {
              WHERE status = 'active'
              ORDER BY updated_at DESC, created_at DESC, wait_condition_id ASC",
             )?;
-            let rows = statement.query_map([], |row| {
-                decode_wait_condition_row(row).map_err(wait_condition_decode_error)
-            })?;
-            rows.collect::<std::result::Result<Vec<_>, _>>()
-                .map_err(|e| anyhow::anyhow!("reading wait conditions: {e}"))
+            active_wait_records(&mut statement, [])
         })
     }
 
@@ -2943,21 +3354,6 @@ impl WaitConditionRepository<'_> {
 }
 
 impl QueueEntryRepository<'_> {
-    pub fn import_legacy(&self, records: Vec<QueueEntryRecord>) -> Result<()> {
-        if self.db.storage_domain_is_complete("queue_entries", "db")? {
-            return Ok(());
-        }
-        self.db
-            .run_storage_domain_import("queue_entries", "jsonl", "db", |tx| {
-                let mut imported_ids = BTreeMap::<String, ()>::new();
-                for record in records {
-                    imported_ids.insert(record.message_id.clone(), ());
-                    let _ = upsert_queue_entry_tx(tx, &record)?;
-                }
-                Ok(serde_json::json!({ "imported_records": imported_ids.len() }))
-            })
-    }
-
     pub fn upsert(&self, record: &QueueEntryRecord) -> Result<()> {
         self.db
             .transaction(|tx| upsert_queue_entry_tx(tx, record).map(|_| ()))
@@ -2969,17 +3365,28 @@ impl QueueEntryRepository<'_> {
     }
 
     pub fn latest(&self, message_id: &str) -> Result<Option<QueueEntryRecord>> {
-        self.db.with_read(|connection| {
-            connection
-                .query_row(
-                    "SELECT payload_json FROM queue_entries WHERE message_id = ?1",
-                    [message_id],
-                    |row| row.get::<_, String>(0),
-                )
-                .optional()?
-                .map(|payload| decode_queue_entry_payload(&payload))
-                .transpose()
-        })
+        self.db
+            .with_read(|connection| Self::latest_on(&connection, message_id))
+    }
+
+    pub(crate) fn latest_for_preparation(
+        &self,
+        message_id: &str,
+    ) -> Result<Option<QueueEntryRecord>> {
+        self.db
+            .read_for_preparation(|tx| Self::latest_on(tx, message_id))
+    }
+
+    fn latest_on(connection: &Connection, message_id: &str) -> Result<Option<QueueEntryRecord>> {
+        connection
+            .query_row(
+                "SELECT payload_json FROM queue_entries WHERE message_id = ?1",
+                [message_id],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()?
+            .map(|payload| decode_queue_entry_payload(&payload))
+            .transpose()
     }
 
     pub fn latest_all(&self) -> Result<Vec<QueueEntryRecord>> {
@@ -2998,38 +3405,90 @@ impl QueueEntryRepository<'_> {
         })
     }
 
+    pub(crate) fn queued_internal_followups_for_agent(
+        &self,
+        agent_id: &str,
+    ) -> Result<Vec<(QueueEntryRecord, MessageEnvelope)>> {
+        let connection = self.db.connection()?;
+        let mut statement = connection.prepare(
+            "SELECT q.payload_json, m.payload_json
+             FROM queue_entries q
+             JOIN messages m ON m.message_id = q.message_id AND m.agent_id = q.agent_id
+             WHERE q.agent_id = ?1 AND q.status = ?2 AND m.kind = ?3
+             ORDER BY q.updated_at DESC, q.created_at DESC, q.message_id ASC",
+        )?;
+        let rows = statement.query_map(
+            params![
+                agent_id,
+                enum_string(&crate::types::QueueEntryStatus::Queued)?,
+                enum_string(&crate::types::MessageKind::InternalFollowup)?,
+            ],
+            |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
+        )?;
+        let mut records = rows
+            .map(|row| {
+                let (queue, message) = row?;
+                Ok((
+                    decode_queue_entry_payload(&queue)?,
+                    decode_message_payload(&message)?,
+                ))
+            })
+            .collect::<Result<Vec<_>>>()?;
+        records.reverse();
+        Ok(records)
+    }
+
     pub fn recent(&self, agent_id: Option<&str>, limit: usize) -> Result<Vec<QueueEntryRecord>> {
         if limit == 0 {
             return Ok(Vec::new());
         }
+        self.db
+            .with_read(|connection| Self::recent_on(&connection, agent_id, limit))
+    }
+
+    pub(crate) fn recent_for_preparation(
+        &self,
+        agent_id: Option<&str>,
+        limit: usize,
+    ) -> Result<Vec<QueueEntryRecord>> {
+        if limit == 0 {
+            return Ok(Vec::new());
+        }
+        self.db
+            .read_for_preparation(|tx| Self::recent_on(tx, agent_id, limit))
+    }
+
+    fn recent_on(
+        connection: &Connection,
+        agent_id: Option<&str>,
+        limit: usize,
+    ) -> Result<Vec<QueueEntryRecord>> {
         let limit = i64::try_from(limit).unwrap_or(i64::MAX);
-        self.db.with_read(|connection| {
-            let mut records = if let Some(agent_id) = agent_id {
-                let mut statement = connection.prepare(
-                    "SELECT payload_json
+        let mut records = if let Some(agent_id) = agent_id {
+            let mut statement = connection.prepare(
+                "SELECT payload_json
                  FROM queue_entries
                  WHERE agent_id = ?1
                  ORDER BY updated_at DESC, created_at DESC, message_id ASC
                  LIMIT ?2",
-                )?;
-                let rows =
-                    statement.query_map(params![agent_id, limit], |row| row.get::<_, String>(0))?;
-                rows.map(|row| decode_queue_entry_payload(&row?))
-                    .collect::<Result<Vec<_>>>()?
-            } else {
-                let mut statement = connection.prepare(
-                    "SELECT payload_json
+            )?;
+            let rows =
+                statement.query_map(params![agent_id, limit], |row| row.get::<_, String>(0))?;
+            rows.map(|row| decode_queue_entry_payload(&row?))
+                .collect::<Result<Vec<_>>>()?
+        } else {
+            let mut statement = connection.prepare(
+                "SELECT payload_json
                  FROM queue_entries
                  ORDER BY updated_at DESC, created_at DESC, message_id ASC
                  LIMIT ?1",
-                )?;
-                let rows = statement.query_map([limit], |row| row.get::<_, String>(0))?;
-                rows.map(|row| decode_queue_entry_payload(&row?))
-                    .collect::<Result<Vec<_>>>()?
-            };
-            records.reverse();
-            Ok(records)
-        })
+            )?;
+            let rows = statement.query_map([limit], |row| row.get::<_, String>(0))?;
+            rows.map(|row| decode_queue_entry_payload(&row?))
+                .collect::<Result<Vec<_>>>()?
+        };
+        records.reverse();
+        Ok(records)
     }
 
     /// Returns true if the given agent has any messages currently queued.
@@ -3126,67 +3585,400 @@ impl QueueEntryRepository<'_> {
     }
 }
 
+/// Original timer cancellation ACK; keys come only from actual SQL exits.
+#[derive(Default)]
+pub(in crate::runtime_db) struct TimerCancellationWrites {
+    pub cancelled_timers: usize,
+    pub timer_ids: std::collections::BTreeSet<String>,
+    pub wake_pairs: std::collections::BTreeSet<(String, String)>,
+    pub queue_entries: Vec<QueueEntryRecord>,
+}
+fn cancel_active_timers_for_agent_tx(
+    tx: &Transaction<'_>,
+    agent_id: &str,
+    cancelled_at: chrono::DateTime<Utc>,
+) -> Result<usize> {
+    Ok(cancel_active_timers_with_writes_tx(tx, agent_id, cancelled_at)?.cancelled_timers)
+}
+
+pub(in crate::runtime_db) fn cancel_active_timers_with_writes_tx(
+    tx: &Transaction<'_>,
+    agent_id: &str,
+    cancelled_at: chrono::DateTime<Utc>,
+) -> Result<TimerCancellationWrites> {
+    let mut statement = tx.prepare(
+        "SELECT payload_json
+             FROM timers
+             WHERE agent_id = ?1 AND status = 'active'",
+    )?;
+    let records = statement
+        .query_map([agent_id], |row| row.get::<_, String>(0))?
+        .map(|row| decode_timer_payload(&row?))
+        .collect::<Result<Vec<_>>>()?;
+    drop(statement);
+
+    let mut writes = TimerCancellationWrites::default();
+    for mut record in records {
+        record.status = TimerStatus::Cancelled;
+        if upsert_timer_with_write_tx(tx, &record)? {
+            writes.timer_ids.insert(record.id.clone());
+        }
+
+        let message_ids = {
+            let mut wake_statement = tx.prepare(
+                "SELECT message_id
+                     FROM timer_wakes
+                     WHERE timer_id = ?1 AND status = 'pending'",
+            )?;
+            let message_ids = wake_statement
+                .query_map([&record.id], |row| row.get::<_, String>(0))?
+                .collect::<std::result::Result<Vec<_>, _>>()?;
+            message_ids
+        };
+        // RETURNING is the actual write exit; the original predicate and one
+        // bulk UPDATE stay intact, including independently pending old wakes.
+        let mut update = tx.prepare(
+            "UPDATE timer_wakes SET status='cancelled', updated_at=?2, cancelled_at=?2
+             WHERE timer_id=?1 AND status='pending' RETURNING timer_id,message_id",
+        )?;
+        for row in update.query_map(params![record.id, timestamp(cancelled_at)], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        })? {
+            writes.wake_pairs.insert(row?);
+        }
+        drop(update);
+        for message_id in message_ids {
+            let payload = tx
+                .query_row(
+                    "SELECT payload_json
+                         FROM queue_entries
+                         WHERE message_id = ?1 AND status IN ('queued', 'interrupted')",
+                    [&message_id],
+                    |row| row.get::<_, String>(0),
+                )
+                .optional()?;
+            if let Some(payload) = payload {
+                let mut entry = decode_queue_entry_payload(&payload)?;
+                entry.status = QueueEntryStatus::Dropped;
+                entry.updated_at = cancelled_at;
+                if upsert_queue_entry_tx(tx, &entry)? {
+                    writes.queue_entries.push(entry);
+                }
+            }
+        }
+        writes.cancelled_timers += 1;
+    }
+    Ok(writes)
+}
+
+pub(crate) struct ScopedTimerWakeRecovery {
+    pub result: TimerWakeRecoveryResult,
+    pub queue_entries: Vec<QueueEntryRecord>,
+    pub scope_facts: super::context_inputs::ContextScopeFacts,
+    pub scheduling_ack: super::scheduling_snapshot::SchedulingMaintenanceAck,
+}
+
+pub(in crate::runtime_db) struct TimerWakeNormalizationInput {
+    pub live_messages: Vec<(QueueEntryRecord, MessageEnvelope)>,
+    pub pending_wakes: Vec<(String, String, i64)>,
+}
+pub(in crate::runtime_db) struct TimerWakeNormalizationWrites {
+    pub result: TimerWakeRecoveryResult,
+    pub wake_pairs: BTreeSet<(String, String)>,
+}
+// Bootstrap admission and the retirement actor must select the same finite
+// sources. A missing/foreign Message is not terminal proof and stays pending.
+pub(in crate::runtime_db) const PENDING_TERMINAL_TIMER_WAKE_SOURCES: &str = "timer_wakes w
+     JOIN timers t ON t.timer_id = w.timer_id
+     JOIN queue_entries q ON q.message_id = w.message_id AND q.agent_id = t.agent_id
+     JOIN messages m ON m.message_id = w.message_id AND m.agent_id = t.agent_id
+     WHERE w.status = 'pending'
+       AND q.status IN ('processed', 'aborted', 'dropped', 'quarantined')";
+
+pub(in crate::runtime_db) fn read_timer_wake_normalization_tx(
+    tx: &Transaction<'_>,
+    agent_id: &str,
+) -> Result<TimerWakeNormalizationInput> {
+    let live_messages = {
+        let mut statement = tx.prepare(
+            "SELECT q.payload_json, m.payload_json
+             FROM queue_entries q
+             JOIN messages m ON m.message_id = q.message_id
+             WHERE q.agent_id = ?1 AND q.status IN ('queued', 'interrupted')
+             ORDER BY q.created_at ASC, q.message_id ASC",
+        )?;
+        let rows = statement.query_map([agent_id], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        })?;
+        rows.map(|row| {
+            let (queue_payload, message_payload) = row?;
+            Ok((
+                decode_queue_entry_payload(&queue_payload)?,
+                decode_message_payload(&message_payload)?,
+            ))
+        })
+        .collect::<Result<Vec<_>>>()?
+    };
+    let pending_wakes = {
+        let mut statement = tx.prepare(
+            "SELECT w.timer_id, w.message_id, w.fire_count
+             FROM timer_wakes w
+             JOIN timers t ON t.timer_id = w.timer_id
+             WHERE t.agent_id = ?1 AND w.status = 'pending'",
+        )?;
+        let rows = statement.query_map([agent_id], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, i64>(2)?,
+            ))
+        })?;
+        rows.collect::<std::result::Result<Vec<_>, _>>()?
+    };
+
+    Ok(TimerWakeNormalizationInput {
+        live_messages,
+        pending_wakes,
+    })
+}
+
+pub(in crate::runtime_db) fn normalize_timer_wakes_at_with_writes_tx(
+    tx: &Transaction<'_>,
+    input: TimerWakeNormalizationInput,
+    recovered_at: DateTime<Utc>,
+) -> Result<TimerWakeNormalizationWrites> {
+    let TimerWakeNormalizationInput {
+        live_messages,
+        pending_wakes,
+    } = input;
+    let mut result = TimerWakeRecoveryResult::default();
+    let mut actual = BTreeSet::new();
+    let mut wakes_by_timer = BTreeMap::new();
+    let terminal_source_sql = format!(
+        "SELECT q.agent_id, q.status, q.payload_json
+         FROM {PENDING_TERMINAL_TIMER_WAKE_SOURCES}
+           AND w.timer_id = ?1 AND w.message_id = ?2"
+    );
+    for (timer_id, message_id, fire_count) in pending_wakes {
+        let entry = tx
+            .query_row(&terminal_source_sql, params![timer_id, message_id], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                ))
+            })
+            .optional()?
+            .map(|(owner, status, payload)| -> Result<QueueEntryRecord> {
+                let entry = decode_queue_entry_payload(&payload)?;
+                anyhow::ensure!(
+                    entry.agent_id == owner
+                        && entry.message_id == message_id
+                        && enum_string(&entry.status)? == status,
+                    "timer recovery terminal Queue columns differ from canonical payload"
+                );
+                Ok(entry)
+            })
+            .transpose()?;
+        if let Some(entry) = entry {
+            if retire_terminal_timer_wake_tx(tx, &entry, recovered_at)? {
+                actual.insert((timer_id, message_id));
+                result.invalidated_wakes += 1;
+                continue;
+            }
+        }
+        wakes_by_timer.insert(timer_id, (message_id, fire_count));
+    }
+    let mut messages_by_timer = BTreeMap::<String, Vec<(QueueEntryRecord, MessageEnvelope)>>::new();
+    for (entry, message) in live_messages {
+        let MessageOrigin::Timer { timer_id } = &message.origin else {
+            continue;
+        };
+        messages_by_timer
+            .entry(timer_id.clone())
+            .or_default()
+            .push((entry, message));
+    }
+
+    for (timer_id, messages) in messages_by_timer {
+        let timer = timer_tx(tx, &timer_id)?;
+        let timer_accepts_wake = timer.as_ref().is_some_and(|timer| {
+            matches!(timer.status, TimerStatus::Active | TimerStatus::Completed)
+        });
+        let existing_wake = wakes_by_timer.remove(&timer_id);
+        let mut first_recoverable = None;
+        if timer_accepts_wake && existing_wake.is_none() {
+            for (index, (_, message)) in messages.iter().enumerate() {
+                let cancelled = tx.query_row(
+                    "SELECT EXISTS(SELECT 1 FROM timer_wakes
+                     WHERE timer_id = ?1 AND message_id = ?2 AND status = 'cancelled')",
+                    params![timer_id, message.id],
+                    |row| row.get::<_, bool>(0),
+                )?;
+                if !cancelled {
+                    first_recoverable = Some(index);
+                    break;
+                }
+            }
+        }
+        let keep_index = if timer_accepts_wake {
+            existing_wake
+                .as_ref()
+                .and_then(|(message_id, _)| {
+                    messages
+                        .iter()
+                        .position(|(_, message)| message.id == *message_id)
+                })
+                .or(first_recoverable)
+        } else {
+            None
+        };
+
+        for (index, (mut entry, _)) in messages.iter().cloned().enumerate() {
+            if Some(index) == keep_index {
+                continue;
+            }
+            if timer_message_has_unsettled_consumption_tx(tx, &entry.agent_id, &entry.message_id)? {
+                continue;
+            }
+            entry.status = QueueEntryStatus::Dropped;
+            entry.updated_at = recovered_at.max(entry.updated_at);
+            upsert_queue_entry_tx(tx, &entry)?;
+            if existing_wake
+                .as_ref()
+                .is_some_and(|(message_id, _)| message_id == &entry.message_id)
+                && tx.query_row(
+                    "SELECT EXISTS(SELECT 1 FROM timer_wakes
+                     WHERE timer_id = ?1 AND message_id = ?2 AND status = 'cancelled')",
+                    params![timer_id, entry.message_id],
+                    |row| row.get::<_, bool>(0),
+                )?
+            {
+                actual.insert((timer_id.clone(), entry.message_id.clone()));
+            }
+            result.dropped_message_ids.push(entry.message_id);
+        }
+
+        match keep_index {
+            Some(index) => {
+                let (entry, message) = &messages[index];
+                if existing_wake
+                    .as_ref()
+                    .is_some_and(|(message_id, _)| message_id == &message.id)
+                {
+                    result.retained_wakes += 1;
+                    continue;
+                }
+                let fire_count = message
+                    .metadata
+                    .as_ref()
+                    .and_then(|metadata| metadata.get("timer_fire_count"))
+                    .and_then(serde_json::Value::as_u64)
+                    .unwrap_or_else(|| timer.as_ref().map_or(1, |timer| timer.fire_count.max(1)));
+                // A wake row for this exact pair may already exist when a claimed
+                // message was restored to the queue after a restart. Reactivate it
+                // instead of inserting a duplicate row for the composite primary key.
+                let now = timestamp(recovered_at);
+                let reactivated = tx.execute(
+                    "UPDATE timer_wakes
+                     SET status = 'pending', fire_count = ?3, updated_at = ?4,
+                         incorporated_at = NULL, cancelled_at = NULL
+                     WHERE timer_id = ?1 AND message_id = ?2 AND status = 'incorporated'",
+                    params![timer_id, message.id, fire_count as i64, now],
+                )?;
+                if reactivated > 0 {
+                    actual.insert((timer_id.clone(), message.id.clone()));
+                    result.reactivated_wakes += reactivated;
+                    continue;
+                }
+                let created_at = timestamp(entry.created_at);
+                tx.execute(
+                    "INSERT INTO timer_wakes
+                     (timer_id, message_id, fire_count, status, created_at, updated_at)
+                     VALUES (?1, ?2, ?3, 'pending', ?4, ?4)",
+                    params![timer_id, message.id, fire_count as i64, created_at],
+                )?;
+                actual.insert((timer_id.clone(), message.id.clone()));
+                result.created_wakes += 1;
+            }
+            None => {
+                if let Some((message_id, fire_count)) = existing_wake {
+                    let retained = tx.query_row(
+                        "SELECT EXISTS(SELECT 1 FROM timer_wakes
+                         WHERE timer_id = ?1 AND message_id = ?2
+                           AND fire_count = ?3 AND status = 'pending')",
+                        params![timer_id, message_id, fire_count],
+                        |row| row.get::<_, bool>(0),
+                    )?;
+                    result.retained_wakes += usize::from(retained);
+                    result.invalidated_wakes += usize::from(!retained);
+                }
+            }
+        }
+    }
+
+    // Absence from the queued/interrupted scan is not proof of terminality.
+    result.retained_wakes += wakes_by_timer.len();
+    Ok(TimerWakeNormalizationWrites {
+        result,
+        wake_pairs: actual,
+    })
+}
+
+fn cancelled_timers_with_waits_tx(tx: &Transaction<'_>, agent: &str) -> Result<Vec<TimerRecord>> {
+    let mut query = tx.prepare("SELECT t.payload_json FROM timers t WHERE t.agent_id=?1 AND t.status='cancelled' AND EXISTS(SELECT 1 FROM wait_conditions w WHERE w.agent_id=t.agent_id AND w.subject_ref=t.timer_id AND w.kind='timer' AND w.status IN ('active','triggered')) ORDER BY t.timer_id")?;
+    let mut rows = query.query([agent])?;
+    let mut timers = Vec::new();
+    while let Some(row) = rows.next()? {
+        let payload = borrowed_sql_text(row, 0)?;
+        crate::diagnostics::resource_io::admit_json_payload(payload)?;
+        reserve_source_vec_slot(&mut timers)?;
+        timers.push(decode_timer_payload(payload)?);
+    }
+    Ok(timers)
+}
+
+fn settle_recovered_timer_waits_tx(
+    tx: &Transaction<'_>,
+    timers: &[TimerRecord],
+    recovered_at: DateTime<Utc>,
+    result: &mut TimerWakeRecoveryResult,
+) -> Result<()> {
+    for timer in timers {
+        let settlement = settle_cancelled_timer_waits_tx(tx, timer, recovered_at)?;
+        result
+            .settled_wait_conditions
+            .extend(settlement.wait_conditions);
+        result.work_items.extend(settlement.work_items);
+        result.audit_events.extend(settlement.audit_events);
+    }
+    Ok(())
+}
+
+fn normalize_timer_wakes_for_recovery_tx(
+    tx: &Transaction<'_>,
+    agent: &str,
+    recovered_at: DateTime<Utc>,
+) -> Result<TimerWakeRecoveryResult> {
+    let timers = cancelled_timers_with_waits_tx(tx, agent)?;
+    let mut result = normalize_timer_wakes_at_with_writes_tx(
+        tx,
+        read_timer_wake_normalization_tx(tx, agent)?,
+        recovered_at,
+    )?
+    .result;
+    settle_recovered_timer_waits_tx(tx, &timers, recovered_at, &mut result)?;
+    Ok(result)
+}
+
 impl TimerRepository<'_> {
     pub fn cancel_active_for_agent(
         &self,
         agent_id: &str,
         cancelled_at: chrono::DateTime<Utc>,
     ) -> Result<usize> {
-        self.db.transaction(|tx| {
-            let mut statement = tx.prepare(
-                "SELECT payload_json
-                 FROM timers
-                 WHERE agent_id = ?1 AND status = 'active'",
-            )?;
-            let records = statement
-                .query_map([agent_id], |row| row.get::<_, String>(0))?
-                .map(|row| decode_timer_payload(&row?))
-                .collect::<Result<Vec<_>>>()?;
-            drop(statement);
-
-            let mut count = 0;
-            for mut record in records {
-                record.status = TimerStatus::Cancelled;
-                upsert_timer_tx(tx, &record)?;
-
-                let message_ids = {
-                    let mut wake_statement = tx.prepare(
-                        "SELECT message_id
-                         FROM timer_wakes
-                         WHERE timer_id = ?1 AND status = 'pending'",
-                    )?;
-                    let message_ids = wake_statement
-                        .query_map([&record.id], |row| row.get::<_, String>(0))?
-                        .collect::<std::result::Result<Vec<_>, _>>()?;
-                    message_ids
-                };
-                tx.execute(
-                    "UPDATE timer_wakes
-                     SET status = 'cancelled', updated_at = ?2, cancelled_at = ?2
-                     WHERE timer_id = ?1 AND status = 'pending'",
-                    params![record.id, timestamp(cancelled_at)],
-                )?;
-                for message_id in message_ids {
-                    let payload = tx
-                        .query_row(
-                            "SELECT payload_json
-                             FROM queue_entries
-                             WHERE message_id = ?1 AND status IN ('queued', 'interrupted')",
-                            [&message_id],
-                            |row| row.get::<_, String>(0),
-                        )
-                        .optional()?;
-                    if let Some(payload) = payload {
-                        let mut entry = decode_queue_entry_payload(&payload)?;
-                        entry.status = QueueEntryStatus::Dropped;
-                        entry.updated_at = cancelled_at;
-                        upsert_queue_entry_tx(tx, &entry)?;
-                    }
-                }
-                count += 1;
-            }
-            Ok(count)
-        })
+        self.db
+            .transaction(|tx| cancel_active_timers_for_agent_tx(tx, agent_id, cancelled_at))
     }
 
     pub fn pending_wake(&self, timer_id: &str) -> Result<Option<TimerWakeRecord>> {
@@ -3272,210 +4064,112 @@ impl TimerRepository<'_> {
         agent_id: &str,
         recovered_at: DateTime<Utc>,
     ) -> Result<TimerWakeRecoveryResult> {
+        self.db
+            .transaction(|tx| normalize_timer_wakes_for_recovery_tx(tx, agent_id, recovered_at))
+    }
+
+    pub(crate) fn normalize_wakes_for_recovery_in_scope(
+        &self,
+        scope: &crate::runtime::resident_input_evidence::InputEvidenceScope,
+        budget: &crate::runtime::input_evidence_budget::InputEvidenceBudgetLedger,
+        recovered_at: DateTime<Utc>,
+    ) -> Result<ScopedTimerWakeRecovery> {
         self.db.transaction(|tx| {
-            let live_messages = {
-                let mut statement = tx.prepare(
-                    "SELECT q.payload_json, m.payload_json
-                     FROM queue_entries q
-                     JOIN messages m ON m.message_id = q.message_id
-                     WHERE q.agent_id = ?1 AND q.status IN ('queued', 'interrupted')
-                     ORDER BY q.created_at ASC, q.message_id ASC",
-                )?;
-                let rows = statement.query_map([agent_id], |row| {
-                    Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
-                })?;
-                rows.map(|row| {
-                    let (queue_payload, message_payload) = row?;
-                    Ok((
-                        decode_queue_entry_payload(&queue_payload)?,
-                        decode_message_payload(&message_payload)?,
-                    ))
-                })
-                .collect::<Result<Vec<_>>>()?
-            };
-            let pending_wakes = {
-                let mut statement = tx.prepare(
-                    "SELECT w.timer_id, w.message_id, w.fire_count
-                     FROM timer_wakes w
-                     JOIN timers t ON t.timer_id = w.timer_id
-                     WHERE t.agent_id = ?1 AND w.status = 'pending'",
-                )?;
-                let rows = statement.query_map([agent_id], |row| {
-                    Ok((
-                        row.get::<_, String>(0)?,
-                        row.get::<_, String>(1)?,
-                        row.get::<_, i64>(2)?,
-                    ))
-                })?;
-                rows.collect::<std::result::Result<Vec<_>, _>>()?
-            };
-
-            let mut result = TimerWakeRecoveryResult::default();
-            let mut wakes_by_timer = BTreeMap::new();
-            for (timer_id, message_id, fire_count) in pending_wakes {
-                let entry = tx
-                    .query_row(
-                        "SELECT payload_json FROM queue_entries
-                         WHERE agent_id = ?1 AND message_id = ?2",
-                        params![agent_id, message_id],
-                        |row| row.get::<_, String>(0),
-                    )
-                    .optional()?
-                    .map(|payload| decode_queue_entry_payload(&payload))
-                    .transpose()?;
-                if let Some(entry) = entry {
-                    if retire_terminal_timer_wake_tx(tx, &entry, recovered_at)? {
-                        result.invalidated_wakes += 1;
-                        continue;
-                    }
-                }
-                wakes_by_timer.insert(timer_id, (message_id, fire_count));
+            let cancelled = cancelled_timers_with_waits_tx(tx, &scope.agent_id)?;
+            let mut cancelled_waits = Vec::new();
+            for timer in &cancelled {
+                cancelled_waits.extend(timer_cancellation_waits_tx(tx, timer)?);
             }
-            let mut messages_by_timer =
-                BTreeMap::<String, Vec<(QueueEntryRecord, MessageEnvelope)>>::new();
-            for (entry, message) in live_messages {
-                let MessageOrigin::Timer { timer_id } = &message.origin else {
-                    continue;
-                };
-                messages_by_timer
-                    .entry(timer_id.clone())
-                    .or_default()
-                    .push((entry, message));
-            }
-
-            for (timer_id, messages) in messages_by_timer {
-                let timer = timer_tx(tx, &timer_id)?;
-                let timer_accepts_wake = timer.as_ref().is_some_and(|timer| {
-                    matches!(timer.status, TimerStatus::Active | TimerStatus::Completed)
-                });
-                let existing_wake = wakes_by_timer.remove(&timer_id);
-                let mut first_recoverable = None;
-                if timer_accepts_wake && existing_wake.is_none() {
-                    for (index, (_, message)) in messages.iter().enumerate() {
-                        let cancelled = tx.query_row(
-                            "SELECT EXISTS(SELECT 1 FROM timer_wakes
-                             WHERE timer_id = ?1 AND message_id = ?2 AND status = 'cancelled')",
-                            params![timer_id, message.id],
-                            |row| row.get::<_, bool>(0),
-                        )?;
-                        if !cancelled {
-                            first_recoverable = Some(index);
-                            break;
-                        }
-                    }
-                }
-                let keep_index = if timer_accepts_wake {
-                    existing_wake
+            let work = if cancelled_waits.is_empty() {
+                None
+            } else {
+                use crate::runtime::resident_work::{WorkCaptureRequest, WorkFamily, WorkKey};
+                let mut keys = super::work_snapshot::work_wait_write_keys_tx(tx, &cancelled_waits)?;
+                keys.extend(cancelled_waits.iter().filter_map(|wait| {
+                    wait.work_item_id
                         .as_ref()
-                        .and_then(|(message_id, _)| {
-                            messages
-                                .iter()
-                                .position(|(_, message)| message.id == *message_id)
-                        })
-                        .or(first_recoverable)
-                } else {
-                    None
+                        .map(|id| WorkKey::new(WorkFamily::Work, id))
+                }));
+                let proof = super::work_snapshot::prepare_work_write_tx(tx, scope, &keys)?;
+                let limits = budget.limits();
+                let request = super::work_snapshot::WorkDomainLoadRequest {
+                    capture: WorkCaptureRequest::current(),
+                    record_limit: usize::try_from(limits.record_limit)?,
+                    byte_limit: usize::try_from(limits.history_per_agent_bytes)?,
                 };
-
-                for (index, (mut entry, _)) in messages.iter().cloned().enumerate() {
-                    if Some(index) == keep_index {
-                        continue;
-                    }
-                    if timer_message_has_unsettled_consumption_tx(tx, agent_id, &entry.message_id)?
-                    {
-                        continue;
-                    }
-                    entry.status = QueueEntryStatus::Dropped;
-                    entry.updated_at = recovered_at.max(entry.updated_at);
-                    upsert_queue_entry_tx(tx, &entry)?;
-                    result.dropped_message_ids.push(entry.message_id);
-                }
-
-                match keep_index {
-                    Some(index) => {
-                        let (entry, message) = &messages[index];
-                        if existing_wake
-                            .as_ref()
-                            .is_some_and(|(message_id, _)| message_id == &message.id)
-                        {
-                            result.retained_wakes += 1;
-                            continue;
-                        }
-                        let fire_count = message
-                            .metadata
-                            .as_ref()
-                            .and_then(|metadata| metadata.get("timer_fire_count"))
-                            .and_then(serde_json::Value::as_u64)
-                            .unwrap_or_else(|| {
-                                timer.as_ref().map_or(1, |timer| timer.fire_count.max(1))
-                            });
-                        // A wake row for this exact pair may already exist when a claimed
-                        // message was restored to the queue after a restart. Reactivate it
-                        // instead of inserting a duplicate row for the composite primary key.
-                        let now = timestamp(recovered_at);
-                        let reactivated = tx.execute(
-                            "UPDATE timer_wakes
-                             SET status = 'pending', fire_count = ?3, updated_at = ?4,
-                                 incorporated_at = NULL, cancelled_at = NULL
-                             WHERE timer_id = ?1 AND message_id = ?2 AND status = 'incorporated'",
-                            params![timer_id, message.id, fire_count as i64, now],
-                        )?;
-                        if reactivated > 0 {
-                            result.reactivated_wakes += reactivated;
-                            continue;
-                        }
-                        let created_at = timestamp(entry.created_at);
-                        tx.execute(
-                            "INSERT INTO timer_wakes
-                             (timer_id, message_id, fire_count, status, created_at, updated_at)
-                             VALUES (?1, ?2, ?3, 'pending', ?4, ?4)",
-                            params![timer_id, message.id, fire_count as i64, created_at],
-                        )?;
-                        result.created_wakes += 1;
-                    }
-                    None => {
-                        if let Some((message_id, fire_count)) = existing_wake {
-                            let retained = tx.query_row(
-                                "SELECT EXISTS(SELECT 1 FROM timer_wakes
-                                 WHERE timer_id = ?1 AND message_id = ?2
-                                   AND fire_count = ?3 AND status = 'pending')",
-                                params![timer_id, message_id, fire_count],
-                                |row| row.get::<_, bool>(0),
-                            )?;
-                            result.retained_wakes += usize::from(retained);
-                            result.invalidated_wakes += usize::from(!retained);
-                        }
-                    }
-                }
-            }
-
-            // Absence from the queued/interrupted scan is not proof of terminality.
-            result.retained_wakes += wakes_by_timer.len();
-            let cancelled_timers = {
-                let mut statement = tx.prepare(
-                    "SELECT t.payload_json FROM timers t
-                     WHERE t.agent_id = ?1 AND t.status = 'cancelled'
-                       AND EXISTS(
-                         SELECT 1 FROM wait_conditions w
-                         WHERE w.agent_id = t.agent_id AND w.subject_ref = t.timer_id
-                           AND w.kind = 'timer' AND w.status IN ('active', 'triggered'))
-                     ORDER BY t.timer_id",
-                )?;
-                let records = statement
-                    .query_map([agent_id], |row| row.get::<_, String>(0))?
-                    .map(|row| decode_timer_payload(&row?))
-                    .collect::<Result<Vec<_>>>()?;
-                records
+                super::work_snapshot::preflight_work_write_snapshot_tx(tx, &proof, &request)?;
+                Some((proof, request))
             };
-            for timer in cancelled_timers {
-                let settlement = settle_cancelled_timer_waits_tx(tx, &timer, recovered_at)?;
-                result
-                    .settled_wait_conditions
-                    .extend(settlement.wait_conditions);
-                result.work_items.extend(settlement.work_items);
-                result.audit_events.extend(settlement.audit_events);
+            let proof = super::scheduling_snapshot::prepare_bootstrap_wake_normalization_tx(
+                tx, scope, budget,
+            )?;
+            let input = read_timer_wake_normalization_tx(tx, &scope.agent_id)?;
+            let proof = proof.observe_inputs_tx(tx, &input)?;
+            let writes = normalize_timer_wakes_at_with_writes_tx(tx, input, recovered_at)?;
+            let mut result = writes.result;
+            settle_recovered_timer_waits_tx(tx, &cancelled, recovered_at, &mut result)?;
+            let scheduling_ack = proof.finish_tx(tx, &writes.wake_pairs)?;
+            let mut queue_entries = Vec::new();
+            for id in &result.dropped_message_ids {
+                let payload: String = tx.query_row(
+                    "SELECT payload_json FROM queue_entries WHERE message_id=?1",
+                    [id],
+                    |r| r.get(0),
+                )?;
+                let record = decode_queue_entry_payload(&payload)?;
+                anyhow::ensure!(
+                    record.agent_id == scope.agent_id
+                        && record.message_id == *id
+                        && record.status == QueueEntryStatus::Dropped,
+                    "timer recovery queue ACK mismatch"
+                );
+                queue_entries.push(record);
             }
-            Ok(result)
+            let scope_facts = super::context_inputs::ContextDurableRead::new(tx, &scope.agent_id)
+                .scope_facts()?;
+            anyhow::ensure!(
+                scope_facts
+                    .identity
+                    .as_ref()
+                    .is_some_and(
+                        |identity| identity.incarnation == scope.identity_incarnation
+                            && identity.status == AgentRegistryStatus::Active
+                    ),
+                "timer recovery identity changed inside transaction"
+            );
+            if let Some((proof, request)) = work {
+                use crate::runtime::resident_work::{WorkFamily, WorkKey};
+                let actual = result
+                    .settled_wait_conditions
+                    .iter()
+                    .map(|wait| WorkKey::new(WorkFamily::Wait, &wait.id))
+                    .chain(
+                        result
+                            .work_items
+                            .iter()
+                            .map(|work| WorkKey::new(WorkFamily::Work, &work.id)),
+                    )
+                    .collect();
+                let state = scope_facts
+                    .state
+                    .as_deref()
+                    .context("Timer recovery Work ACK missing State")?;
+                // Bootstrap loads its first complete resident domains after this exact commit.
+                super::work_snapshot::register_work_writes_tx(
+                    tx,
+                    &proof,
+                    &actual,
+                    &BTreeSet::new(),
+                    state,
+                    &request,
+                )?;
+            }
+            Ok(ScopedTimerWakeRecovery {
+                result,
+                queue_entries,
+                scope_facts,
+                scheduling_ack,
+            })
         })
     }
 
@@ -3488,49 +4182,152 @@ impl TimerRepository<'_> {
         command: &TimerFire,
         fault: Option<crate::runtime_db::transitions::TransitionFaultPoint>,
     ) -> Result<TimerFireResult> {
+        self.fire_with_wait_inner(command, fault, None)
+            .map(|ack| ack.record)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn fire_with_wait_in_scope(
+        &self,
+        scope: &crate::runtime::resident_input_evidence::InputEvidenceScope,
+        command: &TimerFire,
+        work_request: &super::work_snapshot::WorkDomainLoadRequest,
+        ledger: &crate::runtime::input_evidence_budget::InputEvidenceBudgetLedger,
+        fault: Option<crate::runtime_db::transitions::TransitionFaultPoint>,
+    ) -> Result<super::input_evidence_writes::InputEvidenceCommit<TimerFireResult>> {
+        let task_request = super::task_snapshot::TaskDomainLoadRequest {
+            recovery_at: None,
+            query: Default::default(),
+            capture: crate::runtime::resident_task::TaskCaptureRequest::current(),
+            record_limit: work_request.record_limit,
+            byte_limit: work_request.byte_limit,
+        };
+        self.fire_with_wait_in_scope_with_task_request(
+            scope,
+            command,
+            work_request,
+            &task_request,
+            ledger,
+            fault,
+        )
+    }
+
+    #[cfg(test)]
+    pub(crate) fn fire_with_wait_in_scope_with_task_request(
+        &self,
+        scope: &crate::runtime::resident_input_evidence::InputEvidenceScope,
+        command: &TimerFire,
+        work_request: &super::work_snapshot::WorkDomainLoadRequest,
+        task_request: &super::task_snapshot::TaskDomainLoadRequest,
+        ledger: &crate::runtime::input_evidence_budget::InputEvidenceBudgetLedger,
+        fault: Option<crate::runtime_db::transitions::TransitionFaultPoint>,
+    ) -> Result<super::input_evidence_writes::InputEvidenceCommit<TimerFireResult>> {
+        self.fire_with_wait_inner(
+            command,
+            fault,
+            Some((scope, work_request, task_request, ledger)),
+        )
+    }
+
+    fn fire_with_wait_inner(
+        &self,
+        command: &TimerFire,
+        fault: Option<crate::runtime_db::transitions::TransitionFaultPoint>,
+        scoped_work: Option<(
+            &crate::runtime::resident_input_evidence::InputEvidenceScope,
+            &super::work_snapshot::WorkDomainLoadRequest,
+            &super::task_snapshot::TaskDomainLoadRequest,
+            &crate::runtime::input_evidence_budget::InputEvidenceBudgetLedger,
+        )>,
+    ) -> Result<super::input_evidence_writes::InputEvidenceCommit<TimerFireResult>> {
         self.db.transaction(|tx| {
-            if timer_tx(tx, &command.expected.id)?.as_ref() != Some(&command.expected)
-                || command.expected.status != TimerStatus::Active
-            {
-                return Ok(TimerFireResult {
+            self.fire_with_wait_tx(
+                tx,
+                command,
+                fault,
+                scoped_work,
+                false,
+                &mut WaitConditionWrites::default(),
+                &mut Vec::new(),
+                None,
+            )
+        })
+    }
+
+    /// Same original business kernel; the Prepared outer TX owns Work finalization.
+    pub(crate) fn fire_with_wait_tx(
+        &self,
+        tx: &Transaction<'_>,
+        command: &TimerFire,
+        fault: Option<crate::runtime_db::transitions::TransitionFaultPoint>,
+        scoped_work: Option<(
+            &crate::runtime::resident_input_evidence::InputEvidenceScope,
+            &super::work_snapshot::WorkDomainLoadRequest,
+            &super::task_snapshot::TaskDomainLoadRequest,
+            &crate::runtime::input_evidence_budget::InputEvidenceBudgetLedger,
+        )>,
+        defer_work: bool,
+        actual_wait_writes: &mut WaitConditionWrites,
+        actual_audits: &mut Vec<AuditEvent>,
+        mut memory: Option<&mut super::dispatch_memory::DispatchMemoryTransactionBudget>,
+    ) -> Result<super::input_evidence_writes::InputEvidenceCommit<TimerFireResult>> {
+        if let Some((scope, _, _, _)) = scoped_work {
+            super::input_evidence_writes::validate_input_evidence_scope_tx(
+                tx,
+                scope,
+                &command.expected.agent_id,
+            )?;
+        }
+        if timer_tx(tx, &command.expected.id)?.as_ref() != Some(&command.expected)
+            || command.expected.status != TimerStatus::Active
+        {
+            return Ok(super::input_evidence_writes::InputEvidenceCommit {
+                current_read_writes: None,
+                work_delta: None,
+                task_delta: None,
+                task_material_budget_views: Vec::new(),
+                record: TimerFireResult {
                     advanced: false,
                     wake_created: false,
                     message: None,
-                });
-            }
-            if command.record.id != command.expected.id
-                || command.record.agent_id != command.expected.agent_id
-                || command.record.fire_count != command.expected.fire_count + 1
-            {
-                return Err(anyhow!("invalid timer fire transition"));
-            }
-            upsert_timer_tx(tx, &command.record)?;
-            let pending = tx.query_row(
-                "SELECT EXISTS(SELECT 1 FROM timer_wakes WHERE timer_id = ?1 AND status = 'pending')",
-                [&command.record.id],
-                |row| row.get::<_, bool>(0),
-            )?;
-            if pending {
-                // The one-pending-wake guard silently suppressed this fire;
-                // surface it so a stalled pending wake (for example while an
-                // agent loop is dead) stays observable (#3607).
-                let suppressed = tx
-                    .query_row(
-                        "SELECT message_id, created_at FROM timer_wakes
+                },
+                input_delta: Default::default(),
+                agent_state: None,
+            });
+        }
+        if command.record.id != command.expected.id
+            || command.record.agent_id != command.expected.agent_id
+            || command.record.fire_count != command.expected.fire_count + 1
+        {
+            return Err(anyhow!("invalid timer fire transition"));
+        }
+        let pending = tx.query_row(
+            "SELECT EXISTS(SELECT 1 FROM timer_wakes WHERE timer_id = ?1 AND status = 'pending')",
+            [&command.record.id],
+            |row| row.get::<_, bool>(0),
+        )?;
+        if pending {
+            // The one-pending-wake guard silently suppressed this fire;
+            // surface it so a stalled pending wake (for example while an
+            // agent loop is dead) stays observable (#3607).
+            let suppressed = tx
+                .query_row(
+                    "SELECT message_id, created_at FROM timer_wakes
                          WHERE timer_id = ?1 AND status = 'pending'",
-                        [&command.record.id],
-                        |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
-                    )
-                    .optional()?;
-                if let Some((pending_message_id, pending_created_at)) = suppressed {
-                    let pending_age_ms = chrono::DateTime::parse_from_rfc3339(&pending_created_at)
-                        .ok()
-                        .map(|created| {
-                            (Utc::now() - created.with_timezone(&Utc))
-                                .num_milliseconds()
-                                .max(0)
-                        })
-                        .unwrap_or(0);
+                    [&command.record.id],
+                    |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
+                )
+                .optional()?;
+            if let Some((pending_message_id, pending_created_at)) = suppressed {
+                let pending_age_ms = chrono::DateTime::parse_from_rfc3339(&pending_created_at)
+                    .ok()
+                    .map(|created| {
+                        (Utc::now() - created.with_timezone(&Utc))
+                            .num_milliseconds()
+                            .max(0)
+                    })
+                    .unwrap_or(0);
+                actual_audits.push(
                     append_audit_event_tx(
                         tx,
                         Some(&command.record.agent_id),
@@ -3544,202 +4341,321 @@ impl TimerRepository<'_> {
                                 "pending_age_ms": pending_age_ms,
                             }),
                         ),
-                    )?;
-                }
-                return Ok(TimerFireResult {
+                    )?
+                    .0,
+                );
+            }
+            upsert_timer_tx(tx, &command.record)?;
+            return Ok(super::input_evidence_writes::InputEvidenceCommit {
+                current_read_writes: None,
+                work_delta: None,
+                task_delta: None,
+                task_material_budget_views: Vec::new(),
+                record: TimerFireResult {
                     advanced: true,
                     wake_created: false,
                     message: None,
-                });
+                },
+                input_delta: Default::default(),
+                agent_state: None,
+            });
+        }
+        let actual_agent_state = super::transitions::agent_state_tx(tx, &command.record.agent_id)?;
+        if actual_agent_state.as_ref() != Some(&command.agent_state.0) {
+            return Err(RuntimeStateTransitionConflict::concurrent_mutation(
+                "agent_state",
+                &command.record.agent_id,
+            )
+            .into());
+        }
+        if command.message.agent_id != command.record.agent_id
+            || command.queue_entry.agent_id != command.record.agent_id
+        {
+            return Err(anyhow!("invalid timer wake message or queue entry"));
+        }
+        if let Some((scope, _, _, _)) = scoped_work {
+            // A retried append cannot grant a same-name historical Message
+            // to a Fresh successor or resurrect a pruned evidence ID.
+            super::input_evidence_snapshot::validate_existing_input_evidence_tx(
+                tx,
+                scope,
+                &crate::runtime::resident_input_evidence::InputEvidenceKey::new(
+                    crate::runtime::resident_input_evidence::InputEvidenceFamily::Message,
+                    &command.message.id,
+                ),
+            )?;
+        }
+        // Freeze the original reducer's possible Wait writes before it
+        // changes any qualified body. Existing admission/no-match is empty.
+        let (predicted_wait, projection_guard) =
+            if let Some((scope, request, _, ledger)) = scoped_work.filter(|_| !defer_work) {
+                super::transitions::predicted_trigger_wait_tx(
+                    tx,
+                    scope,
+                    &command.message,
+                    &command.queue_entry,
+                    request,
+                    ledger,
+                    memory.as_deref_mut(),
+                )?
+            } else {
+                (None, None)
+            };
+        // A no-match still materializes the original reducer's pool below.
+        let _projection_guard = projection_guard;
+        let work_proof = if let (Some((scope, _, _, _)), Some(wait)) = (scoped_work, predicted_wait)
+        {
+            let keys = super::work_snapshot::work_wait_write_keys_tx(tx, &[wait])?;
+            Some(super::work_snapshot::prepare_work_write_tx(
+                tx, scope, &keys,
+            )?)
+        } else {
+            None
+        };
+        upsert_timer_tx(tx, &command.record)?;
+        inject_fault(
+            fault,
+            crate::runtime_db::transitions::TransitionFaultPoint::AfterValidation,
+        )?;
+        let now = timestamp(command.queue_entry.updated_at);
+        tx.execute(
+            "INSERT INTO timer_wakes
+                 (timer_id, message_id, fire_count, status, created_at, updated_at)
+                 VALUES (?1, ?2, ?3, 'pending', ?4, ?4)",
+            params![
+                command.record.id,
+                command.message.id,
+                command.record.fire_count as i64,
+                now
+            ],
+        )?;
+        let wake = trigger_wait_and_enqueue_tx(tx, &command.message, &command.queue_entry)?;
+        if wake.message_inserted {
+            insert_runtime_index_changes_tx(tx, &[RuntimeIndexChange::for_message(&wake.message)])?;
+        }
+        upsert_agent_state_tx(tx, &command.agent_state.1)?;
+        actual_audits.extend(wake.audit_events);
+        let wait_writes = wake.wait_writes;
+        let result = TimerFireResult {
+            advanced: true,
+            wake_created: true,
+            message: Some(wake.message),
+        };
+        let acknowledgement = if let Some((scope, work_request, task_request, ledger)) = scoped_work
+        {
+            let actual = committed_message_tx(tx, &scope.agent_id, &command.message.id)?;
+            let facts = [
+                super::input_evidence_snapshot::CanonicalInputEvidence::Message(clone_timer_body(
+                    &actual,
+                )?),
+            ];
+            let mut acknowledgement = super::input_evidence_writes::acknowledge_input_evidence_tx(
+                tx,
+                scope,
+                TimerFireResult {
+                    message: Some(actual),
+                    ..result
+                },
+                &facts,
+            )?;
+            let actual = super::transitions::agent_state_tx(tx, &scope.agent_id)?
+                .ok_or(rusqlite::Error::QueryReturnedNoRows)?;
+            let mut expected_ack = clone_timer_body(&command.agent_state.1)?;
+            expected_ack.total_message_count = actual.total_message_count;
+            anyhow::ensure!(
+                actual == expected_ack,
+                "timer fire State ACK differs from the committed wake projection"
+            );
+            if !defer_work && !wait_writes.wait_ids.is_empty() {
+                let proof = work_proof
+                    .as_ref()
+                    .context("timer Wait writes omitted their original Work proof")?;
+                let actual_keys = wait_writes
+                    .wait_ids
+                    .iter()
+                    .map(|id| {
+                        crate::runtime::resident_work::WorkKey::new(
+                            crate::runtime::resident_work::WorkFamily::Wait,
+                            id,
+                        )
+                    })
+                    .collect();
+                acknowledgement.work_delta = Some(
+                    super::work_snapshot::register_work_writes_tx(
+                        tx,
+                        proof,
+                        &actual_keys,
+                        &Default::default(),
+                        &actual,
+                        work_request,
+                    )?
+                    .delta,
+                );
             }
-            let actual_agent_state = tx
+            if let Some((delta, guards)) = super::task_snapshot::register_task_source_metadata_tx(
+                tx,
+                scope,
+                &acknowledgement.input_delta,
+                task_request,
+                ledger,
+                memory.as_deref_mut(),
+            )? {
+                acknowledgement.task_delta = Some(delta);
+                acknowledgement.task_material_budget_views = guards;
+            }
+            acknowledgement.agent_state = Some(super::transitions::AgentStateMutation {
+                expected: Some(Box::new(clone_timer_body(&command.agent_state.0)?)),
+                record: Box::new(actual),
+            });
+            acknowledgement
+        } else {
+            super::input_evidence_writes::InputEvidenceCommit {
+                current_read_writes: None,
+                work_delta: None,
+                task_delta: None,
+                task_material_budget_views: Vec::new(),
+                record: result,
+                input_delta: Default::default(),
+                agent_state: None,
+            }
+        };
+        actual_wait_writes.extend(wait_writes)?;
+        inject_fault(
+            fault,
+            crate::runtime_db::transitions::TransitionFaultPoint::AfterCanonicalWrites,
+        )?;
+        Ok(acknowledgement)
+    }
+
+    pub fn cancel(&self, command: &TimerCancel) -> Result<TimerCancelResult> {
+        self.db.transaction(|tx| self.cancel_tx(tx, command))
+    }
+
+    pub(crate) fn cancel_tx(
+        &self,
+        tx: &Transaction<'_>,
+        command: &TimerCancel,
+    ) -> Result<TimerCancelResult> {
+        if timer_tx(tx, &command.expected.id)?.as_ref() != Some(&command.expected)
+            || !matches!(
+                command.expected.status,
+                TimerStatus::Active | TimerStatus::Cancelled
+            )
+        {
+            return Ok(TimerCancelResult {
+                cancelled: false,
+                dropped_message_id: None,
+                cancelled_wait_condition_ids: Vec::new(),
+                blocked_work_item_ids: Vec::new(),
+                effects: PostCommitEffects::default(),
+            });
+        }
+        if command.record.id != command.expected.id
+            || command.record.agent_id != command.expected.agent_id
+            || command.record.status != TimerStatus::Cancelled
+            || command.record.fire_count != command.expected.fire_count
+            || command.record.next_fire_at.is_some()
+        {
+            return Err(anyhow!("invalid timer cancellation transition"));
+        }
+        if let Some((expected, record)) = command.agent_state.as_ref() {
+            let actual = tx
                 .query_row(
                     "SELECT payload_json FROM agent_states WHERE agent_id = ?1",
-                    [&command.record.agent_id],
+                    [&record.id],
                     |row| row.get::<_, String>(0),
                 )
                 .optional()?
                 .map(|value| serde_json::from_str::<AgentState>(&value))
                 .transpose()?;
-            if actual_agent_state.as_ref() != Some(&command.agent_state.0) {
+            if actual.as_ref() != Some(expected) {
                 return Err(RuntimeStateTransitionConflict::concurrent_mutation(
                     "agent_state",
-                    &command.record.agent_id,
+                    &record.id,
                 )
                 .into());
             }
-            if command.message.agent_id != command.record.agent_id
-                || command.queue_entry.agent_id != command.record.agent_id
-            {
-                return Err(anyhow!("invalid timer wake message or queue entry"));
-            }
-            inject_fault(
-                fault,
-                crate::runtime_db::transitions::TransitionFaultPoint::AfterValidation,
-            )?;
-            // Stage the resource before triggering a wait: a final one-shot fire
-            // has already completed the timer, so its pending wake is the fence.
-            let now = timestamp(command.queue_entry.updated_at);
-            tx.execute(
-                "INSERT INTO timer_wakes
-                 (timer_id, message_id, fire_count, status, created_at, updated_at)
-                 VALUES (?1, ?2, ?3, 'pending', ?4, ?4)",
-                params![command.record.id, command.message.id, command.record.fire_count as i64, now],
-            )?;
-            let wake =
-                trigger_wait_and_enqueue_tx(tx, &command.message, &command.queue_entry)?;
-            if wake.message_inserted {
-                insert_runtime_index_changes_tx(
-                    tx,
-                    &[RuntimeIndexChange::for_message(&wake.message)],
-                )?;
-            }
-            upsert_agent_state_tx(tx, &command.agent_state.1)?;
-            inject_fault(
-                fault,
-                crate::runtime_db::transitions::TransitionFaultPoint::AfterCanonicalWrites,
-            )?;
-            Ok(TimerFireResult {
-                advanced: true,
-                wake_created: true,
-                message: Some(wake.message),
-            })
-        })
-    }
-
-    pub fn cancel(&self, command: &TimerCancel) -> Result<TimerCancelResult> {
-        self.db.transaction(|tx| {
-            if timer_tx(tx, &command.expected.id)?.as_ref() != Some(&command.expected)
-                || !matches!(
-                    command.expected.status,
-                    TimerStatus::Active | TimerStatus::Cancelled
-                )
-            {
-                return Ok(TimerCancelResult {
-                    cancelled: false,
-                    dropped_message_id: None,
-                    cancelled_wait_condition_ids: Vec::new(),
-                    effects: PostCommitEffects::default(),
-                });
-            }
-            if command.record.id != command.expected.id
-                || command.record.agent_id != command.expected.agent_id
-                || command.record.status != TimerStatus::Cancelled
-                || command.record.fire_count != command.expected.fire_count
-                || command.record.next_fire_at.is_some()
-            {
-                return Err(anyhow!("invalid timer cancellation transition"));
-            }
-            if let Some((expected, record)) = command.agent_state.as_ref() {
-                let actual = tx
-                    .query_row(
-                        "SELECT payload_json FROM agent_states WHERE agent_id = ?1",
-                        [&record.id],
-                        |row| row.get::<_, String>(0),
-                    )
-                    .optional()?
-                    .map(|value| serde_json::from_str::<AgentState>(&value))
-                    .transpose()?;
-                if actual.as_ref() != Some(expected) {
-                    return Err(RuntimeStateTransitionConflict::concurrent_mutation(
-                        "agent_state",
-                        &record.id,
-                    )
-                    .into());
-                }
-            }
-            if command.expected.status == TimerStatus::Active {
-                upsert_timer_updated_at_tx(tx, &command.record, command.cancelled_at)?;
-            }
-            let now = timestamp(command.cancelled_at);
-            let message_id = tx
+        }
+        if command.expected.status == TimerStatus::Active {
+            upsert_timer_updated_at_tx(tx, &command.record, command.cancelled_at)?;
+        }
+        let now = timestamp(command.cancelled_at);
+        let message_id = tx
+            .query_row(
+                "SELECT message_id FROM timer_wakes WHERE timer_id = ?1 AND status = 'pending'",
+                [&command.record.id],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()?;
+        tx.execute(
+            "UPDATE timer_wakes SET status = 'cancelled', updated_at = ?2, cancelled_at = ?2
+             WHERE timer_id = ?1 AND status = 'pending'",
+            params![command.record.id, now],
+        )?;
+        if let Some(message_id) = message_id.as_deref() {
+            let payload = tx
                 .query_row(
-                    "SELECT message_id FROM timer_wakes WHERE timer_id = ?1 AND status = 'pending'",
-                    [&command.record.id],
+                    "SELECT payload_json FROM queue_entries WHERE message_id = ?1
+                 AND status IN ('queued', 'interrupted')",
+                    [message_id],
                     |row| row.get::<_, String>(0),
                 )
                 .optional()?;
-            tx.execute(
-                "UPDATE timer_wakes SET status = 'cancelled', updated_at = ?2, cancelled_at = ?2
-                 WHERE timer_id = ?1 AND status = 'pending'",
-                params![command.record.id, now],
-            )?;
-            if let Some(message_id) = message_id.as_deref() {
-                let payload = tx
-                    .query_row(
-                        "SELECT payload_json FROM queue_entries WHERE message_id = ?1
-                     AND status IN ('queued', 'interrupted')",
-                        [message_id],
-                        |row| row.get::<_, String>(0),
-                    )
-                    .optional()?;
-                if let Some(payload) = payload {
-                    let mut entry = decode_queue_entry_payload(&payload)?;
-                    entry.status = QueueEntryStatus::Dropped;
-                    entry.updated_at = command.cancelled_at.max(entry.updated_at);
-                    upsert_queue_entry_tx(tx, &entry)?;
-                }
+            if let Some(payload) = payload {
+                let mut entry = decode_queue_entry_payload(&payload)?;
+                entry.status = QueueEntryStatus::Dropped;
+                entry.updated_at = command.cancelled_at.max(entry.updated_at);
+                upsert_queue_entry_tx(tx, &entry)?;
             }
-            if let Some((_, record)) = command.agent_state.as_ref() {
-                upsert_agent_state_tx(tx, record)?;
-            }
-            let mut settlement =
-                settle_cancelled_timer_waits_tx(tx, &command.record, command.cancelled_at)?;
-            if command.expected.status == TimerStatus::Active {
-                let mut event = AuditEvent::legacy(
-                    "timer_cancelled",
-                    serde_json::json!({
-                        "agent_id": command.record.agent_id,
-                        "timer_id": command.record.id,
-                    }),
-                );
-                event.id = format!("audit:timer-cancelled:{}", command.record.id);
-                event.created_at = command.cancelled_at;
-                settlement
-                    .audit_events
-                    .push(append_audit_event_tx(tx, Some(&command.record.agent_id), &event)?.0);
-            }
-            let notify_memory_index =
-                !settlement.audit_events.is_empty() || !settlement.work_items.is_empty();
-            let notify_scheduler = !settlement.wait_conditions.is_empty() || message_id.is_some();
-            Ok(TimerCancelResult {
-                cancelled: true,
-                dropped_message_id: message_id,
-                cancelled_wait_condition_ids: settlement
-                    .wait_conditions
-                    .into_iter()
-                    .map(|condition| condition.id)
-                    .collect(),
-                effects: PostCommitEffects {
-                    work_items: settlement.work_items,
-                    audit_events: settlement.audit_events,
-                    notify_memory_index,
-                    notify_scheduler,
-                    ..Default::default()
-                },
-            })
-        })
-    }
-
-    pub fn import_legacy(&self, records: Vec<TimerRecord>) -> Result<()> {
-        if self.db.storage_domain_is_complete("timers", "db")? {
-            return Ok(());
         }
-        self.db
-            .run_storage_domain_import("timers", "jsonl", "db", |tx| {
-                let latest = reduce_timer_records(records);
-                for record in latest.values() {
-                    upsert_timer_tx(tx, record)?;
-                }
-                let active_records = latest
-                    .values()
-                    .filter(|record| record.status == TimerStatus::Active)
-                    .count();
-                Ok(serde_json::json!({
-                    "imported_records": latest.len(),
-                    "active_records": active_records,
-                }))
-            })
+        if let Some((_, record)) = command.agent_state.as_ref() {
+            upsert_agent_state_tx(tx, record)?;
+        }
+        let mut settlement =
+            settle_cancelled_timer_waits_tx(tx, &command.record, command.cancelled_at)?;
+        if command.expected.status == TimerStatus::Active {
+            let mut event = AuditEvent::legacy(
+                "timer_cancelled",
+                serde_json::json!({
+                    "agent_id": command.record.agent_id,
+                    "timer_id": command.record.id,
+                }),
+            );
+            event.id = format!("audit:timer-cancelled:{}", command.record.id);
+            event.created_at = command.cancelled_at;
+            settlement
+                .audit_events
+                .push(append_audit_event_tx(tx, Some(&command.record.agent_id), &event)?.0);
+        }
+        let notify_memory_index =
+            !settlement.audit_events.is_empty() || !settlement.work_items.is_empty();
+        let notify_scheduler = !settlement.wait_conditions.is_empty() || message_id.is_some();
+        Ok(TimerCancelResult {
+            cancelled: true,
+            dropped_message_id: message_id,
+            cancelled_wait_condition_ids: settlement
+                .wait_conditions
+                .into_iter()
+                .map(|condition| condition.id)
+                .collect(),
+            blocked_work_item_ids: settlement
+                .work_items
+                .iter()
+                .map(|work_item| work_item.id.clone())
+                .collect(),
+            effects: PostCommitEffects {
+                work_items: settlement.work_items,
+                audit_events: settlement
+                    .audit_events
+                    .into_iter()
+                    .map(super::transitions::AuditEventAck::new)
+                    .collect::<Result<_>>()?,
+                wait_condition_writes: settlement.wait_writes,
+                notify_memory_index,
+                notify_scheduler,
+                ..Default::default()
+            },
+        })
     }
 
     pub fn upsert(&self, record: &TimerRecord) -> Result<()> {
@@ -3748,29 +4664,22 @@ impl TimerRepository<'_> {
 
     pub fn latest(&self, timer_id: &str) -> Result<Option<TimerRecord>> {
         self.db.with_read(|connection| {
-            connection
-                .query_row(
-                    "SELECT payload_json FROM timers WHERE timer_id = ?1",
-                    [timer_id],
-                    |row| row.get::<_, String>(0),
-                )
-                .optional()?
-                .map(|payload| decode_timer_payload(&payload))
-                .transpose()
+            let mut statement =
+                connection.prepare("SELECT payload_json FROM timers WHERE timer_id = ?1")?;
+            let mut rows = statement.query([timer_id])?;
+            rows.next()?.map(timer_row).transpose()
         })
     }
 
     pub fn latest_all(&self) -> Result<Vec<TimerRecord>> {
         self.db.with_read(|connection| {
-            let mut statement = connection.prepare(
+            let mut records = timer_list_on(
+                &connection,
                 "SELECT payload_json
              FROM timers
              ORDER BY updated_at DESC, created_at DESC, timer_id ASC",
+                [],
             )?;
-            let rows = statement.query_map([], |row| row.get::<_, String>(0))?;
-            let mut records: Vec<_> = rows
-                .map(|row| decode_timer_payload(&row?))
-                .collect::<Result<_>>()?;
             records.reverse();
             Ok(records)
         })
@@ -3782,16 +4691,14 @@ impl TimerRepository<'_> {
         }
         let limit = i64::try_from(limit).unwrap_or(i64::MAX);
         self.db.with_read(|connection| {
-            let mut statement = connection.prepare(
+            let mut records = timer_list_on(
+                &connection,
                 "SELECT payload_json
              FROM timers
              ORDER BY updated_at DESC, created_at DESC, timer_id ASC
              LIMIT ?1",
+                [limit],
             )?;
-            let rows = statement.query_map([limit], |row| row.get::<_, String>(0))?;
-            let mut records: Vec<_> = rows
-                .map(|row| decode_timer_payload(&row?))
-                .collect::<Result<_>>()?;
             records.reverse();
             Ok(records)
         })
@@ -3826,19 +4733,14 @@ pub(super) fn recent_timers_for_agent(
 
 #[derive(Default)]
 struct TimerWaitCancellationSettlement {
+    wait_writes: WaitConditionWrites,
     wait_conditions: Vec<WaitConditionRecord>,
     work_items: Vec<WorkItemRecord>,
     audit_events: Vec<AuditEvent>,
 }
 
-fn settle_cancelled_timer_waits_tx(
-    tx: &Transaction<'_>,
-    timer: &TimerRecord,
-    cancelled_at: DateTime<Utc>,
-) -> Result<TimerWaitCancellationSettlement> {
-    let conditions = {
-        let mut statement = tx.prepare(
-            "SELECT w.payload_json FROM wait_conditions w
+const TIMER_CANCELLATION_WAITS_SQL: &str =
+    "SELECT w.payload_json, w.wait_condition_id FROM wait_conditions w
              WHERE w.agent_id = ?1 AND w.kind = 'timer' AND w.subject_ref = ?2
                AND w.status IN ('active', 'triggered')
                AND (w.status = 'active' OR (
@@ -3854,16 +4756,43 @@ fn settle_cancelled_timer_waits_tx(
                    WHERE a.agent_id = w.agent_id
                      AND (a.attempt_id = 'activation:message:' || w.trigger_message_id
                        OR json_extract(a.payload_json, '$.source_message_id') = w.trigger_message_id))))
-             ORDER BY w.wait_condition_id",
-        )?;
-        let records = statement
-            .query_map(params![timer.agent_id, timer.id], |row| {
-                row.get::<_, String>(0)
-            })?
-            .map(|row| decode_wait_condition_payload(&row?))
-            .collect::<Result<Vec<_>>>()?;
-        records
-    };
+         ORDER BY w.wait_condition_id";
+
+pub(in crate::runtime_db) fn visit_timer_cancellation_wait_ids_tx(
+    tx: &Transaction<'_>,
+    timer: &TimerRecord,
+    mut visit: impl FnMut(&str) -> Result<()>,
+) -> Result<()> {
+    let mut statement = tx.prepare(TIMER_CANCELLATION_WAITS_SQL)?;
+    let mut rows = statement.query(params![timer.agent_id, timer.id])?;
+    while let Some(row) = rows.next()? {
+        visit(row.get_ref(1)?.as_str()?)?;
+    }
+    Ok(())
+}
+
+pub(in crate::runtime_db) fn timer_cancellation_waits_tx(
+    tx: &Transaction<'_>,
+    timer: &TimerRecord,
+) -> Result<Vec<WaitConditionRecord>> {
+    let mut statement = tx.prepare(TIMER_CANCELLATION_WAITS_SQL)?;
+    let mut rows = statement.query(params![timer.agent_id, timer.id])?;
+    let mut records = Vec::new();
+    while let Some(row) = rows.next()? {
+        let payload = borrowed_sql_text(row, 0)?;
+        crate::diagnostics::resource_io::admit_json_payload(payload)?;
+        reserve_source_vec_slot(&mut records)?;
+        records.push(decode_wait_condition_payload(payload)?);
+    }
+    Ok(records)
+}
+
+fn settle_cancelled_timer_waits_tx(
+    tx: &Transaction<'_>,
+    timer: &TimerRecord,
+    cancelled_at: DateTime<Utc>,
+) -> Result<TimerWaitCancellationSettlement> {
+    let conditions = timer_cancellation_waits_tx(tx, timer)?;
     let mut result = TimerWaitCancellationSettlement::default();
     for mut condition in conditions {
         let previous_status = condition.status.clone();
@@ -3882,13 +4811,16 @@ fn settle_cancelled_timer_waits_tx(
         continuation.insert("terminal_reason".into(), "timer_cancelled".into());
         continuation.remove("recheck_at");
         condition.continuation = Some(serde_json::Value::Object(continuation));
-        if !upsert_wait_condition_tx(tx, &condition)? {
+        let writes = upsert_wait_condition_with_writes_tx(tx, &condition)?;
+        if writes.wait_ids.is_empty() {
             return Err(RuntimeStateTransitionConflict::concurrent_mutation(
                 "timer_wait",
                 &condition.id,
             )
             .into());
         }
+
+        result.wait_writes.extend(writes)?;
 
         if let Some(work_item_id) = condition.work_item_id.as_deref() {
             let work_item = tx
@@ -3975,94 +4907,40 @@ fn settle_cancelled_timer_waits_tx(
 }
 
 impl TurnRecordRepository<'_> {
-    pub fn import_legacy(
-        &self,
-        messages: Vec<serde_json::Value>,
-        tool_executions: Vec<ToolExecutionRecord>,
-        briefs: Vec<BriefRecord>,
-        delivery_summaries: Vec<DeliverySummaryRecord>,
-        wait_conditions: Vec<WaitConditionRecord>,
-    ) -> Result<()> {
-        if self.db.storage_domain_is_complete("turn_records", "db")? {
-            return Ok(());
-        }
-        self.db
-            .run_storage_domain_import("turn_records", "jsonl-derived", "db", |tx| {
-                let records = derive_turn_records_from_legacy_evidence(
-                    messages,
-                    tool_executions,
-                    briefs,
-                    delivery_summaries,
-                    wait_conditions,
-                )?;
-                for record in &records {
-                    let record = merge_legacy_turn_evidence_tx(tx, record)?;
-                    upsert_turn_record_tx(tx, &record)?;
-                }
-                Ok(serde_json::json!({
-                    "imported_records": records.len(),
-                    "source": "legacy evidence jsonl",
-                    "ignored": "turns.jsonl"
-                }))
-            })
-    }
-
     pub fn upsert(&self, record: &TurnRecord) -> Result<()> {
         self.db.transaction(|tx| upsert_turn_record_tx(tx, record))
     }
 
-    pub fn by_id(&self, agent_id: Option<&str>, turn_id: &str) -> Result<Option<TurnRecord>> {
-        self.db.with_read(|connection| {
-            let payload = if let Some(agent_id) = agent_id {
-                connection
-                    .query_row(
-                        "SELECT payload_json
-                     FROM turn_records
-                     WHERE agent_id = ?1 AND turn_id = ?2
-                     LIMIT 1",
-                        params![agent_id, turn_id],
-                        |row| row.get::<_, String>(0),
-                    )
-                    .optional()?
-            } else {
-                connection
-                    .query_row(
-                        "SELECT payload_json
-                     FROM turn_records
-                     WHERE turn_id = ?1
-                     LIMIT 1",
-                        [turn_id],
-                        |row| row.get::<_, String>(0),
-                    )
-                    .optional()?
-            };
-            payload
-                .map(|payload| decode_turn_record_payload(&payload))
-                .transpose()
+    pub fn upsert_committed(&self, record: &TurnRecord) -> Result<CommittedTurnRecord> {
+        self.db.transaction(|tx| {
+            upsert_turn_record_tx(tx, record)?;
+            committed_turn_record_tx(tx, &record.agent_id, &record.turn_id)
         })
+    }
+
+    pub fn by_id(&self, agent_id: Option<&str>, turn_id: &str) -> Result<Option<TurnRecord>> {
+        self.db
+            .with_read(|connection| context_turn_by_id_on(&connection, agent_id, turn_id))
     }
 
     pub fn recent_for_agent(&self, agent_id: &str, limit: usize) -> Result<Vec<TurnRecord>> {
         if limit == 0 {
             return Ok(Vec::new());
         }
-        let limit = i64::try_from(limit).unwrap_or(i64::MAX);
-        self.db.with_read(|connection| {
-            let mut statement = connection.prepare(
-                "SELECT payload_json
-             FROM turn_records
-             WHERE agent_id = ?1
-             ORDER BY turn_index DESC, created_at DESC, turn_id ASC
-             LIMIT ?2",
-            )?;
-            let rows =
-                statement.query_map(params![agent_id, limit], |row| row.get::<_, String>(0))?;
-            let mut records = rows
-                .map(|row| decode_turn_record_payload(&row?))
-                .collect::<Result<Vec<_>>>()?;
-            records.reverse();
-            Ok(records)
-        })
+        self.db
+            .with_read(|connection| context_recent_turns_on(&connection, agent_id, limit))
+    }
+
+    pub(crate) fn recent_for_agent_for_preparation(
+        &self,
+        agent_id: &str,
+        limit: usize,
+    ) -> Result<Vec<TurnRecord>> {
+        if limit == 0 {
+            return Ok(Vec::new());
+        }
+        self.db
+            .read_for_preparation(|tx| context_recent_turns_on(tx, agent_id, limit))
     }
 
     pub fn recent_for_owner(
@@ -4074,28 +4952,8 @@ impl TurnRecordRepository<'_> {
         if limit == 0 {
             return Ok(Vec::new());
         }
-        let limit = i64::try_from(limit).unwrap_or(i64::MAX);
-        let (owner_kind, owner_id) = owner.index_parts();
-        self.db.with_read(|connection| {
-            let mut statement = connection.prepare(
-                "SELECT payload_json
-             FROM turn_records
-             WHERE agent_id = ?1
-               AND owner_kind = ?2
-               AND owner_id IS ?3
-             ORDER BY turn_index DESC, created_at DESC, turn_id ASC
-             LIMIT ?4",
-            )?;
-            let rows = statement
-                .query_map(params![agent_id, owner_kind, owner_id, limit], |row| {
-                    row.get::<_, String>(0)
-                })?;
-            let mut records = rows
-                .map(|row| decode_turn_record_payload(&row?))
-                .collect::<Result<Vec<_>>>()?;
-            records.reverse();
-            Ok(records)
-        })
+        self.db
+            .with_read(|connection| context_owner_turns_on(&connection, agent_id, owner, limit))
     }
 
     pub fn recent(&self, limit: usize) -> Result<Vec<TurnRecord>> {
@@ -4121,32 +4979,15 @@ impl TurnRecordRepository<'_> {
 }
 
 impl MessageRepository<'_> {
-    pub fn import_legacy(&self, messages: Vec<serde_json::Value>) -> Result<()> {
-        if self.db.storage_domain_is_complete("messages", "db")? {
-            return Ok(());
-        }
-        self.db
-            .run_storage_domain_import("messages", "jsonl", "db", |tx| {
-                let mut imported_messages = 0_u64;
-                let mut dropped_messages = 0_u64;
-                for raw_message in messages {
-                    match normalize_legacy_message_value(raw_message)? {
-                        Some(message) => {
-                            upsert_message_tx(tx, &message)?;
-                            imported_messages += 1;
-                        }
-                        None => dropped_messages += 1,
-                    }
-                }
-                Ok(serde_json::json!({
-                    "imported_messages": imported_messages,
-                    "dropped_messages": dropped_messages,
-                }))
-            })
+    pub fn upsert(&self, message: &MessageEnvelope) -> Result<()> {
+        self.upsert_committed(message).map(|_| ())
     }
 
-    pub fn upsert(&self, message: &MessageEnvelope) -> Result<()> {
-        self.db.transaction(|tx| upsert_message_tx(tx, message))
+    pub fn upsert_committed(&self, message: &MessageEnvelope) -> Result<MessageEnvelope> {
+        self.db.transaction(|tx| {
+            upsert_message_tx(tx, message)?;
+            committed_message_tx(tx, &message.agent_id, &message.id)
+        })
     }
 
     pub fn append_with_index_changes(
@@ -4159,7 +5000,7 @@ impl MessageRepository<'_> {
             if inserted {
                 insert_runtime_index_changes_tx(tx, changes)?;
             }
-            Ok(appended)
+            committed_message_tx(tx, &appended.agent_id, &appended.id)
         })
     }
 
@@ -4168,18 +5009,40 @@ impl MessageRepository<'_> {
         message: &MessageEnvelope,
         changes: &[RuntimeIndexChange],
     ) -> Result<()> {
+        self.upsert_with_index_changes_committed(message, changes)
+            .map(|_| ())
+    }
+
+    pub fn upsert_with_index_changes_committed(
+        &self,
+        message: &MessageEnvelope,
+        changes: &[RuntimeIndexChange],
+    ) -> Result<MessageEnvelope> {
         self.db.transaction(|tx| {
             upsert_message_tx(tx, message)?;
-            insert_runtime_index_changes_tx(tx, changes)
+            insert_runtime_index_changes_tx(tx, changes)?;
+            committed_message_tx(tx, &message.agent_id, &message.id)
         })
     }
 
     pub fn upsert_many(&self, messages: &[MessageEnvelope]) -> Result<()> {
+        self.upsert_many_committed(messages).map(|_| ())
+    }
+
+    pub fn upsert_many_committed(
+        &self,
+        messages: &[MessageEnvelope],
+    ) -> Result<Vec<MessageEnvelope>> {
         self.db.transaction(|tx| {
             for message in messages {
                 upsert_message_tx(tx, message)?;
             }
-            Ok(())
+            let mut seen = std::collections::BTreeSet::new();
+            messages
+                .iter()
+                .filter(|message| seen.insert((&message.agent_id, &message.id)))
+                .map(|message| committed_message_tx(tx, &message.agent_id, &message.id))
+                .collect()
         })
     }
 
@@ -4314,34 +5177,8 @@ impl MessageRepository<'_> {
         agent_id: Option<&str>,
         message_id: &str,
     ) -> Result<Option<MessageEnvelope>> {
-        self.db.with_read(|connection| {
-            let payload = if let Some(agent_id) = agent_id {
-                connection
-                    .query_row(
-                        "SELECT payload_json
-                     FROM messages
-                     WHERE agent_id = ?1 AND message_id = ?2
-                     LIMIT 1",
-                        params![agent_id, message_id],
-                        |row| row.get::<_, String>(0),
-                    )
-                    .optional()?
-            } else {
-                connection
-                    .query_row(
-                        "SELECT payload_json
-                     FROM messages
-                     WHERE message_id = ?1
-                     LIMIT 1",
-                        [message_id],
-                        |row| row.get::<_, String>(0),
-                    )
-                    .optional()?
-            };
-            payload
-                .map(|payload| decode_message_payload(&payload))
-                .transpose()
-        })
+        self.db
+            .with_read(|connection| context_message_by_id_on(&connection, agent_id, message_id))
     }
 
     /// Loads the newest trusted operator input for `agent_id` (or for any
@@ -4354,53 +5191,8 @@ impl MessageRepository<'_> {
         &self,
         agent_id: Option<&str>,
     ) -> Result<Option<MessageEnvelope>> {
-        self.db.with_read(|connection| {
-            let payload = if let Some(agent_id) = agent_id {
-                connection
-                    .query_row(
-                        "SELECT payload_json
-                     FROM messages
-                     WHERE agent_id = ?1
-                       AND message_seq IS NOT NULL
-                       AND (
-                         json_extract(payload_json, '$.authority_class') IN ('operator_instruction', 'trusted_operator')
-                         OR (
-                           json_extract(payload_json, '$.authority_class') IS NULL
-                           AND json_extract(payload_json, '$.trust') IN ('operator_instruction', 'trusted_operator')
-                         )
-                       )
-                       AND json_extract(payload_json, '$.origin.kind') = 'operator'
-                     ORDER BY message_seq DESC, created_at DESC, message_id DESC
-                     LIMIT 1",
-                        [agent_id],
-                        |row| row.get::<_, String>(0),
-                    )
-                    .optional()?
-            } else {
-                connection
-                    .query_row(
-                        "SELECT payload_json
-                     FROM messages
-                     WHERE message_seq IS NOT NULL
-                       AND (
-                         json_extract(payload_json, '$.authority_class') IN ('operator_instruction', 'trusted_operator')
-                         OR (
-                           json_extract(payload_json, '$.authority_class') IS NULL
-                           AND json_extract(payload_json, '$.trust') IN ('operator_instruction', 'trusted_operator')
-                         )
-                       )
-                       AND json_extract(payload_json, '$.origin.kind') = 'operator'
-                     ORDER BY message_seq DESC, created_at DESC, message_id DESC
-                     LIMIT 1",
-                        [],
-                        |row| row.get::<_, String>(0),
-                    )
-                    .optional()?
-            };
-            payload
-                .map(|payload| decode_message_payload(&payload))
-                .transpose()
-        })
+        self.db
+            .with_read(|connection| latest_trusted_operator_on(&connection, agent_id))
     }
 
     pub fn for_turn(
@@ -4450,18 +5242,26 @@ impl MessageRepository<'_> {
     }
 
     pub fn count(&self, agent_id: Option<&str>) -> Result<usize> {
-        self.db.with_read(|connection| {
-            let count: i64 = if let Some(agent_id) = agent_id {
-                connection.query_row(
-                    "SELECT COUNT(*) FROM messages WHERE agent_id = ?1",
-                    [agent_id],
-                    |row| row.get(0),
-                )?
-            } else {
-                connection.query_row("SELECT COUNT(*) FROM messages", [], |row| row.get(0))?
-            };
-            Ok(usize::try_from(count).unwrap_or(usize::MAX))
-        })
+        self.db
+            .with_read(|connection| Self::count_on(&connection, agent_id))
+    }
+
+    pub(crate) fn count_for_preparation(&self, agent_id: Option<&str>) -> Result<usize> {
+        self.db
+            .read_for_preparation(|tx| Self::count_on(tx, agent_id))
+    }
+
+    fn count_on(connection: &Connection, agent_id: Option<&str>) -> Result<usize> {
+        let count: i64 = if let Some(agent_id) = agent_id {
+            connection.query_row(
+                "SELECT COUNT(*) FROM messages WHERE agent_id = ?1",
+                [agent_id],
+                |row| row.get(0),
+            )?
+        } else {
+            connection.query_row("SELECT COUNT(*) FROM messages", [], |row| row.get(0))?
+        };
+        Ok(usize::try_from(count).unwrap_or(usize::MAX))
     }
 
     pub fn max_message_seq(&self, agent_id: Option<&str>) -> Result<u64> {
@@ -4483,40 +5283,42 @@ impl MessageRepository<'_> {
 }
 
 impl TranscriptRepository<'_> {
-    pub fn import_legacy(&self, entries: Vec<TranscriptEntry>) -> Result<()> {
-        if self
-            .db
-            .storage_domain_is_complete("transcript_entries", "db")?
-        {
-            return Ok(());
-        }
-        self.db
-            .run_storage_domain_import("transcript_entries", "jsonl", "db", |tx| {
-                for entry in &entries {
-                    upsert_transcript_entry_tx(tx, entry)?;
-                }
-                Ok(serde_json::json!({
-                    "imported_transcript_entries": entries.len(),
-                }))
-            })
+    pub fn upsert(&self, entry: &TranscriptEntry) -> Result<()> {
+        self.upsert_committed(entry).map(|_| ())
     }
 
-    pub fn upsert(&self, entry: &TranscriptEntry) -> Result<()> {
-        self.db
-            .transaction(|tx| upsert_transcript_entry_tx(tx, entry))
+    pub fn upsert_committed(&self, entry: &TranscriptEntry) -> Result<TranscriptEntry> {
+        self.db.transaction(|tx| {
+            upsert_transcript_entry_tx(tx, entry)?;
+            committed_transcript_tx(tx, &entry.agent_id, &entry.id)
+        })
     }
 
     pub fn append(&self, entry: &TranscriptEntry) -> Result<TranscriptEntry> {
-        self.db
-            .transaction(|tx| append_transcript_entry_tx(tx, entry).map(|(entry, _)| entry))
+        self.db.transaction(|tx| {
+            append_transcript_entry_tx(tx, entry)?;
+            committed_transcript_tx(tx, &entry.agent_id, &entry.id)
+        })
     }
 
     pub fn upsert_many(&self, entries: &[TranscriptEntry]) -> Result<()> {
+        self.upsert_many_committed(entries).map(|_| ())
+    }
+
+    pub fn upsert_many_committed(
+        &self,
+        entries: &[TranscriptEntry],
+    ) -> Result<Vec<TranscriptEntry>> {
         self.db.transaction(|tx| {
             for entry in entries {
                 upsert_transcript_entry_tx(tx, entry)?;
             }
-            Ok(())
+            let mut seen = std::collections::BTreeSet::new();
+            entries
+                .iter()
+                .filter(|entry| seen.insert((&entry.agent_id, &entry.id)))
+                .map(|entry| committed_transcript_tx(tx, &entry.agent_id, &entry.id))
+                .collect()
         })
     }
 
@@ -4524,34 +5326,8 @@ impl TranscriptRepository<'_> {
         if limit == 0 {
             return Ok(Vec::new());
         }
-        let limit = i64::try_from(limit).unwrap_or(i64::MAX);
-        self.db.with_read(|connection| {
-            let mut records = if let Some(agent_id) = agent_id {
-                let mut statement = connection.prepare(
-                    "SELECT payload_json
-                 FROM transcript_entries
-                 WHERE agent_id = ?1
-                 ORDER BY COALESCE(transcript_seq, 9223372036854775807) DESC, created_at DESC, evidence_id ASC
-                 LIMIT ?2",
-                )?;
-                let rows =
-                    statement.query_map(params![agent_id, limit], |row| row.get::<_, String>(0))?;
-                rows.map(|row| decode_transcript_entry_payload(&row?))
-                    .collect::<Result<Vec<_>>>()?
-            } else {
-                let mut statement = connection.prepare(
-                    "SELECT payload_json
-                 FROM transcript_entries
-                 ORDER BY COALESCE(transcript_seq, 9223372036854775807) DESC, created_at DESC, evidence_id ASC
-                 LIMIT ?1",
-                )?;
-                let rows = statement.query_map([limit], |row| row.get::<_, String>(0))?;
-                rows.map(|row| decode_transcript_entry_payload(&row?))
-                    .collect::<Result<Vec<_>>>()?
-            };
-            records.reverse();
-            Ok(records)
-        })
+        self.db
+            .with_read(|connection| context_recent_transcript_on(&connection, agent_id, limit))
     }
 
     pub fn all(&self, agent_id: Option<&str>) -> Result<Vec<TranscriptEntry>> {
@@ -4587,59 +5363,14 @@ impl TranscriptRepository<'_> {
         if turn_ids.is_empty() {
             return Ok(Vec::new());
         }
-        let placeholders = std::iter::repeat_n("?", turn_ids.len())
-            .collect::<Vec<_>>()
-            .join(", ");
         self.db.with_read(|connection| {
-            let mut statement = connection.prepare(&format!(
-                "SELECT payload_json
-             FROM transcript_entries
-             WHERE agent_id = ?
-               AND turn_id IN ({placeholders})
-             ORDER BY COALESCE(transcript_seq, 9223372036854775807) ASC,
-                      created_at ASC,
-                      evidence_id ASC"
-            ))?;
-            let rows = statement.query_map(
-                params_from_iter(
-                    std::iter::once(agent_id).chain(turn_ids.iter().map(String::as_str)),
-                ),
-                |row| row.get::<_, String>(0),
-            )?;
-            rows.map(|row| decode_transcript_entry_payload(&row?))
-                .collect()
+            context_transcript_for_turns_on(&connection, agent_id, turn_ids)
         })
     }
 
     pub fn by_id(&self, agent_id: Option<&str>, entry_id: &str) -> Result<Option<TranscriptEntry>> {
-        self.db.with_read(|connection| {
-            let payload: Option<String> = if let Some(agent_id) = agent_id {
-                connection
-                    .query_row(
-                        "SELECT payload_json
-                     FROM transcript_entries
-                     WHERE agent_id = ?1 AND evidence_id = ?2
-                     LIMIT 1",
-                        params![agent_id, entry_id],
-                        |row| row.get(0),
-                    )
-                    .optional()?
-            } else {
-                connection
-                    .query_row(
-                        "SELECT payload_json
-                     FROM transcript_entries
-                     WHERE evidence_id = ?1
-                     LIMIT 1",
-                        [entry_id],
-                        |row| row.get(0),
-                    )
-                    .optional()?
-            };
-            payload
-                .map(|payload| decode_transcript_entry_payload(&payload))
-                .transpose()
-        })
+        self.db
+            .with_read(|connection| context_transcript_by_id_on(&connection, agent_id, entry_id))
     }
 
     pub fn max_transcript_seq(&self, agent_id: Option<&str>) -> Result<u64> {
@@ -4663,66 +5394,43 @@ impl TranscriptRepository<'_> {
 }
 
 impl EvidenceRepository<'_> {
-    pub fn import_legacy(
-        &self,
-        messages: Vec<serde_json::Value>,
-        transcript_entries: Vec<TranscriptEntry>,
-        tool_executions: Vec<ToolExecutionRecord>,
-        briefs: Vec<BriefRecord>,
-        delivery_summaries: Vec<DeliverySummaryRecord>,
-    ) -> Result<()> {
-        if self.db.storage_domain_is_complete("evidence", "db")? {
-            return Ok(());
-        }
-        self.db
-            .run_storage_domain_import("evidence", "jsonl", "db", |tx| {
-                let mut imported_messages = 0_u64;
-                let mut dropped_messages = 0_u64;
-                for raw_message in messages {
-                    match normalize_legacy_message_value(raw_message)? {
-                        Some(message) => {
-                            insert_message_evidence_tx(tx, &message)?;
-                            imported_messages += 1;
-                        }
-                        None => dropped_messages += 1,
-                    }
-                }
-                for entry in &transcript_entries {
-                    insert_transcript_evidence_tx(tx, entry)?;
-                }
-                for record in &tool_executions {
-                    insert_tool_evidence_tx(tx, record)?;
-                }
-                for brief in &briefs {
-                    insert_brief_evidence_tx(tx, brief)?;
-                }
-                for summary in &delivery_summaries {
-                    insert_delivery_summary_evidence_tx(tx, summary)?;
-                }
-                Ok(serde_json::json!({
-                    "imported_messages": imported_messages,
-                    "dropped_messages": dropped_messages,
-                    "imported_transcript_entries": transcript_entries.len(),
-                    "imported_tool_executions": tool_executions.len(),
-                    "imported_briefs": briefs.len(),
-                    "imported_delivery_summaries": delivery_summaries.len(),
-                }))
-            })
+    pub fn append_message(&self, message: &MessageEnvelope) -> Result<()> {
+        self.append_message_committed(message).map(|_| ())
     }
 
-    pub fn append_message(&self, message: &MessageEnvelope) -> Result<()> {
-        self.db
-            .transaction(|tx| insert_message_evidence_tx(tx, message))
+    pub fn append_message_committed(&self, message: &MessageEnvelope) -> Result<MessageEnvelope> {
+        self.db.transaction(|tx| {
+            insert_message_evidence_tx(tx, message)?;
+            committed_message_tx(tx, &message.agent_id, &message.id)
+        })
     }
 
     pub fn append_transcript_entry(&self, entry: &TranscriptEntry) -> Result<()> {
-        self.db
-            .transaction(|tx| insert_transcript_evidence_tx(tx, entry))
+        self.append_transcript_entry_committed(entry).map(|_| ())
+    }
+
+    pub fn append_transcript_entry_committed(
+        &self,
+        entry: &TranscriptEntry,
+    ) -> Result<TranscriptEntry> {
+        self.db.transaction(|tx| {
+            insert_transcript_evidence_tx(tx, entry)?;
+            committed_transcript_tx(tx, &entry.agent_id, &entry.id)
+        })
     }
 
     pub fn append_tool_execution(&self, record: &ToolExecutionRecord) -> Result<()> {
-        self.db
-            .transaction(|tx| insert_tool_evidence_tx(tx, record))
+        self.append_tool_execution_committed(record).map(|_| ())
+    }
+
+    pub fn append_tool_execution_committed(
+        &self,
+        record: &ToolExecutionRecord,
+    ) -> Result<ToolExecutionRecord> {
+        self.db.transaction(|tx| {
+            insert_tool_evidence_tx(tx, record)?;
+            committed_tool_tx(tx, &record.agent_id, &record.id)
+        })
     }
 
     pub fn append_tool_execution_with_index_changes(
@@ -4730,15 +5438,31 @@ impl EvidenceRepository<'_> {
         record: &ToolExecutionRecord,
         changes: &[RuntimeIndexChange],
     ) -> Result<()> {
+        self.append_tool_execution_with_index_changes_committed(record, changes)
+            .map(|_| ())
+    }
+
+    pub fn append_tool_execution_with_index_changes_committed(
+        &self,
+        record: &ToolExecutionRecord,
+        changes: &[RuntimeIndexChange],
+    ) -> Result<ToolExecutionRecord> {
         self.db.transaction(|tx| {
             insert_tool_evidence_tx(tx, record)?;
-            insert_runtime_index_changes_tx(tx, changes)
+            insert_runtime_index_changes_tx(tx, changes)?;
+            committed_tool_tx(tx, &record.agent_id, &record.id)
         })
     }
 
     pub fn append_brief(&self, brief: &BriefRecord) -> Result<()> {
-        self.db
-            .transaction(|tx| insert_brief_evidence_tx(tx, brief))
+        self.append_brief_committed(brief).map(|_| ())
+    }
+
+    pub fn append_brief_committed(&self, brief: &BriefRecord) -> Result<BriefRecord> {
+        self.db.transaction(|tx| {
+            insert_brief_evidence_tx(tx, brief)?;
+            committed_brief_tx(tx, &brief.agent_id, &brief.id)
+        })
     }
 
     pub fn append_brief_with_index_changes(
@@ -4746,9 +5470,19 @@ impl EvidenceRepository<'_> {
         brief: &BriefRecord,
         changes: &[RuntimeIndexChange],
     ) -> Result<()> {
+        self.append_brief_with_index_changes_committed(brief, changes)
+            .map(|_| ())
+    }
+
+    pub fn append_brief_with_index_changes_committed(
+        &self,
+        brief: &BriefRecord,
+        changes: &[RuntimeIndexChange],
+    ) -> Result<BriefRecord> {
         self.db.transaction(|tx| {
             insert_brief_evidence_tx(tx, brief)?;
-            insert_runtime_index_changes_tx(tx, changes)
+            insert_runtime_index_changes_tx(tx, changes)?;
+            committed_brief_tx(tx, &brief.agent_id, &brief.id)
         })
     }
 
@@ -4830,28 +5564,8 @@ impl EvidenceRepository<'_> {
         if limit == 0 {
             return Ok(Vec::new());
         }
-        let limit = i64::try_from(limit).unwrap_or(i64::MAX);
-        let sql = format!(
-            "SELECT payload_json
-             FROM {}
-             WHERE agent_id = ?1
-             ORDER BY created_at DESC, evidence_id DESC
-             LIMIT ?2",
-            kind.table_name()
-        );
-        self.db.with_read(|connection| {
-            let mut statement = connection.prepare(&sql)?;
-            let rows = statement.query_map(params![agent_id, limit], |row| {
-                Ok(EvidencePayloadRow {
-                    payload_json: row.get(0)?,
-                })
-            })?;
-            let mut records: Vec<_> = rows
-                .map(|row| row.map_err(Into::into))
-                .collect::<Result<_>>()?;
-            records.reverse();
-            Ok(records)
-        })
+        self.db
+            .with_read(|connection| context_recent_evidence_on(&connection, kind, agent_id, limit))
     }
 
     fn payloads_for_turn(
@@ -4884,22 +5598,8 @@ impl EvidenceRepository<'_> {
         agent_id: &str,
         evidence_id: &str,
     ) -> Result<Option<EvidencePayloadRow>> {
-        let sql = format!(
-            "SELECT payload_json
-             FROM {}
-             WHERE agent_id = ?1 AND evidence_id = ?2
-             LIMIT 1",
-            kind.table_name()
-        );
         self.db.with_read(|connection| {
-            connection
-                .query_row(&sql, params![agent_id, evidence_id], |row| {
-                    Ok(EvidencePayloadRow {
-                        payload_json: row.get(0)?,
-                    })
-                })
-                .optional()
-                .map_err(Into::into)
+            context_evidence_by_id_on(&connection, kind, agent_id, evidence_id)
         })
     }
 
@@ -4941,10 +5641,14 @@ impl EvidenceRepository<'_> {
     }
 
     pub fn recent_briefs(&self, agent_id: &str, limit: usize) -> Result<Vec<BriefRecord>> {
-        self.recent_payloads(EvidenceKind::Brief, agent_id, limit)?
-            .into_iter()
-            .map(|row| serde_json::from_str(&row.payload_json).map_err(Into::into))
-            .collect()
+        let payloads = self.recent_payloads(EvidenceKind::Brief, agent_id, limit)?;
+        let mut records = Vec::new();
+        for row in payloads {
+            reserve_source_vec_slot(&mut records)?;
+            crate::diagnostics::resource_io::admit_json_payload(&row.payload_json)?;
+            records.push(serde_json::from_str(&row.payload_json)?);
+        }
+        Ok(records)
     }
 
     pub fn briefs_for_turn(&self, agent_id: &str, turn_id: &str) -> Result<Vec<BriefRecord>> {
@@ -5057,6 +5761,40 @@ impl EvidenceRepository<'_> {
 }
 
 impl AuditEventSink<'_> {
+    /// Retirement observations do not admit commands or qualify event bodies.
+    pub(crate) fn append_retiring_observation(
+        &self,
+        scope: &crate::runtime::resident_input_evidence::InputEvidenceScope,
+        event: &AuditEvent,
+    ) -> Result<Option<AuditEvent>> {
+        self.db.transaction_with_context(
+            RuntimeDbWriteContext::sync("audit_events.retiring_observation", "audit_events"),
+            |tx| {
+                let mut statement = tx.prepare(
+                    "SELECT COALESCE(json_extract(payload_json,'$.incarnation'),1),
+                     status,json_extract(payload_json,'$.status')
+                     FROM agent_identities WHERE agent_id=?1",
+                )?;
+                let mut rows = statement.query([&scope.agent_id])?;
+                let row = rows.next()?.context("retiring Audit identity is missing")?;
+                let incarnation: i64 = row.get(0)?;
+                let status = row.get_ref(1)?.as_str()?;
+                let payload_status = row.get_ref(2)?.as_str()?;
+                anyhow::ensure!(
+                    u64::try_from(incarnation)? == scope.identity_incarnation
+                        && status == payload_status,
+                    "retiring Audit observation identity mismatch"
+                );
+                match status {
+                    "active" => Ok(None),
+                    "deleting" => append_audit_event_tx(tx, Some(&scope.agent_id), event)
+                        .map(|(event, _)| Some(event)),
+                    _ => anyhow::bail!("retired identity cannot append an Audit observation"),
+                }
+            },
+        )
+    }
+
     pub fn append(&self, agent_id: Option<&str>, event: &AuditEvent) -> Result<AuditEvent> {
         self.db.transaction_with_context(
             RuntimeDbWriteContext::sync("audit_events.append", "audit_events"),
@@ -5095,19 +5833,6 @@ impl AuditEventSink<'_> {
         )
     }
 
-    pub fn import_legacy(&self, agent_id: Option<&str>, events: Vec<AuditEvent>) -> Result<()> {
-        if self.db.storage_domain_is_complete("audit_events", "db")? {
-            return Ok(());
-        }
-        self.db
-            .run_storage_domain_import("audit_events", "jsonl", "db", |tx| {
-                for event in &events {
-                    import_audit_event_tx(tx, agent_id, event)?;
-                }
-                Ok(serde_json::json!({ "imported_records": events.len() }))
-            })
-    }
-
     pub fn recent(&self, agent_id: Option<&str>, limit: usize) -> Result<Vec<AuditEvent>> {
         if limit == 0 {
             return Ok(Vec::new());
@@ -5121,24 +5846,44 @@ impl AuditEventSink<'_> {
             sql.push_str(" ORDER BY event_seq DESC, created_at DESC LIMIT ?");
             let mut statement = connection.prepare(&sql)?;
             let mut events = if let Some(agent_id) = agent_id {
-                statement
-                    .query_map(params![agent_id, limit], |row| row.get::<_, String>(0))?
-                    .map(|row| {
-                        let payload = row?;
-                        serde_json::from_str(&payload).map_err(Into::into)
-                    })
-                    .collect::<Result<Vec<_>>>()?
+                audit_event_records(&mut statement, params![agent_id, limit])?
             } else {
-                statement
-                    .query_map(params![limit], |row| row.get::<_, String>(0))?
-                    .map(|row| {
-                        let payload = row?;
-                        serde_json::from_str(&payload).map_err(Into::into)
-                    })
-                    .collect::<Result<Vec<_>>>()?
+                audit_event_records(&mut statement, params![limit])?
             };
             events.reverse();
             Ok(events)
+        })
+    }
+
+    /// Rate-limit one advisory without decoding unrelated event payloads.
+    pub(crate) fn has_recent_scheduling_advisory(
+        &self,
+        agent_id: Option<&str>,
+        evidence: &str,
+        since: DateTime<Utc>,
+    ) -> Result<bool> {
+        self.db.with_read(|connection| {
+            let mut statement = connection.prepare(
+                "SELECT json_extract(data_json, '$.created_at') FROM (
+                    SELECT kind, created_at, data_json FROM audit_events
+                    WHERE (?1 IS NULL OR agent_id = ?1)
+                    ORDER BY event_seq DESC, created_at DESC LIMIT 64
+                 ) AS recent
+                 WHERE kind = 'scheduling_advisory'
+                   AND json_type(data_json, '$.data.evidence') = 'array'
+                   AND EXISTS (
+                       SELECT 1 FROM json_each(recent.data_json, '$.data.evidence')
+                       WHERE type = 'text' AND value = ?2
+                   )",
+            )?;
+            let mut rows = statement.query(params![agent_id, evidence])?;
+            while let Some(row) = rows.next()? {
+                crate::diagnostics::resource_io::charge_owned_metadata(0, 1)?;
+                if parse_timestamp(borrowed_sql_text(row, 0)?)? > since {
+                    return Ok(true);
+                }
+            }
+            Ok(false)
         })
     }
 
@@ -5271,13 +6016,35 @@ impl AuditEventSink<'_> {
     }
 }
 
-fn upsert_work_item_delegation_tx(
+/// Only this repository's successful original SQL write can mint the source.
+pub(in crate::runtime_db) struct OriginalDelegationWrite<'tx, 'connection> {
+    tx: &'tx Transaction<'connection>,
+    delegation_id: &'tx str,
+}
+impl OriginalDelegationWrite<'_, '_> {
+    pub(in crate::runtime_db) fn source_in<'a>(&'a self, tx: &Transaction<'_>) -> Result<&'a str> {
+        anyhow::ensure!(
+            std::ptr::eq(self.tx, tx),
+            "Delegation source crossed transaction"
+        );
+        Ok(self.delegation_id)
+    }
+}
+
+pub(in crate::runtime_db) fn upsert_work_item_delegation_tx(
     tx: &Transaction<'_>,
     record: &WorkItemDelegationRecord,
 ) -> Result<()> {
+    upsert_work_item_delegation_with_ack_tx(tx, record).map(|_| ())
+}
+
+pub(in crate::runtime_db) fn upsert_work_item_delegation_with_ack_tx(
+    tx: &Transaction<'_>,
+    record: &WorkItemDelegationRecord,
+) -> Result<bool> {
     let payload_json = serde_json::to_string(record)?;
     let state = enum_string(&record.state)?;
-    tx.execute(
+    let changed = tx.execute(
         "INSERT INTO work_item_delegations (
             delegation_id, parent_agent_id, parent_work_item_id, child_agent_id,
             child_work_item_id, state, created_at, updated_at, payload_json
@@ -5304,7 +6071,23 @@ fn upsert_work_item_delegation_tx(
             payload_json,
         ],
     )?;
-    Ok(())
+    if changed == 1 {
+        // Older schema fixtures and the upgrade collector precede Task schema.
+        // They receive their fixed inventory at the migration cut instead.
+        let installed: bool = tx.query_row(
+            "SELECT COALESCE(MAX(version),0)>=?1 FROM schema_migrations",
+            [super::task_snapshot::TASK_DOMAIN_VERSION],
+            |row| row.get(0),
+        )?;
+        if installed {
+            let observed = OriginalDelegationWrite {
+                tx,
+                delegation_id: &record.delegation_id,
+            };
+            super::task_snapshot::register_delegation_write_tx(tx, &observed)?;
+        }
+    }
+    Ok(changed == 1)
 }
 
 pub(crate) fn upsert_work_item_continuation_tx(
@@ -5364,6 +6147,9 @@ pub(crate) fn upsert_work_item_continuation_tx(
 }
 
 fn upsert_context_episode_tx(tx: &Transaction<'_>, record: &ContextEpisodeRecord) -> Result<()> {
+    if super::episode_snapshot::validate_immutable_episode_upsert_tx(tx, record)? {
+        return Ok(());
+    }
     let payload_json = serde_json::to_string(record)?;
     let boundary_reason = enum_string(&record.boundary_reason)?;
     tx.execute(
@@ -5398,15 +6184,36 @@ fn upsert_context_episode_tx(tx: &Transaction<'_>, record: &ContextEpisodeRecord
     Ok(())
 }
 
-fn upsert_external_trigger_tx(tx: &Transaction<'_>, record: &ExternalTriggerRecord) -> Result<()> {
+pub(crate) fn upsert_external_trigger_tx(
+    tx: &Transaction<'_>,
+    record: &ExternalTriggerRecord,
+) -> Result<()> {
+    upsert_external_trigger_with_write_tx(tx, record).map(|_| ())
+}
+
+pub(crate) fn upsert_external_trigger_with_write_tx(
+    tx: &Transaction<'_>,
+    record: &ExternalTriggerRecord,
+) -> Result<bool> {
     if record.status == ExternalTriggerStatus::Active {
         super::reclamation::ensure_work_admission_tx(tx, &record.target_agent_id)?;
     }
+    crate::diagnostics::resource_io::admit_serialized_value(record)?;
     let payload_json = serde_json::to_string(record)?;
-    let status = enum_string(&record.status)?;
-    let revoked_at = record.revoked_at.map(timestamp);
-    let last_delivered_at = record.last_delivered_at.map(timestamp);
-    tx.execute(
+    let status = match record.status {
+        ExternalTriggerStatus::Active => "active",
+        ExternalTriggerStatus::Revoked => "revoked",
+    };
+    let revoked_at = record
+        .revoked_at
+        .map(external_trigger_timestamp)
+        .transpose()?;
+    let last_delivered_at = record
+        .last_delivered_at
+        .map(external_trigger_timestamp)
+        .transpose()?;
+    let created_at = external_trigger_timestamp(record.created_at)?;
+    let changed = tx.execute(
         "INSERT INTO external_triggers (
             external_trigger_id, target_agent_id, trigger_url,
             token_hash, status, created_at, revoked_at, last_delivered_at,
@@ -5444,54 +6251,144 @@ fn upsert_external_trigger_tx(tx: &Transaction<'_>, record: &ExternalTriggerReco
            record.token,
             record.token_hash,
             status,
-            timestamp(record.created_at),
+            created_at,
             revoked_at,
             last_delivered_at,
             record.delivery_count as i64,
             payload_json,
         ],
     )?;
-    Ok(())
+    Ok(changed == 1)
 }
 
+/// Actual affected IDs from the original ensure/reset SQL exits.
+pub(crate) fn ensure_default_external_trigger_tx(
+    tx: &Transaction<'_>,
+    agent_id: &str,
+    delivery_mode: CallbackDeliveryMode,
+    now: DateTime<Utc>,
+    external_trigger_id: &str,
+    token: &str,
+    actual_ids: &mut BTreeSet<String>,
+) -> Result<(ExternalTriggerRecord, Option<ExternalTriggerRecord>, bool)> {
+    if let Some(descriptor) = active_default_for_agent_tx(tx, agent_id)? {
+        if descriptor.token.is_some() {
+            return Ok((descriptor, None, false));
+        }
+
+        let mut revoked = descriptor;
+        revoked.status = ExternalTriggerStatus::Revoked;
+        revoked.revoked_at = Some(now);
+        if upsert_external_trigger_with_write_tx(tx, &revoked)? {
+            actual_ids.insert(clone_external_trigger_text(&revoked.external_trigger_id)?);
+        }
+
+        let descriptor = default_external_trigger_record(
+            agent_id,
+            delivery_mode,
+            now,
+            external_trigger_id,
+            token,
+        )?;
+        if upsert_external_trigger_with_write_tx(tx, &descriptor)? {
+            actual_ids.insert(clone_external_trigger_text(
+                &descriptor.external_trigger_id,
+            )?);
+        }
+        return Ok((descriptor, Some(revoked), true));
+    }
+
+    let descriptor =
+        default_external_trigger_record(agent_id, delivery_mode, now, external_trigger_id, token)?;
+    if upsert_external_trigger_with_write_tx(tx, &descriptor)? {
+        actual_ids.insert(clone_external_trigger_text(
+            &descriptor.external_trigger_id,
+        )?);
+    }
+    Ok((descriptor, None, true))
+}
+pub(crate) fn reset_default_external_trigger_tx(
+    tx: &Transaction<'_>,
+    agent_id: &str,
+    delivery_mode: CallbackDeliveryMode,
+    now: DateTime<Utc>,
+    external_trigger_id: &str,
+    token: &str,
+    actual_ids: &mut BTreeSet<String>,
+) -> Result<(ExternalTriggerRecord, Option<ExternalTriggerRecord>)> {
+    let revoked = if let Some(descriptor) = active_default_for_agent_tx(tx, agent_id)? {
+        let mut revoked = descriptor;
+        revoked.status = ExternalTriggerStatus::Revoked;
+        revoked.revoked_at = Some(now);
+        if upsert_external_trigger_with_write_tx(tx, &revoked)? {
+            actual_ids.insert(clone_external_trigger_text(&revoked.external_trigger_id)?);
+        }
+        Some(revoked)
+    } else {
+        None
+    };
+
+    let descriptor =
+        default_external_trigger_record(agent_id, delivery_mode, now, external_trigger_id, token)?;
+    if upsert_external_trigger_with_write_tx(tx, &descriptor)? {
+        actual_ids.insert(clone_external_trigger_text(
+            &descriptor.external_trigger_id,
+        )?);
+    }
+    Ok((descriptor, revoked))
+}
 fn active_default_for_agent_tx(
     tx: &Transaction<'_>,
     agent_id: &str,
 ) -> Result<Option<ExternalTriggerRecord>> {
-    tx.query_row(
+    external_trigger_on(
+        tx,
         "SELECT payload_json
          FROM external_triggers
          WHERE target_agent_id = ?1 AND status = 'active'
          ORDER BY created_at DESC, external_trigger_id ASC
          LIMIT 1",
         [agent_id],
-        |row| row.get::<_, String>(0),
     )
-    .optional()?
-    .map(|payload| decode_external_trigger_payload(&payload))
-    .transpose()
+}
+
+fn external_trigger_timestamp(value: DateTime<Utc>) -> Result<String> {
+    crate::diagnostics::resource_io::admit_serialized_value(&value)?;
+    Ok(timestamp(value))
+}
+
+fn clone_external_trigger_text(text: &str) -> Result<String> {
+    crate::diagnostics::resource_io::admit_cloned_value(&text)?;
+    Ok(text.to_owned())
 }
 
 fn default_external_trigger_record(
     agent_id: &str,
     delivery_mode: CallbackDeliveryMode,
     now: DateTime<Utc>,
-    external_trigger_id: String,
-    token: String,
-) -> ExternalTriggerRecord {
-    ExternalTriggerRecord {
+    external_trigger_id: &str,
+    token: &str,
+) -> Result<ExternalTriggerRecord> {
+    let external_trigger_id = clone_external_trigger_text(external_trigger_id)?;
+    let target_agent_id = clone_external_trigger_text(agent_id)?;
+    let token = clone_external_trigger_text(token)?;
+    crate::diagnostics::resource_io::admit_cloned_value(
+        &"0000000000000000000000000000000000000000000000000000000000000000",
+    )?;
+    let token_hash = crate::callbacks::hash_callback_token(&token);
+    Ok(ExternalTriggerRecord {
         external_trigger_id,
-        target_agent_id: agent_id.to_string(),
+        target_agent_id,
         scope: ExternalTriggerScope::Agent,
         delivery_mode,
-        token: Some(token.clone()),
-        token_hash: crate::callbacks::hash_callback_token(&token),
+        token: Some(token),
+        token_hash,
         status: ExternalTriggerStatus::Active,
         created_at: now,
         revoked_at: None,
         last_delivered_at: None,
         delivery_count: 0,
-    }
+    })
 }
 
 fn insert_operator_notification_tx(
@@ -5738,9 +6635,28 @@ fn update_work_item_row_tx(
     Ok(())
 }
 
-fn import_work_item_tx(tx: &Transaction<'_>, record: &WorkItemRecord) -> Result<()> {
+enum WorkImportOutcome {
+    ActualWrite,
+    LegacyEqual,
+    Ignored,
+}
+
+fn import_work_item_tx(tx: &Transaction<'_>, record: &WorkItemRecord) -> Result<WorkImportOutcome> {
     if record.state != WorkItemState::Completed {
         super::reclamation::ensure_work_admission_tx(tx, &record.agent_id)?;
+    }
+    let existing: Option<String> = tx
+        .query_row(
+            "SELECT payload_json FROM work_items WHERE work_item_id=?1",
+            [&record.id],
+            |row| row.get(0),
+        )
+        .optional()?;
+    if let Some(payload) = existing {
+        let existing: WorkItemRecord = decode_work_item_payload(&payload)?;
+        if existing == *record && work_import_projection_equal_tx(tx, record)? {
+            return Ok(WorkImportOutcome::LegacyEqual);
+        }
     }
     let payload_json = serde_json::to_string(record)?;
     let state = enum_string(&record.state)?;
@@ -5754,7 +6670,7 @@ fn import_work_item_tx(tx: &Transaction<'_>, record: &WorkItemRecord) -> Result<
     let blocked_by = record.blocked_by.clone();
     let recheck_at = record.recheck_at.map(|t| timestamp(t));
     let recheck_consumed_at = record.recheck_consumed_at.map(|t| timestamp(t));
-    tx.execute(
+    let changed = tx.execute(
         "INSERT INTO work_items (
             work_item_id, agent_id, state, objective, plan_status,
             revision, current_focus, created_at, updated_at, completed_at,
@@ -5796,7 +6712,37 @@ fn import_work_item_tx(tx: &Transaction<'_>, record: &WorkItemRecord) -> Result<
             recheck_consumed_at,
         ],
     )?;
-    Ok(())
+    Ok(if changed == 1 {
+        WorkImportOutcome::ActualWrite
+    } else {
+        WorkImportOutcome::Ignored
+    })
+}
+
+fn work_import_projection_equal_tx(tx: &Transaction<'_>, record: &WorkItemRecord) -> Result<bool> {
+    let actual: String = tx.query_row(
+        "SELECT json_array(agent_id,state,objective,plan_status,revision,created_at,updated_at,completed_at,plan_artifact_path,last_turn_id,blocked_by,recheck_at,recheck_consumed_at) FROM work_items WHERE work_item_id=?1",
+        [&record.id], |row| row.get(0),
+    )?;
+    let expected = serde_json::json!([
+        record.agent_id,
+        record.state,
+        record.objective,
+        record.plan_status,
+        record.revision,
+        timestamp(record.created_at),
+        timestamp(record.updated_at),
+        (record.state == WorkItemState::Completed).then(|| timestamp(record.updated_at)),
+        record
+            .plan_artifact
+            .as_ref()
+            .map(|artifact| artifact.path.display().to_string()),
+        record.turn_id,
+        record.blocked_by,
+        record.recheck_at.map(timestamp),
+        record.recheck_consumed_at.map(timestamp)
+    ]);
+    Ok(serde_json::from_str::<serde_json::Value>(&actual)? == expected)
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -5856,6 +6802,80 @@ pub(crate) fn upsert_task_tx(tx: &Transaction<'_>, record: &TaskRecord) -> Resul
         }
     }
 
+    write_task_row_tx(tx, record)
+}
+
+pub(crate) fn upsert_interrupted_child_task_stop_tx(
+    tx: &Transaction<'_>,
+    proof: &super::task_stop::TaskStopWriteProof<'_, '_>,
+    record: &TaskRecord,
+) -> Result<bool> {
+    anyhow::ensure!(
+        proof.interrupted_child_cancellation(tx, record)?,
+        "TaskStop does not authorize interrupted child cancellation"
+    );
+    write_task_row_tx(tx, record)
+}
+
+pub(in crate::runtime_db) fn update_original_child_monitor_binding_tx(
+    tx: &Transaction<'_>,
+    proof: &super::transitions::ExistingOriginalChildBindingWriteProof<'_, '_, '_>,
+    record: &TaskRecord,
+) -> Result<bool> {
+    proof.validate_transaction(tx)?;
+    let existing = tx
+        .query_row(
+            "SELECT payload_json FROM tasks WHERE task_id=?1",
+            [&record.id],
+            |row| row.get::<_, String>(0),
+        )
+        .optional()?
+        .map(|raw| decode_task_payload(&raw))
+        .transpose()?
+        .context("existing child binding Task disappeared")?;
+    proof.validate_existing(tx, &existing, record)?;
+    if matches!(
+        task_transition(&existing, record)?,
+        StateTransitionOutcome::Idempotent
+    ) {
+        return Ok(false);
+    }
+    write_task_row_with_mode_tx(tx, record, TaskRowWriteMode::ExistingOriginalBinding)
+}
+pub(in crate::runtime_db) fn update_original_child_running_tx(
+    tx: &Transaction<'_>,
+    proof: &super::transitions::ExistingOriginalChildRunningWriteProof<'_, '_, '_>,
+    record: &TaskRecord,
+) -> Result<bool> {
+    proof.validate_transaction(tx)?;
+    let raw: String = tx
+        .query_row(
+            "SELECT payload_json FROM tasks WHERE task_id=?1",
+            [&record.id],
+            |row| row.get(0),
+        )
+        .context("existing Running Task disappeared")?;
+    let existing = decode_task_payload(&raw)?;
+    proof.validate_existing(tx, &existing, record)?;
+    if task_transition(&existing, record)? == StateTransitionOutcome::Idempotent {
+        return Ok(false);
+    }
+    write_task_row_with_mode_tx(tx, record, TaskRowWriteMode::ExistingOriginalRunning)
+}
+#[derive(Clone, Copy)]
+enum TaskRowWriteMode {
+    Upsert,
+    ExistingOriginalBinding,
+    ExistingOriginalRunning,
+}
+fn write_task_row_tx(tx: &Transaction<'_>, record: &TaskRecord) -> Result<bool> {
+    write_task_row_with_mode_tx(tx, record, TaskRowWriteMode::Upsert)
+}
+fn write_task_row_with_mode_tx(
+    tx: &Transaction<'_>,
+    record: &TaskRecord,
+    mode: TaskRowWriteMode,
+) -> Result<bool> {
     let kind = record.kind.as_str();
     let status = enum_string(&record.status)?;
     let status_phase = i64::from(task_status_phase(&record.status));
@@ -5871,8 +6891,7 @@ pub(crate) fn upsert_task_tx(tx: &Transaction<'_>, record: &TaskRecord) -> Resul
     let completed_at =
         is_terminal_task_status(&record.status).then(|| timestamp(record.updated_at));
     let payload_json = serde_json::to_string(&slim_task_record_for_payload(record))?;
-    tx.execute(
-        "INSERT INTO tasks (
+    let sql=match mode {TaskRowWriteMode::Upsert=>"INSERT INTO tasks (
             task_id, owner_agent_id, parent_agent_id, child_agent_id, kind, status,
             summary, input_target, wait_policy, output_path, result_summary,
             exit_status, terminal_reentry, revision, created_at, updated_at,
@@ -5903,7 +6922,13 @@ pub(crate) fn upsert_task_tx(tx: &Transaction<'_>, record: &TaskRecord) -> Resul
                 WHEN 'running' THEN 1
                 WHEN 'cancelling' THEN 2
                 ELSE 3
-            END",
+            END",TaskRowWriteMode::ExistingOriginalBinding | TaskRowWriteMode::ExistingOriginalRunning=>"UPDATE tasks SET owner_agent_id=?2,parent_agent_id=?3,child_agent_id=?4,kind=?5,status=?6,
+         summary=?7,input_target=?8,wait_policy=?9,output_path=?10,result_summary=?11,exit_status=?12,
+         terminal_reentry=?13,revision=?14,created_at=?15,updated_at=?16,completed_at=?17,last_message_id=?18,payload_json=?19
+         WHERE task_id=?1 AND ?14>=revision AND ?20>=CASE status
+            WHEN 'queued' THEN 0 WHEN 'running' THEN 1 WHEN 'cancelling' THEN 2 ELSE 3 END"};
+    let actual = tx.execute(
+        sql,
         params![
             record.id,
             record.agent_id,
@@ -5927,6 +6952,15 @@ pub(crate) fn upsert_task_tx(tx: &Transaction<'_>, record: &TaskRecord) -> Resul
             status_phase,
         ],
     )?;
+    if matches!(
+        mode,
+        TaskRowWriteMode::ExistingOriginalBinding | TaskRowWriteMode::ExistingOriginalRunning
+    ) {
+        anyhow::ensure!(
+            actual == 1,
+            "existing child binding UPDATE did not affect its original Task"
+        );
+    }
     Ok(true)
 }
 
@@ -5942,47 +6976,126 @@ pub(crate) fn task_status_phase(status: &TaskStatus) -> u8 {
     }
 }
 
+/// The primary row's outcome and every row actually changed by this write.
+/// The owner validates this finite set before publishing final transaction facts.
+#[derive(Debug, Clone, Default)]
+pub(crate) struct WaitConditionWrites {
+    pub primary_applied: bool,
+    pub wait_ids: BTreeSet<String>,
+    pub turn_ids: BTreeSet<String>,
+}
+impl WaitConditionWrites {
+    fn insert_id(ids: &mut BTreeSet<String>, id: &str) -> Result<()> {
+        if !ids.contains(id) {
+            crate::diagnostics::resource_io::charge_owned_metadata(
+                (id.len() + std::mem::size_of::<String>()) as u64,
+                1,
+            )?;
+            ids.insert(id.to_owned());
+        }
+        Ok(())
+    }
+
+    pub(crate) fn extend(&mut self, other: Self) -> Result<()> {
+        let nodes = other.wait_ids.difference(&self.wait_ids).count()
+            + other.turn_ids.difference(&self.turn_ids).count();
+        if nodes > 0 {
+            // Strings move; only new destination slots allocate. Admit both
+            // sets before changing either set or the primary outcome.
+            crate::diagnostics::resource_io::charge_owned_metadata(
+                (nodes * std::mem::size_of::<String>()) as u64,
+                nodes,
+            )?;
+        }
+        self.primary_applied |= other.primary_applied;
+        for id in other.wait_ids {
+            if !self.wait_ids.contains(&id) {
+                self.wait_ids.insert(id);
+            }
+        }
+        for id in other.turn_ids {
+            if !self.turn_ids.contains(&id) {
+                self.turn_ids.insert(id);
+            }
+        }
+        Ok(())
+    }
+}
+
 pub(crate) fn upsert_wait_condition_tx(
     tx: &Transaction<'_>,
     record: &WaitConditionRecord,
 ) -> Result<bool> {
+    Ok(upsert_wait_condition_with_writes_tx(tx, record)?.primary_applied)
+}
+
+pub(crate) fn upsert_wait_condition_with_writes_tx(
+    tx: &Transaction<'_>,
+    record: &WaitConditionRecord,
+) -> Result<WaitConditionWrites> {
     if matches!(
         record.status,
         WaitConditionStatus::Active | WaitConditionStatus::Triggered
     ) {
         super::reclamation::ensure_work_admission_tx(tx, &record.agent_id)?;
     }
-    let existing = tx
-        .query_row(
-            "SELECT payload_json FROM wait_conditions WHERE wait_condition_id = ?1",
-            [&record.id],
-            |row| row.get::<_, String>(0),
-        )
-        .optional()?
-        .map(|payload| decode_wait_condition_payload(&payload))
+    let mut statement =
+        tx.prepare("SELECT payload_json FROM wait_conditions WHERE wait_condition_id = ?1")?;
+    let existing = statement
+        .query([&record.id])?
+        .next()?
+        .map(|row| {
+            let payload = row.get_ref(0)?.as_str()?;
+            crate::diagnostics::resource_io::admit_json_payload(payload)?;
+            decode_wait_condition_payload(payload)
+        })
         .transpose()?;
     if let Some(existing) = existing.as_ref() {
         match wait_condition_transition(existing, record)? {
             StateTransitionOutcome::Applied => {}
-            StateTransitionOutcome::Idempotent => return Ok(false),
+            StateTransitionOutcome::Idempotent => return Ok(WaitConditionWrites::default()),
         }
     }
+    let mut writes = WaitConditionWrites::default();
     if matches!(
         record.status,
         crate::types::WaitConditionStatus::Active | crate::types::WaitConditionStatus::Triggered
     ) {
-        cancel_stale_unresolved_wait_owner_rows_tx(tx, record)?;
+        writes.extend(cancel_stale_unresolved_wait_owner_rows_tx(tx, record)?)?;
     }
 
+    crate::diagnostics::resource_io::admit_serialized_value(record)?;
     let payload_json = serde_json::to_string(record)?;
-    let status = enum_string(&record.status)?;
-    let kind = enum_string(&record.kind)?;
+    let status = match record.status {
+        WaitConditionStatus::Active => "active",
+        WaitConditionStatus::Triggered => "triggered",
+        WaitConditionStatus::Resolved => "resolved",
+        WaitConditionStatus::Cancelled => "cancelled",
+        WaitConditionStatus::Expired => "expired",
+    };
+    let kind = match record.kind {
+        crate::types::WaitConditionKind::Task => "task",
+        crate::types::WaitConditionKind::External => "external",
+        crate::types::WaitConditionKind::Operator => "operator",
+        crate::types::WaitConditionKind::Timer => "timer",
+        crate::types::WaitConditionKind::System => "system",
+    };
+    crate::diagnostics::resource_io::admit_serialized_value(&record.wake_sources)?;
     let wake_sources_json = serde_json::to_string(&record.wake_sources)?;
     let continuation_json = record
         .continuation
         .as_ref()
-        .map(serde_json::to_string)
+        .map(|value| {
+            crate::diagnostics::resource_io::admit_serialized_value(value)?;
+            serde_json::to_string(value).map_err(anyhow::Error::from)
+        })
         .transpose()?;
+    let created_at = wait_sql_timestamp(record.created_at)?;
+    let updated_at = wait_sql_timestamp(record.updated_at)?;
+    let expires_at = record.expires_at.map(wait_sql_timestamp).transpose()?;
+    let resolved_at = record.resolved_at.map(wait_sql_timestamp).transpose()?;
+    let cancelled_at = record.cancelled_at.map(wait_sql_timestamp).transpose()?;
+    let triggered_at = record.triggered_at().map(wait_sql_timestamp).transpose()?;
     let changed = tx.execute(
         "INSERT INTO wait_conditions (
             wait_condition_id, agent_id, work_item_id, status, kind, source,
@@ -6019,20 +7132,25 @@ pub(crate) fn upsert_wait_condition_tx(
             record.source,
             record.subject_ref,
             record.waiting_for,
-            timestamp(record.created_at),
-            timestamp(record.updated_at),
-            record.expires_at.map(timestamp),
-            record.resolved_at.map(timestamp),
-            record.cancelled_at.map(timestamp),
+            created_at,
+            updated_at,
+            expires_at,
+            resolved_at,
+            cancelled_at,
             record.turn_id,
             record.trigger_message_id(),
-            record.triggered_at().map(timestamp),
+            triggered_at,
             wake_sources_json,
             continuation_json,
             payload_json,
         ],
     )?;
     if changed == 1 {
+        writes.primary_applied = true;
+        WaitConditionWrites::insert_id(&mut writes.wait_ids, &record.id)?;
+        if let Some(turn_id) = record.turn_id.as_deref() {
+            WaitConditionWrites::insert_id(&mut writes.turn_ids, turn_id)?;
+        }
         let _ = bump_source_revision_tx(
             tx,
             SOURCE_WAIT,
@@ -6052,7 +7170,12 @@ pub(crate) fn upsert_wait_condition_tx(
             )?;
         }
     }
-    Ok(changed == 1)
+    Ok(writes)
+}
+
+fn wait_sql_timestamp(value: DateTime<Utc>) -> Result<String> {
+    crate::diagnostics::resource_io::admit_serialized_value(&value)?;
+    Ok(timestamp(value))
 }
 
 /// Cancel stale unresolved wait rows that own the same key as an incoming
@@ -6066,23 +7189,35 @@ pub(crate) fn upsert_wait_condition_tx(
 fn cancel_stale_unresolved_wait_owner_rows_tx(
     tx: &Transaction<'_>,
     record: &WaitConditionRecord,
-) -> Result<()> {
-    let rows = tx
-        .prepare(
+) -> Result<WaitConditionWrites> {
+    // Freeze every candidate before updating the table being scanned.
+    let rows = {
+        let mut statement = tx.prepare(
             "SELECT wait_condition_id, payload_json FROM wait_conditions
              WHERE agent_id = ?1
                AND work_item_id IS ?2
                AND wait_condition_id != ?3
                AND status IN ('active', 'triggered')",
-        )?
-        .query_map(
-            params![record.agent_id, record.work_item_id, record.id],
-            |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
-        )?
-        .collect::<std::result::Result<Vec<_>, _>>()?;
+        )?;
+        let mut cursor =
+            statement.query(params![record.agent_id, record.work_item_id, record.id])?;
+        let mut rows = Vec::new();
+        while let Some(row) = cursor.next()? {
+            let wait_id = row.get_ref(0)?.as_str()?;
+            let payload = row.get_ref(1)?.as_str()?;
+            crate::diagnostics::resource_io::admit_json_payload(payload)?;
+            let stale = decode_wait_condition_payload(payload)?;
+            crate::diagnostics::resource_io::charge_owned_metadata(
+                (wait_id.len() + std::mem::size_of::<(String, WaitConditionRecord)>()) as u64,
+                1,
+            )?;
+            rows.push((wait_id.to_owned(), stale));
+        }
+        rows
+    };
     let mut cancelled = Vec::new();
-    for (wait_id, payload_json) in rows {
-        let mut stale = decode_wait_condition_payload(&payload_json)?;
+    let mut writes = WaitConditionWrites::default();
+    for (wait_id, mut stale) in rows {
         if stale.updated_at > record.updated_at {
             // A newer unresolved wait already owns this key; surface the
             // stale write as a conflict instead of discarding the live wait.
@@ -6092,7 +7227,10 @@ fn cancel_stale_unresolved_wait_owner_rows_tx(
         stale.updated_at = record.updated_at;
         stale.resolved_at = None;
         stale.cancelled_at = Some(record.updated_at);
-        tx.execute(
+        crate::diagnostics::resource_io::admit_serialized_value(&stale)?;
+        let payload_json = serde_json::to_string(&stale)?;
+        let updated_at = wait_sql_timestamp(record.updated_at)?;
+        let changed = tx.execute(
             "UPDATE wait_conditions
              SET status = 'cancelled',
                  updated_at = ?1,
@@ -6100,12 +7238,14 @@ fn cancel_stale_unresolved_wait_owner_rows_tx(
                  cancelled_at = ?1,
                  payload_json = ?2
              WHERE wait_condition_id = ?3",
-            params![
-                timestamp(record.updated_at),
-                serde_json::to_string(&stale)?,
-                wait_id
-            ],
+            params![updated_at, payload_json, wait_id],
         )?;
+        if changed > 0 {
+            WaitConditionWrites::insert_id(&mut writes.wait_ids, &stale.id)?;
+        }
+        if let Some(turn_id) = stale.turn_id.as_deref() {
+            WaitConditionWrites::insert_id(&mut writes.turn_ids, turn_id)?;
+        }
         // Mirror the revision bookkeeping applied to every other wait
         // mutation: conversation consumers invalidate cached wait state via
         // source/turn revisions, so a cancelled row must not keep its
@@ -6122,6 +7262,10 @@ fn cancel_stale_unresolved_wait_owner_rows_tx(
             let _ =
                 bump_turn_revision_tx(tx, &stale.agent_id, turn_id, true, true, stale.updated_at)?;
         }
+        crate::diagnostics::resource_io::charge_owned_metadata(
+            std::mem::size_of::<String>() as u64,
+            1,
+        )?;
         cancelled.push(wait_id);
     }
     if !cancelled.is_empty() {
@@ -6133,7 +7277,7 @@ fn cancel_stale_unresolved_wait_owner_rows_tx(
             "cancelled stale unresolved wait conditions superseded by newer registration"
         );
     }
-    Ok(())
+    Ok(writes)
 }
 
 fn timer_message_has_unsettled_consumption_tx(
@@ -6784,19 +7928,24 @@ fn try_transition_claimable_message_tx(
     Ok(changed == 1)
 }
 
-fn timer_tx(tx: &Transaction<'_>, timer_id: &str) -> Result<Option<TimerRecord>> {
-    tx.query_row(
-        "SELECT payload_json FROM timers WHERE timer_id = ?1",
-        [timer_id],
-        |row| row.get::<_, String>(0),
-    )
-    .optional()?
-    .map(|payload| decode_timer_payload(&payload))
-    .transpose()
+pub(in crate::runtime_db) fn timer_tx(
+    tx: &Transaction<'_>,
+    timer_id: &str,
+) -> Result<Option<TimerRecord>> {
+    let mut statement = tx.prepare("SELECT payload_json FROM timers WHERE timer_id = ?1")?;
+    let mut rows = statement.query([timer_id])?;
+    rows.next()?.map(timer_row).transpose()
 }
 
-fn upsert_timer_tx(tx: &Transaction<'_>, record: &TimerRecord) -> Result<()> {
-    upsert_timer_updated_at_tx(tx, record, timer_updated_at(record))
+pub(crate) fn upsert_timer_tx(tx: &Transaction<'_>, record: &TimerRecord) -> Result<()> {
+    upsert_timer_with_write_tx(tx, record).map(|_| ())
+}
+
+pub(crate) fn upsert_timer_with_write_tx(
+    tx: &Transaction<'_>,
+    record: &TimerRecord,
+) -> Result<bool> {
+    upsert_timer_updated_at_with_write_tx(tx, record, timer_updated_at(record))
 }
 
 fn upsert_timer_updated_at_tx(
@@ -6804,12 +7953,29 @@ fn upsert_timer_updated_at_tx(
     record: &TimerRecord,
     updated_at: DateTime<Utc>,
 ) -> Result<()> {
+    upsert_timer_updated_at_with_write_tx(tx, record, updated_at).map(|_| ())
+}
+
+fn upsert_timer_updated_at_with_write_tx(
+    tx: &Transaction<'_>,
+    record: &TimerRecord,
+    updated_at: DateTime<Utc>,
+) -> Result<bool> {
     if record.status == TimerStatus::Active {
         super::reclamation::ensure_work_admission_tx(tx, &record.agent_id)?;
     }
+    crate::diagnostics::resource_io::admit_serialized_value(record)?;
     let payload_json = serde_json::to_string(record)?;
-    let status = enum_string(&record.status)?;
-    tx.execute(
+    let status = match record.status {
+        TimerStatus::Active => "active",
+        TimerStatus::Cancelled => "cancelled",
+        TimerStatus::Completed => "completed",
+    };
+    let created_at = timer_sql_timestamp(record.created_at)?;
+    let next_fire_at = record.next_fire_at.map(timer_sql_timestamp).transpose()?;
+    let last_fired_at = record.last_fired_at.map(timer_sql_timestamp).transpose()?;
+    let updated_at = timer_sql_timestamp(updated_at)?;
+    let changed = tx.execute(
         "INSERT INTO timers (
             timer_id, agent_id, status, summary, created_at, duration_ms,
             interval_ms, repeat, next_fire_at, last_fired_at, fire_count,
@@ -6858,73 +8024,128 @@ fn upsert_timer_updated_at_tx(
             record.agent_id,
             status,
             record.summary,
-            timestamp(record.created_at),
+            created_at,
             record.duration_ms as i64,
             record.interval_ms.map(|value| value as i64),
             i64::from(record.repeat),
-            record.next_fire_at.map(timestamp),
-            record.last_fired_at.map(timestamp),
+            next_fire_at,
+            last_fired_at,
             record.fire_count as i64,
-            timestamp(updated_at),
+            updated_at,
             payload_json,
         ],
     )?;
-    Ok(())
+    Ok(changed == 1)
 }
 
-fn merge_legacy_turn_evidence_tx(tx: &Transaction<'_>, derived: &TurnRecord) -> Result<TurnRecord> {
-    let Some(mut existing) = tx
-        .query_row(
-            "SELECT payload_json FROM turn_records WHERE turn_id = ?1",
-            [&derived.turn_id],
-            |row| row.get::<_, String>(0),
-        )
-        .optional()?
-        .map(|payload| decode_turn_record_payload(&payload))
-        .transpose()?
-    else {
-        return Ok(derived.clone());
-    };
-    if existing.agent_id != derived.agent_id {
-        return Err(RuntimeStateTransitionConflict::new(
-            "turn identity",
-            &derived.turn_id,
-            &existing.agent_id,
-            &derived.agent_id,
-        )
-        .into());
+fn timer_sql_timestamp(value: DateTime<Utc>) -> Result<String> {
+    crate::diagnostics::resource_io::admit_serialized_value(&value)?;
+    Ok(timestamp(value))
+}
+
+pub(crate) fn committed_turn_record_tx(
+    tx: &Transaction<'_>,
+    agent_id: &str,
+    turn_id: &str,
+) -> Result<CommittedTurnRecord> {
+    let payload: String = tx.query_row(
+        "SELECT payload_json FROM turn_records WHERE agent_id = ?1 AND turn_id = ?2",
+        params![agent_id, turn_id],
+        |row| row.get(0),
+    )?;
+    let record = decode_turn_record_payload(&payload)?;
+    anyhow::ensure!(
+        record.agent_id == agent_id && record.turn_id == turn_id,
+        "committed Turn scope mismatch for {turn_id}"
+    );
+    let mut input_assignments = Vec::new();
+    let mut affected_source_revisions = Vec::new();
+    let mut affected_turn_ids = BTreeSet::from([turn_id.to_string()]);
+    for message_id in record.input_message_ids.iter().collect::<BTreeSet<_>>() {
+        let (assigned_turn_id, revision, assigned_at): (String, i64, String) = tx.query_row(
+            "SELECT turn_id, revision, assigned_at FROM conversation_input_assignments WHERE agent_id = ?1 AND message_id = ?2",
+            params![agent_id, message_id], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        ).with_context(|| format!("reading committed input assignment for {message_id}"))?;
+        affected_turn_ids.insert(assigned_turn_id.clone());
+        let (source_agent_id, source_turn_id, source_revision, activity_seq, updated_at): (
+            String,
+            Option<String>,
+            i64,
+            Option<i64>,
+            String,
+        ) = tx
+            .query_row(
+                "SELECT agent_id, turn_id, revision, activity_seq, updated_at
+                 FROM conversation_source_revisions WHERE source_kind = ?1 AND source_id = ?2",
+                params![SOURCE_OPERATOR, message_id],
+                |row| {
+                    Ok((
+                        row.get(0)?,
+                        row.get(1)?,
+                        row.get(2)?,
+                        row.get(3)?,
+                        row.get(4)?,
+                    ))
+                },
+            )
+            .with_context(|| {
+                format!("reading committed input source projection for {message_id}")
+            })?;
+        anyhow::ensure!(
+            source_agent_id == agent_id
+                && source_turn_id.as_deref() == Some(assigned_turn_id.as_str()),
+            "committed input source projection scope mismatch for {message_id}"
+        );
+        affected_source_revisions.push(CommittedConversationSourceRevision {
+            agent_id: source_agent_id,
+            source_kind: SOURCE_OPERATOR.into(),
+            source_id: message_id.clone(),
+            turn_id: source_turn_id,
+            revision: u64::try_from(source_revision)?,
+            activity_seq: activity_seq.map(u64::try_from).transpose()?,
+            updated_at: parse_timestamp(&updated_at)?,
+        });
+        input_assignments.push(CommittedTurnInputAssignment {
+            agent_id: agent_id.into(),
+            message_id: message_id.clone(),
+            turn_id: assigned_turn_id,
+            revision: u64::try_from(revision)?,
+            assigned_at: parse_timestamp(&assigned_at)?,
+        });
     }
-    existing
-        .input_message_ids
-        .extend(derived.input_message_ids.iter().cloned());
-    existing
-        .tool_execution_ids
-        .extend(derived.tool_execution_ids.iter().cloned());
-    existing
-        .produced_brief_ids
-        .extend(derived.produced_brief_ids.iter().cloned());
-    existing
-        .delivery_summary_ids
-        .extend(derived.delivery_summary_ids.iter().cloned());
-    existing
-        .completed_work_item_ids
-        .extend(derived.completed_work_item_ids.iter().cloned());
-    existing
-        .waiting_condition_ids
-        .extend(derived.waiting_condition_ids.iter().cloned());
-    existing.input_message_ids.sort();
-    existing.input_message_ids.dedup();
-    existing.tool_execution_ids.sort();
-    existing.tool_execution_ids.dedup();
-    existing.produced_brief_ids.sort();
-    existing.produced_brief_ids.dedup();
-    existing.delivery_summary_ids.sort();
-    existing.delivery_summary_ids.dedup();
-    existing.completed_work_item_ids.sort();
-    existing.completed_work_item_ids.dedup();
-    existing.waiting_condition_ids.sort();
-    existing.waiting_condition_ids.dedup();
-    Ok(existing)
+    let mut affected_turn_revisions = Vec::new();
+    for affected_turn_id in affected_turn_ids {
+        let (summary, detail, result_settled, updated_at): (i64, i64, bool, String) = tx
+            .query_row(
+                "SELECT summary_revision, detail_revision, result_settled, updated_at
+             FROM conversation_turn_revisions WHERE agent_id = ?1 AND turn_id = ?2",
+                params![agent_id, affected_turn_id],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+            )
+            .with_context(|| format!("reading committed Turn projection for {affected_turn_id}"))?;
+        affected_turn_revisions.push(CommittedConversationTurnRevision {
+            agent_id: agent_id.into(),
+            turn_id: affected_turn_id,
+            revision: super::conversation::ConversationTurnRevision {
+                summary: u64::try_from(summary)?,
+                detail: u64::try_from(detail)?,
+                result_settled,
+            },
+            updated_at: parse_timestamp(&updated_at)?,
+        });
+    }
+    let revision = affected_turn_revisions
+        .iter()
+        .find(|projection| projection.turn_id == turn_id)
+        .ok_or_else(|| anyhow!("requested Turn projection missing from committed facts"))?
+        .revision;
+    Ok(CommittedTurnRecord {
+        record,
+        input_assignments,
+        revision,
+        affected_source_revisions,
+        affected_turn_revisions,
+    })
 }
 
 pub(crate) fn validate_turn_record_identity(
@@ -7218,382 +8439,11 @@ pub(crate) fn upsert_turn_record_tx(tx: &Transaction<'_>, record: &TurnRecord) -
     Ok(())
 }
 
-pub(crate) fn derive_turn_records_from_legacy_evidence(
-    messages: Vec<serde_json::Value>,
-    tool_executions: Vec<ToolExecutionRecord>,
-    briefs: Vec<BriefRecord>,
-    delivery_summaries: Vec<DeliverySummaryRecord>,
-    wait_conditions: Vec<WaitConditionRecord>,
-) -> Result<Vec<TurnRecord>> {
-    let mut records = BTreeMap::<String, TurnRecord>::new();
-    for raw_message in messages {
-        if let Some(message) = normalize_legacy_message_value(raw_message)? {
-            let turn_key = turn_key_from_message(&message);
-            let record = records.entry(turn_key.turn_id.clone()).or_insert_with(|| {
-                TurnRecord::new(&message.agent_id, &turn_key.turn_id, turn_key.turn_index)
-            });
-            reinforce_turn_index(record, &turn_key);
-            record.created_at = record.created_at.min(message.created_at);
-            record.input_message_ids.push(message.id.clone());
-            if record.trigger.is_none() {
-                record.trigger = Some(crate::types::TurnTriggerSummary::from_message(&message));
-            }
-            if record.current_work_item_id.is_none() {
-                record.current_work_item_id = message.work_item_id.clone();
-            }
-        }
-    }
-    for tool in tool_executions {
-        let Some(turn_key) = turn_key_from_optional(tool.turn_id.as_deref(), tool.turn_index)
-        else {
-            continue;
-        };
-        let record = records.entry(turn_key.turn_id.clone()).or_insert_with(|| {
-            TurnRecord::new(&tool.agent_id, &turn_key.turn_id, turn_key.turn_index)
-        });
-        reinforce_turn_index(record, &turn_key);
-        record.created_at = record.created_at.min(tool.created_at);
-        record.tool_execution_ids.push(tool.id.clone());
-        if record.current_work_item_id.is_none() {
-            record.current_work_item_id = tool.work_item_id.clone();
-        }
-    }
-    for brief in briefs {
-        let Some(turn_key) = turn_key_from_optional(
-            brief.turn_id.as_deref(),
-            brief.turn_index.unwrap_or_default(),
-        ) else {
-            continue;
-        };
-        let record = records.entry(turn_key.turn_id.clone()).or_insert_with(|| {
-            TurnRecord::new(&brief.agent_id, &turn_key.turn_id, turn_key.turn_index)
-        });
-        reinforce_turn_index(record, &turn_key);
-        record.created_at = record.created_at.min(brief.created_at);
-        record.produced_brief_ids.push(brief.id.clone());
-        if record.current_work_item_id.is_none() {
-            record.current_work_item_id = brief.work_item_id.clone();
-        }
-    }
-    for summary in delivery_summaries {
-        let Some(turn_key) = turn_key_from_optional(
-            summary.turn_id.as_deref(),
-            summary.source_turn_index.unwrap_or_default(),
-        ) else {
-            continue;
-        };
-        let record = records.entry(turn_key.turn_id.clone()).or_insert_with(|| {
-            TurnRecord::new(&summary.agent_id, &turn_key.turn_id, turn_key.turn_index)
-        });
-        reinforce_turn_index(record, &turn_key);
-        record.created_at = record.created_at.min(summary.created_at);
-        record.delivery_summary_ids.push(summary.id.clone());
-        record
-            .completed_work_item_ids
-            .push(summary.work_item_id.clone());
-        if record.current_work_item_id.is_none() {
-            record.current_work_item_id = Some(summary.work_item_id.clone());
-        }
-    }
-    for condition in wait_conditions {
-        let Some(turn_id) = condition
-            .turn_id
-            .as_deref()
-            .filter(|value| !value.trim().is_empty())
-        else {
-            continue;
-        };
-        let record = records
-            .entry(turn_id.trim().to_string())
-            .or_insert_with(|| TurnRecord::new(&condition.agent_id, turn_id.trim(), 0));
-        record.created_at = record.created_at.min(condition.created_at);
-        record.waiting_condition_ids.push(condition.id.clone());
-        if record.current_work_item_id.is_none() {
-            record.current_work_item_id = condition.work_item_id.clone();
-        }
-    }
-    for record in records.values_mut() {
-        record.input_message_ids.sort();
-        record.input_message_ids.dedup();
-        record.tool_execution_ids.sort();
-        record.tool_execution_ids.dedup();
-        record.produced_brief_ids.sort();
-        record.produced_brief_ids.dedup();
-        record.delivery_summary_ids.sort();
-        record.delivery_summary_ids.dedup();
-        record.completed_work_item_ids.sort();
-        record.completed_work_item_ids.dedup();
-        record.waiting_condition_ids.sort();
-        record.waiting_condition_ids.dedup();
-    }
-    Ok(records.into_values().collect())
-}
-
-pub(crate) struct DerivedTurnKey {
-    turn_id: String,
-    turn_index: u64,
-}
-
-pub(crate) fn reinforce_turn_index(record: &mut TurnRecord, turn_key: &DerivedTurnKey) {
-    if record.turn_index == 0 && turn_key.turn_index != 0 {
-        record.turn_index = turn_key.turn_index;
-    }
-}
-
-pub(crate) fn turn_key_from_message(message: &MessageEnvelope) -> DerivedTurnKey {
-    if let Some(turn_id) = message
-        .turn_id
-        .as_deref()
-        .filter(|value| !value.trim().is_empty())
-    {
-        return DerivedTurnKey {
-            turn_id: turn_id.trim().to_string(),
-            turn_index: 0,
-        };
-    }
-    let turn_index = message.message_seq.unwrap_or_default();
-    DerivedTurnKey {
-        turn_id: format!("legacy-turn-{turn_index}"),
-        turn_index,
-    }
-}
-
-pub(crate) fn turn_key_from_optional(
-    turn_id: Option<&str>,
-    turn_index: u64,
-) -> Option<DerivedTurnKey> {
-    if let Some(turn_id) = turn_id.filter(|value| !value.trim().is_empty()) {
-        return Some(DerivedTurnKey {
-            turn_id: turn_id.trim().to_string(),
-            turn_index,
-        });
-    }
-    (turn_index != 0).then(|| DerivedTurnKey {
-        turn_id: format!("legacy-turn-{turn_index}"),
-        turn_index,
-    })
-}
-
-pub(crate) fn newer_work_item_record(
-    candidate: &WorkItemRecord,
-    existing: &WorkItemRecord,
-) -> bool {
-    candidate
-        .revision
-        .cmp(&existing.revision)
-        .then_with(|| candidate.updated_at.cmp(&existing.updated_at))
-        .then_with(|| candidate.created_at.cmp(&existing.created_at))
-        .is_gt()
-}
-
-pub(crate) fn reduce_timer_records(records: Vec<TimerRecord>) -> BTreeMap<String, TimerRecord> {
-    let mut latest = BTreeMap::<String, TimerRecord>::new();
-    for record in records {
-        if latest
-            .get(&record.id)
-            .is_none_or(|existing| newer_timer_record(&record, existing))
-        {
-            latest.insert(record.id.clone(), record);
-        }
-    }
-    latest
-}
-
-pub(crate) fn newer_timer_record(candidate: &TimerRecord, existing: &TimerRecord) -> bool {
-    candidate
-        .fire_count
-        .cmp(&existing.fire_count)
-        .then_with(|| {
-            timer_status_rank(&candidate.status).cmp(&timer_status_rank(&existing.status))
-        })
-        .then_with(|| timer_updated_at(candidate).cmp(&timer_updated_at(existing)))
-        .then_with(|| candidate.created_at.cmp(&existing.created_at))
-        .then_with(|| candidate.id.cmp(&existing.id))
-        .is_gt()
-}
-
-pub(crate) fn timer_status_rank(status: &TimerStatus) -> u8 {
-    match status {
-        TimerStatus::Active => 0,
-        TimerStatus::Cancelled => 1,
-        TimerStatus::Completed => 2,
-    }
-}
-
 pub(crate) fn timer_updated_at(record: &TimerRecord) -> DateTime<Utc> {
     record
         .last_fired_at
         .or(record.next_fire_at)
         .unwrap_or(record.created_at)
-}
-
-pub(crate) fn reduce_external_trigger_records(
-    records: Vec<ExternalTriggerRecord>,
-) -> BTreeMap<String, ExternalTriggerRecord> {
-    let mut latest_by_id = BTreeMap::<String, ExternalTriggerRecord>::new();
-    for record in records {
-        if latest_by_id
-            .get(&record.external_trigger_id)
-            .is_none_or(|existing| newer_external_trigger_record(&record, existing))
-        {
-            latest_by_id.insert(
-                record.external_trigger_id.clone(),
-                normalize_external_trigger_record(record),
-            );
-        }
-    }
-
-    let mut active_by_agent = BTreeMap::<String, String>::new();
-    for record in latest_by_id.values() {
-        if record.status != ExternalTriggerStatus::Active {
-            continue;
-        }
-        let replace = active_by_agent
-            .get(&record.target_agent_id)
-            .and_then(|id| latest_by_id.get(id))
-            .is_none_or(|existing| newer_external_trigger_record(record, existing));
-        if replace {
-            active_by_agent.insert(
-                record.target_agent_id.clone(),
-                record.external_trigger_id.clone(),
-            );
-        }
-    }
-
-    for record in latest_by_id.values_mut() {
-        if record.status == ExternalTriggerStatus::Active
-            && active_by_agent.get(&record.target_agent_id) != Some(&record.external_trigger_id)
-        {
-            record.status = ExternalTriggerStatus::Revoked;
-            record.revoked_at.get_or_insert(record.created_at);
-        }
-    }
-    latest_by_id
-}
-
-pub(crate) fn normalize_external_trigger_record(
-    mut record: ExternalTriggerRecord,
-) -> ExternalTriggerRecord {
-    record.scope = ExternalTriggerScope::Agent;
-    record.delivery_mode = CallbackDeliveryMode::WakeHint;
-    record
-}
-
-pub(crate) fn newer_external_trigger_record(
-    candidate: &ExternalTriggerRecord,
-    existing: &ExternalTriggerRecord,
-) -> bool {
-    candidate
-        .delivery_count
-        .cmp(&existing.delivery_count)
-        .then_with(|| candidate.last_delivered_at.cmp(&existing.last_delivered_at))
-        .then_with(|| candidate.revoked_at.cmp(&existing.revoked_at))
-        .then_with(|| candidate.created_at.cmp(&existing.created_at))
-        .then_with(|| {
-            candidate
-                .external_trigger_id
-                .cmp(&existing.external_trigger_id)
-        })
-        .is_gt()
-}
-
-pub(crate) fn reduce_task_records(records: Vec<TaskRecord>) -> BTreeMap<String, TaskRecord> {
-    let mut latest = BTreeMap::<String, TaskRecord>::new();
-    for record in records {
-        if let Some(previous) = latest.get(&record.id) {
-            let mut merged = record.clone();
-            if merged.summary.is_none() {
-                merged.summary = previous.summary.clone();
-            }
-            if merged.detail.is_none() {
-                merged.detail = previous.detail.clone();
-            }
-            if merged.recovery.is_none() {
-                merged.recovery = previous.recovery.clone();
-            }
-            if newer_task_record(&merged, previous) {
-                latest.insert(record.id.clone(), merged);
-            }
-        } else {
-            latest.insert(record.id.clone(), record);
-        }
-    }
-    latest
-}
-
-pub(crate) fn reduce_work_item_delegation_records(
-    records: Vec<WorkItemDelegationRecord>,
-) -> BTreeMap<String, WorkItemDelegationRecord> {
-    let mut latest = BTreeMap::<String, WorkItemDelegationRecord>::new();
-    for record in records {
-        let should_replace = latest
-            .get(&record.delegation_id)
-            .is_none_or(|existing| record.updated_at >= existing.updated_at);
-        if should_replace {
-            latest.insert(record.delegation_id.clone(), record);
-        }
-    }
-    latest
-}
-
-pub(crate) fn reduce_context_episode_records(
-    records: Vec<ContextEpisodeRecord>,
-) -> BTreeMap<String, ContextEpisodeRecord> {
-    let mut latest = BTreeMap::<String, ContextEpisodeRecord>::new();
-    for record in records {
-        let should_replace = latest
-            .get(&record.id)
-            .is_none_or(|existing| record.finalized_at >= existing.finalized_at);
-        if should_replace {
-            latest.insert(record.id.clone(), record);
-        }
-    }
-    latest
-}
-
-pub(crate) fn reduce_workspace_entry_records(
-    records: Vec<WorkspaceEntry>,
-) -> BTreeMap<String, WorkspaceEntry> {
-    let mut latest = BTreeMap::<String, WorkspaceEntry>::new();
-    for record in records {
-        let should_replace = latest
-            .get(&record.workspace_id)
-            .is_none_or(|existing| record.updated_at >= existing.updated_at);
-        if should_replace {
-            latest.insert(record.workspace_id.clone(), record);
-        }
-    }
-    latest
-}
-
-pub(crate) fn reduce_workspace_occupancy_records(
-    records: Vec<WorkspaceOccupancyRecord>,
-) -> BTreeMap<String, WorkspaceOccupancyRecord> {
-    let mut latest = BTreeMap::<String, WorkspaceOccupancyRecord>::new();
-    for record in records {
-        let should_replace = latest
-            .get(&record.occupancy_id)
-            .is_none_or(|existing| record.released_at >= existing.released_at);
-        if should_replace {
-            latest.insert(record.occupancy_id.clone(), record);
-        }
-    }
-    latest
-}
-
-pub(crate) fn reduce_agent_identity_records(
-    records: Vec<AgentIdentityRecord>,
-) -> BTreeMap<String, AgentIdentityRecord> {
-    let mut latest = BTreeMap::<String, AgentIdentityRecord>::new();
-    for record in records {
-        let should_replace = latest
-            .get(&record.agent_id)
-            .is_none_or(|existing| record.updated_at >= existing.updated_at);
-        if should_replace {
-            latest.insert(record.agent_id.clone(), record);
-        }
-    }
-    latest
 }
 
 pub(crate) fn slim_task_record_for_payload(record: &TaskRecord) -> TaskRecord {
@@ -7630,14 +8480,6 @@ pub(crate) fn slim_task_detail_value(value: &serde_json::Value) -> serde_json::V
 
 pub(crate) fn truncate_task_payload_string(value: &str) -> String {
     value.chars().take(TASK_PAYLOAD_STRING_LIMIT).collect()
-}
-
-pub(crate) fn newer_task_record(candidate: &TaskRecord, existing: &TaskRecord) -> bool {
-    task_revision(candidate)
-        .cmp(&task_revision(existing))
-        .then_with(|| candidate.updated_at.cmp(&existing.updated_at))
-        .then_with(|| candidate.created_at.cmp(&existing.created_at))
-        .is_gt()
 }
 
 pub(crate) fn task_revision(record: &TaskRecord) -> i64 {
@@ -7856,6 +8698,32 @@ pub(crate) fn decode_timer_payload(payload: &str) -> Result<TimerRecord> {
     serde_json::from_str(payload).context("decoding timer payload from runtime db")
 }
 
+// Plain persistence reads rely on the caller's original material holder.
+// Inspection without an active phase remains unaccounted and unqualified.
+fn timer_row(row: &rusqlite::Row<'_>) -> Result<TimerRecord> {
+    let payload = row.get_ref(0)?.as_str()?;
+    crate::diagnostics::resource_io::admit_json_payload(payload)?;
+    decode_timer_payload(payload)
+}
+
+fn timer_list_on(
+    connection: &rusqlite::Connection,
+    sql: &str,
+    params: impl rusqlite::Params,
+) -> Result<Vec<TimerRecord>> {
+    let mut statement = connection.prepare(sql)?;
+    let mut rows = statement.query(params)?;
+    let mut records = Vec::new();
+    while let Some(row) = rows.next()? {
+        crate::diagnostics::resource_io::charge_owned_metadata(
+            u64::try_from(std::mem::size_of::<TimerRecord>())?,
+            1,
+        )?;
+        records.push(timer_row(row)?);
+    }
+    Ok(records)
+}
+
 pub(crate) fn decode_turn_record_payload(payload: &str) -> Result<TurnRecord> {
     serde_json::from_str(payload).context("decoding turn record payload from runtime db")
 }
@@ -7910,4 +8778,1010 @@ pub(crate) fn is_terminal_task_status(status: &TaskStatus) -> bool {
 
 pub(crate) fn timestamp(value: DateTime<Utc>) -> String {
     value.to_rfc3339_opts(chrono::SecondsFormat::Millis, true)
+}
+
+// Same-query readers for one context acquisition transaction.
+pub(crate) fn context_workspace_entries_on(
+    connection: &rusqlite::Connection,
+) -> Result<Vec<WorkspaceEntry>> {
+    let mut statement = connection.prepare(
+        "SELECT payload_json
+         FROM workspace_entries
+         ORDER BY updated_at DESC, created_at DESC, workspace_id ASC",
+    )?;
+    let rows = statement.query_map([], |row| row.get::<_, String>(0))?;
+    let mut records: Vec<_> = rows
+        .map(|row| decode_workspace_entry_payload(&row?))
+        .collect::<Result<_>>()?;
+    records.reverse();
+    Ok(records)
+}
+
+pub(crate) fn context_execution_roots_on(
+    connection: &rusqlite::Connection,
+    workspace_id: &str,
+) -> Result<Vec<ExecutionRootEntry>> {
+    let mut statement = connection.prepare(
+        "SELECT payload_json FROM execution_root_entries
+             WHERE workspace_id = ?1 AND removed_at IS NULL
+             ORDER BY created_at ASC",
+    )?;
+    let rows = statement.query_map([workspace_id], |row| row.get::<_, String>(0))?;
+    rows.map(|row| decode_execution_root_entry_payload(&row?))
+        .collect()
+}
+
+pub(crate) fn context_open_work_items_on(
+    connection: &rusqlite::Connection,
+    agent_id: &str,
+) -> Result<Vec<WorkItemRecord>> {
+    let mut statement = connection.prepare(
+        "SELECT payload_json
+         FROM work_items
+         WHERE agent_id = ?1 AND state = 'open'",
+    )?;
+    work_queue_records(&mut statement, [agent_id])
+}
+
+pub(crate) fn context_non_open_work_items_on(
+    connection: &rusqlite::Connection,
+    agent_id: &str,
+    limit: usize,
+) -> Result<Vec<WorkItemRecord>> {
+    if limit == 0 {
+        return Ok(Vec::new());
+    }
+    let limit = i64::try_from(limit).unwrap_or(i64::MAX);
+    let mut statement = connection.prepare(
+        "SELECT payload_json
+         FROM work_items
+         WHERE agent_id = ?1 AND state != 'open'
+         ORDER BY updated_at DESC, created_at DESC, work_item_id ASC
+         LIMIT ?2",
+    )?;
+    work_queue_records(&mut statement, params![agent_id, limit])
+}
+
+pub(crate) fn borrowed_payload<'row>(row: &'row rusqlite::Row<'_>) -> Result<&'row str> {
+    let value = row.get_ref(0)?;
+    Ok(value.as_str().map_err(|error| match error {
+        rusqlite::types::FromSqlError::InvalidType => rusqlite::Error::InvalidColumnType(
+            0,
+            row.as_ref().column_name(0).unwrap_or("").to_owned(),
+            value.data_type(),
+        ),
+        rusqlite::types::FromSqlError::Other(error) => {
+            rusqlite::Error::FromSqlConversionFailure(0, value.data_type(), error)
+        }
+        error => rusqlite::Error::FromSqlConversionFailure(0, value.data_type(), Box::new(error)),
+    })?)
+}
+
+// The caller retains the original material holder through its projection.
+fn work_queue_records(
+    statement: &mut rusqlite::Statement<'_>,
+    params: impl rusqlite::Params,
+) -> Result<Vec<WorkItemRecord>> {
+    let mut records = Vec::<WorkItemRecord>::new();
+    work_queue_records_into(statement, params, &mut records)?;
+    Ok(records)
+}
+
+fn work_queue_records_into(
+    statement: &mut rusqlite::Statement<'_>,
+    params: impl rusqlite::Params,
+    records: &mut Vec<WorkItemRecord>,
+) -> Result<()> {
+    let mut rows = statement.query(params)?;
+    while let Some(row) = rows.next()? {
+        let payload = borrowed_sql_text(row, 0)?;
+        if records.len() == records.capacity() {
+            let additional = records.capacity().max(4);
+            crate::diagnostics::resource_io::charge_owned_metadata(
+                u64::try_from(
+                    additional
+                        .checked_mul(std::mem::size_of::<WorkItemRecord>())
+                        .context("work queue capacity overflow")?,
+                )?,
+                additional,
+            )?;
+            records.try_reserve_exact(additional)?;
+        }
+        crate::diagnostics::resource_io::admit_json_payload(payload)?;
+        records.push(decode_work_item_payload(payload)?);
+    }
+    Ok(())
+}
+
+pub(crate) fn context_active_continuations_on(
+    connection: &rusqlite::Connection,
+    agent_id: &str,
+) -> Result<Vec<WorkItemContinuationFrame>> {
+    let mut statement = connection.prepare(
+        "SELECT payload_json
+         FROM work_item_continuations
+         WHERE agent_id = ?1 AND state = 'active'
+         ORDER BY updated_at DESC, created_at DESC, continuation_id ASC",
+    )?;
+    let mut rows = statement.query([agent_id])?;
+    let mut records = Vec::<WorkItemContinuationFrame>::new();
+    while let Some(row) = rows.next()? {
+        if records.len() == records.capacity() {
+            let additional = records.capacity().max(4);
+            crate::diagnostics::resource_io::charge_owned_metadata(
+                u64::try_from(
+                    additional
+                        .checked_mul(std::mem::size_of::<WorkItemContinuationFrame>())
+                        .context("continuation capacity overflow")?,
+                )?,
+                additional,
+            )
+            .context("continuation slots admission")?;
+            records
+                .try_reserve_exact(additional)
+                .context("continuation slots allocation")?;
+        }
+        let value = row.get_ref(0)?;
+        let column_name = row.as_ref().column_name(0)?;
+        let payload = value.as_str().map_err(|error| match error {
+            rusqlite::types::FromSqlError::InvalidType => {
+                rusqlite::Error::InvalidColumnType(0, column_name.to_owned(), value.data_type())
+            }
+            rusqlite::types::FromSqlError::Other(error) => {
+                rusqlite::Error::FromSqlConversionFailure(0, value.data_type(), error)
+            }
+            error => {
+                rusqlite::Error::FromSqlConversionFailure(0, value.data_type(), Box::new(error))
+            }
+        })?;
+        crate::diagnostics::resource_io::admit_json_payload(payload)
+            .context("continuation JSON admission")?;
+        records.push(decode_work_item_continuation_payload(payload)?);
+    }
+    Ok(records)
+}
+
+pub(crate) fn context_external_triggers_on(
+    connection: &rusqlite::Connection,
+    agent_id: &str,
+) -> Result<Vec<ExternalTriggerRecord>> {
+    external_trigger_list_on(
+        connection,
+        "SELECT payload_json
+         FROM external_triggers
+         WHERE target_agent_id = ?1
+         ORDER BY created_at DESC, external_trigger_id ASC",
+        [agent_id],
+    )
+}
+
+// The caller owns the active phase through its returned records. Legacy
+// inspection without a phase remains unqualified; do not create a detached one.
+fn external_trigger_on(
+    connection: &rusqlite::Connection,
+    sql: &str,
+    params: impl rusqlite::Params,
+) -> Result<Option<ExternalTriggerRecord>> {
+    let mut statement = connection.prepare(sql)?;
+    let mut rows = statement.query(params)?;
+    rows.next()?.map(external_trigger_row).transpose()
+}
+
+fn external_trigger_row(row: &rusqlite::Row<'_>) -> Result<ExternalTriggerRecord> {
+    let payload = row.get_ref(0)?.as_str()?;
+    crate::diagnostics::resource_io::admit_json_payload(payload)?;
+    decode_external_trigger_payload(payload)
+}
+
+fn external_trigger_list_on(
+    connection: &rusqlite::Connection,
+    sql: &str,
+    params: impl rusqlite::Params,
+) -> Result<Vec<ExternalTriggerRecord>> {
+    let mut statement = connection.prepare(sql)?;
+    let mut rows = statement.query(params)?;
+    let mut records = Vec::<ExternalTriggerRecord>::new();
+    while let Some(row) = rows.next()? {
+        if records.len() == records.capacity() {
+            let additional = records.capacity().max(4);
+            crate::diagnostics::resource_io::charge_owned_metadata(
+                u64::try_from(
+                    additional
+                        .checked_mul(std::mem::size_of::<ExternalTriggerRecord>())
+                        .context("trigger list capacity overflow")?,
+                )?,
+                additional,
+            )
+            .context("trigger list slots admission")?;
+            records
+                .try_reserve_exact(additional)
+                .context("trigger list slots allocation")?;
+        }
+        records.push(external_trigger_row(row)?);
+    }
+    Ok(records)
+}
+
+pub(crate) fn context_tasks_query_on(
+    connection: &rusqlite::Connection,
+    _agent_id: &str,
+    where_clause: &str,
+    params: [&str; 1],
+    limit: usize,
+) -> Result<Vec<TaskRecord>> {
+    if limit == 0 {
+        return Ok(Vec::new());
+    }
+    let limit = i64::try_from(limit).unwrap_or(i64::MAX);
+    let sql = format!(
+        "SELECT payload_json
+         FROM tasks
+         WHERE {where_clause}
+         ORDER BY updated_at DESC, created_at DESC, task_id ASC
+         LIMIT {limit}",
+    );
+    let mut statement = connection.prepare(&sql)?;
+    let mut rows = statement.query(params)?;
+    let mut records = Vec::<TaskRecord>::new();
+    while let Some(row) = rows.next()? {
+        let payload = borrowed_sql_text(row, 0)?;
+        if records.len() == records.capacity() {
+            let additional = records.capacity().max(4);
+            crate::diagnostics::resource_io::charge_owned_metadata(
+                u64::try_from(additional)?
+                    .checked_mul(std::mem::size_of::<TaskRecord>() as u64)
+                    .context("Task source Vec slots overflow")?,
+                additional,
+            )?;
+            records.try_reserve_exact(additional)?;
+        }
+        crate::diagnostics::resource_io::admit_json_payload(payload)?;
+        records.push(decode_task_payload(payload)?);
+    }
+    Ok(records)
+}
+
+pub(crate) fn context_active_waits_on(
+    connection: &rusqlite::Connection,
+    agent_id: &str,
+) -> Result<Vec<WaitConditionRecord>> {
+    let mut statement = connection.prepare(
+        "SELECT wait_condition_id, agent_id, work_item_id, status, kind, source,
+            subject_ref, waiting_for, created_at, updated_at, expires_at,
+            resolved_at, cancelled_at, last_turn_id, trigger_message_id, triggered_at,
+            wake_sources_json, continuation_json
+         FROM wait_conditions
+         WHERE agent_id = ?1 AND status = 'active'
+         ORDER BY updated_at DESC, created_at DESC, wait_condition_id ASC",
+    )?;
+    active_wait_records(&mut statement, [agent_id])
+}
+
+pub(crate) fn context_turn_by_id_on(
+    connection: &rusqlite::Connection,
+    agent_id: Option<&str>,
+    turn_id: &str,
+) -> Result<Option<TurnRecord>> {
+    let payload = if let Some(agent_id) = agent_id {
+        connection
+            .query_row(
+                "SELECT payload_json
+                 FROM turn_records
+                 WHERE agent_id = ?1 AND turn_id = ?2
+                 LIMIT 1",
+                params![agent_id, turn_id],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()?
+    } else {
+        connection
+            .query_row(
+                "SELECT payload_json
+                 FROM turn_records
+                 WHERE turn_id = ?1
+                 LIMIT 1",
+                [turn_id],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()?
+    };
+    payload
+        .map(|payload| decode_turn_record_payload(&payload))
+        .transpose()
+}
+
+pub(crate) fn context_recent_turns_on(
+    connection: &rusqlite::Connection,
+    agent_id: &str,
+    limit: usize,
+) -> Result<Vec<TurnRecord>> {
+    if limit == 0 {
+        return Ok(Vec::new());
+    }
+    let limit = i64::try_from(limit).unwrap_or(i64::MAX);
+    let mut statement = connection.prepare(
+        "SELECT payload_json
+         FROM turn_records
+         WHERE agent_id = ?1
+         ORDER BY turn_index DESC, created_at DESC, turn_id ASC
+         LIMIT ?2",
+    )?;
+    let rows = statement.query_map(params![agent_id, limit], |row| row.get::<_, String>(0))?;
+    let mut records = rows
+        .map(|row| decode_turn_record_payload(&row?))
+        .collect::<Result<Vec<_>>>()?;
+    records.reverse();
+    Ok(records)
+}
+
+pub(crate) fn context_owner_turns_on(
+    connection: &rusqlite::Connection,
+    agent_id: &str,
+    owner: &crate::types::TurnOwner,
+    limit: usize,
+) -> Result<Vec<TurnRecord>> {
+    if limit == 0 {
+        return Ok(Vec::new());
+    }
+    let limit = i64::try_from(limit).unwrap_or(i64::MAX);
+    let (owner_kind, owner_id) = owner.index_parts();
+    let mut statement = connection.prepare(
+        "SELECT payload_json
+         FROM turn_records
+         WHERE agent_id = ?1
+           AND owner_kind = ?2
+           AND owner_id IS ?3
+         ORDER BY turn_index DESC, created_at DESC, turn_id ASC
+         LIMIT ?4",
+    )?;
+    let rows = statement.query_map(params![agent_id, owner_kind, owner_id, limit], |row| {
+        row.get::<_, String>(0)
+    })?;
+    let mut records = rows
+        .map(|row| decode_turn_record_payload(&row?))
+        .collect::<Result<Vec<_>>>()?;
+    records.reverse();
+    Ok(records)
+}
+
+fn latest_trusted_operator_on(
+    connection: &rusqlite::Connection,
+    agent_id: Option<&str>,
+) -> Result<Option<MessageEnvelope>> {
+    let payload = if let Some(agent_id) = agent_id {
+        connection
+                .query_row(
+                    "SELECT payload_json
+                     FROM messages
+                     WHERE agent_id = ?1
+                       AND message_seq IS NOT NULL
+                       AND (
+                         json_extract(payload_json, '$.authority_class') IN ('operator_instruction', 'trusted_operator')
+                         OR (
+                           json_extract(payload_json, '$.authority_class') IS NULL
+                           AND json_extract(payload_json, '$.trust') IN ('operator_instruction', 'trusted_operator')
+                         )
+                       )
+                       AND json_extract(payload_json, '$.origin.kind') = 'operator'
+                     ORDER BY message_seq DESC, created_at DESC, message_id DESC
+                     LIMIT 1",
+                    [agent_id],
+                    |row| row.get::<_, String>(0),
+                )
+                .optional()?
+    } else {
+        connection
+                .query_row(
+                    "SELECT payload_json
+                     FROM messages
+                     WHERE message_seq IS NOT NULL
+                       AND (
+                         json_extract(payload_json, '$.authority_class') IN ('operator_instruction', 'trusted_operator')
+                         OR (
+                           json_extract(payload_json, '$.authority_class') IS NULL
+                           AND json_extract(payload_json, '$.trust') IN ('operator_instruction', 'trusted_operator')
+                         )
+                       )
+                       AND json_extract(payload_json, '$.origin.kind') = 'operator'
+                     ORDER BY message_seq DESC, created_at DESC, message_id DESC
+                     LIMIT 1",
+                    [],
+                    |row| row.get::<_, String>(0),
+                )
+                .optional()?
+    };
+    payload
+        .map(|payload| decode_message_payload(&payload))
+        .transpose()
+}
+
+pub(crate) fn context_anchor_messages_on(
+    connection: &rusqlite::Connection,
+    agent_id: Option<&str>,
+) -> Result<Vec<MessageEnvelope>> {
+    Ok(latest_trusted_operator_on(connection, agent_id)?
+        .into_iter()
+        .collect())
+}
+
+pub(crate) fn context_message_by_id_on(
+    connection: &rusqlite::Connection,
+    agent_id: Option<&str>,
+    message_id: &str,
+) -> Result<Option<MessageEnvelope>> {
+    let payload = if let Some(agent_id) = agent_id {
+        connection
+            .query_row(
+                "SELECT payload_json
+                 FROM messages
+                 WHERE agent_id = ?1 AND message_id = ?2
+                 LIMIT 1",
+                params![agent_id, message_id],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()?
+    } else {
+        connection
+            .query_row(
+                "SELECT payload_json
+                 FROM messages
+                 WHERE message_id = ?1
+                 LIMIT 1",
+                [message_id],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()?
+    };
+    payload
+        .map(|payload| decode_message_payload(&payload))
+        .transpose()
+}
+
+pub(crate) fn context_recent_transcript_on(
+    connection: &rusqlite::Connection,
+    agent_id: Option<&str>,
+    limit: usize,
+) -> Result<Vec<TranscriptEntry>> {
+    if limit == 0 {
+        return Ok(Vec::new());
+    }
+    let limit = i64::try_from(limit).unwrap_or(i64::MAX);
+    let mut records = if let Some(agent_id) = agent_id {
+        let mut statement = connection.prepare(
+            "SELECT payload_json
+             FROM transcript_entries
+             WHERE agent_id = ?1
+             ORDER BY COALESCE(transcript_seq, 9223372036854775807) DESC, created_at DESC, evidence_id ASC
+             LIMIT ?2",
+        )?;
+        let rows = statement.query_map(params![agent_id, limit], |row| row.get::<_, String>(0))?;
+        rows.map(|row| decode_transcript_entry_payload(&row?))
+            .collect::<Result<Vec<_>>>()?
+    } else {
+        let mut statement = connection.prepare(
+            "SELECT payload_json
+             FROM transcript_entries
+             ORDER BY COALESCE(transcript_seq, 9223372036854775807) DESC, created_at DESC, evidence_id ASC
+             LIMIT ?1",
+        )?;
+        let rows = statement.query_map([limit], |row| row.get::<_, String>(0))?;
+        rows.map(|row| decode_transcript_entry_payload(&row?))
+            .collect::<Result<Vec<_>>>()?
+    };
+    records.reverse();
+    Ok(records)
+}
+
+pub(crate) fn context_transcript_for_turns_on(
+    connection: &rusqlite::Connection,
+    agent_id: &str,
+    turn_ids: &[String],
+) -> Result<Vec<TranscriptEntry>> {
+    if turn_ids.is_empty() {
+        return Ok(Vec::new());
+    }
+    let placeholders = std::iter::repeat_n("?", turn_ids.len())
+        .collect::<Vec<_>>()
+        .join(", ");
+    let mut statement = connection.prepare(&format!(
+        "SELECT payload_json
+         FROM transcript_entries
+         WHERE agent_id = ?
+           AND turn_id IN ({placeholders})
+         ORDER BY COALESCE(transcript_seq, 9223372036854775807) ASC,
+                  created_at ASC,
+                  evidence_id ASC"
+    ))?;
+    let rows = statement.query_map(
+        params_from_iter(std::iter::once(agent_id).chain(turn_ids.iter().map(String::as_str))),
+        |row| row.get::<_, String>(0),
+    )?;
+    rows.map(|row| decode_transcript_entry_payload(&row?))
+        .collect()
+}
+
+pub(crate) fn context_transcript_by_id_on(
+    connection: &rusqlite::Connection,
+    agent_id: Option<&str>,
+    entry_id: &str,
+) -> Result<Option<TranscriptEntry>> {
+    let payload: Option<String> = if let Some(agent_id) = agent_id {
+        connection
+            .query_row(
+                "SELECT payload_json
+                 FROM transcript_entries
+                 WHERE agent_id = ?1 AND evidence_id = ?2
+                 LIMIT 1",
+                params![agent_id, entry_id],
+                |row| row.get(0),
+            )
+            .optional()?
+    } else {
+        connection
+            .query_row(
+                "SELECT payload_json
+                 FROM transcript_entries
+                 WHERE evidence_id = ?1
+                 LIMIT 1",
+                [entry_id],
+                |row| row.get(0),
+            )
+            .optional()?
+    };
+    payload
+        .map(|payload| decode_transcript_entry_payload(&payload))
+        .transpose()
+}
+
+pub(crate) fn context_recent_evidence_on(
+    connection: &rusqlite::Connection,
+    kind: EvidenceKind,
+    agent_id: &str,
+    limit: usize,
+) -> Result<Vec<EvidencePayloadRow>> {
+    if limit == 0 {
+        return Ok(Vec::new());
+    }
+    let limit = i64::try_from(limit).unwrap_or(i64::MAX);
+    let sql = format!(
+        "SELECT payload_json
+         FROM {}
+         WHERE agent_id = ?1
+         ORDER BY created_at DESC, evidence_id DESC
+         LIMIT ?2",
+        kind.table_name()
+    );
+    let mut statement = connection.prepare(&sql)?;
+    let mut rows = statement.query(params![agent_id, limit])?;
+    let mut records = Vec::new();
+    while let Some(row) = rows.next()? {
+        let payload = borrowed_sql_text(row, 0)?;
+        reserve_source_vec_slot(&mut records)?;
+        crate::diagnostics::resource_io::charge_owned_metadata(u64::try_from(payload.len())?, 1)?;
+        records.push(EvidencePayloadRow {
+            payload_json: payload.to_owned(),
+        });
+    }
+    records.reverse();
+    Ok(records)
+}
+
+pub(crate) fn reserve_source_vec_slot<T>(records: &mut Vec<T>) -> Result<()> {
+    if records.len() == records.capacity() {
+        let additional = records.capacity().max(4);
+        crate::diagnostics::resource_io::charge_owned_metadata(
+            u64::try_from(additional)?
+                .checked_mul(std::mem::size_of::<T>() as u64)
+                .context("source Vec capacity overflow")?,
+            additional,
+        )?;
+        records.try_reserve_exact(additional)?;
+    }
+    Ok(())
+}
+
+// Both loaded and cold schedulers need metadata, not the Event body capability.
+// Limit before filtering: an older error outside the original window is irrelevant.
+pub(crate) fn scheduler_latest_runtime_error_on(
+    connection: &rusqlite::Connection,
+    agent_id: &str,
+) -> Result<Option<DateTime<Utc>>> {
+    let mut query = connection.prepare(
+        "SELECT kind,created_at FROM audit_events WHERE agent_id=?1
+         ORDER BY event_seq DESC,created_at DESC LIMIT 64",
+    )?;
+    let mut rows = query.query([agent_id])?;
+    let mut latest = None;
+    while let Some(row) = rows.next()? {
+        let kind = borrowed_sql_text(row, 0)?;
+        let timestamp = borrowed_sql_text(row, 1)?;
+        let at = parse_timestamp(timestamp)?;
+        if kind == "runtime_error" {
+            latest = Some(latest.map_or(at, |previous: DateTime<Utc>| previous.max(at)));
+        }
+    }
+    Ok(latest)
+}
+
+pub(crate) fn audit_event_records(
+    statement: &mut rusqlite::Statement<'_>,
+    params: impl rusqlite::Params,
+) -> Result<Vec<AuditEvent>> {
+    let mut rows = statement.query(params)?;
+    let mut records = Vec::new();
+    while let Some(row) = rows.next()? {
+        let payload = borrowed_sql_text(row, 0)?;
+        reserve_source_vec_slot(&mut records)?;
+        crate::diagnostics::resource_io::admit_json_payload(payload)?;
+        records.push(serde_json::from_str(payload)?);
+    }
+    Ok(records)
+}
+
+pub(crate) fn context_evidence_by_id_on(
+    connection: &rusqlite::Connection,
+    kind: EvidenceKind,
+    agent_id: &str,
+    evidence_id: &str,
+) -> Result<Option<EvidencePayloadRow>> {
+    let sql = format!(
+        "SELECT payload_json
+         FROM {}
+         WHERE agent_id = ?1 AND evidence_id = ?2
+         LIMIT 1",
+        kind.table_name()
+    );
+    connection
+        .query_row(&sql, params![agent_id, evidence_id], |row| {
+            Ok(EvidencePayloadRow {
+                payload_json: row.get(0)?,
+            })
+        })
+        .optional()
+        .map_err(Into::into)
+}
+
+pub(crate) fn context_work_item_by_id_on(
+    connection: &rusqlite::Connection,
+    agent_id: &str,
+    work_item_id: &str,
+) -> Result<Option<WorkItemRecord>> {
+    connection
+        .query_row(
+            "SELECT payload_json FROM work_items WHERE agent_id = ?1 AND work_item_id = ?2",
+            params![agent_id, work_item_id],
+            |row| row.get::<_, String>(0),
+        )
+        .optional()?
+        .map(|payload| decode_work_item_payload(&payload))
+        .transpose()
+}
+
+pub(crate) fn context_work_items_by_ids_on(
+    connection: &rusqlite::Connection,
+    agent_id: &str,
+    ids: &[String],
+) -> Result<Vec<WorkItemRecord>> {
+    let mut records = Vec::new();
+    for chunk in ids.chunks(128) {
+        let placeholders = std::iter::repeat_n("?", chunk.len())
+            .collect::<Vec<_>>()
+            .join(",");
+        let sql = format!("SELECT payload_json FROM work_items WHERE agent_id = ? AND work_item_id IN ({placeholders})");
+        let mut statement = connection.prepare(&sql)?;
+        let rows = statement.query_map(
+            params_from_iter(std::iter::once(agent_id).chain(chunk.iter().map(String::as_str))),
+            |row| row.get::<_, String>(0),
+        )?;
+        records.extend(
+            rows.map(|row| decode_work_item_payload(&row?))
+                .collect::<Result<Vec<_>>>()?,
+        );
+    }
+    Ok(records)
+}
+
+// Focused qualification fixtures use these non-receipted adapters. Production
+// evidence writes use the prepared whole-transaction command.
+#[cfg(test)]
+impl TurnRecordRepository<'_> {
+    pub(crate) fn upsert_in_scope(
+        &self,
+        scope: &crate::runtime::resident_input_evidence::InputEvidenceScope,
+        record: &TurnRecord,
+    ) -> Result<super::input_evidence_writes::InputEvidenceCommit<CommittedTurnRecord>> {
+        self.db.transaction(|tx| {
+            super::input_evidence_writes::validate_input_evidence_scope_tx(
+                tx,
+                scope,
+                &record.agent_id,
+            )?;
+            super::input_evidence_snapshot::validate_existing_input_evidence_tx(
+                tx,
+                scope,
+                &crate::runtime::resident_input_evidence::InputEvidenceKey::new(
+                    crate::runtime::resident_input_evidence::InputEvidenceFamily::Turn,
+                    &record.turn_id,
+                ),
+            )?;
+            upsert_turn_record_tx(tx, record)?;
+            let actual = committed_turn_record_tx(tx, &record.agent_id, &record.turn_id)?;
+            let facts = [
+                super::input_evidence_snapshot::CanonicalInputEvidence::Turn(actual.record.clone()),
+            ];
+            super::input_evidence_writes::acknowledge_input_evidence_tx(tx, scope, actual, &facts)
+        })
+    }
+}
+#[cfg(test)]
+impl MessageRepository<'_> {
+    pub(crate) fn upsert_in_scope(
+        &self,
+        scope: &crate::runtime::resident_input_evidence::InputEvidenceScope,
+        record: &MessageEnvelope,
+    ) -> Result<super::input_evidence_writes::InputEvidenceCommit<MessageEnvelope>> {
+        self.upsert_with_index_changes_in_scope(scope, record, &[])
+    }
+    pub(crate) fn upsert_with_index_changes_in_scope(
+        &self,
+        scope: &crate::runtime::resident_input_evidence::InputEvidenceScope,
+        record: &MessageEnvelope,
+        changes: &[RuntimeIndexChange],
+    ) -> Result<super::input_evidence_writes::InputEvidenceCommit<MessageEnvelope>> {
+        self.db.transaction(|tx| {
+            super::input_evidence_writes::validate_input_evidence_scope_tx(
+                tx,
+                scope,
+                &record.agent_id,
+            )?;
+            super::input_evidence_snapshot::validate_existing_input_evidence_tx(
+                tx,
+                scope,
+                &crate::runtime::resident_input_evidence::InputEvidenceKey::new(
+                    crate::runtime::resident_input_evidence::InputEvidenceFamily::Message,
+                    &record.id,
+                ),
+            )?;
+            upsert_message_tx(tx, record)?;
+            insert_runtime_index_changes_tx(tx, changes)?;
+            let actual = committed_message_tx(tx, &record.agent_id, &record.id)?;
+            let facts =
+                [super::input_evidence_snapshot::CanonicalInputEvidence::Message(actual.clone())];
+            super::input_evidence_writes::acknowledge_input_evidence_tx(tx, scope, actual, &facts)
+        })
+    }
+    pub(crate) fn append_with_index_changes_in_scope(
+        &self,
+        scope: &crate::runtime::resident_input_evidence::InputEvidenceScope,
+        record: &MessageEnvelope,
+        changes: &[RuntimeIndexChange],
+    ) -> Result<super::input_evidence_writes::InputEvidenceCommit<MessageEnvelope>> {
+        self.db.transaction(|tx| {
+            super::input_evidence_writes::validate_input_evidence_scope_tx(
+                tx,
+                scope,
+                &record.agent_id,
+            )?;
+            super::input_evidence_snapshot::validate_existing_input_evidence_tx(
+                tx,
+                scope,
+                &crate::runtime::resident_input_evidence::InputEvidenceKey::new(
+                    crate::runtime::resident_input_evidence::InputEvidenceFamily::Message,
+                    &record.id,
+                ),
+            )?;
+            let (stored, inserted) = append_message_tx(tx, record)?;
+            if inserted {
+                insert_runtime_index_changes_tx(tx, changes)?;
+            }
+            let actual = committed_message_tx(tx, &stored.agent_id, &stored.id)?;
+            let facts =
+                [super::input_evidence_snapshot::CanonicalInputEvidence::Message(actual.clone())];
+            super::input_evidence_writes::acknowledge_input_evidence_tx(tx, scope, actual, &facts)
+        })
+    }
+}
+#[cfg(test)]
+impl TranscriptRepository<'_> {
+    pub(crate) fn upsert_in_scope(
+        &self,
+        scope: &crate::runtime::resident_input_evidence::InputEvidenceScope,
+        record: &TranscriptEntry,
+    ) -> Result<super::input_evidence_writes::InputEvidenceCommit<TranscriptEntry>> {
+        self.db.transaction(|tx| {
+            super::input_evidence_writes::validate_input_evidence_scope_tx(
+                tx,
+                scope,
+                &record.agent_id,
+            )?;
+            super::input_evidence_snapshot::validate_existing_input_evidence_tx(
+                tx,
+                scope,
+                &crate::runtime::resident_input_evidence::InputEvidenceKey::new(
+                    crate::runtime::resident_input_evidence::InputEvidenceFamily::Transcript,
+                    &record.id,
+                ),
+            )?;
+            upsert_transcript_entry_tx(tx, record)?;
+            let actual = committed_transcript_tx(tx, &record.agent_id, &record.id)?;
+            let facts = [
+                super::input_evidence_snapshot::CanonicalInputEvidence::Transcript(actual.clone()),
+            ];
+            super::input_evidence_writes::acknowledge_input_evidence_tx(tx, scope, actual, &facts)
+        })
+    }
+    pub(crate) fn append_in_scope(
+        &self,
+        scope: &crate::runtime::resident_input_evidence::InputEvidenceScope,
+        record: &TranscriptEntry,
+    ) -> Result<super::input_evidence_writes::InputEvidenceCommit<TranscriptEntry>> {
+        self.db.transaction(|tx| {
+            super::input_evidence_writes::validate_input_evidence_scope_tx(
+                tx,
+                scope,
+                &record.agent_id,
+            )?;
+            super::input_evidence_snapshot::validate_existing_input_evidence_tx(
+                tx,
+                scope,
+                &crate::runtime::resident_input_evidence::InputEvidenceKey::new(
+                    crate::runtime::resident_input_evidence::InputEvidenceFamily::Transcript,
+                    &record.id,
+                ),
+            )?;
+            append_transcript_entry_tx(tx, record)?;
+            let actual = committed_transcript_tx(tx, &record.agent_id, &record.id)?;
+            let facts = [
+                super::input_evidence_snapshot::CanonicalInputEvidence::Transcript(actual.clone()),
+            ];
+            super::input_evidence_writes::acknowledge_input_evidence_tx(tx, scope, actual, &facts)
+        })
+    }
+}
+#[cfg(test)]
+impl EvidenceRepository<'_> {
+    pub(crate) fn append_message_in_scope(
+        &self,
+        scope: &crate::runtime::resident_input_evidence::InputEvidenceScope,
+        record: &MessageEnvelope,
+    ) -> Result<super::input_evidence_writes::InputEvidenceCommit<MessageEnvelope>> {
+        self.db.transaction(|tx| {
+            super::input_evidence_writes::validate_input_evidence_scope_tx(
+                tx,
+                scope,
+                &record.agent_id,
+            )?;
+            super::input_evidence_snapshot::validate_existing_input_evidence_tx(
+                tx,
+                scope,
+                &crate::runtime::resident_input_evidence::InputEvidenceKey::new(
+                    crate::runtime::resident_input_evidence::InputEvidenceFamily::Message,
+                    &record.id,
+                ),
+            )?;
+            insert_message_evidence_tx(tx, record)?;
+            let actual = committed_message_tx(tx, &record.agent_id, &record.id)?;
+            let facts =
+                [super::input_evidence_snapshot::CanonicalInputEvidence::Message(actual.clone())];
+            super::input_evidence_writes::acknowledge_input_evidence_tx(tx, scope, actual, &facts)
+        })
+    }
+    pub(crate) fn append_transcript_entry_in_scope(
+        &self,
+        scope: &crate::runtime::resident_input_evidence::InputEvidenceScope,
+        record: &TranscriptEntry,
+    ) -> Result<super::input_evidence_writes::InputEvidenceCommit<TranscriptEntry>> {
+        self.db.transaction(|tx| {
+            super::input_evidence_writes::validate_input_evidence_scope_tx(
+                tx,
+                scope,
+                &record.agent_id,
+            )?;
+            super::input_evidence_snapshot::validate_existing_input_evidence_tx(
+                tx,
+                scope,
+                &crate::runtime::resident_input_evidence::InputEvidenceKey::new(
+                    crate::runtime::resident_input_evidence::InputEvidenceFamily::Transcript,
+                    &record.id,
+                ),
+            )?;
+            insert_transcript_evidence_tx(tx, record)?;
+            let actual = committed_transcript_tx(tx, &record.agent_id, &record.id)?;
+            let facts = [
+                super::input_evidence_snapshot::CanonicalInputEvidence::Transcript(actual.clone()),
+            ];
+            super::input_evidence_writes::acknowledge_input_evidence_tx(tx, scope, actual, &facts)
+        })
+    }
+    pub(crate) fn append_tool_execution_in_scope(
+        &self,
+        scope: &crate::runtime::resident_input_evidence::InputEvidenceScope,
+        record: &ToolExecutionRecord,
+        changes: &[RuntimeIndexChange],
+    ) -> Result<super::input_evidence_writes::InputEvidenceCommit<()>> {
+        self.db.transaction(|tx| {
+            super::input_evidence_writes::validate_input_evidence_scope_tx(
+                tx,
+                scope,
+                &record.agent_id,
+            )?;
+            super::input_evidence_snapshot::validate_existing_input_evidence_tx(
+                tx,
+                scope,
+                &crate::runtime::resident_input_evidence::InputEvidenceKey::new(
+                    crate::runtime::resident_input_evidence::InputEvidenceFamily::ToolExecution,
+                    &record.id,
+                ),
+            )?;
+            insert_tool_evidence_tx(tx, record)?;
+            insert_runtime_index_changes_tx(tx, changes)?;
+            let actual = committed_tool_tx(tx, &record.agent_id, &record.id)?;
+            let facts =
+                [super::input_evidence_snapshot::CanonicalInputEvidence::ToolExecution(actual)];
+            super::input_evidence_writes::acknowledge_input_evidence_tx(tx, scope, (), &facts)
+        })
+    }
+    pub(crate) fn append_brief_in_scope(
+        &self,
+        scope: &crate::runtime::resident_input_evidence::InputEvidenceScope,
+        record: &BriefRecord,
+        changes: &[RuntimeIndexChange],
+    ) -> Result<super::input_evidence_writes::InputEvidenceCommit<BriefRecord>> {
+        self.db.transaction(|tx| {
+            super::input_evidence_writes::validate_input_evidence_scope_tx(
+                tx,
+                scope,
+                &record.agent_id,
+            )?;
+            super::input_evidence_snapshot::validate_existing_input_evidence_tx(
+                tx,
+                scope,
+                &crate::runtime::resident_input_evidence::InputEvidenceKey::new(
+                    crate::runtime::resident_input_evidence::InputEvidenceFamily::Brief,
+                    &record.id,
+                ),
+            )?;
+            insert_brief_evidence_tx(tx, record)?;
+            insert_runtime_index_changes_tx(tx, changes)?;
+            let actual = committed_brief_tx(tx, &record.agent_id, &record.id)?;
+            let facts =
+                [super::input_evidence_snapshot::CanonicalInputEvidence::Brief(actual.clone())];
+            super::input_evidence_writes::acknowledge_input_evidence_tx(tx, scope, actual, &facts)
+        })
+    }
+    pub(crate) fn append_brief_with_created_event_in_scope(
+        &self,
+        scope: &crate::runtime::resident_input_evidence::InputEvidenceScope,
+        agent_id: Option<&str>,
+        record: &BriefRecord,
+        event: &AuditEvent,
+        changes: &[RuntimeIndexChange],
+    ) -> Result<
+        super::input_evidence_writes::InputEvidenceCommit<super::evidence::BriefCreatedCommit>,
+    > {
+        self.db.transaction(|tx| {
+            super::input_evidence_writes::validate_input_evidence_scope_tx(
+                tx,
+                scope,
+                &record.agent_id,
+            )?;
+            anyhow::ensure!(
+                agent_id == Some(scope.agent_id.as_str()),
+                "Brief audit owner differs from reserved input scope"
+            );
+            super::input_evidence_snapshot::validate_existing_input_evidence_tx(
+                tx,
+                scope,
+                &crate::runtime::resident_input_evidence::InputEvidenceKey::new(
+                    crate::runtime::resident_input_evidence::InputEvidenceFamily::Brief,
+                    &record.id,
+                ),
+            )?;
+            let actual = append_brief_with_created_event_tx(tx, agent_id, record, event, changes)?;
+            let facts = [
+                super::input_evidence_snapshot::CanonicalInputEvidence::Brief(actual.brief.clone()),
+            ];
+            super::input_evidence_writes::acknowledge_input_evidence_tx(tx, scope, actual, &facts)
+        })
+    }
 }

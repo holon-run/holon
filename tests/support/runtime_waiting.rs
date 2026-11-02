@@ -35,7 +35,7 @@ use holon::{
         OperatorTransportDeliveryAuth, OperatorTransportDeliveryAuthKind, Priority,
         QueueEntryStatus, TaskStatus, TodoItem, TodoItemState, TokenUsage, TranscriptEntry,
         TranscriptEntryKind, TurnNoBriefReason, TurnTerminalKind, WaitConditionKind, WaitingReason,
-        WorkItemState,
+        WorkItemPlanStatus, WorkItemState,
     },
 };
 use serde_json::json;
@@ -85,6 +85,45 @@ fn admitted_operator_prompt(
     )
 }
 
+async fn wait_for_completed_turn(
+    runtime: &holon::runtime::RuntimeHandle,
+    message_id: &str,
+) -> Result<()> {
+    // Poll the resident terminal before opening canonical readers: repeated
+    // schema loading must not contend with the actor this fixture observes.
+    wait_until_async(|| async {
+        if !runtime
+            .agent_state()
+            .await?
+            .last_turn_terminal
+            .as_ref()
+            .is_some_and(|terminal| terminal.kind == TurnTerminalKind::Completed)
+        {
+            return Ok(false);
+        }
+        Ok(runtime.storage().read_recent_turns(20)?.iter().any(|turn| {
+            turn.input_message_ids.iter().any(|id| id == message_id)
+                && turn
+                    .terminal
+                    .as_ref()
+                    .is_some_and(|terminal| terminal.kind == TurnTerminalKind::Completed)
+        }))
+    })
+    .await
+    .map_err(|error| {
+        error.context(format!(
+            "message {message_id} did not settle; data_dir={:?}; agent={:?}; turns={:?}; queue={:?}",
+            runtime.storage().data_dir(),
+            runtime
+                .storage()
+                .read_agent()
+                .map(|agent| agent.map(|agent| (agent.status, agent.last_runtime_failure))),
+            runtime.storage().read_recent_turns(5),
+            runtime.storage().read_recent_queue_entries(5),
+        ))
+    })
+}
+
 async fn invoke_new_subagent(
     runtime: &holon::runtime::RuntimeHandle,
     message: String,
@@ -93,7 +132,7 @@ async fn invoke_new_subagent(
     model_request: Option<holon::types::AgentModelRequest>,
 ) -> Result<holon::types::AgentInvocationReceipt> {
     let registry = ToolRegistry::new(std::path::PathBuf::new());
-    let caller_agent_id = runtime.agent_summary().await?.identity.agent_id;
+    let caller_agent_id = runtime.agent_summary().await?.identity.agent_id.clone();
     let (result, _) = registry
         .execute(
             runtime,
@@ -170,6 +209,7 @@ impl AgentProvider for WaitForDispatchProvider {
         });
 
         Ok(ProviderTurnResponse {
+            material: Default::default(),
             blocks,
             stop_reason: None,
             input_tokens: 10,
@@ -352,6 +392,7 @@ impl AgentProvider for QueuedTaskResultWaitProvider {
         };
 
         Ok(ProviderTurnResponse {
+            material: Default::default(),
             blocks,
             stop_reason: None,
             input_tokens: 10,
@@ -812,13 +853,7 @@ pub async fn turn_execution_boundary_persists_queue_transcript_and_briefs() -> R
         ))
         .await?;
 
-    wait_until(|| {
-        let queue_entries = runtime.storage().read_recent_queue_entries(20)?;
-        Ok(queue_entries.iter().any(|entry| {
-            entry.message_id == message.id && entry.status == QueueEntryStatus::Processed
-        }))
-    })
-    .await?;
+    wait_for_completed_turn(&runtime, &message.id).await?;
 
     let queue_entries = runtime.storage().read_recent_queue_entries(20)?;
     let statuses = queue_entries
@@ -878,7 +913,7 @@ pub async fn message_processing_creates_briefs_and_sleeps() -> Result<()> {
 
     let message = admitted_operator_prompt("default", "hello");
     runtime.enqueue(message.clone()).await?;
-    tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+    wait_for_completed_turn(&runtime, &message.id).await?;
 
     let briefs = runtime.recent_briefs(10).await?;
     assert_eq!(briefs.len(), 1);
@@ -1075,12 +1110,13 @@ pub async fn update_work_item_creates_and_updates_persisted_snapshot() -> Result
     let created = runtime
         .create_work_item(
             "Ship work-item runtime foundation".into(),
-            None,
+            Some(WorkItemPlanStatus::NeedsInput),
             None,
             Vec::new(),
         )
         .await?;
     assert!(created.id.starts_with("work_"));
+    assert_eq!(created.plan_status, WorkItemPlanStatus::NeedsInput);
 
     let updated = runtime
         .update_work_item_fields(
@@ -1096,6 +1132,7 @@ pub async fn update_work_item_creates_and_updates_persisted_snapshot() -> Result
     let latest = runtime.latest_work_item(&created.id).await?.unwrap();
     assert_eq!(latest.id, created.id);
     assert_eq!(latest.state, WorkItemState::Open);
+    assert_eq!(latest.plan_status, WorkItemPlanStatus::NeedsInput);
     assert_eq!(
         latest.blocked_by.as_deref(),
         Some("queued follow-up after CI")
@@ -1617,10 +1654,10 @@ pub async fn agent_summary_last_turn_token_usage_survives_transcript_windowing()
     let host = RuntimeHost::new_with_provider(test_config(), Arc::new(ToolUsingProvider::new()))?;
     let runtime = host.default_runtime().await?;
 
-    runtime
+    let message = runtime
         .enqueue(admitted_operator_prompt("default", "inspect session state"))
         .await?;
-    tokio::time::sleep(std::time::Duration::from_millis(400)).await;
+    wait_for_completed_turn(&runtime, &message.id).await?;
 
     for i in 0..60 {
         runtime
@@ -1689,10 +1726,9 @@ pub async fn default_external_ingress_register_and_revoke_state() -> Result<()> 
     let host = RuntimeHost::new_with_provider(test_config(), Arc::new(StubProvider::new("ok")))?;
     let runtime = host.default_runtime().await?;
     let registry = ToolRegistry::new(runtime.workspace_root());
-    let work_item = runtime
-        .create_work_item("wait for CI callback".into(), None, None, Vec::new())
-        .await?;
-    runtime.pick_work_item(work_item.id).await?;
+    let before = runtime.agent_summary().await?;
+    assert!(before.active_wait_conditions.is_empty());
+    assert_ne!(before.closure.outcome, ClosureOutcome::Waiting);
 
     let create_error = registry
         .execute(
@@ -1722,13 +1758,17 @@ pub async fn default_external_ingress_register_and_revoke_state() -> Result<()> 
         .next()
         .expect("trigger url should end with a token");
 
-    let waiting: Vec<()> = vec![];
     let descriptors = runtime.latest_external_triggers().await?;
-    assert!(waiting.is_empty());
     assert_eq!(descriptors.len(), 1);
     assert_eq!(descriptors[0].status, ExternalTriggerStatus::Active);
 
     let summary = runtime.agent_summary().await?;
+    assert!(summary.active_wait_conditions.is_empty());
+    assert_eq!(summary.closure.outcome, before.closure.outcome);
+    assert_eq!(
+        summary.closure.waiting_reason,
+        before.closure.waiting_reason
+    );
     assert_eq!(summary.active_external_triggers.len(), 1);
     assert_ne!(summary.closure.outcome, ClosureOutcome::Waiting);
     assert_ne!(
@@ -1792,9 +1832,12 @@ pub async fn default_external_ingress_register_and_revoke_state() -> Result<()> 
         .expect("external_trigger_revoked event");
     assert!(cancelled_event.data["external_trigger_id"].is_string());
 
-    let waiting: Vec<()> = vec![];
     let descriptors = runtime.latest_external_triggers().await?;
-    assert!(waiting.is_empty());
+    assert!(runtime
+        .agent_summary()
+        .await?
+        .active_wait_conditions
+        .is_empty());
     let revoked_descriptor = descriptors
         .iter()
         .find(|descriptor| descriptor.external_trigger_id == capability.external_trigger_id)

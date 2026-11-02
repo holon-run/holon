@@ -1,5 +1,6 @@
 #![allow(dead_code, unused_imports)]
 
+pub(crate) use super::runtime_state::recover_quiescent_startup_fixture;
 pub(crate) use async_trait::async_trait;
 pub(crate) use chrono::Utc;
 pub(crate) use std::path::PathBuf;
@@ -45,6 +46,83 @@ pub(crate) use lifecycle::{
     TERMINAL_PRE_COMMIT_FAULTS,
 };
 
+/// Seed Queue progress through the original writer, including its Current ACK.
+pub(crate) async fn persist_native_queue_fixture(
+    runtime: &RuntimeHandle,
+    record: crate::types::QueueEntryRecord,
+) {
+    use crate::runtime_db::transitions::{
+        PreparedQueueTransition, QueueMutation, QueueOperation, QueueTransitionCommand,
+    };
+    let statuses = match record.status {
+        QueueEntryStatus::Dequeued | QueueEntryStatus::Interjected => {
+            vec![QueueEntryStatus::Queued, record.status.clone()]
+        }
+        _ => vec![record.status.clone()],
+    };
+    for status in statuses {
+        let mut entry = record.clone();
+        entry.status = status;
+        let (operation, mutation) = match entry.status {
+            QueueEntryStatus::Queued => (QueueOperation::Admit, QueueMutation::Upsert(entry)),
+            QueueEntryStatus::Dequeued => (QueueOperation::Claim, QueueMutation::Consume(entry)),
+            QueueEntryStatus::Interjected => {
+                (QueueOperation::Interject, QueueMutation::Consume(entry))
+            }
+            QueueEntryStatus::Processed => (QueueOperation::Settle, QueueMutation::Upsert(entry)),
+            _ => panic!("unsupported native Queue fixture status"),
+        };
+        let commit = {
+            let mut mutation_guard = runtime.begin_mutation().await.unwrap();
+            if matches!(operation, QueueOperation::Admit) {
+                let (_, record_limit, byte_limit) =
+                    mutation_guard.context_input_evidence_policy().unwrap();
+                let request =
+                    crate::runtime_db::input_evidence_snapshot::InputEvidenceLoadRequest {
+                        query: None,
+                        windows: Vec::new(),
+                        mandatory_roots: std::collections::BTreeSet::from([
+                            crate::runtime::resident_input_evidence::InputEvidenceKey::new(
+                                crate::runtime::resident_input_evidence::InputEvidenceFamily::Message,
+                                &record.message_id,
+                            ),
+                        ]),
+                        interrupted_sources: Default::default(),
+                        selected_completion_brief_ids: Default::default(),
+                        record_limit,
+                        byte_limit,
+                    };
+                mutation_guard
+                    .prepare_owner_input_request(&request, 0)
+                    .await
+                    .unwrap();
+            }
+            mutation_guard
+                .commit_prepared_queue(
+                    crate::ids::audit_event_id(),
+                    PreparedQueueTransition::new(QueueTransitionCommand {
+                        agent_id: record.agent_id.clone(),
+                        operation,
+                        mutation,
+                        scheduler_claim_work_item: None,
+                        agent_state: None,
+                        message_evidence: Vec::new(),
+                        transcript_entries: Vec::new(),
+                        turn_record: None,
+                        audit_events: Vec::new(),
+                        notify_scheduler: false,
+                        fault: None,
+                        brief_evidence: Vec::new(),
+                    }),
+                )
+                .await
+                .unwrap()
+        };
+        assert!(commit.applied);
+        runtime.apply_transition_commit(commit).await;
+    }
+}
+
 /// Prompt budget estimated from the live PublicNamed tool registry, matching
 /// `context_config()`. Tool descriptions drift over time and shift this
 /// budget, so tests with size-sensitive fixtures should scale their fixtures
@@ -77,6 +155,12 @@ pub(crate) fn context_config() -> ContextConfig {
     }
 }
 
+pub(crate) fn isolate_test_user_home(runtime: &RuntimeHandle) {
+    let mut config = (*runtime.inner.config_snapshot.load_full()).clone();
+    config.user_home_dir = None;
+    runtime.inner.config_snapshot.store(Arc::new(config));
+}
+
 pub(crate) fn continuation_ready_context_config(
     workspace: &TempDir,
     continuation_effective_budget: usize,
@@ -105,11 +189,75 @@ pub(crate) fn continuation_ready_context_config(
     }
 }
 
+/// Crate-level fixtures use the same qualified Task writer as runtime tests.
+pub(crate) async fn persist_task_transition(
+    runtime: &RuntimeHandle,
+    record: &TaskRecord,
+    event_type: &'static str,
+) -> anyhow::Result<()> {
+    runtime.persist_task_transition(record, event_type).await
+}
+
+/// Persist the original Timer creation ACK, leaving its loop unarmed so restart
+/// is the first producer. This models a crash after durable creation.
+pub(crate) async fn persist_timer_creation_for_restart(
+    runtime: &RuntimeHandle,
+    record: &TimerRecord,
+) -> anyhow::Result<()> {
+    let mut mutation = runtime.begin_mutation().await?;
+    let prepared = crate::runtime_db::transitions::PreparedInputTransition::timer(
+        mutation.input_evidence_scope(),
+        crate::ids::audit_event_id(),
+        runtime.now(),
+        crate::runtime_db::transitions::PreparedTimerTransition::create(record.clone(), None),
+    )?;
+    let (commit, outcome) = mutation.commit_prepared_timer_transition(prepared).await?;
+    assert!(matches!(outcome,
+        crate::runtime_db::transitions::TimerMutationOutcome::Created { record: actual }
+        if actual == *record));
+    drop(mutation);
+    runtime.apply_transition_commit(commit).await;
+    Ok(())
+}
+
+/// Historical parent evidence is committed through the original evidence writer;
+/// it does not stand in for an execution attempt or an active parent dispatch.
+pub(crate) async fn persist_completed_task_parent_fixture(
+    runtime: &RuntimeHandle,
+    turn_id: &str,
+    work_item_id: Option<&str>,
+) -> anyhow::Result<()> {
+    let mut mutation = runtime.begin_mutation().await?;
+    let at = runtime.now();
+    let mut record = TurnRecord::new(
+        &mutation.state.id,
+        turn_id,
+        mutation.state.turn_index.max(1),
+    );
+    record.created_at = at;
+    record.current_work_item_id = work_item_id.map(str::to_owned);
+    record.terminal = Some(crate::types::TurnTerminalSummary {
+        kind: TurnTerminalKind::Completed,
+        reason: Some("historical_task_parent_fixture".into()),
+        no_brief_reason: None,
+        completed_at: at,
+        duration_ms: 0,
+    });
+    let prepared = crate::runtime_db::prepared_input_evidence::PreparedInputEvidence::turn(
+        mutation.input_evidence_scope(),
+        crate::ids::audit_event_id(),
+        at,
+        record,
+    )?;
+    mutation.commit_prepared_evidence(prepared, None).await?;
+    Ok(())
+}
+
 pub(crate) async fn finish_claimed_test_run(runtime: &RuntimeHandle) {
     let mut guard = runtime.inner.agent.lock().await;
-    scheduler::apply_idle_projection(&mut guard.state, &runtime.inner.storage).unwrap();
+    // Provider polling has ended; the original queue terminal transaction owns
+    // durable Run/State closure and its dispatch Memory settlement.
     guard.current_run_abort = None;
-    guard.persist_state(&runtime.inner.storage).unwrap();
 }
 
 pub(crate) fn terminal_transition(
@@ -137,9 +285,10 @@ pub(crate) fn terminal_transition(
     turn_record.terminal = Some(crate::types::TurnTerminalSummary::from_terminal(&terminal));
     super::super::turn::TurnTerminalTransition {
         terminal,
-        turn_record,
+        turn_record: super::super::turn::inputs::BuiltTurnRecord::fixture(turn_record),
         prepared_work_item_completion: None,
         prepared_wait_for: None,
+        provider_recovery_message: None,
         terminal_tool_executions: Vec::new(),
     }
 }
@@ -158,7 +307,7 @@ pub(crate) fn terminal_transition_from_started_turn(
     record.terminal = Some(crate::types::TurnTerminalSummary::from_terminal(
         &transition.terminal,
     ));
-    transition.turn_record = record;
+    transition.turn_record = super::super::turn::inputs::BuiltTurnRecord::fixture(record);
     transition
 }
 
@@ -188,7 +337,9 @@ pub(crate) async fn host_backed_test_runtime() -> (TempDir, RuntimeHost, Runtime
         r#"{"model":{"default":"openai/gpt-5.4"}}"#,
     )
     .unwrap();
-    let config = crate::config::AppConfig::load_with_home(Some(home.path().to_path_buf())).unwrap();
+    let mut config =
+        crate::config::AppConfig::load_with_home(Some(home.path().to_path_buf())).unwrap();
+    config.user_home_dir = None;
     let host = RuntimeHost::new_with_provider(config, Arc::new(StubProvider::new("done"))).unwrap();
     let runtime = host.default_runtime().await.unwrap();
     (home, host, runtime)
@@ -244,8 +395,8 @@ pub(crate) fn test_effective_prompt() -> EffectivePrompt {
             worktree_root: None,
             execution_roots: Vec::new(),
         },
-        loaded_agents_md: LoadedAgentsMd::default(),
-        loaded_agent_memory: LoadedAgentMemory::default(),
+        loaded_agents_md: LoadedAgentsMd::default().into(),
+        loaded_agent_memory: LoadedAgentMemory::default().into(),
         cache_identity: crate::prompt::PromptCacheIdentity {
             agent_id: "default".into(),
             prompt_cache_key: "default".into(),
@@ -264,6 +415,10 @@ pub(crate) fn test_effective_prompt() -> EffectivePrompt {
         projection_evidence: Default::default(),
         context_plan_evidence: Default::default(),
         recent_turns_reprojection: None,
+        frozen_history_policy: crate::context::ContextHistoryPreparation::default(),
+        frozen_projection_budget: None,
+        frozen_recent_message_limit: None,
+        _resource_read_material: None,
     }
 }
 
@@ -281,7 +436,7 @@ pub(crate) fn closure_decision(
 }
 
 pub(crate) async fn bind_turn_to_work_item(runtime: &RuntimeHandle, work_item_id: &str) {
-    let mut guard = runtime.inner.agent.lock().await;
+    let mut guard = runtime.begin_mutation().await.unwrap();
     guard.state.turn_index = 1;
     guard.state.current_turn_work_item_id = Some(work_item_id.to_string());
     guard.state.last_turn_terminal = Some(TurnTerminalRecord {
@@ -295,7 +450,7 @@ pub(crate) async fn bind_turn_to_work_item(runtime: &RuntimeHandle, work_item_id
         completed_at: Utc::now(),
         duration_ms: 10,
     });
-    guard.persist_state(&runtime.inner.storage).unwrap();
+    guard.persist_state(&runtime.inner.storage).await.unwrap();
 }
 
 pub(crate) fn bind_autonomous_work_queue_tick(
@@ -356,6 +511,172 @@ pub(crate) fn seed_waiting_work_execution(
             },
         },
     );
+}
+
+/// The caller has unloaded the Host runtime before this exact fixture write.
+/// Plain pre-bootstrap fixtures above intentionally keep their legacy path.
+pub(crate) fn seed_waiting_work_execution_for_unloaded_host(
+    storage: &AppStorage,
+    work_item: &WorkItemRecord,
+    wait_id: &str,
+) {
+    use crate::domain::execution_protocol::{WorkItemExecutionRecord, WorkItemExecutionState};
+    use crate::runtime::resident_input_evidence::InputEvidenceScope;
+    use crate::runtime_db::input_evidence_snapshot::{
+        register_committed_input_evidence_tx, CanonicalInputEvidence,
+    };
+    use crate::runtime_db::transitions::execution_protocol_repository::{
+        load_state_unchecked_tx, persist_repaired_state_tx,
+    };
+
+    let runtime_db = storage
+        .runtime_db()
+        .unwrap()
+        .expect("test storage should expose RuntimeDb");
+    runtime_db
+        .transaction(|tx| {
+            let identity: crate::types::AgentIdentityRecord =
+                serde_json::from_str(&tx.query_row(
+                    "SELECT payload_json FROM agent_identities WHERE agent_id=?1",
+                    [&work_item.agent_id],
+                    |row| row.get::<_, String>(0),
+                )?)?;
+            let scope = InputEvidenceScope {
+                agent_id: work_item.agent_id.clone(),
+                identity_incarnation: identity.incarnation,
+            };
+            let previous = load_state_unchecked_tx(tx, &work_item.agent_id)?;
+            let mut execution = previous.clone();
+            execution.work_items.insert(
+                work_item.id.clone(),
+                WorkItemExecutionRecord {
+                    source_revision: work_item.revision,
+                    state: WorkItemExecutionState::Waiting {
+                        generation: work_item.revision.max(1),
+                        wait: crate::domain::execution_protocol::WaitReference {
+                            wait_id: wait_id.into(),
+                        },
+                    },
+                },
+            );
+            persist_repaired_state_tx(tx, &previous, &execution)?;
+            let actual: WorkItemExecutionRecord = serde_json::from_str(&tx.query_row(
+                "SELECT payload_json FROM execution_protocol_work_items
+                 WHERE agent_id=?1 AND work_item_id=?2",
+                rusqlite::params![work_item.agent_id, work_item.id],
+                |row| row.get::<_, String>(0),
+            )?)?;
+            register_committed_input_evidence_tx(
+                tx,
+                &scope,
+                &[CanonicalInputEvidence::WorkExecution {
+                    work_item_id: work_item.id.clone(),
+                    record: actual,
+                }],
+            )?;
+            Ok(())
+        })
+        .unwrap();
+}
+
+/// Live fixtures must ACK the touched lane in its original write transaction.
+pub(crate) async fn seed_live_runnable_work_execution(
+    runtime: &RuntimeHandle,
+    work_item: &WorkItemRecord,
+) {
+    seed_live_work_execution(
+        runtime,
+        work_item,
+        crate::domain::execution_protocol::WorkItemExecutionState::Runnable {
+            generation: work_item.revision.max(1),
+            recovery_ref: None,
+        },
+    )
+    .await;
+}
+
+pub(crate) async fn seed_live_paused_work_execution(
+    runtime: &RuntimeHandle,
+    work_item: &WorkItemRecord,
+    reason: &str,
+) {
+    seed_live_work_execution(
+        runtime,
+        work_item,
+        crate::domain::execution_protocol::WorkItemExecutionState::Paused {
+            generation: work_item.revision.max(1),
+            reason: reason.to_owned(),
+        },
+    )
+    .await;
+}
+
+pub(crate) async fn seed_live_waiting_work_execution(
+    runtime: &RuntimeHandle,
+    work_item: &WorkItemRecord,
+    wait_id: &str,
+) {
+    seed_live_work_execution(
+        runtime,
+        work_item,
+        crate::domain::execution_protocol::WorkItemExecutionState::Waiting {
+            generation: work_item.revision.max(1),
+            wait: crate::domain::execution_protocol::WaitReference {
+                wait_id: wait_id.to_owned(),
+            },
+        },
+    )
+    .await;
+}
+
+pub(crate) async fn seed_live_work_execution(
+    runtime: &RuntimeHandle,
+    work_item: &WorkItemRecord,
+    state: crate::domain::execution_protocol::WorkItemExecutionState,
+) {
+    use crate::domain::execution_protocol::WorkItemExecutionRecord;
+    use crate::runtime_db::input_evidence_snapshot::CanonicalInputEvidence;
+    use crate::runtime_db::input_evidence_writes::acknowledge_input_evidence_tx;
+    use crate::runtime_db::transitions::execution_protocol_repository::{
+        load_state_unchecked_tx, persist_repaired_state_tx,
+    };
+
+    let db = runtime.inner.runtime_db.clone();
+    let agent_id = work_item.agent_id.clone();
+    let work_item_id = work_item.id.clone();
+    let source_revision = work_item.revision;
+    runtime
+        .commit_input_evidence(crate::ids::audit_event_id(), move |scope| {
+            db.transaction(|tx| {
+                let previous = load_state_unchecked_tx(tx, &agent_id)?;
+                let mut execution = previous.clone();
+                execution.work_items.insert(
+                    work_item_id.clone(),
+                    WorkItemExecutionRecord {
+                        source_revision,
+                        state: state.clone(),
+                    },
+                );
+                persist_repaired_state_tx(tx, &previous, &execution)?;
+                let actual: WorkItemExecutionRecord = serde_json::from_str(&tx.query_row(
+                    "SELECT payload_json FROM execution_protocol_work_items
+                     WHERE agent_id=?1 AND work_item_id=?2",
+                    rusqlite::params![agent_id, work_item_id],
+                    |row| row.get::<_, String>(0),
+                )?)?;
+                acknowledge_input_evidence_tx(
+                    tx,
+                    scope,
+                    (),
+                    &[CanonicalInputEvidence::WorkExecution {
+                        work_item_id: work_item_id.clone(),
+                        record: actual,
+                    }],
+                )
+            })
+        })
+        .await
+        .unwrap();
 }
 
 fn seed_work_execution(
@@ -438,23 +759,25 @@ pub(crate) async fn seed_bound_work_item(
 
 pub(crate) async fn mark_blocking_task(runtime: &RuntimeHandle, task_id: &str) {
     runtime
-        .inner
-        .storage
-        .append_task(&TaskRecord {
-            id: task_id.into(),
-            agent_id: "default".into(),
-            kind: TaskKind::CommandTask,
-            status: TaskStatus::Running,
-            created_at: Utc::now(),
-            updated_at: Utc::now(),
-            parent_message_id: None,
-            work_item_id: None,
-            summary: Some("blocking command".into()),
-            detail: Some(serde_json::json!({
-                "wait_policy": "blocking"
-            })),
-            recovery: None,
-        })
+        .persist_task_transition(
+            &TaskRecord {
+                id: task_id.into(),
+                agent_id: "default".into(),
+                kind: TaskKind::CommandTask,
+                status: TaskStatus::Running,
+                created_at: Utc::now(),
+                updated_at: Utc::now(),
+                parent_message_id: None,
+                work_item_id: None,
+                summary: Some("blocking command".into()),
+                detail: Some(serde_json::json!({
+                    "wait_policy": "blocking"
+                })),
+                recovery: None,
+            },
+            "blocking_task_fixture",
+        )
+        .await
         .unwrap();
 }
 
@@ -504,6 +827,7 @@ impl AgentProvider for OneToolThenTextProvider {
             }]
         };
         Ok(ProviderTurnResponse {
+            material: Default::default(),
             blocks,
             stop_reason: None,
             input_tokens: 10,
@@ -652,6 +976,7 @@ impl AgentProvider for ReportCompactionProvider {
         }) {
             *self.checkpoint_calls.lock().await += 1;
             return Ok(ProviderTurnResponse {
+                material: request.material,
                 blocks: match self.checkpoint_output {
                     ReportCheckpointOutput::Text => vec![ModelBlock::Text {
                         text:
@@ -748,6 +1073,7 @@ impl AgentProvider for TruncatingProvider {
         *calls += 1;
         if *calls == 1 {
             return Ok(ProviderTurnResponse {
+                material: Default::default(),
                 blocks: vec![
                     ModelBlock::Text {
                         text: "Partial report heading:".into(),
@@ -780,6 +1106,7 @@ impl AgentProvider for TruncatingProvider {
         }));
 
         Ok(ProviderTurnResponse {
+            material: Default::default(),
             blocks: vec![
                 ModelBlock::Text {
                     text: "\n\n- final grounded recommendation".into(),
@@ -812,6 +1139,7 @@ impl AgentProvider for TruncatingProvider {
 impl AgentProvider for EmptyTruncatingProvider {
     async fn complete_turn(&self, _request: ProviderTurnRequest) -> Result<ProviderTurnResponse> {
         Ok(ProviderTurnResponse {
+            material: Default::default(),
             blocks: Vec::new(),
             stop_reason: Some("max_tokens".into()),
             input_tokens: 100,
@@ -828,6 +1156,7 @@ impl AgentProvider for EmptyTruncatingProvider {
 impl AgentProvider for TimelineProvider {
     async fn complete_turn(&self, _request: ProviderTurnRequest) -> Result<ProviderTurnResponse> {
         Ok(ProviderTurnResponse {
+            material: Default::default(),
             blocks: vec![ModelBlock::Text {
                 text: "done with fallback history".into(),
             }],
@@ -917,6 +1246,7 @@ impl AgentProvider for ToolCaptureProvider {
                 .collect::<Vec<_>>(),
         );
         Ok(ProviderTurnResponse {
+            material: Default::default(),
             blocks: vec![ModelBlock::Text {
                 text: "captured tool set".into(),
             }],
@@ -939,6 +1269,7 @@ impl AgentProvider for TurnLocalCompactionProbeProvider {
         *calls += 1;
         let response = match *calls {
             1 => ProviderTurnResponse {
+                material: Default::default(),
                 blocks: vec![
                     ModelBlock::Text {
                         text: format!("Round 1 planning {}", "very detailed preamble ".repeat(150)),
@@ -963,6 +1294,7 @@ impl AgentProvider for TurnLocalCompactionProbeProvider {
                 request_diagnostics: None,
             },
             2 => ProviderTurnResponse {
+                material: Default::default(),
                 blocks: vec![
                     ModelBlock::Text {
                         text: "Round 2 planning keep recent exact.".into(),
@@ -987,6 +1319,7 @@ impl AgentProvider for TurnLocalCompactionProbeProvider {
                 request_diagnostics: None,
             },
             3 => ProviderTurnResponse {
+                material: Default::default(),
                 blocks: vec![
                     ModelBlock::Text {
                         text: "Round 3 planning keep recent exact too.".into(),
@@ -1011,6 +1344,7 @@ impl AgentProvider for TurnLocalCompactionProbeProvider {
                 request_diagnostics: None,
             },
             5 => ProviderTurnResponse {
+                material: Default::default(),
                 blocks: Vec::new(),
                 stop_reason: Some("end_turn".into()),
                 input_tokens: 0,
@@ -1021,6 +1355,7 @@ impl AgentProvider for TurnLocalCompactionProbeProvider {
                 request_diagnostics: None,
             },
             _ => ProviderTurnResponse {
+                material: Default::default(),
                 blocks: vec![ModelBlock::Text {
                     text: "Finished after compacted continuation.".into(),
                 }],
@@ -1044,6 +1379,7 @@ impl AgentProvider for BaselineOverBudgetProbeProvider {
         *calls += 1;
         match *calls {
             1 => Ok(ProviderTurnResponse {
+                material: Default::default(),
                 blocks: vec![ModelBlock::ToolUse {
                     id: "exec-baseline-over-budget".into(),
                     name: "ExecCommand".into(),
@@ -1073,6 +1409,7 @@ impl AgentProvider for LargeBudgetContinuationProbeProvider {
         *calls += 1;
         match *calls {
             1 => Ok(ProviderTurnResponse {
+                material: Default::default(),
                 blocks: vec![ModelBlock::ToolUse {
                     id: "exec-large-budget-continuation".into(),
                     name: "ExecCommand".into(),
@@ -1091,6 +1428,7 @@ impl AgentProvider for LargeBudgetContinuationProbeProvider {
                 request_diagnostics: None,
             }),
             2 => Ok(ProviderTurnResponse {
+                material: Default::default(),
                 blocks: vec![ModelBlock::Text {
                     text: "Finished within the resolved model prompt budget.".into(),
                 }],
@@ -1121,6 +1459,7 @@ impl AgentProvider for SleepOnlyToolProvider {
         );
 
         Ok(ProviderTurnResponse {
+            material: Default::default(),
             blocks: vec![ModelBlock::ToolUse {
                 id: "sleep-1".into(),
                 name: "Sleep".into(),
@@ -1156,6 +1495,7 @@ impl AgentProvider for WaitForOnlyToolProvider {
         );
 
         Ok(ProviderTurnResponse {
+            material: Default::default(),
             blocks: vec![ModelBlock::ToolUse {
                 id: "wait-for-1".into(),
                 name: "WaitFor".into(),
@@ -1470,6 +1810,7 @@ impl AgentProvider for WaitForFinalReportProvider {
             }
         };
         Ok(ProviderTurnResponse {
+            material: Default::default(),
             blocks,
             stop_reason: None,
             input_tokens: 10,
@@ -1504,6 +1845,7 @@ impl AgentProvider for AbandonWaitForFinalReportProvider {
             Vec::new()
         };
         Ok(ProviderTurnResponse {
+            material: Default::default(),
             blocks,
             stop_reason: None,
             input_tokens: 10,
@@ -1523,6 +1865,7 @@ impl AgentProvider for DisallowedToolThenTextProvider {
         *calls += 1;
         match *calls {
             1 => Ok(ProviderTurnResponse {
+                material: Default::default(),
                 blocks: vec![ModelBlock::ToolUse {
                     id: "legacy-task".into(),
                     name: "CreateTask".into(),
@@ -1557,6 +1900,7 @@ impl AgentProvider for DisallowedToolThenTextProvider {
                     "continuation should receive a structured error for the unavailable tool"
                 );
                 Ok(ProviderTurnResponse {
+                    material: Default::default(),
                     blocks: vec![ModelBlock::Text {
                         text: "Recovered after unavailable tool.".into(),
                     }],
@@ -1581,6 +1925,7 @@ impl AgentProvider for MaxOutputMutationToolProvider {
         *calls += 1;
         match *calls {
             1 => Ok(ProviderTurnResponse {
+                material: Default::default(),
                 blocks: vec![ModelBlock::ToolUse {
                     id: "truncated-patch".into(),
                     name: "ApplyPatch".into(),
@@ -1615,6 +1960,7 @@ impl AgentProvider for MaxOutputMutationToolProvider {
                     "continuation should receive a structured truncation error"
                 );
                 Ok(ProviderTurnResponse {
+                    material: Default::default(),
                     blocks: vec![ModelBlock::Text {
                         text: "Recovered after rejected truncated mutation.".into(),
                     }],
@@ -1711,6 +2057,7 @@ impl AgentProvider for RecentTurnsRecoveryProbeProvider {
         *calls += 1;
         match *calls {
             1 => Ok(ProviderTurnResponse {
+                material: Default::default(),
                 blocks: vec![ModelBlock::ToolUse {
                     id: "exec-recent-turns-recovery".into(),
                     name: "ExecCommand".into(),
@@ -1729,6 +2076,7 @@ impl AgentProvider for RecentTurnsRecoveryProbeProvider {
                 request_diagnostics: None,
             }),
             2 => Ok(ProviderTurnResponse {
+                material: Default::default(),
                 blocks: vec![ModelBlock::Text {
                     text: "Recovered by shrinking recent turns.".into(),
                 }],
@@ -1852,6 +2200,7 @@ impl AgentProvider for RecoveringContextLengthProvider {
             ));
         }
         Ok(ProviderTurnResponse {
+            material: Default::default(),
             blocks: vec![ModelBlock::Text {
                 text: "Recovered after reducing recent turns.".into(),
             }],
@@ -1957,6 +2306,7 @@ impl AgentProvider for TextThenFailingFallbackProvider {
         *calls += 1;
         if *calls == 1 {
             return Ok(ProviderTurnResponse {
+                material: Default::default(),
                 blocks: vec![ModelBlock::Text {
                     text: "Partial report heading".into(),
                 }],
@@ -2065,6 +2415,7 @@ impl AgentProvider for StagnatingAfterVerificationProvider {
     async fn complete_turn(&self, request: ProviderTurnRequest) -> Result<ProviderTurnResponse> {
         if request.tools.is_empty() {
             return Ok(ProviderTurnResponse {
+                material: Default::default(),
                 blocks: vec![ModelBlock::Text {
                     text: "What changed: app.txt\nWhy: to address the requested task.\nVerification: successful verification command completed.".into()
                 }],
@@ -2123,6 +2474,7 @@ impl AgentProvider for StagnatingAfterVerificationProvider {
         };
 
         Ok(ProviderTurnResponse {
+            material: Default::default(),
             blocks,
             stop_reason: None,
             input_tokens: 25,
@@ -2158,6 +2510,7 @@ impl AgentProvider for SkillReadProvider {
         };
 
         Ok(ProviderTurnResponse {
+            material: Default::default(),
             blocks,
             stop_reason: None,
             input_tokens: 20,
@@ -2190,6 +2543,7 @@ impl AgentProvider for SkillActivationCommandProvider {
         };
 
         Ok(ProviderTurnResponse {
+            material: Default::default(),
             blocks,
             stop_reason: None,
             input_tokens: 20,
@@ -2208,6 +2562,7 @@ impl AgentProvider for CountingProvider {
         let mut calls = self.calls.lock().await;
         *calls += 1;
         Ok(ProviderTurnResponse {
+            material: Default::default(),
             blocks: vec![ModelBlock::Text {
                 text: self.reply.into(),
             }],
@@ -2220,4 +2575,24 @@ impl AgentProvider for CountingProvider {
             request_diagnostics: None,
         })
     }
+}
+
+/// A DB-only fixture uses the real normalized query selection and its actual
+/// ledger guard without creating a Runtime or changing durable qualification.
+pub(crate) fn task_query_lease_for_fixture(
+    scope: &crate::runtime::resident_input_evidence::InputEvidenceScope,
+    owner_epoch: u64,
+    spec: crate::runtime::task_queries::TaskQuerySpec<'_>,
+    ledger: &crate::runtime::input_evidence_budget::InputEvidenceBudgetLedger,
+    records: usize,
+    bytes: usize,
+) -> anyhow::Result<crate::runtime::task_queries::TaskQueryLease> {
+    crate::runtime::task_queries::TaskQueryRegistry::default().register(
+        scope,
+        owner_epoch,
+        spec,
+        ledger,
+        records,
+        bytes,
+    )
 }

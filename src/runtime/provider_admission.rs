@@ -8,7 +8,7 @@ use sha2::{Digest, Sha256};
 
 use crate::{
     config::{ModelRouteCapability, ModelRouteRef},
-    domain::execution_protocol::ExecutionAttempt,
+    domain::execution_protocol::{ExecutionAttempt, ExecutionProtocolState},
     provider::{
         build_candidate, classify_provider_error, provider_transport_diagnostics,
         ProviderDispatchGuard, ProviderFailureKind, ProviderThrottleKind, ProviderTurnResponse,
@@ -27,7 +27,7 @@ use crate::{
     },
 };
 
-use super::{RuntimeHandle, RuntimeInner};
+use super::{resident_input_evidence::CapturedInputEvidence, RuntimeHandle, RuntimeInner};
 
 // A lease permits controlled takeover after a crashed owner, not exactly-once
 // external IO and not a new wall-clock timeout for a streaming model request.
@@ -56,7 +56,9 @@ struct Chain {
 pub(super) enum ProviderTurnGate {
     Bypass,
     Granted(Arc<ProviderTurnAdmission>),
-    Parked,
+    /// The park event belongs to the original writer, so it is returned
+    /// instead of appended outside the qualified Audit transaction.
+    Parked(Option<AuditEvent>),
 }
 
 enum ProviderCandidateSelection {
@@ -162,6 +164,7 @@ impl ProviderPauseDisposition {
 pub(super) struct ProviderPauseSettlement<'a> {
     pub pause: &'a ProviderDispatchPause,
     pub source: &'a MessageEnvelope,
+    pub original_run_id: &'a str,
     brief: BriefRecord,
     rejection: crate::runtime_error::RuntimeErrorDescriptor,
 }
@@ -196,6 +199,7 @@ impl ProviderPauseSettlement<'_> {
                     "message_kind": self.source.kind,
                     "attempt_id": self.pause.attempt_id,
                     "turn_id": brief.turn_id,
+                    "brief_id": brief.id,
                     "episode_key": self.pause.parking.episode_key,
                     "chain_fingerprint": self.pause.parking.chain_fingerprint,
                     "not_before": self.pause.parking.not_before.to_rfc3339(),
@@ -764,17 +768,100 @@ impl RuntimeHandle {
         Ok(())
     }
 
+    /// A committed Stop may win the dispatch before its pause settles. Only the
+    /// canonical Stop receipt, proven in one transaction together with the
+    /// unchanged parking condition, may acknowledge that pause. Read-only.
+    pub(super) fn provider_pause_control_lease(
+        &self,
+        source: &MessageEnvelope,
+        original_run_id: &str,
+        pause: &ProviderDispatchPause,
+    ) -> Result<Arc<super::control_cancellation::ControlRunLease>> {
+        let lease = self
+            .inner
+            .control_cancellations
+            .run_for(original_run_id)
+            .context("provider pause original control lease disappeared")?;
+        ensure!(
+            source.agent_id == self.inner.mutation_owner.agent_id()
+                && lease.run_id() == original_run_id
+                && lease.source_message_id() == source.id
+                && lease.activation_id() == Some(pause.attempt_id.as_str()),
+            "provider pause differs from its original run/source/activation"
+        );
+        Ok(lease)
+    }
+
+    async fn stopped_provider_pause_is_committed(
+        &self,
+        source: &MessageEnvelope,
+        original_run_id: &str,
+        pause: &ProviderDispatchPause,
+    ) -> Result<bool> {
+        let lease = self.provider_pause_control_lease(source, original_run_id, pause)?;
+        let original = crate::runtime_db::control_transition::ControlStoppedRun {
+            agent_id: &source.agent_id,
+            identity_incarnation: self.inner.identity_incarnation,
+            owner_epoch: self.inner.mutation_owner.owner_epoch(),
+            run_id: original_run_id,
+            runtime_lease_id: lease.lease_id(),
+            activation_id: lease.activation_id(),
+            source,
+        };
+        let frozen = crate::runtime_db::provider_admission::FrozenStoppedProviderPause::freeze(
+            &original, pause,
+        )?;
+        let mut mutation = self.begin_mutation().await?;
+        mutation
+            .prepare_owner_inputs(Default::default(), Default::default())
+            .await?;
+        let scope = mutation.input_evidence_scope();
+        let (request, _request_material) = mutation.owner_task_load_request()?;
+        // Readback is not admission: the final Queue writer owns that proof.
+        // Its own decoded material still belongs to the same shared ledger.
+        let (acknowledged, _proof_material) = self.inner.runtime_db.transaction_once(|tx| {
+            let material =
+                crate::runtime_db::provider_admission::charge_frozen_stopped_provider_pause_tx(
+                    tx,
+                    &frozen,
+                    &scope,
+                    &request,
+                    &self.inner.input_evidence_budget,
+                    None,
+                )?;
+            let acknowledged =
+                crate::runtime_db::provider_admission::acknowledge_stopped_provider_pause_tx(
+                    tx, &original, pause,
+                )?;
+            Ok((acknowledged, material))
+        })?;
+        Ok(acknowledged)
+    }
+
     pub(super) async fn settle_provider_dispatch_pause(
         &self,
         message: &MessageEnvelope,
+        original_run_id: &str,
         error: &anyhow::Error,
         pause: &ProviderDispatchPause,
         duration_ms: u64,
     ) -> Result<()> {
-        let source = self
-            .inner
-            .storage
-            .read_message_by_id(&message.id)?
+        let inputs = {
+            let mut mutation = self.begin_mutation().await?;
+            mutation
+                .prepare_owner_inputs(
+                    std::collections::BTreeSet::from([
+                        super::resident_input_evidence::InputEvidenceKey::new(
+                            super::resident_input_evidence::InputEvidenceFamily::Message,
+                            &message.id,
+                        ),
+                    ]),
+                    Default::default(),
+                )
+                .await?;
+            mutation.capture_input_evidence()?
+        };
+        let source = super::provider_recovery::captured_message(&inputs, &message.id)?
             .context("provider pause source disappeared")?;
         let mut terminal = self
             .build_turn_interrupted_record("provider_dispatch_parked", None, duration_ms)
@@ -784,17 +871,19 @@ impl RuntimeHandle {
         brief.turn_index = Some(terminal.turn_index);
         terminal.no_brief_reason = None;
         let mut turn_record = self.build_turn_record(&terminal).await?;
-        turn_record.produced_brief_ids.push(brief.id.clone());
+        turn_record.include_brief(&brief.id)?;
         let transition = super::turn::TurnTerminalTransition {
             terminal,
             turn_record,
             prepared_work_item_completion: None,
             prepared_wait_for: None,
+            provider_recovery_message: None,
             terminal_tool_executions: Vec::new(),
         };
         let report = ProviderPauseSettlement {
             pause,
             source: &source,
+            original_run_id,
             brief,
             rejection: crate::runtime_error::describe_runtime_error(error),
         };
@@ -806,18 +895,30 @@ impl RuntimeHandle {
             created_at: message.created_at,
             updated_at: self.now(),
         };
-        let witness = super::terminal_execution_settlement_witness(
-            &self.inner.storage,
-            &self.inner.runtime_db,
-            &record,
-            &transition,
-        )?;
-        ensure!(
+        let stopped = self
+            .inner
+            .runtime_db
+            .agent_states()
+            .latest_for_incarnation(&source.agent_id, self.inner.identity_incarnation)?
+            .is_some_and(|state| state.status == AgentStatus::Stopped);
+        let witness = if stopped {
+            // The final Queue writer verifies the original Stop in its own TX.
+            None
+        } else {
+            let witness = super::terminal_execution_settlement_witness(
+                &self.inner.storage,
+                &self.inner.runtime_db,
+                &record,
+                &transition,
+            )?;
+            ensure!(
+                witness
+                    .as_ref()
+                    .is_some_and(|witness| witness.attempt_id == pause.attempt_id),
+                "provider pause execution identity changed before settlement"
+            );
             witness
-                .as_ref()
-                .is_some_and(|witness| witness.attempt_id == pause.attempt_id),
-            "provider pause execution identity changed before settlement"
-        );
+        };
         match self
             .commit_queue_terminal_settlement_with_evidence(
                 record.clone(),
@@ -833,22 +934,42 @@ impl RuntimeHandle {
         {
             Ok(true) => Ok(()),
             outcome => {
-                if self.terminal_settlement_readback(&record, &transition, witness.as_ref())?
-                    == super::TerminalSettlementReadback::Committed
+                let stopped = self
+                    .inner
+                    .runtime_db
+                    .agent_states()
+                    .latest_for_incarnation(&source.agent_id, self.inner.identity_incarnation)?
+                    .is_some_and(|state| state.status == AgentStatus::Stopped);
+                let acknowledged = if stopped {
+                    // A winning Stop keeps its own Turn, attempt and queue
+                    // terminal; only the canonical Stop proof together with
+                    // unchanged parking and acknowledgement treats this as
+                    // committed. An Interrupted alone is never success.
+                    self.stopped_provider_pause_is_committed(&source, original_run_id, pause)
+                        .await?
+                } else {
+                    self.terminal_settlement_readback(&record, &transition, witness.as_ref())?
+                        == super::TerminalSettlementReadback::Committed
+                };
+                if acknowledged
+                    && self
+                        .inner
+                        .storage
+                        .read_brief_by_id(&report.brief.id)?
+                        .is_some_and(|stored| report.matches_brief(&stored))
                     && self
                         .inner
                         .runtime_db
                         .provider_queue_parking(&source.agent_id, &source.id)?
                         .as_ref()
                         == Some(&pause.parking)
-                    && self
-                        .inner
-                        .storage
-                        .read_brief_by_id(&report.brief.id)?
-                        .is_some_and(|stored| report.matches_brief(&stored))
                 {
-                    // Only reconcile memory after the entire pause transaction is durable.
-                    self.restore_parked_provider_source(&source.id).await
+                    if stopped {
+                        // Durable parking/source stay untouched until explicit Start.
+                        Ok(())
+                    } else {
+                        self.restore_parked_provider_source(&source.id).await
+                    }
                 } else {
                     outcome.context("provider pause settlement did not commit")?;
                     anyhow::bail!("provider pause settlement was not applied")
@@ -857,7 +978,10 @@ impl RuntimeHandle {
         }
     }
 
-    pub(super) fn local_provider_dispatch_error(&self, mut error: anyhow::Error) -> anyhow::Error {
+    pub(super) async fn local_provider_dispatch_error(
+        &self,
+        mut error: anyhow::Error,
+    ) -> anyhow::Error {
         if !crate::provider::is_dispatch_guard_rejected(&error) {
             return error;
         }
@@ -888,14 +1012,17 @@ impl RuntimeHandle {
         // The marker describes only this send. Earlier requests remain charged
         // and their diagnostics stay attached to the original error chain.
         let category = denial.to_string();
-        if let Err(audit_error) = self.inner.storage.append_event(&AuditEvent::legacy(
-            "provider_dispatch_rejected",
-            serde_json::json!({
-                "dispatch_occurred": false,
-                "denial": category,
-                "recovery_disposition": disposition,
-            }),
-        )) {
+        if let Err(audit_error) = self
+            .append_original_audit_event(AuditEvent::legacy(
+                "provider_dispatch_rejected",
+                serde_json::json!({
+                    "dispatch_occurred": false,
+                    "denial": category,
+                    "recovery_disposition": disposition,
+                }),
+            ))
+            .await
+        {
             error = error.context(audit_error);
         }
         error.context(
@@ -1038,6 +1165,7 @@ impl RuntimeHandle {
         state: &crate::types::AgentState,
         message: &MessageEnvelope,
         attempt: &ExecutionAttempt,
+        inputs: &CapturedInputEvidence,
     ) -> Result<ProviderTurnGate> {
         let Some(chain) = self.provider_admission_chain(state)? else {
             return Ok(ProviderTurnGate::Bypass);
@@ -1051,35 +1179,35 @@ impl RuntimeHandle {
                 parking.chain_fingerprint == chain.fingerprint && parking.not_before > now
             })
         {
-            return Ok(ProviderTurnGate::Parked);
+            return Ok(ProviderTurnGate::Parked(None));
         }
         // Canonical admission already resolved source/owner eligibility. Walk
         // that exact predecessor chain, never select a root by current focus.
-        let protocol = self
-            .inner
-            .runtime_db
-            .transitions()
-            .load_execution_protocol_state_if_initialized(&message.agent_id)?;
+        ensure!(
+            inputs.scope.agent_id == message.agent_id && attempt.agent_id == message.agent_id,
+            "provider admission captured scope mismatch"
+        );
+        let protocol = inputs
+            .execution_state_if_initialized()?
+            .unwrap_or_else(|| ExecutionProtocolState::empty(message.agent_id.clone()));
         let mut root = attempt.clone();
         let mut visited = std::collections::BTreeSet::new();
         while let Some(prior) = root.recovery_of_attempt_id.as_ref() {
             ensure!(visited.insert(prior.clone()), "provider root cycle");
             root = protocol
-                .as_ref()
-                .and_then(|state| state.attempts.get(prior))
+                .attempts
+                .get(prior)
                 .context("canonical provider predecessor missing")?
                 .clone();
         }
         let binding = ProviderRecoveryBinding::from_root_attempt(&root, &chain.fingerprint)?;
-        let root_message = self
-            .inner
-            .storage
-            .read_message_by_id(
-                root.source_message_id
-                    .as_deref()
-                    .context("provider root message missing")?,
-            )?
-            .context("persisted provider root input missing")?;
+        let root_message = super::provider_recovery::captured_message(
+            inputs,
+            root.source_message_id
+                .as_deref()
+                .context("provider root message missing")?,
+        )?
+        .context("persisted provider root input missing")?;
         let operator = root_message.authority_class == AuthorityClass::OperatorInstruction
             && matches!(root_message.origin, MessageOrigin::Operator { .. })
             && matches!(
@@ -1108,11 +1236,11 @@ impl RuntimeHandle {
                     .runtime_db
                     .begin_provider_recovery_probe_epoch(&episode, now)?
                 else {
-                    return Ok(ProviderTurnGate::Parked);
+                    return Ok(ProviderTurnGate::Parked(None));
                 };
                 episode = next;
             } else {
-                self.persist_provider_queue_parking(
+                let parked = self.persist_provider_queue_parking(
                     message,
                     &chain,
                     &episode,
@@ -1121,12 +1249,14 @@ impl RuntimeHandle {
                         .context("provider pause deadline missing")?,
                     episode.state == ProviderRecoveryBudgetState::BudgetExhausted,
                 )?;
-                return Ok(ProviderTurnGate::Parked);
+                return Ok(ProviderTurnGate::Parked(parked));
             }
         }
         self.select_provider_turn_candidate(
             message,
             attempt,
+            inputs,
+            &protocol,
             &chain,
             &episode,
             &std::collections::BTreeSet::new(),
@@ -1137,11 +1267,15 @@ impl RuntimeHandle {
         &self,
         message: &MessageEnvelope,
         attempt: &ExecutionAttempt,
+        inputs: &CapturedInputEvidence,
+        protocol: &ExecutionProtocolState,
         chain: &Chain,
         episode: &ProviderRecoveryEpisode,
         excluded: &std::collections::BTreeSet<String>,
     ) -> Result<ProviderTurnGate> {
-        match self.available_provider_turn_candidate(message, attempt, chain, episode, excluded)? {
+        match self.available_provider_turn_candidate(
+            message, attempt, inputs, protocol, chain, episode, excluded,
+        )? {
             ProviderCandidateSelection::Granted(admission) => {
                 self.inner
                     .runtime_db
@@ -1163,7 +1297,7 @@ impl RuntimeHandle {
                     .runtime_db
                     .provider_recovery_episode(episode.key())?
                     .context("parked provider episode missing")?;
-                self.persist_provider_queue_parking(
+                let parked = self.persist_provider_queue_parking(
                     message,
                     chain,
                     &parked,
@@ -1172,7 +1306,7 @@ impl RuntimeHandle {
                         .context("parked provider deadline missing")?,
                     parked.state == ProviderRecoveryBudgetState::BudgetExhausted,
                 )?;
-                Ok(ProviderTurnGate::Parked)
+                Ok(ProviderTurnGate::Parked(parked))
             }
         }
     }
@@ -1181,6 +1315,8 @@ impl RuntimeHandle {
         &self,
         message: &MessageEnvelope,
         attempt: &ExecutionAttempt,
+        inputs: &CapturedInputEvidence,
+        protocol: &ExecutionProtocolState,
         chain: &Chain,
         episode: &ProviderRecoveryEpisode,
         excluded: &std::collections::BTreeSet<String>,
@@ -1198,8 +1334,7 @@ impl RuntimeHandle {
             .map(|directive| &directive.fallback_model_ref);
         let mut reselection_reason = None;
         if let Some(requested) = requested {
-            super::provider_recovery::resolve_for_context(&self.inner.storage, message)?
-                .context("provider recovery source resolution missing at admission")?;
+            super::provider_recovery::resolve_from_captured(inputs, message, protocol)?;
             if let Some(index) = chain
                 .candidates
                 .iter()
@@ -1337,7 +1472,33 @@ impl RuntimeHandle {
         excluded: &mut std::collections::BTreeSet<String>,
     ) -> Result<CoolingReplanOutcome> {
         excluded.insert(current.model().as_string());
-        let state = self.inner.agent.lock().await.state.clone();
+        let source_message_id = current
+            .attempt
+            .source_message_id
+            .as_deref()
+            .context("cooling provider source message missing")?;
+        let (state, inputs) = {
+            use super::resident_input_evidence::{InputEvidenceFamily, InputEvidenceKey};
+            let mut mutation = self.begin_mutation().await?;
+            mutation
+                .prepare_owner_inputs(
+                    std::collections::BTreeSet::from([
+                        InputEvidenceKey::new(InputEvidenceFamily::Message, source_message_id),
+                        InputEvidenceKey::new(
+                            InputEvidenceFamily::Attempt,
+                            &current.attempt.attempt_id,
+                        ),
+                    ]),
+                    Default::default(),
+                )
+                .await?;
+            (mutation.state.clone(), mutation.capture_input_evidence()?)
+        };
+        let protocol = inputs
+            .execution_state_if_initialized()?
+            .context("cooling provider execution state missing")?;
+        let message = super::provider_recovery::captured_message(&inputs, source_message_id)?
+            .context("cooling provider source message not persisted")?;
         let chain = self
             .provider_admission_chain(&state)?
             .context("cooling provider chain disappeared")?;
@@ -1351,19 +1512,11 @@ impl RuntimeHandle {
             episode.state == ProviderRecoveryBudgetState::Ready,
             "provider episode changed during candidate replan"
         );
-        let source_message_id = current
-            .attempt
-            .source_message_id
-            .as_deref()
-            .context("cooling provider source message missing")?;
-        let message = self
-            .inner
-            .storage
-            .read_message_by_id(source_message_id)?
-            .context("cooling provider source message not persisted")?;
         match self.available_provider_turn_candidate(
             &message,
             &current.attempt,
+            &inputs,
+            &protocol,
             &chain,
             &episode,
             excluded,
@@ -1385,19 +1538,21 @@ impl RuntimeHandle {
                     replacement.side_effect_boundary |= previous.side_effect_boundary;
                 }
                 let model = next.model().clone();
-                let mut active = self
-                    .inner
-                    .turn_provider_admission
-                    .lock()
-                    .map_err(|_| anyhow!("turn provider admission poisoned"))?;
-                ensure!(
-                    active
-                        .as_ref()
-                        .is_some_and(|active| Arc::ptr_eq(active, current)),
-                    "provider admission changed during candidate replan"
-                );
-                *active = Some(next);
-                self.inner.storage.append_event(&AuditEvent::legacy(
+                {
+                    let mut active = self
+                        .inner
+                        .turn_provider_admission
+                        .lock()
+                        .map_err(|_| anyhow!("turn provider admission poisoned"))?;
+                    ensure!(
+                        active
+                            .as_ref()
+                            .is_some_and(|active| Arc::ptr_eq(active, current)),
+                        "provider admission changed during candidate replan"
+                    );
+                    *active = Some(next);
+                }
+                self.append_original_audit_event(AuditEvent::legacy(
                     "provider_candidate_reselected",
                     serde_json::json!({
                         "from_model_ref": current.model(),
@@ -1407,7 +1562,8 @@ impl RuntimeHandle {
                         "predicate": "scope_cooling",
                         "cooling_until": cooling_until,
                     }),
-                ))?;
+                ))
+                .await?;
                 Ok(CoolingReplanOutcome::Reselect(model))
             }
             // A continuation has already crossed its source replay boundary.
@@ -1600,7 +1756,7 @@ impl RuntimeHandle {
         episode: &ProviderRecoveryEpisode,
         not_before: DateTime<Utc>,
         exhausted: bool,
-    ) -> Result<()> {
+    ) -> Result<Option<AuditEvent>> {
         let parking = ProviderQueueParking {
             agent_id: message.agent_id.clone(),
             message_id: message.id.clone(),
@@ -1615,7 +1771,7 @@ impl RuntimeHandle {
             .into(),
         };
         if self.inner.runtime_db.park_provider_queue(&parking)? {
-            self.inner.storage.append_event(&AuditEvent::legacy(
+            Ok(Some(AuditEvent::legacy(
                 "provider_queue_parked",
                 serde_json::json!({
                     "agent_id": parking.agent_id,
@@ -1627,9 +1783,10 @@ impl RuntimeHandle {
                     "candidate_cursor": episode.candidate_cursor,
                     "untried_candidates": exhausted,
                 }),
-            ))?;
+            )))
+        } else {
+            Ok(None)
         }
-        Ok(())
     }
 
     pub(super) fn active_provider_admission(&self) -> Result<Option<Arc<ProviderTurnAdmission>>> {

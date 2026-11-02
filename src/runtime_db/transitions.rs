@@ -1,23 +1,68 @@
 //! Restricted runtime business-transition unit of work.
 
+mod audit_event_ack;
+pub(crate) use audit_event_ack::AuditEventAck;
+
 // Phase 2 keeps this additive persistence seam dormant until production shadow
 // wiring begins; repository tests exercise it without granting scheduler authority.
 #[cfg(test)]
 mod execution_protocol_fixture_repository;
 pub(crate) mod execution_protocol_repository;
 mod live_input_attachment;
+#[cfg(test)]
+mod provider_queue_tests;
 mod provider_result_handoff;
 mod supervised_invocation;
 mod wait_task_result;
 pub(crate) use execution_protocol_repository::{authority_fences_tx, persist_state_tx};
-pub(crate) use live_input_attachment::LiveInputAttachmentCommand;
+pub(crate) use live_input_attachment::{LiveInputAttachmentCommand, LiveInputRecoveryCommand};
+pub(crate) use provider_result_handoff::ProviderResultHandoffCommand;
+mod prepared_input;
+#[path = "transitions/prepared_task_result.rs"]
+mod prepared_task_result;
+#[cfg(test)]
+mod wait_body_budget_tests;
+#[cfg(test)]
+mod wait_pool_budget_tests;
+pub(crate) use crate::runtime_db::provider_admission::StoppedProviderPauseAck;
+pub(super) use prepared_input::predicted_trigger_wait_tx;
+pub(crate) use prepared_input::worktree_receipt_exists_tx as task_stop_worktree_receipt_exists_tx;
+pub(in crate::runtime_db) use prepared_input::ExistingOriginalChildBindingWriteProof;
+pub(in crate::runtime_db) use prepared_input::ExistingOriginalChildRunningWriteProof;
+pub(super) enum OriginalChildTaskWriteProof<'proof, 'body, 'tx, 'conn> {
+    Binding(&'proof ExistingOriginalChildBindingWriteProof<'body, 'tx, 'conn>),
+    Running(&'proof ExistingOriginalChildRunningWriteProof<'body, 'tx, 'conn>),
+}
+impl OriginalChildTaskWriteProof<'_, '_, '_, '_> {
+    fn validate_transaction(&self, tx: &Transaction<'_>) -> Result<()> {
+        match self {
+            Self::Binding(proof) => proof.validate_transaction(tx),
+            Self::Running(proof) => proof.validate_transaction(tx),
+        }
+    }
+}
+pub(crate) use prepared_input::{
+    ExternalTriggerMutationOutcome, InputMutationExecution, OriginalChildStatusSelection,
+    OriginalTaskCleanupView, PreparedExternalTriggerTransition, PreparedInputTransition,
+    PreparedQueueTransition, PreparedSupervisedInvocationAdmission, PreparedTaskTransition,
+    PreparedTimerTransition, TimerMutationOutcome,
+};
+pub(in crate::runtime_db) use prepared_task_result::receipt_budget_with_material_tx as task_status_receipt_budget_with_material_tx;
+pub(crate) use prepared_task_result::{
+    receipt_budget_tx as task_result_receipt_budget_tx, PreparedTaskResultTransition,
+    TaskResultOperation,
+};
 
 use anyhow::{anyhow, bail, Context, Result};
 use chrono::Utc;
 use rusqlite::{params, OptionalExtension, Transaction};
 use std::collections::{BTreeMap, BTreeSet};
 
+#[cfg(test)]
+use crate::runtime_db::repositories::upsert_wait_condition_tx;
+
 use crate::{
+    runtime::resident_input_evidence::{CommittedInputEvidenceDelta, InputEvidenceScope},
     runtime_db::{
         agent_message_delivery::{
             advance_delivery_state_for_message_tx, bind_delivery_execution_for_message_tx,
@@ -33,8 +78,9 @@ use crate::{
             compare_and_set_queue_entry_tx, ensure_agent_deletion_tx, insert_new_work_item_tx,
             queue_entry_transition, task_transition, try_claim_queued_message_tx,
             try_interject_queued_message_tx, update_expected_work_item_tx, upsert_queue_entry_tx,
-            upsert_task_tx, upsert_turn_record_tx, upsert_wait_condition_tx,
+            upsert_task_tx, upsert_turn_record_tx, upsert_wait_condition_with_writes_tx,
             upsert_work_item_continuation_tx, wait_condition_transition, AgentDeletionRequest,
+            WaitConditionWrites,
         },
         RuntimeDb, RuntimeIndexChange, RuntimeStateTransitionConflict,
     },
@@ -85,7 +131,7 @@ pub(crate) struct PostCommitWarning {
     pub message: String,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize)]
 pub(crate) enum WorkItemMutation {
     Insert {
         record: WorkItemRecord,
@@ -104,10 +150,14 @@ impl WorkItemMutation {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize)]
 pub(crate) enum QueueMutation {
     Consume(QueueEntryRecord),
     Upsert(QueueEntryRecord),
+    SettleWithProviderRecovery {
+        record: QueueEntryRecord,
+        recovery: Box<MessageEnvelope>,
+    },
     CompareAndSet {
         expected: QueueEntryRecord,
         record: QueueEntryRecord,
@@ -125,7 +175,7 @@ pub(crate) enum QueueMutation {
     },
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
 pub(crate) enum QueueOperation {
     Admit,
     Discard,
@@ -138,34 +188,95 @@ pub(crate) enum QueueOperation {
 
 #[derive(Debug, Clone, Default)]
 pub(crate) struct PostCommitEffects {
+    pub current_read_writes: Option<super::current_read_writes::CommittedCurrentWrites>,
+    pub scheduling_delta:
+        Option<Box<crate::runtime::resident_scheduling::CommittedSchedulingDelta>>,
+    pub scheduling_delta_requires_prepared_domain: bool,
+    pub scheduling_write_keys: BTreeSet<crate::runtime::resident_scheduling::SchedulingKey>,
+    pub scheduling_material_budget_views:
+        Vec<std::sync::Arc<crate::runtime::input_evidence_budget::BudgetViewGuard>>,
+    pub task_material_budget_views:
+        Vec<std::sync::Arc<crate::runtime::input_evidence_budget::BudgetViewGuard>>,
+    pub task_delta: Option<crate::runtime::resident_task::CommittedTaskDelta>,
+    /// Original cross-agent business writes, published under their reserved owners.
+    pub related_task_deltas: Vec<crate::runtime::resident_task::CommittedTaskDelta>,
+    /// Already observed related Status heads from one original child terminal ACK.
+    /// They carry no State, Task body or missing-domain bootstrap permission.
+    pub related_task_metadata_deltas: Vec<crate::runtime::resident_task::CommittedTaskDelta>,
+    /// A Task delta never supplies complete missing-domain authority.
+    pub task_delta_requires_prepared_domain: bool,
+    /// Actual original SQL writes, independent of full domain install records.
+    pub task_write_keys: BTreeSet<crate::runtime::resident_task::TaskKey>,
+    /// Frozen original command/result observations, including noop dependencies.
+    pub task_observation_keys: BTreeSet<crate::runtime::resident_task::TaskKey>,
+    /// Final complete Work coverage from this original committing transaction.
+    pub work_delta: Option<crate::runtime::resident_work::CommittedWorkDelta>,
+    /// Sparse metadata/maintenance ACKs cannot bootstrap missing Work bodies.
+    pub work_delta_requires_prepared_domain: bool,
+    /// Finite new dependencies. Existing unrelated Input coverage remains valid;
+    /// a combined request must prepare any uncovered owning/head dependency.
+    pub work_input_preparation: Option<WorkInputPreparation>,
+    pub input_evidence_delta: CommittedInputEvidenceDelta,
+    // Actual Wait rows and Turn revision bookkeeping touched by the whole transaction.
+    pub wait_condition_writes: WaitConditionWrites,
     pub agent_state: Option<AgentStateMutation>,
+    pub agent_identities: Vec<crate::types::AgentIdentityRecord>,
+    pub context_episodes: Vec<crate::types::ContextEpisodeRecord>,
+    pub removed_context_episode_ids: Vec<String>,
+    // Touched canonical facts read back inside the committing transaction,
+    // including allocated sequences and event links. Empty is no delta, not
+    // a claim that the corresponding resident domain is complete.
+    pub messages: Vec<MessageEnvelope>,
+    pub turns: Vec<TurnRecord>,
+    pub tool_executions: Vec<ToolExecutionRecord>,
+    pub briefs: Vec<BriefRecord>,
+    pub transcript_entries: Vec<TranscriptEntry>,
+    pub execution_protocol: Option<crate::domain::execution_protocol::ExecutionProtocolState>,
     pub queued_messages: Vec<MessageEnvelope>,
+    pub removed_queue_message_ids: Vec<String>,
+    /// Actual canonical Queue writes, independent of wake/removal notifications.
+    pub current_queue_write_ids: Vec<String>,
+    pub timers: Vec<crate::types::TimerRecord>,
+    pub external_triggers: Vec<crate::types::ExternalTriggerRecord>,
     pub work_items: Vec<WorkItemRecord>,
     pub tasks: Vec<TaskRecord>,
-    pub audit_events: Vec<AuditEvent>,
+    pub audit_events: Vec<AuditEventAck>,
     pub notify_memory_index: bool,
     pub notify_scheduler: bool,
     pub fault: Option<TransitionFaultPoint>,
 }
 
 #[derive(Debug, Clone)]
+pub(crate) struct WorkInputPreparation {
+    pub scope: InputEvidenceScope,
+    pub work_revision: u64,
+    /// Strong owning dependencies, including original completion intent refs.
+    pub owning_roots: BTreeSet<crate::runtime::resident_input_evidence::InputEvidenceKey>,
+    /// Head selection is separate from owning roots. Optional edge availability
+    /// must be proved for the selected head; it is never global absence.
+    pub completion_heads: BTreeMap<String, crate::runtime::resident_work::WorkCompletionRef>,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
 pub(crate) struct AgentStateMutation {
     pub expected: Option<Box<AgentState>>,
     pub record: Box<AgentState>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize)]
 pub(crate) struct AgentPostureTransitionCommand {
     pub agent_id: String,
+    pub expected_incarnation: Option<u64>,
     pub agent_state: AgentStateMutation,
     pub audit_events: Vec<AuditEvent>,
+    #[serde(skip)]
     pub fault: Option<TransitionFaultPoint>,
 }
 
 #[derive(Debug, Clone, Default)]
 pub(crate) struct TransitionCommit {
     pub applied: bool,
-    pub effects: PostCommitEffects,
+    pub effects: Box<PostCommitEffects>,
     pub delivery_receipt: Option<AgentMessageDeliveryReceipt>,
 }
 
@@ -175,7 +286,7 @@ pub(crate) struct TransitionApplyResult {
     pub warnings: Vec<PostCommitWarning>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize)]
 pub(crate) struct WorkItemTransitionCommand {
     pub agent_id: String,
     pub mutation: WorkItemMutation,
@@ -184,10 +295,11 @@ pub(crate) struct WorkItemTransitionCommand {
     pub audit_events: Vec<AuditEvent>,
     pub index_changes: Vec<RuntimeIndexChange>,
     pub notify_scheduler: bool,
+    #[serde(skip)]
     pub fault: Option<TransitionFaultPoint>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize)]
 pub(crate) struct WaitTransitionCommand {
     pub agent_id: String,
     pub work_items: Vec<WorkItemMutation>,
@@ -199,10 +311,11 @@ pub(crate) struct WaitTransitionCommand {
     pub audit_events: Vec<AuditEvent>,
     pub index_changes: Vec<RuntimeIndexChange>,
     pub notify_scheduler: bool,
+    #[serde(skip)]
     pub fault: Option<TransitionFaultPoint>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize)]
 pub(crate) struct WaitTaskResultAdmission {
     pub message: MessageEnvelope,
     pub expected: Option<QueueEntryRecord>,
@@ -210,7 +323,7 @@ pub(crate) struct WaitTaskResultAdmission {
     pub obligation: wait_task_result::WaitTaskResultObligation,
 }
 
-pub(crate) use wait_task_result::WaitTaskResultObligation;
+pub(crate) use wait_task_result::{WaitTaskResultObligation, WaitTaskResultWitness};
 
 fn admit_wait_task_result_tx(
     tx: &Transaction<'_>,
@@ -243,7 +356,7 @@ fn admit_wait_task_result_tx(
     upsert_queue_entry_tx(tx, &admission.record)
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize)]
 pub(crate) struct WaitConditionExpectation {
     pub id: String,
     pub agent_id: String,
@@ -251,7 +364,7 @@ pub(crate) struct WaitConditionExpectation {
     pub updated_at: chrono::DateTime<chrono::Utc>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize)]
 pub(crate) struct TaskExpectation {
     pub id: String,
     pub agent_id: String,
@@ -261,7 +374,7 @@ pub(crate) struct TaskExpectation {
     pub result_message_id: Option<String>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize)]
 pub(crate) struct QueueWaitTransition {
     pub expected: WaitConditionExpectation,
     pub record: WaitConditionRecord,
@@ -284,6 +397,11 @@ pub(super) struct TriggerWaitAndEnqueueResult {
     pub message_inserted: bool,
     pub queue_applied: bool,
     pub wait_applied: bool,
+    pub wait_writes: WaitConditionWrites,
+    /// Actual newly appended notifications from this same transaction.
+    pub audit_events: Vec<AuditEvent>,
+    /// Canonical no-op ACKs, kept separate from newly appended notifications.
+    pub existing_audit_events: Vec<AuditEvent>,
     pub outcome: TriggerWaitAndEnqueueOutcome,
 }
 
@@ -291,9 +409,13 @@ impl TriggerWaitAndEnqueueResult {
     fn applied(&self) -> bool {
         self.message_inserted || self.queue_applied || self.wait_applied
     }
+
+    fn take_wait_writes(&mut self) -> WaitConditionWrites {
+        std::mem::take(&mut self.wait_writes)
+    }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize)]
 pub(crate) struct WorkItemFocusTransitionCommand {
     pub agent_id: String,
     pub work_items: Vec<WorkItemMutation>,
@@ -306,10 +428,11 @@ pub(crate) struct WorkItemFocusTransitionCommand {
     pub audit_events: Vec<AuditEvent>,
     pub index_changes: Vec<RuntimeIndexChange>,
     pub notify_scheduler: bool,
+    #[serde(skip)]
     pub fault: Option<TransitionFaultPoint>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize)]
 pub(crate) struct QueueTransitionCommand {
     pub agent_id: String,
     pub operation: QueueOperation,
@@ -321,11 +444,12 @@ pub(crate) struct QueueTransitionCommand {
     pub turn_record: Option<TurnRecord>,
     pub audit_events: Vec<AuditEvent>,
     pub notify_scheduler: bool,
+    #[serde(skip)]
     pub fault: Option<TransitionFaultPoint>,
     pub brief_evidence: Vec<BriefRecord>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize)]
 pub(crate) enum SchedulerClaimWorkItemExpectation {
     Snapshot(WorkItemRecord),
     Runnable(WorkItemRecord),
@@ -335,14 +459,14 @@ pub(crate) enum SchedulerClaimWorkItemExpectation {
     },
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize)]
 pub(crate) struct TimerWakeClaim {
     pub timer_id: String,
     pub message_id: String,
     pub fire_count: u64,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize)]
 pub(crate) struct CompletionTransition {
     pub requires_execution_continuation: bool,
     pub work_items: Vec<WorkItemMutation>,
@@ -353,7 +477,7 @@ pub(crate) struct CompletionTransition {
     pub index_changes: Vec<RuntimeIndexChange>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize)]
 pub(crate) struct QueueHeadNoProgressCommand {
     pub agent_id: String,
     pub expected: QueueEntryRecord,
@@ -362,10 +486,12 @@ pub(crate) struct QueueHeadNoProgressCommand {
     pub reason: String,
     pub scenario_class: Option<String>,
     pub max_attempts: u32,
+    #[serde(skip)]
     pub fault: Option<TransitionFaultPoint>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub(crate) enum QueueHeadNoProgressOutcome {
     BoundedDefer { attempt: u32, max_attempts: u32 },
     Quarantined { attempt: u32, max_attempts: u32 },
@@ -377,17 +503,18 @@ pub(crate) struct QueueHeadNoProgressCommit {
     pub commit: TransitionCommit,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize)]
 pub(crate) struct TurnTerminalTransitionCommand {
     pub agent_id: String,
     pub agent_state: AgentStateMutation,
     pub turn_record: TurnRecord,
     pub terminal_tool_executions: Vec<ToolExecutionRecord>,
     pub audit_events: Vec<AuditEvent>,
+    #[serde(skip)]
     pub fault: Option<TransitionFaultPoint>,
 }
 
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, serde::Serialize)]
 pub(crate) struct ExecutionProtocolTransition {
     pub bootstrap: Option<crate::domain::execution_protocol::ExecutionProtocolState>,
     pub commands: Vec<crate::domain::execution_protocol::ExecutionProtocolCommand>,
@@ -399,7 +526,7 @@ pub(crate) struct ExecutionAuthorityFences {
     pub host_registry_revision: u64,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize)]
 pub(crate) struct TaskTransitionCommand {
     pub agent_id: String,
     pub expected_owner_incarnation: u64,
@@ -417,11 +544,14 @@ pub(crate) struct TaskTransitionCommand {
     pub index_changes: Vec<RuntimeIndexChange>,
     pub notify_scheduler: bool,
     pub commit_on_idempotent: bool,
+    #[serde(skip)]
     pub fault: Option<TransitionFaultPoint>,
 }
 
 pub(crate) struct RuntimeTransitionRepository<'a> {
     db: &'a RuntimeDb,
+    input_scope: Option<InputEvidenceScope>,
+    cleanup_input: Option<&'a super::input_evidence_snapshot::ExistingAdmissionInputProof>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -437,30 +567,278 @@ pub(crate) struct StartupRuntimeRecoveryReport {
     pub interrupted_attempts_finalized: usize,
 }
 
+#[derive(Debug, Clone)]
+pub(crate) enum StartupInputRecoveryScope {
+    Current(InputEvidenceScope),
+    Unbound(super::input_evidence_snapshot::legacy_recovery::LegacySeedRecoveryScope),
+    Retired {
+        agent_id: String,
+        identity_incarnation: u64,
+        status: crate::types::AgentRegistryStatus,
+    },
+}
+impl StartupInputRecoveryScope {
+    pub(crate) fn agent_id(&self) -> &str {
+        match self {
+            Self::Current(scope) => &scope.agent_id,
+            Self::Unbound(scope) => &scope.agent_id,
+            Self::Retired { agent_id, .. } => agent_id,
+        }
+    }
+}
+
+#[derive(Debug)]
+pub(crate) struct StartupInputRecoveryCommit {
+    pub report: StartupRuntimeRecoveryReport,
+    pub input_deltas: Vec<(InputEvidenceScope, CommittedInputEvidenceDelta)>,
+    pub(super) _current_writes: Vec<super::current_read_writes::CommittedCurrentWrites>,
+}
+
 #[derive(Debug, Default)]
 struct OrphanedQueueRecovery {
     recovered_agents: Vec<String>,
     changed: usize,
     interrupted_messages: BTreeSet<(String, String)>,
+    writes: Vec<QueueEntryRecord>,
 }
 
 impl RuntimeDb {
     pub(crate) fn transitions(&self) -> RuntimeTransitionRepository<'_> {
-        RuntimeTransitionRepository { db: self }
+        RuntimeTransitionRepository {
+            db: self,
+            input_scope: None,
+            cleanup_input: None,
+        }
     }
 
+    pub(crate) fn transitions_in_scope(
+        &self,
+        scope: &InputEvidenceScope,
+    ) -> RuntimeTransitionRepository<'_> {
+        RuntimeTransitionRepository {
+            db: self,
+            input_scope: Some(scope.clone()),
+            cleanup_input: None,
+        }
+    }
+
+    #[cfg(test)]
     pub(crate) fn recover_interrupted_runtime_state_at_startup(
         &self,
     ) -> Result<StartupRuntimeRecoveryReport> {
         self.recover_interrupted_runtime_state_at_startup_with_fault(None)
     }
 
+    /// Read-only reservation inventory; the original recovery transaction
+    /// validates every exact identity/seed again under the startup capability.
+    pub(crate) fn startup_input_recovery_scopes(
+        &self,
+        agents: &[String],
+    ) -> Result<Vec<StartupInputRecoveryScope>> {
+        let mut connection = self.connection()?;
+        let tx = connection.transaction_with_behavior(rusqlite::TransactionBehavior::Deferred)?;
+        let mut scopes = Vec::new();
+        for agent in agents.iter().collect::<BTreeSet<_>>() {
+            let payload: Option<String> = tx
+                .query_row(
+                    "SELECT payload_json FROM agent_identities WHERE agent_id=?1",
+                    [agent],
+                    |r| r.get(0),
+                )
+                .optional()?;
+            if let Some(payload) = payload {
+                let identity: crate::types::AgentIdentityRecord = serde_json::from_str(&payload)?;
+                anyhow::ensure!(
+                    identity.agent_id == *agent && identity.incarnation > 0,
+                    "startup identity projection mismatch"
+                );
+                if identity.status == crate::types::AgentRegistryStatus::Active {
+                    scopes.push(StartupInputRecoveryScope::Current(InputEvidenceScope {
+                        agent_id: agent.clone(),
+                        identity_incarnation: identity.incarnation,
+                    }));
+                } else {
+                    scopes.push(StartupInputRecoveryScope::Retired {
+                        agent_id: agent.clone(),
+                        identity_incarnation: identity.incarnation,
+                        status: identity.status,
+                    });
+                }
+            } else {
+                scopes.push(StartupInputRecoveryScope::Unbound(
+                    super::input_evidence_snapshot::legacy_recovery::legacy_seed_recovery_scope_tx(
+                        &tx, agent,
+                    )?,
+                ));
+            }
+        }
+        tx.commit()?;
+        Ok(scopes)
+    }
+
+    /// Append an offline observation Event and its archive history ACK in one
+    /// original transaction. The ACK never grants live Current authority; the
+    /// finite history page consumes it against the exact identity and body.
+    pub(crate) fn append_offline_observation_event(
+        &self,
+        agent_id: &str,
+        event: &AuditEvent,
+    ) -> Result<()> {
+        self.transaction(|tx| {
+            let (actual, _) = super::evidence::append_audit_event_tx(tx, Some(agent_id), event)?;
+            if let Some(scope) = active_input_scope_tx(tx, agent_id)? {
+                super::current_read_writes::append_event_history_ack_tx(tx, &scope, &actual.id)?;
+            }
+            Ok(())
+        })
+    }
+
+    #[cfg(test)]
+    pub(crate) fn recover_interrupted_runtime_state_at_startup_in_scopes(
+        &self,
+        scopes: &[StartupInputRecoveryScope],
+        admission: &super::input_evidence_snapshot::legacy_recovery::ExclusiveStartupInputRecovery<
+            '_,
+        >,
+    ) -> Result<StartupInputRecoveryCommit> {
+        admission.validate_database(self)?;
+        self.recover_interrupted_runtime_state_at_startup_inner(None, Some(scopes), None, None)
+    }
+
+    pub(crate) fn recover_interrupted_runtime_state_at_startup_with_tasks_in_scopes(
+        &self,
+        scopes: &[StartupInputRecoveryScope],
+        admission: &super::input_evidence_snapshot::legacy_recovery::ExclusiveStartupInputRecovery<
+            '_,
+        >,
+        ledger: &crate::runtime::input_evidence_budget::InputEvidenceBudgetLedger,
+    ) -> Result<StartupInputRecoveryCommit> {
+        admission.validate_database(self)?;
+        self.recover_interrupted_runtime_state_at_startup_inner(
+            None,
+            Some(scopes),
+            Some((admission, ledger)),
+            None,
+        )
+    }
+
+    #[cfg(test)]
+    pub(crate) fn recover_interrupted_runtime_state_at_startup_with_tasks_in_scopes_at(
+        &self,
+        scopes: &[StartupInputRecoveryScope],
+        admission: &super::input_evidence_snapshot::legacy_recovery::ExclusiveStartupInputRecovery<
+            '_,
+        >,
+        ledger: &crate::runtime::input_evidence_budget::InputEvidenceBudgetLedger,
+        recovered_at: chrono::DateTime<Utc>,
+    ) -> Result<StartupInputRecoveryCommit> {
+        admission.validate_database(self)?;
+        self.recover_interrupted_runtime_state_at_startup_inner(
+            None,
+            Some(scopes),
+            Some((admission, ledger)),
+            Some(recovered_at),
+        )
+    }
+
+    #[cfg(test)]
     fn recover_interrupted_runtime_state_at_startup_with_fault(
         &self,
         fault: Option<TransitionFaultPoint>,
     ) -> Result<StartupRuntimeRecoveryReport> {
+        Ok(self
+            .recover_interrupted_runtime_state_at_startup_inner(fault, None, None, None)?
+            .report)
+    }
+
+    fn recover_interrupted_runtime_state_at_startup_inner(
+        &self,
+        fault: Option<TransitionFaultPoint>,
+        input_scopes: Option<&[StartupInputRecoveryScope]>,
+        task_metadata: Option<(
+            &super::input_evidence_snapshot::legacy_recovery::ExclusiveStartupInputRecovery<'_>,
+            &crate::runtime::input_evidence_budget::InputEvidenceBudgetLedger,
+        )>,
+        recovered_at: Option<chrono::DateTime<Utc>>,
+    ) -> Result<StartupInputRecoveryCommit> {
         self.transaction(|tx| {
-            let recovered_at = Utc::now();
+            let mut input_facts=BTreeMap::<String,Vec<super::input_evidence_snapshot::CanonicalInputEvidence>>::new();
+            let mut input_commands=BTreeMap::<String,Vec<crate::domain::execution_protocol::ExecutionProtocolCommand>>::new();
+            let mut prepared_legacy = BTreeMap::new();
+            let mut current_members=BTreeMap::<String,BTreeSet<crate::runtime::resident_input_evidence::InputEvidenceKey>>::new();
+            let mut deleting_proofs=BTreeMap::<String,super::input_evidence_snapshot::ExistingAdmissionInputProof>::new();
+            if let Some(scopes)=input_scopes {
+                let mut agents=BTreeSet::new();
+                for authority in scopes {
+                    let agent=authority.agent_id();
+                    anyhow::ensure!(agents.insert(agent.to_owned()),"duplicate startup input scope");
+                    match authority {
+                        StartupInputRecoveryScope::Current(scope)=>{
+                            super::input_evidence_writes::validate_input_evidence_scope_tx(tx,scope,agent)?;
+                            let mut members=BTreeSet::new();
+                            for key in startup_input_recovery_targets_tx(tx,agent,Some(scope),false)? {
+                                if super::input_evidence_snapshot::existing_input_evidence_member_tx(tx,scope,&key)? {members.insert(key);}
+                            }
+                            current_members.insert(agent.into(),members);
+                        }
+                        StartupInputRecoveryScope::Unbound(scope)=>{
+                            let keys=startup_input_recovery_targets_tx(tx,agent,None,false)?;
+                            prepared_legacy.insert(agent.to_owned(),super::input_evidence_snapshot::legacy_recovery::prepare_unbound_seed_recovery_tx(tx,scope,&keys)?);
+                        }
+                        StartupInputRecoveryScope::Retired{identity_incarnation,status,..}=>{
+                            anyhow::ensure!(*identity_incarnation>0 && *status!=crate::types::AgentRegistryStatus::Active,"invalid retired startup scope");
+                            let payload:String=tx.query_row("SELECT payload_json FROM agent_identities WHERE agent_id=?1",[agent],|r|r.get(0))?;
+                            let actual:crate::types::AgentIdentityRecord=serde_json::from_str(&payload)?;
+                            anyhow::ensure!(actual.agent_id==agent && actual.incarnation==*identity_incarnation && actual.status==*status,"retired startup identity changed");
+                            if *status == crate::types::AgentRegistryStatus::Deleting {
+                                let scope=InputEvidenceScope{agent_id:agent.into(),identity_incarnation:*identity_incarnation};
+                                let members=startup_input_recovery_targets_tx(tx,agent,Some(&scope),true)?.into_iter().collect::<BTreeSet<_>>();
+                                let proof=super::input_evidence_snapshot::ExistingAdmissionInputProof::prepare_tx(tx,&scope,members.clone(),BTreeSet::new())?;
+                                current_members.insert(agent.into(),members);
+                                deleting_proofs.insert(agent.into(),proof);
+                            }
+                        }
+                    }
+                }
+            }
+            let current_ledger = task_metadata.map(|(_, ledger)| ledger);
+            let task_metadata = task_metadata.map(|(capability, ledger)|
+                super::task_snapshot::prepare_exclusive_startup_task_metadata_tx(tx, capability,
+                    input_scopes.context("startup Task metadata requires original scopes")?, ledger)
+            ).transpose()?;
+            // Retain original Queue address authority before any startup CAS.
+            // The post-write readback alone must never qualify a raw body.
+            let mut current_preparations = Vec::new();
+            if let Some(ledger) = current_ledger {
+                let limits = ledger.limits();
+                let bytes = usize::try_from(
+                    limits.history_per_agent_bytes
+                        .checked_add(limits.pending_per_agent_bytes)
+                        .context("startup Current byte limit overflow")?
+                        .min(64 * 1024 * 1024),
+                )?;
+                let records = usize::try_from(limits.record_limit.min(65_536))?;
+                for authority in input_scopes.context("startup Current scopes missing")? {
+                    let StartupInputRecoveryScope::Current(scope) = authority else { continue };
+                    let mut material = super::input_evidence_snapshot::read_material::InputReadMaterial::new(
+                        scope, ledger, (bytes, records), None,
+                    )?;
+                    let original = super::current_read_writes::OriginalCurrentWrites::prepare(
+                        tx, scope, &mut material, |visit| {
+                            let mut statement = tx.prepare(
+                                "SELECT message_id FROM queue_entries WHERE agent_id=?1 AND status IN ('queued','dequeued','interrupted') ORDER BY message_id",
+                            )?;
+                            let mut rows = statement.query([&scope.agent_id])?;
+                            while let Some(row) = rows.next()? {
+                                visit(super::current_read_writes::CurrentFamily::Queue, row.get_ref(0)?.as_str()?)?;
+                            }
+                            Ok(())
+                        },
+                    )?;
+                    current_preparations.push((scope, material, original));
+                }
+            }
+            let recovered_at = recovered_at.unwrap_or_else(Utc::now);
             inject_fault(fault, TransitionFaultPoint::AfterValidation)?;
             let terminal_sources = {
                 // Interrupted history is recovery lineage, not evidence that
@@ -522,6 +900,9 @@ impl RuntimeDb {
                 }
             }
 
+            let mut current_queue_writes = queue_recovery.writes.into_iter()
+                .map(|record| (record.message_id.clone(), record))
+                .collect::<BTreeMap<_, _>>();
             let mut report = StartupRuntimeRecoveryReport {
                 recovered_queue_agent_ids: queue_recovery.recovered_agents,
                 queue_entries_changed: queue_recovery.changed,
@@ -559,7 +940,9 @@ impl RuntimeDb {
                             let expected = queue.clone();
                             queue.status = QueueEntryStatus::Aborted;
                             queue.updated_at = recovered_at;
-                            let _ = compare_and_set_queue_entry_tx(tx, &expected, &queue)?;
+                            if compare_and_set_queue_entry_tx(tx, &expected, &queue)? {
+                                current_queue_writes.insert(queue.message_id.clone(), queue);
+                            }
                         }
                     }
                     report.daemon_restart_turns += 1;
@@ -602,6 +985,10 @@ impl RuntimeDb {
                     duration_ms,
                 });
                 upsert_turn_record_tx(tx, &turn)?;
+                if input_scopes.is_some() {
+                    let actual=super::repositories::committed_turn_record_tx(tx,&turn.agent_id,&turn.turn_id)?.record;
+                    input_facts.entry(turn.agent_id.clone()).or_default().push(super::input_evidence_snapshot::CanonicalInputEvidence::Turn(actual));
+                }
                 let event = AuditEvent {
                     id: format!("audit:startup-interrupted-turn:{}", turn.turn_id),
                     event_seq: 0,
@@ -620,9 +1007,17 @@ impl RuntimeDb {
                         "trigger_message_id": &trigger_message_id,
                     }),
                 };
-                append_audit_event_tx(tx, Some(&turn.agent_id), &event)?;
+                let (event, _) = append_audit_event_tx(tx, Some(&turn.agent_id), &event)?;
+                if let Some(scope) = startup_current_recovery_scope(input_scopes, &turn.agent_id)
+                {
+                    super::current_read_writes::append_event_history_ack_tx(
+                        tx,
+                        scope,
+                        &event.id,
+                    )?;
+                }
                 if turn.external_side_effect_possible {
-                    append_audit_event_tx(
+                    let (event, _) = append_audit_event_tx(
                         tx,
                         Some(&turn.agent_id),
                         &AuditEvent {
@@ -646,6 +1041,15 @@ impl RuntimeDb {
                             }),
                         },
                     )?;
+                    if let Some(scope) =
+                        startup_current_recovery_scope(input_scopes, &turn.agent_id)
+                    {
+                        super::current_read_writes::append_event_history_ack_tx(
+                            tx,
+                            scope,
+                            &event.id,
+                        )?;
+                    }
                 }
                 report.interrupted_turns += 1;
             }
@@ -689,10 +1093,19 @@ impl RuntimeDb {
                 );
                 match prepared {
                     Ok(Some(prepared)) => {
-                        execution_protocol_repository::persist_execution_commands_tx(
-                            tx,
-                            Some(prepared),
-                        )?;
+                        if let Some(proof)=deleting_proofs.get_mut(&agent_id) {
+                            use crate::runtime::resident_input_evidence::{InputEvidenceFamily as Family,InputEvidenceKey as Key};
+                            if current_members.get(&agent_id).is_some_and(|members|members.contains(&Key::new(Family::Attempt,&attempt_id))) {
+                                proof.allow_execution_recovery_tx(tx,&command)?;
+                            }
+                        }
+                        if input_scopes.is_some() {
+                            let (_,facts)=execution_protocol_repository::persist_execution_commands_with_touched_facts_tx(tx,Some(prepared))?;
+                            input_facts.entry(agent_id.clone()).or_default().extend(facts);
+                            input_commands.entry(agent_id.clone()).or_default().push(command.clone());
+                        } else {
+                            execution_protocol_repository::persist_execution_commands_tx(tx,Some(prepared))?;
+                        }
                         if let Some((expected, recovered)) = queue_change {
                             if !compare_and_set_queue_entry_tx(tx, &expected, &recovered)? {
                                 bail!("startup execution claim changed inside transaction");
@@ -713,6 +1126,7 @@ impl RuntimeDb {
                             if !report.recovered_queue_agent_ids.contains(&agent_id) {
                                 report.recovered_queue_agent_ids.push(agent_id.clone());
                             }
+                            current_queue_writes.insert(recovered.message_id.clone(), recovered);
                         }
                         append_audit_event_tx(
                             tx,
@@ -757,10 +1171,79 @@ impl RuntimeDb {
             // Repair pairs left inconsistent by a crash between the runtime
             // abort write and its attempt settlement (#3607).
             finalize_interrupted_replay_sources_at_startup_tx(tx, recovered_at, &mut report)?;
+            if let Some(metadata) = task_metadata { metadata.finish(tx, &input_commands)?; }
+            let mut input_deltas = Vec::new();
+            if let Some(scopes)=input_scopes {
+                for (agent,facts) in input_facts {
+                    let authority=scopes.iter().find(|scope|scope.agent_id()==agent).ok_or_else(||super::input_evidence_snapshot::legacy_recovery::NeedsLegacyRecoveryPreparation(agent.clone()))?;
+                    match authority {
+                        StartupInputRecoveryScope::Current(scope)=>{
+                            let members=current_members.get(&agent).context("missing startup current qualification footprint")?;
+                            let facts=facts.into_iter().filter(|fact| {
+                                use super::input_evidence_snapshot::CanonicalInputEvidence as Fact;
+                                use crate::runtime::resident_input_evidence::{InputEvidenceKey as Key,InputEvidenceFamily as Family};
+                                match fact {
+                                    Fact::Turn(x)=>members.contains(&Key::new(Family::Turn,&x.turn_id)),
+                                    Fact::Attempt(x)=>members.contains(&Key::new(Family::Attempt,&x.attempt_id)),
+                                    Fact::Outcome(x)=>members.contains(&Key::new(Family::Attempt,&x.attempt_id)),
+                                    Fact::WorkExecution{work_item_id,..}=>members.contains(&Key::new(Family::WorkExecution,work_item_id)),
+                                    _=>false,
+                                }
+                            }).collect::<Vec<_>>();
+                            let delta=super::input_evidence_snapshot::register_committed_input_evidence_tx(tx,scope,&facts)?;
+                            input_deltas.push((scope.clone(),delta));
+                        }
+                        StartupInputRecoveryScope::Unbound(_)=>{
+                            let prepared=prepared_legacy.get(&agent).context("missing prepared legacy startup footprint")?;
+                            let commands=input_commands.remove(&agent).unwrap_or_default();
+                            super::input_evidence_snapshot::legacy_recovery::register_unbound_seed_recovery_tx(tx,prepared,&facts,&commands)?;
+                        }
+                        // This is the original exclusive historical cleanup
+                        // authority, not evidence qualification for a successor.
+                        StartupInputRecoveryScope::Retired{identity_incarnation,status:crate::types::AgentRegistryStatus::Deleting,..}=>{
+                            let scope=InputEvidenceScope{agent_id:agent.clone(),identity_incarnation:*identity_incarnation};
+                            let members=current_members.get(&agent).context("missing startup deleting qualification footprint")?;
+                            let facts=facts.into_iter().filter(|fact| {
+                                use super::input_evidence_snapshot::CanonicalInputEvidence as Fact;
+                                use crate::runtime::resident_input_evidence::{InputEvidenceKey as Key,InputEvidenceFamily as Family};
+                                match fact {
+                                    Fact::Turn(x)=>members.contains(&Key::new(Family::Turn,&x.turn_id)),
+                                    Fact::Attempt(x)=>members.contains(&Key::new(Family::Attempt,&x.attempt_id)),
+                                    Fact::Outcome(x)=>members.contains(&Key::new(Family::Attempt,&x.attempt_id)),
+                                    Fact::WorkExecution{work_item_id,..}=>members.contains(&Key::new(Family::WorkExecution,work_item_id)),
+                                    _=>false,
+                                }
+                            }).collect::<Vec<_>>();
+                            let proof=deleting_proofs.get(&agent).context("missing original startup deleting proof")?;
+                            // Retain aliases for the original cleanup only. No
+                            // active root or successor is installed here.
+                            let delta=super::input_evidence_snapshot::register_committed_cleanup_input_evidence_tx(tx,&scope,&facts,proof)?;
+                            input_deltas.push((scope,delta));
+                        }
+                        StartupInputRecoveryScope::Retired{..}=>{}
+                    }
+                }
+            }
+            let current_queue_writes = current_queue_writes.into_values().collect::<Vec<_>>();
+            let mut current_writes = Vec::new();
+            for (scope, mut material, original) in current_preparations {
+                if let Some(original) = original {
+                    current_writes.push(original.finish_with_shared_records(
+                        &mut material, &[], &current_queue_writes, |visit| {
+                            for record in &current_queue_writes {
+                                if record.agent_id == scope.agent_id {
+                                    visit(super::current_read_writes::CurrentFamily::Queue, &record.message_id)?;
+                                }
+                            }
+                            Ok(())
+                        },
+                    )?);
+                }
+            }
             inject_fault(fault, TransitionFaultPoint::AfterCanonicalWrites)?;
             inject_fault(fault, TransitionFaultPoint::AfterAuditWrites)?;
             inject_fault(fault, TransitionFaultPoint::BeforeCommit)?;
-            Ok(report)
+            Ok(StartupInputRecoveryCommit {report,input_deltas,_current_writes:current_writes})
         })
     }
 }
@@ -1044,21 +1527,33 @@ fn startup_claim_recovery_tx(
                     .query_map([agent_id], |row| row.get::<_, String>(0))?
                     .map(|row| Ok(serde_json::from_str::<WaitConditionRecord>(&row?)?))
                     .collect::<Result<Vec<_>>>()?;
-                match crate::runtime::exact_task_result_claim_recovery_from_facts(
+                if startup_idle_task_result_is_admitted_tx(
+                    tx,
                     message,
                     attempt,
                     work_item_id,
-                    recovered_at,
-                    TaskResultClaimRecoveryAuthority::RuntimeTerminatedBootstrap,
                     task.as_ref(),
-                    &waits,
                     work_item.as_ref(),
+                    &waits,
                 )? {
-                    TaskResultClaimRecovery::Replayable { transition, .. } => {
-                        command = transition.commands.into_iter().next();
-                        QueueEntryStatus::Queued
+                    QueueEntryStatus::Interrupted
+                } else {
+                    match crate::runtime::exact_task_result_claim_recovery_from_facts(
+                        message,
+                        attempt,
+                        work_item_id,
+                        recovered_at,
+                        TaskResultClaimRecoveryAuthority::RuntimeTerminatedBootstrap,
+                        task.as_ref(),
+                        &waits,
+                        work_item.as_ref(),
+                    )? {
+                        TaskResultClaimRecovery::Replayable { transition, .. } => {
+                            command = transition.commands.into_iter().next();
+                            QueueEntryStatus::Queued
+                        }
+                        _ => QueueEntryStatus::Quarantined,
                     }
-                    _ => QueueEntryStatus::Quarantined,
                 }
             }
             _ if attempt.recovery_of_attempt_id.is_none()
@@ -1128,6 +1623,85 @@ fn startup_claim_recovery_tx(
     recovered.status = status;
     recovered.updated_at = recovered_at;
     Ok((command, Some((expected, recovered))))
+}
+
+/// An idle admission is a distinct durable grant, not a missing exact waiter.
+/// Exclusive startup may preserve only the first canonical source's own row.
+fn startup_idle_task_result_is_admitted_tx(
+    tx: &Transaction<'_>,
+    message: &MessageEnvelope,
+    attempt: &crate::domain::execution_protocol::ExecutionAttempt,
+    owner: &str,
+    task: Option<&TaskRecord>,
+    work: Option<&WorkItemRecord>,
+    waits: &[WaitConditionRecord],
+) -> Result<bool> {
+    use crate::domain::execution_protocol::ExecutionSourceIdentity;
+    let Some(task) = task else { return Ok(false) };
+    let Ok(fence) = task.rejoin_fence() else {
+        return Ok(false);
+    };
+    if attempt.attempt_id != format!("activation:message:{}", message.id)
+        || attempt.recovery_of_attempt_id.is_some()
+        || attempt.source_message_id.as_deref() != Some(message.id.as_str())
+        || !matches!(&attempt.source.identity,
+            ExecutionSourceIdentity::TaskResult { task_id, result_message_id }
+            | ExecutionSourceIdentity::ChildResult { task_id, result_message_id, .. }
+                if task_id == &task.id && result_message_id == &message.id)
+        || attempt.admitted_fences.rejoin.as_ref() != Some(&fence)
+        || task.agent_id != message.agent_id
+        || task.effective_work_item_id() != Some(owner)
+        || task.parent_message_id.as_deref() != Some(message.id.as_str())
+        || message.task_id.as_deref() != Some(task.id.as_str())
+        || message.work_item_id.as_deref() != Some(owner)
+        || !matches!(&message.origin, crate::types::MessageOrigin::Task { task_id } if task_id == &task.id)
+        || message.authority_class != crate::types::AuthorityClass::RuntimeInstruction
+        || message.admission_context != Some(crate::types::AdmissionContext::RuntimeOwned)
+        || message.delivery_surface != Some(crate::types::MessageDeliverySurface::TaskRejoin)
+        || !matches!(
+            task.status,
+            crate::types::TaskStatus::Completed
+                | crate::types::TaskStatus::Failed
+                | crate::types::TaskStatus::Cancelled
+                | crate::types::TaskStatus::Interrupted
+        )
+        || !work.is_some_and(|work| {
+            work.agent_id == message.agent_id && work.id == owner && work.is_runnable()
+        })
+        || waits
+            .iter()
+            .any(|wait| wait.trigger_message_id() == Some(message.id.as_str()))
+    {
+        return Ok(false);
+    }
+    // Scalar proof avoids materializing the result body during global recovery.
+    Ok(tx.query_row(
+        "SELECT EXISTS(SELECT 1 FROM task_result_settlements
+         WHERE agent_id=?1 AND message_id=?2 AND task_id=?3 AND work_item_id=?4
+           AND activation_id=?5 AND state='caller_admitted'
+           AND rejoin_generation=?6 AND parent_turn_id=?7 AND command_creation_id IS ?8
+           AND json_extract(payload_json,'$.agent_id') IS agent_id
+           AND json_extract(payload_json,'$.message_id') IS message_id
+           AND json_extract(payload_json,'$.task_id') IS task_id
+           AND json_extract(payload_json,'$.work_item_id') IS work_item_id
+           AND json_extract(payload_json,'$.activation_id') IS activation_id
+           AND json_extract(payload_json,'$.state') IS state
+           AND json_extract(payload_json,'$.rejoin_generation') IS rejoin_generation
+           AND COALESCE(json_extract(payload_json,'$.parent_turn_id'),'') IS parent_turn_id
+           AND json_extract(payload_json,'$.command_creation_id') IS command_creation_id
+           AND json_extract(payload_json,'$.result_identity') IS result_identity)",
+        params![
+            message.agent_id,
+            message.id,
+            task.id,
+            owner,
+            attempt.attempt_id,
+            fence.generation,
+            fence.source.parent_turn_id().unwrap_or(""),
+            fence.source.command_creation_id()
+        ],
+        |row| row.get(0),
+    )?)
 }
 
 fn startup_triggered_wait_is_exact_tx(
@@ -1365,52 +1939,279 @@ fn reconcile_orphaned_dequeued_claims_tx(
             recovery
                 .interrupted_messages
                 .insert((recovered.agent_id.clone(), recovered.message_id.clone()));
-            recovery.recovered_agents.push(recovered.agent_id);
+            recovery.recovered_agents.push(recovered.agent_id.clone());
         }
+        recovery.writes.push(recovered);
     }
     recovery.recovered_agents.sort();
     recovery.recovered_agents.dedup();
     Ok(recovery)
 }
 
+fn startup_input_recovery_targets_tx(
+    tx: &Transaction<'_>,
+    agent: &str,
+    current_scope: Option<&InputEvidenceScope>,
+    original_cleanup: bool,
+) -> Result<Vec<crate::runtime::resident_input_evidence::InputEvidenceKey>> {
+    use crate::runtime::resident_input_evidence::{
+        InputEvidenceFamily as Family, InputEvidenceKey as Key,
+    };
+    let mut keys = BTreeSet::new();
+    let mut key_bytes = 0usize;
+    let mut add = |key: Key| -> Result<()> {
+        if let Some(scope) = current_scope {
+            let member = if original_cleanup {
+                super::input_evidence_snapshot::existing_cleanup_input_evidence_member_tx(
+                    tx, scope, &key,
+                )?
+            } else {
+                super::input_evidence_snapshot::existing_input_evidence_member_tx(tx, scope, &key)?
+            };
+            if !member {
+                return Ok(());
+            }
+        }
+        if !keys.contains(&key) {
+            anyhow::ensure!(
+                keys.len() < 65_536,
+                "startup input metadata count exceeds budget"
+            );
+            key_bytes = key_bytes
+                .checked_add(key.id.len() + 32)
+                .context("startup metadata bytes overflow")?;
+            anyhow::ensure!(
+                key_bytes <= 64 * 1024 * 1024,
+                "startup input metadata bytes exceeds budget"
+            );
+            keys.insert(key);
+        }
+        Ok(())
+    };
+    let mut statement = tx.prepare(
+        "SELECT payload_json FROM turn_records WHERE agent_id=?1 AND terminal_kind IS NULL",
+    )?;
+    for row in statement.query_map([agent], |row| row.get::<_, String>(0))? {
+        let turn: TurnRecord = serde_json::from_str(&row?)?;
+        anyhow::ensure!(turn.agent_id == agent, "startup Turn scope mismatch");
+        add(Key::new(Family::Turn, &turn.turn_id))?;
+        for message in turn.input_message_ids {
+            add(Key::new(Family::Message, &message))?;
+            let assigned:Option<String>=tx.query_row("SELECT turn_id FROM conversation_input_assignments WHERE agent_id=?1 AND message_id=?2",params![agent,message],|row|row.get(0)).optional()?;
+            if let Some(turn) = assigned {
+                add(Key::new(Family::Turn, turn))?;
+            }
+        }
+    }
+    let mut statement=tx.prepare("SELECT payload_json FROM execution_protocol_attempts WHERE agent_id=?1 AND lifecycle_state='open'")?;
+    for row in statement.query_map([agent], |row| row.get::<_, String>(0))? {
+        let attempt: crate::domain::execution_protocol::ExecutionAttempt =
+            serde_json::from_str(&row?)?;
+        anyhow::ensure!(attempt.agent_id == agent, "startup Attempt scope mismatch");
+        add(Key::new(Family::Attempt, &attempt.attempt_id))?;
+        if let Some(message_id) = attempt.source_message_id.as_deref() {
+            add(Key::new(Family::Message, message_id))?;
+        }
+        if let crate::domain::execution_protocol::ExecutionBinding::WorkItem { work_item_id } =
+            attempt.binding
+        {
+            add(Key::new(Family::WorkExecution, work_item_id))?;
+        }
+    }
+    anyhow::ensure!(
+        keys.len() <= 65_536,
+        "startup recovery input footprint exceeds fixed preparation limit"
+    );
+    Ok(keys.into_iter().collect())
+}
+
 impl RuntimeTransitionRepository<'_> {
+    fn validate_input_scope_tx(&self, tx: &Transaction<'_>, agent_id: &str) -> Result<()> {
+        if let Some(scope) = self.input_scope.as_ref() {
+            if let Some(proof) = self.cleanup_input {
+                anyhow::ensure!(
+                    scope.agent_id == agent_id,
+                    "cleanup transition scope mismatch"
+                );
+                proof.validate_scope_tx(tx, scope)?;
+            } else {
+                super::input_evidence_writes::validate_input_evidence_scope_tx(
+                    tx, scope, agent_id,
+                )?;
+            }
+        }
+        Ok(())
+    }
+
+    fn validate_input_key_tx(
+        &self,
+        tx: &Transaction<'_>,
+        family: crate::runtime::resident_input_evidence::InputEvidenceFamily,
+        id: &str,
+    ) -> Result<()> {
+        if let Some(scope) = self.input_scope.as_ref() {
+            let key = crate::runtime::resident_input_evidence::InputEvidenceKey::new(family, id);
+            if let Some(proof) = self.cleanup_input {
+                proof.validate_key_tx(tx, &key)?;
+            } else {
+                super::input_evidence_snapshot::validate_existing_input_evidence_tx(
+                    tx, scope, &key,
+                )?;
+            }
+        }
+        Ok(())
+    }
+
+    fn validate_terminal_input_keys_tx(
+        &self,
+        tx: &Transaction<'_>,
+        turn: &TurnRecord,
+    ) -> Result<()> {
+        self.validate_input_key_tx(
+            tx,
+            crate::runtime::resident_input_evidence::InputEvidenceFamily::Turn,
+            &turn.turn_id,
+        )?;
+        if self.input_scope.is_some() && turn.terminal.is_some() {
+            let mut statement=tx.prepare("SELECT evidence_id FROM tool_executions WHERE agent_id=?1 AND turn_id=?2 AND json_extract(payload_json,'$.status')='deferred' ORDER BY evidence_id LIMIT 65537")?;
+            let ids = statement
+                .query_map(rusqlite::params![turn.agent_id, turn.turn_id], |row| {
+                    row.get::<_, String>(0)
+                })?
+                .collect::<rusqlite::Result<Vec<_>>>()?;
+            anyhow::ensure!(
+                ids.len() <= 65536,
+                "terminal tool input preflight exceeds preparation limit"
+            );
+            for id in ids {
+                self.validate_input_key_tx(
+                    tx,
+                    crate::runtime::resident_input_evidence::InputEvidenceFamily::ToolExecution,
+                    &id,
+                )?;
+            }
+        }
+        Ok(())
+    }
+
     pub fn commit_agent_posture(
         &self,
         command: &AgentPostureTransitionCommand,
     ) -> Result<TransitionCommit> {
+        self.commit_agent_posture_with_started_turn(command, None)
+    }
+
+    pub(crate) fn commit_agent_posture_with_started_turn(
+        &self,
+        command: &AgentPostureTransitionCommand,
+        started_turn: Option<&TurnRecord>,
+    ) -> Result<TransitionCommit> {
+        if let Some(turn) = started_turn {
+            anyhow::ensure!(
+                turn.agent_id == command.agent_id
+                    && Some(&turn.turn_id) == command.agent_state.record.current_turn_id.as_ref()
+                    && turn.turn_index == command.agent_state.record.turn_index
+                    && turn.terminal.is_none(),
+                "started Turn and posture differ"
+            );
+        }
         anyhow::ensure!(
             command.agent_id == command.agent_state.record.id,
             "agent posture transition identity mismatch"
         );
-        self.db.transaction(|tx| {
-            validate_agent_state_mutation_tx(tx, Some(&command.agent_state))?;
-            inject_fault(command.fault, TransitionFaultPoint::AfterValidation)?;
-
-            let agent_state_applied =
-                apply_agent_state_mutation_tx(tx, Some(&command.agent_state))?;
-            if !agent_state_applied {
-                return Ok(TransitionCommit::default());
-            }
-            inject_fault(command.fault, TransitionFaultPoint::AfterCanonicalWrites)?;
-
-            finish_transition_tx(
-                tx,
-                true,
-                &command.agent_id,
-                &command.audit_events,
-                &[],
-                command.fault,
-                PostCommitEffects {
-                    agent_state: Some(command.agent_state.clone()),
-                    ..PostCommitEffects::default()
-                },
-            )
-        })
+        self.db
+            .transaction(|tx| self.commit_agent_posture_tx(tx, command, started_turn))
     }
 
+    #[allow(clippy::too_many_arguments)]
+    fn commit_agent_posture_tx(
+        &self,
+        tx: &Transaction<'_>,
+        command: &AgentPostureTransitionCommand,
+        started_turn: Option<&TurnRecord>,
+    ) -> Result<TransitionCommit> {
+        self.validate_input_scope_tx(tx, &command.agent_id)?;
+        if let Some(expected) = command.expected_incarnation {
+            let identity = tx
+                .query_row(
+                    "SELECT payload_json FROM agent_identities WHERE agent_id = ?1",
+                    [&command.agent_id],
+                    |row| row.get::<_, String>(0),
+                )
+                .optional()?
+                .map(|payload| serde_json::from_str::<crate::types::AgentIdentityRecord>(&payload))
+                .transpose()?;
+            anyhow::ensure!(
+                identity
+                    .as_ref()
+                    .is_none_or(|identity| identity.incarnation == expected
+                        && identity.status != crate::types::AgentRegistryStatus::Deleted),
+                "agent mutation identity incarnation is no longer current"
+            );
+        }
+        validate_agent_state_mutation_tx(tx, Some(&command.agent_state))?;
+        if let Some(turn) = started_turn {
+            let incarnation = self
+                .input_scope
+                .as_ref()
+                .map(|scope| scope.identity_incarnation)
+                .or(command.expected_incarnation)
+                .context("started Turn requires an identity incarnation")?;
+            super::turn_start::validate_start_admission_tx(
+                tx,
+                &command.agent_state.record,
+                turn,
+                incarnation,
+            )?;
+            super::turn_start::validate_prepared_turn_index_tx(tx, turn)?;
+            self.validate_terminal_input_keys_tx(tx, turn)?;
+        }
+        inject_fault(command.fault, TransitionFaultPoint::AfterValidation)?;
+
+        let agent_state_applied = apply_agent_state_mutation_tx(tx, Some(&command.agent_state))?;
+        if !agent_state_applied && started_turn.is_none() {
+            return Ok(TransitionCommit::default());
+        }
+        if let Some(turn) = started_turn {
+            upsert_turn_record_tx(tx, turn)?;
+        }
+        inject_fault(command.fault, TransitionFaultPoint::AfterCanonicalWrites)?;
+
+        finish_transition_with_cleanup_tx(
+            tx,
+            self.input_scope.as_ref(),
+            self.cleanup_input,
+            true,
+            &command.agent_id,
+            &command.audit_events,
+            &[],
+            command.fault,
+            PostCommitEffects {
+                agent_state: Some(command.agent_state.clone()),
+                turns: started_turn.into_iter().cloned().collect(),
+                ..PostCommitEffects::default()
+            },
+        )
+    }
+
+    #[cfg(test)]
     pub fn commit_queue_head_no_progress(
         &self,
         command: &QueueHeadNoProgressCommand,
+    ) -> Result<Option<QueueHeadNoProgressCommit>> {
+        let now = Utc::now();
+        let audit_event_id = crate::ids::audit_event_id();
+        self.db.transaction(|tx| {
+            self.commit_queue_head_no_progress_tx(tx, command, now, &audit_event_id)
+        })
+    }
+
+    fn commit_queue_head_no_progress_tx(
+        &self,
+        tx: &Transaction<'_>,
+        command: &QueueHeadNoProgressCommand,
+        now: chrono::DateTime<Utc>,
+        audit_event_id: &str,
     ) -> Result<Option<QueueHeadNoProgressCommit>> {
         if command.max_attempts == 0 {
             bail!("queue-head no-progress budget must be non-zero");
@@ -1429,212 +2230,232 @@ impl RuntimeTransitionRepository<'_> {
             bail!("queue-head no-progress requires an active head and quarantined terminal record");
         }
 
-        self.db.transaction(|tx| {
-            let current = tx
-                .query_row(
-                    "SELECT payload_json FROM queue_entries WHERE message_id = ?1",
-                    [&command.expected.message_id],
-                    |row| row.get::<_, String>(0),
-                )
-                .optional()?
-                .map(|payload| serde_json::from_str::<QueueEntryRecord>(&payload))
-                .transpose()?;
-            if current.as_ref() != Some(&command.expected) {
-                return Ok(None);
-            }
+        self.validate_input_scope_tx(tx, &command.agent_id)?;
+        let current = tx
+            .query_row(
+                "SELECT payload_json FROM queue_entries WHERE message_id = ?1",
+                [&command.expected.message_id],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()?
+            .map(|payload| serde_json::from_str::<QueueEntryRecord>(&payload))
+            .transpose()?;
+        if current.as_ref() != Some(&command.expected) {
+            return Ok(None);
+        }
 
-            let previous = tx
-                .query_row(
-                    "SELECT attempts, max_attempts, status, first_reason, first_deferred_at
-                     FROM queue_head_no_progress
-                     WHERE message_id = ?1",
-                    [&command.expected.message_id],
-                    |row| {
-                        Ok((
-                            row.get::<_, u32>(0)?,
-                            row.get::<_, u32>(1)?,
-                            row.get::<_, String>(2)?,
-                            row.get::<_, String>(3)?,
-                            row.get::<_, String>(4)?,
-                        ))
-                    },
-                )
-                .optional()?;
-            if previous
-                .as_ref()
-                .is_some_and(|(_, _, status, _, _)| status == "quarantined")
-            {
-                return Ok(None);
-            }
-            inject_fault(command.fault, TransitionFaultPoint::AfterValidation)?;
-            let attempt = previous
-                .as_ref()
-                .map_or(1, |(attempts, _, _, _, _)| attempts.saturating_add(1));
-            let max_attempts = previous
-                .as_ref()
-                .map_or(command.max_attempts, |(_, max, _, _, _)| *max);
-            let now = Utc::now();
-            let first_reason = previous
-                .as_ref()
-                .map_or(command.reason.as_str(), |(_, _, _, reason, _)| {
-                    reason.as_str()
-                });
-            let first_deferred_at = previous
-                .as_ref()
-                .map_or_else(|| now.to_rfc3339(), |(_, _, _, _, value)| value.clone());
-            let quarantined = attempt >= max_attempts;
-            let status = if quarantined {
-                "quarantined"
-            } else {
-                "bounded_defer"
-            };
-
-            validate_agent_state_mutation_tx(tx, quarantined.then_some(&command.agent_state))?;
-            if quarantined
-                && !compare_and_set_queue_entry_tx(tx, &command.expected, &command.quarantined)?
-            {
-                return Ok(None);
-            }
-            tx.execute(
-                "INSERT INTO queue_head_no_progress (
-                    message_id, agent_id, attempts, max_attempts, status,
-                    first_reason, last_reason, first_deferred_at, updated_at
-                 ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
-                 ON CONFLICT(message_id) DO UPDATE SET
-                    attempts = excluded.attempts,
-                    max_attempts = excluded.max_attempts,
-                    status = excluded.status,
-                    last_reason = excluded.last_reason,
-                    updated_at = excluded.updated_at",
-                rusqlite::params![
-                    command.expected.message_id,
-                    command.agent_id,
-                    attempt,
-                    max_attempts,
-                    status,
-                    first_reason,
-                    command.reason,
-                    first_deferred_at,
-                    now.to_rfc3339(),
-                ],
-            )?;
-            let agent_state_applied = if quarantined {
-                apply_agent_state_mutation_tx(tx, Some(&command.agent_state))?
-            } else {
-                false
-            };
-            inject_fault(command.fault, TransitionFaultPoint::AfterCanonicalWrites)?;
-            let event_kind = if quarantined {
-                "scheduler_queue_head_quarantined"
-            } else {
-                "scheduler_queue_head_deferred"
-            };
-            let event = AuditEvent::legacy(
-                event_kind,
-                serde_json::json!({
-                    "message_id": command.expected.message_id,
-                    "agent_id": command.agent_id,
-                    "reason": command.reason,
-                    "scenario_class": command.scenario_class,
-                    "attempt": attempt,
-                    "max_attempts": max_attempts,
-                    "queue_disposition": status,
-                }),
-            );
-            let commit = finish_transition_tx(
-                tx,
-                true,
-                &command.agent_id,
-                &[event],
-                &[],
-                command.fault,
-                PostCommitEffects {
-                    agent_state: agent_state_applied.then(|| command.agent_state.clone()),
-                    notify_scheduler: quarantined,
-                    ..PostCommitEffects::default()
-                },
-            )?;
-            let outcome = if quarantined {
-                QueueHeadNoProgressOutcome::Quarantined {
-                    attempt,
-                    max_attempts,
-                }
-            } else {
-                QueueHeadNoProgressOutcome::BoundedDefer {
-                    attempt,
-                    max_attempts,
-                }
-            };
-            Ok(Some(QueueHeadNoProgressCommit { outcome, commit }))
-        })
-    }
-
-    pub fn commit_turn_terminal(
-        &self,
-        command: &TurnTerminalTransitionCommand,
-    ) -> Result<TransitionCommit> {
-        self.db.transaction(|tx| {
-            validate_agent_state_mutation_tx(tx, Some(&command.agent_state))?;
-            validate_terminal_tool_execution_mutations_tx(
-                tx,
-                &command.agent_id,
-                &command.terminal_tool_executions,
-            )?;
-            inject_fault(command.fault, TransitionFaultPoint::AfterValidation)?;
-
-            let agent_state_applied =
-                apply_agent_state_mutation_tx(tx, Some(&command.agent_state))?;
-            inject_fault(
-                command.fault,
-                TransitionFaultPoint::AfterTerminalAgentStateWrite,
-            )?;
-            let turn_record_applied = tx
-                .query_row(
-                    "SELECT payload_json FROM turn_records WHERE turn_id = ?1",
-                    [&command.turn_record.turn_id],
-                    |row| row.get::<_, String>(0),
-                )
-                .optional()?
-                .map(|payload| serde_json::from_str::<TurnRecord>(&payload))
-                .transpose()?
-                .as_ref()
-                != Some(&command.turn_record);
-            upsert_turn_record_tx(tx, &command.turn_record)?;
-            let mut terminal_tool_execution_applied = false;
-            for tool_execution in &command.terminal_tool_executions {
-                insert_tool_evidence_tx(tx, tool_execution)?;
-                terminal_tool_execution_applied = true;
-            }
-            terminal_tool_execution_applied |=
-                interrupt_deferred_tool_executions_for_terminal_turn_tx(
-                    tx,
-                    &command.agent_id,
-                    &command.turn_record,
-                )? > 0;
-            inject_fault(
-                command.fault,
-                TransitionFaultPoint::AfterTerminalTurnRecordWrite,
-            )?;
-            let applied =
-                agent_state_applied || turn_record_applied || terminal_tool_execution_applied;
-            if !applied {
-                return Ok(TransitionCommit::default());
-            }
-            inject_fault(command.fault, TransitionFaultPoint::AfterCanonicalWrites)?;
-
-            finish_transition_tx(
-                tx,
-                applied,
-                &command.agent_id,
-                &command.audit_events,
-                &[],
-                command.fault,
-                PostCommitEffects {
-                    agent_state: agent_state_applied.then(|| command.agent_state.clone()),
-                    ..PostCommitEffects::default()
+        let previous = tx
+            .query_row(
+                "SELECT attempts, max_attempts, status, first_reason, first_deferred_at
+                 FROM queue_head_no_progress
+                 WHERE message_id = ?1",
+                [&command.expected.message_id],
+                |row| {
+                    Ok((
+                        row.get::<_, u32>(0)?,
+                        row.get::<_, u32>(1)?,
+                        row.get::<_, String>(2)?,
+                        row.get::<_, String>(3)?,
+                        row.get::<_, String>(4)?,
+                    ))
                 },
             )
-        })
+            .optional()?;
+        if previous
+            .as_ref()
+            .is_some_and(|(_, _, status, _, _)| status == "quarantined")
+        {
+            return Ok(None);
+        }
+        inject_fault(command.fault, TransitionFaultPoint::AfterValidation)?;
+        let attempt = previous
+            .as_ref()
+            .map_or(1, |(attempts, _, _, _, _)| attempts.saturating_add(1));
+        let max_attempts = previous
+            .as_ref()
+            .map_or(command.max_attempts, |(_, max, _, _, _)| *max);
+        let first_reason = previous
+            .as_ref()
+            .map_or(command.reason.as_str(), |(_, _, _, reason, _)| {
+                reason.as_str()
+            });
+        let first_deferred_at = previous
+            .as_ref()
+            .map_or_else(|| now.to_rfc3339(), |(_, _, _, _, value)| value.clone());
+        let quarantined = attempt >= max_attempts;
+        let status = if quarantined {
+            "quarantined"
+        } else {
+            "bounded_defer"
+        };
+
+        validate_agent_state_mutation_tx(tx, quarantined.then_some(&command.agent_state))?;
+        if quarantined
+            && !compare_and_set_queue_entry_tx(tx, &command.expected, &command.quarantined)?
+        {
+            return Ok(None);
+        }
+        tx.execute(
+            "INSERT INTO queue_head_no_progress (
+                message_id, agent_id, attempts, max_attempts, status,
+                first_reason, last_reason, first_deferred_at, updated_at
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
+             ON CONFLICT(message_id) DO UPDATE SET
+                attempts = excluded.attempts,
+                max_attempts = excluded.max_attempts,
+                status = excluded.status,
+                last_reason = excluded.last_reason,
+                updated_at = excluded.updated_at",
+            rusqlite::params![
+                command.expected.message_id,
+                command.agent_id,
+                attempt,
+                max_attempts,
+                status,
+                first_reason,
+                command.reason,
+                first_deferred_at,
+                now.to_rfc3339(),
+            ],
+        )?;
+        if quarantined {
+            apply_agent_state_mutation_tx(tx, Some(&command.agent_state))?;
+        }
+        inject_fault(command.fault, TransitionFaultPoint::AfterCanonicalWrites)?;
+        let event_kind = if quarantined {
+            "scheduler_queue_head_quarantined"
+        } else {
+            "scheduler_queue_head_deferred"
+        };
+        let mut event = AuditEvent::legacy(
+            event_kind,
+            serde_json::json!({
+                "message_id": command.expected.message_id,
+                "agent_id": command.agent_id,
+                "reason": command.reason,
+                "scenario_class": command.scenario_class,
+                "attempt": attempt,
+                "max_attempts": max_attempts,
+                "queue_disposition": status,
+            }),
+        );
+        event.id = audit_event_id.to_owned();
+        event.created_at = now;
+        let commit = finish_transition_tx(
+            tx,
+            self.input_scope.as_ref(),
+            true,
+            &command.agent_id,
+            &[event],
+            &[],
+            command.fault,
+            PostCommitEffects {
+                agent_state: quarantined.then(|| command.agent_state.clone()),
+                removed_queue_message_ids: quarantined
+                    .then(|| command.expected.message_id.clone())
+                    .into_iter()
+                    .collect(),
+                notify_scheduler: quarantined,
+                ..PostCommitEffects::default()
+            },
+        )?;
+        let outcome = if quarantined {
+            QueueHeadNoProgressOutcome::Quarantined {
+                attempt,
+                max_attempts,
+            }
+        } else {
+            QueueHeadNoProgressOutcome::BoundedDefer {
+                attempt,
+                max_attempts,
+            }
+        };
+        Ok(Some(QueueHeadNoProgressCommit { outcome, commit }))
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn commit_turn_terminal_tx(
+        &self,
+        tx: &Transaction<'_>,
+        command: &TurnTerminalTransitionCommand,
+    ) -> Result<TransitionCommit> {
+        self.validate_input_scope_tx(tx, &command.agent_id)?;
+        self.validate_terminal_input_keys_tx(tx, &command.turn_record)?;
+        for record in &command.terminal_tool_executions {
+            self.validate_input_key_tx(
+                tx,
+                crate::runtime::resident_input_evidence::InputEvidenceFamily::ToolExecution,
+                &record.id,
+            )?;
+        }
+
+        validate_agent_state_mutation_tx(tx, Some(&command.agent_state))?;
+        validate_terminal_tool_execution_mutations_tx(
+            tx,
+            &command.agent_id,
+            &command.terminal_tool_executions,
+        )?;
+        inject_fault(command.fault, TransitionFaultPoint::AfterValidation)?;
+
+        let agent_state_applied = apply_agent_state_mutation_tx(tx, Some(&command.agent_state))?;
+        inject_fault(
+            command.fault,
+            TransitionFaultPoint::AfterTerminalAgentStateWrite,
+        )?;
+        let turn_record_applied = tx
+            .query_row(
+                "SELECT payload_json FROM turn_records WHERE turn_id = ?1",
+                [&command.turn_record.turn_id],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()?
+            .map(|payload| serde_json::from_str::<TurnRecord>(&payload))
+            .transpose()?
+            .as_ref()
+            != Some(&command.turn_record);
+        upsert_turn_record_tx(tx, &command.turn_record)?;
+        let mut terminal_tool_execution_applied = false;
+        for tool_execution in &command.terminal_tool_executions {
+            insert_tool_evidence_tx(tx, tool_execution)?;
+            terminal_tool_execution_applied = true;
+        }
+        let interrupted_tools = interrupt_deferred_tool_executions_for_terminal_turn_tx(
+            tx,
+            &command.agent_id,
+            &command.turn_record,
+        )?;
+        terminal_tool_execution_applied |= !interrupted_tools.is_empty();
+        inject_fault(
+            command.fault,
+            TransitionFaultPoint::AfterTerminalTurnRecordWrite,
+        )?;
+        let applied = agent_state_applied || turn_record_applied || terminal_tool_execution_applied;
+        if !applied {
+            return Ok(TransitionCommit::default());
+        }
+        inject_fault(command.fault, TransitionFaultPoint::AfterCanonicalWrites)?;
+
+        finish_transition_with_cleanup_tx(
+            tx,
+            self.input_scope.as_ref(),
+            self.cleanup_input,
+            applied,
+            &command.agent_id,
+            &command.audit_events,
+            &[],
+            command.fault,
+            PostCommitEffects {
+                agent_state: Some(command.agent_state.clone()),
+                turns: vec![command.turn_record.clone()],
+                tool_executions: command
+                    .terminal_tool_executions
+                    .iter()
+                    .cloned()
+                    .chain(interrupted_tools)
+                    .collect(),
+                ..PostCommitEffects::default()
+            },
+        )
     }
 
     #[cfg(test)]
@@ -1664,29 +2485,6 @@ impl RuntimeTransitionRepository<'_> {
         )
     }
 
-    pub fn commit_work_item_focus_with_execution_protocol(
-        &self,
-        command: &WorkItemFocusTransitionCommand,
-        execution_protocol: &ExecutionProtocolTransition,
-    ) -> Result<TransitionCommit> {
-        self.commit_work_item_focus_internal(command, execution_protocol, true, None, false)
-    }
-
-    pub fn commit_work_item_focus_with_execution_protocol_and_completion_tool(
-        &self,
-        command: &WorkItemFocusTransitionCommand,
-        execution_protocol: &ExecutionProtocolTransition,
-        tool_execution: &ToolExecutionRecord,
-    ) -> Result<TransitionCommit> {
-        self.commit_work_item_focus_internal(
-            command,
-            execution_protocol,
-            true,
-            Some(tool_execution),
-            false,
-        )
-    }
-
     fn commit_work_item_focus_internal(
         &self,
         command: &WorkItemFocusTransitionCommand,
@@ -1696,143 +2494,212 @@ impl RuntimeTransitionRepository<'_> {
         agent_deletion: bool,
     ) -> Result<TransitionCommit> {
         self.db.transaction(|tx| {
-            if agent_deletion {
-                execution_protocol_repository::validate_agent_deletion_retirement_tx(
-                    tx,
-                    &command.agent_id,
-                )?;
-                anyhow::ensure!(
-                    command.agent_state.record.id == command.agent_id
-                        && command.agent_state.record.current_work_item_id.is_none()
-                        && command.agent_state.record.current_turn_work_item_id.is_none()
-                        && command.agent_state.record.current_execution_binding.is_none()
-                        && command.work_items.iter().all(|mutation| {
-                            matches!(mutation, WorkItemMutation::Update { .. })
-                                && mutation.record().agent_id == command.agent_id
-                                && mutation.record().state != WorkItemState::Open
-                        })
-                        && command.wait_conditions.is_empty()
-                        && command.continuations.iter().all(|frame| {
-                            frame.agent_id == command.agent_id
-                                && frame.state == WorkItemContinuationState::Cancelled
-                        }),
-                    "agent deletion must release focus and execution ownership without admitting work"
-                );
-            }
-            for work_item in &command.work_items {
-                validate_work_item_mutation_tx(tx, work_item)?;
-            }
-            for condition in &command.wait_conditions {
-                validate_wait_condition_tx(tx, condition)?;
-            }
-            validate_active_work_item_continuations_tx(
+            self.commit_work_item_focus_with_retirement_tx(
                 tx,
-                &command.agent_id,
-                command.active_continuation_expectations.as_deref(),
-                &command.continuations,
-            )?;
-            for continuation in &command.continuations {
-                validate_work_item_continuation_tx(
-                    tx,
-                    continuation,
-                    &command.continuation_expectations,
-                )?;
-            }
-            validate_agent_state_mutation_tx(tx, Some(&command.agent_state))?;
-            validate_focus_target_tx(tx, &command.agent_state.record)?;
-            let execution_protocol = if synchronize_execution_protocol {
-                execution_protocol_repository::synchronize_work_item_revisions_tx(
-                    tx,
-                    &command.agent_id,
-                    execution_protocol,
-                    &command.work_items,
-                )?
-            } else {
-                execution_protocol.clone()
-            };
-            if let Some(tool_execution) = completion_tool_execution {
-                let completion = CompletionTransition {
-                    requires_execution_continuation: false,
-                    work_items: command.work_items.clone(),
-                    wait_conditions: command.wait_conditions.clone(),
-                    continuation_expectations: command.continuation_expectations.clone(),
-                    continuations: command.continuations.clone(),
-                    tool_execution: tool_execution.clone(),
-                    index_changes: command.index_changes.clone(),
-                };
-                validate_completion_transition_tx(tx, &command.agent_id, &completion)?;
-                validate_completion_execution_commands(&completion, &execution_protocol.commands)?;
-            }
-            let execution_protocol = execution_protocol_repository::validate_execution_commands_tx(
-                tx,
-                &command.agent_id,
-                execution_protocol.bootstrap.as_ref(),
-                &execution_protocol.commands,
-                &command.work_items,
-                &command.wait_conditions,
-                &command.continuations,
-            )?;
-            inject_fault(command.fault, TransitionFaultPoint::AfterValidation)?;
-
-            let agent_state_applied =
-                apply_agent_state_mutation_tx(tx, Some(&command.agent_state))?;
-            let mut applied = agent_state_applied;
-            let mut work_items = Vec::new();
-            for work_item in &command.work_items {
-                let work_item_applied = apply_work_item_mutation_tx(tx, work_item)?;
-                applied |= work_item_applied;
-                if work_item_applied {
-                    work_items.push(work_item.record().clone());
-                }
-            }
-            for condition in &command.wait_conditions {
-                applied |= upsert_wait_condition_tx(tx, condition)?;
-            }
-            for continuation in &command.continuations {
-                applied |= upsert_work_item_continuation_tx(tx, continuation)?;
-            }
-            if let Some(tool_execution) = completion_tool_execution {
-                applied |= upsert_completion_tool_execution_tx(tx, tool_execution)?;
-            }
-            if agent_deletion {
-                applied |= execution_protocol_repository::retire_agent_execution_tx(
-                    tx,
-                    &command.agent_id,
-                )?;
-            }
-            applied |= execution_protocol
-                .as_ref()
-                .is_some_and(|prepared| prepared.has_writes());
-            if !applied {
-                return Ok(TransitionCommit::default());
-            }
-            execution_protocol_repository::persist_execution_commands_tx(tx, execution_protocol)?;
-            for brief in &command.brief_evidence {
-                insert_brief_evidence_tx(tx, brief)?;
-            }
-            inject_fault(command.fault, TransitionFaultPoint::AfterCanonicalWrites)?;
-
-            let commit = finish_transition_tx(
-                tx,
-                applied,
-                &command.agent_id,
-                &command.audit_events,
-                &command.index_changes,
-                command.fault,
-                PostCommitEffects {
-                    agent_state: agent_state_applied.then(|| command.agent_state.clone()),
-                    work_items,
-                    notify_scheduler: command.notify_scheduler,
-                    ..PostCommitEffects::default()
-                },
-            )?;
-            link_transition_brief_created_events_tx(
-                tx,
-                &command.brief_evidence,
-                &commit.effects.audit_events,
-            )?;
-            Ok(commit)
+                command,
+                execution_protocol,
+                synchronize_execution_protocol,
+                completion_tool_execution,
+                agent_deletion,
+            )
         })
+    }
+
+    pub(super) fn commit_work_item_focus_tx(
+        &self,
+        tx: &Transaction<'_>,
+        command: &WorkItemFocusTransitionCommand,
+        execution_protocol: &ExecutionProtocolTransition,
+        synchronize_execution_protocol: bool,
+        completion_tool_execution: Option<&ToolExecutionRecord>,
+    ) -> Result<TransitionCommit> {
+        self.commit_work_item_focus_with_retirement_tx(
+            tx,
+            command,
+            execution_protocol,
+            synchronize_execution_protocol,
+            completion_tool_execution,
+            false,
+        )
+    }
+
+    pub(super) fn commit_work_item_focus_with_retirement_tx(
+        &self,
+        tx: &Transaction<'_>,
+        command: &WorkItemFocusTransitionCommand,
+        execution_protocol: &ExecutionProtocolTransition,
+        synchronize_execution_protocol: bool,
+        completion_tool_execution: Option<&ToolExecutionRecord>,
+        agent_deletion: bool,
+    ) -> Result<TransitionCommit> {
+        if agent_deletion {
+            execution_protocol_repository::validate_agent_deletion_retirement_tx(
+                tx,
+                &command.agent_id,
+            )?;
+            anyhow::ensure!(
+                command.agent_state.record.id == command.agent_id
+                    && command.agent_state.record.current_work_item_id.is_none()
+                    && command
+                        .agent_state
+                        .record
+                        .current_turn_work_item_id
+                        .is_none()
+                    && command
+                        .agent_state
+                        .record
+                        .current_execution_binding
+                        .is_none()
+                    && command.work_items.iter().all(|mutation| {
+                        matches!(mutation, WorkItemMutation::Update { .. })
+                            && mutation.record().agent_id == command.agent_id
+                            && mutation.record().state != WorkItemState::Open
+                    })
+                    && command.wait_conditions.is_empty()
+                    && command.continuations.iter().all(|frame| {
+                        frame.agent_id == command.agent_id
+                            && frame.state == WorkItemContinuationState::Cancelled
+                    }),
+                "agent deletion must release focus and execution ownership without admitting work"
+            );
+        }
+        self.validate_input_scope_tx(tx, &command.agent_id)?;
+        for record in &command.brief_evidence {
+            self.validate_input_key_tx(
+                tx,
+                crate::runtime::resident_input_evidence::InputEvidenceFamily::Brief,
+                &record.id,
+            )?;
+        }
+        if let Some(record) = completion_tool_execution {
+            self.validate_input_key_tx(
+                tx,
+                crate::runtime::resident_input_evidence::InputEvidenceFamily::ToolExecution,
+                &record.id,
+            )?;
+        }
+
+        for work_item in &command.work_items {
+            validate_work_item_mutation_tx(tx, work_item)?;
+        }
+        for condition in &command.wait_conditions {
+            validate_wait_condition_tx(tx, condition)?;
+        }
+        validate_active_work_item_continuations_tx(
+            tx,
+            &command.agent_id,
+            command.active_continuation_expectations.as_deref(),
+            &command.continuations,
+        )?;
+        for continuation in &command.continuations {
+            validate_work_item_continuation_tx(
+                tx,
+                continuation,
+                &command.continuation_expectations,
+            )?;
+        }
+        validate_agent_state_mutation_tx(tx, Some(&command.agent_state))?;
+        validate_focus_target_tx(tx, &command.agent_state.record)?;
+        let execution_protocol = if synchronize_execution_protocol {
+            execution_protocol_repository::synchronize_work_item_revisions_tx(
+                tx,
+                &command.agent_id,
+                execution_protocol,
+                &command.work_items,
+            )?
+        } else {
+            execution_protocol.clone()
+        };
+        if let Some(tool_execution) = completion_tool_execution {
+            let completion = CompletionTransition {
+                requires_execution_continuation: false,
+                work_items: command.work_items.clone(),
+                wait_conditions: command.wait_conditions.clone(),
+                continuation_expectations: command.continuation_expectations.clone(),
+                continuations: command.continuations.clone(),
+                tool_execution: tool_execution.clone(),
+                index_changes: command.index_changes.clone(),
+            };
+            validate_completion_transition_tx(tx, &command.agent_id, &completion)?;
+            validate_completion_execution_commands(&completion, &execution_protocol.commands)?;
+        }
+        let execution_protocol = execution_protocol_repository::validate_execution_commands_tx(
+            tx,
+            &command.agent_id,
+            execution_protocol.bootstrap.as_ref(),
+            &execution_protocol.commands,
+            &command.work_items,
+            &command.wait_conditions,
+            &command.continuations,
+        )?;
+        inject_fault(command.fault, TransitionFaultPoint::AfterValidation)?;
+
+        let agent_state_applied = apply_agent_state_mutation_tx(tx, Some(&command.agent_state))?;
+        let mut applied = agent_state_applied;
+        let mut work_items = Vec::new();
+        for work_item in &command.work_items {
+            let work_item_applied = apply_work_item_mutation_tx(tx, work_item)?;
+            applied |= work_item_applied;
+            if work_item_applied {
+                work_items.push(work_item.record().clone());
+            }
+        }
+        let mut wait_condition_writes = WaitConditionWrites::default();
+        for condition in &command.wait_conditions {
+            let writes = upsert_wait_condition_with_writes_tx(tx, condition)?;
+            applied |= !writes.wait_ids.is_empty();
+            wait_condition_writes.extend(writes)?;
+        }
+        for continuation in &command.continuations {
+            applied |= upsert_work_item_continuation_tx(tx, continuation)?;
+        }
+        if let Some(tool_execution) = completion_tool_execution {
+            applied |= upsert_completion_tool_execution_tx(tx, tool_execution)?;
+        }
+        if agent_deletion {
+            applied |=
+                execution_protocol_repository::retire_agent_execution_tx(tx, &command.agent_id)?;
+        }
+        applied |= execution_protocol
+            .as_ref()
+            .is_some_and(|prepared| prepared.has_writes());
+        if !applied {
+            return Ok(TransitionCommit::default());
+        }
+        let (execution_protocol, input_evidence_delta) =
+            execution_protocol_repository::persist_execution_commands_with_cleanup_input_facts_tx(
+                tx,
+                execution_protocol,
+                self.input_scope.as_ref(),
+                self.cleanup_input,
+            )?;
+        for brief in &command.brief_evidence {
+            insert_brief_evidence_tx(tx, brief)?;
+        }
+        inject_fault(command.fault, TransitionFaultPoint::AfterCanonicalWrites)?;
+
+        let commit = finish_transition_with_cleanup_tx(
+            tx,
+            self.input_scope.as_ref(),
+            self.cleanup_input,
+            applied,
+            &command.agent_id,
+            &command.audit_events,
+            &command.index_changes,
+            command.fault,
+            PostCommitEffects {
+                agent_state: Some(command.agent_state.clone()),
+                work_items,
+                wait_condition_writes,
+                briefs: command.brief_evidence.clone(),
+                tool_executions: completion_tool_execution.into_iter().cloned().collect(),
+                execution_protocol,
+                input_evidence_delta,
+                notify_scheduler: command.notify_scheduler,
+                ..PostCommitEffects::default()
+            },
+        )?;
+        Ok(commit)
     }
 
     #[cfg(test)]
@@ -1843,89 +2710,111 @@ impl RuntimeTransitionRepository<'_> {
         self.commit_work_item_internal(command, &ExecutionProtocolTransition::default(), false)
     }
 
-    pub fn commit_work_item_with_execution_protocol(
-        &self,
-        command: &WorkItemTransitionCommand,
-        execution_protocol: &ExecutionProtocolTransition,
-    ) -> Result<TransitionCommit> {
-        self.commit_work_item_internal(command, execution_protocol, true)
-    }
-
+    #[cfg(test)]
     fn commit_work_item_internal(
         &self,
         command: &WorkItemTransitionCommand,
         execution_protocol: &ExecutionProtocolTransition,
         synchronize_execution_protocol: bool,
     ) -> Result<TransitionCommit> {
-        let record = command.mutation.record().clone();
         self.db.transaction(|tx| {
-            validate_work_item_mutation_tx(tx, &command.mutation)?;
-            validate_agent_state_mutation_tx(tx, command.agent_state.as_ref())?;
-            let work_items = std::slice::from_ref(&command.mutation);
-            let execution_protocol = if synchronize_execution_protocol {
-                execution_protocol_repository::synchronize_work_item_revisions_tx(
-                    tx,
-                    &command.agent_id,
-                    execution_protocol,
-                    work_items,
-                )?
-            } else {
-                execution_protocol.clone()
-            };
-            let execution_protocol = execution_protocol_repository::validate_execution_commands_tx(
+            self.commit_work_item_tx(
                 tx,
-                &command.agent_id,
-                execution_protocol.bootstrap.as_ref(),
-                &execution_protocol.commands,
-                work_items,
-                &[],
-                &[],
-            )?;
-            inject_fault(command.fault, TransitionFaultPoint::AfterValidation)?;
-            let mut applied = apply_work_item_mutation_tx(tx, &command.mutation)?;
-            let agent_state_applied =
-                apply_agent_state_mutation_tx(tx, command.agent_state.as_ref())?;
-            applied |= agent_state_applied;
-            applied |= execution_protocol
-                .as_ref()
-                .is_some_and(|prepared| prepared.has_writes());
-            if !applied {
-                return Ok(TransitionCommit::default());
-            }
-            execution_protocol_repository::persist_execution_commands_tx(tx, execution_protocol)?;
-            for brief in &command.brief_evidence {
-                insert_brief_evidence_tx(tx, brief)?;
-            }
-            inject_fault(command.fault, TransitionFaultPoint::AfterCanonicalWrites)?;
-            let commit = finish_transition_tx(
-                tx,
-                applied,
-                &command.agent_id,
-                &command.audit_events,
-                &command.index_changes,
-                command.fault,
-                PostCommitEffects {
-                    agent_state: agent_state_applied
-                        .then(|| command.agent_state.clone())
-                        .flatten(),
-                    work_items: applied.then_some(record.clone()).into_iter().collect(),
-                    notify_scheduler: command.notify_scheduler,
-                    ..PostCommitEffects::default()
-                },
-            )?;
-            link_transition_brief_created_events_tx(
-                tx,
-                &command.brief_evidence,
-                &commit.effects.audit_events,
-            )?;
-            Ok(commit)
+                command,
+                execution_protocol,
+                synchronize_execution_protocol,
+            )
         })
     }
 
+    pub(super) fn commit_work_item_tx(
+        &self,
+        tx: &Transaction<'_>,
+        command: &WorkItemTransitionCommand,
+        execution_protocol: &ExecutionProtocolTransition,
+        synchronize_execution_protocol: bool,
+    ) -> Result<TransitionCommit> {
+        let record = command.mutation.record().clone();
+        self.validate_input_scope_tx(tx, &command.agent_id)?;
+        for record in &command.brief_evidence {
+            self.validate_input_key_tx(
+                tx,
+                crate::runtime::resident_input_evidence::InputEvidenceFamily::Brief,
+                &record.id,
+            )?;
+        }
+
+        validate_work_item_mutation_tx(tx, &command.mutation)?;
+        validate_agent_state_mutation_tx(tx, command.agent_state.as_ref())?;
+        let work_items = std::slice::from_ref(&command.mutation);
+        let execution_protocol = if synchronize_execution_protocol {
+            execution_protocol_repository::synchronize_work_item_revisions_tx(
+                tx,
+                &command.agent_id,
+                execution_protocol,
+                work_items,
+            )?
+        } else {
+            execution_protocol.clone()
+        };
+        let execution_protocol = execution_protocol_repository::validate_execution_commands_tx(
+            tx,
+            &command.agent_id,
+            execution_protocol.bootstrap.as_ref(),
+            &execution_protocol.commands,
+            work_items,
+            &[],
+            &[],
+        )?;
+        inject_fault(command.fault, TransitionFaultPoint::AfterValidation)?;
+        let mut applied = apply_work_item_mutation_tx(tx, &command.mutation)?;
+        let agent_state_applied = apply_agent_state_mutation_tx(tx, command.agent_state.as_ref())?;
+        applied |= agent_state_applied;
+        applied |= execution_protocol
+            .as_ref()
+            .is_some_and(|prepared| prepared.has_writes());
+        if !applied {
+            return Ok(TransitionCommit::default());
+        }
+        let (execution_protocol, input_evidence_delta) =
+            execution_protocol_repository::persist_execution_commands_with_cleanup_input_facts_tx(
+                tx,
+                execution_protocol,
+                self.input_scope.as_ref(),
+                self.cleanup_input,
+            )?;
+        for brief in &command.brief_evidence {
+            insert_brief_evidence_tx(tx, brief)?;
+        }
+        inject_fault(command.fault, TransitionFaultPoint::AfterCanonicalWrites)?;
+        let commit = finish_transition_with_cleanup_tx(
+            tx,
+            self.input_scope.as_ref(),
+            self.cleanup_input,
+            applied,
+            &command.agent_id,
+            &command.audit_events,
+            &command.index_changes,
+            command.fault,
+            PostCommitEffects {
+                agent_state: command.agent_state.clone(),
+                work_items: applied.then_some(record.clone()).into_iter().collect(),
+                briefs: command.brief_evidence.clone(),
+                execution_protocol,
+                input_evidence_delta,
+                notify_scheduler: command.notify_scheduler,
+                ..PostCommitEffects::default()
+            },
+        )?;
+        Ok(commit)
+    }
+
+    #[cfg(test)]
     pub fn commit_wait(&self, command: &WaitTransitionCommand) -> Result<TransitionCommit> {
         self.commit_wait_with_execution_protocol(command, &ExecutionProtocolTransition::default())
     }
 
+    #[cfg(test)]
     pub fn commit_wait_with_execution_protocol(
         &self,
         command: &WaitTransitionCommand,
@@ -1938,6 +2827,7 @@ impl RuntimeTransitionRepository<'_> {
         )
     }
 
+    #[cfg(test)]
     pub fn commit_wait_with_execution_protocol_and_task_expectation(
         &self,
         command: &WaitTransitionCommand,
@@ -1945,107 +2835,128 @@ impl RuntimeTransitionRepository<'_> {
         task_expectation: Option<&TaskExpectation>,
     ) -> Result<TransitionCommit> {
         self.db.transaction(|tx| {
-            for work_item in &command.work_items {
-                validate_work_item_mutation_tx(tx, work_item)?;
-            }
-            for condition in &command.wait_conditions {
-                validate_wait_condition_tx(tx, condition)?;
-            }
-            for expected in &command.expected_wait_conditions {
-                validate_wait_condition_expectation_tx(tx, expected)?;
-            }
-            if let Some(task_expectation) = task_expectation {
-                validate_task_expectation_tx(tx, task_expectation)?;
-            }
-            if let Some(timer_wake) = command.timer_wake.as_ref() {
-                let valid = tx.query_row(
-                    "SELECT EXISTS(
-                       SELECT 1 FROM timer_wakes w JOIN timers t ON t.timer_id = w.timer_id
-                       WHERE w.timer_id = ?1 AND w.message_id = ?2 AND w.fire_count = ?3
-                         AND w.status = 'pending' AND t.status IN ('active', 'completed'))",
-                    params![
-                        timer_wake.timer_id,
-                        timer_wake.message_id,
-                        timer_wake.fire_count as i64
-                    ],
-                    |row| row.get::<_, bool>(0),
-                )?;
-                if !valid {
-                    return Err(RuntimeStateTransitionConflict::concurrent_mutation(
-                        "timer_wait",
-                        &timer_wake.timer_id,
-                    )
-                    .into());
-                }
-            }
-            validate_agent_state_mutation_tx(tx, command.agent_state.as_ref())?;
-            let execution_protocol =
-                execution_protocol_repository::synchronize_work_item_revisions_tx(
-                    tx,
-                    &command.agent_id,
-                    execution_protocol,
-                    &command.work_items,
-                )?;
-            let execution_protocol = execution_protocol_repository::validate_execution_commands_tx(
-                tx,
-                &command.agent_id,
-                execution_protocol.bootstrap.as_ref(),
-                &execution_protocol.commands,
-                &command.work_items,
-                &command.wait_conditions,
-                &[],
-            )?;
-            inject_fault(command.fault, TransitionFaultPoint::AfterValidation)?;
-
-            let mut applied =
-                admit_wait_task_result_tx(tx, command.task_result_admission.as_ref())?;
-            let mut work_items = Vec::new();
-            for work_item in &command.work_items {
-                let work_item_applied = apply_work_item_mutation_tx(tx, work_item)?;
-                applied |= work_item_applied;
-                if work_item_applied {
-                    work_items.push(work_item.record().clone());
-                }
-            }
-            for condition in &command.wait_conditions {
-                applied |= upsert_wait_condition_tx(tx, condition)?;
-            }
-            let agent_state_applied =
-                apply_agent_state_mutation_tx(tx, command.agent_state.as_ref())?;
-            applied |= agent_state_applied;
-            applied |= execution_protocol
-                .as_ref()
-                .is_some_and(|prepared| prepared.has_writes());
-            if !applied {
-                return Ok(TransitionCommit::default());
-            }
-            execution_protocol_repository::persist_execution_commands_tx(tx, execution_protocol)?;
-            inject_fault(command.fault, TransitionFaultPoint::AfterCanonicalWrites)?;
-
-            finish_transition_tx(
-                tx,
-                applied,
-                &command.agent_id,
-                &command.audit_events,
-                &command.index_changes,
-                command.fault,
-                PostCommitEffects {
-                    agent_state: agent_state_applied
-                        .then(|| command.agent_state.clone())
-                        .flatten(),
-                    work_items,
-                    queued_messages: command
-                        .task_result_admission
-                        .iter()
-                        .map(|admission| admission.message.clone())
-                        .collect(),
-                    notify_scheduler: command.notify_scheduler,
-                    ..PostCommitEffects::default()
-                },
-            )
+            self.commit_wait_tx(tx, command, execution_protocol, task_expectation)
         })
     }
 
+    pub(super) fn commit_wait_tx(
+        &self,
+        tx: &Transaction<'_>,
+        command: &WaitTransitionCommand,
+        execution_protocol: &ExecutionProtocolTransition,
+        task_expectation: Option<&TaskExpectation>,
+    ) -> Result<TransitionCommit> {
+        self.validate_input_scope_tx(tx, &command.agent_id)?;
+        for work_item in &command.work_items {
+            validate_work_item_mutation_tx(tx, work_item)?;
+        }
+        for condition in &command.wait_conditions {
+            validate_wait_condition_tx(tx, condition)?;
+        }
+        for expected in &command.expected_wait_conditions {
+            validate_wait_condition_expectation_tx(tx, expected)?;
+        }
+        if let Some(task_expectation) = task_expectation {
+            validate_task_expectation_tx(tx, task_expectation)?;
+        }
+        if let Some(timer_wake) = command.timer_wake.as_ref() {
+            let valid = tx.query_row(
+                "SELECT EXISTS(
+                       SELECT 1 FROM timer_wakes w JOIN timers t ON t.timer_id = w.timer_id
+                       WHERE w.timer_id = ?1 AND w.message_id = ?2 AND w.fire_count = ?3
+                         AND w.status = 'pending' AND t.status IN ('active', 'completed'))",
+                params![
+                    timer_wake.timer_id,
+                    timer_wake.message_id,
+                    timer_wake.fire_count as i64
+                ],
+                |row| row.get::<_, bool>(0),
+            )?;
+            if !valid {
+                return Err(RuntimeStateTransitionConflict::concurrent_mutation(
+                    "timer_wait",
+                    &timer_wake.timer_id,
+                )
+                .into());
+            }
+        }
+        validate_agent_state_mutation_tx(tx, command.agent_state.as_ref())?;
+        let execution_protocol = execution_protocol_repository::synchronize_work_item_revisions_tx(
+            tx,
+            &command.agent_id,
+            execution_protocol,
+            &command.work_items,
+        )?;
+        let execution_protocol = execution_protocol_repository::validate_execution_commands_tx(
+            tx,
+            &command.agent_id,
+            execution_protocol.bootstrap.as_ref(),
+            &execution_protocol.commands,
+            &command.work_items,
+            &command.wait_conditions,
+            &[],
+        )?;
+        inject_fault(command.fault, TransitionFaultPoint::AfterValidation)?;
+
+        let mut applied = admit_wait_task_result_tx(tx, command.task_result_admission.as_ref())?;
+        let mut work_items = Vec::new();
+        for work_item in &command.work_items {
+            let work_item_applied = apply_work_item_mutation_tx(tx, work_item)?;
+            applied |= work_item_applied;
+            if work_item_applied {
+                work_items.push(work_item.record().clone());
+            }
+        }
+        let mut wait_condition_writes = WaitConditionWrites::default();
+        for condition in &command.wait_conditions {
+            let writes = upsert_wait_condition_with_writes_tx(tx, condition)?;
+            applied |= !writes.wait_ids.is_empty();
+            wait_condition_writes.extend(writes)?;
+        }
+        let agent_state_applied = apply_agent_state_mutation_tx(tx, command.agent_state.as_ref())?;
+        applied |= agent_state_applied;
+        applied |= execution_protocol
+            .as_ref()
+            .is_some_and(|prepared| prepared.has_writes());
+        if !applied {
+            return Ok(TransitionCommit::default());
+        }
+        let (execution_protocol, input_evidence_delta) =
+            execution_protocol_repository::persist_execution_commands_with_cleanup_input_facts_tx(
+                tx,
+                execution_protocol,
+                self.input_scope.as_ref(),
+                self.cleanup_input,
+            )?;
+        inject_fault(command.fault, TransitionFaultPoint::AfterCanonicalWrites)?;
+
+        finish_transition_with_cleanup_tx(
+            tx,
+            self.input_scope.as_ref(),
+            self.cleanup_input,
+            applied,
+            &command.agent_id,
+            &command.audit_events,
+            &command.index_changes,
+            command.fault,
+            PostCommitEffects {
+                agent_state: command.agent_state.clone(),
+                work_items,
+                wait_condition_writes,
+                execution_protocol,
+                input_evidence_delta,
+                queued_messages: command
+                    .task_result_admission
+                    .iter()
+                    .map(|admission| admission.message.clone())
+                    .collect(),
+                notify_scheduler: command.notify_scheduler,
+                ..PostCommitEffects::default()
+            },
+        )
+    }
+
+    #[cfg(test)]
     pub fn commit_queue(&self, command: &QueueTransitionCommand) -> Result<TransitionCommit> {
         self.commit_queue_transaction(
             command,
@@ -2060,6 +2971,7 @@ impl RuntimeTransitionRepository<'_> {
         )
     }
 
+    #[cfg(test)]
     pub fn commit_queue_with_execution_protocol(
         &self,
         command: &QueueTransitionCommand,
@@ -2078,26 +2990,84 @@ impl RuntimeTransitionRepository<'_> {
         )
     }
 
+    #[cfg(test)]
     pub(crate) fn commit_scheduler_recovery(
         &self,
         command: &QueueTransitionCommand,
         execution_protocol: &ExecutionProtocolTransition,
     ) -> Result<TransitionCommit> {
-        self.commit_queue_transaction_with_delivery(
-            command,
-            execution_protocol,
-            None,
-            None,
-            None,
-            &[],
-            &[],
-            None,
-            DeliverySynchronization::IfAvailable,
-            None,
-            None,
-        )
+        self.commit_scheduler_recovery_with_maintenance(command, execution_protocol, None)
     }
 
+    pub(crate) fn commit_scheduler_recovery_with_maintenance(
+        &self,
+        command: &QueueTransitionCommand,
+        execution_protocol: &ExecutionProtocolTransition,
+        maintenance: Option<&crate::runtime_db::OfflineInputMaintenance<'_>>,
+    ) -> Result<TransitionCommit> {
+        anyhow::ensure!(
+            self.input_scope.is_none(),
+            "offline recovery cannot borrow a resident scoped facade"
+        );
+        self.db.transaction(|tx| {
+            // Derive the original reducer footprint before any canonical writes.
+            let prepared = execution_protocol_repository::validate_execution_commands_tx(
+                tx,
+                &command.agent_id,
+                execution_protocol.bootstrap.as_ref(),
+                &execution_protocol.commands,
+                &[],
+                &[],
+                &[],
+            )?;
+            use crate::runtime::resident_input_evidence::{
+                InputEvidenceFamily as Family, InputEvidenceKey as Key,
+            };
+            let mut keys = prepared
+                .as_ref()
+                .map(|x| x.input_keys())
+                .unwrap_or_default();
+            let message_id = match &command.mutation {
+                QueueMutation::Consume(record)
+                | QueueMutation::Upsert(record)
+                | QueueMutation::SettleWithProviderRecovery { record, .. }
+                | QueueMutation::CompareAndSet { record, .. }
+                | QueueMutation::ParkProviderDispatch { record, .. }
+                | QueueMutation::ConsumeSettledTaskResultRecovery { record, .. } => {
+                    &record.message_id
+                }
+            };
+            keys.push(Key::new(Family::Message, message_id));
+            let input =
+                super::input_evidence_snapshot::maintenance::prepare_offline_input_repair_tx(
+                    tx,
+                    self.db,
+                    &command.agent_id,
+                    &keys,
+                    &execution_protocol.commands,
+                    maintenance,
+                )?;
+            let commit = self.commit_queue_transaction_full_tx(
+                tx,
+                command,
+                execution_protocol,
+                None,
+                None,
+                None,
+                None,
+                &[],
+                &[],
+                None,
+                DeliverySynchronization::IfAvailable,
+                None,
+                None,
+            )?;
+            input.finish_tx(tx)?;
+            Ok(commit)
+        })
+    }
+
+    #[cfg(test)]
     pub fn commit_queue_terminal(
         &self,
         command: &QueueTransitionCommand,
@@ -2121,6 +3091,7 @@ impl RuntimeTransitionRepository<'_> {
         )
     }
 
+    #[cfg(test)]
     pub fn commit_queue_terminal_with_wait(
         &self,
         command: &QueueTransitionCommand,
@@ -2145,68 +3116,43 @@ impl RuntimeTransitionRepository<'_> {
             DeliverySynchronization::Required,
             wait_registration.timer_wake.as_ref(),
             task_result_settlement,
-            None,
         )
     }
 
+    #[cfg(test)]
     pub fn commit_supervised_invocation_admission(
         &self,
         command: &QueueTransitionCommand,
         parent_task: &TaskRecord,
         child_incarnation: u64,
     ) -> Result<TransitionCommit> {
-        self.commit_queue_transaction_full(
-            command,
-            &ExecutionProtocolTransition::default(),
-            None,
-            None,
-            None,
-            None,
-            &[],
-            &[],
-            None,
-            DeliverySynchronization::Required,
-            None,
-            None,
-            Some((parent_task, child_incarnation)),
-        )
-    }
-
-    pub fn commit_queue_with_wait_trigger(
-        &self,
-        command: &QueueTransitionCommand,
-    ) -> Result<TransitionCommit> {
-        self.commit_queue_transaction(
-            command,
-            &ExecutionProtocolTransition::default(),
-            None,
-            None,
-            None,
-            &[],
-            &[],
-            None,
-            None,
-        )
-    }
-
-    pub fn commit_queue_with_execution_protocol_and_wait_transition(
-        &self,
-        command: &QueueTransitionCommand,
-        execution_protocol: &ExecutionProtocolTransition,
-        wait_transition: Option<&QueueWaitTransition>,
-        timer_wake_claim: Option<&TimerWakeClaim>,
-    ) -> Result<TransitionCommit> {
-        self.commit_queue_transaction(
-            command,
-            execution_protocol,
-            wait_transition,
-            None,
-            None,
-            &[],
-            &[],
-            timer_wake_claim,
-            None,
-        )
+        self.db.transaction(|tx| {
+            let Some(task) = supervised_invocation::prepare_admission_tx(
+                tx,
+                command,
+                parent_task,
+                child_incarnation,
+            )?
+            else {
+                return Ok(TransitionCommit::default());
+            };
+            upsert_task_tx(tx, &task)?;
+            self.commit_queue_transaction_full_tx(
+                tx,
+                command,
+                &ExecutionProtocolTransition::default(),
+                None,
+                None,
+                None,
+                None,
+                &[],
+                &[],
+                None,
+                DeliverySynchronization::Required,
+                None,
+                None,
+            )
+        })
     }
 
     #[cfg(test)]
@@ -2229,26 +3175,60 @@ impl RuntimeTransitionRepository<'_> {
         )
     }
 
+    #[cfg(test)]
     pub fn commit_delivery_admission(
         &self,
         command: &QueueTransitionCommand,
         delivery: &AgentMessageDeliveryRecord,
     ) -> Result<TransitionCommit> {
-        self.commit_queue_transaction_with_delivery(
-            command,
-            &ExecutionProtocolTransition::default(),
-            None,
-            None,
-            None,
-            &[],
-            &[],
-            Some(delivery),
-            DeliverySynchronization::Required,
-            None,
-            None,
-        )
+        let ledger = crate::runtime::input_evidence_budget::InputEvidenceBudgetLedger::new(
+            crate::config::StateMemoryLimits::default(),
+        )?;
+        let request = super::task_snapshot::TaskDomainLoadRequest {
+            recovery_at: None,
+            query: Default::default(),
+            capture: crate::runtime::resident_task::TaskCaptureRequest::current(),
+            byte_limit: 64 * 1024 * 1024,
+            record_limit: 65_536,
+        };
+        let owner_scope = delivery
+            .caller
+            .caller_agent_id
+            .as_deref()
+            .map(|owner| self.db.agent_identities().latest(owner))
+            .transpose()?
+            .flatten()
+            .map(|identity| InputEvidenceScope {
+                agent_id: identity.agent_id,
+                identity_incarnation: identity.incarnation,
+            });
+        self.db.transaction(|tx| {
+            self.commit_queue_transaction_full_with_task_results_tx(
+                tx,
+                command,
+                &ExecutionProtocolTransition::default(),
+                None,
+                None,
+                None,
+                None,
+                &[],
+                &[],
+                Some(delivery),
+                DeliverySynchronization::Required,
+                None,
+                None,
+                None,
+                Some(super::agent_message_delivery::MessageWaitTaskWriteBudget {
+                    owner_scope: owner_scope.clone(),
+                    request: &request,
+                    ledger: &ledger,
+                    memory: None,
+                }),
+            )
+        })
     }
 
+    #[cfg(test)]
     fn commit_queue_transaction(
         &self,
         command: &QueueTransitionCommand,
@@ -2278,6 +3258,7 @@ impl RuntimeTransitionRepository<'_> {
         )
     }
 
+    #[cfg(test)]
     #[allow(clippy::too_many_arguments)]
     fn commit_queue_transaction_with_delivery(
         &self,
@@ -2308,10 +3289,10 @@ impl RuntimeTransitionRepository<'_> {
             delivery_synchronization,
             timer_wake_claim,
             task_result_settlement,
-            None,
         )
     }
 
+    #[cfg(test)]
     fn commit_queue_transaction_full(
         &self,
         command: &QueueTransitionCommand,
@@ -2328,148 +3309,409 @@ impl RuntimeTransitionRepository<'_> {
         task_result_settlement: Option<
             &crate::runtime_db::task_result_settlement::TaskResultActivationSettlement,
         >,
-        supervised_invocation: Option<(&TaskRecord, u64)>,
     ) -> Result<TransitionCommit> {
         self.db.transaction(|tx| {
-            let supervised_task = if let Some((parent_task, incarnation)) = supervised_invocation {
-                let Some(task) = supervised_invocation::prepare_admission_tx(
-                    tx,
-                    command,
-                    parent_task,
-                    incarnation,
-                )? else {
-                    return Ok(TransitionCommit::default());
-                };
-                Some(task)
-            } else {
-                None
-            };
-            let synchronize_delivery = match delivery_synchronization {
-                DeliverySynchronization::Required => true,
-                DeliverySynchronization::IfAvailable => tx.query_row(
-                    "SELECT EXISTS(
-                        SELECT 1 FROM sqlite_master
-                        WHERE type = 'table' AND name = 'agent_message_deliveries'
-                    )",
-                    [],
-                    |row| row.get::<_, bool>(0),
-                )?,
-            };
-            let delivery = delivery
-                .map(|delivery| prepare_delivery_admission_tx(tx, delivery))
-                .transpose()?;
-            if let Some(decision @ AgentMessageDeliveryAdmissionDecision::Complete { .. }) =
-                delivery.as_ref()
-            {
-                persist_completed_admission_tx(tx, decision)?;
-                return Ok(TransitionCommit {
-                    applied: true,
-                    effects: PostCommitEffects::default(),
-                    delivery_receipt: Some(decision.receipt()),
-                });
-            }
-            if let Some(AgentMessageDeliveryAdmissionDecision::Queue { record, .. }) =
-                delivery.as_ref()
-            {
-                validate_delivery_queue_admission(command, record)?;
-            }
-            validate_queue_operation(command)?;
-            validate_queue_mutation_tx(tx, &command.mutation)?;
-            if let QueueMutation::ConsumeSettledTaskResultRecovery { source, .. } =
-                &command.mutation
-            {
-                if !crate::runtime_db::task_result_settlement::settled_recovery_source_tx(
-                    tx, source,
-                )? {
-                    return Ok(TransitionCommit::default());
-                }
-            }
-            if let Some(timer_wake_claim) = timer_wake_claim {
-                let valid = tx.query_row(
-                    "SELECT EXISTS(
-                       SELECT 1 FROM timer_wakes w JOIN timers t ON t.timer_id = w.timer_id
-                       WHERE w.timer_id = ?1 AND w.message_id = ?2 AND w.fire_count = ?3
-                         AND w.status = 'pending' AND t.status IN ('active', 'completed'))",
-                    params![
-                        timer_wake_claim.timer_id,
-                        timer_wake_claim.message_id,
-                        timer_wake_claim.fire_count as i64
-                    ],
-                    |row| row.get::<_, bool>(0),
-                )?;
-                if !valid {
-                    return Ok(TransitionCommit::default());
-                }
-            }
-            if let Some(wait_transition) = wait_transition {
-                validate_wait_condition_expectation_tx(tx, &wait_transition.expected)?;
-                validate_wait_condition_tx(tx, &wait_transition.record)?;
-                if let Some(work_item) = wait_transition.work_item.as_ref() {
-                    validate_work_item_mutation_tx(tx, work_item)?;
-                }
-            }
-            for condition in extra_wait_conditions {
-                validate_wait_condition_tx(tx, condition)?;
-            }
-            if let Some(task_expectation) = task_expectation {
-                validate_task_expectation_tx(tx, task_expectation)?;
-            }
-            if let Some(wait_registration) = wait_registration {
-                for work_item in &wait_registration.work_items {
-                    validate_work_item_mutation_tx(tx, work_item)?;
-                }
-                for condition in &wait_registration.wait_conditions {
-                    validate_wait_condition_tx(tx, condition)?;
-                }
-                for expected in &wait_registration.expected_wait_conditions {
-                    validate_wait_condition_expectation_tx(tx, expected)?;
-                }
-            }
-            if let Some(completion) = completion {
-                validate_completion_transition_tx(tx, &command.agent_id, completion)?;
-                if completion.requires_execution_continuation {
-                    validate_completion_execution_commands(
-                        completion,
-                        &execution_protocol_transition.commands,
-                    )?;
-                }
-                for work_item in &completion.work_items {
-                    validate_work_item_mutation_tx(tx, work_item)?;
-                }
-                for condition in &completion.wait_conditions {
-                    validate_wait_condition_tx(tx, condition)?;
-                }
-                for continuation in &completion.continuations {
-                    validate_work_item_continuation_tx(
-                        tx,
-                        continuation,
-                        &completion.continuation_expectations,
-                    )?;
-                }
-            }
-            validate_terminal_tool_execution_mutations_tx(
+            self.commit_queue_transaction_full_tx(
                 tx,
-                &command.agent_id,
+                command,
+                execution_protocol_transition,
+                wait_transition,
+                task_expectation,
+                completion,
+                wait_registration,
                 terminal_tool_executions,
+                extra_wait_conditions,
+                delivery,
+                delivery_synchronization,
+                timer_wake_claim,
+                task_result_settlement,
+            )
+        })
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn commit_queue_transaction_full_tx(
+        &self,
+        tx: &Transaction<'_>,
+        command: &QueueTransitionCommand,
+        execution_protocol_transition: &ExecutionProtocolTransition,
+        wait_transition: Option<&QueueWaitTransition>,
+        task_expectation: Option<&TaskExpectation>,
+        completion: Option<&CompletionTransition>,
+        wait_registration: Option<&WaitTransitionCommand>,
+        terminal_tool_executions: &[ToolExecutionRecord],
+        extra_wait_conditions: &[crate::types::WaitConditionRecord],
+        delivery: Option<&AgentMessageDeliveryRecord>,
+        delivery_synchronization: DeliverySynchronization,
+        timer_wake_claim: Option<&TimerWakeClaim>,
+        task_result_settlement: Option<
+            &crate::runtime_db::task_result_settlement::TaskResultActivationSettlement,
+        >,
+    ) -> Result<TransitionCommit> {
+        self.commit_queue_transaction_full_with_task_results_tx(
+            tx,
+            command,
+            execution_protocol_transition,
+            wait_transition,
+            task_expectation,
+            completion,
+            wait_registration,
+            terminal_tool_executions,
+            extra_wait_conditions,
+            delivery,
+            delivery_synchronization,
+            timer_wake_claim,
+            task_result_settlement,
+            None,
+            None,
+        )
+    }
+
+    fn commit_queue_transaction_full_with_task_results_tx(
+        &self,
+        tx: &Transaction<'_>,
+        command: &QueueTransitionCommand,
+        execution_protocol_transition: &ExecutionProtocolTransition,
+        wait_transition: Option<&QueueWaitTransition>,
+        task_expectation: Option<&TaskExpectation>,
+        completion: Option<&CompletionTransition>,
+        wait_registration: Option<&WaitTransitionCommand>,
+        terminal_tool_executions: &[ToolExecutionRecord],
+        extra_wait_conditions: &[crate::types::WaitConditionRecord],
+        delivery: Option<&AgentMessageDeliveryRecord>,
+        delivery_synchronization: DeliverySynchronization,
+        timer_wake_claim: Option<&TimerWakeClaim>,
+        task_result_settlement: Option<
+            &crate::runtime_db::task_result_settlement::TaskResultActivationSettlement,
+        >,
+        prepared_task_results: Option<
+            super::task_result_settlement::PreparedTaskResultMutation<'_, '_>,
+        >,
+        mut message_wait_budget: Option<
+            super::agent_message_delivery::MessageWaitTaskWriteBudget<'_>,
+        >,
+    ) -> Result<TransitionCommit> {
+        self.validate_input_scope_tx(tx, &command.agent_id)?;
+        for record in &command.message_evidence {
+            self.validate_input_key_tx(
+                tx,
+                crate::runtime::resident_input_evidence::InputEvidenceFamily::Message,
+                &record.id,
             )?;
-            let queue_record = queue_mutation_record(&command.mutation);
-            if synchronize_delivery
-                && delivery_by_message_id_tx(tx, &queue_record.message_id)?.is_some_and(
-                    |delivery| {
-                        !matches!(
-                            delivery.state,
-                            AgentMessageDeliveryState::Queued
-                                | AgentMessageDeliveryState::Dispatched
-                        )
-                    },
-                )
-            {
+        }
+        for record in &command.transcript_entries {
+            self.validate_input_key_tx(
+                tx,
+                crate::runtime::resident_input_evidence::InputEvidenceFamily::Transcript,
+                &record.id,
+            )?;
+        }
+        for record in &command.brief_evidence {
+            self.validate_input_key_tx(
+                tx,
+                crate::runtime::resident_input_evidence::InputEvidenceFamily::Brief,
+                &record.id,
+            )?;
+        }
+        if let Some(record) = command.turn_record.as_ref() {
+            self.validate_terminal_input_keys_tx(tx, record)?;
+        }
+        for record in terminal_tool_executions {
+            self.validate_input_key_tx(
+                tx,
+                crate::runtime::resident_input_evidence::InputEvidenceFamily::ToolExecution,
+                &record.id,
+            )?;
+        }
+        if let Some(completion) = completion {
+            self.validate_input_key_tx(
+                tx,
+                crate::runtime::resident_input_evidence::InputEvidenceFamily::ToolExecution,
+                &completion.tool_execution.id,
+            )?;
+        }
+
+        let synchronize_delivery = match delivery_synchronization {
+            DeliverySynchronization::Required => true,
+            DeliverySynchronization::IfAvailable => tx.query_row(
+                "SELECT EXISTS(
+                    SELECT 1 FROM sqlite_master
+                    WHERE type = 'table' AND name = 'agent_message_deliveries'
+                )",
+                [],
+                |row| row.get::<_, bool>(0),
+            )?,
+        };
+        let delivery = delivery
+            .map(|delivery| prepare_delivery_admission_tx(tx, delivery))
+            .transpose()?;
+        if let Some(decision @ AgentMessageDeliveryAdmissionDecision::Complete { .. }) =
+            delivery.as_ref()
+        {
+            persist_completed_admission_tx(tx, decision)?;
+            return Ok(TransitionCommit {
+                applied: true,
+                effects: Box::new(PostCommitEffects::default()),
+                delivery_receipt: Some(decision.receipt()),
+            });
+        }
+        if let Some(AgentMessageDeliveryAdmissionDecision::Queue { record, .. }) = delivery.as_ref()
+        {
+            validate_delivery_queue_admission(command, record)?;
+        }
+        let message_wait_write = super::agent_message_delivery::prepare_message_wait_task_write_tx(
+            tx,
+            delivery.as_ref(),
+            message_wait_budget.as_mut(),
+        )?;
+        validate_queue_operation(command)?;
+        validate_queue_mutation_tx(tx, &command.mutation)?;
+        if let QueueMutation::ConsumeSettledTaskResultRecovery { source, .. } = &command.mutation {
+            // Planning is not authority: owner results, waits and the durable
+            // Task generation must still agree in this queue CAS transaction.
+            if !super::task_result_settlement::settled_recovery_source_tx(tx, source)? {
                 return Ok(TransitionCommit::default());
             }
-            if let QueueMutation::Consume(record) = &command.mutation {
-                let include_interrupted = match command.operation {
-                    QueueOperation::Claim => true,
-                    QueueOperation::Interject => false,
+        }
+        let mut scheduling_write_keys = BTreeSet::new();
+        if let Some(timer_wake_claim) = timer_wake_claim {
+            let valid = tx.query_row(
+                "SELECT EXISTS(
+                   SELECT 1 FROM timer_wakes w JOIN timers t ON t.timer_id = w.timer_id
+                   WHERE w.timer_id = ?1 AND w.message_id = ?2 AND w.fire_count = ?3
+                     AND w.status = 'pending' AND t.status IN ('active', 'completed'))",
+                params![
+                    timer_wake_claim.timer_id,
+                    timer_wake_claim.message_id,
+                    timer_wake_claim.fire_count as i64
+                ],
+                |row| row.get::<_, bool>(0),
+            )?;
+            if !valid {
+                return Ok(TransitionCommit::default());
+            }
+        }
+        if let Some(wait_transition) = wait_transition {
+            validate_wait_condition_expectation_tx(tx, &wait_transition.expected)?;
+            validate_wait_condition_tx(tx, &wait_transition.record)?;
+            if let Some(work_item) = wait_transition.work_item.as_ref() {
+                validate_work_item_mutation_tx(tx, work_item)?;
+            }
+        }
+        for condition in extra_wait_conditions {
+            validate_wait_condition_tx(tx, condition)?;
+        }
+        if let Some(task_expectation) = task_expectation {
+            validate_task_expectation_tx(tx, task_expectation)?;
+        }
+        if let Some(wait_registration) = wait_registration {
+            for work_item in &wait_registration.work_items {
+                validate_work_item_mutation_tx(tx, work_item)?;
+            }
+            for condition in &wait_registration.wait_conditions {
+                validate_wait_condition_tx(tx, condition)?;
+            }
+            for expected in &wait_registration.expected_wait_conditions {
+                validate_wait_condition_expectation_tx(tx, expected)?;
+            }
+        }
+        if let Some(completion) = completion {
+            validate_completion_transition_tx(tx, &command.agent_id, completion)?;
+            if completion.requires_execution_continuation {
+                validate_completion_execution_commands(
+                    completion,
+                    &execution_protocol_transition.commands,
+                )?;
+            }
+            for work_item in &completion.work_items {
+                validate_work_item_mutation_tx(tx, work_item)?;
+            }
+            for condition in &completion.wait_conditions {
+                validate_wait_condition_tx(tx, condition)?;
+            }
+            for continuation in &completion.continuations {
+                validate_work_item_continuation_tx(
+                    tx,
+                    continuation,
+                    &completion.continuation_expectations,
+                )?;
+            }
+        }
+        validate_terminal_tool_execution_mutations_tx(
+            tx,
+            &command.agent_id,
+            terminal_tool_executions,
+        )?;
+        let queue_record = queue_mutation_record(&command.mutation);
+        let pending_timer_wake: Option<String> = tx
+            .query_row(
+                "SELECT w.timer_id FROM timer_wakes w
+                 JOIN timers t ON t.timer_id = w.timer_id
+                 WHERE w.message_id = ?1 AND t.agent_id = ?2 AND w.status = 'pending'",
+                params![queue_record.message_id, command.agent_id],
+                |row| row.get(0),
+            )
+            .optional()?;
+        if synchronize_delivery
+            && delivery_by_message_id_tx(tx, &queue_record.message_id)?.is_some_and(|delivery| {
+                !matches!(
+                    delivery.state,
+                    AgentMessageDeliveryState::Queued | AgentMessageDeliveryState::Dispatched
+                )
+            })
+        {
+            return Ok(TransitionCommit::default());
+        }
+        if let QueueMutation::Consume(record) = &command.mutation {
+            let include_interrupted = match command.operation {
+                QueueOperation::Claim => true,
+                QueueOperation::Interject => false,
+                QueueOperation::Admit
+                | QueueOperation::Discard
+                | QueueOperation::Requeue
+                | QueueOperation::Settle
+                | QueueOperation::RepairDrop => {
+                    unreachable!("queue operation validation rejects this combination")
+                }
+            };
+            if !crate::runtime_db::repositories::queue_entry_is_claimable_tx(
+                tx,
+                record,
+                include_interrupted,
+            )? {
+                return Ok(TransitionCommit::default());
+            }
+        }
+        validate_agent_state_mutation_tx(tx, command.agent_state.as_ref())?;
+        validate_scheduler_claim_work_item_tx(
+            tx,
+            &command.agent_id,
+            command.operation,
+            command.scheduler_claim_work_item.as_ref(),
+        )?;
+        let final_brief_reply = command
+            .turn_record
+            .as_ref()
+            .map(|turn| {
+                super::agent_message_delivery::prepare_final_brief_reply_tx(
+                    tx,
+                    turn,
+                    &command.brief_evidence,
+                    &command.transcript_entries,
+                )
+            })
+            .transpose()?
+            .flatten();
+        let execution_work_items = if let Some(wait_registration) = wait_registration {
+            wait_registration.work_items.as_slice()
+        } else if let Some(work_item) =
+            wait_transition.and_then(|transition| transition.work_item.as_ref())
+        {
+            std::slice::from_ref(work_item)
+        } else {
+            completion
+                .map(|completion| completion.work_items.as_slice())
+                .unwrap_or_default()
+        };
+        let execution_wait_conditions = if let Some(wait_registration) = wait_registration {
+            wait_registration.wait_conditions.as_slice()
+        } else if let Some(wait_transition) = wait_transition {
+            std::slice::from_ref(&wait_transition.record)
+        } else {
+            completion
+                .map(|completion| completion.wait_conditions.as_slice())
+                .unwrap_or_default()
+        };
+        let mut merged_wait_conditions: Vec<crate::types::WaitConditionRecord>;
+        let execution_wait_conditions: &[crate::types::WaitConditionRecord] =
+            if extra_wait_conditions.is_empty() {
+                execution_wait_conditions
+            } else {
+                merged_wait_conditions = Vec::with_capacity(
+                    execution_wait_conditions.len() + extra_wait_conditions.len(),
+                );
+                merged_wait_conditions.extend_from_slice(execution_wait_conditions);
+                merged_wait_conditions.extend_from_slice(extra_wait_conditions);
+                &merged_wait_conditions
+            };
+        let execution_continuations = completion
+            .map(|completion| completion.continuations.as_slice())
+            .unwrap_or_default();
+        // Every WorkItem mutation must advance its execution registration in this
+        // transaction; only wait registration may derive a missing partition.
+        let mut advance_only_mutations: Vec<WorkItemMutation> = Vec::new();
+        if let Some(work_item) =
+            wait_transition.and_then(|transition| transition.work_item.as_ref())
+        {
+            advance_only_mutations.push(work_item.clone());
+        }
+        if let Some(completion) = completion {
+            advance_only_mutations.extend(completion.work_items.iter().cloned());
+        }
+        let advance_synchronized = if advance_only_mutations.is_empty() {
+            execution_protocol_transition.clone()
+        } else {
+            execution_protocol_repository::synchronize_work_item_revisions_opt(
+                tx,
+                &command.agent_id,
+                execution_protocol_transition,
+                &advance_only_mutations,
+                false,
+            )?
+        };
+        let synchronized_execution_protocol = if let Some(registration) = wait_registration {
+            execution_protocol_repository::synchronize_work_item_revisions_tx(
+                tx,
+                &command.agent_id,
+                &advance_synchronized,
+                &registration.work_items,
+            )?
+        } else {
+            advance_synchronized
+        };
+        let execution_protocol_transition = &synchronized_execution_protocol;
+        let execution_protocol = execution_protocol_repository::validate_execution_commands_tx(
+            tx,
+            &command.agent_id,
+            execution_protocol_transition.bootstrap.as_ref(),
+            &execution_protocol_transition.commands,
+            execution_work_items,
+            execution_wait_conditions,
+            execution_continuations,
+        )?;
+        if command.operation == QueueOperation::Claim {
+            execution_protocol_repository::validate_model_queue_claim_tx(
+                tx,
+                &command.agent_id,
+                &queue_record.message_id,
+                execution_protocol.as_ref(),
+                execution_work_items,
+            )?;
+        }
+        inject_fault(command.fault, TransitionFaultPoint::AfterValidation)?;
+        let mut trigger_wait_and_enqueue = if command.operation == QueueOperation::Admit
+            && !command.message_evidence.is_empty()
+        {
+            let QueueMutation::Upsert(record) = &command.mutation else {
+                unreachable!("queue operation validation requires Admit to use Upsert");
+            };
+            let [message] = command.message_evidence.as_slice() else {
+                bail!(
+                    "TriggerWaitAndEnqueue requires exactly one admitted message for queue entry {}",
+                    record.message_id
+                );
+            };
+            Some(trigger_wait_and_enqueue_tx(tx, message, record)?)
+        } else {
+            None
+        };
+        let mutation_applied = if let Some(result) = trigger_wait_and_enqueue.as_ref() {
+            result.applied()
+        } else {
+            match &command.mutation {
+                QueueMutation::Consume(record) => match command.operation {
+                    QueueOperation::Claim => try_claim_queued_message_tx(tx, record)?,
+                    QueueOperation::Interject => try_interject_queued_message_tx(tx, record)?,
                     QueueOperation::Admit
                     | QueueOperation::Discard
                     | QueueOperation::Requeue
@@ -2477,440 +3719,454 @@ impl RuntimeTransitionRepository<'_> {
                     | QueueOperation::RepairDrop => {
                         unreachable!("queue operation validation rejects this combination")
                     }
-                };
-                if !crate::runtime_db::repositories::queue_entry_is_claimable_tx(
-                    tx,
-                    record,
-                    include_interrupted,
-                )? {
-                    return Ok(TransitionCommit::default());
+                },
+                QueueMutation::Upsert(record)
+                | QueueMutation::SettleWithProviderRecovery { record, .. } => {
+                    upsert_queue_entry_tx(tx, record)?
                 }
+                QueueMutation::CompareAndSet { expected, record }
+                | QueueMutation::ParkProviderDispatch {
+                    expected, record, ..
+                }
+                | QueueMutation::ConsumeSettledTaskResultRecovery {
+                    expected, record, ..
+                } => compare_and_set_queue_entry_tx(tx, expected, record)?,
             }
-            validate_agent_state_mutation_tx(tx, command.agent_state.as_ref())?;
-            validate_scheduler_claim_work_item_tx(
-                tx,
-                &command.agent_id,
-                command.operation,
-                command.scheduler_claim_work_item.as_ref(),
+        };
+        if !matches!(
+            &command.mutation,
+            QueueMutation::Upsert(_) | QueueMutation::SettleWithProviderRecovery { .. }
+        ) && !mutation_applied
+        {
+            return Ok(TransitionCommit {
+                effects: Box::new(PostCommitEffects {
+                    audit_events: trigger_wait_and_enqueue
+                        .as_ref()
+                        .map(|result| {
+                            result
+                                .audit_events
+                                .iter()
+                                .cloned()
+                                .map(AuditEventAck::new)
+                                .collect::<Result<Vec<_>>>()
+                        })
+                        .transpose()?
+                        .unwrap_or_default(),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            });
+        }
+        if let Some(timer_wake_claim) = timer_wake_claim {
+            let changed = tx.execute(
+                "UPDATE timer_wakes SET status = 'incorporated', updated_at = ?4,
+                   incorporated_at = ?4
+                 WHERE timer_id = ?1 AND message_id = ?2 AND fire_count = ?3
+                   AND status = 'pending'",
+                params![
+                    timer_wake_claim.timer_id,
+                    timer_wake_claim.message_id,
+                    timer_wake_claim.fire_count as i64,
+                    Utc::now().to_rfc3339(),
+                ],
             )?;
-            let final_brief_reply = command.turn_record.as_ref()
-                .map(|turn| super::agent_message_delivery::prepare_final_brief_reply_tx(
-                    tx, turn, &command.brief_evidence, &command.transcript_entries,
-                ))
-                .transpose()?
-                .flatten();
-            let execution_work_items = if let Some(wait_registration) = wait_registration {
-                wait_registration.work_items.as_slice()
-            } else if let Some(work_item) =
-                wait_transition.and_then(|transition| transition.work_item.as_ref())
-            {
-                std::slice::from_ref(work_item)
-            } else {
-                completion
-                    .map(|completion| completion.work_items.as_slice())
-                    .unwrap_or_default()
-            };
-            let execution_wait_conditions = if let Some(wait_registration) = wait_registration {
-                wait_registration.wait_conditions.as_slice()
-            } else if let Some(wait_transition) = wait_transition {
-                std::slice::from_ref(&wait_transition.record)
-            } else {
-                completion
-                    .map(|completion| completion.wait_conditions.as_slice())
-                    .unwrap_or_default()
-            };
-            let mut merged_wait_conditions: Vec<crate::types::WaitConditionRecord>;
-            let execution_wait_conditions: &[crate::types::WaitConditionRecord] =
-                if extra_wait_conditions.is_empty() {
-                    execution_wait_conditions
-                } else {
-                    merged_wait_conditions = Vec::with_capacity(
-                        execution_wait_conditions.len() + extra_wait_conditions.len(),
-                    );
-                    merged_wait_conditions.extend_from_slice(execution_wait_conditions);
-                    merged_wait_conditions.extend_from_slice(extra_wait_conditions);
-                    &merged_wait_conditions
-                };
-            let execution_continuations = completion
-                .map(|completion| completion.continuations.as_slice())
-                .unwrap_or_default();
-            // #3816: every WorkItem mutation this transaction applies must
-            // synchronize the execution registration in the same commit, no
-            // matter which payload channel (wait registration, wait
-            // transition, or completion) carried it. Synchronizing only the
-            // wait registration stranded the other channels' revisions ahead
-            // of the registration and doomed later settlements. Derived
-            // registration of missing partitions stays owned by the wait
-            // registration channel; the other channels advance registrations
-            // without inventing them.
-            let mut advance_only_mutations: Vec<WorkItemMutation> = Vec::new();
-            if let Some(work_item) =
-                wait_transition.and_then(|transition| transition.work_item.as_ref())
-            {
-                advance_only_mutations.push(work_item.clone());
+            if changed != 1 {
+                return Err(anyhow!("timer wake changed during queue claim"));
             }
-            if let Some(completion) = completion {
-                advance_only_mutations.extend(completion.work_items.iter().cloned());
-            }
-            let advance_synchronized = if advance_only_mutations.is_empty() {
-                execution_protocol_transition.clone()
-            } else {
-                execution_protocol_repository::synchronize_work_item_revisions_opt(
-                    tx,
-                    &command.agent_id,
-                    execution_protocol_transition,
-                    &advance_only_mutations,
-                    false,
-                )?
-            };
-            let synchronized_execution_protocol = if let Some(registration) = wait_registration {
-                execution_protocol_repository::synchronize_work_item_revisions_tx(
-                    tx,
-                    &command.agent_id,
-                    &advance_synchronized,
-                    &registration.work_items,
-                )?
-            } else {
-                advance_synchronized
-            };
-            let execution_protocol_transition = &synchronized_execution_protocol;
-            let execution_protocol = execution_protocol_repository::validate_execution_commands_tx(
-                tx,
-                &command.agent_id,
-                execution_protocol_transition.bootstrap.as_ref(),
-                &execution_protocol_transition.commands,
-                execution_work_items,
-                execution_wait_conditions,
-                execution_continuations,
+            scheduling_write_keys.insert(crate::runtime::resident_scheduling::SchedulingKey::wake(
+                &timer_wake_claim.timer_id,
+                &timer_wake_claim.message_id,
+            ));
+        }
+        if synchronize_delivery {
+            advance_delivery_for_queue_transition_tx(tx, command, execution_protocol_transition)?;
+        }
+        let agent_state_applied = apply_agent_state_mutation_tx(tx, command.agent_state.as_ref())?;
+        if command.operation == QueueOperation::Settle && command.turn_record.is_some() {
+            inject_fault(
+                command.fault,
+                TransitionFaultPoint::AfterTerminalAgentStateWrite,
             )?;
-            if command.operation == QueueOperation::Claim {
-                execution_protocol_repository::validate_model_queue_claim_tx(
-                    tx,
-                    &command.agent_id,
-                    &queue_record.message_id,
-                    execution_protocol.as_ref(),
-                    execution_work_items,
-                )?;
+        }
+        let execution_protocol_applied = execution_protocol
+            .as_ref()
+            .is_some_and(|prepared| prepared.has_writes());
+        let mut wait_condition_writes = trigger_wait_and_enqueue
+            .as_mut()
+            .map(TriggerWaitAndEnqueueResult::take_wait_writes)
+            .unwrap_or_default();
+        let wait_transition_applied = if let Some(wait_transition) = wait_transition {
+            let writes = upsert_wait_condition_with_writes_tx(tx, &wait_transition.record)?;
+            let applied = !writes.wait_ids.is_empty();
+            wait_condition_writes.extend(writes)?;
+            applied
+        } else {
+            false
+        };
+        let mut wait_registration_work_items = Vec::new();
+        let wait_registration_applied = if let Some(wait_registration) = wait_registration {
+            let mut applied =
+                admit_wait_task_result_tx(tx, wait_registration.task_result_admission.as_ref())?;
+            for work_item in &wait_registration.work_items {
+                if apply_work_item_mutation_tx(tx, work_item)? {
+                    wait_registration_work_items.push(work_item.record().clone());
+                    applied = true;
+                }
             }
-            inject_fault(command.fault, TransitionFaultPoint::AfterValidation)?;
-            let supervised_task_applied = supervised_task
-                .as_ref()
-                .map(|task| upsert_task_tx(tx, task))
-                .transpose()?
-                .unwrap_or(false);
-            let trigger_wait_and_enqueue = if command.operation == QueueOperation::Admit
-                && !command.message_evidence.is_empty()
-            {
-                let QueueMutation::Upsert(record) = &command.mutation else {
-                    unreachable!("queue operation validation requires Admit to use Upsert");
-                };
-                let [message] = command.message_evidence.as_slice() else {
-                    bail!(
-                        "TriggerWaitAndEnqueue requires exactly one admitted message for queue entry {}",
-                        record.message_id
+            for condition in &wait_registration.wait_conditions {
+                let writes = upsert_wait_condition_with_writes_tx(tx, condition)?;
+                applied |= !writes.wait_ids.is_empty();
+                wait_condition_writes.extend(writes)?;
+            }
+            applied
+        } else {
+            false
+        };
+        let mut extra_wait_conditions_applied = false;
+        for condition in extra_wait_conditions {
+            let writes = upsert_wait_condition_with_writes_tx(tx, condition)?;
+            extra_wait_conditions_applied |= !writes.wait_ids.is_empty();
+            wait_condition_writes.extend(writes)?;
+        }
+        let mut wait_work_items = Vec::new();
+        let wait_work_item_applied = if let Some(work_item) =
+            wait_transition.and_then(|wait_transition| wait_transition.work_item.as_ref())
+        {
+            let applied = apply_work_item_mutation_tx(tx, work_item)?;
+            if applied {
+                wait_work_items.push(work_item.record().clone());
+            }
+            applied
+        } else {
+            false
+        };
+        let mut completion_work_items = Vec::new();
+        let completion_applied = if let Some(completion) = completion {
+            let mut applied = false;
+            for work_item in &completion.work_items {
+                if apply_work_item_mutation_tx(tx, work_item)? {
+                    completion_work_items.push(work_item.record().clone());
+                    applied = true;
+                }
+            }
+            for condition in &completion.wait_conditions {
+                let writes = upsert_wait_condition_with_writes_tx(tx, condition)?;
+                applied |= !writes.wait_ids.is_empty();
+                wait_condition_writes.extend(writes)?;
+            }
+            for continuation in &completion.continuations {
+                applied |= upsert_work_item_continuation_tx(tx, continuation)?;
+            }
+            let existing_tool_execution = tx
+                .query_row(
+                    "SELECT payload_json FROM tool_executions WHERE evidence_id = ?1",
+                    [&completion.tool_execution.id],
+                    |row| row.get::<_, String>(0),
+                )
+                .optional()?
+                .map(|payload| serde_json::from_str::<ToolExecutionRecord>(&payload))
+                .transpose()?;
+            if let Some(existing) = existing_tool_execution {
+                if existing != completion.tool_execution {
+                    anyhow::ensure!(
+                        existing.status == crate::types::ToolExecutionStatus::Deferred
+                            && completion.tool_execution.status
+                                == crate::types::ToolExecutionStatus::Success
+                            && existing.agent_id == completion.tool_execution.agent_id
+                            && existing.work_item_id == completion.tool_execution.work_item_id
+                            && existing.turn_index == completion.tool_execution.turn_index
+                            && existing.turn_id == completion.tool_execution.turn_id
+                            && existing.tool_name == completion.tool_execution.tool_name
+                            && existing.created_at == completion.tool_execution.created_at
+                            && existing.authority_class
+                                == completion.tool_execution.authority_class
+                            && existing.input == completion.tool_execution.input
+                            && existing.invocation_surface
+                                == completion.tool_execution.invocation_surface,
+                        "conflicting CompleteWorkItem tool execution evidence for {}",
+                        completion.tool_execution.id
                     );
-                };
-                Some(trigger_wait_and_enqueue_tx(tx, message, record)?)
-            } else {
-                None
-            };
-            let mutation_applied = if let Some(result) = trigger_wait_and_enqueue.as_ref() {
-                result.applied()
-            } else {
-                match &command.mutation {
-                    QueueMutation::Consume(record) => match command.operation {
-                        QueueOperation::Claim => try_claim_queued_message_tx(tx, record)?,
-                        QueueOperation::Interject => try_interject_queued_message_tx(tx, record)?,
-                        QueueOperation::Admit
-                        | QueueOperation::Discard
-                        | QueueOperation::Requeue
-                        | QueueOperation::Settle
-                        | QueueOperation::RepairDrop => {
-                            unreachable!("queue operation validation rejects this combination")
-                        }
-                    },
-                    QueueMutation::Upsert(record) => upsert_queue_entry_tx(tx, record)?,
-                    QueueMutation::CompareAndSet { expected, record }
-                    | QueueMutation::ParkProviderDispatch { expected, record, .. }
-                    | QueueMutation::ConsumeSettledTaskResultRecovery {
-                        expected, record, ..
-                    } => {
-                        compare_and_set_queue_entry_tx(tx, expected, record)?
-                    }
-                }
-            };
-            if !matches!(&command.mutation, QueueMutation::Upsert(_)) && !mutation_applied {
-                return Ok(TransitionCommit::default());
-            }
-            if let Some(timer_wake_claim) = timer_wake_claim {
-                let changed = tx.execute(
-                    "UPDATE timer_wakes SET status = 'incorporated', updated_at = ?4,
-                       incorporated_at = ?4
-                     WHERE timer_id = ?1 AND message_id = ?2 AND fire_count = ?3
-                       AND status = 'pending'",
-                    params![
-                        timer_wake_claim.timer_id,
-                        timer_wake_claim.message_id,
-                        timer_wake_claim.fire_count as i64,
-                        Utc::now().to_rfc3339(),
-                    ],
-                )?;
-                if changed != 1 {
-                    return Err(anyhow!("timer wake changed during queue claim"));
-                }
-            }
-            if synchronize_delivery {
-                advance_delivery_for_queue_transition_tx(
-                    tx,
-                    command,
-                    execution_protocol_transition,
-                )?;
-            }
-            let agent_state_applied =
-                apply_agent_state_mutation_tx(tx, command.agent_state.as_ref())?;
-            if command.turn_record.is_some() {
-                inject_fault(
-                    command.fault,
-                    TransitionFaultPoint::AfterTerminalAgentStateWrite,
-                )?;
-            }
-            let execution_protocol_applied = execution_protocol
-                .as_ref()
-                .is_some_and(|prepared| prepared.has_writes());
-            let wait_transition_applied = wait_transition
-                .map(|wait_transition| upsert_wait_condition_tx(tx, &wait_transition.record))
-                .transpose()?
-                .unwrap_or(false);
-            let mut wait_registration_work_items = Vec::new();
-            let wait_registration_applied = if let Some(wait_registration) = wait_registration {
-                let mut applied = admit_wait_task_result_tx(
-                    tx,
-                    wait_registration.task_result_admission.as_ref(),
-                )?;
-                for work_item in &wait_registration.work_items {
-                    if apply_work_item_mutation_tx(tx, work_item)? {
-                        wait_registration_work_items.push(work_item.record().clone());
-                        applied = true;
-                    }
-                }
-                for condition in &wait_registration.wait_conditions {
-                    applied |= upsert_wait_condition_tx(tx, condition)?;
-                }
-                applied
-            } else {
-                false
-            };
-            let mut extra_wait_conditions_applied = false;
-            for condition in extra_wait_conditions {
-                extra_wait_conditions_applied |= upsert_wait_condition_tx(tx, condition)?;
-            }
-            let mut wait_work_items = Vec::new();
-            let wait_work_item_applied = if let Some(work_item) =
-                wait_transition.and_then(|wait_transition| wait_transition.work_item.as_ref())
-            {
-                let applied = apply_work_item_mutation_tx(tx, work_item)?;
-                if applied {
-                    wait_work_items.push(work_item.record().clone());
-                }
-                applied
-            } else {
-                false
-            };
-            let mut completion_work_items = Vec::new();
-            let completion_applied = if let Some(completion) = completion {
-                let mut applied = false;
-                for work_item in &completion.work_items {
-                    if apply_work_item_mutation_tx(tx, work_item)? {
-                        completion_work_items.push(work_item.record().clone());
-                        applied = true;
-                    }
-                }
-                for condition in &completion.wait_conditions {
-                    applied |= upsert_wait_condition_tx(tx, condition)?;
-                }
-                for continuation in &completion.continuations {
-                    applied |= upsert_work_item_continuation_tx(tx, continuation)?;
-                }
-                let existing_tool_execution = tx
-                    .query_row(
-                        "SELECT payload_json FROM tool_executions WHERE evidence_id = ?1",
-                        [&completion.tool_execution.id],
-                        |row| row.get::<_, String>(0),
-                    )
-                    .optional()?
-                    .map(|payload| serde_json::from_str::<ToolExecutionRecord>(&payload))
-                    .transpose()?;
-                if let Some(existing) = existing_tool_execution {
-                    if existing != completion.tool_execution {
-                        anyhow::ensure!(
-                            existing.status == crate::types::ToolExecutionStatus::Deferred
-                                && completion.tool_execution.status
-                                    == crate::types::ToolExecutionStatus::Success
-                                && existing.agent_id == completion.tool_execution.agent_id
-                                && existing.work_item_id == completion.tool_execution.work_item_id
-                                && existing.turn_index == completion.tool_execution.turn_index
-                                && existing.turn_id == completion.tool_execution.turn_id
-                                && existing.tool_name == completion.tool_execution.tool_name
-                                && existing.created_at == completion.tool_execution.created_at
-                                && existing.authority_class
-                                    == completion.tool_execution.authority_class
-                                && existing.input == completion.tool_execution.input
-                                && existing.invocation_surface
-                                    == completion.tool_execution.invocation_surface,
-                            "conflicting CompleteWorkItem tool execution evidence for {}",
-                            completion.tool_execution.id
-                        );
-                        insert_tool_evidence_tx(tx, &completion.tool_execution)?;
-                        applied = true;
-                    }
-                } else {
                     insert_tool_evidence_tx(tx, &completion.tool_execution)?;
                     applied = true;
                 }
-                applied
             } else {
-                false
-            };
-            let mut terminal_tool_execution_applied = false;
-            for tool_execution in terminal_tool_executions {
-                insert_tool_evidence_tx(tx, tool_execution)?;
-                terminal_tool_execution_applied = true;
-            }
-            if let Some(turn_record) = command.turn_record.as_ref() {
-                terminal_tool_execution_applied |=
-                    interrupt_deferred_tool_executions_for_terminal_turn_tx(
-                        tx,
-                        &command.agent_id,
-                        turn_record,
-                    )? > 0;
-            }
-            let mut applied = mutation_applied
-                || supervised_task_applied
-                || agent_state_applied
-                || execution_protocol_applied
-                || wait_transition_applied
-                || wait_registration_applied
-                || extra_wait_conditions_applied
-                || wait_work_item_applied
-                || completion_applied
-                || terminal_tool_execution_applied;
-            if let Some(settlement) = task_result_settlement {
-                applied |= crate::runtime_db::task_result_settlement::settle_activation_tx(
-                    tx,
-                    &command.agent_id,
-                    &settlement.activation_id,
-                    settlement.disposition,
-                    settlement.settled_at,
-                )? > 0;
-            }
-            if let Some(decision) = delivery.as_ref() {
-                persist_queued_admission_tx(tx, decision)?;
+                insert_tool_evidence_tx(tx, &completion.tool_execution)?;
                 applied = true;
             }
-            let mut message_index_changes = Vec::new();
-            if let Some(result) = trigger_wait_and_enqueue.as_ref() {
-                if result.message_inserted {
-                    message_index_changes.push(RuntimeIndexChange::for_message(&result.message));
+            applied
+        } else {
+            false
+        };
+        let mut terminal_tool_execution_applied = false;
+        for tool_execution in terminal_tool_executions {
+            insert_tool_evidence_tx(tx, tool_execution)?;
+            terminal_tool_execution_applied = true;
+        }
+        let interrupted_tools = if let Some(turn_record) = command.turn_record.as_ref() {
+            interrupt_deferred_tool_executions_for_terminal_turn_tx(
+                tx,
+                &command.agent_id,
+                turn_record,
+            )?
+        } else {
+            Vec::new()
+        };
+        terminal_tool_execution_applied |= !interrupted_tools.is_empty();
+        let mut applied = mutation_applied
+            || agent_state_applied
+            || execution_protocol_applied
+            || wait_transition_applied
+            || wait_registration_applied
+            || extra_wait_conditions_applied
+            || wait_work_item_applied
+            || completion_applied
+            || terminal_tool_execution_applied;
+        let mut task_write_keys = BTreeSet::new();
+        if let Some(prepared) = prepared_task_results {
+            anyhow::ensure!(
+                task_result_settlement.is_some(),
+                "Queue omitted frozen Result settlement"
+            );
+            let ack = prepared.execute()?;
+            use super::task_result_settlement::TaskResultWriteOutcome;
+            let TaskResultWriteOutcome::Count(count) = ack.outcome else {
+                bail!("Queue Result settlement returned a different operation")
+            };
+            applied |= count > 0;
+            task_write_keys.extend(ack.actual_result_ids.into_iter().map(|id| {
+                crate::runtime::resident_task::TaskKey::new(
+                    crate::runtime::resident_task::TaskFamily::ResultSettlement,
+                    id,
+                )
+            }));
+        } else if let Some(settlement) = task_result_settlement {
+            // Explicit legacy/test adapter. Online prepared callers pass the
+            // original finite selection above and retain its actual footprint.
+            applied |= crate::runtime_db::task_result_settlement::settle_activation_tx(
+                tx,
+                &command.agent_id,
+                &settlement.activation_id,
+                settlement.disposition,
+                settlement.settled_at,
+            )? > 0;
+        }
+        if let Some(decision) = delivery.as_ref() {
+            persist_queued_admission_tx(tx, decision, message_wait_write.as_ref())?;
+            applied = true;
+        }
+        let mut message_index_changes = Vec::new();
+        if let Some(result) = trigger_wait_and_enqueue.as_ref() {
+            if result.message_inserted {
+                message_index_changes.push(RuntimeIndexChange::for_message(&result.message));
+            }
+            applied |= result.applied();
+            let _ = &result.outcome;
+        } else {
+            for message in &command.message_evidence {
+                let (message, inserted) = append_message_tx(tx, message)?;
+                if inserted {
+                    applied = true;
+                    message_index_changes.push(RuntimeIndexChange::for_message(&message));
                 }
-                applied |= result.applied();
-                let _ = &result.outcome;
-            } else {
-                for message in &command.message_evidence {
-                    let (message, inserted) = append_message_tx(tx, message)?;
-                    if inserted {
-                        applied = true;
-                        message_index_changes.push(RuntimeIndexChange::for_message(&message));
-                    }
-                }
             }
-            if !applied {
-                return Ok(TransitionCommit::default());
-            }
-            execution_protocol_repository::persist_execution_commands_tx(tx, execution_protocol)?;
-            for entry in &command.transcript_entries {
-                append_transcript_entry_tx(tx, entry)?;
-            }
-            if let Some(turn_record) = command.turn_record.as_ref() {
-                upsert_turn_record_tx(tx, turn_record)?;
+        }
+        if !applied {
+            return Ok(TransitionCommit::default());
+        }
+        if let Some(turn_record) = command.turn_record.as_ref() {
+            upsert_turn_record_tx(tx, turn_record)?;
+            if command.operation == QueueOperation::Settle {
                 inject_fault(
                     command.fault,
                     TransitionFaultPoint::AfterTerminalTurnRecordWrite,
                 )?;
-                if command.operation == QueueOperation::Settle {
-                    for execution_command in &execution_protocol_transition.commands {
-                        if let crate::domain::execution_protocol::ExecutionProtocolCommand::Settle(
-                            settlement,
-                        ) = execution_command
-                        {
-                            crate::runtime_db::task_result_settlement::pause_local_dispatch_rejected_tx(
-                                tx,
-                                queue_record,
-                                turn_record,
-                                &settlement.outcome.attempt_id,
-                                task_result_settlement,
-                            )?;
-                        }
+            }
+        }
+        if let QueueMutation::SettleWithProviderRecovery { recovery, .. } = &command.mutation {
+            upsert_queue_entry_tx(
+                tx,
+                &QueueEntryRecord {
+                    message_id: recovery.id.clone(),
+                    agent_id: recovery.agent_id.clone(),
+                    priority: recovery.priority.clone(),
+                    status: QueueEntryStatus::Queued,
+                    created_at: recovery.created_at,
+                    updated_at: recovery.created_at,
+                },
+            )?;
+        }
+        let (execution_protocol, input_evidence_delta) =
+            execution_protocol_repository::persist_execution_commands_with_cleanup_input_facts_tx(
+                tx,
+                execution_protocol,
+                self.input_scope.as_ref(),
+                self.cleanup_input,
+            )?;
+        if command.operation == QueueOperation::Settle {
+            if let Some(turn_record) = command.turn_record.as_ref() {
+                for execution_command in &execution_protocol_transition.commands {
+                    if let crate::domain::execution_protocol::ExecutionProtocolCommand::Settle(
+                        settlement,
+                    ) = execution_command
+                    {
+                        let changed = crate::runtime_db::task_result_settlement::pause_local_dispatch_rejected_tx(
+                            tx,
+                            queue_record,
+                            turn_record,
+                            &settlement.outcome.attempt_id,
+                            task_result_settlement,
+                        )?;
+                        task_write_keys.extend(changed.into_iter().map(|id| {
+                            crate::runtime::resident_task::TaskKey::new(
+                                crate::runtime::resident_task::TaskFamily::ResultSettlement,
+                                id,
+                            )
+                        }));
                     }
                 }
             }
-            for brief in &command.brief_evidence {
-                insert_brief_evidence_tx(tx, brief)?;
+        }
+        for entry in &command.transcript_entries {
+            append_transcript_entry_tx(tx, entry)?;
+        }
+        for brief in &command.brief_evidence {
+            insert_brief_evidence_tx(tx, brief)?;
+        }
+        // Attempt/Turn settlements must be durable before retiring their wake.
+        super::repositories::retire_terminal_timer_wake_tx(
+            tx,
+            queue_record,
+            queue_record.updated_at,
+        )?;
+        if let Some(timer_id) = pending_timer_wake {
+            let retired: bool = tx.query_row(
+                "SELECT EXISTS(SELECT 1 FROM timer_wakes
+                 WHERE timer_id = ?1 AND message_id = ?2 AND status = 'cancelled')",
+                params![timer_id, queue_record.message_id],
+                |row| row.get(0),
+            )?;
+            if retired {
+                scheduling_write_keys.insert(
+                    crate::runtime::resident_scheduling::SchedulingKey::wake(
+                        &timer_id,
+                        &queue_record.message_id,
+                    ),
+                );
             }
-            // Terminal queue state is not sufficient until this transaction's
-            // attempt/turn settlements have also been persisted.
-            super::repositories::retire_terminal_timer_wake_tx(
+        }
+        inject_fault(command.fault, TransitionFaultPoint::AfterCanonicalWrites)?;
+        let mut index_changes = wait_registration
+            .map(|transition| transition.index_changes.clone())
+            .or_else(|| wait_transition.map(|transition| transition.index_changes.clone()))
+            .or_else(|| completion.map(|completion| completion.index_changes.clone()))
+            .unwrap_or_default();
+        index_changes.extend(super::agent_message_delivery::commit_final_brief_reply_tx(
+            tx,
+            final_brief_reply,
+        )?);
+        index_changes.extend(message_index_changes);
+        let mut commit = finish_transition_with_cleanup_tx(
+            tx,
+            self.input_scope.as_ref(),
+            self.cleanup_input,
+            applied,
+            &command.agent_id,
+            &command.audit_events,
+            &index_changes,
+            command.fault,
+            PostCommitEffects {
+                scheduling_write_keys,
+                task_write_keys,
+                agent_state: command.agent_state.clone(),
+                wait_condition_writes,
+                messages: command.message_evidence.clone(),
+                turns: command.turn_record.iter().cloned().collect(),
+                tool_executions: terminal_tool_executions
+                    .iter()
+                    .cloned()
+                    .chain(completion.map(|completion| completion.tool_execution.clone()))
+                    .chain(interrupted_tools)
+                    .collect(),
+                briefs: command.brief_evidence.clone(),
+                transcript_entries: command.transcript_entries.clone(),
+                execution_protocol,
+                input_evidence_delta,
+                work_items: wait_registration_work_items
+                    .into_iter()
+                    .chain(wait_work_items)
+                    .chain(completion_work_items)
+                    .collect(),
+                queued_messages: command
+                    .message_evidence
+                    .iter()
+                    .filter(|message| {
+                        message.id == queue_record.message_id
+                            && queue_record.status == QueueEntryStatus::Queued
+                    })
+                    .cloned()
+                    .chain(
+                        wait_registration
+                            .and_then(|wait| wait.task_result_admission.as_ref())
+                            .map(|admission| admission.message.clone()),
+                    )
+                    .chain(match &command.mutation {
+                        QueueMutation::ParkProviderDispatch { source, .. } => Some(*source.clone()),
+                        QueueMutation::SettleWithProviderRecovery { recovery, .. } => {
+                            Some(*recovery.clone())
+                        }
+                        _ => None,
+                    })
+                    .collect(),
+                current_queue_write_ids: mutation_applied
+                    .then(|| queue_record.message_id.clone())
+                    .into_iter()
+                    .chain(match &command.mutation {
+                        QueueMutation::SettleWithProviderRecovery { recovery, .. } => {
+                            Some(recovery.id.clone())
+                        }
+                        _ => None,
+                    })
+                    .collect(),
+                removed_queue_message_ids: (!matches!(
+                    queue_record.status,
+                    QueueEntryStatus::Queued | QueueEntryStatus::Interrupted
+                ))
+                .then(|| queue_record.message_id.clone())
+                .into_iter()
+                .collect(),
+                notify_scheduler: command.notify_scheduler,
+                ..PostCommitEffects::default()
+            },
+        )?;
+        if let Some(result) = trigger_wait_and_enqueue {
+            let mut events = AuditEventAck::from_events(result.audit_events)?;
+            events.append(&mut commit.effects.audit_events);
+            commit.effects.audit_events = events;
+        }
+        if let Some(write) = message_wait_write {
+            let write_keys = write.task_write_keys().clone();
+            let (delta, guards) = write.finish(
                 tx,
-                queue_record,
-                queue_record.updated_at,
+                message_wait_budget
+                    .as_mut()
+                    .context("message wait binding omitted original writer budget")?,
             )?;
-            inject_fault(command.fault, TransitionFaultPoint::AfterCanonicalWrites)?;
-            let mut index_changes = wait_registration
-                .map(|transition| transition.index_changes.clone())
-                .or_else(|| wait_transition.map(|transition| transition.index_changes.clone()))
-                .or_else(|| completion.map(|completion| completion.index_changes.clone()))
-                .unwrap_or_default();
-            index_changes.extend(
-                super::agent_message_delivery::commit_final_brief_reply_tx(tx, final_brief_reply)?
-            );
-            index_changes.extend(message_index_changes);
-            let commit = finish_transition_tx(
-                tx,
-                applied,
-                &command.agent_id,
-                &command.audit_events,
-                &index_changes,
-                command.fault,
-                PostCommitEffects {
-                    agent_state: agent_state_applied
-                        .then(|| command.agent_state.clone())
-                        .flatten(),
-                    work_items: wait_registration_work_items
-                        .into_iter()
-                        .chain(wait_work_items)
-                        .chain(completion_work_items)
-                        .collect(),
-                    queued_messages: wait_registration
-                        .and_then(|wait| wait.task_result_admission.as_ref())
-                        .map(|admission| admission.message.clone())
-                        .into_iter()
-                        .chain(match &command.mutation {
-                            QueueMutation::ParkProviderDispatch { source, .. } => Some(*source.clone()),
-                            _ => None,
-                        })
-                        .collect(),
-                    notify_scheduler: command.notify_scheduler,
-                    ..PostCommitEffects::default()
-                },
-            )?;
-            link_transition_brief_created_events_tx(
-                tx,
-                &command.brief_evidence,
-                &commit.effects.audit_events,
-            )?;
-            Ok(TransitionCommit {
-                delivery_receipt: delivery.as_ref().map(|decision| decision.receipt()),
-                ..commit
-            })
+            if delta.scope.agent_id == command.agent_id {
+                anyhow::ensure!(
+                    commit.effects.task_delta.is_none(),
+                    "message wait binding overlaps another original Task writer"
+                );
+                commit.effects.task_write_keys.extend(write_keys);
+                commit.effects.task_delta = Some(delta);
+                commit.effects.task_delta_requires_prepared_domain = true;
+            } else {
+                commit.effects.related_task_deltas.push(delta);
+            }
+            commit.effects.task_material_budget_views.extend(guards);
+        }
+        Ok(TransitionCommit {
+            delivery_receipt: delivery.as_ref().map(|decision| decision.receipt()),
+            ..commit
         })
     }
 
@@ -2919,6 +4175,7 @@ impl RuntimeTransitionRepository<'_> {
         self.commit_task_internal(command, &ExecutionProtocolTransition::default(), false)
     }
 
+    #[cfg(test)]
     pub fn commit_task_with_execution_protocol(
         &self,
         command: &TaskTransitionCommand,
@@ -2927,6 +4184,7 @@ impl RuntimeTransitionRepository<'_> {
         self.commit_task_internal(command, execution_protocol, true)
     }
 
+    #[cfg(test)]
     fn commit_task_internal(
         &self,
         command: &TaskTransitionCommand,
@@ -2934,171 +4192,452 @@ impl RuntimeTransitionRepository<'_> {
         synchronize_execution_protocol: bool,
     ) -> Result<TransitionCommit> {
         self.db.transaction(|tx| {
-            anyhow::ensure!(
-                command.task.agent_id == command.agent_id,
-                "task owner does not match transition partition"
-            );
-            let owner = tx
-                .query_row(
-                    "SELECT payload_json FROM agent_identities WHERE agent_id = ?1",
-                    [&command.agent_id],
-                    |row| row.get::<_, String>(0),
-                )
-                .optional()?
-                .map(|payload| super::repositories::decode_agent_identity_payload(&payload))
-                .transpose()?;
-            // Runtime monitors can outlive unload and deletion. Fence every
-            // task write, including replay, before any result/queue side effect.
-            anyhow::ensure!(
-                owner.is_some_and(|owner| {
-                    owner.status == crate::types::AgentRegistryStatus::Active
-                        && owner.incarnation == command.expected_owner_incarnation
-                }),
-                "task owner incarnation fence rejected for agent {} (expected {})",
-                command.agent_id,
-                command.expected_owner_incarnation
-            );
+            self.commit_task_tx(
+                tx,
+                command,
+                execution_protocol,
+                synchronize_execution_protocol,
+            )
+        })
+    }
+
+    #[cfg(test)]
+    pub(super) fn commit_task_tx(
+        &self,
+        tx: &Transaction<'_>,
+        command: &TaskTransitionCommand,
+        execution_protocol: &ExecutionProtocolTransition,
+        synchronize_execution_protocol: bool,
+    ) -> Result<TransitionCommit> {
+        self.commit_task_metadata_tx(
+            tx,
+            command,
+            execution_protocol,
+            synchronize_execution_protocol,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
+        .map(|(value, _)| value)
+    }
+
+    pub(super) fn commit_task_at_with_task_results_tx(
+        &self,
+        tx: &Transaction<'_>,
+        command: &TaskTransitionCommand,
+        execution_protocol: &ExecutionProtocolTransition,
+        synchronize_execution_protocol: bool,
+        prepared_at: chrono::DateTime<Utc>,
+        deletion_id: Option<&str>,
+        prepared_task_results: Option<
+            super::task_result_settlement::PreparedTaskResultMutation<'_, '_>,
+        >,
+        original_task_cleanup: Option<
+            &super::task_snapshot::OriginalTaskResultCleanupProof<'_, '_, '_>,
+        >,
+        original_stop: Option<&super::task_stop::TaskStopWriteProof<'_, '_>>,
+        original_child: Option<OriginalChildTaskWriteProof<'_, '_, '_, '_>>,
+    ) -> Result<(
+        TransitionCommit,
+        Option<super::input_mutation_receipts::InputTaskDeletionResult>,
+    )> {
+        anyhow::ensure!(
+            command.agent_deletion.is_some() == deletion_id.is_some(),
+            "prepared Task deletion metadata is incomplete"
+        );
+        self.commit_task_metadata_tx(
+            tx,
+            command,
+            execution_protocol,
+            synchronize_execution_protocol,
+            Some(prepared_at),
+            deletion_id,
+            prepared_task_results,
+            original_task_cleanup,
+            original_stop,
+            original_child,
+        )
+    }
+
+    fn commit_task_metadata_tx(
+        &self,
+        tx: &Transaction<'_>,
+        command: &TaskTransitionCommand,
+        execution_protocol: &ExecutionProtocolTransition,
+        synchronize_execution_protocol: bool,
+        prepared_at: Option<chrono::DateTime<Utc>>,
+        deletion_id: Option<&str>,
+        prepared_task_results: Option<
+            super::task_result_settlement::PreparedTaskResultMutation<'_, '_>,
+        >,
+        original_task_cleanup: Option<
+            &super::task_snapshot::OriginalTaskResultCleanupProof<'_, '_, '_>,
+        >,
+        original_stop: Option<&super::task_stop::TaskStopWriteProof<'_, '_>>,
+        original_child: Option<OriginalChildTaskWriteProof<'_, '_, '_, '_>>,
+    ) -> Result<(
+        TransitionCommit,
+        Option<super::input_mutation_receipts::InputTaskDeletionResult>,
+    )> {
+        anyhow::ensure!(
+            command.task.agent_id == command.agent_id,
+            "task owner does not match transition partition"
+        );
+        let owner = tx
+            .query_row(
+                "SELECT payload_json FROM agent_identities WHERE agent_id = ?1",
+                [&command.agent_id],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()?
+            .map(|payload| super::repositories::decode_agent_identity_payload(&payload))
+            .transpose()?;
+        // Runtime monitors can outlive unload and deletion. Fence every
+        // task write, including replay, before any result/queue side effect.
+        if let Some(proof) = &original_child {
+            proof.validate_transaction(tx)?;
+        }
+        if let Some(proof) = original_task_cleanup {
+            proof.validate_task_transition_tx(tx, command)?;
+        }
+        let original_terminal_cleanup = self.cleanup_input.is_some()
+            && self.input_scope.as_ref().is_some_and(|scope| {
+                scope.agent_id == command.agent_id
+                    && scope.identity_incarnation == command.expected_owner_incarnation
+            })
+            && command.queue_entry.is_none()
+            && command.task_result_settlement.is_none()
+            && super::repositories::is_terminal_task_status(&command.task.status)
+            && tx.query_row(
+                "SELECT EXISTS(SELECT 1 FROM tasks WHERE task_id=?1 AND owner_agent_id=?2)",
+                params![command.task.id, command.agent_id],
+                |row| row.get::<_, bool>(0),
+            )?;
+        anyhow::ensure!(
+            owner.is_some_and(|owner| {
+                owner.incarnation == command.expected_owner_incarnation
+                    && (owner.status == crate::types::AgentRegistryStatus::Active
+                        || (owner.status == crate::types::AgentRegistryStatus::Deleting
+                            && (original_task_cleanup.is_some()
+                                || original_terminal_cleanup
+                                || (self.cleanup_input.is_some() && original_child.is_some()))))
+            }),
+            "task owner incarnation fence rejected for agent {} (expected {})",
+            command.agent_id,
+            command.expected_owner_incarnation
+        );
+        self.validate_input_scope_tx(tx, &command.agent_id)?;
+        for record in &command.message_evidence {
+            self.validate_input_key_tx(
+                tx,
+                crate::runtime::resident_input_evidence::InputEvidenceFamily::Message,
+                &record.id,
+            )?;
+        }
+
+        let interrupted_stop = original_stop
+            .map(|proof| proof.interrupted_child_cancellation(tx, &command.task))
+            .transpose()?
+            .unwrap_or(false);
+        if !interrupted_stop {
             validate_task_tx(tx, &command.task)?;
-            // Linearize success/failure publication with the target's deletion
-            // fence. The caller recomputes cancellation if deletion won.
-            if command.queue_entry.is_some() {
-                super::agent_message_delivery::validate_message_wait_terminal_tx(tx, &command.task)?;
-            }
-            if command.queue_entry.is_some() && command.task.status != crate::types::TaskStatus::Cancelled {
-                if let Some(target) = command.task.target() {
-                    if super::repositories::task_target_is_deleted(tx, &target)? {
-                        let terminal: bool = tx.query_row(
-                            "SELECT EXISTS(SELECT 1 FROM tasks WHERE task_id = ?1
+        }
+        // Linearize success/failure publication with the target's deletion
+        // fence. The caller recomputes cancellation if deletion won.
+        if command.queue_entry.is_some() {
+            super::agent_message_delivery::validate_message_wait_terminal_tx(tx, &command.task)?;
+        }
+        if command.queue_entry.is_some()
+            && command.task.status != crate::types::TaskStatus::Cancelled
+        {
+            if let Some(target) = command.task.target() {
+                if super::repositories::task_target_is_deleted(tx, &target)? {
+                    let terminal: bool = tx.query_row(
+                        "SELECT EXISTS(SELECT 1 FROM tasks WHERE task_id = ?1
                              AND status IN ('completed','failed','cancelled','interrupted'))",
-                            [&command.task.id], |row| row.get(0),
-                        )?;
-                        if !terminal {
-                            return Err(super::repositories::TaskTargetDeleted.into());
-                        }
+                        [&command.task.id],
+                        |row| row.get(0),
+                    )?;
+                    if !terminal {
+                        return Err(super::repositories::TaskTargetDeleted.into());
                     }
                 }
             }
-            if let Some(queue_entry) = command.queue_entry.as_ref() {
-                validate_queue_mutation_tx(tx, &QueueMutation::Upsert(queue_entry.clone()))?;
-            }
-            for work_item in &command.work_items {
-                validate_work_item_mutation_tx(tx, work_item)?;
-            }
-            for expected in &command.expected_wait_conditions {
-                validate_wait_condition_expectation_tx(tx, expected)?;
-            }
-            for condition in &command.wait_conditions {
-                validate_wait_condition_tx(tx, condition)?;
-            }
-            validate_agent_state_mutation_tx(tx, command.agent_state.as_ref())?;
-            let execution_protocol = if synchronize_execution_protocol {
-                execution_protocol_repository::synchronize_work_item_revisions_tx(
-                    tx,
-                    &command.agent_id,
-                    execution_protocol,
-                    &command.work_items,
-                )?
-            } else {
-                execution_protocol.clone()
-            };
-            let execution_protocol = execution_protocol_repository::validate_execution_commands_tx(
+        }
+        if let Some(queue_entry) = command.queue_entry.as_ref() {
+            validate_queue_mutation_tx(tx, &QueueMutation::Upsert(queue_entry.clone()))?;
+        }
+        for work_item in &command.work_items {
+            validate_work_item_mutation_tx(tx, work_item)?;
+        }
+        for expected in &command.expected_wait_conditions {
+            validate_wait_condition_expectation_tx(tx, expected)?;
+        }
+        for condition in &command.wait_conditions {
+            validate_wait_condition_tx(tx, condition)?;
+        }
+        validate_agent_state_mutation_tx(tx, command.agent_state.as_ref())?;
+        let execution_protocol = if synchronize_execution_protocol {
+            execution_protocol_repository::synchronize_work_item_revisions_tx(
                 tx,
                 &command.agent_id,
-                execution_protocol.bootstrap.as_ref(),
-                &execution_protocol.commands,
+                execution_protocol,
                 &command.work_items,
-                &command.wait_conditions,
-                &[],
-            )?;
-            inject_fault(command.fault, TransitionFaultPoint::AfterValidation)?;
+            )?
+        } else {
+            execution_protocol.clone()
+        };
+        let execution_protocol = execution_protocol_repository::validate_execution_commands_tx(
+            tx,
+            &command.agent_id,
+            execution_protocol.bootstrap.as_ref(),
+            &execution_protocol.commands,
+            &command.work_items,
+            &command.wait_conditions,
+            &[],
+        )?;
+        inject_fault(command.fault, TransitionFaultPoint::AfterValidation)?;
 
-            let trigger_wait_and_enqueue =
-                if let Some(queue_entry) = command.queue_entry.as_ref() {
-                    let [message] = command.message_evidence.as_slice() else {
-                        bail!(
+        let mut trigger_wait_and_enqueue = if let Some(queue_entry) = command.queue_entry.as_ref() {
+            let [message] = command.message_evidence.as_slice() else {
+                bail!(
                             "TaskResult TriggerWaitAndEnqueue requires exactly one message for queue entry {}",
                             queue_entry.message_id
                         );
-                    };
-                    Some(trigger_wait_and_enqueue_tx(tx, message, queue_entry)?)
-                } else {
-                    None
-                };
-            let task_applied = upsert_task_tx(tx, &command.task)?;
-            let mut applied = task_applied;
-            if let Some(request) = command.agent_deletion.as_ref() {
-                let (_, _, created) = ensure_agent_deletion_tx(tx, request)?;
-                applied |= created;
-            }
-            if let Some(settlement) = command.task_result_settlement.as_ref() {
-                applied |=
-                    crate::runtime_db::task_result_settlement::upsert_pending_tx(tx, settlement)?;
-            }
-            if let Some(result) = trigger_wait_and_enqueue.as_ref() {
-                applied |= result.applied();
-            }
-            let mut work_items = Vec::new();
-            for work_item in &command.work_items {
-                let work_item_applied = apply_work_item_mutation_tx(tx, work_item)?;
-                applied |= work_item_applied;
-                if work_item_applied {
-                    work_items.push(work_item.record().clone());
-                }
-            }
-            for condition in &command.wait_conditions {
-                applied |= upsert_wait_condition_tx(tx, condition)?;
-            }
-            let agent_state_applied =
-                apply_agent_state_mutation_tx(tx, command.agent_state.as_ref())?;
-            applied |= agent_state_applied;
-            let mut message_index_changes = Vec::new();
-            if let Some(result) = trigger_wait_and_enqueue.as_ref() {
-                if result.message_inserted {
-                    message_index_changes.push(RuntimeIndexChange::for_message(&result.message));
-                }
-                let _ = &result.outcome;
-            } else {
-                for message in &command.message_evidence {
-                    let (message, inserted) = append_message_tx(tx, message)?;
-                    if inserted {
-                        applied = true;
-                        message_index_changes.push(RuntimeIndexChange::for_message(&message));
-                    }
-                }
-            }
-            applied |= command.commit_on_idempotent;
-            applied |= execution_protocol
-                .as_ref()
-                .is_some_and(|prepared| prepared.has_writes());
-            if !applied {
-                return Ok(TransitionCommit::default());
-            }
-            execution_protocol_repository::persist_execution_commands_tx(tx, execution_protocol)?;
-            inject_fault(command.fault, TransitionFaultPoint::AfterCanonicalWrites)?;
-
-            let mut index_changes = command.index_changes.clone();
-            index_changes.extend(message_index_changes);
-            finish_transition_tx(
+            };
+            Some(match prepared_at {
+                Some(at) => trigger_wait_and_enqueue_at_tx(tx, message, queue_entry, at)?,
+                None => trigger_wait_and_enqueue_tx(tx, message, queue_entry)?,
+            })
+        } else {
+            None
+        };
+        let task_existed: bool = tx.query_row(
+            "SELECT EXISTS(SELECT 1 FROM tasks WHERE task_id=?1)",
+            [&command.task.id],
+            |row| row.get(0),
+        )?;
+        let task_applied = if interrupted_stop {
+            super::repositories::upsert_interrupted_child_task_stop_tx(
                 tx,
-                applied,
-                &command.agent_id,
-                &command.audit_events,
-                &index_changes,
-                command.fault,
-                PostCommitEffects {
-                    agent_state: agent_state_applied
-                        .then(|| command.agent_state.clone())
-                        .flatten(),
-                    work_items,
-                    tasks: task_applied
-                        .then_some(command.task.clone())
-                        .into_iter()
-                        .collect(),
-                    notify_scheduler: command.notify_scheduler,
-                    ..PostCommitEffects::default()
+                original_stop.expect("validated original Stop"),
+                &command.task,
+            )?
+        } else if let Some(OriginalChildTaskWriteProof::Binding(proof)) = &original_child {
+            super::repositories::update_original_child_monitor_binding_tx(tx, proof, &command.task)?
+        } else if let Some(OriginalChildTaskWriteProof::Running(proof)) = &original_child {
+            super::repositories::update_original_child_running_tx(tx, proof, &command.task)?
+        } else {
+            upsert_task_tx(tx, &command.task)?
+        };
+        let mut task_write_keys = BTreeSet::new();
+        let task_key = crate::runtime::resident_task::TaskKey::new(
+            crate::runtime::resident_task::TaskFamily::Task,
+            &command.task.id,
+        );
+        if task_applied {
+            task_write_keys.insert(task_key.clone());
+        }
+        let task_observation_keys: BTreeSet<_> =
+            task_existed.then_some(task_key).into_iter().collect();
+        let mut applied = task_applied;
+        let mut agent_identities = Vec::new();
+        let mut deletion_result = None;
+        if let Some(request) = command.agent_deletion.as_ref() {
+            let (identity, job, created) = match (prepared_at, deletion_id) {
+                (Some(at), Some(id)) => {
+                    crate::runtime_db::repositories::ensure_agent_deletion_at_tx(
+                        tx, request, id, at,
+                    )?
+                }
+                _ => ensure_agent_deletion_tx(tx, request)?,
+            };
+            agent_identities.push(identity.clone());
+            deletion_result = Some(super::input_mutation_receipts::InputTaskDeletionResult {
+                identity,
+                job,
+                created,
+            });
+            applied |= created;
+        }
+        if let Some(prepared) = prepared_task_results {
+            anyhow::ensure!(
+                command.task_result_settlement.is_some(),
+                "Task omitted frozen Result intent"
+            );
+            let ack = match original_task_cleanup {
+                Some(proof) => prepared.execute_original_task_cleanup(proof)?,
+                None => prepared.execute()?,
+            };
+            use super::task_result_settlement::TaskResultWriteOutcome;
+            let TaskResultWriteOutcome::Changed(changed) = ack.outcome else {
+                bail!("Task pending Result returned a different operation")
+            };
+            applied |= changed;
+            task_write_keys.extend(ack.actual_result_ids.into_iter().map(|id| {
+                crate::runtime::resident_task::TaskKey::new(
+                    crate::runtime::resident_task::TaskFamily::ResultSettlement,
+                    id,
+                )
+            }));
+        } else if let Some(settlement) = command.task_result_settlement.as_ref() {
+            applied |=
+                crate::runtime_db::task_result_settlement::upsert_pending_tx(tx, settlement)?;
+        }
+        if let Some(result) = trigger_wait_and_enqueue.as_ref() {
+            applied |= result.applied();
+        }
+        let mut work_items = Vec::new();
+        for work_item in &command.work_items {
+            let work_item_applied = apply_work_item_mutation_tx(tx, work_item)?;
+            applied |= work_item_applied;
+            if work_item_applied {
+                work_items.push(work_item.record().clone());
+            }
+        }
+        let mut wait_condition_writes = trigger_wait_and_enqueue
+            .as_mut()
+            .map(TriggerWaitAndEnqueueResult::take_wait_writes)
+            .unwrap_or_default();
+        for condition in &command.wait_conditions {
+            let writes = upsert_wait_condition_with_writes_tx(tx, condition)?;
+            applied |= !writes.wait_ids.is_empty();
+            wait_condition_writes.extend(writes)?;
+        }
+        let agent_state_applied = apply_agent_state_mutation_tx(tx, command.agent_state.as_ref())?;
+        applied |= agent_state_applied;
+        let mut message_index_changes = Vec::new();
+        if let Some(result) = trigger_wait_and_enqueue.as_ref() {
+            if result.message_inserted {
+                message_index_changes.push(RuntimeIndexChange::for_message(&result.message));
+            }
+            let _ = &result.outcome;
+        } else {
+            for message in &command.message_evidence {
+                let (message, inserted) = append_message_tx(tx, message)?;
+                if inserted {
+                    applied = true;
+                    message_index_changes.push(RuntimeIndexChange::for_message(&message));
+                }
+            }
+        }
+        applied |= command.commit_on_idempotent;
+        applied |= execution_protocol
+            .as_ref()
+            .is_some_and(|prepared| prepared.has_writes());
+        if !applied {
+            return Ok((
+                TransitionCommit {
+                    effects: Box::new(PostCommitEffects {
+                        task_write_keys,
+                        task_observation_keys,
+                        audit_events: trigger_wait_and_enqueue
+                            .as_ref()
+                            .map(|result| {
+                                result
+                                    .audit_events
+                                    .iter()
+                                    .cloned()
+                                    .map(AuditEventAck::new)
+                                    .collect::<Result<Vec<_>>>()
+                            })
+                            .transpose()?
+                            .unwrap_or_default(),
+                        ..Default::default()
+                    }),
+                    ..Default::default()
                 },
-            )
-        })
+                deletion_result,
+            ));
+        }
+        let (execution_protocol, input_evidence_delta) =
+            execution_protocol_repository::persist_execution_commands_with_cleanup_input_facts_tx(
+                tx,
+                execution_protocol,
+                self.input_scope.as_ref(),
+                self.cleanup_input,
+            )?;
+        inject_fault(command.fault, TransitionFaultPoint::AfterCanonicalWrites)?;
+
+        let mut index_changes = command.index_changes.clone();
+        index_changes.extend(message_index_changes);
+        let mut value = finish_transition_with_cleanup_tx(
+            tx,
+            self.input_scope.as_ref(),
+            self.cleanup_input,
+            applied,
+            &command.agent_id,
+            &command.audit_events,
+            &index_changes,
+            command.fault,
+            PostCommitEffects {
+                task_write_keys,
+                task_observation_keys,
+                agent_state: command.agent_state.clone(),
+                agent_identities,
+                work_items,
+                wait_condition_writes,
+                messages: command.message_evidence.clone(),
+                execution_protocol,
+                input_evidence_delta,
+                current_queue_write_ids: command
+                    .message_evidence
+                    .iter()
+                    .map(|message| message.id.clone())
+                    .chain(
+                        command
+                            .queue_entry
+                            .iter()
+                            .map(|entry| entry.message_id.clone()),
+                    )
+                    .collect(),
+                queued_messages: command
+                    .queue_entry
+                    .as_ref()
+                    .filter(|entry| entry.status == QueueEntryStatus::Queued)
+                    .into_iter()
+                    .flat_map(|entry| {
+                        command
+                            .message_evidence
+                            .iter()
+                            .filter(move |message| message.id == entry.message_id)
+                            .cloned()
+                    })
+                    .collect(),
+                tasks: task_applied
+                    .then_some(command.task.clone())
+                    .into_iter()
+                    .collect(),
+                notify_scheduler: command.notify_scheduler,
+                ..PostCommitEffects::default()
+            },
+        )?;
+        if let Some(result) = trigger_wait_and_enqueue {
+            let mut events = AuditEventAck::from_events(result.audit_events)?;
+            events.append(&mut value.effects.audit_events);
+            value.effects.audit_events = events;
+        }
+        Ok((value, deletion_result))
+    }
+}
+
+pub(super) const WAIT_TRIGGERED_AUDIT_PREFIX: &str = "audit:wait-triggered:";
+pub(super) const WAIT_STALE_AUDIT_PREFIX: &str = "audit:wait-trigger-stale:";
+
+pub(super) fn wait_trigger_audit_id(
+    message_id: &str,
+    wait_id: Option<&str>,
+    stale: bool,
+) -> String {
+    if stale {
+        format!("{WAIT_STALE_AUDIT_PREFIX}{message_id}")
+    } else if let Some(wait_id) = wait_id {
+        format!("{WAIT_TRIGGERED_AUDIT_PREFIX}{message_id}:{wait_id}")
+    } else {
+        format!("{WAIT_TRIGGERED_AUDIT_PREFIX}{message_id}")
     }
 }
 
@@ -3106,6 +4645,52 @@ pub(super) fn trigger_wait_and_enqueue_tx(
     tx: &Transaction<'_>,
     message: &MessageEnvelope,
     queue_entry: &QueueEntryRecord,
+) -> Result<TriggerWaitAndEnqueueResult> {
+    trigger_wait_and_enqueue_with_audit_time_tx(tx, message, queue_entry, None)
+}
+
+pub(super) fn trigger_wait_and_enqueue_at_tx(
+    tx: &Transaction<'_>,
+    message: &MessageEnvelope,
+    queue_entry: &QueueEntryRecord,
+    audit_created_at: chrono::DateTime<Utc>,
+) -> Result<TriggerWaitAndEnqueueResult> {
+    trigger_wait_and_enqueue_with_audit_time_tx(tx, message, queue_entry, Some(audit_created_at))
+}
+
+fn trigger_wait_conditions_tx(
+    tx: &Transaction<'_>,
+    agent_id: &str,
+    limit: Option<usize>,
+) -> Result<Vec<WaitConditionRecord>> {
+    let mut statement = tx.prepare(
+        "SELECT payload_json FROM wait_conditions
+         WHERE agent_id = ?1 AND status IN ('active', 'triggered')
+         ORDER BY updated_at DESC, created_at DESC, wait_condition_id DESC LIMIT ?2",
+    )?;
+    let limit = limit.map(i64::try_from).transpose()?.unwrap_or(-1);
+    let mut rows = statement.query(params![agent_id, limit])?;
+    let mut conditions = Vec::new();
+    while let Some(row) = rows.next()? {
+        let payload = row.get_ref(0)?.as_str()?;
+        crate::diagnostics::resource_io::admit_json_payload(payload)?;
+        crate::diagnostics::resource_io::charge_owned_metadata(
+            std::mem::size_of::<WaitConditionRecord>() as u64,
+            1,
+        )?;
+        conditions.push(
+            serde_json::from_str(payload)
+                .map_err(|error| rusqlite::Error::ToSqlConversionFailure(Box::new(error)))?,
+        );
+    }
+    Ok(conditions)
+}
+
+fn trigger_wait_and_enqueue_with_audit_time_tx(
+    tx: &Transaction<'_>,
+    message: &MessageEnvelope,
+    queue_entry: &QueueEntryRecord,
+    audit_created_at: Option<chrono::DateTime<Utc>>,
 ) -> Result<TriggerWaitAndEnqueueResult> {
     if message.id != queue_entry.message_id
         || message.agent_id != queue_entry.agent_id
@@ -3122,42 +4707,28 @@ pub(super) fn trigger_wait_and_enqueue_tx(
         |row| row.get::<_, bool>(0),
     )?;
 
-    let conditions = {
-        let mut statement = tx.prepare(
-            "SELECT payload_json
-             FROM wait_conditions
-             WHERE agent_id = ?1 AND status IN ('active', 'triggered')
-             ORDER BY updated_at DESC, created_at DESC, wait_condition_id DESC",
-        )?;
-        let conditions = statement
-            .query_map([&message.agent_id], |row| row.get::<_, String>(0))?
-            .map(|payload| {
-                serde_json::from_str::<WaitConditionRecord>(&payload?)
-                    .map_err(|error| rusqlite::Error::ToSqlConversionFailure(Box::new(error)))
-            })
-            .collect::<std::result::Result<Vec<_>, _>>()?;
-        conditions
-    };
+    let conditions = trigger_wait_conditions_tx(tx, &message.agent_id, None)?;
 
-    let selection = crate::wake_contract::select_wait_to_trigger(message, &conditions);
-    let mut triggered_waits: Vec<(WaitConditionRecord, crate::wake_contract::WakeMatch)> =
+    let selection = crate::wake_contract::select_wait_to_trigger(message, &conditions)?;
+    let mut triggered_waits: Vec<(WaitConditionRecord, crate::wake_contract::WakeMatch<'_>)> =
         Vec::new();
     let outcome = match selection {
         crate::wake_contract::WaitTriggerSelection::Match { condition, wake } => {
             if !wait_generation_matches_tx(tx, message, condition)? {
+                crate::diagnostics::resource_io::admit_cloned_value(&condition.id)?;
                 TriggerWaitAndEnqueueOutcome::Stale {
                     wait_id: condition.id.clone(),
                 }
             } else if condition.status == WaitConditionStatus::Triggered {
+                crate::diagnostics::resource_io::admit_cloned_value(&condition.id)?;
                 TriggerWaitAndEnqueueOutcome::Duplicate {
                     wait_id: condition.id.clone(),
                 }
             } else if existing_admission {
                 TriggerWaitAndEnqueueOutcome::DuplicateMessage
             } else {
-                let mut triggered = condition.clone();
-                let trigger_id = agent_message_reply_trigger_tx(tx, message)?
-                    .unwrap_or_else(|| message.id.clone());
+                let trigger_id =
+                    agent_message_reply_trigger_tx(tx, message)?.unwrap_or(&message.id);
                 let already_claimed = tx.query_row(
                     "SELECT EXISTS(SELECT 1 FROM wait_conditions WHERE agent_id = ?1 AND trigger_message_id = ?2 AND wait_condition_id != ?3)",
                     params![message.agent_id, trigger_id, condition.id], |row| row.get::<_, bool>(0))?;
@@ -3169,13 +4740,19 @@ pub(super) fn trigger_wait_and_enqueue_tx(
                         message_inserted,
                         queue_applied,
                         wait_applied: false,
+                        wait_writes: WaitConditionWrites::default(),
+                        audit_events: Vec::new(),
+                        existing_audit_events: Vec::new(),
                         outcome: TriggerWaitAndEnqueueOutcome::DuplicateMessage,
                     });
                 }
-                triggered.mark_triggered(&trigger_id, queue_entry.updated_at);
-                validate_wait_condition_tx(tx, &triggered)?;
-                let wait_id = triggered.id.clone();
-                triggered_waits.push((triggered, wake));
+                let wait_id = stage_triggered_wait(
+                    &mut triggered_waits,
+                    condition,
+                    wake,
+                    trigger_id,
+                    queue_entry.updated_at,
+                )?;
                 TriggerWaitAndEnqueueOutcome::Triggered { wait_id }
             }
         }
@@ -3196,9 +4773,11 @@ pub(super) fn trigger_wait_and_enqueue_tx(
 
     let (message, message_inserted) = append_message_tx(tx, message)?;
     let queue_applied = upsert_queue_entry_tx(tx, queue_entry)?;
-    let mut wait_applied = false;
+    let mut wait_writes = WaitConditionWrites::default();
+    let mut audit_events = Vec::new();
+    let mut existing_audit_events = Vec::new();
     for (index, (triggered, wake)) in triggered_waits.iter().enumerate() {
-        let applied = upsert_wait_condition_tx(tx, triggered)?;
+        let writes = upsert_wait_condition_with_writes_tx(tx, triggered)?;
         let mut event = AuditEvent::legacy(
             "wait_condition_triggered",
             serde_json::json!({
@@ -3212,13 +4791,21 @@ pub(super) fn trigger_wait_and_enqueue_tx(
         );
         // Keep the single-wait audit identity stable; extra task waiters
         // triggered by the same result get a per-wait suffix (#3124).
-        event.id = if index == 0 {
-            format!("audit:wait-triggered:{}", message.id)
+        event.id = wait_trigger_audit_id(
+            &message.id,
+            (index != 0).then_some(triggered.id.as_str()),
+            false,
+        );
+        if let Some(created_at) = audit_created_at {
+            event.created_at = created_at;
+        }
+        let (event, inserted) = append_audit_event_tx(tx, Some(&message.agent_id), &event)?;
+        if inserted {
+            audit_events.push(event);
         } else {
-            format!("audit:wait-triggered:{}:{}", message.id, triggered.id)
-        };
-        append_audit_event_tx(tx, Some(&message.agent_id), &event)?;
-        wait_applied = wait_applied || applied;
+            existing_audit_events.push(event);
+        }
+        wait_writes.extend(writes)?;
     }
     if let TriggerWaitAndEnqueueOutcome::Stale { wait_id } = &outcome {
         let mut event = AuditEvent::legacy(
@@ -3230,23 +4817,57 @@ pub(super) fn trigger_wait_and_enqueue_tx(
                 "work_item_id": message.work_item_id,
             }),
         );
-        event.id = format!("audit:wait-trigger-stale:{}", message.id);
-        append_audit_event_tx(tx, Some(&message.agent_id), &event)?;
+        event.id = wait_trigger_audit_id(&message.id, None, true);
+        if let Some(created_at) = audit_created_at {
+            event.created_at = created_at;
+        }
+        let (event, inserted) = append_audit_event_tx(tx, Some(&message.agent_id), &event)?;
+        if inserted {
+            audit_events.push(event);
+        } else {
+            existing_audit_events.push(event);
+        }
     }
 
     Ok(TriggerWaitAndEnqueueResult {
         message,
         message_inserted,
         queue_applied,
-        wait_applied,
+        wait_applied: !wait_writes.wait_ids.is_empty(),
+        wait_writes,
+        audit_events,
+        existing_audit_events,
         outcome,
     })
 }
 
-fn agent_message_reply_trigger_tx(
+fn stage_triggered_wait<'a>(
+    staged: &mut Vec<(WaitConditionRecord, crate::wake_contract::WakeMatch<'a>)>,
+    condition: &WaitConditionRecord,
+    wake: crate::wake_contract::WakeMatch<'a>,
+    trigger_id: &str,
+    triggered_at: chrono::DateTime<Utc>,
+) -> Result<String> {
+    crate::diagnostics::resource_io::admit_cloned_value(condition)?;
+    let mut triggered = condition.clone();
+    crate::diagnostics::resource_io::admit_cloned_value(&trigger_id)?;
+    triggered.mark_triggered(trigger_id, triggered_at);
+    // The pool and this transition share one transaction, with no intervening writes.
+    wait_condition_transition(condition, &triggered)?;
+    crate::diagnostics::resource_io::admit_cloned_value(&triggered.id)?;
+    let wait_id = triggered.id.clone();
+    crate::diagnostics::resource_io::charge_owned_metadata(
+        std::mem::size_of::<(WaitConditionRecord, crate::wake_contract::WakeMatch<'_>)>() as u64,
+        1,
+    )?;
+    staged.push((triggered, wake));
+    Ok(wait_id)
+}
+
+fn agent_message_reply_trigger_tx<'a>(
     tx: &Transaction<'_>,
-    message: &MessageEnvelope,
-) -> Result<Option<String>> {
+    message: &'a MessageEnvelope,
+) -> Result<Option<&'a str>> {
     let Some(reference) = crate::wake_contract::agent_message_reply_reference(message) else {
         return Ok(None);
     };
@@ -3292,7 +4913,7 @@ fn agent_message_reply_trigger_tx(
     {
         bail!("agent reply reference does not match the durable observation");
     }
-    Ok(Some(reference.to_owned()))
+    Ok(Some(reference))
 }
 
 fn wait_generation_matches_tx(
@@ -3383,8 +5004,75 @@ fn validate_task_expectation_tx(tx: &Transaction<'_>, expected: &TaskExpectation
     Ok(())
 }
 
+/// Resolve the live input scope of an agent inside a writer transaction, so
+/// an offline transition can still attach its archive history ACK.
+fn active_input_scope_tx(
+    tx: &Transaction<'_>,
+    agent_id: &str,
+) -> Result<Option<InputEvidenceScope>> {
+    let payload: Option<String> = tx
+        .query_row(
+            "SELECT payload_json FROM agent_identities WHERE agent_id=?1",
+            [agent_id],
+            |row| row.get(0),
+        )
+        .optional()?;
+    let Some(payload) = payload else {
+        return Ok(None);
+    };
+    let identity: crate::types::AgentIdentityRecord = serde_json::from_str(&payload)?;
+    if identity.agent_id == agent_id
+        && identity.incarnation > 0
+        && identity.status == crate::types::AgentRegistryStatus::Active
+    {
+        Ok(Some(InputEvidenceScope {
+            agent_id: agent_id.to_string(),
+            identity_incarnation: identity.incarnation,
+        }))
+    } else {
+        Ok(None)
+    }
+}
+
+/// The live Current scope of an agent within startup recovery input scopes.
+fn startup_current_recovery_scope<'a>(
+    scopes: Option<&'a [StartupInputRecoveryScope]>,
+    agent_id: &str,
+) -> Option<&'a InputEvidenceScope> {
+    scopes?.iter().find_map(|scope| match scope {
+        StartupInputRecoveryScope::Current(scope) if scope.agent_id == agent_id => Some(scope),
+        _ => None,
+    })
+}
+
 fn finish_transition_tx(
     tx: &Transaction<'_>,
+    input_scope: Option<&InputEvidenceScope>,
+    applied: bool,
+    agent_id: &str,
+    audit_events: &[AuditEvent],
+    index_changes: &[RuntimeIndexChange],
+    fault: Option<TransitionFaultPoint>,
+    effects: PostCommitEffects,
+) -> Result<TransitionCommit> {
+    finish_transition_with_cleanup_tx(
+        tx,
+        input_scope,
+        None,
+        applied,
+        agent_id,
+        audit_events,
+        index_changes,
+        fault,
+        effects,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn finish_transition_with_cleanup_tx(
+    tx: &Transaction<'_>,
+    input_scope: Option<&InputEvidenceScope>,
+    cleanup: Option<&super::input_evidence_snapshot::ExistingAdmissionInputProof>,
     applied: bool,
     agent_id: &str,
     audit_events: &[AuditEvent],
@@ -3396,15 +5084,90 @@ fn finish_transition_tx(
         return Ok(TransitionCommit::default());
     }
 
+    crate::diagnostics::resource_io::charge_owned_metadata(
+        u64::try_from(
+            audit_events
+                .len()
+                .checked_mul(std::mem::size_of::<AuditEventAck>())
+                .context("Audit ACK slots overflow")?,
+        )?,
+        audit_events.len(),
+    )?;
     let mut committed_events = Vec::with_capacity(audit_events.len());
     for event in audit_events {
-        let (event, inserted) = append_audit_event_tx(tx, Some(agent_id), event)?;
+        let (event, inserted) =
+            super::evidence::append_audit_event_ack_tx(tx, Some(agent_id), event)?;
         if inserted {
             committed_events.push(event);
         }
     }
+    // Every original transition Event append is archive-readable history.
+    // Attach the ACK in this same transaction; live Current authority is
+    // still granted only by its own qualification writer.
+    {
+        let history_scope = match input_scope {
+            Some(scope) => Some(scope.clone()),
+            None => active_input_scope_tx(tx, agent_id)?,
+        };
+        if let Some(scope) = history_scope.as_ref() {
+            for event in &committed_events {
+                super::current_read_writes::append_event_history_ack_tx(tx, scope, &event.id)?;
+            }
+        }
+    }
     inject_fault(fault, TransitionFaultPoint::AfterAuditWrites)?;
     insert_runtime_index_changes_tx(tx, index_changes)?;
+    link_transition_brief_created_events_tx(tx, &effects.briefs, &committed_events)?;
+    materialize_committed_input_facts_tx(tx, agent_id, &mut effects)?;
+    if !effects.messages.is_empty() || effects.agent_state.is_some() {
+        if let Some(actual) =
+            super::input_evidence_writes::synchronize_message_count_tx(tx, agent_id)?
+        {
+            if let Some(state) = effects.agent_state.as_mut() {
+                state.record = actual.record;
+            } else {
+                effects.agent_state = Some(actual);
+            }
+        }
+    }
+    if let Some(scope) = input_scope {
+        if let Some(proof) = cleanup {
+            proof.validate_scope_tx(tx, scope)?;
+        } else {
+            super::input_evidence_writes::validate_input_evidence_scope_tx(tx, scope, agent_id)?;
+        }
+        use super::input_evidence_snapshot::CanonicalInputEvidence as Fact;
+        let mut facts = Vec::new();
+        facts.extend(effects.messages.iter().cloned().map(Fact::Message));
+        facts.extend(effects.queued_messages.iter().cloned().map(Fact::Message));
+        facts.extend(effects.turns.iter().cloned().map(Fact::Turn));
+        facts.extend(effects.briefs.iter().cloned().map(Fact::Brief));
+        facts.extend(
+            effects
+                .transcript_entries
+                .iter()
+                .cloned()
+                .map(Fact::Transcript),
+        );
+        // The canonical writer still temporarily owns full tool evidence. Only
+        // its bounded projection survives in the owner/root acknowledgement.
+        facts.extend(
+            std::mem::take(&mut effects.tool_executions)
+                .into_iter()
+                .map(Fact::ToolExecution),
+        );
+        let delta = if let Some(proof) = cleanup {
+            super::input_evidence_snapshot::register_committed_cleanup_input_evidence_tx(
+                tx, scope, &facts, proof,
+            )?
+        } else {
+            super::input_evidence_snapshot::register_committed_input_evidence_tx(tx, scope, &facts)?
+        };
+        super::input_evidence_writes::merge_input_evidence_delta(
+            &mut effects.input_evidence_delta,
+            delta,
+        )?;
+    }
     inject_fault(fault, TransitionFaultPoint::BeforeCommit)?;
 
     effects.audit_events = committed_events;
@@ -3412,20 +5175,116 @@ fn finish_transition_tx(
     effects.fault = fault.filter(|point| point.is_post_commit());
     Ok(TransitionCommit {
         applied: true,
-        effects,
+        effects: Box::new(effects),
         delivery_receipt: None,
     })
 }
 
-fn agent_state_tx(tx: &Transaction<'_>, agent_id: &str) -> Result<Option<AgentState>> {
-    tx.query_row(
-        "SELECT payload_json FROM agent_states WHERE agent_id = ?1",
-        [agent_id],
-        |row| row.get::<_, String>(0),
-    )
-    .optional()?
-    .map(|payload| serde_json::from_str(&payload).map_err(Into::into))
-    .transpose()
+fn committed_input_payload_tx<T: serde::de::DeserializeOwned>(
+    tx: &Transaction<'_>,
+    table: &'static str,
+    id_column: &'static str,
+    id: &str,
+    agent_id: &str,
+) -> Result<T> {
+    let payload: String = tx
+        .query_row(
+            &format!("SELECT payload_json FROM {table} WHERE {id_column} = ?1 AND agent_id = ?2"),
+            params![id, agent_id],
+            |row| row.get(0),
+        )
+        .with_context(|| format!("reading committed {table} fact {id} for agent {agent_id}"))?;
+    serde_json::from_str(&payload).with_context(|| format!("decoding committed {table} fact {id}"))
+}
+
+fn materialize_committed_input_facts_tx(
+    tx: &Transaction<'_>,
+    agent_id: &str,
+    effects: &mut PostCommitEffects,
+) -> Result<()> {
+    if let Some(protocol) = effects.execution_protocol.as_ref() {
+        anyhow::ensure!(
+            protocol.agent_id == agent_id,
+            "committed execution protocol does not match transition agent {agent_id}"
+        );
+    }
+    let mut seen = BTreeSet::new();
+    effects.messages = effects
+        .messages
+        .iter()
+        .filter(|record| seen.insert((record.agent_id.clone(), record.id.clone())))
+        .map(|record| {
+            committed_input_payload_tx(tx, "messages", "evidence_id", &record.id, &record.agent_id)
+        })
+        .collect::<Result<_>>()?;
+    seen.clear();
+    effects.turns = effects
+        .turns
+        .iter()
+        .filter(|record| seen.insert((record.agent_id.clone(), record.turn_id.clone())))
+        .map(|record| {
+            committed_input_payload_tx(
+                tx,
+                "turn_records",
+                "turn_id",
+                &record.turn_id,
+                &record.agent_id,
+            )
+        })
+        .collect::<Result<_>>()?;
+    seen.clear();
+    effects.tool_executions = effects
+        .tool_executions
+        .iter()
+        .filter(|record| seen.insert((record.agent_id.clone(), record.id.clone())))
+        .map(|record| {
+            committed_input_payload_tx(
+                tx,
+                "tool_executions",
+                "evidence_id",
+                &record.id,
+                &record.agent_id,
+            )
+        })
+        .collect::<Result<_>>()?;
+    seen.clear();
+    effects.briefs = effects
+        .briefs
+        .iter()
+        .filter(|record| seen.insert((record.agent_id.clone(), record.id.clone())))
+        .map(|record| {
+            committed_input_payload_tx(tx, "briefs", "evidence_id", &record.id, &record.agent_id)
+        })
+        .collect::<Result<_>>()?;
+    seen.clear();
+    effects.transcript_entries = effects
+        .transcript_entries
+        .iter()
+        .filter(|record| seen.insert((record.agent_id.clone(), record.id.clone())))
+        .map(|record| {
+            committed_input_payload_tx(
+                tx,
+                "transcript_entries",
+                "evidence_id",
+                &record.id,
+                &record.agent_id,
+            )
+        })
+        .collect::<Result<_>>()?;
+    seen.clear();
+    effects.queued_messages = effects
+        .queued_messages
+        .iter()
+        .filter(|record| seen.insert((record.agent_id.clone(), record.id.clone())))
+        .map(|record| {
+            committed_input_payload_tx(tx, "messages", "evidence_id", &record.id, &record.agent_id)
+        })
+        .collect::<Result<_>>()?;
+    Ok(())
+}
+
+pub(super) fn agent_state_tx(tx: &Transaction<'_>, agent_id: &str) -> Result<Option<AgentState>> {
+    super::context_inputs::ContextDurableRead::new(tx, agent_id).owned_state()
 }
 
 fn validate_agent_state_mutation_tx(
@@ -3760,9 +5619,9 @@ fn interrupt_deferred_tool_executions_for_terminal_turn_tx(
     tx: &Transaction<'_>,
     agent_id: &str,
     turn_record: &TurnRecord,
-) -> Result<usize> {
+) -> Result<Vec<ToolExecutionRecord>> {
     let Some(terminal) = turn_record.terminal.as_ref() else {
-        return Ok(0);
+        return Ok(Vec::new());
     };
     let mut statement = tx.prepare(
         "SELECT payload_json
@@ -3784,7 +5643,7 @@ fn interrupt_deferred_tool_executions_for_terminal_turn_tx(
         .filter(|reason| !reason.trim().is_empty())
         .map(ToOwned::to_owned)
         .unwrap_or_else(|| format!("turn_terminal_{:?}", terminal.kind).to_lowercase());
-    let mut interrupted = 0;
+    let mut interrupted = Vec::new();
     for mut record in deferred
         .into_iter()
         .filter(|record| record.status == crate::types::ToolExecutionStatus::Deferred)
@@ -3808,7 +5667,7 @@ fn interrupt_deferred_tool_executions_for_terminal_turn_tx(
             "completion_request_id": completion_request_id,
         });
         insert_tool_evidence_tx(tx, &record)?;
-        interrupted += 1;
+        interrupted.push(record);
     }
     Ok(interrupted)
 }
@@ -4232,7 +6091,12 @@ fn validate_queue_mutation_tx(tx: &Transaction<'_>, mutation: &QueueMutation) ->
         );
     }
     match (mutation, existing.as_ref()) {
-        (QueueMutation::Upsert(_) | QueueMutation::ParkProviderDispatch { .. }, Some(existing)) => {
+        (
+            QueueMutation::Upsert(_)
+            | QueueMutation::SettleWithProviderRecovery { .. }
+            | QueueMutation::ParkProviderDispatch { .. },
+            Some(existing),
+        ) => {
             queue_entry_transition(existing, incoming)?;
         }
         (QueueMutation::CompareAndSet { expected, record }, _)
@@ -4253,6 +6117,7 @@ fn queue_mutation_record(mutation: &QueueMutation) -> &QueueEntryRecord {
     match mutation {
         QueueMutation::Consume(record) | QueueMutation::Upsert(record) => record,
         QueueMutation::CompareAndSet { record, .. }
+        | QueueMutation::SettleWithProviderRecovery { record, .. }
         | QueueMutation::ConsumeSettledTaskResultRecovery { record, .. }
         | QueueMutation::ParkProviderDispatch { record, .. } => record,
     }
@@ -4350,6 +6215,38 @@ fn validate_delivery_queue_admission(
 }
 
 fn validate_queue_operation(command: &QueueTransitionCommand) -> Result<()> {
+    if let QueueMutation::SettleWithProviderRecovery { record, recovery } = &command.mutation {
+        let turn = command
+            .turn_record
+            .as_ref()
+            .context("provider recovery requires source Turn settlement")?;
+        let (turn_id, source_id, kind) =
+            crate::runtime::provider_recovery::continuity_sources(recovery)?
+                .context("provider recovery requires continuity provenance")?;
+        anyhow::ensure!(
+            command.operation == QueueOperation::Settle
+                && record.status == QueueEntryStatus::Processed
+                && record.agent_id == command.agent_id
+                && turn.agent_id == command.agent_id
+                && recovery.agent_id == command.agent_id
+                && recovery.id != record.message_id
+                && command
+                    .message_evidence
+                    .iter()
+                    .any(|message| message == recovery.as_ref())
+                && command.message_evidence.iter().all(|message| {
+                    message.id == record.message_id || message == recovery.as_ref()
+                })
+                && source_id == record.message_id
+                && turn_id == turn.turn_id
+                && turn
+                    .terminal
+                    .as_ref()
+                    .is_some_and(|terminal| terminal.kind == kind),
+            "invalid provider recovery settlement"
+        );
+        return Ok(());
+    }
     if let QueueMutation::ParkProviderDispatch {
         record,
         pause,
@@ -4402,6 +6299,29 @@ fn validate_queue_operation(command: &QueueTransitionCommand) -> Result<()> {
             bail!("invalid settled task-result recovery queue consumption");
         }
         return Ok(());
+    }
+    if let QueueMutation::CompareAndSet { expected, record } = &command.mutation {
+        if matches!(
+            expected.status,
+            QueueEntryStatus::Queued | QueueEntryStatus::Interrupted
+        ) && record.status == QueueEntryStatus::Interrupted
+        {
+            anyhow::ensure!(
+                command.operation == QueueOperation::Settle
+                    && command.agent_state.is_none()
+                    && command.turn_record.is_none()
+                    && command.scheduler_claim_work_item.is_none()
+                    && command.transcript_entries.is_empty()
+                    && command.brief_evidence.is_empty()
+                    && record.message_id == expected.message_id
+                    && record.agent_id == expected.agent_id
+                    && record.agent_id == command.agent_id
+                    && record.priority == expected.priority
+                    && record.created_at == expected.created_at,
+                "unclaimed input interruption must preserve its source without a claim or Turn"
+            );
+            return Ok(());
+        }
     }
     let valid = matches!(
         (&command.operation, &command.mutation),
@@ -4695,6 +6615,10 @@ mod tests {
     fn queue_transition_indexes_new_message_evidence_once() -> Result<()> {
         let (_dir, db) = runtime_db()?;
         let now = Utc::now();
+        let mut input = message("message-index-queue");
+        input
+            .source_refs
+            .insert("origin".into(), "trusted-origin:fixed".into());
         let command = QueueTransitionCommand {
             agent_id: "agent-a".into(),
             operation: QueueOperation::Admit,
@@ -4708,7 +6632,7 @@ mod tests {
             }),
             scheduler_claim_work_item: None,
             agent_state: None,
-            message_evidence: vec![message("message-index-queue")],
+            message_evidence: vec![input],
             transcript_entries: Vec::new(),
             turn_record: None,
             audit_events: Vec::new(),
@@ -4720,12 +6644,23 @@ mod tests {
         let first = db.transitions().commit_queue(&command)?;
         assert!(first.applied);
         assert!(first.effects.notify_memory_index);
+        let stored = db
+            .messages()
+            .by_id(Some("agent-a"), "message-index-queue")?
+            .unwrap();
+        assert!(command.message_evidence[0].message_seq.is_none());
+        assert_eq!(stored.message_seq, Some(1));
+        assert_eq!(first.effects.messages, vec![stored.clone()]);
+        assert_eq!(first.effects.queued_messages, vec![stored]);
         let rows = db.runtime_index_outbox().read_after("agent-a", 0, 10)?;
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].source_ref, "message:message-index-queue");
         assert_eq!(rows[0].reason.as_deref(), Some("message_written"));
 
-        assert!(!db.transitions().commit_queue(&command)?.applied);
+        let replay = db.transitions().commit_queue(&command)?;
+        assert!(!replay.applied);
+        assert!(replay.effects.messages.is_empty());
+        assert!(replay.effects.queued_messages.is_empty());
         assert_eq!(
             db.runtime_index_outbox()
                 .read_after("agent-a", 0, 10)?
@@ -4772,6 +6707,11 @@ mod tests {
                 let commit = db.transitions().commit_task(&command)?;
                 assert!(commit.applied);
                 assert!(commit.effects.notify_memory_index);
+                assert_eq!(
+                    commit.effects.messages,
+                    vec![db.messages().by_id(Some("agent-a"), &message.id)?.unwrap()]
+                );
+                assert_eq!(commit.effects.messages[0].message_seq, Some(1));
                 assert_eq!(
                     db.runtime_index_outbox()
                         .read_after("agent-a", 0, 10)?
@@ -5389,7 +7329,8 @@ mod tests {
         brief.work_item_id = Some(record.id.clone());
         let event = crate::types::brief_created_event_for(&brief)?;
 
-        db.transitions()
+        let commit = db
+            .transitions()
             .commit_work_item(&WorkItemTransitionCommand {
                 agent_id: "agent-a".into(),
                 mutation: WorkItemMutation::Insert {
@@ -5407,6 +7348,8 @@ mod tests {
             .evidence()
             .brief_by_id("agent-a", &brief.id)?
             .expect("brief evidence stored");
+        assert_eq!(commit.effects.briefs, vec![stored.clone()]);
+        assert!(brief.created_event_seq.is_none());
         let linkage = stored.created_event_seq.expect("brief linked to event");
         let events = db.audit_events().recent(Some("agent-a"), 10)?;
         let brief_created: Vec<&crate::types::AuditEvent> = events
@@ -5542,7 +7485,7 @@ mod tests {
             let mut initial = AgentState::new("agent-a");
             initial.current_work_item_id = Some(work.id.clone());
             initial.current_turn_work_item_id = Some(work.id.clone());
-            db.agent_states().upsert(&initial)?;
+            db.agent_states().upsert_for_fixture(&initial)?;
             let mut execution = ExecutionProtocolState::empty("agent-a");
             execution.work_items.insert(
                 work.id.clone(),
@@ -5691,7 +7634,7 @@ mod tests {
             db.work_items().insert_new(&second)?;
             let mut initial_state = AgentState::new("agent-a");
             initial_state.current_work_item_id = Some(first.id.clone());
-            db.agent_states().upsert(&initial_state)?;
+            db.agent_states().upsert_for_fixture(&initial_state)?;
             let mut next_state = initial_state.clone();
             next_state.current_work_item_id = Some(second.id.clone());
             let continuation = WorkItemContinuationFrame::new_on_completed(
@@ -5761,7 +7704,7 @@ mod tests {
         );
         db.work_item_continuations().upsert(&frame)?;
         let initial_state = AgentState::new("agent-a");
-        db.agent_states().upsert(&initial_state)?;
+        db.agent_states().upsert_for_fixture(&initial_state)?;
         let mut next_state = initial_state.clone();
         next_state.current_work_item_id = Some(caller.id.clone());
         next_state.current_turn_work_item_id = Some(caller.id.clone());
@@ -5910,7 +7853,7 @@ mod tests {
     fn focus_transition_rejects_stale_active_continuation_topology() -> Result<()> {
         let (_dir, db) = runtime_db()?;
         let initial_state = AgentState::new("agent-a");
-        db.agent_states().upsert(&initial_state)?;
+        db.agent_states().upsert_for_fixture(&initial_state)?;
         let frame = WorkItemContinuationFrame::new_on_completed(
             "agent-a",
             "work-parent",
@@ -5975,7 +7918,7 @@ mod tests {
         db.work_items().insert_new(&active)?;
         let mut initial_state = AgentState::new("agent-a");
         initial_state.current_work_item_id = Some(active.id.clone());
-        db.agent_states().upsert(&initial_state)?;
+        db.agent_states().upsert_for_fixture(&initial_state)?;
         let frame = WorkItemContinuationFrame::new_on_completed(
             "agent-a",
             parent.id.clone(),
@@ -6022,7 +7965,7 @@ mod tests {
         db.work_items().insert_new(&first)?;
         db.work_items().insert_new(&second)?;
         let initial_state = AgentState::new("agent-a");
-        db.agent_states().upsert(&initial_state)?;
+        db.agent_states().upsert_for_fixture(&initial_state)?;
         let command = |target: &WorkItemRecord| {
             let mut next_state = initial_state.clone();
             next_state.current_work_item_id = Some(target.id.clone());
@@ -6131,7 +8074,7 @@ mod tests {
             db.queue_entries().upsert(&queued)?;
             let mut initial_state = AgentState::new("agent-a");
             initial_state.pending = 1;
-            db.agent_states().upsert(&initial_state)?;
+            db.agent_states().upsert_for_fixture(&initial_state)?;
             let mut settled_state = initial_state.clone();
             settled_state.pending = 0;
             let transcript = TranscriptEntry::new(
@@ -6217,32 +8160,37 @@ mod tests {
             settled_queue.status = queue_status;
             settled_queue.updated_at = terminal.completed_at;
 
-            assert!(
-                db.transitions()
-                    .commit_queue_with_execution_protocol(
-                        &QueueTransitionCommand {
-                            agent_id: "agent-a".into(),
-                            operation: QueueOperation::Settle,
-                            mutation: QueueMutation::Upsert(settled_queue),
-                            scheduler_claim_work_item: None,
-                            agent_state: None,
-                            message_evidence: Vec::new(),
-                            transcript_entries: Vec::new(),
-                            turn_record: Some(turn),
-                            audit_events: Vec::new(),
-                            notify_scheduler: false,
-                            fault: None,
-                            brief_evidence: Vec::new(),
-                        },
-                        &ExecutionProtocolTransition::default(),
-                    )?
-                    .applied
-            );
+            let commit = db.transitions().commit_queue_with_execution_protocol(
+                &QueueTransitionCommand {
+                    agent_id: "agent-a".into(),
+                    operation: QueueOperation::Settle,
+                    mutation: QueueMutation::Upsert(settled_queue),
+                    scheduler_claim_work_item: None,
+                    agent_state: None,
+                    message_evidence: Vec::new(),
+                    transcript_entries: Vec::new(),
+                    turn_record: Some(turn),
+                    audit_events: Vec::new(),
+                    notify_scheduler: false,
+                    fault: None,
+                    brief_evidence: Vec::new(),
+                },
+                &ExecutionProtocolTransition::default(),
+            )?;
+            assert!(commit.applied);
 
             let interrupted = db
                 .evidence()
                 .tool_execution_by_id("agent-a", &deferred.id)?
                 .expect("terminal settlement must retain the tool execution");
+            assert_eq!(commit.effects.tool_executions, vec![interrupted.clone()]);
+            assert_eq!(
+                commit.effects.turns,
+                vec![db
+                    .turn_records()
+                    .by_id(Some("agent-a"), &terminal.turn_id)?
+                    .unwrap()]
+            );
             assert_eq!(interrupted.status, ToolExecutionStatus::Interrupted);
             assert_eq!(interrupted.completed_at, Some(terminal.completed_at));
             assert_eq!(interrupted.output["reason"], reason);
@@ -6398,7 +8346,7 @@ mod tests {
         let mut initial_state = AgentState::new("agent-a");
         initial_state.current_work_item_id = Some(open.id.clone());
         initial_state.current_turn_work_item_id = Some(open.id.clone());
-        db.agent_states().upsert(&initial_state)?;
+        db.agent_states().upsert_for_fixture(&initial_state)?;
 
         let queued = QueueEntryRecord {
             message_id: "message-completion-replay".into(),
@@ -6597,7 +8545,8 @@ mod tests {
         ] {
             let (_dir, db) = runtime_db()?;
             let now = Utc::now();
-            db.agent_states().upsert(&AgentState::new("agent-a"))?;
+            db.agent_states()
+                .upsert_for_fixture(&AgentState::new("agent-a"))?;
             db.agent_identities().upsert(&AgentIdentityRecord::new(
                 "agent-a",
                 AgentKind::Named,
@@ -6715,7 +8664,8 @@ mod tests {
     fn queue_claim_wait_resolution_advances_execution_registration() -> Result<()> {
         let (_dir, db) = runtime_db()?;
         let now = Utc::now();
-        db.agent_states().upsert(&AgentState::new("agent-a"))?;
+        db.agent_states()
+            .upsert_for_fixture(&AgentState::new("agent-a"))?;
         db.agent_identities().upsert(&active_agent("agent-a"))?;
         let open = work_item("work-claim-wait");
         db.transitions()
@@ -6819,12 +8769,34 @@ mod tests {
             },
             &ExecutionProtocolTransition::default(),
         )?;
-        db.transitions().commit_queue_with_execution_protocol(
-            &QueueTransitionCommand {
+        let scope = InputEvidenceScope {
+            agent_id: "agent-a".into(),
+            identity_incarnation: 1,
+        };
+        let mut trigger_message = MessageEnvelope::new(
+            "agent-a",
+            crate::types::MessageKind::TaskResult,
+            crate::types::MessageOrigin::Task {
+                task_id: "task-claim-wait".into(),
+            },
+            AuthorityClass::RuntimeInstruction,
+            Priority::Normal,
+            crate::types::MessageBody::Text {
+                text: "task result triggers the registered wait".into(),
+            },
+        );
+        trigger_message.id = "message-claim-trigger".into();
+        trigger_message.task_id = Some("task-claim-wait".into());
+        trigger_message.created_at = now;
+        let trigger_admission = PreparedInputTransition::queue(
+            scope.clone(),
+            "admit-claim-trigger".into(),
+            now,
+            PreparedQueueTransition::new(QueueTransitionCommand {
                 agent_id: "agent-a".into(),
                 operation: QueueOperation::Admit,
                 mutation: QueueMutation::Upsert(QueueEntryRecord {
-                    message_id: "message-claim-trigger".into(),
+                    message_id: trigger_message.id.clone(),
                     agent_id: "agent-a".into(),
                     priority: Priority::Normal,
                     status: QueueEntryStatus::Queued,
@@ -6833,16 +8805,17 @@ mod tests {
                 }),
                 scheduler_claim_work_item: None,
                 agent_state: None,
-                message_evidence: Vec::new(),
+                message_evidence: vec![trigger_message],
                 transcript_entries: Vec::new(),
                 turn_record: None,
                 audit_events: Vec::new(),
                 notify_scheduler: false,
                 fault: None,
                 brief_evidence: Vec::new(),
-            },
-            &ExecutionProtocolTransition::default(),
+            }),
         )?;
+        db.transitions_in_scope(&scope)
+            .commit_prepared_transition(&trigger_admission)?;
         // The claim resolves the triggered wait and unblocks the WorkItem
         // (revision 1 -> 2) without carrying a WorkItem-bound Admit command.
         let mut resolved = triggered.clone();
@@ -6874,26 +8847,29 @@ mod tests {
             fault: None,
             brief_evidence: Vec::new(),
         };
-        db.transitions()
-            .commit_queue_with_execution_protocol_and_wait_transition(
-                &claim,
-                &ExecutionProtocolTransition::default(),
-                Some(&QueueWaitTransition {
-                    expected: WaitConditionExpectation {
-                        id: triggered.id.clone(),
-                        agent_id: "agent-a".into(),
-                        status: triggered.status.clone(),
-                        updated_at: triggered.updated_at,
-                    },
-                    record: resolved,
-                    work_item: Some(WorkItemMutation::Update {
-                        record: unblocked.clone(),
-                        expected_revision: open.revision,
-                    }),
-                    index_changes: vec![index_change("work_item", &open.id)],
-                }),
-                None,
-            )?;
+        let mut claim = PreparedQueueTransition::new(claim);
+        claim.wait_transition = Some(QueueWaitTransition {
+            expected: WaitConditionExpectation {
+                id: triggered.id.clone(),
+                agent_id: "agent-a".into(),
+                status: triggered.status.clone(),
+                updated_at: triggered.updated_at,
+            },
+            record: resolved,
+            work_item: Some(WorkItemMutation::Update {
+                record: unblocked.clone(),
+                expected_revision: open.revision,
+            }),
+            index_changes: vec![index_change("work_item", &open.id)],
+        });
+        let claim = PreparedInputTransition::queue(
+            scope.clone(),
+            "claim-trigger-with-wait-resolution".into(),
+            now + chrono::Duration::seconds(2),
+            claim,
+        )?;
+        db.transitions_in_scope(&scope)
+            .commit_prepared_transition(&claim)?;
         assert_eq!(
             db.work_items()
                 .latest(&open.id)?
@@ -6962,7 +8938,7 @@ mod tests {
         let mut initial_state = AgentState::new("agent-a");
         initial_state.current_work_item_id = Some(completed_item.id.clone());
         initial_state.current_turn_work_item_id = Some(completed_item.id.clone());
-        db.agent_states().upsert(&initial_state)?;
+        db.agent_states().upsert_for_fixture(&initial_state)?;
         let queued = QueueEntryRecord {
             message_id: "message-completion-cotouch".into(),
             agent_id: "agent-a".into(),
@@ -7184,7 +9160,8 @@ mod tests {
     fn settlement_rejects_preexisting_durable_ahead_drift() -> Result<()> {
         let (dir, db) = runtime_db()?;
         let now = Utc::now();
-        db.agent_states().upsert(&AgentState::new("agent-a"))?;
+        db.agent_states()
+            .upsert_for_fixture(&AgentState::new("agent-a"))?;
         db.agent_identities().upsert(&active_agent("agent-a"))?;
         let open = work_item("work-drift");
         db.transitions()
@@ -7348,7 +9325,8 @@ mod tests {
     #[test]
     fn execution_admission_command_is_idempotent_across_queue_commits() -> Result<()> {
         let (_dir, db) = runtime_db()?;
-        db.agent_states().upsert(&AgentState::new("agent-a"))?;
+        db.agent_states()
+            .upsert_for_fixture(&AgentState::new("agent-a"))?;
         db.agent_identities().upsert(&AgentIdentityRecord::new(
             "agent-a",
             AgentKind::Named,
@@ -7412,7 +9390,8 @@ mod tests {
     #[test]
     fn startup_recovery_settles_open_execution_attempts() -> Result<()> {
         let (_dir, db) = runtime_db()?;
-        db.agent_states().upsert(&AgentState::new("agent-a"))?;
+        db.agent_states()
+            .upsert_for_fixture(&AgentState::new("agent-a"))?;
         db.agent_identities().upsert(&AgentIdentityRecord::new(
             "agent-a",
             AgentKind::Named,
@@ -7576,7 +9555,9 @@ mod tests {
             message_id: "message-execution".into(),
             work_item_id: Some("work-execution".into()),
             rejoin_generation: 1,
-            parent_turn_id: "turn-parent".into(),
+            source: crate::domain::execution_protocol::TaskRejoinSource::ParentTurn {
+                parent_turn_id: "turn-parent".into(),
+            },
             task_status: "completed".into(),
             state:
                 crate::runtime_db::task_result_settlement::TaskResultSettlementState::CallerAdmitted,
@@ -7612,7 +9593,7 @@ mod tests {
                     record.message_id,
                     record.work_item_id,
                     record.rejoin_generation,
-                    record.parent_turn_id,
+                    record.source.parent_turn_id().unwrap(),
                     "caller_admitted",
                     record.activation_id,
                     record.disposition.map(crate::runtime_db::task_result_settlement::TaskResultSettlementDisposition::as_str),
@@ -7634,7 +9615,8 @@ mod tests {
     #[test]
     fn startup_recovery_finalizes_poisoned_interrupted_replay_pair() -> Result<()> {
         let (_dir, db) = runtime_db()?;
-        db.agent_states().upsert(&AgentState::new("agent-a"))?;
+        db.agent_states()
+            .upsert_for_fixture(&AgentState::new("agent-a"))?;
         db.agent_identities().upsert(&active_agent("agent-a"))?;
         let now = Utc::now();
 
@@ -7742,7 +9724,8 @@ mod tests {
     #[test]
     fn startup_recovery_finalizes_completed_replay_pair_as_processed() -> Result<()> {
         let (_dir, db) = runtime_db()?;
-        db.agent_states().upsert(&AgentState::new("agent-a"))?;
+        db.agent_states()
+            .upsert_for_fixture(&AgentState::new("agent-a"))?;
         db.agent_identities().upsert(&active_agent("agent-a"))?;
         let now = Utc::now();
         let admission =
@@ -7820,7 +9803,8 @@ mod tests {
     #[test]
     fn startup_recovery_interrupts_and_quarantines_retained_claim_without_message() -> Result<()> {
         let (_dir, db) = runtime_db()?;
-        db.agent_states().upsert(&AgentState::new("agent-a"))?;
+        db.agent_states()
+            .upsert_for_fixture(&AgentState::new("agent-a"))?;
         db.agent_identities().upsert(&AgentIdentityRecord::new(
             "agent-a",
             AgentKind::Named,
@@ -7948,7 +9932,8 @@ mod tests {
     #[test]
     fn startup_recovery_settles_open_attempts_for_deleting_identities() -> Result<()> {
         let (_dir, db) = runtime_db()?;
-        db.agent_states().upsert(&AgentState::new("agent-a"))?;
+        db.agent_states()
+            .upsert_for_fixture(&AgentState::new("agent-a"))?;
         let mut identity = AgentIdentityRecord::new(
             "agent-a",
             AgentKind::Named,
@@ -8017,7 +10002,8 @@ mod tests {
         // otherwise the pair strands together and the open attempt blocks
         // every later admission for the agent's next incarnation.
         let (_dir, db) = runtime_db()?;
-        db.agent_states().upsert(&AgentState::new("agent-a"))?;
+        db.agent_states()
+            .upsert_for_fixture(&AgentState::new("agent-a"))?;
         let mut identity = AgentIdentityRecord::new(
             "agent-a",
             AgentKind::Named,
@@ -9019,4 +11005,227 @@ mod tests {
         );
         Ok(())
     }
+
+    #[test]
+    fn compound_input_facts_include_actual_sequences_and_brief_linkage() -> Result<()> {
+        for fault in [
+            Some(TransitionFaultPoint::AfterCanonicalWrites),
+            Some(TransitionFaultPoint::AfterAuditWrites),
+            Some(TransitionFaultPoint::BeforeCommit),
+        ] {
+            let (_dir, db) = runtime_db()?;
+            let message = message("message-compound-facts");
+            let mut turn = TurnRecord::new("agent-a", "turn-compound-facts", 1);
+            turn.created_at = message.created_at;
+            turn.input_message_ids = vec![message.id.clone()];
+            let transcript = TranscriptEntry::new(
+                "agent-a",
+                crate::types::TranscriptEntryKind::AssistantRound,
+                Some(1),
+                Some(message.id.clone()),
+                serde_json::json!({"turn_id": turn.turn_id, "text": "result"}),
+            );
+            let mut brief = BriefRecord::new(
+                "agent-a",
+                BriefKind::Result,
+                "compound result",
+                Some(message.id.clone()),
+                None,
+            );
+            brief.turn_id = Some(turn.turn_id.clone());
+            turn.produced_brief_ids = vec![brief.id.clone()];
+            let mut command = QueueTransitionCommand {
+                agent_id: "agent-a".into(),
+                operation: QueueOperation::Admit,
+                mutation: QueueMutation::Upsert(QueueEntryRecord {
+                    message_id: message.id.clone(),
+                    agent_id: "agent-a".into(),
+                    priority: Priority::Normal,
+                    status: QueueEntryStatus::Queued,
+                    created_at: message.created_at,
+                    updated_at: message.created_at,
+                }),
+                scheduler_claim_work_item: None,
+                agent_state: None,
+                message_evidence: vec![message.clone()],
+                transcript_entries: vec![transcript.clone()],
+                turn_record: Some(turn.clone()),
+                audit_events: vec![crate::types::brief_created_event_for(&brief)?],
+                notify_scheduler: false,
+                fault,
+                brief_evidence: vec![brief.clone()],
+            };
+            db.transitions().commit_queue(&command).unwrap_err();
+            assert!(db.messages().by_id(Some("agent-a"), &message.id)?.is_none());
+            assert!(db
+                .transcript_entries()
+                .by_id(Some("agent-a"), &transcript.id)?
+                .is_none());
+            assert!(db
+                .turn_records()
+                .by_id(Some("agent-a"), &turn.turn_id)?
+                .is_none());
+            assert!(db.evidence().brief_by_id("agent-a", &brief.id)?.is_none());
+            assert!(db.audit_events().recent(Some("agent-a"), 10)?.is_empty());
+            command.fault = None;
+            let commit = db.transitions().commit_queue(&command)?;
+            let stored_message = db.messages().by_id(Some("agent-a"), &message.id)?.unwrap();
+            let stored_transcript = db
+                .transcript_entries()
+                .by_id(Some("agent-a"), &transcript.id)?
+                .unwrap();
+            let stored_brief = db.evidence().brief_by_id("agent-a", &brief.id)?.unwrap();
+            assert_eq!(stored_message.message_seq, Some(1));
+            assert_eq!(stored_transcript.transcript_seq, Some(1));
+            assert_eq!(commit.effects.messages, vec![stored_message.clone()]);
+            assert_eq!(commit.effects.queued_messages, vec![stored_message]);
+            assert_eq!(commit.effects.transcript_entries, vec![stored_transcript]);
+            assert_eq!(
+                commit.effects.turns,
+                vec![db
+                    .turn_records()
+                    .by_id(Some("agent-a"), &turn.turn_id)?
+                    .unwrap()]
+            );
+            assert_eq!(commit.effects.briefs, vec![stored_brief.clone()]);
+            assert_eq!(
+                stored_brief.created_event_seq,
+                Some(commit.effects.audit_events[0].event_seq)
+            );
+            assert!(message.message_seq.is_none());
+            assert!(transcript.transcript_seq.is_none());
+            assert!(brief.created_event_seq.is_none());
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn committed_turn_fact_is_sql_retained_version_not_older_command() -> Result<()> {
+        let (_dir, db) = runtime_db()?;
+        let mut stored_turn = TurnRecord::new("agent-a", "turn-retained-fact", 1);
+        let terminal = TurnTerminalSummary {
+            kind: TurnTerminalKind::Interrupted,
+            reason: Some("newer durable result".into()),
+            no_brief_reason: Some(TurnNoBriefReason::Interrupted),
+            completed_at: stored_turn.created_at + chrono::Duration::seconds(2),
+            duration_ms: 2000,
+        };
+        stored_turn.terminal = Some(terminal.clone());
+        db.turn_records().upsert(&stored_turn)?;
+        let mut older_turn = stored_turn.clone();
+        older_turn.terminal.as_mut().unwrap().completed_at -= chrono::Duration::seconds(1);
+        older_turn.terminal.as_mut().unwrap().reason = Some("older command".into());
+        let now = Utc::now();
+        let commit = db.transitions().commit_queue(&QueueTransitionCommand {
+            agent_id: "agent-a".into(),
+            operation: QueueOperation::Admit,
+            mutation: QueueMutation::Upsert(QueueEntryRecord {
+                message_id: "message-retained-fact".into(),
+                agent_id: "agent-a".into(),
+                priority: Priority::Normal,
+                status: QueueEntryStatus::Queued,
+                created_at: now,
+                updated_at: now,
+            }),
+            scheduler_claim_work_item: None,
+            agent_state: None,
+            message_evidence: Vec::new(),
+            transcript_entries: Vec::new(),
+            turn_record: Some(older_turn),
+            audit_events: Vec::new(),
+            notify_scheduler: false,
+            fault: None,
+            brief_evidence: Vec::new(),
+        })?;
+        assert!(commit.applied);
+        assert_eq!(commit.effects.turns, vec![stored_turn]);
+        assert_eq!(commit.effects.turns[0].terminal, Some(terminal));
+        Ok(())
+    }
+
+    #[test]
+    fn protocol_facts_are_read_from_sql_after_persist_and_rollback_with_command() -> Result<()> {
+        let (_dir, db) = runtime_db()?;
+        db.agent_states()
+            .upsert_for_fixture(&AgentState::new("agent-a"))?;
+        db.agent_identities().upsert(&active_agent("agent-a"))?;
+        // A real SQL trigger distinguishes readback from returning the prepared
+        // reducer value. The timestamp change preserves aggregate invariants.
+        db.connection()?.execute_batch(
+            "CREATE TRIGGER canonical_protocol_timestamp AFTER INSERT ON execution_protocol_attempts
+             BEGIN
+               UPDATE execution_protocol_attempts
+               SET payload_json = json_set(payload_json, '$.admitted_at', '2026-08-01T00:00:01Z')
+               WHERE agent_id = NEW.agent_id AND attempt_id = NEW.attempt_id;
+             END;",
+        )?;
+        let now = Utc::now();
+        let mut command = QueueTransitionCommand {
+            agent_id: "agent-a".into(),
+            operation: QueueOperation::Admit,
+            mutation: QueueMutation::Upsert(QueueEntryRecord {
+                message_id: "message-protocol-facts".into(),
+                agent_id: "agent-a".into(),
+                priority: Priority::Normal,
+                status: QueueEntryStatus::Queued,
+                created_at: now,
+                updated_at: now,
+            }),
+            scheduler_claim_work_item: None,
+            agent_state: None,
+            message_evidence: Vec::new(),
+            transcript_entries: Vec::new(),
+            turn_record: None,
+            audit_events: Vec::new(),
+            notify_scheduler: false,
+            fault: Some(TransitionFaultPoint::BeforeCommit),
+            brief_evidence: Vec::new(),
+        };
+        let protocol = execution_admission(
+            "message-protocol-facts",
+            "attempt-protocol-facts",
+            "work-protocol-facts",
+        );
+        db.transitions()
+            .commit_queue_with_execution_protocol(&command, &protocol)
+            .unwrap_err();
+        assert!(db
+            .transitions()
+            .load_execution_protocol_state_if_initialized("agent-a")?
+            .is_none());
+        assert!(db.queue_entries().latest_all()?.is_empty());
+        let count: i64 = db.connection()?.query_row(
+            "SELECT COUNT(*) FROM execution_protocol_command_results WHERE agent_id = 'agent-a'",
+            [],
+            |row| row.get(0),
+        )?;
+        assert_eq!(count, 0);
+        command.fault = None;
+        let commit = db
+            .transitions()
+            .commit_queue_with_execution_protocol(&command, &protocol)?;
+        let stored = db
+            .transitions()
+            .load_execution_protocol_state_if_initialized("agent-a")?
+            .unwrap();
+        assert_eq!(commit.effects.execution_protocol.as_ref(), Some(&stored));
+        assert_eq!(
+            stored.attempts["attempt-protocol-facts"].admitted_at,
+            "2026-08-01T00:00:01Z"
+        );
+        let ExecutionProtocolCommand::Admit(original) = &protocol.commands[0] else {
+            unreachable!()
+        };
+        assert_eq!(original.attempt.admitted_at, "2026-08-01T00:00:00Z");
+        let replay = db
+            .transitions()
+            .commit_queue_with_execution_protocol(&command, &protocol)?;
+        assert!(!replay.applied);
+        assert!(replay.effects.execution_protocol.is_none());
+        Ok(())
+    }
 }
+
+#[cfg(test)]
+#[path = "transition_wait_footprint_tests.rs"]
+mod wait_footprint_tests;

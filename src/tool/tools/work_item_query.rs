@@ -105,20 +105,45 @@ pub(crate) struct WorkItemQueryContext {
 
 pub(crate) type WorkItemDeliverySummaryMap = BTreeMap<String, DeliverySummaryRecord>;
 
+pub(crate) fn query_context_from_work_items(
+    state: &crate::types::AgentState,
+    items: &[crate::work_item_scheduling::WorkItemSchedulingProjection],
+) -> WorkItemQueryContext {
+    WorkItemQueryContext {
+        current_work_item_id: state.current_work_item_id.as_ref().and_then(|id| {
+            items
+                .iter()
+                .find(|item| {
+                    item.work_item.id == *id && item.work_item.state == WorkItemState::Open
+                })
+                .map(|item| item.work_item.id.clone())
+        }),
+        bound_work_item_id: state.current_turn_work_item_id.clone(),
+    }
+}
+
 pub(crate) async fn query_context(runtime: &RuntimeHandle) -> Result<WorkItemQueryContext> {
-    let state = runtime.agent_state().await?;
-    let current_work_item_id = match state.current_work_item_id.as_deref() {
-        Some(current_id) => runtime
-            .latest_work_item(current_id)
-            .await?
-            .filter(|record| record.state == WorkItemState::Open)
-            .map(|record| record.id),
-        None => None,
-    };
-    Ok(WorkItemQueryContext {
-        current_work_item_id,
-        bound_work_item_id: state.current_turn_work_item_id,
-    })
+    let snapshot = runtime.capture_work_query_snapshot().await?;
+    Ok(query_context_from_work_items(
+        &snapshot.state,
+        &snapshot.items,
+    ))
+}
+
+/// Preserve the existing Get/by-ID fallback for records outside the ordinary window.
+pub(crate) fn projection_outside_query_window(
+    context: &WorkItemQueryContext,
+    record: &WorkItemRecord,
+) -> WorkItemSchedulingProjection {
+    crate::work_item_scheduling::derive_work_item_scheduling(
+        crate::work_item_scheduling::WorkItemSchedulingFacts {
+            work_item: record,
+            is_current: context.current_work_item_id.as_deref() == Some(record.id.as_str()),
+            is_yielded: false,
+            active_wait_conditions: &[],
+            trigger_delivery_by_id: &BTreeMap::new(),
+        },
+    )
 }
 
 pub(crate) async fn view_for_record(
@@ -129,27 +154,23 @@ pub(crate) async fn view_for_record(
     delivery_summaries: Option<&WorkItemDeliverySummaryMap>,
     projection: Option<WorkItemSchedulingProjection>,
 ) -> Result<WorkItemView> {
-    let projection = match projection {
-        Some(projection) => projection,
-        None => runtime
-            .storage()
-            .work_queue_read_model()?
-            .items
-            .into_iter()
-            .find(|item| item.work_item.id == record.id)
-            .unwrap_or_else(|| {
-                crate::work_item_scheduling::derive_work_item_scheduling(
-                    crate::work_item_scheduling::WorkItemSchedulingFacts {
-                        work_item: &record,
-                        is_current: context.current_work_item_id.as_deref()
-                            == Some(record.id.as_str()),
-                        is_yielded: false,
-                        active_wait_conditions: &[],
-                        trigger_delivery_by_id: &BTreeMap::new(),
-                    },
-                )
-            }),
+    // Mutation result views use the same ordinary resident policy. Get supplies
+    // its captured projection, including the explicit by-ID historical fallback.
+    let snapshot = if projection.is_none() {
+        Some(runtime.capture_work_query_snapshot().await?)
+    } else {
+        None
     };
+    let projection = projection.unwrap_or_else(|| {
+        snapshot
+            .as_ref()
+            .expect("captured query")
+            .items
+            .iter()
+            .find(|item| item.work_item.id == record.id)
+            .cloned()
+            .unwrap_or_else(|| projection_outside_query_window(context, &record))
+    });
     let record = record;
     let (plan_artifact, plan_artifact_status, plan_diagnostic) =
         match crate::work_item_plan::query_plan_artifact(runtime.agent_home().as_path(), &record) {

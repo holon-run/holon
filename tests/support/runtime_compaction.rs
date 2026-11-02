@@ -73,6 +73,7 @@ pub async fn preview_prompt_after_compaction_keeps_work_item_plan_and_pending_wo
     )?;
     let runtime = host.default_runtime().await?;
 
+    runtime.control(ControlAction::Stop).await?;
     let active = test_work_item(
         &runtime,
         "Stabilize long-running compaction",
@@ -313,13 +314,57 @@ pub async fn task_result_rejoin_after_compaction_preserves_current_work_truth() 
 }
 
 pub async fn contentful_wake_hint_after_compaction_keeps_active_work_truth() -> Result<()> {
+    let first_gate = Arc::new(tokio::sync::Semaphore::new(0));
     let provider = Arc::new(
         RecordingPromptProvider::new(&["first turn complete", "wake follow-up complete"])
-            .with_first_delay(Duration::from_millis(250)),
+            .with_first_gate(first_gate.clone()),
     );
     let host = RuntimeHost::new_with_provider(aggressive_compaction_config(), provider.clone())?;
     let runtime = host.default_runtime().await?;
 
+    runtime.control(ControlAction::Stop).await?;
+    for idx in 0..3 {
+        runtime.storage().append_message(&MessageEnvelope::new(
+            "default",
+            MessageKind::OperatorPrompt,
+            MessageOrigin::Operator {
+                actor_id: None,
+                actor_display_name: None,
+            },
+            AuthorityClass::OperatorInstruction,
+            Priority::Normal,
+            MessageBody::Text {
+                text: format!("wake-history-{idx}: {}", "wake context ".repeat(20)),
+            },
+        ))?;
+    }
+
+    let runtime = host
+        .control_public_agent("default", ControlAction::Start)
+        .await?;
+    runtime
+        .enqueue(MessageEnvelope::new(
+            "default",
+            MessageKind::OperatorPrompt,
+            MessageOrigin::Operator {
+                actor_id: None,
+                actor_display_name: None,
+            },
+            AuthorityClass::OperatorInstruction,
+            Priority::Normal,
+            MessageBody::Text {
+                text: "Do the first turn before the wake hint lands.".into(),
+            },
+        ))
+        .await?;
+
+    wait_until_async(|| {
+        let provider = provider.clone();
+        async move { Ok(provider.captured_requests().await.len() >= 1) }
+    })
+    .await?;
+
+    // Create runnable work only after the first real operator request is held.
     let active = test_work_item(
         &runtime,
         "Keep active compaction work in focus",
@@ -349,44 +394,6 @@ pub async fn contentful_wake_hint_after_compaction_keeps_active_work_truth() -> 
         None,
     )
     .await?;
-    for idx in 0..3 {
-        runtime.storage().append_message(&MessageEnvelope::new(
-            "default",
-            MessageKind::OperatorPrompt,
-            MessageOrigin::Operator {
-                actor_id: None,
-                actor_display_name: None,
-            },
-            AuthorityClass::OperatorInstruction,
-            Priority::Normal,
-            MessageBody::Text {
-                text: format!("wake-history-{idx}: {}", "wake context ".repeat(20)),
-            },
-        ))?;
-    }
-
-    runtime
-        .enqueue(MessageEnvelope::new(
-            "default",
-            MessageKind::OperatorPrompt,
-            MessageOrigin::Operator {
-                actor_id: None,
-                actor_display_name: None,
-            },
-            AuthorityClass::OperatorInstruction,
-            Priority::Normal,
-            MessageBody::Text {
-                text: "Do the first turn before the wake hint lands.".into(),
-            },
-        ))
-        .await?;
-
-    wait_until_async(|| {
-        let provider = provider.clone();
-        async move { Ok(provider.captured_requests().await.len() >= 1) }
-    })
-    .await?;
-
     let disposition = runtime
         .submit_wake_hint(WakeHint {
             agent_id: "default".into(),
@@ -408,15 +415,48 @@ pub async fn contentful_wake_hint_after_compaction_keeps_active_work_truth() -> 
         })
         .await?;
     assert_eq!(disposition, WakeDisposition::Coalesced);
+    first_gate.add_permits(1);
 
-    wait_until_async(|| {
+    let wake_wait = wait_until_async(|| {
         let provider = provider.clone();
-        async move { Ok(provider.captured_requests().await.len() >= 2) }
+        async move {
+            Ok(provider
+                .captured_requests()
+                .await
+                .iter()
+                .any(|request| request.prompt_text.contains("review_requested")))
+        }
     })
-    .await?;
+    .await;
+    if let Err(error) = wake_wait {
+        let requests = provider.captured_requests().await;
+        anyhow::bail!(
+            "{error}: compaction requests {:?}; recent events {:?}",
+            requests
+                .iter()
+                .take(4)
+                .map(|request| (
+                    request.compression_epoch,
+                    request
+                        .prompt_text
+                        .chars()
+                        .rev()
+                        .take(2000)
+                        .collect::<String>()
+                        .chars()
+                        .rev()
+                        .collect::<String>(),
+                ))
+                .collect::<Vec<_>>(),
+            runtime.storage().read_recent_events(15)?,
+        );
+    }
 
     let requests = provider.captured_requests().await;
-    let wake_follow_up = &requests[1];
+    let wake_follow_up = requests
+        .iter()
+        .find(|request| request.prompt_text.contains("review_requested"))
+        .expect("contentful wake request was observed");
     assert!(wake_follow_up
         .prompt_text
         .contains("Keep active compaction work in focus"));
@@ -436,13 +476,55 @@ pub async fn contentful_wake_hint_after_compaction_keeps_active_work_truth() -> 
 }
 
 pub async fn queued_notification_after_compaction_keeps_queued_work_visible() -> Result<()> {
-    let provider = Arc::new(RecordingPromptProvider::new(&[
-        "first turn complete",
-        "queued follow-up complete",
-    ]));
+    let first_gate = Arc::new(tokio::sync::Semaphore::new(0));
+    let provider = Arc::new(
+        RecordingPromptProvider::new(&["first turn complete", "queued follow-up complete"])
+            .with_first_gate(first_gate.clone()),
+    );
     let host = RuntimeHost::new_with_provider(aggressive_compaction_config(), provider.clone())?;
     let runtime = host.default_runtime().await?;
 
+    runtime.control(ControlAction::Stop).await?;
+    for idx in 0..3 {
+        runtime.storage().append_message(&MessageEnvelope::new(
+            "default",
+            MessageKind::OperatorPrompt,
+            MessageOrigin::Operator {
+                actor_id: None,
+                actor_display_name: None,
+            },
+            AuthorityClass::OperatorInstruction,
+            Priority::Normal,
+            MessageBody::Text {
+                text: format!("queue-history-{idx}: {}", "queued context ".repeat(20)),
+            },
+        ))?;
+    }
+
+    let runtime = host
+        .control_public_agent("default", ControlAction::Start)
+        .await?;
+    runtime
+        .enqueue(MessageEnvelope::new(
+            "default",
+            MessageKind::OperatorPrompt,
+            MessageOrigin::Operator {
+                actor_id: None,
+                actor_display_name: None,
+            },
+            AuthorityClass::OperatorInstruction,
+            Priority::Normal,
+            MessageBody::Text {
+                text: "Wrap up the current turn so queued work can resume.".into(),
+            },
+        ))
+        .await?;
+
+    wait_until_async(|| {
+        let provider = provider.clone();
+        async move { Ok(provider.captured_requests().await.len() == 1) }
+    })
+    .await?;
     let queued = test_work_item(
         &runtime,
         "Resume queued compaction validation",
@@ -464,38 +546,7 @@ pub async fn queued_notification_after_compaction_keeps_queued_work_visible() ->
             None,
         )
         .await?;
-    for idx in 0..3 {
-        runtime.storage().append_message(&MessageEnvelope::new(
-            "default",
-            MessageKind::OperatorPrompt,
-            MessageOrigin::Operator {
-                actor_id: None,
-                actor_display_name: None,
-            },
-            AuthorityClass::OperatorInstruction,
-            Priority::Normal,
-            MessageBody::Text {
-                text: format!("queue-history-{idx}: {}", "queued context ".repeat(20)),
-            },
-        ))?;
-    }
-
-    runtime
-        .enqueue(MessageEnvelope::new(
-            "default",
-            MessageKind::OperatorPrompt,
-            MessageOrigin::Operator {
-                actor_id: None,
-                actor_display_name: None,
-            },
-            AuthorityClass::OperatorInstruction,
-            Priority::Normal,
-            MessageBody::Text {
-                text: "Wrap up the current turn so queued work can resume.".into(),
-            },
-        ))
-        .await?;
-
+    first_gate.add_permits(1);
     wait_until_async(|| {
         let provider = provider.clone();
         async move { Ok(provider.captured_requests().await.len() >= 2) }
@@ -507,9 +558,17 @@ pub async fn queued_notification_after_compaction_keeps_queued_work_visible() ->
     assert!(queued_follow_up
         .prompt_text
         .contains("Resume queued compaction validation"));
-    assert!(queued_follow_up
-        .prompt_text
-        .contains("Queued work item is available"));
+    assert!(
+        queued_follow_up
+            .prompt_text
+            .contains("Queued work item is available"),
+        "captured requests: {:?}",
+        requests
+            .iter()
+            .take(4)
+            .map(|request| (request.compression_epoch, &request.prompt_text))
+            .collect::<Vec<_>>()
+    );
 
     wait_until(|| {
         let agent = runtime.storage().read_agent()?.expect("agent should exist");
@@ -958,7 +1017,7 @@ pub async fn runtime_compaction_multi_pass_recovery_preserves_progress_and_artif
                 let message_id = message_id.clone();
                 async move {
                     let requests = provider.captured_requests().await;
-                    if requests.len() < 2 {
+                    if requests.len() < 5 {
                         return Ok(false);
                     }
                     let turns = runtime.storage().read_recent_turns(10)?;

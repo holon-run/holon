@@ -70,6 +70,11 @@ awaiting caller is cancelled. Checkout budget does not bound SQLite execution
 or change the writer's busy timeout. Recursive checkout, awaiting with a lease,
 or writing while holding a read transaction is prohibited.
 
+Read scopes use the real monotonic clock. Async admission translates the
+remaining allowance once to the executor's clock and shares that deadline
+between permit acquisition and blocking-queue admission; a shifted executor
+clock must not reinterpret an absolute real-clock timestamp as already expired.
+
 Readers use the established opener and protection checks, followed by
 `query_only=ON`. This is an application contract, not an OS read-only boundary.
 Persistent WAL configuration occurs at physical open, not on every checkout.

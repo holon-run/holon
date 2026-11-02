@@ -192,7 +192,7 @@ async fn cooling_replan_case(case: ReplanCase) {
                     is_continuation_input_changed(&latest),
                     matches!(denial, LocalDispatchDenial::InputChanged)
                 );
-                let described = runtime.local_provider_dispatch_error(latest);
+                let described = runtime.local_provider_dispatch_error(latest).await;
                 let descriptor = crate::runtime_error::describe_runtime_error(&described);
                 assert_eq!(descriptor.code, "provider_dispatch_rejected");
                 assert_eq!(
@@ -241,12 +241,8 @@ async fn cooling_replan_case(case: ReplanCase) {
                 }
                 assert_eq!(server.calls.load(Ordering::SeqCst), 0);
                 assert_eq!(admission.episode().unwrap().total_requests, before);
-                let wait = runtime
-                    .agent_summary()
-                    .await
-                    .unwrap()
-                    .provider_cooldown_wait
-                    .unwrap();
+                let summary = runtime.agent_summary().await.unwrap();
+                let wait = summary.provider_cooldown_wait.as_ref().unwrap();
                 assert!(wait.not_before >= cooling_until);
                 assert_eq!(
                     wait.not_before,
@@ -701,9 +697,10 @@ async fn native_tool_round(seconds: u64, action: WaitAction) {
     let summary = runtime.agent_summary().await.unwrap();
     let wait = summary
         .provider_cooldown_wait
+        .as_ref()
         .expect("queryable active wait");
     assert_eq!(
-        wait.model.unwrap().as_string(),
+        wait.model.as_ref().unwrap().as_string(),
         "anthropic@default/claude-sonnet-4-6"
     );
     assert!(wait.not_before > clock.now());
@@ -734,6 +731,13 @@ async fn native_tool_round(seconds: u64, action: WaitAction) {
         "local waiting must not charge or refund requests"
     );
     if action == WaitAction::Stop {
+        let workspace = runtime
+            .agent_state()
+            .await
+            .unwrap()
+            .active_workspace_entry
+            .expect("the native continuation must have a selected workspace");
+        assert!(workspace.occupancy_id.is_none());
         runtime
             .control(crate::types::ControlAction::Stop)
             .await
@@ -746,6 +750,11 @@ async fn native_tool_round(seconds: u64, action: WaitAction) {
             "stop cannot complete as a successful model round"
         );
         assert_eq!(calls.load(Ordering::SeqCst), 1);
+        assert_eq!(
+            runtime.agent_state().await.unwrap().active_workspace_entry,
+            Some(workspace),
+            "Stop must preserve the source of the current resource observation"
+        );
         assert!(runtime
             .agent_summary()
             .await
@@ -753,9 +762,15 @@ async fn native_tool_round(seconds: u64, action: WaitAction) {
             .provider_cooldown_wait
             .is_none());
         let events = runtime.storage().read_recent_events(256).unwrap();
-        assert!(events
+        let ended = events
             .iter()
-            .any(|event| event.data["provider_cooldown_wait_ended"]["outcome"] == "cancelled"));
+            .filter(|event| event.data["provider_cooldown_wait_ended"]["outcome"] == "cancelled")
+            .collect::<Vec<_>>();
+        assert_eq!(ended.len(), 1, "Stop and waiter must share one end event");
+        assert_eq!(
+            ended[0].data["status"],
+            serde_json::to_value(crate::types::AgentStatus::Stopped).unwrap()
+        );
         server.abort();
         return;
     }
@@ -854,7 +869,10 @@ async fn native_tool_round(seconds: u64, action: WaitAction) {
             _ = tokio::time::sleep(std::time::Duration::from_secs(10)) => panic!("extension was not observed"),
         }
         let state = runtime.agent_summary().await.unwrap();
-        assert_eq!(state.provider_cooldown_wait.unwrap().not_before, extended);
+        assert_eq!(
+            state.provider_cooldown_wait.as_ref().unwrap().not_before,
+            extended
+        );
         assert_eq!(calls.load(Ordering::SeqCst), 1);
     }
     if matches!(
