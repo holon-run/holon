@@ -129,6 +129,14 @@ Every status or mutation result identifies:
 - the canonical Web UI URL;
 - runtime health and the most recent failure summary.
 
+The default `daemon status` path is layered the same way: health comes from
+the control-plane readiness probe under one shared, bounded probe budget, and
+the status command never opens the runtime database or scans agent
+directories. `last_failure` covers only the daemon-persisted failure summary,
+with an explicit `failure_diagnostics` scope (`persisted_daemon_only`) and
+availability reason; full failure diagnostics stay on `daemon logs` and agent
+status surfaces.
+
 The public state model is:
 
 - `starting`

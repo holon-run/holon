@@ -23,7 +23,7 @@ use crate::{
     types::{RuntimeFailurePhase, RuntimeFailureSummary},
 };
 
-use super::state::latest_known_runtime_failure;
+use super::state::{latest_known_runtime_failure, read_persisted_daemon_failure};
 use super::{
     cleanup_daemon_state, clear_persisted_daemon_lifecycle_failures, config_fingerprint,
     daemon_log_hint, daemon_paths, load_daemon_desired_running, load_daemon_metadata,
@@ -107,7 +107,9 @@ fn daemon_status_from_probe(
 ) -> Result<DaemonStatusView> {
     let fingerprint = config_fingerprint(config)?;
     let metadata = load_daemon_metadata(config).ok().flatten();
-    let persisted_failure = latest_known_runtime_failure(config).ok().flatten();
+    // Default status never opens the runtime DB; it reports only the
+    // daemon-persisted failure summary with bounded diagnostics.
+    let persisted = read_persisted_daemon_failure(config);
     match probe {
         ProbeRuntime::Running(status) => Ok(DaemonStatusView {
             ok: true,
@@ -133,7 +135,8 @@ fn daemon_status_from_probe(
             config_fingerprint_match: Some(status.config_fingerprint == fingerprint),
             activity: status.activity.clone(),
             tunnel: status.tunnel.clone(),
-            last_failure: merge_latest_failure(status.last_failure.clone(), persisted_failure),
+            last_failure: merge_latest_failure(status.last_failure.clone(), persisted.failure),
+            failure_diagnostics: Some(persisted.diagnostics),
             stale_files: Vec::new(),
             message: if status.healthy {
                 status
@@ -187,7 +190,8 @@ fn daemon_status_from_probe(
                 config_fingerprint_match: None,
                 activity: None,
                 tunnel: None,
-                last_failure: persisted_failure,
+                last_failure: persisted.failure,
+                failure_diagnostics: Some(persisted.diagnostics),
                 stale_files,
                 message,
             })
@@ -218,7 +222,8 @@ fn daemon_status_from_probe(
             config_fingerprint_match: None,
             activity: None,
             tunnel: None,
-            last_failure: persisted_failure,
+            last_failure: persisted.failure,
+            failure_diagnostics: Some(persisted.diagnostics),
             stale_files: stale_files(config),
             message: details.clone(),
         }),
@@ -248,7 +253,8 @@ fn daemon_status_from_probe(
             config_fingerprint_match: None,
             activity: None,
             tunnel: None,
-            last_failure: persisted_failure,
+            last_failure: persisted.failure,
+            failure_diagnostics: Some(persisted.diagnostics),
             stale_files: stale_files(config),
             message: format!(
                 "runtime is running but incompatible with the daemon lifecycle contract: {details}"
@@ -983,6 +989,7 @@ fn stopped_status(config: &AppConfig) -> Result<DaemonStatusView> {
         activity: None,
         tunnel: None,
         last_failure: latest_known_runtime_failure(config)?,
+        failure_diagnostics: None,
         stale_files: stale_files(config),
         message: "runtime is not running".into(),
     })
@@ -1611,6 +1618,14 @@ pub(crate) async fn probe_runtime_with_timeout(
     config: &AppConfig,
     probe_timeout: Duration,
 ) -> ProbeRuntime {
+    // One absolute deadline shared by every probe step: unix readiness, the
+    // metadata identity check, the TCP fallback, and their response reads.
+    // Only the unix readiness probe reports Unresponsive on budget
+    // exhaustion: a socket file is positive evidence of a control surface.
+    // The TCP fallback has no such evidence, so it stays bounded but reports
+    // Stopped; the eventual bind attempt arbitrates the address.
+    let deadline = tokio::time::Instant::now() + probe_timeout;
+    let remaining = || deadline.saturating_duration_since(tokio::time::Instant::now());
     #[cfg(unix)]
     if config.socket_path.exists() {
         if let Ok(metadata) = fs::symlink_metadata(&config.socket_path) {
@@ -1628,13 +1643,15 @@ pub(crate) async fn probe_runtime_with_timeout(
                 }
             }
         };
-        match tokio::time::timeout(probe_timeout, client.runtime_readiness_unix_only()).await {
+        match tokio::time::timeout(remaining(), client.runtime_readiness_unix_only()).await {
             Ok(Ok(status)) => return compatible_runtime(status),
             Ok(Err(err)) => {
                 return match unix_probe_stopped_socket_occupancy(err.root_cause()) {
                     Some(occupied_socket) => {
                         if !occupied_socket {
-                            if let Some(status) = metadata_status_if_pid_alive(config).await {
+                            if let Some(status) =
+                                metadata_status_if_pid_alive(config, deadline).await
+                            {
                                 return compatible_runtime(status);
                             }
                         }
@@ -1647,7 +1664,9 @@ pub(crate) async fn probe_runtime_with_timeout(
             }
             Err(_) => {
                 return ProbeRuntime::Unresponsive {
-                    details: format!("unix readiness probe timed out after {probe_timeout:?}"),
+                    details: format!(
+                        "unix readiness probe timed out after shared probe budget of {probe_timeout:?}"
+                    ),
                 };
             }
         }
@@ -1656,7 +1675,7 @@ pub(crate) async fn probe_runtime_with_timeout(
     // Fallback: when the unix socket is missing but the PID file records a
     // live process, the daemon is still running (the socket may have been
     // removed externally — see https://github.com/holon-run/holon/issues/1448).
-    if let Some(status) = metadata_status_if_pid_alive(config).await {
+    if let Some(status) = metadata_status_if_pid_alive(config, deadline).await {
         return compatible_runtime(status);
     }
 
@@ -1668,15 +1687,22 @@ pub(crate) async fn probe_runtime_with_timeout(
             }
         }
     };
-    match client.runtime_readiness().await {
-        Ok(status) => compatible_runtime(status),
-        Err(_) => ProbeRuntime::Stopped {
+    let remaining_budget = remaining();
+    match tokio::time::timeout(remaining_budget, client.runtime_readiness()).await {
+        Ok(Ok(status)) => compatible_runtime(status),
+        // A TCP endpoint that errors or stays silent within the shared budget
+        // gives no evidence of this runtime; the bind attempt stays the
+        // authoritative arbiter for the address.
+        _ => ProbeRuntime::Stopped {
             occupied_socket: false,
         },
     }
 }
 
-async fn metadata_status_if_pid_alive(config: &AppConfig) -> Option<RuntimeStatusResponse> {
+async fn metadata_status_if_pid_alive(
+    config: &AppConfig,
+    deadline: tokio::time::Instant,
+) -> Option<RuntimeStatusResponse> {
     let Ok(Some(metadata)) = load_daemon_metadata(config) else {
         return None;
     };
@@ -1689,9 +1715,12 @@ async fn metadata_status_if_pid_alive(config: &AppConfig) -> Option<RuntimeStatu
         Ok(client) => client,
         Err(_) => return Some(status_from_metadata(metadata)),
     };
-    if let Ok(status) = client.runtime_readiness().await {
-        if runtime_status_matches_metadata(&status, &metadata) {
-            return Some(status);
+    let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+    if !remaining.is_zero() {
+        if let Ok(Ok(status)) = tokio::time::timeout(remaining, client.runtime_readiness()).await {
+            if runtime_status_matches_metadata(&status, &metadata) {
+                return Some(status);
+            }
         }
     }
     // TCP readiness failed or reached a different runtime; report Running with
