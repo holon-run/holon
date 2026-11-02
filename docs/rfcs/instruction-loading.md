@@ -6,6 +6,7 @@ issue:
   - 64
   - 68
   - 2793
+  - 3889
 ---
 
 # RFC: Instruction Loading
@@ -72,6 +73,33 @@ than these stable instruction roots.
 Workspace `CLAUDE.md` should only be considered when workspace `AGENTS.md` is
 absent. Holon should not treat both as co-equal primary roots.
 
+## Same-File Agent and Workspace Guidance
+
+After selecting and reading all sources, the loader omits workspace guidance
+when its selected file is the same file as agent guidance and both reads contain
+identical text. The agent source and its original display path remain unchanged;
+workspace source becomes absent with status `duplicate_of_agent_scope`. Prompt
+rendering, preview, and summaries consume this same loader decision.
+
+File identity uses equal canonical paths, or on Unix equal device and inode
+metadata (following symlinks). This covers symlink aliases and Unix hard links
+without adding a dependency. Non-Unix hard-link equivalence beyond canonical
+paths is not guaranteed. Identity probing is best-effort: failure to establish
+identity retains both sources without adding context-build errors. Equal text
+alone never merges independent files; differing reads of the same file are
+also retained. This is not an atomic file snapshot or an authorization check.
+
+Selection and read-error behavior are unchanged. A duplicate `AGENTS.md` does
+not trigger `CLAUDE.md` fallback, but an already-selected `CLAUDE.md` pointing to
+the agent file can itself be omitted. Missing agent guidance does not disable
+workspace fallback. User-global guidance is outside this deduplication scope.
+Both files may still be read; the saved cost is duplicate prompt injection.
+
+The new status is an observable wire-enum extension. Existing JSON fields,
+defaults, legacy aliases, and content omission remain unchanged; old strict
+enum clients may need updating to accept the new value. No database migration
+is needed.
+
 ## Hierarchical Loading
 
 Optional hierarchical `AGENTS.md` loading from `workspace_anchor` down to the
@@ -88,6 +116,7 @@ Prompt and debug surfaces should be able to report:
 - `not_found` when a known root does not contain the candidate file
 - `root_unavailable` when the runtime mode has no root for that scope
 - `not_evaluated` when a storage-only summary intentionally avoids file I/O
+- `duplicate_of_agent_scope` when workspace guidance is included in agent scope
 
 Unreadable files and decoding failures are context-build errors. They should
 include the instruction scope and candidate path and must not be silently

@@ -16,7 +16,13 @@ pub fn load_agents_md(
 ) -> Result<LoadedAgentsMd> {
     let (user_global_source, user_global_status) = load_user_global_agents_md(user_home)?;
     let (agent_source, agent_status) = load_agent_agents_md(agent_home)?;
-    let (workspace_source, workspace_status) = load_workspace_agents_md(workspace_anchor)?;
+    let (mut workspace_source, mut workspace_status) = load_workspace_agents_md(workspace_anchor)?;
+    if let (Some(agent), Some(workspace)) = (&agent_source, &workspace_source) {
+        if duplicates_agent_source(agent, workspace) {
+            workspace_source = None;
+            workspace_status = AgentsMdLoadStatus::DuplicateOfAgentScope;
+        }
+    }
     Ok(LoadedAgentsMd {
         user_global_source,
         user_global_status,
@@ -25,6 +31,33 @@ pub fn load_agents_md(
         workspace_source,
         workspace_status,
     })
+}
+
+fn duplicates_agent_source(agent: &AgentsMdSource, workspace: &AgentsMdSource) -> bool {
+    // Different reads of a changing file must keep both versions of the guidance.
+    agent.content == workspace.content && same_instruction_file(&agent.path, &workspace.path)
+}
+
+fn same_instruction_file(agent: &Path, workspace: &Path) -> bool {
+    if let (Ok(agent), Ok(workspace)) = (
+        std::fs::canonicalize(agent),
+        std::fs::canonicalize(workspace),
+    ) {
+        if agent == workspace {
+            return true;
+        }
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+
+        if let (Ok(agent), Ok(workspace)) = (std::fs::metadata(agent), std::fs::metadata(workspace))
+        {
+            return agent.dev() == workspace.dev() && agent.ino() == workspace.ino();
+        }
+    }
+    // Identity probing is best-effort; it must not add context-build failures.
+    false
 }
 
 fn load_user_global_agents_md(
@@ -108,6 +141,172 @@ mod tests {
     use tempfile::tempdir;
 
     use super::*;
+
+    fn assert_workspace_duplicate(loaded: &LoadedAgentsMd, agent_path: &Path) {
+        assert_eq!(loaded.agent_status, AgentsMdLoadStatus::Loaded);
+        assert_eq!(loaded.agent_source.as_ref().unwrap().path, agent_path);
+        assert!(loaded.workspace_source.is_none());
+        assert_eq!(
+            loaded.workspace_status,
+            AgentsMdLoadStatus::DuplicateOfAgentScope
+        );
+        let view = crate::types::LoadedAgentsMdView::from(loaded);
+        assert!(view.workspace_source.is_none());
+        assert_eq!(view.workspace_status, loaded.workspace_status);
+    }
+
+    #[test]
+    fn agent_home_workspace_omits_duplicate_without_claude_fallback() {
+        let home = tempdir().unwrap();
+        let agent_path = home.path().join(AGENTS_MD_FILENAME);
+        std::fs::write(&agent_path, "agent guidance").unwrap();
+        // Deduplication must not reopen fallback selection, even if it would fail.
+        std::fs::create_dir(home.path().join(CLAUDE_MD_FILENAME)).unwrap();
+
+        let loaded = load_agents_md(None, home.path(), Some(home.path())).unwrap();
+
+        assert_workspace_duplicate(&loaded, &agent_path);
+        assert_eq!(loaded.agent_source.unwrap().content, "agent guidance");
+    }
+
+    #[test]
+    fn independent_files_with_equal_text_keep_both_scopes() {
+        let agent = tempdir().unwrap();
+        let workspace = tempdir().unwrap();
+        for root in [agent.path(), workspace.path()] {
+            std::fs::write(root.join(AGENTS_MD_FILENAME), "identical guidance").unwrap();
+        }
+        let loaded = load_agents_md(None, agent.path(), Some(workspace.path())).unwrap();
+
+        assert!(loaded.agent_source.is_some());
+        assert!(loaded.workspace_source.is_some());
+        assert_eq!(loaded.workspace_status, AgentsMdLoadStatus::Loaded);
+    }
+
+    #[test]
+    fn missing_agent_in_shared_root_preserves_workspace_fallback_and_missing_states() {
+        let home = tempdir().unwrap();
+        let missing = load_agents_md(None, home.path(), Some(home.path())).unwrap();
+        assert_eq!(missing.agent_status, AgentsMdLoadStatus::NotFound);
+        assert_eq!(missing.workspace_status, AgentsMdLoadStatus::NotFound);
+
+        std::fs::write(home.path().join(CLAUDE_MD_FILENAME), "fallback guidance").unwrap();
+        let loaded = load_agents_md(None, home.path(), Some(home.path())).unwrap();
+        assert!(loaded.agent_source.is_none());
+        assert_eq!(loaded.agent_status, AgentsMdLoadStatus::NotFound);
+        assert_eq!(loaded.workspace_status, AgentsMdLoadStatus::Loaded);
+        assert_eq!(
+            loaded.workspace_source.unwrap().kind,
+            AgentsMdKind::ClaudeMdFallback
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn symlink_aliases_and_selected_claude_fallback_omit_duplicate() {
+        use std::os::unix::fs::symlink;
+
+        let dir = tempdir().unwrap();
+        let agent = dir.path().join("agent");
+        std::fs::create_dir(&agent).unwrap();
+        let agent_path = agent.join(AGENTS_MD_FILENAME);
+        std::fs::write(&agent_path, "agent guidance").unwrap();
+        let alias = dir.path().join("alias");
+        symlink(&agent, &alias).unwrap();
+        let loaded = load_agents_md(None, &agent, Some(&alias)).unwrap();
+        assert_workspace_duplicate(&loaded, &agent_path);
+        // Keep the original agent display path, not its canonical replacement.
+        let loaded = load_agents_md(None, &alias, Some(&agent)).unwrap();
+        assert_workspace_duplicate(&loaded, &alias.join(AGENTS_MD_FILENAME));
+
+        for filename in [AGENTS_MD_FILENAME, CLAUDE_MD_FILENAME] {
+            let workspace = tempdir().unwrap();
+            symlink(&agent_path, workspace.path().join(filename)).unwrap();
+            let loaded = load_agents_md(None, &agent, Some(workspace.path())).unwrap();
+            assert_workspace_duplicate(&loaded, &agent_path);
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn unix_hard_link_omits_duplicate() {
+        let agent = tempdir().unwrap();
+        let workspace = tempdir().unwrap();
+        let agent_path = agent.path().join(AGENTS_MD_FILENAME);
+        let workspace_path = workspace.path().join(AGENTS_MD_FILENAME);
+        std::fs::write(&agent_path, "agent guidance").unwrap();
+        std::fs::hard_link(&agent_path, &workspace_path).unwrap();
+        assert_ne!(
+            std::fs::canonicalize(&agent_path).unwrap(),
+            std::fs::canonicalize(&workspace_path).unwrap()
+        );
+
+        let loaded = load_agents_md(None, agent.path(), Some(workspace.path())).unwrap();
+        assert_workspace_duplicate(&loaded, &agent_path);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn user_global_alias_is_not_deduplicated() {
+        let user = tempdir().unwrap();
+        let agent = tempdir().unwrap();
+        std::fs::create_dir(user.path().join(".agents")).unwrap();
+        let agent_path = agent.path().join(AGENTS_MD_FILENAME);
+        std::fs::write(&agent_path, "agent guidance").unwrap();
+        std::os::unix::fs::symlink(
+            &agent_path,
+            user.path().join(".agents").join(AGENTS_MD_FILENAME),
+        )
+        .unwrap();
+
+        let loaded = load_agents_md(Some(user.path()), agent.path(), Some(agent.path())).unwrap();
+        assert_workspace_duplicate(&loaded, &agent_path);
+        assert!(loaded.user_global_source.is_some());
+        assert_eq!(loaded.user_global_status, AgentsMdLoadStatus::Loaded);
+    }
+
+    #[test]
+    fn identity_probe_failure_and_differing_reads_do_not_deduplicate() {
+        let home = tempdir().unwrap();
+        let path = home.path().join(AGENTS_MD_FILENAME);
+        std::fs::write(&path, "first version").unwrap();
+        let (agent, _) = load_agent_agents_md(home.path()).unwrap();
+        let agent = agent.unwrap();
+        std::fs::write(&path, "second version").unwrap();
+        let (workspace, _) = load_workspace_agents_md(Some(home.path())).unwrap();
+        let workspace = workspace.unwrap();
+        assert!(same_instruction_file(&agent.path, &workspace.path));
+        assert!(!duplicates_agent_source(&agent, &workspace));
+
+        let mut workspace = workspace;
+        workspace.content = agent.content.clone();
+        std::fs::remove_file(&path).unwrap();
+        assert!(!duplicates_agent_source(&agent, &workspace));
+    }
+
+    #[test]
+    fn same_root_read_errors_keep_scope_and_path() {
+        for invalid_utf8 in [false, true] {
+            let home = tempdir().unwrap();
+            let path = home.path().join(AGENTS_MD_FILENAME);
+            if invalid_utf8 {
+                std::fs::write(&path, [0xff]).unwrap();
+            } else {
+                std::fs::create_dir(&path).unwrap();
+            }
+            let error = load_agents_md(None, home.path(), Some(home.path())).unwrap_err();
+            let message = format!("{error:#}");
+            assert!(message.contains("failed to read agent instruction file"));
+            assert!(message.contains(&path.display().to_string()));
+
+            let agent = tempdir().unwrap();
+            std::fs::write(agent.path().join(AGENTS_MD_FILENAME), "agent guidance").unwrap();
+            let error = load_agents_md(None, agent.path(), Some(home.path())).unwrap_err();
+            let message = format!("{error:#}");
+            assert!(message.contains("failed to read workspace instruction file"));
+            assert!(message.contains(&path.display().to_string()));
+        }
+    }
 
     #[test]
     fn loads_agent_and_workspace_agents_md() {
