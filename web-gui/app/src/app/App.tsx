@@ -141,6 +141,7 @@ export function App() {
   const openTemplate = useRuntimeStore((state) => state.openTemplate);
   const setRightPanelOpen = useRuntimeStore((state) => state.setRightPanelOpen);
   const inspectActivity = useRuntimeStore((state) => state.inspectActivity);
+  const fetchAgentMessageText = useRuntimeStore((state) => state.fetchAgentMessageText);
   const loadAgentToolExecutionDetail = useRuntimeStore((state) => state.loadAgentToolExecutionDetail);
   const showAgentOverview = useRuntimeStore((state) => state.showAgentOverview);
   const retryAgentSync = useRuntimeStore((state) => state.retryAgentSync);
@@ -892,6 +893,9 @@ export function App() {
                         inspectActivity(activeAgentId, activity);
                       }
                     },
+                    onLoadMessageText: (messageId) => activeAgentId !== undefined
+                      ? fetchAgentMessageText(activeAgentId, messageId)
+                      : Promise.resolve(null),
                     onLoadBrief: conversationSession.loadBrief,
                     onLoadDetail: conversationSession.loadDetail,
                     onLoadOlderActivities: conversationSession.loadOlderActivities,

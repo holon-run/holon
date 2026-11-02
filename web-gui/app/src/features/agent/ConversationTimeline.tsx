@@ -55,6 +55,9 @@ export interface ConversationTimelineActions {
   onLoadDetail: (turnId: string) => void;
   onLoadOlderActivities: (turnId: string) => void;
   onRetry: () => void;
+  /** Resolves the full message text for copy actions; the conversation read
+   *  model only carries byte-bounded previews. */
+  onLoadMessageText?: (messageId: string) => Promise<string | null>;
   onInspectActivity?: (activity: AgentTimelineActivity) => void;
   onLoadToolDetail?: (id: string, revision: number) => void;
   toolDetails?: Record<string, ToolExecutionDetailState>;
@@ -456,7 +459,7 @@ const ConversationTurnCard = memo(function ConversationTurnCard({
         </button>
       </TurnBoundaryHeader>
       {operatorInputs.map((input) => (
-        <ConversationInputLine key={input.message_id} input={input} />
+        <ConversationInputLine key={input.message_id} input={input} onLoadMessageText={actions.onLoadMessageText} />
       ))}
       <div className={runtimeResultOnly ? "conversation-process" : "conversation-response"}>
         {expanded && taskInputs.length > 0 ? <div className="conversation-task-summary">
@@ -539,11 +542,38 @@ function InputTimestamp({ timestamp }: { timestamp?: string | null }) {
   );
 }
 
-function ConversationInputLine({ input }: { input: TurnInputSummary }) {
+/** Operator prompt bubble. The copy action mirrors the reply card: it copies
+ *  the displayed text, upgrading to the full message body when the read-model
+ *  preview was byte-truncated. */
+export function ConversationInputLine({ input, onLoadMessageText }: {
+  input: TurnInputSummary;
+  onLoadMessageText?: ConversationTimelineActions["onLoadMessageText"];
+}) {
+  const { t } = useTranslation();
+  const copyText = useCopyText();
+  const [copied, setCopied] = useState(false);
+  const text = parseInputPreview(input.preview);
+  const copyMessage = async () => {
+    let body = text;
+    if (isInputPreviewTruncated(input.preview) && onLoadMessageText) {
+      try { body = (await onLoadMessageText(input.message_id)) ?? text; }
+      catch { /* Keep the bounded preview when the full text is unavailable. */ }
+    }
+    try { setCopied(await copyText(body)); }
+    catch { setCopied(false); }
+  };
   return (
     <div className="conversation-input-line" data-conversation-anchor={`input:${input.message_id}`}>
       <InputSender input={input} />
-      <MarkdownContent text={parseInputPreview(input.preview)} />
+      <MarkdownContent text={text} />
+      {text ? (
+        <div className="conversation-input-actions">
+          <button type="button" aria-label={t(copied ? "agentPage.messageCopied" : "agentPage.copyMessage")}
+            onClick={copyMessage}>
+            {copied ? <Check size={13} /> : <Copy size={13} />}
+          </button>
+        </div>
+      ) : null}
     </div>
   );
 }
@@ -570,6 +600,18 @@ export function parseInputPreview(preview: string): string {
   const truncatedText = parseTruncatedTextBodyPreview(preview);
   if (truncatedText !== undefined) return `${truncatedText}…`;
   return preview;
+}
+
+/** Read-model previews are byte-bounded; a recoverable cut means the
+ *  displayed text is only a prefix of the original message body. */
+export function isInputPreviewTruncated(preview: string): boolean {
+  if (preview.length === 0) return false;
+  try {
+    JSON.parse(preview);
+    return false;
+  } catch {
+    return parseTruncatedTextBodyPreview(preview) !== undefined;
+  }
 }
 
 const serializedTextBodyPrefix = '{"type":"text","text":"';
@@ -703,7 +745,7 @@ function ConversationDetailPanel({
     return (
       <li className="conversation-interjection" key={input.message_id} data-conversation-anchor={`input:${input.message_id}`}>
         {input.task_result ? <TaskResultRow input={input} onInspectActivity={actions.onInspectActivity} /> : source === "operator"
-          ? <ConversationInputLine input={input} />
+          ? <ConversationInputLine input={input} onLoadMessageText={actions.onLoadMessageText} />
           : <ConversationEventInput input={input} source={source} onInspectActivity={actions.onInspectActivity} />}
       </li>
     );

@@ -13,10 +13,10 @@ import type {
 } from "@holon/conversation-sdk";
 
 import "../../i18n";
+import { ConversationSyncStatus, ConversationTimeline, TaskResultRow, executionProcessActivities, isInputPreviewTruncated, parseInputPreview, summarizeActivity, conversationActivityToInspectorActivity } from "./ConversationTimeline";
 import { taskResultFailureReason, taskResultPreview } from "../../runtime/conversation-input";
 import taskResultInputs from "../../../../../tests/fixtures/client-wire/task-result-inputs.json";
 import { decodeTurnInputSummary } from "@holon/conversation-sdk";
-import { ConversationSyncStatus, ConversationTimeline, TaskResultRow, executionProcessActivities, parseInputPreview, summarizeActivity, conversationActivityToInspectorActivity } from "./ConversationTimeline";
 import { buildConversationSessionModel } from "../../runtime/conversation-view-model";
 
 function renderToStaticMarkup(node: ReactNode): string {
@@ -213,6 +213,7 @@ describe("ConversationTimeline", () => {
       }),
     ]);
     expect(html).toContain("帮我检查发布");
+    expect(html).toContain('aria-label="Copy message"');
     expect(html).toContain("这是结果内容 markdown");
     expect(html).toContain('aria-label="Conversation turn 2"');
     expect(html).not.toContain("timeline-turn-rail");
@@ -387,6 +388,17 @@ describe("parseInputPreview", () => {
 
     expect(parseInputPreview('{"type":"text","text":"ends with an incomplete escape\\')).toBe("ends with an incomplete escape…");
     expect(parseInputPreview('{"unknown":"shape"')).toBe('{"unknown":"shape"');
+  });
+});
+
+describe("isInputPreviewTruncated", () => {
+  it("flags only byte-truncated serialized text bodies", () => {
+    expect(isInputPreviewTruncated('{"type":"text","text":"hello"}')).toBe(false);
+    expect(isInputPreviewTruncated("plain preview")).toBe(false);
+    expect(isInputPreviewTruncated("")).toBe(false);
+    const text = "y".repeat(3000);
+    const preview = JSON.stringify({ type: "text", text }).slice(0, 2048);
+    expect(isInputPreviewTruncated(preview)).toBe(true);
   });
 });
 
