@@ -5,6 +5,57 @@ unchanged catalog facts are preserved, not newly certified as vendor hard
 limits. An upstream candidate is evidence to review, not permission to change
 an endpoint, region, subscription entitlement, or runtime output policy.
 
+## Incremental review: 2026-11-03
+
+The frozen models.dev payload is
+`dbfacaf2b8140dadc0be5a1354bb4a4284c24d01814e3370865817d727e2d76a`.
+The [official OpenRouter listing](https://openrouter.ai/api/v1/models),
+sampled on November 2 at 20:36 UTC, independently supports these remote
+projection changes:
+
+| OpenRouter model ID | Field | Previous | Current |
+| --- | --- | ---: | ---: |
+| `meta/muse-spark-open` | Provider output ceiling | 131,072 | 943,718 |
+| `qwen/qwen3.8-27b` | Model-level context | 1,000,000 | 1,024,000 |
+
+The existing projection uses the Muse provider ceiling as both its default
+and upper bound; this is not a newly certified omitted-request default.
+Qwen's existing 95% auto-compaction rule gives 972,800 instead of 950,000.
+Model-level and provider-level capacities are not interchangeable.
+
+The new `openrouter/z-ai/glm-5.3-flashx-legal` remote discovery record has
+exact-ID support for context 1,048,576, provider output 131,072, image input,
+tools, reasoning and the `low/high/max` effort set. It adds no static route
+or subscription entitlement. Its advertised video input does not add a
+runtime video capability. OpenRouter's Hermes 3 405B/70B and Venice's Hermes
+3 405B records disappeared from the snapshot; removing those remote records
+does not establish retirement of a reviewed static route.
+
+Two independent official
+[Coding Plan](https://ark.volcengine.com/region:cn-beijing/docs/coding-plan-personal-model-deprecation.md)
+and [Agent Plan](https://ark.volcengine.com/region:cn-beijing/docs/agent-plan-personal-model-deprecation-announcement.md)
+notices were re-read on November 2 at 20:34 UTC. Both retain the final
+MiniMax M3 shutdown time of **November 2, 2026, 14:00 Beijing time
+(06:00 UTC)**, already past at this sample. Remove only
+`volcengine@coding/minimax-m3` and `volcengine@plan/minimax-m3`, and prevent
+old supplemental routes from restoring them. Do not infer ordinary-API,
+Tencent or Go retirement. Keep the separately supported `minimax-latest`
+and `kimi-latest` aliases; their old example mappings alone do not retire
+the aliases. Surviving route metadata and provider defaults stay unchanged.
+
+The Coding notice's raw SHA-256 is
+`6b89ef9880ae40162f809109053e615dd17c705a777ab9ff214808cd7d9afa30`;
+the Agent notice's is
+`805264fec5c9fd73f7b5e91341a48ece7e8c392dc9f46b540f49904c829bfbc2`.
+Both returned HTTP 200. These are affirmative endpoint-specific notices,
+not a conclusion drawn from a missing list entry.
+
+Codex's immutable upstream catalog and normalized DeepSeek pricing/Responses
+documentation are unchanged from the previous sample. Preserve the exact
+OpenRouter Mistral Large 4.0 `none/high` exception and the unresolved native
+version/default limits; generic API changes do not certify Codex or plan
+eligibility.
+
 ## Incremental review: 2026-11-02
 
 The frozen models.dev payload is

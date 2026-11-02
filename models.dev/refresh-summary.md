@@ -54,7 +54,7 @@
 
 ## Route metadata review (offline)
 
-Routes: 656; unknown context: 227; unknown output ceiling: 262.
+Routes: 654; unknown context: 225; unknown output ceiling: 260.
 Runtime output policy is not output capacity. Existing builtin fields are not automatically overwritten.
 
 | Route | Upstream source | Fields requiring review |
@@ -382,7 +382,6 @@ Runtime output policy is not output capacity. Existing builtin fields are not au
 | `volcengine@coding/kimi-k3.1-pro` | Unknown | Unknown | volcengine@coding/kimi-k3.1-pro: Missing capacity is retained as unknown. No exact endpoint upstream capacity evidence is associated; generic API, other region, plan, or protocol limits are not borrowed. Existing known fields and local output policy are preserved, not newly vendor-verified. |
 | `volcengine@coding/kimi-latest` | Unknown | Unknown | volcengine@coding/kimi-latest: Missing capacity is retained as unknown. No exact endpoint upstream capacity evidence is associated; generic API, other region, plan, or protocol limits are not borrowed. Existing known fields and local output policy are preserved, not newly vendor-verified. |
 | `volcengine@coding/minimax-latest` | Unknown | Unknown | volcengine@coding/minimax-latest: Missing capacity is retained as unknown. No exact endpoint upstream capacity evidence is associated; generic API, other region, plan, or protocol limits are not borrowed. Existing known fields and local output policy are preserved, not newly vendor-verified. |
-| `volcengine@coding/minimax-m3` | Unknown | Unknown | volcengine@coding/minimax-m3: Missing capacity is retained as unknown. No exact endpoint upstream capacity evidence is associated; generic API, other region, plan, or protocol limits are not borrowed. Existing known fields and local output policy are preserved, not newly vendor-verified. |
 | `volcengine@default/deepseek-v4-1-flash-260910` | Unknown | Unknown | Native Responses qualification, reasoning/image support and distinct effort levels were independently confirmed. Abbreviated token limits do not certify integer capacities; K3.1 output specifications conflict. Responses cache mechanisms do not establish Anthropic cache_control. |
 | `volcengine@default/deepseek-v4-1-flash-261017` | Unknown | Unknown | Native Responses qualification, reasoning/image support and distinct effort levels were independently confirmed. Abbreviated token limits do not certify integer capacities; K3.1 output specifications conflict. Responses cache mechanisms do not establish Anthropic cache_control. |
 | `volcengine@default/deepseek-v4-1-flash-economy-261017` | Unknown | Unknown | Native Responses qualification, reasoning/image support and distinct effort levels were independently confirmed. Abbreviated token limits do not certify integer capacities; K3.1 output specifications conflict. Responses cache mechanisms do not establish Anthropic cache_control. |
@@ -403,7 +402,6 @@ Runtime output policy is not output capacity. Existing builtin fields are not au
 | `volcengine@plan/kimi-k3.1-pro` | Unknown | Unknown | volcengine@plan/kimi-k3.1-pro: Missing capacity is retained as unknown. No exact endpoint upstream capacity evidence is associated; generic API, other region, plan, or protocol limits are not borrowed. Existing known fields and local output policy are preserved, not newly vendor-verified. |
 | `volcengine@plan/kimi-latest` | Unknown | Unknown | volcengine@plan/kimi-latest: Missing capacity is retained as unknown. No exact endpoint upstream capacity evidence is associated; generic API, other region, plan, or protocol limits are not borrowed. Existing known fields and local output policy are preserved, not newly vendor-verified. |
 | `volcengine@plan/minimax-latest` | Unknown | Unknown | volcengine@plan/minimax-latest: Missing capacity is retained as unknown. No exact endpoint upstream capacity evidence is associated; generic API, other region, plan, or protocol limits are not borrowed. Existing known fields and local output policy are preserved, not newly vendor-verified. |
-| `volcengine@plan/minimax-m3` | Unknown | Unknown | volcengine@plan/minimax-m3: Missing capacity is retained as unknown. No exact endpoint upstream capacity evidence is associated; generic API, other region, plan, or protocol limits are not borrowed. Existing known fields and local output policy are preserved, not newly vendor-verified. |
 | `xai@default/grok-4.3` | Known | Unknown | xai@default/grok-4.3: Missing capacity is retained as unknown. Exact upstream candidate(s) xai/grok-4.3 require endpoint-specific review; no automatic backfill. Existing known fields and local output policy are preserved, not newly vendor-verified. |
 | `xai@default/grok-4.5` | Known | Unknown | xai@default/grok-4.5: Missing capacity is retained as unknown. Exact upstream candidate(s) xai/grok-4.5 require endpoint-specific review; no automatic backfill. Existing known fields and local output policy are preserved, not newly vendor-verified. |
 | `xai@default/grok-imagine-image` | NotApplicable | NotApplicable | xai@default/grok-imagine-image: Images API route; text token context/output ceilings are not the image generation capacity. Existing executable policy is retained, not a capacity assertion. |
@@ -424,8 +422,8 @@ Runtime output policy is not output capacity. Existing builtin fields are not au
 - `stepfun@plan`: 5 checked-in routes; not proof of live subscription support.
 - `tencent-tokenhub@messages`: 49 checked-in routes; not proof of live subscription support.
 - `tencent-tokenhub@responses`: 32 checked-in routes; not proof of live subscription support.
-- `volcengine@coding`: 24 checked-in routes; not proof of live subscription support.
-- `volcengine@plan`: 32 checked-in routes; not proof of live subscription support.
+- `volcengine@coding`: 23 checked-in routes; not proof of live subscription support.
+- `volcengine@plan`: 31 checked-in routes; not proof of live subscription support.
 - `xiaomi@token-plan`: 3 checked-in routes; not proof of live subscription support.
 
 Unassociated plan/Codex provider nodes (not automatically supported):

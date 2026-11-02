@@ -286,7 +286,6 @@ pub(super) fn route_definitions() -> Vec<BuiltInModelRouteDefinition> {
             "doubao-seed-2.1-pro",
             "doubao-seed-2.1-lite",
             "doubao-seed-2.0-mini",
-            "minimax-m3",
             "glm-5.3-flash",
             "deepseek-v4.1-flash",
             "deepseek-v4.1-flash-economy",
@@ -1175,7 +1174,6 @@ pub(super) fn late_entries() -> Vec<BuiltInModelMetadata> {
             ("doubao-seed-2.1-pro", "Doubao Seed 2.1 Pro", false, false),
             ("doubao-seed-2.1-lite", "Doubao Seed 2.1 Lite", false, false),
             ("doubao-seed-2.0-mini", "Doubao Seed 2.0 Mini", false, false),
-            ("minimax-m3", "MiniMax M3", true, true),
             ("glm-5.3-flash", "GLM-5.3 Flash", false, true),
             ("deepseek-v4.1-flash", "DeepSeek V4.1 Flash", true, true),
             (
@@ -1568,7 +1566,6 @@ fn volcengine_reviewed_subscription_models_do_not_imply_default_api_routes() {
         "doubao-seed-2.1-pro",
         "doubao-seed-2.1-lite",
         "doubao-seed-2.0-mini",
-        "minimax-m3",
         "glm-5.3-flash",
         "deepseek-v4.1-flash",
         "kimi-k2.8-preview",
@@ -1657,13 +1654,13 @@ fn subscription_routers_do_not_inherit_underlying_model_capabilities() {
 }
 
 #[test]
-fn volcengine_retired_subscription_ids_preserve_peers_and_future_retirements() {
+fn volcengine_retired_subscription_ids_preserve_peers_and_live_aliases() {
     for catalog in [
         legacy_builtin_catalog().unwrap(),
         BuiltInModelCatalog::new(),
     ] {
         for endpoint in ["coding", "plan"] {
-            for model in ["kimi-k2.6", "kimi-k2.7-code"] {
+            for model in ["kimi-k2.6", "kimi-k2.7-code", "minimax-m3"] {
                 let retired =
                     ModelRouteRef::parse(&format!("volcengine@{endpoint}/{model}")).unwrap();
                 assert!(
@@ -1672,7 +1669,7 @@ fn volcengine_retired_subscription_ids_preserve_peers_and_future_retirements() {
                     retired.as_string()
                 );
             }
-            for model in ["glm-5.2", "kimi-latest", "minimax-m3"] {
+            for model in ["glm-5.2", "kimi-latest", "minimax-latest"] {
                 let route =
                     ModelRouteRef::parse(&format!("volcengine@{endpoint}/{model}")).unwrap();
                 assert!(catalog.get_route(&route).is_some(), "{}", route.as_string());
@@ -1693,6 +1690,10 @@ fn volcengine_retired_subscription_ids_preserve_peers_and_future_retirements() {
             "tencent-tokenhub@default/kimi-k2.7-code",
             "opencode-go@default/kimi-k2.6",
             "opencode-go@default/kimi-k2.7-code",
+            "tencent-tokenhub@default/minimax-m3",
+            "tencent-tokenhub@messages/minimax-m3",
+            "tencent-tokenhub@responses/minimax-m3",
+            "opencode-go@messages/minimax-m3",
         ] {
             assert!(catalog
                 .get_route(&ModelRouteRef::parse(peer).unwrap())

@@ -505,12 +505,15 @@ pub fn generate(
     if let Some(previous) = previous {
         for route in &previous.routes {
             if current_model_refs.contains(&route.model_ref())
-                // Both subscriptions retired K2.6 on 2026-08-18 and K2.7 Code
-                // on 2026-10-28.
+                // Both subscriptions retired K2.6 on 2026-08-18, K2.7 Code
+                // on 2026-10-28, and MiniMax M3 on 2026-11-02.
                 // This does not establish retirement on the ordinary API.
                 && !(route.provider.as_str() == "volcengine"
                     && matches!(route.endpoint.as_str(), "coding" | "plan")
-                    && matches!(route.model.as_str(), "kimi-k2.6" | "kimi-k2.7-code"))
+                    && matches!(
+                        route.model.as_str(),
+                        "kimi-k2.6" | "kimi-k2.7-code" | "minimax-m3"
+                    ))
                 && route_keys.insert(route.as_string())
             {
                 routes.push(route.clone());
@@ -1378,15 +1381,19 @@ mod tests {
     fn retired_volcengine_subscription_routes_do_not_retire_the_api_model() {
         let mut legacy = legacy();
         // Exercise retained routes independently of legacy model promotion.
-        legacy
-            .entries
-            .remove(&ModelRef::parse("volcengine/kimi-k2.7-code").unwrap());
+        for model in ["kimi-k2.7-code", "minimax-m3"] {
+            legacy
+                .entries
+                .remove(&ModelRef::parse(&format!("volcengine/{model}")).unwrap());
+        }
         let parsed: ModelsDevSnapshot = serde_json::from_str(
             r#"{
             "volcengine":{"id":"volcengine","models":{
                 "kimi-k2.6":{"id":"kimi-k2.6","release_date":"2026-10-01",
                     "modalities":{"input":["text"],"output":["text"]}},
                 "kimi-k2.7-code":{"id":"kimi-k2.7-code","release_date":"2026-10-01",
+                    "modalities":{"input":["text"],"output":["text"]}},
+                "minimax-m3":{"id":"minimax-m3","release_date":"2026-10-01",
                     "modalities":{"input":["text"],"output":["text"]}}
             }}
         }"#,
@@ -1400,7 +1407,10 @@ mod tests {
             "volcengine/kimi-k2.7-code",
             "Kimi K2.7 Code",
         ));
-        previous.routes = ["kimi-k2.6", "kimi-k2.7-code"]
+        previous
+            .models
+            .push(supplement_metadata("volcengine/minimax-m3", "MiniMax M3"));
+        previous.routes = ["kimi-k2.6", "kimi-k2.7-code", "minimax-m3"]
             .into_iter()
             .flat_map(|model| {
                 ["default", "coding", "plan"].map(|endpoint| {
@@ -1412,17 +1422,18 @@ mod tests {
             &parsed,
             Some(&previous),
             &legacy,
-            "2026-10-29",
+            "2026-11-03",
             "rev",
             "ver",
         )
         .unwrap();
-        assert_eq!(update.supplement.models.len(), 2);
+        assert_eq!(update.supplement.models.len(), 3);
         assert_eq!(
             update.supplement.routes,
             [
                 ModelRouteRef::parse("volcengine@default/kimi-k2.6").unwrap(),
                 ModelRouteRef::parse("volcengine@default/kimi-k2.7-code").unwrap(),
+                ModelRouteRef::parse("volcengine@default/minimax-m3").unwrap(),
             ]
         );
     }
