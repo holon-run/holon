@@ -1068,7 +1068,7 @@ impl TaskResultSettlementRepository<'_> {
         })
     }
 
-    #[cfg(test)]
+    #[cfg(any(test, feature = "recovery-acceptance"))]
     pub(crate) fn latest_for_message(
         &self,
         message_id: &str,
@@ -1732,7 +1732,7 @@ pub(crate) fn settle_activation_tx(
     .into_count()
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "recovery-acceptance"))]
 fn latest_for_message_connection(
     connection: &rusqlite::Connection,
     message_id: &str,

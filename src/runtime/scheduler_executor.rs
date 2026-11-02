@@ -2152,12 +2152,6 @@ impl<'a> SchedulerDecisionExecutor<'a> {
                 false
             };
             if !charged_replay {
-                #[cfg(feature = "recovery-acceptance")]
-                super::recovery_acceptance::budget_rejected(
-                    self.runtime,
-                    record,
-                    source_message_id,
-                )?;
                 return Ok(false);
             }
         }
@@ -2260,16 +2254,32 @@ impl<'a> SchedulerDecisionExecutor<'a> {
         if matches!(
             &message.origin,
             MessageOrigin::System { subsystem } if subsystem == "task_result_recovery"
-        ) && !super::task_reads::task_result_recovery_deliverable(
-            message,
-            captured_tasks,
-            captured_work,
-            recovered_replies,
-        )? {
-            if super::task_reads::settled_recovery_source(message, captured_tasks)? {
-                return Ok(CanonicalClaimOutcome::ConsumeSettledRecoverySource);
+        ) {
+            let delivery = super::task_reads::task_result_recovery_delivery(
+                message,
+                captured_tasks,
+                captured_work,
+                recovered_replies,
+            )?;
+            if !matches!(
+                delivery,
+                super::task_reads::TaskResultRecoveryDelivery::Deliverable
+            ) {
+                if let super::task_reads::TaskResultRecoveryDelivery::BudgetRejected(_record) =
+                    delivery
+                {
+                    #[cfg(feature = "recovery-acceptance")]
+                    super::recovery_acceptance::budget_rejected(
+                        self.runtime,
+                        _record,
+                        Some(&message.id),
+                    )?;
+                }
+                if super::task_reads::settled_recovery_source(message, captured_tasks)? {
+                    return Ok(CanonicalClaimOutcome::ConsumeSettledRecoverySource);
+                }
+                return Ok(CanonicalClaimOutcome::ReduceOnly);
             }
-            return Ok(CanonicalClaimOutcome::ReduceOnly);
         }
         if crate::wake_contract::agent_message_reply_reference(message).is_some() {
             return Ok(CanonicalClaimOutcome::ReduceOnly);

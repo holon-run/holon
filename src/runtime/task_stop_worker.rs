@@ -408,11 +408,14 @@ impl RuntimeHandle {
             .with_safe_context("task_id", task_id)
         })?;
         let child = self.observe_stop_child_target(qualified)?;
-        drop(first);
-        // Release the parent before acquiring the complete sorted original group.
-        let mut mutation = self
-            .begin_task_stop_with_readonly_child(child.target.as_ref())
-            .await?;
+        let mut mutation = if child.target.is_some() {
+            // Only child coordination needs to release and reacquire the sorted group.
+            drop(first);
+            self.begin_task_stop_with_readonly_child(child.target.as_ref())
+                .await?
+        } else {
+            first
+        };
         mutation.prepare_owner_task_request(&request).await?;
         let selected = mutation.capture_tasks(&request)?;
         let current = selected
@@ -564,6 +567,83 @@ mod initial_tests {
         command_task::CommandTaskHandle, control_cancellation::SharedControlSignal,
     };
     use tokio::sync::{mpsc, oneshot};
+
+    #[tokio::test]
+    async fn command_stop_keeps_owner_ahead_of_a_queued_monitor_update() -> Result<()> {
+        for status in [TaskStatus::Queued, TaskStatus::Running] {
+            let home = tempfile::tempdir()?;
+            let runtime = RuntimeHandle::new(
+                "default",
+                home.path().into(),
+                None::<crate::types::WorkspaceEntry>,
+                String::new(),
+                Arc::new(StubProvider::new("unused")),
+                "default".into(),
+                crate::context::ContextConfig::default(),
+            )?;
+            let at = runtime.now();
+            let task = TaskRecord {
+                id: "task:stop-owner-order".into(),
+                agent_id: "default".into(),
+                kind: TaskKind::CommandTask,
+                status,
+                created_at: at,
+                updated_at: at,
+                parent_message_id: None,
+                work_item_id: None,
+                summary: None,
+                detail: Some(serde_json::json!({"cancel_requested":false})),
+                recovery: None,
+            };
+            runtime
+                .persist_task_transition(&task, "stop_owner_seed")
+                .await?;
+            let (cancel, _) = oneshot::channel();
+            let (force, _) = oneshot::channel();
+            let cancel = SharedControlSignal::new(cancel);
+            let force = SharedControlSignal::new(force);
+            let lease =
+                runtime
+                    .inner
+                    .control_cancellations
+                    .command(&task, cancel.clone(), force.clone());
+            let (input_tx, _) = mpsc::channel(1);
+            let mut handles = runtime.inner.task_handles.lock().await;
+            handles.insert(
+                task.id.clone(),
+                ManagedTaskHandle::Command(CommandTaskHandle {
+                    cancel_tx: Some(cancel),
+                    force_stop_tx: Some(force),
+                    input_tx,
+                    control_lease: Some(lease),
+                }),
+            );
+            let order = std::cell::RefCell::new(Vec::new());
+            let stopping = async {
+                let accepted = runtime
+                    .prepare_task_stop_commit(&task.id, "stop-owner-order".into())
+                    .await?;
+                order.borrow_mut().push("stop-committed");
+                Ok::<_, anyhow::Error>(accepted)
+            };
+            let monitor = async {
+                let _owner = runtime.begin_mutation().await?;
+                order.borrow_mut().push("monitor-acquired");
+                Ok::<_, anyhow::Error>(())
+            };
+            tokio::pin!(stopping, monitor);
+            // Stop holds the owner while waiting for the handle. Register the
+            // monitor behind it without a sleep or a production-only test hook.
+            assert!(futures_util::poll!(&mut stopping).is_pending());
+            assert!(futures_util::poll!(&mut monitor).is_pending());
+            drop(handles);
+            let (stopped, monitored) = tokio::join!(stopping, monitor);
+            assert_eq!(stopped?.original.ack_task.status, TaskStatus::Cancelling);
+            monitored?;
+            assert_eq!(*order.borrow(), ["stop-committed", "monitor-acquired"]);
+        }
+        Ok(())
+    }
 
     #[tokio::test]
     async fn original_initial_worker_claim_prevents_a_sweep_from_completing_before_ack_reply(

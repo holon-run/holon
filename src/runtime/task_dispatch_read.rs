@@ -368,39 +368,55 @@ pub(in crate::runtime) fn dispatch_result_is_invalid(
     Ok(false)
 }
 
-fn result_deliverable(
+fn recovery_budget_rejected(
     tasks: &CapturedTasks,
+    record: &TaskResultSettlementRecord,
+    source: &MessageEnvelope,
+) -> Result<bool> {
+    if record.recovery_paused_at.is_none() {
+        return Ok(false);
+    }
+    let observed = recovery_source_observation(source, tasks)?
+        .paused_replays
+        .get(&record.result_identity)
+        .context("paused Result recovery replay was not prepared")?;
+    anyhow::ensure!(
+        observed.recovery_epoch == record.recovery_epoch,
+        "paused Result recovery observation has a different epoch"
+    );
+    Ok(!observed.root_is_charged
+        || observed.interrupted_anchor.as_deref() != Some(source.id.as_str()))
+}
+
+pub(in crate::runtime) enum TaskResultRecoveryDelivery<'a> {
+    Deliverable,
+    Unavailable,
+    BudgetRejected(&'a TaskResultSettlementRecord),
+}
+
+fn result_delivery<'a>(
+    tasks: &'a CapturedTasks,
     work: &CapturedWork,
     metadata: &TaskResultMetadata,
     recovered_replies: &BTreeSet<String>,
     source: &MessageEnvelope,
-) -> Result<bool> {
+) -> Result<TaskResultRecoveryDelivery<'a>> {
     let record = result_record(tasks, metadata)?;
-    if record.recovery_paused_at.is_some() {
-        let observed = recovery_source_observation(source, tasks)?
-            .paused_replays
-            .get(&record.result_identity)
-            .context("paused Result recovery replay was not prepared")?;
-        anyhow::ensure!(
-            observed.recovery_epoch == record.recovery_epoch,
-            "paused Result recovery observation has a different epoch"
-        );
-        if !observed.root_is_charged
-            || observed.interrupted_anchor.as_deref() != Some(source.id.as_str())
-        {
-            return Ok(false);
-        }
+    if recovery_budget_rejected(tasks, record, source)? {
+        return Ok(TaskResultRecoveryDelivery::BudgetRejected(record));
     }
     let relation = tasks.result_dependency(&metadata.result_identity)?;
     let expected = match &relation.relation {
         TaskResultDependencyRelation::QualifiedCurrent { task } => task,
-        TaskResultDependencyRelation::Invalid { .. } => return Ok(false),
+        TaskResultDependencyRelation::Invalid { .. } => {
+            return Ok(TaskResultRecoveryDelivery::Unavailable)
+        }
     };
     // This header was observed from the actual Result source by the same-view
     // Task loader. It does not grant Message body or mutation authority.
     if metadata.reply_message_id.is_some() && !recovered_replies.contains(&metadata.result_identity)
     {
-        return Ok(false);
+        return Ok(TaskResultRecoveryDelivery::Unavailable);
     }
     let key = TaskKey::new(TaskFamily::Task, &record.task_id);
     let row = tasks
@@ -419,7 +435,7 @@ fn result_deliverable(
             fence.generation == record.rejoin_generation && fence.source == record.source
         }))
     {
-        return Ok(false);
+        return Ok(TaskResultRecoveryDelivery::Unavailable);
     }
     // Preserve the original Active-only/Open-owner filter without cloning Wait
     // or Work bodies into another unobserved owned collection.
@@ -443,10 +459,10 @@ fn result_deliverable(
             && !(wait.kind == WaitConditionKind::Task
                 && wait.trigger_message_id() == Some(source.id.as_str()))
         {
-            return Ok(false);
+            return Ok(TaskResultRecoveryDelivery::Unavailable);
         }
     }
-    Ok(true)
+    Ok(TaskResultRecoveryDelivery::Deliverable)
 }
 
 pub(in crate::runtime) fn recovery_result_candidates<'a>(
@@ -522,6 +538,18 @@ pub(in crate::runtime) fn task_result_recovery_deliverable(
     work: &CapturedWork,
     recovered_replies: &BTreeSet<String>,
 ) -> Result<bool> {
+    Ok(matches!(
+        task_result_recovery_delivery(message, tasks, work, recovered_replies)?,
+        TaskResultRecoveryDelivery::Deliverable
+    ))
+}
+
+pub(in crate::runtime) fn task_result_recovery_delivery<'a>(
+    message: &MessageEnvelope,
+    tasks: &'a CapturedTasks,
+    work: &CapturedWork,
+    recovered_replies: &BTreeSet<String>,
+) -> Result<TaskResultRecoveryDelivery<'a>> {
     anyhow::ensure!(
         tasks.scope == work.scope && tasks.scope.agent_id == message.agent_id,
         "dispatch Task/Work/Message scopes differ"
@@ -533,27 +561,32 @@ pub(in crate::runtime) fn task_result_recovery_deliverable(
     if !super::super::scheduler::runtime_owned_internal_followup(message)
         || message.authority_class != AuthorityClass::RuntimeInstruction
     {
-        return Ok(false);
+        return Ok(TaskResultRecoveryDelivery::Unavailable);
     }
     if let Some(metadata) = exact_recovery_metadata(message, tasks, work)? {
-        return result_deliverable(tasks, work, metadata, recovered_replies, message);
+        return result_delivery(tasks, work, metadata, recovered_replies, message);
     }
     if let Some(owner) = message.source_refs.get("task_result_owner_key") {
         // Original SQL order and LIMIT 8. Full unsettled coverage still contains
         // Open CallerAdmitted rows; only this retry selection filters them.
         let selected = recovery_result_candidates(tasks, message.work_item_id.as_deref())?;
+        let mut rejected = TaskResultRecoveryDelivery::Unavailable;
         for metadata in selected.into_iter().flatten() {
             let row = result_record(tasks, metadata)?;
-            if super::super::task_result_recovery::recovery_owner_key(row) == *owner
-                && result_deliverable(tasks, work, metadata, recovered_replies, message)?
-            {
-                return Ok(true);
+            if super::super::task_result_recovery::recovery_owner_key(row) == *owner {
+                match result_delivery(tasks, work, metadata, recovered_replies, message)? {
+                    TaskResultRecoveryDelivery::Deliverable => {
+                        return Ok(TaskResultRecoveryDelivery::Deliverable)
+                    }
+                    delivery @ TaskResultRecoveryDelivery::BudgetRejected(_) => rejected = delivery,
+                    TaskResultRecoveryDelivery::Unavailable => {}
+                }
             }
         }
-        return Ok(false);
+        return Ok(rejected);
     }
     let Some(source) = message.source_refs.get("task_result_message_id") else {
-        return Ok(false);
+        return Ok(TaskResultRecoveryDelivery::Unavailable);
     };
     for id in &tasks.coverage.unsettled_result_ids {
         let row = tasks.coverage.result_metadata.get(id).ok_or_else(|| {
@@ -563,12 +596,12 @@ pub(in crate::runtime) fn task_result_recovery_deliverable(
             if row.work_item_id != message.work_item_id
                 || message.source_refs.get("task_result_identity") != Some(&row.result_identity)
             {
-                return Ok(false);
+                return Ok(TaskResultRecoveryDelivery::Unavailable);
             }
-            return result_deliverable(tasks, work, row, recovered_replies, message);
+            return result_delivery(tasks, work, row, recovered_replies, message);
         }
     }
-    Ok(false)
+    Ok(TaskResultRecoveryDelivery::Unavailable)
 }
 
 // Only borrowed traversal; no encoded body or temporary node vector exists

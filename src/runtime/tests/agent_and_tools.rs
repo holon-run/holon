@@ -322,7 +322,7 @@ async fn detached_agent_home_guidance_is_deduplicated_in_summary_and_preview() {
         .await
         .unwrap();
     assert_eq!(
-        crate::types::LoadedAgentsMdView::from(&preview.loaded_agents_md),
+        crate::types::LoadedAgentsMdView::from(&*preview.loaded_agents_md),
         *loaded
     );
     assert_eq!(preview.rendered_system_prompt.matches(marker).count(), 1);

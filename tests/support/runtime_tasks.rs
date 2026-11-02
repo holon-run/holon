@@ -192,14 +192,30 @@ impl TaskResultReentryProvider {
         })?;
         let requests = self.requests.lock().await;
         let reentry = &requests[1];
+        let results = runtime
+            .storage()
+            .read_recent_messages(20)?
+            .into_iter()
+            .filter(|message| {
+                message.kind == MessageKind::TaskResult
+                    && message.task_id.as_deref() == Some(task_id)
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            results.len(),
+            1,
+            "the exact task must have one original result"
+        );
         assert!(
             !requests[0].contains(expected),
             "result text must arrive through task-result reentry, not the initial prompt"
         );
         assert!(
             (reentry.contains("[TaskResult]")
-                || reentry.contains("\"delivery_surface\":\"task_rejoin\""))
+                || reentry.contains("\"delivery_surface\":\"task_rejoin\"")
+                || reentry.contains("- result_identity: "))
                 && reentry.contains(task_id)
+                && reentry.contains(&results[0].id)
                 && reentry.contains(expected),
             "exact task result must reach the model: {reentry}"
         );
@@ -249,8 +265,13 @@ impl AgentProvider for TaskResultReentryProvider {
                     _ => None,
                 })
                 .find_map(|text| {
-                    text.split_once("## current_input\n")
-                        .map(|(_, input)| input.split("\n## ").next().unwrap().to_owned())
+                    let (_, input) = text.split_once("## current_input\n")?;
+                    let mut observed = input.split("\n## ").next().unwrap().to_owned();
+                    if let Some((_, pending)) = text.split_once("## pending_task_results\n") {
+                        observed.push_str("\n## pending_task_results\n");
+                        observed.push_str(pending.split("\n## ").next().unwrap());
+                    }
+                    Some(observed)
                 })
                 .expect("the task-result continuation must have a current-input section"),
         );
@@ -2122,6 +2143,55 @@ pub async fn task_output_waits_for_command_task_completion() -> Result<()> {
     assert_eq!(
         runtime.task_status_snapshot(&task.id).await?.status,
         TaskStatus::Completed
+    );
+    Ok(())
+}
+
+pub async fn completed_command_result_reenters_after_original_queue_closes() -> Result<()> {
+    let provider = Arc::new(TaskResultReentryProvider::new(Arc::new(StubProvider::new(
+        "ignored",
+    ))));
+    let host = RuntimeHost::new_with_provider(test_config(), provider.clone())?;
+    let runtime = host.default_runtime().await?;
+    let task = runtime
+        .schedule_command_task(
+            "complete before the exact wait".into(),
+            CommandTaskSpec {
+                cmd: "printf done".into(),
+                workdir: None,
+                shell: Some("sh".into()),
+                login: false,
+                tty: false,
+                yield_time_ms: 10,
+                max_output_tokens: Some(256),
+                accepts_input: false,
+                terminal_reentry: false,
+            },
+            AuthorityClass::OperatorInstruction,
+        )
+        .await?;
+    eventually_for(Duration::from_secs(30), || {
+        let result = runtime
+            .storage()
+            .read_recent_messages(20)?
+            .into_iter()
+            .find(|message| {
+                message.kind == MessageKind::TaskResult
+                    && message.task_id.as_deref() == Some(task.id.as_str())
+            });
+        let entries = runtime.storage().latest_queue_entries()?;
+        Ok(result.is_some_and(|result| {
+            entries.iter().any(|entry| {
+                entry.message_id == result.id
+                    && entry.status == holon::types::QueueEntryStatus::Processed
+            })
+        }))
+    })
+    .await?;
+    provider.observe_result(&runtime, &task.id, "done").await?;
+    assert!(
+        provider.requests.lock().await[1].contains("## pending_task_results\n"),
+        "late exact wait must receive the original result, not only its repair hint"
     );
     Ok(())
 }

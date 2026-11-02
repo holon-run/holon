@@ -97,7 +97,7 @@ async fn assert_original_gate_scanner_claim(original_wait: bool) {
     assert_eq!(latest(runtime, &result.id).recovery_attempts, 0);
     assert!(provider.requests.lock().await.is_empty());
 
-    harness.advance(Duration::from_secs(30)).await;
+    advance_to_result_due(&harness, &result).await;
     if original_wait {
         assert!(!runtime.emit_due_task_result_recovery().await.unwrap());
         assert!(recovery_sources(runtime).is_empty());
@@ -255,7 +255,7 @@ async fn recovery_acceptance_controls_real_first_source_order_without_blocking_e
             false,
             Value::Null,
         );
-        harness.advance(Duration::from_secs(30)).await;
+        advance_to_result_due(&harness, &result).await;
         assert_eq!(
             runtime.emit_due_task_result_recovery().await.unwrap(),
             scanner_first
@@ -342,6 +342,11 @@ async fn recovery_acceptance_sixth_source_uses_real_queue_and_reports_actual_bud
         enqueued["source"]["source_refs"]["task_result_message_id"],
         result.id
     );
+    assert_eq!(
+        enqueued["source"]["source_refs"]["task_result_owner_key"],
+        super::recovery_owner_key(&paused)
+    );
+    assert!(enqueued["source"]["source_refs"].get("wait_id").is_none());
     let RunLoopPoll::Message(scheduled) = SchedulerDecisionExecutor::new(runtime)
         .poll()
         .await
@@ -387,7 +392,7 @@ async fn recovery_acceptance_stale_identity_cannot_hold_or_inject_another_result
     let mut fence = event(runtime, "stale", "target-observed")["fence"].clone();
     fence["result_identity"] = "foreign-result".into();
     control(runtime, &task, "stale", true, true, fence);
-    harness.advance(Duration::from_secs(30)).await;
+    advance_to_result_due(&harness, &result).await;
     assert!(runtime.emit_due_task_result_recovery().await.unwrap());
     assert_eq!(recovery_sources(runtime).len(), 1);
     assert!(!recovery_acceptance::directory(runtime)

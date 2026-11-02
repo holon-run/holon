@@ -827,6 +827,9 @@ jobs:
       - name: Check with local-onnx feature
         run: cargo check --locked --features local-onnx
 
+      - name: Check controlled recovery acceptance feature
+        run: cargo check --locked --features recovery-acceptance
+
       - name: Test decision crates
         run: |
           cargo test --manifest-path crates/decision-core/Cargo.toml --locked

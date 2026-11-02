@@ -98,6 +98,7 @@ runtime_async_tests!(
     task_output_returns_completed_command_task_output,
     task_output_non_blocking_reports_running_command_task,
     task_output_waits_for_command_task_completion,
+    completed_command_result_reenters_after_original_queue_closes,
     task_input_delivers_stdin_to_managed_command_task,
     task_output_times_out_for_long_running_task,
     task_output_prefers_terminal_task_record_over_stale_task_message,

@@ -25,7 +25,8 @@ pub(in crate::runtime) use dispatch::{
     dispatch_plan_material, dispatch_result_is_invalid, dispatch_task_record, dispatch_task_rejoin,
     exact_recovery_metadata, exact_waiter_recovery_replay_wait, exact_waiter_recovery_wait,
     recovery_result_candidates, result_record, scheduler_recovery_source_required,
-    settled_recovery_source, task_result_recovery_deliverable,
+    settled_recovery_source, task_result_recovery_deliverable, task_result_recovery_delivery,
+    TaskResultRecoveryDelivery,
 };
 pub(crate) use dispatch::{
     durable_recovery_source_digest, exact_recovery_source_digest, TaskRecoveryCandidate,
