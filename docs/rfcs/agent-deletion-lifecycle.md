@@ -107,6 +107,14 @@ bounded batch, advances the cursor even when a candidate is ambiguous, and
 yields before continuing. Reopening the runtime resumes after the persisted
 cursor; reaching the end clears it so a later safety sweep starts a new cycle.
 
+Continuation batches use a separate deadline, with at least 200ms of idle time
+after each batch. They do not reset the coordinator's 60-second safety sweep:
+cleanup observations, reminder discovery, trash scans, and idle retirement must
+not run once per residue batch. Deletion admission wakes and persisted retry
+deadlines remain independent of this maintenance pacing.
+Jobs admitted by a continuation batch notify the deletion coordinator immediately;
+they do not wait for the next safety sweep.
+
 The scanner may create a job only for these proven shapes:
 
 1. an `Active` private parent-supervised ephemeral child whose resolved

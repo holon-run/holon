@@ -51,6 +51,12 @@ const DELETION_RETRY_CAP: Duration = Duration::from_secs(30);
 const DELETION_COORDINATOR_ERROR_DELAY: Duration = Duration::from_secs(1);
 pub(crate) const LEGACY_DELETION_REPAIR_BATCH_LIMIT: usize = 16;
 
+/// Minimum spacing between legacy deletion residue drain steps while a scan
+/// pass still has batches. This bounds residue repair to a fixed background
+/// budget; draining through a near-zero sweep reset would re-run every
+/// coordinator duty in a continuous hot loop (#3884).
+const LEGACY_RESIDUE_DRAIN_INTERVAL: Duration = Duration::from_millis(200);
+
 #[derive(Debug, Default)]
 pub(crate) struct LegacyDeletionRepairScanOutcome {
     pub(crate) scanned: usize,
@@ -89,6 +95,7 @@ impl RuntimeHost {
         let mut idle_cursor = None;
         let mut cleanup_cursor = None;
         let mut reminder_cursor = None;
+        let mut residue_drain_at: Option<tokio::time::Instant> = None;
         let mut reminders: Option<tokio::task::JoinHandle<Result<Option<String>>>> = None;
         let mut trash_sweep: Option<tokio::task::JoinHandle<()>> = None;
         loop {
@@ -105,13 +112,7 @@ impl RuntimeHost {
                             Err(error) => { warn!(%error, "deletion startup recovery failed"); sweep.reset_after(DELETION_COORDINATOR_ERROR_DELAY); continue; }
                         }
                     }
-                    match self.scan_legacy_deletion_residue_batch().await {
-                        Ok(outcome) => {
-                            if outcome.created > 0 || outcome.ambiguous > 0 { info!(scanned = outcome.scanned, created = outcome.created, ambiguous = outcome.ambiguous, "legacy deletion scan completed"); }
-                            if outcome.cursor.is_some() { sweep.reset_after(Duration::from_millis(1)); }
-                        },
-                        Err(error) => warn!(%error, "legacy deletion scan failed"),
-                    }
+                    residue_drain_at = self.scan_legacy_deletion_residue_step().await;
                     if trash_sweep.is_none() {
                         let host = self.clone();
                         trash_sweep = Some(tokio::spawn(async move {
@@ -149,6 +150,11 @@ impl RuntimeHost {
                         }
                     }
                     if deletion.is_none() { deletion = Some(self.spawn_deletion_batch()); }
+                }
+                _ = async { tokio::time::sleep_until(residue_drain_at.unwrap()).await }, if residue_drain_at.is_some() => {
+                    // Paced continuation of the legacy residue scan pass; it
+                    // must not reset the shared sweep interval (#3884).
+                    residue_drain_at = self.scan_legacy_deletion_residue_step().await;
                 }
                 _ = self.inner.daemon_deletion_notify.notified(), if startup_recovery_complete => {
                     if deletion.is_none() { deletion = Some(self.spawn_deletion_batch()); }
@@ -282,6 +288,31 @@ impl RuntimeHost {
             .unwrap_or(Duration::ZERO))
     }
 
+    /// Run one legacy deletion residue batch and return the deadline for the
+    /// next paced drain step while the scan pass still has batches. Errors
+    /// defer back to the regular sweep cadence instead of tightening it.
+    async fn scan_legacy_deletion_residue_step(&self) -> Option<tokio::time::Instant> {
+        match self.scan_legacy_deletion_residue_batch().await {
+            Ok(outcome) => {
+                if outcome.created > 0 || outcome.ambiguous > 0 {
+                    info!(
+                        scanned = outcome.scanned,
+                        created = outcome.created,
+                        ambiguous = outcome.ambiguous,
+                        "legacy deletion scan completed"
+                    );
+                }
+                outcome
+                    .cursor
+                    .map(|_| tokio::time::Instant::now() + LEGACY_RESIDUE_DRAIN_INTERVAL)
+            }
+            Err(error) => {
+                warn!(%error, "legacy deletion scan failed");
+                None
+            }
+        }
+    }
+
     pub(crate) async fn scan_legacy_deletion_residue_batch(
         &self,
     ) -> Result<LegacyDeletionRepairScanOutcome> {
@@ -344,6 +375,10 @@ impl RuntimeHost {
                                 identity.agent_id
                             )
                         })?;
+                    if created {
+                        // Admission is durable even if later scan work fails.
+                        self.notify_deletion_coordinator();
+                    }
                     self.cache_agent_identity(&updated_identity)?;
                     outcome.created += usize::from(created);
                 }
@@ -528,6 +563,9 @@ impl RuntimeHost {
                         )
                     {
                         Ok((updated_identity, _, created)) => {
+                            if created {
+                                self.notify_deletion_coordinator();
+                            }
                             self.cache_agent_identity(&updated_identity)?;
                             if created {
                                 self.unload_runtime(&identity.agent_id).await;
