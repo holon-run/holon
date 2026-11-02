@@ -1012,7 +1012,10 @@ impl Fixture {
             .env("HOLON_SOCKET_PATH", self.path("run/control.sock"))
             .env("HOLON_AGENT_ID", AGENT_ID)
             .env("HOLON_DAEMON_START_TIMEOUT_SECS", "60")
-            .env("RUST_LOG", "info,holon::agent_summary=debug")
+            .env(
+                "RUST_LOG",
+                "info,holon::agent_summary=debug,holon::resource_refresh=debug",
+            )
             .envs(self.provider_env.iter().cloned())
             .current_dir(self.home.path())
             .stdin(Stdio::null())

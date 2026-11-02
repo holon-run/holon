@@ -236,6 +236,19 @@ impl Drop for ResourceOwnerWake {
     }
 }
 impl RuntimeHandle {
+    fn trace_resource_refresh(&self, phase: &'static str) {
+        tracing::debug!(
+            target: "holon::resource_refresh",
+            agent_id = self.inner.mutation_owner.agent_id(),
+            owner_epoch = self.inner.mutation_owner.owner_epoch(),
+            phase,
+            initial_done = self.inner.resources.initial_done.load(Ordering::Acquire),
+            retry_owner = self.inner.resources.retry_owner.load(Ordering::Acquire),
+            closed = self.inner.resources.closed.load(Ordering::Acquire),
+            "context resource refresh stage"
+        );
+    }
+
     pub(super) async fn prepare_work_plan_file(
         &self,
         record: &mut WorkItemRecord,
@@ -342,7 +355,9 @@ impl RuntimeHandle {
                     return;
                 }
                 let runtime = RuntimeHandle { inner };
+                runtime.trace_resource_refresh("worker_observation_start");
                 let result = runtime.ensure_context_resources().await;
+                runtime.trace_resource_refresh("worker_observation_returned");
                 let owner_busy = matches!(
                     result.as_ref().err().and_then(
                         |error| error.downcast_ref::<mutation_owner::MutationOwnerError>()
@@ -359,8 +374,10 @@ impl RuntimeHandle {
                 // owner-release wake must run before initial capture proceeds.
                 if !owner_busy {
                     runtime.inner.resources.finish_initial();
+                    runtime.trace_resource_refresh("initial_ready");
                 }
                 let closed = runtime.inner.resources.closed.load(Ordering::Acquire);
+                runtime.trace_resource_refresh("event_wait_start");
                 drop(runtime);
                 if closed {
                     return;
@@ -415,11 +432,13 @@ impl RuntimeHandle {
     pub(super) async fn await_initial_resources(&self) {
         self.start_resource_worker()
             .expect("resource observer startup");
+        self.trace_resource_refresh("initial_wait_start");
         loop {
             let notified = self.inner.resources.initial.notified();
             tokio::pin!(notified);
             notified.as_mut().enable();
             if self.inner.resources.initial_done.load(Ordering::Acquire) {
+                self.trace_resource_refresh("initial_wait_done");
                 return;
             }
             notified.await;
@@ -493,6 +512,7 @@ impl RuntimeHandle {
             }) {
                 // The physical attempt has exited. A plan writer may need SQL,
                 // so neither its refresh lock nor an agent owner can be held.
+                self.trace_resource_refresh("writers_wait_start");
                 tokio::select! {
                     result = self.inner.resources.gate.wait_for_writers() => result?,
                     _ = self.inner.resources.closed() => {
@@ -501,6 +521,7 @@ impl RuntimeHandle {
                         ).into());
                     }
                 }
+                self.trace_resource_refresh("writers_wait_done");
                 continue;
             }
             if source_changes < RESOURCE_SOURCE_CHANGE_REPREPARES
@@ -529,8 +550,12 @@ impl RuntimeHandle {
         }
     }
     async fn reserve_resource_source(&self) -> Result<mutation_owner::MutationReservation> {
+        self.trace_resource_refresh("owner_wait_start");
         tokio::select! {
-            owner = self.inner.mutation_owner.reserve() => Ok(owner?),
+            owner = self.inner.mutation_owner.reserve() => {
+                self.trace_resource_refresh("owner_wait_returned");
+                Ok(owner?)
+            },
             _ = self.inner.resources.closed() => {
                 Err(ResourceObservationError::NotReady(
                     super::resource_observation::ResourceFreshness::Closed
@@ -540,6 +565,7 @@ impl RuntimeHandle {
     }
 
     async fn lock_context_resource_refresh(&self) -> Result<tokio::sync::OwnedMutexGuard<()>> {
+        self.trace_resource_refresh("refresh_lock_wait_start");
         let refresh = tokio::select! {
             guard = self.inner.resources.refresh_lock.clone().lock_owned() => guard,
             _ = self.inner.resources.closed() => {
@@ -548,6 +574,7 @@ impl RuntimeHandle {
                 ).into());
             }
         };
+        self.trace_resource_refresh("refresh_lock_ready");
         anyhow::ensure!(
             !self.inner.resources.closed.load(Ordering::Acquire),
             ResourceObservationError::NotReady(
@@ -565,7 +592,9 @@ impl RuntimeHandle {
         // A cancelled observer/caller cannot detach physical I/O or its budget.
         self.spawn_owned_mutation(async move {
             let _refresh = refresh;
+            runtime.trace_resource_refresh("supervisor_ready");
             let result = runtime.refresh_context_resources_owned().await;
+            runtime.trace_resource_refresh("supervisor_done");
             let _ = send.send(result);
         })?;
         receive
@@ -578,10 +607,12 @@ impl RuntimeHandle {
             #[cfg(test)]
             self.inner.resources.attempts.fetch_add(1, Ordering::AcqRel);
             let runtime = self.clone();
+            self.trace_resource_refresh("blocking_dispatch");
             let result =
                 tokio::task::spawn_blocking(move || runtime.refresh_context_resources_sync())
                     .await
                     .context("resource refresh physical worker failed")?;
+            self.trace_resource_refresh("blocking_returned");
             match result
                 .as_ref()
                 .err()
@@ -594,6 +625,7 @@ impl RuntimeHandle {
                     };
                     // The physical worker has released owner, publication fence
                     // and inventory guards before this actual availability wait.
+                    self.trace_resource_refresh("inventory_wait_start");
                     tokio::select! {
                         available = inventory.write() => drop(available),
                         _ = self.inner.resources.closed() => {
@@ -602,6 +634,7 @@ impl RuntimeHandle {
                             ).into());
                         }
                     }
+                    self.trace_resource_refresh("inventory_wait_done");
                 }
                 Some(ResourceObservationError::InventorySnapshotChanged) if !reordered => {
                     reordered = true;
@@ -745,6 +778,7 @@ impl RuntimeHandle {
         error
     }
     fn refresh_context_resources_sync(&self) -> Result<Arc<ResourceObservation>> {
+        self.trace_resource_refresh("physical_start");
         let resources = &self.inner.resources;
         anyhow::ensure!(
             !resources.closed.load(Ordering::Acquire),
@@ -753,8 +787,10 @@ impl RuntimeHandle {
             )
         );
         resources.retry_owner.store(true, Ordering::Release);
+        self.trace_resource_refresh("source_owner_start");
         let owner = self.inner.mutation_owner.try_reserve()?;
         resources.retry_owner.store(false, Ordering::Release);
+        self.trace_resource_refresh("source_owner_ready");
         let root = self
             .inner
             .mutation_owner
@@ -771,6 +807,7 @@ impl RuntimeHandle {
         };
         // Only the synchronous source capture owns this reservation.
         drop(owner);
+        self.trace_resource_refresh("source_done");
         if let Ok(value) = resources.registry.capture(&source) {
             return Ok(value);
         }
@@ -803,11 +840,13 @@ impl RuntimeHandle {
                     256,
                 )?;
                 // Parser scratch exits before the independent Host skill inventory is retained.
+                self.trace_resource_refresh("templates_start");
                 let agent_templates_catalog = discover_agent_templates_catalog(
                     source.user_home.as_deref(),
                     &source.agent_home,
                 );
                 resource_io::check_active()?;
+                self.trace_resource_refresh("catalogue_start");
                 let host_material = ResourceReadMaterial::host(&self.inner.input_evidence_budget)?;
                 let (mut catalogue, roots) = {
                     let _io = host_material.enter();
@@ -845,6 +884,7 @@ impl RuntimeHandle {
                 )?;
                 skills.agent_templates_catalog = agent_templates_catalog;
                 resource_io::check_active()?;
+                self.trace_resource_refresh("plans_start");
                 let mut plans = std::collections::BTreeMap::new();
                 for plan in &source.plans {
                     resource_io::charge_owned_metadata((plan.work_item_id.len() + 512) as u64, 16)?;
@@ -856,16 +896,23 @@ impl RuntimeHandle {
                     )?;
                     plans.insert(plan.work_item_id.clone(), observed);
                 }
+                self.trace_resource_refresh("guidance_start");
+                let guidance = load_agents_md(
+                    source.user_home.as_deref(),
+                    &source.agent_home,
+                    source.workspace_anchor.as_deref(),
+                )?;
+                self.trace_resource_refresh("memory_start");
+                let memory = load_agent_memory(&source.agent_home)?;
+                self.trace_resource_refresh("notes_start");
+                let notes = crate::notes_catalog::render_agent_home_notes_catalog_checked(
+                    &source.agent_home,
+                )?;
+                self.trace_resource_refresh("body_done");
                 let body = ContextResourceBody {
-                    guidance: load_agents_md(
-                        source.user_home.as_deref(),
-                        &source.agent_home,
-                        source.workspace_anchor.as_deref(),
-                    )?,
-                    memory: load_agent_memory(&source.agent_home)?,
-                    notes: crate::notes_catalog::render_agent_home_notes_catalog_checked(
-                        &source.agent_home,
-                    )?,
+                    guidance,
+                    memory,
+                    notes,
                     skills,
                     plans,
                     _host_catalogue: Some(catalogue.clone()),
@@ -874,12 +921,15 @@ impl RuntimeHandle {
                 Ok(body)
             },
             || {
+                self.trace_resource_refresh("publication_owner_start");
                 resources.retry_owner.store(true, Ordering::Release);
                 let owner = self.inner.mutation_owner.try_reserve()?;
                 resources.retry_owner.store(false, Ordering::Release);
+                self.trace_resource_refresh("publication_owner_ready");
                 Ok(owner)
             },
             |owner, expected| {
+                self.trace_resource_refresh("publication_validate_start");
                 anyhow::ensure!(
                     !resources.closed.load(Ordering::Acquire),
                     ResourceObservationError::SourceChanged
@@ -904,6 +954,7 @@ impl RuntimeHandle {
                     .context("resource catalogue candidate missing")?;
                 *inventory = catalogue.as_ref().clone();
                 drop(inventory);
+                self.trace_resource_refresh("publication_ready");
                 Ok(fence)
             },
         )
