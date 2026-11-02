@@ -9,7 +9,7 @@ use std::{
     sync::Arc,
 };
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use holon::{
     client::{EventStreamRequest, LocalClient},
     config::{AppConfig, ControlAuthMode},
@@ -534,7 +534,8 @@ pub async fn callback_enqueue_rejects_stopped_public_agent_after_restart() -> Re
                 .unwrap_or(false))
         }
     })
-    .await?;
+    .await
+    .context("accepted callback delivery was not recorded before Stop")?;
 
     let runtime = host.default_runtime().await?;
     server.abort();
@@ -546,7 +547,16 @@ pub async fn callback_enqueue_rejects_stopped_public_agent_after_restart() -> Re
             .map(|agent| agent.status == holon::types::AgentStatus::Stopped)
             .unwrap_or(false))
     })
-    .await?;
+    .await
+    .with_context(|| {
+        format!(
+            "Stop did not publish durable Stopped state; observed status: {:?}",
+            runtime
+                .storage()
+                .read_agent()
+                .map(|agent| agent.map(|agent| agent.status))
+        )
+    })?;
     host.shutdown().await?;
     drop(runtime);
     drop(host);
