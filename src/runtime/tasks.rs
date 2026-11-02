@@ -579,11 +579,34 @@ impl RuntimeHandle {
             *recovery_delivery_id = Some(delivery_id);
             *recovery_after_delivery_rowid = Some(after_delivery_rowid);
         }
-        self.apply_task_transition(task_state_reducer::TaskTransition::new(
-            &queued_task,
-            "task_agent_message_wait_admitted",
-        ))
-        .await?;
+        if let Err(error) = self
+            .apply_task_transition(task_state_reducer::TaskTransition::new(
+                &queued_task,
+                "task_agent_message_wait_admitted",
+            ))
+            .await
+        {
+            // A captured fast reply can complete the wait task between the
+            // reducer's latest-record read and its commit transaction, so
+            // admission may collide with an already-terminal record.  First
+            // writer wins: accept the persisted terminal record instead of
+            // failing the invocation with a completed -> queued conflict.
+            let admission_conflict = error.chain().find_map(|cause| {
+                cause
+                    .downcast_ref::<crate::runtime_db::RuntimeStateTransitionConflict>()
+                    .filter(|conflict| {
+                        conflict.domain() == "task" && conflict.record_id() == queued_task.id
+                    })
+            });
+            if admission_conflict.is_some() {
+                if let Ok(Some(latest)) = self.task_record(&queued_task.id).await {
+                    if is_terminal_task_status(&latest.status) {
+                        return Ok(latest);
+                    }
+                }
+            }
+            return Err(error);
+        }
 
         self.inner.notify.notify_one();
         let task_detail = queued_task.detail.clone().unwrap_or(task_detail);

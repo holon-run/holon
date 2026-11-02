@@ -1683,6 +1683,99 @@ mod tests {
         assert_eq!(runtime.recent_events(100).await.unwrap().len(), event_count);
     }
 
+    #[tokio::test]
+    async fn agent_message_wait_admission_conflict_accepts_terminal_first_writer() {
+        let runtime = runtime();
+        let wait_task = task_with_kind(
+            "task-wait-admission-race",
+            TaskStatus::Queued,
+            false,
+            TaskKind::AgentMessageWait,
+        );
+        runtime
+            .persist_task_transition(&wait_task, "task_created")
+            .await
+            .unwrap();
+        // Mirror the production admission payload: runtime_db's binding guard
+        // compares these keys between the terminal record and the admission
+        // snapshot before the terminal-conflict check.
+        let task_detail = json!({
+            "request_delivery_id": "delivery-race",
+            "message_wait_after_delivery_rowid": 7,
+            "business_completion": false,
+        });
+        let mut completed = wait_task.clone();
+        completed.status = TaskStatus::Completed;
+        completed.updated_at += chrono::Duration::seconds(1);
+        completed.detail = Some(task_detail.clone());
+
+        let queued_snapshot = wait_task.clone();
+        let (snapshots, mut observed_snapshots) = tokio::sync::mpsc::unbounded_channel();
+        let (audit_events, _observed_events) = tokio::sync::mpsc::unbounded_channel();
+        let (commits, _observed_commits) = tokio::sync::mpsc::unbounded_channel();
+        *runtime.inner.task_transition_snapshot_pause.lock().unwrap() =
+            Some(Arc::new(TaskTransitionSnapshotPause {
+                task_id: wait_task.id.clone(),
+                snapshots,
+                audit_events,
+                commits,
+            }));
+        let task_id = wait_task.id.clone();
+        let monitor = {
+            let runtime = runtime.runtime.clone();
+            tokio::spawn(async move {
+                runtime
+                    .start_agent_message_wait_monitor(
+                        wait_task,
+                        AuthorityClass::OperatorInstruction,
+                        "target-agent".into(),
+                        "delivery-race".into(),
+                        7,
+                        task_detail,
+                        false,
+                    )
+                    .await
+            })
+        };
+        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(10);
+        let (latest, _, release) = tokio::time::timeout_at(deadline, observed_snapshots.recv())
+            .await
+            .expect("admission must pause after reading the queued record")
+            .unwrap();
+        assert_eq!(latest, Some(queued_snapshot));
+        *runtime.inner.task_transition_snapshot_pause.lock().unwrap() = None;
+        runtime
+            .persist_task_transition(&completed, "task_status_updated")
+            .await
+            .unwrap();
+        assert_eq!(
+            runtime.task_record(&task_id).await.unwrap(),
+            Some(completed.clone())
+        );
+        let event_count = runtime.recent_events(100).await.unwrap().len();
+
+        release.send(()).unwrap();
+        let admitted = tokio::time::timeout_at(deadline, monitor)
+            .await
+            .expect("admission must finish after release")
+            .unwrap()
+            .unwrap();
+        assert_eq!(admitted.status, TaskStatus::Completed);
+        assert_eq!(admitted, completed);
+        assert_eq!(
+            runtime.task_record(&task_id).await.unwrap(),
+            Some(completed)
+        );
+        assert_eq!(runtime.recent_events(100).await.unwrap().len(), event_count);
+        assert!(runtime
+            .inner
+            .task_handles
+            .lock()
+            .await
+            .get(&task_id)
+            .is_none());
+    }
+
     #[test]
     fn active_tasks_do_not_block_from_legacy_wait_policy_payloads() {
         let dir = tempdir().unwrap();
