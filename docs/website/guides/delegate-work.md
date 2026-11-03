@@ -156,7 +156,7 @@ Newly invoked subagents are private, reusable instances retained after their tas
 - **Cleanup inspection:** Calling `GetAgent` on the parent surfaces a bounded `subagent_cleanup` list (up to 16 supervised children) with any blockers.
 - **Blocker checks:** Active execution, unresolved descendant responsibilities, and dirty or shared worktrees block cleanup until settled. Open work items or completed tasks do not block cleanup if the parent decides they are no longer needed.
 - **Delete when done:** Call `DeleteAgent(agent_id, incarnation)` once child artifacts are incorporated and blockers cleared.
-- **Background reminders and retirement:** The daemon can send deduplicated daily reminders to parents with lingering children (`reminders_enabled`). If configured, fully idle child runtimes can cooperatively exit memory (`idle_retirement_enabled`) while preserving durable identity and history on disk.
+- **Background reminders and retirement:** Optional settings can remind parents about lingering children (`reminders_enabled`) and let fully idle child runtimes exit memory (`idle_retirement_enabled`) while preserving their identity and history on disk.
 
 ## Usage Patterns
 

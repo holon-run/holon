@@ -91,7 +91,8 @@ curl --fail --silent --show-error -X POST "$CALLBACK_URL"
 
 The callback URL itself grants the limited callback capability; do not give the
 external sender your control-plane bearer token. A successful HTTP response
-confirms delivery admission, not CI success or WorkItem completion.
+confirms only that the event was accepted, not CI success or WorkItem
+completion.
 
 ## 4. Verify the resumed work
 

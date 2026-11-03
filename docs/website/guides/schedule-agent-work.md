@@ -118,7 +118,7 @@ event-driven updates; for a one-time fallback on an external wait, use
 
 ### Calendar-based schedules
 
-For checks aligned to calendar rules rather than fixed millisecond intervals,
+For checks aligned to calendar rules rather than fixed intervals,
 use a standard five-field cron expression and an IANA timezone:
 
 ```bash

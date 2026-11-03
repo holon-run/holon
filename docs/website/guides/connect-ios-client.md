@@ -82,7 +82,8 @@ runtime rather than left in a local sending queue.
 - **Result-First Timeline:** Conversations display operator requests alongside final Markdown completion briefs. Detailed execution traces and tool outputs collapse into expandable turn rows so you can review deliverables without scrolling through internal logs.
 - **Background Task Visibility:** Ongoing background runs and child-agent invocations appear as compact status cards that reflect current execution state.
 - **Model Selection & Stopping:** Inspect or override the active model route directly from the conversation composer. You can also stop an active run with one tap.
-- **Identity-Bound In-App Browser:** Local App routes and web links open in an identity-bound browser sheet that preserves session authentication without exposing credentials to external apps.
+- **In-App Browser:** Local App routes and web links open inside the app and
+  keep their authenticated session.
 
 ## Native File and Artifact Workflows
 
@@ -137,7 +138,7 @@ report has been moderated.
   address, and the host's listen interface. A physical phone cannot reach your
   computer through the phone's `localhost`.
 - **Unreachable saved host on launch:** If a saved server becomes unreachable,
-  tap **Change address** during the initial restore probe to switch endpoints.
+  tap **Change address** to switch endpoints.
 - **Pairing fails:** Request a fresh invitation. Check its host before redeeming
   it and ensure the phone can reach that host.
 - **Organization login returns without a session:** Retry sign-in and check

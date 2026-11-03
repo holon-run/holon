@@ -85,20 +85,13 @@ revoke a callback for each ordinary wait cycle.
 A timer schedules a future wake; creating it does not pause the current turn.
 If the current work must wait for that timer, the agent records a timer wait.
 Repeating timers remain a scheduling responsibility until cancelled.
-Cancelling an active timer atomically settles any unadmitted waits dependent on
-it with reason `timer_cancelled`, preventing leaked wait registrations while
-leaving the WorkItem explicitly blocked until new action occurs.
+Cancelling an active timer also releases any waits that depended on it. The
+WorkItem stays blocked until a new wait or operator action.
 
-In addition to relative delays and fixed millisecond intervals, timers support
-calendar scheduling with standard five-field cron expressions and an IANA
-timezone. A calendar timer evaluates occurrences against the specified local
-calendar, recalculating its next occurrence in UTC after each fire and across
-daemon restarts so daylight-saving transitions remain accurate.
-
-Timer wait admissions update atomically alongside durable revisions. Timer
-ticks, wait records, and admission snapshots commit in one transaction so
-terminal messages never leave pending timer placeholders behind. Similarly, late
-`WaitFor` calls matching completed replies gain a bounded recovery wake.
+In addition to relative delays and fixed intervals, timers support calendar
+scheduling with standard five-field cron expressions and an IANA timezone.
+Calendar schedules follow the specified timezone, including daylight-saving
+changes.
 
 A fallback recheck deadline on a wait serves a different purpose: reconsider
 that specific wait if no matching wake arrives. It is not a substitute for

@@ -17,7 +17,7 @@ order: 240
 
 ## 1. 创建目录与可选清单文件
 
-在已确认的 Agent Home 中创建 `apps/ping-card/`。无需清单也能托管根目录下的 `index.html`：运行时用目录名作为 `id` 和 `name`，`version` 为 `"0.0.0"`，`entry` 为 `"index.html"`，`description` 为 `null`。默认值仅存在于内存中；Holon 不写入清单，也不修改应用文件。
+在已确认的 Agent Home 中创建 `apps/ping-card/`。无需清单也能托管根目录下的 `index.html`；Holon 会补上默认值，但不写入清单，也不修改应用文件。默认值见[清单规范契约](../reference/local-apps.md#manifest-contract)。
 
 若要使用本例的展示名称和描述，可选择保存 `apps/ping-card/manifest.json`：
 
