@@ -297,29 +297,22 @@ final class HolonUITests: XCTestCase {
     private enum FixtureError: Error { case missingInput, invalidEndpoint }
 
     private func openSettings(_ app: XCUIApplication) {
-        // Accept either ready route instead of spending the whole budget
-        // waiting for a restored conversation when already at home.
+        // Cache restoration can replace a transient Home with a conversation.
+        // Keep following the current route until Settings itself is ready.
         let home = app.buttons["settings.open"]
         let conversation = app.buttons["conversation.more"]
+        let destination = app.buttons["settings.connection"]
         let route = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
-            (home.exists && home.isHittable) || (conversation.exists && conversation.isHittable)
+            if destination.exists && destination.isHittable { return true }
+            if conversation.exists && conversation.isHittable {
+                let back = app.navigationBars.buttons.element(boundBy: 0)
+                if back.exists && back.isEnabled && back.isHittable { back.tap() }
+            } else if home.exists && home.isEnabled && home.isHittable {
+                home.tap()
+            }
+            return false
         }, object: nil)
-        XCTAssertEqual(XCTWaiter.wait(for: [route], timeout: UIWaitScale.scaled(30)), .completed)
-        if conversation.exists {
-            let back = app.navigationBars.buttons.element(boundBy: 0)
-            waitForHittable(back)
-            back.tap()
-        }
-        let settings = app.buttons["settings.open"]
-        for _ in 0..<6 {
-            if settings.waitForExistence(timeout: UIWaitScale.scaled(3)) { break }
-            let back = app.navigationBars.buttons.element(boundBy: 0)
-            XCTAssertTrue(back.waitForExistence(timeout: UIWaitScale.scaled(10)))
-            back.tap()
-        }
-        waitForHittable(settings)
-        settings.tap()
-        XCTAssertTrue(app.buttons["settings.connection"].waitForExistence(timeout: UIWaitScale.scaled(10)),
+        XCTAssertEqual(XCTWaiter.wait(for: [route], timeout: UIWaitScale.scaled(30)), .completed,
                       "Settings must finish opening before revealing its controls")
     }
 
@@ -1562,6 +1555,10 @@ final class HolonUITests: XCTestCase {
         XCTAssertTrue(app.buttons["conversation.more"].waitForExistence(timeout: UIWaitScale.scaled(30)), "Process relaunch restores the confirmed Agent route")
         XCTAssertTrue(app.descendants(matching: .any)["sending.text"].firstMatch.exists)
         capture(app, "restored-confirmed-conversation")
+        // Do not pre-wait for restoration: Settings must handle either the
+        // transient Home or the asynchronously restored conversation.
+        app.terminate(); app.launch()
+        openSettings(app)
         app.terminate()
     }
 
