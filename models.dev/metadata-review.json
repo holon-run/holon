@@ -31948,236 +31948,6 @@
       "review": null
     },
     {
-      "route_ref": "tencent-tokenhub@default/deepseek-v3.2",
-      "facts": {
-        "context_window_tokens": 128000,
-        "default_max_output_tokens": 32768,
-        "max_output_tokens_upper_limit": 32768,
-        "prompt_budget_estimated_tokens": 121600,
-        "runtime_max_output_tokens": 32768,
-        "capabilities": {
-          "agent_turn": true,
-          "parallel_tool_calls": false,
-          "image_input": false,
-          "image_generation": false,
-          "supports_reasoning": true,
-          "interactive_exec": false
-        },
-        "agent_turn": true,
-        "decision_capable": false,
-        "reasoning_effort_options": []
-      },
-      "inputs": {
-        "model": {
-          "auto_compact_token_limit": null,
-          "capabilities": {
-            "agent_turn": true,
-            "image_generation": false,
-            "image_input": false,
-            "interactive_exec": false,
-            "parallel_tool_calls": false,
-            "supports_reasoning": true
-          },
-          "context_window_tokens": 128000,
-          "default_max_output_tokens": 32768,
-          "default_verbosity": null,
-          "effective_context_window_percent": 95,
-          "max_output_tokens_upper_limit": 32768,
-          "tool_output_truncation_estimated_tokens": 2500
-        },
-        "route": {
-          "capabilities": {},
-          "effective_context_window_percent": null,
-          "reasoning_effort_options": null
-        },
-        "evidence": {
-          "fields": {
-            "display_name": "model_builtin",
-            "description": "model_builtin",
-            "context_window_tokens": "model_builtin",
-            "effective_context_window_percent": "model_builtin",
-            "auto_compact_token_limit": "derived",
-            "prompt_budget_estimated_tokens": "derived",
-            "compaction_trigger_estimated_tokens": "derived",
-            "compaction_keep_recent_estimated_tokens": "derived",
-            "runtime_max_output_tokens": "model_builtin",
-            "verbosity": "derived",
-            "tool_output_truncation_estimated_tokens": "model_builtin",
-            "max_output_tokens_upper_limit": "model_builtin",
-            "agent_turn": "model_builtin",
-            "parallel_tool_calls": "model_builtin",
-            "image_input": "model_builtin",
-            "image_generation": "model_builtin",
-            "supports_reasoning": "model_builtin",
-            "interactive_exec": "model_builtin",
-            "reasoning_effort_options": "derived"
-          }
-        }
-      },
-      "context_status": "known",
-      "output_status": "known",
-      "review": null
-    },
-    {
-      "route_ref": "tencent-tokenhub@default/deepseek-v4-flash",
-      "facts": {
-        "context_window_tokens": 1000000,
-        "default_max_output_tokens": 384000,
-        "max_output_tokens_upper_limit": 384000,
-        "prompt_budget_estimated_tokens": 950000,
-        "runtime_max_output_tokens": 384000,
-        "capabilities": {
-          "agent_turn": true,
-          "parallel_tool_calls": false,
-          "image_input": false,
-          "image_generation": false,
-          "supports_reasoning": true,
-          "interactive_exec": false
-        },
-        "agent_turn": true,
-        "decision_capable": false,
-        "reasoning_effort_options": [
-          "low",
-          "high",
-          "max"
-        ]
-      },
-      "inputs": {
-        "model": {
-          "auto_compact_token_limit": null,
-          "capabilities": {
-            "agent_turn": true,
-            "image_generation": false,
-            "image_input": false,
-            "interactive_exec": false,
-            "parallel_tool_calls": false,
-            "supports_reasoning": true
-          },
-          "context_window_tokens": 1000000,
-          "default_max_output_tokens": 384000,
-          "default_verbosity": null,
-          "effective_context_window_percent": 95,
-          "max_output_tokens_upper_limit": 384000,
-          "tool_output_truncation_estimated_tokens": 2500
-        },
-        "route": {
-          "capabilities": {},
-          "effective_context_window_percent": null,
-          "reasoning_effort_options": [
-            "low",
-            "high",
-            "max"
-          ]
-        },
-        "evidence": {
-          "fields": {
-            "display_name": "model_builtin",
-            "description": "model_builtin",
-            "context_window_tokens": "model_builtin",
-            "effective_context_window_percent": "model_builtin",
-            "auto_compact_token_limit": "derived",
-            "prompt_budget_estimated_tokens": "derived",
-            "compaction_trigger_estimated_tokens": "derived",
-            "compaction_keep_recent_estimated_tokens": "derived",
-            "runtime_max_output_tokens": "model_builtin",
-            "verbosity": "derived",
-            "tool_output_truncation_estimated_tokens": "model_builtin",
-            "max_output_tokens_upper_limit": "model_builtin",
-            "agent_turn": "model_builtin",
-            "parallel_tool_calls": "model_builtin",
-            "image_input": "model_builtin",
-            "image_generation": "model_builtin",
-            "supports_reasoning": "model_builtin",
-            "interactive_exec": "model_builtin",
-            "reasoning_effort_options": "route_builtin"
-          }
-        }
-      },
-      "context_status": "known",
-      "output_status": "known",
-      "review": null
-    },
-    {
-      "route_ref": "tencent-tokenhub@default/deepseek-v4-flash-0731",
-      "facts": {
-        "context_window_tokens": null,
-        "default_max_output_tokens": null,
-        "max_output_tokens_upper_limit": null,
-        "prompt_budget_estimated_tokens": 128000,
-        "runtime_max_output_tokens": 8192,
-        "capabilities": {
-          "agent_turn": true,
-          "parallel_tool_calls": false,
-          "image_input": false,
-          "image_generation": false,
-          "supports_reasoning": true,
-          "interactive_exec": false
-        },
-        "agent_turn": true,
-        "decision_capable": false,
-        "reasoning_effort_options": []
-      },
-      "inputs": {
-        "model": {
-          "auto_compact_token_limit": null,
-          "capabilities": {
-            "agent_turn": true,
-            "image_generation": false,
-            "image_input": false,
-            "interactive_exec": false,
-            "parallel_tool_calls": false,
-            "supports_reasoning": true
-          },
-          "context_window_tokens": null,
-          "default_max_output_tokens": null,
-          "default_verbosity": null,
-          "effective_context_window_percent": 95,
-          "max_output_tokens_upper_limit": null,
-          "tool_output_truncation_estimated_tokens": 2500
-        },
-        "route": {
-          "capabilities": {},
-          "effective_context_window_percent": null,
-          "reasoning_effort_options": null
-        },
-        "evidence": {
-          "fields": {
-            "display_name": "model_builtin",
-            "description": "model_builtin",
-            "context_window_tokens": "derived",
-            "effective_context_window_percent": "model_builtin",
-            "auto_compact_token_limit": "derived",
-            "prompt_budget_estimated_tokens": "runtime_default",
-            "compaction_trigger_estimated_tokens": "derived",
-            "compaction_keep_recent_estimated_tokens": "derived",
-            "runtime_max_output_tokens": "runtime_default",
-            "verbosity": "derived",
-            "tool_output_truncation_estimated_tokens": "model_builtin",
-            "max_output_tokens_upper_limit": "derived",
-            "agent_turn": "model_builtin",
-            "parallel_tool_calls": "model_builtin",
-            "image_input": "model_builtin",
-            "image_generation": "model_builtin",
-            "supports_reasoning": "model_builtin",
-            "interactive_exec": "model_builtin",
-            "reasoning_effort_options": "derived"
-          }
-        }
-      },
-      "context_status": "unknown",
-      "output_status": "unknown",
-      "review": {
-        "owner": "holon-model-provider",
-        "reviewed_at": "2026-10-26",
-        "reason": "Only separately evidenced fields were accepted. Unconfirmed context/output capacities remain unknown; Chat defaults, reasoning/vision and hosted thinking support do not establish limits for another protocol or deployment.",
-        "recheck": "Recheck the exact endpoint/model integer limits when its official schema or model table changes.",
-        "evidence": [
-          "models.dev/endpoint-review.md",
-          "models.dev/metadata-evidence.md"
-        ]
-      }
-    },
-    {
       "route_ref": "tencent-tokenhub@default/deepseek-v4-flash-202605",
       "facts": {
         "context_window_tokens": null,
@@ -32509,12 +32279,16 @@
           "parallel_tool_calls": false,
           "image_input": false,
           "image_generation": false,
-          "supports_reasoning": false,
+          "supports_reasoning": true,
           "interactive_exec": false
         },
         "agent_turn": true,
         "decision_capable": false,
-        "reasoning_effort_options": []
+        "reasoning_effort_options": [
+          "low",
+          "high",
+          "max"
+        ]
       },
       "inputs": {
         "model": {
@@ -32525,7 +32299,7 @@
             "image_input": false,
             "interactive_exec": false,
             "parallel_tool_calls": false,
-            "supports_reasoning": false
+            "supports_reasoning": true
           },
           "context_window_tokens": null,
           "default_max_output_tokens": null,
@@ -32537,7 +32311,11 @@
         "route": {
           "capabilities": {},
           "effective_context_window_percent": null,
-          "reasoning_effort_options": null
+          "reasoning_effort_options": [
+            "low",
+            "high",
+            "max"
+          ]
         },
         "evidence": {
           "fields": {
@@ -32559,7 +32337,7 @@
             "image_generation": "model_builtin",
             "supports_reasoning": "model_builtin",
             "interactive_exec": "model_builtin",
-            "reasoning_effort_options": "derived"
+            "reasoning_effort_options": "route_builtin"
           }
         }
       },
@@ -32567,8 +32345,8 @@
       "output_status": "unknown",
       "review": {
         "owner": "holon-model-provider",
-        "reviewed_at": "2026-10-25",
-        "reason": "tencent-tokenhub@default/deepseek-v4.1-flash: Missing capacity is retained as unknown. No exact endpoint upstream capacity evidence is associated; generic API, other region, plan, or protocol limits are not borrowed. Existing known fields and local output policy are preserved, not newly vendor-verified.",
+        "reviewed_at": "2026-11-04",
+        "reason": "tencent-tokenhub@default/deepseek-v4.1-flash: Missing capacity is retained as unknown. No exact endpoint upstream capacity evidence is associated; generic API, other region, plan, or protocol limits are not borrowed. Existing known fields and local output policy are preserved, not newly vendor-verified. November 4 review: only exact V4.1 Chat thinking and low/high/max effort are independently documented; Messages/Responses reasoning remains unaudited and disabled, with no borrowed capacity or default.",
         "recheck": "At the next exact endpoint model/catalog/documentation change or before increasing its local execution budget; verify support and each missing capacity independently.",
         "evidence": [
           "models.dev/metadata-evidence.md",
@@ -32590,12 +32368,16 @@
           "parallel_tool_calls": false,
           "image_input": false,
           "image_generation": false,
-          "supports_reasoning": false,
+          "supports_reasoning": true,
           "interactive_exec": false
         },
         "agent_turn": true,
         "decision_capable": false,
-        "reasoning_effort_options": []
+        "reasoning_effort_options": [
+          "low",
+          "high",
+          "max"
+        ]
       },
       "inputs": {
         "model": {
@@ -32606,7 +32388,7 @@
             "image_input": false,
             "interactive_exec": false,
             "parallel_tool_calls": false,
-            "supports_reasoning": false
+            "supports_reasoning": true
           },
           "context_window_tokens": null,
           "default_max_output_tokens": null,
@@ -32618,7 +32400,11 @@
         "route": {
           "capabilities": {},
           "effective_context_window_percent": null,
-          "reasoning_effort_options": null
+          "reasoning_effort_options": [
+            "low",
+            "high",
+            "max"
+          ]
         },
         "evidence": {
           "fields": {
@@ -32640,7 +32426,7 @@
             "image_generation": "model_builtin",
             "supports_reasoning": "model_builtin",
             "interactive_exec": "model_builtin",
-            "reasoning_effort_options": "derived"
+            "reasoning_effort_options": "route_builtin"
           }
         }
       },
@@ -32648,8 +32434,8 @@
       "output_status": "unknown",
       "review": {
         "owner": "holon-model-provider",
-        "reviewed_at": "2026-10-25",
-        "reason": "tencent-tokenhub@default/deepseek-v4.1-flash-1017: Missing capacity is retained as unknown. No exact endpoint upstream capacity evidence is associated; generic API, other region, plan, or protocol limits are not borrowed. Existing known fields and local output policy are preserved, not newly vendor-verified.",
+        "reviewed_at": "2026-11-04",
+        "reason": "tencent-tokenhub@default/deepseek-v4.1-flash-1017: Missing capacity is retained as unknown. No exact endpoint upstream capacity evidence is associated; generic API, other region, plan, or protocol limits are not borrowed. Existing known fields and local output policy are preserved, not newly vendor-verified. November 4 review: only exact V4.1 Chat thinking and low/high/max effort are independently documented; Messages/Responses reasoning remains unaudited and disabled, with no borrowed capacity or default.",
         "recheck": "At the next exact endpoint model/catalog/documentation change or before increasing its local execution budget; verify support and each missing capacity independently.",
         "evidence": [
           "models.dev/metadata-evidence.md",
@@ -33139,219 +32925,6 @@
       }
     },
     {
-      "route_ref": "tencent-tokenhub@default/glm-5",
-      "facts": {
-        "context_window_tokens": 202800,
-        "default_max_output_tokens": 131072,
-        "max_output_tokens_upper_limit": 131072,
-        "prompt_budget_estimated_tokens": 192660,
-        "runtime_max_output_tokens": 131072,
-        "capabilities": {
-          "agent_turn": true,
-          "parallel_tool_calls": false,
-          "image_input": false,
-          "image_generation": false,
-          "supports_reasoning": true,
-          "interactive_exec": false
-        },
-        "agent_turn": true,
-        "decision_capable": false,
-        "reasoning_effort_options": []
-      },
-      "inputs": {
-        "model": {
-          "auto_compact_token_limit": null,
-          "capabilities": {
-            "agent_turn": true,
-            "image_generation": false,
-            "image_input": false,
-            "interactive_exec": false,
-            "parallel_tool_calls": false,
-            "supports_reasoning": true
-          },
-          "context_window_tokens": 202800,
-          "default_max_output_tokens": 131072,
-          "default_verbosity": null,
-          "effective_context_window_percent": 95,
-          "max_output_tokens_upper_limit": 131072,
-          "tool_output_truncation_estimated_tokens": 2500
-        },
-        "route": {
-          "capabilities": {},
-          "effective_context_window_percent": null,
-          "reasoning_effort_options": null
-        },
-        "evidence": {
-          "fields": {
-            "display_name": "model_builtin",
-            "description": "model_builtin",
-            "context_window_tokens": "model_builtin",
-            "effective_context_window_percent": "model_builtin",
-            "auto_compact_token_limit": "derived",
-            "prompt_budget_estimated_tokens": "derived",
-            "compaction_trigger_estimated_tokens": "derived",
-            "compaction_keep_recent_estimated_tokens": "derived",
-            "runtime_max_output_tokens": "model_builtin",
-            "verbosity": "derived",
-            "tool_output_truncation_estimated_tokens": "model_builtin",
-            "max_output_tokens_upper_limit": "model_builtin",
-            "agent_turn": "model_builtin",
-            "parallel_tool_calls": "model_builtin",
-            "image_input": "model_builtin",
-            "image_generation": "model_builtin",
-            "supports_reasoning": "model_builtin",
-            "interactive_exec": "model_builtin",
-            "reasoning_effort_options": "derived"
-          }
-        }
-      },
-      "context_status": "known",
-      "output_status": "known",
-      "review": null
-    },
-    {
-      "route_ref": "tencent-tokenhub@default/glm-5-turbo",
-      "facts": {
-        "context_window_tokens": 202800,
-        "default_max_output_tokens": 131072,
-        "max_output_tokens_upper_limit": 131072,
-        "prompt_budget_estimated_tokens": 192660,
-        "runtime_max_output_tokens": 131072,
-        "capabilities": {
-          "agent_turn": true,
-          "parallel_tool_calls": false,
-          "image_input": false,
-          "image_generation": false,
-          "supports_reasoning": true,
-          "interactive_exec": false
-        },
-        "agent_turn": true,
-        "decision_capable": false,
-        "reasoning_effort_options": []
-      },
-      "inputs": {
-        "model": {
-          "auto_compact_token_limit": null,
-          "capabilities": {
-            "agent_turn": true,
-            "image_generation": false,
-            "image_input": false,
-            "interactive_exec": false,
-            "parallel_tool_calls": false,
-            "supports_reasoning": true
-          },
-          "context_window_tokens": 202800,
-          "default_max_output_tokens": 131072,
-          "default_verbosity": null,
-          "effective_context_window_percent": 95,
-          "max_output_tokens_upper_limit": 131072,
-          "tool_output_truncation_estimated_tokens": 2500
-        },
-        "route": {
-          "capabilities": {},
-          "effective_context_window_percent": null,
-          "reasoning_effort_options": null
-        },
-        "evidence": {
-          "fields": {
-            "display_name": "model_builtin",
-            "description": "model_builtin",
-            "context_window_tokens": "model_builtin",
-            "effective_context_window_percent": "model_builtin",
-            "auto_compact_token_limit": "derived",
-            "prompt_budget_estimated_tokens": "derived",
-            "compaction_trigger_estimated_tokens": "derived",
-            "compaction_keep_recent_estimated_tokens": "derived",
-            "runtime_max_output_tokens": "model_builtin",
-            "verbosity": "derived",
-            "tool_output_truncation_estimated_tokens": "model_builtin",
-            "max_output_tokens_upper_limit": "model_builtin",
-            "agent_turn": "model_builtin",
-            "parallel_tool_calls": "model_builtin",
-            "image_input": "model_builtin",
-            "image_generation": "model_builtin",
-            "supports_reasoning": "model_builtin",
-            "interactive_exec": "model_builtin",
-            "reasoning_effort_options": "derived"
-          }
-        }
-      },
-      "context_status": "known",
-      "output_status": "known",
-      "review": null
-    },
-    {
-      "route_ref": "tencent-tokenhub@default/glm-5.1",
-      "facts": {
-        "context_window_tokens": 202800,
-        "default_max_output_tokens": 131072,
-        "max_output_tokens_upper_limit": 131072,
-        "prompt_budget_estimated_tokens": 192660,
-        "runtime_max_output_tokens": 131072,
-        "capabilities": {
-          "agent_turn": true,
-          "parallel_tool_calls": false,
-          "image_input": false,
-          "image_generation": false,
-          "supports_reasoning": true,
-          "interactive_exec": false
-        },
-        "agent_turn": true,
-        "decision_capable": false,
-        "reasoning_effort_options": []
-      },
-      "inputs": {
-        "model": {
-          "auto_compact_token_limit": null,
-          "capabilities": {
-            "agent_turn": true,
-            "image_generation": false,
-            "image_input": false,
-            "interactive_exec": false,
-            "parallel_tool_calls": false,
-            "supports_reasoning": true
-          },
-          "context_window_tokens": 202800,
-          "default_max_output_tokens": 131072,
-          "default_verbosity": null,
-          "effective_context_window_percent": 95,
-          "max_output_tokens_upper_limit": 131072,
-          "tool_output_truncation_estimated_tokens": 2500
-        },
-        "route": {
-          "capabilities": {},
-          "effective_context_window_percent": null,
-          "reasoning_effort_options": null
-        },
-        "evidence": {
-          "fields": {
-            "display_name": "model_builtin",
-            "description": "model_builtin",
-            "context_window_tokens": "model_builtin",
-            "effective_context_window_percent": "model_builtin",
-            "auto_compact_token_limit": "derived",
-            "prompt_budget_estimated_tokens": "derived",
-            "compaction_trigger_estimated_tokens": "derived",
-            "compaction_keep_recent_estimated_tokens": "derived",
-            "runtime_max_output_tokens": "model_builtin",
-            "verbosity": "derived",
-            "tool_output_truncation_estimated_tokens": "model_builtin",
-            "max_output_tokens_upper_limit": "model_builtin",
-            "agent_turn": "model_builtin",
-            "parallel_tool_calls": "model_builtin",
-            "image_input": "model_builtin",
-            "image_generation": "model_builtin",
-            "supports_reasoning": "model_builtin",
-            "interactive_exec": "model_builtin",
-            "reasoning_effort_options": "derived"
-          }
-        }
-      },
-      "context_status": "known",
-      "output_status": "known",
-      "review": null
-    },
-    {
       "route_ref": "tencent-tokenhub@default/glm-5.2",
       "facts": {
         "context_window_tokens": 1000000,
@@ -33701,77 +33274,6 @@
           "models.dev/metadata-evidence.md"
         ]
       }
-    },
-    {
-      "route_ref": "tencent-tokenhub@default/glm-5v-turbo",
-      "facts": {
-        "context_window_tokens": 202800,
-        "default_max_output_tokens": 131072,
-        "max_output_tokens_upper_limit": 131072,
-        "prompt_budget_estimated_tokens": 192660,
-        "runtime_max_output_tokens": 131072,
-        "capabilities": {
-          "agent_turn": true,
-          "parallel_tool_calls": false,
-          "image_input": true,
-          "image_generation": false,
-          "supports_reasoning": true,
-          "interactive_exec": false
-        },
-        "agent_turn": true,
-        "decision_capable": false,
-        "reasoning_effort_options": []
-      },
-      "inputs": {
-        "model": {
-          "auto_compact_token_limit": null,
-          "capabilities": {
-            "agent_turn": true,
-            "image_generation": false,
-            "image_input": true,
-            "interactive_exec": false,
-            "parallel_tool_calls": false,
-            "supports_reasoning": true
-          },
-          "context_window_tokens": 202800,
-          "default_max_output_tokens": 131072,
-          "default_verbosity": null,
-          "effective_context_window_percent": 95,
-          "max_output_tokens_upper_limit": 131072,
-          "tool_output_truncation_estimated_tokens": 2500
-        },
-        "route": {
-          "capabilities": {},
-          "effective_context_window_percent": null,
-          "reasoning_effort_options": null
-        },
-        "evidence": {
-          "fields": {
-            "display_name": "model_builtin",
-            "description": "model_builtin",
-            "context_window_tokens": "model_builtin",
-            "effective_context_window_percent": "model_builtin",
-            "auto_compact_token_limit": "derived",
-            "prompt_budget_estimated_tokens": "derived",
-            "compaction_trigger_estimated_tokens": "derived",
-            "compaction_keep_recent_estimated_tokens": "derived",
-            "runtime_max_output_tokens": "model_builtin",
-            "verbosity": "derived",
-            "tool_output_truncation_estimated_tokens": "model_builtin",
-            "max_output_tokens_upper_limit": "model_builtin",
-            "agent_turn": "model_builtin",
-            "parallel_tool_calls": "model_builtin",
-            "image_input": "model_builtin",
-            "image_generation": "model_builtin",
-            "supports_reasoning": "model_builtin",
-            "interactive_exec": "model_builtin",
-            "reasoning_effort_options": "derived"
-          }
-        }
-      },
-      "context_status": "known",
-      "output_status": "known",
-      "review": null
     },
     {
       "route_ref": "tencent-tokenhub@default/hunyuan-role-latest",
@@ -34420,77 +33922,6 @@
       "review": null
     },
     {
-      "route_ref": "tencent-tokenhub@default/hy3-preview",
-      "facts": {
-        "context_window_tokens": 256000,
-        "default_max_output_tokens": 128000,
-        "max_output_tokens_upper_limit": 128000,
-        "prompt_budget_estimated_tokens": 243200,
-        "runtime_max_output_tokens": 128000,
-        "capabilities": {
-          "agent_turn": true,
-          "parallel_tool_calls": false,
-          "image_input": false,
-          "image_generation": false,
-          "supports_reasoning": true,
-          "interactive_exec": false
-        },
-        "agent_turn": true,
-        "decision_capable": false,
-        "reasoning_effort_options": []
-      },
-      "inputs": {
-        "model": {
-          "auto_compact_token_limit": null,
-          "capabilities": {
-            "agent_turn": true,
-            "image_generation": false,
-            "image_input": false,
-            "interactive_exec": false,
-            "parallel_tool_calls": false,
-            "supports_reasoning": true
-          },
-          "context_window_tokens": 256000,
-          "default_max_output_tokens": 128000,
-          "default_verbosity": null,
-          "effective_context_window_percent": 95,
-          "max_output_tokens_upper_limit": 128000,
-          "tool_output_truncation_estimated_tokens": 2500
-        },
-        "route": {
-          "capabilities": {},
-          "effective_context_window_percent": null,
-          "reasoning_effort_options": null
-        },
-        "evidence": {
-          "fields": {
-            "display_name": "model_builtin",
-            "description": "model_builtin",
-            "context_window_tokens": "model_builtin",
-            "effective_context_window_percent": "model_builtin",
-            "auto_compact_token_limit": "derived",
-            "prompt_budget_estimated_tokens": "derived",
-            "compaction_trigger_estimated_tokens": "derived",
-            "compaction_keep_recent_estimated_tokens": "derived",
-            "runtime_max_output_tokens": "model_builtin",
-            "verbosity": "derived",
-            "tool_output_truncation_estimated_tokens": "model_builtin",
-            "max_output_tokens_upper_limit": "model_builtin",
-            "agent_turn": "model_builtin",
-            "parallel_tool_calls": "model_builtin",
-            "image_input": "model_builtin",
-            "image_generation": "model_builtin",
-            "supports_reasoning": "model_builtin",
-            "interactive_exec": "model_builtin",
-            "reasoning_effort_options": "derived"
-          }
-        }
-      },
-      "context_status": "known",
-      "output_status": "known",
-      "review": null
-    },
-    {
       "route_ref": "tencent-tokenhub@default/hy4-preview",
       "facts": {
         "context_window_tokens": null,
@@ -34575,77 +34006,6 @@
           "models.dev/metadata-evidence.md"
         ]
       }
-    },
-    {
-      "route_ref": "tencent-tokenhub@default/kimi-k2.5",
-      "facts": {
-        "context_window_tokens": 262144,
-        "default_max_output_tokens": 262144,
-        "max_output_tokens_upper_limit": 262144,
-        "prompt_budget_estimated_tokens": 249036,
-        "runtime_max_output_tokens": 262144,
-        "capabilities": {
-          "agent_turn": true,
-          "parallel_tool_calls": false,
-          "image_input": true,
-          "image_generation": false,
-          "supports_reasoning": true,
-          "interactive_exec": false
-        },
-        "agent_turn": true,
-        "decision_capable": false,
-        "reasoning_effort_options": []
-      },
-      "inputs": {
-        "model": {
-          "auto_compact_token_limit": null,
-          "capabilities": {
-            "agent_turn": true,
-            "image_generation": false,
-            "image_input": true,
-            "interactive_exec": false,
-            "parallel_tool_calls": false,
-            "supports_reasoning": true
-          },
-          "context_window_tokens": 262144,
-          "default_max_output_tokens": 262144,
-          "default_verbosity": null,
-          "effective_context_window_percent": 95,
-          "max_output_tokens_upper_limit": 262144,
-          "tool_output_truncation_estimated_tokens": 2500
-        },
-        "route": {
-          "capabilities": {},
-          "effective_context_window_percent": null,
-          "reasoning_effort_options": null
-        },
-        "evidence": {
-          "fields": {
-            "display_name": "model_builtin",
-            "description": "model_builtin",
-            "context_window_tokens": "model_builtin",
-            "effective_context_window_percent": "model_builtin",
-            "auto_compact_token_limit": "derived",
-            "prompt_budget_estimated_tokens": "derived",
-            "compaction_trigger_estimated_tokens": "derived",
-            "compaction_keep_recent_estimated_tokens": "derived",
-            "runtime_max_output_tokens": "model_builtin",
-            "verbosity": "derived",
-            "tool_output_truncation_estimated_tokens": "model_builtin",
-            "max_output_tokens_upper_limit": "model_builtin",
-            "agent_turn": "model_builtin",
-            "parallel_tool_calls": "model_builtin",
-            "image_input": "model_builtin",
-            "image_generation": "model_builtin",
-            "supports_reasoning": "model_builtin",
-            "interactive_exec": "model_builtin",
-            "reasoning_effort_options": "derived"
-          }
-        }
-      },
-      "context_status": "known",
-      "output_status": "known",
-      "review": null
     },
     {
       "route_ref": "tencent-tokenhub@default/kimi-k2.6",
@@ -35222,87 +34582,6 @@
       }
     },
     {
-      "route_ref": "tencent-tokenhub@default/mimo-v2.5-pro",
-      "facts": {
-        "context_window_tokens": null,
-        "default_max_output_tokens": null,
-        "max_output_tokens_upper_limit": null,
-        "prompt_budget_estimated_tokens": 128000,
-        "runtime_max_output_tokens": 8192,
-        "capabilities": {
-          "agent_turn": true,
-          "parallel_tool_calls": false,
-          "image_input": false,
-          "image_generation": false,
-          "supports_reasoning": false,
-          "interactive_exec": false
-        },
-        "agent_turn": true,
-        "decision_capable": false,
-        "reasoning_effort_options": []
-      },
-      "inputs": {
-        "model": {
-          "auto_compact_token_limit": null,
-          "capabilities": {
-            "agent_turn": true,
-            "image_generation": false,
-            "image_input": false,
-            "interactive_exec": false,
-            "parallel_tool_calls": false,
-            "supports_reasoning": false
-          },
-          "context_window_tokens": null,
-          "default_max_output_tokens": null,
-          "default_verbosity": null,
-          "effective_context_window_percent": 95,
-          "max_output_tokens_upper_limit": null,
-          "tool_output_truncation_estimated_tokens": 2500
-        },
-        "route": {
-          "capabilities": {},
-          "effective_context_window_percent": null,
-          "reasoning_effort_options": null
-        },
-        "evidence": {
-          "fields": {
-            "display_name": "model_builtin",
-            "description": "model_builtin",
-            "context_window_tokens": "derived",
-            "effective_context_window_percent": "model_builtin",
-            "auto_compact_token_limit": "derived",
-            "prompt_budget_estimated_tokens": "runtime_default",
-            "compaction_trigger_estimated_tokens": "derived",
-            "compaction_keep_recent_estimated_tokens": "derived",
-            "runtime_max_output_tokens": "runtime_default",
-            "verbosity": "derived",
-            "tool_output_truncation_estimated_tokens": "model_builtin",
-            "max_output_tokens_upper_limit": "derived",
-            "agent_turn": "model_builtin",
-            "parallel_tool_calls": "model_builtin",
-            "image_input": "model_builtin",
-            "image_generation": "model_builtin",
-            "supports_reasoning": "model_builtin",
-            "interactive_exec": "model_builtin",
-            "reasoning_effort_options": "derived"
-          }
-        }
-      },
-      "context_status": "unknown",
-      "output_status": "unknown",
-      "review": {
-        "owner": "holon-model-provider",
-        "reviewed_at": "2026-10-25",
-        "reason": "tencent-tokenhub@default/mimo-v2.5-pro: Missing capacity is retained as unknown. No exact endpoint upstream capacity evidence is associated; generic API, other region, plan, or protocol limits are not borrowed. Existing known fields and local output policy are preserved, not newly vendor-verified.",
-        "recheck": "At the next exact endpoint model/catalog/documentation change or before increasing its local execution budget; verify support and each missing capacity independently.",
-        "evidence": [
-          "models.dev/metadata-evidence.md",
-          "models.dev/endpoint-review.md",
-          "models.dev/endpoint-mappings.json"
-        ]
-      }
-    },
-    {
       "route_ref": "tencent-tokenhub@default/mimo-v2.6-flash",
       "facts": {
         "context_window_tokens": null,
@@ -35463,77 +34742,6 @@
           "models.dev/endpoint-mappings.json"
         ]
       }
-    },
-    {
-      "route_ref": "tencent-tokenhub@default/minimax-m2.5",
-      "facts": {
-        "context_window_tokens": 196608,
-        "default_max_output_tokens": 32768,
-        "max_output_tokens_upper_limit": 32768,
-        "prompt_budget_estimated_tokens": 186777,
-        "runtime_max_output_tokens": 32768,
-        "capabilities": {
-          "agent_turn": true,
-          "parallel_tool_calls": false,
-          "image_input": false,
-          "image_generation": false,
-          "supports_reasoning": true,
-          "interactive_exec": false
-        },
-        "agent_turn": true,
-        "decision_capable": false,
-        "reasoning_effort_options": []
-      },
-      "inputs": {
-        "model": {
-          "auto_compact_token_limit": null,
-          "capabilities": {
-            "agent_turn": true,
-            "image_generation": false,
-            "image_input": false,
-            "interactive_exec": false,
-            "parallel_tool_calls": false,
-            "supports_reasoning": true
-          },
-          "context_window_tokens": 196608,
-          "default_max_output_tokens": 32768,
-          "default_verbosity": null,
-          "effective_context_window_percent": 95,
-          "max_output_tokens_upper_limit": 32768,
-          "tool_output_truncation_estimated_tokens": 2500
-        },
-        "route": {
-          "capabilities": {},
-          "effective_context_window_percent": null,
-          "reasoning_effort_options": null
-        },
-        "evidence": {
-          "fields": {
-            "display_name": "model_builtin",
-            "description": "model_builtin",
-            "context_window_tokens": "model_builtin",
-            "effective_context_window_percent": "model_builtin",
-            "auto_compact_token_limit": "derived",
-            "prompt_budget_estimated_tokens": "derived",
-            "compaction_trigger_estimated_tokens": "derived",
-            "compaction_keep_recent_estimated_tokens": "derived",
-            "runtime_max_output_tokens": "model_builtin",
-            "verbosity": "derived",
-            "tool_output_truncation_estimated_tokens": "model_builtin",
-            "max_output_tokens_upper_limit": "model_builtin",
-            "agent_turn": "model_builtin",
-            "parallel_tool_calls": "model_builtin",
-            "image_input": "model_builtin",
-            "image_generation": "model_builtin",
-            "supports_reasoning": "model_builtin",
-            "interactive_exec": "model_builtin",
-            "reasoning_effort_options": "derived"
-          }
-        }
-      },
-      "context_status": "known",
-      "output_status": "known",
-      "review": null
     },
     {
       "route_ref": "tencent-tokenhub@default/minimax-m2.7",
@@ -35779,148 +34987,6 @@
       }
     },
     {
-      "route_ref": "tencent-tokenhub@default/qwen3.5-flash",
-      "facts": {
-        "context_window_tokens": 1000000,
-        "default_max_output_tokens": 65536,
-        "max_output_tokens_upper_limit": 65536,
-        "prompt_budget_estimated_tokens": 950000,
-        "runtime_max_output_tokens": 65536,
-        "capabilities": {
-          "agent_turn": true,
-          "parallel_tool_calls": false,
-          "image_input": true,
-          "image_generation": false,
-          "supports_reasoning": true,
-          "interactive_exec": false
-        },
-        "agent_turn": true,
-        "decision_capable": false,
-        "reasoning_effort_options": []
-      },
-      "inputs": {
-        "model": {
-          "auto_compact_token_limit": null,
-          "capabilities": {
-            "agent_turn": true,
-            "image_generation": false,
-            "image_input": true,
-            "interactive_exec": false,
-            "parallel_tool_calls": false,
-            "supports_reasoning": true
-          },
-          "context_window_tokens": 1000000,
-          "default_max_output_tokens": 65536,
-          "default_verbosity": null,
-          "effective_context_window_percent": 95,
-          "max_output_tokens_upper_limit": 65536,
-          "tool_output_truncation_estimated_tokens": 2500
-        },
-        "route": {
-          "capabilities": {},
-          "effective_context_window_percent": null,
-          "reasoning_effort_options": null
-        },
-        "evidence": {
-          "fields": {
-            "display_name": "model_builtin",
-            "description": "model_builtin",
-            "context_window_tokens": "model_builtin",
-            "effective_context_window_percent": "model_builtin",
-            "auto_compact_token_limit": "derived",
-            "prompt_budget_estimated_tokens": "derived",
-            "compaction_trigger_estimated_tokens": "derived",
-            "compaction_keep_recent_estimated_tokens": "derived",
-            "runtime_max_output_tokens": "model_builtin",
-            "verbosity": "derived",
-            "tool_output_truncation_estimated_tokens": "model_builtin",
-            "max_output_tokens_upper_limit": "model_builtin",
-            "agent_turn": "model_builtin",
-            "parallel_tool_calls": "model_builtin",
-            "image_input": "model_builtin",
-            "image_generation": "model_builtin",
-            "supports_reasoning": "model_builtin",
-            "interactive_exec": "model_builtin",
-            "reasoning_effort_options": "derived"
-          }
-        }
-      },
-      "context_status": "known",
-      "output_status": "known",
-      "review": null
-    },
-    {
-      "route_ref": "tencent-tokenhub@default/qwen3.5-plus",
-      "facts": {
-        "context_window_tokens": 1000000,
-        "default_max_output_tokens": 65536,
-        "max_output_tokens_upper_limit": 65536,
-        "prompt_budget_estimated_tokens": 950000,
-        "runtime_max_output_tokens": 65536,
-        "capabilities": {
-          "agent_turn": true,
-          "parallel_tool_calls": false,
-          "image_input": true,
-          "image_generation": false,
-          "supports_reasoning": true,
-          "interactive_exec": false
-        },
-        "agent_turn": true,
-        "decision_capable": false,
-        "reasoning_effort_options": []
-      },
-      "inputs": {
-        "model": {
-          "auto_compact_token_limit": null,
-          "capabilities": {
-            "agent_turn": true,
-            "image_generation": false,
-            "image_input": true,
-            "interactive_exec": false,
-            "parallel_tool_calls": false,
-            "supports_reasoning": true
-          },
-          "context_window_tokens": 1000000,
-          "default_max_output_tokens": 65536,
-          "default_verbosity": null,
-          "effective_context_window_percent": 95,
-          "max_output_tokens_upper_limit": 65536,
-          "tool_output_truncation_estimated_tokens": 2500
-        },
-        "route": {
-          "capabilities": {},
-          "effective_context_window_percent": null,
-          "reasoning_effort_options": null
-        },
-        "evidence": {
-          "fields": {
-            "display_name": "model_builtin",
-            "description": "model_builtin",
-            "context_window_tokens": "model_builtin",
-            "effective_context_window_percent": "model_builtin",
-            "auto_compact_token_limit": "derived",
-            "prompt_budget_estimated_tokens": "derived",
-            "compaction_trigger_estimated_tokens": "derived",
-            "compaction_keep_recent_estimated_tokens": "derived",
-            "runtime_max_output_tokens": "model_builtin",
-            "verbosity": "derived",
-            "tool_output_truncation_estimated_tokens": "model_builtin",
-            "max_output_tokens_upper_limit": "model_builtin",
-            "agent_turn": "model_builtin",
-            "parallel_tool_calls": "model_builtin",
-            "image_input": "model_builtin",
-            "image_generation": "model_builtin",
-            "supports_reasoning": "model_builtin",
-            "interactive_exec": "model_builtin",
-            "reasoning_effort_options": "derived"
-          }
-        }
-      },
-      "context_status": "known",
-      "output_status": "known",
-      "review": null
-    },
-    {
       "route_ref": "tencent-tokenhub@default/step-5-preview",
       "facts": {
         "context_window_tokens": null,
@@ -35998,320 +35064,6 @@
           "models.dev/metadata-evidence.md",
           "models.dev/endpoint-review.md",
           "models.dev/endpoint-mappings.json"
-        ]
-      }
-    },
-    {
-      "route_ref": "tencent-tokenhub@default/youtu-vita",
-      "facts": {
-        "context_window_tokens": null,
-        "default_max_output_tokens": null,
-        "max_output_tokens_upper_limit": null,
-        "prompt_budget_estimated_tokens": 128000,
-        "runtime_max_output_tokens": 8192,
-        "capabilities": {
-          "agent_turn": true,
-          "parallel_tool_calls": false,
-          "image_input": true,
-          "image_generation": false,
-          "supports_reasoning": false,
-          "interactive_exec": false
-        },
-        "agent_turn": true,
-        "decision_capable": false,
-        "reasoning_effort_options": []
-      },
-      "inputs": {
-        "model": {
-          "auto_compact_token_limit": null,
-          "capabilities": {
-            "agent_turn": true,
-            "image_generation": false,
-            "image_input": true,
-            "interactive_exec": false,
-            "parallel_tool_calls": false,
-            "supports_reasoning": false
-          },
-          "context_window_tokens": null,
-          "default_max_output_tokens": null,
-          "default_verbosity": null,
-          "effective_context_window_percent": 95,
-          "max_output_tokens_upper_limit": null,
-          "tool_output_truncation_estimated_tokens": 2500
-        },
-        "route": {
-          "capabilities": {},
-          "effective_context_window_percent": null,
-          "reasoning_effort_options": null
-        },
-        "evidence": {
-          "fields": {
-            "display_name": "model_builtin",
-            "description": "model_builtin",
-            "context_window_tokens": "derived",
-            "effective_context_window_percent": "model_builtin",
-            "auto_compact_token_limit": "derived",
-            "prompt_budget_estimated_tokens": "runtime_default",
-            "compaction_trigger_estimated_tokens": "derived",
-            "compaction_keep_recent_estimated_tokens": "derived",
-            "runtime_max_output_tokens": "runtime_default",
-            "verbosity": "derived",
-            "tool_output_truncation_estimated_tokens": "model_builtin",
-            "max_output_tokens_upper_limit": "derived",
-            "agent_turn": "model_builtin",
-            "parallel_tool_calls": "model_builtin",
-            "image_input": "model_builtin",
-            "image_generation": "model_builtin",
-            "supports_reasoning": "model_builtin",
-            "interactive_exec": "model_builtin",
-            "reasoning_effort_options": "derived"
-          }
-        }
-      },
-      "context_status": "unknown",
-      "output_status": "unknown",
-      "review": {
-        "owner": "holon-model-provider",
-        "reviewed_at": "2026-10-25",
-        "reason": "tencent-tokenhub@default/youtu-vita: Missing capacity is retained as unknown. No exact endpoint upstream capacity evidence is associated; generic API, other region, plan, or protocol limits are not borrowed. Existing known fields and local output policy are preserved, not newly vendor-verified.",
-        "recheck": "At the next exact endpoint model/catalog/documentation change or before increasing its local execution budget; verify support and each missing capacity independently.",
-        "evidence": [
-          "models.dev/metadata-evidence.md",
-          "models.dev/endpoint-review.md",
-          "models.dev/endpoint-mappings.json"
-        ]
-      }
-    },
-    {
-      "route_ref": "tencent-tokenhub@messages/deepseek-v3.2",
-      "facts": {
-        "context_window_tokens": 128000,
-        "default_max_output_tokens": 32768,
-        "max_output_tokens_upper_limit": 32768,
-        "prompt_budget_estimated_tokens": 121600,
-        "runtime_max_output_tokens": 32768,
-        "capabilities": {
-          "agent_turn": true,
-          "parallel_tool_calls": false,
-          "image_input": false,
-          "image_generation": false,
-          "supports_reasoning": true,
-          "interactive_exec": false
-        },
-        "agent_turn": true,
-        "decision_capable": false,
-        "reasoning_effort_options": []
-      },
-      "inputs": {
-        "model": {
-          "auto_compact_token_limit": null,
-          "capabilities": {
-            "agent_turn": true,
-            "image_generation": false,
-            "image_input": false,
-            "interactive_exec": false,
-            "parallel_tool_calls": false,
-            "supports_reasoning": true
-          },
-          "context_window_tokens": 128000,
-          "default_max_output_tokens": 32768,
-          "default_verbosity": null,
-          "effective_context_window_percent": 95,
-          "max_output_tokens_upper_limit": 32768,
-          "tool_output_truncation_estimated_tokens": 2500
-        },
-        "route": {
-          "capabilities": {},
-          "effective_context_window_percent": null,
-          "reasoning_effort_options": null
-        },
-        "evidence": {
-          "fields": {
-            "display_name": "model_builtin",
-            "description": "model_builtin",
-            "context_window_tokens": "model_builtin",
-            "effective_context_window_percent": "model_builtin",
-            "auto_compact_token_limit": "derived",
-            "prompt_budget_estimated_tokens": "derived",
-            "compaction_trigger_estimated_tokens": "derived",
-            "compaction_keep_recent_estimated_tokens": "derived",
-            "runtime_max_output_tokens": "model_builtin",
-            "verbosity": "derived",
-            "tool_output_truncation_estimated_tokens": "model_builtin",
-            "max_output_tokens_upper_limit": "model_builtin",
-            "agent_turn": "model_builtin",
-            "parallel_tool_calls": "model_builtin",
-            "image_input": "model_builtin",
-            "image_generation": "model_builtin",
-            "supports_reasoning": "model_builtin",
-            "interactive_exec": "model_builtin",
-            "reasoning_effort_options": "derived"
-          }
-        }
-      },
-      "context_status": "known",
-      "output_status": "known",
-      "review": null
-    },
-    {
-      "route_ref": "tencent-tokenhub@messages/deepseek-v4-flash",
-      "facts": {
-        "context_window_tokens": 1000000,
-        "default_max_output_tokens": 384000,
-        "max_output_tokens_upper_limit": 384000,
-        "prompt_budget_estimated_tokens": 950000,
-        "runtime_max_output_tokens": 384000,
-        "capabilities": {
-          "agent_turn": true,
-          "parallel_tool_calls": false,
-          "image_input": false,
-          "image_generation": false,
-          "supports_reasoning": true,
-          "interactive_exec": false
-        },
-        "agent_turn": true,
-        "decision_capable": false,
-        "reasoning_effort_options": []
-      },
-      "inputs": {
-        "model": {
-          "auto_compact_token_limit": null,
-          "capabilities": {
-            "agent_turn": true,
-            "image_generation": false,
-            "image_input": false,
-            "interactive_exec": false,
-            "parallel_tool_calls": false,
-            "supports_reasoning": true
-          },
-          "context_window_tokens": 1000000,
-          "default_max_output_tokens": 384000,
-          "default_verbosity": null,
-          "effective_context_window_percent": 95,
-          "max_output_tokens_upper_limit": 384000,
-          "tool_output_truncation_estimated_tokens": 2500
-        },
-        "route": {
-          "capabilities": {},
-          "effective_context_window_percent": null,
-          "reasoning_effort_options": null
-        },
-        "evidence": {
-          "fields": {
-            "display_name": "model_builtin",
-            "description": "model_builtin",
-            "context_window_tokens": "model_builtin",
-            "effective_context_window_percent": "model_builtin",
-            "auto_compact_token_limit": "derived",
-            "prompt_budget_estimated_tokens": "derived",
-            "compaction_trigger_estimated_tokens": "derived",
-            "compaction_keep_recent_estimated_tokens": "derived",
-            "runtime_max_output_tokens": "model_builtin",
-            "verbosity": "derived",
-            "tool_output_truncation_estimated_tokens": "model_builtin",
-            "max_output_tokens_upper_limit": "model_builtin",
-            "agent_turn": "model_builtin",
-            "parallel_tool_calls": "model_builtin",
-            "image_input": "model_builtin",
-            "image_generation": "model_builtin",
-            "supports_reasoning": "model_builtin",
-            "interactive_exec": "model_builtin",
-            "reasoning_effort_options": "derived"
-          }
-        }
-      },
-      "context_status": "known",
-      "output_status": "known",
-      "review": null
-    },
-    {
-      "route_ref": "tencent-tokenhub@messages/deepseek-v4-flash-0731",
-      "facts": {
-        "context_window_tokens": null,
-        "default_max_output_tokens": null,
-        "max_output_tokens_upper_limit": null,
-        "prompt_budget_estimated_tokens": 128000,
-        "runtime_max_output_tokens": 8192,
-        "capabilities": {
-          "agent_turn": true,
-          "parallel_tool_calls": false,
-          "image_input": false,
-          "image_generation": false,
-          "supports_reasoning": false,
-          "interactive_exec": false
-        },
-        "agent_turn": true,
-        "decision_capable": false,
-        "reasoning_effort_options": []
-      },
-      "inputs": {
-        "model": {
-          "auto_compact_token_limit": null,
-          "capabilities": {
-            "agent_turn": true,
-            "image_generation": false,
-            "image_input": false,
-            "interactive_exec": false,
-            "parallel_tool_calls": false,
-            "supports_reasoning": true
-          },
-          "context_window_tokens": null,
-          "default_max_output_tokens": null,
-          "default_verbosity": null,
-          "effective_context_window_percent": 95,
-          "max_output_tokens_upper_limit": null,
-          "tool_output_truncation_estimated_tokens": 2500
-        },
-        "route": {
-          "capabilities": {
-            "supports_reasoning": false
-          },
-          "effective_context_window_percent": null,
-          "reasoning_effort_options": null
-        },
-        "evidence": {
-          "fields": {
-            "display_name": "model_builtin",
-            "description": "model_builtin",
-            "context_window_tokens": "derived",
-            "effective_context_window_percent": "model_builtin",
-            "auto_compact_token_limit": "derived",
-            "prompt_budget_estimated_tokens": "runtime_default",
-            "compaction_trigger_estimated_tokens": "derived",
-            "compaction_keep_recent_estimated_tokens": "derived",
-            "runtime_max_output_tokens": "runtime_default",
-            "verbosity": "derived",
-            "tool_output_truncation_estimated_tokens": "model_builtin",
-            "max_output_tokens_upper_limit": "derived",
-            "agent_turn": "model_builtin",
-            "parallel_tool_calls": "model_builtin",
-            "image_input": "model_builtin",
-            "image_generation": "model_builtin",
-            "supports_reasoning": "model_builtin",
-            "interactive_exec": "model_builtin",
-            "reasoning_effort_options": "derived"
-          },
-          "constraints": [
-            {
-              "field": "supports_reasoning",
-              "kind": "disabled",
-              "source": "endpoint_policy",
-              "requested": "true",
-              "effective": "false"
-            }
-          ]
-        }
-      },
-      "context_status": "unknown",
-      "output_status": "unknown",
-      "review": {
-        "owner": "holon-model-provider",
-        "reviewed_at": "2026-10-26",
-        "reason": "Only separately evidenced fields were accepted. Unconfirmed context/output capacities remain unknown; Chat defaults, reasoning/vision and hosted thinking support do not establish limits for another protocol or deployment.",
-        "recheck": "Recheck the exact endpoint/model integer limits when its official schema or model table changes.",
-        "evidence": [
-          "models.dev/endpoint-review.md",
-          "models.dev/metadata-evidence.md"
         ]
       }
     },
@@ -36688,7 +35440,7 @@
             "image_input": false,
             "interactive_exec": false,
             "parallel_tool_calls": false,
-            "supports_reasoning": false
+            "supports_reasoning": true
           },
           "context_window_tokens": null,
           "default_max_output_tokens": null,
@@ -36698,7 +35450,9 @@
           "tool_output_truncation_estimated_tokens": 2500
         },
         "route": {
-          "capabilities": {},
+          "capabilities": {
+            "supports_reasoning": false
+          },
           "effective_context_window_percent": null,
           "reasoning_effort_options": null
         },
@@ -36723,15 +35477,24 @@
             "supports_reasoning": "model_builtin",
             "interactive_exec": "model_builtin",
             "reasoning_effort_options": "derived"
-          }
+          },
+          "constraints": [
+            {
+              "field": "supports_reasoning",
+              "kind": "disabled",
+              "source": "endpoint_policy",
+              "requested": "true",
+              "effective": "false"
+            }
+          ]
         }
       },
       "context_status": "unknown",
       "output_status": "unknown",
       "review": {
         "owner": "holon-model-provider",
-        "reviewed_at": "2026-10-25",
-        "reason": "tencent-tokenhub@messages/deepseek-v4.1-flash: Missing capacity is retained as unknown. No exact endpoint upstream capacity evidence is associated; generic API, other region, plan, or protocol limits are not borrowed. Existing known fields and local output policy are preserved, not newly vendor-verified.",
+        "reviewed_at": "2026-11-04",
+        "reason": "tencent-tokenhub@messages/deepseek-v4.1-flash: Missing capacity is retained as unknown. No exact endpoint upstream capacity evidence is associated; generic API, other region, plan, or protocol limits are not borrowed. Existing known fields and local output policy are preserved, not newly vendor-verified. November 4 review: only exact V4.1 Chat thinking and low/high/max effort are independently documented; Messages/Responses reasoning remains unaudited and disabled, with no borrowed capacity or default.",
         "recheck": "At the next exact endpoint model/catalog/documentation change or before increasing its local execution budget; verify support and each missing capacity independently.",
         "evidence": [
           "models.dev/metadata-evidence.md",
@@ -36769,7 +35532,7 @@
             "image_input": false,
             "interactive_exec": false,
             "parallel_tool_calls": false,
-            "supports_reasoning": false
+            "supports_reasoning": true
           },
           "context_window_tokens": null,
           "default_max_output_tokens": null,
@@ -36779,7 +35542,9 @@
           "tool_output_truncation_estimated_tokens": 2500
         },
         "route": {
-          "capabilities": {},
+          "capabilities": {
+            "supports_reasoning": false
+          },
           "effective_context_window_percent": null,
           "reasoning_effort_options": null
         },
@@ -36804,15 +35569,24 @@
             "supports_reasoning": "model_builtin",
             "interactive_exec": "model_builtin",
             "reasoning_effort_options": "derived"
-          }
+          },
+          "constraints": [
+            {
+              "field": "supports_reasoning",
+              "kind": "disabled",
+              "source": "endpoint_policy",
+              "requested": "true",
+              "effective": "false"
+            }
+          ]
         }
       },
       "context_status": "unknown",
       "output_status": "unknown",
       "review": {
         "owner": "holon-model-provider",
-        "reviewed_at": "2026-10-25",
-        "reason": "tencent-tokenhub@messages/deepseek-v4.1-flash-1017: Missing capacity is retained as unknown. No exact endpoint upstream capacity evidence is associated; generic API, other region, plan, or protocol limits are not borrowed. Existing known fields and local output policy are preserved, not newly vendor-verified.",
+        "reviewed_at": "2026-11-04",
+        "reason": "tencent-tokenhub@messages/deepseek-v4.1-flash-1017: Missing capacity is retained as unknown. No exact endpoint upstream capacity evidence is associated; generic API, other region, plan, or protocol limits are not borrowed. Existing known fields and local output policy are preserved, not newly vendor-verified. November 4 review: only exact V4.1 Chat thinking and low/high/max effort are independently documented; Messages/Responses reasoning remains unaudited and disabled, with no borrowed capacity or default.",
         "recheck": "At the next exact endpoint model/catalog/documentation change or before increasing its local execution budget; verify support and each missing capacity independently.",
         "evidence": [
           "models.dev/metadata-evidence.md",
@@ -37368,219 +36142,6 @@
       }
     },
     {
-      "route_ref": "tencent-tokenhub@messages/glm-5",
-      "facts": {
-        "context_window_tokens": 202800,
-        "default_max_output_tokens": 131072,
-        "max_output_tokens_upper_limit": 131072,
-        "prompt_budget_estimated_tokens": 192660,
-        "runtime_max_output_tokens": 131072,
-        "capabilities": {
-          "agent_turn": true,
-          "parallel_tool_calls": false,
-          "image_input": false,
-          "image_generation": false,
-          "supports_reasoning": true,
-          "interactive_exec": false
-        },
-        "agent_turn": true,
-        "decision_capable": false,
-        "reasoning_effort_options": []
-      },
-      "inputs": {
-        "model": {
-          "auto_compact_token_limit": null,
-          "capabilities": {
-            "agent_turn": true,
-            "image_generation": false,
-            "image_input": false,
-            "interactive_exec": false,
-            "parallel_tool_calls": false,
-            "supports_reasoning": true
-          },
-          "context_window_tokens": 202800,
-          "default_max_output_tokens": 131072,
-          "default_verbosity": null,
-          "effective_context_window_percent": 95,
-          "max_output_tokens_upper_limit": 131072,
-          "tool_output_truncation_estimated_tokens": 2500
-        },
-        "route": {
-          "capabilities": {},
-          "effective_context_window_percent": null,
-          "reasoning_effort_options": null
-        },
-        "evidence": {
-          "fields": {
-            "display_name": "model_builtin",
-            "description": "model_builtin",
-            "context_window_tokens": "model_builtin",
-            "effective_context_window_percent": "model_builtin",
-            "auto_compact_token_limit": "derived",
-            "prompt_budget_estimated_tokens": "derived",
-            "compaction_trigger_estimated_tokens": "derived",
-            "compaction_keep_recent_estimated_tokens": "derived",
-            "runtime_max_output_tokens": "model_builtin",
-            "verbosity": "derived",
-            "tool_output_truncation_estimated_tokens": "model_builtin",
-            "max_output_tokens_upper_limit": "model_builtin",
-            "agent_turn": "model_builtin",
-            "parallel_tool_calls": "model_builtin",
-            "image_input": "model_builtin",
-            "image_generation": "model_builtin",
-            "supports_reasoning": "model_builtin",
-            "interactive_exec": "model_builtin",
-            "reasoning_effort_options": "derived"
-          }
-        }
-      },
-      "context_status": "known",
-      "output_status": "known",
-      "review": null
-    },
-    {
-      "route_ref": "tencent-tokenhub@messages/glm-5-turbo",
-      "facts": {
-        "context_window_tokens": 202800,
-        "default_max_output_tokens": 131072,
-        "max_output_tokens_upper_limit": 131072,
-        "prompt_budget_estimated_tokens": 192660,
-        "runtime_max_output_tokens": 131072,
-        "capabilities": {
-          "agent_turn": true,
-          "parallel_tool_calls": false,
-          "image_input": false,
-          "image_generation": false,
-          "supports_reasoning": true,
-          "interactive_exec": false
-        },
-        "agent_turn": true,
-        "decision_capable": false,
-        "reasoning_effort_options": []
-      },
-      "inputs": {
-        "model": {
-          "auto_compact_token_limit": null,
-          "capabilities": {
-            "agent_turn": true,
-            "image_generation": false,
-            "image_input": false,
-            "interactive_exec": false,
-            "parallel_tool_calls": false,
-            "supports_reasoning": true
-          },
-          "context_window_tokens": 202800,
-          "default_max_output_tokens": 131072,
-          "default_verbosity": null,
-          "effective_context_window_percent": 95,
-          "max_output_tokens_upper_limit": 131072,
-          "tool_output_truncation_estimated_tokens": 2500
-        },
-        "route": {
-          "capabilities": {},
-          "effective_context_window_percent": null,
-          "reasoning_effort_options": null
-        },
-        "evidence": {
-          "fields": {
-            "display_name": "model_builtin",
-            "description": "model_builtin",
-            "context_window_tokens": "model_builtin",
-            "effective_context_window_percent": "model_builtin",
-            "auto_compact_token_limit": "derived",
-            "prompt_budget_estimated_tokens": "derived",
-            "compaction_trigger_estimated_tokens": "derived",
-            "compaction_keep_recent_estimated_tokens": "derived",
-            "runtime_max_output_tokens": "model_builtin",
-            "verbosity": "derived",
-            "tool_output_truncation_estimated_tokens": "model_builtin",
-            "max_output_tokens_upper_limit": "model_builtin",
-            "agent_turn": "model_builtin",
-            "parallel_tool_calls": "model_builtin",
-            "image_input": "model_builtin",
-            "image_generation": "model_builtin",
-            "supports_reasoning": "model_builtin",
-            "interactive_exec": "model_builtin",
-            "reasoning_effort_options": "derived"
-          }
-        }
-      },
-      "context_status": "known",
-      "output_status": "known",
-      "review": null
-    },
-    {
-      "route_ref": "tencent-tokenhub@messages/glm-5.1",
-      "facts": {
-        "context_window_tokens": 202800,
-        "default_max_output_tokens": 131072,
-        "max_output_tokens_upper_limit": 131072,
-        "prompt_budget_estimated_tokens": 192660,
-        "runtime_max_output_tokens": 131072,
-        "capabilities": {
-          "agent_turn": true,
-          "parallel_tool_calls": false,
-          "image_input": false,
-          "image_generation": false,
-          "supports_reasoning": true,
-          "interactive_exec": false
-        },
-        "agent_turn": true,
-        "decision_capable": false,
-        "reasoning_effort_options": []
-      },
-      "inputs": {
-        "model": {
-          "auto_compact_token_limit": null,
-          "capabilities": {
-            "agent_turn": true,
-            "image_generation": false,
-            "image_input": false,
-            "interactive_exec": false,
-            "parallel_tool_calls": false,
-            "supports_reasoning": true
-          },
-          "context_window_tokens": 202800,
-          "default_max_output_tokens": 131072,
-          "default_verbosity": null,
-          "effective_context_window_percent": 95,
-          "max_output_tokens_upper_limit": 131072,
-          "tool_output_truncation_estimated_tokens": 2500
-        },
-        "route": {
-          "capabilities": {},
-          "effective_context_window_percent": null,
-          "reasoning_effort_options": null
-        },
-        "evidence": {
-          "fields": {
-            "display_name": "model_builtin",
-            "description": "model_builtin",
-            "context_window_tokens": "model_builtin",
-            "effective_context_window_percent": "model_builtin",
-            "auto_compact_token_limit": "derived",
-            "prompt_budget_estimated_tokens": "derived",
-            "compaction_trigger_estimated_tokens": "derived",
-            "compaction_keep_recent_estimated_tokens": "derived",
-            "runtime_max_output_tokens": "model_builtin",
-            "verbosity": "derived",
-            "tool_output_truncation_estimated_tokens": "model_builtin",
-            "max_output_tokens_upper_limit": "model_builtin",
-            "agent_turn": "model_builtin",
-            "parallel_tool_calls": "model_builtin",
-            "image_input": "model_builtin",
-            "image_generation": "model_builtin",
-            "supports_reasoning": "model_builtin",
-            "interactive_exec": "model_builtin",
-            "reasoning_effort_options": "derived"
-          }
-        }
-      },
-      "context_status": "known",
-      "output_status": "known",
-      "review": null
-    },
-    {
       "route_ref": "tencent-tokenhub@messages/glm-5.2",
       "facts": {
         "context_window_tokens": 1000000,
@@ -37939,77 +36500,6 @@
           "models.dev/metadata-evidence.md"
         ]
       }
-    },
-    {
-      "route_ref": "tencent-tokenhub@messages/glm-5v-turbo",
-      "facts": {
-        "context_window_tokens": 202800,
-        "default_max_output_tokens": 131072,
-        "max_output_tokens_upper_limit": 131072,
-        "prompt_budget_estimated_tokens": 192660,
-        "runtime_max_output_tokens": 131072,
-        "capabilities": {
-          "agent_turn": true,
-          "parallel_tool_calls": false,
-          "image_input": true,
-          "image_generation": false,
-          "supports_reasoning": true,
-          "interactive_exec": false
-        },
-        "agent_turn": true,
-        "decision_capable": false,
-        "reasoning_effort_options": []
-      },
-      "inputs": {
-        "model": {
-          "auto_compact_token_limit": null,
-          "capabilities": {
-            "agent_turn": true,
-            "image_generation": false,
-            "image_input": true,
-            "interactive_exec": false,
-            "parallel_tool_calls": false,
-            "supports_reasoning": true
-          },
-          "context_window_tokens": 202800,
-          "default_max_output_tokens": 131072,
-          "default_verbosity": null,
-          "effective_context_window_percent": 95,
-          "max_output_tokens_upper_limit": 131072,
-          "tool_output_truncation_estimated_tokens": 2500
-        },
-        "route": {
-          "capabilities": {},
-          "effective_context_window_percent": null,
-          "reasoning_effort_options": null
-        },
-        "evidence": {
-          "fields": {
-            "display_name": "model_builtin",
-            "description": "model_builtin",
-            "context_window_tokens": "model_builtin",
-            "effective_context_window_percent": "model_builtin",
-            "auto_compact_token_limit": "derived",
-            "prompt_budget_estimated_tokens": "derived",
-            "compaction_trigger_estimated_tokens": "derived",
-            "compaction_keep_recent_estimated_tokens": "derived",
-            "runtime_max_output_tokens": "model_builtin",
-            "verbosity": "derived",
-            "tool_output_truncation_estimated_tokens": "model_builtin",
-            "max_output_tokens_upper_limit": "model_builtin",
-            "agent_turn": "model_builtin",
-            "parallel_tool_calls": "model_builtin",
-            "image_input": "model_builtin",
-            "image_generation": "model_builtin",
-            "supports_reasoning": "model_builtin",
-            "interactive_exec": "model_builtin",
-            "reasoning_effort_options": "derived"
-          }
-        }
-      },
-      "context_status": "known",
-      "output_status": "known",
-      "review": null
     },
     {
       "route_ref": "tencent-tokenhub@messages/hunyuan-role-latest",
@@ -38407,77 +36897,6 @@
       "review": null
     },
     {
-      "route_ref": "tencent-tokenhub@messages/hy3-preview",
-      "facts": {
-        "context_window_tokens": 256000,
-        "default_max_output_tokens": 128000,
-        "max_output_tokens_upper_limit": 128000,
-        "prompt_budget_estimated_tokens": 243200,
-        "runtime_max_output_tokens": 128000,
-        "capabilities": {
-          "agent_turn": true,
-          "parallel_tool_calls": false,
-          "image_input": false,
-          "image_generation": false,
-          "supports_reasoning": true,
-          "interactive_exec": false
-        },
-        "agent_turn": true,
-        "decision_capable": false,
-        "reasoning_effort_options": []
-      },
-      "inputs": {
-        "model": {
-          "auto_compact_token_limit": null,
-          "capabilities": {
-            "agent_turn": true,
-            "image_generation": false,
-            "image_input": false,
-            "interactive_exec": false,
-            "parallel_tool_calls": false,
-            "supports_reasoning": true
-          },
-          "context_window_tokens": 256000,
-          "default_max_output_tokens": 128000,
-          "default_verbosity": null,
-          "effective_context_window_percent": 95,
-          "max_output_tokens_upper_limit": 128000,
-          "tool_output_truncation_estimated_tokens": 2500
-        },
-        "route": {
-          "capabilities": {},
-          "effective_context_window_percent": null,
-          "reasoning_effort_options": null
-        },
-        "evidence": {
-          "fields": {
-            "display_name": "model_builtin",
-            "description": "model_builtin",
-            "context_window_tokens": "model_builtin",
-            "effective_context_window_percent": "model_builtin",
-            "auto_compact_token_limit": "derived",
-            "prompt_budget_estimated_tokens": "derived",
-            "compaction_trigger_estimated_tokens": "derived",
-            "compaction_keep_recent_estimated_tokens": "derived",
-            "runtime_max_output_tokens": "model_builtin",
-            "verbosity": "derived",
-            "tool_output_truncation_estimated_tokens": "model_builtin",
-            "max_output_tokens_upper_limit": "model_builtin",
-            "agent_turn": "model_builtin",
-            "parallel_tool_calls": "model_builtin",
-            "image_input": "model_builtin",
-            "image_generation": "model_builtin",
-            "supports_reasoning": "model_builtin",
-            "interactive_exec": "model_builtin",
-            "reasoning_effort_options": "derived"
-          }
-        }
-      },
-      "context_status": "known",
-      "output_status": "known",
-      "review": null
-    },
-    {
       "route_ref": "tencent-tokenhub@messages/hy4-preview",
       "facts": {
         "context_window_tokens": null,
@@ -38567,77 +36986,6 @@
           "models.dev/metadata-evidence.md"
         ]
       }
-    },
-    {
-      "route_ref": "tencent-tokenhub@messages/kimi-k2.5",
-      "facts": {
-        "context_window_tokens": 262144,
-        "default_max_output_tokens": 262144,
-        "max_output_tokens_upper_limit": 262144,
-        "prompt_budget_estimated_tokens": 249036,
-        "runtime_max_output_tokens": 262144,
-        "capabilities": {
-          "agent_turn": true,
-          "parallel_tool_calls": false,
-          "image_input": true,
-          "image_generation": false,
-          "supports_reasoning": true,
-          "interactive_exec": false
-        },
-        "agent_turn": true,
-        "decision_capable": false,
-        "reasoning_effort_options": []
-      },
-      "inputs": {
-        "model": {
-          "auto_compact_token_limit": null,
-          "capabilities": {
-            "agent_turn": true,
-            "image_generation": false,
-            "image_input": true,
-            "interactive_exec": false,
-            "parallel_tool_calls": false,
-            "supports_reasoning": true
-          },
-          "context_window_tokens": 262144,
-          "default_max_output_tokens": 262144,
-          "default_verbosity": null,
-          "effective_context_window_percent": 95,
-          "max_output_tokens_upper_limit": 262144,
-          "tool_output_truncation_estimated_tokens": 2500
-        },
-        "route": {
-          "capabilities": {},
-          "effective_context_window_percent": null,
-          "reasoning_effort_options": null
-        },
-        "evidence": {
-          "fields": {
-            "display_name": "model_builtin",
-            "description": "model_builtin",
-            "context_window_tokens": "model_builtin",
-            "effective_context_window_percent": "model_builtin",
-            "auto_compact_token_limit": "derived",
-            "prompt_budget_estimated_tokens": "derived",
-            "compaction_trigger_estimated_tokens": "derived",
-            "compaction_keep_recent_estimated_tokens": "derived",
-            "runtime_max_output_tokens": "model_builtin",
-            "verbosity": "derived",
-            "tool_output_truncation_estimated_tokens": "model_builtin",
-            "max_output_tokens_upper_limit": "model_builtin",
-            "agent_turn": "model_builtin",
-            "parallel_tool_calls": "model_builtin",
-            "image_input": "model_builtin",
-            "image_generation": "model_builtin",
-            "supports_reasoning": "model_builtin",
-            "interactive_exec": "model_builtin",
-            "reasoning_effort_options": "derived"
-          }
-        }
-      },
-      "context_status": "known",
-      "output_status": "known",
-      "review": null
     },
     {
       "route_ref": "tencent-tokenhub@messages/kimi-k2.6",
@@ -39249,87 +37597,6 @@
       }
     },
     {
-      "route_ref": "tencent-tokenhub@messages/mimo-v2.5-pro",
-      "facts": {
-        "context_window_tokens": null,
-        "default_max_output_tokens": null,
-        "max_output_tokens_upper_limit": null,
-        "prompt_budget_estimated_tokens": 128000,
-        "runtime_max_output_tokens": 8192,
-        "capabilities": {
-          "agent_turn": true,
-          "parallel_tool_calls": false,
-          "image_input": false,
-          "image_generation": false,
-          "supports_reasoning": false,
-          "interactive_exec": false
-        },
-        "agent_turn": true,
-        "decision_capable": false,
-        "reasoning_effort_options": []
-      },
-      "inputs": {
-        "model": {
-          "auto_compact_token_limit": null,
-          "capabilities": {
-            "agent_turn": true,
-            "image_generation": false,
-            "image_input": false,
-            "interactive_exec": false,
-            "parallel_tool_calls": false,
-            "supports_reasoning": false
-          },
-          "context_window_tokens": null,
-          "default_max_output_tokens": null,
-          "default_verbosity": null,
-          "effective_context_window_percent": 95,
-          "max_output_tokens_upper_limit": null,
-          "tool_output_truncation_estimated_tokens": 2500
-        },
-        "route": {
-          "capabilities": {},
-          "effective_context_window_percent": null,
-          "reasoning_effort_options": null
-        },
-        "evidence": {
-          "fields": {
-            "display_name": "model_builtin",
-            "description": "model_builtin",
-            "context_window_tokens": "derived",
-            "effective_context_window_percent": "model_builtin",
-            "auto_compact_token_limit": "derived",
-            "prompt_budget_estimated_tokens": "runtime_default",
-            "compaction_trigger_estimated_tokens": "derived",
-            "compaction_keep_recent_estimated_tokens": "derived",
-            "runtime_max_output_tokens": "runtime_default",
-            "verbosity": "derived",
-            "tool_output_truncation_estimated_tokens": "model_builtin",
-            "max_output_tokens_upper_limit": "derived",
-            "agent_turn": "model_builtin",
-            "parallel_tool_calls": "model_builtin",
-            "image_input": "model_builtin",
-            "image_generation": "model_builtin",
-            "supports_reasoning": "model_builtin",
-            "interactive_exec": "model_builtin",
-            "reasoning_effort_options": "derived"
-          }
-        }
-      },
-      "context_status": "unknown",
-      "output_status": "unknown",
-      "review": {
-        "owner": "holon-model-provider",
-        "reviewed_at": "2026-10-25",
-        "reason": "tencent-tokenhub@messages/mimo-v2.5-pro: Missing capacity is retained as unknown. No exact endpoint upstream capacity evidence is associated; generic API, other region, plan, or protocol limits are not borrowed. Existing known fields and local output policy are preserved, not newly vendor-verified.",
-        "recheck": "At the next exact endpoint model/catalog/documentation change or before increasing its local execution budget; verify support and each missing capacity independently.",
-        "evidence": [
-          "models.dev/metadata-evidence.md",
-          "models.dev/endpoint-review.md",
-          "models.dev/endpoint-mappings.json"
-        ]
-      }
-    },
-    {
       "route_ref": "tencent-tokenhub@messages/mimo-v2.6-flash",
       "facts": {
         "context_window_tokens": null,
@@ -39490,77 +37757,6 @@
           "models.dev/endpoint-mappings.json"
         ]
       }
-    },
-    {
-      "route_ref": "tencent-tokenhub@messages/minimax-m2.5",
-      "facts": {
-        "context_window_tokens": 196608,
-        "default_max_output_tokens": 32768,
-        "max_output_tokens_upper_limit": 32768,
-        "prompt_budget_estimated_tokens": 186777,
-        "runtime_max_output_tokens": 32768,
-        "capabilities": {
-          "agent_turn": true,
-          "parallel_tool_calls": false,
-          "image_input": false,
-          "image_generation": false,
-          "supports_reasoning": true,
-          "interactive_exec": false
-        },
-        "agent_turn": true,
-        "decision_capable": false,
-        "reasoning_effort_options": []
-      },
-      "inputs": {
-        "model": {
-          "auto_compact_token_limit": null,
-          "capabilities": {
-            "agent_turn": true,
-            "image_generation": false,
-            "image_input": false,
-            "interactive_exec": false,
-            "parallel_tool_calls": false,
-            "supports_reasoning": true
-          },
-          "context_window_tokens": 196608,
-          "default_max_output_tokens": 32768,
-          "default_verbosity": null,
-          "effective_context_window_percent": 95,
-          "max_output_tokens_upper_limit": 32768,
-          "tool_output_truncation_estimated_tokens": 2500
-        },
-        "route": {
-          "capabilities": {},
-          "effective_context_window_percent": null,
-          "reasoning_effort_options": null
-        },
-        "evidence": {
-          "fields": {
-            "display_name": "model_builtin",
-            "description": "model_builtin",
-            "context_window_tokens": "model_builtin",
-            "effective_context_window_percent": "model_builtin",
-            "auto_compact_token_limit": "derived",
-            "prompt_budget_estimated_tokens": "derived",
-            "compaction_trigger_estimated_tokens": "derived",
-            "compaction_keep_recent_estimated_tokens": "derived",
-            "runtime_max_output_tokens": "model_builtin",
-            "verbosity": "derived",
-            "tool_output_truncation_estimated_tokens": "model_builtin",
-            "max_output_tokens_upper_limit": "model_builtin",
-            "agent_turn": "model_builtin",
-            "parallel_tool_calls": "model_builtin",
-            "image_input": "model_builtin",
-            "image_generation": "model_builtin",
-            "supports_reasoning": "model_builtin",
-            "interactive_exec": "model_builtin",
-            "reasoning_effort_options": "derived"
-          }
-        }
-      },
-      "context_status": "known",
-      "output_status": "known",
-      "review": null
     },
     {
       "route_ref": "tencent-tokenhub@messages/minimax-m2.7",
@@ -39806,148 +38002,6 @@
       }
     },
     {
-      "route_ref": "tencent-tokenhub@messages/qwen3.5-flash",
-      "facts": {
-        "context_window_tokens": 1000000,
-        "default_max_output_tokens": 65536,
-        "max_output_tokens_upper_limit": 65536,
-        "prompt_budget_estimated_tokens": 950000,
-        "runtime_max_output_tokens": 65536,
-        "capabilities": {
-          "agent_turn": true,
-          "parallel_tool_calls": false,
-          "image_input": true,
-          "image_generation": false,
-          "supports_reasoning": true,
-          "interactive_exec": false
-        },
-        "agent_turn": true,
-        "decision_capable": false,
-        "reasoning_effort_options": []
-      },
-      "inputs": {
-        "model": {
-          "auto_compact_token_limit": null,
-          "capabilities": {
-            "agent_turn": true,
-            "image_generation": false,
-            "image_input": true,
-            "interactive_exec": false,
-            "parallel_tool_calls": false,
-            "supports_reasoning": true
-          },
-          "context_window_tokens": 1000000,
-          "default_max_output_tokens": 65536,
-          "default_verbosity": null,
-          "effective_context_window_percent": 95,
-          "max_output_tokens_upper_limit": 65536,
-          "tool_output_truncation_estimated_tokens": 2500
-        },
-        "route": {
-          "capabilities": {},
-          "effective_context_window_percent": null,
-          "reasoning_effort_options": null
-        },
-        "evidence": {
-          "fields": {
-            "display_name": "model_builtin",
-            "description": "model_builtin",
-            "context_window_tokens": "model_builtin",
-            "effective_context_window_percent": "model_builtin",
-            "auto_compact_token_limit": "derived",
-            "prompt_budget_estimated_tokens": "derived",
-            "compaction_trigger_estimated_tokens": "derived",
-            "compaction_keep_recent_estimated_tokens": "derived",
-            "runtime_max_output_tokens": "model_builtin",
-            "verbosity": "derived",
-            "tool_output_truncation_estimated_tokens": "model_builtin",
-            "max_output_tokens_upper_limit": "model_builtin",
-            "agent_turn": "model_builtin",
-            "parallel_tool_calls": "model_builtin",
-            "image_input": "model_builtin",
-            "image_generation": "model_builtin",
-            "supports_reasoning": "model_builtin",
-            "interactive_exec": "model_builtin",
-            "reasoning_effort_options": "derived"
-          }
-        }
-      },
-      "context_status": "known",
-      "output_status": "known",
-      "review": null
-    },
-    {
-      "route_ref": "tencent-tokenhub@messages/qwen3.5-plus",
-      "facts": {
-        "context_window_tokens": 1000000,
-        "default_max_output_tokens": 65536,
-        "max_output_tokens_upper_limit": 65536,
-        "prompt_budget_estimated_tokens": 950000,
-        "runtime_max_output_tokens": 65536,
-        "capabilities": {
-          "agent_turn": true,
-          "parallel_tool_calls": false,
-          "image_input": true,
-          "image_generation": false,
-          "supports_reasoning": true,
-          "interactive_exec": false
-        },
-        "agent_turn": true,
-        "decision_capable": false,
-        "reasoning_effort_options": []
-      },
-      "inputs": {
-        "model": {
-          "auto_compact_token_limit": null,
-          "capabilities": {
-            "agent_turn": true,
-            "image_generation": false,
-            "image_input": true,
-            "interactive_exec": false,
-            "parallel_tool_calls": false,
-            "supports_reasoning": true
-          },
-          "context_window_tokens": 1000000,
-          "default_max_output_tokens": 65536,
-          "default_verbosity": null,
-          "effective_context_window_percent": 95,
-          "max_output_tokens_upper_limit": 65536,
-          "tool_output_truncation_estimated_tokens": 2500
-        },
-        "route": {
-          "capabilities": {},
-          "effective_context_window_percent": null,
-          "reasoning_effort_options": null
-        },
-        "evidence": {
-          "fields": {
-            "display_name": "model_builtin",
-            "description": "model_builtin",
-            "context_window_tokens": "model_builtin",
-            "effective_context_window_percent": "model_builtin",
-            "auto_compact_token_limit": "derived",
-            "prompt_budget_estimated_tokens": "derived",
-            "compaction_trigger_estimated_tokens": "derived",
-            "compaction_keep_recent_estimated_tokens": "derived",
-            "runtime_max_output_tokens": "model_builtin",
-            "verbosity": "derived",
-            "tool_output_truncation_estimated_tokens": "model_builtin",
-            "max_output_tokens_upper_limit": "model_builtin",
-            "agent_turn": "model_builtin",
-            "parallel_tool_calls": "model_builtin",
-            "image_input": "model_builtin",
-            "image_generation": "model_builtin",
-            "supports_reasoning": "model_builtin",
-            "interactive_exec": "model_builtin",
-            "reasoning_effort_options": "derived"
-          }
-        }
-      },
-      "context_status": "known",
-      "output_status": "known",
-      "review": null
-    },
-    {
       "route_ref": "tencent-tokenhub@messages/step-5-preview",
       "facts": {
         "context_window_tokens": null,
@@ -40025,249 +38079,6 @@
           "models.dev/metadata-evidence.md",
           "models.dev/endpoint-review.md",
           "models.dev/endpoint-mappings.json"
-        ]
-      }
-    },
-    {
-      "route_ref": "tencent-tokenhub@messages/youtu-vita",
-      "facts": {
-        "context_window_tokens": null,
-        "default_max_output_tokens": null,
-        "max_output_tokens_upper_limit": null,
-        "prompt_budget_estimated_tokens": 128000,
-        "runtime_max_output_tokens": 8192,
-        "capabilities": {
-          "agent_turn": true,
-          "parallel_tool_calls": false,
-          "image_input": true,
-          "image_generation": false,
-          "supports_reasoning": false,
-          "interactive_exec": false
-        },
-        "agent_turn": true,
-        "decision_capable": false,
-        "reasoning_effort_options": []
-      },
-      "inputs": {
-        "model": {
-          "auto_compact_token_limit": null,
-          "capabilities": {
-            "agent_turn": true,
-            "image_generation": false,
-            "image_input": true,
-            "interactive_exec": false,
-            "parallel_tool_calls": false,
-            "supports_reasoning": false
-          },
-          "context_window_tokens": null,
-          "default_max_output_tokens": null,
-          "default_verbosity": null,
-          "effective_context_window_percent": 95,
-          "max_output_tokens_upper_limit": null,
-          "tool_output_truncation_estimated_tokens": 2500
-        },
-        "route": {
-          "capabilities": {},
-          "effective_context_window_percent": null,
-          "reasoning_effort_options": null
-        },
-        "evidence": {
-          "fields": {
-            "display_name": "model_builtin",
-            "description": "model_builtin",
-            "context_window_tokens": "derived",
-            "effective_context_window_percent": "model_builtin",
-            "auto_compact_token_limit": "derived",
-            "prompt_budget_estimated_tokens": "runtime_default",
-            "compaction_trigger_estimated_tokens": "derived",
-            "compaction_keep_recent_estimated_tokens": "derived",
-            "runtime_max_output_tokens": "runtime_default",
-            "verbosity": "derived",
-            "tool_output_truncation_estimated_tokens": "model_builtin",
-            "max_output_tokens_upper_limit": "derived",
-            "agent_turn": "model_builtin",
-            "parallel_tool_calls": "model_builtin",
-            "image_input": "model_builtin",
-            "image_generation": "model_builtin",
-            "supports_reasoning": "model_builtin",
-            "interactive_exec": "model_builtin",
-            "reasoning_effort_options": "derived"
-          }
-        }
-      },
-      "context_status": "unknown",
-      "output_status": "unknown",
-      "review": {
-        "owner": "holon-model-provider",
-        "reviewed_at": "2026-10-25",
-        "reason": "tencent-tokenhub@messages/youtu-vita: Missing capacity is retained as unknown. No exact endpoint upstream capacity evidence is associated; generic API, other region, plan, or protocol limits are not borrowed. Existing known fields and local output policy are preserved, not newly vendor-verified.",
-        "recheck": "At the next exact endpoint model/catalog/documentation change or before increasing its local execution budget; verify support and each missing capacity independently.",
-        "evidence": [
-          "models.dev/metadata-evidence.md",
-          "models.dev/endpoint-review.md",
-          "models.dev/endpoint-mappings.json"
-        ]
-      }
-    },
-    {
-      "route_ref": "tencent-tokenhub@responses/deepseek-v4-flash",
-      "facts": {
-        "context_window_tokens": 1000000,
-        "default_max_output_tokens": 384000,
-        "max_output_tokens_upper_limit": 384000,
-        "prompt_budget_estimated_tokens": 950000,
-        "runtime_max_output_tokens": 384000,
-        "capabilities": {
-          "agent_turn": true,
-          "parallel_tool_calls": false,
-          "image_input": false,
-          "image_generation": false,
-          "supports_reasoning": true,
-          "interactive_exec": false
-        },
-        "agent_turn": true,
-        "decision_capable": false,
-        "reasoning_effort_options": []
-      },
-      "inputs": {
-        "model": {
-          "auto_compact_token_limit": null,
-          "capabilities": {
-            "agent_turn": true,
-            "image_generation": false,
-            "image_input": false,
-            "interactive_exec": false,
-            "parallel_tool_calls": false,
-            "supports_reasoning": true
-          },
-          "context_window_tokens": 1000000,
-          "default_max_output_tokens": 384000,
-          "default_verbosity": null,
-          "effective_context_window_percent": 95,
-          "max_output_tokens_upper_limit": 384000,
-          "tool_output_truncation_estimated_tokens": 2500
-        },
-        "route": {
-          "capabilities": {},
-          "effective_context_window_percent": null,
-          "reasoning_effort_options": null
-        },
-        "evidence": {
-          "fields": {
-            "display_name": "model_builtin",
-            "description": "model_builtin",
-            "context_window_tokens": "model_builtin",
-            "effective_context_window_percent": "model_builtin",
-            "auto_compact_token_limit": "derived",
-            "prompt_budget_estimated_tokens": "derived",
-            "compaction_trigger_estimated_tokens": "derived",
-            "compaction_keep_recent_estimated_tokens": "derived",
-            "runtime_max_output_tokens": "model_builtin",
-            "verbosity": "derived",
-            "tool_output_truncation_estimated_tokens": "model_builtin",
-            "max_output_tokens_upper_limit": "model_builtin",
-            "agent_turn": "model_builtin",
-            "parallel_tool_calls": "model_builtin",
-            "image_input": "model_builtin",
-            "image_generation": "model_builtin",
-            "supports_reasoning": "model_builtin",
-            "interactive_exec": "model_builtin",
-            "reasoning_effort_options": "derived"
-          }
-        }
-      },
-      "context_status": "known",
-      "output_status": "known",
-      "review": null
-    },
-    {
-      "route_ref": "tencent-tokenhub@responses/deepseek-v4-flash-0731",
-      "facts": {
-        "context_window_tokens": null,
-        "default_max_output_tokens": null,
-        "max_output_tokens_upper_limit": null,
-        "prompt_budget_estimated_tokens": 128000,
-        "runtime_max_output_tokens": 8192,
-        "capabilities": {
-          "agent_turn": true,
-          "parallel_tool_calls": false,
-          "image_input": false,
-          "image_generation": false,
-          "supports_reasoning": false,
-          "interactive_exec": false
-        },
-        "agent_turn": true,
-        "decision_capable": false,
-        "reasoning_effort_options": []
-      },
-      "inputs": {
-        "model": {
-          "auto_compact_token_limit": null,
-          "capabilities": {
-            "agent_turn": true,
-            "image_generation": false,
-            "image_input": false,
-            "interactive_exec": false,
-            "parallel_tool_calls": false,
-            "supports_reasoning": true
-          },
-          "context_window_tokens": null,
-          "default_max_output_tokens": null,
-          "default_verbosity": null,
-          "effective_context_window_percent": 95,
-          "max_output_tokens_upper_limit": null,
-          "tool_output_truncation_estimated_tokens": 2500
-        },
-        "route": {
-          "capabilities": {
-            "supports_reasoning": false
-          },
-          "effective_context_window_percent": null,
-          "reasoning_effort_options": null
-        },
-        "evidence": {
-          "fields": {
-            "display_name": "model_builtin",
-            "description": "model_builtin",
-            "context_window_tokens": "derived",
-            "effective_context_window_percent": "model_builtin",
-            "auto_compact_token_limit": "derived",
-            "prompt_budget_estimated_tokens": "runtime_default",
-            "compaction_trigger_estimated_tokens": "derived",
-            "compaction_keep_recent_estimated_tokens": "derived",
-            "runtime_max_output_tokens": "runtime_default",
-            "verbosity": "derived",
-            "tool_output_truncation_estimated_tokens": "model_builtin",
-            "max_output_tokens_upper_limit": "derived",
-            "agent_turn": "model_builtin",
-            "parallel_tool_calls": "model_builtin",
-            "image_input": "model_builtin",
-            "image_generation": "model_builtin",
-            "supports_reasoning": "model_builtin",
-            "interactive_exec": "model_builtin",
-            "reasoning_effort_options": "derived"
-          },
-          "constraints": [
-            {
-              "field": "supports_reasoning",
-              "kind": "disabled",
-              "source": "endpoint_policy",
-              "requested": "true",
-              "effective": "false"
-            }
-          ]
-        }
-      },
-      "context_status": "unknown",
-      "output_status": "unknown",
-      "review": {
-        "owner": "holon-model-provider",
-        "reviewed_at": "2026-10-26",
-        "reason": "Only separately evidenced fields were accepted. Unconfirmed context/output capacities remain unknown; Chat defaults, reasoning/vision and hosted thinking support do not establish limits for another protocol or deployment.",
-        "recheck": "Recheck the exact endpoint/model integer limits when its official schema or model table changes.",
-        "evidence": [
-          "models.dev/endpoint-review.md",
-          "models.dev/metadata-evidence.md"
         ]
       }
     },
@@ -40644,7 +38455,7 @@
             "image_input": false,
             "interactive_exec": false,
             "parallel_tool_calls": false,
-            "supports_reasoning": false
+            "supports_reasoning": true
           },
           "context_window_tokens": null,
           "default_max_output_tokens": null,
@@ -40654,7 +38465,9 @@
           "tool_output_truncation_estimated_tokens": 2500
         },
         "route": {
-          "capabilities": {},
+          "capabilities": {
+            "supports_reasoning": false
+          },
           "effective_context_window_percent": null,
           "reasoning_effort_options": null
         },
@@ -40679,15 +38492,24 @@
             "supports_reasoning": "model_builtin",
             "interactive_exec": "model_builtin",
             "reasoning_effort_options": "derived"
-          }
+          },
+          "constraints": [
+            {
+              "field": "supports_reasoning",
+              "kind": "disabled",
+              "source": "endpoint_policy",
+              "requested": "true",
+              "effective": "false"
+            }
+          ]
         }
       },
       "context_status": "unknown",
       "output_status": "unknown",
       "review": {
         "owner": "holon-model-provider",
-        "reviewed_at": "2026-10-25",
-        "reason": "tencent-tokenhub@responses/deepseek-v4.1-flash: Missing capacity is retained as unknown. No exact endpoint upstream capacity evidence is associated; generic API, other region, plan, or protocol limits are not borrowed. Existing known fields and local output policy are preserved, not newly vendor-verified.",
+        "reviewed_at": "2026-11-04",
+        "reason": "tencent-tokenhub@responses/deepseek-v4.1-flash: Missing capacity is retained as unknown. No exact endpoint upstream capacity evidence is associated; generic API, other region, plan, or protocol limits are not borrowed. Existing known fields and local output policy are preserved, not newly vendor-verified. November 4 review: only exact V4.1 Chat thinking and low/high/max effort are independently documented; Messages/Responses reasoning remains unaudited and disabled, with no borrowed capacity or default.",
         "recheck": "At the next exact endpoint model/catalog/documentation change or before increasing its local execution budget; verify support and each missing capacity independently.",
         "evidence": [
           "models.dev/metadata-evidence.md",
@@ -40725,7 +38547,7 @@
             "image_input": false,
             "interactive_exec": false,
             "parallel_tool_calls": false,
-            "supports_reasoning": false
+            "supports_reasoning": true
           },
           "context_window_tokens": null,
           "default_max_output_tokens": null,
@@ -40735,7 +38557,9 @@
           "tool_output_truncation_estimated_tokens": 2500
         },
         "route": {
-          "capabilities": {},
+          "capabilities": {
+            "supports_reasoning": false
+          },
           "effective_context_window_percent": null,
           "reasoning_effort_options": null
         },
@@ -40760,15 +38584,24 @@
             "supports_reasoning": "model_builtin",
             "interactive_exec": "model_builtin",
             "reasoning_effort_options": "derived"
-          }
+          },
+          "constraints": [
+            {
+              "field": "supports_reasoning",
+              "kind": "disabled",
+              "source": "endpoint_policy",
+              "requested": "true",
+              "effective": "false"
+            }
+          ]
         }
       },
       "context_status": "unknown",
       "output_status": "unknown",
       "review": {
         "owner": "holon-model-provider",
-        "reviewed_at": "2026-10-25",
-        "reason": "tencent-tokenhub@responses/deepseek-v4.1-flash-1017: Missing capacity is retained as unknown. No exact endpoint upstream capacity evidence is associated; generic API, other region, plan, or protocol limits are not borrowed. Existing known fields and local output policy are preserved, not newly vendor-verified.",
+        "reviewed_at": "2026-11-04",
+        "reason": "tencent-tokenhub@responses/deepseek-v4.1-flash-1017: Missing capacity is retained as unknown. No exact endpoint upstream capacity evidence is associated; generic API, other region, plan, or protocol limits are not borrowed. Existing known fields and local output policy are preserved, not newly vendor-verified. November 4 review: only exact V4.1 Chat thinking and low/high/max effort are independently documented; Messages/Responses reasoning remains unaudited and disabled, with no borrowed capacity or default.",
         "recheck": "At the next exact endpoint model/catalog/documentation change or before increasing its local execution budget; verify support and each missing capacity independently.",
         "evidence": [
           "models.dev/metadata-evidence.md",
@@ -42214,87 +40047,6 @@
       }
     },
     {
-      "route_ref": "tencent-tokenhub@responses/mimo-v2.5-pro",
-      "facts": {
-        "context_window_tokens": null,
-        "default_max_output_tokens": null,
-        "max_output_tokens_upper_limit": null,
-        "prompt_budget_estimated_tokens": 128000,
-        "runtime_max_output_tokens": 8192,
-        "capabilities": {
-          "agent_turn": true,
-          "parallel_tool_calls": false,
-          "image_input": false,
-          "image_generation": false,
-          "supports_reasoning": false,
-          "interactive_exec": false
-        },
-        "agent_turn": true,
-        "decision_capable": false,
-        "reasoning_effort_options": []
-      },
-      "inputs": {
-        "model": {
-          "auto_compact_token_limit": null,
-          "capabilities": {
-            "agent_turn": true,
-            "image_generation": false,
-            "image_input": false,
-            "interactive_exec": false,
-            "parallel_tool_calls": false,
-            "supports_reasoning": false
-          },
-          "context_window_tokens": null,
-          "default_max_output_tokens": null,
-          "default_verbosity": null,
-          "effective_context_window_percent": 95,
-          "max_output_tokens_upper_limit": null,
-          "tool_output_truncation_estimated_tokens": 2500
-        },
-        "route": {
-          "capabilities": {},
-          "effective_context_window_percent": null,
-          "reasoning_effort_options": null
-        },
-        "evidence": {
-          "fields": {
-            "display_name": "model_builtin",
-            "description": "model_builtin",
-            "context_window_tokens": "derived",
-            "effective_context_window_percent": "model_builtin",
-            "auto_compact_token_limit": "derived",
-            "prompt_budget_estimated_tokens": "runtime_default",
-            "compaction_trigger_estimated_tokens": "derived",
-            "compaction_keep_recent_estimated_tokens": "derived",
-            "runtime_max_output_tokens": "runtime_default",
-            "verbosity": "derived",
-            "tool_output_truncation_estimated_tokens": "model_builtin",
-            "max_output_tokens_upper_limit": "derived",
-            "agent_turn": "model_builtin",
-            "parallel_tool_calls": "model_builtin",
-            "image_input": "model_builtin",
-            "image_generation": "model_builtin",
-            "supports_reasoning": "model_builtin",
-            "interactive_exec": "model_builtin",
-            "reasoning_effort_options": "derived"
-          }
-        }
-      },
-      "context_status": "unknown",
-      "output_status": "unknown",
-      "review": {
-        "owner": "holon-model-provider",
-        "reviewed_at": "2026-10-25",
-        "reason": "tencent-tokenhub@responses/mimo-v2.5-pro: Missing capacity is retained as unknown. No exact endpoint upstream capacity evidence is associated; generic API, other region, plan, or protocol limits are not borrowed. Existing known fields and local output policy are preserved, not newly vendor-verified.",
-        "recheck": "At the next exact endpoint model/catalog/documentation change or before increasing its local execution budget; verify support and each missing capacity independently.",
-        "evidence": [
-          "models.dev/metadata-evidence.md",
-          "models.dev/endpoint-review.md",
-          "models.dev/endpoint-mappings.json"
-        ]
-      }
-    },
-    {
       "route_ref": "tencent-tokenhub@responses/mimo-v2.6-flash",
       "facts": {
         "context_window_tokens": null,
@@ -42698,148 +40450,6 @@
           "models.dev/endpoint-mappings.json"
         ]
       }
-    },
-    {
-      "route_ref": "tencent-tokenhub@responses/qwen3.5-flash",
-      "facts": {
-        "context_window_tokens": 1000000,
-        "default_max_output_tokens": 65536,
-        "max_output_tokens_upper_limit": 65536,
-        "prompt_budget_estimated_tokens": 950000,
-        "runtime_max_output_tokens": 65536,
-        "capabilities": {
-          "agent_turn": true,
-          "parallel_tool_calls": false,
-          "image_input": true,
-          "image_generation": false,
-          "supports_reasoning": true,
-          "interactive_exec": false
-        },
-        "agent_turn": true,
-        "decision_capable": false,
-        "reasoning_effort_options": []
-      },
-      "inputs": {
-        "model": {
-          "auto_compact_token_limit": null,
-          "capabilities": {
-            "agent_turn": true,
-            "image_generation": false,
-            "image_input": true,
-            "interactive_exec": false,
-            "parallel_tool_calls": false,
-            "supports_reasoning": true
-          },
-          "context_window_tokens": 1000000,
-          "default_max_output_tokens": 65536,
-          "default_verbosity": null,
-          "effective_context_window_percent": 95,
-          "max_output_tokens_upper_limit": 65536,
-          "tool_output_truncation_estimated_tokens": 2500
-        },
-        "route": {
-          "capabilities": {},
-          "effective_context_window_percent": null,
-          "reasoning_effort_options": null
-        },
-        "evidence": {
-          "fields": {
-            "display_name": "model_builtin",
-            "description": "model_builtin",
-            "context_window_tokens": "model_builtin",
-            "effective_context_window_percent": "model_builtin",
-            "auto_compact_token_limit": "derived",
-            "prompt_budget_estimated_tokens": "derived",
-            "compaction_trigger_estimated_tokens": "derived",
-            "compaction_keep_recent_estimated_tokens": "derived",
-            "runtime_max_output_tokens": "model_builtin",
-            "verbosity": "derived",
-            "tool_output_truncation_estimated_tokens": "model_builtin",
-            "max_output_tokens_upper_limit": "model_builtin",
-            "agent_turn": "model_builtin",
-            "parallel_tool_calls": "model_builtin",
-            "image_input": "model_builtin",
-            "image_generation": "model_builtin",
-            "supports_reasoning": "model_builtin",
-            "interactive_exec": "model_builtin",
-            "reasoning_effort_options": "derived"
-          }
-        }
-      },
-      "context_status": "known",
-      "output_status": "known",
-      "review": null
-    },
-    {
-      "route_ref": "tencent-tokenhub@responses/qwen3.5-plus",
-      "facts": {
-        "context_window_tokens": 1000000,
-        "default_max_output_tokens": 65536,
-        "max_output_tokens_upper_limit": 65536,
-        "prompt_budget_estimated_tokens": 950000,
-        "runtime_max_output_tokens": 65536,
-        "capabilities": {
-          "agent_turn": true,
-          "parallel_tool_calls": false,
-          "image_input": true,
-          "image_generation": false,
-          "supports_reasoning": true,
-          "interactive_exec": false
-        },
-        "agent_turn": true,
-        "decision_capable": false,
-        "reasoning_effort_options": []
-      },
-      "inputs": {
-        "model": {
-          "auto_compact_token_limit": null,
-          "capabilities": {
-            "agent_turn": true,
-            "image_generation": false,
-            "image_input": true,
-            "interactive_exec": false,
-            "parallel_tool_calls": false,
-            "supports_reasoning": true
-          },
-          "context_window_tokens": 1000000,
-          "default_max_output_tokens": 65536,
-          "default_verbosity": null,
-          "effective_context_window_percent": 95,
-          "max_output_tokens_upper_limit": 65536,
-          "tool_output_truncation_estimated_tokens": 2500
-        },
-        "route": {
-          "capabilities": {},
-          "effective_context_window_percent": null,
-          "reasoning_effort_options": null
-        },
-        "evidence": {
-          "fields": {
-            "display_name": "model_builtin",
-            "description": "model_builtin",
-            "context_window_tokens": "model_builtin",
-            "effective_context_window_percent": "model_builtin",
-            "auto_compact_token_limit": "derived",
-            "prompt_budget_estimated_tokens": "derived",
-            "compaction_trigger_estimated_tokens": "derived",
-            "compaction_keep_recent_estimated_tokens": "derived",
-            "runtime_max_output_tokens": "model_builtin",
-            "verbosity": "derived",
-            "tool_output_truncation_estimated_tokens": "model_builtin",
-            "max_output_tokens_upper_limit": "model_builtin",
-            "agent_turn": "model_builtin",
-            "parallel_tool_calls": "model_builtin",
-            "image_input": "model_builtin",
-            "image_generation": "model_builtin",
-            "supports_reasoning": "model_builtin",
-            "interactive_exec": "model_builtin",
-            "reasoning_effort_options": "derived"
-          }
-        }
-      },
-      "context_status": "known",
-      "output_status": "known",
-      "review": null
     },
     {
       "route_ref": "together@default/MiniMaxAI/MiniMax-M2.7",

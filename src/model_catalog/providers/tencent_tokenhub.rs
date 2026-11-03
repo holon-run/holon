@@ -49,14 +49,6 @@ type TencentTokenHubModelSpec = (
 
 const TENCENT_TOKENHUB_MODELS: &[TencentTokenHubModelSpec] = &[
     ("hy3", "Hy3", Some(256_000), Some(128_000), true, false),
-    (
-        "hy3-preview",
-        "Hy3 Preview",
-        Some(256_000),
-        Some(128_000),
-        true,
-        false,
-    ),
     ("hy-mt2-pro", "Hy-MT2-Pro", None, None, false, false),
     ("hy-mt2-plus", "Hy-MT2-Plus", None, None, false, false),
     ("hy-mt2-lite", "Hy-MT2-Lite", None, None, false, false),
@@ -70,26 +62,10 @@ const TENCENT_TOKENHUB_MODELS: &[TencentTokenHubModelSpec] = &[
     ),
     ("hy-role", "Hy-Role", None, None, false, false),
     (
-        "deepseek-v4-flash",
-        "DeepSeek V4 Flash",
-        Some(1_000_000),
-        Some(384_000),
-        true,
-        false,
-    ),
-    (
         "deepseek-v4-pro",
         "DeepSeek V4 Pro",
         Some(1_000_000),
         Some(384_000),
-        true,
-        false,
-    ),
-    (
-        "deepseek-v3.2",
-        "DeepSeek V3.2",
-        Some(128_000),
-        Some(32_768),
         true,
         false,
     ),
@@ -101,31 +77,6 @@ const TENCENT_TOKENHUB_MODELS: &[TencentTokenHubModelSpec] = &[
         true,
         false,
     ),
-    (
-        "glm-5.1",
-        "GLM-5.1",
-        Some(202_800),
-        Some(131_072),
-        true,
-        false,
-    ),
-    (
-        "glm-5v-turbo",
-        "GLM-5V Turbo",
-        Some(202_800),
-        Some(131_072),
-        true,
-        true,
-    ),
-    (
-        "glm-5-turbo",
-        "GLM-5 Turbo",
-        Some(202_800),
-        Some(131_072),
-        true,
-        false,
-    ),
-    ("glm-5", "GLM-5", Some(202_800), Some(131_072), true, false),
     (
         "kimi-k2.7-code-highspeed",
         "Kimi K2.7 Code HighSpeed",
@@ -151,14 +102,6 @@ const TENCENT_TOKENHUB_MODELS: &[TencentTokenHubModelSpec] = &[
         true,
     ),
     (
-        "kimi-k2.5",
-        "Kimi K2.5",
-        Some(262_144),
-        Some(262_144),
-        true,
-        true,
-    ),
-    (
         "minimax-m3",
         "MiniMax M3",
         Some(1_000_000),
@@ -174,31 +117,6 @@ const TENCENT_TOKENHUB_MODELS: &[TencentTokenHubModelSpec] = &[
         true,
         false,
     ),
-    (
-        "minimax-m2.5",
-        "MiniMax M2.5",
-        Some(196_608),
-        Some(32_768),
-        true,
-        false,
-    ),
-    (
-        "qwen3.5-flash",
-        "Qwen3.5 Flash",
-        Some(1_000_000),
-        Some(65_536),
-        true,
-        true,
-    ),
-    (
-        "qwen3.5-plus",
-        "Qwen3.5 Plus",
-        Some(1_000_000),
-        Some(65_536),
-        true,
-        true,
-    ),
-    ("youtu-vita", "YT-VITA", None, None, false, true),
     (
         "hy-vision-2.0-instruct",
         "HY-Vision-2.0-Instruct",
@@ -231,7 +149,6 @@ const TENCENT_TOKENHUB_ADDITIONAL_MODEL_IDS: &[&str] = &[
     "deepseek/deepseek-v4-pro-0813",
     "deepseek/deepseek-v4-pro",
     "deepseek/deepseek-v4-flash-vision-exp",
-    "deepseek-v4-flash-0731",
     "deepseek-v4-pro-0813",
     "deepseek-v4.1-flash",
     "deepseek-v4.1-flash-1017",
@@ -244,7 +161,6 @@ const TENCENT_TOKENHUB_ADDITIONAL_MODEL_IDS: &[&str] = &[
     "kimi-k2.8-preview",
     "mimo-v2.6-pro",
     "mimo-v2.6-flash",
-    "mimo-v2.5-pro",
     "minimax-m3.1-flash",
     "step-5-preview",
 ];
@@ -268,9 +184,7 @@ const TENCENT_TOKENHUB_RESPONSES_MODEL_IDS: &[&str] = &[
     "deepseek/deepseek-v4-flash-vision-exp",
     "deepseek-v4.1-flash",
     "deepseek-v4.1-flash-1017",
-    "deepseek-v4-flash-0731",
     "deepseek-v4-pro-0813",
-    "deepseek-v4-flash",
     "deepseek-v4-pro",
     "glm-5.3",
     "glm-5.3-flash",
@@ -283,11 +197,8 @@ const TENCENT_TOKENHUB_RESPONSES_MODEL_IDS: &[&str] = &[
     "minimax-m3",
     "minimax-m3.1-flash",
     "minimax-m2.7",
-    "qwen3.5-flash",
-    "qwen3.5-plus",
     "mimo-v2.6-pro",
     "mimo-v2.6-flash",
-    "mimo-v2.5-pro",
 ];
 
 // Chat guides establish these capabilities independently of protocol eligibility.
@@ -308,8 +219,9 @@ fn reviewed_chat_capabilities(id: &str) -> (bool, bool) {
             | "deepseek-v4-pro-202606"
             | "deepseek/deepseek-v4-pro-0813"
             | "deepseek/deepseek-v4-pro"
-            | "deepseek-v4-flash-0731"
             | "deepseek-v4-pro-0813"
+            | "deepseek-v4.1-flash"
+            | "deepseek-v4.1-flash-1017"
             | "deepseek/deepseek-v4-flash-vision-exp"
             | "glm-5.3"
             | "glm-5.3-flash"
@@ -345,7 +257,8 @@ fn reviewed_chat_policy(id: &str) -> BuiltInModelRoutePolicy {
     let effort: &[&str] = match id {
         "hy4-preview" => &["high", "none"],
         "hy3" => &["low", "high", "none"],
-        "deepseek-v4-flash"
+        "deepseek-v4.1-flash"
+        | "deepseek-v4.1-flash-1017"
         | "deepseek-v4-pro"
         | "glm-5.3"
         | "glm-5.3-flash"
@@ -445,9 +358,106 @@ pub(super) fn route_definitions() -> Vec<BuiltInModelRouteDefinition> {
 }
 
 #[test]
+fn tokenhub_retirements_and_v41_chat_efforts_follow_exact_endpoint_evidence() {
+    let retired = [
+        "deepseek-v3.2",
+        "deepseek-v4-flash",
+        "deepseek-v4-flash-0731",
+        "glm-5",
+        "glm-5-turbo",
+        "glm-5.1",
+        "glm-5v-turbo",
+        "hy3-preview",
+        "kimi-k2.5",
+        "mimo-v2.5-pro",
+        "minimax-m2.5",
+        "qwen3.5-flash",
+        "qwen3.5-plus",
+        "youtu-vita",
+    ];
+    for catalog in [
+        BuiltInModelCatalog::from_legacy_definitions(),
+        BuiltInModelCatalog::new(),
+    ] {
+        for id in retired {
+            assert!(!is_tencent_tokenhub_model_id(id), "{id} is retired");
+            assert!(catalog
+                .get(&ModelRef::new(provider_id("tencent-tokenhub"), id))
+                .is_none());
+            for endpoint in ["default", "messages", "responses"] {
+                let route =
+                    ModelRouteRef::parse(&format!("tencent-tokenhub@{endpoint}/{id}")).unwrap();
+                assert!(catalog.get_route(&route).is_none(), "{}", route.as_string());
+            }
+        }
+        for id in [
+            "minimax-m2.7",
+            "minimax-m3",
+            "deepseek-v4-flash-202605",
+            "deepseek/deepseek-v4-flash",
+            "deepseek/deepseek-v4-flash-0731",
+        ] {
+            assert!(is_tencent_tokenhub_model_id(id), "{id} must remain");
+            assert!(catalog
+                .get(&ModelRef::new(provider_id("tencent-tokenhub"), id))
+                .is_some());
+        }
+        for id in ["deepseek-v4.1-flash", "deepseek-v4.1-flash-1017"] {
+            let metadata = catalog
+                .get(&ModelRef::new(provider_id("tencent-tokenhub"), id))
+                .unwrap();
+            assert!(metadata.capabilities.supports_reasoning);
+            assert_eq!(metadata.context_window_tokens, None);
+            assert_eq!(metadata.default_max_output_tokens, None);
+            assert_eq!(metadata.max_output_tokens_upper_limit, None);
+            for endpoint in ["default", "messages", "responses"] {
+                let route =
+                    ModelRouteRef::parse(&format!("tencent-tokenhub@{endpoint}/{id}")).unwrap();
+                let policy = catalog.get_route(&route).expect("existing V4.1 route");
+                if endpoint == "default" {
+                    assert_eq!(
+                        policy
+                            .reasoning_effort_options
+                            .as_deref()
+                            .unwrap_or_default(),
+                        ["low", "high", "max"]
+                    );
+                } else {
+                    assert!(policy.reasoning_effort_options.is_none());
+                    assert_eq!(policy.capabilities.supports_reasoning, Some(false));
+                }
+                let resolved = catalog.resolve_route_policy(
+                    &route,
+                    &HashMap::new(),
+                    &HashMap::new(),
+                    None,
+                    &ContextConfig::default(),
+                    8_192,
+                );
+                assert_eq!(
+                    resolved.capabilities.supports_reasoning,
+                    endpoint == "default"
+                );
+                assert_eq!(
+                    resolved.reasoning_effort_options,
+                    if endpoint == "default" {
+                        vec!["low", "high", "max"]
+                    } else {
+                        vec![]
+                    }
+                );
+                assert_eq!(resolved.context_window_tokens, None);
+                assert_eq!(resolved.runtime_max_output_tokens, 8_192);
+                assert_eq!(resolved.max_output_tokens_upper_limit, None);
+            }
+        }
+    }
+}
+
+#[test]
 fn tokenhub_responses_routes_follow_the_independent_protocol_matrix() {
     let catalog = BuiltInModelCatalog::from_legacy_definitions();
-    assert_eq!(TENCENT_TOKENHUB_RESPONSES_MODEL_IDS.len(), 32);
+    assert_eq!(TENCENT_TOKENHUB_RESPONSES_MODEL_IDS.len(), 27);
     for id in TENCENT_TOKENHUB_MODELS
         .iter()
         .map(|model| model.0)
@@ -669,7 +679,8 @@ fn tokenhub_reviewed_chat_capabilities_and_effort_preserve_unknown_fields() {
     for (id, expected) in [
         ("hy4-preview", vec!["high", "none"]),
         ("hy3", vec!["low", "high", "none"]),
-        ("deepseek-v4-flash", vec!["low", "high", "max"]),
+        ("deepseek-v4.1-flash", vec!["low", "high", "max"]),
+        ("deepseek-v4.1-flash-1017", vec!["low", "high", "max"]),
         ("deepseek-v4-pro", vec!["low", "high", "max"]),
         ("glm-5.3", vec!["low", "high", "max"]),
         ("glm-5.3-flash", vec!["low", "high", "max"]),

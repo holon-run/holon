@@ -5230,69 +5230,6 @@
       "source": "built_in_catalog"
     },
     {
-      "model_ref": "tencent-tokenhub/deepseek-v3.2",
-      "display_name": "DeepSeek V3.2",
-      "description": "Holon conservative built-in metadata for the Tencent TokenHub deepseek-v3.2 model.",
-      "context_window_tokens": 128000,
-      "effective_context_window_percent": 95,
-      "auto_compact_token_limit": null,
-      "default_max_output_tokens": 32768,
-      "max_output_tokens_upper_limit": 32768,
-      "default_verbosity": null,
-      "tool_output_truncation_estimated_tokens": 2500,
-      "capabilities": {
-        "agent_turn": true,
-        "parallel_tool_calls": false,
-        "image_input": false,
-        "image_generation": false,
-        "supports_reasoning": true,
-        "interactive_exec": false
-      },
-      "source": "conservative_builtin"
-    },
-    {
-      "model_ref": "tencent-tokenhub/deepseek-v4-flash",
-      "display_name": "DeepSeek V4 Flash",
-      "description": "Holon conservative built-in metadata for the Tencent TokenHub deepseek-v4-flash model.",
-      "context_window_tokens": 1000000,
-      "effective_context_window_percent": 95,
-      "auto_compact_token_limit": null,
-      "default_max_output_tokens": 384000,
-      "max_output_tokens_upper_limit": 384000,
-      "default_verbosity": null,
-      "tool_output_truncation_estimated_tokens": 2500,
-      "capabilities": {
-        "agent_turn": true,
-        "parallel_tool_calls": false,
-        "image_input": false,
-        "image_generation": false,
-        "supports_reasoning": true,
-        "interactive_exec": false
-      },
-      "source": "conservative_builtin"
-    },
-    {
-      "model_ref": "tencent-tokenhub/deepseek-v4-flash-0731",
-      "display_name": "deepseek-v4-flash-0731",
-      "description": "Official TokenHub language-model ID with Chat and Messages support; only independently reviewed Chat fields are populated.",
-      "context_window_tokens": null,
-      "effective_context_window_percent": 95,
-      "auto_compact_token_limit": null,
-      "default_max_output_tokens": null,
-      "max_output_tokens_upper_limit": null,
-      "default_verbosity": null,
-      "tool_output_truncation_estimated_tokens": 2500,
-      "capabilities": {
-        "agent_turn": true,
-        "parallel_tool_calls": false,
-        "image_input": false,
-        "image_generation": false,
-        "supports_reasoning": true,
-        "interactive_exec": false
-      },
-      "source": "conservative_builtin"
-    },
-    {
       "model_ref": "tencent-tokenhub/deepseek-v4-flash-202605",
       "display_name": "deepseek-v4-flash-202605",
       "description": "Official TokenHub language-model ID with Chat and Messages support; only independently reviewed Chat fields are populated.",
@@ -5392,7 +5329,7 @@
         "parallel_tool_calls": false,
         "image_input": false,
         "image_generation": false,
-        "supports_reasoning": false,
+        "supports_reasoning": true,
         "interactive_exec": false
       },
       "source": "conservative_builtin"
@@ -5413,7 +5350,7 @@
         "parallel_tool_calls": false,
         "image_input": false,
         "image_generation": false,
-        "supports_reasoning": false,
+        "supports_reasoning": true,
         "interactive_exec": false
       },
       "source": "conservative_builtin"
@@ -5545,69 +5482,6 @@
       "source": "conservative_builtin"
     },
     {
-      "model_ref": "tencent-tokenhub/glm-5",
-      "display_name": "GLM-5",
-      "description": "Holon conservative built-in metadata for the Tencent TokenHub glm-5 model.",
-      "context_window_tokens": 202800,
-      "effective_context_window_percent": 95,
-      "auto_compact_token_limit": null,
-      "default_max_output_tokens": 131072,
-      "max_output_tokens_upper_limit": 131072,
-      "default_verbosity": null,
-      "tool_output_truncation_estimated_tokens": 2500,
-      "capabilities": {
-        "agent_turn": true,
-        "parallel_tool_calls": false,
-        "image_input": false,
-        "image_generation": false,
-        "supports_reasoning": true,
-        "interactive_exec": false
-      },
-      "source": "conservative_builtin"
-    },
-    {
-      "model_ref": "tencent-tokenhub/glm-5-turbo",
-      "display_name": "GLM-5 Turbo",
-      "description": "Holon conservative built-in metadata for the Tencent TokenHub glm-5-turbo model.",
-      "context_window_tokens": 202800,
-      "effective_context_window_percent": 95,
-      "auto_compact_token_limit": null,
-      "default_max_output_tokens": 131072,
-      "max_output_tokens_upper_limit": 131072,
-      "default_verbosity": null,
-      "tool_output_truncation_estimated_tokens": 2500,
-      "capabilities": {
-        "agent_turn": true,
-        "parallel_tool_calls": false,
-        "image_input": false,
-        "image_generation": false,
-        "supports_reasoning": true,
-        "interactive_exec": false
-      },
-      "source": "conservative_builtin"
-    },
-    {
-      "model_ref": "tencent-tokenhub/glm-5.1",
-      "display_name": "GLM-5.1",
-      "description": "Holon conservative built-in metadata for the Tencent TokenHub glm-5.1 model.",
-      "context_window_tokens": 202800,
-      "effective_context_window_percent": 95,
-      "auto_compact_token_limit": null,
-      "default_max_output_tokens": 131072,
-      "max_output_tokens_upper_limit": 131072,
-      "default_verbosity": null,
-      "tool_output_truncation_estimated_tokens": 2500,
-      "capabilities": {
-        "agent_turn": true,
-        "parallel_tool_calls": false,
-        "image_input": false,
-        "image_generation": false,
-        "supports_reasoning": true,
-        "interactive_exec": false
-      },
-      "source": "conservative_builtin"
-    },
-    {
       "model_ref": "tencent-tokenhub/glm-5.2",
       "display_name": "GLM-5.2",
       "description": "Holon conservative built-in metadata for the Tencent TokenHub glm-5.2 model.",
@@ -5679,27 +5553,6 @@
       "auto_compact_token_limit": null,
       "default_max_output_tokens": null,
       "max_output_tokens_upper_limit": null,
-      "default_verbosity": null,
-      "tool_output_truncation_estimated_tokens": 2500,
-      "capabilities": {
-        "agent_turn": true,
-        "parallel_tool_calls": false,
-        "image_input": true,
-        "image_generation": false,
-        "supports_reasoning": true,
-        "interactive_exec": false
-      },
-      "source": "conservative_builtin"
-    },
-    {
-      "model_ref": "tencent-tokenhub/glm-5v-turbo",
-      "display_name": "GLM-5V Turbo",
-      "description": "Holon conservative built-in metadata for the Tencent TokenHub glm-5v-turbo model.",
-      "context_window_tokens": 202800,
-      "effective_context_window_percent": 95,
-      "auto_compact_token_limit": null,
-      "default_max_output_tokens": 131072,
-      "max_output_tokens_upper_limit": 131072,
       "default_verbosity": null,
       "tool_output_truncation_estimated_tokens": 2500,
       "capabilities": {
@@ -5881,27 +5734,6 @@
       "source": "conservative_builtin"
     },
     {
-      "model_ref": "tencent-tokenhub/hy3-preview",
-      "display_name": "Hy3 Preview",
-      "description": "Holon conservative built-in metadata for the Tencent TokenHub hy3-preview model.",
-      "context_window_tokens": 256000,
-      "effective_context_window_percent": 95,
-      "auto_compact_token_limit": null,
-      "default_max_output_tokens": 128000,
-      "max_output_tokens_upper_limit": 128000,
-      "default_verbosity": null,
-      "tool_output_truncation_estimated_tokens": 2500,
-      "capabilities": {
-        "agent_turn": true,
-        "parallel_tool_calls": false,
-        "image_input": false,
-        "image_generation": false,
-        "supports_reasoning": true,
-        "interactive_exec": false
-      },
-      "source": "conservative_builtin"
-    },
-    {
       "model_ref": "tencent-tokenhub/hy4-preview",
       "display_name": "hy4-preview",
       "description": "Official TokenHub language-model ID with Chat and Messages support; only independently reviewed Chat fields are populated.",
@@ -5916,27 +5748,6 @@
         "agent_turn": true,
         "parallel_tool_calls": false,
         "image_input": false,
-        "image_generation": false,
-        "supports_reasoning": true,
-        "interactive_exec": false
-      },
-      "source": "conservative_builtin"
-    },
-    {
-      "model_ref": "tencent-tokenhub/kimi-k2.5",
-      "display_name": "Kimi K2.5",
-      "description": "Holon conservative built-in metadata for the Tencent TokenHub kimi-k2.5 model.",
-      "context_window_tokens": 262144,
-      "effective_context_window_percent": 95,
-      "auto_compact_token_limit": null,
-      "default_max_output_tokens": 262144,
-      "max_output_tokens_upper_limit": 262144,
-      "default_verbosity": null,
-      "tool_output_truncation_estimated_tokens": 2500,
-      "capabilities": {
-        "agent_turn": true,
-        "parallel_tool_calls": false,
-        "image_input": true,
         "image_generation": false,
         "supports_reasoning": true,
         "interactive_exec": false
@@ -6091,27 +5902,6 @@
       "source": "conservative_builtin"
     },
     {
-      "model_ref": "tencent-tokenhub/mimo-v2.5-pro",
-      "display_name": "mimo-v2.5-pro",
-      "description": "Official TokenHub language-model ID with Chat and Messages support; only independently reviewed Chat fields are populated.",
-      "context_window_tokens": null,
-      "effective_context_window_percent": 95,
-      "auto_compact_token_limit": null,
-      "default_max_output_tokens": null,
-      "max_output_tokens_upper_limit": null,
-      "default_verbosity": null,
-      "tool_output_truncation_estimated_tokens": 2500,
-      "capabilities": {
-        "agent_turn": true,
-        "parallel_tool_calls": false,
-        "image_input": false,
-        "image_generation": false,
-        "supports_reasoning": false,
-        "interactive_exec": false
-      },
-      "source": "conservative_builtin"
-    },
-    {
       "model_ref": "tencent-tokenhub/mimo-v2.6-flash",
       "display_name": "mimo-v2.6-flash",
       "description": "Official TokenHub language-model ID with Chat and Messages support; only independently reviewed Chat fields are populated.",
@@ -6149,27 +5939,6 @@
         "image_input": false,
         "image_generation": false,
         "supports_reasoning": false,
-        "interactive_exec": false
-      },
-      "source": "conservative_builtin"
-    },
-    {
-      "model_ref": "tencent-tokenhub/minimax-m2.5",
-      "display_name": "MiniMax M2.5",
-      "description": "Holon conservative built-in metadata for the Tencent TokenHub minimax-m2.5 model.",
-      "context_window_tokens": 196608,
-      "effective_context_window_percent": 95,
-      "auto_compact_token_limit": null,
-      "default_max_output_tokens": 32768,
-      "max_output_tokens_upper_limit": 32768,
-      "default_verbosity": null,
-      "tool_output_truncation_estimated_tokens": 2500,
-      "capabilities": {
-        "agent_turn": true,
-        "parallel_tool_calls": false,
-        "image_input": false,
-        "image_generation": false,
-        "supports_reasoning": true,
         "interactive_exec": false
       },
       "source": "conservative_builtin"
@@ -6238,48 +6007,6 @@
       "source": "conservative_builtin"
     },
     {
-      "model_ref": "tencent-tokenhub/qwen3.5-flash",
-      "display_name": "Qwen3.5 Flash",
-      "description": "Holon conservative built-in metadata for the Tencent TokenHub qwen3.5-flash model.",
-      "context_window_tokens": 1000000,
-      "effective_context_window_percent": 95,
-      "auto_compact_token_limit": null,
-      "default_max_output_tokens": 65536,
-      "max_output_tokens_upper_limit": 65536,
-      "default_verbosity": null,
-      "tool_output_truncation_estimated_tokens": 2500,
-      "capabilities": {
-        "agent_turn": true,
-        "parallel_tool_calls": false,
-        "image_input": true,
-        "image_generation": false,
-        "supports_reasoning": true,
-        "interactive_exec": false
-      },
-      "source": "conservative_builtin"
-    },
-    {
-      "model_ref": "tencent-tokenhub/qwen3.5-plus",
-      "display_name": "Qwen3.5 Plus",
-      "description": "Holon conservative built-in metadata for the Tencent TokenHub qwen3.5-plus model.",
-      "context_window_tokens": 1000000,
-      "effective_context_window_percent": 95,
-      "auto_compact_token_limit": null,
-      "default_max_output_tokens": 65536,
-      "max_output_tokens_upper_limit": 65536,
-      "default_verbosity": null,
-      "tool_output_truncation_estimated_tokens": 2500,
-      "capabilities": {
-        "agent_turn": true,
-        "parallel_tool_calls": false,
-        "image_input": true,
-        "image_generation": false,
-        "supports_reasoning": true,
-        "interactive_exec": false
-      },
-      "source": "conservative_builtin"
-    },
-    {
       "model_ref": "tencent-tokenhub/step-5-preview",
       "display_name": "step-5-preview",
       "description": "Official TokenHub language-model ID with Chat and Messages support; only independently reviewed Chat fields are populated.",
@@ -6294,27 +6021,6 @@
         "agent_turn": true,
         "parallel_tool_calls": false,
         "image_input": false,
-        "image_generation": false,
-        "supports_reasoning": false,
-        "interactive_exec": false
-      },
-      "source": "conservative_builtin"
-    },
-    {
-      "model_ref": "tencent-tokenhub/youtu-vita",
-      "display_name": "YT-VITA",
-      "description": "Holon conservative built-in metadata for the Tencent TokenHub youtu-vita model.",
-      "context_window_tokens": null,
-      "effective_context_window_percent": 95,
-      "auto_compact_token_limit": null,
-      "default_max_output_tokens": null,
-      "max_output_tokens_upper_limit": null,
-      "default_verbosity": null,
-      "tool_output_truncation_estimated_tokens": 2500,
-      "capabilities": {
-        "agent_turn": true,
-        "parallel_tool_calls": false,
-        "image_input": true,
         "image_generation": false,
         "supports_reasoning": false,
         "interactive_exec": false
@@ -12431,40 +12137,6 @@
       }
     },
     {
-      "route_ref": "tencent-tokenhub@default/deepseek-v3.2",
-      "policy": {
-        "display_name": null,
-        "description": null,
-        "effective_context_window_percent": null,
-        "capabilities": {},
-        "reasoning_effort_options": null
-      }
-    },
-    {
-      "route_ref": "tencent-tokenhub@default/deepseek-v4-flash",
-      "policy": {
-        "display_name": null,
-        "description": null,
-        "effective_context_window_percent": null,
-        "capabilities": {},
-        "reasoning_effort_options": [
-          "low",
-          "high",
-          "max"
-        ]
-      }
-    },
-    {
-      "route_ref": "tencent-tokenhub@default/deepseek-v4-flash-0731",
-      "policy": {
-        "display_name": null,
-        "description": null,
-        "effective_context_window_percent": null,
-        "capabilities": {},
-        "reasoning_effort_options": null
-      }
-    },
-    {
       "route_ref": "tencent-tokenhub@default/deepseek-v4-flash-202605",
       "policy": {
         "display_name": null,
@@ -12515,7 +12187,11 @@
         "description": null,
         "effective_context_window_percent": null,
         "capabilities": {},
-        "reasoning_effort_options": null
+        "reasoning_effort_options": [
+          "low",
+          "high",
+          "max"
+        ]
       }
     },
     {
@@ -12525,7 +12201,11 @@
         "description": null,
         "effective_context_window_percent": null,
         "capabilities": {},
-        "reasoning_effort_options": null
+        "reasoning_effort_options": [
+          "low",
+          "high",
+          "max"
+        ]
       }
     },
     {
@@ -12580,36 +12260,6 @@
     },
     {
       "route_ref": "tencent-tokenhub@default/deepseek/deepseek-v4-pro-0813",
-      "policy": {
-        "display_name": null,
-        "description": null,
-        "effective_context_window_percent": null,
-        "capabilities": {},
-        "reasoning_effort_options": null
-      }
-    },
-    {
-      "route_ref": "tencent-tokenhub@default/glm-5",
-      "policy": {
-        "display_name": null,
-        "description": null,
-        "effective_context_window_percent": null,
-        "capabilities": {},
-        "reasoning_effort_options": null
-      }
-    },
-    {
-      "route_ref": "tencent-tokenhub@default/glm-5-turbo",
-      "policy": {
-        "display_name": null,
-        "description": null,
-        "effective_context_window_percent": null,
-        "capabilities": {},
-        "reasoning_effort_options": null
-      }
-    },
-    {
-      "route_ref": "tencent-tokenhub@default/glm-5.1",
       "policy": {
         "display_name": null,
         "description": null,
@@ -12676,16 +12326,6 @@
           "high",
           "max"
         ]
-      }
-    },
-    {
-      "route_ref": "tencent-tokenhub@default/glm-5v-turbo",
-      "policy": {
-        "display_name": null,
-        "description": null,
-        "effective_context_window_percent": null,
-        "capabilities": {},
-        "reasoning_effort_options": null
       }
     },
     {
@@ -12773,16 +12413,6 @@
       }
     },
     {
-      "route_ref": "tencent-tokenhub@default/hy3-preview",
-      "policy": {
-        "display_name": null,
-        "description": null,
-        "effective_context_window_percent": null,
-        "capabilities": {},
-        "reasoning_effort_options": null
-      }
-    },
-    {
       "route_ref": "tencent-tokenhub@default/hy4-preview",
       "policy": {
         "display_name": null,
@@ -12793,16 +12423,6 @@
           "high",
           "none"
         ]
-      }
-    },
-    {
-      "route_ref": "tencent-tokenhub@default/kimi-k2.5",
-      "policy": {
-        "display_name": null,
-        "description": null,
-        "effective_context_window_percent": null,
-        "capabilities": {},
-        "reasoning_effort_options": null
       }
     },
     {
@@ -12901,16 +12521,6 @@
       }
     },
     {
-      "route_ref": "tencent-tokenhub@default/mimo-v2.5-pro",
-      "policy": {
-        "display_name": null,
-        "description": null,
-        "effective_context_window_percent": null,
-        "capabilities": {},
-        "reasoning_effort_options": null
-      }
-    },
-    {
       "route_ref": "tencent-tokenhub@default/mimo-v2.6-flash",
       "policy": {
         "display_name": null,
@@ -12922,16 +12532,6 @@
     },
     {
       "route_ref": "tencent-tokenhub@default/mimo-v2.6-pro",
-      "policy": {
-        "display_name": null,
-        "description": null,
-        "effective_context_window_percent": null,
-        "capabilities": {},
-        "reasoning_effort_options": null
-      }
-    },
-    {
-      "route_ref": "tencent-tokenhub@default/minimax-m2.5",
       "policy": {
         "display_name": null,
         "description": null,
@@ -12971,74 +12571,12 @@
       }
     },
     {
-      "route_ref": "tencent-tokenhub@default/qwen3.5-flash",
-      "policy": {
-        "display_name": null,
-        "description": null,
-        "effective_context_window_percent": null,
-        "capabilities": {},
-        "reasoning_effort_options": null
-      }
-    },
-    {
-      "route_ref": "tencent-tokenhub@default/qwen3.5-plus",
-      "policy": {
-        "display_name": null,
-        "description": null,
-        "effective_context_window_percent": null,
-        "capabilities": {},
-        "reasoning_effort_options": null
-      }
-    },
-    {
       "route_ref": "tencent-tokenhub@default/step-5-preview",
       "policy": {
         "display_name": null,
         "description": null,
         "effective_context_window_percent": null,
         "capabilities": {},
-        "reasoning_effort_options": null
-      }
-    },
-    {
-      "route_ref": "tencent-tokenhub@default/youtu-vita",
-      "policy": {
-        "display_name": null,
-        "description": null,
-        "effective_context_window_percent": null,
-        "capabilities": {},
-        "reasoning_effort_options": null
-      }
-    },
-    {
-      "route_ref": "tencent-tokenhub@messages/deepseek-v3.2",
-      "policy": {
-        "display_name": null,
-        "description": null,
-        "effective_context_window_percent": null,
-        "capabilities": {},
-        "reasoning_effort_options": null
-      }
-    },
-    {
-      "route_ref": "tencent-tokenhub@messages/deepseek-v4-flash",
-      "policy": {
-        "display_name": null,
-        "description": null,
-        "effective_context_window_percent": null,
-        "capabilities": {},
-        "reasoning_effort_options": null
-      }
-    },
-    {
-      "route_ref": "tencent-tokenhub@messages/deepseek-v4-flash-0731",
-      "policy": {
-        "display_name": null,
-        "description": null,
-        "effective_context_window_percent": null,
-        "capabilities": {
-          "supports_reasoning": false
-        },
         "reasoning_effort_options": null
       }
     },
@@ -13094,7 +12632,9 @@
         "display_name": null,
         "description": null,
         "effective_context_window_percent": null,
-        "capabilities": {},
+        "capabilities": {
+          "supports_reasoning": false
+        },
         "reasoning_effort_options": null
       }
     },
@@ -13104,7 +12644,9 @@
         "display_name": null,
         "description": null,
         "effective_context_window_percent": null,
-        "capabilities": {},
+        "capabilities": {
+          "supports_reasoning": false
+        },
         "reasoning_effort_options": null
       }
     },
@@ -13181,36 +12723,6 @@
       }
     },
     {
-      "route_ref": "tencent-tokenhub@messages/glm-5",
-      "policy": {
-        "display_name": null,
-        "description": null,
-        "effective_context_window_percent": null,
-        "capabilities": {},
-        "reasoning_effort_options": null
-      }
-    },
-    {
-      "route_ref": "tencent-tokenhub@messages/glm-5-turbo",
-      "policy": {
-        "display_name": null,
-        "description": null,
-        "effective_context_window_percent": null,
-        "capabilities": {},
-        "reasoning_effort_options": null
-      }
-    },
-    {
-      "route_ref": "tencent-tokenhub@messages/glm-5.1",
-      "policy": {
-        "display_name": null,
-        "description": null,
-        "effective_context_window_percent": null,
-        "capabilities": {},
-        "reasoning_effort_options": null
-      }
-    },
-    {
       "route_ref": "tencent-tokenhub@messages/glm-5.2",
       "policy": {
         "display_name": null,
@@ -13255,16 +12767,6 @@
           "image_input": false,
           "supports_reasoning": false
         },
-        "reasoning_effort_options": null
-      }
-    },
-    {
-      "route_ref": "tencent-tokenhub@messages/glm-5v-turbo",
-      "policy": {
-        "display_name": null,
-        "description": null,
-        "effective_context_window_percent": null,
-        "capabilities": {},
         "reasoning_effort_options": null
       }
     },
@@ -13319,16 +12821,6 @@
       }
     },
     {
-      "route_ref": "tencent-tokenhub@messages/hy3-preview",
-      "policy": {
-        "display_name": null,
-        "description": null,
-        "effective_context_window_percent": null,
-        "capabilities": {},
-        "reasoning_effort_options": null
-      }
-    },
-    {
       "route_ref": "tencent-tokenhub@messages/hy4-preview",
       "policy": {
         "display_name": null,
@@ -13337,16 +12829,6 @@
         "capabilities": {
           "supports_reasoning": false
         },
-        "reasoning_effort_options": null
-      }
-    },
-    {
-      "route_ref": "tencent-tokenhub@messages/kimi-k2.5",
-      "policy": {
-        "display_name": null,
-        "description": null,
-        "effective_context_window_percent": null,
-        "capabilities": {},
         "reasoning_effort_options": null
       }
     },
@@ -13433,16 +12915,6 @@
       }
     },
     {
-      "route_ref": "tencent-tokenhub@messages/mimo-v2.5-pro",
-      "policy": {
-        "display_name": null,
-        "description": null,
-        "effective_context_window_percent": null,
-        "capabilities": {},
-        "reasoning_effort_options": null
-      }
-    },
-    {
       "route_ref": "tencent-tokenhub@messages/mimo-v2.6-flash",
       "policy": {
         "display_name": null,
@@ -13454,16 +12926,6 @@
     },
     {
       "route_ref": "tencent-tokenhub@messages/mimo-v2.6-pro",
-      "policy": {
-        "display_name": null,
-        "description": null,
-        "effective_context_window_percent": null,
-        "capabilities": {},
-        "reasoning_effort_options": null
-      }
-    },
-    {
-      "route_ref": "tencent-tokenhub@messages/minimax-m2.5",
       "policy": {
         "display_name": null,
         "description": null,
@@ -13503,64 +12965,12 @@
       }
     },
     {
-      "route_ref": "tencent-tokenhub@messages/qwen3.5-flash",
-      "policy": {
-        "display_name": null,
-        "description": null,
-        "effective_context_window_percent": null,
-        "capabilities": {},
-        "reasoning_effort_options": null
-      }
-    },
-    {
-      "route_ref": "tencent-tokenhub@messages/qwen3.5-plus",
-      "policy": {
-        "display_name": null,
-        "description": null,
-        "effective_context_window_percent": null,
-        "capabilities": {},
-        "reasoning_effort_options": null
-      }
-    },
-    {
       "route_ref": "tencent-tokenhub@messages/step-5-preview",
       "policy": {
         "display_name": null,
         "description": null,
         "effective_context_window_percent": null,
         "capabilities": {},
-        "reasoning_effort_options": null
-      }
-    },
-    {
-      "route_ref": "tencent-tokenhub@messages/youtu-vita",
-      "policy": {
-        "display_name": null,
-        "description": null,
-        "effective_context_window_percent": null,
-        "capabilities": {},
-        "reasoning_effort_options": null
-      }
-    },
-    {
-      "route_ref": "tencent-tokenhub@responses/deepseek-v4-flash",
-      "policy": {
-        "display_name": null,
-        "description": null,
-        "effective_context_window_percent": null,
-        "capabilities": {},
-        "reasoning_effort_options": null
-      }
-    },
-    {
-      "route_ref": "tencent-tokenhub@responses/deepseek-v4-flash-0731",
-      "policy": {
-        "display_name": null,
-        "description": null,
-        "effective_context_window_percent": null,
-        "capabilities": {
-          "supports_reasoning": false
-        },
         "reasoning_effort_options": null
       }
     },
@@ -13616,7 +13026,9 @@
         "display_name": null,
         "description": null,
         "effective_context_window_percent": null,
-        "capabilities": {},
+        "capabilities": {
+          "supports_reasoning": false
+        },
         "reasoning_effort_options": null
       }
     },
@@ -13626,7 +13038,9 @@
         "display_name": null,
         "description": null,
         "effective_context_window_percent": null,
-        "capabilities": {},
+        "capabilities": {
+          "supports_reasoning": false
+        },
         "reasoning_effort_options": null
       }
     },
@@ -13822,16 +13236,6 @@
       }
     },
     {
-      "route_ref": "tencent-tokenhub@responses/mimo-v2.5-pro",
-      "policy": {
-        "display_name": null,
-        "description": null,
-        "effective_context_window_percent": null,
-        "capabilities": {},
-        "reasoning_effort_options": null
-      }
-    },
-    {
       "route_ref": "tencent-tokenhub@responses/mimo-v2.6-flash",
       "policy": {
         "display_name": null,
@@ -13873,26 +13277,6 @@
     },
     {
       "route_ref": "tencent-tokenhub@responses/minimax-m3.1-flash",
-      "policy": {
-        "display_name": null,
-        "description": null,
-        "effective_context_window_percent": null,
-        "capabilities": {},
-        "reasoning_effort_options": null
-      }
-    },
-    {
-      "route_ref": "tencent-tokenhub@responses/qwen3.5-flash",
-      "policy": {
-        "display_name": null,
-        "description": null,
-        "effective_context_window_percent": null,
-        "capabilities": {},
-        "reasoning_effort_options": null
-      }
-    },
-    {
-      "route_ref": "tencent-tokenhub@responses/qwen3.5-plus",
       "policy": {
         "display_name": null,
         "description": null,
@@ -15171,18 +14555,6 @@
       "target": "stepfun/step-3.7-flash"
     },
     {
-      "alias": "tencent-tokenhub-messages/deepseek-v3.2",
-      "target": "tencent-tokenhub/deepseek-v3.2"
-    },
-    {
-      "alias": "tencent-tokenhub-messages/deepseek-v4-flash",
-      "target": "tencent-tokenhub/deepseek-v4-flash"
-    },
-    {
-      "alias": "tencent-tokenhub-messages/deepseek-v4-flash-0731",
-      "target": "tencent-tokenhub/deepseek-v4-flash-0731"
-    },
-    {
       "alias": "tencent-tokenhub-messages/deepseek-v4-flash-202605",
       "target": "tencent-tokenhub/deepseek-v4-flash-202605"
     },
@@ -15231,18 +14603,6 @@
       "target": "tencent-tokenhub/deepseek/deepseek-v4-pro-0813"
     },
     {
-      "alias": "tencent-tokenhub-messages/glm-5",
-      "target": "tencent-tokenhub/glm-5"
-    },
-    {
-      "alias": "tencent-tokenhub-messages/glm-5-turbo",
-      "target": "tencent-tokenhub/glm-5-turbo"
-    },
-    {
-      "alias": "tencent-tokenhub-messages/glm-5.1",
-      "target": "tencent-tokenhub/glm-5.1"
-    },
-    {
       "alias": "tencent-tokenhub-messages/glm-5.2",
       "target": "tencent-tokenhub/glm-5.2"
     },
@@ -15257,10 +14617,6 @@
     {
       "alias": "tencent-tokenhub-messages/glm-5.3-flashx",
       "target": "tencent-tokenhub/glm-5.3-flashx"
-    },
-    {
-      "alias": "tencent-tokenhub-messages/glm-5v-turbo",
-      "target": "tencent-tokenhub/glm-5v-turbo"
     },
     {
       "alias": "tencent-tokenhub-messages/hunyuan-role-latest",
@@ -15283,16 +14639,8 @@
       "target": "tencent-tokenhub/hy3"
     },
     {
-      "alias": "tencent-tokenhub-messages/hy3-preview",
-      "target": "tencent-tokenhub/hy3-preview"
-    },
-    {
       "alias": "tencent-tokenhub-messages/hy4-preview",
       "target": "tencent-tokenhub/hy4-preview"
-    },
-    {
-      "alias": "tencent-tokenhub-messages/kimi-k2.5",
-      "target": "tencent-tokenhub/kimi-k2.5"
     },
     {
       "alias": "tencent-tokenhub-messages/kimi-k2.6",
@@ -15323,20 +14671,12 @@
       "target": "tencent-tokenhub/kimi-k3.1-pro-highspeed"
     },
     {
-      "alias": "tencent-tokenhub-messages/mimo-v2.5-pro",
-      "target": "tencent-tokenhub/mimo-v2.5-pro"
-    },
-    {
       "alias": "tencent-tokenhub-messages/mimo-v2.6-flash",
       "target": "tencent-tokenhub/mimo-v2.6-flash"
     },
     {
       "alias": "tencent-tokenhub-messages/mimo-v2.6-pro",
       "target": "tencent-tokenhub/mimo-v2.6-pro"
-    },
-    {
-      "alias": "tencent-tokenhub-messages/minimax-m2.5",
-      "target": "tencent-tokenhub/minimax-m2.5"
     },
     {
       "alias": "tencent-tokenhub-messages/minimax-m2.7",
@@ -15351,28 +14691,8 @@
       "target": "tencent-tokenhub/minimax-m3.1-flash"
     },
     {
-      "alias": "tencent-tokenhub-messages/qwen3.5-flash",
-      "target": "tencent-tokenhub/qwen3.5-flash"
-    },
-    {
-      "alias": "tencent-tokenhub-messages/qwen3.5-plus",
-      "target": "tencent-tokenhub/qwen3.5-plus"
-    },
-    {
       "alias": "tencent-tokenhub-messages/step-5-preview",
       "target": "tencent-tokenhub/step-5-preview"
-    },
-    {
-      "alias": "tencent-tokenhub-messages/youtu-vita",
-      "target": "tencent-tokenhub/youtu-vita"
-    },
-    {
-      "alias": "tencent-tokenhub-responses/deepseek-v4-flash",
-      "target": "tencent-tokenhub/deepseek-v4-flash"
-    },
-    {
-      "alias": "tencent-tokenhub-responses/deepseek-v4-flash-0731",
-      "target": "tencent-tokenhub/deepseek-v4-flash-0731"
     },
     {
       "alias": "tencent-tokenhub-responses/deepseek-v4-flash-202605",
@@ -15463,10 +14783,6 @@
       "target": "tencent-tokenhub/kimi-k3.1-pro-highspeed"
     },
     {
-      "alias": "tencent-tokenhub-responses/mimo-v2.5-pro",
-      "target": "tencent-tokenhub/mimo-v2.5-pro"
-    },
-    {
       "alias": "tencent-tokenhub-responses/mimo-v2.6-flash",
       "target": "tencent-tokenhub/mimo-v2.6-flash"
     },
@@ -15485,14 +14801,6 @@
     {
       "alias": "tencent-tokenhub-responses/minimax-m3.1-flash",
       "target": "tencent-tokenhub/minimax-m3.1-flash"
-    },
-    {
-      "alias": "tencent-tokenhub-responses/qwen3.5-flash",
-      "target": "tencent-tokenhub/qwen3.5-flash"
-    },
-    {
-      "alias": "tencent-tokenhub-responses/qwen3.5-plus",
-      "target": "tencent-tokenhub/qwen3.5-plus"
     },
     {
       "alias": "volcengine-agent/MiniMax-M3",
@@ -16953,18 +16261,6 @@
       "route_ref": "synthetic@default/syn:small:vision"
     },
     {
-      "model_ref": "tencent-tokenhub/deepseek-v3.2",
-      "route_ref": "tencent-tokenhub@default/deepseek-v3.2"
-    },
-    {
-      "model_ref": "tencent-tokenhub/deepseek-v4-flash",
-      "route_ref": "tencent-tokenhub@default/deepseek-v4-flash"
-    },
-    {
-      "model_ref": "tencent-tokenhub/deepseek-v4-flash-0731",
-      "route_ref": "tencent-tokenhub@default/deepseek-v4-flash-0731"
-    },
-    {
       "model_ref": "tencent-tokenhub/deepseek-v4-flash-202605",
       "route_ref": "tencent-tokenhub@default/deepseek-v4-flash-202605"
     },
@@ -17013,18 +16309,6 @@
       "route_ref": "tencent-tokenhub@default/deepseek/deepseek-v4-pro-0813"
     },
     {
-      "model_ref": "tencent-tokenhub/glm-5",
-      "route_ref": "tencent-tokenhub@default/glm-5"
-    },
-    {
-      "model_ref": "tencent-tokenhub/glm-5-turbo",
-      "route_ref": "tencent-tokenhub@default/glm-5-turbo"
-    },
-    {
-      "model_ref": "tencent-tokenhub/glm-5.1",
-      "route_ref": "tencent-tokenhub@default/glm-5.1"
-    },
-    {
       "model_ref": "tencent-tokenhub/glm-5.2",
       "route_ref": "tencent-tokenhub@default/glm-5.2"
     },
@@ -17039,10 +16323,6 @@
     {
       "model_ref": "tencent-tokenhub/glm-5.3-flashx",
       "route_ref": "tencent-tokenhub@default/glm-5.3-flashx"
-    },
-    {
-      "model_ref": "tencent-tokenhub/glm-5v-turbo",
-      "route_ref": "tencent-tokenhub@default/glm-5v-turbo"
     },
     {
       "model_ref": "tencent-tokenhub/hunyuan-role-latest",
@@ -17077,16 +16357,8 @@
       "route_ref": "tencent-tokenhub@default/hy3"
     },
     {
-      "model_ref": "tencent-tokenhub/hy3-preview",
-      "route_ref": "tencent-tokenhub@default/hy3-preview"
-    },
-    {
       "model_ref": "tencent-tokenhub/hy4-preview",
       "route_ref": "tencent-tokenhub@default/hy4-preview"
-    },
-    {
-      "model_ref": "tencent-tokenhub/kimi-k2.5",
-      "route_ref": "tencent-tokenhub@default/kimi-k2.5"
     },
     {
       "model_ref": "tencent-tokenhub/kimi-k2.6",
@@ -17117,20 +16389,12 @@
       "route_ref": "tencent-tokenhub@default/kimi-k3.1-pro-highspeed"
     },
     {
-      "model_ref": "tencent-tokenhub/mimo-v2.5-pro",
-      "route_ref": "tencent-tokenhub@default/mimo-v2.5-pro"
-    },
-    {
       "model_ref": "tencent-tokenhub/mimo-v2.6-flash",
       "route_ref": "tencent-tokenhub@default/mimo-v2.6-flash"
     },
     {
       "model_ref": "tencent-tokenhub/mimo-v2.6-pro",
       "route_ref": "tencent-tokenhub@default/mimo-v2.6-pro"
-    },
-    {
-      "model_ref": "tencent-tokenhub/minimax-m2.5",
-      "route_ref": "tencent-tokenhub@default/minimax-m2.5"
     },
     {
       "model_ref": "tencent-tokenhub/minimax-m2.7",
@@ -17145,20 +16409,8 @@
       "route_ref": "tencent-tokenhub@default/minimax-m3.1-flash"
     },
     {
-      "model_ref": "tencent-tokenhub/qwen3.5-flash",
-      "route_ref": "tencent-tokenhub@default/qwen3.5-flash"
-    },
-    {
-      "model_ref": "tencent-tokenhub/qwen3.5-plus",
-      "route_ref": "tencent-tokenhub@default/qwen3.5-plus"
-    },
-    {
       "model_ref": "tencent-tokenhub/step-5-preview",
       "route_ref": "tencent-tokenhub@default/step-5-preview"
-    },
-    {
-      "model_ref": "tencent-tokenhub/youtu-vita",
-      "route_ref": "tencent-tokenhub@default/youtu-vita"
     },
     {
       "model_ref": "together/MiniMaxAI/MiniMax-M2.7",

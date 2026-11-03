@@ -9,6 +9,109 @@ reviewed routes unless there is affirmative removal evidence. New routes require
 their own endpoint evidence; missing capability flags are conservative omissions,
 not proof that a model lacks the feature.
 
+## 2026-11-04 incremental review
+
+This cycle starts from main `aaee7b22`; evidence was sampled on November 3
+UTC (November 4 in Beijing). The frozen models.dev payload is
+`0d6995e11f1174c560cf6dd7bf7458e53258ea0b4de19dc8072e9b3e972051c8`.
+The [capacity evidence](metadata-evidence.md#incremental-review-2026-11-04)
+records the exact changes and separates new retirement evidence from
+previously missed shutdowns. All 30 registered endpoints were individually
+reviewed: 361 first-group and 168 second-group pre-change review records.
+These counts are effective review projections, not counts of explicit
+built-in route objects.
+
+### First endpoint group
+
+All 78 successful raw-source hashes were verified. Tencent's fourteen exact
+retired model IDs lose 33 existing routes; only two V4.1 Chat routes gain
+reviewed thinking and `low/high/max` effort. The four corresponding
+Messages/Responses routes stay reasoning-disabled and keep empty effort;
+this means independently unaudited, not proof of server incapability.
+Unknown context, output ceiling and omitted-request defaults remain unknown.
+
+| Registered endpoint | Result and preserved boundary |
+| --- | --- |
+| `dashscope@default` | Preserve existing fields; ordinary API eligibility is not a plan allowlist. |
+| `dashscope@token-plan` | Personal/team Token Plan remains independently scoped. |
+| `dashscope@coding-plan` | “Legacy” navigation labeling is not a shutdown notice; eligibility is retained. |
+| `dashscope@coding-plan-intl` | FAQ host typo corrected to the already-registered international host; six-model eligibility unchanged. |
+| `volcengine@default` | New V4.1 parallel-tool parameter restrictions do not change capacities or plan support. |
+| `volcengine@coding` | M3 remains retired; other live aliases and unknowns are preserved. |
+| `volcengine@plan` | Independent plan boundary preserved; no generic API inheritance. |
+| `tencent-tokenhub@default` | Remove fourteen retired exact IDs; refine only two V4.1 Chat policies. |
+| `tencent-tokenhub@messages` | Remove fourteen exact IDs; do not inherit Chat reasoning. |
+| `tencent-tokenhub@responses` | Remove five existing exact routes; do not inherit Chat reasoning. |
+| `qianfan@default` | Prior six retirements remain removed; no broader family retirement. |
+| `bigmodel@default` | No new exact model eligibility or independently audited fields. |
+| `zai@default` | Preserve international/API distinctions and unknowns. |
+| `xiaomi@default` | Responses/model bodies unchanged; Finance navigation is not new model evidence. |
+| `xiaomi@token-plan` | Historical ultraspeed and plan eligibility are not retired by absence. |
+
+The ordinary Volcengine DeepSeek V4.1 guide now says Responses accepts
+`parallel_tool_calls` but ignores it, including the economy variant; even
+`false` can yield multiple calls. Chat does not support this parameter and
+always enables parallel calls. This does not certify that disabling
+parallelism is enforceable or justify copying fields to subscription routes.
+Reformatted cache-token thresholds are unchanged. Responses storage billing
+uses natural hours (10:57–12:27 is three hours), not a model budget change.
+
+### Second endpoint group
+
+All 15 endpoints and 168 effective review records were unchanged. Of 89
+source receipts, 65 returned HTTP 200; all available raw bodies and all
+receipts were hash-verified. Sixteen Mistral requests reset; Together had
+six 403/404 responses and Fireworks two 404s. Failures and navigation
+changes are not model removal or admission evidence.
+
+| Registered endpoint | Result and preserved boundary |
+| --- | --- |
+| `minimax@default` | Text contract unchanged; November 18 retirement is still future. |
+| `minimax-cn@default` | Domestic host/schema separately checked; no borrowed international fields. |
+| `minimax@m-plan` | Plan eligibility/preview forwarding is not native API retirement. |
+| `minimax-cn@m-plan` | Domestic plan defaults remain unknown where undocumented. |
+| `moonshot@default` | K3.1 marketing changes do not certify capacity; October 31 was a new-registration cutoff. |
+| `byteplus@default` | Ordinary API cache matrix changed; November 11 deactivation is still future. |
+| `byteplus@coding` | No new plan evidence; do not copy the ordinary API cache matrix. |
+| `stepfun@default` | Step Code documentation links do not change model budgets. |
+| `stepfun@plan` | Router effort and ambiguous 64K remain independently scoped. |
+| `opencode-go@default` | 38 review records retained, including ten historically absent IDs. |
+| `opencode-go@messages` | 34 review records retained, including six historically absent IDs. |
+| `opencode-go@responses` | 30 review records retained, including two historically absent IDs. |
+| `kilocode@default` | Five complete auto records unchanged; non-auto changes do not propagate. |
+| `together@default` | Existing five model cards unchanged; navigation/403/404 is not availability evidence. |
+| `fireworks@default` | 329 indexed IDs and six reviewed capability/deployment fields unchanged. |
+
+The [ordinary BytePlus cache matrix](https://docs.byteplus.com/en/docs/modelark/model-list)
+now distinguishes implicit Chat/Responses/Messages/Batch caching from explicit
+Responses prefix/session caching. In particular, the two Seed 2.0 code/pro
+IDs have no implicit caching but do have explicit Responses caching. This
+does not certify any Coding-plan cache capability.
+The [Go listing](https://opencode.ai/inference/go/v1/models) still has 28 IDs:
+the DeepSeek V4 Pro name loses “(New)” (already reflected locally), and
+MiniMax M3.1 Flash changes `open_weights` to true. Neither changes runtime
+capabilities or independently proves a native vendor license. Zen-only
+models are not admitted to Go.
+
+The [Kilo listing](https://api.kilo.ai/api/gateway/models) changes from 383
+to 379 non-auto records, including new `stealth/crouton-alpha`, five absent
+free IDs, and 110 changed common records (17 capability/output subsets).
+All five auto objects remain exactly unchanged. Fireworks has 280 index
+timestamp changes and a price-only change for `ultramarine-1-flash-us`;
+no capacity follows from either. Native Mistral exact version
+`mistral-large-4.0-26-10` remains unverified; an OpenRouter record or a failed
+native request cannot establish native wire identity, integer ceiling or
+omitted-request default.
+
+Local verification passes: 313 test executions passed and one snapshot-writing
+test was ignored across the real `models_dev` CI filter, catalog/discovery,
+adapter and context-budget targets. Artifact/supplement validation (1,073/55),
+the 621-route field gate, strict full-object increment review, formatting,
+warning-free locked all-target checks and all 12 frozen hashes pass.
+Independent frozen review and the test-only retired-MiMo fixture follow-up
+found no unresolved P1/P2. This is offline verification, not paid inference
+or proof of account entitlement; the documented evidence gaps remain.
+
 ## 2026-11-03 incremental review
 
 This cycle starts from main `536449d8`; evidence was sampled on November 2

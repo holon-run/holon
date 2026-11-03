@@ -1259,6 +1259,76 @@ mod tests {
     }
 
     #[test]
+    fn tokenhub_retired_models_are_not_restored_from_previous_supplements() {
+        let ids = [
+            "deepseek-v3.2",
+            "deepseek-v4-flash",
+            "deepseek-v4-flash-0731",
+            "glm-5",
+            "glm-5-turbo",
+            "glm-5.1",
+            "glm-5v-turbo",
+            "hy3-preview",
+            "kimi-k2.5",
+            "mimo-v2.5-pro",
+            "minimax-m2.5",
+            "qwen3.5-flash",
+            "qwen3.5-plus",
+            "youtu-vita",
+        ];
+        let responses = [
+            "deepseek-v4-flash",
+            "deepseek-v4-flash-0731",
+            "mimo-v2.5-pro",
+            "qwen3.5-flash",
+            "qwen3.5-plus",
+        ];
+        let mut parsed: ModelsDevSnapshot = serde_json::from_value(serde_json::json!({
+            "tencent-tokenhub": {"id": "tencent-tokenhub", "models": {}}
+        }))
+        .unwrap();
+        let mut previous = ModelsDevSupplement::empty();
+        for id in ids {
+            parsed
+                .providers
+                .get_mut("tencent-tokenhub")
+                .unwrap()
+                .models
+                .insert(
+                    id.into(),
+                    serde_json::from_value(serde_json::json!({
+                        "id": id, "release_date": "2026-11-01",
+                        "modalities": {"input": ["text"], "output": ["text"]}
+                    }))
+                    .unwrap(),
+                );
+            previous
+                .models
+                .push(supplement_metadata(&format!("tencent-tokenhub/{id}"), id));
+            for endpoint in ["default", "messages", "responses"] {
+                if endpoint == "responses" && !responses.contains(&id) {
+                    continue;
+                }
+                previous.routes.push(
+                    ModelRouteRef::parse(&format!("tencent-tokenhub@{endpoint}/{id}")).unwrap(),
+                );
+            }
+        }
+        assert_eq!(previous.routes.len(), 33);
+        // Gateway catalogs cannot auto-admit models, including retained entries.
+        assert!(!AUTO_SUPPLEMENT_PROVIDERS.contains(&"tencent-tokenhub"));
+        for previous in [None, Some(&previous)] {
+            let update =
+                generate(&parsed, previous, &legacy(), "2026-11-04", "rev", "ver").unwrap();
+            assert!(update.supplement.models.is_empty());
+            assert!(update.supplement.routes.is_empty());
+            if previous.is_some() {
+                assert_eq!(update.removed.len(), ids.len());
+            }
+        }
+    }
+
+    #[test]
     fn retired_qianfan_ids_are_not_drafted_or_retained() {
         // Qianfan has no upstream mapping or supplement admission. Do not
         // broaden either to filter IDs already excluded by that boundary.

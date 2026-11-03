@@ -5,6 +5,110 @@ unchanged catalog facts are preserved, not newly certified as vendor hard
 limits. An upstream candidate is evidence to review, not permission to change
 an endpoint, region, subscription entitlement, or runtime output policy.
 
+## Incremental review: 2026-11-04
+
+The frozen models.dev payload is
+`0d6995e11f1174c560cf6dd7bf7458e53258ea0b4de19dc8072e9b3e972051c8`.
+The [official OpenRouter listing](https://openrouter.ai/api/v1/models),
+sampled on November 3 at 20:34 UTC (raw SHA-256
+`c690e60e063d18d7e69556ba2e1fb06ff47dff6f54e0254ee3e0b7d4fa293bef`),
+independently supports six provider-level output projection changes:
+
+| OpenRouter model ID | Previous | Current |
+| --- | ---: | ---: |
+| `google/gemma-4-26b-a4b-it` | 235,929 | 32,768 |
+| `meta-llama/llama-3.1-70b-instruct` | 16,384 | 8,192 |
+| `meta-llama/llama-3.2-3b-instruct` | 117,964 | 72,000 |
+| `meta-llama/llama-3.3-70b-instruct` | 16,384 | 128,000 |
+| `qwen/qwen3-235b-a22b-2507` | 16,384 | 117,964 |
+| `qwen/qwen3-next-80b-a3b-instruct` | 16,384 | 235,929 |
+
+The existing remote projection uses these ceilings as both default and upper
+bound; this is not a newly certified omitted-request default. Model-level
+context and `top_provider.context_length` remain separate. New Crouton and
+Grok batch records in the public listing do not themselves add static routes.
+
+Ten Venice output projections also change in the upstream payload:
+six exact DeepSeek IDs (`deepseek-v4-1-flash[-1017]`,
+`deepseek-v4-flash[-0731]`, `deepseek-v4-pro[-0813]`) now report 262,144;
+the two Gemma 4 26B/31B IDs report 16,384; `minimax-m3-preview` reports
+131,072; and `nvidia-nemotron-3-5-super-vl-120b-a12b` reports 102,400.
+**These ten changes have models.dev provenance only in this cycle.**
+Both public Venice model-list URLs and the independent official model-list
+and reasoning documentation failed with connection resets on November 3.
+Keep the records `remote_discovered`, with this first-party verification
+debt explicit; do not certify them as native-vendor hard limits, change a
+static route, or transfer them to another endpoint. Existing remote default
+projection behavior is unchanged.
+
+The upstream `xai/grok-imagine-image-quality` remote record disappears, but
+the independent [official migration notice](https://docs.x.ai/developers/migration/imagine-image-quality-nov-2)
+expressly preserves requests to that slug after November 2 by redirecting
+generation and editing to `grok-imagine-image-2.0` with `quality: "low"`.
+It preserves request/response shapes and reports the serving model in the
+response. Keep the existing reviewed static route; deletion of the remote
+record does not remove that compatible alias or add a quality selector.
+This is a compatibility redirect for a retired model slug, not continued
+service by the original model or a promise of its old pricing. The explicit
+shape-and-parameter compatibility guarantee supports the existing capability
+subset; it does not admit new editing or quality controls.
+The notice was sampled on November 3 at 20:45 UTC, raw SHA-256
+`b0d61b1bf32f97b2e1dfccf47fbd063ac234464d42b47d7333bde345931422db`.
+
+### Exact Tencent TokenHub retirements
+
+The [protocol matrix](https://cloud.tencent.com/document/product/1823/130079)
+and [DeepSeek guide](https://cloud.tencent.com/document/product/1823/132248)
+removed the two old bare Flash IDs on November 3. Independent final service
+notices, not model-table omissions, confirm their retirement and reveal
+previously missed historical retirements:
+
+| Exact TokenHub ID(s) | Final cutoff, Beijing time | Official notice |
+| --- | --- | --- |
+| `deepseek-v3.2` | July 16, 2026, 00:00 | [2327](https://cloud.tencent.com/announce/detail/2327) |
+| `minimax-m2.5` | August 7, 2026, 00:00 | [2362](https://cloud.tencent.com/announce/detail/2362) |
+| `hy3-preview` | August 31, 2026, 00:00 | [2391](https://cloud.tencent.com/announce/detail/2391) |
+| `kimi-k2.5` | August 31, 2026, 00:00 | [2414](https://cloud.tencent.com/announce/detail/2414) |
+| `qwen3.5-flash`, `qwen3.5-plus` | September 8, 2026, 00:00 | [2427](https://cloud.tencent.com/announce/detail/2427) |
+| `deepseek-v4-flash` | September 27, 2026, 00:00 | [2451](https://cloud.tencent.com/announce/detail/2451) |
+| `glm-5`, `glm-5-turbo`, `glm-5.1` | October 9, 2026, 00:00 | [2469](https://cloud.tencent.com/announce/detail/2469) |
+| `youtu-vita` | October 15, 2026, 00:00 | [2447](https://cloud.tencent.com/announce/detail/2447) |
+| `mimo-v2.5-pro` | October 20, 2026, 23:59:59 | [2494](https://cloud.tencent.com/announce/detail/2494) |
+| `glm-5v-turbo` | October 30, 2026, 23:59:59 | [2479](https://cloud.tencent.com/announce/detail/2479) |
+| `deepseek-v4-flash-0731` | October 31, 2026, 00:00 | [2496](https://cloud.tencent.com/announce/detail/2496) |
+
+All cutoffs precede the November 3 sample. The two Flash IDs account for six
+current routes; the other twelve IDs account for 27 historical omissions,
+not 27 newly retired November 4 routes. Limit removal to the fourteen exact
+`tencent-tokenhub` model IDs and their 33 existing routes (14 Chat,
+14 Messages, five Responses). The official [model list](https://cloud.tencent.com/document/product/1823/130051)
+links the MiMo display name to its lowercase call ID. Conditional upgrades
+for eligible accounts, sometimes with changed billing, do not certify the
+old model or guarantee that every account's old request still succeeds.
+Some notices also describe automatic switching, but do not provide the
+equivalent request/response-shape and accepted-parameter guarantee above.
+YT-VITA availability on a different image-recognition API is not TokenHub
+availability.
+
+Retain native-direct prefixed/suffixed Flash IDs, other providers' models,
+and Tencent M3/M3.1, Pro and V4.1. In particular, the
+[M2.7 cutoff](https://cloud.tencent.com/announce/detail/2511) is
+November 17, 2026, 23:59:59 Beijing time, still in the future.
+
+The exact V4.1 Chat IDs `deepseek-v4.1-flash` and
+`deepseek-v4.1-flash-1017` have thinking instructions and the
+`low/high/max` effort set in the DeepSeek guide; `medium/xhigh` are
+compatibility mappings to `high`, not additional strengths. Enable only
+their reviewed Chat reasoning and effort policy; keep Messages/Responses
+reasoning explicitly disabled rather than inheriting the model flag.
+Capacity abbreviations such as 1M/384K do not provide unambiguous integer
+capacities or omitted-request defaults, so those unknowns remain null.
+The guide's sampled raw SHA-256 is
+`4b67e9cb864cc52d705e94b0a9ac8f154ea0f99293218984ba7c690620d6ce9a`.
+
+MiniMax M3.1 `open_weights` changes are upstream descriptive metadata, not
+new subscription entitlement, protocol support or runtime capability.
+
 ## Incremental review: 2026-11-03
 
 The frozen models.dev payload is
