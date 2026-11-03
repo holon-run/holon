@@ -68,10 +68,8 @@ refuse cleanup even when the caller believes the assignment is over.
 Historical error records (`last_runtime_failure`) serve as diagnostic evidence
 rather than active execution blockers. A settled child agent that is idle or
 stopped can be safely deleted once its work is done, without being kept alive
-merely because an earlier failure was recorded.
-The background deletion coordinator paces residue cleanup batches with a minimum
-delay of 200 ms between continuation rounds, decoupling residue sweeps from the
-main 60-second maintenance cycle so idle daemons avoid continuous CPU spinning.
+merely because an earlier failure was recorded. Background cleanup of deleted
+records proceeds incrementally and does not keep an idle runtime busy.
 
 ## Boundaries and trust
 
