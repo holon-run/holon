@@ -1266,9 +1266,17 @@ mod tests {
         assert!(metadata_handle.metadata()?.is_file());
         drop(metadata_handle);
 
-        let error = fs::read_link(&metadata_fd_path)
-            .expect_err("dropping the metadata handle must close its exact descriptor");
-        assert_eq!(error.kind(), std::io::ErrorKind::NotFound);
+        // Linux reuses fd numbers: a parallel test thread may open a new file that
+        // lands on the dropped descriptor between drop and read_link. Only a link
+        // still targeting the wal file proves the handle leaked; any other target
+        // is benign fd-number reuse.
+        match fs::read_link(&metadata_fd_path) {
+            Ok(target) => assert_ne!(
+                target, wal_path,
+                "dropping the metadata handle must close its exact descriptor"
+            ),
+            Err(error) => assert_eq!(error.kind(), std::io::ErrorKind::NotFound),
+        }
         Ok(())
     }
 
