@@ -984,6 +984,10 @@ const zh: Record<string, any> = {
         label: "Tavily",
         description: "面向智能体和 RAG 工作流优化的搜索 API。",
       },
+      keenable: {
+        label: "Keenable",
+        description: "面向智能体的独立网页索引，也可免密钥使用。",
+      },
       exa: {
         label: "Exa",
         description: "用于高相关性网页检索的神经搜索 API。",

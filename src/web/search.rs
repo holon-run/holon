@@ -633,6 +633,9 @@ async fn search_configured_provider(
         WebProviderKind::DeepSeek => {
             deepseek_search(query, max_results, provider_id, provider_config, fetch_config).await
         }
+        WebProviderKind::Keenable => {
+            keenable_search(query, max_results, provider_id, provider_config, fetch_config).await
+        }
         WebProviderKind::Exa => {
             exa_search(query, max_results, provider_id, provider_config, fetch_config).await
         }
@@ -649,7 +652,7 @@ async fn search_configured_provider(
             "provider_unavailable",
             format!("WebSearch provider kind `{kind:?}` is reserved for future provider support"),
             provider_id,
-            "configure a duckduckgo, searxng, brave, tencent_cloud_wsa, bocha, tavily, deepseek, exa, perplexity, or firecrawl provider for this Holon version",
+            "configure a duckduckgo, searxng, brave, tencent_cloud_wsa, bocha, tavily, keenable, deepseek, exa, perplexity, or firecrawl provider for this Holon version",
         )),
     }?;
     Ok(ProviderSearchOutput::new(results))
@@ -1619,6 +1622,128 @@ async fn tavily_search(
             "Tavily returned no parseable search results",
             provider_id,
             "try a different query or check the API subscription",
+        ));
+    }
+    Ok(results)
+}
+
+const KEENABLE_APP_TITLE: &str = "Holon";
+
+fn keenable_request(
+    client: &Client,
+    base_url: &str,
+    api_key: &str,
+    query: &str,
+    max_results: usize,
+) -> reqwest::RequestBuilder {
+    let base_url = base_url.trim_end_matches('/');
+    let body = serde_json::json!({
+        "query": query,
+        "max_results": max_results.min(20),
+    });
+    let request = if api_key.trim().is_empty() {
+        // Keenable's public endpoint needs no key; it identifies the app by title instead.
+        client
+            .post(format!("{base_url}/v1/search/public"))
+            .header("X-Keenable-Title", KEENABLE_APP_TITLE)
+    } else {
+        client
+            .post(format!("{base_url}/v1/search"))
+            .header("X-API-Key", api_key.trim())
+    };
+    request.json(&body)
+}
+
+async fn keenable_search(
+    query: &str,
+    max_results: usize,
+    provider_id: &str,
+    provider: &WebProviderConfig,
+    fetch_config: &WebFetchConfig,
+) -> Result<Vec<WebSearchResult>> {
+    let client = Client::builder().timeout(timeout(fetch_config)).build()?;
+    let base_url = provider
+        .base_url
+        .as_deref()
+        .unwrap_or("https://api.keenable.ai");
+    let response = keenable_request(&client, base_url, &provider.api_key, query, max_results)
+        .send()
+        .await
+        .map_err(|error| {
+            search_error(
+                "network_failed",
+                format!("Keenable request failed: {error}"),
+                provider_id,
+                "retry later or check the API key",
+            )
+        })?;
+    let status = response.status();
+    if !status.is_success() {
+        let kind = if status == reqwest::StatusCode::UNAUTHORIZED {
+            "provider_unavailable"
+        } else if status == reqwest::StatusCode::TOO_MANY_REQUESTS {
+            "rate_limited"
+        } else {
+            "network_failed"
+        };
+        return Err(search_error(
+            kind,
+            format!("Keenable returned HTTP {status}"),
+            provider_id,
+            "check the API key or retry later",
+        ));
+    }
+    let body = read_search_response(response, provider_id).await?;
+    let payload: serde_json::Value = serde_json::from_str(&body).map_err(|error| {
+        search_error(
+            "parse_failed",
+            format!("Keenable returned invalid JSON: {error}"),
+            provider_id,
+            "check the API key or retry later",
+        )
+    })?;
+    let results = payload
+        .get("results")
+        .and_then(|results| results.as_array())
+        .into_iter()
+        .flatten()
+        .enumerate()
+        .filter_map(|(index, entry)| {
+            let url = entry.get("url")?.as_str()?.trim().to_string();
+            let title = entry
+                .get("title")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .trim()
+                .to_string();
+            let snippet = ["snippet", "description"]
+                .iter()
+                .filter_map(|key| entry.get(*key).and_then(|v| v.as_str()))
+                .find(|text| !text.trim().is_empty())
+                .map(str::to_string);
+            normalize_search_result(
+                provider_id,
+                index + 1,
+                ProviderRawSearchResult {
+                    title,
+                    url,
+                    snippet,
+                    published_at: entry
+                        .get("published_at")
+                        .and_then(|v| v.as_str())
+                        .map(str::to_string),
+                    ..ProviderRawSearchResult::default()
+                },
+            )
+        })
+        .take(max_results)
+        .collect::<Vec<_>>();
+    if results.is_empty() {
+        return Err(search_error(
+            "parse_failed",
+            "Keenable returned no parseable search results",
+            provider_id,
+            "try a different query",
         ));
     }
     Ok(results)
@@ -3423,6 +3548,61 @@ mod tests {
         assert_eq!(results.len(), 2);
         assert_eq!(results[0].title, "Tavily Search");
         assert_eq!(results[1].title, "Tavily Docs");
+    }
+
+    #[tokio::test]
+    async fn keenable_search_integration_success() {
+        let router = axum::Router::new().route(
+            "/v1/search",
+            axum::routing::post(|headers: axum::http::HeaderMap| async move {
+                assert_eq!(headers["x-api-key"], "test-key-123");
+                axum::Json(serde_json::json!({
+                    "results": [
+                        {
+                            "title": "Keenable",
+                            "url": "https://keenable.ai",
+                            "description": "",
+                            "snippet": "Web search for agents",
+                            "published_at": "2026-01-01T00:00:00Z"
+                        },
+                        { "title": "No URL" }
+                    ]
+                }))
+            }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            axum::serve(listener, router).await.unwrap();
+        });
+        let base_url = format!("http://{}", addr);
+
+        let provider = test_provider(WebProviderKind::Keenable, &base_url);
+        let results = keenable_search("test", 5, "keenable_test", &provider, &test_fetch_config())
+            .await
+            .unwrap();
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].title, "Keenable");
+    }
+
+    #[test]
+    fn keenable_request_is_key_free_without_api_key() {
+        let client = Client::new();
+        let request = keenable_request(&client, "https://api.keenable.ai/", " ", "q", 50)
+            .build()
+            .unwrap();
+        assert_eq!(
+            request.url().as_str(),
+            "https://api.keenable.ai/v1/search/public"
+        );
+        assert_eq!(request.headers()["X-Keenable-Title"], KEENABLE_APP_TITLE);
+        assert!(request.headers().get("X-API-Key").is_none());
+
+        let request = keenable_request(&client, "https://api.keenable.ai", "k", "q", 5)
+            .build()
+            .unwrap();
+        assert_eq!(request.url().as_str(), "https://api.keenable.ai/v1/search");
+        assert_eq!(request.headers()["X-API-Key"], "k");
     }
 
     #[tokio::test]

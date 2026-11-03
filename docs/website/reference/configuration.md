@@ -534,7 +534,7 @@ Prometheus, Grafana, alerting, and troubleshooting examples.
 | `x_search.enabled` | boolean | `true` | Enable `XSearch` automatically when xAI credentials are available; set `false` to hide it |
 | `x_search.model` | model_ref | — | Optional xAI model route for isolated `XSearch` requests |
 | `x_search.timeout_seconds` | integer | `60` | Timeout for isolated xAI `XSearch` requests |
-| `web.providers.<name>.kind` | string | required | Provider kind: `duck_duck_go`, `searxng`, `brave`, `tencent_cloud_wsa`, `bocha`, `tavily`, `exa`, `perplexity`, `firecrawl`, `open_ai_native`, `anthropic_native`, `gemini_native`, or `command` |
+| `web.providers.<name>.kind` | string | required | Provider kind: `duck_duck_go`, `searxng`, `brave`, `tencent_cloud_wsa`, `bocha`, `tavily`, `keenable`, `exa`, `perplexity`, `firecrawl`, `open_ai_native`, `anthropic_native`, `gemini_native`, or `command` |
 | `web.providers.<name>.base_url` | string | unset | Custom provider endpoint |
 | `web.providers.<name>.credential_profile` | string | unset | Credential profile for API-backed providers |
 | `web.providers.<name>.capabilities` | json_object | derived | Read-only capability metadata surfaced by `holon config get` and routing diagnostics |

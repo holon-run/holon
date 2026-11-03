@@ -443,6 +443,7 @@ pub enum WebProviderKind {
     TencentCloudWsa,
     Bocha,
     Tavily,
+    Keenable,
     Exa,
     Perplexity,
     Firecrawl,
@@ -457,7 +458,7 @@ impl WebProviderKind {
     ///
     /// Missing entries are not caught at compile time, so keep this in sync
     /// when adding or removing enum variants.
-    pub const ALL: [Self; 14] = [
+    pub const ALL: [Self; 15] = [
         Self::DuckDuckGo,
         Self::Searxng,
         Self::Brave,
@@ -465,6 +466,7 @@ impl WebProviderKind {
         Self::TencentCloudWsa,
         Self::Bocha,
         Self::Tavily,
+        Self::Keenable,
         Self::Exa,
         Self::Perplexity,
         Self::Firecrawl,
@@ -492,6 +494,7 @@ impl WebProviderKind {
             WebProviderKind::TencentCloudWsa => "tencent_cloud_wsa",
             WebProviderKind::Bocha => "bocha",
             WebProviderKind::Tavily => "tavily",
+            WebProviderKind::Keenable => "keenable",
             WebProviderKind::Exa => "exa",
             WebProviderKind::Perplexity => "perplexity",
             WebProviderKind::Firecrawl => "firecrawl",
@@ -586,6 +589,19 @@ impl WebProviderKind {
                 supports_full_content: true,
                 supports_native_citations: false,
                 default_priority: 75,
+                status: WebProviderSupportStatus::Supported,
+            },
+            // Keenable also works without a key (public endpoint); a key raises limits.
+            WebProviderKind::Keenable => WebProviderCapabilityMetadata {
+                auth: WebProviderAuthClass::ApiKey,
+                cost_class: WebProviderCostClass::Paid,
+                quality_hint: WebProviderQualityHint::Keyword,
+                supports_domain_filter: false,
+                supports_freshness: false,
+                supports_region_or_language: false,
+                supports_full_content: false,
+                supports_native_citations: false,
+                default_priority: 72,
                 status: WebProviderSupportStatus::Supported,
             },
             WebProviderKind::Exa => WebProviderCapabilityMetadata {
