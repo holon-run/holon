@@ -43,6 +43,11 @@ const TOKEN: &str = "provider-recovery-test-secret-not-an-operator-token";
 const AGENT_ID: &str = "main";
 const DEADLINE: Duration = Duration::from_secs(120);
 const PARK_WINDOW: Duration = Duration::from_secs(6);
+/// A daemon restart can tear the listener down between the readiness probe and
+/// the next request, so the status probe retries inside this budget. The
+/// budget is bounded: once it is spent the transport error still fails the
+/// test loudly, so a real regression is never hidden by the retry.
+const STATUS_PROBE_BUDGET: Duration = Duration::from_secs(15);
 
 fn holon_bin() -> PathBuf {
     std::env::var_os("CARGO_BIN_EXE_holon")
@@ -544,6 +549,33 @@ struct ParkedInput {
     reason: String,
 }
 
+/// Why one agent status probe did not produce a payload.
+enum StatusProbeFailure {
+    /// The listener was unreachable. The daemon may be inside a restart
+    /// window, so this is the only failure worth retrying.
+    Transport(String),
+    /// The daemon answered, but not with a usable status payload. This is a
+    /// deterministic answer and must stay loud.
+    Response(String),
+}
+
+fn agent_status_path() -> String {
+    format!("/api/agents/{AGENT_ID}/status?detail=full")
+}
+
+/// Keep failure output bounded: the full status payload can be large.
+fn bounded(text: &str) -> String {
+    const LIMIT: usize = 2_000;
+    if text.len() <= LIMIT {
+        return text.to_string();
+    }
+    let mut end = LIMIT;
+    while end > 0 && !text.is_char_boundary(end) {
+        end -= 1;
+    }
+    format!("{}...[truncated]", &text[..end])
+}
+
 impl Fixture {
     fn new(provider_env: Vec<(String, String)>) -> Self {
         let home = tempfile::tempdir().expect("isolated HOLON_HOME");
@@ -1027,6 +1059,75 @@ impl Fixture {
         response.json().ok()
     }
 
+    /// Probe the agent status endpoint once and classify the outcome.
+    ///
+    /// A daemon restart can tear the listener down between the readiness probe
+    /// and this request, so a transport error here is a timing race rather
+    /// than a wrong answer. Every other failure is a deterministic answer.
+    fn probe_agent_status(&self, address: &str) -> Result<Value, StatusProbeFailure> {
+        let path = agent_status_path();
+        let response = self
+            .client
+            .get(format!("http://{address}{path}"))
+            .bearer_auth(TOKEN)
+            .send()
+            .map_err(|error| StatusProbeFailure::Transport(error.to_string()))?;
+        let http_status = response.status();
+        let body = response
+            .text()
+            .map_err(|error| StatusProbeFailure::Response(format!("body read error: {error}")))?;
+        if !http_status.is_success() {
+            return Err(StatusProbeFailure::Response(format!(
+                "status={http_status}, body={}",
+                bounded(&body)
+            )));
+        }
+        serde_json::from_str(&body).map_err(|error| {
+            StatusProbeFailure::Response(format!("JSON error: {error}, body={}", bounded(&body)))
+        })
+    }
+
+    /// Read the agent status across a daemon restart window.
+    ///
+    /// Only transport errors are retried; the budget is bounded so an
+    /// exhausted retry still fails the test with the daemon diagnostics.
+    fn wait_for_agent_status(&self, address: &str, budget: Duration) -> Value {
+        let deadline = Instant::now() + budget;
+        let mut last_error: String;
+        loop {
+            match self.probe_agent_status(address) {
+                Ok(status) => return status,
+                Err(StatusProbeFailure::Transport(error)) => {
+                    last_error = format!("transport error: {error}");
+                }
+                Err(StatusProbeFailure::Response(error)) => panic!(
+                    "GET {} failed: {error}\n{}",
+                    agent_status_path(),
+                    self.all_diagnostics()
+                ),
+            }
+            if Instant::now() >= deadline {
+                panic!(
+                    "GET {} kept failing for {budget:?} inside the restart budget: {last_error}\n{}",
+                    agent_status_path(),
+                    self.all_diagnostics()
+                );
+            }
+            eprintln!("retrying agent status probe after {last_error}");
+            thread::sleep(Duration::from_millis(100));
+        }
+    }
+
+    /// Daemon stdout and stderr for every spawned process, with the control
+    /// token redacted so failure output stays safe to publish.
+    fn all_diagnostics(&self) -> String {
+        self.processes
+            .iter()
+            .map(|process| process.diagnostics().replace(TOKEN, "[redacted]"))
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
     fn post_prompt(&self, address: &str, text: &str) -> String {
         let response = self
             .client
@@ -1084,12 +1185,7 @@ impl Fixture {
     }
 
     fn assert_primary_override(&self, address: &str) {
-        let status = self
-            .try_get(
-                address,
-                &format!("/api/agents/{AGENT_ID}/status?detail=full"),
-            )
-            .unwrap();
+        let status = self.wait_for_agent_status(address, STATUS_PROBE_BUDGET);
         assert_eq!(status["model"]["source"], "agent_override");
         assert_eq!(status["agent"]["model_override"], "openai@default/gpt-5.4");
         let persisted: String = self
