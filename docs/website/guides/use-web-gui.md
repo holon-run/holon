@@ -126,6 +126,9 @@ Select an agent from the Dashboard to open its conversation page:
 - **Display levels** — switch between Info (compact user-facing output),
   Verbose (tool calls and intermediate results), and Debug (full runtime
   metadata including tool execution records).
+- **Message copy with full-text retrieval** — copy buttons on operator prompts
+  and assistant briefs copy text directly. When an operator message preview is
+  truncated in the conversation feed, copying fetches the full message body.
 - **Input bar** — send operator messages to the selected agent.
 - **Conversation hydration** — Agent detail and execution state hydrate directly
   from conversation records rather than legacy event logs.

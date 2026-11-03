@@ -1,9 +1,9 @@
 ---
 title: CLI 参考
-summary: Holon 命令行界面——基于 holon --help 验证（v0.57.0）。
+summary: Holon 命令行界面——基于 holon --help 验证（v0.58.0）。
 order: 10
 ---
-<!-- maintenance: regenerate from `holon --help` output when commands change. Last regenerated against v0.57.0. -->
+<!-- maintenance: regenerate from `holon --help` output when commands change. Last regenerated against v0.58.0. -->
 
 # CLI 参考
 
@@ -41,7 +41,7 @@ holon tail --agent child --include-progress --follow --cursor '<checkpoint>'
 ## 命令树
 
 ```text
-holon (v0.57.0)
+holon (v0.58.0)
 ├── context      显示本次 CLI 调用的声明式调用方上下文
 ├── commands     显示机器可读的 CLI 命令元数据
 ├── serve        启动 HTTP 控制平面服务
@@ -287,6 +287,8 @@ holon daemon stop
 进程时为 true。幂等 Start 复用已有 daemon 时为 false；成功返回不代表取得进程管理权。
 在停止流程中，stop 路径会在短暂延迟后复核进程存活状态，并将僵尸进程（状态 Z 或 X）正确视作
 已退出而非仍在运行的守护进程，避免因操作系统进程回收延迟引发多余的 TERM+KILL 失败报警。
+使用 `holon daemon status` 查询状态时，探测逻辑在就绪性检查、Unix 域套接字与 TCP 回退之间共享
+5 秒有界时限。诊断信息读取本地持久化的 daemon 故障记录，不再直接打开运行时数据库，规避了控制平面健康时因数据库锁竞争导致的命令挂起。
 
 ### 初始化配置
 
