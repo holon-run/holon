@@ -13,7 +13,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::Arc;
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use async_trait::async_trait;
 use chrono::Utc;
 use holon::{
@@ -98,6 +98,11 @@ impl TaskResultReentryProvider {
         }
     }
 
+    /// Observation budget for this helper. On 2-core CI runners under shard
+    /// load, the exact-handle WaitFor record can become visible well past the
+    /// old 30s budget (#3879); only slow paths pay for the larger window.
+    const OBSERVE_RESULT_WINDOW: Duration = Duration::from_secs(60);
+
     pub(crate) async fn observe_result(
         self: &Arc<Self>,
         runtime: &holon::runtime::RuntimeHandle,
@@ -120,16 +125,48 @@ impl TaskResultReentryProvider {
                 },
             ))
             .await?;
-        eventually_for(Duration::from_secs(30), || {
+        eventually_for(Self::OBSERVE_RESULT_WINDOW, || {
             Ok(runtime
                 .storage()
                 .read_recent_tool_executions(20)?
                 .iter()
                 .any(|record| record.tool_name == "WaitFor" && record.input["resource"] == task_id))
         })
-        .await?;
+        .await
+        .map_err(|err| {
+            // Near-miss evidence: distinguish a slow-but-progressing pipeline
+            // from a stuck one when the budget is exhausted.
+            let observed = runtime
+                .storage()
+                .read_recent_tool_executions(20)
+                .map(|records| {
+                    records
+                        .iter()
+                        .map(|record| {
+                            format!(
+                                "{}[{:?}](resource={})",
+                                record.tool_name,
+                                record.status,
+                                record
+                                    .input
+                                    .get("resource")
+                                    .map(|value| value.to_string())
+                                    .unwrap_or_default()
+                            )
+                        })
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                })
+                .unwrap_or_else(|read_err| {
+                    format!("<recent tool executions unavailable: {read_err}>")
+                });
+            err.context(format!(
+                "no exact-handle WaitFor tool execution for task {task_id} observed within {:?}; recent tool executions: [{observed}]",
+                Self::OBSERVE_RESULT_WINDOW
+            ))
+        })?;
         self.child_release.notify_one();
-        wait_until_async_for(Duration::from_secs(30), || {
+        wait_until_async_for(Self::OBSERVE_RESULT_WINDOW, || {
             let provider = self.clone();
             let runtime = runtime.clone();
             async move {
@@ -141,7 +178,18 @@ impl TaskResultReentryProvider {
                         .any(|brief| brief.text == "exact task result observed"))
             }
         })
-        .await?;
+        .await
+        .map_err(|err| {
+            let observed_requests = self
+                .requests
+                .try_lock()
+                .map(|requests| requests.len())
+                .ok();
+            err.context(format!(
+                "exact task result reentry not observed within {:?}; provider requests observed: {observed_requests:?}",
+                Self::OBSERVE_RESULT_WINDOW
+            ))
+        })?;
         let requests = self.requests.lock().await;
         let reentry = &requests[1];
         assert!(
