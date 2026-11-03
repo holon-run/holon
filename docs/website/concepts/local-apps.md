@@ -12,10 +12,9 @@ a particular workflow. The app's files live under that agent's `apps/`
 directory; users open it through a logical app route.
 
 An app may also be a static site or an uncompressed, single-threaded Unity
-Web build. A root `index.html` is enough when no `manifest.json` exists:
-the runtime derives metadata in memory without changing the build output.
-An explicit manifest still controls metadata and custom entry pages; a broken
-manifest is an error, not a reason to guess another entry.
+Web build. A root `index.html` is enough when no manifest exists. A manifest can
+add metadata and custom entry pages; a broken manifest is an error, not a reason
+to guess another entry.
 
 For example, a documentation agent could host a review queue with a button to
 request a fresh link check. The app presents the queue and sends the request.
@@ -44,10 +43,10 @@ request was accepted. It does not mean the link check passed, or even that
 the agent has finished handling it. The interface must distinguish accepted,
 pending, and completed work and display actual results when available.
 
-The current event stream reports requests being enqueued and processing
-starting. It does not stream completed business results or all agent activity.
-An app must obtain the outcome through the result surface appropriate to its
-workflow rather than displaying "complete" when processing starts. Replay is
+The event stream reports when a request is accepted and processing starts. It
+does not deliver the completed business result or all agent activity. An app
+must obtain the outcome through the result surface appropriate to its workflow
+rather than displaying "complete" when processing starts. Replay is
 bounded, so after a disconnect, check work state rather than assuming a missing
 event means nothing happened. See [Results and artifacts](./results-and-artifacts.md).
 
@@ -62,16 +61,11 @@ preserve their App provenance. Neither a button label nor the app owner's
 agent ID makes submitted text an operator instruction.
 
 The host enforces contained, non-hidden file paths and a configurable
-per-file size limit (64 MiB by default). It does not impose an extension
-allowlist or a platform Content Security Policy by default. Operators may
-configure a complete App CSP; browser CORS and any app-supplied CSP still
-apply. These settings do not change Web GUI or Explorer sandbox policy.
-With a running daemon, `holon config set` and `holon config unset` persist
-these settings through the existing configuration API and schedule reload.
-After a successful reload, subsequent App requests use the new settings;
-in-flight streams retain their acquired policy. Direct configuration-file edits
-do not automatically reload; offline settings take effect on daemon startup
-or restart.
+per-file size limit. It does not impose an extension allowlist or a platform
+Content Security Policy by default. Operators may configure a complete App CSP;
+browser CORS and any app-supplied CSP still apply. These settings do not change
+Web GUI or Explorer sandbox policy. Configuration changes take effect after the
+daemon reloads them.
 They also do not provide separate browser origins or isolation between
 mutually untrusted apps. Review app code before hosting it in a session
 that can access the control plane.

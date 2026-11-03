@@ -28,7 +28,6 @@ holon daemon start
 Then open [http://127.0.0.1:7878/](http://127.0.0.1:7878/) in a
 browser.
 
-The Web GUI is served from embedded assets compiled into the `holon` binary.
 The default CORS configuration permits `localhost` origins so the GUI works
 out of the box on the same machine.
 
@@ -109,10 +108,9 @@ The Dashboard provides a runtime overview:
   completion) refresh the list in real time.
 - **Quick actions** — create agents, attach workspaces, and view agent detail.
 - **Agent lifecycle** — start, stop, and delete agents from the dashboard.
-  Creation flows distinguish acceptance, initialization, and failure feedback,
-  retiring the creation banner after a successful first turn.
-  Before deleting, preserve needed results and review the confirmation and
-  any blockers. Include private children only when you intend to remove them.
+  Creation shows progress and any failure. Before deleting, preserve needed
+  results and review the confirmation and any blockers. Include private
+  children only when you intend to remove them.
 - **Timer overview** — View active relative and calendar timers (with cron rules
   and timezones), check upcoming fire times, and cancel timers in the agent
   detail panel.
@@ -126,12 +124,7 @@ Select an agent from the Dashboard to open its conversation page:
 - **Display levels** — switch between Info (compact user-facing output),
   Verbose (tool calls and intermediate results), and Debug (full runtime
   metadata including tool execution records).
-- **Message copy with full-text retrieval** — copy buttons on operator prompts
-  and assistant briefs copy text directly. When an operator message preview is
-  truncated in the conversation feed, copying fetches the full message body.
 - **Input bar** — send operator messages to the selected agent.
-- **Conversation hydration** — Agent detail and execution state hydrate directly
-  from conversation records rather than legacy event logs.
 - **Tool execution details** — expand individual tool calls in the message
   stream to inspect request/response payloads, timing, and metadata.
   Tool result panels show structured output alongside raw data, making
@@ -227,9 +220,8 @@ and **Source** modes; text files support syntax highlighting.
 Files are resolved against registered workspaces and execution roots. Path
 traversal and symlink escapes are blocked. Text previews are capped at 1 MB;
 downloads can retrieve the complete file.
-Workspace files use explicit reads only. When a WorkItem plan artifact changes
-on disk, the browser surfaces a reload prompt rather than overwriting open
-preview state in the background.
+Workspace files are read only when you open them. If a WorkItem plan file
+changes on disk, the browser asks before reloading it.
 
 #### Optional Finder integration (macOS)
 
@@ -322,12 +314,9 @@ When viewing an agent or the Dashboard, the right panel shows:
 - **Active children** — spawned child agents and their status.
 - **Tool latency** — per-tool call count and total duration.
 
-Overview timers and expanded recent tasks refresh through a shared scheduler
-with identity fences, pausing background reads whenever the section collapses
-or the side panel closes. When inspecting a specific Task or WorkItem, the
-panel revalidates live details in place and surfaces refresh feedback in the
-header. For delegated child agents, click the conversation button to switch
-into the subagent view
+The inspector refreshes while it is open and stops background reads when the
+panel is collapsed. Task and WorkItem details update in place. For delegated
+child agents, click the conversation button to switch into the subagent view
 without a full-page reload, then use the return link to resume the parent.
 
 Expand the right panel when you need more room to read a detail view.
@@ -368,15 +357,8 @@ instead of blocking the request:
 
 - **Inline progress** — the Skills page shows a progress indicator for the
   running job, with success or error feedback when it finishes.
-- **Job API** — the runtime exposes the job read model at
-  `/api/jobs/{job_id}` for status, phase, and progress items.
-
-### Brief Cursor Decoupling and Debouncing
-
-Brief read status queries run through a reader connection pool instead of
-competing with write transactions. The Web GUI debounces cursor-advance updates
-into quiet windows, eliminating polling contention during active multi-client
-or multi-tab sessions.
+- **Job status** — API clients can check `/api/jobs/{job_id}` for progress and
+  errors.
 
 ## Verify your session
 

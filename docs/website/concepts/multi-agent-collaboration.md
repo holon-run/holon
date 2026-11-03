@@ -27,9 +27,8 @@ result.
 A reply can also be a question, progress update, or refusal. Even when it
 satisfies a reply wait, inspect its content before calling the business work
 complete.
-If the peer replies immediately before the caller's wait admission
-transaction settles, the runtime admits the terminal first writer and returns the
-completed wait receipt without conflicting task transitions.
+If the peer replies before the caller has registered its wait, the reply still
+satisfies that wait instead of being lost.
 
 ## What the delegating agent stays responsible for
 
@@ -50,11 +49,8 @@ working copy. Shared directories require explicit, non-overlapping edit scopes.
 
 ## Supervision and cleanup
 
-Use the invocation's task handle to wait for completion. The runtime recognizes
-supervised task results consumed within the same turn without forcing extra wait
-cycles, and restores child settlements by their original invocation context after
-a recovery. In graphical clients, child runs provide direct in-app navigation to
-the child's conversation view with verified return paths to the parent.
+Use the invocation's task handle to wait for completion. In graphical clients,
+you can open a child's conversation directly and return to the parent.
 
 Inspect status or output when diagnosis is needed, and stop work when it is no longer useful.
 A terminal handle is historical evidence, not a channel that can restart the
@@ -65,7 +61,7 @@ cleanup authority and has no needed work or artifacts. Preserve the result
 first. A completed invocation does not authorize deleting a shared peer or
 another agent's workspace. The runtime's ownership and active-use checks can
 refuse cleanup even when the caller believes the assignment is over.
-Historical error records (`last_runtime_failure`) serve as diagnostic evidence
+Historical error records serve as diagnostic evidence
 rather than active execution blockers. A settled child agent that is idle or
 stopped can be safely deleted once its work is done, without being kept alive
 merely because an earlier failure was recorded. Background cleanup of deleted

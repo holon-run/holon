@@ -300,10 +300,8 @@ daemon reports false; success alone does not establish process ownership.
 During shutdown, the stop path rechecks process liveness with a short delay and
 treats zombie processes (state Z or X) as exited rather than running daemons,
 preventing spurious TERM+KILL failures when system reaping lags behind process
-termination. Status inspection with `holon daemon status` bounds probing to a
-5-second shared deadline across readiness, Unix domain socket, and TCP fallback
-paths. It reads locally persisted daemon failure records without opening the
-runtime database, avoiding lock stalls while the control plane is healthy.
+termination. `holon daemon status` reports readiness with bounded diagnostic
+checks and avoids waiting on a busy runtime database.
 
 #### Persistent serve options
 

@@ -26,10 +26,10 @@ permission to run arbitrary work. For the underlying model, see
 ## 1. Create the directory and optional manifest
 
 In the confirmed Agent Home, create `apps/ping-card/`. A root `index.html`
-is enough to host it without a manifest: the runtime uses the directory name
-for `id` and `name`, `"0.0.0"` for `version`, `"index.html"` for `entry`,
-and `null` for `description`. These defaults exist only in memory; Holon
-does not write a manifest or change your files.
+is enough to host it without a manifest; Holon fills in the defaults and does
+not write a manifest or change your files. See the
+[manifest contract](../reference/local-apps.md#manifest-contract) for the
+default values.
 
 For the display name and description used in this example, optionally save
 `apps/ping-card/manifest.json`:

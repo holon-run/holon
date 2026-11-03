@@ -108,8 +108,10 @@ already submitted to the runtime is unaffected.
 - **Model Selection:** View and override the active model for any agent directly from the mobile interface.
   Unavailable or unconfigured model options are filtered automatically so only callable candidates appear in the picker.
 - **System Share Sheet Integration:** Share text, links, or documents from other Android apps directly into an agent's input composer.
-- **Durable Outbox & Network Resilience:** Prompts written while offline queue locally in the outbox. The app reconciles delivered messages against the runtime, fences stale sends, and tracks transient failures to avoid duplicate submissions on reconnect.
-- **Identity-Bound In-App Browser:** Local App routes and web links open in an identity-bound browser sheet that maintains authenticated session state without leaking credentials.
+- **Offline Outbox:** Prompts written while offline are queued and sent when the
+  connection returns, without duplicate submissions.
+- **In-App Browser:** Local App routes and web links open inside the app and
+  keep their authenticated session.
 - **Single-File Diagnostic Traces:** Export diagnostics saved to a single consolidated file that organizes events by network environment, simplifying troubleshooting and log sharing.
 - **Report AI Content:** Long-press an assistant response to report inaccurate,
   harmful, or inappropriate content. The runtime stores a bounded snapshot of

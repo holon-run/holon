@@ -104,7 +104,7 @@ Agent 工具调用对应的参数为 `interval_ms`，而非 CLI 的 `every_ms`�
 
 ### 基于日历规则的调度
 
-若巡检需要按照日历作息而非固定毫秒间隔触发，使用标准五段式 cron 表达式与 IANA 时区：
+若巡检需要按照日历作息而非固定间隔触发，使用标准五段式 cron 表达式与 IANA 时区：
 
 ```bash
 holon timer create --agent builder \
