@@ -171,7 +171,7 @@ final class HolonUITests: XCTestCase {
     func testPrivacyConsentCanBeWithdrawnAndExplicitlyRestored() async throws {
         try await connectForSharing()
         let app = launch(language: "en", dark: false, large: false)
-        openSettings(app)
+        try openSettings(app)
         let revoke = app.buttons["privacy.revoke"]
         reveal(revoke, in: app)
         XCTAssertTrue(app.links["privacy.policy"].exists || app.buttons["privacy.policy"].exists)
@@ -294,9 +294,9 @@ final class HolonUITests: XCTestCase {
         return value
     }
 
-    private enum FixtureError: Error { case missingInput, invalidEndpoint }
+    private enum FixtureError: Error { case missingInput, invalidEndpoint, settingsNotReady }
 
-    private func openSettings(_ app: XCUIApplication) {
+    private func openSettings(_ app: XCUIApplication) throws {
         // Cache restoration can replace a transient Home with a conversation.
         // Keep following the current route until Settings itself is ready.
         let home = app.buttons["settings.open"]
@@ -304,7 +304,8 @@ final class HolonUITests: XCTestCase {
         let destination = app.buttons["settings.connection"]
         let route = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
             if destination.exists && destination.isHittable { return true }
-            if conversation.exists && conversation.isHittable {
+            // The menu identifies the route; only the Back button needs to be hittable.
+            if conversation.exists {
                 let back = app.navigationBars.buttons.element(boundBy: 0)
                 if back.exists && back.isEnabled && back.isHittable { back.tap() }
             } else if home.exists && home.isEnabled && home.isHittable {
@@ -312,8 +313,11 @@ final class HolonUITests: XCTestCase {
             }
             return false
         }, object: nil)
-        XCTAssertEqual(XCTWaiter.wait(for: [route], timeout: UIWaitScale.scaled(30)), .completed,
-                      "Settings must finish opening before revealing its controls")
+        guard XCTWaiter.wait(for: [route], timeout: UIWaitScale.scaled(30)) == .completed else {
+            XCTFail("Settings must finish opening before revealing its controls")
+            // Async tests can continue after an assertion; do not operate on the wrong page.
+            throw FixtureError.settingsNotReady
+        }
     }
 
     private func openDiagnostics(_ app: XCUIApplication) {
@@ -334,7 +338,7 @@ final class HolonUITests: XCTestCase {
     func testChineseDiagnosticsDarkAccessibilitySize() throws {
         let app = launch(language: "zh-Hans", dark: true, large: true)
         defer { app.terminate() }
-        openSettings(app)
+        try openSettings(app)
         openDiagnostics(app)
         let allowlist = app.staticTexts[
             "仅包含连接状态与数量，不包含凭据、身份、地址、消息内容或原始错误。"]
@@ -352,7 +356,7 @@ final class HolonUITests: XCTestCase {
     func testPreparedDiagnosticsViewportCoverage() throws {
         let app = launch(language: "en", dark: false, large: true)
         defer { app.terminate() }
-        openSettings(app)
+        try openSettings(app)
         openDiagnostics(app)
         app.buttons["diagnostics.prepare"].tap()
         XCTAssertTrue(app.staticTexts["diagnostics.report"].waitForExistence(timeout: UIWaitScale.scaled(10)))
@@ -436,7 +440,7 @@ final class HolonUITests: XCTestCase {
     func testPreparedDiagnosticsRespondToRuntimeTextSize() async throws {
         let app = launch(language: "en", dark: false, large: false)
         defer { app.terminate() }
-        openSettings(app)
+        try openSettings(app)
         openDiagnostics(app)
         app.buttons["diagnostics.prepare"].tap()
         let report = app.staticTexts["diagnostics.report"]
@@ -476,7 +480,7 @@ final class HolonUITests: XCTestCase {
     func testDiagnosticsControlsRespondToRuntimeTextSize() async throws {
         let app = launch(language: "en", dark: false, large: true)
         defer { app.terminate() }
-        openSettings(app)
+        try openSettings(app)
         openDiagnostics(app)
         let allowlist = app.staticTexts[
             "Only connection states and counts are included. Credentials, identities, addresses, message content and raw errors are excluded."]
@@ -997,7 +1001,7 @@ final class HolonUITests: XCTestCase {
         // Do not pre-wait for restoration: Settings must handle either the
         // transient Home or the asynchronously restored conversation.
         app.terminate(); app.launch()
-        openSettings(app)
+        try openSettings(app)
         app.terminate()
     }
 
@@ -1301,7 +1305,7 @@ final class HolonUITests: XCTestCase {
         try await connectForSharing()
         let app = launch(language: "en", dark: false, large: false)
         defer { app.terminate() }
-        openSettings(app)
+        try openSettings(app)
         let revoke = app.buttons["privacy.revoke"]
         reveal(revoke, in: app); revoke.tap()
         app.terminate(); app.launch()
