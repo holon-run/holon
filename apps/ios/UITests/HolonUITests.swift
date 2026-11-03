@@ -994,6 +994,11 @@ final class HolonUITests: XCTestCase {
         close.firstMatch.tap()
         XCTAssertTrue(app.descendants(matching: .any)["sending.text"].firstMatch.waitForExistence(timeout: UIWaitScale.scaled(15)),
                       "Closing the runtime browser returns to the conversation")
+        // Do not pre-wait for restoration: Settings must handle either the
+        // transient Home or the asynchronously restored conversation.
+        app.terminate(); app.launch()
+        openSettings(app)
+        app.terminate()
     }
 
     private func openContentReport() async throws -> XCUIApplication {
@@ -1555,10 +1560,6 @@ final class HolonUITests: XCTestCase {
         XCTAssertTrue(app.buttons["conversation.more"].waitForExistence(timeout: UIWaitScale.scaled(30)), "Process relaunch restores the confirmed Agent route")
         XCTAssertTrue(app.descendants(matching: .any)["sending.text"].firstMatch.exists)
         capture(app, "restored-confirmed-conversation")
-        // Do not pre-wait for restoration: Settings must handle either the
-        // transient Home or the asynchronously restored conversation.
-        app.terminate(); app.launch()
-        openSettings(app)
         app.terminate()
     }
 
