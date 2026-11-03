@@ -983,6 +983,10 @@ const en = {
         label: "Tavily",
         description: "Search API optimized for agent and RAG workflows.",
       },
+      keenable: {
+        label: "Keenable",
+        description: "Independent web index for agents; also works without a key.",
+      },
       exa: {
         label: "Exa",
         description: "Neural search API for high-relevance web retrieval.",

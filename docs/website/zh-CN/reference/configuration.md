@@ -522,7 +522,7 @@ OTLP 设置在 daemon 启动时生效。Collector、Prometheus、Grafana、告�
 | `x_search.enabled` | boolean | `true` | 有 xAI 凭据时自动启用 `XSearch`；设为 `false` 可隐藏它 |
 | `x_search.model` | model_ref | — | 用于隔离 `XSearch` 请求的可选 xAI 模型路由 |
 | `x_search.timeout_seconds` | integer | `60` | 隔离 xAI `XSearch` 请求的超时 |
-| `web.providers.<name>.kind` | string | required | 提供商类型：`duck_duck_go`、`searxng`、`brave`、`tencent_cloud_wsa`、`bocha`、`tavily`、`exa`、`perplexity`、`firecrawl`、`open_ai_native`、`anthropic_native`、`gemini_native` 或 `command` |
+| `web.providers.<name>.kind` | string | required | 提供商类型：`duck_duck_go`、`searxng`、`brave`、`tencent_cloud_wsa`、`bocha`、`tavily`、`keenable`、`exa`、`perplexity`、`firecrawl`、`open_ai_native`、`anthropic_native`、`gemini_native` 或 `command` |
 | `web.providers.<name>.base_url` | string | unset | 自定义提供商端点 |
 | `web.providers.<name>.credential_profile` | string | unset | API 型提供商的凭据 profile |
 | `web.providers.<name>.capabilities` | json_object | derived | `holon config get` 和路由诊断暴露的只读能力元数据 |
