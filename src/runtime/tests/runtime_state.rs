@@ -8286,11 +8286,57 @@ async fn task_result_wait_preserves_business_blocker(
     ));
 
     // The explicit wait resumes exactly once without releasing the business blocker.
-    let poll = Box::pin(scheduler_executor::SchedulerDecisionExecutor::new(&runtime).poll())
-        .await
-        .unwrap();
-    let scheduler_executor::RunLoopPoll::Message(scheduled) = poll else {
-        panic!("late task result should remain durably queued");
+    // Restart can return one non-Message poll before the persisted late result
+    // is reselected (#3881). Retry only that path, and only while the entry
+    // stays durably Queued. A delivered message is never retried.
+    let scheduled = if restart {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        let mut scheduled = None;
+        let mut last_poll = "none";
+        while scheduled.is_none() {
+            let entry = runtime
+                .inner
+                .runtime_db
+                .queue_entries()
+                .latest(&result.id)
+                .unwrap();
+            assert!(
+                entry
+                    .as_ref()
+                    .is_some_and(|entry| entry.status == QueueEntryStatus::Queued),
+                "late task result must stay durably queued across restart, status={:?}",
+                entry.as_ref().map(|entry| entry.status.clone())
+            );
+            match Box::pin(scheduler_executor::SchedulerDecisionExecutor::new(&runtime).poll())
+                .await
+                .unwrap()
+            {
+                scheduler_executor::RunLoopPoll::Message(message) => scheduled = Some(message),
+                scheduler_executor::RunLoopPoll::Idle => last_poll = "idle",
+                scheduler_executor::RunLoopPoll::Stopped(_, _) => last_poll = "stopped",
+                scheduler_executor::RunLoopPoll::Shutdown => last_poll = "shutdown",
+                scheduler_executor::RunLoopPoll::AuthorityBlocked => {
+                    last_poll = "authority_blocked"
+                }
+            }
+            if scheduled.is_none() {
+                if std::time::Instant::now() >= deadline {
+                    break;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+            }
+        }
+        scheduled.unwrap_or_else(|| {
+            panic!("late task result should remain durably queued (last poll: {last_poll})")
+        })
+    } else {
+        let poll = Box::pin(scheduler_executor::SchedulerDecisionExecutor::new(&runtime).poll())
+            .await
+            .unwrap();
+        let scheduler_executor::RunLoopPoll::Message(scheduled) = poll else {
+            panic!("late task result should remain durably queued");
+        };
+        scheduled
     };
     assert_eq!(scheduled.message.id, result.id);
     assert!(scheduled.scheduler_decision.model_reentry);
