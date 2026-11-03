@@ -27,6 +27,9 @@ result.
 A reply can also be a question, progress update, or refusal. Even when it
 satisfies a reply wait, inspect its content before calling the business work
 complete.
+If the peer replies immediately before the caller's wait admission
+transaction settles, the runtime admits the terminal first writer and returns the
+completed wait receipt without conflicting task transitions.
 
 ## What the delegating agent stays responsible for
 
@@ -66,6 +69,9 @@ Historical error records (`last_runtime_failure`) serve as diagnostic evidence
 rather than active execution blockers. A settled child agent that is idle or
 stopped can be safely deleted once its work is done, without being kept alive
 merely because an earlier failure was recorded.
+The background deletion coordinator paces residue cleanup batches with a minimum
+delay of 200 ms between continuation rounds, decoupling residue sweeps from the
+main 60-second maintenance cycle so idle daemons avoid continuous CPU spinning.
 
 ## Boundaries and trust
 

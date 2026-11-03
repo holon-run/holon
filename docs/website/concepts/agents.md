@@ -52,6 +52,12 @@ Loaded guidance tells the agent how to work within its authorized scope:
   subject to higher-priority runtime constraints.
 - A [skill](./skills-and-tools.md) supplies a workflow when the task calls for it.
 
+When an agent is anchored directly in its workspace directory or shares guidance
+files through symlinks or hard links, Holon recognizes the duplicate guidance file
+across agent and workspace scopes. The loader includes the file once under the
+agent scope and marks the workspace source as `duplicate_of_agent_scope`, avoiding
+duplicate prompt tokens in the model context.
+
 These sources have scopes and precedence. A project rule to run tests does not
 authorize a release when the operator requested a read-only review. An ordinary
 file opened during research does not acquire the authority of loaded guidance.

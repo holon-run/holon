@@ -1,9 +1,9 @@
 ---
 title: CLI reference
-summary: Holon's command-line interface — verified against holon --help (v0.57.0).
+summary: Holon's command-line interface — verified against holon --help (v0.58.0).
 order: 10
 ---
-<!-- maintenance: regenerate from `holon --help` output when commands change. Last regenerated against v0.57.0. -->
+<!-- maintenance: regenerate from `holon --help` output when commands change. Last regenerated against v0.58.0. -->
 
 # CLI Reference
 
@@ -45,7 +45,7 @@ the existing default brief snapshot remains available without it.
 ## Command Tree
 
 ```text
-holon (v0.57.0)
+holon (v0.58.0)
 ├── context      Show the declared caller context
 ├── commands     Show machine-readable CLI command metadata
 ├── serve        Start HTTP control plane server
@@ -300,7 +300,10 @@ daemon reports false; success alone does not establish process ownership.
 During shutdown, the stop path rechecks process liveness with a short delay and
 treats zombie processes (state Z or X) as exited rather than running daemons,
 preventing spurious TERM+KILL failures when system reaping lags behind process
-termination.
+termination. Status inspection with `holon daemon status` bounds probing to a
+5-second shared deadline across readiness, Unix domain socket, and TCP fallback
+paths. It reads locally persisted daemon failure records without opening the
+runtime database, avoiding lock stalls while the control plane is healthy.
 
 #### Persistent serve options
 
