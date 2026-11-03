@@ -5013,6 +5013,13 @@ mod tests {
             }
             assert!(catalog
                 .get(&ModelRef::parse("tencent-tokenhub/mimo-v2.5-pro").unwrap())
+                // Tencent TokenHub retired its own aggregator copy on
+                // 2026-10-20 (announcement 2494); the surviving mimo-v2.6
+                // aggregator entries prove the Xiaomi retirements did not
+                // cascade to the aggregator.
+                .is_none());
+            assert!(catalog
+                .get(&ModelRef::parse("tencent-tokenhub/mimo-v2.6-pro").unwrap())
                 .is_some());
             for (provider, endpoint) in [("xiaomi", "default"), ("xiaomi-token-plan", "token-plan")]
             {
@@ -5851,7 +5858,7 @@ mod tests {
             .filter(|model| model.model_ref.provider == provider)
             .collect::<Vec<_>>();
 
-        assert_eq!(models.len(), 52);
+        assert_eq!(models.len(), 38);
         for model in &models {
             assert_eq!(model.source, ModelMetadataSource::ConservativeBuiltin);
             assert!(model.reasoning_effort_options.is_empty());
@@ -5870,12 +5877,7 @@ mod tests {
         assert_eq!(hy3.context_window_tokens, Some(256_000));
         assert_eq!(hy3.max_output_tokens_upper_limit, Some(128_000));
 
-        for vision in [
-            "glm-5v-turbo",
-            "youtu-vita",
-            "hy-vision-2.0-instruct",
-            "hunyuan-t1-vision-20250916",
-        ] {
+        for vision in ["hy-vision-2.0-instruct", "hunyuan-t1-vision-20250916"] {
             assert!(
                 catalog
                     .get(&ModelRef::new(provider.clone(), vision))
@@ -5885,6 +5887,8 @@ mod tests {
             );
         }
         for retired_or_unsupported in [
+            "glm-5v-turbo",
+            "youtu-vita",
             "deepseek-v3.1-terminus",
             "deepseek-r1-0528",
             "deepseek-v3-0324",

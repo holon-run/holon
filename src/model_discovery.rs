@@ -2769,6 +2769,7 @@ mod tests {
             r#"{"data":[
                 {"id":"hy3"},
                 {"id":"glm-5v-turbo"},
+                {"id":"deepseek-v4.1-flash"},
                 {"id":"deepseek-r1-0528"},
                 {"id":"HY-Image-V3.0"},
                 {"id":"future-model"},
@@ -2783,7 +2784,7 @@ mod tests {
                 .iter()
                 .map(|model| model.model_ref.model.as_str())
                 .collect::<Vec<_>>(),
-            ["glm-5v-turbo", "hy3"]
+            ["deepseek-v4.1-flash", "hy3"]
         );
         assert!(models.iter().all(|model| {
             model.endpoint.is_none()
