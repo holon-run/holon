@@ -4904,6 +4904,13 @@ borrow the corresponding prepared inputs rather than recapturing the entire
 resident coverage. Both retain the original material and failure latch; this
 reuse neither creates a new allowance nor weakens source qualification.
 
+Operator State scheduler reads select that same-root RecentBriefs window and
+the complete live Attempt/WorkExecution frontier through request-scoped Input
+capture. Unrelated Context history and owner Message roots are not scheduler
+inputs. The selected closure still qualifies every required protocol body,
+fails closed on missing preparation, and shares the original material allowance
+and failure latch. This does not narrow the full Work inventory returned by State.
+
 Task recovery predicate material follows the same short-circuit boundaries as
 the original observer. A source without a selected Result reads its durable
 Message but does not expand into unrelated open Attempts, waits or Turns.

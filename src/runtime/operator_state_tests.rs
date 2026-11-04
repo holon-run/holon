@@ -91,6 +91,7 @@ async fn loaded_state_surfaces_keep_full_queue_beyond_scheduler_candidates() -> 
 
 #[tokio::test]
 async fn operator_state_keeps_scheduler_window_after_narrow_owner_preparation() -> Result<()> {
+    use crate::domain::execution_protocol::{ExecutionAttemptState, WorkItemExecutionState};
     use crate::runtime::resident_input_evidence::{
         InputEvidenceFamily, InputEvidenceKey, InputEvidenceScope, InputWindowSelector,
     };
@@ -98,13 +99,86 @@ async fn operator_state_keeps_scheduler_window_after_narrow_owner_preparation() 
         InputEvidenceLoadRequest, InputWindowRequest,
     };
     use crate::types::{
-        AuthorityClass, MessageBody, MessageEnvelope, MessageKind, MessageOrigin, Priority,
+        AdmissionContext, AuthorityClass, MessageBody, MessageDeliverySurface, MessageEnvelope,
+        MessageKind, MessageOrigin, Priority,
     };
 
     for limit in [0, 1] {
         let harness = LifecycleHarness::new();
         let runtime = harness.runtime();
         runtime.await_initial_resources().await;
+        let mut work_ids = Vec::new();
+        for index in 0..3 {
+            work_ids.push(
+                runtime
+                    .create_work_item(
+                        format!("live scheduler frontier {index}"),
+                        Some(WorkItemPlanStatus::Ready),
+                        None,
+                        Vec::new(),
+                    )
+                    .await?
+                    .id,
+            );
+        }
+        let waiting = runtime
+            .register_wait_for(
+                "default",
+                Some(work_ids[2].clone()),
+                WaitForWakeKind::External,
+                Some("scheduler-frontier-fixture".into()),
+                "retain the waiting execution frontier".into(),
+                None,
+            )
+            .await?;
+        let waiter = waiting.work_item.as_ref().unwrap();
+        // Registration without a live attempt does not settle an execution.
+        crate::runtime::tests::support::seed_live_waiting_work_execution(
+            runtime,
+            waiter,
+            &waiting.condition.id,
+        )
+        .await;
+        runtime.pick_work_item(work_ids[0].clone()).await?;
+        let mut source = MessageEnvelope::new(
+            "default",
+            MessageKind::OperatorPrompt,
+            MessageOrigin::Operator {
+                actor_id: None,
+                actor_display_name: None,
+            },
+            AuthorityClass::OperatorInstruction,
+            Priority::Normal,
+            MessageBody::Text {
+                text: "admit a live scheduler frontier".into(),
+            },
+        )
+        .with_admission(
+            MessageDeliverySurface::HttpControlPrompt,
+            AdmissionContext::ControlAuthenticated,
+        );
+        source.work_item_id = Some(work_ids[0].clone());
+        let source = runtime.enqueue(source).await?;
+        let scheduler_executor::RunLoopPoll::Message(scheduled) =
+            scheduler_executor::SchedulerDecisionExecutor::new(runtime)
+                .poll()
+                .await?
+        else {
+            panic!("the frontier fixture must admit its source");
+        };
+        assert_eq!(scheduled.message.id, source.id);
+        runtime
+            .begin_dispatch_turn(
+                &scheduled.message,
+                None,
+                None,
+                scheduled
+                    .dispatch_plan
+                    .execution_admission_provenance
+                    .clone(),
+                &scheduled.dispatch_plan.prior_closure,
+            )
+            .await?;
         let _refresh = runtime.hold_resource_refresh_for_test().await?;
         drop(runtime.operator_state_read_projection(10, 10).await?);
         let before = runtime.inner.mutation_owner.capture()?.unwrap();
@@ -162,6 +236,62 @@ async fn operator_state_keeps_scheduler_window_after_narrow_owner_preparation() 
         mutation.prepare_owner_input_request(&request, 0).await?;
         let prepared = mutation.capture_published_root()?;
         assert_ne!(prepared.token, before.token, "exercise actual preparation");
+        let key = InputEvidenceKey::new(InputEvidenceFamily::Message, &message.id);
+        assert!(prepared
+            .input_evidence
+            .as_ref()
+            .unwrap()
+            .capture()?
+            .lookup(&key)?
+            .is_some());
+        let read = runtime.capture_operator_scheduler_from_root(&prepared, runtime.now())?;
+        assert!(
+            matches!(
+                read.inputs.lookup(&key),
+                Err(crate::runtime::resident_input_evidence::InputEvidenceReadError::NeedsPreparation(missing))
+                    if missing == key
+            ),
+            "State must neither capture nor qualify absence of an unrelated owner Message"
+        );
+        let execution = read
+            .inputs
+            .execution_state_if_initialized()?
+            .expect("the fixture initialized a nonempty execution frontier");
+        assert_eq!(execution.attempts.len(), 1);
+        assert!(execution.attempts.values().all(|attempt| {
+            attempt.state == ExecutionAttemptState::Open
+                && attempt.source_message_id.as_deref() == Some(source.id.as_str())
+        }));
+        for (id, expected) in work_ids.iter().zip(["in_flight", "runnable", "waiting"]) {
+            let state = &execution.work_items[id].state;
+            assert!(
+                matches!(
+                    (expected, state),
+                    ("in_flight", WorkItemExecutionState::InFlight { .. })
+                        | ("runnable", WorkItemExecutionState::Runnable { .. })
+                        | ("waiting", WorkItemExecutionState::Waiting { .. })
+                ),
+                "the fixture must exercise {expected}: {state:?}"
+            );
+        }
+        assert!(read
+            .inputs
+            .lookup(&InputEvidenceKey::new(
+                InputEvidenceFamily::Message,
+                &source.id
+            ))?
+            .is_some());
+        assert_eq!(
+            Some(execution),
+            prepared
+                .input_evidence
+                .as_ref()
+                .unwrap()
+                .capture()?
+                .execution_state_if_initialized()?,
+            "narrow Input selection must retain the live execution frontier"
+        );
+        drop(read);
         drop((mutation, prepared, before));
 
         // The publication, not an ordinary State read, must retain its dependencies.

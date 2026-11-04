@@ -2424,6 +2424,7 @@ mod tests {
         authenticate_session, error_response, if_none_match_satisfied, origin_guard_allows,
         projection_gate_error_response, redact_request_path, router, session_credential,
         tailscale_serve, AppState, HttpErrorEnvelope, ProjectionGate, ProjectionGateError,
+        STATE_BOOTSTRAP_WORK_ITEM_LIMIT,
     };
     use crate::{
         config::{AppConfig, ControlAuthMode},
@@ -2445,7 +2446,7 @@ mod tests {
         response::IntoResponse,
         Json,
     };
-    use std::{fs, path::Path, sync::Arc, time::Duration};
+    use std::{collections::BTreeMap, fs, path::Path, sync::Arc, time::Duration};
     use tempfile::tempdir;
     use tower::ServiceExt;
 
@@ -3553,6 +3554,76 @@ mod tests {
         assert!(wire["tasks"].is_array() && wire["waits"].is_array());
         assert_eq!(wire["timers"][0]["id"], timer.id);
         assert!(wire.get("material").is_none());
+        host.shutdown().await.unwrap();
+    }
+
+    #[cfg(holon_lib_test_shard = "c")]
+    #[tokio::test]
+    async fn operator_state_route_preserves_large_inventory_with_default_material_limits() {
+        let (_home, host, runtime) =
+            crate::runtime::tests::support::host_backed_test_runtime().await;
+        let run_loop = runtime.pause_run_loop_for_monitor_test().await;
+        let mut objectives = BTreeMap::new();
+        for index in 0..200 {
+            let objective = format!("HTTP benchmark work item {index}");
+            let item = runtime
+                .create_work_item(objective.clone(), None, None, Vec::new())
+                .await
+                .unwrap();
+            objectives.insert(item.id, objective);
+        }
+        let projection = runtime
+            .operator_state_read_projection(40, 50)
+            .await
+            .unwrap();
+        assert_eq!(projection.agent.work_queue.items.len(), 200);
+        drop(projection);
+
+        let id = runtime.instance_agent_id();
+        for _ in 0..3 {
+            // A new gate reproduces a miss without waiting for a cache timeout.
+            let app = router(AppState::for_unix(host.clone()));
+            let mut prior = None;
+            for _ in 0..2 {
+                let response = app
+                    .clone()
+                    .oneshot(
+                        Request::builder()
+                            .uri(format!("/api/agents/{id}/state"))
+                            .body(Body::empty())
+                            .unwrap(),
+                    )
+                    .await
+                    .unwrap();
+                let status = response.status();
+                let bytes = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+                assert_eq!(
+                    status,
+                    StatusCode::OK,
+                    "{}",
+                    String::from_utf8_lossy(&bytes)
+                );
+                let wire: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+                assert_eq!(wire["agent"]["agent"]["id"], id);
+                let items = wire["work_items"].as_array().unwrap();
+                assert_eq!(items.len(), STATE_BOOTSTRAP_WORK_ITEM_LIMIT);
+                let mut seen = std::collections::BTreeSet::new();
+                for item in items {
+                    let item_id = item["id"].as_str().unwrap();
+                    assert!(seen.insert(item_id));
+                    assert_eq!(item["objective"], objectives[item_id]);
+                }
+                assert!(wire.get("material").is_none());
+                if let Some(prior) = prior {
+                    assert_eq!(
+                        bytes, prior,
+                        "a fresh State wire must survive the cache hit"
+                    );
+                }
+                prior = Some(bytes);
+            }
+        }
+        drop(run_loop);
         host.shutdown().await.unwrap();
     }
 

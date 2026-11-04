@@ -512,11 +512,29 @@ impl RuntimeHandle {
             scope,
         )?;
         material.read(|| {
+            let inputs = root
+                .input_evidence
+                .as_ref()
+                .context("State scheduler Input domain is unpublished")?;
+            let (_, record_limit, byte_limit) = self.scheduler_input_limits()?;
+            let mut windows = Vec::new();
+            super::super::scheduler::include_scheduler_brief_window(&mut windows);
+            let mut input_request = InputEvidenceLoadRequest {
+                query: None,
+                windows,
+                mandatory_roots: Default::default(),
+                interrupted_sources: Default::default(),
+                selected_completion_brief_ids: Default::default(),
+                record_limit,
+                byte_limit,
+            };
+            // State needs the live protocol frontier, not unrelated Context history.
+            input_request.extend_admitted_roots(|| inputs.scheduler_execution_roots())?;
             self.capture_scheduler_read_from_root(
                 root,
                 root.state.pending,
                 &WorkCaptureRequest::current(),
-                None,
+                Some(&input_request),
                 None,
                 now,
                 SchedulerAdapterRoot::PublishedCurrent,
