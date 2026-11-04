@@ -1219,7 +1219,10 @@ impl Fixture {
     fn assert_primary_override(&self, address: &str, phase: &str) {
         let status = self.wait_for_agent_status(address, STATUS_PROBE_BUDGET);
         assert_eq!(status["model"]["source"], "agent_override", "phase={phase}");
-        assert_eq!(status["agent"]["model_override"], "openai@default/gpt-5.4", "phase={phase}");
+        assert_eq!(
+            status["agent"]["model_override"], "openai@default/gpt-5.4",
+            "phase={phase}"
+        );
         let persisted: String = self
             .database()
             .query_row(

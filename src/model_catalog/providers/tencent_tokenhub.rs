@@ -460,6 +460,7 @@ fn tokenhub_retirements_and_v41_chat_efforts_follow_exact_endpoint_evidence() {
     }
 }
 
+#[cfg(holon_lib_test_shard = "c")]
 #[test]
 fn tokenhub_responses_routes_follow_the_independent_protocol_matrix() {
     let catalog = BuiltInModelCatalog::from_legacy_definitions();

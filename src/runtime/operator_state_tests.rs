@@ -51,6 +51,41 @@ async fn loaded_state_surfaces_keep_full_queue_beyond_scheduler_candidates() -> 
     let operator = runtime.operator_state_read_projection(10, 10).await?;
     assert_eq!(queue_wire(&operator.agent.work_queue)?, expected);
     assert!(operator.material._work.is_some());
+
+    let root = runtime.inner.mutation_owner.capture()?.unwrap();
+    let mut read = runtime.capture_operator_scheduler_from_root(&root, runtime.now())?;
+    let usage = read.acquisition.finish()?;
+    let (queue, budget) = read.full_state_work_queue(&runtime.inner.input_evidence_budget)?;
+    assert_eq!(queue_wire(&queue)?, expected);
+    assert_eq!(
+        read.acquisition.finish()?,
+        usage,
+        "moving the operator inventory must not allocate or rank it again"
+    );
+    drop((read, queue, budget));
+
+    let ledger = &runtime.inner.input_evidence_budget;
+    let scope = root.work.as_ref().unwrap().scope();
+    for (bytes, records, succeeds) in [
+        (usage.0, usage.1, true),
+        (usage.0 - 1, usage.1, false),
+        (usage.0, usage.1 - 1, false),
+    ] {
+        let phase =
+            resource_io::ResourceReadMaterial::with_test_limits(ledger, scope, bytes, records)?;
+        let result =
+            phase.read(|| runtime.capture_operator_scheduler_from_root(&root, runtime.now()));
+        if succeeds {
+            let mut read = result?;
+            assert!(phase.shares_allowance(&read.acquisition));
+            let (queue, _budget) = read.full_state_work_queue(ledger)?;
+            assert_eq!(queue_wire(&queue)?, expected);
+            assert_eq!(phase.finish()?, usage);
+        } else {
+            resource_io::assert_retryable_resource_error(&result.err().unwrap());
+            assert!(phase.finish().is_err());
+        }
+    }
     Ok(())
 }
 

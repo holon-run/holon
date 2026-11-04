@@ -9061,6 +9061,7 @@ async fn task_result_wait_with_explicit_blocker_keeps_exact_model_reentry() {
     task_result_wait_preserves_business_blocker(false, false, true).await;
 }
 
+#[cfg(holon_lib_test_shard = "a")]
 #[tokio::test]
 async fn terminal_task_result_commit_rejects_fenced_off_task_write() {
     // #3910 regression: when the durable task row stays non-terminal because
@@ -9528,6 +9529,9 @@ async fn task_result_wait_preserves_business_blocker_inner(
                 scheduler_executor::RunLoopPoll::Shutdown => last_poll = "shutdown",
                 scheduler_executor::RunLoopPoll::AuthorityBlocked => {
                     last_poll = "authority_blocked"
+                }
+                scheduler_executor::RunLoopPoll::ContextPreparationInterrupted => {
+                    last_poll = "context_preparation_interrupted"
                 }
             }
             if scheduled.is_none() {

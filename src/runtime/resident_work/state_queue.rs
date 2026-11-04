@@ -1,7 +1,7 @@
 //! Full State inventory shares qualified bodies; only projection metadata is owned.
 use super::*;
 use crate::work_item_scheduling::{
-    compare_queue_display_order, derive_borrowed_queue_work_item_scheduling,
+    compare_queue_display_order, derive_borrowed_queue_work_item_scheduling, QueueWorkRank,
     WorkItemCandidateClass, WorkItemSchedulingProjection, WorkQueueReadModel,
 };
 use std::{borrow::Borrow, ops::Deref};
@@ -72,6 +72,17 @@ impl CapturedWork {
     ) -> Result<StateWorkQueue> {
         let _entry = material.enter();
         let ranked = self.queue_work_ranks(state, triggers)?;
+        self.state_work_queue_from_ranks(state, triggers, material, &ranked)
+    }
+
+    pub(crate) fn state_work_queue_from_ranks(
+        &self,
+        state: &AgentState,
+        triggers: &[ExternalTriggerRecord],
+        material: &crate::diagnostics::resource_io::ResourceReadMaterial,
+        ranked: &[QueueWorkRank<'_>],
+    ) -> Result<StateWorkQueue> {
+        let _entry = material.enter();
         let mut source = shared_slots(self.budget_views.len())?;
         source.extend(self.budget_views.iter().cloned());
         crate::diagnostics::resource_io::charge_owned_metadata(

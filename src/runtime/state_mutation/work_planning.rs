@@ -49,6 +49,10 @@ pub(crate) struct PreparedSchedulerRead {
     pub(crate) _owned_budget: Arc<BudgetViewGuard>,
     pub(crate) _task_owned_budget: Arc<BudgetViewGuard>,
     pub(crate) acquisition: crate::diagnostics::resource_io::ResourceReadMaterial,
+    state_work_queue: Option<(
+        super::super::resident_work::StateWorkQueue,
+        Arc<BudgetViewGuard>,
+    )>,
 }
 
 pub(crate) struct ColdSchedulerFacts {
@@ -62,42 +66,22 @@ pub(crate) struct ColdSchedulerFacts {
 impl PreparedSchedulerRead {
     /// State surfaces retain the full queue, not the scheduler candidate window.
     pub(in crate::runtime) fn full_state_work_queue(
-        &self,
+        &mut self,
         ledger: &InputEvidenceBudgetLedger,
     ) -> Result<(
         super::super::resident_work::StateWorkQueue,
         Arc<BudgetViewGuard>,
     )> {
+        if let Some(queue) = self.state_work_queue.take() {
+            return Ok(queue);
+        }
         self.acquisition.read(|| {
             let queue = self.work.state_work_queue_with_material(
                 &self.state,
                 &self.triggers.records,
                 &self.acquisition,
             )?;
-            let bytes = serialized_bytes(&(
-                &queue.current,
-                &queue.queued_blocked,
-                &queue.items,
-                &queue.current_runnable,
-                &queue.triggered_blocked,
-                &queue.queued_runnable,
-                &queue.yielded,
-                &queue.waiting_for_operator,
-                &queue.blocked,
-                &queue.completing,
-                &queue.completed_recent,
-            ))?;
-            let budget = ledger.register_owned_bytes(
-                &self.work.scope,
-                InputMemoryCategory::Pins,
-                OwnedBytesEstimate {
-                    payload_bytes: bytes.saturating_mul(2),
-                    metadata_estimate_bytes: std::mem::size_of::<
-                        super::super::resident_work::StateWorkQueue,
-                    >() as u64,
-                },
-            )?;
-            Ok((queue, budget))
+            retain_state_work_queue(queue, &self.work, ledger)
         })
     }
 
@@ -687,6 +671,7 @@ impl RuntimeHandle {
                 tasks,
                 scheduling: scheduling.scheduling,
                 task_selector_budget,
+                include_state_queue: matches!(adapter_root, SchedulerAdapterRoot::PublishedCurrent),
             },
             request,
             queue_len,
@@ -758,6 +743,42 @@ pub(crate) struct SchedulerReadDomains {
     pub tasks: super::super::resident_task::CapturedTasks,
     pub scheduling: CapturedScheduling,
     pub task_selector_budget: Arc<BudgetViewGuard>,
+    pub include_state_queue: bool,
+}
+
+fn retain_state_work_queue(
+    queue: super::super::resident_work::StateWorkQueue,
+    work: &CapturedWork,
+    ledger: &InputEvidenceBudgetLedger,
+) -> Result<(
+    super::super::resident_work::StateWorkQueue,
+    Arc<BudgetViewGuard>,
+)> {
+    let bytes = serialized_bytes(&(
+        &queue.current,
+        &queue.queued_blocked,
+        &queue.items,
+        &queue.current_runnable,
+        &queue.triggered_blocked,
+        &queue.queued_runnable,
+        &queue.yielded,
+        &queue.waiting_for_operator,
+        &queue.blocked,
+        &queue.completing,
+        &queue.completed_recent,
+    ))?;
+    let budget =
+        ledger.register_owned_bytes(
+            &work.scope,
+            InputMemoryCategory::Pins,
+            OwnedBytesEstimate {
+                payload_bytes: bytes.saturating_mul(2),
+                metadata_estimate_bytes: std::mem::size_of::<
+                    super::super::resident_work::StateWorkQueue,
+                >() as u64,
+            },
+        )?;
+    Ok((queue, budget))
 }
 
 pub(crate) fn derive_scheduler_read(
@@ -776,6 +797,7 @@ pub(crate) fn derive_scheduler_read(
         tasks,
         scheduling,
         task_selector_budget,
+        include_state_queue,
     } = domains;
     let scope = work.scope.clone();
     anyhow::ensure!(
@@ -934,6 +956,17 @@ pub(crate) fn derive_scheduler_read(
     let budget = ledger.register_owned_bytes(&scope, InputMemoryCategory::Pins, owned)?;
     let brief_budget =
         ledger.register_view(&scope, InputMemoryCategory::Pins, &observability_briefs)?;
+    // Operator State needs the full inventory. Reuse this cut's ranking rather
+    // than allocate the same displayed IDs and ranks again after capture.
+    let state_work_queue = if include_state_queue {
+        Some(retain_state_work_queue(
+            work.state_work_queue_from_ranks(&state, &triggers.records, material, &ranked_work)?,
+            &work,
+            ledger,
+        )?)
+    } else {
+        None
+    };
     Ok(PreparedSchedulerRead {
         state,
         projection,
@@ -953,6 +986,7 @@ pub(crate) fn derive_scheduler_read(
         _owned_budget: budget,
         _task_owned_budget: task_owned_budget,
         acquisition: material.clone(),
+        state_work_queue,
     })
 }
 

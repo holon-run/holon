@@ -4465,9 +4465,10 @@ impl RuntimeTransitionRepository<'_> {
                 .optional()?
                 .map(|payload| crate::runtime_db::repositories::decode_task_payload(&payload))
                 .transpose()?;
-            if !durable_task.as_ref().is_some_and(|task| {
-                crate::runtime::is_terminal_task_status(&task.status)
-            }) {
+            if !durable_task
+                .as_ref()
+                .is_some_and(|task| crate::runtime::is_terminal_task_status(&task.status))
+            {
                 bail!(
                     "terminal task result for task {} rejected: the durable task row stays non-terminal ({:?}); the terminal write was fenced off by the updated_at revision",
                     command.task.id,
