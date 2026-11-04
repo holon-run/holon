@@ -2048,6 +2048,7 @@ fn built_in_route_definitions() -> Vec<BuiltInModelRouteDefinition> {
                         image_generation: Some(false),
                         supports_reasoning: Some(false),
                         interactive_exec: Some(false),
+                        agent_turn: (id == "hy4").then_some(false),
                         ..ModelCapabilityOverride::default()
                     },
                     reasoning_effort_options: Some(Vec::new()),
@@ -5495,7 +5496,7 @@ mod tests {
             .filter(|model| model.model_ref.provider == provider)
             .collect::<Vec<_>>();
 
-        assert_eq!(models.len(), 42);
+        assert_eq!(models.len(), 43);
         for model in &models {
             assert_eq!(
                 model.capabilities.supports_reasoning,
@@ -5508,7 +5509,7 @@ mod tests {
                 .iter()
                 .filter(|model| !model.reasoning_effort_options.is_empty())
                 .count(),
-            20
+            21
         );
 
         for model in [
@@ -5530,6 +5531,7 @@ mod tests {
             "mimo-v2.6-flash",
             "mimo-v2.5-pro",
             "mimo-v2.5",
+            "hy4",
             "hy4-preview",
             "hy3",
             "space-bunny",
@@ -5858,7 +5860,7 @@ mod tests {
             .filter(|model| model.model_ref.provider == provider)
             .collect::<Vec<_>>();
 
-        assert_eq!(models.len(), 38);
+        assert_eq!(models.len(), 39);
         for model in &models {
             assert_eq!(model.source, ModelMetadataSource::ConservativeBuiltin);
             assert!(model.reasoning_effort_options.is_empty());

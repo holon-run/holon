@@ -9,6 +9,70 @@ reviewed routes unless there is affirmative removal evidence. New routes require
 their own endpoint evidence; missing capability flags are conservative omissions,
 not proof that a model lacks the feature.
 
+## 2026-11-05 incremental review
+
+Baseline main is `82c2a236`; sampling on November 4 UTC corresponds to
+November 5 in Beijing. The fixed models.dev payload is
+`a032bd9630156a5a601e8097d13005838c9be0822e37b1e0cb035af10e6e79ca`.
+[Exact field evidence](metadata-evidence.md#incremental-review-2026-11-05)
+separates provider-local additions, discovery projections and unknowns.
+All 30 registered endpoints were reviewed independently: 328 first-group
+and 168 second-group pre-change review objects. First-group 83/83 responses
+were HTTP 200; second-group 87 receipts comprise 67 HTTP 200, eight
+403/404 and 12 connection failures. All 158 obtained response bodies and
+the second group's receipts passed raw SHA-256 checks; failures are not
+model-retirement evidence.
+
+| Endpoints | New evidence and preserved boundary |
+| --- | --- |
+| `dashscope@default` | Exact K3.1 Pro Messages route; image/reasoning and four effort values independently supported. No integer budgets, output default or explicit cache entitlement inferred. |
+| `dashscope@token-plan`, `@coding-plan`, `@coding-plan-intl` | Separate allowlists preserved; K3.1 API eligibility is not a subscription grant. |
+| `volcengine@default`, `@coding`, `@plan` | Removed display rows for already retired M3/K2.7 do not trigger duplicate code removal. Ordinary K3.1 default conflict and subscription K3.1 effort/budgets remain unresolved. |
+| `tencent-tokenhub@default`, `@messages`, `@responses` | Add Hy4 with independently certified image input in all three. Reasoning/effort only on Chat; exact three existing Chat effort changes do not spread across IDs or protocols. Prior 33 retired routes stay absent, preview stays present. |
+| `qianfan@default` | No newly certified change; experimental listing gaps do not prove retirement. |
+| `bigmodel@default`, `zai@default` | No new exact Legal Messages ID or account entitlement established. |
+| `xiaomi@default`, `@token-plan` | No new certified change; three JS shells do not recertify fields, and no exact ultraspeed retirement was found. |
+| `minimax@default`, `minimax-cn@default`, both `@m-plan` | Region and subscription boundaries preserved. November 18 API retirement is still future; Preview output limits/default remain unknown. |
+| `moonshot@default` | K2.6/K2.7-Code/Highspeed remain available to users registered before November 1; expected late-December retirement has no exact timestamp. Do not remove existing routes or promise new-account access. |
+| `byteplus@default`, `@coding` | Ordinary November 11 retirement table now distinguishes recommended and automatic replacements. Neither transparent identity/capabilities nor Coding eligibility is inferred. Ordinary regional shutdown and cache evidence stay separate. |
+| `stepfun@default`, `@plan` | No new semantic change; abbreviated router capacity and Messages effort remain unresolved. |
+| `opencode-go@default`, `@messages`, `@responses` | New Hy4 native Chat with provider-local integer context/ceiling and `none/high`; output default unknown. Two translated routes retain unknown budgets and disabled unconfirmed capabilities. Existing 27 native/57 translated records and preview are independently retained. |
+| `kilocode@default` | Five complete auto records unchanged. Non-auto listing additions and capacity changes do not change auto mappings/defaults/effort. |
+| `together@default` | New K3.1 provider card remains discovery-only; `1M` is not converted into a static integer or copied output budget. |
+| `fireworks@default` | K3.1's own index confirms integer context, images and Function Calling. Output limits/default/effort remain unknown; preferred model unchanged. |
+
+Codex revision `126a0ee92ed2c5e73cd8a8f7e37563e8527552d7` still contains
+the same 12 models, byte-for-byte unchanged. DeepSeek Responses is
+unchanged; removing an old Search/Fetch billing notice is not a capacity
+or entitlement change. Tencent Step 5's November 6 price change is not a
+cache-capability change; M2.7's November 17 23:59:59 Beijing cutoff remains
+future. Twelve native Mistral source failures leave exact-version gates
+unresolved, not recertified by another host's data.
+
+### Final verification
+
+Seven real behavioral regressions first failed at their intended assertions.
+The four focused green groups then passed 21 tests. The final serial gate
+passed 390 test executions, with one existing ignored test:
+
+- `cargo test --locked models_dev`
+- `cargo test --locked --lib model_catalog::`
+- `cargo test --locked --lib model_discovery::`
+- `cargo test --locked --lib config::builtin_providers::reasoning_effort_tests`
+- `cargo test --locked --lib provider::transports::anthropic::`
+- `cargo test --locked --test models_dev_adapter`
+- `cargo test --locked --test context_budget`
+
+Catalog validation, the final 629-record coverage gate, strict complete-object
+review, `cargo fmt --all -- --check`, `RUSTFLAGS="-D warnings" cargo check
+--all-targets --locked`, and `git diff --check` passed. All 16 reviewed files
+matched their frozen SHA-256 values before and after the serial gate.
+Independent review confirmed both configuration/transport findings closed,
+with no unresolved P1/P2. Two subsequent test-only count/sentinel deltas
+were independently checked and passed focused and complete regressions.
+Existing preferred mappings remain unchanged. This is local verification,
+not a claim that remote PR CI or paid inference was exercised.
+
 ## 2026-11-04 incremental review
 
 This cycle starts from main `aaee7b22`; evidence was sampled on November 3

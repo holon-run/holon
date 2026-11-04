@@ -1557,6 +1557,33 @@
       "source": "built_in_catalog"
     },
     {
+      "model_ref": "dashscope/kimi-k3.1-pro",
+      "display_name": "Kimi K3.1 Pro",
+      "description": "DashScope Beijing Anthropic-compatible API Kimi K3.1 Pro; vision and output_config.effort are reviewed independently of subscription plans; exact token limits remain unconfirmed.",
+      "context_window_tokens": null,
+      "effective_context_window_percent": 95,
+      "auto_compact_token_limit": null,
+      "default_max_output_tokens": null,
+      "max_output_tokens_upper_limit": null,
+      "default_verbosity": null,
+      "tool_output_truncation_estimated_tokens": 2500,
+      "capabilities": {
+        "agent_turn": true,
+        "parallel_tool_calls": false,
+        "image_input": true,
+        "image_generation": false,
+        "supports_reasoning": true,
+        "interactive_exec": false
+      },
+      "reasoning_effort_options": [
+        "low",
+        "medium",
+        "high",
+        "max"
+      ],
+      "source": "conservative_builtin"
+    },
+    {
       "model_ref": "dashscope/mimo-v2.5-pro",
       "display_name": "MiMo V2.5 Pro",
       "description": "Holon built-in runtime metadata for the dashscope/mimo-v2.5-pro compatible provider model.",
@@ -2287,6 +2314,27 @@
         "image_input": false,
         "image_generation": false,
         "supports_reasoning": true,
+        "interactive_exec": false
+      },
+      "source": "conservative_builtin"
+    },
+    {
+      "model_ref": "fireworks/accounts/fireworks/models/kimi-k3p1-pro",
+      "display_name": "Kimi K3.1 Pro",
+      "description": "Holon conservative built-in metadata for the Fireworks serverless accounts/fireworks/models/kimi-k3p1-pro model.",
+      "context_window_tokens": 1048576,
+      "effective_context_window_percent": 95,
+      "auto_compact_token_limit": null,
+      "default_max_output_tokens": null,
+      "max_output_tokens_upper_limit": null,
+      "default_verbosity": null,
+      "tool_output_truncation_estimated_tokens": 2500,
+      "capabilities": {
+        "agent_turn": true,
+        "parallel_tool_calls": false,
+        "image_input": true,
+        "image_generation": false,
+        "supports_reasoning": false,
         "interactive_exec": false
       },
       "source": "conservative_builtin"
@@ -3959,6 +4007,31 @@
       "reasoning_effort_options": [
         "none",
         "low",
+        "high"
+      ],
+      "source": "conservative_builtin"
+    },
+    {
+      "model_ref": "opencode-go/hy4",
+      "display_name": "Hy4",
+      "description": "OpenCode Go native Chat Hy4; context, output ceiling, vision and effort follow the official Go listing; service output default remains unconfirmed.",
+      "context_window_tokens": 1048576,
+      "effective_context_window_percent": 95,
+      "auto_compact_token_limit": null,
+      "default_max_output_tokens": null,
+      "max_output_tokens_upper_limit": 65536,
+      "default_verbosity": null,
+      "tool_output_truncation_estimated_tokens": 2500,
+      "capabilities": {
+        "agent_turn": true,
+        "parallel_tool_calls": false,
+        "image_input": true,
+        "image_generation": false,
+        "supports_reasoning": true,
+        "interactive_exec": false
+      },
+      "reasoning_effort_options": [
+        "none",
         "high"
       ],
       "source": "conservative_builtin"
@@ -5727,6 +5800,27 @@
         "agent_turn": true,
         "parallel_tool_calls": false,
         "image_input": false,
+        "image_generation": false,
+        "supports_reasoning": true,
+        "interactive_exec": false
+      },
+      "source": "conservative_builtin"
+    },
+    {
+      "model_ref": "tencent-tokenhub/hy4",
+      "display_name": "Hy4",
+      "description": "Holon conservative built-in metadata for the Tencent TokenHub hy4 model.",
+      "context_window_tokens": null,
+      "effective_context_window_percent": 95,
+      "auto_compact_token_limit": null,
+      "default_max_output_tokens": null,
+      "max_output_tokens_upper_limit": null,
+      "default_verbosity": null,
+      "tool_output_truncation_estimated_tokens": 2500,
+      "capabilities": {
+        "agent_turn": true,
+        "parallel_tool_calls": false,
+        "image_input": true,
         "image_generation": false,
         "supports_reasoning": true,
         "interactive_exec": false
@@ -8669,6 +8763,16 @@
       }
     },
     {
+      "route_ref": "dashscope@default/kimi-k3.1-pro",
+      "policy": {
+        "display_name": null,
+        "description": null,
+        "effective_context_window_percent": null,
+        "capabilities": {},
+        "reasoning_effort_options": null
+      }
+    },
+    {
       "route_ref": "dashscope@default/mimo-v2.5-pro",
       "policy": {
         "display_name": null,
@@ -9284,6 +9388,16 @@
     },
     {
       "route_ref": "fireworks@default/accounts/fireworks/models/gpt-oss-120b",
+      "policy": {
+        "display_name": null,
+        "description": null,
+        "effective_context_window_percent": null,
+        "capabilities": {},
+        "reasoning_effort_options": null
+      }
+    },
+    {
+      "route_ref": "fireworks@default/accounts/fireworks/models/kimi-k3p1-pro",
       "policy": {
         "display_name": null,
         "description": null,
@@ -10143,6 +10257,16 @@
       }
     },
     {
+      "route_ref": "opencode-go@default/hy4",
+      "policy": {
+        "display_name": null,
+        "description": null,
+        "effective_context_window_percent": null,
+        "capabilities": {},
+        "reasoning_effort_options": null
+      }
+    },
+    {
       "route_ref": "opencode-go@default/hy4-preview",
       "policy": {
         "display_name": null,
@@ -10721,6 +10845,31 @@
         "max_output_tokens_upper_limit": null,
         "default_verbosity": null,
         "capabilities": {
+          "parallel_tool_calls": false,
+          "image_input": false,
+          "image_generation": false,
+          "supports_reasoning": false,
+          "interactive_exec": false
+        },
+        "reasoning_effort_options": []
+      }
+    },
+    {
+      "route_ref": "opencode-go@messages/hy4",
+      "policy": {
+        "cache_capabilities": {
+          "cache_control": false
+        },
+        "display_name": null,
+        "description": "OpenCode Go translated text route; capacity, vision, reasoning controls, and explicit cache support are unconfirmed.",
+        "context_window_tokens": null,
+        "effective_context_window_percent": null,
+        "auto_compact_token_limit": null,
+        "default_max_output_tokens": null,
+        "max_output_tokens_upper_limit": null,
+        "default_verbosity": null,
+        "capabilities": {
+          "agent_turn": false,
           "parallel_tool_calls": false,
           "image_input": false,
           "image_generation": false,
@@ -11383,6 +11532,31 @@
         "max_output_tokens_upper_limit": null,
         "default_verbosity": null,
         "capabilities": {
+          "parallel_tool_calls": false,
+          "image_input": false,
+          "image_generation": false,
+          "supports_reasoning": false,
+          "interactive_exec": false
+        },
+        "reasoning_effort_options": []
+      }
+    },
+    {
+      "route_ref": "opencode-go@responses/hy4",
+      "policy": {
+        "cache_capabilities": {
+          "cache_control": false
+        },
+        "display_name": null,
+        "description": "OpenCode Go translated text route; capacity, vision, reasoning controls, and explicit cache support are unconfirmed.",
+        "context_window_tokens": null,
+        "effective_context_window_percent": null,
+        "auto_compact_token_limit": null,
+        "default_max_output_tokens": null,
+        "max_output_tokens_upper_limit": null,
+        "default_verbosity": null,
+        "capabilities": {
+          "agent_turn": false,
           "parallel_tool_calls": false,
           "image_input": false,
           "image_generation": false,
@@ -12156,7 +12330,8 @@
         "reasoning_effort_options": [
           "low",
           "high",
-          "max"
+          "max",
+          "none"
         ]
       }
     },
@@ -12408,7 +12583,20 @@
         "reasoning_effort_options": [
           "low",
           "high",
-          "none"
+          "no_think"
+        ]
+      }
+    },
+    {
+      "route_ref": "tencent-tokenhub@default/hy4",
+      "policy": {
+        "display_name": null,
+        "description": null,
+        "effective_context_window_percent": null,
+        "capabilities": {},
+        "reasoning_effort_options": [
+          "high",
+          "no_think"
         ]
       }
     },
@@ -12421,7 +12609,7 @@
         "capabilities": {},
         "reasoning_effort_options": [
           "high",
-          "none"
+          "no_think"
         ]
       }
     },
@@ -12821,6 +13009,18 @@
       }
     },
     {
+      "route_ref": "tencent-tokenhub@messages/hy4",
+      "policy": {
+        "display_name": null,
+        "description": null,
+        "effective_context_window_percent": null,
+        "capabilities": {
+          "supports_reasoning": false
+        },
+        "reasoning_effort_options": null
+      }
+    },
+    {
       "route_ref": "tencent-tokenhub@messages/hy4-preview",
       "policy": {
         "display_name": null,
@@ -13171,6 +13371,18 @@
         "description": null,
         "effective_context_window_percent": null,
         "capabilities": {},
+        "reasoning_effort_options": null
+      }
+    },
+    {
+      "route_ref": "tencent-tokenhub@responses/hy4",
+      "policy": {
+        "display_name": null,
+        "description": null,
+        "effective_context_window_percent": null,
+        "capabilities": {
+          "supports_reasoning": false
+        },
         "reasoning_effort_options": null
       }
     },
@@ -14639,6 +14851,10 @@
       "target": "tencent-tokenhub/hy3"
     },
     {
+      "alias": "tencent-tokenhub-messages/hy4",
+      "target": "tencent-tokenhub/hy4"
+    },
+    {
       "alias": "tencent-tokenhub-messages/hy4-preview",
       "target": "tencent-tokenhub/hy4-preview"
     },
@@ -14761,6 +14977,10 @@
     {
       "alias": "tencent-tokenhub-responses/hy3",
       "target": "tencent-tokenhub/hy3"
+    },
+    {
+      "alias": "tencent-tokenhub-responses/hy4",
+      "target": "tencent-tokenhub/hy4"
     },
     {
       "alias": "tencent-tokenhub-responses/hy4-preview",
@@ -15589,6 +15809,10 @@
       "route_ref": "dashscope@default/kimi-k2.7-code"
     },
     {
+      "model_ref": "dashscope/kimi-k3.1-pro",
+      "route_ref": "dashscope@default/kimi-k3.1-pro"
+    },
+    {
       "model_ref": "dashscope/mimo-v2.5-pro",
       "route_ref": "dashscope@default/mimo-v2.5-pro"
     },
@@ -15727,6 +15951,10 @@
     {
       "model_ref": "fireworks/accounts/fireworks/models/gpt-oss-120b",
       "route_ref": "fireworks@default/accounts/fireworks/models/gpt-oss-120b"
+    },
+    {
+      "model_ref": "fireworks/accounts/fireworks/models/kimi-k3p1-pro",
+      "route_ref": "fireworks@default/accounts/fireworks/models/kimi-k3p1-pro"
     },
     {
       "model_ref": "fireworks/accounts/fireworks/models/minimax-m2p7",
@@ -16027,6 +16255,10 @@
     {
       "model_ref": "opencode-go/hy3",
       "route_ref": "opencode-go@default/hy3"
+    },
+    {
+      "model_ref": "opencode-go/hy4",
+      "route_ref": "opencode-go@default/hy4"
     },
     {
       "model_ref": "opencode-go/hy4-preview",
@@ -16355,6 +16587,10 @@
     {
       "model_ref": "tencent-tokenhub/hy3",
       "route_ref": "tencent-tokenhub@default/hy3"
+    },
+    {
+      "model_ref": "tencent-tokenhub/hy4",
+      "route_ref": "tencent-tokenhub@default/hy4"
     },
     {
       "model_ref": "tencent-tokenhub/hy4-preview",

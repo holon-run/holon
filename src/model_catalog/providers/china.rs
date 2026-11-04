@@ -1316,6 +1316,16 @@ pub(super) fn late_entries() -> Vec<BuiltInModelMetadata> {
             entry
         }),
     );
+    entries.push(BuiltInModelMetadata {
+        description: "DashScope Beijing Anthropic-compatible API Kimi K3.1 Pro; vision and output_config.effort are reviewed independently of subscription plans; exact token limits remain unconfirmed.".into(),
+        reasoning_effort_options: ["low", "medium", "high", "max"]
+            .into_iter()
+            .map(str::to_owned)
+            .collect(),
+        ..reviewed_subscription_model(
+            "dashscope", "default", "kimi-k3.1-pro", "Kimi K3.1 Pro", true, true,
+        )
+    });
     // Endpoint eligibility is reviewed against the official Token Plan list.
     // Limits and tool support come from models.dev's alibaba-token-plan-cn,
     // not from the underlying vendors' API catalogs or official hard limits.
@@ -1915,6 +1925,47 @@ fn qianfan_ernie_abbreviated_context_does_not_keep_conflicting_exact_limits() {
             model_ref.model,
         );
         assert!(catalog.get_route(&route).is_some(), "{id}");
+    }
+}
+
+#[test]
+fn dashscope_k31_messages_route_does_not_imply_subscription_entitlement_or_limits() {
+    for catalog in [
+        legacy_builtin_catalog().unwrap(),
+        BuiltInModelCatalog::new(),
+    ] {
+        let route = ModelRouteRef::parse("dashscope@default/kimi-k3.1-pro").unwrap();
+        assert!(catalog.get_route(&route).is_some());
+        let policy = catalog.resolve_route_policy(
+            &route,
+            &HashMap::new(),
+            &HashMap::new(),
+            None,
+            &ContextConfig::default(),
+            8_192,
+        );
+        assert!(policy.capabilities.supports_reasoning);
+        assert!(policy.capabilities.image_input);
+        assert_eq!(
+            policy.reasoning_effort_options,
+            ["low", "medium", "high", "max"]
+        );
+        policy.validate_reasoning_effort("max").unwrap();
+        assert!(policy.validate_reasoning_effort("xhigh").is_err());
+        assert_eq!(policy.context_window_tokens, None);
+        assert_eq!(
+            catalog
+                .get(&route.model_ref())
+                .unwrap()
+                .default_max_output_tokens,
+            None
+        );
+        assert_eq!(policy.max_output_tokens_upper_limit, None);
+        for endpoint in ["token-plan", "coding-plan", "coding-plan-intl"] {
+            let route =
+                ModelRouteRef::parse(&format!("dashscope@{endpoint}/kimi-k3.1-pro")).unwrap();
+            assert!(catalog.get_route(&route).is_none(), "{}", route.as_string());
+        }
     }
 }
 

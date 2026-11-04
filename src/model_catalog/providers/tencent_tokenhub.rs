@@ -49,6 +49,7 @@ type TencentTokenHubModelSpec = (
 
 const TENCENT_TOKENHUB_MODELS: &[TencentTokenHubModelSpec] = &[
     ("hy3", "Hy3", Some(256_000), Some(128_000), true, false),
+    ("hy4", "Hy4", None, None, true, true),
     ("hy-mt2-pro", "Hy-MT2-Pro", None, None, false, false),
     ("hy-mt2-plus", "Hy-MT2-Plus", None, None, false, false),
     ("hy-mt2-lite", "Hy-MT2-Lite", None, None, false, false),
@@ -174,6 +175,7 @@ const TENCENT_TOKENHUB_CHAT_ONLY_MODEL_IDS: &[&str] = &["hy-mt2-pro", "hy-mt2-pl
 const TENCENT_TOKENHUB_RESPONSES_MODEL_IDS: &[&str] = &[
     "hy4-preview",
     "hy3",
+    "hy4",
     "deepseek/deepseek-flash",
     "deepseek-v4-flash-202605",
     "deepseek/deepseek-v4-flash-0731",
@@ -211,7 +213,8 @@ const TENCENT_TOKENHUB_RESPONSES_MODEL_IDS: &[&str] = &[
 fn reviewed_chat_capabilities(id: &str) -> (bool, bool) {
     let reasoning = matches!(
         id,
-        "hy4-preview"
+        "hy4"
+            | "hy4-preview"
             | "deepseek/deepseek-flash"
             | "deepseek-v4-flash-202605"
             | "deepseek/deepseek-v4-flash-0731"
@@ -233,7 +236,8 @@ fn reviewed_chat_capabilities(id: &str) -> (bool, bool) {
     );
     let image = matches!(
         id,
-        "glm-5.3-flash"
+        "hy4"
+            | "glm-5.3-flash"
             | "glm-5.3-flashx"
             | "kimi-k3"
             | "kimi-k3.1-pro"
@@ -255,11 +259,11 @@ fn reviewed_chat_policy(id: &str) -> BuiltInModelRoutePolicy {
         _ => (None, None),
     };
     let effort: &[&str] = match id {
-        "hy4-preview" => &["high", "none"],
-        "hy3" => &["low", "high", "none"],
+        "hy4" | "hy4-preview" => &["high", "no_think"],
+        "hy3" => &["low", "high", "no_think"],
+        "deepseek-v4-pro" => &["low", "high", "max", "none"],
         "deepseek-v4.1-flash"
         | "deepseek-v4.1-flash-1017"
-        | "deepseek-v4-pro"
         | "glm-5.3"
         | "glm-5.3-flash"
         | "glm-5.3-flashx"
@@ -287,7 +291,8 @@ fn unreviewed_protocol_policy(id: &str) -> BuiltInModelRoutePolicy {
     BuiltInModelRoutePolicy {
         capabilities: ModelCapabilityOverride {
             supports_reasoning: reasoning.then_some(false),
-            image_input: image.then_some(false),
+            // Hy4 vision is independently documented for all three protocols.
+            image_input: (image && id != "hy4").then_some(false),
             ..ModelCapabilityOverride::default()
         },
         ..BuiltInModelRoutePolicy::default()
@@ -457,7 +462,7 @@ fn tokenhub_retirements_and_v41_chat_efforts_follow_exact_endpoint_evidence() {
 #[test]
 fn tokenhub_responses_routes_follow_the_independent_protocol_matrix() {
     let catalog = BuiltInModelCatalog::from_legacy_definitions();
-    assert_eq!(TENCENT_TOKENHUB_RESPONSES_MODEL_IDS.len(), 27);
+    assert_eq!(TENCENT_TOKENHUB_RESPONSES_MODEL_IDS.len(), 28);
     for id in TENCENT_TOKENHUB_MODELS
         .iter()
         .map(|model| model.0)
@@ -646,6 +651,98 @@ fn tokenhub_chat_budgets_and_effort_do_not_leak_to_other_protocols() {
 }
 
 #[test]
+fn tokenhub_hy4_routes_preserve_independently_reviewed_protocol_capabilities() {
+    for catalog in [
+        BuiltInModelCatalog::from_legacy_definitions(),
+        BuiltInModelCatalog::new(),
+    ] {
+        assert_eq!(
+            catalog.preferred_model_for_provider(&provider_id("tencent-tokenhub")),
+            Some(ModelRef::parse("tencent-tokenhub/hy3").unwrap()),
+        );
+        assert_eq!(
+            catalog.preferred_route_for_provider(&provider_id("tencent-tokenhub")),
+            Some(ModelRouteRef::parse("tencent-tokenhub@default/hy3").unwrap()),
+        );
+        for endpoint in ["default", "messages", "responses"] {
+            let route = ModelRouteRef::parse(&format!("tencent-tokenhub@{endpoint}/hy4")).unwrap();
+            assert!(catalog.get_route(&route).is_some(), "{}", route.as_string());
+            let policy = catalog.resolve_route_policy(
+                &route,
+                &HashMap::new(),
+                &HashMap::new(),
+                None,
+                &ContextConfig::default(),
+                8_192,
+            );
+            assert!(policy.capabilities.image_input, "{endpoint}");
+            assert_eq!(
+                policy.capabilities.supports_reasoning,
+                endpoint == "default"
+            );
+            assert_eq!(policy.context_window_tokens, None);
+            assert_eq!(
+                catalog
+                    .get(&route.model_ref())
+                    .unwrap()
+                    .default_max_output_tokens,
+                None
+            );
+            assert_eq!(policy.max_output_tokens_upper_limit, None);
+            if endpoint == "default" {
+                assert_eq!(policy.reasoning_effort_options, ["high", "no_think"]);
+                policy.validate_reasoning_effort("no_think").unwrap();
+                assert!(policy.validate_reasoning_effort("none").is_err());
+            } else {
+                assert!(policy.reasoning_effort_options.is_empty());
+                assert!(policy.validate_reasoning_effort("no_think").is_err());
+            }
+            let preview =
+                ModelRouteRef::parse(&format!("tencent-tokenhub@{endpoint}/hy4-preview")).unwrap();
+            assert!(catalog.get_route(&preview).is_some());
+        }
+    }
+}
+
+#[test]
+fn tokenhub_chat_effort_updates_are_exact_model_and_protocol_scoped() {
+    for catalog in [
+        BuiltInModelCatalog::from_legacy_definitions(),
+        BuiltInModelCatalog::new(),
+    ] {
+        for (id, expected) in [
+            ("hy4-preview", vec!["high", "no_think"]),
+            ("hy3", vec!["low", "high", "no_think"]),
+            ("deepseek-v4-pro", vec!["low", "high", "max", "none"]),
+            ("deepseek-v4.1-flash", vec!["low", "high", "max"]),
+            ("deepseek-v4.1-flash-1017", vec!["low", "high", "max"]),
+        ] {
+            for endpoint in ["default", "messages", "responses"] {
+                let route =
+                    ModelRouteRef::parse(&format!("tencent-tokenhub@{endpoint}/{id}")).unwrap();
+                assert!(catalog.get_route(&route).is_some());
+                let policy = catalog.resolve_route_policy(
+                    &route,
+                    &HashMap::new(),
+                    &HashMap::new(),
+                    None,
+                    &ContextConfig::default(),
+                    8_192,
+                );
+                if endpoint == "default" {
+                    assert_eq!(policy.reasoning_effort_options, expected, "{id}");
+                } else {
+                    assert!(
+                        policy.reasoning_effort_options.is_empty(),
+                        "{id}@{endpoint}"
+                    );
+                }
+            }
+        }
+    }
+}
+
+#[test]
 fn tokenhub_reviewed_chat_capabilities_and_effort_preserve_unknown_fields() {
     let catalog = BuiltInModelCatalog::from_legacy_definitions();
     for id in TENCENT_TOKENHUB_ADDITIONAL_MODEL_IDS {
@@ -677,11 +774,11 @@ fn tokenhub_reviewed_chat_capabilities_and_effort_preserve_unknown_fields() {
         }
     }
     for (id, expected) in [
-        ("hy4-preview", vec!["high", "none"]),
-        ("hy3", vec!["low", "high", "none"]),
+        ("hy4-preview", vec!["high", "no_think"]),
+        ("hy3", vec!["low", "high", "no_think"]),
         ("deepseek-v4.1-flash", vec!["low", "high", "max"]),
         ("deepseek-v4.1-flash-1017", vec!["low", "high", "max"]),
-        ("deepseek-v4-pro", vec!["low", "high", "max"]),
+        ("deepseek-v4-pro", vec!["low", "high", "max", "none"]),
         ("glm-5.3", vec!["low", "high", "max"]),
         ("glm-5.3-flash", vec!["low", "high", "max"]),
         ("glm-5.3-flashx", vec!["low", "high", "max"]),

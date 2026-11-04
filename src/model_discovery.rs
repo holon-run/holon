@@ -880,6 +880,7 @@ pub(crate) const OPENCODE_GO_TEXT_MODELS: &[(&str, &str)] = &[
     ("qwen3.8-max", "messages"),
     ("qwen3.8-flash", "messages"),
     ("qwen3.7-plus", "messages"),
+    ("hy4", "default"),
     ("hy4-preview", "default"),
     ("hy3", "default"),
     ("step-5-preview", "default"),
@@ -2705,7 +2706,7 @@ mod tests {
 
     #[test]
     fn opencode_go_discovery_accepts_reviewed_text_ids_without_inventing_capabilities() {
-        assert_eq!(OPENCODE_GO_TEXT_MODELS.len(), 30);
+        assert_eq!(OPENCODE_GO_TEXT_MODELS.len(), 31);
         let mut data = OPENCODE_GO_TEXT_MODELS
             .iter()
             .map(|(id, _)| serde_json::json!({"id": id}))
@@ -2722,7 +2723,7 @@ mod tests {
             serde_json::from_value(serde_json::json!({"data": data})).unwrap();
         let models = payload.into_model_metadata(&ProviderId::parse("opencode-go").unwrap());
         // Discovery is model-keyed, not route-keyed: retain one preferred record.
-        assert_eq!(models.len(), 30);
+        assert_eq!(models.len(), 31);
         assert!(models
             .windows(2)
             .all(|pair| pair[0].model_ref.model < pair[1].model_ref.model));
@@ -2749,6 +2750,7 @@ mod tests {
             assert!(model.reasoning_effort_options.is_empty());
         }
         for id in [
+            "hy4",
             "gemini-4-argon",
             "kimi-k3.1-pro",
             "iceman-contributor-free",

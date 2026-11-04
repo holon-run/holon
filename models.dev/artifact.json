@@ -1,12 +1,12 @@
 {
   "schema_version": 1,
-  "revision": "models-dev-0d6995e11f1174c560cf6dd7bf7458e53258ea0b4de19dc8072e9b3e972051c8",
+  "revision": "models-dev-a032bd9630156a5a601e8097d13005838c9be0822e37b1e0cb035af10e6e79ca",
   "upstream": {
     "source": "models.dev",
-    "revision": "0d6995e11f1174c560cf6dd7bf7458e53258ea0b4de19dc8072e9b3e972051c8",
-    "fetched_at": "2026-11-03T21:18:59.412416505+00:00",
-    "content_sha256": "0d6995e11f1174c560cf6dd7bf7458e53258ea0b4de19dc8072e9b3e972051c8",
-    "adapter_version": "0.58.0 (aaee7b22-dirty)"
+    "revision": "a032bd9630156a5a601e8097d13005838c9be0822e37b1e0cb035af10e6e79ca",
+    "fetched_at": "2026-11-04T21:33:23.445191891+00:00",
+    "content_sha256": "a032bd9630156a5a601e8097d13005838c9be0822e37b1e0cb035af10e6e79ca",
+    "adapter_version": "0.58.0 (82c2a236-dirty)"
   },
   "models": [
     {
@@ -1364,6 +1364,27 @@
         "image_input": true,
         "image_generation": false,
         "supports_reasoning": true,
+        "interactive_exec": false
+      },
+      "source": "remote_discovered"
+    },
+    {
+      "model_ref": "chutes/tencent/Hy4",
+      "display_name": "Hy4",
+      "description": "Tencent Hy reasoning model for coding, instruction following, and agent tasks",
+      "context_window_tokens": null,
+      "effective_context_window_percent": 95,
+      "auto_compact_token_limit": null,
+      "default_max_output_tokens": null,
+      "max_output_tokens_upper_limit": null,
+      "default_verbosity": null,
+      "tool_output_truncation_estimated_tokens": 2500,
+      "capabilities": {
+        "agent_turn": true,
+        "parallel_tool_calls": false,
+        "image_input": false,
+        "image_generation": false,
+        "supports_reasoning": false,
         "interactive_exec": false
       },
       "source": "remote_discovered"
@@ -13735,8 +13756,8 @@
       "context_window_tokens": 131072,
       "effective_context_window_percent": 95,
       "auto_compact_token_limit": 124518,
-      "default_max_output_tokens": 128000,
-      "max_output_tokens_upper_limit": 128000,
+      "default_max_output_tokens": 16384,
+      "max_output_tokens_upper_limit": 16384,
       "default_verbosity": null,
       "tool_output_truncation_estimated_tokens": 2500,
       "capabilities": {
@@ -15234,8 +15255,8 @@
       "context_window_tokens": 1048576,
       "effective_context_window_percent": 95,
       "auto_compact_token_limit": 996147,
-      "default_max_output_tokens": 235929,
-      "max_output_tokens_upper_limit": 235929,
+      "default_max_output_tokens": 943718,
+      "max_output_tokens_upper_limit": 943718,
       "default_verbosity": null,
       "tool_output_truncation_estimated_tokens": 2500,
       "capabilities": {
@@ -16630,8 +16651,8 @@
       "context_window_tokens": 131072,
       "effective_context_window_percent": 95,
       "auto_compact_token_limit": 124518,
-      "default_max_output_tokens": 117964,
-      "max_output_tokens_upper_limit": 117964,
+      "default_max_output_tokens": 32768,
+      "max_output_tokens_upper_limit": 32768,
       "default_verbosity": null,
       "tool_output_truncation_estimated_tokens": 2500,
       "capabilities": {
@@ -17186,8 +17207,8 @@
       "context_window_tokens": 262144,
       "effective_context_window_percent": 95,
       "auto_compact_token_limit": 249036,
-      "default_max_output_tokens": 117964,
-      "max_output_tokens_upper_limit": 117964,
+      "default_max_output_tokens": 16384,
+      "max_output_tokens_upper_limit": 16384,
       "default_verbosity": null,
       "tool_output_truncation_estimated_tokens": 2500,
       "capabilities": {
@@ -18073,6 +18094,27 @@
       "source": "remote_discovered"
     },
     {
+      "model_ref": "openrouter/ricursiveai/ripple-65b-preview",
+      "display_name": "ricursiveAI/Ripple-65B-Preview",
+      "description": "Preview model for early access evaluation, prototyping, and compatibility testing",
+      "context_window_tokens": 16384,
+      "effective_context_window_percent": 95,
+      "auto_compact_token_limit": 15564,
+      "default_max_output_tokens": 14745,
+      "max_output_tokens_upper_limit": 14745,
+      "default_verbosity": null,
+      "tool_output_truncation_estimated_tokens": 2500,
+      "capabilities": {
+        "agent_turn": true,
+        "parallel_tool_calls": false,
+        "image_input": false,
+        "image_generation": false,
+        "supports_reasoning": false,
+        "interactive_exec": false
+      },
+      "source": "remote_discovered"
+    },
+    {
       "model_ref": "openrouter/sakana/fugu-max",
       "display_name": "Fugu Max",
       "description": "Multi-agent model for routing expert agents across complex analytical tasks",
@@ -18257,6 +18299,35 @@
         "supports_reasoning": false,
         "interactive_exec": false
       },
+      "source": "remote_discovered"
+    },
+    {
+      "model_ref": "openrouter/stealth/crouton-alpha",
+      "display_name": "Crouton Alpha",
+      "description": "Multimodal reasoning model for visual analysis, planning, and tool use",
+      "context_window_tokens": 1048576,
+      "effective_context_window_percent": 95,
+      "auto_compact_token_limit": 996147,
+      "default_max_output_tokens": 943718,
+      "max_output_tokens_upper_limit": 943718,
+      "default_verbosity": null,
+      "tool_output_truncation_estimated_tokens": 2500,
+      "capabilities": {
+        "agent_turn": true,
+        "parallel_tool_calls": false,
+        "image_input": true,
+        "image_generation": false,
+        "supports_reasoning": true,
+        "interactive_exec": false
+      },
+      "reasoning_effort_options": [
+        "minimal",
+        "low",
+        "medium",
+        "high",
+        "xhigh",
+        "max"
+      ],
       "source": "remote_discovered"
     },
     {
@@ -18469,6 +18540,32 @@
       "source": "remote_discovered"
     },
     {
+      "model_ref": "openrouter/tencent/hy4",
+      "display_name": "Hy4",
+      "description": "Tencent Hy reasoning model for coding, instruction following, and agent tasks",
+      "context_window_tokens": 1048576,
+      "effective_context_window_percent": 95,
+      "auto_compact_token_limit": 996147,
+      "default_max_output_tokens": 65536,
+      "max_output_tokens_upper_limit": 65536,
+      "default_verbosity": null,
+      "tool_output_truncation_estimated_tokens": 2500,
+      "capabilities": {
+        "agent_turn": true,
+        "parallel_tool_calls": false,
+        "image_input": true,
+        "image_generation": false,
+        "supports_reasoning": true,
+        "interactive_exec": false
+      },
+      "reasoning_effort_options": [
+        "none",
+        "low",
+        "high"
+      ],
+      "source": "remote_discovered"
+    },
+    {
       "model_ref": "openrouter/tencent/hy4-preview",
       "display_name": "Hy4 preview",
       "description": "Tencent Hy reasoning model for coding, instruction following, and agent tasks",
@@ -18593,64 +18690,6 @@
       "context_window_tokens": 524288,
       "effective_context_window_percent": 95,
       "auto_compact_token_limit": 498073,
-      "default_max_output_tokens": 262144,
-      "max_output_tokens_upper_limit": 262144,
-      "default_verbosity": null,
-      "tool_output_truncation_estimated_tokens": 2500,
-      "capabilities": {
-        "agent_turn": true,
-        "parallel_tool_calls": false,
-        "image_input": true,
-        "image_generation": false,
-        "supports_reasoning": true,
-        "interactive_exec": false
-      },
-      "reasoning_effort_options": [
-        "none",
-        "minimal",
-        "low",
-        "medium",
-        "high",
-        "max"
-      ],
-      "source": "remote_discovered"
-    },
-    {
-      "model_ref": "openrouter/thinkingmachines/inkling-small:free",
-      "display_name": "Inkling Small (free)",
-      "description": "Multimodal reasoning model for visual analysis, planning, and tool use",
-      "context_window_tokens": 1048576,
-      "effective_context_window_percent": 95,
-      "auto_compact_token_limit": 996147,
-      "default_max_output_tokens": 262144,
-      "max_output_tokens_upper_limit": 262144,
-      "default_verbosity": null,
-      "tool_output_truncation_estimated_tokens": 2500,
-      "capabilities": {
-        "agent_turn": true,
-        "parallel_tool_calls": false,
-        "image_input": true,
-        "image_generation": false,
-        "supports_reasoning": true,
-        "interactive_exec": false
-      },
-      "reasoning_effort_options": [
-        "none",
-        "minimal",
-        "low",
-        "medium",
-        "high",
-        "max"
-      ],
-      "source": "remote_discovered"
-    },
-    {
-      "model_ref": "openrouter/thinkingmachines/inkling:free",
-      "display_name": "Inkling (free)",
-      "description": "Multimodal reasoning model for visual analysis, planning, and tool use",
-      "context_window_tokens": 1048576,
-      "effective_context_window_percent": 95,
-      "auto_compact_token_limit": 996147,
       "default_max_output_tokens": 262144,
       "max_output_tokens_upper_limit": 262144,
       "default_verbosity": null,
@@ -18997,9 +19036,9 @@
       "model_ref": "openrouter/xiaomi/mimo-v2.5",
       "display_name": "MiMo-V2.5",
       "description": "Open MiMo model for multimodal coding agents and long-context automation",
-      "context_window_tokens": 1050000,
+      "context_window_tokens": 1000000,
       "effective_context_window_percent": 95,
-      "auto_compact_token_limit": 997500,
+      "auto_compact_token_limit": 950000,
       "default_max_output_tokens": 65536,
       "max_output_tokens_upper_limit": 65536,
       "default_verbosity": null,
@@ -19388,8 +19427,8 @@
       "context_window_tokens": 1048576,
       "effective_context_window_percent": 95,
       "auto_compact_token_limit": 996147,
-      "default_max_output_tokens": 131072,
-      "max_output_tokens_upper_limit": 131072,
+      "default_max_output_tokens": 943717,
+      "max_output_tokens_upper_limit": 943717,
       "default_verbosity": null,
       "tool_output_truncation_estimated_tokens": 2500,
       "capabilities": {
@@ -20670,6 +20709,34 @@
       "reasoning_effort_options": [
         "none",
         "low",
+        "high",
+        "max"
+      ],
+      "source": "remote_discovered"
+    },
+    {
+      "model_ref": "together/moonshotai/Kimi-K3.1-Pro",
+      "display_name": "Kimi K3.1 Pro",
+      "description": "Multimodal Kimi model with 1M context and always-on reasoning for coding, 3D creation, financial research, and agentic work",
+      "context_window_tokens": 1048576,
+      "effective_context_window_percent": 95,
+      "auto_compact_token_limit": 996147,
+      "default_max_output_tokens": 131072,
+      "max_output_tokens_upper_limit": 131072,
+      "default_verbosity": null,
+      "tool_output_truncation_estimated_tokens": 2500,
+      "capabilities": {
+        "agent_turn": true,
+        "parallel_tool_calls": false,
+        "image_input": true,
+        "image_generation": false,
+        "supports_reasoning": true,
+        "interactive_exec": false
+      },
+      "reasoning_effort_options": [
+        "none",
+        "low",
+        "medium",
         "high",
         "max"
       ],
