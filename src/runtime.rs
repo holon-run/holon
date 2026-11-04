@@ -62,6 +62,7 @@ pub use repair::{
     SchedulerRepairInspection, SchedulerRepairOperation, SchedulerRepairRequest,
     SchedulerRepairResult, WorkItemRepairAssessment,
 };
+pub(crate) use scheduler::is_terminal_task_status;
 pub use scheduler_acceptance::{
     seed_scheduler_restart_fixture, seed_scheduler_terminal_recovery_fixture,
     SchedulerIngressAdmissionRestartFixture, SchedulerTerminalRecoveryFixture,
