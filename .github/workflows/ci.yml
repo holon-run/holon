@@ -106,7 +106,7 @@ on:
   workflow_dispatch:
   schedule:
     # Nightly full-sweep safety net: path-tiered main pushes skip
-    # Coverage/macOS, so every tier still runs once a day.
+    # macOS, so every enabled tier still runs once a day.
     - cron: "40 2 * * *"
 
 concurrency:
@@ -986,75 +986,6 @@ jobs:
         if: github.event_name == 'push'
         run: make test-concurrent-repeat CONCURRENT_REPEATS=2
 
-  coverage:
-    name: Coverage
-    # Compile under the 16 GB runner budget; see docs/implementation-decisions/ci-rust-memory-budget.md.
-    needs: changes
-    # Coverage runs only in nightly and manual full sweeps: the lcov
-    # artifact has no downstream gate, so PRs and path-tiered main
-    # pushes no longer spend a Linux runner slot (~23m) on it.
-    if: needs.changes.outputs.full_sweep == 'true'
-    runs-on: ubuntu-latest
-    timeout-minutes: 60
-    env:
-      CARGO_TARGET_DIR: target/llvm-cov
-      CARGO_INCREMENTAL: "0"
-      CARGO_PROFILE_DEV_DEBUG: "line-tables-only"
-      CARGO_PROFILE_DEV_CODEGEN_UNITS: "1"
-      CARGO_PROFILE_TEST_DEBUG: "line-tables-only"
-      CARGO_PROFILE_TEST_CODEGEN_UNITS: "1"
-      CARGO_PROFILE_RELEASE_CODEGEN_UNITS: "1"
-      CARGO_BUILD_JOBS: "2"
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Set up Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: '24.22.1'
-          cache: npm
-          cache-dependency-path: |
-            web-gui/app/package-lock.json
-            packages/conversation-sdk/package-lock.json
-
-      - name: Build web GUI
-        if: needs.changes.outputs.web == 'true'
-        run: make web
-
-      - name: Set up Rust
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          components: llvm-tools
-
-      - name: Restore coverage build cache
-        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
-        with:
-          prefix-key: v1-rust
-          key: ci-coverage
-          env-vars: CARGO_TARGET_DIR
-          workspaces: . -> target/llvm-cov
-          cache-bin: false
-          save-if: ${{ (github.event_name == 'push' || github.event_name == 'schedule') && github.ref == 'refs/heads/main' }}
-
-      - name: Install cargo-llvm-cov
-        uses: taiki-e/install-action@cargo-llvm-cov
-
-      - name: Clear stale coverage profiles
-        run: |
-          if [ -d "${CARGO_TARGET_DIR}" ]; then
-            find "${CARGO_TARGET_DIR}" -type f \
-              \( -name '*.profraw' -o -name '*.profdata' \) -delete
-          fi
-
-      - name: Generate coverage
-        run: cargo llvm-cov --no-clean --lib --bins --tests --lcov --output-path lcov.info
-
-      - name: Upload coverage artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: coverage-report
-          path: lcov.info
-
   e2e-scheduler:
     name: Scheduler Live Canary (optional)
     needs:
@@ -1325,7 +1256,6 @@ jobs:
       - rust-build
       - rust-test
       - rust-concurrent
-      - coverage
       - e2e-scheduler
       - scheduler-e2e-required
     if: always() && (needs.changes.outputs.full_sweep == 'true' || needs.changes.outputs.rust == 'true')
