@@ -205,6 +205,7 @@ fn timer_not_found(timer_id: &str) -> anyhow::Error {
         .into()
 }
 
+#[cfg(holon_lib_test_shard = "c")]
 #[cfg(test)]
 mod tests {
     use super::*;

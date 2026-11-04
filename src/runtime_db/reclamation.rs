@@ -216,6 +216,7 @@ pub(crate) fn idle_evidence_tx(tx: &Transaction<'_>, agent_id: &str) -> Result<S
     ))?)
 }
 
+#[cfg(holon_lib_test_shard = "b")]
 #[cfg(test)]
 mod tests {
     use super::*;

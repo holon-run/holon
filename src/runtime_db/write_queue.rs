@@ -707,6 +707,7 @@ fn runtime_db_write_queue_key(path: &Path) -> PathBuf {
     }
 }
 
+#[cfg(holon_lib_test_shard = "b")]
 #[cfg(test)]
 mod persistence_tests {
     use super::*;
@@ -973,6 +974,7 @@ mod persistence_tests {
     }
 }
 
+#[cfg(holon_lib_test_shard = "b")]
 #[cfg(all(test, target_os = "linux"))]
 mod tests {
     use std::fs;

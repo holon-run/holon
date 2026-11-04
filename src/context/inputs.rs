@@ -1177,6 +1177,7 @@ impl ContextInputs for ResidentContextInputs<'_, '_> {
     }
 }
 
+#[cfg(holon_lib_test_shard = "d")]
 #[cfg(test)]
 mod resident_tests {
     use super::*;

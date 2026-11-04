@@ -1429,6 +1429,7 @@ pub(super) fn late_entries() -> Vec<BuiltInModelMetadata> {
     entries
 }
 
+#[cfg(holon_lib_test_shard = "c")]
 #[test]
 fn volcengine_api_eos_keeps_independently_reviewed_subscription_routes() {
     let catalog = BuiltInModelCatalog::new();
@@ -1477,6 +1478,7 @@ fn volcengine_api_eos_keeps_independently_reviewed_subscription_routes() {
     }
 }
 
+#[cfg(holon_lib_test_shard = "c")]
 #[test]
 fn volcengine_native_responses_ids_keep_protocol_and_unknown_limits_scoped() {
     let entries = late_entries();
@@ -1534,6 +1536,7 @@ fn volcengine_native_responses_ids_keep_protocol_and_unknown_limits_scoped() {
     }
 }
 
+#[cfg(holon_lib_test_shard = "c")]
 #[test]
 fn volcengine_native_additions_do_not_displace_surviving_preferences() {
     let catalog = BuiltInModelCatalog::new();
@@ -1568,6 +1571,7 @@ fn volcengine_native_additions_do_not_displace_surviving_preferences() {
     }
 }
 
+#[cfg(holon_lib_test_shard = "c")]
 #[test]
 fn volcengine_reviewed_subscription_models_do_not_imply_default_api_routes() {
     let catalog = BuiltInModelCatalog::new();
@@ -1600,6 +1604,7 @@ fn volcengine_reviewed_subscription_models_do_not_imply_default_api_routes() {
     }
 }
 
+#[cfg(holon_lib_test_shard = "c")]
 #[test]
 fn reviewed_byteplus_vision_and_volcengine_alias_are_endpoint_scoped() {
     for catalog in [
@@ -1632,6 +1637,7 @@ fn reviewed_byteplus_vision_and_volcengine_alias_are_endpoint_scoped() {
     }
 }
 
+#[cfg(holon_lib_test_shard = "c")]
 #[test]
 fn subscription_routers_do_not_inherit_underlying_model_capabilities() {
     for catalog in [
@@ -1663,6 +1669,7 @@ fn subscription_routers_do_not_inherit_underlying_model_capabilities() {
     }
 }
 
+#[cfg(holon_lib_test_shard = "c")]
 #[test]
 fn volcengine_retired_subscription_ids_preserve_peers_and_live_aliases() {
     for catalog in [
@@ -1712,6 +1719,7 @@ fn volcengine_retired_subscription_ids_preserve_peers_and_live_aliases() {
     }
 }
 
+#[cfg(holon_lib_test_shard = "c")]
 #[test]
 fn international_coding_plan_has_its_own_allowlist_and_unknown_limits() {
     for catalog in [
@@ -1762,6 +1770,7 @@ fn international_coding_plan_has_its_own_allowlist_and_unknown_limits() {
     }
 }
 
+#[cfg(holon_lib_test_shard = "c")]
 #[test]
 fn reviewed_subscription_capabilities_do_not_leak_between_endpoints() {
     for catalog in [
@@ -1784,6 +1793,7 @@ fn reviewed_subscription_capabilities_do_not_leak_between_endpoints() {
     }
 }
 
+#[cfg(holon_lib_test_shard = "c")]
 #[test]
 fn reviewed_kimi_k31_subscription_metadata_does_not_inherit_k3_tier_or_api_limits() {
     let entries = late_entries();
@@ -1809,6 +1819,7 @@ fn reviewed_kimi_k31_subscription_metadata_does_not_inherit_k3_tier_or_api_limit
     assert!(plan.policy.description.is_none());
 }
 
+#[cfg(holon_lib_test_shard = "c")]
 #[test]
 fn retired_qianfan_ids_do_not_leave_legacy_routes_or_defaults() {
     let catalog = BuiltInModelCatalog::from_legacy_definitions();
@@ -1836,6 +1847,7 @@ fn retired_qianfan_ids_do_not_leave_legacy_routes_or_defaults() {
     }
 }
 
+#[cfg(holon_lib_test_shard = "c")]
 #[test]
 fn qianfan_reviewed_chat_ids_keep_context_and_output_defaults_unknown() {
     let entries = early_entries();
@@ -1905,6 +1917,7 @@ fn qianfan_reviewed_chat_ids_keep_context_and_output_defaults_unknown() {
     }
 }
 
+#[cfg(holon_lib_test_shard = "c")]
 #[test]
 fn qianfan_ernie_abbreviated_context_does_not_keep_conflicting_exact_limits() {
     let entries = early_entries();
@@ -1928,6 +1941,7 @@ fn qianfan_ernie_abbreviated_context_does_not_keep_conflicting_exact_limits() {
     }
 }
 
+#[cfg(holon_lib_test_shard = "c")]
 #[test]
 fn dashscope_k31_messages_route_does_not_imply_subscription_entitlement_or_limits() {
     for catalog in [

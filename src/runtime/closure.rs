@@ -4,6 +4,7 @@ use crate::types::{
 };
 use chrono::{DateTime, Utc};
 
+#[cfg(holon_lib_test_shard = "a")]
 #[cfg(test)]
 #[path = "closure_material_tests.rs"]
 mod material_tests;
@@ -295,6 +296,7 @@ pub(crate) fn runtime_error_active_at(
     }
 }
 
+#[cfg(holon_lib_test_shard = "a")]
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -188,6 +188,7 @@ pub(crate) fn render_for_model(result: &ToolResult) -> Result<String> {
     }
 }
 
+#[cfg(holon_lib_test_shard = "c")]
 #[cfg(test)]
 mod tests {
     use super::*;

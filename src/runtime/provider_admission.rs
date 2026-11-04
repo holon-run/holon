@@ -1491,7 +1491,8 @@ impl RuntimeHandle {
                     ]),
                     Default::default(),
                 )
-                .await?;
+                .await
+                .context("cooling provider source message not persisted in prepared evidence")?;
             (mutation.state.clone(), mutation.capture_input_evidence()?)
         };
         let protocol = inputs
@@ -1822,5 +1823,6 @@ fn scope_cooling_deadline(error: &anyhow::Error) -> Option<DateTime<Utc>> {
     })
 }
 
+#[cfg(holon_lib_test_shard = "a")]
 #[cfg(test)]
 mod tests;

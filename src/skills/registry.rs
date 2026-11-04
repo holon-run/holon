@@ -503,6 +503,7 @@ fn normalize_path(path: &Path) -> PathBuf {
     path.components().collect()
 }
 
+#[cfg(holon_lib_test_shard = "c")]
 #[cfg(test)]
 mod tests {
     use super::*;

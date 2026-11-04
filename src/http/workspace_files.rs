@@ -888,6 +888,7 @@ async fn workspace_files_inner(
     Ok(Json(json!(file_content)).into_response())
 }
 
+#[cfg(holon_lib_test_shard = "c")]
 #[cfg(test)]
 mod tests {
     use super::*;

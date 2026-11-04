@@ -666,7 +666,7 @@ async fn wake_hint_when_awake_running_is_coalesced() {
     )
     .unwrap();
     {
-        let mut guard = runtime.inner.agent.lock().await;
+        let mut guard = runtime.begin_mutation().await.unwrap();
         guard.state.status = AgentStatus::AwakeRunning;
         guard.state.current_run_id = Some("run-live".into());
         guard.current_run_abort = Some(CurrentRunAbortHandle {
@@ -674,7 +674,7 @@ async fn wake_hint_when_awake_running_is_coalesced() {
             token: CancellationToken::new(),
             reason: Arc::new(StdMutex::new("operator_aborted".into())),
         });
-        guard.persist_state(&runtime.inner.storage).unwrap();
+        guard.persist_state(&runtime.inner.storage).await.unwrap();
     }
 
     let disposition = runtime.submit_wake_hint(wake_hint_smoke()).await.unwrap();
@@ -794,10 +794,10 @@ async fn wake_hint_recovers_stale_awake_running_projection_and_triggers() {
     )
     .unwrap();
     {
-        let mut guard = runtime.inner.agent.lock().await;
+        let mut guard = runtime.begin_mutation().await.unwrap();
         guard.state.status = AgentStatus::AwakeRunning;
         guard.state.current_run_id = Some("run-stale".into());
-        guard.persist_state(&runtime.inner.storage).unwrap();
+        guard.persist_state(&runtime.inner.storage).await.unwrap();
     }
 
     let disposition = runtime.submit_wake_hint(wake_hint_smoke()).await.unwrap();
@@ -835,7 +835,7 @@ async fn wake_hint_fails_closed_on_run_id_mismatch() {
     )
     .unwrap();
     {
-        let mut guard = runtime.inner.agent.lock().await;
+        let mut guard = runtime.begin_mutation().await.unwrap();
         guard.state.status = AgentStatus::AwakeRunning;
         guard.state.current_run_id = Some("run-projected".into());
         guard.current_run_abort = Some(CurrentRunAbortHandle {
@@ -843,7 +843,7 @@ async fn wake_hint_fails_closed_on_run_id_mismatch() {
             token: CancellationToken::new(),
             reason: Arc::new(StdMutex::new("operator_aborted".into())),
         });
-        guard.persist_state(&runtime.inner.storage).unwrap();
+        guard.persist_state(&runtime.inner.storage).await.unwrap();
     }
 
     let error = runtime
@@ -883,9 +883,9 @@ async fn wake_hint_when_awaiting_task_is_coalesced() {
     )
     .unwrap();
     {
-        let mut guard = runtime.inner.agent.lock().await;
+        let mut guard = runtime.begin_mutation().await.unwrap();
         guard.state.status = AgentStatus::AwaitingTask;
-        guard.persist_state(&runtime.inner.storage).unwrap();
+        guard.persist_state(&runtime.inner.storage).await.unwrap();
     }
 
     let disposition = runtime.submit_wake_hint(wake_hint_smoke()).await.unwrap();
@@ -913,9 +913,9 @@ async fn wake_hint_when_stopped_is_ignored() {
     )
     .unwrap();
     {
-        let mut guard = runtime.inner.agent.lock().await;
+        let mut guard = runtime.begin_mutation().await.unwrap();
         guard.state.status = AgentStatus::Stopped;
-        guard.persist_state(&runtime.inner.storage).unwrap();
+        guard.persist_state(&runtime.inner.storage).await.unwrap();
     }
 
     let disposition = runtime.submit_wake_hint(wake_hint_smoke()).await.unwrap();

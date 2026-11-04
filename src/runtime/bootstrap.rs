@@ -2999,6 +2999,7 @@ fn visual_observation_response_format() -> ProviderResponseFormatRequest {
     })
 }
 
+#[cfg(holon_lib_test_shard = "a")]
 #[cfg(test)]
 mod view_image_route_tests {
     use super::*;
@@ -3541,6 +3542,7 @@ mod view_image_route_tests {
     }
 }
 
+#[cfg(holon_lib_test_shard = "a")]
 #[cfg(test)]
 mod view_image_candidate_health_tests {
     use super::*;
@@ -3875,6 +3877,7 @@ mod view_image_candidate_health_tests {
     }
 }
 
+#[cfg(holon_lib_test_shard = "a")]
 #[cfg(test)]
 mod mutation_bootstrap_tests {
     use super::*;
@@ -4349,10 +4352,12 @@ mod mutation_bootstrap_tests {
     }
 }
 
+#[cfg(holon_lib_test_shard = "a")]
 #[cfg(test)]
 #[path = "bootstrap_task_recovery_tests.rs"]
 mod task_recovery_tests;
 
+#[cfg(holon_lib_test_shard = "a")]
 #[cfg(test)]
 #[path = "bootstrap_audit_tests.rs"]
 mod audit_tests;

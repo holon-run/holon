@@ -374,6 +374,7 @@ fn gauge(output: &mut String, name: &str, value: impl std::fmt::Display) {
     writeln!(output, "{name} {value}").expect("writing to a string cannot fail");
 }
 
+#[cfg(holon_lib_test_shard = "d")]
 #[cfg(test)]
 mod tests {
     use std::collections::HashSet;

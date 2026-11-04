@@ -3,6 +3,7 @@ use crate::diagnostics::resource_io::{
     assert_retryable_resource_error, charge_owned_metadata, ResourceReadMaterial,
 };
 
+#[cfg(holon_lib_test_shard = "a")]
 #[path = "scheduling_output_loan_tests.rs"]
 mod loan_tests;
 
@@ -62,6 +63,7 @@ fn project(
     )
 }
 
+#[cfg(holon_lib_test_shard = "a")]
 #[test]
 fn cold_body_standalone_exact_cost_wire_and_original_last_holder() -> Result<()> {
     for count in [0, 9] {
@@ -100,6 +102,7 @@ fn cold_body_standalone_exact_cost_wire_and_original_last_holder() -> Result<()>
     Ok(())
 }
 
+#[cfg(holon_lib_test_shard = "a")]
 #[test]
 fn cold_body_inherits_exact_remaining_bytes_records_and_failure_latch() -> Result<()> {
     for shortage in [None, Some(true), Some(false)] {
@@ -157,6 +160,7 @@ fn cold_body_inherits_exact_remaining_bytes_records_and_failure_latch() -> Resul
     Ok(())
 }
 
+#[cfg(holon_lib_test_shard = "a")]
 #[test]
 fn cold_body_rejects_slots_before_growth_and_releases_partial_output() -> Result<()> {
     for slots_only in [true, false] {
@@ -199,6 +203,7 @@ fn cold_body_rejects_slots_before_growth_and_releases_partial_output() -> Result
     Ok(())
 }
 
+#[cfg(holon_lib_test_shard = "a")]
 #[test]
 fn cold_top_k_does_not_copy_discarded_large_timer_but_keeps_its_source() -> Result<()> {
     let mut selected = fixture(9)?;
@@ -247,6 +252,7 @@ fn cold_top_k_does_not_copy_discarded_large_timer_but_keeps_its_source() -> Resu
     Ok(())
 }
 
+#[cfg(holon_lib_test_shard = "a")]
 #[test]
 fn cold_body_shares_large_history_text_and_admits_only_output_handles() -> Result<()> {
     for include_history in [false, true] {

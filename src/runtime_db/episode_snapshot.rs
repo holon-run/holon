@@ -34,33 +34,43 @@ use super::{
 
 #[path = "current_read_upgrade.rs"]
 pub(super) mod current_upgrade;
+#[cfg(holon_lib_test_shard = "b")]
 #[cfg(test)]
 #[path = "episode_snapshot_fresh_timestamp_tests.rs"]
 mod fresh_timestamp_tests;
+#[cfg(holon_lib_test_shard = "b")]
 #[cfg(test)]
 #[path = "episode_snapshot_legacy_timestamp_tests.rs"]
 mod legacy_timestamp_tests;
+#[cfg(holon_lib_test_shard = "b")]
 #[cfg(test)]
 #[path = "episode_snapshot_list_input_tests.rs"]
 mod list_input_tests;
+#[cfg(holon_lib_test_shard = "b")]
 #[cfg(test)]
 #[path = "episode_snapshot_member_digest_tests.rs"]
 mod member_digest_tests;
+#[cfg(holon_lib_test_shard = "b")]
 #[cfg(test)]
 #[path = "episode_snapshot_member_explicit_ref_tests.rs"]
 mod member_explicit_ref_tests;
+#[cfg(holon_lib_test_shard = "b")]
 #[cfg(test)]
 #[path = "episode_snapshot_member_qualification_tests.rs"]
 mod member_qualification_tests;
+#[cfg(holon_lib_test_shard = "b")]
 #[cfg(test)]
 #[path = "episode_snapshot_member_reason_tests.rs"]
 mod member_reason_tests;
+#[cfg(holon_lib_test_shard = "b")]
 #[cfg(test)]
 #[path = "episode_snapshot_member_recent_tests.rs"]
 mod member_recent_tests;
+#[cfg(holon_lib_test_shard = "b")]
 #[cfg(test)]
 #[path = "episode_snapshot_member_sort_tests.rs"]
 mod member_sort_tests;
+#[cfg(holon_lib_test_shard = "b")]
 #[cfg(test)]
 #[path = "episode_snapshot_seed_boundary_tests.rs"]
 mod seed_boundary_tests;
@@ -70,12 +80,15 @@ mod seed_candidate_tests;
 #[cfg(test)]
 #[path = "episode_snapshot_seed_id_tests.rs"]
 mod seed_id_tests;
+#[cfg(holon_lib_test_shard = "b")]
 #[cfg(test)]
 #[path = "episode_snapshot_seed_identity_hex_tests.rs"]
 mod seed_identity_hex_tests;
+#[cfg(holon_lib_test_shard = "b")]
 #[cfg(test)]
 #[path = "episode_snapshot_seed_identity_tests.rs"]
 mod seed_identity_tests;
+#[cfg(holon_lib_test_shard = "b")]
 #[cfg(test)]
 #[path = "episode_snapshot_seed_timestamp_tests.rs"]
 mod seed_timestamp_tests;
@@ -2000,6 +2013,7 @@ fn collect_provider_recovery_refs(
     Ok(())
 }
 
+#[cfg(holon_lib_test_shard = "b")]
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2527,8 +2541,16 @@ mod tests {
                 .source_refs
                 .insert("old_context".into(), "episode:explicit-episode".into());
             upsert_message_tx(tx, &message).unwrap();
+            let entry = crate::types::QueueEntryRecord {
+                message_id: message.id.clone(),
+                agent_id: message.agent_id.clone(),
+                priority: message.priority,
+                status: crate::types::QueueEntryStatus::Interjected,
+                created_at: time(),
+                updated_at: time(),
+            };
             tx.execute("INSERT INTO queue_entries (message_id, agent_id, priority, status, created_at, updated_at, payload_json)
-               VALUES ('pending-message', 'agent-a', 'normal', 'interjected', ?1, ?1, '{}')", [time().to_rfc3339()]).unwrap();
+               VALUES ('pending-message', 'agent-a', 'normal', 'interjected', ?1, ?1, ?2)", params![crate::runtime_db::repositories::timestamp(time()), serde_json::to_string(&entry).unwrap()]).unwrap();
             insert_episode(tx, &episode("agent-a", "owner-episode", 1, Some(&work.id)));
             insert_episode(tx, &episode("agent-a", "explicit-episode", 2, None));
             for index in 3..=20 {
@@ -2636,6 +2658,7 @@ mod tests {
                 "live-recovery-message"
             }
             .into();
+            recovery.created_at = time();
             recovery.causation_id = Some(root.id.clone());
             recovery
                 .source_refs
@@ -2651,8 +2674,16 @@ mod tests {
                 .unwrap()
                 .0;
             if queued_only {
+                let entry = crate::types::QueueEntryRecord {
+                    message_id: recovery.id.clone(),
+                    agent_id: recovery.agent_id.clone(),
+                    priority: recovery.priority,
+                    status: crate::types::QueueEntryStatus::Queued,
+                    created_at: time(),
+                    updated_at: time(),
+                };
                 tx.execute("INSERT INTO queue_entries (message_id, agent_id, priority, status, created_at, updated_at, payload_json)
-                    VALUES ('queued-recovery', 'agent-a', 'next', 'queued', ?1, ?1, '{}')", [time().to_rfc3339()]).unwrap();
+                    VALUES ('queued-recovery', 'agent-a', 'next', 'queued', ?1, ?1, ?2)", params![crate::runtime_db::repositories::timestamp(time()), serde_json::to_string(&entry).unwrap()]).unwrap();
             } else {
                 let mut live = predecessor.clone();
                 live.attempt_id = "live-recovery".into();
@@ -3167,6 +3198,7 @@ mod tests {
     }
 }
 
+#[cfg(holon_lib_test_shard = "b")]
 #[cfg(test)]
 #[path = "episode_snapshot_deleting_upgrade_tests.rs"]
 mod deleting_upgrade_tests;

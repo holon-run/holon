@@ -546,6 +546,7 @@ pub(crate) fn memory_binding_material_tx(
     Ok(vec![turn_material, first, second])
 }
 
+#[cfg(holon_lib_test_shard = "b")]
 #[cfg(test)]
 mod memory_material_tests {
     use super::*;
@@ -639,6 +640,7 @@ mod memory_material_tests {
     }
 }
 
+#[cfg(holon_lib_test_shard = "b")]
 #[cfg(test)]
 mod cancel_flag_tests {
     use super::*;

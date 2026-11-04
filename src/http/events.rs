@@ -613,6 +613,7 @@ fn event_seq_not_found(
     )
 }
 
+#[cfg(holon_lib_test_shard = "c")]
 #[cfg(test)]
 mod material_tests {
     use super::*;

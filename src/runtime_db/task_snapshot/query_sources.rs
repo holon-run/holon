@@ -10,6 +10,7 @@ use crate::{
 // Both the fixed and current paths use received order metadata. A raw
 // canonical update cannot move another accepted Source into the global window.
 const HEADERS: &str = "SELECT h.evidence_id,h.message_seq,h.created_at,h.message_id FROM task_message_order_headers h WHERE h.agent_id=?1 AND h.identity_incarnation=?2";
+const SOURCE_AVAILABILITY: &str = "SELECT         EXISTS(SELECT 1 FROM input_evidence_current WHERE agent_id=?1 AND identity_incarnation=?2 AND family='message' AND record_id=?3 AND availability='pruned') OR (NOT EXISTS(SELECT 1 FROM input_evidence_current WHERE agent_id=?1 AND identity_incarnation=?2 AND family='message' AND record_id=?3) AND EXISTS(SELECT 1 FROM task_message_source_inventory i JOIN task_output_fixed_input_prunes p ON p.inventory_id=i.query_inventory_id AND p.family='message' JOIN task_query_fixed_messages f ON f.inventory_id=p.inventory_id AND f.evidence_id=p.record_id AND f.content_digest=p.content_digest WHERE i.agent_id=?1 AND i.identity_incarnation=?2 AND p.record_id=?3)),        EXISTS(SELECT 1 FROM input_evidence_current WHERE agent_id=?1 AND identity_incarnation=?2 AND family='message' AND record_id=?3 AND availability='present' AND revision=?4 AND content_digest=?5),        EXISTS(SELECT 1 FROM input_evidence_current WHERE agent_id=?1 AND identity_incarnation=?2 AND family='message' AND record_id=?3),        EXISTS(SELECT 1 FROM task_message_source_inventory i JOIN task_query_fixed_messages f ON f.inventory_id=i.query_inventory_id WHERE i.agent_id=?1 AND i.identity_incarnation=?2 AND f.evidence_id=?3 AND f.content_digest=?5), EXISTS(SELECT 1 FROM task_message_order_headers h WHERE h.agent_id=?1 AND h.identity_incarnation=?2 AND h.evidence_id=?3 AND h.revision=?4 AND h.content_digest=?5) ";
 fn recent_headers() -> String {
     format!("{HEADERS} ORDER BY message_seq IS NULL ASC,message_seq DESC,created_at DESC,message_id ASC LIMIT 200")
 }
@@ -166,6 +167,7 @@ pub(super) fn observe_output_heads_tx(
         }),
         heads: BTreeMap::new(),
     };
+    let mut source_availability = tx.prepare(SOURCE_AVAILABILITY)?;
     for task in tasks {
         ensure!(
             task.scope == *scope && task.key.family == TaskFamily::Task,
@@ -209,7 +211,8 @@ pub(super) fn observe_output_heads_tx(
                         && valid_input_digest(&message.content_digest),
                     "Task output source locator corrupt"
                 );
-                let availability = source_availability_tx(tx, scope, &message)?;
+                let availability =
+                    source_availability_tx(&mut source_availability, scope, &message)?;
                 let message_status =
                     serde_json::from_value(serde_json::Value::String(message_status))?;
                 selected = Some(TaskOutputSourceHead {
@@ -239,11 +242,29 @@ pub(super) fn observe_output_heads_tx(
 }
 
 fn source_availability_tx(
-    tx: &Transaction<'_>,
+    statement: &mut rusqlite::Statement<'_>,
     scope: &InputEvidenceScope,
     message: &EvidenceLocator,
 ) -> Result<TaskOutputSourceAvailability> {
-    let (pruned,present,overridden,fixed,header):(bool,bool,bool,bool,bool)=tx.query_row("SELECT         EXISTS(SELECT 1 FROM input_evidence_current WHERE agent_id=?1 AND identity_incarnation=?2 AND family='message' AND record_id=?3 AND availability='pruned') OR (NOT EXISTS(SELECT 1 FROM input_evidence_current WHERE agent_id=?1 AND identity_incarnation=?2 AND family='message' AND record_id=?3) AND EXISTS(SELECT 1 FROM task_message_source_inventory i JOIN task_output_fixed_input_prunes p ON p.inventory_id=i.query_inventory_id AND p.family='message' JOIN task_query_fixed_messages f ON f.inventory_id=p.inventory_id AND f.evidence_id=p.record_id AND f.content_digest=p.content_digest WHERE i.agent_id=?1 AND i.identity_incarnation=?2 AND p.record_id=?3)),        EXISTS(SELECT 1 FROM input_evidence_current WHERE agent_id=?1 AND identity_incarnation=?2 AND family='message' AND record_id=?3 AND availability='present' AND revision=?4 AND content_digest=?5),        EXISTS(SELECT 1 FROM input_evidence_current WHERE agent_id=?1 AND identity_incarnation=?2 AND family='message' AND record_id=?3),        EXISTS(SELECT 1 FROM task_message_source_inventory i JOIN task_query_fixed_messages f ON f.inventory_id=i.query_inventory_id WHERE i.agent_id=?1 AND i.identity_incarnation=?2 AND f.evidence_id=?3 AND f.content_digest=?5), EXISTS(SELECT 1 FROM task_message_order_headers h WHERE h.agent_id=?1 AND h.identity_incarnation=?2 AND h.evidence_id=?3 AND h.revision=?4 AND h.content_digest=?5) ",params![scope.agent_id,scope.identity_incarnation,message.key.id,message.revision,message.content_digest],|row|Ok((row.get(0)?,row.get(1)?,row.get(2)?,row.get(3)?,row.get(4)?)))?;
+    let (pruned, present, overridden, fixed, header): (bool, bool, bool, bool, bool) = statement
+        .query_row(
+            params![
+                scope.agent_id,
+                scope.identity_incarnation,
+                message.key.id,
+                message.revision,
+                message.content_digest
+            ],
+            |row| {
+                Ok((
+                    row.get(0)?,
+                    row.get(1)?,
+                    row.get(2)?,
+                    row.get(3)?,
+                    row.get(4)?,
+                ))
+            },
+        )?;
     Ok(if pruned {
         TaskOutputSourceAvailability::Pruned
     } else if header && (present || (!overridden && fixed)) {
@@ -257,6 +278,7 @@ fn valid_input_digest(value: &str) -> bool {
     value.len() == 64 && value.bytes().all(|b| b.is_ascii_hexdigit())
 }
 
+#[cfg(holon_lib_test_shard = "b")]
 #[cfg(test)]
 #[path = "query_sources_tests.rs"]
 mod tests;

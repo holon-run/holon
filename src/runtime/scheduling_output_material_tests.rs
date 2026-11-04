@@ -2,6 +2,7 @@ use super::*;
 
 #[path = "scheduling_output_body_tests.rs"]
 mod body_tests;
+#[cfg(holon_lib_test_shard = "a")]
 #[path = "scheduling_output_timestamp_tests.rs"]
 mod timestamp_tests;
 
@@ -212,6 +213,7 @@ fn expected(
     (timers, triggers)
 }
 
+#[cfg(holon_lib_test_shard = "a")]
 #[test]
 fn typed_output_slots_keep_exact_capacity_order_cost_and_last_original_holders() -> Result<()> {
     for cold in [false, true] {
@@ -274,6 +276,7 @@ fn typed_output_slots_keep_exact_capacity_order_cost_and_last_original_holders()
     Ok(())
 }
 
+#[cfg(holon_lib_test_shard = "a")]
 #[test]
 fn typed_output_rejects_both_combined_boundaries_before_returning_material() -> Result<()> {
     for cold in [false, true] {
@@ -320,6 +323,7 @@ fn typed_output_rejects_both_combined_boundaries_before_returning_material() -> 
     Ok(())
 }
 
+#[cfg(holon_lib_test_shard = "a")]
 #[test]
 fn typed_output_capacity_preserves_empty_zero_limit_and_selected_members() -> Result<()> {
     for cold in [false, true] {
@@ -377,6 +381,7 @@ fn typed_output_capacity_preserves_empty_zero_limit_and_selected_members() -> Re
     Ok(())
 }
 
+#[cfg(holon_lib_test_shard = "a")]
 #[test]
 fn timer_top_k_borrows_beyond_full_window_with_no_material_allowance() -> Result<()> {
     use crate::diagnostics::resource_io::ResourceReadMaterial;
@@ -440,6 +445,7 @@ fn timer_top_k_borrows_beyond_full_window_with_no_material_allowance() -> Result
     Ok(())
 }
 
+#[cfg(holon_lib_test_shard = "a")]
 #[test]
 fn concurrent_output_vectors_keep_independent_original_pins_until_each_last_holder() -> Result<()> {
     let ledger = ledger()?;

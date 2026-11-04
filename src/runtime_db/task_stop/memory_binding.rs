@@ -74,6 +74,7 @@ pub(crate) fn load_task_stop_phase_memory_binding_tx(
     super::super::dispatch_memory::load_dispatch_memory_binding_tx(tx, scope, state)
 }
 
+#[cfg(holon_lib_test_shard = "b")]
 #[cfg(test)]
 mod tests {
     use super::*;

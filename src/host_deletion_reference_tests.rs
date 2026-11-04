@@ -1,4 +1,5 @@
 // Included from host.rs's tests module.
+#[cfg(holon_lib_test_shard = "d")]
 mod deletion_reference_tests {
     use super::*;
 

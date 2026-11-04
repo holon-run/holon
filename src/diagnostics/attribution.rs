@@ -147,6 +147,7 @@ stages! {
     WORKSPACE_STATE_RENDER => "workspace.state.render",
 }
 
+#[cfg(holon_lib_test_shard = "d")]
 #[cfg(test)]
 mod tests {
     use super::*;

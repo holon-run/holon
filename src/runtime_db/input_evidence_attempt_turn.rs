@@ -432,6 +432,7 @@ pub(super) fn capture(
     Ok(proof)
 }
 
+#[cfg(holon_lib_test_shard = "b")]
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -181,8 +181,27 @@ fn bootstrap_orphan_pending_cancellation_keeps_actual_qualified_write_without_me
             created_at: at(),
             updated_at: at() + chrono::Duration::seconds(1),
         };
-        // Original terminal queue state before fixed cutover, not a current prune.
+        // Keep Input Current aligned with Queue, then restore the historical
+        // orphan that the current terminal writer would otherwise retire.
         repositories::upsert_queue_entry_tx(tx, &entry)?;
+        tx.execute(
+            "UPDATE timer_wakes SET status='pending', updated_at=created_at, cancelled_at=NULL
+             WHERE timer_id='orphan' AND message_id='already-done'",
+            [],
+        )?;
+        // Fixed historical Input eligibility comes from the actual old Turn,
+        // not a new Message grant during Wake normalization.
+        let mut turn = TurnRecord::new(&scope().agent_id, "orphan-history", 1);
+        turn.created_at = at();
+        turn.input_message_ids.push(entry.message_id.clone());
+        turn.terminal = Some(TurnTerminalSummary {
+            kind: TurnTerminalKind::Aborted,
+            reason: Some("original cancelled wake".into()),
+            no_brief_reason: None,
+            completed_at: entry.updated_at,
+            duration_ms: 1000,
+        });
+        repositories::upsert_turn_record_tx(tx, &turn)?;
         Ok(())
     })?;
     let budget = ledger()?;

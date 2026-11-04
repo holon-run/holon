@@ -50,6 +50,7 @@ impl CapturedScheduling {
     }
 }
 
+#[cfg(holon_lib_test_shard = "a")]
 #[cfg(test)]
 #[path = "scheduling_reads_tests.rs"]
 mod tests;

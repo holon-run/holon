@@ -782,6 +782,7 @@ fn pipe_process_output(reader: Box<dyn std::io::Read + Send>) -> Box<dyn Process
     Box::new(reader_stream)
 }
 
+#[cfg(holon_lib_test_shard = "c")]
 #[cfg(test)]
 mod tests {
     use tempfile::{tempdir, TempDir};
@@ -1057,6 +1058,7 @@ mod tests {
     }
 }
 
+#[cfg(holon_lib_test_shard = "c")]
 #[cfg(all(test, unix))]
 mod registered_process_group_tests {
     use super::*;

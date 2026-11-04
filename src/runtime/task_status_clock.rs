@@ -196,6 +196,7 @@ pub(super) fn qualify<'a>(
     }))
 }
 
+#[cfg(holon_lib_test_shard = "a")]
 #[cfg(test)]
 #[path = "task_status_clock_tests.rs"]
 mod tests;

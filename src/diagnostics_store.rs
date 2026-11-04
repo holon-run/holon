@@ -542,6 +542,7 @@ fn trace_search_text(trace: &RecentTrace) -> String {
     values.join("\n")
 }
 
+#[cfg(holon_lib_test_shard = "d")]
 #[cfg(test)]
 mod tests {
     use super::*;

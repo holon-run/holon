@@ -2,6 +2,11 @@
 mod work_planning;
 use work_planning::{WorkCommandRead, WorkCommandReadMode};
 
+#[cfg(holon_lib_test_shard = "a")]
+#[cfg(test)]
+#[path = "tasks/live_work_record_tests.rs"]
+mod live_work_record_tests;
+
 use super::message_dispatch::message_text;
 use super::waiting::WorkItemBlockerClearance;
 use super::{task_state_reducer, *};
@@ -668,34 +673,41 @@ impl RuntimeHandle {
             *recovery_delivery_id = Some(delivery_id);
             *recovery_after_delivery_rowid = Some(after_delivery_rowid);
         }
-        if let Err(error) = self
-            .apply_task_transition(task_state_reducer::TaskTransition::new(
+        let admitted_task = match self
+            .apply_task_transition_record(task_state_reducer::TaskTransition::new(
                 &queued_task,
                 "task_agent_message_wait_admitted",
             ))
             .await
         {
-            // A captured fast reply can complete the wait task between the
-            // reducer's latest-record read and its commit transaction, so
-            // admission may collide with an already-terminal record.  First
-            // writer wins: accept the persisted terminal record instead of
-            // failing the invocation with a completed -> queued conflict.
-            let admission_conflict = error.chain().find_map(|cause| {
-                cause
-                    .downcast_ref::<crate::runtime_db::RuntimeStateTransitionConflict>()
-                    .filter(|conflict| {
-                        conflict.domain() == "task" && conflict.record_id() == queued_task.id
-                    })
-            });
-            if admission_conflict.is_some() {
-                if let Ok(Some(latest)) = self.task_record(&queued_task.id).await {
-                    if is_terminal_task_status(&latest.status) {
-                        return Ok(latest);
+            Ok(record) => record,
+            Err(error) => {
+                // A captured fast reply can complete the wait task between the
+                // reducer's latest-record read and its commit transaction, so
+                // admission may collide with an already-terminal record.  First
+                // writer wins: accept the persisted terminal record instead of
+                // failing the invocation with a completed -> queued conflict.
+                let admission_conflict = error.chain().find_map(|cause| {
+                    cause
+                        .downcast_ref::<crate::runtime_db::RuntimeStateTransitionConflict>()
+                        .filter(|conflict| {
+                            conflict.domain() == "task" && conflict.record_id() == queued_task.id
+                        })
+                });
+                if admission_conflict.is_some() {
+                    if let Ok(Some(latest)) = self.task_record(&queued_task.id).await {
+                        if is_terminal_task_status(&latest.status) {
+                            return Ok(latest);
+                        }
                     }
                 }
+                return Err(error);
             }
-            return Err(error);
+        };
+        if is_terminal_task_status(&admitted_task.status) {
+            return Ok(admitted_task);
         }
+        queued_task = admitted_task;
 
         self.inner.notify.notify_one();
         let task_detail = queued_task.detail.clone().unwrap_or(task_detail);
@@ -4108,6 +4120,46 @@ impl RuntimeHandle {
         })
     }
 
+    /// CAS a live record through its owning runtime's original Work transaction.
+    /// Unlike the offline Storage writer, this also acknowledges Work and State.
+    pub async fn update_work_item_record_expected(
+        &self,
+        record: &WorkItemRecord,
+        expected_revision: u64,
+    ) -> Result<()> {
+        let _admission = self.execution_admission_lease()?;
+        let commit = {
+            let mut mutation = self.begin_mutation().await?;
+            let scope = mutation.input_evidence_scope();
+            anyhow::ensure!(
+                record.agent_id == scope.agent_id,
+                "live WorkItem record writer requires its owning runtime"
+            );
+            mutation
+                .commit_work_transition(
+                    crate::ids::audit_event_id(),
+                    crate::runtime_db::transitions::WorkItemTransitionCommand {
+                        agent_id: scope.agent_id,
+                        mutation: crate::runtime_db::transitions::WorkItemMutation::Update {
+                            record: record.clone(),
+                            expected_revision,
+                        },
+                        agent_state: None,
+                        brief_evidence: Vec::new(),
+                        audit_events: Vec::new(),
+                        index_changes: self.inner.storage.index_changes_for_work_item(record)?,
+                        notify_scheduler: false,
+                        fault: self.take_transition_fault(),
+                    },
+                    crate::runtime_db::transitions::ExecutionProtocolTransition::default(),
+                    true,
+                )
+                .await?
+        };
+        self.apply_transition_commit(commit).await;
+        Ok(())
+    }
+
     pub async fn update_work_item_fields(
         &self,
         work_item_id: String,
@@ -6151,6 +6203,7 @@ fn task_status_from_message(message: &MessageEnvelope, metadata: &serde_json::Va
     super::resident_task::task_output_status_from_message(message, metadata)
 }
 
+#[cfg(holon_lib_test_shard = "a")]
 #[cfg(test)]
 mod control_task_result_tests {
     use super::*;

@@ -55,6 +55,7 @@ fn add(a: (u64, usize), b: (u64, usize)) -> (u64, usize) {
     (a.0 + b.0, a.1 + b.1)
 }
 
+#[cfg(holon_lib_test_shard = "d")]
 #[tokio::test]
 async fn wait_summary_each_gate_rejects_on_both_snapshot_paths_and_latches() -> Result<()> {
     let (_home, host) = active_wait_fixture().await?;
@@ -173,6 +174,7 @@ async fn wait_summary_each_gate_rejects_on_both_snapshot_paths_and_latches() -> 
     Ok(())
 }
 
+#[cfg(holon_lib_test_shard = "d")]
 #[tokio::test]
 async fn wait_summary_keeps_original_holder_through_wire_failure_and_last_release() -> Result<()> {
     let (_home, host) = active_wait_fixture().await?;

@@ -71,6 +71,18 @@ pub(crate) use writes::{
     register_work_wait_cleanup_tx, CommittedWorkFacts,
 };
 pub(super) const WORK_DOMAIN_SCHEMA: &str = include_str!("work_snapshot/schema.sql");
+
+pub(super) fn validate_unscoped_work_item_write_tx(
+    tx: &Transaction<'_>,
+    work_item_id: &str,
+) -> Result<()> {
+    ensure!(
+        !qualification::known_anywhere(tx, &WorkKey::new(WorkFamily::Work, work_item_id))?,
+        "qualified WorkItem record requires its owning runtime writer: {work_item_id}"
+    );
+    Ok(())
+}
+
 #[cfg(test)]
 pub(crate) fn install_work_domain_test_schema(tx: &Transaction<'_>) -> Result<()> {
     let ready: bool = tx.query_row(

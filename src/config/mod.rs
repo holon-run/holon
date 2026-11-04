@@ -955,5 +955,6 @@ fn parse_anthropic_cache_strategy(raw_value: &str) -> Result<AnthropicCacheStrat
     }
 }
 
+#[cfg(holon_lib_test_shard = "d")]
 #[cfg(test)]
 mod tests;

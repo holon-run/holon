@@ -1,7 +1,9 @@
 //! Owner preparation and a storage-free terminal assembler's owning input cut.
+#[cfg(holon_lib_test_shard = "a")]
 #[cfg(test)]
 #[path = "inputs_amendment_tests.rs"]
 mod amendment_tests;
+#[cfg(holon_lib_test_shard = "a")]
 #[cfg(test)]
 #[path = "inputs_tests.rs"]
 mod tests;

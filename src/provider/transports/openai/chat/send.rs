@@ -496,6 +496,7 @@ async fn read_chat_completion_stream(response: Response) -> Result<Value> {
     Ok(accumulated)
 }
 
+#[cfg(holon_lib_test_shard = "c")]
 #[cfg(test)]
 mod retry_after_tests {
     use super::classify_chat_completion_status_error;

@@ -1276,5 +1276,6 @@ pub(crate) fn mark_task_stop_monitor_joined_tx(
     })
 }
 
+#[cfg(holon_lib_test_shard = "b")]
 #[cfg(test)]
 mod tests;

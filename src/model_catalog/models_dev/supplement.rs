@@ -739,6 +739,7 @@ pub fn render_summary_markdown(update: &SupplementUpdate) -> String {
     out
 }
 
+#[cfg(holon_lib_test_shard = "c")]
 #[cfg(test)]
 mod tests {
     use super::*;

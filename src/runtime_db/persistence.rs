@@ -100,6 +100,7 @@ pub(crate) fn mark_persistence_failure(
     error.context(failure)
 }
 
+#[cfg(holon_lib_test_shard = "b")]
 #[cfg(test)]
 mod tests {
     use super::*;

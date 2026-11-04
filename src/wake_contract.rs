@@ -319,6 +319,7 @@ fn matching_wake_hint_external_source<'a>(
         })
 }
 
+#[cfg(holon_lib_test_shard = "c")]
 #[cfg(test)]
 mod tests {
     use super::*;

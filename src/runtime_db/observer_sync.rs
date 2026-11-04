@@ -540,6 +540,7 @@ fn verification_success_detail(detail: &impl serde::Serialize) -> Result<String>
     Ok(serde_json::to_string(detail)?)
 }
 
+#[cfg(holon_lib_test_shard = "b")]
 #[cfg(test)]
 #[path = "observer_sync/verification_success_budget_tests.rs"]
 mod verification_success_budget_tests;
@@ -565,6 +566,7 @@ fn verification_error_detail(error: &anyhow::Error, source: Option<&str>) -> Res
     Ok(serde_json::to_string(&detail)?)
 }
 
+#[cfg(holon_lib_test_shard = "b")]
 #[cfg(test)]
 #[path = "observer_sync/verification_error_budget_tests.rs"]
 mod verification_error_budget_tests;
@@ -761,14 +763,17 @@ fn verify_projection_snapshot_view(connection: &Connection) -> Result<bool> {
     Ok(true)
 }
 
+#[cfg(holon_lib_test_shard = "b")]
 #[cfg(test)]
 #[path = "observer_sync/projection_members_tests.rs"]
 mod projection_members_tests;
 
+#[cfg(holon_lib_test_shard = "b")]
 #[cfg(test)]
 #[path = "observer_sync/projection_scalar_tests.rs"]
 mod projection_scalar_tests;
 
+#[cfg(holon_lib_test_shard = "b")]
 #[cfg(test)]
 #[path = "observer_sync/roster_material_tests.rs"]
 mod roster_material_tests;
@@ -1130,6 +1135,7 @@ fn verify_brief_atomic_linkage(connection: &Connection) -> Result<bool> {
     Ok(true)
 }
 
+#[cfg(holon_lib_test_shard = "b")]
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1294,6 +1300,7 @@ impl std::fmt::Display for InventoryDiagnostics<'_> {
     }
 }
 
+#[cfg(holon_lib_test_shard = "b")]
 #[cfg(test)]
 #[path = "observer_sync/inventory_budget_tests.rs"]
 mod inventory_budget_tests;
@@ -1355,6 +1362,7 @@ fn current_event_projection_effect_verification(connection: &Connection) -> Resu
     reusable_event_projection_effect_verification(connection, row.get_ref(0)?.as_str()?)
 }
 
+#[cfg(holon_lib_test_shard = "b")]
 #[cfg(test)]
 #[path = "observer_sync/foundation_epoch_tests.rs"]
 mod foundation_epoch_tests;
@@ -1516,13 +1524,16 @@ fn observer_verification_timestamp(now: chrono::DateTime<chrono::Utc>) -> Result
     Ok(now.to_rfc3339_opts(chrono::SecondsFormat::Millis, true))
 }
 
+#[cfg(holon_lib_test_shard = "b")]
 #[cfg(test)]
 #[path = "observer_sync/append_budget_tests.rs"]
 mod append_budget_tests;
 
+#[cfg(holon_lib_test_shard = "b")]
 #[cfg(test)]
 mod foundation_timestamp_budget_tests;
 
+#[cfg(holon_lib_test_shard = "b")]
 #[cfg(test)]
 mod foundation_probe_budget_tests;
 
@@ -1583,6 +1594,7 @@ fn count_agent_state_identity_mismatches(connection: &Connection) -> Result<u64>
     Ok(mismatches)
 }
 
+#[cfg(holon_lib_test_shard = "b")]
 #[cfg(test)]
 mod state_identity_budget_tests;
 
@@ -1622,9 +1634,11 @@ fn read_metadata(connection: &Connection, key: &str) -> Result<String> {
     Ok(value.to_owned())
 }
 
+#[cfg(holon_lib_test_shard = "b")]
 #[cfg(test)]
 mod foundation_metadata_budget_tests;
 
+#[cfg(holon_lib_test_shard = "b")]
 #[cfg(test)]
 mod foundation_scope_tests;
 

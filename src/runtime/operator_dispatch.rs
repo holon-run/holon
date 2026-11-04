@@ -942,6 +942,7 @@ fn bind_brief_to_assistant_round(brief: &mut BriefRecord, entry_id: Option<&str>
     }
 }
 
+#[cfg(holon_lib_test_shard = "a")]
 #[cfg(test)]
 mod tests {
     use super::*;

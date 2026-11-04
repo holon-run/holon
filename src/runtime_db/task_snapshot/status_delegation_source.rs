@@ -20,6 +20,7 @@ pub(in crate::runtime_db) fn register_delegation_write_tx(
     Ok(())
 }
 
+#[cfg(holon_lib_test_shard = "b")]
 #[cfg(test)]
 mod tests {
     use super::*;

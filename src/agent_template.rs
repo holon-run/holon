@@ -3493,6 +3493,7 @@ fn copy_template_dir(src: &Path, dst: &Path) -> Result<()> {
     Ok(())
 }
 
+#[cfg(holon_lib_test_shard = "c")]
 #[cfg(test)]
 mod tests {
     use std::{

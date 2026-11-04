@@ -1583,6 +1583,7 @@ fn component_schema_with_refs<T: JsonSchema>() -> Value {
     value
 }
 
+#[cfg(holon_lib_test_shard = "d")]
 #[cfg(test)]
 mod tests {
     use super::*;

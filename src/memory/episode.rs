@@ -381,6 +381,7 @@ pub(super) fn working_snapshot_is_empty(snapshot: &WorkingMemorySnapshot) -> boo
     snapshot == &WorkingMemorySnapshot::default()
 }
 
+#[cfg(holon_lib_test_shard = "c")]
 #[cfg(test)]
 mod tests {
     use tempfile::tempdir;

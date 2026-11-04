@@ -976,6 +976,7 @@ fn scheduler_owned_bytes(
     })
 }
 
+#[cfg(holon_lib_test_shard = "a")]
 #[cfg(test)]
 #[path = "work_planning_tests.rs"]
 mod tests;

@@ -1178,7 +1178,18 @@ impl RuntimeMutation {
         Box::pin(self.commit_transition_inner(operation_id, None, move || commit(&scope)))
     }
 
-    pub(super) async fn commit_prepared_queue(
+    // Do not retain the queue commit future inline in the scheduler's poll frame.
+    #[inline(never)]
+    pub(super) fn commit_prepared_queue(
+        &mut self,
+        operation_id: String,
+        queue: crate::runtime_db::transitions::PreparedQueueTransition,
+    ) -> std::pin::Pin<Box<impl std::future::Future<Output = Result<TransitionCommit>> + Send + '_>>
+    {
+        Box::pin(self.commit_prepared_queue_inner(operation_id, queue))
+    }
+
+    async fn commit_prepared_queue_inner(
         &mut self,
         operation_id: String,
         mut queue: crate::runtime_db::transitions::PreparedQueueTransition,
@@ -2265,6 +2276,12 @@ impl RuntimeMutation {
                 Err(error)
             }
         }
+    }
+
+    #[cfg(test)]
+    pub(super) async fn unprepare_input_evidence_fixture(&mut self) -> Result<()> {
+        self.input_evidence = None;
+        self.install_transient().await
     }
 
     pub(super) async fn install_transient(&mut self) -> Result<()> {
@@ -4041,22 +4058,27 @@ fn trace_publication(token: PublicationToken) {
     );
 }
 
+#[cfg(holon_lib_test_shard = "a")]
 #[cfg(test)]
 #[path = "state_mutation_tests.rs"]
 mod tests;
 
+#[cfg(holon_lib_test_shard = "a")]
 #[cfg(test)]
 #[path = "state_mutation/context_preparation_tests.rs"]
 mod context_preparation_tests;
 
+#[cfg(holon_lib_test_shard = "a")]
 #[cfg(test)]
 #[path = "state_mutation/dispatch_memory_auto_tests.rs"]
 mod dispatch_memory_auto_tests;
 
+#[cfg(holon_lib_test_shard = "a")]
 #[cfg(test)]
 #[path = "state_mutation/recovery_effects_tests.rs"]
 mod recovery_effects_tests;
 
+#[cfg(holon_lib_test_shard = "a")]
 #[cfg(test)]
 mod plan_preparation_tests {
     use super::*;

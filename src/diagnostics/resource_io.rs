@@ -933,6 +933,7 @@ pub(crate) fn assert_retryable_resource_error(error: &anyhow::Error) {
         .any(|source| source == &original.operator_message));
 }
 
+#[cfg(holon_lib_test_shard = "d")]
 #[cfg(test)]
 mod tests {
     use super::*;

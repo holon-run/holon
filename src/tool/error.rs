@@ -180,6 +180,7 @@ impl std::fmt::Display for ToolError {
 
 impl std::error::Error for ToolError {}
 
+#[cfg(holon_lib_test_shard = "c")]
 #[cfg(test)]
 mod tests {
     use super::*;

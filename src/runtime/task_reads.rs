@@ -607,6 +607,7 @@ pub(in crate::runtime) fn reply_work_owner<'a>(
     Ok(selected.and_then(|task| task.work_item_id.as_deref()))
 }
 
+#[cfg(holon_lib_test_shard = "a")]
 #[cfg(test)]
 #[path = "task_publication_read_tests.rs"]
 mod publication_read_tests;

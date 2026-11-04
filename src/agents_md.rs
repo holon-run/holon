@@ -136,6 +136,7 @@ fn agents_md_scope_name(scope: &AgentsMdScope) -> &'static str {
     }
 }
 
+#[cfg(holon_lib_test_shard = "d")]
 #[cfg(test)]
 mod tests {
     use tempfile::tempdir;

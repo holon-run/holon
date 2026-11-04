@@ -178,6 +178,7 @@ impl CapturedBirthInputs {
     }
 }
 
+#[cfg(holon_lib_test_shard = "a")]
 #[cfg(test)]
 #[path = "input_birth_reads_tests.rs"]
 mod birth_read_tests;

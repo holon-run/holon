@@ -82,6 +82,7 @@ impl Drop for ResourceWrite {
         }
     }
 }
+#[cfg(holon_lib_test_shard = "d")]
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -111,6 +112,7 @@ mod tests {
     }
 }
 
+#[cfg(holon_lib_test_shard = "d")]
 #[cfg(test)]
 mod actual_http_tests {
     use super::*;
@@ -250,6 +252,7 @@ mod actual_http_tests {
     }
 }
 
+#[cfg(holon_lib_test_shard = "d")]
 #[cfg(test)]
 mod join_failure_tests {
     use super::*;

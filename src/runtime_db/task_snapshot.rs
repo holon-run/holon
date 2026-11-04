@@ -28,14 +28,17 @@ mod qualified_input_read;
 mod query_sources;
 mod recovery_sources;
 mod running_sources;
+#[cfg(holon_lib_test_shard = "b")]
 #[cfg(test)]
 mod running_sources_tests;
 pub(in crate::runtime_db) use qualified_input_read::TaskInputReadAuthorization;
 mod result_routing;
+#[cfg(holon_lib_test_shard = "b")]
 #[cfg(test)]
 mod result_routing_tests;
 pub(crate) use result_routing::{prepare_task_result_parent_read_tx, TaskResultParentRead};
 mod output_read;
+#[cfg(holon_lib_test_shard = "b")]
 #[cfg(test)]
 mod output_read_tests;
 pub(in crate::runtime_db) use output_read::TaskOutputReadAuthorization;
@@ -43,9 +46,11 @@ pub(crate) use output_read::{
     prepare_task_output_input_batch_tx, prepare_task_output_input_recall_tx,
 };
 pub(in crate::runtime_db) mod monitor_relations;
+#[cfg(holon_lib_test_shard = "b")]
 #[cfg(test)]
 #[path = "task_snapshot/monitor_relations_tests.rs"]
 mod monitor_relations_tests;
+#[cfg(holon_lib_test_shard = "b")]
 #[cfg(test)]
 #[path = "task_snapshot/query_relations_tests.rs"]
 mod query_relation_tests;
@@ -68,6 +73,7 @@ pub(in crate::runtime_db) use status_observation::{
     observe_tx as observe_task_status_headers_tx, sync_child_observers_tx,
 };
 pub(in crate::runtime_db) use status_upgrade::capture_status_sources_upgrade_tx;
+#[cfg(holon_lib_test_shard = "b")]
 #[cfg(test)]
 mod projection_tests;
 pub(in crate::runtime_db) mod read_preparation;
@@ -615,6 +621,7 @@ pub(in crate::runtime_db) fn checkpoint_fact_on(
     }))
 }
 
+#[cfg(holon_lib_test_shard = "b")]
 #[cfg(test)]
 #[path = "task_snapshot/query_fixed_tests.rs"]
 mod query_fixed_tests;

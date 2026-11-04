@@ -1541,6 +1541,7 @@ fn bounded_diagnostic(value: &str) -> String {
     value.chars().take(DELIVERY_DIAGNOSTIC_LIMIT).collect()
 }
 
+#[cfg(holon_lib_test_shard = "b")]
 #[cfg(test)]
 mod tests {
     use super::*;

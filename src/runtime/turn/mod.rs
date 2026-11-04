@@ -13,8 +13,10 @@ mod projection;
 mod reminders;
 mod tool_summary;
 
+#[cfg(holon_lib_test_shard = "a")]
 #[cfg(test)]
 mod resident_wait_tests;
+#[cfg(holon_lib_test_shard = "a")]
 #[cfg(test)]
 mod tests;
 

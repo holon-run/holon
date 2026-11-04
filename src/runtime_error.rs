@@ -717,6 +717,7 @@ fn is_wait_owner_uniqueness_violation(source: &(dyn std::error::Error + 'static)
     is_wait_owner_uniqueness_message(&source.to_string())
 }
 
+#[cfg(holon_lib_test_shard = "d")]
 #[cfg(test)]
 mod tests {
     use super::*;

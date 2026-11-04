@@ -93,6 +93,7 @@ pub(crate) use chat::{
     send_chat_completion_stream_request,
 };
 use chat::{plan_chat_completion_request, send_chat_completion_request_with_material};
+#[cfg(holon_lib_test_shard = "c")]
 #[cfg(test)]
 #[path = "image_turn_material_tests.rs"]
 mod image_turn_material_tests;
@@ -1644,6 +1645,7 @@ fn openai_codex_status_error_context(status: reqwest::StatusCode) -> &'static st
     }
 }
 
+#[cfg(holon_lib_test_shard = "c")]
 #[cfg(test)]
 mod tests;
 
@@ -1683,6 +1685,7 @@ fn apply_service_tier(
     }
 }
 
+#[cfg(holon_lib_test_shard = "c")]
 #[cfg(test)]
 mod service_tier_tests {
     use super::*;

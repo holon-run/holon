@@ -10,12 +10,14 @@ use crate::{
     types::{AgentSchedulingPosture, WorkItemPlanStatus, WorkItemRecord, WorkItemState},
 };
 
+#[cfg(holon_lib_test_shard = "d")]
 #[path = "projection_work_queue_material_tests/diagnostics_material_tests.rs"]
 mod diagnostics_material_tests;
 
 #[path = "projection_work_queue_material_tests/wait_summary_material_tests.rs"]
 mod wait_summary_material_tests;
 
+#[cfg(holon_lib_test_shard = "d")]
 #[path = "projection_work_queue_material_tests/latest_key_material_tests.rs"]
 mod latest_key_material_tests;
 
@@ -26,6 +28,7 @@ fn scope() -> InputEvidenceScope {
     }
 }
 
+#[cfg(holon_lib_test_shard = "d")]
 #[tokio::test]
 async fn host_queue_display_clone_rejection_propagates_on_both_snapshot_paths() -> Result<()> {
     fn shape(value: &serde_json::Value) -> usize {
@@ -144,6 +147,7 @@ async fn continuation_fixture() -> Result<(tempfile::TempDir, RuntimeHost)> {
     Ok((home, host))
 }
 
+#[cfg(holon_lib_test_shard = "d")]
 #[tokio::test]
 async fn host_continuation_sql_slots_and_json_reject_on_both_paths_and_latch() -> Result<()> {
     fn shape(value: &serde_json::Value) -> usize {
@@ -253,6 +257,7 @@ async fn host_continuation_sql_slots_and_json_reject_on_both_paths_and_latch() -
     Ok(())
 }
 
+#[cfg(holon_lib_test_shard = "d")]
 #[tokio::test]
 async fn host_continuation_sql_decode_error_releases_partial_snapshot_on_both_paths() -> Result<()>
 {
@@ -286,6 +291,7 @@ async fn host_continuation_sql_decode_error_releases_partial_snapshot_on_both_pa
     Ok(())
 }
 
+#[cfg(holon_lib_test_shard = "d")]
 #[tokio::test]
 async fn host_queue_continuation_slots_reject_on_both_paths_and_latch() -> Result<()> {
     let (_home, host) = continuation_fixture().await?;
@@ -363,6 +369,7 @@ async fn host_queue_continuation_slots_reject_on_both_paths_and_latch() -> Resul
     Ok(())
 }
 
+#[cfg(holon_lib_test_shard = "d")]
 #[tokio::test]
 async fn host_queue_continuation_slots_keep_original_holder_through_wire_and_last_release(
 ) -> Result<()> {
@@ -444,6 +451,7 @@ async fn todo_fixture() -> Result<(tempfile::TempDir, RuntimeHost)> {
     Ok((home, host))
 }
 
+#[cfg(holon_lib_test_shard = "d")]
 #[tokio::test]
 async fn host_queue_current_todo_rejects_on_both_snapshot_paths_without_reset() -> Result<()> {
     let (_home, host) = todo_fixture().await?;
@@ -520,6 +528,7 @@ async fn host_queue_current_todo_rejects_on_both_snapshot_paths_without_reset() 
     Ok(())
 }
 
+#[cfg(holon_lib_test_shard = "d")]
 #[tokio::test]
 async fn host_queue_current_todo_keeps_original_holder_through_wire_and_last_release() -> Result<()>
 {
@@ -603,6 +612,7 @@ fn task_wait_summary_cost(host: &RuntimeHost) -> Result<(u64, usize)> {
         .fold((0, 0), |sum, cost| (sum.0 + cost.0, sum.1 + cost.1)))
 }
 
+#[cfg(holon_lib_test_shard = "d")]
 #[tokio::test]
 async fn host_queue_items_slots_reject_on_both_snapshot_paths_and_preserve_failure() -> Result<()> {
     let (_home, host) = items_fixture().await?;
@@ -677,6 +687,7 @@ async fn host_queue_items_slots_reject_on_both_snapshot_paths_and_preserve_failu
     Ok(())
 }
 
+#[cfg(holon_lib_test_shard = "d")]
 #[tokio::test]
 async fn host_queue_items_slots_keep_original_holder_through_wire_success_and_error() -> Result<()>
 {
@@ -738,6 +749,7 @@ async fn host_queue_items_slots_keep_original_holder_through_wire_success_and_er
     Ok(())
 }
 
+#[cfg(holon_lib_test_shard = "d")]
 #[tokio::test]
 async fn host_queue_current_id_borrow_preserves_focus_and_wire_holder() -> Result<()> {
     let (_home, host) = fixture().await?;
@@ -847,6 +859,7 @@ async fn trigger_fixture() -> Result<(tempfile::TempDir, RuntimeHost)> {
     Ok((home, host))
 }
 
+#[cfg(holon_lib_test_shard = "d")]
 #[tokio::test]
 async fn host_queue_trigger_slots_reject_on_both_paths_without_partial_snapshot_or_reset(
 ) -> Result<()> {
@@ -936,6 +949,7 @@ async fn host_queue_trigger_slots_reject_on_both_paths_without_partial_snapshot_
     Ok(())
 }
 
+#[cfg(holon_lib_test_shard = "d")]
 #[tokio::test]
 async fn host_queue_trigger_index_keeps_original_holder_through_wire_and_last_release() -> Result<()>
 {
@@ -1046,6 +1060,7 @@ fn entry(
     }
 }
 
+#[cfg(holon_lib_test_shard = "d")]
 #[tokio::test]
 async fn host_queue_sql_material_keeps_original_holder_through_wire_and_last_release() -> Result<()>
 {
@@ -1110,6 +1125,7 @@ async fn host_queue_sql_material_keeps_original_holder_through_wire_and_last_rel
     Ok(())
 }
 
+#[cfg(holon_lib_test_shard = "d")]
 #[tokio::test]
 async fn host_queue_sql_bad_non_open_payload_propagates_without_partial_snapshot_or_reset(
 ) -> Result<()> {
@@ -1179,6 +1195,7 @@ async fn active_wait_fixture() -> Result<(tempfile::TempDir, RuntimeHost)> {
     Ok((home, host))
 }
 
+#[cfg(holon_lib_test_shard = "d")]
 #[tokio::test]
 async fn host_active_wait_sql_material_keeps_original_holder_through_wire_and_last_release(
 ) -> Result<()> {
@@ -1243,6 +1260,7 @@ async fn host_active_wait_sql_material_keeps_original_holder_through_wire_and_la
     Ok(())
 }
 
+#[cfg(holon_lib_test_shard = "d")]
 #[tokio::test]
 async fn host_wait_scope_filters_terminal_missing_owners_with_original_holder() -> Result<()> {
     let (_home, host) = active_wait_fixture().await?;
@@ -1314,6 +1332,7 @@ async fn host_wait_scope_filters_terminal_missing_owners_with_original_holder() 
     Ok(())
 }
 
+#[cfg(holon_lib_test_shard = "d")]
 #[tokio::test]
 async fn host_wait_scope_lookup_error_outside_queue_scope_has_no_partial_snapshot() -> Result<()> {
     let (_home, host) = active_wait_fixture().await?;
@@ -1357,6 +1376,7 @@ async fn host_wait_scope_lookup_error_outside_queue_scope_has_no_partial_snapsho
     Ok(())
 }
 
+#[cfg(holon_lib_test_shard = "d")]
 #[tokio::test]
 async fn host_active_wait_sql_decode_error_returns_no_partial_snapshot_or_new_phase() -> Result<()>
 {

@@ -1625,6 +1625,7 @@ fn update_cleanup_evidence(
     }
 }
 
+#[cfg(holon_lib_test_shard = "a")]
 #[cfg(test)]
 mod tests {
     use super::*;

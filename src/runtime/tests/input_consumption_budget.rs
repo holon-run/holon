@@ -84,6 +84,7 @@ async fn build(
     anchor: &MessageEnvelope,
     config: &ContextConfig,
 ) -> EffectivePrompt {
+    runtime.ensure_context_resources().await.unwrap();
     let state = runtime.agent_state().await.unwrap();
     let identity = runtime.agent_identity_view().await.unwrap();
     let execution = runtime.execution_snapshot().await.unwrap();

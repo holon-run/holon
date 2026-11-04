@@ -453,6 +453,7 @@ fn write_agent_state_mutations(
     })
 }
 
+#[cfg(holon_lib_test_shard = "c")]
 #[cfg(test)]
 mod tests {
     use super::*;

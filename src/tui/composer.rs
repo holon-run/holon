@@ -365,6 +365,7 @@ impl From<String> for ComposerState {
     }
 }
 
+#[cfg(holon_lib_test_shard = "d")]
 #[cfg(test)]
 mod tests {
     use super::ComposerState;
@@ -458,6 +459,7 @@ mod tests {
     }
 }
 
+#[cfg(holon_lib_test_shard = "d")]
 #[test]
 fn move_to_start_moves_cursor_to_beginning() {
     let mut composer = ComposerState::from("some text");
@@ -465,6 +467,7 @@ fn move_to_start_moves_cursor_to_beginning() {
     assert_eq!(composer.cursor(), 0);
 }
 
+#[cfg(holon_lib_test_shard = "d")]
 #[test]
 fn move_to_end_moves_cursor_to_end() {
     let mut composer = ComposerState::from("some text");
@@ -473,6 +476,7 @@ fn move_to_end_moves_cursor_to_end() {
     assert_eq!(composer.cursor(), 9);
 }
 
+#[cfg(holon_lib_test_shard = "d")]
 #[test]
 fn delete_to_end_deletes_from_cursor_to_line_end() {
     let mut composer = ComposerState::from("first line\nsecond line");
@@ -487,6 +491,7 @@ fn delete_to_end_deletes_from_cursor_to_line_end() {
     assert_eq!(composer.cursor(), 5);
 }
 
+#[cfg(holon_lib_test_shard = "d")]
 #[test]
 fn delete_to_start_deletes_from_line_start_to_cursor() {
     let mut composer = ComposerState::from("first line\nsecond line");
@@ -501,6 +506,7 @@ fn delete_to_start_deletes_from_line_start_to_cursor() {
     assert_eq!(composer.cursor(), 0);
 }
 
+#[cfg(holon_lib_test_shard = "d")]
 #[test]
 fn delete_to_end_on_last_line_deletes_to_end_of_buffer() {
     let mut composer = ComposerState::from("first\nsecond");
@@ -515,6 +521,7 @@ fn delete_to_end_on_last_line_deletes_to_end_of_buffer() {
     assert_eq!(composer.cursor(), 7);
 }
 
+#[cfg(holon_lib_test_shard = "d")]
 #[test]
 fn delete_word_deletes_previous_word() {
     let mut composer = ComposerState::from("hello world test");
@@ -523,6 +530,7 @@ fn delete_word_deletes_previous_word() {
     assert_eq!(composer.cursor(), 12);
 }
 
+#[cfg(holon_lib_test_shard = "d")]
 #[test]
 fn delete_word_handles_multiple_spaces() {
     let mut composer = ComposerState::from("hello   world");
@@ -531,6 +539,7 @@ fn delete_word_handles_multiple_spaces() {
     assert_eq!(composer.cursor(), 8);
 }
 
+#[cfg(holon_lib_test_shard = "d")]
 #[test]
 fn delete_word_handles_tabs_and_newlines() {
     let mut composer = ComposerState::from("hello\tworld\nthere");
@@ -540,6 +549,7 @@ fn delete_word_handles_tabs_and_newlines() {
     assert_eq!(composer.cursor(), 12);
 }
 
+#[cfg(holon_lib_test_shard = "d")]
 #[test]
 fn vim_word_motions_respect_utf8_boundaries() {
     let mut composer = ComposerState::from("你 好 world");
@@ -558,6 +568,7 @@ fn vim_word_motions_respect_utf8_boundaries() {
     assert_eq!(composer.cursor(), "你 好 ".len());
 }
 
+#[cfg(holon_lib_test_shard = "d")]
 #[test]
 fn vim_line_and_word_edits_stay_inside_current_line() {
     let mut composer = ComposerState::from("alpha beta\ngamma");
@@ -578,6 +589,7 @@ fn vim_line_and_word_edits_stay_inside_current_line() {
     assert_eq!(composer.as_str(), "gamma");
 }
 
+#[cfg(holon_lib_test_shard = "d")]
 #[test]
 fn vim_open_line_above_and_below_place_cursor_on_new_line() {
     let mut composer = ComposerState::from("alpha\nbeta");

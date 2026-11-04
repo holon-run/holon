@@ -736,6 +736,7 @@ pub(crate) fn read_optional_text(path: &std::path::Path) -> Result<Option<String
     }
 }
 
+#[cfg(holon_lib_test_shard = "a")]
 #[cfg(test)]
 #[path = "resource_observation_tests.rs"]
 mod tests;

@@ -813,6 +813,7 @@ pub(crate) fn unlock(_file: &File) -> Result<()> {
     Ok(())
 }
 
+#[cfg(holon_lib_test_shard = "b")]
 #[cfg(test)]
 mod tests {
     use super::*;

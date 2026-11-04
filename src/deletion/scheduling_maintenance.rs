@@ -197,6 +197,7 @@ async fn ensure_unloaded(host: &RuntimeHost, agent: &str) -> Result<()> {
     );
     Ok(())
 }
+#[cfg(holon_lib_test_shard = "d")]
 #[cfg(test)]
 mod tests {
     use super::*;

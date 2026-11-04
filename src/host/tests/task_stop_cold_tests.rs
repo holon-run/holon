@@ -574,6 +574,8 @@ async fn retired_resource_drain_preserves_unknown_current_owner_gate() -> Result
     let (_home, host) = test_host();
     let runtime = host.default_runtime().await?;
     runtime.wait_for_bootstrap().await?;
+    runtime.await_initial_resources_for_test().await;
+    let refresh = runtime.hold_resource_refresh_for_test().await?;
     let scope = (
         runtime.instance_agent_id().to_owned(),
         runtime.instance_incarnation(),
@@ -581,6 +583,7 @@ async fn retired_resource_drain_preserves_unknown_current_owner_gate() -> Result
     let (current, reserved) = host
         .bridge()
         .claim_reserved_mutation_owner(&scope.0, scope.1)?;
+    drop(refresh);
     let mut group = vec![reserved];
     crate::runtime::mutation_owner::MutationReservation::begin_all(
         &mut group,

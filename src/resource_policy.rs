@@ -149,6 +149,7 @@ fn cap_glibc_arenas() -> Option<GlibcArenaCapReport> {
     None
 }
 
+#[cfg(holon_lib_test_shard = "d")]
 #[cfg(test)]
 mod tests {
     use super::*;

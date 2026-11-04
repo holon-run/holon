@@ -317,6 +317,7 @@ mod tests {
         )
     }
 
+    #[cfg(holon_lib_test_shard = "c")]
     #[test]
     fn empty_dispatch_is_a_pure_noop_plan() {
         let agent = AgentState::new("agent-a");
@@ -344,6 +345,7 @@ mod tests {
         assert!(plan.audit_events.is_empty());
     }
 
+    #[cfg(holon_lib_test_shard = "c")]
     #[test]
     fn active_work_switch_finalizes_before_merging_current_turn() {
         let frozen = frozen();
@@ -408,6 +410,7 @@ mod tests {
         assert_eq!(plan.audit_events, repeated.audit_events);
     }
 
+    #[cfg(holon_lib_test_shard = "c")]
     #[test]
     fn wait_boundary_merges_current_turn_before_finalizing() {
         let mut agent = AgentState::new("agent-a");
@@ -442,6 +445,7 @@ mod tests {
         assert!(next.source_turn_ids.is_empty());
     }
 
+    #[cfg(holon_lib_test_shard = "c")]
     #[test]
     fn stop_cleared_state_still_records_the_actual_dispatch_turn() {
         let mut agent = AgentState::new("agent-a");
@@ -467,6 +471,7 @@ mod tests {
         assert!(plan.candidate.current_turn_id.is_none());
     }
 
+    #[cfg(holon_lib_test_shard = "c")]
     #[test]
     fn task_rejoin_precedes_active_work_switch() {
         let mut agent = AgentState::new("agent-a");
@@ -503,6 +508,7 @@ mod tests {
         );
     }
 
+    #[cfg(holon_lib_test_shard = "c")]
     #[test]
     fn hard_turn_cap_preserves_the_existing_boundary_and_bounded_source_list() {
         let mut agent = AgentState::new("agent-a");
@@ -544,6 +550,7 @@ mod tests {
         );
     }
 
+    #[cfg(holon_lib_test_shard = "c")]
     #[test]
     fn fallback_work_switch_archive_preserves_empty_legacy_source_evidence() {
         let mut agent = AgentState::new("agent-a");

@@ -15,6 +15,7 @@ fn scope() -> InputEvidenceScope {
     }
 }
 
+#[cfg(holon_lib_test_shard = "c")]
 #[tokio::test]
 async fn image_turn_result_and_error_keep_material_without_changing_classification() -> Result<()> {
     for failed in [false, true] {
@@ -71,6 +72,7 @@ async fn image_turn_result_and_error_keep_material_without_changing_classificati
     Ok(())
 }
 
+#[cfg(holon_lib_test_shard = "c")]
 #[test]
 fn image_turn_refuses_mixed_acquisitions_and_standalone_images() -> Result<()> {
     use crate::provider::{ConversationMessage, ProviderImageData};
@@ -106,6 +108,7 @@ fn image_turn_refuses_mixed_acquisitions_and_standalone_images() -> Result<()> {
     Ok(())
 }
 
+#[cfg(holon_lib_test_shard = "c")]
 #[test]
 fn provider_material_refuses_foreign_ledger_and_incarnation() -> Result<()> {
     let ledger = InputEvidenceBudgetLedger::new(StateMemoryLimits::default())?;
@@ -122,6 +125,7 @@ fn provider_material_refuses_foreign_ledger_and_incarnation() -> Result<()> {
     Ok(())
 }
 
+#[cfg(holon_lib_test_shard = "c")]
 #[test]
 fn provider_wire_and_image_decode_admit_exact_bytes_and_records() -> Result<()> {
     let scope = scope();
@@ -171,6 +175,7 @@ fn provider_wire_and_image_decode_admit_exact_bytes_and_records() -> Result<()> 
     Ok(())
 }
 
+#[cfg(holon_lib_test_shard = "c")]
 #[test]
 fn generated_image_response_clones_share_body_and_last_holder() -> Result<()> {
     let ledger = InputEvidenceBudgetLedger::new(StateMemoryLimits::default())?;
@@ -236,6 +241,7 @@ pub(crate) async fn response(
     Ok((url, server))
 }
 
+#[cfg(holon_lib_test_shard = "c")]
 #[tokio::test]
 async fn mock_response_waits_for_complete_fragmented_headers() -> Result<()> {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -259,6 +265,7 @@ async fn mock_response_waits_for_complete_fragmented_headers() -> Result<()> {
     Ok(())
 }
 
+#[cfg(holon_lib_test_shard = "c")]
 #[tokio::test]
 async fn mock_response_rejects_eof_before_complete_headers() -> Result<()> {
     use tokio::io::AsyncWriteExt;
@@ -275,6 +282,7 @@ async fn mock_response_rejects_eof_before_complete_headers() -> Result<()> {
     Ok(())
 }
 
+#[cfg(holon_lib_test_shard = "c")]
 #[tokio::test]
 async fn provider_response_append_refuses_records_before_owning_copy() -> Result<()> {
     let ledger = InputEvidenceBudgetLedger::new(StateMemoryLimits::default())?;
@@ -292,6 +300,7 @@ async fn provider_response_append_refuses_records_before_owning_copy() -> Result
     Ok(())
 }
 
+#[cfg(holon_lib_test_shard = "c")]
 #[tokio::test]
 async fn provider_response_retains_lossy_utf8() -> Result<()> {
     let ledger = InputEvidenceBudgetLedger::new(StateMemoryLimits::default())?;

@@ -76,6 +76,7 @@ fn parse_sleep_args(input: &Value) -> Result<SleepArgs> {
     Ok(args)
 }
 
+#[cfg(holon_lib_test_shard = "c")]
 #[cfg(test)]
 mod tests {
     use super::*;

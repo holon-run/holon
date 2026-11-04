@@ -1041,6 +1041,7 @@ pub(super) fn render_summary(agent: &AgentSummary) -> String {
     lines.join("\n")
 }
 
+#[cfg(holon_lib_test_shard = "d")]
 #[cfg(test)]
 mod tests {
     use super::{

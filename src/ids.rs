@@ -226,6 +226,7 @@ pub fn capability_id(prefix: &str) -> String {
     )
 }
 
+#[cfg(holon_lib_test_shard = "d")]
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -1164,6 +1164,7 @@ pub(crate) fn format_provider_failure(
     }
 }
 
+#[cfg(holon_lib_test_shard = "c")]
 #[cfg(test)]
 mod tests {
     use reqwest::StatusCode;

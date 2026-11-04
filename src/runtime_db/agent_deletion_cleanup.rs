@@ -22,6 +22,7 @@ use crate::types::{
     WaitConditionRecord, WaitConditionStatus,
 };
 
+#[cfg(holon_lib_test_shard = "b")]
 #[cfg(test)]
 #[path = "agent_deletion_cleanup/supervised_admission_tests.rs"]
 mod supervised_admission_tests;
@@ -1287,6 +1288,7 @@ fn write_proof_tx(
     Ok(())
 }
 
+#[cfg(holon_lib_test_shard = "b")]
 #[cfg(test)]
 mod tests {
     use std::collections::BTreeMap;

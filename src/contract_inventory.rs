@@ -82,6 +82,7 @@ fn schema_enum_values<'a>(schema: &'a Value, name: &str) -> Result<Vec<&'a Value
     Ok(values)
 }
 
+#[cfg(holon_lib_test_shard = "c")]
 #[cfg(test)]
 mod tests {
     use super::schema_enum_values;

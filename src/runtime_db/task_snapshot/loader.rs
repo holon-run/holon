@@ -965,6 +965,7 @@ fn validate_observation_revision(
     Ok(())
 }
 
+#[cfg(holon_lib_test_shard = "b")]
 #[cfg(test)]
 mod status_loader_tests {
     use super::*;

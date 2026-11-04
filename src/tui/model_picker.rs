@@ -221,6 +221,7 @@ fn supports_reasoning_effort(entry: &ResolvedModelAvailability) -> bool {
     !entry.policy.reasoning_effort_options.is_empty()
 }
 
+#[cfg(holon_lib_test_shard = "d")]
 #[cfg(test)]
 mod tests {
     use super::{clamp_model_picker_selection, model_picker_rows, selected_model_picker_row};

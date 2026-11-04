@@ -654,6 +654,7 @@ fn fit_group(
     Ok(Some(selected))
 }
 
+#[cfg(holon_lib_test_shard = "a")]
 #[cfg(test)]
 mod tests {
     use super::*;

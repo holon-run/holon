@@ -303,6 +303,7 @@ async fn open_external_wake_claim_fixture() -> OpenExternalWakeClaimFixture {
     }
 }
 
+#[cfg(holon_lib_test_shard = "a")]
 #[tokio::test]
 async fn bootstrap_recovers_open_external_wake_claim_and_releases_execution_lane() {
     let mut fixture = open_external_wake_claim_fixture().await;
@@ -438,6 +439,7 @@ async fn bootstrap_recovers_open_external_wake_claim_and_releases_execution_lane
     );
 }
 
+#[cfg(holon_lib_test_shard = "a")]
 #[tokio::test]
 async fn startup_recovery_preserves_retained_external_wait_before_bootstrap() {
     let mut fixture = open_external_wake_claim_fixture().await;
@@ -495,6 +497,7 @@ async fn startup_recovery_preserves_retained_external_wait_before_bootstrap() {
     );
 }
 
+#[cfg(holon_lib_test_shard = "a")]
 #[tokio::test]
 async fn startup_recovery_without_work_item_or_retained_claim_admits_operator_interject() {
     let harness = LifecycleHarness::new();
@@ -574,6 +577,7 @@ async fn startup_recovery_without_work_item_or_retained_claim_admits_operator_in
     assert_ne!(execution.open_attempt().unwrap().attempt_id, attempt_id);
 }
 
+#[cfg(holon_lib_test_shard = "a")]
 #[tokio::test]
 async fn startup_recovery_retained_task_result_obeys_exact_rejoin_wait_and_revision_fences() {
     use crate::domain::execution_protocol::ExecutionAttemptState;
@@ -933,6 +937,7 @@ async fn startup_recovery_retained_task_result_obeys_exact_rejoin_wait_and_revis
     }
 }
 
+#[cfg(holon_lib_test_shard = "a")]
 #[tokio::test]
 async fn startup_recovery_preserves_operator_claim_while_interrupting_its_active_turn() {
     let harness = LifecycleHarness::new();
@@ -1073,6 +1078,7 @@ fn apply_offline_scheduler_recovery_fixture(
     )
 }
 
+#[cfg(holon_lib_test_shard = "a")]
 #[tokio::test]
 async fn scheduler_recovery_routes_external_wake_claim_through_generic_interruption() {
     use crate::domain::execution_protocol::{ExecutionAttemptState, ExecutionProtocolCommand};
@@ -1168,6 +1174,7 @@ async fn scheduler_recovery_routes_external_wake_claim_through_generic_interrupt
     );
 }
 
+#[cfg(holon_lib_test_shard = "a")]
 #[tokio::test]
 async fn cancelled_task_result_wait_quarantines_open_claim_and_releases_lane() {
     use crate::domain::execution_protocol::ExecutionAttemptState;
@@ -1240,6 +1247,7 @@ async fn cancelled_task_result_wait_quarantines_open_claim_and_releases_lane() {
     );
 }
 
+#[cfg(holon_lib_test_shard = "a")]
 #[tokio::test]
 async fn scheduler_recovery_apply_quarantines_cancelled_task_result_claim_atomically() {
     let fixture = cancelled_wait_task_result_claim_fixture("task-cancelled-wait-debug-apply").await;
@@ -1290,6 +1298,7 @@ async fn scheduler_recovery_apply_quarantines_cancelled_task_result_claim_atomic
     );
 }
 
+#[cfg(holon_lib_test_shard = "a")]
 #[tokio::test]
 async fn scheduler_recovery_quarantines_task_result_claim_with_missing_wait() {
     use crate::domain::execution_protocol::ExecutionAttemptState;
@@ -1604,6 +1613,7 @@ async fn execute_source_bound_input(runtime: &RuntimeHandle, root: &MessageEnvel
     execute_source_bound_round(runtime, false).await;
 }
 
+#[cfg(holon_lib_test_shard = "a")]
 #[tokio::test]
 async fn provider_recovery_conversation_pins_root_across_hops_without_claiming_focus() {
     let dir = tempdir().unwrap();
@@ -1768,6 +1778,7 @@ async fn provider_recovery_conversation_pins_root_across_hops_without_claiming_f
             .contains("SOURCE_BOUND_ROOT_TASK_UNIQUE")));
 }
 
+#[cfg(holon_lib_test_shard = "a")]
 #[tokio::test]
 async fn provider_recovery_work_item_scoped_request_pins_source_outside_owner_window() {
     let dir = tempdir().unwrap();
@@ -1899,6 +1910,7 @@ async fn provider_recovery_work_item_scoped_request_pins_source_outside_owner_wi
     );
 }
 
+#[cfg(holon_lib_test_shard = "a")]
 #[tokio::test]
 async fn provider_recovery_lifecycle_keeps_root_trust_and_no_work_item_fences() {
     let dir = tempdir().unwrap();
@@ -1982,6 +1994,7 @@ async fn provider_recovery_lifecycle_keeps_root_trust_and_no_work_item_fences() 
     );
 }
 
+#[cfg(holon_lib_test_shard = "a")]
 #[tokio::test]
 async fn provider_recovery_pinned_root_minimum_fails_closed_before_provider_request() {
     let dir = tempdir().unwrap();
@@ -2173,6 +2186,7 @@ async fn execute_admitted_context_budget_failure(runtime: &RuntimeHandle) {
         .unwrap();
 }
 
+#[cfg(holon_lib_test_shard = "a")]
 #[tokio::test]
 async fn context_admission_zero_budget_keeps_source_unclaimed_without_provider_recovery() {
     let dir = tempdir().unwrap();
@@ -2241,6 +2255,7 @@ async fn context_admission_zero_budget_keeps_source_unclaimed_without_provider_r
     assert_eq!(requests.lock().await.len(), 1);
 }
 
+#[cfg(holon_lib_test_shard = "a")]
 #[tokio::test]
 async fn context_budget_failure_settles_without_dispatch_or_provider_recovery() {
     let dir = tempdir().unwrap();
@@ -2310,6 +2325,7 @@ async fn context_budget_failure_settles_without_dispatch_or_provider_recovery() 
     );
 }
 
+#[cfg(holon_lib_test_shard = "a")]
 #[tokio::test]
 async fn context_budget_stop_survives_ticks_restart_and_rechecks_only_after_budget_change() {
     use crate::domain::execution_protocol::{ExecutionAttemptState, WorkItemExecutionState};
@@ -2445,6 +2461,7 @@ async fn context_budget_stop_survives_ticks_restart_and_rechecks_only_after_budg
     assert_eq!(requests.lock().await.len(), 1);
 }
 
+#[cfg(holon_lib_test_shard = "a")]
 #[tokio::test]
 async fn provider_recovery_source_validation_rejects_invalid_partitions_owners_terminals_and_cycles(
 ) {
@@ -2521,50 +2538,68 @@ async fn provider_recovery_source_validation_rejects_invalid_partitions_owners_t
 
     let mut cycle = recovery.clone();
     cycle.turn_id = Some("cycle-turn".into());
-    cycle.causation_id = Some(cycle.id.clone());
-    cycle
-        .source_refs
-        .insert("source_turn_id".into(), "cycle-turn".into());
-    cycle
-        .source_refs
-        .insert("source_message_id".into(), cycle.id.clone());
-    cycle.metadata.as_mut().unwrap()["provider_recovery"]["source_turn_id"] =
-        serde_json::json!("cycle-turn");
-    cycle.metadata.as_mut().unwrap()["provider_recovery"]["source_message_id"] =
-        serde_json::json!(cycle.id);
-    runtime.storage().append_message(&cycle).unwrap();
-    let mut cycle_turn = valid.source_turn().clone();
-    cycle_turn.turn_id = "cycle-turn".into();
-    cycle_turn.turn_index = 2;
-    cycle_turn.input_message_ids = vec![cycle.id.clone()];
-    cycle_turn.trigger = Some(crate::types::TurnTriggerSummary::from_message(&cycle));
-    runtime.storage().append_turn(&cycle_turn).unwrap();
+    let mut cycle_peer = recovery.clone();
+    cycle_peer.id = "cycle-peer-message".into();
+    cycle_peer.turn_id = Some("cycle-peer-turn".into());
+    let cycle_id = cycle.id.clone();
+    let cycle_peer_id = cycle_peer.id.clone();
+    for (message, source_message_id, source_turn_id) in [
+        (&mut cycle, cycle_peer_id, "cycle-peer-turn"),
+        (&mut cycle_peer, cycle_id, "cycle-turn"),
+    ] {
+        message.causation_id = Some(source_message_id.clone());
+        message
+            .source_refs
+            .insert("source_turn_id".into(), source_turn_id.into());
+        message
+            .source_refs
+            .insert("source_message_id".into(), source_message_id.clone());
+        message.metadata.as_mut().unwrap()["provider_recovery"]["source_turn_id"] =
+            serde_json::json!(source_turn_id);
+        message.metadata.as_mut().unwrap()["provider_recovery"]["source_message_id"] =
+            serde_json::json!(source_message_id);
+    }
     let mut cyclic_state = state.clone();
-    let mut cyclic_attempt = valid.predecessor.clone();
-    cyclic_attempt.attempt_id = "cycle-attempt".into();
-    cyclic_attempt.source_message_id = Some(cycle.id.clone());
-    cyclic_attempt.turn_id = Some("cycle-turn".into());
-    cyclic_attempt.source.identity = ExecutionSourceIdentity::RuntimeRecovery {
-        recovery_id: cycle.id.clone(),
-    };
-    cyclic_attempt.recovery_of_attempt_id = Some("cycle-attempt".into());
-    cyclic_attempt.terminal_outcome_id = Some("cycle-outcome".into());
-    let mut outcome =
-        state.outcomes[valid.predecessor.terminal_outcome_id.as_ref().unwrap()].clone();
-    outcome.outcome_id = "cycle-outcome".into();
-    outcome.attempt_id = cyclic_attempt.attempt_id.clone();
-    cyclic_state
-        .outcomes
-        .insert(outcome.outcome_id.clone(), outcome);
-    cyclic_state
-        .attempts
-        .insert(cyclic_attempt.attempt_id.clone(), cyclic_attempt);
+    // Distinct messages are provider hops, not same-message interrupted replays.
+    for (message, source_message, turn_index) in
+        [(&cycle, &cycle_peer, 2), (&cycle_peer, &cycle, 3)]
+    {
+        runtime.storage().append_message(message).unwrap();
+        let mut cycle_turn = valid.source_turn().clone();
+        cycle_turn.turn_id = message.turn_id.clone().unwrap();
+        cycle_turn.turn_index = turn_index;
+        cycle_turn.run_id = Some(format!("run-{}", message.id));
+        cycle_turn.input_message_ids = vec![message.id.clone()];
+        cycle_turn.trigger = Some(crate::types::TurnTriggerSummary::from_message(message));
+        runtime.storage().append_turn(&cycle_turn).unwrap();
+        let mut cyclic_attempt = valid.predecessor.clone();
+        cyclic_attempt.attempt_id = format!("attempt-{}", message.id);
+        cyclic_attempt.source_message_id = Some(message.id.clone());
+        cyclic_attempt.turn_id = message.turn_id.clone();
+        cyclic_attempt.run_id = cycle_turn.run_id.clone();
+        cyclic_attempt.source.identity = ExecutionSourceIdentity::RuntimeRecovery {
+            recovery_id: message.id.clone(),
+        };
+        cyclic_attempt.recovery_of_attempt_id = Some(format!("attempt-{}", source_message.id));
+        cyclic_attempt.terminal_outcome_id = Some(format!("outcome-{}", message.id));
+        let mut outcome =
+            state.outcomes[valid.predecessor.terminal_outcome_id.as_ref().unwrap()].clone();
+        outcome.outcome_id = cyclic_attempt.terminal_outcome_id.clone().unwrap();
+        outcome.attempt_id = cyclic_attempt.attempt_id.clone();
+        cyclic_state
+            .outcomes
+            .insert(outcome.outcome_id.clone(), outcome);
+        cyclic_state
+            .attempts
+            .insert(cyclic_attempt.attempt_id.clone(), cyclic_attempt);
+    }
     assert!(resolve(&cycle, &cyclic_state)
         .unwrap_err()
         .to_string()
         .contains("cyclic"));
 }
 
+#[cfg(holon_lib_test_shard = "a")]
 #[tokio::test]
 async fn provider_recovery_wrong_owner_is_rejected_with_visible_failure_and_no_focus_mutation() {
     let dir = tempdir().unwrap();
@@ -3042,6 +3077,7 @@ async fn begin_canonical_operator_turn(
     (message, activation_id, scheduled)
 }
 
+#[cfg(holon_lib_test_shard = "a")]
 #[tokio::test]
 async fn canonical_agent_lifecycle_binding_does_not_inherit_replay_or_message_work_item() {
     let dir = tempdir().unwrap();
@@ -3191,6 +3227,7 @@ async fn canonical_agent_lifecycle_binding_does_not_inherit_replay_or_message_wo
     );
 }
 
+#[cfg(holon_lib_test_shard = "a")]
 #[tokio::test]
 #[allow(deprecated)]
 async fn legacy_compat_provenance_cannot_start_a_new_turn() {
@@ -3234,6 +3271,7 @@ async fn legacy_compat_provenance_cannot_start_a_new_turn() {
         .is_none());
 }
 
+#[cfg(holon_lib_test_shard = "a")]
 #[tokio::test]
 async fn canonical_turn_binding_preserves_the_admitted_work_item_revision() {
     let dir = tempdir().unwrap();
@@ -3407,6 +3445,7 @@ async fn claim_exact_timer(
     scheduled
 }
 
+#[cfg(holon_lib_test_shard = "a")]
 #[tokio::test(start_paused = true)]
 async fn exact_timer_first_dispatch_preserves_same_attempt_revision_advances() {
     for advance_after_claim in [false, true] {
@@ -3477,9 +3516,22 @@ async fn exact_timer_first_dispatch_preserves_same_attempt_revision_advances() {
                 metadata: Default::default(),
             });
             record.revision += 1;
-            runtime
+            assert!(runtime
                 .storage()
                 .update_work_item_expected(&record, expected_revision)
+                .is_err());
+            assert_eq!(
+                runtime
+                    .storage()
+                    .latest_work_item(&fixture.work_item_id)
+                    .unwrap()
+                    .unwrap()
+                    .revision,
+                expected_revision
+            );
+            runtime
+                .update_work_item_record_expected(&record, expected_revision)
+                .await
                 .unwrap();
             let advanced = fixture.harness.snapshot();
             let protocol = advanced.execution_protocol.as_ref().unwrap();
@@ -3517,6 +3569,7 @@ async fn exact_timer_first_dispatch_preserves_same_attempt_revision_advances() {
     }
 }
 
+#[cfg(holon_lib_test_shard = "a")]
 #[tokio::test(start_paused = true)]
 async fn exact_timer_claim_rejects_existing_revision_drift_without_consuming_wait() {
     for durable_ahead in [false, true] {
@@ -3586,13 +3639,14 @@ async fn exact_timer_claim_rejects_existing_revision_drift_without_consuming_wai
     }
 }
 
+#[cfg(holon_lib_test_shard = "a")]
 #[tokio::test(start_paused = true)]
 async fn exact_timer_claim_failure_rolls_back_wait_source_and_revision() {
     for fault in PRE_COMMIT_FAULTS {
         let fixture = exact_timer_admission_fixture().await;
         let runtime = fixture.harness.runtime();
         let before = fixture.harness.snapshot();
-        fixture.harness.arm_fault(fault);
+        runtime.inject_next_claim_transition_fault(fault);
         assert!(scheduler_executor::SchedulerDecisionExecutor::new(runtime)
             .poll()
             .await
@@ -3996,6 +4050,7 @@ async fn persist_execution_transition_only(
     publish_execution_fixture(runtime, &state).await;
 }
 
+#[cfg(holon_lib_test_shard = "a")]
 #[tokio::test]
 async fn append_state_changed_events_emits_single_lightweight_agent_event() {
     let dir = tempdir().unwrap();
@@ -4035,6 +4090,7 @@ async fn append_state_changed_events_emits_single_lightweight_agent_event() {
     assert!(payload.get("context_summary").is_none());
 }
 
+#[cfg(holon_lib_test_shard = "a")]
 #[tokio::test]
 async fn model_override_defers_reasoning_effort_validation_for_unresolved_route() {
     let dir = tempdir().unwrap();
@@ -4214,6 +4270,7 @@ impl AgentProvider for TerminalWaitInterjectionProvider {
     }
 }
 
+#[cfg(holon_lib_test_shard = "a")]
 #[tokio::test]
 async fn model_override_reasoning_effort_does_not_leak_into_deferred_fallback() {
     let home = tempdir().unwrap();
@@ -4262,6 +4319,7 @@ async fn model_override_reasoning_effort_does_not_leak_into_deferred_fallback() 
     );
 }
 
+#[cfg(holon_lib_test_shard = "a")]
 #[tokio::test]
 async fn update_agent_state_rolls_back_memory_when_persist_fails() {
     let dir = tempdir().unwrap();
@@ -4296,6 +4354,7 @@ async fn update_agent_state_rolls_back_memory_when_persist_fails() {
     assert_eq!(restored.status, original.status);
 }
 
+#[cfg(holon_lib_test_shard = "a")]
 #[tokio::test]
 async fn non_model_reentry_external_events_do_not_run_interactive_turn() {
     let dir = tempdir().unwrap();
@@ -4341,6 +4400,7 @@ async fn non_model_reentry_external_events_do_not_run_interactive_turn() {
         .all(|entry| entry.kind != TranscriptEntryKind::AssistantRound));
 }
 
+#[cfg(holon_lib_test_shard = "a")]
 #[tokio::test]
 async fn run_loop_claim_fault_rolls_back_scheduler_events_with_claim_facts() {
     for fault in PRE_COMMIT_FAULTS {
@@ -4417,6 +4477,7 @@ async fn run_loop_claim_fault_rolls_back_scheduler_events_with_claim_facts() {
     }
 }
 
+#[cfg(holon_lib_test_shard = "a")]
 #[tokio::test]
 async fn runtime_failure_preserves_canonical_claim_for_bootstrap_reconciliation() {
     let dir = tempdir().unwrap();
@@ -4508,6 +4569,7 @@ async fn runtime_failure_preserves_canonical_claim_for_bootstrap_reconciliation(
         }));
 }
 
+#[cfg(holon_lib_test_shard = "a")]
 #[tokio::test]
 async fn interrupted_message_replay_creates_new_turn_without_current_focus_drift() {
     let dir = tempdir().unwrap();
@@ -4630,6 +4692,7 @@ async fn interrupted_message_replay_creates_new_turn_without_current_focus_drift
         Some(QueueEntryStatus::Processed)
     );
 }
+#[cfg(holon_lib_test_shard = "a")]
 #[tokio::test]
 async fn canonical_work_item_wait_keeps_other_runnable_work_schedulable() {
     let dir = tempdir().unwrap();
@@ -4764,6 +4827,7 @@ async fn canonical_work_item_wait_keeps_other_runnable_work_schedulable() {
     );
 }
 
+#[cfg(holon_lib_test_shard = "a")]
 #[tokio::test]
 async fn late_terminal_task_result_for_completed_work_item_settles_without_model_reentry() {
     let dir = tempdir().unwrap();
@@ -4980,6 +5044,7 @@ async fn late_terminal_task_result_for_completed_work_item_settles_without_model
     }));
 }
 
+#[cfg(holon_lib_test_shard = "a")]
 #[tokio::test]
 async fn bootstrap_recovery_interrupts_open_attempt_and_releases_message_for_reentry() {
     let dir = tempdir().unwrap();
@@ -5189,6 +5254,7 @@ async fn claim_lifecycle_delivery(runtime: &RuntimeHandle, message_id: &str) {
     finish_claimed_test_run(runtime).await;
 }
 
+#[cfg(holon_lib_test_shard = "a")]
 #[tokio::test]
 async fn lifecycle_delivery_reentry_tracks_the_current_canonical_activation() {
     let dir = tempdir().unwrap();
@@ -5287,6 +5353,7 @@ async fn lifecycle_delivery_reentry_tracks_the_current_canonical_activation() {
     );
 }
 
+#[cfg(holon_lib_test_shard = "a")]
 #[tokio::test]
 async fn lifecycle_delivery_reentry_rejects_an_invalid_canonical_predecessor() {
     let dir = tempdir().unwrap();
@@ -5390,6 +5457,7 @@ async fn lifecycle_delivery_reentry_rejects_an_invalid_canonical_predecessor() {
     assert_eq!(scheduled.message.id, valid.id);
 }
 
+#[cfg(holon_lib_test_shard = "a")]
 #[tokio::test]
 async fn bootstrap_recovery_replays_task_result_claim_after_canonical_revision_sync() {
     use crate::domain::execution_protocol::{
@@ -5852,6 +5920,7 @@ async fn add_claim_fixture_business_blocker(fixture: &StaleTaskResultClaimFixtur
         .unwrap();
 }
 
+#[cfg(holon_lib_test_shard = "a")]
 #[tokio::test]
 async fn bootstrap_task_result_claim_with_business_blocker_recovers_exact_wait_once() {
     use crate::domain::execution_protocol::WorkItemExecutionState;
@@ -6119,6 +6188,7 @@ async fn bootstrap_task_result_claim_with_business_blocker_recovers_exact_wait_o
     }
 }
 
+#[cfg(holon_lib_test_shard = "a")]
 #[tokio::test]
 async fn bootstrap_recovers_unadvanced_task_result_claim_but_diagnostic_apply_does_not() {
     use crate::domain::execution_protocol::{ExecutionAttemptState, WorkItemExecutionState};
@@ -6184,6 +6254,7 @@ async fn bootstrap_recovers_unadvanced_task_result_claim_but_diagnostic_apply_do
     );
 }
 
+#[cfg(holon_lib_test_shard = "a")]
 #[tokio::test]
 async fn bootstrap_quarantines_repeated_task_result_claim_recovery() {
     use crate::domain::execution_protocol::ExecutionAttemptState;
@@ -6267,6 +6338,7 @@ async fn bootstrap_quarantines_repeated_task_result_claim_recovery() {
     ));
 }
 
+#[cfg(holon_lib_test_shard = "a")]
 #[tokio::test]
 async fn scheduler_recovery_task_result_claim_is_atomic_fenced_and_idempotent() {
     use crate::domain::execution_protocol::{ExecutionAttemptState, WorkItemExecutionState};
@@ -6455,6 +6527,7 @@ async fn scheduler_recovery_task_result_claim_is_atomic_fenced_and_idempotent() 
     );
 }
 
+#[cfg(holon_lib_test_shard = "a")]
 #[tokio::test]
 async fn scheduler_recovery_quarantines_repeated_task_result_claim() {
     use crate::domain::execution_protocol::ExecutionAttemptState;
@@ -6513,6 +6586,7 @@ async fn scheduler_recovery_quarantines_repeated_task_result_claim() {
     );
 }
 
+#[cfg(holon_lib_test_shard = "a")]
 #[tokio::test]
 async fn bootstrap_recovery_uses_execution_attempt() {
     let mut harness = LifecycleHarness::new();
@@ -6786,6 +6860,7 @@ fn legacy_terminal_claim_fixture(
     (dir, runtime)
 }
 
+#[cfg(holon_lib_test_shard = "a")]
 #[tokio::test]
 async fn bootstrap_recovery_settles_dequeued_activation_from_terminal_turn() {
     let dir = tempdir().unwrap();
@@ -6883,6 +6958,7 @@ async fn bootstrap_recovery_settles_dequeued_activation_from_terminal_turn() {
     );
 }
 
+#[cfg(holon_lib_test_shard = "a")]
 #[tokio::test]
 async fn bootstrap_restart_reconciles_dequeued_queue_after_unified_settlement() {
     let harness = LifecycleHarness::new();
@@ -7065,6 +7141,7 @@ async fn bootstrap_restart_reconciles_dequeued_queue_after_unified_settlement() 
         .is_some_and(|outcome_id| execution.outcomes.contains_key(outcome_id)));
 }
 
+#[cfg(holon_lib_test_shard = "a")]
 #[tokio::test]
 async fn bootstrap_recovery_settles_completed_work_item_from_bound_terminal_evidence() {
     let dir = tempdir().unwrap();
@@ -7196,6 +7273,7 @@ async fn bootstrap_recovery_settles_completed_work_item_from_bound_terminal_evid
     );
 }
 
+#[cfg(holon_lib_test_shard = "a")]
 #[tokio::test]
 async fn bootstrap_recovery_fault_rolls_back_queue_canonical_and_audit() {
     for terminal_evidence in [false, true] {
@@ -7515,6 +7593,7 @@ fn publish_resolved_task_wait_fixture<'a>(
     })
 }
 
+#[cfg(holon_lib_test_shard = "a")]
 #[tokio::test]
 async fn production_protocol_claim_and_settlement_release_the_canonical_slot() {
     let dir = tempdir().unwrap();
@@ -7682,6 +7761,7 @@ async fn production_protocol_claim_and_settlement_release_the_canonical_slot() {
     );
 }
 
+#[cfg(holon_lib_test_shard = "a")]
 #[tokio::test]
 async fn production_settlement_ignores_foreign_turn_read_model_yield_divergence() {
     let dir = tempdir().unwrap();
@@ -7794,6 +7874,7 @@ async fn production_settlement_ignores_foreign_turn_read_model_yield_divergence(
     );
 }
 
+#[cfg(holon_lib_test_shard = "a")]
 #[tokio::test]
 async fn production_settlement_yields_to_exact_matching_revision_continuation() {
     let dir = tempdir().unwrap();
@@ -7900,6 +7981,7 @@ async fn production_settlement_yields_to_exact_matching_revision_continuation() 
     );
 }
 
+#[cfg(holon_lib_test_shard = "a")]
 #[tokio::test]
 async fn production_settlement_interrupts_yield_to_stale_execution_revision() {
     let dir = tempdir().unwrap();
@@ -8009,6 +8091,7 @@ async fn production_settlement_interrupts_yield_to_stale_execution_revision() {
     ));
 }
 
+#[cfg(holon_lib_test_shard = "a")]
 #[tokio::test]
 async fn production_settlement_accepts_authoritative_revision_advance_while_in_flight() {
     let dir = tempdir().unwrap();
@@ -8134,6 +8217,7 @@ async fn production_settlement_accepts_authoritative_revision_advance_while_in_f
     );
 }
 
+#[cfg(holon_lib_test_shard = "a")]
 #[tokio::test]
 async fn context_budget_stop_keeps_admitted_revision_and_recheck_obeys_durable_waits() {
     use crate::domain::execution_protocol::{
@@ -8313,6 +8397,7 @@ async fn context_budget_stop_keeps_admitted_revision_and_recheck_obeys_durable_w
     );
 }
 
+#[cfg(holon_lib_test_shard = "a")]
 #[tokio::test]
 async fn production_settlement_interrupts_stale_owner_execution_revision() {
     let dir = tempdir().unwrap();
@@ -8409,6 +8494,7 @@ async fn production_settlement_interrupts_stale_owner_execution_revision() {
     ));
 }
 
+#[cfg(holon_lib_test_shard = "a")]
 #[tokio::test]
 async fn production_protocol_wait_settlement_creates_rejoinable_wait_generation() {
     let dir = tempdir().unwrap();
@@ -8657,6 +8743,7 @@ async fn production_protocol_wait_settlement_creates_rejoinable_wait_generation(
     );
 }
 
+#[cfg(holon_lib_test_shard = "a")]
 #[tokio::test]
 async fn lifecycle_settlement_adopts_wait_without_work_item_turn_binding() {
     let dir = tempdir().unwrap();
@@ -8797,6 +8884,7 @@ async fn lifecycle_settlement_adopts_wait_without_work_item_turn_binding() {
     );
 }
 
+#[cfg(holon_lib_test_shard = "a")]
 #[tokio::test]
 async fn terminal_task_wait_handoffs_conversation_to_work_item_wait() {
     let dir = tempdir().unwrap();
@@ -8937,31 +9025,37 @@ async fn terminal_task_wait_handoffs_conversation_to_work_item_wait() {
     ));
 }
 
+#[cfg(holon_lib_test_shard = "a")]
 #[tokio::test]
 async fn late_task_result_wait_with_independent_blocker_keeps_exact_model_reentry() {
     task_result_wait_preserves_business_blocker(true, false, false).await;
 }
 
+#[cfg(holon_lib_test_shard = "a")]
 #[tokio::test]
 async fn task_result_wait_with_independent_blocker_keeps_exact_model_reentry() {
     task_result_wait_preserves_business_blocker(false, false, false).await;
 }
 
+#[cfg(holon_lib_test_shard = "a")]
 #[tokio::test]
 async fn late_task_result_wait_with_independent_blocker_survives_restart() {
     task_result_wait_preserves_business_blocker(true, true, false).await;
 }
 
+#[cfg(holon_lib_test_shard = "a")]
 #[tokio::test]
 async fn task_result_wait_with_independent_blocker_survives_restart() {
     task_result_wait_preserves_business_blocker(false, true, false).await;
 }
 
+#[cfg(holon_lib_test_shard = "a")]
 #[tokio::test]
 async fn late_task_result_wait_with_explicit_blocker_keeps_exact_model_reentry() {
     task_result_wait_preserves_business_blocker(true, false, true).await;
 }
 
+#[cfg(holon_lib_test_shard = "a")]
 #[tokio::test]
 async fn task_result_wait_with_explicit_blocker_keeps_exact_model_reentry() {
     task_result_wait_preserves_business_blocker(false, false, true).await;
@@ -9653,6 +9747,7 @@ async fn task_result_wait_preserves_business_blocker_inner(
 // A same-text independent blocker must stay authoritative: blocker ownership
 // is decided by registration provenance (`blocked_by_wait_id`), never by
 // display-text equality.
+#[cfg(holon_lib_test_shard = "a")]
 #[tokio::test]
 async fn late_task_result_wait_with_same_text_independent_blocker_keeps_blocker() {
     late_task_result_wait_with_same_text_independent_blocker_keeps_blocker_fixture().await;
@@ -9954,6 +10049,7 @@ async fn late_task_result_wait_with_same_text_independent_blocker_keeps_blocker_
 
 // A blocker derived by a replaced task wait is taken over by the new task
 // wait, so the settlement of the exact task result can still clear it.
+#[cfg(holon_lib_test_shard = "a")]
 #[tokio::test]
 async fn late_task_result_wait_replacing_task_wait_takes_over_derived_blocker() {
     late_task_result_wait_replacing_task_wait_takes_over_derived_blocker_fixture().await;
@@ -10187,6 +10283,7 @@ async fn late_task_result_wait_replacing_task_wait_takes_over_derived_blocker_in
     assert_eq!(*provider.calls.lock().await, 1);
 }
 
+#[cfg(holon_lib_test_shard = "a")]
 #[tokio::test]
 async fn lifecycle_wait_handoff_to_work_item_wait_is_atomic_idempotent_and_restart_safe() {
     let dir = tempdir().unwrap();
@@ -10469,6 +10566,7 @@ async fn lifecycle_wait_handoff_to_work_item_wait_is_atomic_idempotent_and_resta
     );
 }
 
+#[cfg(holon_lib_test_shard = "a")]
 #[tokio::test]
 async fn exact_task_rejoin_uses_canonical_wait_when_work_item_revision_advanced() {
     let dir = tempdir().unwrap();
@@ -10649,6 +10747,7 @@ async fn exact_task_rejoin_uses_canonical_wait_when_work_item_revision_advanced(
     );
 }
 
+#[cfg(holon_lib_test_shard = "a")]
 #[tokio::test]
 async fn sibling_task_result_is_preserved_without_consuming_current_wait() {
     let dir = tempdir().unwrap();
@@ -10934,6 +11033,7 @@ async fn sibling_task_result_is_preserved_without_consuming_current_wait() {
     );
 }
 
+#[cfg(holon_lib_test_shard = "a")]
 #[tokio::test]
 async fn interrupted_activation_releases_admitted_task_result_to_next_scheduler_activation() {
     let mut harness = LifecycleHarness::new();
@@ -11538,6 +11638,7 @@ fn closed_owner_with_persisted_task_result_fixture() -> std::pin::Pin<
     })
 }
 
+#[cfg(holon_lib_test_shard = "a")]
 #[tokio::test]
 async fn task_rejoin_with_closed_owner_is_settled_without_reentry() {
     let (_dir, _workspace, runtime, stale) =
@@ -11621,6 +11722,7 @@ async fn task_rejoin_with_closed_owner_is_settled_without_reentry() {
     assert_eq!(scheduled.message.id, valid.id);
 }
 
+#[cfg(holon_lib_test_shard = "a")]
 #[tokio::test]
 async fn task_rejoin_missing_from_execution_partition_is_preserved_without_reentry() {
     let (_dir, _workspace, runtime, _work_item, result) =
@@ -11697,6 +11799,7 @@ async fn task_rejoin_missing_from_execution_partition_is_preserved_without_reent
         }));
 }
 
+#[cfg(holon_lib_test_shard = "a")]
 #[tokio::test]
 async fn exact_task_rejoin_claim_is_atomic_and_restart_safe() {
     let dir = tempdir().unwrap();
@@ -11915,6 +12018,7 @@ async fn exact_task_rejoin_claim_is_atomic_and_restart_safe() {
     );
 }
 
+#[cfg(holon_lib_test_shard = "a")]
 #[tokio::test]
 async fn terminal_task_result_without_work_item_is_canonical_reducer_only() {
     let dir = tempdir().unwrap();
@@ -12014,6 +12118,7 @@ async fn terminal_task_result_without_work_item_is_canonical_reducer_only() {
     );
 }
 
+#[cfg(holon_lib_test_shard = "a")]
 #[tokio::test]
 async fn bootstrap_completion_releases_all_waiters() {
     let dir = tempdir().unwrap();
@@ -12051,6 +12156,7 @@ async fn bootstrap_completion_releases_all_waiters() {
     .expect("all bootstrap waiters should observe the durable result");
 }
 
+#[cfg(holon_lib_test_shard = "a")]
 #[tokio::test]
 async fn agent_scope_terminal_result_persists_obligation_without_consuming_unrelated_wait() {
     for status in [
@@ -12173,6 +12279,7 @@ async fn agent_scope_terminal_result_persists_obligation_without_consuming_unrel
     }
 }
 
+#[cfg(holon_lib_test_shard = "a")]
 #[tokio::test]
 async fn terminal_task_result_resumes_exact_agent_lifecycle_task_wait() {
     let dir = tempdir().unwrap();
@@ -12290,6 +12397,7 @@ async fn terminal_task_result_resumes_exact_agent_lifecycle_task_wait() {
     ));
 }
 
+#[cfg(holon_lib_test_shard = "a")]
 #[tokio::test]
 async fn exact_agent_lifecycle_task_wait_runs_one_model_continuation() {
     let dir = tempdir().unwrap();
@@ -12382,6 +12490,7 @@ async fn exact_agent_lifecycle_task_wait_runs_one_model_continuation() {
     runner.abort();
 }
 
+#[cfg(holon_lib_test_shard = "a")]
 #[tokio::test(start_paused = true)]
 async fn restarted_interrupted_unbound_operator_prompt_does_not_block_resent_prompt() {
     let mut harness = LifecycleHarness::new();
@@ -12473,6 +12582,7 @@ async fn restarted_interrupted_unbound_operator_prompt_does_not_block_resent_pro
         }));
 }
 
+#[cfg(holon_lib_test_shard = "a")]
 #[tokio::test]
 async fn authoritative_explicit_operator_binding_ignores_unrelated_waits() {
     let dir = tempdir().unwrap();
@@ -12644,6 +12754,7 @@ async fn authoritative_explicit_operator_binding_ignores_unrelated_waits() {
     );
 }
 
+#[cfg(holon_lib_test_shard = "a")]
 #[tokio::test]
 async fn canonical_processed_settlement_without_terminal_turn_fails_closed() {
     let dir = tempdir().unwrap();
@@ -12737,6 +12848,7 @@ async fn canonical_processed_settlement_without_terminal_turn_fails_closed() {
     );
 }
 
+#[cfg(holon_lib_test_shard = "a")]
 #[tokio::test]
 async fn trusted_operator_conversation_owner_flows_from_admission_to_terminal_turn() {
     let dir = tempdir().unwrap();
@@ -12869,6 +12981,7 @@ async fn trusted_operator_conversation_owner_flows_from_admission_to_terminal_tu
     );
 }
 
+#[cfg(holon_lib_test_shard = "a")]
 #[tokio::test]
 async fn authoritative_explicit_operator_missing_target_is_bounded_across_restart() {
     let dir = tempdir().unwrap();
@@ -12981,6 +13094,7 @@ async fn authoritative_explicit_operator_missing_target_is_bounded_across_restar
         }));
 }
 
+#[cfg(holon_lib_test_shard = "a")]
 #[tokio::test]
 async fn authoritative_completion_terminalizes_canonical_work_and_binds_report() {
     let dir = tempdir().unwrap();
@@ -13109,6 +13223,7 @@ async fn authoritative_completion_terminalizes_canonical_work_and_binds_report()
     );
 }
 
+#[cfg(holon_lib_test_shard = "a")]
 #[tokio::test]
 async fn authoritative_completion_resumes_parent_canonically_and_writes_terminal_once() {
     let dir = tempdir().unwrap();
@@ -13499,6 +13614,7 @@ async fn authoritative_completion_resumes_parent_canonically_and_writes_terminal
     host.shutdown().await.unwrap();
 }
 
+#[cfg(holon_lib_test_shard = "a")]
 #[tokio::test]
 async fn authoritative_completion_cancels_active_child_wait_and_resumes_parent() {
     let dir = tempdir().unwrap();
@@ -13709,6 +13825,7 @@ async fn authoritative_completion_cancels_active_child_wait_and_resumes_parent()
     );
 }
 
+#[cfg(holon_lib_test_shard = "a")]
 #[tokio::test]
 async fn terminal_settlement_fault_rolls_back_all_facts_and_retry_is_idempotent() {
     for fault in PRE_COMMIT_FAULTS {
@@ -13910,6 +14027,7 @@ async fn terminal_settlement_fault_rolls_back_all_facts_and_retry_is_idempotent(
     }
 }
 
+#[cfg(holon_lib_test_shard = "a")]
 #[tokio::test]
 async fn standalone_terminal_transition_fault_rolls_back_and_restart_replays_exactly_once() {
     for fault in TERMINAL_PRE_COMMIT_FAULTS {
@@ -14053,6 +14171,7 @@ async fn standalone_terminal_transition_fault_rolls_back_and_restart_replays_exa
     }
 }
 
+#[cfg(holon_lib_test_shard = "a")]
 #[tokio::test]
 async fn standalone_terminal_transition_survives_post_commit_effect_faults() {
     for (fault, expected_effect) in POST_COMMIT_FAULTS
@@ -14164,6 +14283,7 @@ async fn standalone_terminal_transition_survives_post_commit_effect_faults() {
     }
 }
 
+#[cfg(holon_lib_test_shard = "a")]
 #[tokio::test]
 async fn standalone_aborted_terminal_commits_terminal_and_abort_audits_atomically() {
     for fault in TERMINAL_PRE_COMMIT_FAULTS {
@@ -14237,6 +14357,7 @@ async fn standalone_aborted_terminal_commits_terminal_and_abort_audits_atomicall
     }
 }
 
+#[cfg(holon_lib_test_shard = "a")]
 #[tokio::test]
 async fn terminal_settlement_survives_post_commit_effect_faults() {
     for (fault, expected_effect) in POST_COMMIT_FAULTS {
@@ -14390,6 +14511,7 @@ async fn terminal_settlement_survives_post_commit_effect_faults() {
     }
 }
 
+#[cfg(holon_lib_test_shard = "a")]
 #[tokio::test]
 async fn runtime_failure_terminal_fault_retries_confirmed_rollback_and_commits_failure_evidence() {
     let dir = tempdir().unwrap();
@@ -14524,6 +14646,7 @@ async fn runtime_failure_terminal_fault_retries_confirmed_rollback_and_commits_f
         }));
 }
 
+#[cfg(holon_lib_test_shard = "a")]
 #[tokio::test]
 async fn terminal_settlement_readback_rejects_terminal_queue_and_turn_with_open_attempt() {
     for (status, expected_attempt_state) in [
@@ -14640,6 +14763,7 @@ async fn terminal_settlement_readback_rejects_terminal_queue_and_turn_with_open_
     }
 }
 
+#[cfg(holon_lib_test_shard = "a")]
 #[tokio::test]
 async fn terminal_settlement_materialization_failure_is_fenced_and_aborted() {
     let dir = tempdir().unwrap();
@@ -14787,6 +14911,7 @@ async fn terminal_settlement_materialization_failure_is_fenced_and_aborted() {
     assert!(retained_work_item.result_brief_id.is_none());
 }
 
+#[cfg(holon_lib_test_shard = "a")]
 #[tokio::test]
 async fn successful_turn_terminal_fault_is_fenced_and_aborted_without_losing_earlier_brief() {
     let dir = tempdir().unwrap();
@@ -14875,6 +15000,7 @@ async fn successful_turn_terminal_fault_is_fenced_and_aborted_without_losing_ear
     runner.abort();
 }
 
+#[cfg(holon_lib_test_shard = "a")]
 #[tokio::test]
 async fn interrupted_terminal_fault_retries_confirmed_rollback_and_closes_claim() {
     let dir = tempdir().unwrap();
@@ -15000,6 +15126,7 @@ async fn interrupted_terminal_fault_retries_confirmed_rollback_and_closes_claim(
         }));
 }
 
+#[cfg(holon_lib_test_shard = "a")]
 #[tokio::test]
 async fn completed_production_settlement_uses_exact_bound_result_brief() {
     let dir = tempdir().unwrap();
@@ -15202,6 +15329,7 @@ async fn completed_production_settlement_uses_exact_bound_result_brief() {
     ));
 }
 
+#[cfg(holon_lib_test_shard = "a")]
 #[tokio::test]
 async fn completed_wait_resume_settlement_accepts_exact_reconciliation_revision() {
     let dir = tempdir().unwrap();
@@ -15446,6 +15574,7 @@ async fn completed_wait_resume_settlement_accepts_exact_reconciliation_revision(
     ));
 }
 
+#[cfg(holon_lib_test_shard = "a")]
 #[tokio::test]
 async fn completed_production_settlement_interrupts_mismatched_completion_execution() {
     use crate::runtime::resident_work::{WorkCaptureRequest, WorkFamily, WorkKey};
@@ -15646,6 +15775,7 @@ async fn completed_production_settlement_interrupts_mismatched_completion_execut
     );
 }
 
+#[cfg(holon_lib_test_shard = "a")]
 #[tokio::test]
 async fn completed_production_settlement_interrupts_without_result_report() {
     let dir = tempdir().unwrap();
@@ -15758,6 +15888,7 @@ async fn completed_production_settlement_interrupts_without_result_report() {
     ));
 }
 
+#[cfg(holon_lib_test_shard = "a")]
 #[tokio::test]
 async fn production_protocol_settlement_fault_rolls_back_queue_and_protocol_facts() {
     for fault in PRE_COMMIT_FAULTS {
@@ -15867,6 +15998,7 @@ async fn production_protocol_settlement_fault_rolls_back_queue_and_protocol_fact
     }
 }
 
+#[cfg(holon_lib_test_shard = "a")]
 #[tokio::test]
 async fn message_admission_fault_rolls_back_all_canonical_facts() {
     for fault in PRE_COMMIT_FAULTS {
@@ -15933,6 +16065,7 @@ async fn message_admission_fault_rolls_back_all_canonical_facts() {
     }
 }
 
+#[cfg(holon_lib_test_shard = "a")]
 #[tokio::test]
 async fn control_message_admission_does_not_depend_on_retired_rollout_rows() {
     let dir = tempdir().unwrap();
@@ -15987,6 +16120,7 @@ async fn control_message_admission_does_not_depend_on_retired_rollout_rows() {
     assert_eq!(entries[0].status, QueueEntryStatus::Queued);
 }
 
+#[cfg(holon_lib_test_shard = "a")]
 #[tokio::test]
 async fn run_loop_stale_head_noops_before_canonical_claim() {
     let dir = tempdir().unwrap();
@@ -16051,6 +16185,7 @@ async fn run_loop_stale_head_noops_before_canonical_claim() {
     }));
 }
 
+#[cfg(holon_lib_test_shard = "a")]
 #[tokio::test]
 async fn stale_work_queue_revision_is_dropped_before_canonical_claim() {
     let dir = tempdir().unwrap();
@@ -16140,6 +16275,7 @@ async fn stale_work_queue_revision_is_dropped_before_canonical_claim() {
         }));
 }
 
+#[cfg(holon_lib_test_shard = "a")]
 #[tokio::test]
 async fn run_loop_idle_sleep_records_scheduler_owned_posture_decision() {
     let dir = tempdir().unwrap();
@@ -16180,6 +16316,7 @@ async fn run_loop_idle_sleep_records_scheduler_owned_posture_decision() {
     runner.abort();
 }
 
+#[cfg(holon_lib_test_shard = "a")]
 #[tokio::test]
 async fn run_loop_idle_sleep_rechecks_queue_before_transition() {
     let dir = tempdir().unwrap();
@@ -16232,6 +16369,7 @@ async fn run_loop_idle_sleep_rechecks_queue_before_transition() {
     }));
 }
 
+#[cfg(holon_lib_test_shard = "a")]
 #[tokio::test]
 async fn run_loop_idle_sleep_refreshes_sleeping_until_when_already_asleep() {
     let dir = tempdir().unwrap();
@@ -16252,10 +16390,10 @@ async fn run_loop_idle_sleep_refreshes_sleeping_until_when_already_asleep() {
     let previous_deadline = Utc::now() + chrono::Duration::seconds(60);
     let next_deadline = Utc::now() + chrono::Duration::seconds(5);
     {
-        let mut guard = runtime.inner.agent.lock().await;
+        let mut guard = runtime.begin_mutation().await.unwrap();
         guard.state.status = AgentStatus::Asleep;
         guard.state.sleeping_until = Some(previous_deadline);
-        guard.persist_state(&runtime.inner.storage).unwrap();
+        guard.persist_state(&runtime.inner.storage).await.unwrap();
     }
 
     let transition = scheduler_executor::SchedulerDecisionExecutor::new(&runtime)
@@ -16279,6 +16417,7 @@ async fn run_loop_idle_sleep_refreshes_sleeping_until_when_already_asleep() {
         .any(|event| event.kind == "agent_state_changed"));
 }
 
+#[cfg(holon_lib_test_shard = "a")]
 #[tokio::test]
 async fn already_asleep_lifecycle_sleep_refresh_skips_posture_and_state_changed_audits() {
     let dir = tempdir().unwrap();
@@ -16321,6 +16460,7 @@ async fn already_asleep_lifecycle_sleep_refresh_skips_posture_and_state_changed_
         .any(|event| event.kind == "agent_state_changed"));
 }
 
+#[cfg(holon_lib_test_shard = "a")]
 #[tokio::test]
 async fn stopped_lifecycle_sleep_cannot_overwrite_stop_or_spawn_wake() {
     for duration_ms in [None, Some(60_000)] {
@@ -16365,6 +16505,7 @@ async fn stopped_lifecycle_sleep_cannot_overwrite_stop_or_spawn_wake() {
     }
 }
 
+#[cfg(holon_lib_test_shard = "a")]
 #[tokio::test]
 async fn awake_lifecycle_sleep_records_posture_and_state_changed_audits() {
     let dir = tempdir().unwrap();
@@ -16405,6 +16546,7 @@ async fn awake_lifecycle_sleep_records_posture_and_state_changed_audits() {
         .any(|event| event.kind == "agent_state_changed"));
 }
 
+#[cfg(holon_lib_test_shard = "a")]
 #[tokio::test]
 async fn run_loop_idle_sleep_preserves_existing_timed_sleep_when_no_recheck() {
     let dir = tempdir().unwrap();
@@ -16424,10 +16566,10 @@ async fn run_loop_idle_sleep_preserves_existing_timed_sleep_when_no_recheck() {
     .unwrap();
     let existing_deadline = Utc::now() + chrono::Duration::milliseconds(50);
     {
-        let mut guard = runtime.inner.agent.lock().await;
+        let mut guard = runtime.begin_mutation().await.unwrap();
         guard.state.status = AgentStatus::Asleep;
         guard.state.sleeping_until = Some(existing_deadline);
-        guard.persist_state(&runtime.inner.storage).unwrap();
+        guard.persist_state(&runtime.inner.storage).await.unwrap();
     }
 
     let transition = scheduler_executor::SchedulerDecisionExecutor::new(&runtime)
@@ -16448,6 +16590,7 @@ async fn run_loop_idle_sleep_preserves_existing_timed_sleep_when_no_recheck() {
     }));
 }
 
+#[cfg(holon_lib_test_shard = "a")]
 #[tokio::test]
 async fn explicit_sleep_transition_records_scheduler_owned_posture_decision() {
     let dir = tempdir().unwrap();
@@ -16488,6 +16631,7 @@ async fn explicit_sleep_transition_records_scheduler_owned_posture_decision() {
     }));
 }
 
+#[cfg(holon_lib_test_shard = "a")]
 #[tokio::test]
 async fn indefinite_sleep_with_current_runnable_work_item_emits_continuation_tick() {
     let dir = tempdir().unwrap();
@@ -16554,6 +16698,7 @@ async fn indefinite_sleep_with_current_runnable_work_item_emits_continuation_tic
     }));
 }
 
+#[cfg(holon_lib_test_shard = "a")]
 #[tokio::test]
 async fn lifecycle_sleep_work_queue_override_preserves_active_run() {
     let dir = tempdir().unwrap();
@@ -16604,6 +16749,7 @@ async fn lifecycle_sleep_work_queue_override_preserves_active_run() {
         .any(|event| event.data["reason"] == "sleep_overridden_runnable_work"));
 }
 
+#[cfg(holon_lib_test_shard = "a")]
 #[tokio::test]
 async fn indefinite_sleep_with_queued_runnable_work_item_emits_selection_tick() {
     let dir = tempdir().unwrap();
@@ -16658,6 +16804,7 @@ async fn indefinite_sleep_with_queued_runnable_work_item_emits_selection_tick() 
     );
 }
 
+#[cfg(holon_lib_test_shard = "a")]
 #[tokio::test]
 async fn idle_tick_ignores_read_model_runnable_when_execution_is_paused() {
     let dir = tempdir().unwrap();
@@ -16713,6 +16860,7 @@ async fn idle_tick_ignores_read_model_runnable_when_execution_is_paused() {
         )));
 }
 
+#[cfg(holon_lib_test_shard = "a")]
 #[tokio::test]
 async fn restart_sleep_ignores_read_model_runnable_when_execution_is_paused() {
     let dir = tempdir().unwrap();
@@ -16786,6 +16934,7 @@ async fn restart_sleep_ignores_read_model_runnable_when_execution_is_paused() {
         .all(|event| event.data["reason"] != "sleep_overridden_runnable_work"));
 }
 
+#[cfg(holon_lib_test_shard = "a")]
 #[tokio::test]
 async fn idle_tick_ignores_runnable_execution_with_stale_source_revision() {
     let dir = tempdir().unwrap();
@@ -16826,6 +16975,7 @@ async fn idle_tick_ignores_runnable_execution_with_stale_source_revision() {
     assert!(!runtime.maybe_emit_pending_system_tick(None).await.unwrap());
 }
 
+#[cfg(holon_lib_test_shard = "a")]
 #[tokio::test]
 async fn indefinite_sleep_with_waiting_operator_or_task_work_item_can_sleep() {
     for waiting_kind in ["operator", "task"] {
@@ -16917,6 +17067,7 @@ async fn indefinite_sleep_with_waiting_operator_or_task_work_item_can_sleep() {
     }
 }
 
+#[cfg(holon_lib_test_shard = "a")]
 #[tokio::test]
 async fn wait_for_task_result_marks_work_item_waiting_and_allows_sleep() {
     let dir = tempdir().unwrap();
@@ -16988,6 +17139,7 @@ async fn wait_for_task_result_marks_work_item_waiting_and_allows_sleep() {
         .all(|event| event.data["reason"] != "sleep_overridden_runnable_work"));
 }
 
+#[cfg(holon_lib_test_shard = "a")]
 #[tokio::test]
 async fn register_wait_for_validates_required_runtime_resources() {
     let dir = tempdir().unwrap();
@@ -17056,6 +17208,7 @@ async fn register_wait_for_validates_required_runtime_resources() {
     assert_eq!(operator_wait.condition.subject_ref, None);
 }
 
+#[cfg(holon_lib_test_shard = "a")]
 #[tokio::test]
 async fn prepared_task_wait_rejects_task_completion_race_without_registering_wait() {
     let dir = tempdir().unwrap();
@@ -17151,6 +17304,7 @@ async fn prepared_task_wait_rejects_task_completion_race_without_registering_wai
     );
 }
 
+#[cfg(holon_lib_test_shard = "a")]
 #[tokio::test]
 async fn register_wait_for_external_recheck_sets_recoverable_work_item_deadline() {
     let dir = tempdir().unwrap();
@@ -17206,6 +17360,7 @@ async fn register_wait_for_external_recheck_sets_recoverable_work_item_deadline(
     );
 }
 
+#[cfg(holon_lib_test_shard = "a")]
 #[tokio::test]
 async fn canonical_task_result_claim_resolves_wait_and_clears_matching_blocker() {
     let dir = tempdir().unwrap();
@@ -17322,6 +17477,7 @@ async fn canonical_task_result_claim_resolves_wait_and_clears_matching_blocker()
         .any(|event| event.kind == "wait_condition_triggered"));
 }
 
+#[cfg(holon_lib_test_shard = "a")]
 #[tokio::test]
 async fn resolved_task_result_uses_canonical_wait() {
     let dir = tempdir().unwrap();
@@ -17448,6 +17604,7 @@ async fn resolved_task_result_uses_canonical_wait() {
     ));
 }
 
+#[cfg(holon_lib_test_shard = "a")]
 #[tokio::test]
 async fn message_admission_wakes_asleep_and_booting_agents() {
     for status in [AgentStatus::Asleep, AgentStatus::Booting] {
@@ -17467,10 +17624,10 @@ async fn message_admission_wakes_asleep_and_booting_agents() {
         )
         .unwrap();
         {
-            let mut guard = runtime.inner.agent.lock().await;
+            let mut guard = runtime.begin_mutation().await.unwrap();
             guard.state.status = status.clone();
             guard.state.sleeping_until = Some(Utc::now() + chrono::Duration::seconds(60));
-            guard.persist_state(&runtime.inner.storage).unwrap();
+            guard.persist_state(&runtime.inner.storage).await.unwrap();
         }
 
         runtime
@@ -17528,6 +17685,7 @@ async fn message_admission_wakes_asleep_and_booting_agents() {
     }
 }
 
+#[cfg(holon_lib_test_shard = "a")]
 #[tokio::test]
 async fn message_admission_does_not_wake_stopped_agents() {
     let dir = tempdir().unwrap();
@@ -17546,9 +17704,9 @@ async fn message_admission_does_not_wake_stopped_agents() {
     )
     .unwrap();
     {
-        let mut guard = runtime.inner.agent.lock().await;
+        let mut guard = runtime.begin_mutation().await.unwrap();
         guard.state.status = AgentStatus::Stopped;
-        guard.persist_state(&runtime.inner.storage).unwrap();
+        guard.persist_state(&runtime.inner.storage).await.unwrap();
     }
 
     runtime
@@ -17577,6 +17735,7 @@ async fn message_admission_does_not_wake_stopped_agents() {
     }));
 }
 
+#[cfg(holon_lib_test_shard = "a")]
 #[tokio::test]
 async fn control_start_hands_stopped_agent_to_scheduler_without_model_turn() {
     let dir = tempdir().unwrap();
@@ -17649,6 +17808,7 @@ async fn control_start_hands_stopped_agent_to_scheduler_without_model_turn() {
     }));
 }
 
+#[cfg(holon_lib_test_shard = "a")]
 #[tokio::test]
 async fn control_stop_clears_autonomous_sleep_and_wake_posture() {
     let dir = tempdir().unwrap();
@@ -17705,6 +17865,7 @@ async fn control_stop_clears_autonomous_sleep_and_wake_posture() {
     }));
 }
 
+#[cfg(holon_lib_test_shard = "a")]
 #[tokio::test]
 async fn control_stop_cancels_waits_and_discards_pending_input() {
     let dir = tempdir().unwrap();
@@ -17803,6 +17964,7 @@ async fn control_stop_cancels_waits_and_discards_pending_input() {
     assert_eq!(runtime.agent_state().await.unwrap().pending, 0);
 }
 
+#[cfg(holon_lib_test_shard = "a")]
 #[tokio::test(start_paused = true)]
 async fn sleep_wake_task_ignores_stale_sleeping_until() {
     let dir = tempdir().unwrap();
@@ -17848,6 +18010,7 @@ async fn sleep_wake_task_ignores_stale_sleeping_until() {
     );
 }
 
+#[cfg(holon_lib_test_shard = "a")]
 #[tokio::test]
 async fn enqueue_retries_stale_agent_state_from_safe_persisted_baseline() {
     let dir = tempdir().unwrap();
@@ -17924,6 +18087,7 @@ async fn enqueue_retries_stale_agent_state_from_safe_persisted_baseline() {
     }
 }
 
+#[cfg(holon_lib_test_shard = "a")]
 #[tokio::test]
 async fn enqueue_stale_agent_state_fails_closed_when_local_state_is_dirty() {
     let dir = tempdir().unwrap();
@@ -18007,6 +18171,7 @@ async fn enqueue_stale_agent_state_fails_closed_when_local_state_is_dirty() {
     );
 }
 
+#[cfg(holon_lib_test_shard = "a")]
 #[tokio::test]
 async fn enqueue_stale_agent_state_fails_closed_when_pending_diverges_from_queue() {
     let dir = tempdir().unwrap();
@@ -18067,6 +18232,7 @@ async fn enqueue_stale_agent_state_fails_closed_when_pending_diverges_from_queue
     assert_eq!(runtime.storage().read_agent().unwrap().unwrap().pending, 1);
 }
 
+#[cfg(holon_lib_test_shard = "a")]
 #[tokio::test]
 async fn enqueue_normalizes_operator_admission_fields() {
     let dir = tempdir().unwrap();
@@ -18135,6 +18301,7 @@ async fn enqueue_normalizes_operator_admission_fields() {
     assert_eq!(event.data["authority_class"], "operator_instruction");
 }
 
+#[cfg(holon_lib_test_shard = "a")]
 #[tokio::test]
 async fn enqueue_normalizes_runtime_followup_without_authority_upgrade() {
     let dir = tempdir().unwrap();
@@ -18184,6 +18351,7 @@ async fn enqueue_normalizes_runtime_followup_without_authority_upgrade() {
     assert_eq!(queued.authority_class, AuthorityClass::ExternalEvidence);
 }
 
+#[cfg(holon_lib_test_shard = "a")]
 #[tokio::test]
 async fn enqueue_inherits_current_work_item_and_preserves_canonical_provenance() {
     let dir = tempdir().unwrap();
@@ -18271,6 +18439,7 @@ async fn enqueue_inherits_current_work_item_and_preserves_canonical_provenance()
     ));
 }
 
+#[cfg(holon_lib_test_shard = "a")]
 #[tokio::test]
 async fn stale_bound_internal_followup_is_dropped_before_operator_resume() {
     let dir = tempdir().unwrap();
@@ -18443,6 +18612,7 @@ async fn stale_bound_internal_followup_is_dropped_before_operator_resume() {
     assert_eq!(scheduled.message.id, operator.id);
 }
 
+#[cfg(holon_lib_test_shard = "a")]
 #[tokio::test]
 async fn provider_recovery_claims_waiting_work_item_without_clearing_wait() {
     let dir = tempdir().unwrap();
@@ -18614,6 +18784,7 @@ async fn provider_recovery_claims_waiting_work_item_without_clearing_wait() {
     );
 }
 
+#[cfg(holon_lib_test_shard = "a")]
 #[tokio::test]
 async fn provider_recovery_claims_execution_waiting_projection_drift() {
     let dir = tempdir().unwrap();
@@ -18678,6 +18849,7 @@ async fn provider_recovery_claims_execution_waiting_projection_drift() {
     ));
 }
 
+#[cfg(holon_lib_test_shard = "a")]
 #[tokio::test]
 async fn malformed_provider_recovery_cannot_claim_waiting_work_item() {
     let dir = tempdir().unwrap();
@@ -18768,6 +18940,7 @@ async fn malformed_provider_recovery_cannot_claim_waiting_work_item() {
     ));
 }
 
+#[cfg(holon_lib_test_shard = "a")]
 #[tokio::test]
 async fn provider_recovery_rejects_missing_durable_source() {
     let dir = tempdir().unwrap();
@@ -18841,6 +19014,7 @@ async fn provider_recovery_rejects_missing_durable_source() {
         }));
 }
 
+#[cfg(holon_lib_test_shard = "a")]
 #[tokio::test]
 async fn triggered_wait_survives_provider_recovery_settlement_and_resumes() {
     let dir = tempdir().unwrap();
@@ -18970,6 +19144,7 @@ async fn triggered_wait_survives_provider_recovery_settlement_and_resumes() {
     );
 }
 
+#[cfg(holon_lib_test_shard = "a")]
 #[tokio::test]
 async fn provider_recovery_cannot_claim_blocked_work_item() {
     let dir = tempdir().unwrap();
@@ -19043,6 +19218,7 @@ async fn provider_recovery_cannot_claim_blocked_work_item() {
         }));
 }
 
+#[cfg(holon_lib_test_shard = "a")]
 #[tokio::test]
 async fn provider_recovery_cannot_claim_paused_execution() {
     let dir = tempdir().unwrap();
@@ -19106,6 +19282,7 @@ async fn provider_recovery_cannot_claim_paused_execution() {
         }));
 }
 
+#[cfg(holon_lib_test_shard = "a")]
 #[tokio::test]
 async fn claim_time_work_item_change_replans_and_drops_stale_internal_followup() {
     let dir = tempdir().unwrap();
@@ -19199,6 +19376,7 @@ async fn claim_time_work_item_change_replans_and_drops_stale_internal_followup()
     assert_eq!(scheduled.message.id, operator.id);
 }
 
+#[cfg(holon_lib_test_shard = "a")]
 #[tokio::test]
 async fn enqueue_does_not_bind_to_focus_without_current_turn_ownership() {
     let dir = tempdir().unwrap();
@@ -19259,6 +19437,7 @@ async fn enqueue_does_not_bind_to_focus_without_current_turn_ownership() {
     assert_eq!(message.work_item_id, None);
 }
 
+#[cfg(holon_lib_test_shard = "a")]
 #[tokio::test]
 async fn runtime_owned_followup_preserves_all_authority_classes() {
     use crate::domain::execution_protocol::ExecutionTrust;
@@ -19341,6 +19520,7 @@ async fn runtime_owned_followup_preserves_all_authority_classes() {
     }
 }
 
+#[cfg(holon_lib_test_shard = "a")]
 #[tokio::test]
 async fn runtime_owned_task_followup_preserves_task_origin_and_external_evidence() {
     let dir = tempdir().unwrap();
@@ -19405,6 +19585,7 @@ async fn runtime_owned_task_followup_preserves_task_origin_and_external_evidence
     );
 }
 
+#[cfg(holon_lib_test_shard = "a")]
 #[tokio::test]
 async fn runtime_owned_bound_task_followup_survives_scheduler_reload() {
     let dir = tempdir().unwrap();
@@ -19494,6 +19675,7 @@ async fn runtime_owned_bound_task_followup_survives_scheduler_reload() {
     ));
 }
 
+#[cfg(holon_lib_test_shard = "a")]
 #[tokio::test]
 async fn canonical_unclassified_model_reentry_is_dropped_without_blocking_next_message() {
     let dir = tempdir().unwrap();
@@ -19584,6 +19766,7 @@ async fn canonical_unclassified_model_reentry_is_dropped_without_blocking_next_m
     assert_eq!(scheduled.message.id, valid.id);
 }
 
+#[cfg(holon_lib_test_shard = "a")]
 #[tokio::test]
 async fn canonical_stale_correlated_wait_is_dropped_without_blocking_next_message() {
     let dir = tempdir().unwrap();
@@ -19726,6 +19909,7 @@ async fn canonical_stale_correlated_wait_is_dropped_without_blocking_next_messag
         }));
 }
 
+#[cfg(holon_lib_test_shard = "a")]
 #[tokio::test]
 async fn scheduler_recovery_reconciles_stale_continuation_yield_without_legacy_partition() {
     let dir = tempdir().unwrap();
@@ -19843,6 +20027,7 @@ async fn scheduler_recovery_reconciles_stale_continuation_yield_without_legacy_p
             && event.data["continuation_id"] == frame.id));
 }
 
+#[cfg(holon_lib_test_shard = "a")]
 #[tokio::test]
 async fn lifecycle_ingress_ignores_completed_work_item_lane_before_claim() {
     let dir = tempdir().unwrap();
@@ -19944,6 +20129,7 @@ async fn lifecycle_ingress_ignores_completed_work_item_lane_before_claim() {
     );
 }
 
+#[cfg(holon_lib_test_shard = "a")]
 #[tokio::test]
 async fn enqueue_normalizes_system_wake_as_coordination_with_work_item_binding() {
     let dir = tempdir().unwrap();
@@ -20000,6 +20186,7 @@ async fn enqueue_normalizes_system_wake_as_coordination_with_work_item_binding()
     );
 }
 
+#[cfg(holon_lib_test_shard = "a")]
 #[tokio::test]
 async fn enqueue_normalizes_task_rejoin_identity_and_artifact_refs() {
     let dir = tempdir().unwrap();
@@ -20061,6 +20248,7 @@ async fn enqueue_normalizes_task_rejoin_identity_and_artifact_refs() {
     assert_eq!(queued.authority_class, AuthorityClass::RuntimeInstruction);
 }
 
+#[cfg(holon_lib_test_shard = "a")]
 #[tokio::test]
 async fn enqueue_generates_turn_id_for_blank_admitted_turn_id() {
     let dir = tempdir().unwrap();
@@ -20102,6 +20290,7 @@ async fn enqueue_generates_turn_id_for_blank_admitted_turn_id() {
         .is_some_and(|turn_id| turn_id.starts_with("turn_")));
 }
 
+#[cfg(holon_lib_test_shard = "a")]
 #[tokio::test]
 async fn runtime_error_marks_queue_entry_aborted_and_persists_failed_turn() {
     let dir = tempdir().unwrap();
@@ -20180,6 +20369,7 @@ async fn runtime_error_marks_queue_entry_aborted_and_persists_failed_turn() {
     assert_eq!(turn.produced_brief_ids, vec![failure_brief.id.clone()]);
 }
 
+#[cfg(holon_lib_test_shard = "a")]
 #[tokio::test]
 async fn enqueue_normalizes_callback_payload_without_operator_elevation() {
     let dir = tempdir().unwrap();
@@ -20238,6 +20428,7 @@ async fn enqueue_normalizes_callback_payload_without_operator_elevation() {
     assert!(queued.work_item_id.is_none());
 }
 
+#[cfg(holon_lib_test_shard = "a")]
 #[tokio::test]
 async fn enqueue_does_not_project_untrusted_metadata_into_binding_fields() {
     let dir = tempdir().unwrap();
@@ -20292,6 +20483,7 @@ async fn enqueue_does_not_project_untrusted_metadata_into_binding_fields() {
     );
 }
 
+#[cfg(holon_lib_test_shard = "a")]
 #[tokio::test]
 async fn enqueue_normalizes_wake_hint_as_runtime_owned_inspection_signal() {
     let dir = tempdir().unwrap();
@@ -20355,6 +20547,7 @@ async fn enqueue_normalizes_wake_hint_as_runtime_owned_inspection_signal() {
     );
 }
 
+#[cfg(holon_lib_test_shard = "a")]
 #[tokio::test]
 async fn abort_current_run_aborts_provider_turn_and_stops_agent() {
     let dir = tempdir().unwrap();
@@ -20507,6 +20700,7 @@ async fn abort_current_run_aborts_provider_turn_and_stops_agent() {
     runner.await.unwrap().unwrap();
 }
 
+#[cfg(holon_lib_test_shard = "a")]
 #[tokio::test]
 async fn abort_current_run_idle_after_abort_keeps_agent_awake_and_accepts_next_prompt() {
     let dir = tempdir().unwrap();
@@ -20647,6 +20841,7 @@ async fn abort_current_run_idle_after_abort_keeps_agent_awake_and_accepts_next_p
     runner.await.unwrap().unwrap();
 }
 
+#[cfg(holon_lib_test_shard = "a")]
 #[tokio::test]
 async fn operator_interjection_prompt_is_interjected_before_next_provider_round() {
     let dir = tempdir().unwrap();
@@ -20804,6 +20999,7 @@ async fn operator_interjection_prompt_is_interjected_before_next_provider_round(
     runner.abort();
 }
 
+#[cfg(holon_lib_test_shard = "a")]
 #[tokio::test]
 async fn terminal_wait_leaves_late_interjection_for_next_activation() {
     let dir = tempdir().unwrap();
@@ -21016,6 +21212,7 @@ async fn terminal_wait_leaves_late_interjection_for_next_activation() {
         }));
 }
 
+#[cfg(holon_lib_test_shard = "a")]
 #[tokio::test]
 async fn operator_interjection_preserves_unified_lifecycle_attempt() {
     let dir = tempdir().unwrap();
@@ -21244,6 +21441,7 @@ async fn interjection_with_diverged_canonical_status(
     (dir, workspace, runtime, interjection)
 }
 
+#[cfg(holon_lib_test_shard = "a")]
 #[tokio::test]
 async fn operator_interjection_defers_interrupted_source_without_starving_fresh_input() {
     let (_dir, _workspace, runtime, interjection) =
@@ -21331,6 +21529,7 @@ async fn operator_interjection_defers_interrupted_source_without_starving_fresh_
         .all(|input| input.message_id != interjection.id));
 }
 
+#[cfg(holon_lib_test_shard = "a")]
 #[tokio::test]
 async fn operator_interjection_keeps_fail_closed_on_unexpected_canonical_status() {
     let (_dir, _workspace, runtime, interjection) =
@@ -21367,6 +21566,7 @@ async fn operator_interjection_keeps_fail_closed_on_unexpected_canonical_status(
         .is_some());
 }
 
+#[cfg(holon_lib_test_shard = "a")]
 #[tokio::test]
 async fn operator_interjection_distinguishes_closed_attempt_from_source_mismatch() {
     let closed_dir = tempdir().unwrap();
@@ -21489,6 +21689,7 @@ async fn operator_interjection_distinguishes_closed_attempt_from_source_mismatch
     );
 }
 
+#[cfg(holon_lib_test_shard = "a")]
 #[tokio::test]
 async fn operator_interjection_rejects_canonical_activation_without_provenance() {
     let dir = tempdir().unwrap();
@@ -21530,14 +21731,14 @@ async fn operator_interjection_rejects_canonical_activation_without_provenance()
         .await
         .unwrap();
     {
-        let mut guard = runtime.inner.agent.lock().await;
+        let mut guard = runtime.begin_mutation().await.unwrap();
         guard
             .state
             .current_execution_binding
             .as_mut()
             .expect("current execution binding")
             .admission_provenance = None;
-        guard.persist_state(&runtime.inner.storage).unwrap();
+        guard.persist_state(&runtime.inner.storage).await.unwrap();
     }
 
     let mut interjection = trusted_operator_prompt(None, "must fail closed");
@@ -21566,6 +21767,7 @@ async fn operator_interjection_rejects_canonical_activation_without_provenance()
     );
 }
 
+#[cfg(holon_lib_test_shard = "a")]
 #[tokio::test]
 async fn abort_current_run_rejects_stale_run_id() {
     let dir = tempdir().unwrap();
@@ -21642,6 +21844,7 @@ async fn abort_current_run_rejects_stale_run_id() {
     runner.await.unwrap().unwrap();
 }
 
+#[cfg(holon_lib_test_shard = "a")]
 #[tokio::test]
 async fn operator_event_runs_canonical_interactive_turn() {
     let dir = tempdir().unwrap();
@@ -21694,6 +21897,7 @@ async fn operator_event_runs_canonical_interactive_turn() {
         .any(|entry| entry.kind == TranscriptEntryKind::AssistantRound));
 }
 
+#[cfg(holon_lib_test_shard = "a")]
 #[tokio::test]
 async fn task_status_routes_only_through_task_state_reduction() {
     let dir = tempdir().unwrap();
@@ -21764,6 +21968,7 @@ async fn task_status_routes_only_through_task_state_reduction() {
     );
 }
 
+#[cfg(holon_lib_test_shard = "a")]
 #[test]
 fn task_rejoin_fence_requires_live_persisted_contract() {
     let now = Utc::now();
@@ -21797,6 +22002,7 @@ fn task_rejoin_fence_requires_live_persisted_contract() {
         .contains("does not match"));
 }
 
+#[cfg(holon_lib_test_shard = "a")]
 #[tokio::test]
 async fn unbound_task_result_reduces_without_model_reentry() {
     let dir = tempdir().unwrap();
@@ -21904,6 +22110,7 @@ async fn unbound_task_result_reduces_without_model_reentry() {
         .any(|event| event.kind == "task_result_received"));
 }
 
+#[cfg(holon_lib_test_shard = "a")]
 #[tokio::test]
 async fn task_result_records_wait_reconciliation_and_resolves_task_wait_condition() {
     let dir = tempdir().unwrap();
@@ -22036,6 +22243,7 @@ async fn task_result_records_wait_reconciliation_and_resolves_task_wait_conditio
     }));
 }
 
+#[cfg(holon_lib_test_shard = "a")]
 #[tokio::test]
 async fn timer_and_system_ticks_record_wait_reconciliation_signals() {
     let dir = tempdir().unwrap();
@@ -22157,6 +22365,7 @@ async fn timer_and_system_ticks_record_wait_reconciliation_signals() {
     );
 }
 
+#[cfg(holon_lib_test_shard = "a")]
 #[tokio::test]
 async fn same_turn_message_does_not_reconcile_wait_condition() {
     let dir = tempdir().unwrap();
@@ -22270,6 +22479,7 @@ async fn same_turn_message_does_not_reconcile_wait_condition() {
         "different-turn message must reconcile the wait"
     );
 }
+#[cfg(holon_lib_test_shard = "a")]
 #[tokio::test]
 async fn task_result_persists_reduced_state_when_agent_status_is_not_mutable() {
     let dir = tempdir().unwrap();
@@ -22359,6 +22569,7 @@ async fn task_result_persists_reduced_state_when_agent_status_is_not_mutable() {
     assert!(!active_tasks.iter().any(|task| task.id == "task-1"));
 }
 
+#[cfg(holon_lib_test_shard = "a")]
 #[tokio::test]
 async fn unknown_control_action_fails_without_mutating_runtime_state() {
     let dir = tempdir().unwrap();
@@ -22401,6 +22612,7 @@ async fn unknown_control_action_fails_without_mutating_runtime_state() {
     assert_eq!(after.current_run_id, before.current_run_id);
 }
 
+#[cfg(holon_lib_test_shard = "a")]
 #[tokio::test]
 async fn final_status_rewrite_preserves_stopped_and_asleep_states() {
     for status in [AgentStatus::Stopped, AgentStatus::Asleep] {
@@ -22447,6 +22659,7 @@ async fn final_status_rewrite_preserves_stopped_and_asleep_states() {
     }
 }
 
+#[cfg(holon_lib_test_shard = "a")]
 #[tokio::test]
 async fn incoming_transcript_entries_preserve_delivery_surface_and_correlation_metadata() {
     let dir = tempdir().unwrap();
@@ -22505,6 +22718,7 @@ async fn incoming_transcript_entries_preserve_delivery_surface_and_correlation_m
     assert_eq!(entry.data["causation_id"].as_str(), Some("cause-1"));
 }
 
+#[cfg(holon_lib_test_shard = "a")]
 #[tokio::test]
 async fn runtime_does_not_force_completion_after_post_verification_stagnation() {
     let dir = tempdir().unwrap();
@@ -22548,6 +22762,7 @@ async fn runtime_does_not_force_completion_after_post_verification_stagnation() 
     );
 }
 
+#[cfg(holon_lib_test_shard = "a")]
 #[tokio::test]
 async fn runtime_skills_view_filters_active_skills_to_effective_registry_snapshot() {
     let dir = tempdir().unwrap();
@@ -22619,6 +22834,7 @@ async fn runtime_skills_view_filters_active_skills_to_effective_registry_snapsho
     assert_eq!(skills.active_skills[0].skill_id, discoverable.skill_id);
 }
 
+#[cfg(holon_lib_test_shard = "a")]
 #[tokio::test]
 async fn reading_discovered_skill_marks_it_active_and_promotes_on_success() {
     let dir = tempdir().unwrap();
@@ -22721,6 +22937,7 @@ async fn reading_discovered_skill_marks_it_active_and_promotes_on_success() {
     assert!(activation.data.get("run_id").is_some());
 }
 
+#[cfg(holon_lib_test_shard = "a")]
 #[tokio::test]
 async fn batch_command_reading_discovered_skill_marks_it_active() {
     let (_dir, _workspace, runtime) = run_skill_activation_probe(
@@ -22752,6 +22969,7 @@ async fn batch_command_reading_discovered_skill_marks_it_active() {
     assert_eq!(activation.data["path"], activation.data["entrypoint_path"]);
 }
 
+#[cfg(holon_lib_test_shard = "a")]
 #[tokio::test]
 async fn command_running_skill_script_marks_it_active_with_script_reason() {
     let (_dir, _workspace, runtime) = run_skill_activation_probe(
@@ -22788,6 +23006,7 @@ async fn command_running_skill_script_marks_it_active_with_script_reason() {
         .ends_with(".agents/skills/demo/SKILL.md"));
 }
 
+#[cfg(holon_lib_test_shard = "a")]
 #[tokio::test]
 async fn batch_skipped_skill_command_does_not_mark_skill_active() {
     let (_dir, _workspace, runtime) = run_skill_activation_probe(
@@ -22931,6 +23150,7 @@ fn skill_activation_event(runtime: &RuntimeHandle, skill_id: &str) -> AuditEvent
         .expect("skill_activated event should be recorded")
 }
 
+#[cfg(holon_lib_test_shard = "a")]
 #[test]
 fn sanitize_subagent_result_removes_think_and_tool_markup() {
     let input = r#"I'll inspect the workspace first.
@@ -22951,6 +23171,7 @@ Final concise answer."#;
     assert!(cleaned.contains("Final concise answer."));
 }
 
+#[cfg(holon_lib_test_shard = "a")]
 #[test]
 fn sanitize_subagent_result_removes_single_line_tool_markup_and_system_lines() {
     let input = r#"[SYSTEM] Updating plan
@@ -22965,6 +23186,7 @@ Final answer with grounded content."#;
     assert!(cleaned.contains("Final answer with grounded content."));
 }
 
+#[cfg(holon_lib_test_shard = "a")]
 #[test]
 fn sanitize_subagent_result_drops_unclosed_think_block() {
     let input = "I'll inspect this first.\n<think>\nhidden\nstill hidden";
@@ -22972,6 +23194,7 @@ fn sanitize_subagent_result_drops_unclosed_think_block() {
     assert_eq!(cleaned, "I'll inspect this first.");
 }
 
+#[cfg(holon_lib_test_shard = "a")]
 #[test]
 fn sanitize_subagent_result_preserves_english_result_prefixes() {
     let cleaned = sanitize_subagent_result(
@@ -22983,6 +23206,7 @@ fn sanitize_subagent_result_preserves_english_result_prefixes() {
     );
 }
 
+#[cfg(holon_lib_test_shard = "a")]
 #[test]
 fn sanitize_subagent_result_preserves_chinese_final_report() {
     let input = "结论：已经定位到问题。\n相关文件：src/runtime/subagent.rs\n验证：cargo test -q";
@@ -22990,6 +23214,7 @@ fn sanitize_subagent_result_preserves_chinese_final_report() {
     assert_eq!(cleaned, input);
 }
 
+#[cfg(holon_lib_test_shard = "a")]
 #[test]
 fn runtime_failure_summary_preserves_exact_limit_without_ellipsis() {
     let message = "x".repeat(200);
@@ -23002,6 +23227,7 @@ fn runtime_failure_summary_preserves_exact_limit_without_ellipsis() {
     assert!(!summary.ends_with('…'));
 }
 
+#[cfg(holon_lib_test_shard = "a")]
 #[test]
 fn runtime_failure_summary_keeps_prefix_for_long_single_segment() {
     let message = "x".repeat(260);
@@ -23015,6 +23241,7 @@ fn runtime_failure_summary_keeps_prefix_for_long_single_segment() {
     assert_ne!(summary, "…");
 }
 
+#[cfg(holon_lib_test_shard = "a")]
 #[test]
 fn runtime_failure_summary_truncates_exact_budget_before_ellipsis() {
     let message = format!("{} {}", "x".repeat(200), "tail");
@@ -23028,6 +23255,7 @@ fn runtime_failure_summary_truncates_exact_budget_before_ellipsis() {
     assert_eq!(summary, expected);
 }
 
+#[cfg(holon_lib_test_shard = "a")]
 #[test]
 fn wake_hint_preserved_when_replaced_during_critical_window() {
     use tokio::runtime::Runtime;
@@ -23119,7 +23347,7 @@ fn wake_hint_preserved_when_replaced_during_critical_window() {
     // Replace the hint while emit thread is blocked at checkpoint
     rt.block_on(async {
         // Acquire the lock and update the hint
-        let mut guard = runtime.inner.agent.lock().await;
+        let mut guard = runtime.begin_mutation().await.unwrap();
         guard.state.pending_wake_hint = Some(PendingWakeHint {
             reason: "new-hint".into(),
             description: None,
@@ -23133,7 +23361,7 @@ fn wake_hint_preserved_when_replaced_during_critical_window() {
             causation_id: None,
             created_at: Utc::now(),
         });
-        guard.persist_state(&runtime.inner.storage).unwrap();
+        guard.persist_state(&runtime.inner.storage).await.unwrap();
         drop(guard);
     });
 
@@ -23155,6 +23383,7 @@ fn wake_hint_preserved_when_replaced_during_critical_window() {
     assert!(events.iter().any(|e| e.kind == "system_tick_emitted"));
 }
 
+#[cfg(holon_lib_test_shard = "a")]
 #[tokio::test]
 async fn register_wait_for_agent_scoped_cancels_prior_agent_scoped_waits() {
     let dir = tempdir().unwrap();
@@ -23220,6 +23449,7 @@ async fn register_wait_for_agent_scoped_cancels_prior_agent_scoped_waits() {
     assert_eq!(first_record.status, WaitConditionStatus::Cancelled);
 }
 
+#[cfg(holon_lib_test_shard = "a")]
 #[tokio::test]
 async fn register_wait_for_agent_scoped_resolves_prior_triggered_wait() {
     let dir = tempdir().unwrap();
@@ -23305,6 +23535,7 @@ async fn register_wait_for_agent_scoped_resolves_prior_triggered_wait() {
         }));
 }
 
+#[cfg(holon_lib_test_shard = "a")]
 #[tokio::test]
 async fn agent_scoped_wait_replacement_preserves_work_item_scoped_waits() {
     let dir = tempdir().unwrap();
@@ -23356,6 +23587,7 @@ async fn agent_scoped_wait_replacement_preserves_work_item_scoped_waits() {
     assert!(active.iter().any(|wait| wait.id == agent_wait.condition.id));
 }
 
+#[cfg(holon_lib_test_shard = "a")]
 #[tokio::test]
 async fn scheduler_repair_dry_run_and_apply_cancel_agent_wait() {
     let dir = tempdir().unwrap();
@@ -23433,6 +23665,7 @@ async fn scheduler_repair_dry_run_and_apply_cancel_agent_wait() {
         .is_empty());
 }
 
+#[cfg(holon_lib_test_shard = "a")]
 #[tokio::test]
 async fn scheduler_repair_only_drops_wake_only_queue_entries_with_occ() {
     let dir = tempdir().unwrap();
@@ -23548,6 +23781,7 @@ async fn scheduler_repair_only_drops_wake_only_queue_entries_with_occ() {
         .is_err());
 }
 
+#[cfg(holon_lib_test_shard = "a")]
 #[tokio::test]
 async fn stop_agent_revokes_active_external_triggers() {
     let dir = tempdir().unwrap();
@@ -23593,6 +23827,7 @@ async fn stop_agent_revokes_active_external_triggers() {
     assert_eq!(revoked.status, crate::types::ExternalTriggerStatus::Revoked);
 }
 
+#[cfg(holon_lib_test_shard = "a")]
 #[tokio::test]
 async fn post_commit_install_failure_fences_but_notification_failures_warn() {
     let dir = tempdir().unwrap();
@@ -23693,6 +23928,7 @@ async fn post_commit_install_failure_fences_but_notification_failures_warn() {
     }
 }
 
+#[cfg(holon_lib_test_shard = "a")]
 #[tokio::test]
 async fn late_notification_does_not_rebase_or_persist_agent_state() {
     let dir = tempdir().unwrap();
@@ -23828,6 +24064,7 @@ impl AgentProvider for ConversationProgressProvider {
     }
 }
 
+#[cfg(holon_lib_test_shard = "a")]
 #[tokio::test]
 async fn conversation_stream_exposes_progress_and_tool_before_result_delivery() {
     use crate::domain::conversation::{ConversationActivity, ConversationChange, ExecutionState};
@@ -23935,6 +24172,7 @@ async fn conversation_stream_exposes_progress_and_tool_before_result_delivery() 
     runner.await.unwrap().unwrap();
 }
 
+#[cfg(holon_lib_test_shard = "a")]
 #[tokio::test]
 async fn service_tier_override_survives_reload_but_not_fallback_or_model_switch() {
     use crate::config::{ModelRouteOptions, ServiceTier};
@@ -24356,6 +24594,7 @@ fn d5_assigned_turn(runtime: &RuntimeHandle, message: &MessageEnvelope) -> TurnR
         .unwrap()
 }
 
+#[cfg(holon_lib_test_shard = "a")]
 #[tokio::test]
 async fn d5_sealed_legacy_assignment_is_not_started_attempt_evidence() {
     for with_hint in [false, true] {
@@ -24671,18 +24910,22 @@ async fn d5_assert_existing_legacy_result_new_dispatch_inner(closed: bool, with_
         }));
 }
 
+#[cfg(holon_lib_test_shard = "a")]
 #[tokio::test]
 async fn d5_existing_legacy_hinted_result_closed_owner_gets_new_actual_turn() {
     d5_assert_existing_legacy_result_new_dispatch(true, true).await;
 }
+#[cfg(holon_lib_test_shard = "a")]
 #[tokio::test]
 async fn d5_existing_legacy_unhinted_result_closed_owner_gets_new_actual_turn() {
     d5_assert_existing_legacy_result_new_dispatch(true, false).await;
 }
+#[cfg(holon_lib_test_shard = "a")]
 #[tokio::test]
 async fn d5_existing_legacy_hinted_result_missing_execution_owner_keeps_pending() {
     d5_assert_existing_legacy_result_new_dispatch(false, true).await;
 }
+#[cfg(holon_lib_test_shard = "a")]
 #[tokio::test]
 async fn d5_existing_legacy_unhinted_result_missing_execution_owner_keeps_pending() {
     d5_assert_existing_legacy_result_new_dispatch(false, false).await;
@@ -25002,36 +25245,44 @@ fn d5_q1_retry_processing(
     })
 }
 
+#[cfg(holon_lib_test_shard = "a")]
 #[tokio::test]
 async fn d5_same_canonical_dispatch_begin_reuses_original_start() {
     d5_q1_retry_case(D5BeginRetryCase::Canonical).await;
 }
+#[cfg(holon_lib_test_shard = "a")]
 #[tokio::test]
 async fn d5_same_reducer_dispatch_begin_reuses_original_start() {
     d5_q1_retry_case(D5BeginRetryCase::Reducer).await;
 }
+#[cfg(holon_lib_test_shard = "a")]
 #[tokio::test]
 async fn d5_begin_retry_after_known_publication_failure_keeps_original_turn() {
     d5_q1_retry_case(D5BeginRetryCase::KnownPublicationFailure).await;
 }
+#[cfg(holon_lib_test_shard = "a")]
 #[tokio::test]
 async fn d5_begin_retry_without_original_start_cannot_refreeze() {
     d5_q1_retry_case(D5BeginRetryCase::MissingStart).await;
 }
+#[cfg(holon_lib_test_shard = "a")]
 #[tokio::test]
 async fn d5_begin_retry_after_physical_completion_cannot_recreate_lease() {
     d5_q1_retry_case(D5BeginRetryCase::PhysicallyCompleted).await;
 }
 
+#[cfg(holon_lib_test_shard = "a")]
 #[tokio::test]
 async fn d5_legacy_assignment_cannot_start_after_original_physical_completion() {
     d5_q1_retry_case(D5BeginRetryCase::LegacyCompletedBeforeStart).await;
 }
 
+#[cfg(holon_lib_test_shard = "a")]
 #[tokio::test]
 async fn d5_begin_retry_validates_original_whole_start_outcome_checksum() {
     d5_q1_retry_case(D5BeginRetryCase::CorruptOriginalReceipt).await;
 }
+#[cfg(holon_lib_test_shard = "a")]
 #[tokio::test]
 async fn d5_begin_retry_counts_all_receipt_fields_before_decode() {
     d5_q1_retry_case(D5BeginRetryCase::OversizeOriginalReceipt).await;

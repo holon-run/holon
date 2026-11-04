@@ -127,6 +127,7 @@ impl RunningMonitorFixture {
     }
 }
 
+#[cfg(holon_lib_test_shard = "a")]
 #[tokio::test]
 async fn original_running_whole_ack_after_admission_close_installs_task_input_queue_and_state(
 ) -> Result<()> {
@@ -244,6 +245,7 @@ async fn original_running_whole_ack_after_admission_close_installs_task_input_qu
     Ok(())
 }
 
+#[cfg(holon_lib_test_shard = "a")]
 #[tokio::test]
 async fn original_running_dnc_and_unknown_retain_exact_capsule_and_only_install_whole_ack(
 ) -> Result<()> {
@@ -305,6 +307,7 @@ async fn original_running_dnc_and_unknown_retain_exact_capsule_and_only_install_
     Ok(())
 }
 
+#[cfg(holon_lib_test_shard = "a")]
 #[tokio::test]
 async fn original_running_rejects_binding_only_cancellation_and_exact_task_revision_drift(
 ) -> Result<()> {
@@ -359,6 +362,7 @@ async fn original_running_rejects_binding_only_cancellation_and_exact_task_revis
     Ok(())
 }
 
+#[cfg(holon_lib_test_shard = "a")]
 #[tokio::test]
 async fn original_running_no_state_and_retired_scope_do_not_decode_or_install_successor(
 ) -> Result<()> {
@@ -451,6 +455,7 @@ async fn original_running_no_state_and_retired_scope_do_not_decode_or_install_su
     Ok(())
 }
 
+#[cfg(holon_lib_test_shard = "a")]
 #[tokio::test]
 async fn original_terminal_three_real_precommit_occ_conflicts_roll_back_then_retry_same_source(
 ) -> Result<()> {
@@ -599,6 +604,7 @@ fn child_receipt(
             .map(Option::flatten)
     })
 }
+#[cfg(holon_lib_test_shard = "a")]
 #[tokio::test]
 async fn child_original_terminal_whole_ack_replays_after_both_fault_boundaries() -> Result<()> {
     for fault in [
@@ -680,6 +686,7 @@ async fn child_original_terminal_whole_ack_replays_after_both_fault_boundaries()
     }
     Ok(())
 }
+#[cfg(holon_lib_test_shard = "a")]
 #[tokio::test]
 async fn child_no_state_terminal_preserves_preexisting_accepted_input_and_keeps_task_unprepared(
 ) -> Result<()> {
@@ -753,6 +760,7 @@ async fn child_no_state_terminal_preserves_preexisting_accepted_input_and_keeps_
     assert_eq!(after.pending, before.pending);
     Ok(())
 }
+#[cfg(holon_lib_test_shard = "a")]
 #[tokio::test]
 async fn child_retired_terminal_never_reads_poisoned_successor_state_or_changes_task() -> Result<()>
 {
@@ -1050,6 +1058,7 @@ pub(crate) async fn continue_child_monitor_for_test(
     runtime.continue_original_child_terminal(source).await
 }
 
+#[cfg(holon_lib_test_shard = "a")]
 #[tokio::test]
 async fn child_actual_git_cleanup_is_saved_before_audit_failure_and_never_repeated() -> Result<()> {
     fn git(path: &std::path::Path, args: &[&str]) -> Result<()> {
@@ -1187,6 +1196,7 @@ async fn child_actual_git_cleanup_is_saved_before_audit_failure_and_never_repeat
     Ok(())
 }
 
+#[cfg(holon_lib_test_shard = "a")]
 #[tokio::test]
 async fn child_current_entry_rejects_oversized_malformed_state_and_task_before_decode() -> Result<()>
 {
@@ -1280,6 +1290,7 @@ async fn child_current_entry_rejects_oversized_malformed_state_and_task_before_d
     Ok(())
 }
 
+#[cfg(holon_lib_test_shard = "a")]
 #[tokio::test]
 async fn child_fresh_receipt_and_primary_joint_task_material_share_one_remaining_allowance(
 ) -> Result<()> {
@@ -1430,6 +1441,7 @@ async fn child_fresh_receipt_and_primary_joint_task_material_share_one_remaining
     Ok(())
 }
 
+#[cfg(holon_lib_test_shard = "a")]
 #[tokio::test]
 async fn child_full_state_native_nodes_are_rejected_before_all_three_decoders() -> Result<()> {
     use crate::runtime_db::task_snapshot::{TaskDomainLoadRequest, TaskSnapshotError};
@@ -1555,6 +1567,7 @@ async fn child_full_state_native_nodes_are_rejected_before_all_three_decoders() 
     }
     Ok(())
 }
+#[cfg(holon_lib_test_shard = "a")]
 #[tokio::test]
 async fn child_receipt_nested_ack_nodes_are_budgeted_before_lookup_and_checksum() -> Result<()> {
     use crate::runtime_db::task_snapshot::{TaskDomainLoadRequest, TaskSnapshotError};
@@ -1654,6 +1667,7 @@ async fn child_receipt_nested_ack_nodes_are_budgeted_before_lookup_and_checksum(
     Ok(())
 }
 
+#[cfg(holon_lib_test_shard = "a")]
 #[tokio::test]
 async fn child_prebind_failure_retains_original_monitor_through_reap_and_actual_terminal_retry(
 ) -> Result<()> {
@@ -1912,6 +1926,7 @@ async fn child_prebind_failure_retains_original_monitor_through_reap_and_actual_
     Ok(())
 }
 
+#[cfg(holon_lib_test_shard = "a")]
 #[tokio::test]
 async fn child_cancelled_pre_result_monitor_never_restarts_wait_and_retains_original_retirement_responsibility(
 ) -> Result<()> {
@@ -2047,6 +2062,7 @@ async fn child_cancelled_pre_result_monitor_never_restarts_wait_and_retains_orig
     Ok(())
 }
 
+#[cfg(holon_lib_test_shard = "a")]
 #[tokio::test]
 async fn actual_creator_without_current_turn_keeps_child_terminal_partial_contract_without_fake_rejoin(
 ) -> Result<()> {
@@ -2252,6 +2268,7 @@ async fn actual_creator_without_current_turn_keeps_child_terminal_partial_contra
     Ok(())
 }
 
+#[cfg(holon_lib_test_shard = "a")]
 #[tokio::test]
 async fn actual_task_ack_cannot_change_partial_generation_under_an_original_child_source(
 ) -> Result<()> {
@@ -2351,6 +2368,7 @@ async fn actual_task_ack_cannot_change_partial_generation_under_an_original_chil
     Ok(())
 }
 
+#[cfg(holon_lib_test_shard = "a")]
 #[tokio::test]
 async fn child_original_public_stop_whole_ack_takes_over_unobserved_monitor_without_child_result(
 ) -> Result<()> {
@@ -2450,6 +2468,7 @@ async fn child_original_public_stop_whole_ack_takes_over_unobserved_monitor_with
     Ok(())
 }
 
+#[cfg(holon_lib_test_shard = "a")]
 #[tokio::test]
 async fn child_physical_retirement_hands_exact_durable_monitor_to_real_reload_without_a_stop(
 ) -> Result<()> {

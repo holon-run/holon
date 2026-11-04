@@ -711,6 +711,7 @@ pub(crate) fn register_work_pruned_tx(
     register_work_writes_tx(tx, proof, keys, &BTreeSet::new(), state, request)
 }
 
+#[cfg(holon_lib_test_shard = "b")]
 #[test]
 fn original_work_proof_reuses_canonical_state_and_rejects_changed_final_state() -> Result<()> {
     use crate::{

@@ -169,6 +169,7 @@ async fn exhaust(runtime: &RuntimeHandle, record: &TaskResultSettlementRecord) {
     }
 }
 
+#[cfg(holon_lib_test_shard = "a")]
 #[tokio::test(start_paused = true)]
 async fn paused_diagnostic_preserves_unit_result_through_runtime_write_and_noop() {
     let harness = LifecycleHarness::new();
@@ -226,6 +227,7 @@ async fn paused_diagnostic_preserves_unit_result_through_runtime_write_and_noop(
     assert_eq!(runtime.storage().read_recent_briefs(20).unwrap().len(), 1);
 }
 
+#[cfg(holon_lib_test_shard = "a")]
 #[tokio::test(start_paused = true)]
 async fn paused_scanner_reports_once_without_queueing_or_exposing_result_content() {
     let harness = LifecycleHarness::new();
@@ -285,6 +287,7 @@ async fn paused_scanner_reports_once_without_queueing_or_exposing_result_content
     assert!(report.pending_task_results[0].next_recheck_at.is_none());
 }
 
+#[cfg(holon_lib_test_shard = "a")]
 #[tokio::test(start_paused = true)]
 async fn paused_diagnostic_preserves_deferred_reason_with_legacy_budget_default() {
     for reason in [
@@ -336,6 +339,7 @@ async fn paused_diagnostic_preserves_deferred_reason_with_legacy_budget_default(
     }
 }
 
+#[cfg(holon_lib_test_shard = "a")]
 #[tokio::test(start_paused = true)]
 async fn paused_diagnostics_drain_beyond_scanner_batch_without_a_timer() {
     let harness = LifecycleHarness::new();
@@ -368,6 +372,7 @@ async fn paused_diagnostics_drain_beyond_scanner_batch_without_a_timer() {
         .is_none());
 }
 
+#[cfg(holon_lib_test_shard = "a")]
 #[tokio::test(start_paused = true)]
 async fn paused_result_does_not_block_same_owner_new_results_or_charge_scanner_probes() {
     let harness = LifecycleHarness::new();
@@ -395,6 +400,7 @@ async fn paused_result_does_not_block_same_owner_new_results_or_charge_scanner_p
     .is_some());
 }
 
+#[cfg(holon_lib_test_shard = "a")]
 #[tokio::test(start_paused = true)]
 async fn scanner_defers_obligation_claimed_by_another_waiter_without_charging() {
     let harness = LifecycleHarness::new();
@@ -459,6 +465,7 @@ async fn scanner_defers_obligation_claimed_by_another_waiter_without_charging() 
     .is_none());
 }
 
+#[cfg(holon_lib_test_shard = "a")]
 #[tokio::test(start_paused = true)]
 async fn scanner_uses_obligation_classification_instead_of_queue_progress() {
     for (status, should_recover) in [

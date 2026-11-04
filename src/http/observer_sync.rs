@@ -31,9 +31,11 @@ pub(crate) use crate::runtime_event::ProjectionEffect;
 use axum::extract::{Path, State};
 use axum::http::{HeaderMap, StatusCode};
 
+#[cfg(holon_lib_test_shard = "c")]
 #[cfg(test)]
 #[path = "observer_sync/projection_decode_tests.rs"]
 mod projection_decode_tests;
+#[cfg(holon_lib_test_shard = "c")]
 #[cfg(test)]
 #[path = "observer_sync/roster_material_tests.rs"]
 mod roster_material_tests;
@@ -741,6 +743,7 @@ pub async fn agent_projection_snapshot(
     }
 }
 
+#[cfg(holon_lib_test_shard = "c")]
 #[cfg(test)]
 mod tests {
     use super::*;

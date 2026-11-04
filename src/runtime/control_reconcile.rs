@@ -617,6 +617,7 @@ fn overlay_control_worktree_evidence(
     Ok(observed)
 }
 
+#[cfg(holon_lib_test_shard = "a")]
 #[cfg(test)]
 mod tests {
     use super::*;

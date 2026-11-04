@@ -540,6 +540,7 @@ fn mark_last_cache_breakpoint(
     }
 }
 
+#[cfg(holon_lib_test_shard = "a")]
 #[cfg(test)]
 #[path = "provider_image_material_tests.rs"]
 mod image_material_tests;
@@ -561,6 +562,7 @@ mod tests {
     };
     use std::path::PathBuf;
 
+    #[cfg(holon_lib_test_shard = "a")]
     #[test]
     fn build_provider_turn_request_preserves_supplied_tool_list() {
         let tools = vec![
@@ -599,6 +601,7 @@ mod tests {
         );
     }
 
+    #[cfg(holon_lib_test_shard = "a")]
     #[test]
     fn inference_time_does_not_mutate_stable_frame_or_input() {
         let prompt = fixture_prompt();
@@ -633,6 +636,7 @@ mod tests {
         assert_eq!(retry_time, blocks);
     }
 
+    #[cfg(holon_lib_test_shard = "a")]
     #[test]
     fn build_provider_turn_request_constructs_valid_request() {
         let effective_prompt = fixture_prompt();
@@ -683,6 +687,7 @@ mod tests {
         );
     }
 
+    #[cfg(holon_lib_test_shard = "a")]
     #[test]
     fn build_provider_turn_request_disables_continuation_for_empty_agent_id() {
         let mut effective_prompt = fixture_prompt();
@@ -694,6 +699,7 @@ mod tests {
         assert_eq!(request.continuation_scope_id, None);
     }
 
+    #[cfg(holon_lib_test_shard = "a")]
     #[test]
     fn build_provider_turn_request_adds_workspace_markdown_image_input() {
         let workspace = tempfile::tempdir().expect("workspace");
@@ -731,6 +737,7 @@ mod tests {
         assert!(!data_base64.is_empty());
     }
 
+    #[cfg(holon_lib_test_shard = "a")]
     #[test]
     fn historical_images_are_optional_by_section_id_without_losing_text() {
         let workspace = tempfile::tempdir().expect("workspace");
@@ -787,6 +794,7 @@ mod tests {
         }
     }
 
+    #[cfg(holon_lib_test_shard = "a")]
     #[test]
     fn markdown_image_budget_deduplicates_paths_and_contents_with_current_priority() {
         let workspace = tempfile::tempdir().unwrap();
@@ -817,6 +825,7 @@ mod tests {
         assert!(blocks[1].text.contains("![Copy](copy.png)"));
     }
 
+    #[cfg(holon_lib_test_shard = "a")]
     #[test]
     fn markdown_image_budget_omits_only_history_and_preserves_observations() {
         let workspace = tempfile::tempdir().unwrap();
@@ -862,6 +871,7 @@ mod tests {
         assert!(blocks[1].text.contains(&references[0]));
     }
 
+    #[cfg(holon_lib_test_shard = "a")]
     #[test]
     fn markdown_image_budget_rejects_required_count_overflow_before_provider_dispatch() {
         let workspace = tempfile::tempdir().unwrap();
@@ -884,6 +894,7 @@ mod tests {
         assert_eq!(text_only.conversation.len(), 1);
     }
 
+    #[cfg(holon_lib_test_shard = "a")]
     #[test]
     fn initial_material_request_preserves_markdown_image_limits() {
         let workspace = tempfile::tempdir().unwrap();
@@ -947,6 +958,7 @@ mod tests {
         }
     }
 
+    #[cfg(holon_lib_test_shard = "a")]
     #[test]
     fn markdown_image_budget_bounds_duplicate_content_reads() {
         let workspace = tempfile::tempdir().unwrap();
@@ -986,6 +998,7 @@ mod tests {
         )));
     }
 
+    #[cfg(holon_lib_test_shard = "a")]
     #[test]
     fn markdown_image_budget_decoded_byte_boundary_is_exact() {
         let workspace = tempfile::tempdir().unwrap();
@@ -1034,6 +1047,7 @@ mod tests {
         ] if note.contains("omitted 1 optional historical")));
     }
 
+    #[cfg(holon_lib_test_shard = "a")]
     #[test]
     fn markdown_image_budget_rejects_unreadable_current_image_not_silent_omission() {
         let workspace = tempfile::tempdir().unwrap();
@@ -1087,6 +1101,7 @@ mod tests {
             .collect()
     }
 
+    #[cfg(holon_lib_test_shard = "a")]
     #[test]
     fn build_provider_turn_request_skips_markdown_images_when_disabled() {
         let workspace = tempfile::tempdir().expect("workspace");
@@ -1115,6 +1130,7 @@ mod tests {
             .contains("![Chart](workspace://ws_test/outputs/missing.png)"));
     }
 
+    #[cfg(holon_lib_test_shard = "a")]
     #[test]
     fn initial_request_recomputes_markdown_image_gate_after_fallback_promotion() {
         let workspace = tempfile::tempdir().expect("workspace");
@@ -1171,6 +1187,7 @@ mod tests {
         ));
     }
 
+    #[cfg(holon_lib_test_shard = "a")]
     #[test]
     fn markdown_image_resolver_ignores_remote_urls_and_workspace_escapes() {
         let workspace = tempfile::tempdir().expect("workspace");
@@ -1301,6 +1318,7 @@ mod tests {
         }
     }
 
+    #[cfg(holon_lib_test_shard = "a")]
     #[test]
     fn build_provider_turn_request_marks_last_stable_and_agent_scoped_breakpoints() {
         let effective_prompt = EffectivePrompt {
@@ -1426,6 +1444,7 @@ mod tests {
         assert!(flagged.iter().any(|text| text.contains("agent context")));
     }
 
+    #[cfg(holon_lib_test_shard = "a")]
     #[test]
     fn build_continuation_request_preserves_conversation_history() {
         let conversation = vec![
@@ -1492,6 +1511,7 @@ mod tests {
         assert_eq!(request.tools.len(), 1);
     }
 
+    #[cfg(holon_lib_test_shard = "a")]
     #[test]
     fn build_continuation_request_accepts_missing_scope() {
         let request = build_continuation_request(
@@ -1505,6 +1525,7 @@ mod tests {
         assert_eq!(request.continuation_scope_id, None);
     }
 
+    #[cfg(holon_lib_test_shard = "a")]
     #[test]
     fn resolve_markdown_image_src_with_root_param() {
         let mut execution = ExecutionSnapshot {
@@ -1552,6 +1573,7 @@ mod tests {
         assert_eq!(path, None);
     }
 
+    #[cfg(holon_lib_test_shard = "a")]
     #[test]
     fn resolve_markdown_image_src_allows_only_execution_visible_absolute_paths() {
         let canonical = tempfile::tempdir().unwrap();

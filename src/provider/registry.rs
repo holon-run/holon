@@ -226,6 +226,7 @@ fn build_gemini_provider(
     ))
 }
 
+#[cfg(holon_lib_test_shard = "c")]
 #[cfg(test)]
 mod tests {
     use std::collections::{HashMap, HashSet};

@@ -225,6 +225,7 @@ pub(crate) fn control_terminal_rejoin_matches(task: &TaskRecord, generation: &Va
     }
 }
 
+#[cfg(holon_lib_test_shard = "a")]
 #[cfg(test)]
 mod tests {
     use super::*;

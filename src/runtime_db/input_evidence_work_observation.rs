@@ -278,6 +278,7 @@ pub(super) fn prune_tx(
     Ok(result)
 }
 
+#[cfg(holon_lib_test_shard = "b")]
 #[cfg(test)]
 mod tests {
     use super::*;

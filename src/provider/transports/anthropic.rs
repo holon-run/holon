@@ -47,6 +47,7 @@ use crate::provider::retry::{
 
 const ANTHROPIC_PROVIDER_BLOCK_FORMAT: &str = "anthropic_messages/v1";
 
+#[cfg(holon_lib_test_shard = "c")]
 #[cfg(test)]
 #[path = "anthropic_material_tests.rs"]
 mod material_tests;
@@ -3480,6 +3481,7 @@ fn count_payload_cache_controls(request_payload: &Value) -> (usize, usize) {
     (system_count, message_count)
 }
 
+#[cfg(holon_lib_test_shard = "c")]
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -47,6 +47,7 @@ pub mod provider_admission;
 pub(crate) mod read_block;
 mod read_scope;
 mod reader_pool;
+#[cfg(holon_lib_test_shard = "b")]
 #[cfg(test)]
 mod reader_pool_tests;
 pub(crate) mod reclamation;
@@ -144,6 +145,7 @@ pub use crate::runtime_db::work_item_source_revision_repair::{
     WorkItemSourceRevisionRepairEntry, WorkItemSourceRevisionRepairReport,
 };
 pub use read_scope::RuntimeDbReadScope;
+#[cfg(holon_lib_test_shard = "b")]
 #[cfg(test)]
 mod brief_latest_tests;
 #[cfg(test)]

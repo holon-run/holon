@@ -1031,6 +1031,7 @@ pub(super) fn spawn_agent_bootstrap_job(
     id
 }
 
+#[cfg(holon_lib_test_shard = "c")]
 #[cfg(test)]
 #[path = "jobs/resource_writer_tests.rs"]
 mod resource_writer_tests;

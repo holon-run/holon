@@ -283,6 +283,7 @@ fn validate_ready_root(
     Ok(())
 }
 
+#[cfg(holon_lib_test_shard = "a")]
 #[cfg(test)]
 #[path = "input_preparation_tests.rs"]
 mod tests;

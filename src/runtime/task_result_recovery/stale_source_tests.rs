@@ -179,6 +179,7 @@ async fn process_next(runtime: &RuntimeHandle) {
         .unwrap();
 }
 
+#[cfg(holon_lib_test_shard = "a")]
 #[tokio::test(start_paused = true)]
 async fn recovery_settled_before_claim_consumes_source_without_creating_turn() {
     let provider = Arc::new(CountingProvider {
@@ -232,6 +233,7 @@ async fn recovery_settled_before_claim_consumes_source_without_creating_turn() {
             && event.data["message_id"] == recovery_id));
 }
 
+#[cfg(holon_lib_test_shard = "a")]
 #[tokio::test(start_paused = true)]
 async fn settled_recovery_precommit_faults_replay_without_losing_source_or_creating_turn() {
     for fault in PRE_COMMIT_FAULTS {
@@ -268,6 +270,7 @@ async fn settled_recovery_precommit_faults_replay_without_losing_source_or_creat
     }
 }
 
+#[cfg(holon_lib_test_shard = "a")]
 #[tokio::test(start_paused = true)]
 async fn settled_recovery_postcommit_faults_and_competing_polls_consume_once() {
     for (fault, effect) in POST_COMMIT_FAULTS {
@@ -386,6 +389,7 @@ pub(super) async fn replace_terminal_task_fixture(runtime: &RuntimeHandle, task:
     .await;
 }
 
+#[cfg(holon_lib_test_shard = "a")]
 #[tokio::test(start_paused = true)]
 async fn settled_recovery_rechecks_new_owner_results_inside_queue_transaction() {
     let harness = LifecycleHarness::new();
@@ -418,6 +422,7 @@ async fn settled_recovery_rechecks_new_owner_results_inside_queue_transaction() 
     assert_eq!(runtime.storage().read_recent_turns(20).unwrap().len(), 3);
 }
 
+#[cfg(holon_lib_test_shard = "a")]
 #[tokio::test(start_paused = true)]
 async fn settled_recovery_requires_durable_source_identity_and_excludes_exact_waits() {
     let harness = LifecycleHarness::new();
@@ -457,6 +462,7 @@ async fn settled_recovery_requires_durable_source_identity_and_excludes_exact_wa
     assert!(!settlements.settled_recovery_source(&untrusted).unwrap());
 }
 
+#[cfg(holon_lib_test_shard = "a")]
 #[tokio::test(start_paused = true)]
 async fn pending_recovery_retains_model_delivery_instead_of_system_only_consumption() {
     let provider = Arc::new(CountingProvider {
@@ -488,6 +494,7 @@ async fn pending_recovery_retains_model_delivery_instead_of_system_only_consumpt
         .any(|event| event.kind == "task_result_recovery_source_consumed"));
 }
 
+#[cfg(holon_lib_test_shard = "a")]
 #[tokio::test(start_paused = true)]
 async fn settled_recovery_does_not_complete_or_admit_its_work_item_owner() {
     let harness = LifecycleHarness::new();
@@ -555,6 +562,7 @@ async fn persist_independent_wait_fixture(
         .unwrap();
 }
 
+#[cfg(holon_lib_test_shard = "a")]
 #[tokio::test(start_paused = true)]
 async fn settled_recovery_retains_independent_wait_reconciliation_and_generation_fences() {
     use crate::types::{WaitConditionKind, WaitConditionRecord, WaitConditionStatus, WakeSource};
@@ -652,6 +660,7 @@ async fn settled_recovery_retains_independent_wait_reconciliation_and_generation
         .any(|event| event.kind == "task_result_recovery_source_consumed"));
 }
 
+#[cfg(holon_lib_test_shard = "a")]
 #[tokio::test(start_paused = true)]
 async fn settled_recovery_rechecks_durable_task_owner_before_queue_commit() {
     let harness = LifecycleHarness::new();
@@ -687,6 +696,7 @@ async fn settled_recovery_rechecks_durable_task_owner_before_queue_commit() {
     );
 }
 
+#[cfg(holon_lib_test_shard = "a")]
 #[tokio::test(start_paused = true)]
 async fn settled_recovery_rejects_task_body_drift_without_original_projection_ack() {
     let harness = LifecycleHarness::new();
@@ -737,15 +747,19 @@ async fn settled_recovery_rejects_task_body_drift_without_original_projection_ac
     );
 }
 
+#[cfg(holon_lib_test_shard = "a")]
 #[tokio::test(start_paused = true)]
 async fn stopped_agent_retains_settled_recovery_source_without_any_consumption() {
     let harness = LifecycleHarness::new();
     let runtime = harness.runtime();
     let (_, recovery_id) = settled_recovery(&harness).await;
     {
-        let mut guard = runtime.inner.agent.lock().await;
-        guard.state.status = AgentStatus::Stopped;
-        guard.persist_state(&runtime.inner.storage).unwrap();
+        let mut mutation = runtime.begin_mutation().await.unwrap();
+        mutation.state.status = AgentStatus::Stopped;
+        mutation
+            .persist_state(&runtime.inner.storage)
+            .await
+            .unwrap();
     }
     let before = harness.snapshot();
     assert!(matches!(

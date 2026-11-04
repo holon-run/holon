@@ -229,6 +229,7 @@ impl PreparedOfflineInputRepair {
     }
 }
 
+#[cfg(holon_lib_test_shard = "b")]
 #[cfg(test)]
 #[path = "input_evidence_maintenance_tests.rs"]
 mod tests;

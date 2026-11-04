@@ -296,6 +296,7 @@ impl RuntimeDb {
         })
     }
 }
+#[cfg(holon_lib_test_shard = "b")]
 #[cfg(test)]
 #[path = "deletion_maintenance_tests.rs"]
 mod tests;

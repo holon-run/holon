@@ -4580,6 +4580,7 @@ fn build_release_baseline_final_schema() -> Result<Vec<String>> {
         .collect())
 }
 
+#[cfg(holon_lib_test_shard = "b")]
 #[cfg(test)]
 #[path = "release_baseline_schema_tests.rs"]
 mod release_baseline_schema_tests;

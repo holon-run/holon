@@ -2722,6 +2722,7 @@ fn wait_resource_required(wake: WaitForWakeKind, resource: Option<String>) -> Re
         .ok_or_else(|| anyhow!("wait_for {:?} requires non-empty resource", wake))
 }
 
+#[cfg(holon_lib_test_shard = "a")]
 #[cfg(test)]
 mod wait_condition_parts_tests {
     use super::*;
@@ -2851,6 +2852,7 @@ fn normalize_recovered_timer(mut timer: TimerRecord, now: DateTime<Utc>) -> Resu
     Ok(timer)
 }
 
+#[cfg(holon_lib_test_shard = "a")]
 #[cfg(test)]
 mod mutation_tests {
     use super::*;
@@ -3174,6 +3176,7 @@ mod mutation_tests {
     }
 }
 
+#[cfg(holon_lib_test_shard = "a")]
 #[cfg(test)]
 #[path = "timer_producer_reads_tests.rs"]
 mod timer_producer_resident_tests;

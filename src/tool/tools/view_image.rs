@@ -864,6 +864,7 @@ fn is_jpeg_sof_marker(marker: u8) -> bool {
     )
 }
 
+#[cfg(holon_lib_test_shard = "c")]
 #[cfg(test)]
 mod tests {
     use super::*;

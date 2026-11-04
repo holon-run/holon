@@ -3342,6 +3342,7 @@ pub(crate) fn register_pruned_input_evidence_tx(
     })
 }
 
+#[cfg(holon_lib_test_shard = "b")]
 #[cfg(test)]
 #[path = "input_evidence_snapshot_tests.rs"]
 mod tests;

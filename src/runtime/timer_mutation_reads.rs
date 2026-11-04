@@ -270,6 +270,7 @@ pub(in crate::runtime) fn selected_work_material(work: &CapturedWork) -> Result<
     Ok((bytes, records))
 }
 
+#[cfg(holon_lib_test_shard = "a")]
 #[cfg(test)]
 #[path = "timer_mutation_reads_tests.rs"]
 mod tests;

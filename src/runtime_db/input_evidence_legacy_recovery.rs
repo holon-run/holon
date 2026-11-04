@@ -320,6 +320,7 @@ pub(super) fn validate_seed_overlay_on(tx: &Transaction<'_>, seed: &str, key: &K
     Ok(())
 }
 
+#[cfg(holon_lib_test_shard = "b")]
 #[cfg(test)]
 #[path = "input_evidence_legacy_recovery_tests.rs"]
 mod tests;

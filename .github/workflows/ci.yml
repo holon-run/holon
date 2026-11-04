@@ -752,6 +752,8 @@ jobs:
         run: make validate-agent-templates
 
   rust-lint:
+
+    # Compile under the 16 GB runner budget; see docs/implementation-decisions/ci-rust-memory-budget.md.
     name: Rust lint
     needs: changes
     if: needs.changes.outputs.full_sweep == 'true' || needs.changes.outputs.rust == 'true'
@@ -759,6 +761,13 @@ jobs:
     timeout-minutes: 30
     env:
       RUSTFLAGS: -D warnings
+      CARGO_INCREMENTAL: "0"
+      CARGO_PROFILE_DEV_DEBUG: "line-tables-only"
+      CARGO_PROFILE_DEV_CODEGEN_UNITS: "1"
+      CARGO_PROFILE_TEST_DEBUG: "line-tables-only"
+      CARGO_PROFILE_TEST_CODEGEN_UNITS: "1"
+      CARGO_PROFILE_RELEASE_CODEGEN_UNITS: "1"
+      CARGO_BUILD_JOBS: "2"
     steps:
       - uses: actions/checkout@v4
 
@@ -789,7 +798,7 @@ jobs:
         run: make test-resource-lint
 
       - name: Test CI timing tooling
-        run: python3 -m unittest tests.test_ci_timing tests.test_ci_test_shards
+        run: python3 -m unittest tests.test_ci_timing tests.test_ci_test_shards tests.test_build_script
 
       - name: Clippy
         run: make lint
@@ -797,13 +806,24 @@ jobs:
           RUSTFLAGS: ""
 
   rust-build:
+
+    # Compile under the 16 GB runner budget; see docs/implementation-decisions/ci-rust-memory-budget.md.
     name: Rust build
     needs: changes
     if: needs.changes.outputs.full_sweep == 'true' || needs.changes.outputs.rust == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 60
     env:
+      # Other libtest groups compile and run in the two Rust Test jobs.
+      HOLON_LIB_TEST_SHARD: c
       RUSTFLAGS: -D warnings
+      CARGO_INCREMENTAL: "0"
+      CARGO_PROFILE_DEV_DEBUG: "line-tables-only"
+      CARGO_PROFILE_DEV_CODEGEN_UNITS: "1"
+      CARGO_PROFILE_TEST_DEBUG: "line-tables-only"
+      CARGO_PROFILE_TEST_CODEGEN_UNITS: "1"
+      CARGO_PROFILE_RELEASE_CODEGEN_UNITS: "1"
+      CARGO_BUILD_JOBS: "2"
     steps:
       - uses: actions/checkout@v4
 
@@ -821,6 +841,13 @@ jobs:
 
       - name: Build all targets, including benchmarks
         run: make build
+
+      # No CI job runs the default complete test crate; keep that selector
+      # warning-free. See docs/implementation-decisions/lib-test-compile-shards.md.
+      - name: Check complete test crate with warnings denied
+        run: cargo check --locked --all-targets
+        env:
+          HOLON_LIB_TEST_SHARD: all
 
       # Release binaries build with --features local-onnx (see release.yml);
       # keep the feature-gated path compiling on CI.
@@ -848,6 +875,8 @@ jobs:
         run: make snapshots-check
 
   rust-test:
+
+    # Compile under the 16 GB runner budget; see docs/implementation-decisions/ci-rust-memory-budget.md.
     name: Rust Test (${{ matrix.shard }})
     needs: changes
     if: needs.changes.outputs.full_sweep == 'true' || needs.changes.outputs.rust == 'true'
@@ -859,6 +888,14 @@ jobs:
         shard: [lib-a, lib-b, control, cli, misc]
     env:
       RUSTFLAGS: -D warnings
+      CARGO_INCREMENTAL: "0"
+      CARGO_PROFILE_DEV_DEBUG: "line-tables-only"
+      CARGO_PROFILE_DEV_DEBUG_ASSERTIONS: "true"
+      CARGO_PROFILE_TEST_DEBUG: "line-tables-only"
+      CARGO_PROFILE_TEST_DEBUG_ASSERTIONS: "true"
+      CARGO_PROFILE_TEST_CODEGEN_UNITS: "1"
+      CARGO_PROFILE_RELEASE_CODEGEN_UNITS: "1"
+      CARGO_BUILD_JOBS: "2"
     steps:
       - uses: actions/checkout@v4
 
@@ -904,10 +941,14 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: ci-rust-test-timing-${{ matrix.shard }}-${{ github.run_attempt }}
-          path: target/ci-timing/rust-test-targets.json
+          path: |
+            target/ci-timing/rust-test-targets.json
+            target/ci-timing/lib-test-names-*.json
           if-no-files-found: warn
 
   rust-concurrent:
+
+    # Compile under the 16 GB runner budget; see docs/implementation-decisions/ci-rust-memory-budget.md.
     name: Rust Concurrent
     needs: changes
     if: needs.changes.outputs.full_sweep == 'true' || needs.changes.outputs.rust == 'true'
@@ -915,6 +956,14 @@ jobs:
     timeout-minutes: 45
     env:
       RUSTFLAGS: -D warnings
+      CARGO_INCREMENTAL: "0"
+      CARGO_PROFILE_DEV_DEBUG: "line-tables-only"
+      CARGO_PROFILE_DEV_DEBUG_ASSERTIONS: "true"
+      CARGO_PROFILE_TEST_DEBUG: "line-tables-only"
+      CARGO_PROFILE_TEST_DEBUG_ASSERTIONS: "true"
+      CARGO_PROFILE_TEST_CODEGEN_UNITS: "1"
+      CARGO_PROFILE_RELEASE_CODEGEN_UNITS: "1"
+      CARGO_BUILD_JOBS: "2"
     steps:
       - uses: actions/checkout@v4
 
@@ -939,6 +988,7 @@ jobs:
 
   coverage:
     name: Coverage
+    # Compile under the 16 GB runner budget; see docs/implementation-decisions/ci-rust-memory-budget.md.
     needs: changes
     # Coverage runs only in nightly and manual full sweeps: the lcov
     # artifact has no downstream gate, so PRs and path-tiered main
@@ -948,6 +998,13 @@ jobs:
     timeout-minutes: 60
     env:
       CARGO_TARGET_DIR: target/llvm-cov
+      CARGO_INCREMENTAL: "0"
+      CARGO_PROFILE_DEV_DEBUG: "line-tables-only"
+      CARGO_PROFILE_DEV_CODEGEN_UNITS: "1"
+      CARGO_PROFILE_TEST_DEBUG: "line-tables-only"
+      CARGO_PROFILE_TEST_CODEGEN_UNITS: "1"
+      CARGO_PROFILE_RELEASE_CODEGEN_UNITS: "1"
+      CARGO_BUILD_JOBS: "2"
     steps:
       - uses: actions/checkout@v4
 

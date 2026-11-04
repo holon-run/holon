@@ -403,6 +403,7 @@ fn truncate_text(text: &str, max: usize) -> String {
     truncated
 }
 
+#[cfg(holon_lib_test_shard = "d")]
 #[cfg(test)]
 mod tests {
     use super::*;

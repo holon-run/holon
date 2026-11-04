@@ -3,6 +3,7 @@ use super::*;
 use crate::runtime_db::ExternalTriggerRepository;
 use crate::types::ExternalTriggerRecord;
 
+#[cfg(holon_lib_test_shard = "b")]
 #[cfg(test)]
 #[path = "trigger_observation/body_budget_tests.rs"]
 mod body_budget_tests;

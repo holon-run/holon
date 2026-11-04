@@ -517,6 +517,27 @@ async fn automatic_memory_runtime_plain_receipt_is_not_decorated_by_a_later_disp
         f.commit(f.plain_work("runtime-plain-work", at, &command)?)
             .await?;
         assert_eq!(f.auto_count("runtime-plain-work")?, 0);
+        // This raw Work command does not advance the runtime execution registration.
+        let updated = f
+            .runtime
+            .runtime_db()
+            .work_items()
+            .latest(&work.id)?
+            .context("updated Work missing")?;
+        let registration = f
+            .runtime
+            .runtime_db()
+            .transitions()
+            .load_execution_protocol_state_if_initialized("default")?
+            .context("execution registration missing")?
+            .work_items[&work.id]
+            .clone();
+        crate::runtime::tests::support::seed_live_work_execution(
+            &f.runtime,
+            &updated,
+            registration.state,
+        )
+        .await;
         f.start().await?;
         let before = f.durable_image()?;
         let start = f.memory()?;

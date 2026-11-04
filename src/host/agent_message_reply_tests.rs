@@ -136,6 +136,7 @@ async fn reply_gate_recovery_fixture(
     (home, host, parent, peer, provider, receipt)
 }
 
+#[cfg(holon_lib_test_shard = "d")]
 #[tokio::test]
 async fn agent_message_wait_provider_fallback_returns_exact_final_without_explicit_reply() {
     let (_home, host, parent, peer, gate, receipt) =
@@ -306,6 +307,7 @@ fn reply_result_count(host: &RuntimeHost, task_id: &str) -> usize {
         .unwrap()
 }
 
+#[cfg(holon_lib_test_shard = "d")]
 #[tokio::test]
 async fn agent_message_wait_explicit_reply_wins_without_a_derived_duplicate() {
     let (_home, host, parent, peer, gate, receipt) =
@@ -330,6 +332,7 @@ async fn agent_message_wait_explicit_reply_wins_without_a_derived_duplicate() {
     host.shutdown().await.unwrap();
 }
 
+#[cfg(holon_lib_test_shard = "d")]
 #[tokio::test]
 async fn agent_message_wait_timeout_does_not_stop_target_or_revive_for_late_reply() {
     let (_home, host, parent, peer, gate, receipt) =
@@ -367,6 +370,7 @@ async fn agent_message_wait_timeout_does_not_stop_target_or_revive_for_late_repl
     host.shutdown().await.unwrap();
 }
 
+#[cfg(holon_lib_test_shard = "d")]
 #[tokio::test]
 async fn agent_message_wait_recovered_outbox_beats_expired_deadline() {
     let (_home, host, parent, peer, gate, receipt) =
@@ -408,6 +412,7 @@ async fn agent_message_wait_recovered_outbox_beats_expired_deadline() {
     host.shutdown().await.unwrap();
 }
 
+#[cfg(holon_lib_test_shard = "d")]
 #[tokio::test]
 async fn agent_message_wait_recovery_keeps_deadline_and_does_not_resend() {
     let (_home, host, parent, peer, gate, receipt) =
@@ -442,6 +447,7 @@ async fn agent_message_wait_recovery_keeps_deadline_and_does_not_resend() {
     host.shutdown().await.unwrap();
 }
 
+#[cfg(holon_lib_test_shard = "d")]
 #[tokio::test]
 async fn agent_message_wait_retries_outbox_read_and_terminal_commit_without_synthetic_failure() {
     let (_home, host, parent, peer, gate, receipt) =
@@ -524,6 +530,7 @@ async fn agent_message_wait_retries_outbox_read_and_terminal_commit_without_synt
     host.shutdown().await.unwrap();
 }
 
+#[cfg(holon_lib_test_shard = "d")]
 #[tokio::test]
 async fn agent_message_wait_durable_outbox_survives_a_real_host_restart_once() {
     let (_home, host, parent, peer, gate, receipt) =
@@ -592,6 +599,7 @@ async fn agent_message_wait_durable_outbox_survives_a_real_host_restart_once() {
     restarted.shutdown().await.unwrap();
 }
 
+#[cfg(holon_lib_test_shard = "d")]
 #[test]
 fn startup_recovery_admission_keeps_callers_future_bounded() {
     let home = tempdir().unwrap();
@@ -612,6 +620,7 @@ fn startup_recovery_admission_keeps_callers_future_bounded() {
     );
 }
 
+#[cfg(holon_lib_test_shard = "d")]
 #[tokio::test]
 async fn agent_message_wait_empty_or_waiting_final_is_not_a_fallback_reply() {
     for (answer, wait) in [("", false), ("intentionally waiting, not an answer", true)] {
@@ -635,6 +644,7 @@ async fn agent_message_wait_empty_or_waiting_final_is_not_a_fallback_reply() {
     }
 }
 
+#[cfg(holon_lib_test_shard = "d")]
 #[tokio::test]
 async fn agent_message_wait_cancelled_task_fences_the_targets_later_final() {
     let (_home, host, parent, peer, gate, receipt) =
@@ -665,6 +675,7 @@ async fn agent_message_wait_cancelled_task_fences_the_targets_later_final() {
     host.shutdown().await.unwrap();
 }
 
+#[cfg(holon_lib_test_shard = "d")]
 #[tokio::test]
 async fn agent_message_wait_final_requires_exact_request_turn_and_round_evidence() {
     use crate::runtime_db::agent_message_delivery::{

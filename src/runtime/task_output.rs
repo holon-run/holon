@@ -755,6 +755,7 @@ impl RuntimeHandle {
     }
 }
 
+#[cfg(holon_lib_test_shard = "a")]
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1163,6 +1164,7 @@ mod tests {
     }
 }
 
+#[cfg(holon_lib_test_shard = "a")]
 #[cfg(test)]
 #[path = "run_once_task_outputs_tests.rs"]
 mod run_once_task_outputs_tests;

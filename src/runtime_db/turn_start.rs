@@ -242,6 +242,7 @@ pub(super) fn validate_start_admission_tx(
     Ok(())
 }
 
+#[cfg(holon_lib_test_shard = "b")]
 #[cfg(test)]
 mod tests {
     use super::*;

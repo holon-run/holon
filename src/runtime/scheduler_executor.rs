@@ -4753,6 +4753,7 @@ pub(super) fn apply_bootstrap_recovered_projection(
     state.status != previous_status || state.current_run_id != previous_run_id
 }
 
+#[cfg(holon_lib_test_shard = "a")]
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -4781,7 +4782,7 @@ mod tests {
             .settled_recovery_source(&source)
             .unwrap());
         let candidate = {
-            let mut guard = runtime.inner.agent.lock().await;
+            let mut guard = runtime.begin_mutation().await.unwrap();
             let candidate = QueueCandidate {
                 message: source.clone(),
                 prior_state: guard.state.clone(),
@@ -4789,7 +4790,7 @@ mod tests {
                 provider_parked: Default::default(),
             };
             guard.state.status = AgentStatus::Stopped;
-            guard.persist_state(&runtime.inner.storage).unwrap();
+            guard.persist_state(&runtime.inner.storage).await.unwrap();
             candidate
         };
         let before = harness.snapshot();
@@ -5869,10 +5870,10 @@ mod tests {
             .await
             .unwrap();
         {
-            let mut guard = runtime.inner.agent.lock().await;
+            let mut guard = runtime.begin_mutation().await.unwrap();
             guard.state.status = AgentStatus::AwakeRunning;
             guard.state.current_run_id = Some("run-stale".into());
-            guard.persist_state(&runtime.inner.storage).unwrap();
+            guard.persist_state(&runtime.inner.storage).await.unwrap();
         }
 
         let RunLoopPoll::Message(scheduled) = SchedulerDecisionExecutor::new(&runtime)
@@ -6040,10 +6041,10 @@ mod tests {
         )
         .unwrap();
         let previous_state = {
-            let mut guard = runtime.inner.agent.lock().await;
+            let mut guard = runtime.begin_mutation().await.unwrap();
             guard.state.status = AgentStatus::AwakeRunning;
             guard.state.current_run_id = Some("run-stale".into());
-            guard.persist_state(&runtime.inner.storage).unwrap();
+            guard.persist_state(&runtime.inner.storage).await.unwrap();
             guard.state.clone()
         };
         let mut concurrent_state = previous_state.clone();
@@ -7137,6 +7138,7 @@ mod tests {
     }
 }
 
+#[cfg(holon_lib_test_shard = "a")]
 #[cfg(test)]
 #[path = "task_dispatch_tests.rs"]
 mod task_dispatch_tests;

@@ -856,6 +856,7 @@ pub(crate) fn continuity_turn_id(message: &MessageEnvelope) -> Option<&str> {
         .flatten()
 }
 
+#[cfg(holon_lib_test_shard = "a")]
 #[cfg(test)]
 mod context_assignment_tests {
     use super::*;

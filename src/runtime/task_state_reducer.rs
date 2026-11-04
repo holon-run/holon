@@ -309,6 +309,15 @@ impl RuntimeHandle {
     }
 
     pub(super) async fn apply_task_transition(&self, transition: TaskTransition<'_>) -> Result<()> {
+        self.apply_task_transition_record(transition)
+            .await
+            .map(|_| ())
+    }
+
+    pub(super) async fn apply_task_transition_record(
+        &self,
+        transition: TaskTransition<'_>,
+    ) -> Result<TaskRecord> {
         self.apply_task_transition_inner(transition, true).await
     }
 
@@ -316,13 +325,13 @@ impl RuntimeHandle {
         &self,
         transition: TaskTransition<'_>,
         emit_event: bool,
-    ) -> Result<()> {
+    ) -> Result<TaskRecord> {
         for attempt in 0..TASK_TRANSITION_MAX_ATTEMPTS {
             match self
                 .apply_task_transition_attempt(&transition, emit_event)
                 .await
             {
-                Ok(()) => return Ok(()),
+                Ok(record) => return Ok(record),
                 Err(error)
                     if task_transition_error_is_retryable_conflict(&error)
                         && attempt + 1 < TASK_TRANSITION_MAX_ATTEMPTS =>
@@ -350,7 +359,7 @@ impl RuntimeHandle {
         &self,
         transition: &TaskTransition<'_>,
         emit_event: bool,
-    ) -> Result<()> {
+    ) -> Result<TaskRecord> {
         let task = transition.task;
         if let Some(source) = &transition.original_child_diagnostic {
             source.source_view()?.validate_generation(task)?;
@@ -416,11 +425,11 @@ impl RuntimeHandle {
                 }
                 // The first publication committed task/result/obligation together.
                 // Do not create a new result or reopen a consumed queue entry.
-                return Ok(());
+                return Ok(latest.clone());
             }
         }
         if should_ignore_task_update(latest_task.clone(), task) {
-            return Ok(());
+            return Ok(latest_task.expect("ignored Task update has a canonical record"));
         }
         let repeated_terminal = latest_task.as_ref().is_some_and(|latest| {
             is_terminal_task_status(&latest.status)
@@ -683,7 +692,7 @@ impl RuntimeHandle {
         let command = crate::runtime_db::transitions::TaskTransitionCommand {
             agent_id,
             expected_owner_incarnation: self.inner.identity_incarnation,
-            task: persisted_task,
+            task: persisted_task.clone(),
             agent_deletion: transition.agent_deletion.clone(),
             task_result_settlement,
             queue_entry,
@@ -726,7 +735,7 @@ impl RuntimeHandle {
         }
         drop(agent_guard);
         self.apply_transition_commit(commit).await;
-        Ok(())
+        Ok(persisted_task)
     }
 
     #[cfg(test)]
@@ -1478,6 +1487,7 @@ fn task_result_parent_turn_already_delivered(
         .any(|brief| brief.kind == BriefKind::Result))
 }
 
+#[cfg(holon_lib_test_shard = "a")]
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2393,55 +2403,65 @@ mod tests {
         completed.detail = Some(task_detail.clone());
 
         let queued_snapshot = wait_task.clone();
-        let (snapshots, mut observed_snapshots) = tokio::sync::mpsc::unbounded_channel();
-        let (audit_events, _observed_events) = tokio::sync::mpsc::unbounded_channel();
-        let (commits, _observed_commits) = tokio::sync::mpsc::unbounded_channel();
-        *runtime.inner.task_transition_snapshot_pause.lock().unwrap() =
-            Some(Arc::new(TaskTransitionSnapshotPause {
-                task_id: wait_task.id.clone(),
-                snapshots,
-                audit_events,
-                commits,
-            }));
-        let task_id = wait_task.id.clone();
-        let monitor = {
-            let runtime = runtime.runtime.clone();
-            tokio::spawn(async move {
-                runtime
-                    .start_agent_message_wait_monitor(
-                        wait_task,
-                        AuthorityClass::OperatorInstruction,
-                        "target-agent".into(),
-                        "delivery-race".into(),
-                        7,
-                        task_detail,
-                        false,
-                    )
-                    .await
-            })
-        };
-        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(10);
-        let (latest, _, release) = tokio::time::timeout_at(deadline, observed_snapshots.recv())
-            .await
-            .expect("admission must pause after reading the queued record")
-            .unwrap();
+        let latest = runtime.task_record(&wait_task.id).await.unwrap();
         assert_eq!(latest, Some(queued_snapshot));
-        *runtime.inner.task_transition_snapshot_pause.lock().unwrap() = None;
-        runtime
-            .persist_task_transition(&completed, "task_status_updated")
+        let task_id = wait_task.id.clone();
+        let mut mutation = runtime.begin_mutation().await.unwrap();
+        let monitor = runtime.start_agent_message_wait_monitor(
+            wait_task,
+            AuthorityClass::OperatorInstruction,
+            "target-agent".into(),
+            "delivery-race".into(),
+            7,
+            task_detail,
+            false,
+        );
+        tokio::pin!(monitor);
+        // The first writer owns the mutation; admission must wait for its ACK.
+        std::future::poll_fn(|cx| {
+            assert!(std::future::Future::poll(monitor.as_mut(), cx).is_pending());
+            std::task::Poll::Ready(())
+        })
+        .await;
+        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(10);
+        let (commit, _) = mutation
+            .commit_task_transition(
+                crate::ids::audit_event_id(),
+                crate::runtime_db::transitions::TaskTransitionCommand {
+                    agent_id: completed.agent_id.clone(),
+                    expected_owner_incarnation: runtime.inner.identity_incarnation,
+                    task: completed.clone(),
+                    agent_deletion: None,
+                    task_result_settlement: None,
+                    queue_entry: None,
+                    work_items: vec![],
+                    expected_wait_conditions: vec![],
+                    wait_conditions: vec![],
+                    agent_state: None,
+                    message_evidence: vec![],
+                    audit_events: vec![],
+                    index_changes: vec![],
+                    notify_scheduler: false,
+                    commit_on_idempotent: false,
+                    fault: None,
+                },
+                Default::default(),
+                true,
+                None,
+            )
             .await
             .unwrap();
+        drop(mutation);
+        runtime.apply_transition_commit(commit).await;
         assert_eq!(
             runtime.task_record(&task_id).await.unwrap(),
             Some(completed.clone())
         );
         let event_count = runtime.recent_events(100).await.unwrap().len();
 
-        release.send(()).unwrap();
         let admitted = tokio::time::timeout_at(deadline, monitor)
             .await
             .expect("admission must finish after release")
-            .unwrap()
             .unwrap();
         assert_eq!(admitted.status, TaskStatus::Completed);
         assert_eq!(admitted, completed);

@@ -422,6 +422,7 @@ fn render_exec_item(lines: &mut Vec<String>, result: Option<&ExecCommandResult>)
     }
 }
 
+#[cfg(holon_lib_test_shard = "c")]
 #[cfg(test)]
 mod tests {
     use super::*;

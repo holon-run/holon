@@ -412,6 +412,7 @@ fn decode_operation(row: &rusqlite::Row<'_>) -> rusqlite::Result<DestructiveOper
     })
 }
 
+#[cfg(holon_lib_test_shard = "b")]
 #[cfg(test)]
 mod tests {
     use super::*;

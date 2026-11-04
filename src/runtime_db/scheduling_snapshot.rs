@@ -45,6 +45,7 @@ mod stored;
 pub(crate) use startup_maintenance::{StartupSchedulingAck, StartupSchedulingMaterial};
 #[cfg(test)]
 mod tests;
+#[cfg(holon_lib_test_shard = "b")]
 #[cfg(test)]
 mod trigger_writer_tests;
 mod writes;

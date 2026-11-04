@@ -389,6 +389,7 @@ fn selection_order(left: &ContextCandidate, right: &ContextCandidate) -> std::cm
         .then_with(|| left.id().cmp(right.id()))
 }
 
+#[cfg(holon_lib_test_shard = "d")]
 #[cfg(test)]
 mod tests {
     use crate::prompt::{PromptSection, PromptStability};

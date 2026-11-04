@@ -666,6 +666,7 @@ fn interrupted_outcome_matches(
     }
 }
 
+#[cfg(holon_lib_test_shard = "b")]
 #[cfg(test)]
 #[path = "startup_ended_memory_tests.rs"]
 mod tests;

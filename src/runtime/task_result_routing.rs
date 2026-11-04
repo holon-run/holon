@@ -589,6 +589,7 @@ impl RuntimeHandle {
     }
 }
 
+#[cfg(holon_lib_test_shard = "a")]
 #[cfg(test)]
 #[path = "task_result_routing_tests.rs"]
 mod tests;

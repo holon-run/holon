@@ -4930,7 +4930,7 @@ async fn single_candidate_quota_failures_park_without_recovery_enqueue() {
         .unwrap();
     runtime.pick_work_item(work.id.clone()).await.unwrap();
     {
-        let mut guard = runtime.inner.agent.lock().await;
+        let mut guard = runtime.begin_mutation().await.unwrap();
         guard.state.current_execution_binding = Some(crate::types::WorkItemExecutionBinding {
             activation_id: Some("activation-quota-park".into()),
             admission_provenance: None,
@@ -4940,7 +4940,7 @@ async fn single_candidate_quota_failures_park_without_recovery_enqueue() {
             work_item_id: Some(work.id.clone()),
             claimed_work_revision: Some(work.revision),
         });
-        guard.persist_state(&runtime.inner.storage).unwrap();
+        guard.persist_state(&runtime.inner.storage).await.unwrap();
     }
     let error = crate::provider::provider_turn_error(
         "all configured providers failed for this turn: test/model: retries_exhausted (rate_limited)",
@@ -5647,12 +5647,12 @@ async fn bootstrap_discards_legacy_fallback_slot_but_preserves_typed_recovery() 
         )
         .unwrap();
         {
-            let mut guard = runtime.inner.agent.lock().await;
+            let mut guard = runtime.begin_mutation().await.unwrap();
             guard.state.pending_fallback_model = Some(
                 crate::config::ModelRouteRef::parse_compatible("anthropic/claude-sonnet-4-6")
                     .unwrap(),
             );
-            guard.persist_state(&runtime.inner.storage).unwrap();
+            guard.persist_state(&runtime.inner.storage).await.unwrap();
         }
         let mut recovery = MessageEnvelope::new(
             "default",

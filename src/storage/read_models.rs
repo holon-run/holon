@@ -23,26 +23,32 @@ use crate::{
     },
 };
 
+#[cfg(holon_lib_test_shard = "d")]
 #[cfg(test)]
 #[path = "read_models/posture_material_tests.rs"]
 mod posture_material_tests;
 
+#[cfg(holon_lib_test_shard = "d")]
 #[cfg(test)]
 #[path = "read_models/snapshot_view_tests.rs"]
 mod snapshot_view_tests;
 
+#[cfg(holon_lib_test_shard = "d")]
 #[cfg(test)]
 #[path = "read_models/work_queue_ownership_tests.rs"]
 mod work_queue_ownership_tests;
 
+#[cfg(holon_lib_test_shard = "d")]
 #[cfg(test)]
 #[path = "read_models/queue_trigger_material_tests.rs"]
 mod queue_trigger_material_tests;
 
+#[cfg(holon_lib_test_shard = "d")]
 #[cfg(test)]
 #[path = "read_models/queue_todo_material_tests.rs"]
 mod queue_todo_material_tests;
 
+#[cfg(holon_lib_test_shard = "d")]
 #[cfg(test)]
 #[path = "read_models/queue_diagnostics_material_tests.rs"]
 mod queue_diagnostics_material_tests;
@@ -51,34 +57,42 @@ mod queue_diagnostics_material_tests;
 #[path = "read_models/queue_wait_summary_material_tests.rs"]
 mod queue_wait_summary_material_tests;
 
+#[cfg(holon_lib_test_shard = "d")]
 #[cfg(test)]
 #[path = "read_models/wait_scope_material_tests.rs"]
 mod wait_scope_material_tests;
 
+#[cfg(holon_lib_test_shard = "d")]
 #[cfg(test)]
 #[path = "read_models/queue_display_material_tests.rs"]
 mod queue_display_material_tests;
 
+#[cfg(holon_lib_test_shard = "d")]
 #[cfg(test)]
 #[path = "read_models/queue_items_material_tests.rs"]
 mod queue_items_material_tests;
 
+#[cfg(holon_lib_test_shard = "d")]
 #[cfg(test)]
 #[path = "read_models/queue_latest_key_material_tests.rs"]
 mod queue_latest_key_material_tests;
 
+#[cfg(holon_lib_test_shard = "d")]
 #[cfg(test)]
 #[path = "read_models/queue_continuation_material_tests.rs"]
 mod queue_continuation_material_tests;
 
+#[cfg(holon_lib_test_shard = "d")]
 #[cfg(test)]
 #[path = "read_models/queue_current_id_tests.rs"]
 mod queue_current_id_tests;
 
+#[cfg(holon_lib_test_shard = "d")]
 #[cfg(test)]
 #[path = "read_models/queue_sort_tests.rs"]
 mod queue_sort_tests;
 
+#[cfg(holon_lib_test_shard = "d")]
 #[cfg(test)]
 #[path = "read_models/queue_wait_index_tests.rs"]
 mod queue_wait_index_tests;

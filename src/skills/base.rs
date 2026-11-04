@@ -2917,6 +2917,7 @@ fn create_symlink(src: &Path, dst: &Path) -> std::io::Result<()> {
         std::os::windows::fs::symlink_file(src, dst)
     }
 }
+#[cfg(holon_lib_test_shard = "c")]
 #[cfg(test)]
 mod tests {
     use std::collections::HashMap;

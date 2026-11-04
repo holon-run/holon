@@ -116,6 +116,7 @@ pub(super) fn clone_oracle(
     )
 }
 
+#[cfg(holon_lib_test_shard = "a")]
 #[test]
 fn canonical_transfer_matches_old_clone_map_and_all_projection_fields() {
     let state = AgentState::new("agent");
@@ -159,6 +160,7 @@ fn canonical_transfer_matches_old_clone_map_and_all_projection_fields() {
     }
 }
 
+#[cfg(holon_lib_test_shard = "a")]
 #[test]
 fn canonical_transfer_moves_original_key_and_wait_buffers_for_both_queue_modes() {
     let state = AgentState::new("agent");
@@ -208,6 +210,7 @@ fn canonical_transfer_moves_original_key_and_wait_buffers_for_both_queue_modes()
     }
 }
 
+#[cfg(holon_lib_test_shard = "a")]
 #[test]
 fn canonical_transfer_preserves_revision_generation_and_fail_closed_authority() {
     let mut item = WorkItemRecord::new("agent", "authority", WorkItemState::Open);

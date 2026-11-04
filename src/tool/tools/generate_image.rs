@@ -26,6 +26,7 @@ use crate::tool::helpers::{parse_tool_args, validate_non_empty};
 
 pub(crate) const NAME: &str = crate::tool::names::GENERATE_IMAGE;
 
+#[cfg(holon_lib_test_shard = "c")]
 #[cfg(test)]
 #[path = "generate_image_material_tests.rs"]
 mod material_tests;
@@ -408,6 +409,7 @@ fn generate_image_failed(error: anyhow::Error) -> anyhow::Error {
     .into()
 }
 
+#[cfg(holon_lib_test_shard = "c")]
 #[cfg(test)]
 mod tests {
     use super::*;

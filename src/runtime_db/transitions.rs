@@ -5,10 +5,12 @@ pub(crate) use audit_event_ack::AuditEventAck;
 
 // Phase 2 keeps this additive persistence seam dormant until production shadow
 // wiring begins; repository tests exercise it without granting scheduler authority.
+#[cfg(holon_lib_test_shard = "b")]
 #[cfg(test)]
 mod execution_protocol_fixture_repository;
 pub(crate) mod execution_protocol_repository;
 mod live_input_attachment;
+#[cfg(holon_lib_test_shard = "b")]
 #[cfg(test)]
 mod provider_queue_tests;
 mod provider_result_handoff;
@@ -20,8 +22,10 @@ pub(crate) use provider_result_handoff::ProviderResultHandoffCommand;
 mod prepared_input;
 #[path = "transitions/prepared_task_result.rs"]
 mod prepared_task_result;
+#[cfg(holon_lib_test_shard = "b")]
 #[cfg(test)]
 mod wait_body_budget_tests;
+#[cfg(holon_lib_test_shard = "b")]
 #[cfg(test)]
 mod wait_pool_budget_tests;
 pub(crate) use crate::runtime_db::provider_admission::StoppedProviderPauseAck;
@@ -111,7 +115,7 @@ pub(crate) enum TransitionFaultPoint {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum DeliverySynchronization {
     Required,
-    IfAvailable,
+    IfAvailable { timer_wakes_available: bool },
 }
 
 impl TransitionFaultPoint {
@@ -3058,7 +3062,9 @@ impl RuntimeTransitionRepository<'_> {
                 &[],
                 &[],
                 None,
-                DeliverySynchronization::IfAvailable,
+                DeliverySynchronization::IfAvailable {
+                    timer_wakes_available: super::current_schema_version(tx)? >= 62,
+                },
                 None,
                 None,
             )?;
@@ -3433,7 +3439,7 @@ impl RuntimeTransitionRepository<'_> {
 
         let synchronize_delivery = match delivery_synchronization {
             DeliverySynchronization::Required => true,
-            DeliverySynchronization::IfAvailable => tx.query_row(
+            DeliverySynchronization::IfAvailable { .. } => tx.query_row(
                 "SELECT EXISTS(
                     SELECT 1 FROM sqlite_master
                     WHERE type = 'table' AND name = 'agent_message_deliveries'
@@ -3442,6 +3448,16 @@ impl RuntimeTransitionRepository<'_> {
                 |row| row.get::<_, bool>(0),
             )?,
         };
+        let synchronize_timer_wakes = match delivery_synchronization {
+            DeliverySynchronization::Required => true,
+            DeliverySynchronization::IfAvailable {
+                timer_wakes_available,
+            } => timer_wakes_available,
+        };
+        anyhow::ensure!(
+            synchronize_timer_wakes || timer_wake_claim.is_none(),
+            "timer wake claims require runtime db schema 62 or later"
+        );
         let delivery = delivery
             .map(|delivery| prepare_delivery_admission_tx(tx, delivery))
             .transpose()?;
@@ -3543,15 +3559,18 @@ impl RuntimeTransitionRepository<'_> {
             terminal_tool_executions,
         )?;
         let queue_record = queue_mutation_record(&command.mutation);
-        let pending_timer_wake: Option<String> = tx
-            .query_row(
+        let pending_timer_wake: Option<String> = if synchronize_timer_wakes {
+            tx.query_row(
                 "SELECT w.timer_id FROM timer_wakes w
                  JOIN timers t ON t.timer_id = w.timer_id
                  WHERE w.message_id = ?1 AND t.agent_id = ?2 AND w.status = 'pending'",
                 params![queue_record.message_id, command.agent_id],
                 |row| row.get(0),
             )
-            .optional()?;
+            .optional()?
+        } else {
+            None
+        };
         if synchronize_delivery
             && delivery_by_message_id_tx(tx, &queue_record.message_id)?.is_some_and(|delivery| {
                 !matches!(
@@ -4033,11 +4052,13 @@ impl RuntimeTransitionRepository<'_> {
             insert_brief_evidence_tx(tx, brief)?;
         }
         // Attempt/Turn settlements must be durable before retiring their wake.
-        super::repositories::retire_terminal_timer_wake_tx(
-            tx,
-            queue_record,
-            queue_record.updated_at,
-        )?;
+        if synchronize_timer_wakes {
+            super::repositories::retire_terminal_timer_wake_tx(
+                tx,
+                queue_record,
+                queue_record.updated_at,
+            )?;
+        }
         if let Some(timer_id) = pending_timer_wake {
             let retired: bool = tx.query_row(
                 "SELECT EXISTS(SELECT 1 FROM timer_wakes
@@ -6453,6 +6474,7 @@ pub(super) fn inject_fault(
     Ok(())
 }
 
+#[cfg(holon_lib_test_shard = "b")]
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -8685,12 +8707,20 @@ mod tests {
     fn queue_claim_wait_resolution_advances_execution_registration() -> Result<()> {
         let (_dir, db) = runtime_db()?;
         let now = Utc::now();
+        let scope = InputEvidenceScope {
+            agent_id: "agent-a".into(),
+            identity_incarnation: 1,
+        };
         db.agent_states()
             .upsert_for_fixture(&AgentState::new("agent-a"))?;
         db.agent_identities().upsert(&active_agent("agent-a"))?;
         let open = work_item("work-claim-wait");
-        db.transitions()
-            .commit_work_item(&WorkItemTransitionCommand {
+        // Fixture Work must be qualified before the scoped queue claim reads it.
+        let insert = PreparedInputTransition::work(
+            scope.clone(),
+            "insert-work-claim-wait".into(),
+            now,
+            WorkItemTransitionCommand {
                 agent_id: "agent-a".into(),
                 mutation: WorkItemMutation::Insert {
                     record: open.clone(),
@@ -8701,12 +8731,40 @@ mod tests {
                 index_changes: vec![index_change("work_item", &open.id)],
                 notify_scheduler: false,
                 fault: None,
-            })?;
+            },
+            ExecutionProtocolTransition::default(),
+            false,
+        )?;
+        db.transitions_in_scope(&scope)
+            .commit_prepared_transition(&insert)?;
         let admission = execution_admission(
             "message-admit-claim",
             "attempt-claim-wait",
             "work-claim-wait",
         );
+        let mut source_message = MessageEnvelope::new(
+            "agent-a",
+            crate::types::MessageKind::InternalFollowup,
+            crate::types::MessageOrigin::System {
+                subsystem: "fixture".into(),
+            },
+            AuthorityClass::RuntimeInstruction,
+            Priority::Normal,
+            crate::types::MessageBody::Text {
+                text: "execution that registers the wait".into(),
+            },
+        );
+        source_message.id = "message-admit-claim".into();
+        source_message.created_at = now;
+        let mut turn = TurnRecord::new("agent-a", "turn-claim-wait", 1);
+        turn.current_work_item_id = Some(open.id.clone());
+        turn.owner = Some(crate::types::TurnOwner::WorkItem {
+            work_item_id: open.id.clone(),
+        });
+        turn.trigger = Some(crate::types::TurnTriggerSummary::from_message(
+            &source_message,
+        ));
+        turn.input_message_ids.push(source_message.id.clone());
         db.transitions().commit_queue_with_execution_protocol(
             &QueueTransitionCommand {
                 agent_id: "agent-a".into(),
@@ -8721,7 +8779,7 @@ mod tests {
                 }),
                 scheduler_claim_work_item: None,
                 agent_state: None,
-                message_evidence: Vec::new(),
+                message_evidence: vec![source_message],
                 transcript_entries: Vec::new(),
                 turn_record: None,
                 audit_events: Vec::new(),
@@ -8731,10 +8789,36 @@ mod tests {
             },
             &admission,
         )?;
+        // Give the settling Attempt an actual assigned Turn, not an unproved
+        // turn_id hint or an unstarted Attempt behind a still-queued source.
+        db.transitions().commit_queue(&QueueTransitionCommand {
+            agent_id: "agent-a".into(),
+            operation: QueueOperation::Claim,
+            mutation: QueueMutation::Consume(QueueEntryRecord {
+                message_id: "message-admit-claim".into(),
+                agent_id: "agent-a".into(),
+                priority: Priority::Normal,
+                status: QueueEntryStatus::Dequeued,
+                created_at: now,
+                updated_at: now,
+            }),
+            scheduler_claim_work_item: None,
+            agent_state: None,
+            message_evidence: Vec::new(),
+            transcript_entries: Vec::new(),
+            turn_record: Some(turn),
+            audit_events: Vec::new(),
+            notify_scheduler: false,
+            fault: None,
+            brief_evidence: Vec::new(),
+        })?;
         let mut wait = wait_condition("wait-claim-wait", "work-claim-wait", "task-claim-wait");
         wait.updated_at = now;
-        db.transitions().commit_wait_with_execution_protocol(
-            &WaitTransitionCommand {
+        let register_wait = PreparedInputTransition::wait(
+            scope.clone(),
+            "register-wait-claim-wait".into(),
+            now,
+            WaitTransitionCommand {
                 task_result_admission: None,
                 agent_id: "agent-a".into(),
                 work_items: Vec::new(),
@@ -8747,7 +8831,7 @@ mod tests {
                 notify_scheduler: false,
                 fault: None,
             },
-            &ExecutionProtocolTransition {
+            ExecutionProtocolTransition {
                 bootstrap: None,
                 commands: vec![ExecutionProtocolCommand::Settle(SettleExecution {
                     outcome: ExecutionOutcomeRecord {
@@ -8762,15 +8846,21 @@ mod tests {
                     },
                 })],
             },
+            None,
         )?;
+        db.transitions_in_scope(&scope)
+            .commit_prepared_transition(&register_wait)?;
         // The wait fires for a runtime-owned task result message.
         let mut triggered = wait.clone();
         triggered.status = WaitConditionStatus::Triggered;
         triggered.trigger_message_id = Some("message-claim-trigger".into());
         triggered.triggered_at = Some(now + chrono::Duration::seconds(1));
         triggered.updated_at = now + chrono::Duration::seconds(1);
-        db.transitions().commit_wait_with_execution_protocol(
-            &WaitTransitionCommand {
+        let trigger_wait = PreparedInputTransition::wait(
+            scope.clone(),
+            "trigger-wait-claim-wait".into(),
+            now + chrono::Duration::seconds(1),
+            WaitTransitionCommand {
                 task_result_admission: None,
                 agent_id: "agent-a".into(),
                 work_items: Vec::new(),
@@ -8788,12 +8878,11 @@ mod tests {
                 notify_scheduler: false,
                 fault: None,
             },
-            &ExecutionProtocolTransition::default(),
+            ExecutionProtocolTransition::default(),
+            None,
         )?;
-        let scope = InputEvidenceScope {
-            agent_id: "agent-a".into(),
-            identity_incarnation: 1,
-        };
+        db.transitions_in_scope(&scope)
+            .commit_prepared_transition(&trigger_wait)?;
         let mut trigger_message = MessageEnvelope::new(
             "agent-a",
             crate::types::MessageKind::TaskResult,
@@ -11247,6 +11336,7 @@ mod tests {
     }
 }
 
+#[cfg(holon_lib_test_shard = "b")]
 #[cfg(test)]
 #[path = "transition_wait_footprint_tests.rs"]
 mod wait_footprint_tests;

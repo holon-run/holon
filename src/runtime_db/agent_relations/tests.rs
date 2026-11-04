@@ -656,6 +656,7 @@ fn backfill_report_does_not_migrate_and_apply_can_record_pre_migration_backup() 
              DROP TABLE command_task_creation_sources;
              DROP TABLE current_read_qualification;
              DROP TABLE current_read_revisions;
+             DROP TABLE event_history_acks;
              DROP TABLE input_query_birth_members;
              DROP TABLE input_query_birth_cursors;
              DROP INDEX input_native_known_current;

@@ -1200,6 +1200,7 @@ fn histogram_quantile(histogram: &[u64; HISTOGRAM_UPPER_BOUNDS_MS.len()], percen
     u64::MAX
 }
 
+#[cfg(holon_lib_test_shard = "d")]
 #[cfg(test)]
 mod tests {
     use super::*;

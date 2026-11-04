@@ -409,6 +409,7 @@ pub(super) async fn send_openai_codex_image_generation_request(
     parse_openai_codex_image_generation_response_items(terminal_response.output_items, material)
 }
 
+#[cfg(holon_lib_test_shard = "c")]
 #[cfg(test)]
 #[path = "images_material_tests.rs"]
 mod material_tests;

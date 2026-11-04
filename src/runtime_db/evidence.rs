@@ -25,6 +25,7 @@ pub(crate) const AUDIT_EVENT_SEQUENCE_DOMAIN: &str = "audit_event";
 pub(crate) const MESSAGE_SEQUENCE_DOMAIN: &str = "message";
 pub(crate) const TRANSCRIPT_SEQUENCE_DOMAIN: &str = "transcript";
 
+#[cfg(holon_lib_test_shard = "b")]
 #[cfg(test)]
 #[path = "evidence/audit_sql_budget_tests.rs"]
 mod audit_sql_budget_tests;
@@ -32,18 +33,23 @@ mod audit_sql_budget_tests;
 #[cfg(test)]
 mod registry_incarnation_budget_tests;
 
+#[cfg(holon_lib_test_shard = "b")]
 #[cfg(test)]
 mod registry_post_write_budget_tests;
 
+#[cfg(holon_lib_test_shard = "b")]
 #[cfg(test)]
 mod registry_enum_tests;
 
+#[cfg(holon_lib_test_shard = "b")]
 #[cfg(test)]
 mod registry_name_key_budget_tests;
 
+#[cfg(holon_lib_test_shard = "b")]
 #[cfg(test)]
 mod registry_timestamp_budget_tests;
 
+#[cfg(holon_lib_test_shard = "b")]
 #[cfg(test)]
 mod registry_clock_budget_tests;
 
@@ -1667,6 +1673,7 @@ fn timestamp(value: chrono::DateTime<chrono::Utc>) -> String {
     value.to_rfc3339_opts(chrono::SecondsFormat::Millis, true)
 }
 
+#[cfg(holon_lib_test_shard = "b")]
 #[cfg(test)]
 #[path = "standalone_evidence_tests.rs"]
 mod standalone_evidence_tests;

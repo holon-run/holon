@@ -98,6 +98,7 @@ async fn actual_reply(runtime: &RuntimeHandle) -> Result<MessageEnvelope> {
     Ok(actual)
 }
 
+#[cfg(holon_lib_test_shard = "a")]
 #[tokio::test]
 async fn accepted_message_wait_terminal_early_return_uses_current_task_without_body_sql(
 ) -> Result<()> {
@@ -143,6 +144,7 @@ async fn accepted_message_wait_terminal_early_return_uses_current_task_without_b
     Ok(())
 }
 
+#[cfg(holon_lib_test_shard = "a")]
 #[tokio::test]
 async fn actual_delivery_reply_reconciliation_keeps_complete_active_waits_without_task_body_sql(
 ) -> Result<()> {
@@ -153,6 +155,8 @@ async fn actual_delivery_reply_reconciliation_keeps_complete_active_waits_withou
         .persist_task_transition(&original, "message_wait_original_ack")
         .await?;
     let actual = actual_reply(runtime).await?;
+    runtime.await_initial_resources_for_test().await;
+    let _resources = runtime.hold_resource_refresh_for_test().await?;
     let token = runtime.inner.mutation_owner.capture()?.unwrap().token;
     let baseline = runtime.inner.input_evidence_budget.report()?.observed_bytes;
     deny_body_tables(runtime)?;
@@ -184,6 +188,7 @@ async fn actual_delivery_reply_reconciliation_keeps_complete_active_waits_withou
     Ok(())
 }
 
+#[cfg(holon_lib_test_shard = "a")]
 #[tokio::test]
 async fn message_wait_current_generation_and_foreign_owner_are_rejected_without_body_fallback(
 ) -> Result<()> {
@@ -252,6 +257,7 @@ async fn message_wait_current_generation_and_foreign_owner_are_rejected_without_
     Ok(())
 }
 
+#[cfg(holon_lib_test_shard = "a")]
 #[tokio::test]
 async fn message_wait_terminal_projection_is_budgeted_before_new_owned_detail_and_writes(
 ) -> Result<()> {
@@ -294,6 +300,7 @@ async fn message_wait_terminal_projection_is_budgeted_before_new_owned_detail_an
     Ok(())
 }
 
+#[cfg(holon_lib_test_shard = "a")]
 #[tokio::test]
 async fn message_wait_no_state_original_ack_never_falls_back_to_raw_active_task() -> Result<()> {
     use crate::runtime::child_task_producer_tests::register_child_monitor_for_test;
@@ -383,6 +390,7 @@ impl RuntimeHandle {
     }
 }
 
+#[cfg(holon_lib_test_shard = "a")]
 #[tokio::test]
 async fn actual_reply_task_none_and_incomplete_active_view_do_not_hydrate_or_fallback() -> Result<()>
 {
@@ -440,6 +448,7 @@ async fn actual_reply_task_none_and_incomplete_active_view_do_not_hydrate_or_fal
     Ok(())
 }
 
+#[cfg(holon_lib_test_shard = "a")]
 #[tokio::test]
 async fn real_running_task_status_dispatch_keeps_original_message_wait_generation_finishable(
 ) -> Result<()> {
@@ -555,6 +564,7 @@ async fn dispatch_original_running_status(
     Ok(admitted)
 }
 
+#[cfg(holon_lib_test_shard = "a")]
 #[tokio::test]
 async fn actual_message_wait_rejoin_contract_rejects_missing_and_changed_generation() -> Result<()>
 {
@@ -699,6 +709,7 @@ async fn actual_message_wait_rejoin_contract_rejects_missing_and_changed_generat
     Ok(())
 }
 
+#[cfg(holon_lib_test_shard = "a")]
 #[tokio::test]
 async fn actual_unbound_message_wait_creator_preserves_partial_contract_through_running_and_finish(
 ) -> Result<()> {

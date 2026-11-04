@@ -2251,6 +2251,7 @@ fn resolve_patch_path(workspace_root: &Path, path: &str) -> Result<PathBuf> {
     Ok(normalized_candidate)
 }
 
+#[cfg(holon_lib_test_shard = "c")]
 #[cfg(test)]
 mod resource_runtime_tests {
     use super::*;
@@ -2367,6 +2368,7 @@ mod resource_runtime_tests {
     }
 }
 
+#[cfg(holon_lib_test_shard = "c")]
 #[cfg(test)]
 mod tests {
     use super::*;

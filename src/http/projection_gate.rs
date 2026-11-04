@@ -507,6 +507,7 @@ async fn wait_for_flight(flight: Arc<Flight>) -> ProjectionDelivery {
     }
 }
 
+#[cfg(holon_lib_test_shard = "c")]
 #[cfg(test)]
 mod tests {
     use std::sync::atomic::{AtomicUsize, Ordering};

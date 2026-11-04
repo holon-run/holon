@@ -731,6 +731,7 @@ async fn cleanup_metadata(
     }
 }
 
+#[cfg(holon_lib_test_shard = "a")]
 #[cfg(test)]
 #[path = "worktree_cleanup_tests.rs"]
 mod tests;

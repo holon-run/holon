@@ -603,13 +603,16 @@ pub(crate) fn resolve_input_recovery_with_queries(
     Ok(resolved)
 }
 
+#[cfg(holon_lib_test_shard = "a")]
 #[cfg(test)]
 #[path = "input_recovery_tests.rs"]
 mod tests;
 
+#[cfg(holon_lib_test_shard = "a")]
 #[cfg(test)]
 #[path = "input_recovery_cache_tests.rs"]
 mod cache_tests;
+#[cfg(holon_lib_test_shard = "a")]
 #[cfg(test)]
 #[path = "input_recovery_replay_tests.rs"]
 mod replay_tests;

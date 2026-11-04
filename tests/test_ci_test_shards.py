@@ -141,66 +141,102 @@ class CiTestShardsTests(unittest.TestCase):
             ["cargo", "test", "--lib", "--", "--list"],
         )
 
-    def test_lib_partition_assigns_every_test_exactly_once(self):
-        names = [
-            "alpha::tests::one",
-            "alpha::tests::two",
-            "beta::tests::one",
-            "gamma::solo",
-            "delta::tests::one",
-        ]
-        shards = ci_test_shards.partition_lib_tests(names, 2)
-        flattened = [name for shard in shards for name in shard]
-        self.assertEqual(sorted(flattened), sorted(names))
-        self.assertEqual(len(flattened), len(set(flattened)))
+    def test_compile_groups_cover_each_group_once(self):
+        groups = [g for job in ci_test_shards.LIB_SHARDS
+                  for g in ci_test_shards.LIB_COMPILE_GROUPS[job]]
+        self.assertEqual(sorted(groups), ["a", "b", "c", "d"])
 
-    def test_lib_partition_keeps_modules_together_and_balances_counts(self):
-        names = [
-            f"module_{index}::tests::case_{case}"
-            for index in range(6)
-            for case in range(4)
-        ]
-        names += [f"heavy::tests::case_{case}" for case in range(10)]
-        shards = ci_test_shards.partition_lib_tests(names, 2)
-        module_sets = [
-            {name.rsplit("::", 1)[0] for name in shard} for shard in shards
-        ]
-        self.assertEqual(
-            module_sets[0] & module_sets[1],
-            set(),
-            "a module must not span two lib shards",
-        )
-        sizes = [len(shard) for shard in shards]
-        self.assertLessEqual(
-            abs(sizes[0] - sizes[1]),
-            10,
-            "lib shards must stay close in test count",
-        )
+    def test_ownership_keeps_subsystems_and_new_tests_together(self):
+        for owner, expected in (("runtime", "a"), ("runtime_db", "b"),
+                                ("model_catalog", "c"), ("host", "d"),
+                                ("new_subsystem", "d")):
+            for name in (f"{owner}::tests::one", f"{owner}::nested::new_test"):
+                self.assertEqual(ci_test_shards.lib_compile_group(name), expected)
 
-    def test_lib_shard_commands_run_exact_names_with_two_threads(self):
-        names = ["alpha::tests::one", "beta::tests::one"]
-        first = ci_test_shards.lib_shard_commands("lib-a", names)
-        second = ci_test_shards.lib_shard_commands("lib-b", names)
-        self.assertEqual(
-            first[0][:5], ["cargo", "test", "--lib", "--", "--exact"]
-        )
-        self.assertIn("--test-threads=2", first[0])
-        self.assertEqual(len(first[0]) - 6, 1)
-        self.assertEqual(first[1][:3], ["cargo", "test", "--bins"])
-        self.assertEqual(
-            second[0][:5], ["cargo", "test", "--lib", "--", "--exact"]
-        )
-        self.assertEqual(len(second), 1)
+    def test_missing_cfg_duplicate_and_empty_groups_are_rejected(self):
+        for names, group in (([], "a"), (["runtime::test"] * 2, "a"),
+                             (["host::ungated_test"], "a")):
+            with self.subTest(names=names), self.assertRaises(ValueError):
+                ci_test_shards.validate_lib_group(names, group)
+        ci_test_shards.validate_lib_group(["runtime::tests::new_test"], "a")
 
-    def test_lib_shard_splits_the_enumerated_test_names(self):
-        names = ["alpha::tests::one", "beta::tests::one"]
-        with mock.patch.object(
-            ci_test_shards, "lib_test_names", return_value=names
+    def test_group_env_overrides_stale_selector_without_changing_rustflags(self):
+        with mock.patch.dict(ci_test_shards.os.environ,
+                             {"HOLON_LIB_TEST_SHARD": "b", "RUSTFLAGS": "-D warnings"}):
+            env = ci_test_shards.lib_group_environment("a")
+            self.assertEqual(env["HOLON_LIB_TEST_SHARD"], "a")
+            self.assertEqual(env["RUSTFLAGS"], "-D warnings")
+            self.assertEqual(ci_test_shards.os.environ["HOLON_LIB_TEST_SHARD"], "b")
+        with self.assertRaises(ValueError):
+            ci_test_shards.lib_group_environment("typo")
+
+    def test_group_enumeration_selects_cfg_before_compilation(self):
+        with mock.patch.object(ci_test_shards.subprocess, "run") as run:
+            run.return_value.stdout = "runtime::tests::one: test\n"
+            self.assertEqual(ci_test_shards.lib_test_names("a"), ["runtime::tests::one"])
+        self.assertEqual(run.call_args.kwargs["env"]["HOLON_LIB_TEST_SHARD"], "a")
+        self.assertNotIn("capture_output", run.call_args.kwargs)
+
+    def test_ci_jobs_never_request_full_libtest(self):
+        for job in ci_test_shards.LIB_SHARDS:
+            with self.assertRaises(ValueError):
+                ci_test_shards.suite_command(job, FAKE_TARGETS, None)
+
+    def test_runner_executes_compile_groups_serially_and_bins_once(self):
+        import json
+        import tempfile
+        for job, names, expected_bins in (
+            ("lib-a", [["runtime::one"], ["model_catalog::one"]], 1),
+            ("lib-b", [["runtime_db::one"], ["host::one"]], 0),
         ):
-            commands = ci_test_shards.suite_commands("lib-a", FAKE_TARGETS, None)
-        self.assertEqual(
-            commands[0][:5], ["cargo", "test", "--lib", "--", "--exact"]
-        )
+            with self.subTest(job=job), tempfile.TemporaryDirectory() as target:
+                with mock.patch.dict(ci_test_shards.os.environ, {"CARGO_TARGET_DIR": target}), \
+                     mock.patch.object(ci_test_shards, "lib_test_names", side_effect=names) as listing, \
+                     mock.patch.object(ci_test_shards.subprocess, "run") as run:
+                    run.return_value.returncode = 0
+                    ci_test_shards.run_lib_shard(job)
+                groups = ci_test_shards.LIB_COMPILE_GROUPS[job]
+                self.assertEqual(listing.call_args_list, [mock.call(g) for g in groups])
+                self.assertEqual(run.call_count, 2 + expected_bins)
+                for call, group in zip(run.call_args_list, groups):
+                    self.assertEqual(call.kwargs["env"]["HOLON_LIB_TEST_SHARD"], group)
+                    self.assertEqual(call.args[0],
+                                     ["cargo", "test", "--lib", "--", "--test-threads=2"])
+                    self.assertNotIn("check", call.kwargs)
+                for group, expected in zip(groups, names):
+                    path = Path(target) / "ci-timing" / f"lib-test-names-{group}.json"
+                    self.assertEqual(json.loads(path.read_text()), expected)
+                if expected_bins:
+                    self.assertIn("--bins", run.call_args_list[-1].args[0])
+
+    def test_missing_source_cfg_fails_before_running_tests(self):
+        with mock.patch.object(ci_test_shards, "lib_test_names", return_value=["host::one"]), \
+             mock.patch.object(ci_test_shards.subprocess, "run") as run:
+            with self.assertRaises(ValueError):
+                ci_test_shards.run_lib_shard("lib-a")
+            run.assert_not_called()
+
+    def test_coverage_compares_the_name_multiset_not_only_counts(self):
+        names = ["runtime::one", "runtime_db::one", "model_catalog::one", "host::one"]
+        groups = [[name] for name in names]
+        ci_test_shards.verify_lib_lists(names, groups)
+        for broken in (groups[:-1], groups[:-1] + [["host::other"]],
+                       groups[:-1] + [["runtime::one"]], groups[:-1] + [[]]):
+            with self.subTest(groups=broken), self.assertRaises(ValueError):
+                ci_test_shards.verify_lib_lists(names, broken)
+
+    def test_test_failures_do_not_skip_the_remaining_groups(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as target:
+            with mock.patch.dict(ci_test_shards.os.environ, {"CARGO_TARGET_DIR": target}), \
+                 mock.patch.object(ci_test_shards, "lib_test_names",
+                                   side_effect=[["runtime::one"], ["model_catalog::one"]]), \
+                 mock.patch.object(ci_test_shards.subprocess, "run") as run:
+                run.return_value.returncode = 1
+                with self.assertRaises(ci_test_shards.subprocess.CalledProcessError):
+                    ci_test_shards.run_lib_shard("lib-a")
+                self.assertEqual(run.call_count, 3)
+
 
 if __name__ == "__main__":
     unittest.main()

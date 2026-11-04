@@ -15,6 +15,7 @@ const AGENT: &str = "seed-id";
 #[path = "episode_snapshot_seed_ownership_tests.rs"]
 mod ownership_tests;
 
+#[cfg(holon_lib_test_shard = "b")]
 #[path = "episode_snapshot_seed_loaded_tests.rs"]
 mod loaded_tests;
 
@@ -53,6 +54,7 @@ fn original_seed_id(boundary: &str, agent: &str) -> Result<String> {
     Ok(format!("episode_seed_{:x}", Sha256::digest(&preimage)))
 }
 
+#[cfg(holon_lib_test_shard = "b")]
 #[test]
 fn seed_id_stream_preserves_original_json_hash_and_sql_identity() -> Result<()> {
     assert_eq!(
@@ -93,6 +95,7 @@ fn seed_id_stream_preserves_original_json_hash_and_sql_identity() -> Result<()> 
     Ok(())
 }
 
+#[cfg(holon_lib_test_shard = "b")]
 #[test]
 fn seed_id_stream_keeps_exhausted_original_phase_and_last_holder() -> Result<()> {
     let boundary = "界\0\"\\\n".repeat(16_384);
@@ -148,6 +151,7 @@ fn seed_id_stream_keeps_exhausted_original_phase_and_last_holder() -> Result<()>
     Ok(())
 }
 
+#[cfg(holon_lib_test_shard = "b")]
 #[test]
 fn seed_id_stream_conflict_and_sql_error_release_reader_and_rollback() -> Result<()> {
     for conflict in [true, false] {
@@ -198,6 +202,7 @@ fn seed_id_stream_conflict_and_sql_error_release_reader_and_rollback() -> Result
     Ok(())
 }
 
+#[cfg(holon_lib_test_shard = "b")]
 #[test]
 fn seed_id_stream_real_identity_import_retains_phase_and_atomic_binding() -> Result<()> {
     let home = tempfile::tempdir()?;

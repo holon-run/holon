@@ -4,6 +4,7 @@ use crate::types::WorkItemRecord;
 
 type Entry = (String, WorkItemRecord, usize);
 
+#[cfg(holon_lib_test_shard = "d")]
 #[cfg(test)]
 mod tests;
 

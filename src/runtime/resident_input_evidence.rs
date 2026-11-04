@@ -2566,6 +2566,7 @@ fn compare_record_order(
         })
 }
 
+#[cfg(holon_lib_test_shard = "a")]
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -4624,6 +4625,7 @@ mod tests {
     }
 }
 
+#[cfg(holon_lib_test_shard = "a")]
 #[cfg(test)]
 #[path = "resident_input_completion_tests.rs"]
 mod completion_tests;

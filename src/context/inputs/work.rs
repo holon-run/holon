@@ -317,6 +317,7 @@ pub(super) mod tests {
         (brief, transcript, message, head)
     }
 
+    #[cfg(holon_lib_test_shard = "d")]
     #[test]
     fn completion_reads_selected_bodies_without_any_sql_history_table() {
         let (brief, transcript, message, head) = completion();
@@ -358,6 +359,7 @@ pub(super) mod tests {
         assert_eq!(reports["work"].brief_id.as_deref(), Some(brief.id.as_str()));
     }
 
+    #[cfg(holon_lib_test_shard = "d")]
     #[test]
     fn completion_admits_borrowed_lookup_ids_before_constructing_missing_keys() {
         use crate::{
@@ -411,6 +413,7 @@ pub(super) mod tests {
         }
     }
 
+    #[cfg(holon_lib_test_shard = "d")]
     #[test]
     fn completion_borrows_large_source_but_refuses_owning_resolution_at_original_limit() {
         use crate::{
@@ -483,6 +486,7 @@ pub(super) mod tests {
         fresh.finish().unwrap();
     }
 
+    #[cfg(holon_lib_test_shard = "d")]
     #[test]
     fn completion_final_brief_copy_obeys_exact_byte_and_record_limits() {
         use crate::{
@@ -525,6 +529,7 @@ pub(super) mod tests {
         }
     }
 
+    #[cfg(holon_lib_test_shard = "d")]
     #[test]
     fn frozen_optional_absence_preserves_fallback_but_missing_selected_body_is_not_absence() {
         let (brief, _, _, mut head) = completion();
@@ -563,6 +568,7 @@ pub(super) mod tests {
         assert!(completion_input(&work, &pruned, "work").is_err());
     }
 
+    #[cfg(holon_lib_test_shard = "d")]
     #[test]
     fn work_lookup_distinguishes_unprepared_absent_and_foreign_incarnation() {
         let mut work = capture(Vec::new(), Vec::new(), Vec::new(), BTreeMap::new());
@@ -587,6 +593,7 @@ pub(super) mod tests {
         );
     }
 
+    #[cfg(holon_lib_test_shard = "d")]
     #[test]
     fn incomplete_live_wait_coverage_is_never_an_empty_projection() {
         let mut work = capture(Vec::new(), Vec::new(), Vec::new(), BTreeMap::new());
@@ -605,6 +612,7 @@ pub(super) mod tests {
         assert_eq!(work_item(&work, &record.id).unwrap(), Some(record));
     }
 
+    #[cfg(holon_lib_test_shard = "d")]
     #[test]
     fn completion_selector_borrows_known_absence_but_admits_missing_key_errors() -> Result<()> {
         use crate::{
@@ -649,6 +657,7 @@ pub(super) mod tests {
         Ok(())
     }
 
+    #[cfg(holon_lib_test_shard = "d")]
     #[test]
     fn completion_heads_follow_the_bounded_display_selector_without_strict_source_roots() {
         let mut records = Vec::new();

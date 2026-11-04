@@ -1166,5 +1166,6 @@ impl RuntimeDb {
     }
 }
 
+#[cfg(holon_lib_test_shard = "b")]
 #[cfg(test)]
 mod tests;

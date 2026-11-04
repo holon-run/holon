@@ -173,21 +173,24 @@ pub(crate) fn preflight_task_write_snapshot_with_memory_budget_tx(
     budget: &crate::runtime::input_evidence_budget::InputEvidenceBudgetLedger,
     memory_budget: Option<&mut crate::runtime_db::dispatch_memory::DispatchMemoryTransactionBudget>,
 ) -> Result<TaskBootstrapSnapshot> {
-    ensure!(
-        current_coverage(tx, &proof.scope)?.map_or(1, |c| c.revision) == proof.base_revision,
-        "Task proof base changed"
-    );
     match memory_budget {
-        Some(memory) => loader::load_with_memory_budget(
-            tx,
-            &proof.scope,
-            request,
-            false,
-            proof.original_recovery,
-            true,
-            Some(budget),
-            Some(memory),
-        ),
+        Some(memory) => {
+            ensure!(
+                current_coverage(tx, &proof.scope)?.map_or(1, |c| c.revision)
+                    == proof.base_revision,
+                "Task proof base changed"
+            );
+            loader::load_with_memory_budget(
+                tx,
+                &proof.scope,
+                request,
+                false,
+                proof.original_recovery,
+                true,
+                Some(budget),
+                Some(memory),
+            )
+        }
         None => preflight_task_write_snapshot_with_budget_tx(tx, proof, request, budget),
     }
 }
@@ -368,8 +371,9 @@ fn register_task_writes_inner(
         facts.state.as_deref() == Some(final_state) && final_state.id == proof.scope.agent_id,
         "Task finalizer requires actual final canonical State"
     );
+    let previous = current_coverage(tx, &proof.scope)?;
     ensure!(
-        current_coverage(tx, &proof.scope)?.map_or(1, |c| c.revision) == proof.base_revision,
+        previous.as_ref().map_or(1, |c| c.revision) == proof.base_revision,
         "Task finalizer base changed"
     );
     ensure!(
@@ -379,7 +383,6 @@ fn register_task_writes_inner(
         "Task actual writes exceed pre-SQL proof"
     );
     lengths(tx, actual_final_keys, Some(request))?;
-    let previous = current_coverage(tx, &proof.scope)?;
     let mut changed = false;
     let mut removals = BTreeMap::new();
     let revision = proof
@@ -448,7 +451,9 @@ fn register_task_writes_inner(
         persist_coverage(tx, &proof.scope, &empty_coverage(proof.base_revision))?;
     }
     if changed {
-        let mut base = current_coverage(tx, &proof.scope)?.expect("base initialized");
+        let mut base = previous
+            .clone()
+            .unwrap_or_else(|| empty_coverage(proof.base_revision));
         base.revision = revision;
         persist_coverage(tx, &proof.scope, &base)?;
     }
@@ -506,7 +511,6 @@ fn register_task_writes_inner(
         coverage.revision = revision;
         persist_coverage(tx, &proof.scope, &coverage)?;
     }
-    persist_coverage(tx, &proof.scope, &coverage)?;
     let final_revision = coverage.revision;
     let stop_records = if final_revision == proof.base_revision {
         Vec::new()

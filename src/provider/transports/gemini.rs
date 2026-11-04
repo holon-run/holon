@@ -861,6 +861,7 @@ fn gemini_function_response_name(tool_use_id: &str) -> String {
         .to_string()
 }
 
+#[cfg(holon_lib_test_shard = "c")]
 #[cfg(test)]
 mod tests {
     use super::*;

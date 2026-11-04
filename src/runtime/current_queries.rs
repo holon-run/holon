@@ -16,6 +16,7 @@ struct CurrentLeaseInner {
     _budget: Arc<BudgetViewGuard>,
 }
 
+#[cfg(holon_lib_test_shard = "a")]
 #[cfg(test)]
 #[path = "current_queries_tests.rs"]
 mod tests;

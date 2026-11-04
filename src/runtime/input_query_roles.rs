@@ -272,6 +272,7 @@ impl InputQueryRegistry {
     }
 }
 
+#[cfg(holon_lib_test_shard = "a")]
 #[cfg(test)]
 #[path = "input_query_roles_tests.rs"]
 mod tests;

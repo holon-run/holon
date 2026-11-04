@@ -102,6 +102,7 @@ fn ensure_actor_material(bytes: u64, limits: &crate::config::StateMemoryLimits) 
     Ok(())
 }
 
+#[cfg(holon_lib_test_shard = "d")]
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -280,6 +281,7 @@ mod tests {
     }
 }
 
+#[cfg(holon_lib_test_shard = "d")]
 #[cfg(test)]
 mod scope_budget_tests {
     use super::*;

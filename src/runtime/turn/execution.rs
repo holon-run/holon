@@ -2139,6 +2139,7 @@ fn record_turn_local_span(
     );
 }
 
+#[cfg(holon_lib_test_shard = "a")]
 #[cfg(test)]
 mod provider_span_tests {
     use chrono::{Duration, Utc};
@@ -5793,6 +5794,7 @@ fn provider_quota_clean_success_identities(
     Ok(identities)
 }
 
+#[cfg(holon_lib_test_shard = "a")]
 #[cfg(test)]
 mod tests {
     use super::{

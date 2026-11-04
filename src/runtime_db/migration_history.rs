@@ -96,6 +96,7 @@ pub(super) fn reconcile_feature_history(connection: &mut Connection) -> Result<(
     Ok(())
 }
 
+#[cfg(holon_lib_test_shard = "b")]
 #[cfg(test)]
 #[path = "migration_history_tests.rs"]
 mod tests;

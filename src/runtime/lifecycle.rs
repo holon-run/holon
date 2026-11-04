@@ -2658,10 +2658,12 @@ fn turn_end_wait_blocker_state(
     (Some(blocker), latest.blocked_by_wait_id.clone())
 }
 
+#[cfg(holon_lib_test_shard = "a")]
 #[cfg(test)]
 #[path = "current_state_reads_tests.rs"]
 mod current_state_reads_tests;
 
+#[cfg(holon_lib_test_shard = "a")]
 #[cfg(test)]
 mod tests {
     use super::*;

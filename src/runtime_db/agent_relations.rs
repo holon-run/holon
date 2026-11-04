@@ -2036,29 +2036,38 @@ fn issue(
     Ok(())
 }
 
+#[cfg(holon_lib_test_shard = "b")]
 #[cfg(test)]
 mod tests;
 
+#[cfg(holon_lib_test_shard = "b")]
 #[cfg(test)]
 mod material_tests;
 
+#[cfg(holon_lib_test_shard = "b")]
 #[cfg(test)]
 mod identity_task_material_tests;
 
+#[cfg(holon_lib_test_shard = "b")]
 #[cfg(test)]
 mod enum_decode_tests;
 
+#[cfg(holon_lib_test_shard = "b")]
 #[cfg(test)]
 mod diagnostic_material_tests;
 
+#[cfg(holon_lib_test_shard = "b")]
 #[cfg(test)]
 mod backfill_material_tests;
 
+#[cfg(holon_lib_test_shard = "b")]
 #[cfg(test)]
 mod legacy_relation_material_tests;
 
+#[cfg(holon_lib_test_shard = "b")]
 #[cfg(test)]
 mod legacy_policy_material_tests;
 
+#[cfg(holon_lib_test_shard = "b")]
 #[cfg(test)]
 mod lineage_children_material_tests;

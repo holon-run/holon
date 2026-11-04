@@ -12,6 +12,7 @@ pub(super) fn return_cost(agent: &str) -> (u64, usize) {
     ((13 + 64 + agent.len() as u64) * 8, 2 * 8)
 }
 
+#[cfg(holon_lib_test_shard = "b")]
 #[test]
 fn returned_seed_alone_retains_original_phase_after_sql_and_tls_exit() -> Result<()> {
     let mut connection = connection("fixed-boundary")?;
@@ -46,6 +47,7 @@ fn returned_seed_alone_retains_original_phase_after_sql_and_tls_exit() -> Result
     Ok(())
 }
 
+#[cfg(holon_lib_test_shard = "b")]
 #[test]
 fn seed_return_text_is_rejected_before_insert_for_each_budget_dimension() -> Result<()> {
     for byte_failure in [true, false] {
@@ -91,6 +93,7 @@ fn seed_return_text_is_rejected_before_insert_for_each_budget_dimension() -> Res
     Ok(())
 }
 
+#[cfg(holon_lib_test_shard = "b")]
 #[test]
 fn failed_seed_sql_rolls_back_without_releasing_the_retained_original_seed() -> Result<()> {
     let mut connection = connection("fixed-boundary")?;
@@ -140,6 +143,7 @@ fn failed_seed_sql_rolls_back_without_releasing_the_retained_original_seed() -> 
     Ok(())
 }
 
+#[cfg(holon_lib_test_shard = "b")]
 #[test]
 fn loaded_seed_transfers_original_holder_and_no_phase_call_stays_unbudgeted() -> Result<()> {
     let mut connection = connection("fixed-boundary")?;

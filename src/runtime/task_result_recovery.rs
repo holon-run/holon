@@ -10,9 +10,11 @@ const RESULT_RECHECK_LIMIT: usize = 8;
 #[cfg(test)]
 pub(super) mod budget_tests;
 
+#[cfg(holon_lib_test_shard = "a")]
 #[cfg(test)]
 mod terminal_anchor_tests;
 
+#[cfg(holon_lib_test_shard = "a")]
 #[cfg(test)]
 mod repeated_failure_tests;
 
@@ -833,6 +835,7 @@ impl RuntimeHandle {
     }
 }
 
+#[cfg(holon_lib_test_shard = "a")]
 #[cfg(test)]
 mod tests {
     use super::*;

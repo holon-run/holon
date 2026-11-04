@@ -240,6 +240,7 @@ pub(crate) fn pending_queue_inputs_and_charges_tx(
     Ok(pending)
 }
 
+#[cfg(holon_lib_test_shard = "b")]
 #[cfg(test)]
 mod tests {
     use super::*;

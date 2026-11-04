@@ -45,6 +45,7 @@ fn request() -> WorkDomainLoadRequest {
         byte_limit: 1024 * 1024,
     }
 }
+#[cfg(holon_lib_test_shard = "b")]
 #[test]
 fn work_loader_consumes_original_scope_state_without_redecoding() -> Result<()> {
     let (_home, db) = legacy(|_| Ok(()))?;
@@ -63,6 +64,7 @@ fn work_loader_consumes_original_scope_state_without_redecoding() -> Result<()> 
     })
 }
 
+#[cfg(holon_lib_test_shard = "b")]
 #[test]
 fn named_work_preflight_shares_scope_state_without_writes_and_rejects_drift() -> Result<()> {
     let (_home, db) = legacy(|_| Ok(()))?;
@@ -102,6 +104,7 @@ fn named_work_preflight_shares_scope_state_without_writes_and_rejects_drift() ->
     })
 }
 
+#[cfg(holon_lib_test_shard = "b")]
 #[test]
 fn work_loader_scope_transfer_rejects_drift_before_sidecar_writes() -> Result<()> {
     let (_home, db) = legacy(|_| Ok(()))?;
@@ -220,6 +223,7 @@ fn write_brief(tx: &Transaction<'_>, brief: &BriefRecord) -> Result<()> {
     Ok(())
 }
 
+#[cfg(holon_lib_test_shard = "b")]
 #[test]
 fn actual_work_ack_and_noop_preserve_exact_final_coverage() -> Result<()> {
     let (_dir, db) = fresh()?;
@@ -263,6 +267,7 @@ fn actual_work_ack_and_noop_preserve_exact_final_coverage() -> Result<()> {
     Ok(())
 }
 
+#[cfg(holon_lib_test_shard = "b")]
 #[test]
 fn fixed_manifest_limits_history_and_never_adopts_a_raw_late_work_or_result() -> Result<()> {
     let (_dir, db) = legacy(|tx| {
@@ -302,6 +307,7 @@ fn fixed_manifest_limits_history_and_never_adopts_a_raw_late_work_or_result() ->
     Ok(())
 }
 
+#[cfg(holon_lib_test_shard = "b")]
 #[test]
 fn fresh_reincarnation_does_not_inherit_old_work_and_pruned_ids_never_resurrect() -> Result<()> {
     let (_dir, db) = fresh()?;
@@ -347,6 +353,7 @@ fn fresh_reincarnation_does_not_inherit_old_work_and_pruned_ids_never_resurrect(
     Ok(())
 }
 
+#[cfg(holon_lib_test_shard = "b")]
 #[test]
 fn implicit_wait_cancellation_returns_actual_millis_rows_and_complete_turn_frontier() -> Result<()>
 {
@@ -421,6 +428,7 @@ fn implicit_wait_cancellation_returns_actual_millis_rows_and_complete_turn_front
     Ok(())
 }
 
+#[cfg(holon_lib_test_shard = "b")]
 #[test]
 fn qualification_failure_rolls_back_the_original_work_sql() -> Result<()> {
     let (_dir, db) = fresh()?;
@@ -438,6 +446,7 @@ fn qualification_failure_rolls_back_the_original_work_sql() -> Result<()> {
     Ok(())
 }
 
+#[cfg(holon_lib_test_shard = "b")]
 #[test]
 fn qualified_result_head_uses_original_sort_and_optional_sources_are_edge_bound() -> Result<()> {
     let (_dir, db) = fresh()?;
@@ -564,6 +573,7 @@ fn qualified_result_head_uses_original_sort_and_optional_sources_are_edge_bound(
     Ok(())
 }
 
+#[cfg(holon_lib_test_shard = "b")]
 #[test]
 fn deleting_cleanup_requires_original_qualified_work_and_keeps_scope_revision_strict() -> Result<()>
 {
@@ -645,6 +655,7 @@ fn deleting_cleanup_requires_original_qualified_work_and_keeps_scope_revision_st
     Ok(())
 }
 
+#[cfg(holon_lib_test_shard = "b")]
 #[test]
 fn revision_change_is_typed_and_oversized_required_body_has_no_partial_prepare() -> Result<()> {
     let (_dir, db) = fresh()?;
@@ -680,6 +691,7 @@ fn revision_change_is_typed_and_oversized_required_body_has_no_partial_prepare()
     Ok(())
 }
 
+#[cfg(holon_lib_test_shard = "b")]
 #[test]
 fn actual_result_outside_history_window_survives_trim_and_by_id_prepare() -> Result<()> {
     let (_dir, db) = fresh()?;
@@ -728,6 +740,7 @@ fn actual_result_outside_history_window_survives_trim_and_by_id_prepare() -> Res
     Ok(())
 }
 
+#[cfg(holon_lib_test_shard = "b")]
 #[test]
 fn new_work_and_qualified_result_share_one_finalizer_revision() -> Result<()> {
     let (_dir, db) = fresh()?;
@@ -763,6 +776,7 @@ fn new_work_and_qualified_result_share_one_finalizer_revision() -> Result<()> {
     Ok(())
 }
 
+#[cfg(holon_lib_test_shard = "b")]
 #[test]
 fn preflight_checks_fixed_bodies_without_writing_sidecars_or_advancing_proof() -> Result<()> {
     let (_dir, db) =
@@ -807,6 +821,7 @@ fn preflight_checks_fixed_bodies_without_writing_sidecars_or_advancing_proof() -
     Ok(())
 }
 
+#[cfg(holon_lib_test_shard = "b")]
 #[test]
 fn bound_result_head_is_one_completion_edge_while_intent_source_stays_strict() -> Result<()> {
     let (_dir, db) = fresh()?;
@@ -869,6 +884,7 @@ fn bound_result_head_is_one_completion_edge_while_intent_source_stays_strict() -
     Ok(())
 }
 
+#[cfg(holon_lib_test_shard = "b")]
 #[path = "input_completion_tests.rs"]
 mod input_completion_tests;
 
@@ -901,6 +917,7 @@ fn write_qualified_wait(
     register_work_writes_tx(tx, &proof, &actual, &BTreeSet::new(), &state, policy)
 }
 
+#[cfg(holon_lib_test_shard = "b")]
 #[test]
 fn fixed_accepted_task_result_keeps_all_status_waits_and_owner_outside_optional_window(
 ) -> Result<()> {
@@ -928,9 +945,18 @@ fn fixed_accepted_task_result_keeps_all_status_waits_and_owner_outside_optional_
             },
         );
         message.id = "accepted-result".into();
+        message.created_at = time();
         message.task_id = Some("accepted-task".into());
         crate::runtime_db::evidence::upsert_message_tx(tx, &message)?;
-        tx.execute("INSERT INTO queue_entries(message_id,agent_id,priority,status,created_at,updated_at,payload_json) VALUES(?1,'agent-a','normal','queued',?2,?2,'{}')",params![message.id,time().to_rfc3339()])?;
+        let entry = crate::types::QueueEntryRecord {
+            message_id: message.id.clone(),
+            agent_id: message.agent_id.clone(),
+            priority: message.priority.clone(),
+            status: crate::types::QueueEntryStatus::Queued,
+            created_at: time(),
+            updated_at: time(),
+        };
+        tx.execute("INSERT INTO queue_entries(message_id,agent_id,priority,status,created_at,updated_at,payload_json) VALUES(?1,'agent-a','normal','queued',?2,?2,?3)",params![message.id,repositories::timestamp(time()),serde_json::to_string(&entry)?])?;
         let mut state = ContextDurableRead::new(tx, "agent-a")
             .scope_facts()?
             .into_owned_state()?
@@ -973,6 +999,7 @@ fn fixed_accepted_task_result_keeps_all_status_waits_and_owner_outside_optional_
     Ok(())
 }
 
+#[cfg(holon_lib_test_shard = "b")]
 #[test]
 fn raw_late_matching_wait_is_not_an_observed_empty_or_new_qualification() -> Result<()> {
     let (_dir, db) = legacy(|_| Ok(()))?;
@@ -1006,6 +1033,7 @@ fn raw_late_matching_wait_is_not_an_observed_empty_or_new_qualification() -> Res
     Ok(())
 }
 
+#[cfg(holon_lib_test_shard = "b")]
 #[test]
 fn qualified_wait_relations_replace_superseded_edges_and_survive_trim_then_prune() -> Result<()> {
     let (_dir, db) = fresh()?;
@@ -1068,6 +1096,7 @@ fn qualified_wait_relations_replace_superseded_edges_and_survive_trim_then_prune
     Ok(())
 }
 
+#[cfg(holon_lib_test_shard = "b")]
 #[test]
 fn terminal_wait_ack_keeps_exact_present_observation_without_a_turn_or_owner() -> Result<()> {
     let (_dir, db) = fresh()?;
@@ -1131,6 +1160,7 @@ fn terminal_wait_ack_keeps_exact_present_observation_without_a_turn_or_owner() -
     Ok(())
 }
 
+#[cfg(holon_lib_test_shard = "b")]
 #[test]
 fn wait_cleanup_preserves_current_history_without_loading_optional_body_debt() -> Result<()> {
     let (_dir, db) = fresh()?;
@@ -1200,12 +1230,15 @@ fn wait_cleanup_preserves_current_history_without_loading_optional_body_debt() -
     Ok(())
 }
 
+#[cfg(holon_lib_test_shard = "b")]
 #[path = "completion_writes_tests.rs"]
 mod completion_writes_tests;
 
+#[cfg(holon_lib_test_shard = "b")]
 #[path = "startup_wait_tests.rs"]
 mod startup_wait_tests;
 
+#[cfg(holon_lib_test_shard = "b")]
 #[test]
 fn finalizer_view_has_exact_final_revision_and_selected_bodies_even_for_noop() -> Result<()> {
     let (_dir, db) = fresh()?;
@@ -1261,6 +1294,7 @@ fn finalizer_view_has_exact_final_revision_and_selected_bodies_even_for_noop() -
     Ok(())
 }
 
+#[cfg(holon_lib_test_shard = "b")]
 #[test]
 fn finalizer_view_selection_does_not_depend_on_working_memory_overlay() -> Result<()> {
     let (_dir, db) = fresh()?;

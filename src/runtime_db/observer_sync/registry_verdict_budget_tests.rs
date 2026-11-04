@@ -131,6 +131,7 @@ pub(super) fn probe_registry_timestamp_cost() -> (u64, usize) {
     add(one, one)
 }
 
+#[cfg(holon_lib_test_shard = "b")]
 #[test]
 fn probe_post_write_denial_propagates_before_tombstone_verdict_and_rolls_back() -> Result<()> {
     let (_home, db) = fixture()?;
@@ -185,6 +186,7 @@ fn probe_post_write_denial_propagates_before_tombstone_verdict_and_rolls_back() 
     Ok(())
 }
 
+#[cfg(holon_lib_test_shard = "b")]
 #[test]
 fn probe_pre_read_denial_propagates_before_availability_verdict() -> Result<()> {
     let (_home, db) = fixture()?;
@@ -228,6 +230,7 @@ fn probe_pre_read_denial_propagates_before_availability_verdict() -> Result<()> 
     Ok(())
 }
 
+#[cfg(holon_lib_test_shard = "b")]
 #[test]
 fn verifier_propagates_registry_denial_without_capability_writes() -> Result<()> {
     let (_home, db) = fixture()?;

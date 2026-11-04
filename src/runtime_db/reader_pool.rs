@@ -744,6 +744,7 @@ fn should_log(last: &Mutex<Option<Instant>>) -> bool {
     true
 }
 
+#[cfg(holon_lib_test_shard = "b")]
 #[cfg(test)]
 mod tests {
     use std::sync::mpsc;

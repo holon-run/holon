@@ -137,6 +137,7 @@ fn resolve_single_episode_recovery(
     Ok(true)
 }
 
+#[cfg(holon_lib_test_shard = "a")]
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -659,6 +659,7 @@ pub struct AgentListQuery {
     pub parent: Option<String>,
 }
 
+#[cfg(holon_lib_test_shard = "c")]
 #[cfg(test)]
 mod tests {
     use super::*;

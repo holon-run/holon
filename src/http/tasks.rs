@@ -1,6 +1,7 @@
 use super::*;
 use crate::runtime_error::RuntimeError;
 
+#[cfg(holon_lib_test_shard = "c")]
 #[cfg(test)]
 #[path = "tasks_tests.rs"]
 mod tests;
@@ -984,6 +985,7 @@ pub(super) fn task_query_error(error: anyhow::Error, task_id: &str) -> (StatusCo
     }
 }
 
+#[cfg(holon_lib_test_shard = "c")]
 #[cfg(test)]
 mod task_query_error_tests {
     use super::*;
@@ -1059,6 +1061,7 @@ mod task_query_error_tests {
     }
 }
 
+#[cfg(holon_lib_test_shard = "c")]
 #[cfg(test)]
 #[path = "task_active_list_tests.rs"]
 mod active_list_tests;

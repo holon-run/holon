@@ -362,6 +362,7 @@ pub(super) fn route_definitions() -> Vec<BuiltInModelRouteDefinition> {
         .collect()
 }
 
+#[cfg(holon_lib_test_shard = "c")]
 #[test]
 fn tokenhub_retirements_and_v41_chat_efforts_follow_exact_endpoint_evidence() {
     let retired = [
@@ -490,6 +491,7 @@ fn tokenhub_responses_routes_follow_the_independent_protocol_matrix() {
     }
 }
 
+#[cfg(holon_lib_test_shard = "c")]
 #[test]
 fn tokenhub_preferred_routes_do_not_inherit_unreviewed_chat_capabilities() {
     for catalog in [
@@ -511,6 +513,7 @@ fn tokenhub_preferred_routes_do_not_inherit_unreviewed_chat_capabilities() {
     }
 }
 
+#[cfg(holon_lib_test_shard = "c")]
 #[test]
 fn tokenhub_protocol_matrix_routes_do_not_inherit_vendor_limits() {
     let catalog = BuiltInModelCatalog::from_legacy_definitions();
@@ -551,6 +554,7 @@ fn tokenhub_protocol_matrix_routes_do_not_inherit_vendor_limits() {
     }
 }
 
+#[cfg(holon_lib_test_shard = "c")]
 #[test]
 fn tokenhub_kimi_k3_1_routes_keep_endpoint_metadata_conservative() {
     let catalog = BuiltInModelCatalog::from_legacy_definitions();
@@ -598,6 +602,7 @@ fn tokenhub_kimi_k3_1_routes_keep_endpoint_metadata_conservative() {
     }
 }
 
+#[cfg(holon_lib_test_shard = "c")]
 #[test]
 fn tokenhub_chat_budgets_and_effort_do_not_leak_to_other_protocols() {
     let catalog = BuiltInModelCatalog::from_legacy_definitions();
@@ -650,6 +655,7 @@ fn tokenhub_chat_budgets_and_effort_do_not_leak_to_other_protocols() {
     }
 }
 
+#[cfg(holon_lib_test_shard = "c")]
 #[test]
 fn tokenhub_hy4_routes_preserve_independently_reviewed_protocol_capabilities() {
     for catalog in [

@@ -39,6 +39,7 @@ impl TaskQuerySelection {
     }
 }
 
+#[cfg(holon_lib_test_shard = "a")]
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -994,6 +995,7 @@ mod run_once_reads;
 pub(crate) use run_once_reads::{exec_command_event_task_id, run_tool_task_id};
 pub(crate) use run_once_reads::{RunOnceOwnedRecords, RunOnceRead};
 
+#[cfg(holon_lib_test_shard = "a")]
 #[cfg(test)]
 mod birth_session_tests {
     use super::*;
@@ -1215,6 +1217,7 @@ mod birth_session_tests {
 #[path = "task_query_recovery.rs"]
 mod recovery;
 
+#[cfg(holon_lib_test_shard = "a")]
 #[cfg(test)]
 #[path = "task_query_recovery_tests.rs"]
 mod recovery_tests;

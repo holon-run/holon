@@ -268,6 +268,7 @@ impl OriginalChildTaskProducer {
             .map(|prepared| prepared.descriptor().clone())
     }
 }
+#[cfg(holon_lib_test_shard = "a")]
 #[cfg(test)]
 #[path = "child_monitor_binding_tests.rs"]
 mod tests;

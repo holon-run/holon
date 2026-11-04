@@ -256,6 +256,7 @@ fn deleting(f: &Fixture, parent: bool) -> Result<()> {
     })
 }
 
+#[cfg(holon_lib_test_shard = "b")]
 #[test]
 fn frozen_stop_result_delivers_without_physical_join_and_owns_work_wait_input_ack() -> Result<()> {
     let f = Fixture::new()?;
@@ -378,6 +379,7 @@ fn frozen_stop_result_delivers_without_physical_join_and_owns_work_wait_input_ac
     Ok(())
 }
 
+#[cfg(holon_lib_test_shard = "b")]
 #[test]
 fn frozen_stop_result_without_rejoin_delivers_message_and_queue_without_invented_settlement(
 ) -> Result<()> {
@@ -403,6 +405,7 @@ fn frozen_stop_result_without_rejoin_delivers_message_and_queue_without_invented
     Ok(())
 }
 
+#[cfg(holon_lib_test_shard = "b")]
 #[test]
 fn frozen_stop_result_final_receipt_failure_rolls_back_every_business_and_progress_write(
 ) -> Result<()> {
@@ -427,6 +430,7 @@ fn frozen_stop_result_final_receipt_failure_rolls_back_every_business_and_progre
     Ok(())
 }
 
+#[cfg(holon_lib_test_shard = "b")]
 #[test]
 fn frozen_stop_result_sparse_delivery_keeps_task_unprepared_but_returns_actual_state_queue_work_input(
 ) -> Result<()> {
@@ -466,6 +470,7 @@ fn frozen_stop_result_sparse_delivery_keeps_task_unprepared_but_returns_actual_s
     Ok(())
 }
 
+#[cfg(holon_lib_test_shard = "b")]
 #[test]
 fn frozen_stop_result_parent_cleanup_fence_remains_atomic_with_or_without_rejoin() -> Result<()> {
     for rejoin in [true, false] {
@@ -496,6 +501,7 @@ fn frozen_stop_result_parent_cleanup_fence_remains_atomic_with_or_without_rejoin
     Ok(())
 }
 
+#[cfg(holon_lib_test_shard = "b")]
 #[test]
 fn frozen_stop_result_no_state_and_retired_poisoned_successor_only_record_unavailable() -> Result<()>
 {
@@ -551,6 +557,7 @@ fn frozen_stop_result_no_state_and_retired_poisoned_successor_only_record_unavai
     Ok(())
 }
 
+#[cfg(holon_lib_test_shard = "b")]
 #[test]
 fn frozen_stop_result_address_survives_independent_physical_attention() -> Result<()> {
     let f = Fixture::new()?;
@@ -590,6 +597,7 @@ fn frozen_stop_result_address_survives_independent_physical_attention() -> Resul
     Ok(())
 }
 
+#[cfg(holon_lib_test_shard = "b")]
 #[path = "task_stop_partial_recovery_tests.rs"]
 mod partial_recovery;
 

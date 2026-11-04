@@ -266,6 +266,7 @@ fn parse_slow_read_ms(raw: Option<&str>) -> u64 {
         .unwrap_or(DEFAULT_SLOW_READ_MS)
 }
 
+#[cfg(holon_lib_test_shard = "b")]
 #[cfg(test)]
 pub(crate) mod tests {
     use std::io;

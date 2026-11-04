@@ -19,6 +19,7 @@ enum LocalStopPhase {
     Safe(TaskStopProgressAction),
 }
 
+#[cfg(holon_lib_test_shard = "a")]
 #[cfg(test)]
 mod tests {
     use super::*;

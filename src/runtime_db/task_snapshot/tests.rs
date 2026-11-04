@@ -120,6 +120,7 @@ fn write_task(tx: &Transaction<'_>, value: &TaskRecord) -> Result<CommittedTaskF
     )
 }
 
+#[cfg(holon_lib_test_shard = "b")]
 #[test]
 fn actual_slim_ack_noop_and_selected_arc_survive_without_domain_pin() -> Result<()> {
     let (_dir, db) = fresh()?;
@@ -174,6 +175,7 @@ fn actual_slim_ack_noop_and_selected_arc_survive_without_domain_pin() -> Result<
     Ok(())
 }
 
+#[cfg(holon_lib_test_shard = "b")]
 #[test]
 fn complete_unsettled_frontier_includes_caller_admitted_open_activation() -> Result<()> {
     let (_dir, db) = fresh()?;
@@ -217,6 +219,7 @@ fn complete_unsettled_frontier_includes_caller_admitted_open_activation() -> Res
     })
 }
 
+#[cfg(holon_lib_test_shard = "b")]
 #[test]
 fn original_v81_cutover_freezes_terminal128_and_never_adopts_later_or_new_incarnation() -> Result<()>
 {
@@ -277,6 +280,7 @@ fn original_v81_cutover_freezes_terminal128_and_never_adopts_later_or_new_incarn
     })
 }
 
+#[cfg(holon_lib_test_shard = "b")]
 #[test]
 fn final_alias_failure_rolls_back_original_task_and_metadata() -> Result<()> {
     let (_dir, db) = fresh()?;
@@ -303,6 +307,7 @@ fn final_alias_failure_rolls_back_original_task_and_metadata() -> Result<()> {
     })
 }
 
+#[cfg(holon_lib_test_shard = "b")]
 #[test]
 fn explicit_absence_is_not_unknown_and_pruned_id_cannot_be_revived() -> Result<()> {
     let (_dir, db) = fresh()?;
@@ -353,6 +358,7 @@ fn explicit_absence_is_not_unknown_and_pruned_id_cannot_be_revived() -> Result<(
     })
 }
 
+#[cfg(holon_lib_test_shard = "b")]
 #[test]
 fn same_millis_canonical_change_advances_locator_and_raw_backwrite_is_rejected() -> Result<()> {
     let (_dir, db) = fresh()?;
@@ -385,6 +391,7 @@ fn same_millis_canonical_change_advances_locator_and_raw_backwrite_is_rejected()
     })
 }
 
+#[cfg(holon_lib_test_shard = "b")]
 #[test]
 fn final_combined_body_metadata_budget_failure_keeps_canonical_and_coverage_unchanged() -> Result<()>
 {
@@ -424,6 +431,7 @@ fn final_combined_body_metadata_budget_failure_keeps_canonical_and_coverage_unch
     })
 }
 
+#[cfg(holon_lib_test_shard = "b")]
 #[test]
 fn finalizer_installs_complete_active_body_despite_narrow_prompt_capture() -> Result<()> {
     let (_dir, db) = fresh()?;
@@ -459,6 +467,7 @@ fn finalizer_installs_complete_active_body_despite_narrow_prompt_capture() -> Re
     Ok(())
 }
 
+#[cfg(holon_lib_test_shard = "b")]
 #[test]
 fn full_task_projection_rejects_sql_only_changes_but_keeps_original_slim_semantics() -> Result<()> {
     let (_dir, db) = fresh()?;
@@ -486,6 +495,7 @@ fn full_task_projection_rejects_sql_only_changes_but_keeps_original_slim_semanti
     })
 }
 
+#[cfg(holon_lib_test_shard = "b")]
 #[test]
 fn fixed_unmaterialized_task_projection_is_frozen_at_original_upgrade() -> Result<()> {
     let (_dir, db) = legacy(true, |tx| {
@@ -529,6 +539,7 @@ fn fixed_unmaterialized_task_projection_is_frozen_at_original_upgrade() -> Resul
     })
 }
 
+#[cfg(holon_lib_test_shard = "b")]
 #[test]
 fn unproven_command_parent_turns_remain_strict_roots() -> Result<()> {
     let (_dir, db) = fresh()?;
@@ -576,6 +587,7 @@ fn unproven_command_parent_turns_remain_strict_roots() -> Result<()> {
     })
 }
 
+#[cfg(holon_lib_test_shard = "b")]
 #[test]
 fn non_command_missing_parent_turn_remains_strict_root() -> Result<()> {
     let (_dir, db) = fresh()?;
@@ -599,6 +611,7 @@ fn non_command_missing_parent_turn_remains_strict_root() -> Result<()> {
     })
 }
 
+#[cfg(holon_lib_test_shard = "b")]
 #[test]
 fn qualified_command_result_does_not_prove_turnless_birth() -> Result<()> {
     let (_dir, db) = fresh()?;
@@ -657,26 +670,34 @@ fn qualified_command_result_does_not_prove_turnless_birth() -> Result<()> {
     })
 }
 
+#[cfg(holon_lib_test_shard = "b")]
 #[path = "read_preparation_tests.rs"]
 mod read_preparation;
 
+#[cfg(holon_lib_test_shard = "b")]
 #[path = "command_creation_tests.rs"]
 mod command_creation_tests;
 
+#[cfg(holon_lib_test_shard = "b")]
 #[path = "recovery_sources_tests.rs"]
 mod recovery_sources_tests;
 
+#[cfg(holon_lib_test_shard = "b")]
 #[path = "maintenance_tests.rs"]
 mod maintenance_tests;
 
+#[cfg(holon_lib_test_shard = "b")]
 #[path = "original_cleanup_tests.rs"]
 mod original_cleanup_tests;
 
+#[cfg(holon_lib_test_shard = "b")]
 #[path = "result_activation_budget_tests.rs"]
 mod result_activation_budget_tests;
 
+#[cfg(holon_lib_test_shard = "b")]
 #[path = "startup_metadata_tests.rs"]
 mod startup_metadata_tests;
 
+#[cfg(holon_lib_test_shard = "b")]
 #[path = "deletion_maintenance_tests.rs"]
 mod deletion_maintenance_tests;

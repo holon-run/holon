@@ -30,6 +30,7 @@ pub(super) struct FallbackProvider {
     pub(crate) candidates: Vec<ProviderCandidate>,
 }
 
+#[cfg(holon_lib_test_shard = "c")]
 #[cfg(test)]
 mod tests {
     use std::sync::{

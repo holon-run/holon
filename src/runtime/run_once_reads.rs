@@ -360,10 +360,12 @@ fn compare_message_order(left: &MessageEnvelope, right: &MessageEnvelope) -> std
         .then_with(|| left.id.cmp(&right.id))
 }
 
+#[cfg(holon_lib_test_shard = "a")]
 #[cfg(test)]
 #[path = "run_once_reads_tests.rs"]
 mod tests;
 
+#[cfg(holon_lib_test_shard = "a")]
 #[cfg(test)]
 mod current_preparation_tests {
     use super::*;

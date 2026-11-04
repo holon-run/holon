@@ -164,6 +164,7 @@ impl ContextResourceViews {
     }
 }
 
+#[cfg(holon_lib_test_shard = "d")]
 #[cfg(test)]
 #[path = "resources_tests.rs"]
 mod tests;

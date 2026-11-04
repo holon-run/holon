@@ -650,6 +650,7 @@ impl SchedulerProjection {
     }
 }
 
+#[cfg(holon_lib_test_shard = "a")]
 #[cfg(test)]
 #[path = "projection_queue_tests.rs"]
 mod queue_tests;
@@ -658,18 +659,22 @@ mod queue_tests;
 #[path = "projection_canonical_ownership_tests.rs"]
 mod canonical_ownership_tests;
 
+#[cfg(holon_lib_test_shard = "a")]
 #[cfg(test)]
 #[path = "projection_agent_ownership_tests.rs"]
 mod agent_ownership_tests;
 
+#[cfg(holon_lib_test_shard = "a")]
 #[cfg(test)]
 #[path = "projection_wait_borrow_tests.rs"]
 mod wait_borrow_tests;
 
+#[cfg(holon_lib_test_shard = "a")]
 #[cfg(test)]
 #[path = "projection_cold_material_tests.rs"]
 mod cold_material_tests;
 
+#[cfg(holon_lib_test_shard = "a")]
 #[cfg(test)]
 #[path = "projection_canonical_material_tests.rs"]
 mod canonical_material_tests;

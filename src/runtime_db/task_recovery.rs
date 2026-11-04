@@ -606,6 +606,7 @@ fn visit_current_dependencies(
     Ok(())
 }
 
+#[cfg(holon_lib_test_shard = "b")]
 #[cfg(test)]
 #[path = "task_recovery_tests.rs"]
 mod tests;

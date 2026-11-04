@@ -310,6 +310,7 @@ pub(crate) fn tombstone_task_stop_child_tx(
     Ok(evidence)
 }
 
+#[cfg(holon_lib_test_shard = "b")]
 #[cfg(test)]
 #[path = "task_stop/child_tests.rs"]
 mod tests;

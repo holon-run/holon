@@ -910,18 +910,22 @@ impl RuntimeHandle {
     }
 }
 
+#[cfg(holon_lib_test_shard = "a")]
 #[cfg(test)]
 #[path = "scheduling_output_tests.rs"]
 mod tests;
 
+#[cfg(holon_lib_test_shard = "a")]
 #[cfg(test)]
 #[path = "timer_record_read_tests.rs"]
 mod timer_record_read_tests;
 
+#[cfg(holon_lib_test_shard = "a")]
 #[cfg(test)]
 #[path = "trigger_list_read_tests.rs"]
 mod trigger_list_read_tests;
 
+#[cfg(holon_lib_test_shard = "a")]
 #[cfg(test)]
 #[path = "timer_list_read_tests.rs"]
 mod timer_list_read_tests;

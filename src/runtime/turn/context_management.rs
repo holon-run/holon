@@ -266,6 +266,7 @@ pub(super) fn is_context_management_excluded_tool(tool_name: Option<&str>) -> bo
     matches!(tool_name, Some(crate::tool::names::APPLY_PATCH))
 }
 
+#[cfg(holon_lib_test_shard = "a")]
 #[cfg(test)]
 mod tests {
     use std::collections::BTreeMap;

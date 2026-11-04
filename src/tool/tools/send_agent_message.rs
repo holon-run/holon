@@ -103,6 +103,7 @@ fn map_send_error(error: anyhow::Error) -> anyhow::Error {
     error
 }
 
+#[cfg(holon_lib_test_shard = "c")]
 #[cfg(test)]
 mod tests {
     use super::*;

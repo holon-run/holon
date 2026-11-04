@@ -1425,6 +1425,7 @@ fn task_status_label(state: &TaskStatus) -> &'static str {
     }
 }
 
+#[cfg(holon_lib_test_shard = "d")]
 #[cfg(test)]
 mod tests {
     use std::{path::Path, sync::Arc};

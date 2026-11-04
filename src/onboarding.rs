@@ -1060,6 +1060,7 @@ fn overall_status(sections: &[OnboardingSection]) -> OnboardingStatus {
     }
 }
 
+#[cfg(holon_lib_test_shard = "d")]
 #[cfg(test)]
 mod tests {
     use std::{

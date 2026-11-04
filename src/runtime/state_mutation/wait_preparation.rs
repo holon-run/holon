@@ -186,6 +186,7 @@ fn external_wait_read(
     })
 }
 
+#[cfg(holon_lib_test_shard = "a")]
 #[cfg(test)]
 #[path = "wait_preparation_tests.rs"]
 mod tests;

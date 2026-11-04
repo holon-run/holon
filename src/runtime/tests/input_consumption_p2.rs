@@ -1604,6 +1604,43 @@ async fn assert_mixed_operator_live_restart_with_evidence(
         } else {
             None
         };
+        if let Some(binding) = in_flight
+            .as_ref()
+            .and_then(|state| state.current_execution_binding.as_ref())
+        {
+            // The schema-89 copy cannot retain the actual dispatch's D1 table.
+            // Preserve only its original checkpoint, never synthesize a Start
+            // for the recovery claim that has not begun a dispatch.
+            let scope = runtime
+                .begin_mutation()
+                .await
+                .unwrap()
+                .input_evidence_scope();
+            let mut connection = rusqlite::Connection::open(
+                home.path()
+                    .join("default-state/.holon/state/runtime.sqlite"),
+            )
+            .unwrap();
+            connection
+                .execute(
+                    "ATTACH DATABASE ?1 AS original",
+                    [runtime.inner.runtime_db.path().to_str().unwrap()],
+                )
+                .unwrap();
+            let tx = connection.transaction().unwrap();
+            assert_eq!(
+                tx.execute(
+                    "INSERT INTO main.dispatch_memory_checkpoints
+                     SELECT * FROM original.dispatch_memory_checkpoints
+                     WHERE agent_id = ?1 AND identity_incarnation = ?2 AND turn_id = ?3",
+                    rusqlite::params![scope.agent_id, scope.identity_incarnation, binding.turn_id],
+                )
+                .unwrap(),
+                1,
+                "the retained binding must have its original actual-dispatch checkpoint"
+            );
+            tx.commit().unwrap();
+        }
         *provider.runtime.lock().await = None;
         drop(runtime);
         let runtime = RuntimeHandle::new(

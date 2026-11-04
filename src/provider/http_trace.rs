@@ -15,6 +15,7 @@ use super::ProviderRequestMaterial;
 use crate::diagnostics::resource_io;
 use crate::utf8::IncrementalUtf8LossyDecoder;
 
+#[cfg(holon_lib_test_shard = "c")]
 #[cfg(test)]
 #[path = "http_trace_material_tests.rs"]
 mod material_tests;
@@ -614,6 +615,7 @@ fn current_time_millis() -> u128 {
         .unwrap_or_default()
 }
 
+#[cfg(holon_lib_test_shard = "c")]
 #[cfg(test)]
 mod tests {
     use super::{

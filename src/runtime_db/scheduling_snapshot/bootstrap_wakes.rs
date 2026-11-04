@@ -554,6 +554,7 @@ impl BootstrapWakeCleanup<'_, '_> {
     }
 }
 
+#[cfg(holon_lib_test_shard = "b")]
 #[cfg(test)]
 #[path = "bootstrap_wake_tests.rs"]
 mod tests;

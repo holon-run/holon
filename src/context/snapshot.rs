@@ -1484,6 +1484,7 @@ fn descriptors(
     out.into_values().collect()
 }
 
+#[cfg(holon_lib_test_shard = "d")]
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1854,6 +1855,7 @@ mod tests {
     }
 }
 
+#[cfg(holon_lib_test_shard = "d")]
 #[cfg(test)]
 mod coherent_acquisition_tests {
     use super::*;

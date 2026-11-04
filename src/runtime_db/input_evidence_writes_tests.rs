@@ -76,6 +76,7 @@ impl Fixture {
         )?)
     }
 }
+#[cfg(holon_lib_test_shard = "b")]
 #[test]
 fn scoped_message_ack_uses_actual_sequence_and_replay_row() -> Result<()> {
     let f = Fixture::new()?;
@@ -95,6 +96,7 @@ fn scoped_message_ack_uses_actual_sequence_and_replay_row() -> Result<()> {
     assert_eq!(f.aliases()?, 1);
     Ok(())
 }
+#[cfg(holon_lib_test_shard = "b")]
 #[test]
 fn wrong_original_incarnation_rejects_before_any_evidence_write() -> Result<()> {
     let f = Fixture::new()?;
@@ -113,6 +115,7 @@ fn wrong_original_incarnation_rejects_before_any_evidence_write() -> Result<()> 
     assert_eq!(f.aliases()?, 0);
     Ok(())
 }
+#[cfg(holon_lib_test_shard = "b")]
 #[test]
 fn qualification_failure_rolls_back_canonical_sequence_and_alias() -> Result<()> {
     let f = Fixture::new()?;
@@ -138,6 +141,7 @@ fn qualification_failure_rolls_back_canonical_sequence_and_alias() -> Result<()>
     assert_eq!(ack.record.message_seq, Some(1));
     Ok(())
 }
+#[cfg(holon_lib_test_shard = "b")]
 #[test]
 fn compound_scope_mismatch_cannot_write_another_agent() -> Result<()> {
     let f = Fixture::new()?;
@@ -159,6 +163,7 @@ fn compound_scope_mismatch_cannot_write_another_agent() -> Result<()> {
     assert!(f.db.agent_states().latest("agent-b")?.is_none());
     Ok(())
 }
+#[cfg(holon_lib_test_shard = "b")]
 #[test]
 fn original_destructive_operation_tx_qualifies_only_fresh_turn_write() -> Result<()> {
     let f = Fixture::new()?;
@@ -216,6 +221,7 @@ fn seed_retention(f: &Fixture) -> Result<()> {
     }
     Ok(())
 }
+#[cfg(holon_lib_test_shard = "b")]
 #[test]
 fn retention_same_tx_prunes_only_actual_deleted_current_alias() -> Result<()> {
     let f = Fixture::new()?;
@@ -234,6 +240,7 @@ fn retention_same_tx_prunes_only_actual_deleted_current_alias() -> Result<()> {
     assert_eq!(availability, "pruned");
     Ok(())
 }
+#[cfg(holon_lib_test_shard = "b")]
 #[test]
 fn retention_missing_reservation_rolls_back_all_deletes() -> Result<()> {
     let f = Fixture::new()?;
@@ -248,6 +255,7 @@ fn retention_missing_reservation_rolls_back_all_deletes() -> Result<()> {
     assert_eq!(n, 2);
     Ok(())
 }
+#[cfg(holon_lib_test_shard = "b")]
 #[test]
 fn retention_ignored_delete_does_not_publish_pruned_delta() -> Result<()> {
     let f = Fixture::new()?;
@@ -276,6 +284,7 @@ fn retention_identity_status(f: &Fixture, status: AgentRegistryStatus) -> Result
     f.db.agent_identities().upsert(&identity)
 }
 
+#[cfg(holon_lib_test_shard = "b")]
 #[test]
 fn retention_protects_deleting_evidence_without_granting_or_pruning_qualification() -> Result<()> {
     let f = Fixture::new()?;
@@ -381,6 +390,7 @@ fn retention_protects_deleting_evidence_without_granting_or_pruning_qualificatio
     Ok(())
 }
 
+#[cfg(holon_lib_test_shard = "b")]
 #[test]
 fn retention_revalidates_identity_projection_and_original_incarnation_before_deletion() -> Result<()>
 {
@@ -438,6 +448,7 @@ fn retention_revalidates_identity_projection_and_original_incarnation_before_del
     Ok(())
 }
 
+#[cfg(holon_lib_test_shard = "b")]
 #[test]
 fn fresh_scope_cannot_qualify_old_append_or_equal_upsert_replays() -> Result<()> {
     let f = Fixture::new()?;
@@ -491,6 +502,7 @@ fn fresh_scope_cannot_qualify_old_append_or_equal_upsert_replays() -> Result<()>
     Ok(())
 }
 
+#[cfg(holon_lib_test_shard = "b")]
 #[test]
 fn scoped_transcript_append_retry_keeps_original_qualification() -> Result<()> {
     let f = Fixture::new()?;
@@ -517,6 +529,7 @@ fn scoped_transcript_append_retry_keeps_original_qualification() -> Result<()> {
     Ok(())
 }
 
+#[cfg(holon_lib_test_shard = "b")]
 #[test]
 fn reincarnated_scope_cannot_reuse_original_scope_message_ack() -> Result<()> {
     let f = Fixture::new()?;
@@ -549,6 +562,7 @@ fn reincarnated_scope_cannot_reuse_original_scope_message_ack() -> Result<()> {
     Ok(())
 }
 
+#[cfg(holon_lib_test_shard = "b")]
 #[test]
 fn fresh_scope_cannot_requalify_equal_tool_or_brief() -> Result<()> {
     let f = Fixture::new()?;
@@ -605,6 +619,7 @@ fn fresh_scope_cannot_requalify_equal_tool_or_brief() -> Result<()> {
     Ok(())
 }
 
+#[cfg(holon_lib_test_shard = "b")]
 #[test]
 fn started_posture_turn_and_assignment_commit_together_and_roll_back_together() -> Result<()> {
     use crate::runtime_db::transitions::{
@@ -736,6 +751,7 @@ fn timer_fire_fixture(f: &Fixture, message_id: &str) -> Result<crate::runtime_db
     })
 }
 
+#[cfg(holon_lib_test_shard = "b")]
 #[test]
 fn scoped_timer_fire_returns_qualified_actual_wake_and_rolls_back_the_whole_transaction(
 ) -> Result<()> {
@@ -842,6 +858,7 @@ fn scoped_timer_fire_returns_qualified_actual_wake_and_rolls_back_the_whole_tran
     Ok(())
 }
 
+#[cfg(holon_lib_test_shard = "b")]
 #[test]
 fn scoped_timer_fire_does_not_adopt_an_unqualified_same_name_message() -> Result<()> {
     let mut f = Fixture::new()?;

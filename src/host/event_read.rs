@@ -200,6 +200,7 @@ impl RuntimeHost {
 #[path = "event_read_tests.rs"]
 mod tests;
 
+#[cfg(holon_lib_test_shard = "d")]
 #[cfg(test)]
 #[path = "event_stream_http_tests.rs"]
 mod stream_http_tests;

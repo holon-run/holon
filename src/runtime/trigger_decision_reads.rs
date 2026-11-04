@@ -143,6 +143,7 @@ impl RuntimeHandle {
     }
 }
 
+#[cfg(holon_lib_test_shard = "a")]
 #[cfg(test)]
 #[path = "trigger_decision_reads_tests.rs"]
 mod tests;

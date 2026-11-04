@@ -23,6 +23,7 @@ pub(super) enum RequestDeadline {
     TextStream,
 }
 
+#[cfg(holon_lib_test_shard = "c")]
 #[cfg(test)]
 mod tests {
     use super::*;

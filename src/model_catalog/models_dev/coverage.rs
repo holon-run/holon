@@ -595,6 +595,7 @@ pub fn render_coverage_summary(report: &CoverageReport) -> String {
     summary
 }
 
+#[cfg(holon_lib_test_shard = "c")]
 #[cfg(test)]
 mod tests {
     use super::*;

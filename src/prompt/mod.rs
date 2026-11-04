@@ -1539,6 +1539,7 @@ pub fn context_sections_from_built_context(built: BuiltContext) -> Vec<PromptSec
     built.sections
 }
 
+#[cfg(holon_lib_test_shard = "d")]
 #[cfg(test)]
 mod tests {
     use crate::types::{

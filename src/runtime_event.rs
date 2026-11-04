@@ -361,6 +361,7 @@ pub fn is_legacy_event_shape(payload_schema: &str, contract_version: u32) -> boo
         || contract_version == LEGACY_RUNTIME_EVENT_CONTRACT_VERSION
 }
 
+#[cfg(holon_lib_test_shard = "c")]
 #[cfg(test)]
 mod tests {
     use std::collections::HashSet;

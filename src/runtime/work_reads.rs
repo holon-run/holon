@@ -308,6 +308,7 @@ fn ensure_live(work: &CapturedWork) -> Result<()> {
     Ok(())
 }
 
+#[cfg(holon_lib_test_shard = "a")]
 #[cfg(test)]
 #[path = "work_reads_tests.rs"]
 mod tests;

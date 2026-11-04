@@ -22,16 +22,25 @@ use super::{
     ProviderTurnResponse, ToolResultBlock, ToolSchemaContract,
 };
 
+#[cfg(holon_lib_test_shard = "c")]
 mod anthropic_messages;
+#[cfg(holon_lib_test_shard = "c")]
 mod anthropic_route_cache;
+#[cfg(holon_lib_test_shard = "c")]
 mod gemini_generate_content;
+#[cfg(holon_lib_test_shard = "c")]
 mod http_timeouts;
+#[cfg(holon_lib_test_shard = "c")]
 mod openai_chat_completions;
+#[cfg(holon_lib_test_shard = "c")]
 mod openai_responses;
+#[cfg(holon_lib_test_shard = "c")]
 mod routing_auth_doctor;
 mod support;
+#[cfg(holon_lib_test_shard = "c")]
 mod tool_schema;
 
+#[cfg(holon_lib_test_shard = "c")]
 #[test]
 fn provider_attempt_outcome_labels_match_serialized_values() {
     for outcome in [
@@ -50,6 +59,7 @@ fn provider_attempt_outcome_labels_match_serialized_values() {
     }
 }
 
+#[cfg(holon_lib_test_shard = "c")]
 #[test]
 fn provider_quota_identity_hashes_are_stable_and_account_scoped() {
     let first = ProviderQuotaIdentity::exact("codex-account", "account-a")
@@ -66,6 +76,7 @@ fn provider_quota_identity_hashes_are_stable_and_account_scoped() {
     assert!(!first.scope.contains("account-b"));
 }
 
+#[cfg(holon_lib_test_shard = "c")]
 #[test]
 fn provider_quota_identity_rejects_empty_exact_values_and_round_trips_coarse_values() {
     assert!(ProviderQuotaIdentity::exact("", "account-a").is_none());

@@ -406,6 +406,7 @@ fn truncate_activation_text(text: &str) -> String {
     }
 }
 
+#[cfg(holon_lib_test_shard = "a")]
 #[cfg(test)]
 mod mutation_tests {
     use super::*;

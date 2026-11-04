@@ -297,6 +297,7 @@ pub fn error_result(tool_name: &str, error: ToolError) -> crate::tool::ToolResul
     crate::tool::ToolResult::error(tool_name, error)
 }
 
+#[cfg(holon_lib_test_shard = "d")]
 #[cfg(test)]
 mod tests {
     use super::*;

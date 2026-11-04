@@ -267,6 +267,7 @@ pub(crate) fn typed_spec<T: schemars::JsonSchema + 'static>(
     ))
 }
 
+#[cfg(holon_lib_test_shard = "c")]
 #[cfg(test)]
 mod tests {
     use super::*;

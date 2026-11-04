@@ -1695,6 +1695,7 @@ pub(crate) fn wake_hint_idempotency_key(pending: &PendingWakeHint) -> String {
     )
 }
 
+#[cfg(holon_lib_test_shard = "a")]
 #[cfg(test)]
 mod tests {
     use super::*;

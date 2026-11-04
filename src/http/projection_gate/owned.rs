@@ -343,11 +343,14 @@ impl ProjectionGate {
     }
 }
 
+#[cfg(holon_lib_test_shard = "c")]
 #[cfg(test)]
 mod tests;
 
+#[cfg(holon_lib_test_shard = "c")]
 #[cfg(test)]
 mod sql_tests;
 
+#[cfg(holon_lib_test_shard = "c")]
 #[cfg(test)]
 mod roster_tests;

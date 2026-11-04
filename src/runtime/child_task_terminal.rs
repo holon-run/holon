@@ -1396,6 +1396,7 @@ fn normalize_original_partial_result_contract(
     Ok(true)
 }
 
+#[cfg(holon_lib_test_shard = "a")]
 #[cfg(test)]
 mod partial_result_contract_tests {
     use super::*;
@@ -1784,6 +1785,7 @@ impl OriginalChildTaskProducer {
     }
 }
 
+#[cfg(holon_lib_test_shard = "a")]
 #[cfg(test)]
 #[path = "child_stop_actual_facets_tests.rs"]
 mod stop_actual_facets_tests;

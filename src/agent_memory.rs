@@ -82,6 +82,7 @@ impl From<&LoadedAgentMemory> for LoadedAgentMemoryView {
     }
 }
 
+#[cfg(holon_lib_test_shard = "d")]
 #[cfg(test)]
 mod tests {
     use tempfile::tempdir;

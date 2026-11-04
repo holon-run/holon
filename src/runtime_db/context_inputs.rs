@@ -859,6 +859,7 @@ pub(crate) fn prepare_admitted_settlement_inputs<M: std::borrow::Borrow<MessageE
     Ok(pending)
 }
 
+#[cfg(holon_lib_test_shard = "b")]
 #[cfg(test)]
 #[path = "context_inputs_tests.rs"]
 mod tests;

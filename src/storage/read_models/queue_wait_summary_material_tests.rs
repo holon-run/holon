@@ -150,6 +150,7 @@ fn waits(count: usize) -> Vec<WaitConditionRecord> {
         .collect()
 }
 
+#[cfg(holon_lib_test_shard = "d")]
 #[test]
 fn summary_matches_public_api_stable_equal_keys_filtering_and_recoverability() -> Result<()> {
     let record = item();
@@ -225,6 +226,7 @@ fn summary_matches_public_api_stable_equal_keys_filtering_and_recoverability() -
     Ok(())
 }
 
+#[cfg(holon_lib_test_shard = "d")]
 #[test]
 fn summary_exact_material_retains_only_returned_fields_and_last_holder() -> Result<()> {
     for count in [1, 9, 65] {
@@ -279,6 +281,7 @@ fn summary_exact_material_retains_only_returned_fields_and_last_holder() -> Resu
     Ok(())
 }
 
+#[cfg(holon_lib_test_shard = "d")]
 #[test]
 fn summary_each_gate_rejects_before_clone_or_lookup_and_latches_original_phase() -> Result<()> {
     let conditions = waits(2);
@@ -338,6 +341,7 @@ fn summary_each_gate_rejects_before_clone_or_lookup_and_latches_original_phase()
     Ok(())
 }
 
+#[cfg(holon_lib_test_shard = "d")]
 #[test]
 fn empty_or_foreign_summaries_have_no_cost_even_on_failed_phase() -> Result<()> {
     let ledger = InputEvidenceBudgetLedger::new(StateMemoryLimits::default())?;
@@ -371,6 +375,7 @@ fn empty_or_foreign_summaries_have_no_cost_even_on_failed_phase() -> Result<()> 
     Ok(())
 }
 
+#[cfg(holon_lib_test_shard = "d")]
 #[test]
 fn shared_queue_summary_failure_returns_no_partial_queue() -> Result<()> {
     let mut conditions = waits(1);

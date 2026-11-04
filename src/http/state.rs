@@ -3,6 +3,7 @@ use anyhow::Context as _;
 
 const STATE_BOOTSTRAP_FAILURE_ARTIFACT_ENTRY_LIMIT: usize = 16;
 
+#[cfg(holon_lib_test_shard = "c")]
 #[cfg(test)]
 #[path = "state_work_item_tests.rs"]
 mod work_item_tests;
@@ -916,6 +917,7 @@ fn build_worktree_info(
     }
 }
 
+#[cfg(holon_lib_test_shard = "c")]
 #[cfg(test)]
 mod tests {
     use super::{

@@ -1,20 +1,29 @@
 use super::*;
+#[cfg(holon_lib_test_shard = "b")]
 #[path = "cold_query_tests.rs"]
 mod cold_query_tests;
+#[cfg(holon_lib_test_shard = "b")]
 #[path = "collection_budget_tests.rs"]
 mod collection_budget_tests;
+#[cfg(holon_lib_test_shard = "b")]
 #[path = "foreign_owner_tests.rs"]
 mod foreign_owner_tests;
+#[cfg(holon_lib_test_shard = "b")]
 #[path = "material_phase_tests.rs"]
 mod material_phase_tests;
+#[cfg(holon_lib_test_shard = "b")]
 #[path = "resident_map_budget_tests.rs"]
 mod resident_map_budget_tests;
+#[cfg(holon_lib_test_shard = "b")]
 #[path = "saved_coverage_budget_tests.rs"]
 mod saved_coverage_budget_tests;
+#[cfg(holon_lib_test_shard = "b")]
 #[path = "scope_state_native_tests.rs"]
 mod scope_state_native_tests;
+#[cfg(holon_lib_test_shard = "b")]
 #[path = "source_material_tests.rs"]
 mod source_material_tests;
+#[cfg(holon_lib_test_shard = "b")]
 #[path = "token_discovery_tests.rs"]
 mod token_discovery_tests;
 use crate::{
@@ -107,6 +116,7 @@ pub(super) fn legacy(
     for migration in MIGRATIONS.iter().filter(|m| m.version <= 89) {
         apply_migration(&mut conn, migration)?;
     }
+    crate::runtime_db::ensure_runtime_identity_metadata(&conn)?;
     {
         let tx = conn.transaction()?;
         upsert_agent_identity_tx(&tx, &identity())?;
@@ -166,6 +176,7 @@ pub(super) fn wake(
     tx.execute("INSERT INTO timer_wakes(timer_id,message_id,fire_count,status,created_at,updated_at) VALUES(?1,?2,?3,'pending',?4,?4)",params![timer_id,message_id,count,repositories::timestamp(at())])?;
     Ok(())
 }
+#[cfg(holon_lib_test_shard = "b")]
 #[test]
 fn cancelled_timer_preserves_independent_update_time_and_strict_payload_validation() -> Result<()> {
     let expected = timer("cancelled-at-later-time", TimerStatus::Active);
@@ -209,6 +220,7 @@ fn cancelled_timer_preserves_independent_update_time_and_strict_payload_validati
     Ok(())
 }
 
+#[cfg(holon_lib_test_shard = "b")]
 #[test]
 fn fixed_actual_pending_wake_keeps_its_count_and_completed_timer_closure() -> Result<()> {
     let (_home, db) = legacy(true, |tx| {
@@ -247,6 +259,7 @@ fn fixed_actual_pending_wake_keeps_its_count_and_completed_timer_closure() -> Re
     assert_eq!(snapshot.input_roots.len(), 2);
     Ok(())
 }
+#[cfg(holon_lib_test_shard = "b")]
 #[test]
 fn fixed_deleting_is_named_recovery_only_and_retired_never_reads_successor_state() -> Result<()> {
     let (_home, db) = legacy(true, |tx| {
@@ -297,6 +310,7 @@ fn fixed_deleting_is_named_recovery_only_and_retired_never_reads_successor_state
     );
     Ok(())
 }
+#[cfg(holon_lib_test_shard = "b")]
 #[test]
 fn raw_late_live_cannot_enter_complete_coverage_or_partially_mint_aliases() -> Result<()> {
     let (_home, db) = legacy(true, |tx| {
@@ -319,6 +333,7 @@ fn raw_late_live_cannot_enter_complete_coverage_or_partially_mint_aliases() -> R
     assert_eq!(budget.report()?.observed_bytes, 0);
     Ok(())
 }
+#[cfg(holon_lib_test_shard = "b")]
 #[test]
 fn actual_full_normalized_timer_projection_and_pruned_alias_remain_strict() -> Result<()> {
     let (_home, db) = legacy(true, |tx| {
@@ -351,6 +366,7 @@ fn actual_full_normalized_timer_projection_and_pruned_alias_remain_strict() -> R
     );
     Ok(())
 }
+#[cfg(holon_lib_test_shard = "b")]
 #[test]
 fn malformed_oversized_normalized_material_fails_budget_before_decode_and_releases_guards(
 ) -> Result<()> {
@@ -387,6 +403,7 @@ fn malformed_oversized_normalized_material_fails_budget_before_decode_and_releas
     );
     Ok(())
 }
+#[cfg(holon_lib_test_shard = "b")]
 #[test]
 fn selected_capture_owns_only_selected_arcs_and_shared_weak_ledger_releases() -> Result<()> {
     let (_home, db) = legacy(true, |tx| {
@@ -434,6 +451,7 @@ fn selected_capture_owns_only_selected_arcs_and_shared_weak_ledger_releases() ->
     assert_eq!(budget.report()?.observed_bytes, 0);
     Ok(())
 }
+#[cfg(holon_lib_test_shard = "b")]
 #[test]
 fn historical_missing_table_is_not_a_later_empty_or_adoption_proof() -> Result<()> {
     let (_home, db) = legacy(true, |tx| {
@@ -481,6 +499,7 @@ fn historical_missing_table_is_not_a_later_empty_or_adoption_proof() -> Result<(
     Ok(())
 }
 
+#[cfg(holon_lib_test_shard = "b")]
 #[test]
 fn fresh_successor_does_not_inherit_old_fixed_live_rows_but_explicit_old_id_is_strict() -> Result<()>
 {
@@ -522,6 +541,7 @@ fn fresh_successor_does_not_inherit_old_fixed_live_rows_but_explicit_old_id_is_s
     ));
     Ok(())
 }
+#[cfg(holon_lib_test_shard = "b")]
 #[test]
 fn original_live_normalized_owner_drift_is_not_complete_empty() -> Result<()> {
     let (_home, db) = legacy(true, |tx| {
@@ -543,6 +563,7 @@ fn original_live_normalized_owner_drift_is_not_complete_empty() -> Result<()> {
     Ok(())
 }
 
+#[cfg(holon_lib_test_shard = "b")]
 #[test]
 fn no_state_and_preexisting_deleted_never_construct_ready_or_new_qualification() -> Result<()> {
     let (_home, db) = legacy(true, |tx| {
@@ -605,6 +626,7 @@ fn no_state_and_preexisting_deleted_never_construct_ready_or_new_qualification()
     Ok(())
 }
 
+#[cfg(holon_lib_test_shard = "b")]
 #[test]
 fn fixed_history128_preserves_order_and_explicit_old_id_without_a_late_tail() -> Result<()> {
     let (_home, db) = legacy(true, |tx| {
@@ -669,6 +691,7 @@ fn fixed_history128_preserves_order_and_explicit_old_id_without_a_late_tail() ->
     assert_eq!(captured.records[0].locator.key.id, "closed-129");
     Ok(())
 }
+#[cfg(holon_lib_test_shard = "b")]
 #[test]
 fn global_absent_and_pruned_are_distinct_and_old_selected_bytes_survive() -> Result<()> {
     let (_home, db) = legacy(true, |tx| {
@@ -728,6 +751,7 @@ fn global_absent_and_pruned_are_distinct_and_old_selected_bytes_survive() -> Res
     Ok(())
 }
 
+#[cfg(holon_lib_test_shard = "b")]
 #[test]
 fn first_original_writer_initializes_final_revision_and_noop_keeps_full_install_records(
 ) -> Result<()> {
@@ -781,6 +805,7 @@ fn first_original_writer_initializes_final_revision_and_noop_keeps_full_install_
     drop(held);
     Ok(())
 }
+#[cfg(holon_lib_test_shard = "b")]
 #[test]
 fn finalizer_fault_rolls_back_business_aliases_and_scope_and_original_cleanup_is_existing_only(
 ) -> Result<()> {
@@ -854,15 +879,19 @@ fn finalizer_fault_rolls_back_business_aliases_and_scope_and_original_cleanup_is
     Ok(())
 }
 
+#[cfg(holon_lib_test_shard = "b")]
 #[path = "timer_writer_tests.rs"]
 mod timer_writer_tests;
 
+#[cfg(holon_lib_test_shard = "b")]
 #[path = "timer_kernel_tests.rs"]
 mod timer_kernel_tests;
 
+#[cfg(holon_lib_test_shard = "b")]
 #[path = "history_order_tests.rs"]
 mod history_order_tests;
 
+#[cfg(holon_lib_test_shard = "b")]
 #[test]
 fn pruned_history_without_original_loaded_order_keeps_metadata_and_rejects_time_fabrication(
 ) -> Result<()> {
@@ -926,6 +955,7 @@ fn pruned_history_without_original_loaded_order_keeps_metadata_and_rejects_time_
     Ok(())
 }
 
+#[cfg(holon_lib_test_shard = "b")]
 #[test]
 fn pruned_same_millisecond_head_keeps_observed_nanosecond_order_and_never_rolls_to_raw_tail(
 ) -> Result<()> {

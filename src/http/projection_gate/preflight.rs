@@ -341,5 +341,6 @@ where
     scope
 }
 
+#[cfg(holon_lib_test_shard = "c")]
 #[cfg(test)]
 mod tests;

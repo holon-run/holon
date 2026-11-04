@@ -152,6 +152,7 @@ fn admitted_plan_path(agent_home: &Path, work_item_id: &str) -> Result<PathBuf> 
     Ok(plan_path(agent_home, work_item_id))
 }
 
+#[cfg(holon_lib_test_shard = "d")]
 #[cfg(test)]
 mod tests {
     use super::*;

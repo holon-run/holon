@@ -7464,7 +7464,7 @@ async fn turn_end_work_item_commit_preserves_existing_blocker_on_failed_turn() {
     )
     .await;
     {
-        let mut guard = runtime.inner.agent.lock().await;
+        let mut guard = runtime.begin_mutation().await.unwrap();
         guard.state.last_turn_terminal = Some(TurnTerminalRecord {
             turn_id: "test-turn".into(),
             turn_index: guard.state.turn_index,
@@ -7476,7 +7476,7 @@ async fn turn_end_work_item_commit_preserves_existing_blocker_on_failed_turn() {
             completed_at: Utc::now(),
             duration_ms: 42,
         });
-        guard.persist_state(&runtime.inner.storage).unwrap();
+        guard.persist_state(&runtime.inner.storage).await.unwrap();
     }
 
     let committed = runtime
@@ -7710,9 +7710,9 @@ async fn agent_scoped_wake_hint_preserves_external_trigger_provenance() {
     )
     .unwrap();
     {
-        let mut guard = runtime.inner.agent.lock().await;
+        let mut guard = runtime.begin_mutation().await.unwrap();
         guard.state.status = AgentStatus::Asleep;
-        guard.persist_state(&runtime.inner.storage).unwrap();
+        guard.persist_state(&runtime.inner.storage).await.unwrap();
     }
     let capability = runtime
         .create_external_trigger(

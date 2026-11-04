@@ -1742,6 +1742,7 @@ pub fn assert_invariants(state: &ExecutionProtocolState) -> Result<(), String> {
     Ok(())
 }
 
+#[cfg(holon_lib_test_shard = "c")]
 #[cfg(test)]
 mod tests {
     use super::*;

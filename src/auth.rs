@@ -1419,6 +1419,7 @@ fn decode_jwt_payload(token: &str) -> Result<Value> {
     serde_json::from_slice(&payload).context("failed to parse JWT payload")
 }
 
+#[cfg(holon_lib_test_shard = "c")]
 #[cfg(test)]
 mod tests {
     use super::*;

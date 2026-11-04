@@ -1,9 +1,11 @@
 use super::*;
 
+#[cfg(holon_lib_test_shard = "b")]
 #[cfg(test)]
 #[path = "selector_budget_tests.rs"]
 mod selector_budget_tests;
 
+#[cfg(holon_lib_test_shard = "b")]
 #[cfg(test)]
 #[path = "scope_read_tests.rs"]
 mod scope_read_tests;

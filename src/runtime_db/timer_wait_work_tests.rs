@@ -101,6 +101,7 @@ fn observed_wait_status(domain: &ResidentWorkDomain, wait_id: &str) -> Result<Wa
     Ok(wait.status.clone())
 }
 
+#[cfg(holon_lib_test_shard = "b")]
 #[test]
 fn scoped_timer_fire_publishes_triggered_wait_in_original_work_ack() -> Result<()> {
     let f = Fixture::new()?;
@@ -161,6 +162,7 @@ fn scoped_timer_fire_publishes_triggered_wait_in_original_work_ack() -> Result<(
     Ok(())
 }
 
+#[cfg(holon_lib_test_shard = "b")]
 #[test]
 fn scoped_timer_work_finalization_failure_rolls_back_wait_message_and_timer() -> Result<()> {
     let f = Fixture::new()?;
@@ -222,6 +224,7 @@ fn scoped_timer_work_finalization_failure_rolls_back_wait_message_and_timer() ->
     Ok(())
 }
 
+#[cfg(holon_lib_test_shard = "b")]
 #[test]
 fn scoped_timer_fire_refuses_unqualified_wait_instead_of_adopting_it() -> Result<()> {
     let f = Fixture::new()?;
@@ -258,6 +261,7 @@ fn scoped_timer_fire_refuses_unqualified_wait_instead_of_adopting_it() -> Result
     Ok(())
 }
 
+#[cfg(holon_lib_test_shard = "b")]
 #[test]
 fn scoped_timer_projection_rejects_oversize_before_decode_and_business_writes() -> Result<()> {
     use crate::runtime_db::work_snapshot::WorkSnapshotError;
@@ -357,6 +361,7 @@ fn scoped_timer_projection_rejects_oversize_before_decode_and_business_writes() 
     Ok(())
 }
 
+#[cfg(holon_lib_test_shard = "b")]
 #[test]
 fn trigger_wait_projection_budget_follows_original_work_proof() -> Result<()> {
     use crate::runtime::input_evidence_budget::InputMemoryCategory;
@@ -389,6 +394,7 @@ fn trigger_wait_projection_budget_follows_original_work_proof() -> Result<()> {
     Ok(())
 }
 
+#[cfg(holon_lib_test_shard = "b")]
 #[test]
 fn scoped_timer_fire_refreshes_observed_global_task_output_window_in_its_original_ack() -> Result<()>
 {

@@ -768,6 +768,7 @@ pub(in crate::runtime) async fn prepare_outstanding_recovery_message_id(
     }))
 }
 
+#[cfg(holon_lib_test_shard = "a")]
 #[cfg(test)]
 mod tests {
     use super::*;

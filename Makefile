@@ -152,6 +152,8 @@ snapshots-refresh: ## Refresh CLI, OpenAPI, HTTP route, runtime status, and mode
 	cargo test --test tool_schema_inventory_snapshot refresh_tool_schema_inventory_snapshot -- --ignored
 
 build: ## Build all Rust targets (cargo build --all-targets)
+	cargo build --lib
+	cargo test --lib --no-run
 	cargo build --all-targets
 
 all: web app-sdk build ## Build everything: web GUI, App SDK, then Rust

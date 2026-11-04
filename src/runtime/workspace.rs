@@ -483,6 +483,7 @@ pub(crate) fn execution_root_sync(storage: &AppStorage) -> PathBuf {
         .unwrap_or_else(|| detached_execution_root(storage))
 }
 
+#[cfg(holon_lib_test_shard = "a")]
 #[cfg(test)]
 mod tests {
     use super::*;

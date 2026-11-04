@@ -8,6 +8,7 @@ mod observer_read;
 pub(crate) use observer_read::{observer_hint_bytes, observer_json_bytes};
 mod child_monitor_binding;
 mod child_task_producer;
+#[cfg(holon_lib_test_shard = "d")]
 #[cfg(test)]
 #[path = "host/child_task_summaries_read_tests.rs"]
 mod child_task_summaries_read_tests;
@@ -24,8 +25,10 @@ mod pending_budget;
 pub(crate) mod resource_writes;
 mod startup_dispatch_memory;
 mod task_monitor_read;
+#[cfg(holon_lib_test_shard = "d")]
 #[cfg(test)]
 mod task_monitor_read_tests;
+#[cfg(holon_lib_test_shard = "d")]
 #[cfg(test)]
 mod task_observability_tests;
 mod task_status_metadata;
@@ -11712,6 +11715,7 @@ impl RuntimeHostBridge {
     }
 }
 
+#[cfg(holon_lib_test_shard = "d")]
 #[cfg(test)]
 mod memory_indexer_retry_tests {
     use super::*;
@@ -11762,48 +11766,69 @@ mod memory_indexer_retry_tests {
 
 #[cfg(test)]
 mod tests {
+    #[cfg(holon_lib_test_shard = "d")]
     #[path = "agent_summary_scheduling_tests.rs"]
     mod agent_summary_scheduling_tests;
+    #[cfg(holon_lib_test_shard = "d")]
     #[path = "callback_discovery_tests.rs"]
     mod callback_discovery_tests;
+    #[cfg(holon_lib_test_shard = "d")]
     #[path = "child_summary_ownership_tests.rs"]
     mod child_summary_ownership_tests;
+    #[cfg(holon_lib_test_shard = "d")]
     #[path = "cold_capture_phase_tests.rs"]
     mod cold_capture_phase_tests;
+    #[cfg(holon_lib_test_shard = "d")]
     #[path = "cold_queue_borrow_tests.rs"]
     mod cold_queue_borrow_tests;
+    #[cfg(holon_lib_test_shard = "d")]
     #[path = "cold_scheduling_tests.rs"]
     mod cold_scheduling_tests;
+    #[cfg(holon_lib_test_shard = "d")]
     #[path = "cold_summary_projection_tests.rs"]
     mod cold_summary_projection_tests;
+    #[cfg(holon_lib_test_shard = "d")]
     #[path = "cold_work_queue_phase_tests.rs"]
     mod cold_work_queue_phase_tests;
+    #[cfg(holon_lib_test_shard = "d")]
     #[path = "projection_brief_preview_tests.rs"]
     mod projection_brief_preview_tests;
+    #[cfg(holon_lib_test_shard = "d")]
     #[path = "projection_hydration_tests.rs"]
     mod projection_hydration_tests;
+    #[cfg(holon_lib_test_shard = "d")]
     #[path = "projection_identity_move_tests.rs"]
     mod projection_identity_move_tests;
+    #[cfg(holon_lib_test_shard = "d")]
     #[path = "projection_lifecycle_material_tests.rs"]
     mod projection_lifecycle_material_tests;
+    #[cfg(holon_lib_test_shard = "d")]
     #[path = "projection_model_catalog_view_tests.rs"]
     mod projection_model_catalog_view_tests;
+    #[cfg(holon_lib_test_shard = "d")]
     #[path = "projection_model_material_tests.rs"]
     mod projection_model_material_tests;
+    #[cfg(holon_lib_test_shard = "d")]
     #[path = "projection_model_move_tests.rs"]
     mod projection_model_move_tests;
+    #[cfg(holon_lib_test_shard = "d")]
     #[path = "projection_model_summary_tests.rs"]
     mod projection_model_summary_tests;
+    #[cfg(holon_lib_test_shard = "d")]
     #[path = "projection_model_tier_material_tests.rs"]
     mod projection_model_tier_material_tests;
+    #[cfg(holon_lib_test_shard = "d")]
     #[path = "projection_posture_material_tests.rs"]
     mod projection_posture_material_tests;
+    #[cfg(holon_lib_test_shard = "d")]
     #[path = "projection_stopped_state_material_tests.rs"]
     mod projection_stopped_state_material_tests;
+    #[cfg(holon_lib_test_shard = "d")]
     #[path = "projection_storage_view_tests.rs"]
     mod projection_storage_view_tests;
     #[path = "projection_work_queue_material_tests.rs"]
     mod projection_work_queue_material_tests;
+    #[cfg(holon_lib_test_shard = "d")]
     #[path = "task_stop_cold_tests.rs"]
     mod task_stop_cold_tests;
     use std::{
@@ -11914,6 +11939,7 @@ mod tests {
         (home, host)
     }
 
+    #[cfg(holon_lib_test_shard = "d")]
     #[test]
     fn pre_server_preparation_skips_missing_default_agent() {
         let home = tempdir().unwrap();
@@ -12190,6 +12216,7 @@ mod tests {
         (work_item.id, attempt_id)
     }
 
+    #[cfg(holon_lib_test_shard = "d")]
     #[tokio::test]
     async fn unloaded_waiting_execution_fixture_has_exact_fresh_input_qualification() {
         use crate::runtime::resident_input_evidence::{
@@ -12264,6 +12291,7 @@ mod tests {
         assert!(storage.latest_queue_entries().unwrap().is_empty());
     }
 
+    #[cfg(holon_lib_test_shard = "d")]
     #[tokio::test]
     async fn unloaded_consumed_result_fixture_has_canonical_source_and_started_turn() {
         use crate::runtime::resident_input_evidence::{
@@ -12513,6 +12541,7 @@ mod tests {
         assert_eq!(wake_status, if applied { "cancelled" } else { "pending" });
     }
 
+    #[cfg(holon_lib_test_shard = "d")]
     #[tokio::test]
     async fn startup_stopped_cleanup_rolls_back_wait_timer_wake_queue_and_state() {
         use crate::runtime_db::transitions::TransitionFaultPoint;
@@ -12548,6 +12577,7 @@ mod tests {
         }
     }
 
+    #[cfg(holon_lib_test_shard = "d")]
     #[tokio::test]
     async fn startup_stopped_cleanup_retains_exact_known_state_before_publication() {
         let (_home, host) = test_host();
@@ -12601,6 +12631,7 @@ mod tests {
         assert!(host.inner.runtimes.read().await.agents.is_empty());
     }
 
+    #[cfg(holon_lib_test_shard = "d")]
     #[tokio::test]
     async fn startup_rechecks_new_orphan_scope_without_handoff_across_owner_wait() {
         let (_home, host) = test_host();
@@ -12689,6 +12720,7 @@ mod tests {
         assert!(host.inner.runtimes.read().await.agents.is_empty());
     }
 
+    #[cfg(holon_lib_test_shard = "d")]
     #[tokio::test]
     async fn startup_recovery_caller_cancellation_keeps_host_worker_until_shutdown_drain() {
         let (_home, host) = test_host();
@@ -12743,6 +12775,7 @@ mod tests {
         assert!(owner.capture().is_ok());
     }
 
+    #[cfg(holon_lib_test_shard = "d")]
     #[tokio::test]
     async fn startup_recovery_rejects_loaded_and_draining_runtimes_before_sql() {
         let (_home, host) = test_host();
@@ -12804,6 +12837,7 @@ mod tests {
         host.shutdown().await.unwrap();
     }
 
+    #[cfg(holon_lib_test_shard = "d")]
     #[tokio::test]
     async fn startup_recovery_rejects_temporary_runtime_without_loaded_runtime() {
         let (_home, host) = test_host();
@@ -12842,11 +12876,13 @@ mod tests {
         host.shutdown().await.unwrap();
     }
 
+    #[cfg(holon_lib_test_shard = "d")]
     #[tokio::test]
     async fn startup_recovery_discovers_consumed_result_owner_without_queue_task_or_timer_wake() {
         Box::pin(startup_consumed_result_owner_recovery(false)).await;
     }
 
+    #[cfg(holon_lib_test_shard = "d")]
     #[tokio::test]
     async fn startup_recovery_preserves_execution_only_owner_after_known_publication_fault() {
         Box::pin(startup_consumed_result_owner_recovery(true)).await;
@@ -12923,6 +12959,7 @@ mod tests {
         restarted.shutdown().await.unwrap();
     }
 
+    #[cfg(holon_lib_test_shard = "d")]
     #[tokio::test]
     async fn startup_recovery_releases_stopped_execution_lane_without_starting_owner() {
         let (_home, mut host) = canonical_test_host();
@@ -12958,6 +12995,7 @@ mod tests {
         );
     }
 
+    #[cfg(holon_lib_test_shard = "d")]
     #[tokio::test]
     async fn startup_recovery_releases_deleted_execution_lane_without_reviving_identity() {
         let (_home, mut host) = canonical_test_host();
@@ -12999,6 +13037,7 @@ mod tests {
         }
     }
 
+    #[cfg(holon_lib_test_shard = "d")]
     #[tokio::test]
     async fn daemon_indexer_work_gap_observes_cancellation() {
         let (_home, host) = test_host();
@@ -13014,6 +13053,7 @@ mod tests {
         assert!(cancelled);
     }
 
+    #[cfg(holon_lib_test_shard = "d")]
     #[test]
     fn memory_indexer_active_gate_allows_private_children_and_fails_closed() {
         let (_home, host) = test_host();
@@ -13088,6 +13128,7 @@ mod tests {
         .expect("config reload status")
     }
 
+    #[cfg(holon_lib_test_shard = "d")]
     #[tokio::test]
     async fn config_reload_coordinator_converges_to_latest_scheduled_generation() {
         let (_home, host) = test_host();
@@ -13104,6 +13145,7 @@ mod tests {
         host.shutdown().await.unwrap();
     }
 
+    #[cfg(holon_lib_test_shard = "d")]
     #[tokio::test]
     async fn config_reload_coordinator_recovers_after_a_failed_generation() {
         let (home, host) = test_host();
@@ -13126,6 +13168,7 @@ mod tests {
         host.shutdown().await.unwrap();
     }
 
+    #[cfg(holon_lib_test_shard = "d")]
     #[tokio::test]
     async fn bootstrap_provider_is_cleared_before_post_onboarding_runtime_creation() {
         let _env_lock = crate::test_env::lock_env();
@@ -13177,6 +13220,7 @@ mod tests {
         }
     }
 
+    #[cfg(holon_lib_test_shard = "d")]
     #[tokio::test]
     async fn active_runtime_activation_does_not_wait_for_bootstrap_handoff_lock() {
         let (_home, host) = test_host();
@@ -13196,6 +13240,7 @@ mod tests {
         host.shutdown().await.unwrap();
     }
 
+    #[cfg(holon_lib_test_shard = "d")]
     #[tokio::test]
     async fn runtime_creation_waits_for_bootstrap_handoff_during_reload() {
         let _env_lock = crate::test_env::lock_env();
@@ -13274,6 +13319,7 @@ mod tests {
         }
     }
 
+    #[cfg(holon_lib_test_shard = "d")]
     #[tokio::test]
     async fn config_reload_coordinator_rejects_scheduling_after_shutdown() {
         let (_home, host) = test_host();
@@ -13283,6 +13329,7 @@ mod tests {
         assert!(error.to_string().contains("shutting down"));
     }
 
+    #[cfg(holon_lib_test_shard = "d")]
     #[tokio::test]
     async fn debug_prompt_preview_is_storage_only_and_leaves_queued_input_unchanged() {
         let (_home, host) = test_host();
@@ -13454,18 +13501,21 @@ mod tests {
         );
     }
 
+    #[cfg(holon_lib_test_shard = "d")]
     #[tokio::test]
     async fn static_runtime_prompt_uses_configured_user_home() {
         let fixture = provider_test_config(Some("dummy-token"));
         assert_runtime_prompt_uses_configured_user_home(fixture.config, true).await;
     }
 
+    #[cfg(holon_lib_test_shard = "d")]
     #[tokio::test]
     async fn reconfigurable_runtime_prompt_uses_configured_user_home() {
         let fixture = provider_test_config(Some("dummy-token"));
         assert_runtime_prompt_uses_configured_user_home(fixture.config, false).await;
     }
 
+    #[cfg(holon_lib_test_shard = "d")]
     #[tokio::test]
     async fn config_reload_preserves_runtime_user_home() {
         let mut fixture = provider_test_config(Some("dummy-token"));
@@ -13513,6 +13563,7 @@ mod tests {
             .any(|section| section.content.contains("replacement guidance")));
     }
 
+    #[cfg(holon_lib_test_shard = "d")]
     #[tokio::test]
     async fn debug_prompt_preview_uses_model_apply_patch_surface_even_when_tools_are_lowered() {
         let home = tempdir().unwrap();
@@ -13762,6 +13813,7 @@ mod tests {
         }
     }
 
+    #[cfg(holon_lib_test_shard = "d")]
     #[tokio::test]
     async fn public_named_agents_require_explicit_creation() {
         let (_home, host) = test_host();
@@ -13833,6 +13885,7 @@ mod tests {
         assert!(listed.contains(&"release-bot".to_string()));
     }
 
+    #[cfg(holon_lib_test_shard = "d")]
     #[tokio::test]
     async fn first_public_named_agent_becomes_default_after_restart() {
         let (home, host) = empty_test_host();
@@ -13862,6 +13915,7 @@ mod tests {
         drop(home);
     }
 
+    #[cfg(holon_lib_test_shard = "d")]
     #[tokio::test]
     async fn named_agent_template_resolution_uses_user_home_not_config_home() {
         struct HomeGuard(Option<String>);
@@ -13907,6 +13961,7 @@ mod tests {
         assert!(agents_md.starts_with("# User worker\n\nfrom user home\n"));
     }
 
+    #[cfg(holon_lib_test_shard = "d")]
     #[tokio::test]
     async fn public_named_agent_degraded_template_can_be_repaired_without_recreation() {
         let (home, host) = test_host();
@@ -13948,6 +14003,7 @@ mod tests {
         );
     }
 
+    #[cfg(holon_lib_test_shard = "d")]
     #[tokio::test]
     async fn public_named_agent_repair_does_not_overwrite_user_agents_md() {
         let (home, host) = test_host();
@@ -13979,6 +14035,7 @@ mod tests {
         );
     }
 
+    #[cfg(holon_lib_test_shard = "d")]
     #[tokio::test]
     async fn unloaded_list_agent_entries_reads_agent_state_from_db_without_agent_json() {
         let home = tempdir().unwrap();
@@ -14021,6 +14078,7 @@ mod tests {
         assert_eq!(entry.status, AgentStatus::Asleep);
     }
 
+    #[cfg(holon_lib_test_shard = "d")]
     #[tokio::test]
     async fn list_agent_entries_for_parent_matches_canonical_lineage_parent() {
         let (_home, host) = test_host();
@@ -14102,6 +14160,7 @@ mod tests {
         identity
     }
 
+    #[cfg(holon_lib_test_shard = "d")]
     #[tokio::test]
     async fn scoped_host_snapshots_and_list_match_ordinary_reads_and_reject_cancelled_empty_reads()
     {
@@ -14154,6 +14213,7 @@ mod tests {
         assert!(host.agent_roster_snapshot().is_ok());
     }
 
+    #[cfg(holon_lib_test_shard = "d")]
     #[tokio::test(flavor = "current_thread")]
     async fn scoped_loaded_lookup_times_out_without_falling_back_to_unloaded() {
         let (_home, host) = test_host();
@@ -14195,6 +14255,7 @@ mod tests {
             .is_none());
     }
 
+    #[cfg(holon_lib_test_shard = "d")]
     #[cfg(target_os = "linux")]
     #[tokio::test]
     async fn scoped_host_empty_reads_preserve_protection_failure_over_cancellation() {
@@ -14227,6 +14288,7 @@ mod tests {
         }
     }
 
+    #[cfg(holon_lib_test_shard = "d")]
     #[tokio::test]
     async fn list_agent_entries_serves_committed_postures_per_agent() {
         let (_home, host) = test_host();
@@ -14342,6 +14404,7 @@ mod tests {
         );
     }
 
+    #[cfg(holon_lib_test_shard = "d")]
     #[tokio::test]
     async fn list_agent_entries_matches_per_agent_storage_projection() {
         let (_home, host) = test_host();
@@ -14403,6 +14466,7 @@ mod tests {
         assert_eq!(entries, reference);
     }
 
+    #[cfg(holon_lib_test_shard = "d")]
     #[tokio::test]
     async fn list_agent_entries_never_starts_or_touches_runtimes() {
         let (_home, host) = test_host();
@@ -14419,6 +14483,7 @@ mod tests {
             .any(|entry| entry.identity.agent_id == "resident-agent"));
     }
 
+    #[cfg(holon_lib_test_shard = "d")]
     #[tokio::test]
     async fn unloaded_operator_agent_state_projection_reads_storage_without_starting_runtime() {
         let (_home, host) = test_host();
@@ -14450,6 +14515,7 @@ mod tests {
             .exists());
     }
 
+    #[cfg(holon_lib_test_shard = "d")]
     #[tokio::test]
     async fn loaded_operator_agent_state_projection_prefers_runtime() {
         let (_home, host) = test_host();
@@ -14464,6 +14530,7 @@ mod tests {
         assert_eq!(projection.source, AgentStateProjectionSource::Loaded);
     }
 
+    #[cfg(holon_lib_test_shard = "d")]
     #[tokio::test]
     async fn external_ingress_stopped_gate_reads_agent_state_from_db_without_agent_json() {
         let home = tempdir().unwrap();
@@ -14506,6 +14573,7 @@ mod tests {
         assert!(matches!(error, PublicAgentError::Stopped { .. }));
     }
 
+    #[cfg(holon_lib_test_shard = "d")]
     #[tokio::test]
     async fn default_runtime_materializes_default_agent_template() {
         let (_home, host) = test_host();
@@ -14542,6 +14610,7 @@ mod tests {
         );
     }
 
+    #[cfg(holon_lib_test_shard = "d")]
     #[tokio::test]
     async fn default_runtime_does_not_overwrite_existing_default_agents_md() {
         let (_home, host) = test_host();
@@ -14557,6 +14626,7 @@ mod tests {
         );
     }
 
+    #[cfg(holon_lib_test_shard = "d")]
     #[test]
     fn agent_data_dir_uses_agents_directory_without_sessions_compat() {
         let (_home, host) = test_host();
@@ -14576,6 +14646,7 @@ mod tests {
         );
     }
 
+    #[cfg(holon_lib_test_shard = "d")]
     #[tokio::test]
     async fn creation_audit_rejects_foreign_incarnation_without_activating_or_appending() {
         for template in [None, Some("missing-creation-audit-template")] {
@@ -14634,6 +14705,7 @@ mod tests {
         }
     }
 
+    #[cfg(holon_lib_test_shard = "d")]
     #[tokio::test]
     async fn public_named_create_returns_receipt_and_rejects_duplicate() {
         let (_home, host) = test_host();
@@ -14730,6 +14802,7 @@ mod tests {
         );
     }
 
+    #[cfg(holon_lib_test_shard = "d")]
     #[tokio::test]
     async fn concurrent_public_named_create_has_one_core_commit_winner() {
         let (_home, host) = test_host();
@@ -14758,6 +14831,7 @@ mod tests {
         assert_eq!(bootstrap.summary().status, AgentBootstrapStatus::Ready);
     }
 
+    #[cfg(holon_lib_test_shard = "d")]
     #[tokio::test]
     async fn deleted_public_agent_detail_retains_name_and_rename_is_rejected() {
         let (_home, host) = test_host();
@@ -14819,6 +14893,7 @@ mod tests {
         ));
     }
 
+    #[cfg(holon_lib_test_shard = "d")]
     #[tokio::test]
     async fn agent_face_create_reincarnates_fully_deleted_agent_id() {
         let (_home, host) = test_host();
@@ -14914,6 +14989,7 @@ mod tests {
         );
     }
 
+    #[cfg(holon_lib_test_shard = "d")]
     #[tokio::test]
     async fn spawn_public_named_rejects_existing_agent_without_side_effects() {
         let fixture = provider_test_config(Some("dummy-token"));
@@ -14964,6 +15040,7 @@ mod tests {
         );
     }
 
+    #[cfg(holon_lib_test_shard = "d")]
     #[tokio::test]
     async fn spawn_public_named_rejects_existing_default_agent_without_side_effects() {
         let fixture = provider_test_config(Some("dummy-token"));
@@ -15005,6 +15082,7 @@ mod tests {
         );
     }
 
+    #[cfg(holon_lib_test_shard = "d")]
     #[tokio::test]
     async fn canonical_create_reuses_committed_agent_without_supervision_or_reconfiguration() {
         let (_home, host) = test_host();
@@ -15095,6 +15173,7 @@ mod tests {
         );
     }
 
+    #[cfg(holon_lib_test_shard = "d")]
     #[tokio::test]
     async fn canonical_new_subagent_rejects_missing_model_before_task_creation() {
         let (_home, host) = test_host();
@@ -15126,6 +15205,7 @@ mod tests {
         );
     }
 
+    #[cfg(holon_lib_test_shard = "d")]
     #[tokio::test]
     async fn canonical_existing_invocation_preserves_target_configuration_and_relations() {
         let (_home, host) = test_host_with_silent_peer("canonical-existing");
@@ -15232,6 +15312,7 @@ mod tests {
         assert_eq!(detail["business_completion"], false);
     }
 
+    #[cfg(holon_lib_test_shard = "d")]
     #[tokio::test]
     async fn canonical_new_subagent_remains_reusable_after_invocation_and_restart() {
         let (_home, host) = test_host();
@@ -15321,21 +15402,25 @@ mod tests {
             .is_none());
     }
 
+    #[cfg(holon_lib_test_shard = "d")]
     #[tokio::test]
     async fn supervised_invocation_settles_after_same_turn_command_consumption() {
         assert_supervised_command_consumption(false, false, false).await;
     }
 
+    #[cfg(holon_lib_test_shard = "d")]
     #[tokio::test]
     async fn supervised_invocation_settles_after_late_command_wait() {
         assert_supervised_command_consumption(true, false, false).await;
     }
 
+    #[cfg(holon_lib_test_shard = "d")]
     #[tokio::test]
     async fn supervised_invocation_settles_after_late_command_wait_final_report() {
         assert_supervised_command_consumption(true, true, false).await;
     }
 
+    #[cfg(holon_lib_test_shard = "d")]
     #[tokio::test]
     async fn supervised_invocation_legacy_late_wait_survives_provider_recovery() {
         assert_supervised_command_consumption(true, false, true).await;
@@ -16195,6 +16280,7 @@ mod tests {
         store(execution);
     }
 
+    #[cfg(holon_lib_test_shard = "d")]
     #[tokio::test]
     async fn recovered_actor_invocation_uses_its_original_terminal_not_later_child_output() {
         struct InvocationProvider {
@@ -16381,6 +16467,7 @@ mod tests {
         }
     }
 
+    #[cfg(holon_lib_test_shard = "d")]
     #[tokio::test]
     async fn agent_message_wait_preserves_reply_authority_with_late_status() {
         for (use_wait, reply_authority) in [
@@ -16783,6 +16870,7 @@ mod tests {
         }
     }
 
+    #[cfg(holon_lib_test_shard = "d")]
     #[tokio::test]
     async fn agent_message_wait_returns_request_bound_final_without_explicit_reply() {
         let (_home, host) = test_host();
@@ -16841,6 +16929,7 @@ mod tests {
 
     include!("host/agent_message_reply_tests.rs");
 
+    #[cfg(holon_lib_test_shard = "d")]
     #[tokio::test]
     async fn agent_message_wait_for_existing_agent_captures_reply_before_invoke_returns() {
         let _delivery_checkpoint_test_lock = DELIVERY_CHECKPOINT_TEST_LOCK.lock().await;
@@ -16991,6 +17080,7 @@ mod tests {
         assert_eq!(detail["message_wait_satisfied"], true);
     }
 
+    #[cfg(holon_lib_test_shard = "d")]
     #[tokio::test]
     async fn agent_message_wait_recovery_reuses_the_persisted_delivery() {
         let _delivery_checkpoint_test_lock = DELIVERY_CHECKPOINT_TEST_LOCK.lock().await;
@@ -17080,6 +17170,7 @@ mod tests {
         }
     }
 
+    #[cfg(holon_lib_test_shard = "d")]
     #[tokio::test]
     async fn cancelling_agent_message_wait_does_not_stop_the_target_or_late_messages() {
         struct PendingTarget {
@@ -17181,6 +17272,7 @@ mod tests {
         host.shutdown().await.unwrap();
     }
 
+    #[cfg(holon_lib_test_shard = "d")]
     #[tokio::test]
     async fn concurrent_existing_agent_waits_share_the_first_later_message() {
         // Keep explicit shared-channel observation separate from final-brief replies.
@@ -17587,6 +17679,7 @@ mod tests {
         }
     }
 
+    #[cfg(holon_lib_test_shard = "d")]
     #[tokio::test]
     async fn shared_reply_waiter_identities_drain_in_bounded_batches() {
         for use_wait in [false, true] {
@@ -17797,6 +17890,7 @@ mod tests {
         }
     }
 
+    #[cfg(holon_lib_test_shard = "d")]
     #[tokio::test]
     async fn shared_reply_is_model_delivered_once_beyond_settlement_batch_limit() {
         for use_wait in [false, true] {
@@ -18004,6 +18098,7 @@ mod tests {
         }
     }
 
+    #[cfg(holon_lib_test_shard = "d")]
     #[tokio::test]
     async fn failed_existing_agent_delivery_terminates_without_a_target_turn() {
         let (_home, host) = test_host();
@@ -18144,6 +18239,7 @@ mod tests {
         assert!(detail["turn_id"].is_null());
     }
 
+    #[cfg(holon_lib_test_shard = "d")]
     #[tokio::test]
     async fn spawn_public_named_records_lineage_without_supervision() {
         let (_home, host) = test_host();
@@ -18189,6 +18285,7 @@ mod tests {
         );
     }
 
+    #[cfg(holon_lib_test_shard = "d")]
     #[tokio::test]
     async fn operator_agent_tree_nests_supervised_child_and_allows_detail_navigation() {
         let (_home, host) = test_host();
@@ -18259,6 +18356,7 @@ mod tests {
             .any(|record| record.child_agent_id == child_agent_id));
     }
 
+    #[cfg(holon_lib_test_shard = "d")]
     #[tokio::test]
     async fn operator_agent_tree_keeps_unsupervised_public_named_lineage() {
         let (_home, host) = test_host();
@@ -18291,6 +18389,7 @@ mod tests {
         );
     }
 
+    #[cfg(holon_lib_test_shard = "d")]
     #[tokio::test]
     async fn operator_agent_tree_hides_deleted_agent_but_keeps_history() {
         let (_home, host) = test_host();
@@ -18330,6 +18429,7 @@ mod tests {
         );
     }
 
+    #[cfg(holon_lib_test_shard = "d")]
     #[tokio::test]
     async fn private_child_initial_message_sets_task_label_and_supervision_provenance() {
         let (_home, host) = test_host();
@@ -18422,6 +18522,7 @@ mod tests {
         );
     }
 
+    #[cfg(holon_lib_test_shard = "d")]
     #[tokio::test]
     async fn private_child_spawn_accepts_user_global_catalog_id_with_install_suffix() {
         let (home, host) = test_host();
@@ -18453,6 +18554,7 @@ mod tests {
         assert!(!spawned.task_handle.task_id.is_empty());
     }
 
+    #[cfg(holon_lib_test_shard = "d")]
     #[tokio::test]
     async fn private_child_archive_failure_preserves_recovery_and_failed_task_artifact() {
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
@@ -18602,6 +18704,7 @@ mod tests {
         }
     }
 
+    #[cfg(holon_lib_test_shard = "d")]
     #[tokio::test]
     async fn private_child_spawn_failure_preserves_safe_cause_in_tool_and_task_diagnostics() {
         let (_home, host) = test_host();
@@ -18661,6 +18764,7 @@ mod tests {
             .any(|cause| cause.contains("template install_id contains unsupported characters")));
     }
 
+    #[cfg(holon_lib_test_shard = "d")]
     #[tokio::test]
     async fn legacy_child_spawn_failure_after_identity_creation_requests_deletion() {
         let home = tempdir().unwrap();
@@ -18728,6 +18832,7 @@ mod tests {
         ));
     }
 
+    #[cfg(holon_lib_test_shard = "d")]
     #[tokio::test]
     async fn private_child_spawn_accepts_explicit_model_selection() {
         let fixture = provider_test_config(Some("dummy-token"));
@@ -18768,6 +18873,7 @@ mod tests {
         );
     }
 
+    #[cfg(holon_lib_test_shard = "d")]
     #[tokio::test]
     async fn private_child_spawn_rejects_unavailable_explicit_model_without_fallback() {
         let fixture = provider_test_config(Some("dummy-token"));
@@ -18795,6 +18901,7 @@ mod tests {
         assert!(error.to_string().contains("unavailable"));
     }
 
+    #[cfg(holon_lib_test_shard = "d")]
     #[tokio::test]
     async fn private_child_runtime_spawn_rejects_blank_initial_message() {
         let (_home, host) = test_host();
@@ -18815,6 +18922,7 @@ mod tests {
             .contains("agent invocation requires a non-empty message"));
     }
 
+    #[cfg(holon_lib_test_shard = "d")]
     #[tokio::test]
     async fn independent_agent_initial_message_is_optional_and_inherits_only_attached_workspaces() {
         let (_home, host) = test_host();
@@ -18980,6 +19088,7 @@ mod tests {
         );
     }
 
+    #[cfg(holon_lib_test_shard = "d")]
     #[tokio::test]
     async fn public_agent_creation_without_initial_message_enqueues_default_bootstrap() {
         let fixture = provider_test_config(Some("dummy-token"));
@@ -19049,6 +19158,7 @@ mod tests {
         );
     }
 
+    #[cfg(holon_lib_test_shard = "d")]
     #[tokio::test]
     async fn explicit_initial_message_bootstrap_has_no_default_marker() {
         let fixture = provider_test_config(Some("dummy-token"));
@@ -19093,6 +19203,7 @@ mod tests {
         );
     }
 
+    #[cfg(holon_lib_test_shard = "d")]
     #[tokio::test]
     async fn legacy_creation_without_default_intent_stays_silent() {
         let fixture = provider_test_config(Some("dummy-token"));
@@ -19116,6 +19227,7 @@ mod tests {
     include!("host_deletion_tests.rs");
     include!("host_deletion_reference_tests.rs");
 
+    #[cfg(holon_lib_test_shard = "d")]
     #[tokio::test]
     async fn default_bootstrap_intent_is_dropped_without_ready_provider() {
         let (_home, host) = test_host();
@@ -19143,6 +19255,7 @@ mod tests {
         );
     }
 
+    #[cfg(holon_lib_test_shard = "d")]
     #[tokio::test]
     async fn spawn_public_named_resolves_parent_agent_template_catalog() {
         let (_home, host) = test_host();
@@ -19175,6 +19288,7 @@ mod tests {
         assert!(agents_md.contains("`agent_home` is this agent's default workspace"));
     }
 
+    #[cfg(holon_lib_test_shard = "d")]
     #[tokio::test]
     async fn agent_summary_reports_runtime_default_then_override_and_clear() {
         let mut fixture = provider_test_config(Some("dummy-token"));
@@ -19260,6 +19374,7 @@ mod tests {
         );
     }
 
+    #[cfg(holon_lib_test_shard = "d")]
     #[tokio::test]
     async fn recovered_runtime_reapplies_persisted_model_override_to_provider_chain() {
         let fixture = provider_test_config(Some("dummy-token"));
@@ -19298,6 +19413,7 @@ mod tests {
         );
     }
 
+    #[cfg(holon_lib_test_shard = "d")]
     #[tokio::test]
     async fn child_runtime_reconfigures_provider_when_inheriting_model_override() {
         let fixture = provider_test_config(Some("dummy-token"));
@@ -19377,6 +19493,7 @@ mod tests {
         );
     }
 
+    #[cfg(holon_lib_test_shard = "d")]
     #[tokio::test]
     async fn child_identity_template_resolves_parent_agent_template_catalog() {
         let fixture = provider_test_config(Some("dummy-token"));
@@ -19402,6 +19519,7 @@ mod tests {
         assert!(child_home.join(".holon/state").is_dir());
     }
 
+    #[cfg(holon_lib_test_shard = "d")]
     #[tokio::test]
     async fn create_named_agent_rejects_conflicting_existing_identity() {
         let (_home, host) = test_host();
@@ -19427,6 +19545,7 @@ mod tests {
         assert!(error.to_string().contains("different identity type"));
     }
 
+    #[cfg(holon_lib_test_shard = "d")]
     #[tokio::test]
     async fn create_named_agent_rejects_temporary_prefix() {
         let (_home, host) = test_host();
@@ -19439,6 +19558,7 @@ mod tests {
         assert!(error.to_string().contains("reserved temporary prefix"));
     }
 
+    #[cfg(holon_lib_test_shard = "d")]
     #[tokio::test]
     async fn unknown_named_agents_are_not_auto_created() {
         let (_home, host) = test_host();
@@ -19451,6 +19571,7 @@ mod tests {
         assert!(error.to_string().contains("create it first"));
     }
 
+    #[cfg(holon_lib_test_shard = "d")]
     #[tokio::test]
     async fn parent_summary_shows_private_children_but_public_listing_hides_them() {
         let (_home, host) = test_host();
@@ -19522,6 +19643,7 @@ mod tests {
         assert!(!listed.contains(&"child_test".to_string()));
     }
 
+    #[cfg(holon_lib_test_shard = "d")]
     #[tokio::test]
     async fn host_bootstrap_keeps_interrupted_supervised_child_active() {
         let (_home, host) = test_host();
@@ -19776,6 +19898,7 @@ mod tests {
         (home, host, task)
     }
 
+    #[cfg(holon_lib_test_shard = "d")]
     #[test]
     fn invocation_canonical_turn_requires_assignment_but_not_hint() {
         let (_home, host, task) = source_bound_invocation_fixture();
@@ -19813,6 +19936,7 @@ mod tests {
             .is_none());
     }
 
+    #[cfg(holon_lib_test_shard = "d")]
     #[test]
     fn invocation_canonical_turn_rejects_conflicting_evidence() {
         for mutation in [
@@ -19908,6 +20032,7 @@ mod tests {
         }
     }
 
+    #[cfg(holon_lib_test_shard = "d")]
     #[tokio::test]
     async fn supervised_invocation_terminal_observability_excludes_later_activity() {
         let (_home, host, task) = source_bound_invocation_fixture();
@@ -20012,6 +20137,7 @@ mod tests {
         held
     }
 
+    #[cfg(holon_lib_test_shard = "d")]
     #[tokio::test]
     async fn runtime_constructor_cancellation_retains_activation_guards() {
         let (_home, host, _task) = source_bound_invocation_fixture();
@@ -20057,6 +20183,7 @@ mod tests {
         host.shutdown().await.unwrap();
     }
 
+    #[cfg(holon_lib_test_shard = "d")]
     #[tokio::test]
     async fn temporary_runtime_constructor_cancellation_archives_unclaimed_identity() {
         let (_home, host) = test_host();
@@ -20095,6 +20222,7 @@ mod tests {
         host.shutdown().await.unwrap();
     }
 
+    #[cfg(holon_lib_test_shard = "d")]
     #[tokio::test]
     async fn temporary_runtime_unclaimed_handoff_archives_identity() {
         let (_home, host) = test_host();
@@ -20148,6 +20276,7 @@ mod tests {
         .expect("runtime operation was not admitted");
     }
 
+    #[cfg(holon_lib_test_shard = "d")]
     #[tokio::test]
     async fn cancelled_activation_releases_bootstrap_wait() {
         let (_home, host, _task) = source_bound_invocation_fixture();
@@ -20171,6 +20300,7 @@ mod tests {
         host.shutdown().await.unwrap();
     }
 
+    #[cfg(holon_lib_test_shard = "d")]
     #[tokio::test]
     async fn shutdown_cancels_activation_bootstrap_wait() {
         let (_home, host, _task) = source_bound_invocation_fixture();
@@ -20207,6 +20337,7 @@ mod tests {
             .is_empty());
     }
 
+    #[cfg(holon_lib_test_shard = "d")]
     #[tokio::test]
     async fn shutdown_drains_cancelled_cold_runtime_construction() {
         let (_home, host, _task) = source_bound_invocation_fixture();
@@ -20259,6 +20390,7 @@ mod tests {
             .is_empty());
     }
 
+    #[cfg(holon_lib_test_shard = "d")]
     #[tokio::test]
     async fn shutdown_drains_cancelled_temporary_runtime_construction() {
         let (_home, host) = test_host();
@@ -20309,6 +20441,7 @@ mod tests {
             .is_empty());
     }
 
+    #[cfg(holon_lib_test_shard = "d")]
     #[tokio::test]
     async fn shutdown_drains_dropped_temporary_runtime_cleanup() {
         let (_home, host) = test_host();
@@ -20359,6 +20492,7 @@ mod tests {
             .is_empty());
     }
 
+    #[cfg(holon_lib_test_shard = "d")]
     #[tokio::test]
     async fn shutdown_archives_unconsumed_temporary_runtime_handoff() {
         let (_home, host) = test_host();
@@ -20389,6 +20523,7 @@ mod tests {
         drop(pending);
     }
 
+    #[cfg(holon_lib_test_shard = "d")]
     #[tokio::test]
     async fn shutdown_cancels_queued_runtime_construction() {
         let (_home, host, _task) = source_bound_invocation_fixture();
@@ -20448,6 +20583,7 @@ mod tests {
         drop(handoff);
     }
 
+    #[cfg(holon_lib_test_shard = "d")]
     #[tokio::test]
     async fn runtime_activation_saturation_takes_over_asynchronously_and_bootstraps_after_release()
     {
@@ -20516,6 +20652,7 @@ mod tests {
         host.shutdown_runtime_recovery_coordinator().await;
     }
 
+    #[cfg(holon_lib_test_shard = "d")]
     #[tokio::test]
     async fn invocation_activation_reader_pressure_and_target_deletion_preserve_cancellation() {
         for saturated in [false, true] {
@@ -20666,6 +20803,7 @@ mod tests {
         }
     }
 
+    #[cfg(holon_lib_test_shard = "d")]
     #[tokio::test]
     async fn supervised_invocation_saturation_is_retryable_and_does_not_block_async() {
         let (_home, host, task) = source_bound_invocation_fixture();
@@ -20698,6 +20836,7 @@ mod tests {
         ));
     }
 
+    #[cfg(holon_lib_test_shard = "d")]
     #[tokio::test]
     async fn invocation_and_message_monitors_retry_saturated_readers() {
         let (_home, host, task) = source_bound_invocation_fixture();
@@ -20737,6 +20876,7 @@ mod tests {
         assert!(result.text.contains("missing from the durable ledger"));
     }
 
+    #[cfg(holon_lib_test_shard = "d")]
     #[tokio::test]
     async fn supervised_invocation_resolution_is_source_bound_and_fail_closed() {
         use crate::domain::execution_protocol::*;
@@ -21125,6 +21265,7 @@ mod tests {
         ));
     }
 
+    #[cfg(holon_lib_test_shard = "d")]
     #[tokio::test]
     async fn supervised_invocation_inline_consumption_requires_exact_settled_delivery() {
         use crate::runtime_db::task_result_settlement::TaskResultSettlementDisposition;
@@ -21322,6 +21463,7 @@ mod tests {
         }
     }
 
+    #[cfg(holon_lib_test_shard = "d")]
     #[tokio::test]
     async fn supervised_invocation_distinguishes_original_later_and_unknown_activity() {
         let (_home, host, task) = source_bound_invocation_fixture();
@@ -21424,6 +21566,7 @@ mod tests {
         ));
     }
 
+    #[cfg(holon_lib_test_shard = "d")]
     #[tokio::test]
     async fn supervised_invocation_diagnostic_retries_after_storage_recovers() {
         let (_home, host, mut task) = source_bound_invocation_fixture();
@@ -21498,6 +21641,7 @@ mod tests {
         host.shutdown().await.unwrap();
     }
 
+    #[cfg(holon_lib_test_shard = "d")]
     #[tokio::test]
     async fn supervised_invocation_monitor_retains_responsibility_after_commit_retry_exhaustion() {
         let (_home, host, mut task) = source_bound_invocation_fixture();
@@ -21641,6 +21785,7 @@ mod tests {
         host.shutdown().await.unwrap();
     }
 
+    #[cfg(holon_lib_test_shard = "d")]
     #[tokio::test]
     async fn recovered_runtime_reattaches_supervised_child_monitor() {
         let (_home, host) = test_host();
@@ -21877,6 +22022,7 @@ mod tests {
         restarted.shutdown_daemon_deletion_coordinator().await;
     }
 
+    #[cfg(holon_lib_test_shard = "d")]
     #[tokio::test]
     async fn recovered_child_monitor_waits_for_active_child_tasks() {
         let (_home, host) = test_host();
@@ -22015,6 +22161,7 @@ mod tests {
         runtime_task.abort();
     }
 
+    #[cfg(holon_lib_test_shard = "d")]
     #[tokio::test]
     async fn recovered_child_monitor_waits_for_active_child_task_result_wait() {
         let (_home, host) = test_host();
@@ -22132,6 +22279,7 @@ mod tests {
         runtime_task.abort();
     }
 
+    #[cfg(holon_lib_test_shard = "d")]
     #[tokio::test]
     async fn host_bootstrap_preserves_private_child_with_missing_task() {
         let (_home, host) = test_host();
@@ -22169,6 +22317,7 @@ mod tests {
         assert!(restarted.agent_data_dir("child_orphan").exists());
     }
 
+    #[cfg(holon_lib_test_shard = "d")]
     #[tokio::test]
     async fn archived_private_child_identity_cannot_restart_runtime() {
         let (_home, host) = test_host();
@@ -22199,6 +22348,7 @@ mod tests {
         assert!(!restarted.agent_data_dir("child_archived").exists());
     }
 
+    #[cfg(holon_lib_test_shard = "d")]
     #[tokio::test]
     async fn host_bootstrap_preserves_child_without_recreating_missing_parent_storage() {
         let (_home, host) = test_host();
@@ -22253,6 +22403,7 @@ mod tests {
         assert!(!restarted.agent_data_dir("parent_missing").exists());
     }
 
+    #[cfg(holon_lib_test_shard = "d")]
     #[tokio::test]
     async fn stop_task_cleans_up_interrupted_supervised_child_after_restart() {
         let (_home, host) = test_host();
@@ -22385,6 +22536,7 @@ mod tests {
         restarted.shutdown().await.unwrap();
     }
 
+    #[cfg(holon_lib_test_shard = "d")]
     #[tokio::test]
     async fn unload_runtime_only_removes_targeted_agent() {
         let (_home, host) = test_host();
@@ -22422,6 +22574,7 @@ mod tests {
         );
     }
 
+    #[cfg(holon_lib_test_shard = "d")]
     #[tokio::test]
     async fn unload_runtime_drains_owned_mutations_before_reactivation() {
         let (_home, host) = test_host();
@@ -22464,6 +22617,7 @@ mod tests {
         host.shutdown().await.unwrap();
     }
 
+    #[cfg(holon_lib_test_shard = "d")]
     #[tokio::test]
     async fn temporary_runtime_restores_exact_known_facts_before_opening_the_gate() {
         let (_home, host) = test_host();
@@ -22667,16 +22821,19 @@ mod tests {
         }
     }
 
+    #[cfg(holon_lib_test_shard = "d")]
     #[tokio::test]
     async fn host_shutdown_restores_exact_known_facts_before_opening_the_gate() {
         retiring_runtime_keeps_exact_known_installation_target(true).await;
     }
 
+    #[cfg(holon_lib_test_shard = "d")]
     #[tokio::test]
     async fn unload_runtime_restores_exact_known_facts_before_opening_the_gate() {
         retiring_runtime_keeps_exact_known_installation_target(false).await;
     }
 
+    #[cfg(holon_lib_test_shard = "d")]
     #[tokio::test]
     async fn accepted_retirement_drains_its_instance_while_host_is_closing() {
         let (_home, host) = test_host();
@@ -22742,6 +22899,7 @@ mod tests {
             .unwrap();
     }
 
+    #[cfg(holon_lib_test_shard = "d")]
     #[tokio::test]
     async fn successful_retirement_retry_releases_previously_failed_generation() {
         let (_home, host) = test_host();
@@ -22781,6 +22939,7 @@ mod tests {
         host.shutdown().await.unwrap();
     }
 
+    #[cfg(holon_lib_test_shard = "d")]
     #[tokio::test]
     async fn retirement_of_old_incarnation_does_not_drain_current_instance() {
         let (_home, host) = test_host();
@@ -22802,6 +22961,7 @@ mod tests {
         host.shutdown().await.unwrap();
     }
 
+    #[cfg(holon_lib_test_shard = "d")]
     #[tokio::test]
     async fn host_shutdown_keeps_serve_maintenance_lease_until_external_mutations_drain() {
         let (_home, host) = canonical_test_host();
@@ -22855,6 +23015,7 @@ mod tests {
         assert!(crate::runtime_db::RuntimeDbLock::try_lock(&lease_path).is_ok());
     }
 
+    #[cfg(holon_lib_test_shard = "d")]
     #[tokio::test]
     async fn host_model_migration_cancelled_caller_keeps_cold_owner_write_visible_to_shutdown() {
         let (_home, host) = canonical_test_host();
@@ -22937,6 +23098,7 @@ mod tests {
         assert!(host.inner.runtimes.read().await.agents.is_empty());
     }
 
+    #[cfg(holon_lib_test_shard = "d")]
     #[tokio::test]
     async fn host_shutdown_drains_owned_mutations_before_closing() {
         let (_home, host) = test_host();
@@ -22979,6 +23141,7 @@ mod tests {
         );
     }
 
+    #[cfg(holon_lib_test_shard = "d")]
     #[tokio::test]
     async fn host_shutdown_cancelled_caller_keeps_shared_mutation_drain() {
         let (_home, host) = test_host();
@@ -23031,6 +23194,7 @@ mod tests {
         host.shutdown().await.unwrap();
     }
 
+    #[cfg(holon_lib_test_shard = "d")]
     #[tokio::test]
     async fn unload_runtime_cancelled_caller_keeps_mutations_visible_to_shutdown() {
         let (_home, host) = test_host();
@@ -23097,6 +23261,7 @@ mod tests {
         assert!(registry.unloading_mutations.is_empty());
     }
 
+    #[cfg(holon_lib_test_shard = "d")]
     #[tokio::test]
     async fn unload_runtime_cancelled_caller_releases_completed_generation() {
         let (_home, host) = test_host();
@@ -23160,6 +23325,7 @@ mod tests {
         host.shutdown().await.unwrap();
     }
 
+    #[cfg(holon_lib_test_shard = "d")]
     #[tokio::test]
     async fn host_shutdown_concurrent_callers_share_failure() {
         let (_home, host) = test_host();
@@ -23183,6 +23349,7 @@ mod tests {
         );
     }
 
+    #[cfg(holon_lib_test_shard = "d")]
     #[tokio::test]
     async fn host_shutdown_preserves_public_agent_durable_status() {
         let (_home, host) = test_host();
@@ -23207,6 +23374,7 @@ mod tests {
             .any(|event| event.kind == "runtime_service_shutdown_requested"));
     }
 
+    #[cfg(holon_lib_test_shard = "d")]
     #[tokio::test]
     async fn host_shutdown_aborts_active_run_with_daemon_shutdown_reason() {
         let home = tempdir().unwrap();
@@ -23276,6 +23444,7 @@ mod tests {
         }));
     }
 
+    #[cfg(holon_lib_test_shard = "d")]
     #[tokio::test]
     async fn host_shutdown_awaits_runtime_task_after_abort() {
         let (_home, host) = test_host();
@@ -23309,6 +23478,7 @@ mod tests {
         );
     }
 
+    #[cfg(holon_lib_test_shard = "d")]
     #[tokio::test]
     async fn host_shutdown_does_not_repoll_completed_tasks_after_grace_timeout() {
         let (_home, host) = test_host();
@@ -23357,6 +23527,7 @@ mod tests {
         assert!(registry.agents.is_empty());
     }
 
+    #[cfg(holon_lib_test_shard = "d")]
     #[tokio::test]
     async fn daemon_style_shutdown_does_not_strand_public_agent_on_restart() {
         let (_home, host) = test_host();
@@ -23417,6 +23588,7 @@ mod tests {
         assert_ne!(final_state.status, AgentStatus::Stopped);
     }
 
+    #[cfg(holon_lib_test_shard = "d")]
     #[tokio::test]
     async fn explicit_agent_stop_remains_durable_across_restart() {
         let (_home, host) = test_host();
@@ -23434,6 +23606,7 @@ mod tests {
         );
     }
 
+    #[cfg(holon_lib_test_shard = "d")]
     #[tokio::test]
     async fn stop_releases_active_workspace_occupancy() {
         let (_home, host) = test_host();
@@ -23492,6 +23665,7 @@ mod tests {
         .unwrap();
     }
 
+    #[cfg(holon_lib_test_shard = "d")]
     #[tokio::test]
     async fn start_respawns_stopped_persistent_agent_runtime_loop() {
         let (_home, host) = test_host();
@@ -23563,6 +23737,7 @@ mod tests {
         }));
     }
 
+    #[cfg(holon_lib_test_shard = "d")]
     #[tokio::test]
     async fn runtime_loop_failure_recovers_and_replays_canonical_claim_without_host_access() {
         let (_home, host) = canonical_test_host();
@@ -23730,6 +23905,7 @@ mod tests {
             .unwrap();
     }
 
+    #[cfg(holon_lib_test_shard = "d")]
     #[tokio::test]
     async fn non_retryable_runtime_loop_failure_does_not_trigger_automatic_recovery() {
         let (_home, host) = canonical_test_host();
@@ -23794,6 +23970,7 @@ mod tests {
             .all(|event| event.kind != "runtime_loop_recovered"));
     }
 
+    #[cfg(holon_lib_test_shard = "d")]
     #[test]
     fn runtime_host_new_builds_provider_from_valid_config() {
         let fixture = provider_test_config(Some("anthropic-token"));
@@ -23801,6 +23978,7 @@ mod tests {
         assert!(host.is_ok());
     }
 
+    #[cfg(holon_lib_test_shard = "d")]
     #[test]
     fn runtime_host_new_fails_when_no_configured_provider_is_available() {
         let _env_lock = crate::test_env::lock_env();
@@ -23823,6 +24001,7 @@ mod tests {
             .contains("anthropic@default/claude-sonnet-5"));
     }
 
+    #[cfg(holon_lib_test_shard = "d")]
     #[tokio::test]
     async fn get_public_agent_rejects_private_child() {
         let (_home, host) = test_host();
@@ -23852,6 +24031,7 @@ mod tests {
         }
     }
 
+    #[cfg(holon_lib_test_shard = "d")]
     #[tokio::test]
     async fn get_agent_for_local_status_accepts_private_child() {
         let (_home, host) = test_host();
@@ -23883,6 +24063,7 @@ mod tests {
         assert_eq!(summary.identity.kind, AgentKind::Child);
     }
 
+    #[cfg(holon_lib_test_shard = "d")]
     #[tokio::test]
     async fn get_agent_for_local_status_rejects_archived() {
         let (_home, host) = test_host();
@@ -23913,6 +24094,7 @@ mod tests {
         }
     }
 
+    #[cfg(holon_lib_test_shard = "d")]
     #[tokio::test]
     async fn get_agent_for_local_status_rejects_unknown() {
         let (_home, host) = test_host();
@@ -23930,6 +24112,7 @@ mod tests {
         }
     }
 
+    #[cfg(holon_lib_test_shard = "d")]
     #[tokio::test]
     async fn get_agent_for_local_status_accepts_public_agent() {
         let (_home, host) = test_host();
@@ -23944,6 +24127,7 @@ mod tests {
         assert_eq!(summary.identity.visibility, AgentVisibility::Public);
     }
 
+    #[cfg(holon_lib_test_shard = "d")]
     #[tokio::test]
     async fn deletion_coordinator_drives_job_to_completed() {
         let (_home, host) = test_host();
@@ -23998,6 +24182,7 @@ mod tests {
         assert!(!host.agent_data_dir("delete-me").exists());
     }
 
+    #[cfg(holon_lib_test_shard = "d")]
     #[tokio::test]
     async fn deletion_job_removes_leftover_trash_when_home_already_renamed() {
         let (_home, host) = test_host();
@@ -24040,6 +24225,7 @@ mod tests {
         assert!(!trash_dir.exists());
     }
 
+    #[cfg(holon_lib_test_shard = "d")]
     #[tokio::test]
     async fn orphan_agent_home_trash_sweep_removes_stale_directories() {
         let (_home, host) = test_host();
@@ -24065,6 +24251,7 @@ mod tests {
         assert!(agents_root.join("linked.deleting_trash").exists());
     }
 
+    #[cfg(holon_lib_test_shard = "d")]
     #[tokio::test]
     async fn orphan_agent_home_trash_sweep_spares_live_home_with_trash_suffix_id() {
         let (_home, host) = test_host();
@@ -24094,6 +24281,7 @@ mod tests {
         assert!(!agents_root.join("stale.deleting_trash").exists());
     }
 
+    #[cfg(holon_lib_test_shard = "d")]
     #[tokio::test]
     async fn orphan_trash_sweep_rechecks_ownership_after_enumeration() {
         let (_home, host) = test_host();
@@ -24159,6 +24347,7 @@ mod tests {
         host.shutdown().await.unwrap();
     }
 
+    #[cfg(holon_lib_test_shard = "d")]
     #[tokio::test]
     async fn deletion_phase_home_refuses_live_home_colliding_with_trash_name() {
         let (_home, host) = test_host();
@@ -24225,6 +24414,7 @@ mod tests {
         assert!(agents_root.join("customer").exists());
     }
 
+    #[cfg(holon_lib_test_shard = "d")]
     #[tokio::test]
     async fn daemon_deletion_coordinator_is_singleton_and_admission_wakes_it() {
         let (_home, host) = test_host();
@@ -24287,6 +24477,7 @@ mod tests {
         assert!(host.inner.daemon_deletion_handle.lock().unwrap().is_none());
     }
 
+    #[cfg(holon_lib_test_shard = "d")]
     #[tokio::test]
     async fn deletion_retry_deadline_bounds_real_index_lock_retries() {
         let (_home, host) = test_host();
@@ -24452,6 +24643,7 @@ mod tests {
         })
     }
 
+    #[cfg(holon_lib_test_shard = "d")]
     #[tokio::test]
     async fn resource_revision_loaded_ready_child_idle_retirement_and_parent_cleanup() {
         let (_home, host) = test_host();
@@ -24496,6 +24688,7 @@ mod tests {
         host.shutdown().await.unwrap();
     }
 
+    #[cfg(holon_lib_test_shard = "d")]
     #[tokio::test]
     async fn resource_revision_cleanup_refuses_physical_refresh_then_exits_after_completion() {
         let (_home, host) = test_host();
@@ -24563,6 +24756,7 @@ mod tests {
         host.shutdown().await.unwrap();
     }
 
+    #[cfg(holon_lib_test_shard = "d")]
     #[tokio::test]
     async fn resource_revision_failed_cleanup_admission_keeps_refresh_available() {
         let (_home, host) = test_host();
@@ -24598,6 +24792,7 @@ mod tests {
         host.shutdown().await.unwrap();
     }
 
+    #[cfg(holon_lib_test_shard = "d")]
     #[tokio::test]
     async fn idle_retirement_preserves_identity_and_reloads_one_new_generation() {
         let (_home, host) = test_host();
@@ -24672,6 +24867,7 @@ mod tests {
         host.shutdown().await.unwrap();
     }
 
+    #[cfg(holon_lib_test_shard = "d")]
     #[tokio::test]
     async fn idle_retirement_cannot_overtake_an_admitted_operation() {
         let (_home, host) = test_host();
@@ -24694,6 +24890,7 @@ mod tests {
         host.shutdown().await.unwrap();
     }
 
+    #[cfg(holon_lib_test_shard = "d")]
     #[tokio::test]
     async fn subagent_reminder_observation_is_durable_bounded_and_read_only() {
         let (_home, host) = test_host();
@@ -24776,6 +24973,7 @@ mod tests {
         reopened.shutdown().await.unwrap();
     }
 
+    #[cfg(holon_lib_test_shard = "d")]
     #[tokio::test]
     async fn subagent_reminder_defers_stopped_and_exhausted_parent_without_losing_outbox() {
         let (_home, host) = test_host();
@@ -24841,6 +25039,7 @@ mod tests {
         host.shutdown().await.unwrap();
     }
 
+    #[cfg(holon_lib_test_shard = "d")]
     #[tokio::test]
     async fn subagent_reminder_revalidates_activity_and_scans_beyond_first_batch() {
         let (_home, host) = test_host();
@@ -24904,6 +25103,7 @@ mod tests {
         host.shutdown().await.unwrap();
     }
 
+    #[cfg(holon_lib_test_shard = "d")]
     #[tokio::test]
     async fn subagent_reminder_orphan_notice_retries_same_brief_without_activation() {
         let (_home, host) = test_host();
@@ -24975,6 +25175,7 @@ mod tests {
         host.shutdown().await.unwrap();
     }
 
+    #[cfg(holon_lib_test_shard = "d")]
     #[tokio::test]
     async fn both_deletion_policies_preserve_unsafe_worktrees() {
         let (_home, host) = test_host();
@@ -25074,6 +25275,7 @@ mod tests {
         host.shutdown().await.unwrap();
     }
 
+    #[cfg(holon_lib_test_shard = "d")]
     #[tokio::test]
     async fn idle_retirement_reloads_through_callback_and_blocks_old_process_start() {
         let (_home, host) = test_host();
@@ -25163,6 +25365,7 @@ mod tests {
         host.shutdown().await.unwrap();
     }
 
+    #[cfg(holon_lib_test_shard = "d")]
     #[tokio::test]
     async fn parent_cleanup_follows_transferred_supervision_not_lineage() {
         let (_home, host) = test_host();
@@ -25234,6 +25437,7 @@ mod tests {
         host.shutdown().await.unwrap();
     }
 
+    #[cfg(holon_lib_test_shard = "d")]
     #[tokio::test]
     async fn subagent_reminder_repeated_cleanup_failure_notifies_only_changed_reason() {
         let (_home, host) = test_host();
@@ -25276,6 +25480,7 @@ mod tests {
         host.shutdown().await.unwrap();
     }
 
+    #[cfg(holon_lib_test_shard = "d")]
     #[tokio::test]
     async fn parent_cleanup_requires_current_supervision_and_incarnation() {
         let (_home, host) = test_host();
@@ -25336,6 +25541,7 @@ mod tests {
         host.shutdown().await.unwrap();
     }
 
+    #[cfg(holon_lib_test_shard = "d")]
     #[tokio::test]
     async fn idle_retirement_retries_child_followup_after_runtime_lookup() {
         let (_home, host) = test_host();
@@ -25404,6 +25610,7 @@ mod tests {
         host.shutdown().await.unwrap();
     }
 
+    #[cfg(holon_lib_test_shard = "d")]
     #[tokio::test]
     async fn parent_cleanup_serializes_with_pending_settlement_without_losing_result() {
         use crate::runtime_db::task_result_settlement::{
@@ -25510,6 +25717,7 @@ mod tests {
         host.shutdown().await.unwrap();
     }
 
+    #[cfg(holon_lib_test_shard = "d")]
     #[tokio::test]
     async fn parent_cleanup_serializes_with_queued_work_without_cancelling_it() {
         let (_home, host) = test_host();
@@ -25580,6 +25788,7 @@ mod tests {
         host.shutdown().await.unwrap();
     }
 
+    #[cfg(holon_lib_test_shard = "d")]
     #[tokio::test]
     async fn parent_cleanup_protects_active_work_and_home_artifacts() {
         let (_home, host) = test_host();
@@ -25617,6 +25826,7 @@ mod tests {
         host.shutdown().await.unwrap();
     }
 
+    #[cfg(holon_lib_test_shard = "d")]
     #[tokio::test]
     async fn parent_cleanup_allows_historical_failure_without_cancelling_live_work() {
         let (_home, host) = test_host();
@@ -25706,6 +25916,7 @@ mod tests {
         host.shutdown().await.unwrap();
     }
 
+    #[cfg(holon_lib_test_shard = "d")]
     #[tokio::test]
     async fn parent_cleanup_allows_retention_state_and_retained_outputs() {
         let (_home, host) = test_host();
@@ -25832,6 +26043,7 @@ mod tests {
         host.shutdown().await.unwrap();
     }
 
+    #[cfg(holon_lib_test_shard = "d")]
     #[tokio::test]
     async fn subagent_reminder_reports_retention_state_and_defers_busy_parent() {
         let (_home, host) = test_host();
@@ -25891,6 +26103,7 @@ mod tests {
         host.shutdown().await.unwrap();
     }
 
+    #[cfg(holon_lib_test_shard = "d")]
     #[tokio::test]
     async fn deletion_trash_uses_full_ids_and_recovers_only_unambiguous_legacy_paths() {
         let (_home, host) = test_host();
@@ -25963,6 +26176,7 @@ mod tests {
         host.shutdown().await.unwrap();
     }
 
+    #[cfg(holon_lib_test_shard = "d")]
     #[tokio::test]
     async fn both_deletion_policies_preserve_other_identity_trash_aliases() {
         for operator in [false, true] {
@@ -26043,6 +26257,7 @@ mod tests {
         }
     }
 
+    #[cfg(holon_lib_test_shard = "d")]
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn operator_deletion_replay_preserves_loaded_safe_cleanup_runtime() {
         let (_home, host) = test_host();
@@ -26118,6 +26333,7 @@ mod tests {
         host.shutdown().await.unwrap();
     }
 
+    #[cfg(holon_lib_test_shard = "d")]
     #[tokio::test]
     async fn cross_entry_deletion_replay_preserves_admitted_policy() {
         let (_home, host) = test_host();
@@ -26224,6 +26440,7 @@ mod tests {
         host.shutdown().await.unwrap();
     }
 
+    #[cfg(holon_lib_test_shard = "d")]
     #[tokio::test]
     async fn tool_and_operator_deletion_remove_real_runtime_outputs() {
         let (_home, host) = test_host();
@@ -26284,6 +26501,7 @@ mod tests {
         host.shutdown().await.unwrap();
     }
 
+    #[cfg(holon_lib_test_shard = "d")]
     #[tokio::test]
     async fn both_deletion_policies_remove_clean_owned_git_worktrees() {
         let (_home, host) = test_host();
@@ -26381,6 +26599,7 @@ mod tests {
         host.shutdown().await.unwrap();
     }
 
+    #[cfg(holon_lib_test_shard = "d")]
     #[tokio::test]
     async fn safe_deletion_retry_preserves_user_files_even_after_home_rename() {
         let (_home, host) = test_host();
@@ -26432,6 +26651,7 @@ mod tests {
         host.shutdown().await.unwrap();
     }
 
+    #[cfg(holon_lib_test_shard = "d")]
     #[tokio::test]
     async fn tool_cleanup_preserves_user_home_deliverables_while_operator_deletion_discards_them() {
         let (_home, host) = test_host();
@@ -26465,6 +26685,7 @@ mod tests {
         host.shutdown().await.unwrap();
     }
 
+    #[cfg(holon_lib_test_shard = "d")]
     #[tokio::test]
     async fn safe_deletion_removes_nonempty_tmp_without_following_symlinks() {
         let (home_root, host) = test_host();
@@ -26498,6 +26719,7 @@ mod tests {
         host.shutdown().await.unwrap();
     }
 
+    #[cfg(holon_lib_test_shard = "d")]
     #[tokio::test]
     async fn parent_cleanup_exits_runtime_and_preserves_parent_result() {
         let (_home, host) = test_host();
@@ -26856,6 +27078,7 @@ mod tests {
         host.shutdown().await.unwrap();
     }
 
+    #[cfg(holon_lib_test_shard = "d")]
     #[tokio::test]
     async fn operator_deletion_accepts_private_parent_supervised_child() {
         let (_home, host) = test_host();
@@ -26888,6 +27111,7 @@ mod tests {
         );
     }
 
+    #[cfg(holon_lib_test_shard = "d")]
     #[tokio::test]
     async fn operator_deletion_rejects_other_private_identity_shapes() {
         let (_home, host) = test_host();
@@ -26913,6 +27137,7 @@ mod tests {
         ));
     }
 
+    #[cfg(holon_lib_test_shard = "d")]
     #[tokio::test]
     async fn cleanup_repair_clears_runtime_outbox_without_reopening_deleted_identity() {
         let (_home, host) = test_host();
@@ -26990,6 +27215,7 @@ mod tests {
         );
     }
 
+    #[cfg(holon_lib_test_shard = "d")]
     #[tokio::test]
     async fn legacy_residue_scanner_replaces_completed_delete_once_for_partial_cleanup() {
         let (_home, host) = test_host();
@@ -27077,6 +27303,7 @@ mod tests {
         );
     }
 
+    #[cfg(holon_lib_test_shard = "d")]
     #[tokio::test]
     async fn legacy_residue_scanner_deletes_terminal_one_shot_child_and_cleans_three_layers() {
         let (_home, host) = test_host();
@@ -27193,6 +27420,7 @@ mod tests {
         assert_eq!(source_count, 0);
     }
 
+    #[cfg(holon_lib_test_shard = "d")]
     #[tokio::test]
     async fn legacy_residue_scanner_preserves_reusable_actor_invocation_child() {
         let (_home, host) = test_host();
@@ -27252,6 +27480,7 @@ mod tests {
         );
     }
 
+    #[cfg(holon_lib_test_shard = "d")]
     #[tokio::test]
     async fn legacy_residue_scanner_bounds_batches_and_reaches_all_deleted_residue() {
         let (_home, host) = test_host();
@@ -27298,6 +27527,7 @@ mod tests {
         }
     }
 
+    #[cfg(holon_lib_test_shard = "d")]
     #[tokio::test]
     async fn legacy_residue_scanner_retries_failed_batch_after_restart_without_duplicates() {
         let (_home, host) = test_host();
@@ -27426,6 +27656,7 @@ mod tests {
         );
     }
 
+    #[cfg(holon_lib_test_shard = "d")]
     #[tokio::test]
     async fn legacy_residue_scanner_diagnoses_missing_relations_without_deleting() {
         let (_home, host) = test_host();
@@ -27476,6 +27707,7 @@ mod tests {
         assert_eq!(diagnostics, 1);
     }
 
+    #[cfg(holon_lib_test_shard = "d")]
     #[tokio::test]
     async fn deletion_coordinator_terminalizes_open_work_items() {
         let (_home, host) = test_host();
@@ -27547,6 +27779,7 @@ mod tests {
             .is_none());
     }
 
+    #[cfg(holon_lib_test_shard = "d")]
     #[tokio::test]
     async fn deletion_coordinator_reentry_retires_canonical_work_and_attempts() {
         use crate::domain::execution_protocol::{WorkItemExecutionRecord, WorkItemExecutionState};
@@ -27725,6 +27958,7 @@ mod tests {
             .is_none());
     }
 
+    #[cfg(holon_lib_test_shard = "d")]
     #[tokio::test]
     async fn parent_cleanup_retires_work_without_reopening_admission_or_inventing_legacy_briefs() {
         use crate::domain::execution_protocol::{
@@ -27853,6 +28087,7 @@ mod tests {
         }
     }
 
+    #[cfg(holon_lib_test_shard = "d")]
     #[tokio::test]
     async fn deletion_coordinator_resumes_from_persisted_phase() {
         let (_home, host) = test_host();
@@ -27925,6 +28160,7 @@ mod tests {
         );
     }
 
+    #[cfg(holon_lib_test_shard = "d")]
     #[tokio::test]
     async fn deletion_cascade_private_children() {
         let (_home, host) = test_host();
@@ -28044,6 +28280,7 @@ mod tests {
         runtime
     }
 
+    #[cfg(holon_lib_test_shard = "d")]
     #[tokio::test]
     async fn reincarnation_waits_for_old_owner_outside_global_handoff() {
         let (_home, host) = test_host();
@@ -28114,6 +28351,7 @@ mod tests {
         host.shutdown().await.unwrap();
     }
 
+    #[cfg(holon_lib_test_shard = "d")]
     #[tokio::test]
     async fn reincarnation_rejects_unknown_old_scope_without_creating_home() {
         let (_home, host) = test_host();
@@ -28149,6 +28387,7 @@ mod tests {
         host.shutdown().await.unwrap();
     }
 
+    #[cfg(holon_lib_test_shard = "d")]
     #[tokio::test]
     async fn archive_known_publication_fault_still_drains_instance_and_home() {
         let (_home, host) = test_host();
@@ -28192,6 +28431,7 @@ mod tests {
         host.shutdown().await.unwrap();
     }
 
+    #[cfg(holon_lib_test_shard = "d")]
     #[tokio::test]
     async fn cancelled_private_archive_finishes_drain_while_host_is_closing() {
         let (_home, host) = test_host();
@@ -28268,6 +28508,7 @@ mod tests {
         assert!(!runtime.accepts_execution_admission());
     }
 
+    #[cfg(holon_lib_test_shard = "d")]
     #[tokio::test]
     async fn public_deletion_known_publication_fault_still_drains_instance() {
         let (_home, host) = test_host();
@@ -28301,6 +28542,7 @@ mod tests {
         host.shutdown().await.unwrap();
     }
 
+    #[cfg(holon_lib_test_shard = "d")]
     #[tokio::test]
     async fn cancelled_temporary_cleanup_retains_instance_responsibility() {
         let (_home, host) = test_host();
@@ -28373,6 +28615,7 @@ mod tests {
         assert!(!runtime.accepts_execution_admission());
     }
 
+    #[cfg(holon_lib_test_shard = "d")]
     #[tokio::test]
     async fn temporary_cleanup_after_closing_keeps_host_exit_responsibility() {
         let (_home, host) = test_host();
@@ -28452,6 +28695,7 @@ mod tests {
         );
     }
 
+    #[cfg(holon_lib_test_shard = "d")]
     #[tokio::test]
     async fn temporary_cleanup_success_releases_host_entry_before_shutdown() {
         let (_home, host) = test_host();
@@ -28478,6 +28722,7 @@ mod tests {
         host.shutdown().await.unwrap();
     }
 
+    #[cfg(holon_lib_test_shard = "d")]
     #[tokio::test]
     async fn temporary_shutdown_preserves_unknown_from_late_accepted_host_writer() {
         let (_home, host) = test_host();
@@ -28622,6 +28867,7 @@ mod tests {
         assert!(registry.temporary_runtimes.contains_key(&agent_id));
     }
 
+    #[cfg(holon_lib_test_shard = "d")]
     #[tokio::test]
     async fn temporary_cleanup_unknown_outcome_preserves_identity_and_home() {
         let (_home, host) = test_host();
@@ -28680,6 +28926,7 @@ mod tests {
             .contains_key(&agent_id));
     }
 
+    #[cfg(holon_lib_test_shard = "d")]
     #[tokio::test]
     async fn archive_private_agent_aborts_pending_queue_entries() {
         let (_home, host) = test_host();
@@ -28782,6 +29029,7 @@ mod tests {
         );
     }
 
+    #[cfg(holon_lib_test_shard = "d")]
     #[tokio::test]
     async fn deletion_pipeline_aborts_pending_queue_entries() {
         let (_home, host) = test_host();
@@ -28838,6 +29086,7 @@ mod tests {
             .is_none());
     }
 
+    #[cfg(holon_lib_test_shard = "d")]
     #[tokio::test]
     async fn runtime_entry_fixture_inspection_observes_without_activation() {
         let (_home, host) = test_host();
@@ -28853,6 +29102,7 @@ mod tests {
         host.shutdown().await.expect("shutdown host");
     }
 
+    #[cfg(holon_lib_test_shard = "d")]
     #[tokio::test]
     async fn read_only_host_methods_do_not_activate_runtime() {
         let (_home, host) = test_host();
@@ -28935,6 +29185,7 @@ mod tests {
         host.unload_runtime(agent_id).await;
     }
 
+    #[cfg(holon_lib_test_shard = "d")]
     #[tokio::test]
     async fn startup_recovery_observes_multiple_slow_owners_without_changing_serial_gate() {
         let (_home, host) = canonical_test_host();
@@ -29031,6 +29282,7 @@ mod tests {
         host.shutdown().await.unwrap();
     }
 
+    #[cfg(holon_lib_test_shard = "d")]
     #[tokio::test]
     async fn startup_recovery_failure_summary_preserves_pending_candidates_and_error() {
         const CHILD_TEST: &str = "HOLON_STARTUP_SUMMARY_CHILD_TEST";
@@ -29145,6 +29397,7 @@ mod tests {
         host.shutdown().await.unwrap();
     }
 
+    #[cfg(holon_lib_test_shard = "d")]
     #[tokio::test]
     async fn startup_recovery_activates_active_task_owners_and_waits_for_bootstrap() {
         let (_home, mut host) = canonical_test_host();
@@ -29211,6 +29464,7 @@ mod tests {
         }
     }
 
+    #[cfg(holon_lib_test_shard = "d")]
     #[tokio::test]
     async fn startup_recovery_discovers_queued_only_owner_without_new_ingress() {
         let (_home, host) = canonical_test_host();
@@ -29330,6 +29584,7 @@ mod tests {
         restarted.shutdown().await.unwrap();
     }
 
+    #[cfg(holon_lib_test_shard = "d")]
     #[tokio::test]
     async fn startup_recovery_queued_only_preserves_lifecycle_and_business_blockers() {
         for boundary in ["stopped", "deleted", "blocked"] {
@@ -29445,6 +29700,7 @@ mod tests {
         }
     }
 
+    #[cfg(holon_lib_test_shard = "d")]
     #[tokio::test]
     async fn startup_recovery_replays_interrupted_operator_prompt_while_work_item_waits_external() {
         let (_home, host) = canonical_test_host();
@@ -29643,6 +29899,7 @@ mod tests {
             }));
     }
 
+    #[cfg(holon_lib_test_shard = "d")]
     #[tokio::test]
     async fn startup_recovery_converges_stopped_task_owner_without_reentry() {
         let (_home, mut host) = canonical_test_host();
@@ -29749,6 +30006,7 @@ mod tests {
         );
     }
 
+    #[cfg(holon_lib_test_shard = "d")]
     #[tokio::test]
     async fn startup_recovery_activates_timer_only_owner_and_resolves_waiting_timer() {
         let (_home, host) = canonical_test_host();
@@ -29887,6 +30145,7 @@ mod tests {
         );
     }
 
+    #[cfg(holon_lib_test_shard = "d")]
     #[tokio::test]
     async fn startup_recovery_discovers_timer_only_owner_without_wait_records() {
         let (_home, mut host) = canonical_test_host();
@@ -29928,6 +30187,7 @@ mod tests {
         assert_startup_timer_tick_count(&storage, "timer-startup-no-wait-1", 1);
     }
 
+    #[cfg(holon_lib_test_shard = "d")]
     #[tokio::test]
     async fn startup_recovery_activates_wait_recheck_only_owner() {
         let (_home, host) = canonical_test_host();
@@ -30021,6 +30281,7 @@ mod tests {
         );
     }
 
+    #[cfg(holon_lib_test_shard = "d")]
     #[tokio::test]
     async fn startup_recovery_preserves_but_does_not_activate_stopped_wait_recheck_owner() {
         let (_home, host) = canonical_test_host();
@@ -30075,6 +30336,7 @@ mod tests {
                 )));
     }
 
+    #[cfg(holon_lib_test_shard = "d")]
     #[tokio::test]
     async fn startup_recovery_overdue_repeating_timer_fires_once_and_keeps_cadence() {
         let (_home, mut host) = canonical_test_host();
@@ -30119,6 +30381,7 @@ mod tests {
         assert_startup_timer_tick_count(&storage, "timer-startup-repeating-1", 1);
     }
 
+    #[cfg(holon_lib_test_shard = "d")]
     #[tokio::test]
     async fn startup_recovery_keeps_terminal_timer_owner_and_unrelated_agents_unloaded() {
         let (_home, mut host) = canonical_test_host();
@@ -30169,6 +30432,7 @@ mod tests {
         assert_startup_timer_tick_count(&storage, "timer-terminal-cancelled", 0);
     }
 
+    #[cfg(holon_lib_test_shard = "d")]
     #[tokio::test]
     async fn startup_recovery_skips_stopped_timer_only_owner() {
         let (_home, mut host) = canonical_test_host();
@@ -30232,6 +30496,7 @@ mod tests {
         assert_eq!(state.pending, 0);
     }
 
+    #[cfg(holon_lib_test_shard = "d")]
     #[tokio::test]
     async fn startup_recovery_activates_timer_and_task_owner_once() {
         let (_home, mut host) = canonical_test_host();
@@ -30305,6 +30570,7 @@ mod tests {
         );
     }
 
+    #[cfg(holon_lib_test_shard = "d")]
     #[tokio::test]
     async fn startup_recovery_does_not_refire_persisted_one_shot_timer() {
         let (_home, host) = canonical_test_host();
@@ -30437,6 +30703,7 @@ mod tests {
         assert_startup_timer_tick_count(&storage, "timer-startup-once-1", 1);
     }
 
+    #[cfg(holon_lib_test_shard = "d")]
     #[tokio::test]
     async fn startup_recovery_ignores_interrupted_queue_for_deleted_private_child() {
         let (_home, host) = canonical_test_host();
@@ -30483,6 +30750,7 @@ mod tests {
         );
     }
 
+    #[cfg(holon_lib_test_shard = "d")]
     #[tokio::test]
     async fn shutdown_rejects_new_runtime_activation() {
         let (_home, host) = test_host();
@@ -30497,6 +30765,7 @@ mod tests {
         }
     }
 
+    #[cfg(holon_lib_test_shard = "d")]
     #[tokio::test]
     async fn startup_recovery_recovers_prior_process_claims_and_settles_completed_sources() {
         use crate::runtime_db::{
@@ -30791,6 +31060,7 @@ mod tests {
                 && event.data["reason"] == "terminal_failure_completion_evidence"
         }));
     }
+    #[cfg(holon_lib_test_shard = "d")]
     #[tokio::test]
     async fn host_state_only_commit_preserves_loaded_episode_domain() {
         let (_home, host) = test_host();
@@ -30915,6 +31185,7 @@ mod tests {
         (key, target)
     }
 
+    #[cfg(holon_lib_test_shard = "d")]
     #[tokio::test]
     async fn control_startup_recovery_uses_the_real_exclusive_lease_before_activation() {
         use crate::runtime_db::control_transition::ControlObligationState;
@@ -30964,6 +31235,7 @@ mod tests {
         host.shutdown().await.unwrap();
     }
 
+    #[cfg(holon_lib_test_shard = "d")]
     #[tokio::test]
     async fn control_startup_proof_cannot_be_reused_after_activation_and_unload() {
         use crate::runtime_db::control_transition::ControlObligationState;
@@ -31001,8 +31273,10 @@ mod tests {
         );
         host.shutdown().await.unwrap();
     }
+    #[cfg(holon_lib_test_shard = "d")]
     #[path = "task_stop_phase_tests.rs"]
     mod task_stop_phase_tests;
+    #[cfg(holon_lib_test_shard = "d")]
     #[path = "task_stop_supervisor_tests.rs"]
     mod task_stop_supervisor_tests;
 }

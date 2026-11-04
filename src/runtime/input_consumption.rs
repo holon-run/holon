@@ -309,6 +309,7 @@ pub(crate) fn render_admitted_operator_inputs(
     Ok((!parts.is_empty()).then(|| parts.join("\n")))
 }
 
+#[cfg(holon_lib_test_shard = "a")]
 #[cfg(test)]
 mod tests {
     use super::*;

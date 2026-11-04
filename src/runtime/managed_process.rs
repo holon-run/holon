@@ -112,6 +112,7 @@ impl OriginalManagedProcess {
     }
 }
 
+#[cfg(holon_lib_test_shard = "a")]
 #[cfg(all(test, unix))]
 mod tests {
     use super::*;

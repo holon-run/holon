@@ -704,6 +704,7 @@ impl From<SlimChildObservabilityDto> for ChildAgentObservabilitySnapshot {
     }
 }
 
+#[cfg(holon_lib_test_shard = "c")]
 #[cfg(test)]
 mod work_status_tests {
     use super::*;

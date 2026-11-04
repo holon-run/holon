@@ -7,19 +7,19 @@ exactly one runner. Shards with explicit member lists are validated against
 ``cargo metadata``; unassigned targets fall through to the ``misc`` shard, so
 a newly added test binary can never be silently skipped.
 
-The ``lib`` unit-test binary is split the same way, but by test name instead
-of by cargo target: the runner enumerates the real test list with
-``cargo test --lib -- --list`` and hands each shard an exact, disjoint set of
-test names. A module never spans two shards, so every test still runs exactly
-once and the per-process test thread count stays unchanged.
+Library tests are split at compile time, before libtest enumeration. Each CI
+runner builds and runs two disjoint groups, keeping private APIs and shared
+fixtures in the library. No selector still builds the complete local suite.
 """
 
 from __future__ import annotations
 
 import argparse
 import json
+import os
 import subprocess
 import sys
+from collections import Counter
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -79,9 +79,75 @@ SUITES = (
     "misc",
 )
 
-# Shards of the ``lib`` unit-test binary. Each shard runs a disjoint set of
-# test names from the same binary.
+# Two CI jobs each build two smaller libtest binaries, serially.
 LIB_SHARDS = ("lib-a", "lib-b")
+LIB_COMPILE_GROUPS = {"lib-a": ("a", "c"), "lib-b": ("b", "d")}
+LIB_C_OWNERS = frozenset(
+    {
+        "agent_template", "auth", "calendar", "client", "cloudflare_tunnel",
+        "contract_inventory", "daemon", "domain", "fd_limit", "github",
+        "github_archive", "host_registry", "http", "http_dto", "memory",
+        "model_catalog", "model_config_migration", "model_discovery",
+        "object_query_cache", "object_resolver", "oidc", "otlp_exporter",
+        "policy", "presentation", "provider", "runtime_event", "skills",
+        "solve", "startup", "system", "tool", "tui_markdown", "utf8",
+        "wake_contract", "x_search",
+    }
+)
+
+
+def lib_compile_group(name: str) -> str:
+    owner = name.split("::", 1)[0]
+    if owner == "runtime":
+        return "a"
+    if owner == "runtime_db":
+        return "b"
+    return "c" if owner in LIB_C_OWNERS else "d"
+
+
+def lib_group_environment(group: str) -> dict[str, str]:
+    if group not in ("a", "b", "c", "d"):
+        raise ValueError(f"unknown lib compile group: {group}")
+    return {**os.environ, "HOLON_LIB_TEST_SHARD": group}
+
+
+def validate_lib_group(names: list[str], group: str) -> None:
+    if not names:
+        raise ValueError(f"lib compile group {group} has no tests")
+    if len(names) != len(set(names)):
+        raise ValueError(f"lib compile group {group} contains duplicate tests")
+    misplaced = [name for name in names if lib_compile_group(name) != group]
+    if misplaced:
+        raise ValueError(
+            f"lib compile group {group} contains tests owned by another group "
+            f"(missing or incorrect source cfg): {', '.join(misplaced[:10])}"
+        )
+
+
+def verify_lib_lists(baseline: list[str], groups: list[list[str]]) -> None:
+    """Compare real libtest enumerations, not counts or inferred source names."""
+    actual = [name for names in groups for name in names]
+    duplicates = [name for name, count in Counter(actual).items() if count > 1]
+    missing = sorted((Counter(baseline) - Counter(actual)).elements())
+    extra = sorted((Counter(actual) - Counter(baseline)).elements())
+    if not baseline or len(groups) != 4 or any(not group for group in groups):
+        raise ValueError("coverage requires a nonempty baseline and all four nonempty lists")
+    if duplicates or missing or extra:
+        raise ValueError(
+            f"lib coverage mismatch: duplicates={duplicates[:10]}, "
+            f"missing={missing[:10]}, extra={extra[:10]}"
+        )
+
+
+def command_verify_lib_lists(args: argparse.Namespace) -> None:
+    baseline = args.baseline.read_text().splitlines()
+    groups = []
+    for group in "abcd":
+        names = json.loads((args.directory / f"lib-test-names-{group}.json").read_text())
+        validate_lib_group(names, group)
+        groups.append(names)
+    verify_lib_lists(baseline, groups)
+    print(f"lib coverage: {len(baseline)} original test names, no missing/extra/duplicates")
 
 # Lib unit tests opt into 2 test threads after the Phase 3 acceptance runs;
 # every other suite stays serial inside each binary and parallel across jobs.
@@ -149,6 +215,8 @@ def validation_problems(all_targets: list[str]) -> list[str]:
 
 
 def suite_command(suite: str, all_targets: list[str], test_threads: str | None) -> list[str]:
+    if suite in LIB_SHARDS:
+        raise ValueError("lib CI shards must use run_lib_shard, not a full libtest build")
     members = suite_members(suite, all_targets)
     command = ["cargo", "test"]
     if members is None:
@@ -160,14 +228,15 @@ def suite_command(suite: str, all_targets: list[str], test_threads: str | None) 
     return command + ["--", f"--test-threads={threads}"]
 
 
-def lib_test_names() -> list[str]:
+def lib_test_names(group: str | None = None) -> list[str]:
     """Return every unit-test name in the lib target, spelled as libtest does."""
     completed = subprocess.run(
         ["cargo", "test", "--lib", "--", "--list"],
         cwd=REPO_ROOT,
-        capture_output=True,
+        stdout=subprocess.PIPE,
         text=True,
         check=True,
+        env=lib_group_environment(group) if group else None,
     )
     names: list[str] = []
     for line in completed.stdout.splitlines():
@@ -177,64 +246,46 @@ def lib_test_names() -> list[str]:
     return names
 
 
-def partition_lib_tests(names: list[str], shard_count: int) -> list[list[str]]:
-    """Split lib test names into shards by owning module, balanced by count.
-
-    A module is never split across shards, so module-level fixtures stay in
-    one process, and every name is handed to exactly one shard. Modules are
-    placed largest first into the currently lightest shard, which keeps the
-    shards close to equal in test count.
-    """
-    if shard_count < 1:
-        raise ValueError("shard_count must be positive")
-    modules: dict[str, list[str]] = {}
-    for name in names:
-        module = name.rsplit("::", 1)[0] if "::" in name else name
-        modules.setdefault(module, []).append(name)
-    shards: list[list[str]] = [[] for _ in range(shard_count)]
-    loads = [0] * shard_count
-    ordered = sorted(modules.items(), key=lambda item: (-len(item[1]), item[0]))
-    for _module, members in ordered:
-        target = min(range(shard_count), key=lambda index: (loads[index], index))
-        shards[target].extend(members)
-        loads[target] += len(members)
-    return shards
-
-
-def lib_shard_commands(
-    shard: str, names: list[str], test_threads: str | None = None
-) -> list[list[str]]:
-    """Return the cargo commands that run one shard of the lib test binary."""
-    if shard not in LIB_SHARDS:
-        raise ValueError(f"unknown lib shard: {shard}")
-    threads = test_threads or THREAD_DEFAULTS.get("lib", SERIAL_TEST_THREADS)
-    shards = partition_lib_tests(names, len(LIB_SHARDS))
-    selected = shards[LIB_SHARDS.index(shard)]
-    if not selected:
-        raise ValueError(f"lib shard {shard} has no tests to run")
-    commands = [
-        [
-            "cargo",
-            "test",
-            "--lib",
-            "--",
-            "--exact",
-            *selected,
-            f"--test-threads={threads}",
-        ]
-    ]
+def run_lib_shard(shard: str, test_threads: str | None = None) -> None:
+    threads = test_threads or THREAD_DEFAULTS["lib"]
+    failures = []
+    for group in LIB_COMPILE_GROUPS[shard]:
+        names = lib_test_names(group)
+        validate_lib_group(names, group)
+        # Keep the real enumerations for cross-job union/overlap auditing.
+        output = Path(os.environ.get("CARGO_TARGET_DIR", REPO_ROOT / "target"))
+        if not output.is_absolute():
+            output = REPO_ROOT / output
+        output = output / "ci-timing"
+        output.mkdir(parents=True, exist_ok=True)
+        (output / f"lib-test-names-{group}.json").write_text(
+            json.dumps(sorted(names), indent=2) + "\n"
+        )
+        print(f"lib compile group {group}: {len(names)} tests", file=sys.stderr)
+        completed = subprocess.run(
+            ["cargo", "test", "--lib", "--", f"--test-threads={threads}"],
+            cwd=REPO_ROOT,
+            env=lib_group_environment(group),
+        )
+        if completed.returncode:
+            failures.append(completed)
     if shard == LIB_SHARDS[0]:
-        # Binary unit tests are cheap; run them once, in the first shard.
-        commands.append(["cargo", "test", "--bins", "--", f"--test-threads={threads}"])
-    return commands
+        # Binary unit tests are independent of the library's test-only cfg.
+        completed = subprocess.run(
+            ["cargo", "test", "--bins", "--", f"--test-threads={threads}"],
+            cwd=REPO_ROOT,
+            env=lib_group_environment(LIB_COMPILE_GROUPS[shard][-1]),
+        )
+        if completed.returncode:
+            failures.append(completed)
+    if failures:
+        raise subprocess.CalledProcessError(failures[0].returncode, failures[0].args)
 
 
 def suite_commands(
     suite: str, all_targets: list[str], test_threads: str | None
 ) -> list[list[str]]:
     """Return every cargo command a suite runs, in order."""
-    if suite in LIB_SHARDS:
-        return lib_shard_commands(suite, lib_test_names(), test_threads)
     return [suite_command(suite, all_targets, test_threads)]
 
 
@@ -261,23 +312,12 @@ def command_args(args: argparse.Namespace) -> None:
             print(f"error: {problem}", file=sys.stderr)
         sys.exit(1)
     if args.suite in LIB_SHARDS:
-        names = lib_test_names()
-        shards = partition_lib_tests(names, len(LIB_SHARDS))
-        selected = shards[LIB_SHARDS.index(args.suite)]
         threads = args.test_threads or THREAD_DEFAULTS.get("lib", SERIAL_TEST_THREADS)
-        print(
-            " ".join(
-                [
-                    "cargo",
-                    "test",
-                    "--lib",
-                    "--",
-                    "--exact",
-                    f"<{len(selected)} lib tests>",
-                    f"--test-threads={threads}",
-                ]
+        for group in LIB_COMPILE_GROUPS[args.suite]:
+            print(
+                f"HOLON_LIB_TEST_SHARD={group} "
+                f"cargo test --lib -- --test-threads={threads}"
             )
-        )
         return
     print(" ".join(suite_command(args.suite, all_targets, args.test_threads)))
 
@@ -289,6 +329,9 @@ def command_run(args: argparse.Namespace) -> None:
         for problem in problems:
             print(f"error: {problem}", file=sys.stderr)
         sys.exit(1)
+    if args.suite in LIB_SHARDS:
+        run_lib_shard(args.suite, args.test_threads)
+        return
     commands = suite_commands(args.suite, all_targets, args.test_threads)
     for command in commands:
         printable = " ".join(command)
@@ -312,7 +355,7 @@ def command_validate(_: argparse.Namespace) -> None:
         members = suite_members(suite, all_targets)
         if members is None:
             if suite in LIB_SHARDS:
-                print(f"{suite}: one shard of the lib unit-test binary")
+                print(f"{suite}: lib compile groups {LIB_COMPILE_GROUPS[suite]}")
             else:
                 print(f"{suite}: lib + bins unit tests")
         else:
@@ -320,8 +363,8 @@ def command_validate(_: argparse.Namespace) -> None:
     print(f"total cargo test targets: {len(all_targets)}")
     print("coverage: explicit shards + concurrent + misc = full target set")
     print(
-        "lib coverage: every lib test name is assigned to exactly one of "
-        + ", ".join(LIB_SHARDS)
+        "lib ownership: source cfg and actual per-group lists are checked by "
+        "the lib jobs; use verify-lib-lists for baseline union/overlap validation"
     )
 
 
@@ -338,6 +381,10 @@ def build_parser() -> argparse.ArgumentParser:
 
     validate = subparsers.add_parser("validate")
     validate.set_defaults(func=command_validate)
+    verify = subparsers.add_parser("verify-lib-lists")
+    verify.add_argument("--baseline", type=Path, required=True)
+    verify.add_argument("--directory", type=Path, required=True)
+    verify.set_defaults(func=command_verify_lib_lists)
     return parser
 
 

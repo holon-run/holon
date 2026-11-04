@@ -15,12 +15,15 @@ use crate::runtime_db::{
 };
 use std::sync::Arc;
 
+#[cfg(holon_lib_test_shard = "b")]
 #[cfg(test)]
 #[path = "prepared_timer/body_budget_tests.rs"]
 mod body_budget_tests;
+#[cfg(holon_lib_test_shard = "b")]
 #[cfg(test)]
 #[path = "prepared_timer/effects_budget_tests.rs"]
 mod effects_budget_tests;
+#[cfg(holon_lib_test_shard = "b")]
 #[cfg(test)]
 #[path = "prepared_timer/selector_budget_tests.rs"]
 mod selector_budget_tests;

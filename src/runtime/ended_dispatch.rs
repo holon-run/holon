@@ -17,6 +17,7 @@ use rusqlite::Transaction;
 use serde::Serialize;
 use std::sync::Arc;
 
+#[cfg(holon_lib_test_shard = "a")]
 #[cfg(test)]
 #[path = "ended_dispatch_tests.rs"]
 mod tests;

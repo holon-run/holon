@@ -1,6 +1,7 @@
 mod compaction;
 mod continuation;
 mod parse;
+#[cfg(holon_lib_test_shard = "c")]
 #[cfg(test)]
 mod phase_timeout_tests;
 mod plan;

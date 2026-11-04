@@ -1378,6 +1378,7 @@ mod work_observations {
     }
 }
 
+#[cfg(holon_lib_test_shard = "a")]
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1924,6 +1925,7 @@ mod tests {
     }
 }
 
+#[cfg(holon_lib_test_shard = "a")]
 #[cfg(test)]
 #[path = "resident_work_turn_wait_tests.rs"]
 mod turn_wait_tests;
@@ -1935,6 +1937,7 @@ fn task_wait_matches(wait: &WaitConditionRecord, task_id: &str) -> bool {
     })
 }
 
+#[cfg(holon_lib_test_shard = "a")]
 #[cfg(test)]
 #[path = "resident_work_task_wait_tests.rs"]
 mod task_wait_tests;

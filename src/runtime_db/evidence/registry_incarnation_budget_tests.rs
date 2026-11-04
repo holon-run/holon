@@ -142,6 +142,7 @@ pub(super) fn snapshot(
     .collect()
 }
 
+#[cfg(holon_lib_test_shard = "b")]
 #[test]
 fn registry_incarnation_reuses_original_remainder_and_last_holder() -> Result<()> {
     let (_home, db) = fixture()?;
@@ -186,6 +187,7 @@ fn registry_incarnation_reuses_original_remainder_and_last_holder() -> Result<()
     Ok(())
 }
 
+#[cfg(holon_lib_test_shard = "b")]
 #[test]
 fn registry_incarnation_denial_precedes_reservation_and_rolls_back_transaction() -> Result<()> {
     let (_home, db) = fixture()?;
@@ -237,6 +239,7 @@ fn registry_incarnation_denial_precedes_reservation_and_rolls_back_transaction()
     Ok(())
 }
 
+#[cfg(holon_lib_test_shard = "b")]
 #[test]
 fn registry_incarnation_admits_before_validating_complete_identity() -> Result<()> {
     let (_home, db) = fixture()?;
@@ -289,6 +292,7 @@ fn registry_incarnation_admits_before_validating_complete_identity() -> Result<(
     Ok(())
 }
 
+#[cfg(holon_lib_test_shard = "b")]
 #[test]
 fn registry_incarnation_missing_row_and_sql_errors_do_not_charge_decode() -> Result<()> {
     let (_home, db) = fixture()?;
@@ -330,6 +334,7 @@ fn registry_incarnation_missing_row_and_sql_errors_do_not_charge_decode() -> Res
     Ok(())
 }
 
+#[cfg(holon_lib_test_shard = "b")]
 #[test]
 fn registry_incarnation_preserves_stale_continuity_and_retired_guard() -> Result<()> {
     let (_home, db) = fixture()?;

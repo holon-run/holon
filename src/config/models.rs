@@ -8,6 +8,7 @@ use std::collections::HashSet;
 
 pub(crate) const VIEW_IMAGE_CONTRACT_VERSION: &str = "view_image.v2";
 
+#[cfg(holon_lib_test_shard = "d")]
 #[cfg(test)]
 #[path = "route_cache_tests.rs"]
 mod route_cache_tests;
@@ -453,10 +454,12 @@ pub(crate) struct ModelListCatalog<'a> {
     built_in_catalog: &'a BuiltInModelCatalog,
 }
 
+#[cfg(holon_lib_test_shard = "d")]
 #[cfg(test)]
 #[path = "models/list_catalog_tests.rs"]
 mod list_catalog_tests;
 
+#[cfg(holon_lib_test_shard = "d")]
 #[cfg(test)]
 #[path = "models/policy_material_tests.rs"]
 mod policy_material_tests;
@@ -1763,6 +1766,7 @@ pub(crate) fn dedupe_fallback_models(configured: Vec<ModelRouteRef>) -> Vec<Mode
     })
 }
 
+#[cfg(holon_lib_test_shard = "d")]
 #[cfg(test)]
 mod tests {
     use super::*;

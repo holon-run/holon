@@ -69,6 +69,7 @@ fn insert_roots(
     )
 }
 
+#[cfg(holon_lib_test_shard = "b")]
 #[test]
 fn roots_json_preserves_default_sorted_and_escaped_bytes_at_independent_exact_cost() -> Result<()> {
     for roots in [EpisodeContinuityRoots::default(), roots()] {
@@ -96,6 +97,7 @@ fn roots_json_preserves_default_sorted_and_escaped_bytes_at_independent_exact_co
     Ok(())
 }
 
+#[cfg(holon_lib_test_shard = "b")]
 #[test]
 fn roots_json_rejects_both_dimensions_on_the_original_used_remainder() -> Result<()> {
     let roots = roots();
@@ -131,6 +133,7 @@ fn roots_json_rejects_both_dimensions_on_the_original_used_remainder() -> Result
     Ok(())
 }
 
+#[cfg(holon_lib_test_shard = "b")]
 #[test]
 fn roots_json_insert_refuses_before_candidate_json_and_sql_with_whole_tx_rollback() -> Result<()> {
     let roots = roots();
@@ -194,6 +197,7 @@ fn roots_json_insert_refuses_before_candidate_json_and_sql_with_whole_tx_rollbac
     Ok(())
 }
 
+#[cfg(holon_lib_test_shard = "b")]
 #[test]
 fn roots_json_sql_success_and_failure_keep_original_phase_and_last_holder() -> Result<()> {
     let roots = roots();

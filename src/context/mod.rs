@@ -4778,6 +4778,7 @@ mod tests {
         .unwrap()
     }
 
+    #[cfg(holon_lib_test_shard = "d")]
     #[test]
     fn immutable_snapshot_renders_after_storage_and_resources_are_removed() {
         let dir = tempdir().unwrap();
@@ -4990,6 +4991,7 @@ mod tests {
         assert!(build_context_from_snapshot(&snapshot, 8193).is_err());
     }
 
+    #[cfg(holon_lib_test_shard = "d")]
     #[test]
     fn compact_current_input_budget_includes_reply_expectation() {
         let mut message = MessageEnvelope::new(
@@ -5052,6 +5054,7 @@ mod tests {
             .contains("message_created_at=2024-01-02T03:04:05.123Z UTC"));
     }
 
+    #[cfg(holon_lib_test_shard = "d")]
     #[test]
     fn work_item_scoped_reprojection_reads_deeper_owner_history_and_hydrates_evidence() {
         let dir = tempdir().unwrap();
@@ -5209,6 +5212,7 @@ mod tests {
         }
     }
 
+    #[cfg(holon_lib_test_shard = "d")]
     #[test]
     fn context_defaults_share_the_internal_prompt_budget_policy() {
         let config = ContextConfig::default();
@@ -5220,6 +5224,7 @@ mod tests {
         assert_eq!(config.turn_projection_max_budget, 64_000);
     }
 
+    #[cfg(holon_lib_test_shard = "d")]
     #[test]
     fn turn_projection_budget_applies_ratio_floor_and_ceiling() {
         let ratio = ContextConfig {
@@ -5253,6 +5258,7 @@ mod tests {
         assert_eq!(ceiling.turn_projection_budget(), 64_000);
     }
 
+    #[cfg(holon_lib_test_shard = "d")]
     #[test]
     fn recent_turns_prefers_db_turn_records_when_available() {
         let dir = tempdir().unwrap();
@@ -5537,6 +5543,7 @@ mod tests {
         }
     }
 
+    #[cfg(holon_lib_test_shard = "d")]
     #[test]
     fn replay_reference_classifies_anchor_follower_and_repeated_restarts() {
         for restarts in [1, 3, 64] {
@@ -5572,6 +5579,7 @@ mod tests {
         }
     }
 
+    #[cfg(holon_lib_test_shard = "d")]
     #[test]
     fn replay_reference_rejects_foreign_and_unverifiable_evidence() {
         use crate::domain::execution_protocol::{
@@ -5713,6 +5721,7 @@ mod tests {
         }
     }
 
+    #[cfg(holon_lib_test_shard = "d")]
     #[test]
     fn replay_reference_requires_interrupted_terminal_for_every_attached_ancestor() {
         if isolate_replay_diagnostic_test() {
@@ -5766,6 +5775,7 @@ mod tests {
         }
     }
 
+    #[cfg(holon_lib_test_shard = "d")]
     #[test]
     fn replay_reference_rejects_missing_legacy_evidence_and_lineage_overflow() {
         let fixture = replay_reference_fixture(65);
@@ -5847,6 +5857,7 @@ mod tests {
         String::from_utf8(bytes).unwrap()
     }
 
+    #[cfg(holon_lib_test_shard = "d")]
     #[test]
     fn replay_reference_diagnostics_are_private_deduplicated_and_build_local() {
         if isolate_replay_diagnostic_test() {
@@ -5882,6 +5893,7 @@ mod tests {
         assert!(!diagnostic.contains("corrupt"));
     }
 
+    #[cfg(holon_lib_test_shard = "d")]
     #[test]
     fn replay_reference_diagnostics_redact_malformed_input_reference_ids() {
         if isolate_replay_diagnostic_test() {
@@ -5909,6 +5921,7 @@ mod tests {
         assert!(!diagnostic.contains("capability.invalid"));
     }
 
+    #[cfg(holon_lib_test_shard = "d")]
     #[test]
     fn replay_reference_diagnostics_redact_malformed_stored_object_turn_id() {
         if isolate_replay_diagnostic_test() {
@@ -5939,6 +5952,7 @@ mod tests {
         assert!(!diagnostic.contains("capability.invalid"));
     }
 
+    #[cfg(holon_lib_test_shard = "d")]
     #[test]
     fn recent_turns_marks_replay_provenance_without_treating_source_as_continuation() {
         let dir = tempdir().unwrap();
@@ -6036,6 +6050,7 @@ mod tests {
         assert!(!recent_turns.contains("  - continues input:"));
     }
 
+    #[cfg(holon_lib_test_shard = "d")]
     #[test]
     fn recent_turns_ignores_persisted_cross_turn_references() {
         let dir = tempdir().unwrap();
@@ -6174,6 +6189,7 @@ mod tests {
         assert!(!recent_turns.contains("tool_execution:tool-cross-turn:output"));
     }
 
+    #[cfg(holon_lib_test_shard = "d")]
     #[test]
     fn recent_turns_preserves_ordered_assistant_tool_assistant_sequence() {
         let dir = tempdir().unwrap();
@@ -6308,6 +6324,7 @@ mod tests {
         assert!(!rendered.contains("tool executions:"));
     }
 
+    #[cfg(holon_lib_test_shard = "d")]
     #[test]
     fn recent_turns_covers_transcript_sequence_and_fallback_references() {
         let dir = tempdir().unwrap();
@@ -6471,6 +6488,7 @@ mod tests {
         (turn, anchor, follower)
     }
 
+    #[cfg(holon_lib_test_shard = "d")]
     #[test]
     fn recent_turns_replay_keeps_live_follower_only_in_current_live_inputs() {
         let dir = tempdir().unwrap();
@@ -6542,6 +6560,7 @@ mod tests {
         assert_eq!(turn.live_input_batches[0].items.len(), 1);
     }
 
+    #[cfg(holon_lib_test_shard = "d")]
     #[test]
     fn recent_turns_explicit_foreign_or_missing_trigger_never_uses_owned_follower() {
         for missing in [false, true] {
@@ -6577,6 +6596,7 @@ mod tests {
         }
     }
 
+    #[cfg(holon_lib_test_shard = "d")]
     #[test]
     fn recent_turns_explicit_owned_trigger_wins_over_earlier_live_follower() {
         let dir = tempdir().unwrap();
@@ -6602,6 +6622,7 @@ mod tests {
         assert!(!rendered.contains("  - trigger: unavailable"));
     }
 
+    #[cfg(holon_lib_test_shard = "d")]
     #[test]
     fn recent_turns_legacy_trigger_fallback_excludes_live_batch_items() {
         for summary_without_id in [false, true] {
@@ -6636,6 +6657,7 @@ mod tests {
         }
     }
 
+    #[cfg(holon_lib_test_shard = "d")]
     #[test]
     fn recent_turns_keeps_db_turn_when_trigger_message_is_outside_window() {
         let dir = tempdir().unwrap();
@@ -6713,6 +6735,7 @@ mod tests {
         assert!(recent_turns.contains("brief_ref=brief:brief-missing-trigger"));
     }
 
+    #[cfg(holon_lib_test_shard = "d")]
     #[test]
     fn recent_turns_hydrates_turn_record_references_outside_recent_windows() {
         let dir = tempdir().unwrap();
@@ -6854,6 +6877,7 @@ mod tests {
         assert!(!recent_turns.contains("hydrated tool execution by turn record id"));
     }
 
+    #[cfg(holon_lib_test_shard = "d")]
     #[test]
     fn recent_turns_renders_full_operator_input_with_brief_ref() {
         let dir = tempdir().unwrap();
@@ -6937,6 +6961,7 @@ mod tests {
         assert!(recent_turns.contains("brief_ref=brief:brief-full-operator-input"));
     }
 
+    #[cfg(holon_lib_test_shard = "d")]
     #[test]
     fn older_recent_turn_operator_input_is_previewed_with_message_ref() {
         let dir = tempdir().unwrap();
@@ -6991,6 +7016,7 @@ mod tests {
         assert!(rendered.contains("brief_ref=brief:"));
     }
 
+    #[cfg(holon_lib_test_shard = "d")]
     #[test]
     fn recent_turns_resolves_transcript_backed_brief_content() {
         let dir = tempdir().unwrap();
@@ -7053,6 +7079,7 @@ mod tests {
         assert!(rendered.contains("brief_ref=brief:brief-transcript-backed"));
     }
 
+    #[cfg(holon_lib_test_shard = "d")]
     #[test]
     fn sync_agent_message_count_updates_total_without_compaction() {
         let dir = tempdir().unwrap();
@@ -7081,6 +7108,7 @@ mod tests {
         assert_eq!(session.working_memory.compression_epoch, 0);
     }
 
+    #[cfg(holon_lib_test_shard = "d")]
     #[test]
     fn context_fingerprint_changes_when_projected_context_lineage_changes() {
         let dir = tempdir().unwrap();
@@ -7215,6 +7243,7 @@ mod tests {
         assert_eq!(second_prompt.cache_identity.compression_epoch, 7);
     }
 
+    #[cfg(holon_lib_test_shard = "d")]
     #[test]
     fn build_context_folds_latest_result_into_recent_turns_and_keeps_generic_context_contract() {
         let dir = tempdir().unwrap();
@@ -7342,6 +7371,7 @@ mod tests {
             .contains("current work item objective first"));
     }
 
+    #[cfg(holon_lib_test_shard = "d")]
     #[test]
     fn build_context_does_not_render_recent_turns_from_orphan_recent_evidence() {
         let dir = tempdir().unwrap();
@@ -7438,6 +7468,7 @@ mod tests {
             .any(|section| section.name == "recent_tool_executions"));
     }
 
+    #[cfg(holon_lib_test_shard = "d")]
     #[test]
     fn recent_tool_context_includes_recoverable_command_receipt_ref() {
         let command = "python - <<'PY'\nprint('context_receipt_middle_1246')\nPY";
@@ -7476,6 +7507,7 @@ mod tests {
         assert!(!rendered.contains("context_receipt_middle_1246"));
     }
 
+    #[cfg(holon_lib_test_shard = "d")]
     #[test]
     fn recent_tool_context_includes_batch_item_receipt_refs() {
         let record = ToolExecutionRecord {
@@ -7529,6 +7561,7 @@ mod tests {
         assert!(!rendered.contains("hidden_batch_1246"));
     }
 
+    #[cfg(holon_lib_test_shard = "d")]
     #[test]
     fn recent_tool_context_omits_output_refs_without_output_evidence() {
         let record = ToolExecutionRecord {
@@ -7557,6 +7590,7 @@ mod tests {
         assert!(!rendered.contains("output_ref="));
     }
 
+    #[cfg(holon_lib_test_shard = "d")]
     #[test]
     fn recent_turns_compacts_older_successful_tool_executions() {
         let dir = tempdir().unwrap();
@@ -7691,6 +7725,7 @@ mod tests {
         ));
     }
 
+    #[cfg(holon_lib_test_shard = "d")]
     #[test]
     fn older_turn_tool_rollup_retains_failure_and_promoted_alerts() {
         let success = ToolExecutionRecord {
@@ -7771,6 +7806,7 @@ mod tests {
         assert!(!rendered.contains("successful old command should not get alert"));
     }
 
+    #[cfg(holon_lib_test_shard = "d")]
     #[test]
     fn build_context_folds_briefs_into_recent_turns_without_parallel_brief_section() {
         let dir = tempdir().unwrap();
@@ -7871,6 +7907,7 @@ mod tests {
             .any(|section| section.name == "latest_result"));
     }
 
+    #[cfg(holon_lib_test_shard = "d")]
     #[test]
     fn recent_turns_inlines_latest_result_beyond_old_preview_limit() {
         let dir = tempdir().unwrap();
@@ -7951,6 +7988,7 @@ mod tests {
         assert!(recent_turns.contains(&format!("brief_ref=brief:{}", result.id)));
     }
 
+    #[cfg(holon_lib_test_shard = "d")]
     #[test]
     fn continuity_result_truncation_keeps_explicit_brief_ref() {
         let dir = tempdir().unwrap();
@@ -8000,6 +8038,7 @@ mod tests {
         assert!(rendered.contains("[truncated; full via brief_ref=brief:brief-long-continuity]"));
     }
 
+    #[cfg(holon_lib_test_shard = "d")]
     #[test]
     fn oversized_latest_recent_turn_is_truncated_instead_of_dropped() {
         let rendered = render_budgeted_recent_turns(
@@ -8018,6 +8057,7 @@ mod tests {
         assert!(rendered.contains("[truncated recent turn; use visible refs for full evidence]"));
     }
 
+    #[cfg(holon_lib_test_shard = "d")]
     #[test]
     fn nearby_turns_get_larger_result_previews_than_older_turns() {
         let dir = tempdir().unwrap();
@@ -8099,6 +8139,7 @@ mod tests {
         assert!(!rendered.contains("older-tail-after-compact-preview"));
     }
 
+    #[cfg(holon_lib_test_shard = "d")]
     #[test]
     fn build_context_uses_turn_records_without_legacy_message_fallback() {
         let dir = tempdir().unwrap();
@@ -8192,6 +8233,7 @@ mod tests {
             .contains("legacy-message-without-turn-record"));
     }
 
+    #[cfg(holon_lib_test_shard = "d")]
     #[test]
     fn sync_agent_message_count_persists_message_count_without_compaction() {
         let dir = tempdir().unwrap();
@@ -8219,6 +8261,7 @@ mod tests {
         assert_eq!(session.total_message_count, 1);
     }
 
+    #[cfg(holon_lib_test_shard = "d")]
     #[test]
     fn build_context_omits_working_memory_sections_by_default() {
         let dir = tempdir().unwrap();
@@ -8277,6 +8320,7 @@ mod tests {
             .any(|section| section.name == "compacted_summary"));
     }
 
+    #[cfg(holon_lib_test_shard = "d")]
     #[test]
     fn build_context_keeps_verification_as_raw_evidence_without_promoting_session_fact() {
         let dir = tempdir().unwrap();
@@ -8403,6 +8447,7 @@ mod tests {
             .any(|section| section.name == "recent_tool_executions"));
     }
 
+    #[cfg(holon_lib_test_shard = "d")]
     #[test]
     fn build_context_does_not_emit_follow_up_specific_contracts() {
         let dir = tempdir().unwrap();
@@ -8467,6 +8512,7 @@ mod tests {
         assert!(context_contract_index < current_input_index);
     }
 
+    #[cfg(holon_lib_test_shard = "d")]
     #[test]
     fn build_context_lists_skill_metadata_without_skill_body() {
         let dir = tempdir().unwrap();
@@ -8567,6 +8613,7 @@ mod tests {
         assert!(active.content.contains("session_active"));
     }
 
+    #[cfg(holon_lib_test_shard = "d")]
     #[test]
     fn build_context_lists_agent_template_catalog_without_template_body() {
         let dir = tempdir().unwrap();
@@ -8635,6 +8682,7 @@ mod tests {
         assert!(catalog.content.contains("skills=ghx"));
     }
 
+    #[cfg(holon_lib_test_shard = "d")]
     #[test]
     fn build_context_includes_worktree_session_when_active() {
         let dir = tempdir().unwrap();
@@ -8695,6 +8743,7 @@ mod tests {
         assert!(worktree_section.content.contains("feature-branch"));
     }
 
+    #[cfg(holon_lib_test_shard = "d")]
     #[test]
     fn build_context_includes_current_work_item_and_plan_sections() {
         let dir = tempdir().unwrap();
@@ -8989,6 +9038,7 @@ mod tests {
             .contains("Other agent transcript must not leak"));
     }
 
+    #[cfg(holon_lib_test_shard = "d")]
     #[test]
     fn build_context_prefers_execution_binding_over_global_work_item_focus() {
         let dir = tempdir().unwrap();
@@ -9068,6 +9118,7 @@ mod tests {
         assert!(!background.content.contains(&execution_owner.id));
     }
 
+    #[cfg(holon_lib_test_shard = "d")]
     #[test]
     fn build_context_explicit_non_work_item_binding_does_not_fall_back_to_focus() {
         let dir = tempdir().unwrap();
@@ -9186,6 +9237,7 @@ mod tests {
             .any(|section| section.name == "queued_blocked_work_items"));
     }
 
+    #[cfg(holon_lib_test_shard = "d")]
     #[test]
     fn build_context_includes_empty_current_work_item_section_when_unfocused() {
         let dir = tempdir().unwrap();
@@ -9236,6 +9288,7 @@ mod tests {
             .contains("No focused WorkItem is attached to this turn."));
     }
 
+    #[cfg(holon_lib_test_shard = "d")]
     #[test]
     fn completion_cold_adapters_keep_latest_result_delivery_and_work_summary_precedence() {
         let dir = tempfile::tempdir().unwrap();
@@ -9287,6 +9340,7 @@ mod tests {
         assert_eq!(same_view[&work.id].text, latest.text);
     }
 
+    #[cfg(holon_lib_test_shard = "d")]
     #[test]
     fn build_context_includes_ranked_work_item_candidates_and_completion_reports() {
         let dir = tempdir().unwrap();
@@ -9459,6 +9513,7 @@ mod tests {
         assert!(!summary.content.contains("Plan preview complete:"));
     }
 
+    #[cfg(holon_lib_test_shard = "d")]
     #[test]
     fn build_context_omits_worktree_session_when_not_active() {
         let dir = tempdir().unwrap();
@@ -9504,6 +9559,7 @@ mod tests {
             .all(|section| section.name != "worktree_session"));
     }
 
+    #[cfg(holon_lib_test_shard = "d")]
     #[test]
     fn build_context_includes_execution_environment() {
         let dir = tempdir().unwrap();
@@ -9576,6 +9632,7 @@ mod tests {
             .contains("child_process_containment: not_enforced"));
     }
 
+    #[cfg(holon_lib_test_shard = "d")]
     #[test]
     fn build_context_omits_active_tasks_when_none() {
         let dir = tempdir().unwrap();
@@ -9589,6 +9646,7 @@ mod tests {
             .all(|section| section.name != "active_tasks"));
     }
 
+    #[cfg(holon_lib_test_shard = "d")]
     #[test]
     fn pending_task_results_render_only_for_the_admitted_activation() {
         let dir = tempdir().unwrap();
@@ -9731,6 +9789,7 @@ mod tests {
         );
     }
 
+    #[cfg(holon_lib_test_shard = "d")]
     #[test]
     fn pending_preview_borrowed_dedup_matches_original_formatter() {
         let previews = (0..12)
@@ -9918,6 +9977,7 @@ mod tests {
         expected
     }
 
+    #[cfg(holon_lib_test_shard = "d")]
     #[test]
     fn pending_projected_candidate_measure_matches_retained_formatter() {
         use crate::domain::execution_protocol::TaskRejoinSource;
@@ -9968,6 +10028,7 @@ mod tests {
         }
     }
 
+    #[cfg(holon_lib_test_shard = "d")]
     #[test]
     fn pending_projected_candidate_measure_matches_mixed_preview_paths() {
         let (legacy, message, _, _) = projected_pending_preview_fixture(0);
@@ -10003,6 +10064,7 @@ mod tests {
         assert!(rendered.find(&source.rendered).unwrap() < rendered.find(&reply.rendered).unwrap());
     }
 
+    #[cfg(holon_lib_test_shard = "d")]
     #[test]
     fn pending_projected_candidate_measure_preserves_identity_dedup() {
         let (mut candidate, mut current, source, reply) = projected_pending_preview_fixture(0);
@@ -10059,6 +10121,7 @@ mod tests {
         assert!(distinct.contains(&reply.rendered));
     }
 
+    #[cfg(holon_lib_test_shard = "d")]
     #[test]
     fn pending_projected_candidate_measure_preserves_shared_messages_and_order() {
         let (prior, _, mut prior_source, mut prior_reply) = projected_pending_preview_fixture(0);
@@ -10125,6 +10188,7 @@ mod tests {
         assert!(!rendered.contains(&reply.rendered));
     }
 
+    #[cfg(holon_lib_test_shard = "d")]
     #[test]
     fn pending_projected_candidate_measure_preserves_anchor_and_exclusions() {
         let (record, mut current, source, reply) = projected_pending_preview_fixture(0);
@@ -10184,6 +10248,7 @@ mod tests {
         }
     }
 
+    #[cfg(holon_lib_test_shard = "d")]
     #[test]
     fn pending_projected_candidate_measure_preserves_unicode_inline_sanitization() {
         use crate::domain::execution_protocol::TaskRejoinSource;
@@ -10230,6 +10295,7 @@ mod tests {
         assert!(rendered.len() > rendered.chars().count());
     }
 
+    #[cfg(holon_lib_test_shard = "d")]
     #[test]
     fn pending_task_results_do_not_truncate_cumulative_admissions() {
         let dir = tempdir().unwrap();
@@ -10294,6 +10360,7 @@ mod tests {
         assert!(!rendered.contains("omitted_results"));
     }
 
+    #[cfg(holon_lib_test_shard = "d")]
     #[test]
     fn live_input_recovery_renders_each_persisted_batch_and_body_once() {
         use crate::types::IdleInputBatchItem;
@@ -10331,6 +10398,7 @@ mod tests {
         assert!(rendered.find("original reply").unwrap() < rendered.find("later result").unwrap());
     }
 
+    #[cfg(holon_lib_test_shard = "d")]
     #[test]
     fn recovery_input_projection_keeps_full_source_evidence_and_shared_message_deduplication() {
         use crate::types::{IdleInputBatchItem, IdleInputBatchRecord};
@@ -10404,6 +10472,7 @@ mod tests {
         assert!(plan_context(vec![candidate], budget.saturating_sub(1)).is_err());
     }
 
+    #[cfg(holon_lib_test_shard = "d")]
     #[test]
     fn recovered_operator_context_preserves_full_body_provenance_and_shared_deduplication() {
         let dir = tempdir().unwrap();
@@ -10534,6 +10603,7 @@ mod tests {
         );
     }
 
+    #[cfg(holon_lib_test_shard = "d")]
     #[test]
     fn build_context_includes_active_command_task_projection() {
         let dir = tempdir().unwrap();
@@ -10586,6 +10656,7 @@ mod tests {
         assert!(!active_tasks.contains("wait_policy"));
     }
 
+    #[cfg(holon_lib_test_shard = "d")]
     #[test]
     fn build_context_sanitizes_active_task_scalars_and_command_preview() {
         let dir = tempdir().unwrap();
@@ -10629,6 +10700,7 @@ mod tests {
         assert!(!active_tasks.contains("\nspoofed: true"));
     }
 
+    #[cfg(holon_lib_test_shard = "d")]
     #[test]
     fn build_context_scopes_active_tasks_to_current_agent() {
         let dir = tempdir().unwrap();
@@ -10663,6 +10735,7 @@ mod tests {
         assert!(!active_tasks.contains("task-other"));
     }
 
+    #[cfg(holon_lib_test_shard = "d")]
     #[test]
     fn build_context_omits_terminal_tasks_from_active_tasks() {
         let dir = tempdir().unwrap();
@@ -10684,6 +10757,7 @@ mod tests {
             .all(|section| section.name != "active_tasks"));
     }
 
+    #[cfg(holon_lib_test_shard = "d")]
     #[test]
     fn build_context_limits_active_tasks_and_reports_hidden_count() {
         let dir = tempdir().unwrap();
@@ -10716,6 +10790,7 @@ mod tests {
         assert!(active_tasks.contains("use ListTasks for the full active task list"));
     }
 
+    #[cfg(holon_lib_test_shard = "d")]
     #[test]
     fn build_context_includes_default_external_wake_ingress() {
         let dir = tempdir().unwrap();
@@ -10782,6 +10857,7 @@ mod tests {
         assert!(ingress.content.contains("capability_secret: true"));
     }
 
+    #[cfg(holon_lib_test_shard = "d")]
     #[test]
     fn build_context_uses_latest_default_external_wake_ingress() {
         let dir = tempdir().unwrap();
@@ -10864,6 +10940,7 @@ mod tests {
             .contains("http://127.0.0.1:7878/callbacks/wake/old"));
     }
 
+    #[cfg(holon_lib_test_shard = "d")]
     #[test]
     fn build_context_omits_system_tick_from_recent_turns() {
         let dir = tempdir().unwrap();
@@ -10939,6 +11016,7 @@ mod tests {
             .contains("current input must not be repeated in history"));
     }
 
+    #[cfg(holon_lib_test_shard = "d")]
     #[test]
     fn build_context_includes_continuation_context_for_system_tick() {
         let dir = tempdir().unwrap();
@@ -11010,6 +11088,7 @@ mod tests {
         assert!(activation.content.contains("\"pr\": 123"));
     }
 
+    #[cfg(holon_lib_test_shard = "d")]
     #[test]
     fn recent_turns_summarizes_wake_hint_without_inlining_payload() {
         let dir = tempdir().unwrap();
@@ -11102,6 +11181,7 @@ mod tests {
         assert!(!recent_turns.content.contains("notification_type"));
     }
 
+    #[cfg(holon_lib_test_shard = "d")]
     #[test]
     fn build_context_includes_continuation_context_for_work_queue_system_tick() {
         let dir = tempdir().unwrap();
@@ -11165,6 +11245,7 @@ mod tests {
         assert!(activation.content.contains("fix stale pid handling"));
     }
 
+    #[cfg(holon_lib_test_shard = "d")]
     #[test]
     fn recent_turns_summarizes_work_queue_tick_without_inlining_body() {
         let dir = tempdir().unwrap();
@@ -11246,6 +11327,7 @@ mod tests {
         assert!(!recent_turns.content.contains("raw queue body"));
     }
 
+    #[cfg(holon_lib_test_shard = "d")]
     #[test]
     fn recent_turns_generic_system_tick_summary_includes_subsystem() {
         let dir = tempdir().unwrap();
@@ -11312,6 +11394,7 @@ mod tests {
         assert!(!recent_turns.content.contains("provider fallback"));
     }
 
+    #[cfg(holon_lib_test_shard = "d")]
     #[test]
     fn build_context_anchors_latest_operator_input_for_runtime_continuation_without_work_item() {
         let dir = tempdir().unwrap();
@@ -11388,6 +11471,7 @@ mod tests {
         assert!(anchor.content.contains("not a new operator request"));
     }
 
+    #[cfg(holon_lib_test_shard = "d")]
     #[test]
     fn build_context_marks_fresh_operator_input_as_the_only_new_task() {
         let dir = tempdir().unwrap();
@@ -11446,6 +11530,7 @@ mod tests {
         ));
     }
 
+    #[cfg(holon_lib_test_shard = "d")]
     #[test]
     fn build_context_anchor_uses_operator_input_beyond_recent_window() {
         let dir = tempdir().unwrap();
@@ -11548,6 +11633,7 @@ mod tests {
             .contains("Preserve this trimmed operator intent."));
     }
 
+    #[cfg(holon_lib_test_shard = "d")]
     #[test]
     fn resume_override_anchor_ignores_legacy_operator_without_message_seq() {
         let dir = tempdir().unwrap();
@@ -11654,6 +11740,7 @@ mod tests {
         assert!(!anchor.content.contains("legacy null sequence request"));
     }
 
+    #[cfg(holon_lib_test_shard = "d")]
     #[test]
     fn build_context_work_item_anchor_does_not_duplicate_work_item_projection() {
         let dir = tempdir().unwrap();
@@ -11746,6 +11833,7 @@ mod tests {
         assert!(!anchor.content.contains("Current WorkItem"));
     }
 
+    #[cfg(holon_lib_test_shard = "d")]
     #[test]
     fn build_context_preserves_pinned_truth_at_exact_minimum_and_fails_below_it() {
         let dir = tempdir().unwrap();
@@ -11860,6 +11948,7 @@ mod tests {
             .contains(&format!("pinned_minimum={pinned_minimum}")));
     }
 
+    #[cfg(holon_lib_test_shard = "d")]
     #[test]
     fn build_context_bounds_recent_turn_reprojection_to_planned_compact_budget() {
         let dir = tempdir().unwrap();
@@ -11990,6 +12079,7 @@ mod tests {
         );
     }
 
+    #[cfg(holon_lib_test_shard = "d")]
     #[test]
     fn build_context_keeps_full_current_input_body_for_long_operator_prompt() {
         let dir = tempdir().unwrap();
@@ -12046,6 +12136,7 @@ mod tests {
         assert!(current_input.content.contains("\n  Read this file first"));
     }
 
+    #[cfg(holon_lib_test_shard = "d")]
     #[test]
     fn build_context_renders_provenance_admission_and_authority_labels() {
         let dir = tempdir().unwrap();
@@ -12091,6 +12182,7 @@ mod tests {
         ));
     }
 
+    #[cfg(holon_lib_test_shard = "d")]
     #[test]
     fn build_context_uses_budgeted_hot_tail_and_preserves_section_order() {
         let dir = tempdir().unwrap();
@@ -12225,6 +12317,7 @@ mod tests {
         assert!(!trimmed_hot_tail.contains("older wake-path probe"));
     }
 
+    #[cfg(holon_lib_test_shard = "d")]
     #[test]
     fn build_context_omits_working_memory_delta_even_when_legacy_snapshot_exists() {
         let dir = tempdir().unwrap();
@@ -12274,6 +12367,7 @@ mod tests {
             .any(|section| section.name == "working_memory_delta"));
     }
 
+    #[cfg(holon_lib_test_shard = "d")]
     #[test]
     fn build_context_selects_only_relevant_archived_episodes_that_fit_budget() {
         let dir = tempdir().unwrap();
@@ -12409,6 +12503,7 @@ mod tests {
         assert!(!episode_section.content.contains("ep_old"));
     }
 
+    #[cfg(holon_lib_test_shard = "d")]
     #[test]
     fn build_context_excludes_episode_overlapping_recent_turn_window() {
         let dir = tempdir().unwrap();
@@ -12491,6 +12586,7 @@ mod tests {
         assert!(!section.content.contains("ep_recent_overlap"));
     }
 
+    #[cfg(holon_lib_test_shard = "d")]
     #[test]
     fn recent_turn_window_start_ignores_zero_sentinel_turn_index() {
         let sentinel = crate::types::TurnRecord::new("default", "turn-zero", 0);
@@ -12499,6 +12595,7 @@ mod tests {
         assert_eq!(recent_turn_window_start(&[sentinel, recent]), Some(6));
     }
 
+    #[cfg(holon_lib_test_shard = "d")]
     #[test]
     fn build_context_orders_work_item_before_relevant_episode_memory() {
         let dir = tempdir().unwrap();
@@ -12600,6 +12697,7 @@ mod tests {
         assert!(work_item_index < episode_index);
     }
 
+    #[cfg(holon_lib_test_shard = "d")]
     #[test]
     fn build_context_enforces_total_prompt_budget_across_large_sections() {
         let dir = tempdir().unwrap();
@@ -12733,6 +12831,7 @@ mod tests {
             .contains("Keep the current input visible"));
     }
 
+    #[cfg(holon_lib_test_shard = "d")]
     #[test]
     fn message_header_sanitizes_dynamic_binding_labels() {
         let mut message = MessageEnvelope::new(
@@ -12758,6 +12857,7 @@ mod tests {
         assert!(!header.contains("[operator]"));
     }
 
+    #[cfg(holon_lib_test_shard = "d")]
     #[test]
     fn turn_record_matches_message_requires_matching_non_empty_turn_id() {
         let mut message = MessageEnvelope::new(
@@ -12799,6 +12899,7 @@ mod tests {
         assert!(turn_record_matches_message(&record, &message));
     }
 
+    #[cfg(holon_lib_test_shard = "d")]
     #[test]
     fn turn_record_matches_message_ignores_sequence_collision() {
         let mut message = MessageEnvelope::new(
@@ -12821,6 +12922,7 @@ mod tests {
         assert!(!turn_record_matches_message(&record, &message));
     }
 
+    #[cfg(holon_lib_test_shard = "d")]
     #[test]
     fn latest_trusted_operator_input_ignores_legacy_null_sequence() {
         let mut sequenced = MessageEnvelope::new(
@@ -12882,6 +12984,7 @@ mod tests {
         assert_eq!(latest.id, "msg-sequenced");
     }
 
+    #[cfg(holon_lib_test_shard = "d")]
     #[test]
     fn resolve_latest_trusted_operator_input_prefers_current_operator_input() {
         let current_message = MessageEnvelope::new(
@@ -12908,6 +13011,7 @@ mod tests {
         );
     }
 
+    #[cfg(holon_lib_test_shard = "d")]
     #[test]
     fn resolve_latest_trusted_operator_input_falls_back_to_historical_anchor() {
         let mut historical = MessageEnvelope::new(
@@ -13019,6 +13123,7 @@ mod tests {
         std::fs::write(notes.join(name), body).unwrap();
     }
 
+    #[cfg(holon_lib_test_shard = "d")]
     #[test]
     fn build_context_omits_notes_catalog_when_no_notes_directory() {
         // tempdir() has no `notes/` subdirectory; the section must be absent.
@@ -13061,6 +13166,7 @@ mod tests {
             .all(|section| section.name != "agent_home_notes_catalog"));
     }
 
+    #[cfg(holon_lib_test_shard = "d")]
     #[test]
     fn build_context_projects_frontmatter_metadata_into_notes_catalog() {
         let dir = tempdir().unwrap();
@@ -13119,6 +13225,7 @@ mod tests {
         assert!(catalog.content.contains("never override"));
     }
 
+    #[cfg(holon_lib_test_shard = "d")]
     #[test]
     fn build_context_falls_back_when_note_has_no_frontmatter() {
         let dir = tempdir().unwrap();
@@ -13171,6 +13278,7 @@ mod tests {
         assert!(!catalog.content.contains("tags:"));
     }
 
+    #[cfg(holon_lib_test_shard = "d")]
     #[test]
     fn build_context_truncates_notes_catalog_to_item_and_char_limits() {
         let dir = tempdir().unwrap();
@@ -13231,6 +13339,7 @@ mod tests {
         assert!(catalog.content.chars().count() <= crate::notes_catalog::MAX_NOTES_CATALOG_CHARS);
     }
 
+    #[cfg(holon_lib_test_shard = "d")]
     #[test]
     fn build_context_notes_catalog_does_not_elevate_above_higher_priority_sections() {
         // The agent prompt stacks system / developer / operator / AGENTS /
@@ -13317,6 +13426,7 @@ mod tests {
     /// Regression test for the context module split: verifies that budget
     /// and render helpers in `budget.rs` and `render.rs` cooperate correctly
     /// after extraction from the monolithic `context.rs`.
+    #[cfg(holon_lib_test_shard = "d")]
     #[test]
     fn budget_and_render_submodules_cooperate() {
         use super::budget::{estimate_section_tokens, fit_section_to_budget};

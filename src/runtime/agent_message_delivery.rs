@@ -321,6 +321,7 @@ fn digest<T: Serialize>(domain: &[u8], value: &T) -> Result<String> {
         .collect())
 }
 
+#[cfg(holon_lib_test_shard = "a")]
 #[cfg(test)]
 mod tests {
     use super::*;

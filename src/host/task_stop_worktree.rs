@@ -354,6 +354,7 @@ impl RuntimeHost {
     }
 }
 
+#[cfg(holon_lib_test_shard = "d")]
 #[cfg(test)]
 #[path = "task_stop_worktree_tests.rs"]
 mod tests;

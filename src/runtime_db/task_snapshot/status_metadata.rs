@@ -121,6 +121,7 @@ pub(in crate::runtime_db) fn refresh_task_status_metadata_using_material_tx(
     }))
 }
 
+#[cfg(holon_lib_test_shard = "b")]
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -270,6 +271,7 @@ mod tests {
     }
 }
 
+#[cfg(holon_lib_test_shard = "b")]
 #[cfg(test)]
 mod shared_material_tests {
     use super::*;

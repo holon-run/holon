@@ -2441,6 +2441,7 @@ fn command_parse_error_with_attempt(
     anyhow::Error::from(tool_error)
 }
 
+#[cfg(holon_lib_test_shard = "d")]
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -485,6 +485,7 @@ fn ref_status_rank(status: WorkItemRefStatus) -> u8 {
     }
 }
 
+#[cfg(holon_lib_test_shard = "d")]
 #[cfg(test)]
 mod tests {
     use chrono::Utc;

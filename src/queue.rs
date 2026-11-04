@@ -140,6 +140,7 @@ fn into_owned_message(message: Arc<MessageEnvelope>) -> MessageEnvelope {
     Arc::try_unwrap(message).unwrap_or_else(|message| message.as_ref().clone())
 }
 
+#[cfg(holon_lib_test_shard = "d")]
 #[cfg(test)]
 mod tests {
     use crate::types::{AuthorityClass, MessageBody, MessageEnvelope, MessageKind, MessageOrigin};

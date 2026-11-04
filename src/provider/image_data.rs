@@ -93,6 +93,7 @@ impl Serialize for ProviderImageData {
     }
 }
 
+#[cfg(holon_lib_test_shard = "c")]
 #[cfg(test)]
 #[path = "image_data_tests.rs"]
 mod tests;

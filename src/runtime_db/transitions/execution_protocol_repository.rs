@@ -2066,6 +2066,7 @@ fn to_i64(value: u64) -> Result<i64> {
     i64::try_from(value).context("execution protocol generation exceeds SQLite INTEGER")
 }
 
+#[cfg(holon_lib_test_shard = "b")]
 #[cfg(test)]
 mod tests {
     use super::*;

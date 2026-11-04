@@ -7,6 +7,7 @@ use crate::types::{
     OperatorMessageStatus, WorkItemRecord,
 };
 
+#[cfg(holon_lib_test_shard = "a")]
 #[cfg(test)]
 #[path = "delivery_image_tests.rs"]
 mod image_tests;
@@ -321,6 +322,7 @@ fn operator_message_status(
     }
 }
 
+#[cfg(holon_lib_test_shard = "a")]
 #[cfg(test)]
 mod input_evidence_tests {
     use super::*;

@@ -199,6 +199,10 @@ For a published owner, mutation entry initializes the candidate State from that
 root, not from the compatibility cache. Private cache edits cannot grant a new
 command selectors or authority. Preparing a read does not publish or repair those
 edits; an intentional State change still requires its original commit and ACK.
+An enqueue OCC baseline refresh must separately reject a dirty compatibility
+cache under the owner reservation before adopting a different durable baseline.
+That refresh protection does not prevent candidates or reads from using the
+already-published State.
 
 Each canonical commit returns a typed committed-domain delta containing all
 records and removals in its invariant, including database-assigned sequences.
@@ -809,6 +813,16 @@ repair transactions obey the same boundary when they touch this domain.
 Uncertain persistence keeps the original receipt and owner gate; positive
 recovery installs current coherent domains while returning the original
 command outcome.
+
+Live record CAS uses
+`RuntimeHandle::update_work_item_record_expected(&WorkItemRecord, u64)`.
+The owning Runtime reserves its actual incarnation scope and original budget,
+then reuses the Work command's pre-write proof, actual write-set finalizer,
+final State, and acknowledgement path. Execution source revision advances in
+that same transaction without replacing admitted attempt fences. Unscoped
+repository updates reject already-qualified, fixed-seed, or pruned Work IDs
+before business SQL; genuinely unqualified legacy writes remain offline. An
+`agent_id` alone never supplies a live owner or grants qualification.
 
 ### Dispatch memory and compound Work commands
 
@@ -4320,6 +4334,13 @@ revision and payload digest; changed State is decoded and checked against the
 exact final canonical value rather than being replaced by an old typed value.
 Remaining legacy and cold NoState consumers still require their full
 material boundary; these paths do not attest that wider cutover.
+Task write preflight and finalization retain independent coverage revision,
+qualification and budget checks on either side of business SQL. Each phase
+reuses its own unchanged coverage observation rather than decoding it again;
+the finalizer does not republish coverage already persisted by its loader or
+revision adjustment. Output-head observation prepares its availability statement
+once per traversal, but binds and queries every selected head independently.
+Neither reuse carries query results or validation across a write or transaction.
 Bootstrap Queue reconciliation may locate the original StartedTurn after
 bootstrap clears its physical run. This is not ordinary live-dispatch binding:
 the original State must still match SQL, no live processing handle may exist,
@@ -4943,3 +4964,10 @@ capability validates its transaction, scope and exact frozen command before any
 inner write, including in the offline adapter. It grants no Input qualification:
 scoped production calls still require the separate D3 proof and key validation.
 Neither path admits a missing Task, a successor alias or a retired scope.
+
+Agent-message wait admission uses the canonical Task returned by its original
+reducer, including an existing terminal first writer when a queued update is
+ignored. A terminal result returns before control-handle registration; admission
+does not register a monitor from the discarded queued candidate. The original
+mutation serializes the writers, and Task ACK, generation and control-registration
+fences remain unchanged.

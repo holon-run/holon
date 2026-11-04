@@ -79,6 +79,7 @@ fn task(id: &str, status: TaskStatus) -> TaskRecord {
     }
 }
 
+#[cfg(holon_lib_test_shard = "a")]
 #[test]
 fn active_task_order_and_count_survive_without_durable_task_tables() -> Result<()> {
     let (_dir, db) = fixture()?;
@@ -308,6 +309,7 @@ pub(crate) fn admitted_fixture() -> Result<(CapturedTasks, Vec<MessageEnvelope>)
     })
 }
 
+#[cfg(holon_lib_test_shard = "a")]
 #[test]
 fn captured_task_result_message_read_requires_complete_original_facts() -> Result<()> {
     let (captured, messages) = admitted_fixture()?;
@@ -370,6 +372,7 @@ fn captured_task_result_message_read_requires_complete_original_facts() -> Resul
     Ok(())
 }
 
+#[cfg(holon_lib_test_shard = "a")]
 #[test]
 fn context_admitted_selection_keeps_open_activation_and_exact_body_selection() -> Result<()> {
     let (full, _) = admitted_fixture()?;
@@ -397,6 +400,7 @@ fn context_admitted_selection_keeps_open_activation_and_exact_body_selection() -
     Ok(())
 }
 
+#[cfg(holon_lib_test_shard = "a")]
 #[test]
 fn context_task_selector_is_charged_before_clone_and_outlives_source_capture() -> Result<()> {
     let (full, messages) = admitted_fixture()?;
@@ -440,6 +444,7 @@ fn context_task_selector_is_charged_before_clone_and_outlives_source_capture() -
     Ok(())
 }
 
+#[cfg(holon_lib_test_shard = "a")]
 #[test]
 fn result_deadline_and_retry_order_match_normalized_sql_without_durable_tables() -> Result<()> {
     let (_dir, db) = fixture()?;
@@ -503,6 +508,7 @@ fn result_deadline_and_retry_order_match_normalized_sql_without_durable_tables()
     Ok(())
 }
 
+#[cfg(holon_lib_test_shard = "a")]
 #[test]
 fn due_recovery_selection_matches_sql_limit_and_millis_without_tables() -> Result<()> {
     let (_dir, db) = fixture()?;
@@ -574,6 +580,7 @@ fn due_recovery_selection_matches_sql_limit_and_millis_without_tables() -> Resul
     Ok(())
 }
 
+#[cfg(holon_lib_test_shard = "a")]
 #[tokio::test]
 async fn current_task_monitor_reads_are_pure_and_missing_keys_do_not_fallback() -> Result<()> {
     let harness = crate::runtime::tests::support::LifecycleHarness::new();
@@ -606,6 +613,7 @@ async fn current_task_monitor_reads_are_pure_and_missing_keys_do_not_fallback() 
     Ok(())
 }
 
+#[cfg(holon_lib_test_shard = "a")]
 #[tokio::test]
 async fn ordinary_task_list_captures_published_facts_without_owner_or_body_sql() -> Result<()> {
     let harness = crate::runtime::tests::support::LifecycleHarness::new();
@@ -637,6 +645,7 @@ async fn ordinary_task_list_captures_published_facts_without_owner_or_body_sql()
     Ok(())
 }
 
+#[cfg(holon_lib_test_shard = "a")]
 #[tokio::test]
 async fn canonical_active_record_carrier_preserves_sql_order_limit_and_wire_lifetime_without_body_sql(
 ) -> Result<()> {

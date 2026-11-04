@@ -567,6 +567,7 @@ fn strip_xml_like_tool_calls(input: &str) -> String {
     result.join("\n")
 }
 
+#[cfg(holon_lib_test_shard = "a")]
 #[cfg(test)]
 mod running_generation_tests {
     use super::*;

@@ -115,6 +115,7 @@ bodies(payload_json) AS (
  )
 )";
 
+#[cfg(holon_lib_test_shard = "b")]
 #[cfg(test)]
 #[path = "recovery_sources_material_tests.rs"]
 mod material_tests;

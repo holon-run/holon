@@ -301,6 +301,7 @@ fn request() -> WorkDomainLoadRequest {
     }
 }
 
+#[cfg(holon_lib_test_shard = "b")]
 #[test]
 fn checkpoint_retention_uses_original_turn_and_incarnation() -> Result<()> {
     let f = Fixture::new(true)?;
@@ -325,6 +326,7 @@ fn checkpoint_retention_uses_original_turn_and_incarnation() -> Result<()> {
     Ok(())
 }
 
+#[cfg(holon_lib_test_shard = "b")]
 #[test]
 fn actual_started_turn_owns_seed_but_payload_hint_cannot_install_it() -> Result<()> {
     let f = Fixture::new(true)?;
@@ -349,6 +351,7 @@ fn actual_started_turn_owns_seed_but_payload_hint_cannot_install_it() -> Result<
     Ok(())
 }
 
+#[cfg(holon_lib_test_shard = "b")]
 #[test]
 fn detached_commands_append_original_members_without_resetting_first_baseline_or_ids() -> Result<()>
 {
@@ -377,6 +380,7 @@ fn detached_commands_append_original_members_without_resetting_first_baseline_or
     Ok(())
 }
 
+#[cfg(holon_lib_test_shard = "b")]
 #[test]
 fn whole_business_failure_rolls_back_work_obligation_and_receipt() -> Result<()> {
     let f = Fixture::new(true)?;
@@ -393,6 +397,7 @@ fn whole_business_failure_rolls_back_work_obligation_and_receipt() -> Result<()>
     Ok(())
 }
 
+#[cfg(holon_lib_test_shard = "b")]
 #[test]
 fn actual_open_dispatch_requires_original_start_and_original_memory_baseline() -> Result<()> {
     let f = Fixture::new(false)?;
@@ -419,6 +424,7 @@ fn actual_open_dispatch_requires_original_start_and_original_memory_baseline() -
     Ok(())
 }
 
+#[cfg(holon_lib_test_shard = "b")]
 #[test]
 fn same_nonce_changed_command_is_not_a_second_obligation_member() -> Result<()> {
     let f = Fixture::new(true)?;
@@ -444,6 +450,7 @@ fn same_nonce_changed_command_is_not_a_second_obligation_member() -> Result<()> 
     Ok(())
 }
 
+#[cfg(holon_lib_test_shard = "b")]
 #[test]
 fn no_actual_dispatch_does_not_create_work_memory_responsibility() -> Result<()> {
     let f = Fixture::new(false)?;
@@ -470,6 +477,7 @@ fn no_actual_dispatch_does_not_create_work_memory_responsibility() -> Result<()>
     Ok(())
 }
 
+#[cfg(holon_lib_test_shard = "b")]
 #[test]
 fn done_requires_real_original_d1_receipt_and_compacts_the_saved_baseline() -> Result<()> {
     let f = Fixture::new(true)?;
@@ -553,6 +561,7 @@ fn done_requires_real_original_d1_receipt_and_compacts_the_saved_baseline() -> R
     Ok(())
 }
 
+#[cfg(holon_lib_test_shard = "b")]
 #[test]
 fn deleting_observes_original_dispatch_but_successor_scope_cannot_inherit_it() -> Result<()> {
     let f = Fixture::new(true)?;
@@ -618,6 +627,7 @@ fn deleting_observes_original_dispatch_but_successor_scope_cannot_inherit_it() -
     Ok(())
 }
 
+#[cfg(holon_lib_test_shard = "b")]
 #[test]
 fn claim_ack_before_started_turn_keeps_work_command_as_no_dispatch() -> Result<()> {
     let f = Fixture::new(false)?;
@@ -735,6 +745,7 @@ fn claim_ack_before_started_turn_keeps_work_command_as_no_dispatch() -> Result<(
     Ok(())
 }
 
+#[cfg(holon_lib_test_shard = "b")]
 #[test]
 fn seed_cannot_freeze_a_source_different_from_the_actual_binding() -> Result<()> {
     let f = Fixture::new(false)?;
@@ -792,15 +803,19 @@ fn prepare_start_command(
         })
     })
 }
+#[cfg(holon_lib_test_shard = "b")]
 #[path = "dispatch_memory_binding_tests.rs"]
 mod binding_tests;
 
+#[cfg(holon_lib_test_shard = "b")]
 #[path = "dispatch_memory_retired_tests.rs"]
 mod retired_tests;
 
+#[cfg(holon_lib_test_shard = "b")]
 #[path = "dispatch_memory_auto_tests.rs"]
 mod automatic_tests;
 
+#[cfg(holon_lib_test_shard = "b")]
 #[path = "dispatch_memory_task_budget_tests.rs"]
 mod task_budget_tests;
 

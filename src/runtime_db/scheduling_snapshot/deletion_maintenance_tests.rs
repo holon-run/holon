@@ -129,6 +129,7 @@ fn supervised() -> Result<(tempfile::TempDir, RuntimeDb)> {
     for migration in MIGRATIONS.iter().filter(|m| m.version <= 89) {
         apply_migration(&mut c, migration)?;
     }
+    crate::runtime_db::ensure_runtime_identity_metadata(&c)?;
     let parent = AgentIdentityRecord::new(
         "cleanup-parent",
         AgentKind::Named,
@@ -181,8 +182,17 @@ fn supervised() -> Result<(tempfile::TempDir, RuntimeDb)> {
     };
     // Genuine pre-cutover backlog: wake pending but the source queue is already
     // terminal, so ParentCleanup's original execution blocker can allow it.
+    // Raw legacy SQL avoids the current writer's terminal-wake retirement.
     queue.updated_at += chrono::Duration::seconds(1);
-    repositories::upsert_queue_entry_tx(&tx, &queue)?;
+    tx.execute(
+        "UPDATE queue_entries SET status='dropped', updated_at=?2, payload_json=?3
+         WHERE message_id=?1",
+        rusqlite::params![
+            queue.message_id,
+            repositories::timestamp(queue.updated_at),
+            serde_json::to_string(&queue)?
+        ],
+    )?;
     let mut state = AgentState::new(&child.agent_id);
     state.status = AgentStatus::Stopped;
     state.total_message_count = 1;

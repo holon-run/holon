@@ -35,6 +35,7 @@ pub(crate) mod completion_sources;
 mod context_capture;
 mod continuation;
 mod control;
+#[cfg(holon_lib_test_shard = "a")]
 #[cfg(test)]
 mod model_material_tests;
 mod task_status_metadata;
@@ -43,6 +44,7 @@ pub(crate) use task_status_metadata::{
     OriginalControlMetadataCapsule, TaskStatusMetadataRead,
 };
 mod control_cancellation;
+#[cfg(holon_lib_test_shard = "a")]
 #[cfg(test)]
 mod control_task_generation_tests;
 pub(crate) mod task_generation;
@@ -86,6 +88,7 @@ pub(crate) mod resident_input_evidence;
 pub(crate) mod resident_scheduling;
 pub(crate) mod resource_observation;
 mod resource_refresh;
+#[cfg(holon_lib_test_shard = "a")]
 #[cfg(test)]
 mod resource_runtime_tests;
 mod scheduling_output;
@@ -936,6 +939,7 @@ fn scheduler_acceptance_fixtures_enabled_from_values(
     Ok(parse(SCHEDULER_ACCEPTANCE_FIXTURES_ENV, acceptance_fixtures)? == Some(true))
 }
 
+#[cfg(holon_lib_test_shard = "a")]
 #[cfg(test)]
 mod scheduler_acceptance_gate_tests {
     use super::*;
@@ -5320,6 +5324,14 @@ impl RuntimeHandle {
         agent_id: &str,
     ) -> Result<bool> {
         let mut guard = self.begin_mutation().await?;
+        {
+            // Candidate State comes from publication, so inspect the cache under
+            // the reservation before accepting a different durable baseline.
+            let cache = self.inner.agent.lock().await;
+            if cache.state != cache.last_persisted_state {
+                return Ok(false);
+            }
+        }
         let Some(latest_persisted_state) = self
             .inner
             .runtime_db
@@ -8144,6 +8156,7 @@ async fn observe_startup_phase_inner<T>(
     result
 }
 
+#[cfg(holon_lib_test_shard = "a")]
 #[cfg(test)]
 mod startup_phase_tests {
     use super::observe_startup_phase;
@@ -8400,18 +8413,22 @@ pub(crate) fn retryable_enqueue_conflict(error: &anyhow::Error, agent_id: &str) 
 #[cfg(test)]
 pub(crate) mod tests;
 
+#[cfg(holon_lib_test_shard = "a")]
 #[cfg(test)]
 #[path = "runtime/state_mutation_2b_tests.rs"]
 mod state_mutation_2b_tests;
 
+#[cfg(holon_lib_test_shard = "a")]
 #[cfg(test)]
 #[path = "runtime/tests/control_stop_settlement.rs"]
 mod control_stop_settlement_tests;
 
+#[cfg(holon_lib_test_shard = "a")]
 #[cfg(test)]
 #[path = "runtime/begin_turn_input_tests.rs"]
 mod begin_turn_input_tests;
 
+#[cfg(holon_lib_test_shard = "a")]
 #[cfg(test)]
 #[path = "runtime/dispatch_run_projection_tests.rs"]
 mod dispatch_run_projection_tests;

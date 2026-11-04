@@ -206,6 +206,7 @@ fn stop_binding(
     stop.clone()
 }
 
+#[cfg(holon_lib_test_shard = "b")]
 #[test]
 fn prepared_stop_initial_ack_binds_actual_facet_and_defers_noncommand_result_without_signal(
 ) -> Result<()> {
@@ -336,6 +337,7 @@ fn prepared_stop_initial_ack_binds_actual_facet_and_defers_noncommand_result_wit
     Ok(())
 }
 
+#[cfg(holon_lib_test_shard = "b")]
 #[test]
 fn prepared_stop_alias_or_whole_receipt_fault_rolls_back_task_intent_audit_and_metadata(
 ) -> Result<()> {
@@ -401,6 +403,7 @@ fn prepared_stop_alias_or_whole_receipt_fault_rolls_back_task_intent_audit_and_m
     Ok(())
 }
 
+#[cfg(holon_lib_test_shard = "b")]
 #[test]
 fn prepared_new_stop_rejects_deleting_but_original_receipt_replay_and_signal_stay_frozen(
 ) -> Result<()> {
@@ -485,6 +488,7 @@ fn prepared_new_stop_rejects_deleting_but_original_receipt_replay_and_signal_sta
     Ok(())
 }
 
+#[cfg(holon_lib_test_shard = "b")]
 #[test]
 fn prepared_stop_child_is_only_original_readonly_scope_including_deleted_and_never_successor_state(
 ) -> Result<()> {
@@ -595,6 +599,7 @@ fn prepared_stop_child_is_only_original_readonly_scope_including_deleted_and_nev
     Ok(())
 }
 
+#[cfg(holon_lib_test_shard = "b")]
 #[test]
 fn prepared_stop_cannot_smuggle_first_result_queue_activation_or_identity_deletion() -> Result<()> {
     for extra in [
@@ -677,6 +682,7 @@ fn prepared_stop_cannot_smuggle_first_result_queue_activation_or_identity_deleti
     Ok(())
 }
 
+#[cfg(holon_lib_test_shard = "b")]
 #[test]
 fn prepared_plain_task_digest_has_no_stop_field_and_new_noop_stop_still_advances_once() -> Result<()>
 {
@@ -742,6 +748,7 @@ fn prepared_plain_task_digest_has_no_stop_field_and_new_noop_stop_still_advances
     Ok(())
 }
 
+#[cfg(holon_lib_test_shard = "b")]
 #[test]
 fn task_and_stop_receipt_preflight_bounds_all_material_before_direct_and_fresh_lookup() -> Result<()>
 {
@@ -827,6 +834,7 @@ fn task_and_stop_receipt_preflight_bounds_all_material_before_direct_and_fresh_l
     Ok(())
 }
 
+#[cfg(holon_lib_test_shard = "b")]
 #[test]
 fn interrupted_child_cancellation_requires_original_stop_proof_and_keeps_terminal_rules_atomic(
 ) -> Result<()> {

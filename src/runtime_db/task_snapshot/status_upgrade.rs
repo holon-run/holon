@@ -99,6 +99,7 @@ pub(in crate::runtime_db) fn capture_status_sources_upgrade_tx(tx: &Transaction<
     Ok(())
 }
 
+#[cfg(holon_lib_test_shard = "b")]
 #[cfg(test)]
 mod tests {
     use super::*;

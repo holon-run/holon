@@ -83,6 +83,21 @@ fn fixture(
         record.id = format!("work_{index:03}");
         record.created_at = "2026-10-01T00:00:00Z".parse()?;
         record.updated_at = record.created_at;
+        if terminal {
+            record.result_brief_id = Some(format!("result-{index:03}"));
+            record.completion_intent = Some(crate::types::WorkItemCompletionIntent {
+                work_item_id: record.id.clone(),
+                source_activation_id: None,
+                source_message_id: None,
+                source_turn_id: None,
+                expected_work_revision: record.revision,
+                report_requirement: crate::types::CompletionReportRequirement::Required,
+                report_state: crate::types::CompletionReportState::Bound,
+                result_brief_id: record.result_brief_id.clone(),
+                created_at: record.created_at,
+                updated_at: record.updated_at,
+            });
+        }
         assert!(db.work_items().insert_new(&record)?);
         expected.push(record);
     }

@@ -984,6 +984,7 @@ mod tests {
         (home, runtime)
     }
 
+    #[cfg(holon_lib_test_shard = "a")]
     #[test]
     fn context_work_request_names_focus_and_actual_owner_without_reading_message_hints() {
         let mut state = AgentState::new("context-capture");
@@ -1012,6 +1013,7 @@ mod tests {
         );
     }
 
+    #[cfg(holon_lib_test_shard = "a")]
     #[test]
     fn admission_request_uses_planned_owner_history_without_proposed_execution_roots() {
         let mut state = AgentState::new("context-capture");
@@ -1091,6 +1093,7 @@ mod tests {
         );
     }
 
+    #[cfg(holon_lib_test_shard = "a")]
     #[tokio::test]
     async fn admission_snapshot_keeps_real_publication_and_resources_for_planned_owner(
     ) -> Result<()> {
@@ -1178,6 +1181,7 @@ mod tests {
         Ok(())
     }
 
+    #[cfg(holon_lib_test_shard = "a")]
     #[test]
     fn frozen_trigger_and_work_changes_require_replanning_instead_of_reusing_old_heads() {
         let work = |revision| CapturedWork {
@@ -1230,6 +1234,7 @@ mod tests {
         validate_trigger_selection(&[trigger.clone()], &[trigger]).unwrap();
     }
 
+    #[cfg(holon_lib_test_shard = "a")]
     #[test]
     fn input_request_preserves_hints_without_adopting_unstarted_turns() {
         let state = AgentState::new("context-capture");
@@ -1282,6 +1287,7 @@ mod tests {
         );
     }
 
+    #[cfg(holon_lib_test_shard = "a")]
     #[test]
     fn current_request_rejects_large_binding_before_key_construction() -> Result<()> {
         use crate::{
@@ -1344,6 +1350,7 @@ mod tests {
         Ok(())
     }
 
+    #[cfg(holon_lib_test_shard = "a")]
     #[test]
     fn current_request_admits_recovery_value_before_clone_and_decode() -> Result<()> {
         use crate::{
@@ -1406,6 +1413,7 @@ mod tests {
         Ok(())
     }
 
+    #[cfg(holon_lib_test_shard = "a")]
     #[test]
     fn current_request_acquisition_clone_uses_the_constructor_phase_remainder() -> Result<()> {
         use crate::{
@@ -1456,6 +1464,7 @@ mod tests {
         Ok(())
     }
 
+    #[cfg(holon_lib_test_shard = "a")]
     #[test]
     fn input_request_freezes_current_binding_and_both_history_windows() {
         let mut state = AgentState::new("context-capture");
@@ -1521,6 +1530,7 @@ mod tests {
                 if work_item_id=="queue-owner-must-not-leak")));
     }
 
+    #[cfg(holon_lib_test_shard = "a")]
     #[test]
     fn input_request_rejects_public_policy_expansion_before_capture() {
         let state = AgentState::new("context-capture");
@@ -1712,6 +1722,7 @@ mod tests {
         })
     }
 
+    #[cfg(holon_lib_test_shard = "a")]
     #[tokio::test]
     async fn named_preparation_preserves_scheduler_briefs_and_prompt_window() {
         let (_home, runtime) = fixture();
@@ -1816,6 +1827,7 @@ mod tests {
         );
     }
 
+    #[cfg(holon_lib_test_shard = "a")]
     #[tokio::test]
     async fn preview_preserves_published_posture_after_unprojected_history_append() {
         let (_home, runtime) = fixture();
@@ -1862,6 +1874,7 @@ mod tests {
         runtime.join_owned_mutations().await.unwrap();
     }
 
+    #[cfg(holon_lib_test_shard = "a")]
     #[tokio::test]
     async fn configuration_change_during_capture_reacquires_before_returning_prompt() {
         let (_home, runtime) = fixture();
@@ -1920,6 +1933,7 @@ mod tests {
         runtime.join_owned_mutations().await.unwrap();
     }
 
+    #[cfg(holon_lib_test_shard = "a")]
     #[tokio::test]
     async fn three_configuration_replacements_preserve_input_for_runtime_rebuild() {
         use crate::provider::{AgentProvider, ProviderTurnRequest, ProviderTurnResponse};
@@ -2121,6 +2135,7 @@ mod tests {
         runtime.join_owned_mutations().await.unwrap();
     }
 
+    #[cfg(holon_lib_test_shard = "a")]
     #[test]
     fn exhausted_context_retry_preserves_accepted_input_for_recovery() {
         let error = anyhow::Error::new(ContextPreparationRetryExhausted).context(
@@ -2144,6 +2159,7 @@ mod tests {
     }
 }
 
+#[cfg(holon_lib_test_shard = "a")]
 #[cfg(test)]
 mod resource_read_tests {
     use super::*;

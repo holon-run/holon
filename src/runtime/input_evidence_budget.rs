@@ -1625,10 +1625,12 @@ fn add_owned(total: &mut OwnedBytesEstimate, bytes: OwnedBytesEstimate) -> Resul
         add(total.metadata_estimate_bytes, bytes.metadata_estimate_bytes)?;
     Ok(())
 }
+#[cfg(holon_lib_test_shard = "a")]
 #[cfg(test)]
 #[path = "input_evidence_budget_tests.rs"]
 mod tests;
 
+#[cfg(holon_lib_test_shard = "a")]
 #[cfg(test)]
 #[path = "input_evidence_owned_completion_tests.rs"]
 mod owned_completion_tests;

@@ -320,6 +320,7 @@ fn template_install_error_response(error: anyhow::Error) -> (StatusCode, Json<Va
     )
 }
 
+#[cfg(holon_lib_test_shard = "c")]
 #[cfg(test)]
 mod tests {
     use super::*;

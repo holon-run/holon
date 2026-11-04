@@ -885,6 +885,7 @@ fn timestamp(value: DateTime<Utc>) -> String {
     value.to_rfc3339_opts(SecondsFormat::Nanos, true)
 }
 
+#[cfg(holon_lib_test_shard = "b")]
 #[cfg(test)]
 #[path = "input_mutation_receipts_tests.rs"]
 mod tests;

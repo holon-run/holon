@@ -237,6 +237,7 @@ pub fn tool_sections_with_context(
     sections
 }
 
+#[cfg(holon_lib_test_shard = "d")]
 #[cfg(test)]
 mod tests {
     use super::*;

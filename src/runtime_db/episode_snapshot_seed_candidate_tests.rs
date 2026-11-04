@@ -10,9 +10,11 @@ use crate::{
 };
 use std::sync::Arc;
 
+#[cfg(holon_lib_test_shard = "b")]
 #[path = "episode_snapshot_seed_candidate_node_tests.rs"]
 mod node_tests;
 
+#[cfg(holon_lib_test_shard = "b")]
 #[path = "episode_snapshot_seed_candidate_json_tests.rs"]
 mod json_tests;
 
@@ -142,6 +144,7 @@ fn stored_json(connection: &Connection) -> Result<String> {
     )?)
 }
 
+#[cfg(holon_lib_test_shard = "b")]
 #[test]
 fn fixed_candidate_digests_preserve_sha256_vectors_and_json_hex_bytes() -> Result<()> {
     assert_eq!(std::mem::size_of::<CandidatePayloadDigest>(), 32);
@@ -173,6 +176,7 @@ fn fixed_candidate_digests_preserve_sha256_vectors_and_json_hex_bytes() -> Resul
     Ok(())
 }
 
+#[cfg(holon_lib_test_shard = "b")]
 #[test]
 fn fixed_candidate_digest_streams_to_stack_writer_and_propagates_each_io_failure() -> Result<()> {
     struct Writer {
@@ -216,6 +220,7 @@ fn fixed_candidate_digest_streams_to_stack_writer_and_propagates_each_io_failure
     Ok(())
 }
 
+#[cfg(holon_lib_test_shard = "b")]
 #[test]
 fn fixed_candidate_digests_preserve_actual_seed_sql_payload_json() -> Result<()> {
     let long = "界\0\"\\".repeat(16_384);
@@ -239,6 +244,7 @@ fn fixed_candidate_digests_preserve_actual_seed_sql_payload_json() -> Result<()>
     Ok(())
 }
 
+#[cfg(holon_lib_test_shard = "b")]
 #[test]
 fn fixed_candidate_digests_keep_original_exhausted_phase_through_sql_and_rollback() -> Result<()> {
     let records = rows()?;
@@ -312,6 +318,7 @@ fn fixed_candidate_digests_keep_original_exhausted_phase_through_sql_and_rollbac
     Ok(())
 }
 
+#[cfg(holon_lib_test_shard = "b")]
 #[test]
 fn borrowed_candidate_keys_preserve_owning_map_bytes_filter_order_and_duplicates() -> Result<()> {
     let mut records = rows()?;
@@ -343,6 +350,7 @@ fn borrowed_candidate_keys_preserve_owning_map_bytes_filter_order_and_duplicates
     Ok(())
 }
 
+#[cfg(holon_lib_test_shard = "b")]
 #[test]
 fn borrowed_candidate_keys_keep_exhausted_caller_phase_tls_and_last_holder() -> Result<()> {
     let records = rows()?;
@@ -403,6 +411,7 @@ fn borrowed_candidate_keys_keep_exhausted_caller_phase_tls_and_last_holder() -> 
     Ok(())
 }
 
+#[cfg(holon_lib_test_shard = "b")]
 #[test]
 fn borrowed_candidate_keys_sql_failure_releases_reader_and_rolls_back_original_tx() -> Result<()> {
     let records = rows()?;
@@ -461,6 +470,7 @@ fn borrowed_candidate_keys_sql_failure_releases_reader_and_rolls_back_original_t
     Ok(())
 }
 
+#[cfg(holon_lib_test_shard = "b")]
 #[test]
 fn borrowed_candidate_keys_real_import_keeps_original_rows_and_atomic_seed_binding() -> Result<()> {
     let home = tempfile::tempdir()?;

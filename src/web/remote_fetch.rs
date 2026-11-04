@@ -155,6 +155,7 @@ fn remote_error(message: &str, retryable: bool) -> anyhow::Error {
         .into()
 }
 
+#[cfg(holon_lib_test_shard = "d")]
 #[cfg(test)]
 mod tests {
     use super::*;

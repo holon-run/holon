@@ -337,6 +337,7 @@ pub(super) fn encoded_metadata_bytes(value: &impl serde::Serialize) -> Result<us
     Ok(counter.0)
 }
 
+#[cfg(holon_lib_test_shard = "b")]
 #[cfg(test)]
 mod tests {
     use super::*;

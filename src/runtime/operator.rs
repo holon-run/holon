@@ -353,6 +353,7 @@ fn operator_notification_summary(message: &str) -> String {
     crate::tool::helpers::truncate_text(first_line, OPERATOR_NOTIFICATION_SUMMARY_LIMIT)
 }
 
+#[cfg(holon_lib_test_shard = "a")]
 #[cfg(test)]
 mod tests {
     use super::*;

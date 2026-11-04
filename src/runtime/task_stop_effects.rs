@@ -529,6 +529,7 @@ impl PublishedTaskStopEffects {
 #[path = "task_stop_epoch_fixture.rs"]
 mod host_epoch_fixture;
 
+#[cfg(holon_lib_test_shard = "a")]
 #[cfg(test)]
 mod tests {
     use super::*;

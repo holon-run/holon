@@ -352,6 +352,7 @@ fn high_watermark_for_agent_in(connection: &rusqlite::Connection, agent_id: &str
         .map_err(Into::into)
 }
 
+#[cfg(holon_lib_test_shard = "b")]
 #[cfg(test)]
 mod tests {
     use super::*;

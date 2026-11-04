@@ -1,3 +1,18 @@
+// Partial libtests retain shared fixtures whose callers live in other shards.
+// Production builds and the default complete suite keep the usual lint policy.
+#![cfg_attr(
+    all(
+        test,
+        not(all(
+            holon_lib_test_shard = "a",
+            holon_lib_test_shard = "b",
+            holon_lib_test_shard = "c",
+            holon_lib_test_shard = "d"
+        ))
+    ),
+    allow(dead_code, unused_imports)
+)]
+
 pub mod agent_memory;
 pub mod agent_template;
 pub mod agents_md;
@@ -77,5 +92,6 @@ pub mod x_search;
 #[cfg(test)]
 mod test_env;
 
+#[cfg(holon_lib_test_shard = "d")]
 #[cfg(test)]
 mod worktree_tests;

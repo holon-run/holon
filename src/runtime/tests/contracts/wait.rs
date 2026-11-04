@@ -413,7 +413,21 @@ fn publish_original_reply<'a>(
             })
             .await
             .unwrap();
-        stored.expect("original reply committed")
+        let reply = stored.expect("original reply committed");
+        drop(mutation);
+        persist_native_queue_fixture(
+            runtime,
+            QueueEntryRecord {
+                message_id: reply.id.clone(),
+                agent_id: reply.agent_id.clone(),
+                priority: reply.priority.clone(),
+                status: QueueEntryStatus::Queued,
+                created_at: reply.created_at,
+                updated_at: harness.now(),
+            },
+        )
+        .await;
+        reply
     })
 }
 

@@ -1844,7 +1844,7 @@ async fn timer_message_binds_the_unique_matching_wait_work_item() {
 
     clock.advance(std::time::Duration::from_millis(100));
     tokio::time::advance(std::time::Duration::from_millis(100)).await;
-    tokio::task::yield_now().await;
+    assert_timer_fire_count(&runtime, &timer.id, 1).await;
 
     let message = runtime
         .storage()

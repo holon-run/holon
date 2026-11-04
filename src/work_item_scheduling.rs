@@ -851,6 +851,7 @@ fn current_todo_ref(record: &WorkItemRecord) -> Option<&TodoItem> {
         })
 }
 
+#[cfg(holon_lib_test_shard = "d")]
 #[cfg(test)]
 mod tests {
     use super::*;

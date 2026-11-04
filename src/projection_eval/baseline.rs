@@ -519,6 +519,7 @@ pub fn generate_phase_1_scorecard() -> Phase1Scorecard {
     }
 }
 
+#[cfg(holon_lib_test_shard = "d")]
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -651,6 +651,7 @@ impl RuntimeHandle {
     }
 }
 
+#[cfg(holon_lib_test_shard = "a")]
 #[cfg(test)]
 #[path = "child_task_spawn_tests.rs"]
 mod tests;
@@ -890,6 +891,7 @@ fn accepted_child_spawn_command(
         && expected_lifecycle == lifecycle
 }
 
+#[cfg(holon_lib_test_shard = "a")]
 #[cfg(test)]
 mod accepted_legacy_command_tests {
     use super::*;

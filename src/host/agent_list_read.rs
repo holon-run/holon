@@ -228,6 +228,7 @@ impl RuntimeHost {
 mod tree;
 pub use tree::OwnedAgentTreeRead;
 
+#[cfg(holon_lib_test_shard = "d")]
 #[cfg(test)]
 #[path = "agent_list_read_tests.rs"]
 mod tests;

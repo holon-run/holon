@@ -43,6 +43,7 @@ impl serde::Serialize for BorrowedEvents<'_> {
     }
 }
 
+#[cfg(holon_lib_test_shard = "d")]
 #[tokio::test]
 async fn finite_history_http_page_uses_qualified_read_and_retains_its_response_body() -> Result<()>
 {
@@ -85,6 +86,7 @@ async fn finite_history_http_page_uses_qualified_read_and_retains_its_response_b
     Ok(())
 }
 
+#[cfg(holon_lib_test_shard = "d")]
 #[tokio::test]
 async fn finite_history_cold_read_matches_original_page_without_activation_or_live_publication(
 ) -> Result<()> {
@@ -130,6 +132,7 @@ async fn finite_history_cold_read_matches_original_page_without_activation_or_li
     Ok(())
 }
 
+#[cfg(holon_lib_test_shard = "d")]
 #[tokio::test]
 async fn finite_history_wire_keeps_original_source_through_cache_and_last_slice() -> Result<()> {
     let (_home, host) = fixture().await?;
@@ -168,6 +171,7 @@ async fn finite_history_wire_keeps_original_source_through_cache_and_last_slice(
     Ok(())
 }
 
+#[cfg(holon_lib_test_shard = "d")]
 #[tokio::test]
 async fn finite_history_wire_exact_cumulative_axes_and_last_slice() -> Result<()> {
     let (_home, host) = fixture().await?;

@@ -32,58 +32,72 @@ use crate::types::*;
 mod active_wait_material;
 use active_wait_material::active_wait_records;
 
+#[cfg(holon_lib_test_shard = "b")]
 #[cfg(test)]
 #[path = "repositories/active_wait_material_tests.rs"]
 mod active_wait_material_tests;
 
+#[cfg(holon_lib_test_shard = "b")]
 #[cfg(test)]
 #[path = "repositories/trigger_body_budget_tests.rs"]
 mod trigger_body_budget_tests;
 
+#[cfg(holon_lib_test_shard = "b")]
 #[cfg(test)]
 #[path = "repositories/trigger_sql_budget_tests.rs"]
 mod trigger_sql_budget_tests;
 
+#[cfg(holon_lib_test_shard = "b")]
 #[cfg(test)]
 #[path = "repositories/trigger_read_budget_tests.rs"]
 mod trigger_read_budget_tests;
 
+#[cfg(holon_lib_test_shard = "b")]
 #[cfg(test)]
 #[path = "repositories/timer_read_budget_tests.rs"]
 mod timer_read_budget_tests;
 
+#[cfg(holon_lib_test_shard = "b")]
 #[cfg(test)]
 #[path = "repositories/work_queue_material_tests.rs"]
 mod work_queue_material_tests;
 
+#[cfg(holon_lib_test_shard = "b")]
 #[cfg(test)]
 #[path = "repositories/continuation_material_tests.rs"]
 mod continuation_material_tests;
 
+#[cfg(holon_lib_test_shard = "b")]
 #[cfg(test)]
 #[path = "repositories/timer_sql_budget_tests.rs"]
 mod timer_sql_budget_tests;
 
+#[cfg(holon_lib_test_shard = "b")]
 #[cfg(test)]
 #[path = "repositories/state_sql_budget_tests.rs"]
 mod state_sql_budget_tests;
 
+#[cfg(holon_lib_test_shard = "b")]
 #[cfg(test)]
 #[path = "repositories/occupancy_read_budget_tests.rs"]
 mod occupancy_read_budget_tests;
 
+#[cfg(holon_lib_test_shard = "b")]
 #[cfg(test)]
 #[path = "repositories/advisory_read_tests.rs"]
 mod advisory_read_tests;
 
+#[cfg(holon_lib_test_shard = "b")]
 #[cfg(test)]
 #[path = "repositories/wait_sql_budget_tests.rs"]
 mod wait_sql_budget_tests;
 
+#[cfg(holon_lib_test_shard = "b")]
 #[cfg(test)]
 #[path = "repositories/wait_owner_budget_tests.rs"]
 mod wait_owner_budget_tests;
 
+#[cfg(holon_lib_test_shard = "b")]
 #[cfg(test)]
 #[path = "repositories/wait_writes_budget_tests.rs"]
 mod wait_writes_budget_tests;
@@ -235,12 +249,13 @@ impl WorkItemRepository<'_> {
         expected_revision: u64,
         changes: &[RuntimeIndexChange],
     ) -> Result<bool> {
-        // Public record writers must preserve canonical execution authority too.
-        // The raw transaction helper is only for composed transitions.
+        // Offline writers cannot mutate an already-qualified Work body.
+        // Live owners use the original Work transaction and acknowledge its facts.
         use crate::runtime_db::transitions::{
             ExecutionProtocolTransition, WorkItemMutation, WorkItemTransitionCommand,
         };
         self.db.transaction(|tx| {
+            super::work_snapshot::validate_unscoped_work_item_write_tx(tx, &record.id)?;
             Ok(self
                 .db
                 .transitions()
@@ -4719,14 +4734,12 @@ pub(super) fn recent_timers_for_agent(
         return Ok(Vec::new());
     }
     let limit = i64::try_from(limit).unwrap_or(i64::MAX);
-    let mut statement = connection.prepare(
+    let mut records = timer_list_on(
+        connection,
         "SELECT payload_json FROM timers WHERE agent_id = ?1
          ORDER BY updated_at DESC, created_at DESC, timer_id ASC LIMIT ?2",
+        params![agent_id, limit],
     )?;
-    let rows = statement.query_map(params![agent_id, limit], |row| row.get::<_, String>(0))?;
-    let mut records: Vec<_> = rows
-        .map(|row| decode_timer_payload(&row?))
-        .collect::<Result<_>>()?;
     records.reverse();
     Ok(records)
 }

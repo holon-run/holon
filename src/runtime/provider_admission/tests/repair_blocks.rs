@@ -1,5 +1,5 @@
 use super::*;
-use crate::domain::execution_protocol::{WorkItemExecutionRecord, WorkItemExecutionState};
+use crate::domain::execution_protocol::WorkItemExecutionState;
 use crate::types::{BriefKind, QueueEntryStatus, WorkItemPlanStatus};
 use std::sync::atomic::Ordering;
 
@@ -38,27 +38,37 @@ async fn repair_blocked_operator_sources_scenario() {
     let mut two = operator();
     two.priority = Priority::Interject;
     runtime.enqueue(one.clone()).await.unwrap();
-    let mut stranded = runtime
+    let original = runtime
         .runtime_db()
         .work_items()
         .latest(&work.id)
         .unwrap()
         .unwrap();
-    stranded.revision += 1;
-    runtime
+    let registration = runtime
         .runtime_db()
-        .transaction(|tx| {
-            tx.execute(
-                "UPDATE work_items SET revision = ?1, payload_json = ?2 WHERE work_item_id = ?3",
-                rusqlite::params![
-                    stranded.revision,
-                    serde_json::to_string(&stranded)?,
-                    work.id
-                ],
-            )?;
-            Ok(())
-        })
+        .transitions()
+        .load_execution_protocol_state_if_initialized("default")
+        .unwrap()
+        .unwrap()
+        .work_items[&work.id]
+        .clone();
+    let stranded = runtime
+        .update_work_item_fields(
+            work.id.clone(),
+            Some(original.objective.clone()),
+            None,
+            None,
+            None,
+            None,
+        )
+        .await
         .unwrap();
+    crate::runtime::tests::support::seed_live_work_execution(
+        &runtime,
+        &original,
+        registration.state,
+    )
+    .await;
     let canonical_before = runtime
         .runtime_db()
         .transitions()
@@ -148,25 +158,17 @@ async fn repair_blocked_operator_sources_scenario() {
             .count(),
         3
     );
-    runtime
-        .runtime_db()
-        .transaction(|tx| {
-            // Simulate the separately authorized offline registration repair.
-            // A real owner blocker must remain intact and is not replay authority.
-            let repaired = WorkItemExecutionRecord {
-                source_revision: stranded.revision,
-                state: WorkItemExecutionState::NeedsRepair {
-                    generation: canonical_before.work_items[&work.id].generation(),
-                    repair_id: "business-repair".into(),
-                },
-            };
-            tx.execute(
-            "UPDATE execution_protocol_work_items SET payload_json = ?1 WHERE work_item_id = ?2",
-            rusqlite::params![serde_json::to_string(&repaired)?, work.id],
-        )?;
-            Ok(())
-        })
-        .unwrap();
+    // Simulate the separately authorized offline registration repair.
+    // A real owner blocker must remain intact and is not replay authority.
+    crate::runtime::tests::support::seed_live_work_execution(
+        &runtime,
+        &stranded,
+        WorkItemExecutionState::NeedsRepair {
+            generation: canonical_before.work_items[&work.id].generation(),
+            repair_id: "business-repair".into(),
+        },
+    )
+    .await;
     let inspection = runtime.inspect_scheduler_repair().await.unwrap();
     assert!(inspection.source_revision_drifts.is_empty());
     assert!(!inspection.source_revision_repair_blocks[0].drift_present);

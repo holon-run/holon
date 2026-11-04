@@ -14,6 +14,7 @@
 //! (matching the previous per-agent read-error behavior) while the rest of
 //! the roster stays servable.
 
+#[cfg(holon_lib_test_shard = "b")]
 #[cfg(test)]
 #[path = "agent_list_tests.rs"]
 mod tests;

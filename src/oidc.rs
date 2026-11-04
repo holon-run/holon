@@ -489,6 +489,7 @@ async fn read_limited_body(
     Ok(body)
 }
 
+#[cfg(holon_lib_test_shard = "c")]
 #[cfg(test)]
 mod tests {
     use super::*;

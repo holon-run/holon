@@ -116,6 +116,7 @@ impl RuntimeMutation {
     }
 }
 
+#[cfg(holon_lib_test_shard = "a")]
 #[cfg(test)]
 #[path = "task_transition_tests.rs"]
 mod tests;

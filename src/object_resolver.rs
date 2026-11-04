@@ -349,6 +349,7 @@ fn message_body_text(body: &crate::types::MessageBody) -> Option<String> {
     }
 }
 
+#[cfg(holon_lib_test_shard = "c")]
 #[cfg(test)]
 mod tests {
     use serde_json::json;

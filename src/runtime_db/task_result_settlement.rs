@@ -51,8 +51,10 @@ pub(in crate::runtime_db) use recovery_observation::paused_replay_root_is_charge
 
 mod writes;
 pub(crate) use writes::*;
+#[cfg(holon_lib_test_shard = "b")]
 #[cfg(test)]
 mod tests;
+#[cfg(holon_lib_test_shard = "b")]
 #[cfg(test)]
 mod writes_tests;
 
@@ -1765,6 +1767,7 @@ fn latest_for_message_tx(
         .transpose()
 }
 
+#[cfg(holon_lib_test_shard = "b")]
 #[cfg(test)]
 mod projection_tests {
     use super::*;

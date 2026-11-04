@@ -1363,6 +1363,7 @@ fn is_runtime_work_queue_message_for_work_item(
         })
 }
 
+#[cfg(holon_lib_test_shard = "a")]
 #[cfg(test)]
 mod tests {
     use super::*;

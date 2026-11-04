@@ -14,6 +14,7 @@ use crate::context::{
 use crate::provider::provider_definitions;
 
 mod metadata_selection;
+#[cfg(holon_lib_test_shard = "c")]
 #[cfg(test)]
 mod metadata_selection_tests;
 use metadata_selection::{
@@ -2121,6 +2122,7 @@ fn default_verbosity_for_model(model_ref: &ModelRef) -> Option<ModelVerbosity> {
     (model_ref.provider == ProviderId::openai_codex()).then_some(ModelVerbosity::Low)
 }
 
+#[cfg(holon_lib_test_shard = "c")]
 #[cfg(test)]
 mod tests {
     use super::*;

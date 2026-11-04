@@ -15,10 +15,12 @@ use crate::types::{
 };
 use anyhow::ensure;
 
+#[cfg(holon_lib_test_shard = "b")]
 #[cfg(test)]
 #[path = "prepared_external_trigger/selector_budget_tests.rs"]
 mod selector_budget_tests;
 
+#[cfg(holon_lib_test_shard = "b")]
 #[cfg(test)]
 #[path = "prepared_external_trigger/commit_body_budget_tests.rs"]
 mod commit_body_budget_tests;

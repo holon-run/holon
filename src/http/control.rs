@@ -27,6 +27,7 @@ pub(crate) async fn prompt_body_limit(
 }
 const MAX_TRACE_SEARCH_RESULTS: usize = 100;
 
+#[cfg(holon_lib_test_shard = "c")]
 #[cfg(test)]
 mod setup_tests {
     use super::{runtime_config_setup, RuntimeConfigReloadState, RuntimeConfigReloadStatus};
@@ -2043,6 +2044,7 @@ fn markdown_absolute_path(path: &std::path::Path) -> String {
         .join("/")
 }
 
+#[cfg(holon_lib_test_shard = "c")]
 #[cfg(test)]
 mod tests {
     use super::*;

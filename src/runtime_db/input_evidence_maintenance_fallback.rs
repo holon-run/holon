@@ -398,6 +398,7 @@ pub(crate) fn validate_origin_tx(tx: &Transaction<'_>, seed: &str, key: &Key) ->
     Ok(())
 }
 
+#[cfg(holon_lib_test_shard = "b")]
 #[cfg(test)]
 #[path = "input_evidence_maintenance_fallback_tests.rs"]
 mod tests;

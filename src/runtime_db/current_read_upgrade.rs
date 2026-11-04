@@ -24,6 +24,18 @@ pub(in crate::runtime_db) fn capture_tx(tx: &Transaction<'_>) -> Result<()> {
         !installed,
         "Current upgrade is not an original schema transaction"
     );
+    let has_candidates: bool = tx.query_row(
+        "SELECT EXISTS(
+            SELECT 1 FROM agent_episode_continuity c
+            JOIN episode_continuity_seeds s ON s.seed_id=c.seed_id
+            WHERE c.mode='legacy_adopted' AND c.policy_version=1
+              AND s.source_kind='upgrade_identity')",
+        [],
+        |row| row.get(0),
+    )?;
+    if !has_candidates {
+        return Ok(());
+    }
     let (count, bytes): (usize, usize) = tx.query_row(
         &format!("SELECT COUNT(*),COALESCE(SUM(length(CAST(c.agent_id AS BLOB))+length(CAST(c.seed_id AS BLOB))+length(CAST(s.roots_json AS BLOB))+length(CAST(i.payload_json AS BLOB))+length(CAST(s.boundary_id AS BLOB))+length(CAST(s.identity_digest AS BLOB))),0) {SCOPES}"),
         [],
@@ -208,6 +220,7 @@ pub(in crate::runtime_db) fn capture_tx(tx: &Transaction<'_>) -> Result<()> {
     Ok(())
 }
 
+#[cfg(holon_lib_test_shard = "b")]
 #[cfg(test)]
 #[path = "current_read_upgrade_tests.rs"]
 mod tests;

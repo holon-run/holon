@@ -356,6 +356,7 @@ impl StartupSchedulingCleanup<'_, '_> {
     }
 }
 
+#[cfg(holon_lib_test_shard = "b")]
 #[cfg(test)]
 #[path = "startup_maintenance_tests.rs"]
 mod tests;

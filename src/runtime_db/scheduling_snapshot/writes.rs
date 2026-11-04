@@ -469,18 +469,22 @@ fn selected_install(
     })
 }
 
+#[cfg(holon_lib_test_shard = "b")]
 #[cfg(test)]
 #[path = "selected_install_budget_tests.rs"]
 mod selected_install_budget_tests;
 
+#[cfg(holon_lib_test_shard = "b")]
 #[cfg(test)]
 #[path = "standalone_install_budget_tests.rs"]
 mod standalone_install_budget_tests;
 
+#[cfg(holon_lib_test_shard = "b")]
 #[cfg(test)]
 #[path = "proof_phase_tests.rs"]
 mod proof_phase_tests;
 
+#[cfg(holon_lib_test_shard = "b")]
 #[cfg(test)]
 #[path = "observation_budget_tests.rs"]
 mod observation_budget_tests;

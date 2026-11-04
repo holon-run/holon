@@ -351,6 +351,7 @@ fn fallback_reason_for_hook_error(
     }
 }
 
+#[cfg(holon_lib_test_shard = "a")]
 #[cfg(test)]
 mod tests {
     use super::*;

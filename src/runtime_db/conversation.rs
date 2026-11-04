@@ -2542,11 +2542,14 @@ fn timestamp(value: DateTime<Utc>) -> String {
     value.to_rfc3339_opts(chrono::SecondsFormat::Millis, true)
 }
 
+#[cfg(holon_lib_test_shard = "b")]
 #[cfg(test)]
 mod tests;
 
+#[cfg(holon_lib_test_shard = "b")]
 #[cfg(test)]
 mod revision_budget_tests;
 
+#[cfg(holon_lib_test_shard = "b")]
 #[cfg(test)]
 mod assignment_budget_tests;

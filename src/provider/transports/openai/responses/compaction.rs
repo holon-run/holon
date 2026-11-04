@@ -4,6 +4,7 @@ use super::continuation::*;
 use crate::provider::classify_provider_error;
 use crate::provider::transports::http::DispatchGuardRejected;
 
+#[cfg(holon_lib_test_shard = "c")]
 #[cfg(test)]
 #[path = "compaction_material_tests.rs"]
 mod material_tests;

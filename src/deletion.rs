@@ -2027,6 +2027,7 @@ mod tests {
         (job, owner)
     }
 
+    #[cfg(holon_lib_test_shard = "d")]
     #[tokio::test]
     async fn deletion_finalize_known_publication_fault_restores_exact_ack() {
         let (_home, host) = metadata_test_host();
@@ -2087,6 +2088,7 @@ mod tests {
         host.shutdown().await.unwrap();
     }
 
+    #[cfg(holon_lib_test_shard = "d")]
     #[tokio::test]
     async fn deletion_metadata_known_fault_does_not_replay_original_sql() {
         let (_home, host) = metadata_test_host();
@@ -2127,6 +2129,7 @@ mod tests {
         host.shutdown().await.unwrap();
     }
 
+    #[cfg(holon_lib_test_shard = "d")]
     #[tokio::test]
     async fn deletion_metadata_unknown_fences_whole_group_without_replay() {
         let (_home, host) = metadata_test_host();
@@ -2209,6 +2212,7 @@ mod tests {
         host.shutdown().await.unwrap();
     }
 
+    #[cfg(holon_lib_test_shard = "d")]
     #[tokio::test]
     async fn deletion_metadata_pending_requeues_exact_running_checkpoint_without_ack() {
         let (_home, host) = metadata_test_host();
@@ -2269,6 +2273,7 @@ mod tests {
         host.shutdown().await.unwrap();
     }
 
+    #[cfg(holon_lib_test_shard = "d")]
     #[tokio::test]
     async fn deletion_requeued_known_metadata_checkpoint_can_resume_finalization() {
         let (_home, host) = metadata_test_host();
@@ -2333,6 +2338,7 @@ mod tests {
         host.shutdown().await.unwrap();
     }
 
+    #[cfg(holon_lib_test_shard = "d")]
     #[tokio::test]
     async fn deletion_metadata_pending_does_not_requeue_an_advanced_checkpoint() {
         let (_home, host) = metadata_test_host();
@@ -2371,6 +2377,7 @@ mod tests {
         host.shutdown().await.unwrap();
     }
 
+    #[cfg(holon_lib_test_shard = "d")]
     #[tokio::test]
     async fn deletion_finalize_existing_unknown_preserves_completed_checkpoint() {
         let (_home, host) = metadata_test_host();
@@ -2419,6 +2426,7 @@ mod tests {
         host.shutdown().await.unwrap();
     }
 
+    #[cfg(holon_lib_test_shard = "d")]
     #[tokio::test]
     async fn deletion_metadata_cancelled_caller_keeps_owned_short_commit() {
         let (_home, host) = metadata_test_host();
@@ -2468,6 +2476,7 @@ mod tests {
             .is_ok());
     }
 
+    #[cfg(holon_lib_test_shard = "d")]
     #[tokio::test]
     async fn deletion_metadata_opposite_scope_orders_release_all_owners() {
         let (_home, host) = metadata_test_host();
@@ -2512,6 +2521,7 @@ mod tests {
         host.shutdown().await.unwrap();
     }
 
+    #[cfg(holon_lib_test_shard = "d")]
     #[test]
     fn home_resource_policy_classifies_real_runtime_output_and_user_files() {
         let root = tempfile::tempdir().unwrap();
@@ -2556,6 +2566,7 @@ mod tests {
         }
     }
 
+    #[cfg(holon_lib_test_shard = "d")]
     #[test]
     fn home_resource_policy_allows_only_empty_user_directories() {
         let root = tempfile::tempdir().unwrap();
@@ -2596,6 +2607,7 @@ mod tests {
         }
     }
 
+    #[cfg(holon_lib_test_shard = "d")]
     #[test]
     fn home_resource_policy_treats_tmp_directory_as_disposable_scratch() {
         let root = tempfile::tempdir().unwrap();
@@ -2644,6 +2656,7 @@ mod tests {
         }
     }
 
+    #[cfg(holon_lib_test_shard = "d")]
     #[cfg(unix)]
     #[test]
     fn both_home_policies_reject_symlinks_and_paths_outside_agents_root() {
@@ -2708,6 +2721,7 @@ mod tests {
         }
     }
 
+    #[cfg(holon_lib_test_shard = "d")]
     #[test]
     fn deletion_retry_delay_is_deterministic_exponential_and_capped() {
         let first = deletion_retry_delay(&retry_job(1));
@@ -2723,6 +2737,7 @@ mod tests {
         assert_eq!(deletion_retry_delay(&retry_job(32)), DELETION_RETRY_CAP);
     }
 
+    #[cfg(holon_lib_test_shard = "d")]
     #[test]
     fn index_cleanup_removes_row_map_before_fts_rowid_reuse() -> Result<()> {
         let connection = rusqlite::Connection::open_in_memory()?;
@@ -2788,6 +2803,7 @@ mod tests {
         Ok(())
     }
 
+    #[cfg(holon_lib_test_shard = "d")]
     #[test]
     fn deletable_home_accepts_plain_directory_inside_root() {
         let root = tempfile::tempdir().unwrap();
@@ -2796,6 +2812,7 @@ mod tests {
         ensure_deletable_agent_home(&agents.join("alpha"), &agents).unwrap();
     }
 
+    #[cfg(holon_lib_test_shard = "d")]
     #[test]
     fn deletable_home_rejects_missing_directory() {
         let root = tempfile::tempdir().unwrap();
@@ -2805,6 +2822,7 @@ mod tests {
         assert!(err.to_string().contains("inspecting agent home"));
     }
 
+    #[cfg(holon_lib_test_shard = "d")]
     #[test]
     fn deletable_home_rejects_plain_file() {
         let root = tempfile::tempdir().unwrap();
@@ -2815,6 +2833,7 @@ mod tests {
         assert!(err.to_string().contains("is not a directory"));
     }
 
+    #[cfg(holon_lib_test_shard = "d")]
     #[cfg(unix)]
     #[test]
     fn deletable_home_rejects_symlink_pointing_inside_root() {
@@ -2828,6 +2847,7 @@ mod tests {
         assert!(err.to_string().contains("is a symlink"));
     }
 
+    #[cfg(holon_lib_test_shard = "d")]
     #[cfg(unix)]
     #[test]
     fn deletable_home_rejects_symlink_pointing_outside_root() {

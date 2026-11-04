@@ -2189,6 +2189,7 @@ fn trim_to_tail(buffer: &mut String, max_chars: usize) {
     buffer.drain(..trim_at);
 }
 
+#[cfg(holon_lib_test_shard = "a")]
 #[cfg(test)]
 mod tests {
     use std::{collections::BTreeMap, io::Cursor, path::Path, sync::Arc};

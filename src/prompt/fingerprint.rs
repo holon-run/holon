@@ -127,6 +127,7 @@ pub(super) fn digest(value: &impl Serialize) -> String {
     format!("{:x}", writer.0.finalize())
 }
 
+#[cfg(holon_lib_test_shard = "d")]
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -443,6 +443,7 @@ fn insert_bulk_messages_tx(
     Ok(())
 }
 
+#[cfg(holon_lib_test_shard = "b")]
 #[cfg(test)]
 #[path = "cold_fixture_tests.rs"]
 mod tests;

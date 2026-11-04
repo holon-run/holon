@@ -285,6 +285,7 @@ pub(crate) async fn resolve_control_recovery(
     Ok(true)
 }
 
+#[cfg(holon_lib_test_shard = "a")]
 #[cfg(test)]
 mod tests {
     use super::*;

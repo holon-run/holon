@@ -852,6 +852,7 @@ pub(super) fn register_seed_recovery_tx(
     Ok(())
 }
 
+#[cfg(holon_lib_test_shard = "b")]
 #[cfg(test)]
 #[path = "input_evidence_execution_tests.rs"]
 mod tests;

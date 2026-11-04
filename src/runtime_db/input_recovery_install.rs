@@ -321,6 +321,7 @@ fn current_payload_tx(
     Ok(Some(payload))
 }
 
+#[cfg(holon_lib_test_shard = "b")]
 #[cfg(test)]
 #[path = "input_recovery_install_tests.rs"]
 mod tests;

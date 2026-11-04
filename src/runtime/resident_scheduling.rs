@@ -1,13 +1,17 @@
 //! Timer, pending wake and ingress facts selected from one owner publication.
+#[cfg(holon_lib_test_shard = "a")]
 #[cfg(test)]
 #[path = "resident_scheduling/replacement_budget_tests.rs"]
 mod replacement_budget_tests;
+#[cfg(holon_lib_test_shard = "a")]
 #[cfg(test)]
 #[path = "resident_scheduling/selection_budget_tests.rs"]
 mod selection_budget_tests;
+#[cfg(holon_lib_test_shard = "a")]
 #[cfg(test)]
 #[path = "resident_scheduling/standalone_capture_budget_tests.rs"]
 mod standalone_capture_budget_tests;
+#[cfg(holon_lib_test_shard = "a")]
 #[cfg(test)]
 #[path = "resident_scheduling/standalone_preparation_budget_tests.rs"]
 mod standalone_preparation_budget_tests;

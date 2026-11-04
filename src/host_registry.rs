@@ -5,6 +5,7 @@ use std::sync::{Arc, Mutex as StdMutex, RwLock as StdRwLock};
 use anyhow::{anyhow, Result};
 use arc_swap::ArcSwap;
 
+#[cfg(holon_lib_test_shard = "c")]
 #[cfg(test)]
 #[path = "host_registry/model_catalog_tests.rs"]
 mod model_catalog_tests;
@@ -538,6 +539,7 @@ pub(crate) fn validate_agent_id_format(agent_id: &str) -> Result<()> {
     Ok(())
 }
 
+#[cfg(holon_lib_test_shard = "c")]
 #[cfg(test)]
 mod tests {
     use super::*;

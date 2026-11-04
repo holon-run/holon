@@ -1748,9 +1748,9 @@ async fn enter_git_worktree_root_rejects_when_managed_worktrees_disabled() {
     )
     .unwrap();
     {
-        let mut guard = runtime.inner.agent.lock().await;
+        let mut guard = runtime.begin_mutation().await.unwrap();
         guard.state.execution_profile.supports_managed_worktrees = false;
-        guard.persist_state(&runtime.inner.storage).unwrap();
+        guard.persist_state(&runtime.inner.storage).await.unwrap();
     }
     let workspace_entry = WorkspaceEntry::new("ws-1", workspace.path().to_path_buf(), None);
     runtime.attach_workspace(&workspace_entry).await.unwrap();

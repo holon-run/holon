@@ -15,6 +15,7 @@ pub(crate) struct EventStreamScope {
     _material: ResourceReadMaterial,
 }
 
+#[cfg(holon_lib_test_shard = "d")]
 #[cfg(test)]
 #[path = "event_stream_read_tests.rs"]
 mod tests;

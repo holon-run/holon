@@ -1451,6 +1451,7 @@ pub(super) fn build_turn_local_projection_with_time(
     })
 }
 
+#[cfg(holon_lib_test_shard = "a")]
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -4951,6 +4951,7 @@ fn is_zero_i64(value: &i64) -> bool {
     *value == 0
 }
 
+#[cfg(holon_lib_test_shard = "c")]
 #[cfg(test)]
 mod tests {
     use std::{

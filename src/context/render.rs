@@ -308,6 +308,7 @@ pub(super) fn enum_label<T: serde::Serialize + std::fmt::Debug>(value: &T) -> St
         .unwrap_or_else(|| format!("{value:?}"))
 }
 
+#[cfg(holon_lib_test_shard = "d")]
 #[cfg(test)]
 mod tests {
     use super::*;

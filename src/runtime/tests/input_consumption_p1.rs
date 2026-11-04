@@ -6,11 +6,17 @@ use crate::types::{
     QueueEntryRecord, TurnOwner, WorkItemPlanStatus,
 };
 
+#[cfg(holon_lib_test_shard = "a")]
 mod canonical_not_runnable;
+#[cfg(holon_lib_test_shard = "a")]
 mod recovery_batching;
+#[cfg(holon_lib_test_shard = "a")]
 mod recovery_diagnostics;
+#[cfg(holon_lib_test_shard = "a")]
 mod rejected_producers;
+#[cfg(holon_lib_test_shard = "a")]
 mod retained_sources;
+#[cfg(holon_lib_test_shard = "a")]
 mod task_rejoin_recovery;
 
 #[derive(Default)]
@@ -107,6 +113,7 @@ impl AgentProvider for ResultFallbackProvider {
     }
 }
 
+#[cfg(holon_lib_test_shard = "a")]
 #[tokio::test(start_paused = true)]
 async fn task_result_provider_fallback_transfers_initial_snapshot_and_converges() {
     assert_task_result_provider_fallback().await;
@@ -415,11 +422,13 @@ async fn recover_stopped_target(home: &std::path::Path, provider: Arc<dyn AgentP
         .unwrap();
 }
 
+#[cfg(holon_lib_test_shard = "a")]
 #[tokio::test(start_paused = true)]
 async fn p1_paused_and_backoff_results_do_not_reserve_recovery_capacity() {
     assert_budgeted_recovery_capacity(false).await;
 }
 
+#[cfg(holon_lib_test_shard = "a")]
 #[tokio::test(start_paused = true)]
 async fn p1_fresh_task_result_does_not_consume_paused_owner_results() {
     assert_budgeted_recovery_capacity(true).await;
@@ -673,6 +682,7 @@ impl AgentProvider for BatchProvider {
     }
 }
 
+#[cfg(holon_lib_test_shard = "a")]
 #[tokio::test]
 async fn p1_command_and_child_batches_include_anchor_and_reduce_settled_notifications() {
     for kind in [TaskKind::CommandTask, TaskKind::ChildAgentTask] {
@@ -1305,6 +1315,7 @@ async fn publish_owner_result_with_reentry(
     message.id
 }
 
+#[cfg(holon_lib_test_shard = "a")]
 #[tokio::test(start_paused = true)]
 async fn p1_command_and_child_recovery_wakes_drain_pending_results_once() {
     Box::pin(assert_command_and_child_recovery_wakes_drain_pending_results_once()).await;
@@ -1549,6 +1560,7 @@ async fn assert_command_and_child_recovery_wakes_drain_pending_results_once() {
     }
 }
 
+#[cfg(holon_lib_test_shard = "a")]
 #[tokio::test(start_paused = true)]
 async fn p1_command_and_child_admitted_anchor_survives_two_runtime_rebuilds() {
     use crate::runtime_db::task_result_settlement::{
@@ -1859,6 +1871,7 @@ async fn publish_shared_reply(
     (reply.id, results)
 }
 
+#[cfg(holon_lib_test_shard = "a")]
 #[tokio::test(start_paused = true)]
 async fn p1_shared_reply_counts_each_waiter_with_one_body_per_bounded_batch() {
     use crate::runtime_db::task_result_settlement::{
@@ -1995,6 +2008,7 @@ async fn p1_shared_reply_counts_each_waiter_with_one_body_per_bounded_batch() {
     }
 }
 
+#[cfg(holon_lib_test_shard = "a")]
 #[tokio::test(start_paused = true)]
 async fn p1_shared_reply_overflow_recovers_after_queued_notifications_finish() {
     use crate::runtime_db::task_result_settlement::{
@@ -2134,6 +2148,7 @@ async fn p1_shared_reply_overflow_recovers_after_queued_notifications_finish() {
     assert!(!runtime.emit_due_task_result_recovery().await.unwrap());
 }
 
+#[cfg(holon_lib_test_shard = "a")]
 #[tokio::test]
 async fn p1_shared_reply_does_not_settle_a_different_captured_owner() {
     use crate::runtime_db::task_result_settlement::TaskResultSettlementState;
@@ -2175,6 +2190,7 @@ async fn p1_shared_reply_does_not_settle_a_different_captured_owner() {
     assert_eq!(provider.requests.lock().await.len(), 1);
 }
 
+#[cfg(holon_lib_test_shard = "a")]
 #[tokio::test(start_paused = true)]
 async fn p1_shared_reply_recovery_reuses_admitted_waiters_before_overflow() {
     use crate::runtime_db::task_result_settlement::TaskResultSettlementState;
@@ -2247,6 +2263,7 @@ async fn p1_shared_reply_recovery_reuses_admitted_waiters_before_overflow() {
     assert_eq!(provider.requests.lock().await.len(), 1);
 }
 
+#[cfg(holon_lib_test_shard = "a")]
 #[tokio::test(start_paused = true)]
 async fn p1_closed_admitted_reply_recovers_through_fenced_runtime_wake() {
     use crate::runtime_db::task_result_settlement::{
@@ -2544,6 +2561,7 @@ async fn p1_closed_admitted_reply_recovers_through_fenced_runtime_wake() {
     }
 }
 
+#[cfg(holon_lib_test_shard = "a")]
 #[tokio::test]
 async fn p1_mixed_owner_reserves_two_ordinary_inputs_before_result_admission() {
     let (_home, _host, sender, target, provider) = fixture().await;
@@ -2601,6 +2619,7 @@ async fn p1_mixed_owner_reserves_two_ordinary_inputs_before_result_admission() {
     assert_eq!(provider.requests.lock().await.len(), 1);
 }
 
+#[cfg(holon_lib_test_shard = "a")]
 #[tokio::test]
 async fn p1_result_flood_reserves_two_ordinary_inputs_in_the_same_owner_budget() {
     let (_home, _host, sender, target, provider) = fixture().await;
@@ -2673,6 +2692,7 @@ async fn p1_result_flood_reserves_two_ordinary_inputs_in_the_same_owner_budget()
     assert_eq!(provider.requests.lock().await.len(), 1);
 }
 
+#[cfg(holon_lib_test_shard = "a")]
 #[tokio::test]
 async fn p1_mixed_budget_reserves_ordinary_bytes_before_result_admission() {
     let (_home, _host, sender, target, provider) = fixture().await;
@@ -2736,6 +2756,7 @@ async fn p1_mixed_budget_reserves_ordinary_bytes_before_result_admission() {
     assert!(visible.contains(&"y".repeat(12000)));
 }
 
+#[cfg(holon_lib_test_shard = "a")]
 #[tokio::test]
 async fn p1_result_bytes_are_reserved_before_the_source_ledger_admits() {
     let (_home, _host, sender, target, provider) = fixture().await;
@@ -2818,6 +2839,7 @@ async fn p1_result_bytes_are_reserved_before_the_source_ledger_admits() {
     assert_eq!(provider.requests.lock().await.len(), 1);
 }
 
+#[cfg(holon_lib_test_shard = "a")]
 #[tokio::test]
 async fn p1_exact_waiter_precedes_owner_batch_without_migrating_result_owner() {
     let (_home, _host, sender, target, provider) = fixture().await;
@@ -2921,6 +2943,7 @@ async fn p1_exact_waiter_precedes_owner_batch_without_migrating_result_owner() {
     assert_eq!(provider.requests.lock().await.len(), 1);
 }
 
+#[cfg(holon_lib_test_shard = "a")]
 #[tokio::test]
 async fn p1_receiver_owner_combines_multiple_senders_without_using_current_focus() {
     let (_home, host, sender, target, provider) = fixture().await;
@@ -2964,6 +2987,7 @@ async fn p1_receiver_owner_combines_multiple_senders_without_using_current_focus
     assert_eq!(provider.requests.lock().await.len(), 1);
 }
 
+#[cfg(holon_lib_test_shard = "a")]
 #[tokio::test]
 async fn p1_sender_never_bridges_receiver_owners_through_an_unbound_message() {
     let (_home, _host, sender, target, _) = fixture().await;
@@ -3000,6 +3024,7 @@ async fn p1_sender_never_bridges_receiver_owners_through_an_unbound_message() {
     );
 }
 
+#[cfg(holon_lib_test_shard = "a")]
 #[tokio::test]
 async fn p1_sender_messages_1_2_8_9_use_bounded_provider_batches() {
     for count in [1usize, 2, 8, 9] {
@@ -3066,6 +3091,7 @@ async fn p1_sender_messages_1_2_8_9_use_bounded_provider_batches() {
     }
 }
 
+#[cfg(holon_lib_test_shard = "a")]
 #[tokio::test]
 async fn p1_different_runtime_senders_are_not_combined() {
     let (_home, host, sender, target, provider) = fixture().await;
@@ -3084,6 +3110,7 @@ async fn p1_different_runtime_senders_are_not_combined() {
     assert_eq!(provider.requests.lock().await.len(), 2);
 }
 
+#[cfg(holon_lib_test_shard = "a")]
 #[tokio::test]
 async fn p1_oversize_input_preserves_utf8_preview_and_reachable_source() {
     let (_home, _host, sender, target, provider) = fixture().await;
@@ -3106,6 +3133,7 @@ async fn p1_oversize_input_preserves_utf8_preview_and_reachable_source() {
     assert_eq!(provider.requests.lock().await.len(), 1);
 }
 
+#[cfg(holon_lib_test_shard = "a")]
 #[tokio::test]
 async fn p1_turn_start_cutoff_excludes_arrivals_before_later_context_rebuild() {
     let (_home, _host, sender, target, _) = fixture().await;
@@ -3124,6 +3152,7 @@ async fn p1_turn_start_cutoff_excludes_arrivals_before_later_context_rebuild() {
     );
 }
 
+#[cfg(holon_lib_test_shard = "a")]
 #[tokio::test]
 async fn p1_concurrent_attachment_and_fixed_cutoff_do_not_double_consume() {
     let (_home, _host, sender, target, provider) = fixture().await;
@@ -3163,6 +3192,7 @@ async fn p1_concurrent_attachment_and_fixed_cutoff_do_not_double_consume() {
     assert!(provider.requests.lock().await.is_empty());
 }
 
+#[cfg(holon_lib_test_shard = "a")]
 #[tokio::test]
 async fn p1_unreconciled_reply_wait_is_not_sender_fallback() {
     let (_home, _host, sender, target, _) = fixture().await;
@@ -3211,6 +3241,7 @@ async fn p1_unreconciled_reply_wait_is_not_sender_fallback() {
     );
 }
 
+#[cfg(holon_lib_test_shard = "a")]
 #[tokio::test]
 async fn p1_byte_budget_defers_whole_normal_item_without_claiming_it() {
     let (_home, _host, sender, target, _) = fixture().await;
@@ -3238,6 +3269,7 @@ async fn p1_byte_budget_defers_whole_normal_item_without_claiming_it() {
     );
 }
 
+#[cfg(holon_lib_test_shard = "a")]
 #[tokio::test]
 async fn p1_current_focus_is_not_receiver_ownership() {
     let (_home, _host, sender, target, _) = fixture().await;
@@ -3263,6 +3295,7 @@ async fn p1_current_focus_is_not_receiver_ownership() {
     ));
 }
 
+#[cfg(holon_lib_test_shard = "a")]
 #[tokio::test]
 async fn p1_operator_interject_remains_ahead_of_sender_batch() {
     let (_home, _host, sender, target, provider) = fixture().await;
@@ -3294,6 +3327,7 @@ async fn p1_operator_interject_remains_ahead_of_sender_batch() {
     assert_eq!(provider.requests.lock().await.len(), 1);
 }
 
+#[cfg(holon_lib_test_shard = "a")]
 #[tokio::test]
 async fn p1_same_sender_different_authority_is_not_combined() {
     let (_home, _host, sender, target, _) = fixture().await;
@@ -3322,6 +3356,7 @@ async fn p1_same_sender_different_authority_is_not_combined() {
     );
 }
 
+#[cfg(holon_lib_test_shard = "a")]
 #[tokio::test]
 async fn p1_scan_stops_at_64_snapshot_candidates() {
     let (_home, host, sender, target, _) = fixture().await;
@@ -3358,6 +3393,7 @@ async fn p1_scan_stops_at_64_snapshot_candidates() {
     );
 }
 
+#[cfg(holon_lib_test_shard = "a")]
 #[tokio::test]
 async fn p1_precommit_fault_leaves_follower_queued_and_unattached() {
     let (_home, _host, sender, target, _) = fixture().await;
@@ -3387,6 +3423,7 @@ async fn p1_precommit_fault_leaves_follower_queued_and_unattached() {
     );
 }
 
+#[cfg(holon_lib_test_shard = "a")]
 #[tokio::test]
 async fn p1_restart_presents_attached_inputs_before_claiming_new_arrivals() {
     let (home, host, sender, target, provider) = fixture().await;
@@ -3564,6 +3601,7 @@ fn seed_recovery_priority_barrier<'a>(
     })
 }
 
+#[cfg(holon_lib_test_shard = "a")]
 #[tokio::test]
 async fn p1_recovered_batch_never_precedes_operator_task_rejoin_or_exact_waiter() {
     for barrier in ["operator", "task-rejoin", "exact-waiter"] {
@@ -3676,6 +3714,7 @@ async fn p1_recovered_batch_never_precedes_operator_task_rejoin_or_exact_waiter(
     }
 }
 
+#[cfg(holon_lib_test_shard = "a")]
 #[tokio::test]
 async fn p1_null_ingress_turn_recovers_twice_without_rebinding_attempt_turns() {
     for null_ingress in [false, true] {
@@ -3944,6 +3983,7 @@ async fn p1_null_ingress_turn_recovers_twice_without_rebinding_attempt_turns() {
     }
 }
 
+#[cfg(holon_lib_test_shard = "a")]
 #[tokio::test]
 async fn p1_terminal_replay_lineage_rejects_missing_foreign_cycles_and_overflow() {
     let (_home, _host, sender, target, _) = fixture().await;
@@ -4056,6 +4096,7 @@ async fn p1_terminal_replay_lineage_rejects_missing_foreign_cycles_and_overflow(
     .is_none());
 }
 
+#[cfg(holon_lib_test_shard = "a")]
 #[tokio::test]
 async fn p1_claim_only_replay_without_source_turn_does_not_admit_a_batch() {
     for operator in [true, false] {
@@ -4191,6 +4232,7 @@ async fn p1_claim_only_replay_without_source_turn_does_not_admit_a_batch() {
     }
 }
 
+#[cfg(holon_lib_test_shard = "a")]
 #[tokio::test]
 async fn p1_recovery_rejects_unqualified_snapshot_admission_drift() {
     use crate::runtime_db::input_evidence_snapshot::InputEvidenceSnapshotError;
@@ -4398,6 +4440,7 @@ fn legacy_recovery_home_with_current_upgrade(
     Ok(home)
 }
 
+#[cfg(holon_lib_test_shard = "a")]
 #[tokio::test]
 async fn p1_recovery_quarantines_qualified_foreign_owner_snapshot_admission() {
     let (_original_home, host, sender, target, provider) = fixture().await;
@@ -4514,6 +4557,7 @@ async fn p1_recovery_quarantines_qualified_foreign_owner_snapshot_admission() {
     assert!(provider.requests.lock().await.is_empty());
 }
 
+#[cfg(holon_lib_test_shard = "a")]
 #[tokio::test]
 async fn p1_recovery_rejects_missing_or_foreign_snapshot_admission() {
     for invalid_evidence in [
@@ -5063,6 +5107,7 @@ async fn p1_recovery_rejects_missing_or_foreign_snapshot_admission() {
     }
 }
 
+#[cfg(holon_lib_test_shard = "a")]
 #[tokio::test]
 async fn p1_changed_or_invalid_receiver_binding_never_falls_back_to_sender() {
     let (_home, _host, sender, target, provider) = fixture().await;

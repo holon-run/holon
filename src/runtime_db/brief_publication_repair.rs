@@ -1199,6 +1199,7 @@ fn repair_candidate(tx: &Transaction<'_>, candidate: &RepairCandidate) -> Result
     Ok(())
 }
 
+#[cfg(holon_lib_test_shard = "b")]
 #[cfg(test)]
 mod tests {
     use std::panic::{catch_unwind, AssertUnwindSafe};

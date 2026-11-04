@@ -355,6 +355,7 @@ pub(crate) fn acknowledge_frozen_stopped_provider_pause_tx(
     stopped_pause_memory::revalidate_tx(tx, frozen, &proof)
 }
 
+#[cfg(holon_lib_test_shard = "b")]
 #[cfg(test)]
 #[path = "stopped_pause_tests.rs"]
 mod stopped_pause_tests;
@@ -443,6 +444,7 @@ impl RuntimeDb {
     }
 }
 
+#[cfg(holon_lib_test_shard = "b")]
 #[cfg(test)]
 mod tests {
     use super::*;

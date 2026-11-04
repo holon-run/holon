@@ -77,6 +77,7 @@ pub mod test_support {
     }
 }
 
+#[cfg(holon_lib_test_shard = "b")]
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1338,6 +1339,7 @@ mod tests {
              DROP TABLE command_task_creation_sources;
              DROP TABLE current_read_qualification;
              DROP TABLE current_read_revisions;
+             DROP TABLE event_history_acks;
              DROP TABLE input_query_birth_members;
              DROP TABLE input_query_birth_cursors;
              DROP INDEX input_native_known_current;
