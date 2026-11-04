@@ -5,6 +5,100 @@ unchanged catalog facts are preserved, not newly certified as vendor hard
 limits. An upstream candidate is evidence to review, not permission to change
 an endpoint, region, subscription entitlement, or runtime output policy.
 
+## Incremental review: 2026-11-05
+
+The immutable models.dev payload is
+`a032bd9630156a5a601e8097d13005838c9be0822e37b1e0cb035af10e6e79ca`.
+The [official OpenRouter listing](https://openrouter.ai/api/v1/models),
+sampled November 4 at 20:34:48 UTC (raw SHA-256
+`91afc2ddc6864809142b8ae100f26ea641936681a69790a62ffc587bf54e4b9e`),
+supports these endpoint-local discovery projection changes:
+
+| OpenRouter model ID | Field | Previous | Current |
+| --- | --- | ---: | ---: |
+| `meta-llama/llama-3.3-70b-instruct` | output ceiling | 128,000 | 16,384 |
+| `nvidia/nemotron-3.5-super-vl` | output ceiling | 235,929 | 943,718 |
+| `openai/gpt-oss-20b` | output ceiling | 117,964 | 32,768 |
+| `qwen/qwen3-235b-a22b-2507` | output ceiling | 117,964 | 16,384 |
+| `z-ai/glm-5.3-flash` | output ceiling | 131,072 | 943,717 |
+| `xiaomi/mimo-v2.5` | model-level context | 1,050,000 | 1,000,000 |
+
+The existing remote projection also uses these output ceilings as defaults;
+this does not independently certify an omitted-request service default.
+GLM's model-level context is `1048576`, while its provider-level context is
+`1048575`; neither is substituted for the other. MiMo's compaction projection
+changes from `997500` to `950000` with its model-level context.
+
+Five new remote records are `chutes/tencent/Hy4`,
+`openrouter/ricursiveai/ripple-65b-preview`,
+`openrouter/stealth/crouton-alpha`, `openrouter/tencent/hy4`, and
+`together/moonshotai/Kimi-K3.1-Pro`. These remain discovery metadata, not
+static entitlement or independent certification of every upstream field.
+The two missing `openrouter/thinkingmachines/inkling:free` and
+`openrouter/thinkingmachines/inkling-small:free` records are removed only
+from the generated discovery artifact, not interpreted as provider-wide EOS.
+
+### DashScope Messages and Tencent Hy4
+
+The [DashScope Messages contract](https://help.aliyun.com/zh/model-studio/anthropic-api-messages)
+(raw SHA-256 `eb2d5c64ed1a790daf2423632d63c509e78fbaf3c460ea140623f185a7afdf39`)
+adds exact `kimi-k3.1-pro`, default-on thinking and
+`output_config.effort=low/medium/high/max` (service default `max`).
+The [Kimi deployment guide](https://help.aliyun.com/zh/model-studio/kimi-api)
+independently certifies text/image input, not video. Only the ordinary
+DashScope Messages endpoint is eligible; no Token Plan or Coding Plan
+entitlement, integer capacity, output default or explicit cache breakpoint
+support is inferred. Effort must be sent as `output_config.effort`, not
+translated into an Anthropic thinking-token budget.
+
+Tencent's [protocol matrix](https://cloud.tencent.com/document/product/1823/130079)
+and [Hy4 guide](https://cloud.tencent.com/document/product/1823/132252)
+(raw SHA-256 `6132e8361d25a0f7cc461ddf20f56565ff56fae6899f30e8cd75626280c91622`)
+certify exact `hy4` in Chat, Messages and Responses, including image input
+independently for all three protocols. The
+[thinking contract](https://cloud.tencent.com/document/product/1823/131208)
+(raw SHA-256 `3d02637b55382a09f151ba923f6a70a22d504a66838f98d0d49a14365116d098`)
+certifies Chat `high/no_think`. Messages/Responses retain conservative
+reasoning=false and no effort controls without separate protocol evidence;
+that restriction must not erase their independently certified image input.
+Abbreviated `1024k/1M/960k/64k` are not exact integer budgets or defaults.
+
+The same exact Chat contract replaces `none` with `no_think` for
+`hy4-preview` and `hy3`, and adds `none` to exact `deepseek-v4-pro`.
+It does not change similarly prefixed/suffixed IDs or another provider.
+Provider configuration and final route/model validation are separate:
+accepting Tencent Chat's `no_think` must not relax OpenAI's generic
+vocabulary or bypass the selected model's allowlist. The old spelling was
+not tested against a paid service. `hy4-preview` remains a distinct ID.
+
+### Go and Fireworks provider-local additions
+
+The [Go listing](https://opencode.ai/inference/go/v1/models), sampled
+November 4 at 20:35:12 UTC (raw SHA-256
+`b0f53924e8d397bb5c2d55040f642012b9dedbf71b2c4b772b99d03374adae75`),
+adds exact `hy4` alongside `hy4-preview`. Native Chat context is `1048576`,
+input limit `983010`, output ceiling `65536`, image/tools/reasoning true,
+and effort `none/high`; omitted-request output default remains unknown.
+Messages/Responses are translated text routes, not separately certified
+native metadata: budgets remain unknown, image/reasoning and effort are
+disabled, and the new translated routes do not claim agent-turn support.
+Preview's privacy and training statements are not transferred to Hy4.
+
+The [Fireworks index](https://fireworks.ai/models) independently publishes
+integer `contextLength="1048576"` and image input for exact
+`accounts/fireworks/models/kimi-k3p1-pro`. Its
+[deployment card](https://fireworks.ai/models/fireworks/kimi-k3p1-pro)
+(raw SHA-256 `0b26b7527390c47b1e7ea2920ac67f1b0127797b87f4ebed0abe617e6d5caf4e`)
+confirms serverless availability and Function Calling, not an account's
+quota or successful inference. Output default/ceiling and model-specific
+effort remain unknown; reasoning is not promoted without independent
+evidence. Input-cache pricing is not an explicit cache-write contract.
+
+Together's [K3.1 card](https://www.together.ai/models/kimi-k3-1-pro)
+only establishes the exact `moonshotai/Kimi-K3.1-Pro` deployment,
+text/image and abbreviated `1M`. It remains discovery-only; no Fireworks,
+Moonshot or Go budgets or effort are copied into a static Together route.
+
 ## Incremental review: 2026-11-04
 
 The frozen models.dev payload is

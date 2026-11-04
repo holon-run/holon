@@ -508,6 +508,13 @@ pub(super) fn early_entries() -> Vec<BuiltInModelMetadata> {
             )
         },
         fireworks_model(
+            "accounts/fireworks/models/kimi-k3p1-pro",
+            "Kimi K3.1 Pro",
+            Some(1_048_576),
+            false,
+            true,
+        ),
+        fireworks_model(
             "accounts/fireworks/models/deepseek-v4-flash",
             "DeepSeek V4 Flash",
             Some(1_048_576),
@@ -1074,6 +1081,33 @@ pub(super) fn late_entries() -> Vec<BuiltInModelMetadata> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn fireworks_k31_uses_provider_context_without_inventing_output_or_effort() {
+        for catalog in [
+            BuiltInModelCatalog::from_legacy_definitions(),
+            BuiltInModelCatalog::new(),
+        ] {
+            let route =
+                ModelRouteRef::parse("fireworks@default/accounts/fireworks/models/kimi-k3p1-pro")
+                    .unwrap();
+            assert!(catalog.get_route(&route).is_some());
+            let metadata = catalog.get(&route.model_ref()).unwrap();
+            assert_eq!(metadata.context_window_tokens, Some(1_048_576));
+            assert_eq!(metadata.default_max_output_tokens, None);
+            assert_eq!(metadata.max_output_tokens_upper_limit, None);
+            assert!(metadata.capabilities.image_input);
+            assert!(metadata.capabilities.agent_turn);
+            assert!(metadata.reasoning_effort_options.is_empty());
+            assert_eq!(
+                catalog
+                    .preferred_route_for_provider(&provider_id("fireworks"))
+                    .unwrap()
+                    .as_string(),
+                "fireworks@default/accounts/fireworks/models/minimax-m3"
+            );
+        }
+    }
 
     #[test]
     fn fireworks_retired_serverless_ids_preserve_custom_deployments_and_peers() {

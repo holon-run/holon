@@ -296,6 +296,11 @@ pub(super) fn opencode_entries() -> Vec<BuiltInModelMetadata> {
         },
     ];
     entries.push(BuiltInModelMetadata {
+        description: "OpenCode Go native Chat Hy4; context, output ceiling, vision and effort follow the official Go listing; service output default remains unconfirmed.".into(),
+        default_max_output_tokens: None,
+        ..opencode_go_model("hy4", "Hy4", 1_048_576, Some(65_536), true, true, None)
+    });
+    entries.push(BuiltInModelMetadata {
         model_ref: ModelRef::new(provider_id("opencode-go"), "kimi-k3.1-pro"),
         display_name: "Kimi K3.1 Pro".into(),
         description: "OpenCode Go and Go Plus native Chat route; capacity, modalities, and reasoning controls follow the official Go model listing.".into(),
@@ -372,7 +377,7 @@ pub(super) fn opencode_entries() -> Vec<BuiltInModelMetadata> {
             }
             "deepseek-v4-pro" | "glm-5.2" => &["high", "max"],
             "hy3" => &["none", "low", "high"],
-            "hy4-preview" => &["none", "high"],
+            "hy4" | "hy4-preview" => &["none", "high"],
             "kimi-k3" => &["max"],
             "minimax-m3.1-flash" | "beam-free" | "claude-haiku-5-5" => {
                 &["low", "medium", "high", "xhigh", "max"]
@@ -394,6 +399,42 @@ pub(super) fn opencode_entries() -> Vec<BuiltInModelMetadata> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn opencode_go_hy4_native_metadata_does_not_certify_translation() {
+        for catalog in [
+            BuiltInModelCatalog::from_legacy_definitions(),
+            BuiltInModelCatalog::new(),
+        ] {
+            let route = ModelRouteRef::parse("opencode-go@default/hy4").unwrap();
+            assert!(catalog.get_route(&route).is_some());
+            let metadata = catalog.get(&route.model_ref()).unwrap();
+            assert_eq!(metadata.context_window_tokens, Some(1_048_576));
+            assert_eq!(metadata.default_max_output_tokens, None);
+            assert_eq!(metadata.max_output_tokens_upper_limit, Some(65_536));
+            assert_eq!(metadata.reasoning_effort_options, ["none", "high"]);
+            assert!(metadata.capabilities.image_input);
+            assert!(metadata.capabilities.supports_reasoning);
+            for endpoint in ["messages", "responses"] {
+                let route = ModelRouteRef::parse(&format!("opencode-go@{endpoint}/hy4")).unwrap();
+                assert!(catalog.get_route(&route).is_some());
+                let policy = catalog.resolve_route_policy(
+                    &route,
+                    &HashMap::new(),
+                    &HashMap::new(),
+                    None,
+                    &ContextConfig::default(),
+                    8_192,
+                );
+                assert_eq!(policy.context_window_tokens, None);
+                assert_eq!(policy.max_output_tokens_upper_limit, None);
+                assert!(!policy.capabilities.supports_reasoning);
+                assert!(!policy.capabilities.image_input);
+                assert!(!policy.agent_turn);
+                assert!(policy.reasoning_effort_options.is_empty());
+            }
+        }
+    }
 
     #[test]
     fn opencode_go_native_metadata_preserves_defaults_and_exact_efforts() {

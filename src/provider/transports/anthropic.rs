@@ -341,6 +341,19 @@ fn anthropic_reasoning_controls<'a>(
     reasoning_effort: Option<&'a str>,
     max_output_tokens: u32,
 ) -> Result<(Option<ThinkingRequest>, Option<OutputConfigRequest<'a>>)> {
+    if route_provider == "dashscope" && model == "kimi-k3.1-pro" {
+        if let Some(effort) = reasoning_effort {
+            if !matches!(effort, "low" | "medium" | "high" | "max") {
+                return Err(anyhow!(
+                    "DashScope {model} reasoning effort must be low, medium, high, or max"
+                ));
+            }
+        }
+        return Ok((
+            None,
+            reasoning_effort.map(|effort| OutputConfigRequest { effort }),
+        ));
+    }
     if matches!(route_provider, "minimax" | "minimax-cn")
         && matches!(model, "MiniMax-M3.1-Flash-Preview" | "MiniMax-M3.1-Flash")
     {
@@ -5281,6 +5294,53 @@ mod tests {
         .unwrap();
         assert_eq!(thinking.unwrap().budget_tokens, 8192);
         assert!(output_config.is_none());
+    }
+
+    #[test]
+    fn dashscope_k31_reasoning_sends_model_specific_output_config_effort() {
+        for effort in ["low", "medium", "high", "max"] {
+            let (thinking, output_config) = anthropic_reasoning_controls(
+                "dashscope",
+                "kimi-k3.1-pro",
+                true,
+                Some(effort),
+                16_384,
+            )
+            .unwrap();
+            assert!(thinking.is_none());
+            assert_eq!(
+                serde_json::to_value(output_config).unwrap(),
+                json!({"effort": effort})
+            );
+        }
+        let (thinking, output_config) =
+            anthropic_reasoning_controls("dashscope", "kimi-k3.1-pro", true, None, 16_384).unwrap();
+        assert!(thinking.is_none());
+        assert!(output_config.is_none());
+        for effort in ["none", "no_think", "xhigh", "unknown"] {
+            assert!(
+                anthropic_reasoning_controls(
+                    "dashscope",
+                    "kimi-k3.1-pro",
+                    true,
+                    Some(effort),
+                    16_384,
+                )
+                .is_err(),
+                "{effort}"
+            );
+        }
+        for (provider, model) in [
+            ("dashscope", "kimi-k3"),
+            ("dashscope", "kimi-k3.1-pro-unknown"),
+            ("moonshot", "kimi-k3.1-pro"),
+            ("tencent-tokenhub", "kimi-k3.1-pro"),
+        ] {
+            let (thinking, output_config) =
+                anthropic_reasoning_controls(provider, model, true, Some("high"), 16_384).unwrap();
+            assert!(thinking.is_some());
+            assert!(output_config.is_none());
+        }
     }
 
     #[test]
