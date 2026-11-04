@@ -8080,6 +8080,87 @@ async fn task_result_wait_with_explicit_blocker_keeps_exact_model_reentry() {
     .await;
 }
 
+#[tokio::test]
+async fn terminal_task_result_commit_rejects_fenced_off_task_write() {
+    // #3910 regression: when the durable task row stays non-terminal because
+    // the terminal record loses the updated_at last-write-wins fence, the
+    // terminal result commit must fail the whole transaction instead of
+    // persisting queue/wait/settlement delivery artifacts for a task that
+    // remains durably Running.
+    let dir = tempdir().unwrap();
+    let workspace = tempdir().unwrap();
+    let provider = Arc::new(CountingProvider {
+        calls: Mutex::new(0),
+        reply: "unused",
+    });
+    let runtime = RuntimeHandle::new(
+        "default",
+        dir.path().to_path_buf(),
+        workspace.path().to_path_buf(),
+        "http://127.0.0.1:7878".into(),
+        provider.clone(),
+        "default".into(),
+        context_config(),
+    )
+    .unwrap();
+    let work_item = runtime
+        .create_work_item("fenced terminal result".into(), None, None, Vec::new())
+        .await
+        .unwrap();
+    append_running_rejoin_task(&runtime, "task-fenced", &work_item.id);
+    let mut result = task_result_message("task-fenced").with_admission(
+        MessageDeliverySurface::TaskRejoin,
+        AdmissionContext::RuntimeOwned,
+    );
+    result.task_id = Some("task-fenced".into());
+    result.work_item_id = Some(work_item.id.clone());
+    result.turn_id = Some("turn-fenced-result".into());
+    let terminal_task = TaskRecord {
+        id: "task-fenced".into(),
+        agent_id: "default".into(),
+        kind: TaskKind::CommandTask,
+        status: TaskStatus::Completed,
+        created_at: Utc::now(),
+        updated_at: Utc::now() - chrono::Duration::milliseconds(50),
+        parent_message_id: Some(result.id.clone()),
+        work_item_id: Some(work_item.id.clone()),
+        summary: Some("fenced terminal completion".into()),
+        detail: Some(serde_json::json!({
+            "rejoin_obligation_id": "task-fenced",
+            "rejoin_generation": 1,
+            "parent_turn_id": "turn-fenced",
+        })),
+        recovery: None,
+    };
+    let error = runtime
+        .commit_terminal_task_result(&terminal_task, "task_completed", &result)
+        .await
+        .unwrap_err();
+    assert!(
+        error.to_string().contains("non-terminal"),
+        "unexpected error: {error}"
+    );
+    // The whole transaction rolled back: the task row stays Running and no
+    // delivery artifacts exist for the fenced terminal write.
+    assert_eq!(
+        runtime
+            .inner
+            .storage
+            .latest_task_record("task-fenced")
+            .unwrap()
+            .unwrap()
+            .status,
+        TaskStatus::Running
+    );
+    assert!(runtime
+        .inner
+        .runtime_db
+        .queue_entries()
+        .latest(&result.id)
+        .unwrap()
+        .is_none());
+}
+
 async fn task_result_wait_preserves_business_blocker(
     completed_before_wait: bool,
     restart: bool,
@@ -8186,7 +8267,7 @@ async fn task_result_wait_preserves_business_blocker(
     result.task_id = Some("task-late-blocked".into());
     result.work_item_id = Some(work_item.id.clone());
     result.turn_id = Some("turn-late-blocked-result".into());
-    let terminal_task = TaskRecord {
+    let mut terminal_task = TaskRecord {
         id: "task-late-blocked".into(),
         agent_id: "default".into(),
         kind: TaskKind::CommandTask,
@@ -8210,6 +8291,11 @@ async fn task_result_wait_preserves_business_blocker(
             .unwrap();
     } else {
         append_running_rejoin_task(&runtime, &terminal_task.id, &work_item.id);
+        // The task row upsert fences writes on updated_at last-write-wins
+        // (#3910): the terminal record must not carry a construction-time
+        // timestamp that predates the running append, or the terminal
+        // write is fenced off.
+        terminal_task.updated_at = Utc::now();
     }
 
     let registration = runtime
@@ -8339,7 +8425,11 @@ async fn task_result_wait_preserves_business_blocker(
         scheduled
     };
     assert_eq!(scheduled.message.id, result.id);
-    assert!(scheduled.scheduler_decision.model_reentry);
+    assert!(
+        scheduled.scheduler_decision.model_reentry,
+        "expected canonical_activation_admitted, got {} ({:?})",
+        scheduled.scheduler_decision.reason, scheduled.scheduler_decision.kind
+    );
     let scheduled_message = scheduled.message;
     let scheduled_transition = Box::pin(runtime.process_message_with_plan_deferred(
         scheduled_message.clone(),

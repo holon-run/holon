@@ -3033,6 +3033,32 @@ impl RuntimeTransitionRepository<'_> {
             if let Some(settlement) = command.task_result_settlement.as_ref() {
                 applied |=
                     crate::runtime_db::task_result_settlement::upsert_pending_tx(tx, settlement)?;
+                // #3910: a terminal result delivery must not commit its
+                // queue/wait/settlement artifacts while the task row write
+                // itself was fenced off (for example a terminal record whose
+                // updated_at predates the durable row). Fail the transaction
+                // instead of persisting delivery evidence for a task that
+                // stays durably non-terminal.
+                let durable_task = tx
+                    .query_row(
+                        "SELECT payload_json FROM tasks WHERE task_id = ?1",
+                        [&command.task.id],
+                        |row| row.get::<_, String>(0),
+                    )
+                    .optional()?
+                    .map(|payload| {
+                        crate::runtime_db::repositories::decode_task_payload(&payload)
+                    })
+                    .transpose()?;
+                if !durable_task.as_ref().is_some_and(|task| {
+                        crate::runtime::is_terminal_task_status(&task.status)
+                }) {
+                    bail!(
+                        "terminal task result for task {} rejected: the durable task row stays non-terminal ({:?}); the terminal write was fenced off by the updated_at revision",
+                        command.task.id,
+                        durable_task.as_ref().map(|task| task.status.clone())
+                    );
+                }
             }
             if let Some(result) = trigger_wait_and_enqueue.as_ref() {
                 applied |= result.applied();
