@@ -366,6 +366,13 @@ struct SealedResourceBody {
     material: Arc<BudgetViewGuard>,
 }
 
+/// Owns the original acquisition while publication awaits its mutation owner.
+pub(crate) struct PreparedResourceRefresh {
+    ticket: ResourceRefreshTicket,
+    candidate: SealedResourceBody,
+    material: ResourceReadMaterial,
+}
+
 impl SealedResourceBody {
     fn new(body: ContextResourceBody, material: &ResourceReadMaterial) -> Result<Self> {
         let (bytes, records) = body.retained_material()?;
@@ -629,6 +636,7 @@ impl ContextResourceRegistry {
 
     /// Validation returns a narrow guard covering registry installation.
     /// Lock order: original owner -> Host readiness fence -> registry.
+    #[cfg(test)]
     pub(crate) fn refresh_fenced_after<F>(
         &self,
         source: &ContextResourceSource,
@@ -637,6 +645,31 @@ impl ContextResourceRegistry {
         try_owner: impl FnOnce() -> Result<MutationReservation>,
         validate: impl FnOnce(&MutationReservation, &ContextResourceSource) -> Result<F>,
     ) -> Result<Arc<ResourceObservation>> {
+        let prepared = self.prepare_refresh_after(source, prior, read)?;
+        let owner = match try_owner() {
+            Ok(owner) => owner,
+            Err(error) => {
+                if !matches!(
+                    error.downcast_ref::<MutationOwnerError>(),
+                    Some(MutationOwnerError::Busy)
+                ) && !matches!(
+                    error.downcast_ref::<ResourceObservationError>(),
+                    Some(ResourceObservationError::InventoryContended)
+                ) {
+                    self.fail_prepared(prepared)?;
+                }
+                return Err(error);
+            }
+        };
+        self.publish_refresh_fenced(prepared, owner, validate)
+    }
+
+    pub(crate) fn prepare_refresh_after(
+        &self,
+        source: &ContextResourceSource,
+        prior: (u64, usize),
+        read: impl FnOnce() -> Result<ContextResourceBody>,
+    ) -> Result<PreparedResourceRefresh> {
         let prepared = PreparedSource::after(source, &self.ledger, prior)?;
         let ticket = self.begin_refresh(prepared)?;
         let material =
@@ -663,25 +696,32 @@ impl ContextResourceRegistry {
                 return Err(error);
             }
         };
-        let owner = match try_owner() {
-            Ok(owner) => owner,
-            Err(error) => {
-                if !matches!(
-                    error.downcast_ref::<MutationOwnerError>(),
-                    Some(MutationOwnerError::Busy)
-                ) && !matches!(
-                    error.downcast_ref::<ResourceObservationError>(),
-                    Some(ResourceObservationError::InventoryContended)
-                ) {
-                    self.fail(ticket)?;
-                }
-                return Err(error);
-            }
-        };
+        Ok(PreparedResourceRefresh {
+            ticket,
+            candidate,
+            material,
+        })
+    }
+
+    pub(crate) fn fail_prepared(&self, prepared: PreparedResourceRefresh) -> Result<()> {
+        self.fail(prepared.ticket)
+    }
+
+    pub(crate) fn publish_refresh_fenced<F>(
+        &self,
+        prepared: PreparedResourceRefresh,
+        owner: MutationReservation,
+        validate: impl FnOnce(&MutationReservation, &ContextResourceSource) -> Result<F>,
+    ) -> Result<Arc<ResourceObservation>> {
+        let PreparedResourceRefresh {
+            ticket,
+            candidate,
+            material,
+        } = prepared;
         let validation: Result<F> = (|| {
             anyhow::ensure!(
-                owner.agent_id() == source.scope.agent_id
-                    && owner.identity_incarnation() == source.scope.identity_incarnation,
+                owner.agent_id() == ticket.source.key.scope.agent_id
+                    && owner.identity_incarnation() == ticket.source.key.scope.identity_incarnation,
                 ResourceObservationError::SourceChanged
             );
             let _io = material.enter();

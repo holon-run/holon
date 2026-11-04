@@ -508,7 +508,10 @@ async fn actual_owner_busy_keeps_ready_then_dirty_until_explicit_retry() -> Resu
     ));
     assert_eq!(registry.freshness()?, ResourceFreshness::Ready);
     registry.invalidate(ResourceInvalidation::ExplicitRefresh)?;
-    assert!(runtime.refresh_context_resources().await.is_err());
+    assert!(runtime
+        .try_refresh_context_resources_for_test()
+        .await
+        .is_err());
     assert_eq!(
         registry.freshness()?,
         ResourceFreshness::Dirty(ResourceInvalidation::ExplicitRefresh)

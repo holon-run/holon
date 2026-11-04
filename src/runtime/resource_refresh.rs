@@ -1,7 +1,7 @@
 //! Event-only resource acquisition. Capture never calls a loader.
 use super::resource_observation::{
     ContextPlanSource, ContextResourceBody, ContextResourceRegistry, ContextResourceSource,
-    ResourceInvalidation, ResourceObservation, ResourceObservationError,
+    PreparedResourceRefresh, ResourceInvalidation, ResourceObservation, ResourceObservationError,
 };
 use super::*;
 use crate::{
@@ -22,7 +22,10 @@ pub(super) struct RuntimeResources {
     closed: AtomicBool,
     scope: InputEvidenceScope,
     standalone_skills: Arc<RwLock<SkillsRegistry>>,
+    refresh_admission: Arc<RwLock<()>>,
     refresh_lock: Arc<Mutex<()>>,
+    refresh_in_flight: AtomicBool,
+    refresh_finished: Notify,
     observer: StdMutex<Option<tokio::task::JoinHandle<()>>>,
     observer_drain: Mutex<Option<tokio::task::JoinHandle<()>>>,
     closing: Notify,
@@ -32,7 +35,39 @@ pub(super) struct RuntimeResources {
     checkpoint: StdMutex<Option<Arc<RefreshIoBarrier>>>,
     #[cfg(test)]
     attempts: AtomicUsize,
+    #[cfg(test)]
+    reads: AtomicUsize,
+    #[cfg(test)]
+    flight_waits: AtomicUsize,
 }
+
+struct ResourceRefreshFlight<'a>(&'a RuntimeResources);
+
+impl Drop for ResourceRefreshFlight<'_> {
+    fn drop(&mut self) {
+        self.0.refresh_in_flight.store(false, Ordering::Release);
+        self.0.refresh_finished.notify_waiters();
+    }
+}
+
+#[cfg(test)]
+pub(crate) struct ResourcePreparationHold<'a> {
+    _flight: ResourceRefreshFlight<'a>,
+}
+
+struct ResourceRefreshSource {
+    state: Arc<AgentState>,
+    source: ContextResourceSource,
+    material: ResourceReadMaterial,
+}
+
+struct PreparedContextResources {
+    prepared: PreparedResourceRefresh,
+    inventory: Arc<RwLock<SkillsRegistry>>,
+    base: SkillsRegistry,
+    catalogue: Arc<SkillsRegistry>,
+}
+
 #[cfg(test)]
 #[derive(Default)]
 struct RefreshIoBarrier {
@@ -148,7 +183,10 @@ impl RuntimeResources {
             initial: Notify::new(),
             closed: AtomicBool::new(false),
             standalone_skills: Arc::new(RwLock::new(SkillsRegistry::new())),
+            refresh_admission: Arc::new(RwLock::new(())),
             refresh_lock: Arc::new(Mutex::new(())),
+            refresh_in_flight: AtomicBool::new(false),
+            refresh_finished: Notify::new(),
             observer: StdMutex::new(None),
             observer_drain: Mutex::new(None),
             closing: Notify::new(),
@@ -158,6 +196,10 @@ impl RuntimeResources {
             checkpoint: StdMutex::new(None),
             #[cfg(test)]
             attempts: AtomicUsize::new(0),
+            #[cfg(test)]
+            reads: AtomicUsize::new(0),
+            #[cfg(test)]
+            flight_waits: AtomicUsize::new(0),
         })
     }
     pub(super) fn notify(&self) {
@@ -387,18 +429,50 @@ impl RuntimeHandle {
         }));
         Ok(())
     }
-    pub(super) fn quiesce_resource_refresh(&self) -> Result<tokio::sync::MutexGuard<'_, ()>> {
-        self.inner
+    pub(super) fn quiesce_resource_refresh(
+        &self,
+    ) -> Result<(
+        tokio::sync::RwLockWriteGuard<'_, ()>,
+        tokio::sync::MutexGuard<'_, ()>,
+    )> {
+        // A supervisor can be queued or awaiting an owner without physical I/O.
+        let admission = self
+            .inner
+            .resources
+            .refresh_admission
+            .try_write()
+            .map_err(|_| anyhow!("agent_cleanup_blocked: resource_refresh_exit_pending"))?;
+        // A future can release its admission guard before Tokio marks it exited.
+        anyhow::ensure!(
+            self.inner
+                .mutation_tasks
+                .lock()
+                .expect("mutation tasks poisoned")
+                .resource_refresh_finished(),
+            "agent_cleanup_blocked: resource_refresh_exit_pending"
+        );
+        let physical = self
+            .inner
             .resources
             .refresh_lock
             .try_lock()
-            .map_err(|_| anyhow!("agent_cleanup_blocked: resource_refresh_exit_pending"))
+            .map_err(|_| anyhow!("agent_cleanup_blocked: resource_refresh_exit_pending"))?;
+        Ok((admission, physical))
     }
     #[cfg(test)]
     pub(crate) async fn hold_resource_refresh_for_test(
         &self,
     ) -> Result<tokio::sync::OwnedMutexGuard<()>> {
         self.lock_context_resource_refresh().await
+    }
+    #[cfg(test)]
+    pub(crate) async fn hold_resource_preparation_for_test(
+        &self,
+    ) -> Result<ResourcePreparationHold<'_>> {
+        // Budget assertions must also freeze source capture before physical I/O.
+        Ok(ResourcePreparationHold {
+            _flight: self.claim_resource_refresh().await?,
+        })
     }
     pub(crate) fn resource_refresh_pending(&self) -> bool {
         let resources = &self.inner.resources;
@@ -408,6 +482,14 @@ impl RuntimeHandle {
                 .lock()
                 .expect("resource observer poisoned")
                 .is_some())
+            || resources.refresh_in_flight.load(Ordering::Acquire)
+            || resources.refresh_admission.try_write().is_err()
+            || !self
+                .inner
+                .mutation_tasks
+                .lock()
+                .expect("mutation tasks poisoned")
+                .resource_refresh_finished()
             || resources.refresh_lock.try_lock().is_err()
     }
     pub(super) async fn join_resource_worker(&self) -> Result<()> {
@@ -451,13 +533,15 @@ impl RuntimeHandle {
     /// Explicit refresh/event worker only; no mutation owner survives the I/O.
     #[cfg(test)]
     pub(crate) async fn refresh_context_resources(&self) -> Result<Arc<ResourceObservation>> {
-        let refresh = self.lock_context_resource_refresh().await?;
-        // Bind this explicit event to its own result, not a racing observer.
-        self.inner
-            .resources
-            .registry
-            .invalidate(ResourceInvalidation::ExplicitRefresh)?;
-        self.run_context_resource_refresh(refresh).await
+        self.run_context_resource_refresh(true).await
+    }
+    #[cfg(test)]
+    pub(crate) async fn try_refresh_context_resources_for_test(
+        &self,
+    ) -> Result<Arc<ResourceObservation>> {
+        // Probe admission only when a test deliberately holds the owner.
+        drop(self.inner.mutation_owner.try_reserve()?);
+        self.refresh_context_resources().await
     }
     pub(super) async fn prepare_summary_instruction_resources(&self) -> Result<()> {
         let captured = {
@@ -503,8 +587,7 @@ impl RuntimeHandle {
                     return Ok(observation);
                 }
             }
-            let refresh = self.lock_context_resource_refresh().await?;
-            let result = self.run_context_resource_refresh(refresh).await;
+            let result = self.run_context_resource_refresh(false).await;
             if result.as_ref().err().is_some_and(|error| {
                 error
                     .downcast_ref::<crate::host::context_resources::ContextResourceWritersActive>()
@@ -535,23 +618,16 @@ impl RuntimeHandle {
                 source_changes += 1;
                 continue;
             }
-            if !matches!(
-                result
-                    .as_ref()
-                    .err()
-                    .and_then(|error| error.downcast_ref::<mutation_owner::MutationOwnerError>()),
-                Some(mutation_owner::MutationOwnerError::Busy)
-            ) {
-                return result;
-            }
-            // The physical attempt has exited. Wait without its refresh lock,
-            // and release the owner before acquiring resources on the next attempt.
-            drop(self.reserve_resource_source().await?);
+            return result;
         }
     }
     async fn reserve_resource_source(&self) -> Result<mutation_owner::MutationReservation> {
         self.trace_resource_refresh("owner_wait_start");
-        tokio::select! {
+        self.inner
+            .resources
+            .retry_owner
+            .store(true, Ordering::Release);
+        let result = tokio::select! {
             owner = self.inner.mutation_owner.reserve() => {
                 self.trace_resource_refresh("owner_wait_returned");
                 Ok(owner?)
@@ -560,6 +636,43 @@ impl RuntimeHandle {
                 Err(ResourceObservationError::NotReady(
                     super::resource_observation::ResourceFreshness::Closed
                 ).into())
+            }
+        };
+        self.inner
+            .resources
+            .retry_owner
+            .store(false, Ordering::Release);
+        result
+    }
+
+    async fn claim_resource_refresh(&self) -> Result<ResourceRefreshFlight<'_>> {
+        let resources = &self.inner.resources;
+        loop {
+            let finished = resources.refresh_finished.notified();
+            tokio::pin!(finished);
+            finished.as_mut().enable();
+            anyhow::ensure!(
+                !resources.closed.load(Ordering::Acquire),
+                ResourceObservationError::NotReady(
+                    super::resource_observation::ResourceFreshness::Closed
+                )
+            );
+            if resources
+                .refresh_in_flight
+                .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+                .is_ok()
+            {
+                return Ok(ResourceRefreshFlight(resources));
+            }
+            #[cfg(test)]
+            resources.flight_waits.fetch_add(1, Ordering::AcqRel);
+            tokio::select! {
+                _ = finished => {},
+                _ = resources.closed() => {
+                    return Err(ResourceObservationError::NotReady(
+                        super::resource_observation::ResourceFreshness::Closed
+                    ).into());
+                }
             }
         }
     }
@@ -585,15 +698,23 @@ impl RuntimeHandle {
     }
     async fn run_context_resource_refresh(
         &self,
-        refresh: tokio::sync::OwnedMutexGuard<()>,
+        explicit: bool,
     ) -> Result<Arc<ResourceObservation>> {
+        // Reserve before spawning, including the supervisor's unpolled window.
+        let admission = self
+            .inner
+            .resources
+            .refresh_admission
+            .clone()
+            .read_owned()
+            .await;
         let runtime = self.clone();
         let (send, receive) = tokio::sync::oneshot::channel();
         // A cancelled observer/caller cannot detach physical I/O or its budget.
-        self.spawn_owned_mutation(async move {
-            let _refresh = refresh;
+        self.spawn_owned_resource_refresh(async move {
+            let _admission = admission;
             runtime.trace_resource_refresh("supervisor_ready");
-            let result = runtime.refresh_context_resources_owned().await;
+            let result = runtime.refresh_context_resources_owned(explicit).await;
             runtime.trace_resource_refresh("supervisor_done");
             let _ = send.send(result);
         })?;
@@ -601,18 +722,63 @@ impl RuntimeHandle {
             .await
             .context("resource refresh supervisor failed")?
     }
-    async fn refresh_context_resources_owned(&self) -> Result<Arc<ResourceObservation>> {
+    async fn refresh_context_resources_owned(
+        &self,
+        explicit: bool,
+    ) -> Result<Arc<ResourceObservation>> {
+        // Logical single-flight survives owner waits without holding the I/O
+        // lock. Joining ensures capture the original flight's published view.
+        let _flight = self.claim_resource_refresh().await?;
+        if explicit {
+            self.inner
+                .resources
+                .registry
+                .invalidate(ResourceInvalidation::ExplicitRefresh)?;
+        }
         let mut reordered = false;
         let result = loop {
+            self.trace_resource_refresh("source_owner_start");
+            let owner = self.reserve_resource_source().await?;
+            self.trace_resource_refresh("source_owner_ready");
+            let source = self.capture_resource_refresh_source(&owner)?;
+            drop(owner);
+            if !explicit {
+                if let Ok(value) = self.inner.resources.registry.capture(&source.source) {
+                    source.material.finish()?;
+                    break Ok(value);
+                }
+            }
+            let refresh = self.lock_context_resource_refresh().await?;
             #[cfg(test)]
             self.inner.resources.attempts.fetch_add(1, Ordering::AcqRel);
             let runtime = self.clone();
             self.trace_resource_refresh("blocking_dispatch");
-            let result =
-                tokio::task::spawn_blocking(move || runtime.refresh_context_resources_sync())
-                    .await
-                    .context("resource refresh physical worker failed")?;
+            let prepared = tokio::task::spawn_blocking(move || {
+                let _refresh = refresh;
+                runtime.prepare_context_resources_sync(source)
+            })
+            .await
+            .context("resource refresh physical worker failed")?;
             self.trace_resource_refresh("blocking_returned");
+            let result = match prepared {
+                Ok(prepared) => {
+                    self.trace_resource_refresh("publication_owner_start");
+                    match self.reserve_resource_source().await {
+                        Ok(owner) => {
+                            self.trace_resource_refresh("publication_owner_ready");
+                            self.publish_context_resources(prepared, owner)
+                        }
+                        Err(error) => {
+                            self.inner
+                                .resources
+                                .registry
+                                .fail_prepared(prepared.prepared)?;
+                            Err(error)
+                        }
+                    }
+                }
+                Err(error) => Err(error),
+            };
             match result
                 .as_ref()
                 .err()
@@ -777,7 +943,36 @@ impl RuntimeHandle {
         }
         error
     }
-    fn refresh_context_resources_sync(&self) -> Result<Arc<ResourceObservation>> {
+    fn capture_resource_refresh_source(
+        &self,
+        owner: &mutation_owner::MutationReservation,
+    ) -> Result<ResourceRefreshSource> {
+        let root = owner
+            .capture_ready_snapshot()?
+            .context("resource source has no published root")?;
+        let state = root.state.clone();
+        drop(root);
+        let config = self.inner.config_snapshot.load_full();
+        let source_material = ResourceReadMaterial::new(
+            &self.inner.input_evidence_budget,
+            &self.inner.resources.scope,
+        )?;
+        let source = {
+            let _io = source_material.enter();
+            self.context_resource_source(&state, &config)?
+        };
+        self.trace_resource_refresh("source_done");
+        Ok(ResourceRefreshSource {
+            state,
+            source,
+            material: source_material,
+        })
+    }
+
+    fn prepare_context_resources_sync(
+        &self,
+        captured: ResourceRefreshSource,
+    ) -> Result<PreparedContextResources> {
         self.trace_resource_refresh("physical_start");
         let resources = &self.inner.resources;
         anyhow::ensure!(
@@ -786,31 +981,11 @@ impl RuntimeHandle {
                 super::resource_observation::ResourceFreshness::Closed
             )
         );
-        resources.retry_owner.store(true, Ordering::Release);
-        self.trace_resource_refresh("source_owner_start");
-        let owner = self.inner.mutation_owner.try_reserve()?;
-        resources.retry_owner.store(false, Ordering::Release);
-        self.trace_resource_refresh("source_owner_ready");
-        let root = self
-            .inner
-            .mutation_owner
-            .capture()?
-            .context("resource source has no published root")?;
-        let state = root.state.clone();
-        drop(root);
-        let config = self.inner.config_snapshot.load_full();
-        let source_material =
-            ResourceReadMaterial::new(&self.inner.input_evidence_budget, &resources.scope)?;
-        let source = {
-            let _io = source_material.enter();
-            self.context_resource_source(&state, &config)?
-        };
-        // Only the synchronous source capture owns this reservation.
-        drop(owner);
-        self.trace_resource_refresh("source_done");
-        if let Ok(value) = resources.registry.capture(&source) {
-            return Ok(value);
-        }
+        let ResourceRefreshSource {
+            state,
+            source,
+            material: source_material,
+        } = captured;
         let inventory = match self.inner.host_bridge.as_ref() {
             Some(bridge) => bridge.skills_registry()?,
             None => resources.standalone_skills.clone(),
@@ -819,116 +994,136 @@ impl RuntimeHandle {
             .try_read()
             .map_err(|_| ResourceObservationError::InventoryContended)?
             .clone();
-        let candidate = std::cell::RefCell::new(None);
-        resources.registry.refresh_fenced_after(
-            &source,
-            source_material.finish()?,
-            || {
-                #[cfg(test)]
-                let checkpoint = resources.checkpoint.lock().unwrap().take();
-                #[cfg(test)]
-                if let Some(checkpoint) = checkpoint {
-                    *checkpoint.inventory_base.lock().unwrap() = Some(base.clone());
-                    checkpoint.reached.notify_one();
-                    let mut released = checkpoint.released.lock().unwrap();
-                    while !*released {
-                        released = checkpoint.release.wait(released).unwrap();
-                    }
-                }
-                resource_io::charge_owned_metadata(
-                    input_evidence_budget::serialized_bytes(&state.active_skills)? + 16384,
-                    256,
-                )?;
-                // Parser scratch exits before the independent Host skill inventory is retained.
-                self.trace_resource_refresh("templates_start");
-                let agent_templates_catalog = discover_agent_templates_catalog(
-                    source.user_home.as_deref(),
-                    &source.agent_home,
-                );
-                resource_io::check_active()?;
-                self.trace_resource_refresh("catalogue_start");
-                let host_material = ResourceReadMaterial::host(&self.inner.input_evidence_budget)?;
-                let (mut catalogue, roots) = {
-                    let _io = host_material.enter();
-                    base.admit_candidate()?;
-                    let mut catalogue = base.clone();
-                    resource_io::charge_owned_metadata(16384, 256)?;
-                    let roots = effective_skill_root_registrations(
-                        if source.include_user_skills {
-                            SkillVisibility::DefaultAgent
-                        } else {
-                            SkillVisibility::NonDefaultAgent
-                        },
-                        source.user_home.as_deref(),
-                        &source.scope.agent_id,
-                        &source.agent_home,
-                        source.execution_root.as_deref(),
-                    );
-                    catalogue.sync_effective_roots(roots.clone())?;
-                    for root in catalogue.roots() {
-                        if let crate::types::SkillRootScanStatus::Failed { error } =
-                            &root.scan_status
-                        {
-                            bail!("context skill catalogue read failed: {error}");
+        let mut candidate = None;
+        let prepared =
+            resources
+                .registry
+                .prepare_refresh_after(&source, source_material.finish()?, || {
+                    #[cfg(test)]
+                    resources.reads.fetch_add(1, Ordering::AcqRel);
+                    #[cfg(test)]
+                    let checkpoint = resources.checkpoint.lock().unwrap().take();
+                    #[cfg(test)]
+                    if let Some(checkpoint) = checkpoint {
+                        *checkpoint.inventory_base.lock().unwrap() = Some(base.clone());
+                        checkpoint.reached.notify_one();
+                        let mut released = checkpoint.released.lock().unwrap();
+                        while !*released {
+                            released = checkpoint.release.wait(released).unwrap();
                         }
                     }
-                    host_material.finish()?;
-                    (catalogue, roots)
-                };
-                catalogue.retain_material(host_material.guard()?);
-                let catalogue = Arc::new(catalogue);
-                let mut skills = skills_runtime_view_from_catalog(
-                    catalogue.catalog_for_roots(&roots, None),
-                    &roots,
-                    &state.active_skills,
-                )?;
-                skills.agent_templates_catalog = agent_templates_catalog;
-                resource_io::check_active()?;
-                self.trace_resource_refresh("plans_start");
-                let mut plans = std::collections::BTreeMap::new();
-                for plan in &source.plans {
-                    resource_io::charge_owned_metadata((plan.work_item_id.len() + 512) as u64, 16)?;
-                    let observed = crate::work_item_plan::observe_plan_artifact(
-                        &source.agent_home,
-                        &source.scope.agent_id,
-                        &plan.work_item_id,
-                        plan.recorded,
+                    resource_io::charge_owned_metadata(
+                        input_evidence_budget::serialized_bytes(&state.active_skills)? + 16384,
+                        256,
                     )?;
-                    plans.insert(plan.work_item_id.clone(), observed);
-                }
-                self.trace_resource_refresh("guidance_start");
-                let guidance = load_agents_md(
-                    source.user_home.as_deref(),
-                    &source.agent_home,
-                    source.workspace_anchor.as_deref(),
-                )?;
-                self.trace_resource_refresh("memory_start");
-                let memory = load_agent_memory(&source.agent_home)?;
-                self.trace_resource_refresh("notes_start");
-                let notes = crate::notes_catalog::render_agent_home_notes_catalog_checked(
-                    &source.agent_home,
-                )?;
-                self.trace_resource_refresh("body_done");
-                let body = ContextResourceBody {
-                    guidance,
-                    memory,
-                    notes,
-                    skills,
-                    plans,
-                    _host_catalogue: Some(catalogue.clone()),
-                };
-                *candidate.borrow_mut() = Some(catalogue);
-                Ok(body)
-            },
-            || {
-                self.trace_resource_refresh("publication_owner_start");
-                resources.retry_owner.store(true, Ordering::Release);
-                let owner = self.inner.mutation_owner.try_reserve()?;
-                resources.retry_owner.store(false, Ordering::Release);
-                self.trace_resource_refresh("publication_owner_ready");
-                Ok(owner)
-            },
-            |owner, expected| {
+                    // Parser scratch exits before the independent Host skill inventory is retained.
+                    self.trace_resource_refresh("templates_start");
+                    let agent_templates_catalog = discover_agent_templates_catalog(
+                        source.user_home.as_deref(),
+                        &source.agent_home,
+                    );
+                    resource_io::check_active()?;
+                    self.trace_resource_refresh("catalogue_start");
+                    let host_material =
+                        ResourceReadMaterial::host(&self.inner.input_evidence_budget)?;
+                    let (mut catalogue, roots) = {
+                        let _io = host_material.enter();
+                        base.admit_candidate()?;
+                        let mut catalogue = base.clone();
+                        resource_io::charge_owned_metadata(16384, 256)?;
+                        let roots = effective_skill_root_registrations(
+                            if source.include_user_skills {
+                                SkillVisibility::DefaultAgent
+                            } else {
+                                SkillVisibility::NonDefaultAgent
+                            },
+                            source.user_home.as_deref(),
+                            &source.scope.agent_id,
+                            &source.agent_home,
+                            source.execution_root.as_deref(),
+                        );
+                        catalogue.sync_effective_roots(roots.clone())?;
+                        for root in catalogue.roots() {
+                            if let crate::types::SkillRootScanStatus::Failed { error } =
+                                &root.scan_status
+                            {
+                                bail!("context skill catalogue read failed: {error}");
+                            }
+                        }
+                        host_material.finish()?;
+                        (catalogue, roots)
+                    };
+                    catalogue.retain_material(host_material.guard()?);
+                    let catalogue = Arc::new(catalogue);
+                    let mut skills = skills_runtime_view_from_catalog(
+                        catalogue.catalog_for_roots(&roots, None),
+                        &roots,
+                        &state.active_skills,
+                    )?;
+                    skills.agent_templates_catalog = agent_templates_catalog;
+                    resource_io::check_active()?;
+                    self.trace_resource_refresh("plans_start");
+                    let mut plans = std::collections::BTreeMap::new();
+                    for plan in &source.plans {
+                        resource_io::charge_owned_metadata(
+                            (plan.work_item_id.len() + 512) as u64,
+                            16,
+                        )?;
+                        let observed = crate::work_item_plan::observe_plan_artifact(
+                            &source.agent_home,
+                            &source.scope.agent_id,
+                            &plan.work_item_id,
+                            plan.recorded,
+                        )?;
+                        plans.insert(plan.work_item_id.clone(), observed);
+                    }
+                    self.trace_resource_refresh("guidance_start");
+                    let guidance = load_agents_md(
+                        source.user_home.as_deref(),
+                        &source.agent_home,
+                        source.workspace_anchor.as_deref(),
+                    )?;
+                    self.trace_resource_refresh("memory_start");
+                    let memory = load_agent_memory(&source.agent_home)?;
+                    self.trace_resource_refresh("notes_start");
+                    let notes = crate::notes_catalog::render_agent_home_notes_catalog_checked(
+                        &source.agent_home,
+                    )?;
+                    self.trace_resource_refresh("body_done");
+                    let body = ContextResourceBody {
+                        guidance,
+                        memory,
+                        notes,
+                        skills,
+                        plans,
+                        _host_catalogue: Some(catalogue.clone()),
+                    };
+                    candidate = Some(catalogue);
+                    Ok(body)
+                })?;
+        Ok(PreparedContextResources {
+            prepared,
+            inventory,
+            base,
+            catalogue: candidate.context("resource catalogue candidate missing")?,
+        })
+    }
+
+    fn publish_context_resources(
+        &self,
+        prepared: PreparedContextResources,
+        owner: mutation_owner::MutationReservation,
+    ) -> Result<Arc<ResourceObservation>> {
+        let resources = &self.inner.resources;
+        let PreparedContextResources {
+            prepared,
+            inventory,
+            base,
+            catalogue,
+        } = prepared;
+        resources
+            .registry
+            .publish_refresh_fenced(prepared, owner, |owner, expected| {
                 self.trace_resource_refresh("publication_validate_start");
                 anyhow::ensure!(
                     !resources.closed.load(Ordering::Acquire),
@@ -948,16 +1143,11 @@ impl RuntimeHandle {
                     inventory.same_snapshot(&base),
                     ResourceObservationError::InventorySnapshotChanged
                 );
-                let catalogue = candidate
-                    .borrow_mut()
-                    .take()
-                    .context("resource catalogue candidate missing")?;
                 *inventory = catalogue.as_ref().clone();
                 drop(inventory);
                 self.trace_resource_refresh("publication_ready");
                 Ok(fence)
-            },
-        )
+            })
     }
     pub(crate) fn begin_context_resource_write(
         &self,
@@ -1475,7 +1665,8 @@ mod tests {
                     ));
                 } else {
                     result?;
-                    assert_eq!(runtime.inner.resources.attempts.load(Ordering::Acquire), 2);
+                    assert_eq!(runtime.inner.resources.attempts.load(Ordering::Acquire), 1);
+                    assert_eq!(runtime.inner.resources.reads.load(Ordering::Acquire), 1);
                     assert_eq!(
                         runtime.inner.resources.registry.freshness()?,
                         super::super::resource_observation::ResourceFreshness::Ready
@@ -1486,6 +1677,217 @@ mod tests {
             })?;
         }
         Ok(())
+    }
+
+    #[test]
+    fn resource_revision_cleanup_fences_unpolled_supervisor() -> Result<()> {
+        let home = tempdir()?;
+        let runtime = synchronous_runtime("resource-cleanup-unpolled", home.path())?;
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()?
+            .block_on(async {
+                let mut refresh = Box::pin(runtime.run_context_resource_refresh(false));
+                std::future::poll_fn(|cx| {
+                    assert!(std::future::Future::poll(refresh.as_mut(), cx).is_pending());
+                    std::task::Poll::Ready(())
+                })
+                .await;
+                // Current-thread execution has registered but not polled the task.
+                assert!(!runtime
+                    .inner
+                    .resources
+                    .refresh_in_flight
+                    .load(Ordering::Acquire));
+                assert!(runtime.inner.resources.refresh_lock.try_lock().is_ok());
+                assert!(runtime.resource_refresh_pending());
+                let error = runtime.quiesce_resource_refresh().err().unwrap();
+                assert!(error.to_string().contains("resource_refresh_exit_pending"));
+                drop(refresh);
+                tokio::time::timeout(Duration::from_secs(5), runtime.join_owned_mutations())
+                    .await??;
+                Ok(())
+            })
+    }
+
+    #[test]
+    fn resource_revision_cleanup_waits_for_supervisor_exit_after_admission_release() -> Result<()> {
+        let home = tempdir()?;
+        let runtime = synchronous_runtime("resource-cleanup-exit", home.path())?;
+        tokio::runtime::Runtime::new()?.block_on(async {
+            let admission = runtime
+                .inner
+                .resources
+                .refresh_admission
+                .clone()
+                .read_owned()
+                .await;
+            let (released, released_wait) = tokio::sync::oneshot::channel();
+            let (exit, exit_wait) = tokio::sync::oneshot::channel();
+            runtime.spawn_owned_resource_refresh(async move {
+                drop(admission);
+                let _ = released.send(());
+                let _ = exit_wait.await;
+            })?;
+            tokio::time::timeout(Duration::from_secs(5), released_wait).await??;
+            assert!(runtime
+                .inner
+                .resources
+                .refresh_admission
+                .try_write()
+                .is_ok());
+            assert!(runtime.inner.resources.refresh_lock.try_lock().is_ok());
+            assert!(runtime.resource_refresh_pending());
+            let error = runtime.quiesce_resource_refresh().err().unwrap();
+            assert!(error.to_string().contains("resource_refresh_exit_pending"));
+            assert!(!runtime.inner.mutation_tasks.lock().unwrap().all_finished());
+            let _ = exit.send(());
+            tokio::time::timeout(Duration::from_secs(5), runtime.join_owned_mutations()).await??;
+            assert!(runtime.quiesce_resource_refresh().is_ok());
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn resource_revision_cleanup_rejection_reopens_refresh_admission() -> Result<()> {
+        let home = tempdir()?;
+        let runtime = synchronous_runtime("resource-cleanup-admission", home.path())?;
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()?
+            .block_on(async {
+                let cleanup = runtime.quiesce_resource_refresh()?;
+                let mut refresh = Box::pin(runtime.run_context_resource_refresh(false));
+                std::future::poll_fn(|cx| {
+                    assert!(std::future::Future::poll(refresh.as_mut(), cx).is_pending());
+                    std::task::Poll::Ready(())
+                })
+                .await;
+                assert!(runtime.inner.mutation_tasks.lock().unwrap().all_finished());
+                assert_eq!(runtime.inner.resources.attempts.load(Ordering::Acquire), 0);
+                drop(cleanup);
+                tokio::time::timeout(Duration::from_secs(5), refresh).await??;
+                assert_eq!(runtime.inner.resources.reads.load(Ordering::Acquire), 1);
+                runtime.join_owned_mutations().await
+            })
+    }
+
+    #[test]
+    fn resource_revision_fifo_owner_handoff_joins_one_physical_candidate() -> Result<()> {
+        let home = tempdir()?;
+        let runtime = synchronous_runtime("resource-fifo-publication", home.path())?;
+        tokio::runtime::Runtime::new()?.block_on(async {
+            let pause = runtime.pause_next_resource_refresh();
+            let first = tokio::spawn({
+                let runtime = runtime.clone();
+                async move { runtime.ensure_context_resources().await }
+            });
+            tokio::time::timeout(Duration::from_secs(5), pause.wait()).await?;
+            let second = tokio::spawn({
+                let runtime = runtime.clone();
+                async move { runtime.ensure_context_resources().await }
+            });
+            tokio::time::timeout(Duration::from_secs(5), async {
+                while runtime.inner.resources.flight_waits.load(Ordering::Acquire) == 0 {
+                    tokio::task::yield_now().await;
+                }
+            })
+            .await?;
+            let held = runtime.inner.mutation_owner.try_reserve()?;
+            let (queued, queued_wait) = tokio::sync::oneshot::channel();
+            let (acquired, acquired_wait) = tokio::sync::oneshot::channel();
+            let (release, released) = tokio::sync::oneshot::channel();
+            let competitor = tokio::spawn({
+                let runtime = runtime.clone();
+                async move {
+                    let reserve = runtime.inner.mutation_owner.reserve();
+                    tokio::pin!(reserve);
+                    std::future::poll_fn(|cx| {
+                        assert!(std::future::Future::poll(reserve.as_mut(), cx).is_pending());
+                        std::task::Poll::Ready(())
+                    })
+                    .await;
+                    let _ = queued.send(());
+                    let _owner = reserve.await?;
+                    let _ = acquired.send(());
+                    let _ = released.await;
+                    Result::<()>::Ok(())
+                }
+            });
+            tokio::time::timeout(Duration::from_secs(5), queued_wait).await??;
+            pause.release();
+            tokio::time::timeout(Duration::from_secs(5), async {
+                while !runtime.inner.resources.retry_owner.load(Ordering::Acquire) {
+                    tokio::task::yield_now().await;
+                }
+                let _io = runtime.inner.resources.refresh_lock.lock().await;
+            })
+            .await?;
+            assert!(runtime.resource_refresh_pending());
+            let error = runtime.quiesce_resource_refresh().err().unwrap();
+            assert!(error.to_string().contains("resource_refresh_exit_pending"));
+            assert!(!first.is_finished() && !second.is_finished());
+            assert_eq!(runtime.inner.resources.reads.load(Ordering::Acquire), 1);
+            drop(held);
+            tokio::time::timeout(Duration::from_secs(5), acquired_wait).await??;
+            assert!(!first.is_finished() && !second.is_finished());
+            let _ = release.send(());
+            let first = tokio::time::timeout(Duration::from_secs(5), first).await???;
+            let second = tokio::time::timeout(Duration::from_secs(5), second).await???;
+            tokio::time::timeout(Duration::from_secs(5), competitor).await???;
+            assert!(Arc::ptr_eq(&first, &second));
+            assert_eq!(runtime.inner.resources.reads.load(Ordering::Acquire), 1);
+            assert_eq!(runtime.inner.resources.attempts.load(Ordering::Acquire), 1);
+            runtime.join_owned_mutations().await?;
+            assert!(!runtime.resource_refresh_pending());
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn resource_revision_cancelled_candidate_stays_owned_until_close_releases_budget() -> Result<()>
+    {
+        let home = tempdir()?;
+        let runtime = synchronous_runtime("resource-cancelled-publication", home.path())?;
+        let before = runtime.inner.input_evidence_budget.report()?.observed_bytes;
+        tokio::runtime::Runtime::new()?.block_on(async {
+            let pause = runtime.pause_next_resource_refresh();
+            let request = tokio::spawn({
+                let runtime = runtime.clone();
+                async move { runtime.ensure_context_resources().await }
+            });
+            tokio::time::timeout(Duration::from_secs(5), pause.wait()).await?;
+            let held = runtime.inner.mutation_owner.try_reserve()?;
+            pause.release();
+            tokio::time::timeout(Duration::from_secs(5), async {
+                while !runtime.inner.resources.retry_owner.load(Ordering::Acquire) {
+                    tokio::task::yield_now().await;
+                }
+                let _io = runtime.inner.resources.refresh_lock.lock().await;
+            })
+            .await?;
+            request.abort();
+            assert!(request.await.unwrap_err().is_cancelled());
+            assert!(runtime.resource_refresh_pending());
+            assert!(runtime.inner.input_evidence_budget.report()?.observed_bytes > before);
+            runtime.inner.resources.close();
+            tokio::time::timeout(Duration::from_secs(5), async {
+                while runtime.resource_refresh_pending() {
+                    tokio::task::yield_now().await;
+                }
+            })
+            .await?;
+            assert!(!runtime.resource_refresh_pending());
+            assert_eq!(runtime.inner.resources.reads.load(Ordering::Acquire), 1);
+            assert_eq!(
+                runtime.inner.input_evidence_budget.report()?.observed_bytes,
+                before
+            );
+            // Full shutdown reconciles posture under the owner, unlike candidate exit.
+            drop(held);
+            tokio::time::timeout(Duration::from_secs(5), runtime.join_owned_mutations()).await??;
+            Ok(())
+        })
     }
 
     #[test]

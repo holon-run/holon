@@ -616,6 +616,9 @@ async fn retired_resource_drain_keeps_original_join_failure_after_owner_replacem
     let (_home, host) = test_host();
     let runtime = host.default_runtime().await?;
     runtime.wait_for_bootstrap().await?;
+    runtime.await_initial_resources_for_test().await;
+    // Keep resource publication from racing this fixture's owner takeover.
+    let refresh = runtime.hold_resource_refresh_for_test().await?;
     let (release, pending) = tokio::sync::oneshot::channel();
     runtime.spawn_owned_mutation(async move {
         let _ = pending.await;
@@ -625,6 +628,7 @@ async fn retired_resource_drain_keeps_original_join_failure_after_owner_replacem
         runtime.instance_agent_id(),
         runtime.instance_incarnation(),
     )?;
+    drop(refresh);
     drop(reserved);
     runtime.close_execution_admission();
     release.send(()).unwrap();

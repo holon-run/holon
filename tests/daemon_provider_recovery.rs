@@ -1103,7 +1103,13 @@ impl Fixture {
             .get(format!("http://{address}{path}"))
             .bearer_auth(TOKEN)
             .send()
-            .map_err(|error| StatusProbeFailure::Transport(error.to_string()))?;
+            .map_err(|error| {
+                StatusProbeFailure::Transport(format!(
+                    "timeout={}, connect={}, error={error:?}",
+                    error.is_timeout(),
+                    error.is_connect()
+                ))
+            })?;
         let http_status = response.status();
         let body = response
             .text()

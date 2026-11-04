@@ -1356,7 +1356,15 @@ latches initial completion and wakes all initial and inventory waiters. A
 cancelled request or observer does not detach finite physical I/O or its
 budget: its owned refresh remains responsible until the worker exits.
 Cleanup first quiesces refresh admission, then evaluates its original
-admission checks; rejection does not close the usable runtime. Successful
+admission checks. Each finite refresh reserves shared admission before its
+supervisor is spawned and retains it across single-flight and owner waits,
+physical preparation, and publication. Cleanup takes exclusive admission
+non-blockingly and retains it with the physical-I/O guard through its decision;
+queued or unpolled refresh work cannot bypass that gate. Refresh handles are
+classified in the same owned-task registration gate; their actual exit state
+also fences the interval after admission is released but before task completion.
+The generic owned-mutation exit check remains unchanged. Rejection does not
+close the usable runtime. Successful
 cleanup closes and joins the observer outside the mutation reservation. Idle
 observers alone are not pending mutations and cannot prevent idle retirement.
 An event whose current source already has a Ready observation performs only
@@ -4275,6 +4283,18 @@ Context; borrowed cold inputs retain their pre-clone admission. The explicit
 resource preparation barrier may wait for active Host writers only after its
 physical refresh and owner locks have exited. Pure captures still fail closed,
 and Closing or a failed physical writer is not retryable readiness.
+Resource refresh transfers the actual asynchronously acquired source reservation
+into source capture, releases it before physical I/O, and retains its original
+sealed candidate and material while awaiting publication ownership. The actual
+publication reservation proceeds directly through source validation and install;
+an acquire/drop/try-acquire loop must not restart physical reads on contention.
+An owned logical flight spans preparation and publication. Joining preparations
+capture that flight's completed observation rather than replacing its ticket.
+The physical refresh lock and synchronous material TLS entry both exit before
+an owner wait. Pending flights remain visible to resource lifecycle inspection;
+caller cancellation cannot detach their physical worker or candidate, and close
+terminates their waits and releases the original acquisition. Generation, nonce,
+owner epoch, Host fence and shared inventory validation remain unchanged.
 Completion selectors retain the same bounded candidates and charge each unique
 owned ID and set slot before allocation, without a temporary JSON resolver.
 Qualified completion-head lookups borrow their keys; a missing-key diagnostic

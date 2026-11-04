@@ -279,7 +279,7 @@ mod tests {
         runtime
             .persist_task_transition(&task, "task_completed")
             .await?;
-        let _resource_refresh = runtime.hold_resource_refresh_for_test().await?;
+        let _resource_refresh = runtime.hold_resource_preparation_for_test().await?;
         let baseline = runtime.inner.input_evidence_budget.report()?.observed_bytes;
         runtime.runtime_db().transaction(|tx| {
             tx.execute_batch("ALTER TABLE tasks RENAME TO status_owned_tasks_forbidden;ALTER TABLE agent_states RENAME TO status_owned_state_forbidden;ALTER TABLE agent_identities RENAME TO status_owned_identity_forbidden;ALTER TABLE control_cancellation_obligations RENAME TO status_owned_control_forbidden;ALTER TABLE work_item_delegations RENAME TO status_owned_delegation_forbidden;")?;

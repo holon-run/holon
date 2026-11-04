@@ -195,7 +195,7 @@ async fn run_once_batch_file_and_render_allowance_is_cumulative_one_record_short
             .persist_task_transition(&row, "task_completed")
             .await?;
     }
-    let _refresh = runtime.hold_resource_refresh_for_test().await?;
+    let _refresh = runtime.hold_resource_preparation_for_test().await?;
     let (_, mut prepared) = runtime.prepare_run_once_task_outputs(&session).await?;
     let render_records = prepared
         .reads

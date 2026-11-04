@@ -80,9 +80,14 @@ pub(super) struct OwnedMutationTasks {
     closed: bool,
     drain: Arc<Mutex<Vec<tokio::task::JoinHandle<()>>>>,
     handles: Vec<tokio::task::JoinHandle<()>>,
+    resource_refresh: Vec<tokio::task::AbortHandle>,
 }
 
 impl OwnedMutationTasks {
+    pub(super) fn resource_refresh_finished(&self) -> bool {
+        self.resource_refresh.iter().all(|task| task.is_finished())
+    }
+
     pub(super) fn all_finished(&self) -> bool {
         self.handles.iter().all(|task| task.is_finished())
             && self
@@ -2901,6 +2906,21 @@ impl RuntimeHandle {
         &self,
         mutation: impl std::future::Future<Output = ()> + Send + 'static,
     ) -> Result<()> {
+        self.spawn_owned_mutation_inner(mutation, false)
+    }
+
+    pub(super) fn spawn_owned_resource_refresh(
+        &self,
+        mutation: impl std::future::Future<Output = ()> + Send + 'static,
+    ) -> Result<()> {
+        self.spawn_owned_mutation_inner(mutation, true)
+    }
+
+    fn spawn_owned_mutation_inner(
+        &self,
+        mutation: impl std::future::Future<Output = ()> + Send + 'static,
+        resource_refresh: bool,
+    ) -> Result<()> {
         let mut tasks = self
             .inner
             .mutation_tasks
@@ -2910,9 +2930,14 @@ impl RuntimeHandle {
             return Err(super::execution_admission::closed_error());
         }
         tasks.handles.retain(|task| !task.is_finished());
+        tasks.resource_refresh.retain(|task| !task.is_finished());
         // Registration and closing share one gate. Shutdown cannot miss a task
         // spawned immediately after taking the previous handles to drain.
-        tasks.handles.push(tokio::spawn(mutation));
+        let task = tokio::spawn(mutation);
+        if resource_refresh {
+            tasks.resource_refresh.push(task.abort_handle());
+        }
+        tasks.handles.push(task);
         Ok(())
     }
 
