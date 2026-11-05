@@ -9,6 +9,102 @@ reviewed routes unless there is affirmative removal evidence. New routes require
 their own endpoint evidence; missing capability flags are conservative omissions,
 not proof that a model lacks the feature.
 
+## 2026-11-06 incremental review
+
+Baseline main is `8bc65e0b`; November 5 UTC sampling corresponds to the
+November 6 Beijing cycle. The immutable models.dev payload is
+`3f019fca55828f87d462e6140e635dc0548a5961f66e9f059026521912214ebc`.
+[Exact field evidence](metadata-evidence.md#incremental-review-2026-11-06)
+separates OpenRouter discovery changes from static endpoint admission.
+All 30 registered endpoints were independently reviewed: 332 first-group
+and 172 second-group complete static objects, with no new static patch.
+The first group obtained 85/85 HTTP 200 responses at 20:34:04–20:35:16 UTC.
+The second group's 20:33–20:43 UTC archive contains 86 receipts:
+66 HTTP 200 and 20 HTTP/network failures. Obtained response bodies and
+receipts passed their SHA-256 checks. Failures, absence and successful
+HTTP access do not establish retirement, entitlement or live inference.
+
+| Endpoints | New evidence and preserved boundary |
+| --- | --- |
+| `dashscope@default` | K3.1 Messages effort already uses `output_config.effort`. Newly explicit sampling restrictions and Chat-only dynamic-tool examples do not add Messages capabilities, budgets or output defaults. |
+| `dashscope@token-plan`, `@coding-plan`, `@coding-plan-intl` | Personal/team promotional prices and table layout changed, not the reviewed model allowlists. No K3.1 plan grant; domestic/international eligibility remains separate. |
+| `volcengine@default`, `@coding`, `@plan` | Evolving's same-ID November update does not change existing plan records. Its Anthropic-compatible card is not evidence of ordinary v3 Responses eligibility; K3.1 default conflict remains unresolved. |
+| `tencent-tokenhub@default`, `@messages`, `@responses` | Hy4 and three Chat effort updates are already in main. Image input remains certified across protocols; reasoning/effort remain Chat-only. New image/video generation services are not agent Chat/Messages/Responses admission. |
+| `qianfan@default` | Navigation changes do not certify an agent OCR route or exact thinking-exp retirement. |
+| `bigmodel@default`, `zai@default` | Managed Agent Channel navigation changes do not resolve Legal's exact Messages ID; international evidence remains independent. |
+| `xiaomi@default`, `@token-plan` | Readable official bodies unchanged; three JS shells do not recertify fields. No exact ultraspeed retirement or new plan entitlement established. |
+| `minimax@default`, `minimax-cn@default`, both `@m-plan` | Separate regional/plan records unchanged. November 18 API retirement remains future; Preview output limits/default remain unknown. |
+| `moonshot@default` | November 1 new-account restrictions do not delete six retained routes or promise access for new accounts. |
+| `byteplus@default`, `@coding` | November 11 cutoff remains future. Two SSL failures do not prove removal; other successful sources retain 13 Coding routes without transferring eligibility to ordinary API. |
+| `stepfun@default`, `@plan` | No newly certified route or field change; router budgets and Messages effort remain unresolved. |
+| `opencode-go@default`, `@messages`, `@responses` | Hy4 now has an explicit console entry; all three routes are already in main. Native listing remains 29 objects with timestamp-only changes; 28 native projections match and 59 translated routes remain conservative. |
+| `kilocode@default` | Five complete auto objects are unchanged. The three new OpenRouter IDs also occur in non-auto discovery, but none belongs to an auto pool; do not propagate their fields into auto routes. |
+| `together@default` | Existing 12 static routes unchanged. Documentation 403/404 responses are not retirement evidence or a substitute for exact admission evidence. |
+| `fireworks@default` | Existing K3.1 route independently reconfirmed. Ripple's index and model card confirm Function Calling and an explicit base-model resource path, but mark Serverless unsupported and offer On-demand deployment only. Direct callability on the registered public serverless endpoint is not established. Keep ten static routes. |
+
+The [DashScope Kimi guide](https://help.aliyun.com/zh/model-studio/kimi-api)
+documents exact K3.1 sampling defaults `temperature=1.0`, `top_p=0.95`,
+and `presence_penalty=0.0`; non-default values are rejected. Messages,
+Responses and Chat use different effort fields. Dynamic tools target Chat
+and Kimi-K3 web search is labeled Responses-only; neither feature certifies
+the registered Messages endpoint or subscription eligibility.
+Ark's [release notice](https://ark.volcengine.com/region:cn-beijing/docs/model-release-announcement.md)
+and [Evolving card](https://ark.volcengine.com/models/doubao-seed-evolving.md)
+describe the same-ID update, but their `/api/compatible` example and
+abbreviated `1M/1024k/256k` do not supply ordinary v3 eligibility or new
+integer budgets/defaults.
+
+The [Kilo listing](https://api.kilo.ai/api/gateway/models), sampled at
+20:35:04 UTC, raw SHA-256
+`aa4b2ed426a55674023d5a65967a68cdbc1a4d44bb5a91811fda612c02717be0`,
+contains both Gemini Omni Flash IDs and Ling 3.0 Tiny as non-auto records.
+Both Omni records omit `tools`/`tool_choice`; Ling declares these only as
+aggregator metadata. Kilo's existing `StaticAndDiscovery` decoder accepts
+nonempty IDs without filtering on tools. Discovery candidates and inherited
+`agent_turn` defaults are therefore not static admission or tested capability.
+All five auto records and their memberships remain unchanged.
+
+The second group's derived set grows from 168 to 172 only because Go's
+three Hy4 routes and Fireworks K3.1 are now independently derivable;
+all four already exist in the baseline. Fireworks' [Ripple model card](https://fireworks.ai/models/fireworks/ripple-65b-preview)
+independently confirms Function Calling and explicitly publishes
+`accounts/fireworks/models/ripple-65b-preview` as a base-model resource path.
+Both the index and card mark Serverless unsupported and offer On-demand
+deployment only. This does not establish direct callability on the currently
+registered public serverless endpoint; no static route is admitted.
+Marketing tags, `updatedAt` churn and removal of a fine-tuning section
+do not change the other static records. Twelve native Mistral connection
+resets leave the exact-version admission gate unresolved.
+
+Tencent's [Step 5 cached-input price notice](https://cloud.tencent.com/announce/detail/2542)
+is now effective: November 6 at 00:00 Beijing is November 5 at 16:00 UTC.
+Guangzhou changes 0.35 → 0.70 and Singapore 0.36 → 0.72 CNY per million
+tokens; uncached input/output prices are unchanged. This is not explicit
+cache-breakpoint authorization or an observed cache hit.
+The [M2.7 cutoff](https://cloud.tencent.com/announce/detail/2511) remains
+November 17 at 23:59:59 Beijing (15:59:59 UTC), still future at sampling.
+Existing retired IDs stay absent; no early deletion is inferred.
+Codex's fixed revision and all 12 objects are byte-identical, and normalized
+DeepSeek pricing/Responses bodies are unchanged. No credentials,
+authenticated discovery or paid inference were used.
+
+### Final verification
+
+Final serial local verification passed 318 test executions with one intentional
+snapshot-writer ignore across `cargo test --locked models_dev`,
+`cargo test --locked --lib model_catalog::`,
+`cargo test --locked --lib model_discovery::`,
+`cargo test --locked --test models_dev_adapter`, and
+`cargo test --locked --test context_budget`.
+`models-dev validate`, the 629-record `models-dev coverage --check` gate,
+strict complete-object delta review, `cargo fmt --all -- --check`,
+`RUSTFLAGS="-D warnings" cargo check --all-targets --locked`, and
+`git diff --check` all pass. Data/protection hashes match before and after
+the gates. Independent read-only final review of the six changed files and
+two unchanged protected baselines found no unresolved confirmed P1/P2,
+including the Ripple base-model/Serverless distinction above.
+This is local verification, not live endpoint inference or a remote CI result.
+
 ## 2026-11-05 incremental review
 
 Baseline main is `82c2a236`; sampling on November 4 UTC corresponds to

@@ -1,12 +1,12 @@
 {
   "schema_version": 1,
-  "revision": "models-dev-a032bd9630156a5a601e8097d13005838c9be0822e37b1e0cb035af10e6e79ca",
+  "revision": "models-dev-3f019fca55828f87d462e6140e635dc0548a5961f66e9f059026521912214ebc",
   "upstream": {
     "source": "models.dev",
-    "revision": "a032bd9630156a5a601e8097d13005838c9be0822e37b1e0cb035af10e6e79ca",
-    "fetched_at": "2026-11-04T21:33:23.445191891+00:00",
-    "content_sha256": "a032bd9630156a5a601e8097d13005838c9be0822e37b1e0cb035af10e6e79ca",
-    "adapter_version": "0.58.0 (82c2a236-dirty)"
+    "revision": "3f019fca55828f87d462e6140e635dc0548a5961f66e9f059026521912214ebc",
+    "fetched_at": "2026-11-05T20:36:00.182711779+00:00",
+    "content_sha256": "3f019fca55828f87d462e6140e635dc0548a5961f66e9f059026521912214ebc",
+    "adapter_version": "0.59.0 (8bc65e0b)"
   },
   "models": [
     {
@@ -13118,6 +13118,56 @@
       "source": "remote_discovered"
     },
     {
+      "model_ref": "openrouter/google/gemini-omni-1.1-flash",
+      "display_name": "Gemini Omni 1.1 Flash",
+      "description": "Omni-modal model for text, vision, audio, and multimodal agent tasks",
+      "context_window_tokens": 131072,
+      "effective_context_window_percent": 95,
+      "auto_compact_token_limit": 124518,
+      "default_max_output_tokens": 65536,
+      "max_output_tokens_upper_limit": 65536,
+      "default_verbosity": null,
+      "tool_output_truncation_estimated_tokens": 2500,
+      "capabilities": {
+        "agent_turn": true,
+        "parallel_tool_calls": false,
+        "image_input": true,
+        "image_generation": false,
+        "supports_reasoning": true,
+        "interactive_exec": false
+      },
+      "reasoning_effort_options": [
+        "low",
+        "high"
+      ],
+      "source": "remote_discovered"
+    },
+    {
+      "model_ref": "openrouter/google/gemini-omni-1.2-flash",
+      "display_name": "Gemini Omni 1.2 Flash",
+      "description": "Omni-modal model for text, vision, audio, and multimodal agent tasks",
+      "context_window_tokens": 131072,
+      "effective_context_window_percent": 95,
+      "auto_compact_token_limit": 124518,
+      "default_max_output_tokens": 65536,
+      "max_output_tokens_upper_limit": 65536,
+      "default_verbosity": null,
+      "tool_output_truncation_estimated_tokens": 2500,
+      "capabilities": {
+        "agent_turn": true,
+        "parallel_tool_calls": false,
+        "image_input": true,
+        "image_generation": false,
+        "supports_reasoning": true,
+        "interactive_exec": false
+      },
+      "reasoning_effort_options": [
+        "low",
+        "high"
+      ],
+      "source": "remote_discovered"
+    },
+    {
       "model_ref": "openrouter/google/gemma-2-27b-it",
       "display_name": "Gemma 2 27B",
       "description": "Open Gemma instruction model for efficient chat and self-hosted deployments",
@@ -13208,8 +13258,8 @@
       "context_window_tokens": 262144,
       "effective_context_window_percent": 95,
       "auto_compact_token_limit": 249036,
-      "default_max_output_tokens": 32768,
-      "max_output_tokens_upper_limit": 32768,
+      "default_max_output_tokens": 235929,
+      "max_output_tokens_upper_limit": 235929,
       "default_verbosity": null,
       "tool_output_truncation_estimated_tokens": 2500,
       "capabilities": {
@@ -13498,6 +13548,27 @@
       "source": "remote_discovered"
     },
     {
+      "model_ref": "openrouter/inclusionai/ling-3.0-tiny",
+      "display_name": "Ling 3.0 Tiny",
+      "description": "Reasoning model for deliberate analysis, multi-step problem solving, and tool use",
+      "context_window_tokens": 262144,
+      "effective_context_window_percent": 95,
+      "auto_compact_token_limit": 249036,
+      "default_max_output_tokens": 250000,
+      "max_output_tokens_upper_limit": 250000,
+      "default_verbosity": null,
+      "tool_output_truncation_estimated_tokens": 2500,
+      "capabilities": {
+        "agent_turn": true,
+        "parallel_tool_calls": false,
+        "image_input": false,
+        "image_generation": false,
+        "supports_reasoning": true,
+        "interactive_exec": false
+      },
+      "source": "remote_discovered"
+    },
+    {
       "model_ref": "openrouter/inclusionai/ling-3.1-flash",
       "display_name": "Ling 3.1 Flash",
       "description": "Efficient model for low-latency assistance, extraction, and routine automation",
@@ -13525,8 +13596,8 @@
       "context_window_tokens": 128000,
       "effective_context_window_percent": 95,
       "auto_compact_token_limit": 121600,
-      "default_max_output_tokens": 4096,
-      "max_output_tokens_upper_limit": 4096,
+      "default_max_output_tokens": 8192,
+      "max_output_tokens_upper_limit": 8192,
       "default_verbosity": null,
       "tool_output_truncation_estimated_tokens": 2500,
       "capabilities": {
@@ -13756,8 +13827,8 @@
       "context_window_tokens": 131072,
       "effective_context_window_percent": 95,
       "auto_compact_token_limit": 124518,
-      "default_max_output_tokens": 16384,
-      "max_output_tokens_upper_limit": 16384,
+      "default_max_output_tokens": 32768,
+      "max_output_tokens_upper_limit": 32768,
       "default_verbosity": null,
       "tool_output_truncation_estimated_tokens": 2500,
       "capabilities": {
@@ -13777,8 +13848,8 @@
       "context_window_tokens": 524288,
       "effective_context_window_percent": 95,
       "auto_compact_token_limit": 498073,
-      "default_max_output_tokens": 16384,
-      "max_output_tokens_upper_limit": 16384,
+      "default_max_output_tokens": 32768,
+      "max_output_tokens_upper_limit": 32768,
       "default_verbosity": null,
       "tool_output_truncation_estimated_tokens": 2500,
       "capabilities": {
@@ -14080,27 +14151,6 @@
       "source": "remote_discovered"
     },
     {
-      "model_ref": "openrouter/minimax/minimax-01",
-      "display_name": "MiniMax-01",
-      "description": "MiniMax multimodal coding model for long-context reasoning and agent tasks",
-      "context_window_tokens": 1000192,
-      "effective_context_window_percent": 95,
-      "auto_compact_token_limit": 950182,
-      "default_max_output_tokens": 40000,
-      "max_output_tokens_upper_limit": 40000,
-      "default_verbosity": null,
-      "tool_output_truncation_estimated_tokens": 2500,
-      "capabilities": {
-        "agent_turn": true,
-        "parallel_tool_calls": false,
-        "image_input": true,
-        "image_generation": false,
-        "supports_reasoning": false,
-        "interactive_exec": false
-      },
-      "source": "remote_discovered"
-    },
-    {
       "model_ref": "openrouter/minimax/minimax-m1",
       "display_name": "MiniMax M1",
       "description": "MiniMax model for chat, coding, office work, and agentic tasks",
@@ -14109,69 +14159,6 @@
       "auto_compact_token_limit": 950000,
       "default_max_output_tokens": 40000,
       "max_output_tokens_upper_limit": 40000,
-      "default_verbosity": null,
-      "tool_output_truncation_estimated_tokens": 2500,
-      "capabilities": {
-        "agent_turn": true,
-        "parallel_tool_calls": false,
-        "image_input": false,
-        "image_generation": false,
-        "supports_reasoning": true,
-        "interactive_exec": false
-      },
-      "source": "remote_discovered"
-    },
-    {
-      "model_ref": "openrouter/minimax/minimax-m2",
-      "display_name": "MiniMax-M2",
-      "description": "Efficient open MiniMax model built for coding agents and tool-heavy workflows",
-      "context_window_tokens": 204800,
-      "effective_context_window_percent": 95,
-      "auto_compact_token_limit": 194560,
-      "default_max_output_tokens": 131072,
-      "max_output_tokens_upper_limit": 131072,
-      "default_verbosity": null,
-      "tool_output_truncation_estimated_tokens": 2500,
-      "capabilities": {
-        "agent_turn": true,
-        "parallel_tool_calls": false,
-        "image_input": false,
-        "image_generation": false,
-        "supports_reasoning": true,
-        "interactive_exec": false
-      },
-      "source": "remote_discovered"
-    },
-    {
-      "model_ref": "openrouter/minimax/minimax-m2-her",
-      "display_name": "MiniMax-M2 Her",
-      "description": "MiniMax model for chat, coding, office work, and agentic tasks",
-      "context_window_tokens": 65536,
-      "effective_context_window_percent": 95,
-      "auto_compact_token_limit": 62259,
-      "default_max_output_tokens": 2048,
-      "max_output_tokens_upper_limit": 2048,
-      "default_verbosity": null,
-      "tool_output_truncation_estimated_tokens": 2500,
-      "capabilities": {
-        "agent_turn": true,
-        "parallel_tool_calls": false,
-        "image_input": false,
-        "image_generation": false,
-        "supports_reasoning": false,
-        "interactive_exec": false
-      },
-      "source": "remote_discovered"
-    },
-    {
-      "model_ref": "openrouter/minimax/minimax-m2.1",
-      "display_name": "MiniMax-M2.1",
-      "description": "Earlier MiniMax agent model for practical coding and productivity tasks",
-      "context_window_tokens": 204800,
-      "effective_context_window_percent": 95,
-      "auto_compact_token_limit": 194560,
-      "default_max_output_tokens": 131072,
-      "max_output_tokens_upper_limit": 131072,
       "default_verbosity": null,
       "tool_output_truncation_estimated_tokens": 2500,
       "capabilities": {
@@ -14212,8 +14199,8 @@
       "context_window_tokens": 204800,
       "effective_context_window_percent": 95,
       "auto_compact_token_limit": 194560,
-      "default_max_output_tokens": 131072,
-      "max_output_tokens_upper_limit": 131072,
+      "default_max_output_tokens": 176947,
+      "max_output_tokens_upper_limit": 176947,
       "default_verbosity": null,
       "tool_output_truncation_estimated_tokens": 2500,
       "capabilities": {
@@ -16651,8 +16638,8 @@
       "context_window_tokens": 131072,
       "effective_context_window_percent": 95,
       "auto_compact_token_limit": 124518,
-      "default_max_output_tokens": 32768,
-      "max_output_tokens_upper_limit": 32768,
+      "default_max_output_tokens": 117964,
+      "max_output_tokens_upper_limit": 117964,
       "default_verbosity": null,
       "tool_output_truncation_estimated_tokens": 2500,
       "capabilities": {
@@ -17207,8 +17194,8 @@
       "context_window_tokens": 262144,
       "effective_context_window_percent": 95,
       "auto_compact_token_limit": 249036,
-      "default_max_output_tokens": 16384,
-      "max_output_tokens_upper_limit": 16384,
+      "default_max_output_tokens": 117964,
+      "max_output_tokens_upper_limit": 117964,
       "default_verbosity": null,
       "tool_output_truncation_estimated_tokens": 2500,
       "capabilities": {
@@ -17396,8 +17383,8 @@
       "context_window_tokens": 262144,
       "effective_context_window_percent": 95,
       "auto_compact_token_limit": 249036,
-      "default_max_output_tokens": 235929,
-      "max_output_tokens_upper_limit": 235929,
+      "default_max_output_tokens": 16384,
+      "max_output_tokens_upper_limit": 16384,
       "default_verbosity": null,
       "tool_output_truncation_estimated_tokens": 2500,
       "capabilities": {
@@ -17988,8 +17975,8 @@
       "context_window_tokens": 1048576,
       "effective_context_window_percent": 95,
       "auto_compact_token_limit": 996147,
-      "default_max_output_tokens": 131072,
-      "max_output_tokens_upper_limit": 131072,
+      "default_max_output_tokens": 943718,
+      "max_output_tokens_upper_limit": 943718,
       "default_verbosity": null,
       "tool_output_truncation_estimated_tokens": 2500,
       "capabilities": {
@@ -18097,11 +18084,11 @@
       "model_ref": "openrouter/ricursiveai/ripple-65b-preview",
       "display_name": "ricursiveAI/Ripple-65B-Preview",
       "description": "Preview model for early access evaluation, prototyping, and compatibility testing",
-      "context_window_tokens": 16384,
+      "context_window_tokens": 1048576,
       "effective_context_window_percent": 95,
-      "auto_compact_token_limit": 15564,
-      "default_max_output_tokens": 14745,
-      "max_output_tokens_upper_limit": 14745,
+      "auto_compact_token_limit": 996147,
+      "default_max_output_tokens": 131072,
+      "max_output_tokens_upper_limit": 131072,
       "default_verbosity": null,
       "tool_output_truncation_estimated_tokens": 2500,
       "capabilities": {
