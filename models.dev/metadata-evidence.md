@@ -5,6 +5,75 @@ unchanged catalog facts are preserved, not newly certified as vendor hard
 limits. An upstream candidate is evidence to review, not permission to change
 an endpoint, region, subscription entitlement, or runtime output policy.
 
+## Incremental review: 2026-11-06
+
+The immutable models.dev payload is
+`3f019fca55828f87d462e6140e635dc0548a5961f66e9f059026521912214ebc`,
+sampled November 5 UTC for the November 6 Beijing cycle.
+The [official OpenRouter listing](https://openrouter.ai/api/v1/models),
+sampled November 5 at 20:34:06 UTC (454 records; raw SHA-256
+`c82b1a41012f7bf702d57523bcfb78b7e033eec393a3806d482d2138bb9f114e`),
+independently supports the following discovery-local changes:
+
+| OpenRouter model ID | Reviewed projection |
+| --- | --- |
+| `google/gemini-omni-1.1-flash`, `google/gemini-omni-1.2-flash` | New discovery records; global context 131,072, top-provider output ceiling 65,536, image input, reasoning. The fixed models.dev objects specify `low/high` effort and explicitly disable tool calls. |
+| `inclusionai/ling-3.0-tiny` | New discovery record; global context 262,144, top-provider output ceiling 250,000, text-only input, reasoning and tools. Toggle reasoning does not establish an effort enum. |
+| `minimax/minimax-01`, `minimax/minimax-m2`, `minimax/minimax-m2-her`, `minimax/minimax-m2.1` | Absent from both fresh discovery sources; remove only their remote projections. Existing static routes are not retired by a listing omission. |
+| `meta-llama/llama-3.3-70b-instruct`, `meta-llama/llama-4-maverick` | Top-provider output ceiling 16,384 → 32,768. |
+| `openai/gpt-oss-20b` | Top-provider output ceiling 32,768 → 117,964. |
+| `qwen/qwen3-235b-a22b-2507` | Top-provider output ceiling 16,384 → 117,964. |
+| `qwen/qwen3-next-80b-a3b-instruct` | Top-provider output ceiling 235,929 → 16,384. |
+| `google/gemma-4-26b-a4b-it` | Top-provider output ceiling 32,768 → 235,929. |
+| `reflection/beam-1.0-501b-a23b` | Top-provider output ceiling 131,072 → 943,718. |
+| `inference-net/schematron-v2-small` | Top-provider output ceiling 4,096 → 8,192. |
+| `minimax/minimax-m2.7` | Top-provider output ceiling 131,072 → 176,947. |
+| `ricursiveai/ripple-65b-preview` | Global context 16,384 → 1,048,576 and top-provider output ceiling 14,745 → 131,072. The 95% compact threshold follows the global context. |
+
+These are aggregator discovery projections, not new static agent routes or
+subscription entitlements. Output ceilings populate both discovery output
+fields under the existing projection contract; they are not newly certified
+vendor defaults. Global `context_length` is not replaced by
+`top_provider.context_length`: several top-provider contexts changed without
+changing the corresponding global context. The official-only `openrouter/auto-code`
+record is not in the fixed models.dev source and does not change Kilo auto
+mapping. No audio/video execution or tool capability is inferred from Omni's
+name or description. In particular, the discovery projector's existing
+`agent_turn` field is not certification that these tool-less Omni models can
+execute agent turns, and does not grant a new static route.
+
+The same three additions are present in Kilo's non-auto discovery listing,
+not in any of its five auto routing pools. Both Omni objects omit tools;
+Ling's tool parameters remain aggregator-local evidence. Kilo's existing
+decoder can expose these candidates with inherited capability defaults,
+which is not static admission, native endpoint support or live certification.
+The five complete auto objects are unchanged. Fireworks' Ripple index and
+[model card](https://fireworks.ai/models/fireworks/ripple-65b-preview) confirm
+Function Calling and explicitly publish the base-model resource path
+`accounts/fireworks/models/ripple-65b-preview`. The index sets `serverless=false`
+and `serverlessApi=false`; the card also marks Serverless unsupported and
+offers On-demand deployment only. A published base-model path does not establish
+direct callability on the registered public serverless endpoint, so no static
+route is admitted. Its abbreviated marketing capacities are not copied into
+other providers.
+
+The artifact changes from 1,076 to 1,075 models. Its complete route, alias and
+preferred/default collections remain identical. All 55 retained supplemental
+models, the complete built-in snapshot, and every fact, protected input and
+status in the 629-record metadata review baseline remain unchanged. Mapped
+upstream changes outside these OpenRouter limits are price fields, not
+endpoint-specific capability evidence.
+
+The [official Codex catalog at the fixed revision](https://github.com/openai/codex/blob/126a0ee92ed2c5e73cd8a8f7e37563e8527552d7/codex-rs/models-manager/models.json)
+was sampled November 5 at 20:34:02 UTC, raw SHA-256
+`1384625c0b6b3e67d3c60da29becea2b017f2c283fc1e2d05b8edafb4698eb10`.
+All 12 objects are byte-for-byte unchanged; generic API additions do not
+establish Codex access.
+[DeepSeek pricing](https://api-docs.deepseek.com/quick_start/pricing/) and
+[Responses](https://api-docs.deepseek.com/guides/responses_api/) were freshly
+sampled at 20:34:04/05 UTC; normalized bodies match the previous cycle exactly.
+No capacity, effort, endpoint or account-access change is inferred.
+
 ## Incremental review: 2026-11-05
 
 The immutable models.dev payload is
