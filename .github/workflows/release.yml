@@ -345,68 +345,54 @@ jobs:
           # release-prep commit; never reuse the previous version's notes.
           # See docs/release.md ("Release notes").
           cat > release-notes.md <<EOF
-          This release concentrates on runtime efficiency and lifecycle correctness: the deletion coordinator bounds legacy-residue rescans and decouples them from maintenance rounds, holon daemon status no longer opens the runtime database without a bound surface, agent message wait tasks admit a terminal first writer, and the same AGENTS.md is no longer injected twice across agent and workspace scopes. The provider catalog stays current: Volcanoengine M3 plan routes are retired and OpenRouter's exact effort values are preserved, with the model catalog refreshed alongside. The web GUI upgrades truncated operator-message previews to full text on copy, iOS fixes UI readiness, short-term ticket handling, and font-size fixture timing, and test stability covers status probes during the daemon restart window, per-task interruption events, and the runtime DB fd-metadata drop assertion tolerating benign fd-number reuse. A meeting coordination steward agent template arrives, and documentation gains a self-hosted Keycloak OIDC single sign-on guide, the v0.57.0 release documentation, and a team blog refreshed with 131-day metrics and dual-panel SVGs.
+          This release concentrates on task lifecycle correctness and a current provider catalog: terminal task result commits fenced off by the task-row last-write-wins guard are now rejected, keeping late results from being misclassified under load; Tencent's exactly-retired endpoint IDs drop 33 stale routes after the official announcement; and the daily catalog adds Tencent Hy4, OpenCode Go Hy4, Bailian K3.1, and Fireworks K3.1 IDs with precise Tencent and Bailian effort adaptation. Web search gains a key-free Keenable provider, a composable chief-of-staff agent template arrives for explicitly delegated coordination, and test stability bounds the restart-path task result poll and unifies the observe_result observation window at 60 seconds with near-miss evidence. Documentation trims implementation detail from concepts, guides, and reference, folds in the v0.58.0 release documentation, and adds a conversation-driven code reviewer guide with a simplified reviewer blog.
 
           Supported binary assets for this release are Linux amd64, macOS amd64, macOS arm64, and Android. The macOS app DMG is a universal binary supporting both x86_64 and arm64. The Linux amd64 binary supports Ubuntu 22.04 or newer (glibc 2.35 or newer). The signed Android APK requires Android 8.0 (API 26) or newer; the AAB is for store submission, not direct installation.
 
           ## Summary
 
-          ### Runtime efficiency and lifecycle invariants
-          - The deletion coordinator bounds legacy-residue rescans and decouples maintenance rounds ([#3890](https://github.com/holon-run/holon/pull/3890), fixing [#3884](https://github.com/holon-run/holon/issues/3884)), ending idle full-core burn from 1ms shared sweep resets.
-          - holon daemon status no longer scans the runtime DB without a bound surface ([#3875](https://github.com/holon-run/holon/pull/3875), fixing [#3848](https://github.com/holon-run/holon/issues/3848)), so it no longer hangs over 20 seconds under lock contention while the control plane is healthy.
-          - Agent message wait tasks admit a terminal first writer ([#3892](https://github.com/holon-run/holon/pull/3892), fixing [#3869](https://github.com/holon-run/holon/issues/3869)), closing the reply-before-invoke race that hit a conflicting task transition (completed -> queued).
-          - The same AGENTS.md is no longer injected twice across agent and workspace scopes ([#3893](https://github.com/holon-run/holon/pull/3893)).
+          ### Task lifecycle correctness
+          - Terminal task result commits fenced off by the task-row last-write-wins guard are rejected ([#3915](https://github.com/holon-run/holon/pull/3915), fixing [#3910](https://github.com/holon-run/holon/issues/3910)), so a late task result is no longer misclassified as reducer-only under load.
 
           ### Provider catalog
-          - Volcanoengine M3 plan routes are retired with a model catalog refresh ([#3899](https://github.com/holon-run/holon/pull/3899)), and OpenRouter's exact effort values are preserved with another catalog refresh ([#3878](https://github.com/holon-run/holon/pull/3878)).
+          - The 2026-11-04 catalog refresh removes 33 routes across 14 exactly-retired Tencent endpoint IDs per the official announcement, keeping not-yet-expired M2.7 routes and surviving default mappings ([#3913](https://github.com/holon-run/holon/pull/3913)).
+          - The 2026-11-05 catalog refresh adds Tencent Hy4, OpenCode Go Hy4, Bailian K3.1, and Fireworks exact K3.1 IDs, and adapts Tencent and Bailian Chat effort lists precisely ([#3918](https://github.com/holon-run/holon/pull/3918)).
 
-          ### Web GUI
-          - Copying an operator message upgrades a truncated preview to the full text before copying ([#3894](https://github.com/holon-run/holon/pull/3894)).
-
-          ### iOS stability
-          - The iOS app fixes UI readiness, short-term ticket handling, and font-size fixture timing ([#3901](https://github.com/holon-run/holon/pull/3901), fixing [#3861](https://github.com/holon-run/holon/issues/3861)).
-
-          ### Test stability
-          - Status probes retry transport errors with bounded backoff inside the daemon restart window ([#3902](https://github.com/holon-run/holon/pull/3902), fixing [#3880](https://github.com/holon-run/holon/issues/3880)), and the task-restart test waits for each restarted task's own interruption event ([#3891](https://github.com/holon-run/holon/pull/3891), fixing [#3870](https://github.com/holon-run/holon/issues/3870)).
-          - The runtime DB fd-metadata drop test only fails on a real same-WAL-path handle leak, so benign Linux fd-number reuse no longer triggers a false failure ([#3904](https://github.com/holon-run/holon/pull/3904), fixing [#3895](https://github.com/holon-run/holon/issues/3895)).
+          ### Web search
+          - Web search gains the Keenable provider kind next to Brave, Tavily, Exa, Perplexity, and Firecrawl, working key-free with an optional credential profile ([#3911](https://github.com/holon-run/holon/pull/3911)).
 
           ### Agent templates
-          - A meeting coordination steward agent template arrives ([#3883](https://github.com/holon-run/holon/pull/3883)).
+          - A composable chief-of-staff agent template arrives for explicitly delegated coordination work, with updatable delegation records and no new permission transfer ([#3921](https://github.com/holon-run/holon/pull/3921)).
+
+          ### Test stability
+          - The restart-path task result poll retries with a bounded budget instead of assuming the first poll returns the late task result ([#3909](https://github.com/holon-run/holon/pull/3909), fixing [#3881](https://github.com/holon-run/holon/issues/3881)).
+          - The observe_result helper unifies its observation windows at a 60-second constant and attaches near-miss evidence on timeout ([#3907](https://github.com/holon-run/holon/pull/3907), fixing [#3879](https://github.com/holon-run/holon/issues/3879)).
 
           ### Documentation
-          - The v0.57.0 release documentation is folded in ([#3877](https://github.com/holon-run/holon/pull/3877)), and a self-hosted Keycloak OIDC single sign-on guide lands in zh-CN and en (commit [b8120793](https://github.com/holon-run/holon/commit/b8120793dde834ed274a2b170fdc2932f3d46188)).
-          - The team blog post on running agents natively in a small team gains 131-day metrics, dual-panel SVGs, and team voice (commit [6860656f](https://github.com/holon-run/holon/commit/6860656f17b659ae14ba29192916bd7d36953f62)), and links to the shared team guide with IdP walkthrough links (commit [c4a1e4c0](https://github.com/holon-run/holon/commit/c4a1e4c0a6af6ae8ce4b278462be6e3c25b128fc)).
+          - User documentation trims release-note-style implementation detail from concepts, guides, and reference ([#3912](https://github.com/holon-run/holon/pull/3912)), and the v0.58.0 release documentation is folded in ([#3908](https://github.com/holon-run/holon/pull/3908)).
+          - A conversation-driven code reviewer guide lands and the reviewer blog is simplified (commit [050f6918](https://github.com/holon-run/holon/commit/050f691811aa110fe2ddc3c05f0eda2ec2e99136)).
 
           ## Pull requests
 
-          - [#3904](https://github.com/holon-run/holon/pull/3904) test: fd 号复用窗口内 fd metadata drop 断言仅对同 wal 路径泄漏判失败
-          - [#3901](https://github.com/holon-run/holon/pull/3901) fix(ios): 修复 UI 就绪、短期票据与字号 fixture 时序
-          - [#3902](https://github.com/holon-run/holon/pull/3902) test: 对 daemon restart 窗口内的 status 探测 transport 错误有界重试
-          - [#3899](https://github.com/holon-run/holon/pull/3899) fix: 退役火山 M3 套餐路由并更新模型目录（11月3日）
-          - [#3894](https://github.com/holon-run/holon/pull/3894) feat(web-gui): copy operator messages with full-text upgrade for truncated previews
-          - [#3893](https://github.com/holon-run/holon/pull/3893) fix: 避免同一 AGENTS.md 跨 agent／workspace 重复注入
-          - [#3892](https://github.com/holon-run/holon/pull/3892) fix: accept terminal first writer when admitting agent message wait task
-          - [#3891](https://github.com/holon-run/holon/pull/3891) test: wait for each restarted task's own interruption event (fixes #3870 flaky)
-          - [#3890](https://github.com/holon-run/holon/pull/3890) fix: 限制删除残留续扫并解耦维护轮次
-          - [#3883](https://github.com/holon-run/holon/pull/3883) feat: 新增会议协调管家模板
-          - [#3878](https://github.com/holon-run/holon/pull/3878) fix: 保留 OpenRouter 精确 effort 并刷新模型目录
-          - [#3877](https://github.com/holon-run/holon/pull/3877) docs: update documentation for v0.57.0 release
-          - [#3875](https://github.com/holon-run/holon/pull/3875) fix: daemon status no longer scans runtime DB without a bound surface
+          - [#3921](https://github.com/holon-run/holon/pull/3921) feat: 新增可组合的 chief-of-staff（幕僚长）模板
+          - [#3918](https://github.com/holon-run/holon/pull/3918) fix: 更新模型目录并修复腾讯与百炼 effort 适配
+          - [#3915](https://github.com/holon-run/holon/pull/3915) fix(runtime): reject terminal task result commits fenced off by task-row LWW
+          - [#3913](https://github.com/holon-run/holon/pull/3913) chore: 更新11月4日模型目录并修复腾讯精确退役路由
+          - [#3912](https://github.com/holon-run/holon/pull/3912) docs: trim implementation details from concepts, guides, and reference
+          - [#3911](https://github.com/holon-run/holon/pull/3911) feat(web): add Keenable search provider (works key-free)
+          - [#3909](https://github.com/holon-run/holon/pull/3909) test: restart 路径 task_result_wait 有界 poll 重试（修复 #3881 flake）
+          - [#3908](https://github.com/holon-run/holon/pull/3908) docs: update documentation for v0.58.0 release
+          - [#3907](https://github.com/holon-run/holon/pull/3907) test: observe_result 观察窗口统一 60s 常量并附 near-miss 证据 (Fixes #3879)
 
           ### Direct commits
 
-          - [6860656f](https://github.com/holon-run/holon/commit/6860656f17b659ae14ba29192916bd7d36953f62) docs(blog): update small-team agent native post with 131-day metrics, dual-panel SVGs, and team voice
-          - [c4a1e4c0](https://github.com/holon-run/holon/commit/c4a1e4c0a6af6ae8ce4b278462be6e3c25b128fc) docs: link team blog to shared team guide and add IdP walkthrough links
-          - [b8120793](https://github.com/holon-run/holon/commit/b8120793dde834ed274a2b170fdc2932f3d46188) docs: add self-hosted Keycloak OIDC single sign-on guide in zh-CN and en
+          - [050f6918](https://github.com/holon-run/holon/commit/050f691811aa110fe2ddc3c05f0eda2ec2e99136) docs: add conversation-driven code reviewer guide and simplify reviewer blog
 
           ## Issues
 
-          - [#3884](https://github.com/holon-run/holon/issues/3884) perf(daemon): 删除协调器 legacy residue 扫描以 1ms 重置共享 sweep，空闲态持续整核燃烧并放大全部协调器职责 — fixed by [#3890](https://github.com/holon-run/holon/pull/3890)
-          - [#3880](https://github.com/holon-run/holon/issues/3880) Flaky: payment_required_chain_parks_within_budget_and_restart_preserves_deadline hits transport error on /api/agents/main/status during daemon restart — fixed by [#3902](https://github.com/holon-run/holon/pull/3902)
-          - [#3870](https://github.com/holon-run/holon/issues/3870) Flaky: task_restart_interrupts_inflight_task_once sees Running after task_interrupted_on_restart audit event — fixed by [#3891](https://github.com/holon-run/holon/pull/3891)
-          - [#3869](https://github.com/holon-run/holon/issues/3869) Flaky: agent_message_wait_for_existing_agent reply-before-invoke race hits conflicting task transition (completed -> queued) — fixed by [#3892](https://github.com/holon-run/holon/pull/3892)
-          - [#3861](https://github.com/holon-run/holon/issues/3861) Flaky: iOS testRuntimeBrowserWorkflow 的 consent→Agent home 断言首次失败、重试通过 — fixed by [#3901](https://github.com/holon-run/holon/pull/3901)
-          - [#3848](https://github.com/holon-run/holon/issues/3848) bug(cli): holon daemon status 同步打开本地 runtime DB 并汇总历史失败，无整体时限，锁竞争下可挂起超过 20 秒（控制面健康时同样发生）— fixed by [#3875](https://github.com/holon-run/holon/pull/3875)
+          - [#3910](https://github.com/holon-run/holon/issues/3910) Flaky test: task_result_wait_with_independent_blocker_keeps_exact_model_reentry (late task result classified canonical_reducer_only under load) — fixed by [#3915](https://github.com/holon-run/holon/pull/3915)
+          - [#3881](https://github.com/holon-run/holon/issues/3881) Flaky test: task_result_wait_with_independent_blocker_survives_restart (late task result should remain durably queued) — fixed by [#3909](https://github.com/holon-run/holon/pull/3909)
+          - [#3879](https://github.com/holon-run/holon/issues/3879) Flaky: task_output_returns_worktree_subagent_result_text times out waiting for exact-handle WaitFor tool execution within 30s — fixed by [#3907](https://github.com/holon-run/holon/pull/3907)
 
           ## Install
 
