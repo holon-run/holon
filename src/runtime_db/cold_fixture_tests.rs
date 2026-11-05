@@ -72,6 +72,131 @@ fn count(db: &RuntimeDb, table: &str) -> Result<usize> {
         })?)
 }
 
+#[cfg(target_os = "linux")]
+fn wal_descriptor_count(wal: &std::path::Path) -> Result<usize> {
+    Ok(std::fs::read_dir("/proc/self/fd")?
+        .filter_map(|entry| std::fs::read_link(entry.ok()?.path()).ok())
+        .filter(|target| target == wal)
+        .count())
+}
+
+#[test]
+fn reader_warmup_initializes_and_reuses_every_real_pool_reader() -> Result<()> {
+    use std::{sync::mpsc, time::Duration};
+
+    for capacity in [1, 2, 4] {
+        let (_dir, mut db) = fixture()?;
+        db.configure_reader_pool_for_tests(capacity, Duration::from_millis(250))?;
+        #[cfg(target_os = "linux")]
+        let wal = _dir.path().join("runtime.sqlite-wal").canonicalize()?;
+        #[cfg(target_os = "linux")]
+        let cold_fds = wal_descriptor_count(&wal)?;
+        assert_eq!(warm_readers(&db)?, capacity);
+        let warmed = db.reader_pool_stats_for_tests();
+        assert_eq!(warmed.current_connections, capacity);
+        assert_eq!(warmed.idle_connections, capacity);
+        #[cfg(target_os = "linux")]
+        let baseline = wal_descriptor_count(&wal)?;
+        #[cfg(target_os = "linux")]
+        assert_eq!(baseline, cold_fds + capacity as usize);
+
+        std::thread::scope(|scope| -> Result<()> {
+            let (ready_tx, ready_rx) = mpsc::channel();
+            let mut releases = Vec::new();
+            let mut handles = Vec::new();
+            for _ in 0..capacity {
+                let db = &db;
+                let ready_tx = ready_tx.clone();
+                let (release_tx, release_rx) = mpsc::channel();
+                releases.push(release_tx);
+                handles.push(scope.spawn(move || {
+                    db.with_read(|connection| {
+                        let rows: usize = connection.query_row(
+                            "SELECT count(*) FROM agent_states",
+                            [],
+                            |row| row.get(0),
+                        )?;
+                        ready_tx.send(rows)?;
+                        release_rx.recv_timeout(Duration::from_secs(5))?;
+                        Ok(())
+                    })
+                }));
+            }
+            drop(ready_tx);
+            for _ in 0..capacity {
+                assert_eq!(ready_rx.recv_timeout(Duration::from_secs(5))?, 1);
+            }
+            #[cfg(target_os = "linux")]
+            assert_eq!(wal_descriptor_count(&wal)?, baseline);
+            for release in releases {
+                release.send(())?;
+            }
+            for handle in handles {
+                handle
+                    .join()
+                    .map_err(|_| anyhow::anyhow!("fixture reader panicked"))??;
+            }
+            Ok(())
+        })?;
+        assert_eq!(warm_readers(&db)?, capacity);
+        assert_eq!(
+            db.reader_pool_stats_for_tests().connections_opened,
+            warmed.connections_opened
+        );
+        assert_eq!(db.reader_pool_stats_for_tests().connections_dropped, 0);
+        #[cfg(target_os = "linux")]
+        assert_eq!(wal_descriptor_count(&wal)?, baseline);
+    }
+    Ok(())
+}
+
+#[test]
+fn reader_warmup_preserves_cancelled_scope_without_opening_readers() -> Result<()> {
+    use super::super::{RuntimeDbReadScope, RuntimeDbRetryableError};
+    use std::time::{Duration, Instant};
+
+    let (_dir, db) = fixture()?;
+    let scope = RuntimeDbReadScope::new(Instant::now() + Duration::from_secs(5));
+    scope.cancel();
+    let scoped = db.with_read_scope(scope);
+    assert!(warm_readers(&scoped)
+        .unwrap_err()
+        .is::<RuntimeDbRetryableError>());
+    assert_eq!(db.reader_pool_stats_for_tests().connect_attempts, 0);
+    Ok(())
+}
+
+#[test]
+fn reader_warmup_saturation_has_no_overflow_connection() -> Result<()> {
+    use super::super::RuntimeDbRetryableError;
+    use std::{sync::mpsc, time::Duration};
+
+    let (_dir, mut db) = fixture()?;
+    db.configure_reader_pool_for_tests(1, Duration::from_millis(100))?;
+    std::thread::scope(|scope| -> Result<()> {
+        let (ready_tx, ready_rx) = mpsc::channel();
+        let (release_tx, release_rx) = mpsc::channel();
+        let db = &db;
+        let holder = scope.spawn(move || {
+            db.with_read(|_| {
+                ready_tx.send(())?;
+                release_rx.recv_timeout(Duration::from_secs(5))?;
+                Ok(())
+            })
+        });
+        ready_rx.recv_timeout(Duration::from_secs(5))?;
+        let result = warm_readers(db);
+        release_tx.send(())?;
+        holder
+            .join()
+            .map_err(|_| anyhow::anyhow!("fixture reader panicked"))??;
+        assert!(result.unwrap_err().is::<RuntimeDbRetryableError>());
+        assert_eq!(db.reader_pool_stats_for_tests().current_connections, 1);
+        assert_eq!(warm_readers(db)?, 1);
+        Ok(())
+    })
+}
+
 #[test]
 fn full_cold_combination_preserves_qualification_birth_queue_and_result_head() -> Result<()> {
     let (_dir, db) = fixture()?;

@@ -64,6 +64,17 @@ Scale one dimension per fixture before combining growth and contention.
 Temporary databases must not read production records. A synthetic result can
 validate a mechanism but cannot establish its contribution to live latency.
 
+The queue attribution fixture initializes the complete actual reader pool via
+`cold_fixture::warm_readers` before taking its sole FD baseline. The typed setup
+entry point retains all pool checkouts together and reads the schema on each,
+so SQLite's lazy WAL open cannot first occur in the measured operation. It
+exposes neither SQL callbacks nor connections, honors protection and the normal
+acquisition budget, and does not change production lazy initialization. Warming
+independent raw connections or only as many readers as measurement workers does
+not establish full-pool steady state. Exact before/after FD equality, workload,
+concurrency and time limits remain unchanged; no tolerance, sleep or post-failure
+baseline reset is allowed. Historical failures remain failures.
+
 The bounded latest-Brief workload uses the production SQL and bundled SQLite:
 
 ```bash

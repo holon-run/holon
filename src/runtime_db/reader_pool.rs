@@ -178,6 +178,58 @@ impl RuntimeDbReaderPool {
         }
     }
 
+    /// Fixture-only initialization: retain every checkout until all readers
+    /// have actually read the database, including SQLite's lazy WAL open.
+    pub(super) fn warm_for_fixture(&self) -> Result<u32> {
+        self.check_read_scope()?;
+        let pool = self
+            .shared
+            .pool
+            .lock()
+            .map_err(|_| anyhow!("runtime db reader pool mutex poisoned"))?
+            .clone()
+            .ok_or_else(|| anyhow!("runtime db reader pool is closed"))?;
+        let capacity = pool.max_size();
+        let deadline = self.acquisition_deadline();
+        let mut readers = Vec::with_capacity(capacity as usize);
+        for _ in 0..capacity {
+            self.check_read_scope()?;
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            if remaining.is_zero() {
+                self.shared.control.timeout();
+                return Err(RuntimeDbRetryableError::new(
+                    "fixture reader warmup",
+                    &self.shared.control.writer.path,
+                    "reader pool acquisition budget exhausted",
+                )
+                .into());
+            }
+            let mut reader = pool.get_timeout(remaining).map_err(|error| {
+                self.shared.control.timeout();
+                self.check_read_scope().err().unwrap_or_else(|| {
+                    RuntimeDbRetryableError::new(
+                        "fixture reader warmup",
+                        &self.shared.control.writer.path,
+                        error,
+                    )
+                    .into()
+                })
+            })?;
+            self.check_read_scope()?;
+            if let Err(error) = reader.connection.as_ref().expect("live reader").query_row(
+                "SELECT count(*) FROM sqlite_schema",
+                [],
+                |_| Ok(()),
+            ) {
+                reader.broken = true;
+                return Err(error.into());
+            }
+            self.check_read_scope()?;
+            readers.push(reader);
+        }
+        Ok(capacity)
+    }
+
     fn acquisition_deadline(&self) -> Instant {
         let deadline = Instant::now() + self.shared.budget;
         self.effective_scope()

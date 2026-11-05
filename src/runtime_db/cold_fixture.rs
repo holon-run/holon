@@ -1,4 +1,4 @@
-//! Typed, insert-only setup for stopped, unloaded synthetic fixtures.
+//! Typed setup for stopped, unloaded synthetic fixtures.
 //! Qualification is part of each original insert, never a later adoption pass.
 
 use std::collections::BTreeSet;
@@ -36,6 +36,13 @@ use crate::{
 pub struct ColdFixtureWriter<'db> {
     db: &'db RuntimeDb,
     scope: InputEvidenceScope,
+}
+
+/// Initialize every actual pooled reader before measuring a quiescent synthetic
+/// fixture. No connection, SQL callback, or lease escapes this setup boundary.
+/// Call only after fixture writes and before taking the sole FD baseline.
+pub fn warm_readers(db: &RuntimeDb) -> Result<u32> {
+    db.readers.warm_for_fixture()
 }
 
 /// Only these original evidence inserts are supported by cold setup.
