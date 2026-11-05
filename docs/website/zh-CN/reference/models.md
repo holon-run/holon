@@ -10,8 +10,8 @@ summary: Holon 内置支持的所有模型和提供商的完整参考。
 
 # Supported Models
 
-Holon includes built-in configuration for **34 provider accounts**
-across **43 endpoints** and **295 models**.
+Holon includes built-in configuration for **36 provider accounts**
+across **50 endpoints** and **420 models**.
 
 This page is auto-generated from the Holon source code
 ([`src/model_catalog.rs`](../../../src/model_catalog.rs) and
@@ -38,6 +38,7 @@ used in existing `provider/model` refs and config shortcuts.
 | `chutes` | `default` | `chutes` | OpenAI Chat Completions | `https://llm.chutes.ai/v1` | `CHUTES_API_KEY` |
 | `dashscope` | `default` | `dashscope` | Anthropic Messages | `https://dashscope.aliyuncs.com/apps/anthropic` | `DASHSCOPE_API_KEY or QWEN_API_KEY` |
 | `dashscope` | `coding-plan` | `dashscope-coding-plan` | Anthropic Messages | `https://coding.dashscope.aliyuncs.com/apps/anthropic` | `DASHSCOPE_CODING_PLAN_API_KEY` |
+| `dashscope` | `coding-plan-intl` | `dashscope-coding-plan-intl` | Anthropic Messages | `https://coding-intl.dashscope.aliyuncs.com/apps/anthropic` | `DASHSCOPE_CODING_PLAN_INTL_API_KEY` |
 | `dashscope` | `token-plan` | `dashscope-token-plan` | Anthropic Messages | `https://token-plan.cn-beijing.maas.aliyuncs.com/apps/anthropic` | `DASHSCOPE_TOKEN_PLAN_API_KEY` |
 | `deepseek` | `default` | `deepseek` | Anthropic Messages | `https://api.deepseek.com/anthropic` | `DEEPSEEK_API_KEY` |
 | `fireworks` | `default` | `fireworks` | OpenAI Chat Completions | `https://api.fireworks.ai/inference/v1` | `FIREWORKS_API_KEY` |
@@ -46,6 +47,9 @@ used in existing `provider/model` refs and config shortcuts.
 | `kilocode` | `default` | `kilocode` | OpenAI Chat Completions | `https://api.kilo.ai/api/gateway` | `KILOCODE_API_KEY` |
 | `litellm` | `default` | `litellm` | OpenAI Chat Completions | `http://localhost:4000` | `LITELLM_API_KEY` |
 | `minimax` | `default` | `minimax` | Anthropic Messages | `https://api.minimax.io/anthropic` | `MINIMAX_API_KEY` |
+| `minimax-cn` | `default` | `minimax-cn` | Anthropic Messages | `https://api.minimax.cn/anthropic` | `MINIMAX_CN_API_KEY` |
+| `minimax-cn` | `m-plan` | `minimax-cn-m-plan` | Anthropic Messages | `https://api.minimax.cn/anthropic` | `MINIMAX_CN_M_PLAN_API_KEY` |
+| `minimax` | `m-plan` | `minimax-m-plan` | Anthropic Messages | `https://api.minimax.io/anthropic` | `MINIMAX_M_PLAN_API_KEY` |
 | `mistral` | `default` | `mistral` | OpenAI Chat Completions | `https://api.mistral.ai/v1` | `MISTRAL_API_KEY` |
 | `moonshot` | `default` | `moonshot` | OpenAI Chat Completions | `https://api.moonshot.ai/v1` | `MOONSHOT_API_KEY` |
 | `nearai` | `default` | `nearai` | OpenAI Chat Completions | `https://cloud-api.near.ai/v1` | `NEARAI_API_KEY` |
@@ -53,8 +57,9 @@ used in existing `provider/model` refs and config shortcuts.
 | `ollama` | `default` | `ollama` | Anthropic Messages | `http://127.0.0.1:11434` | `—` |
 | `openai` | `default` | `openai` | OpenAI Responses | `https://api.openai.com/v1` | `OPENAI_API_KEY` |
 | `openai-codex` | `default` | `openai-codex` | OpenAI Codex | `https://chatgpt.com/backend-api/codex` | `—` |
-| `opencode-go` | `default` | `opencode-go` | OpenAI Chat Completions | `https://opencode.ai/zen/go/v1` | `OPENCODE_GO_API_KEY` |
-| `opencode-go` | `messages` | `opencode-go-messages` | Anthropic Messages | `https://opencode.ai/zen/go/v1` | `OPENCODE_GO_API_KEY` |
+| `opencode-go` | `default` | `opencode-go` | OpenAI Chat Completions | `https://opencode.ai/inference/go/openai/v1` | `OPENCODE_GO_API_KEY` |
+| `opencode-go` | `messages` | `opencode-go-messages` | Anthropic Messages | `https://opencode.ai/inference/go/anthropic/v1` | `OPENCODE_GO_API_KEY` |
+| `opencode-go` | `responses` | `opencode-go-responses` | OpenAI Responses | `https://opencode.ai/inference/go/openai/v1` | `OPENCODE_GO_API_KEY` |
 | `openrouter` | `default` | `openrouter` | OpenAI Chat Completions | `https://openrouter.ai/api/v1` | `OPENROUTER_API_KEY` |
 | `qianfan` | `default` | `qianfan` | OpenAI Chat Completions | `https://qianfan.baidubce.com/v2` | `QIANFAN_API_KEY` |
 | `stepfun` | `default` | `stepfun` | OpenAI Chat Completions | `https://api.stepfun.com/v1` | `STEPFUN_API_KEY` |
@@ -62,7 +67,9 @@ used in existing `provider/model` refs and config shortcuts.
 | `synthetic` | `default` | `synthetic` | Anthropic Messages | `https://api.synthetic.new/anthropic` | `SYNTHETIC_API_KEY` |
 | `tencent-tokenhub` | `default` | `tencent-tokenhub` | OpenAI Chat Completions | `https://tokenhub.tencentmaas.com/v1` | `TOKENHUB_API_KEY` |
 | `tencent-tokenhub` | `messages` | `tencent-tokenhub-messages` | Anthropic Messages | `https://tokenhub.tencentmaas.com` | `TOKENHUB_API_KEY` |
+| `tencent-tokenhub` | `responses` | `tencent-tokenhub-responses` | OpenAI Responses | `https://tokenhub.tencentmaas.com/v1` | `TOKENHUB_API_KEY` |
 | `together` | `default` | `together` | OpenAI Chat Completions | `https://api.together.xyz/v1` | `TOGETHER_API_KEY` |
+| `typesafe` | `default` | `typesafe` | AI Evaluation Model | `https://api.typesafe.ai/v1/systemone` | `TYPESAFE_API_KEY` |
 | `venice` | `default` | `venice` | OpenAI Chat Completions | `https://api.venice.ai/api/v1` | `VENICE_API_KEY` |
 | `vercel-ai-gateway` | `default` | `vercel-ai-gateway` | Anthropic Messages | `https://ai-gateway.vercel.sh` | `VERCEL_OIDC_TOKEN or AI_GATEWAY_API_KEY or VERCEL_AI_GATEWAY_API_KEY` |
 | `vllm` | `default` | `vllm` | OpenAI Chat Completions | `http://127.0.0.1:8000/v1` | `—` |
@@ -84,9 +91,12 @@ and capabilities.
 | `anthropic` | `claude-fable-5` | `anthropic/claude-fable-5` | 1000000 | 128000 | ✅ | ✅ |
 | `anthropic` | `claude-fable-5-1` | `anthropic/claude-fable-5-1` | 1000000 | 128000 | ✅ | ✅ |
 | `anthropic` | `claude-haiku-4-5` | `anthropic/claude-haiku-4-5` | 200000 | 64000 | ✅ | ✅ |
+| `anthropic` | `claude-haiku-5-5` | `anthropic/claude-haiku-5-5` | 1000000 | 128000 | ✅ | ✅ |
 | `anthropic` | `claude-opus-4-8` | `anthropic/claude-opus-4-8` | 1000000 | 128000 | ✅ | ✅ |
 | `anthropic` | `claude-opus-5` | `anthropic/claude-opus-5` | 1000000 | 128000 | ✅ | ✅ |
+| `anthropic` | `claude-opus-5-5` | `anthropic/claude-opus-5-5` | 1000000 | 128000 | ✅ | ✅ |
 | `anthropic` | `claude-sonnet-5` | `anthropic/claude-sonnet-5` | 1000000 | 128000 | ✅ | ✅ |
+| `anthropic` | `claude-sonnet-5-5` | `anthropic/claude-sonnet-5-5` | 1000000 | 128000 | ✅ | ✅ |
 | `arcee` | `trinity-large-preview` | `arcee/trinity-large-preview` | 131072 | — | — | — |
 | `arcee` | `trinity-mini` | `arcee/trinity-mini` | 131072 | — | — | — |
 | `bigmodel` | `glm-4-flash-250414` | `bigmodel/glm-4-flash-250414` | 131072 | 16384 | — | — |
@@ -110,7 +120,21 @@ and capabilities.
 | `bigmodel` | `glm-5.2` | `bigmodel/glm-5.2` | 1000000 | 131072 | ✅ | — |
 | `bigmodel` | `glm-5.3` | `bigmodel/glm-5.3` | 1000000 | 131072 | ✅ | — |
 | `bigmodel` | `glm-5.3-flash` | `bigmodel/glm-5.3-flash` | 1000000 | 131072 | ✅ | ✅ |
+| `bigmodel` | `glm-5.3-flashx` | `bigmodel/glm-5.3-flashx` | 1000000 | 131072 | ✅ | ✅ |
 | `bigmodel` | `glm-5v-turbo` | `bigmodel/glm-5v-turbo` | 204800 | 131072 | ✅ | ✅ |
+| `byteplus` | `ark-code-latest` | `byteplus/ark-code-latest` | — | — | — | — |
+| `byteplus` | `bytedance-seed-code` | `byteplus/bytedance-seed-code` | — | — | — | ✅ |
+| `byteplus` | `deepseek-v4-flash` | `byteplus/deepseek-v4-flash` | — | — | ✅ | — |
+| `byteplus` | `deepseek-v4-pro` | `byteplus/deepseek-v4-pro` | — | — | ✅ | — |
+| `byteplus` | `deepseek-v4.1-flash` | `byteplus/deepseek-v4.1-flash` | — | — | ✅ | ✅ |
+| `byteplus` | `dola-seed-2.0-code` | `byteplus/dola-seed-2.0-code` | — | — | — | ✅ |
+| `byteplus` | `dola-seed-2.0-lite` | `byteplus/dola-seed-2.0-lite` | — | — | — | — |
+| `byteplus` | `dola-seed-2.0-pro` | `byteplus/dola-seed-2.0-pro` | — | — | — | — |
+| `byteplus` | `glm-5.1` | `byteplus/glm-5.1` | — | — | ✅ | — |
+| `byteplus` | `glm-5.2` | `byteplus/glm-5.2` | — | — | — | — |
+| `byteplus` | `glm-5.3-flash` | `byteplus/glm-5.3-flash` | — | — | — | ✅ |
+| `byteplus` | `gpt-oss-120b` | `byteplus/gpt-oss-120b` | — | — | ✅ | — |
+| `byteplus` | `kimi-k2.5` | `byteplus/kimi-k2.5` | — | — | ✅ | ✅ |
 | `chutes` | `MiniMaxAI/MiniMax-M2.5-TEE` | `chutes/MiniMaxAI/MiniMax-M2.5-TEE` | 196608 | 65536 | ✅ | — |
 | `chutes` | `Qwen/Qwen3-235B-A22B-Thinking-2507-TEE` | `chutes/Qwen/Qwen3-235B-A22B-Thinking-2507-TEE` | 262144 | 262144 | ✅ | — |
 | `chutes` | `Qwen/Qwen3-32B-TEE` | `chutes/Qwen/Qwen3-32B-TEE` | 40960 | 40960 | ✅ | — |
@@ -128,57 +152,75 @@ and capabilities.
 | `dashscope` | `MiniMax/MiniMax-M3` | `dashscope/MiniMax/MiniMax-M3` | 196608 | 32768 | ✅ | — |
 | `dashscope` | `ZHIPU/GLM-5.2` | `dashscope/ZHIPU/GLM-5.2` | 1000000 | 131072 | ✅ | — |
 | `dashscope` | `ZHIPU/GLM-5.3` | `dashscope/ZHIPU/GLM-5.3` | 1000000 | 131072 | ✅ | — |
+| `dashscope` | `auto` | `dashscope/auto` | — | — | — | — |
 | `dashscope` | `deepseek-v3.2` | `dashscope/deepseek-v3.2` | 128000 | 32768 | ✅ | — |
 | `dashscope` | `deepseek-v4-flash` | `dashscope/deepseek-v4-flash` | 1000000 | 384000 | ✅ | — |
 | `dashscope` | `deepseek-v4-flash-0731` | `dashscope/deepseek-v4-flash-0731` | 1000000 | 384000 | ✅ | — |
 | `dashscope` | `deepseek-v4-pro` | `dashscope/deepseek-v4-pro` | 1000000 | 384000 | ✅ | — |
+| `dashscope` | `deepseek-v4-pro-0813` | `dashscope/deepseek-v4-pro-0813` | 1000000 | 384000 | ✅ | — |
+| `dashscope` | `deepseek-v4.1-flash` | `dashscope/deepseek-v4.1-flash` | 1000000 | 384000 | ✅ | ✅ |
+| `dashscope` | `deepseek-v4.1-flash-1017` | `dashscope/deepseek-v4.1-flash-1017` | 1000000 | — | ✅ | ✅ |
 | `dashscope` | `glm-4.7` | `dashscope/glm-4.7` | 202752 | 16384 | ✅ | — |
 | `dashscope` | `glm-5` | `dashscope/glm-5` | 202752 | 16384 | ✅ | — |
 | `dashscope` | `glm-5.1` | `dashscope/glm-5.1` | 202752 | 131072 | ✅ | — |
 | `dashscope` | `glm-5.2` | `dashscope/glm-5.2` | 204800 | 128000 | ✅ | — |
+| `dashscope` | `glm-5.3` | `dashscope/glm-5.3` | 1000000 | 131072 | ✅ | — |
 | `dashscope` | `kimi-k2.5` | `dashscope/kimi-k2.5` | 262144 | 32768 | ✅ | ✅ |
 | `dashscope` | `kimi-k2.6` | `dashscope/kimi-k2.6` | 262144 | 98304 | ✅ | ✅ |
 | `dashscope` | `kimi-k2.7-code` | `dashscope/kimi-k2.7-code` | 262144 | 98304 | ✅ | ✅ |
+| `dashscope` | `kimi-k3` | `dashscope/kimi-k3` | 1048576 | 1048576 | ✅ | ✅ |
+| `dashscope` | `kimi-k3.1-pro` | `dashscope/kimi-k3.1-pro` | — | — | ✅ | ✅ |
 | `dashscope` | `mimo-v2.5-pro` | `dashscope/mimo-v2.5-pro` | 1000000 | 131072 | ✅ | — |
+| `dashscope` | `qwen-flash-2025-07-28` | `dashscope/qwen-flash-2025-07-28` | 1000000 | — | — | — |
+| `dashscope` | `qwen-plus-latest` | `dashscope/qwen-plus-latest` | 1000000 | — | — | — |
 | `dashscope` | `qwen3-coder-flash` | `dashscope/qwen3-coder-flash` | 1000000 | 65536 | ✅ | — |
 | `dashscope` | `qwen3-coder-next` | `dashscope/qwen3-coder-next` | 262144 | 65536 | ✅ | — |
 | `dashscope` | `qwen3-coder-plus` | `dashscope/qwen3-coder-plus` | 1000000 | 65536 | ✅ | — |
 | `dashscope` | `qwen3-max-2026-01-23` | `dashscope/qwen3-max-2026-01-23` | 262144 | 65536 | — | — |
 | `dashscope` | `qwen3.5-flash` | `dashscope/qwen3.5-flash` | 1000000 | 65536 | ✅ | ✅ |
+| `dashscope` | `qwen3.5-flash-2026-02-23` | `dashscope/qwen3.5-flash-2026-02-23` | 1000000 | — | — | — |
 | `dashscope` | `qwen3.5-plus` | `dashscope/qwen3.5-plus` | 1000000 | 65536 | ✅ | ✅ |
+| `dashscope` | `qwen3.5-plus-2026-02-15` | `dashscope/qwen3.5-plus-2026-02-15` | 1000000 | — | — | — |
+| `dashscope` | `qwen3.5-plus-2026-04-20` | `dashscope/qwen3.5-plus-2026-04-20` | 1000000 | — | — | — |
 | `dashscope` | `qwen3.6-flash` | `dashscope/qwen3.6-flash` | 1000000 | 65536 | ✅ | ✅ |
+| `dashscope` | `qwen3.6-flash-2026-04-16` | `dashscope/qwen3.6-flash-2026-04-16` | 1000000 | — | — | — |
 | `dashscope` | `qwen3.6-plus` | `dashscope/qwen3.6-plus` | 1000000 | 65536 | ✅ | ✅ |
+| `dashscope` | `qwen3.6-plus-2026-04-02` | `dashscope/qwen3.6-plus-2026-04-02` | 1000000 | — | — | — |
+| `dashscope` | `qwen3.7-flash` | `dashscope/qwen3.7-flash` | 1000000 | 131072 | ✅ | ✅ |
+| `dashscope` | `qwen3.7-flash-2026-07-15` | `dashscope/qwen3.7-flash-2026-07-15` | 1000000 | — | — | — |
 | `dashscope` | `qwen3.7-max` | `dashscope/qwen3.7-max` | 1000000 | 65536 | ✅ | — |
 | `dashscope` | `qwen3.7-max-2026-05-20` | `dashscope/qwen3.7-max-2026-05-20` | 1000000 | 65536 | ✅ | — |
 | `dashscope` | `qwen3.7-max-2026-06-08` | `dashscope/qwen3.7-max-2026-06-08` | 1000000 | 65536 | ✅ | — |
 | `dashscope` | `qwen3.7-plus` | `dashscope/qwen3.7-plus` | 1000000 | 65536 | ✅ | ✅ |
 | `dashscope` | `qwen3.7-plus-2026-05-26` | `dashscope/qwen3.7-plus-2026-05-26` | 1000000 | 65536 | ✅ | ✅ |
+| `dashscope` | `qwen3.8-2.4t-a95b` | `dashscope/qwen3.8-2.4t-a95b` | 1000000 | 131072 | ✅ | — |
+| `dashscope` | `qwen3.8-27b` | `dashscope/qwen3.8-27b` | 1000000 | 131072 | ✅ | ✅ |
 | `dashscope` | `qwen3.8-flash` | `dashscope/qwen3.8-flash` | 1000000 | 131072 | ✅ | ✅ |
 | `dashscope` | `qwen3.8-max` | `dashscope/qwen3.8-max` | 1000000 | 131072 | ✅ | ✅ |
+| `dashscope` | `qwen3.8-max-0902` | `dashscope/qwen3.8-max-0902` | 1000000 | 131072 | ✅ | ✅ |
 | `dashscope` | `qwen3.8-max-preview` | `dashscope/qwen3.8-max-preview` | 1000000 | 65536 | ✅ | ✅ |
-| `deepseek` | `deepseek-flash` | `deepseek/deepseek-flash` | 1000000 | 384000 | ✅ | ✅ |
+| `dashscope` | `qwen3.8-omni-flash` | `dashscope/qwen3.8-omni-flash` | 1000000 | 131072 | ✅ | ✅ |
+| `deepseek` | `deepseek-flash` | `deepseek/deepseek-flash` | 1000000 | — | ✅ | ✅ |
 | `deepseek` | `deepseek-v4-flash` | `deepseek/deepseek-v4-flash` | 1000000 | 384000 | ✅ | — |
-| `deepseek` | `deepseek-v4-flash-vision-exp` | `deepseek/deepseek-v4-flash-vision-exp` | 1000000 | 384000 | ✅ | ✅ |
+| `deepseek` | `deepseek-v4-flash-vision-exp` | `deepseek/deepseek-v4-flash-vision-exp` | 1048576 | 393216 | ✅ | ✅ |
 | `deepseek` | `deepseek-v4-pro` | `deepseek/deepseek-v4-pro` | 1000000 | 384000 | ✅ | — |
 | `fireworks` | `accounts/fireworks/models/deepseek-v4-flash` | `fireworks/accounts/fireworks/models/deepseek-v4-flash` | 1048576 | — | ✅ | — |
 | `fireworks` | `accounts/fireworks/models/deepseek-v4-pro` | `fireworks/accounts/fireworks/models/deepseek-v4-pro` | 1048576 | — | ✅ | — |
 | `fireworks` | `accounts/fireworks/models/glm-5p1` | `fireworks/accounts/fireworks/models/glm-5p1` | 202752 | — | ✅ | — |
-| `fireworks` | `accounts/fireworks/models/glm-5p2` | `fireworks/accounts/fireworks/models/glm-5p2` | 1048576 | — | ✅ | — |
 | `fireworks` | `accounts/fireworks/models/gpt-oss-120b` | `fireworks/accounts/fireworks/models/gpt-oss-120b` | 131072 | — | ✅ | — |
-| `fireworks` | `accounts/fireworks/models/kimi-k2p6` | `fireworks/accounts/fireworks/models/kimi-k2p6` | 262144 | — | ✅ | ✅ |
-| `fireworks` | `accounts/fireworks/models/kimi-k2p7-code` | `fireworks/accounts/fireworks/models/kimi-k2p7-code` | 262144 | — | ✅ | ✅ |
+| `fireworks` | `accounts/fireworks/models/kimi-k3p1-pro` | `fireworks/accounts/fireworks/models/kimi-k3p1-pro` | 1048576 | — | — | ✅ |
 | `fireworks` | `accounts/fireworks/models/minimax-m2p7` | `fireworks/accounts/fireworks/models/minimax-m2p7` | 196608 | — | ✅ | — |
-| `fireworks` | `accounts/fireworks/models/minimax-m3` | `fireworks/accounts/fireworks/models/minimax-m3` | 524288 | — | ✅ | ✅ |
+| `fireworks` | `accounts/fireworks/models/minimax-m3` | `fireworks/accounts/fireworks/models/minimax-m3` | 512000 | — | ✅ | ✅ |
 | `fireworks` | `accounts/fireworks/models/nemotron-3-ultra-nvfp4` | `fireworks/accounts/fireworks/models/nemotron-3-ultra-nvfp4` | 262144 | — | ✅ | — |
 | `fireworks` | `accounts/fireworks/models/qwen3p6-plus` | `fireworks/accounts/fireworks/models/qwen3p6-plus` | — | — | ✅ | ✅ |
 | `fireworks` | `accounts/fireworks/models/qwen3p7-plus` | `fireworks/accounts/fireworks/models/qwen3p7-plus` | 262144 | — | ✅ | ✅ |
 | `gemini` | `gemini-2.5-flash` | `gemini/gemini-2.5-flash` | 1048576 | 65536 | ✅ | ✅ |
 | `gemini` | `gemini-2.5-flash-lite` | `gemini/gemini-2.5-flash-lite` | 1048576 | 65536 | ✅ | ✅ |
 | `gemini` | `gemini-2.5-pro` | `gemini/gemini-2.5-pro` | 1048576 | 65536 | ✅ | ✅ |
-| `gemini` | `gemini-3-pro-image` | `gemini/gemini-3-pro-image` | 131072 | 32768 | ✅ | ✅ |
-| `gemini` | `gemini-3.1-flash-image` | `gemini/gemini-3.1-flash-image` | 65536 | 65536 | ✅ | ✅ |
+| `gemini` | `gemini-3-pro-image` | `gemini/gemini-3-pro-image` | 65536 | 32768 | ✅ | ✅ |
+| `gemini` | `gemini-3.1-flash-image` | `gemini/gemini-3.1-flash-image` | 131072 | 32768 | ✅ | ✅ |
 | `gemini` | `gemini-3.1-flash-lite` | `gemini/gemini-3.1-flash-lite` | 1048576 | 65536 | ✅ | ✅ |
-| `gemini` | `gemini-3.1-flash-lite-image` | `gemini/gemini-3.1-flash-lite-image` | 65536 | 65536 | ✅ | ✅ |
+| `gemini` | `gemini-3.1-flash-lite-image` | `gemini/gemini-3.1-flash-lite-image` | 65536 | 4096 | ✅ | ✅ |
 | `gemini` | `gemini-3.1-pro-preview` | `gemini/gemini-3.1-pro-preview` | 1048576 | 65536 | ✅ | ✅ |
 | `gemini` | `gemini-3.5-flash` | `gemini/gemini-3.5-flash` | 1048576 | 65536 | ✅ | ✅ |
 | `gemini` | `gemini-3.5-flash-lite` | `gemini/gemini-3.5-flash-lite` | 1048576 | 65536 | ✅ | ✅ |
@@ -186,6 +228,7 @@ and capabilities.
 | `gemini` | `gemini-3.6-flash` | `gemini/gemini-3.6-flash` | 1048576 | 65536 | ✅ | ✅ |
 | `gemini` | `gemini-3.7-flash` | `gemini/gemini-3.7-flash` | 1048576 | 65536 | ✅ | ✅ |
 | `gemini` | `gemini-3.8-flash` | `gemini/gemini-3.8-flash` | 1048576 | 65536 | ✅ | ✅ |
+| `gemini` | `gemini-4-argon` | `gemini/gemini-4-argon` | 1048576 | 32768 | ✅ | ✅ |
 | `gemini` | `gemini-flash-latest` | `gemini/gemini-flash-latest` | 1048576 | 65536 | ✅ | ✅ |
 | `gemini` | `gemini-flash-lite-latest` | `gemini/gemini-flash-lite-latest` | 1048576 | 65536 | ✅ | ✅ |
 | `huggingface` | `openai/gpt-oss-120b` | `huggingface/openai/gpt-oss-120b` | 131072 | — | ✅ | — |
@@ -193,31 +236,33 @@ and capabilities.
 | `kilocode` | `kilo-auto/efficient` | `kilocode/kilo-auto/efficient` | 1000000 | — | ✅ | ✅ |
 | `kilocode` | `kilo-auto/free` | `kilocode/kilo-auto/free` | 256000 | — | ✅ | — |
 | `kilocode` | `kilo-auto/frontier` | `kilocode/kilo-auto/frontier` | 1000000 | — | ✅ | ✅ |
-| `minimax` | `MiniMax-M2` | `minimax/MiniMax-M2` | 204800 | 128000 | ✅ | — |
-| `minimax` | `MiniMax-M2.1` | `minimax/MiniMax-M2.1` | 204800 | 128000 | ✅ | — |
-| `minimax` | `MiniMax-M2.1-highspeed` | `minimax/MiniMax-M2.1-highspeed` | 204800 | 128000 | ✅ | — |
+| `kilocode` | `kilo-auto/small` | `kilocode/kilo-auto/small` | 262144 | — | ✅ | ✅ |
 | `minimax` | `MiniMax-M2.5` | `minimax/MiniMax-M2.5` | 204800 | 128000 | ✅ | — |
 | `minimax` | `MiniMax-M2.5-highspeed` | `minimax/MiniMax-M2.5-highspeed` | 204800 | 128000 | ✅ | — |
 | `minimax` | `MiniMax-M2.7` | `minimax/MiniMax-M2.7` | 204800 | 128000 | ✅ | — |
 | `minimax` | `MiniMax-M2.7-highspeed` | `minimax/MiniMax-M2.7-highspeed` | 204800 | 128000 | ✅ | — |
-| `minimax` | `MiniMax-M3` | `minimax/MiniMax-M3` | 1000000 | 32768 | ✅ | ✅ |
+| `minimax` | `MiniMax-M3` | `minimax/MiniMax-M3` | 1000000 | 131072 | ✅ | ✅ |
+| `minimax` | `MiniMax-M3.1-Flash` | `minimax/MiniMax-M3.1-Flash` | 1000000 | 131072 | ✅ | ✅ |
+| `minimax` | `MiniMax-M3.1-Flash-Preview` | `minimax/MiniMax-M3.1-Flash-Preview` | 1000000 | — | ✅ | ✅ |
+| `minimax-cn` | `MiniMax-M3` | `minimax-cn/MiniMax-M3` | 1000000 | 131072 | ✅ | ✅ |
+| `minimax-cn` | `MiniMax-M3.1-Flash` | `minimax-cn/MiniMax-M3.1-Flash` | 1000000 | 131072 | ✅ | ✅ |
+| `minimax-cn` | `MiniMax-M3.1-Flash-Preview` | `minimax-cn/MiniMax-M3.1-Flash-Preview` | 1000000 | — | ✅ | ✅ |
 | `mistral` | `codestral-latest` | `mistral/codestral-latest` | 128000 | 4096 | — | — |
+| `mistral` | `glm-5-2` | `mistral/glm-5-2` | 1048576 | 131072 | ✅ | — |
+| `mistral` | `labs-leanstral-1-5-1` | `mistral/labs-leanstral-1-5-1` | 262144 | 128000 | ✅ | ✅ |
+| `mistral` | `mistral-large-4` | `mistral/mistral-large-4` | 1048576 | 262144 | ✅ | ✅ |
 | `mistral` | `mistral-large-latest` | `mistral/mistral-large-latest` | 256000 | 16384 | — | ✅ |
 | `mistral` | `mistral-medium-latest` | `mistral/mistral-medium-latest` | 256000 | 8192 | ✅ | ✅ |
 | `mistral` | `mistral-small-latest` | `mistral/mistral-small-latest` | 256000 | 16384 | — | ✅ |
-| `mistral` | `zai-glm-5-2` | `mistral/zai-glm-5-2` | 1000000 | 131072 | ✅ | — |
-| `moonshot` | `kimi-k2.5` | `moonshot/kimi-k2.5` | 262144 | 262144 | ✅ | ✅ |
+| `mistral` | `zai-glm-5-2` | `mistral/zai-glm-5-2` | 1048576 | 131072 | ✅ | — |
+| `mistral` | `zai-glm-5-3` | `mistral/zai-glm-5-3` | 1048576 | 131072 | ✅ | — |
+| `mistral` | `zai-glm-5-3-flash` | `mistral/zai-glm-5-3-flash` | 1048576 | 131072 | ✅ | ✅ |
 | `moonshot` | `kimi-k2.6` | `moonshot/kimi-k2.6` | 262144 | 262144 | ✅ | ✅ |
 | `moonshot` | `kimi-k2.7-code` | `moonshot/kimi-k2.7-code` | 262144 | 262144 | ✅ | ✅ |
 | `moonshot` | `kimi-k2.7-code-highspeed` | `moonshot/kimi-k2.7-code-highspeed` | 262144 | 262144 | ✅ | ✅ |
-| `moonshot` | `kimi-k3` | `moonshot/kimi-k3` | 1000000 | 262144 | ✅ | ✅ |
-| `moonshot` | `moonshot-v1-128k` | `moonshot/moonshot-v1-128k` | 131072 | 131072 | — | — |
-| `moonshot` | `moonshot-v1-128k-vision-preview` | `moonshot/moonshot-v1-128k-vision-preview` | 131072 | 131072 | — | ✅ |
-| `moonshot` | `moonshot-v1-32k` | `moonshot/moonshot-v1-32k` | 32768 | 32768 | — | — |
-| `moonshot` | `moonshot-v1-32k-vision-preview` | `moonshot/moonshot-v1-32k-vision-preview` | 32768 | 32768 | — | ✅ |
-| `moonshot` | `moonshot-v1-8k` | `moonshot/moonshot-v1-8k` | 8192 | 8192 | — | — |
-| `moonshot` | `moonshot-v1-8k-vision-preview` | `moonshot/moonshot-v1-8k-vision-preview` | 8192 | 8192 | — | ✅ |
-| `moonshot` | `moonshot-v1-auto` | `moonshot/moonshot-v1-auto` | 131072 | 131072 | — | — |
+| `moonshot` | `kimi-k3` | `moonshot/kimi-k3` | 1048576 | 131072 | ✅ | ✅ |
+| `moonshot` | `kimi-k3.1-pro` | `moonshot/kimi-k3.1-pro` | 1048576 | 131072 | ✅ | ✅ |
+| `moonshot` | `kimi-k3.1-pro-highspeed` | `moonshot/kimi-k3.1-pro-highspeed` | 1048576 | 131072 | ✅ | ✅ |
 | `nearai` | `Qwen/Qwen3-VL-30B-A3B-Instruct` | `nearai/Qwen/Qwen3-VL-30B-A3B-Instruct` | 16384 | 8192 | — | ✅ |
 | `nearai` | `Qwen/Qwen3.5-122B-A10B` | `nearai/Qwen/Qwen3.5-122B-A10B` | 262144 | 16384 | ✅ | ✅ |
 | `nearai` | `Qwen/Qwen3.6-35B-A3B-FP8` | `nearai/Qwen/Qwen3.6-35B-A3B-FP8` | 262144 | 8192 | ✅ | — |
@@ -236,40 +281,89 @@ and capabilities.
 | `openai` | `gpt-5.6-sol` | `openai/gpt-5.6-sol` | 372000 | 128000 | ✅ | ✅ |
 | `openai` | `gpt-5.6-terra` | `openai/gpt-5.6-terra` | 372000 | 128000 | ✅ | ✅ |
 | `openai` | `gpt-6-astra` | `openai/gpt-6-astra` | 1050000 | 128000 | ✅ | ✅ |
+| `openai` | `gpt-6-luna` | `openai/gpt-6-luna` | 1050000 | 128000 | ✅ | ✅ |
+| `openai` | `gpt-6-sol` | `openai/gpt-6-sol` | 1050000 | 128000 | ✅ | ✅ |
+| `openai` | `gpt-6.1-sol` | `openai/gpt-6.1-sol` | 1050000 | 128000 | ✅ | ✅ |
+| `openai` | `gpt-6.1-terra` | `openai/gpt-6.1-terra` | 1050000 | 128000 | ✅ | ✅ |
+| `openai` | `gpt-daybreak-blue-latest` | `openai/gpt-daybreak-blue-latest` | 1050000 | 128000 | ✅ | ✅ |
+| `openai` | `gpt-daybreak-red-latest` | `openai/gpt-daybreak-red-latest` | 400000 | 128000 | ✅ | ✅ |
 | `openai` | `gpt-image-2` | `openai/gpt-image-2` | — | — | — | — |
 | `openai` | `gpt-realtime-2.1` | `openai/gpt-realtime-2.1` | 128000 | 32000 | ✅ | ✅ |
-| `openai-codex` | `gpt-5.3-codex-spark` | `openai-codex/gpt-5.3-codex-spark` | 128000 | — | ✅ | — |
-| `openai-codex` | `gpt-5.4` | `openai-codex/gpt-5.4` | 272000 | — | ✅ | ✅ |
-| `openai-codex` | `gpt-5.4-mini` | `openai-codex/gpt-5.4-mini` | 272000 | — | ✅ | ✅ |
-| `openai-codex` | `gpt-5.5` | `openai-codex/gpt-5.5` | 272000 | — | ✅ | ✅ |
-| `openai-codex` | `gpt-5.6-luna` | `openai-codex/gpt-5.6-luna` | 372000 | — | ✅ | ✅ |
-| `openai-codex` | `gpt-5.6-sol` | `openai-codex/gpt-5.6-sol` | 372000 | — | ✅ | ✅ |
-| `openai-codex` | `gpt-5.6-terra` | `openai-codex/gpt-5.6-terra` | 372000 | — | ✅ | ✅ |
+| `openai-codex` | `gpt-5.6` | `openai-codex/gpt-5.6` | 1050000 | 128000 | ✅ | ✅ |
+| `openai-codex` | `gpt-5.6-luna` | `openai-codex/gpt-5.6-luna` | 272000 | — | ✅ | ✅ |
+| `openai-codex` | `gpt-5.6-sol` | `openai-codex/gpt-5.6-sol` | 272000 | — | ✅ | ✅ |
+| `openai-codex` | `gpt-5.6-terra` | `openai-codex/gpt-5.6-terra` | 272000 | — | ✅ | ✅ |
 | `openai-codex` | `gpt-6-astra` | `openai-codex/gpt-6-astra` | 272000 | — | ✅ | ✅ |
+| `openai-codex` | `gpt-6-luna` | `openai-codex/gpt-6-luna` | 272000 | — | ✅ | ✅ |
+| `openai-codex` | `gpt-6-sol` | `openai-codex/gpt-6-sol` | 272000 | — | ✅ | ✅ |
+| `openai-codex` | `gpt-6.1-sol` | `openai-codex/gpt-6.1-sol` | 272000 | — | ✅ | ✅ |
+| `openai-codex` | `gpt-6.1-terra` | `openai-codex/gpt-6.1-terra` | 500000 | — | ✅ | ✅ |
+| `openai-codex` | `gpt-daybreak-blue-latest` | `openai-codex/gpt-daybreak-blue-latest` | 1050000 | 128000 | ✅ | ✅ |
+| `openai-codex` | `gpt-daybreak-red-latest` | `openai-codex/gpt-daybreak-red-latest` | 400000 | 128000 | ✅ | ✅ |
+| `opencode-go` | `beam-free` | `opencode-go/beam-free` | 1048576 | 131072 | ✅ | — |
+| `opencode-go` | `cat-jam-free` | `opencode-go/cat-jam-free` | 262144 | 131072 | ✅ | — |
+| `opencode-go` | `claude-haiku-5-5` | `opencode-go/claude-haiku-5-5` | 1000000 | 128000 | ✅ | ✅ |
 | `opencode-go` | `deepseek-v4-flash` | `opencode-go/deepseek-v4-flash` | 1000000 | 384000 | ✅ | — |
 | `opencode-go` | `deepseek-v4-pro` | `opencode-go/deepseek-v4-pro` | 1000000 | 384000 | ✅ | — |
+| `opencode-go` | `deepseek-v4.1-flash` | `opencode-go/deepseek-v4.1-flash` | 1000000 | 384000 | ✅ | ✅ |
+| `opencode-go` | `gemini-4-argon` | `opencode-go/gemini-4-argon` | — | — | — | — |
 | `opencode-go` | `glm-5.1` | `opencode-go/glm-5.1` | 202800 | 131072 | ✅ | — |
 | `opencode-go` | `glm-5.2` | `opencode-go/glm-5.2` | 1000000 | 131072 | ✅ | — |
+| `opencode-go` | `glm-5.3` | `opencode-go/glm-5.3` | 1000000 | 131072 | ✅ | — |
+| `opencode-go` | `glm-5.3-flash` | `opencode-go/glm-5.3-flash` | 1000000 | 131072 | ✅ | ✅ |
+| `opencode-go` | `gpt-5.6-luna` | `opencode-go/gpt-5.6-luna` | 1050000 | 128000 | ✅ | ✅ |
+| `opencode-go` | `gpt-6-luna` | `opencode-go/gpt-6-luna` | 1050000 | 128000 | ✅ | ✅ |
+| `opencode-go` | `grok-4.7` | `opencode-go/grok-4.7` | 500000 | 500000 | ✅ | ✅ |
+| `opencode-go` | `hy3` | `opencode-go/hy3` | 256000 | 128000 | ✅ | — |
+| `opencode-go` | `hy4` | `opencode-go/hy4` | 1048576 | — | ✅ | ✅ |
+| `opencode-go` | `hy4-preview` | `opencode-go/hy4-preview` | 1024000 | 64000 | ✅ | — |
+| `opencode-go` | `iceman-contributor-free` | `opencode-go/iceman-contributor-free` | 262144 | — | ✅ | — |
 | `opencode-go` | `kimi-k2.6` | `opencode-go/kimi-k2.6` | 262144 | 262144 | ✅ | ✅ |
 | `opencode-go` | `kimi-k2.7-code` | `opencode-go/kimi-k2.7-code` | 262144 | 262144 | ✅ | ✅ |
+| `opencode-go` | `kimi-k3` | `opencode-go/kimi-k3` | 1048576 | 131072 | ✅ | ✅ |
+| `opencode-go` | `kimi-k3.1-pro` | `opencode-go/kimi-k3.1-pro` | 1048576 | — | ✅ | ✅ |
+| `opencode-go` | `longcat-2.0` | `opencode-go/longcat-2.0` | 1000000 | 131072 | ✅ | — |
+| `opencode-go` | `longcat-2.5-preview-free` | `opencode-go/longcat-2.5-preview-free` | 1000000 | 131072 | ✅ | ✅ |
 | `opencode-go` | `mimo-v2.5` | `opencode-go/mimo-v2.5` | 1048576 | 131072 | ✅ | ✅ |
 | `opencode-go` | `mimo-v2.5-pro` | `opencode-go/mimo-v2.5-pro` | 1048576 | 131072 | ✅ | — |
+| `opencode-go` | `mimo-v2.6-flash` | `opencode-go/mimo-v2.6-flash` | 1048576 | 131072 | ✅ | ✅ |
+| `opencode-go` | `mimo-v2.6-pro` | `opencode-go/mimo-v2.6-pro` | 1048576 | 131072 | ✅ | ✅ |
 | `opencode-go` | `minimax-m2.5` | `opencode-go/minimax-m2.5` | 196608 | 32768 | ✅ | — |
 | `opencode-go` | `minimax-m2.7` | `opencode-go/minimax-m2.7` | 204800 | — | ✅ | — |
 | `opencode-go` | `minimax-m3` | `opencode-go/minimax-m3` | 1000000 | — | ✅ | ✅ |
+| `opencode-go` | `minimax-m3.1-flash` | `opencode-go/minimax-m3.1-flash` | 1000000 | 512000 | ✅ | ✅ |
+| `opencode-go` | `minimax-m3.1-flash-free` | `opencode-go/minimax-m3.1-flash-free` | 1000000 | 512000 | ✅ | ✅ |
+| `opencode-go` | `muse-spark-1.2-contributor` | `opencode-go/muse-spark-1.2-contributor` | 1048576 | 131072 | ✅ | ✅ |
+| `opencode-go` | `muse-spark-1.3-contributor` | `opencode-go/muse-spark-1.3-contributor` | 1048576 | 131072 | ✅ | ✅ |
 | `opencode-go` | `qwen3.6-plus` | `opencode-go/qwen3.6-plus` | 1000000 | 65536 | ✅ | ✅ |
 | `opencode-go` | `qwen3.7-max` | `opencode-go/qwen3.7-max` | 1000000 | 65536 | ✅ | — |
 | `opencode-go` | `qwen3.7-plus` | `opencode-go/qwen3.7-plus` | 1000000 | 65536 | ✅ | ✅ |
+| `opencode-go` | `qwen3.8-flash` | `opencode-go/qwen3.8-flash` | 1000000 | 131072 | ✅ | ✅ |
+| `opencode-go` | `qwen3.8-max` | `opencode-go/qwen3.8-max` | 1000000 | 131072 | ✅ | ✅ |
+| `opencode-go` | `space-bunny` | `opencode-go/space-bunny` | 1048576 | 524288 | ✅ | ✅ |
+| `opencode-go` | `step-5-preview` | `opencode-go/step-5-preview` | 1000000 | 65536 | ✅ | ✅ |
+| `opencode-go` | `step-5-preview-free` | `opencode-go/step-5-preview-free` | 1000000 | 65536 | ✅ | ✅ |
 | `openrouter` | `auto` | `openrouter/auto` | 2000000 | — | ✅ | ✅ |
-| `qianfan` | `deepseek-v3.2` | `qianfan/deepseek-v3.2` | 131072 | 32768 | — | — |
-| `qianfan` | `deepseek-v3.2-think` | `qianfan/deepseek-v3.2-think` | 163840 | 65536 | ✅ | — |
-| `qianfan` | `ernie-5.0` | `qianfan/ernie-5.0` | 248832 | 65536 | — | ✅ |
-| `qianfan` | `ernie-5.0-thinking-preview` | `qianfan/ernie-5.0-thinking-preview` | 248832 | 65536 | ✅ | ✅ |
-| `qianfan` | `ernie-5.1` | `qianfan/ernie-5.1` | 248832 | 65536 | — | — |
-| `qianfan` | `ernie-x1.1` | `qianfan/ernie-x1.1` | 121856 | 65536 | ✅ | — |
+| `qianfan` | `deepseek-v4-flash-0731` | `qianfan/deepseek-v4-flash-0731` | — | — | ✅ | — |
+| `qianfan` | `deepseek-v4-pro` | `qianfan/deepseek-v4-pro` | — | — | ✅ | — |
+| `qianfan` | `deepseek-v4-pro-0813` | `qianfan/deepseek-v4-pro-0813` | — | — | ✅ | — |
+| `qianfan` | `deepseek-v4.1-flash` | `qianfan/deepseek-v4.1-flash` | — | — | ✅ | — |
+| `qianfan` | `deepseek-v4.1-flash-1017` | `qianfan/deepseek-v4.1-flash-1017` | — | — | ✅ | — |
+| `qianfan` | `ernie-5.0-thinking-exp` | `qianfan/ernie-5.0-thinking-exp` | — | — | — | — |
+| `qianfan` | `ernie-5.1` | `qianfan/ernie-5.1` | — | — | — | — |
+| `qianfan` | `glm-5.1` | `qianfan/glm-5.1` | — | — | — | — |
+| `qianfan` | `glm-5.2` | `qianfan/glm-5.2` | — | — | — | — |
+| `qianfan` | `glm-5.3` | `qianfan/glm-5.3` | — | — | — | — |
+| `qianfan` | `glm-5.3-flash` | `qianfan/glm-5.3-flash` | — | — | — | — |
+| `qianfan` | `qwen3.5-122b-a10b` | `qianfan/qwen3.5-122b-a10b` | — | — | ✅ | — |
+| `qianfan` | `qwen3.5-27b` | `qianfan/qwen3.5-27b` | — | — | ✅ | — |
+| `qianfan` | `qwen3.5-35b-a3b` | `qianfan/qwen3.5-35b-a3b` | — | — | ✅ | — |
+| `qianfan` | `qwen3.5-397b-a17b` | `qianfan/qwen3.5-397b-a17b` | — | — | ✅ | — |
 | `stepfun` | `step-3.5-flash` | `stepfun/step-3.5-flash` | 262144 | — | ✅ | — |
 | `stepfun` | `step-3.5-flash-2603` | `stepfun/step-3.5-flash-2603` | 262144 | — | ✅ | — |
 | `stepfun` | `step-3.7-flash` | `stepfun/step-3.7-flash` | 262144 | — | ✅ | ✅ |
+| `stepfun` | `step-5-preview` | `stepfun/step-5-preview` | 1000000 | 65536 | ✅ | ✅ |
+| `stepfun` | `step-router-v1` | `stepfun/step-router-v1` | — | — | — | — |
 | `synthetic` | `hf:MiniMaxAI/MiniMax-M3` | `synthetic/hf:MiniMaxAI/MiniMax-M3` | 262144 | 65536 | ✅ | ✅ |
 | `synthetic` | `hf:Qwen/Qwen3.6-27B` | `synthetic/hf:Qwen/Qwen3.6-27B` | 262144 | 65536 | ✅ | ✅ |
 | `synthetic` | `hf:moonshotai/Kimi-K2.7-Code` | `synthetic/hf:moonshotai/Kimi-K2.7-Code` | 262144 | 65536 | ✅ | ✅ |
@@ -281,14 +375,22 @@ and capabilities.
 | `synthetic` | `syn:large:vision` | `synthetic/syn:large:vision` | 262144 | 65536 | ✅ | ✅ |
 | `synthetic` | `syn:small:text` | `synthetic/syn:small:text` | 196608 | 65536 | ✅ | — |
 | `synthetic` | `syn:small:vision` | `synthetic/syn:small:vision` | 262144 | 65536 | ✅ | ✅ |
-| `tencent-tokenhub` | `deepseek-v3.2` | `tencent-tokenhub/deepseek-v3.2` | 128000 | 32768 | ✅ | — |
-| `tencent-tokenhub` | `deepseek-v4-flash` | `tencent-tokenhub/deepseek-v4-flash` | 1000000 | 384000 | ✅ | — |
+| `tencent-tokenhub` | `deepseek-v4-flash-202605` | `tencent-tokenhub/deepseek-v4-flash-202605` | — | — | ✅ | — |
 | `tencent-tokenhub` | `deepseek-v4-pro` | `tencent-tokenhub/deepseek-v4-pro` | 1000000 | 384000 | ✅ | — |
-| `tencent-tokenhub` | `glm-5` | `tencent-tokenhub/glm-5` | 202800 | 131072 | ✅ | — |
-| `tencent-tokenhub` | `glm-5-turbo` | `tencent-tokenhub/glm-5-turbo` | 202800 | 131072 | ✅ | — |
-| `tencent-tokenhub` | `glm-5.1` | `tencent-tokenhub/glm-5.1` | 202800 | 131072 | ✅ | — |
+| `tencent-tokenhub` | `deepseek-v4-pro-0813` | `tencent-tokenhub/deepseek-v4-pro-0813` | — | — | ✅ | — |
+| `tencent-tokenhub` | `deepseek-v4-pro-202606` | `tencent-tokenhub/deepseek-v4-pro-202606` | — | — | ✅ | — |
+| `tencent-tokenhub` | `deepseek-v4.1-flash` | `tencent-tokenhub/deepseek-v4.1-flash` | — | — | ✅ | — |
+| `tencent-tokenhub` | `deepseek-v4.1-flash-1017` | `tencent-tokenhub/deepseek-v4.1-flash-1017` | — | — | ✅ | — |
+| `tencent-tokenhub` | `deepseek/deepseek-flash` | `tencent-tokenhub/deepseek/deepseek-flash` | — | — | ✅ | — |
+| `tencent-tokenhub` | `deepseek/deepseek-v4-flash` | `tencent-tokenhub/deepseek/deepseek-v4-flash` | — | — | ✅ | — |
+| `tencent-tokenhub` | `deepseek/deepseek-v4-flash-0731` | `tencent-tokenhub/deepseek/deepseek-v4-flash-0731` | — | — | ✅ | — |
+| `tencent-tokenhub` | `deepseek/deepseek-v4-flash-vision-exp` | `tencent-tokenhub/deepseek/deepseek-v4-flash-vision-exp` | — | — | ✅ | — |
+| `tencent-tokenhub` | `deepseek/deepseek-v4-pro` | `tencent-tokenhub/deepseek/deepseek-v4-pro` | — | — | ✅ | — |
+| `tencent-tokenhub` | `deepseek/deepseek-v4-pro-0813` | `tencent-tokenhub/deepseek/deepseek-v4-pro-0813` | — | — | ✅ | — |
 | `tencent-tokenhub` | `glm-5.2` | `tencent-tokenhub/glm-5.2` | 1000000 | 131072 | ✅ | — |
-| `tencent-tokenhub` | `glm-5v-turbo` | `tencent-tokenhub/glm-5v-turbo` | 202800 | 131072 | ✅ | ✅ |
+| `tencent-tokenhub` | `glm-5.3` | `tencent-tokenhub/glm-5.3` | — | — | ✅ | — |
+| `tencent-tokenhub` | `glm-5.3-flash` | `tencent-tokenhub/glm-5.3-flash` | — | — | ✅ | ✅ |
+| `tencent-tokenhub` | `glm-5.3-flashx` | `tencent-tokenhub/glm-5.3-flashx` | — | — | ✅ | ✅ |
 | `tencent-tokenhub` | `hunyuan-role-latest` | `tencent-tokenhub/hunyuan-role-latest` | — | — | — | — |
 | `tencent-tokenhub` | `hunyuan-t1-vision-20250916` | `tencent-tokenhub/hunyuan-t1-vision-20250916` | — | — | ✅ | ✅ |
 | `tencent-tokenhub` | `hy-mt2-lite` | `tencent-tokenhub/hy-mt2-lite` | — | — | — | — |
@@ -297,27 +399,34 @@ and capabilities.
 | `tencent-tokenhub` | `hy-role` | `tencent-tokenhub/hy-role` | — | — | — | — |
 | `tencent-tokenhub` | `hy-vision-2.0-instruct` | `tencent-tokenhub/hy-vision-2.0-instruct` | — | — | — | ✅ |
 | `tencent-tokenhub` | `hy3` | `tencent-tokenhub/hy3` | 256000 | 128000 | ✅ | — |
-| `tencent-tokenhub` | `hy3-preview` | `tencent-tokenhub/hy3-preview` | 256000 | 128000 | ✅ | — |
-| `tencent-tokenhub` | `kimi-k2.5` | `tencent-tokenhub/kimi-k2.5` | 262144 | 262144 | ✅ | ✅ |
+| `tencent-tokenhub` | `hy4` | `tencent-tokenhub/hy4` | — | — | ✅ | ✅ |
+| `tencent-tokenhub` | `hy4-preview` | `tencent-tokenhub/hy4-preview` | — | — | ✅ | — |
 | `tencent-tokenhub` | `kimi-k2.6` | `tencent-tokenhub/kimi-k2.6` | 262144 | 262144 | ✅ | ✅ |
 | `tencent-tokenhub` | `kimi-k2.7-code` | `tencent-tokenhub/kimi-k2.7-code` | 262144 | 262144 | ✅ | ✅ |
 | `tencent-tokenhub` | `kimi-k2.7-code-highspeed` | `tencent-tokenhub/kimi-k2.7-code-highspeed` | 262144 | 262144 | ✅ | ✅ |
-| `tencent-tokenhub` | `minimax-m2.5` | `tencent-tokenhub/minimax-m2.5` | 196608 | 32768 | ✅ | — |
+| `tencent-tokenhub` | `kimi-k2.8-preview` | `tencent-tokenhub/kimi-k2.8-preview` | — | — | ✅ | ✅ |
+| `tencent-tokenhub` | `kimi-k3` | `tencent-tokenhub/kimi-k3` | — | — | ✅ | ✅ |
+| `tencent-tokenhub` | `kimi-k3.1-pro` | `tencent-tokenhub/kimi-k3.1-pro` | — | — | ✅ | ✅ |
+| `tencent-tokenhub` | `kimi-k3.1-pro-highspeed` | `tencent-tokenhub/kimi-k3.1-pro-highspeed` | — | — | ✅ | ✅ |
+| `tencent-tokenhub` | `mimo-v2.6-flash` | `tencent-tokenhub/mimo-v2.6-flash` | — | — | — | — |
+| `tencent-tokenhub` | `mimo-v2.6-pro` | `tencent-tokenhub/mimo-v2.6-pro` | — | — | — | — |
 | `tencent-tokenhub` | `minimax-m2.7` | `tencent-tokenhub/minimax-m2.7` | 204800 | — | ✅ | — |
 | `tencent-tokenhub` | `minimax-m3` | `tencent-tokenhub/minimax-m3` | 1000000 | — | ✅ | ✅ |
-| `tencent-tokenhub` | `qwen3.5-flash` | `tencent-tokenhub/qwen3.5-flash` | 1000000 | 65536 | ✅ | ✅ |
-| `tencent-tokenhub` | `qwen3.5-plus` | `tencent-tokenhub/qwen3.5-plus` | 1000000 | 65536 | ✅ | ✅ |
-| `tencent-tokenhub` | `youtu-vita` | `tencent-tokenhub/youtu-vita` | — | — | — | ✅ |
+| `tencent-tokenhub` | `minimax-m3.1-flash` | `tencent-tokenhub/minimax-m3.1-flash` | — | — | — | — |
+| `tencent-tokenhub` | `step-5-preview` | `tencent-tokenhub/step-5-preview` | — | — | — | — |
 | `together` | `MiniMaxAI/MiniMax-M2.7` | `together/MiniMaxAI/MiniMax-M2.7` | 202752 | — | ✅ | — |
-| `together` | `MiniMaxAI/MiniMax-M3` | `together/MiniMaxAI/MiniMax-M3` | 524288 | — | — | ✅ |
+| `together` | `MiniMaxAI/MiniMax-M3` | `together/MiniMaxAI/MiniMax-M3` | 524288 | — | ✅ | ✅ |
+| `together` | `MiniMaxAI/MiniMax-M3.1-Flash` | `together/MiniMaxAI/MiniMax-M3.1-Flash` | — | — | ✅ | ✅ |
 | `together` | `Qwen/Qwen3.5-9B` | `together/Qwen/Qwen3.5-9B` | 262144 | — | ✅ | ✅ |
 | `together` | `deepseek-ai/DeepSeek-V4-Pro` | `together/deepseek-ai/DeepSeek-V4-Pro` | 512000 | — | ✅ | — |
+| `together` | `deepseek-ai/DeepSeek-V4.1-Flash-1017` | `together/deepseek-ai/DeepSeek-V4.1-Flash-1017` | — | — | ✅ | ✅ |
 | `together` | `meta-llama/Llama-3.3-70B-Instruct-Turbo` | `together/meta-llama/Llama-3.3-70B-Instruct-Turbo` | 131072 | — | — | — |
 | `together` | `moonshotai/Kimi-K2.6` | `together/moonshotai/Kimi-K2.6` | 262144 | — | ✅ | ✅ |
 | `together` | `moonshotai/Kimi-K2.7-Code` | `together/moonshotai/Kimi-K2.7-Code` | 262144 | — | — | ✅ |
 | `together` | `nvidia/nemotron-3-ultra-550b-a55b` | `together/nvidia/nemotron-3-ultra-550b-a55b` | 512300 | — | ✅ | — |
 | `together` | `openai/gpt-oss-120b` | `together/openai/gpt-oss-120b` | 128000 | — | ✅ | — |
 | `together` | `zai-org/GLM-5.2` | `together/zai-org/GLM-5.2` | 262144 | — | — | — |
+| `typesafe` | `jev-latest` | `typesafe/jev-latest` | — | — | — | — |
 | `venice` | `qwen3-235b-a22b-thinking-2507` | `venice/qwen3-235b-a22b-thinking-2507` | 128000 | 16384 | ✅ | — |
 | `venice` | `qwen3-coder-480b-a35b-instruct-turbo` | `venice/qwen3-coder-480b-a35b-instruct-turbo` | 256000 | 65536 | — | — |
 | `venice` | `qwen3-vl-235b-a22b` | `venice/qwen3-vl-235b-a22b` | 128000 | 16384 | — | ✅ |
@@ -329,32 +438,54 @@ and capabilities.
 | `vercel-ai-gateway` | `openai/gpt-5.4-pro` | `vercel-ai-gateway/openai/gpt-5.4-pro` | 1050000 | 128000 | ✅ | ✅ |
 | `volcengine` | `MiniMax-M3` | `volcengine/MiniMax-M3` | 1000000 | 8192 | ✅ | — |
 | `volcengine` | `ark-code-latest` | `volcengine/ark-code-latest` | 256000 | 65536 | ✅ | — |
+| `volcengine` | `deepseek-latest` | `volcengine/deepseek-latest` | — | — | — | — |
 | `volcengine` | `deepseek-v3-2-251201` | `volcengine/deepseek-v3-2-251201` | 128000 | 4096 | — | — |
+| `volcengine` | `deepseek-v4-1-flash-260910` | `volcengine/deepseek-v4-1-flash-260910` | — | — | ✅ | ✅ |
+| `volcengine` | `deepseek-v4-1-flash-261017` | `volcengine/deepseek-v4-1-flash-261017` | — | — | ✅ | ✅ |
+| `volcengine` | `deepseek-v4-1-flash-economy-261017` | `volcengine/deepseek-v4-1-flash-economy-261017` | — | — | ✅ | ✅ |
 | `volcengine` | `deepseek-v4-flash` | `volcengine/deepseek-v4-flash` | 1000000 | 8192 | ✅ | — |
 | `volcengine` | `deepseek-v4-flash-ga-260731` | `volcengine/deepseek-v4-flash-ga-260731` | 1000000 | 384000 | ✅ | — |
 | `volcengine` | `deepseek-v4-pro` | `volcengine/deepseek-v4-pro` | 1000000 | 8192 | ✅ | — |
 | `volcengine` | `deepseek-v4-pro-ga-260813` | `volcengine/deepseek-v4-pro-ga-260813` | 1000000 | 384000 | ✅ | — |
-| `volcengine` | `doubao-seed-1-8-251228` | `volcengine/doubao-seed-1-8-251228` | 256000 | 4096 | — | ✅ |
+| `volcengine` | `deepseek-v4.1-flash` | `volcengine/deepseek-v4.1-flash` | — | — | ✅ | ✅ |
+| `volcengine` | `deepseek-v4.1-flash-economy` | `volcengine/deepseek-v4.1-flash-economy` | — | — | ✅ | ✅ |
 | `volcengine` | `doubao-seed-2-0-code-preview-260215` | `volcengine/doubao-seed-2-0-code-preview-260215` | 256000 | 4096 | — | ✅ |
 | `volcengine` | `doubao-seed-2-0-lite-260215` | `volcengine/doubao-seed-2-0-lite-260215` | 256000 | 4096 | — | — |
 | `volcengine` | `doubao-seed-2-0-mini-260215` | `volcengine/doubao-seed-2-0-mini-260215` | 256000 | 4096 | — | — |
 | `volcengine` | `doubao-seed-2-0-pro-260215` | `volcengine/doubao-seed-2-0-pro-260215` | 256000 | 4096 | ✅ | ✅ |
+| `volcengine` | `doubao-seed-2-1-lite-260915` | `volcengine/doubao-seed-2-1-lite-260915` | — | — | ✅ | ✅ |
 | `volcengine` | `doubao-seed-2-1-pro-260628` | `volcengine/doubao-seed-2-1-pro-260628` | 256000 | 256000 | ✅ | ✅ |
+| `volcengine` | `doubao-seed-2-1-pro-260915` | `volcengine/doubao-seed-2-1-pro-260915` | — | — | ✅ | ✅ |
 | `volcengine` | `doubao-seed-2-1-turbo-260628` | `volcengine/doubao-seed-2-1-turbo-260628` | 256000 | 256000 | ✅ | ✅ |
+| `volcengine` | `doubao-seed-2.0-mini` | `volcengine/doubao-seed-2.0-mini` | — | — | — | — |
+| `volcengine` | `doubao-seed-2.1-lite` | `volcengine/doubao-seed-2.1-lite` | — | — | — | — |
+| `volcengine` | `doubao-seed-2.1-pro` | `volcengine/doubao-seed-2.1-pro` | — | — | — | — |
 | `volcengine` | `doubao-seed-character-260628` | `volcengine/doubao-seed-character-260628` | 256000 | 256000 | ✅ | ✅ |
-| `volcengine` | `doubao-seed-evolving` | `volcengine/doubao-seed-evolving` | 256000 | 256000 | ✅ | ✅ |
+| `volcengine` | `doubao-seed-evolving` | `volcengine/doubao-seed-evolving` | — | — | — | — |
 | `volcengine` | `doubao-seedream-5.0-lite` | `volcengine/doubao-seedream-5.0-lite` | — | — | — | — |
 | `volcengine` | `glm-5-2-260617` | `volcengine/glm-5-2-260617` | 1000000 | 131072 | ✅ | — |
+| `volcengine` | `glm-5-3-flash-260828` | `volcengine/glm-5-3-flash-260828` | 1000000 | 131072 | ✅ | ✅ |
 | `volcengine` | `glm-5.2` | `volcengine/glm-5.2` | 204800 | 128000 | ✅ | — |
 | `volcengine` | `glm-5.3` | `volcengine/glm-5.3` | 204800 | 128000 | ✅ | — |
-| `volcengine` | `kimi-k2.6` | `volcengine/kimi-k2.6` | 262144 | 32768 | ✅ | — |
-| `volcengine` | `kimi-k2.7-code` | `volcengine/kimi-k2.7-code` | 262144 | 32768 | ✅ | — |
+| `volcengine` | `glm-5.3-flash` | `volcengine/glm-5.3-flash` | — | — | — | ✅ |
+| `volcengine` | `glm-latest` | `volcengine/glm-latest` | — | — | ✅ | — |
+| `volcengine` | `kimi-k2.8-preview` | `volcengine/kimi-k2.8-preview` | — | — | ✅ | ✅ |
+| `volcengine` | `kimi-k3` | `volcengine/kimi-k3` | — | — | ✅ | ✅ |
+| `volcengine` | `kimi-k3-1-pro` | `volcengine/kimi-k3-1-pro` | 1048576 | — | ✅ | ✅ |
+| `volcengine` | `kimi-k3.1-pro` | `volcengine/kimi-k3.1-pro` | — | — | ✅ | — |
+| `volcengine` | `kimi-latest` | `volcengine/kimi-latest` | — | — | — | — |
+| `volcengine` | `minimax-latest` | `volcengine/minimax-latest` | — | — | — | — |
 | `xai` | `grok-4.3` | `xai/grok-4.3` | 1000000 | — | ✅ | ✅ |
 | `xai` | `grok-4.5` | `xai/grok-4.5` | 500000 | — | ✅ | ✅ |
 | `xai` | `grok-4.6` | `xai/grok-4.6` | 500000 | 500000 | ✅ | ✅ |
-| `xiaomi` | `mimo-v2.5` | `xiaomi/mimo-v2.5` | 1048576 | 131072 | ✅ | ✅ |
-| `xiaomi` | `mimo-v2.5-pro` | `xiaomi/mimo-v2.5-pro` | 1048576 | 131072 | ✅ | — |
+| `xai` | `grok-4.7` | `xai/grok-4.7` | 500000 | 500000 | ✅ | ✅ |
+| `xai` | `grok-imagine-image` | `xai/grok-imagine-image` | — | — | — | — |
+| `xai` | `grok-imagine-image-2.0` | `xai/grok-imagine-image-2.0` | — | — | — | — |
+| `xai` | `grok-imagine-image-quality` | `xai/grok-imagine-image-quality` | — | — | — | — |
 | `xiaomi` | `mimo-v2.5-pro-ultraspeed` | `xiaomi/mimo-v2.5-pro-ultraspeed` | 1048576 | 131072 | ✅ | — |
+| `xiaomi` | `mimo-v2.6-flash` | `xiaomi/mimo-v2.6-flash` | 1048576 | 131072 | ✅ | ✅ |
+| `xiaomi` | `mimo-v2.6-pro` | `xiaomi/mimo-v2.6-pro` | 1048576 | 131072 | ✅ | ✅ |
+| `xiaomi` | `mimo-v2.6-pro-ultraspeed` | `xiaomi/mimo-v2.6-pro-ultraspeed` | 1048576 | 131072 | ✅ | ✅ |
 | `zai` | `glm-4-32b-0414-128k` | `zai/glm-4-32b-0414-128k` | 131072 | 16384 | — | — |
 | `zai` | `glm-4.5` | `zai/glm-4.5` | 131072 | 98304 | ✅ | — |
 | `zai` | `glm-4.5-air` | `zai/glm-4.5-air` | 131072 | 98304 | ✅ | — |
@@ -375,37 +506,5 @@ and capabilities.
 | `zai` | `glm-5.2` | `zai/glm-5.2` | 1000000 | 131072 | ✅ | — |
 | `zai` | `glm-5.3` | `zai/glm-5.3` | 1000000 | 131072 | ✅ | — |
 | `zai` | `glm-5.3-flash` | `zai/glm-5.3-flash` | 1000000 | 131072 | ✅ | ✅ |
+| `zai` | `glm-5.3-flashx` | `zai/glm-5.3-flashx` | 1000000 | 131072 | ✅ | ✅ |
 | `zai` | `glm-5v-turbo` | `zai/glm-5v-turbo` | 202800 | 131072 | ✅ | ✅ |
-
-## Fast mode
-
-Supported OpenAI and OpenAI Codex model routes expose an independent **Speed**
-button and popover in the Web GUI, matching Thinking level. **Auto** uses the
-exact route default (or the upstream default when unset), **Standard**
-overrides a Fast default, and **Fast** requests faster processing with higher
-quota consumption or cost. Thinking level remains independent.
-
-Runtime defaults are keyed by the complete model route:
-
-```json
-{
-  "model": {
-    "route_options": {
-      "openai-codex@default/gpt-6-astra": { "service_tier": "fast" }
-    }
-  }
-}
-```
-
-Use `holon config set model.route_options '<JSON object>'` to update these
-defaults. There is currently no dedicated Web GUI editor for route speed
-defaults and no provider-wide `openai.speed` setting. The agent model control
-API also accepts optional `service_tier`
-(`default` or `fast`) with `model` and `reasoning_effort`. An omitted value
-inherits the route default. `priority` is accepted as an alias for `fast`.
-Model changes replace the previous route override, and fallback candidates
-use their own route defaults. Compatible gateways do not inherit OpenAI's
-service-tier capability. Changes apply to future turns.
-
-Request diagnostics distinguish the requested and upstream-served tiers. An
-upstream service may serve standard processing even when Fast was requested.

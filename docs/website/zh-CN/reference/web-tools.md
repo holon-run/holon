@@ -105,6 +105,10 @@ Holon 使用基于提供商的搜索模型，有多种提供商可选：
 - **博查 AI 搜索**：博查 AI Web Search API。需要把 API key 存为凭据 profile。配置方式：
   `holon config set web.providers.bocha.kind bocha` 和
   `holon config set web.providers.bocha.credential_profile <profile>`。
+- **Keenable**：面向 Agent 的独立网页索引。公共端点无需 API key，配置密钥后改用
+  认证端点。配置方式：`holon config set web.providers.keenable.kind keenable`；
+  需要密钥时再加
+  `holon config set web.providers.keenable.credential_profile <profile>`。
 - **模型原生搜索**：部分模型提供商（OpenAI、Anthropic）通过自家 API 支持原生网络搜索。
   在 "Auto" 模式下，Holon 会优先使用它们。
 - **DeepSeek**：独立 Search / Fetch API，通过 `kind=deepseek` 引用 API key profile，
