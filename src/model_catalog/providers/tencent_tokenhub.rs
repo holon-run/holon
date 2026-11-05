@@ -711,6 +711,7 @@ fn tokenhub_hy4_routes_preserve_independently_reviewed_protocol_capabilities() {
     }
 }
 
+#[cfg(holon_lib_test_shard = "c")]
 #[test]
 fn tokenhub_chat_effort_updates_are_exact_model_and_protocol_scoped() {
     for catalog in [
@@ -749,6 +750,7 @@ fn tokenhub_chat_effort_updates_are_exact_model_and_protocol_scoped() {
     }
 }
 
+#[cfg(holon_lib_test_shard = "c")]
 #[test]
 fn tokenhub_reviewed_chat_capabilities_and_effort_preserve_unknown_fields() {
     let catalog = BuiltInModelCatalog::from_legacy_definitions();

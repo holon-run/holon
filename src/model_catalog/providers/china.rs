@@ -1983,6 +1983,7 @@ fn dashscope_k31_messages_route_does_not_imply_subscription_entitlement_or_limit
     }
 }
 
+#[cfg(holon_lib_test_shard = "c")]
 #[test]
 fn reviewed_dashscope_anthropic_ids_are_default_only_and_conservative() {
     let entries = late_entries();
