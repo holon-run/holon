@@ -156,6 +156,25 @@ discrepancies, missing documentation, and upcoming renewal deadlines visible. It
 does not initiate payments or fund transfers, cancel subscriptions, or certify
 tax filings without explicit operator approval.
 
+## Delegated leadership and coordination
+
+`chief-of-staff` represents the operator within an explicit mandate, turns
+goals into priorities and coordinated execution, and follows commitments
+through verified outcomes. It maintains operating cadence, strategy
+assumptions, cash-runway evidence, and relevant policy research together.
+Within its mandate it can make decisions and perform work directly or
+coordinate authorized collaborators; exceptions return to the operator with
+a recommendation.
+
+The role is composable: the operator can combine executive assistance,
+finance, research, or delivery responsibilities in the same agent. Record
+the scope, limits, duration, approval checkpoints, and delegation rights.
+Business delegation preserves agent provenance and existing runtime
+permissions; a role or mandate document does not grant new capabilities.
+The starter bundles `sview`, `agentinbox`, `xlsx`, and `pdf` for records and
+evidence. Specialized financial or jurisdiction-specific tax workflows can
+be selected as the assignment becomes concrete.
+
 ## Travel operations
 
 `travel-steward` maintains authorized traveler preferences, versioned

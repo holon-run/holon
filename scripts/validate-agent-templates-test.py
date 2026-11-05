@@ -79,5 +79,27 @@ class VideoProducerSkillTests(unittest.TestCase):
         self.assertIn(("remotion-dev/skills", "skills/remotion-best-practices"), sources)
 
 
+class ChiefOfStaffTemplateTests(unittest.TestCase):
+    def test_bundles_record_and_evidence_skills(self) -> None:
+        root = Path(__file__).resolve().parent.parent
+        template = root / "agent_templates/chief-of-staff"
+        manifest = VALIDATOR["load_toml"](template / "template.toml")
+        self.assertEqual(manifest["id"], "chief-of-staff")
+        self.assertEqual(manifest["name"], "Chief of Staff")
+        path = template / "skills.toml"
+        VALIDATOR["validate_skills"](path)
+        skills = VALIDATOR["load_toml"](path)["skills"]
+        self.assertEqual(len(skills), 4)
+        self.assertEqual(
+            {(skill["repo"], skill["path"]) for skill in skills},
+            {
+                ("holon-run/sview", "skills/sview"),
+                ("holon-run/agentinbox", "skills/agentinbox"),
+                ("holon-run/holon", "skills/xlsx"),
+                ("holon-run/holon", "skills/pdf"),
+            },
+        )
+
+
 if __name__ == "__main__":
     unittest.main()

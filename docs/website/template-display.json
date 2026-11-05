@@ -15,6 +15,13 @@
         "summary": "持续监控应用商店关键词基线与搜索趋势，生成符合商店规范的元数据改写方案与发版对比包；不单方面发布应用或上线线上元数据。"
       }
     },
+    "chief-of-staff": {
+      "category": "operations",
+      "zh-CN": {
+        "name": "幕僚长",
+        "summary": "在明确委托范围内代表 operator 决策与协调，持续维护经营节拍、战略假设和资金跑道证据，推动已授权事项闭环；超出授权时提请决策。"
+      }
+    },
     "code-health-steward": {
       "category": "engineering",
       "zh-CN": {
