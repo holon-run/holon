@@ -116,6 +116,10 @@ Holon uses a provider-based search model with multiple provider options:
   credential profile. Configure with
   `holon config set web.providers.bocha.kind bocha` and
   `holon config set web.providers.bocha.credential_profile <profile>`.
+- **Keenable** — an independent web index for agents. The public endpoint works
+  without an API key; a key switches it to the authenticated endpoint. Configure
+  with `holon config set web.providers.keenable.kind keenable` and, for keyed
+  access, `holon config set web.providers.keenable.credential_profile <profile>`.
 - **DeepSeek** — independent Search/Fetch APIs using a DeepSeek API key profile
   (`kind=deepseek`), available to any conversation model.
 - **Model-native search** — Some model providers (OpenAI, Anthropic) support
