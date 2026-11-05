@@ -263,6 +263,23 @@ class UIFixtureBootstrapContracts(unittest.TestCase):
     def advance(self, seconds):
         self.now += seconds
 
+    def create_fixture_work(self, local):
+        # Execute the real create/wait/work statements, not a source-string assertion.
+        source = ROOT / "scripts/ios_ui_fixture.py"
+        tree = ast.parse(source.read_text(), filename=str(source))
+        setup = next(node for node in ast.walk(tree) if isinstance(getattr(node, "body", None), list)
+                     and any(isinstance(child, ast.Assign)
+                             and any(isinstance(target, ast.Name) and target.id == "created"
+                                     for target in child.targets) for child in node.body))
+        start = next(index for index, node in enumerate(setup.body)
+                     if isinstance(node, ast.Assign)
+                     and any(isinstance(target, ast.Name) and target.id == "created"
+                             for target in node.targets))
+        namespace = dict(self.helpers, local=local, agent="holon-tester")
+        exec(compile(ast.Module(body=setup.body[start:start + 3], type_ignores=[]),
+                     str(source), "exec"), namespace)
+        return namespace["work"]
+
     def test_background_creation_waits_for_ready_before_work_mutation(self):
         def local(method, path, **kwargs):
             self.assertEqual((method, path), ("GET", "/jobs/bootstrap-fixture"))
@@ -299,7 +316,26 @@ class UIFixtureBootstrapContracts(unittest.TestCase):
         self.assertTrue(all(0 < request.kwargs["timeout"] <= .25
                             for request in local.call_args_list))
 
-    def test_missing_job_or_nonready_terminal_receipt_fails_immediately(self):
+    def test_missing_job_with_durable_ready_allows_work_creation(self):
+        created = {"receipt": {"stage": "provisioning", "agent_id": "holon-tester"}}
+        local = Mock(side_effect=[created, {"bootstrap": {"status": "ready"}}, {"id": "work"}])
+        self.assertEqual(self.create_fixture_work(local), {"id": "work"})
+        self.assertEqual([(call.args[0], call.args[1]) for call in local.call_args_list], [
+            ("POST", "/control/agents/holon-tester/create"),
+            ("GET", "/control/agents/holon-tester/detail"),
+            ("POST", "/control/agents/holon-tester/work-items")])
+        self.assertEqual(local.call_args_list[1].kwargs["timeout"], 10)
+
+    def test_missing_job_without_durable_ready_never_creates_work(self):
+        for bootstrap in ({"status": "provisioning"}, {"status": "degraded"}, None, {}):
+            with self.subTest(bootstrap=bootstrap):
+                created = {"receipt": {"stage": "provisioning", "agent_id": "holon-tester"}}
+                local = Mock(side_effect=[created, {"bootstrap": bootstrap}])
+                with self.assertRaisesRegex(RuntimeError, "no ready durable state or job"):
+                    self.create_fixture_work(local)
+                self.assertEqual(local.call_count, 2)
+
+    def test_missing_identity_or_nonready_terminal_receipt_fails_immediately(self):
         for receipt in ({"stage": "provisioning"}, {"stage": "degraded"},
                         {"stage": "bootstrapped", "bootstrap": {"status": "degraded"}}):
             local = Mock()

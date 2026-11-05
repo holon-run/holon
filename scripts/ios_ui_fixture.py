@@ -308,12 +308,13 @@ def monitor_xcodebuild(command, env, idle_budget, subprocess_module=None,
 
 
 def wait_for_agent_bootstrap(local, created, timeout=30):
-    """A create receipt admits bootstrap; only its terminal result proves ready."""
+    """A create receipt admits bootstrap; verify a terminal or durable ready state."""
     receipt = created["receipt"]
     if receipt["stage"] == "bootstrapped" and receipt["bootstrap"]["status"] == "ready":
         return
     job_id = receipt.get("job_id")
-    if receipt["stage"] != "provisioning" or not job_id:
+    agent_id = receipt.get("agent_id")
+    if receipt["stage"] != "provisioning" or not (job_id or agent_id):
         raise RuntimeError("fixture agent bootstrap has no ready receipt or job")
     deadline = time.monotonic() + timeout
     status = "queued"
@@ -321,6 +322,12 @@ def wait_for_agent_bootstrap(local, created, timeout=30):
         remaining = deadline - time.monotonic()
         if remaining <= 0:
             raise RuntimeError(f"fixture agent bootstrap timed out (job status: {status})")
+        if not job_id:
+            # Bootstrap may finish between creation and the HTTP handler's job attachment.
+            detail = local("GET", f"/control/agents/{agent_id}/detail", timeout=min(10, remaining))
+            if (detail.get("bootstrap") or {}).get("status") == "ready":
+                return
+            raise RuntimeError("fixture agent bootstrap has no ready durable state or job")
         job = local("GET", f"/jobs/{job_id}", timeout=min(10, remaining))["job"]
         status = job["status"]
         if status == "completed":
