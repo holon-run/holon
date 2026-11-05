@@ -247,6 +247,67 @@ class BuildToolContracts(unittest.TestCase):
         self.assertFalse(self.log.exists())
 
 
+class UIFixtureBootstrapContracts(unittest.TestCase):
+    def setUp(self):
+        self.helpers = fixture_helpers()
+        self.wait = self.helpers["wait_for_agent_bootstrap"]
+        self.created = {"receipt": {"stage": "provisioning", "job_id": "bootstrap-fixture"}}
+        self.now = 0
+        self.clock = patch.object(self.helpers["time"], "monotonic", side_effect=lambda: self.now)
+        self.sleeper = patch.object(self.helpers["time"], "sleep", side_effect=self.advance)
+        self.clock.start()
+        self.sleeper.start()
+        self.addCleanup(self.clock.stop)
+        self.addCleanup(self.sleeper.stop)
+
+    def advance(self, seconds):
+        self.now += seconds
+
+    def test_background_creation_waits_for_ready_before_work_mutation(self):
+        def local(method, path, **kwargs):
+            self.assertEqual((method, path), ("GET", "/jobs/bootstrap-fixture"))
+            self.assertLessEqual(kwargs["timeout"], 30 - self.now)
+            if self.now < 10.8:
+                return {"job": {"status": "running"}}
+            return {"job": {"status": "completed", "result": {"bootstrap": {"status": "ready"}}}}
+
+        self.wait(local, self.created)
+        self.assertGreaterEqual(self.now, 10.8, "202 must not stand in for bootstrap readiness")
+        source = (ROOT / "scripts/ios_ui_fixture.py").read_text()
+        self.assertIn('wait_for_agent_bootstrap(local, created)\n'
+                      '            work = local("POST"', source)
+
+    def test_inline_ready_receipt_needs_no_poll(self):
+        local = Mock()
+        self.wait(local, {"receipt": {"stage": "bootstrapped", "bootstrap": {"status": "ready"}}})
+        local.assert_not_called()
+
+    def test_failed_or_degraded_bootstrap_stops_without_echoing_details(self):
+        for job in ({"status": "failed", "error": "PRIVATE"},
+                    {"status": "completed", "result": {"bootstrap": {"status": "degraded"}}},
+                    {"status": "completed"}, {"status": "PRIVATE"}):
+            with self.subTest(job=job), self.assertRaises(RuntimeError) as failure:
+                self.wait(Mock(return_value={"job": job}), self.created)
+            self.assertNotIn("PRIVATE", str(failure.exception))
+
+    def test_pending_bootstrap_has_total_deadline_and_bounded_requests(self):
+        local = Mock(return_value={"job": {"status": "queued"}})
+        with self.assertRaisesRegex(RuntimeError, "timed out"):
+            self.wait(local, self.created, timeout=.25)
+        self.assertAlmostEqual(self.now, .25)
+        self.assertEqual(local.call_count, 3)
+        self.assertTrue(all(0 < request.kwargs["timeout"] <= .25
+                            for request in local.call_args_list))
+
+    def test_missing_job_or_nonready_terminal_receipt_fails_immediately(self):
+        for receipt in ({"stage": "provisioning"}, {"stage": "degraded"},
+                        {"stage": "bootstrapped", "bootstrap": {"status": "degraded"}}):
+            local = Mock()
+            with self.assertRaisesRegex(RuntimeError, "no ready receipt or job"):
+                self.wait(local, {"receipt": receipt})
+            local.assert_not_called()
+
+
 class UIFixtureSetupContracts(unittest.TestCase):
     def run_loss_scenarios(self, invalid_receipts=None):
         # Execute the real per-case loop; only external XCTest/services are mocked.
