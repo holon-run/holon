@@ -58,6 +58,10 @@ order: 30
   复用 Research Steward 模板与多 Workspace 机制。深入剖析 Agent 自动维护知识库的底层原理，展示让 Agent 自动克隆挂载仓库、精简指令交互，以及移动端随手转发链接的异步调研工作流。
   <!-- mdorigin:index kind=article -->
 
+- [搭建持续跟进 PR 的本地 Code Reviewer](./build-code-reviewer.md)
+  从 code-reviewer 模板创建审阅 Agent，直接通过对话让它挂载代码库、记录合并权限并订阅 GitHub 事件，持续跟进新提交与 CI 直至合并。
+  <!-- mdorigin:index kind=article -->
+
 - [使用 holon solve 处理 GitHub 任务](./run-github-task.md)
   明确 issue、评审或 PR 修复的目标与交付边界；单次执行并验证本地产物与 GitHub 副作用。
   <!-- mdorigin:index kind=article -->

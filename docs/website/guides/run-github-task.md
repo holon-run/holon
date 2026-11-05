@@ -13,8 +13,8 @@ local output and any GitHub changes. A completed run does not mean a PR merged.
 ## When to use solve
 
 Use it to implement an issue, review a PR, or address review feedback. For an
-ongoing review cycle or CI watch, use a
-[long-lived WorkItem](run-long-lived-task.md) with an explicit event subscription.
+ongoing review cycle or CI watch, see [Build a local Code Reviewer that follows PRs](build-code-reviewer.md)
+or use a [long-lived WorkItem](run-long-lived-task.md) with an explicit event subscription.
 The solve preset does not keep monitoring a PR after its run ends.
 
 ## Configuration
@@ -195,6 +195,7 @@ Report an unresolved blocker rather than claiming the issue is fixed.
 
 ## See also
 
+- [Build a local Code Reviewer that follows PRs](build-code-reviewer.md)
 - [CLI reference](../reference/cli.md)
 - [Run a long-lived task](run-long-lived-task.md)
 - [Troubleshooting](troubleshooting.md)

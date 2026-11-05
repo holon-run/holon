@@ -27,33 +27,13 @@ Across the three months from June 12 to September 12, 2026, Holon Reviewer revie
 
 These figures combine reviews submitted by `holonbot` and `jolestar`, the personal GitHub account used by the local Reviewer, and exclude Copilot. PR coverage counts each PR once.
 
-The steps below set up a reviewer to pick up new repository PRs automatically and follow them through fixes and CI updates.
+Following a PR across new commits and CI runs—without re-pasting links or repeating resolved comments on every push—relies on three pieces working together: **a role contract from the template, two layers of event subscriptions, and one durable WorkItem per PR**.
 
-## Create a reviewer from a template
+> To set this up in your own repository step by step, follow the guide: [Build a local Code Reviewer that follows PRs](../guides/build-code-reviewer.md).
 
-First follow [Create your first agent](../getting-started/first-agent.md) to install Holon, configure a model, and start the long-running runtime. The machine running Holon needs access to the target repository, the GitHub CLI (`gh`), and the project's testing tools. Receiving events continuously also uses AgentInbox and UXC; we will check the integration later.
+## 1. Role contract and permission confirmation
 
-In your own terminal, create an agent named `reviewer` from the official template:
-
-```bash
-holon agent create reviewer --template https://github.com/holon-run/holon/tree/4895eafce1926cb4cc4687c5b9a99c13b071a1e4/agent_templates/code-reviewer
-```
-
-This example pins the template revision so the command does not depend on when
-that template revision reaches `main`. Use the current template ID when
-creating the agent:
-
-```bash
-holon agent create reviewer --template code-reviewer
-```
-
-`reviewer` is the name of the agent you create; `code-reviewer` is the template name. If an agent with that name already exists, use another name rather than overwrite its work records.
-
-After creation, run `holon agent list` to confirm that the new agent appears, then select it from the TUI or Web GUI.
-
-### The template's built-in AGENTS.md
-
-The `code-reviewer` template includes `AGENTS.md`, which supplies the new agent's initial working rules. Creation also installs the Skills declared by the template. The following excerpt contains the role definition and permission confirmation checklist:
+The `code-reviewer` template initializes the agent's working rules (`AGENTS.md`) and installs the required Skills (`code-review`, `github-review`, `ghx`, `sview`, `agentinbox`, and `uxc`). Its core safeguard is the **Permission Confirmation Protocol**:
 
 ```markdown
 # Code Reviewer Agent
@@ -73,61 +53,19 @@ AGENTS.md:
 - whether you may fix code on behalf of the author
 ```
 
-These rules require the agent to review code, follow PRs, and judge whether they can be merged. Before starting ongoing work, it must confirm permissions with you and record them in its own `AGENTS.md`. Installing a template does not automatically grant merge permission.
+Installing the template never grants merge or push permissions by default. In your first conversation, you simply tell the agent in plain language which repository to watch, when it is allowed to approve or merge, and what changes require human review. The agent attaches the repository and records those standing rules in its own `AGENTS.md`:
 
-The rest of the file defines the workflow:
-
-- **Ongoing follow-up:** Create a WorkItem for a PR and subscribe to new commits, CI, and review comments. When a new version arrives, recheck previous findings first. After merging or closure, complete the work item and clean up subscriptions.
 - **Merge requirements:** All required CI checks on the final head must pass, with no unresolved blocking findings. Ordinary suggestions should not be treated as blockers, and GitHub's platform restrictions cannot be bypassed.
 - **Escalation:** Leave large refactors, breaking API changes, and security-sensitive changes to the operator's judgment. Do not proactively fix code on the author's behalf without authorization.
 
-Skills provide the specific review methods: `code-review` defines evidence, finding categories, and verification coverage; `github-review` handles GitHub context collection, deduplication, and review publication. `ghx` and `sview` support platform operations and source reading; `agentinbox` and `uxc` handle event integration.
+## 2. Two subscription layers and one WorkItem per PR
 
-Add your project requirements; you do not need to write a review prompt from scratch. To adjust general responsibilities or replace Skills, see the [Agent template guide](../reference/agent-templates.md).
-
-## Confirm responsibilities and merge permissions before starting
-
-Tell the reviewer which repository it is responsible for, the project requirements, and its operational permissions:
-
-```text
-Take responsibility for PRs in <owner/repo>. Subscribe to the repository, automatically review new PRs, and keep following them until merged or closed.
-The local repository is at <absolute path>. Focus on compatibility and give feedback in Chinese; isolated testing, comments, and approvals are allowed.
-You may merge directly when the final version's required checks pass, no blockers remain, and repository merge rules are satisfied.
-Do not fix code on the author's behalf; ask me first about major or security-sensitive changes. Remember these long-term requirements.
-```
-
-Have the reviewer confirm and record these instructions in its own `AGENTS.md`. The same authorization applies to future PRs. Read the repository's own `AGENTS.md` first for build, test, and code conventions. If the team only allows squash merges, say so here too.
-
-This authorization also requires the GitHub account to have the corresponding permissions and comply with repository protection rules. The template does not provide credentials. For a first trial, choose a familiar, low-risk PR and prepare an isolated testing environment.
-
-## Subscribe to the repository to discover PRs automatically
-
-After confirming responsibilities, connect the event source. The Holon repository's own `holon-reviewer` uses two subscription layers in its working rules:
+To follow PRs autonomously, `holon-reviewer` separates repository discovery from per-PR tracking through AgentInbox:
 
 - **Keep the repository subscription long-term** to discover newly opened PRs and let the reviewer start reviewing automatically.
 - **Follow each PR separately** to receive subsequent commits, CI, and review comments; clean up that PR's subscription after merging or closure.
 
-The template provides per-PR follow-up rules and integration Skills. The earlier authorization defines the repository and scope for automatically taking on work. External services still require separate authentication and subscriptions.
-
-AgentInbox receives events and then notifies Holon to resume work; the GitHub integration uses UXC. Ask the reviewer to set up the integration using its included Skill:
-
-```text
-Use the agentinbox Skill to connect new-PR subscriptions for this repository and per-PR CI and comment follow-up. Tell me if tools or authentication are missing.
-```
-
-Following the Skill, the reviewer checks the services, repository access, and its own wake target, and identifies any installation or authentication you need to complete. Configure credentials through the tools' authentication flows; do not paste them into the conversation. For integration details, see the [AgentInbox onboarding guide](https://agentinbox.holon.run/guides/onboarding-with-agent-skill).
-
-After setup, have it confirm that the repository discovery subscription is active. Do not assume a new event subscription fills in history. To take on existing open PRs, also say, “Take on the currently open PRs too.”
-
-## Check whether it starts reviewing automatically
-
-Wait for a new PR suitable for a trial run, and observe whether the reviewer discovers it from an event, automatically creates a WorkItem, and starts reviewing. Do not manually send the PR URL this time.
-
-If reviewing does not start after a new PR appears, first check the repository discovery subscription, AgentInbox's event records, and the reviewer's wake target. Manually sending a PR can test a one-time review, but does not prove that automatic repository integration is active.
-
-Open the WorkItem for this PR. You should find the reviewed head, findings and evidence, completed verification, and what it is waiting for next. When a fix arrives, the reviewer can compare the new version with the previous blockers.
-
-Use this example to check the first review result:
+When a new PR opens, the reviewer creates a dedicated [WorkItem](why-work-items.md) that records the reviewed `head SHA`, blocking findings with evidence, local verification results, and the exact wait condition:
 
 ```text
 Reviewed version: <head SHA>
@@ -136,27 +74,19 @@ Verification: <tests run and results>; <areas not covered>
 Next step: wait for <author's fix / CI for the current head / maintainer's decision>
 ```
 
-## Verify that follow-up reviews resume on their own
+## 3. Revision-aware re-review and merge cleanup
 
-First let the existing CI finish and check whether the reviewer receives the event and updates the check results. Then wait for the author to submit an update normally, and observe whether it returns to the same PR's WorkItem to review the new version. Do not send “please continue” in between. Check both CI notifications and new commits; the former cannot replace the latter.
+Because review state lives in the PR's WorkItem rather than a transient chat scrollback, every CI update or new push wakes that same WorkItem without anyone typing `"please continue"`:
 
-Check the re-review record:
+- **Exact revision matching:** Each re-review records the new `head SHA` and checks CI for that commit rather than stale results from an earlier push.
+- **Deduplicated delta feedback:** As in the second revision of PR #2854 (`19f390ca`), the reviewer first checks whether earlier blockers are resolved—without re-posting resolved threads—and lists any newly introduced issues separately so the author knows exactly what remains.
+- **Clean closure:** Once required checks pass on the final head and no blockers remain, the reviewer merges (or notifies a maintainer), completes the WorkItem, and removes that PR's subscription while keeping the repository-level watch active for future PRs.
 
-- It states the new head, and the cited CI belongs to that version.
-- It explains whether each previous finding is fixed or still present, with new findings listed separately.
-- It clearly states what it is still waiting for or what decision it needs from you.
+## Next step: Set up your own Code Reviewer
 
-If AgentInbox has received the event but the reviewer has not resumed, first check the wake target, whether the runtime is online, and the work item's wait condition. If it resumes but still cites old CI, ask it to check the commit again. Sending “continue” can move work forward temporarily, but cannot replace this integration verification.
+To set up this workflow in your own repository—creating the agent in the Web GUI and asking it in conversation to attach your codebase, record permissions, and connect event subscriptions—follow the step-by-step guide:
 
-The second version of PR #2854 fixed the previous problem but introduced another error. The re-review record needs to distinguish the two so the author knows what to change next.
-
-## Merge and clean up
-
-Once the final head's required checks pass, no blockers remain, and repository rules are satisfied, the reviewer can merge directly under its authorization. For changes requiring escalation, or PRs lacking the required permissions or checks, it should explain why and leave the decision to you.
-
-The final report should state the actual merge result, final commit, and unverified areas. After the PR is merged or closed, the reviewer confirms the terminal state, completes the WorkItem, and cleans up that task's subscriptions as required by the template; shared event sources remain for other work.
-
-Keep the repository subscription so the reviewer can continue taking on new PRs and involve you only when a decision is needed. To retain manual merging, change the long-term authorization to “Notify me when merge conditions are met; I will merge it.”
+- **[Build a local Code Reviewer that follows PRs](../guides/build-code-reviewer.md)**
 
 ## Case sources
 

@@ -10,7 +10,7 @@ order: 90
 
 ## 何时使用 solve
 
-适用于实现单个 issue、评审单个 PR 或修复审查反馈。对于持续跟踪的审查闭环或 CI 监控，请使用带有显式事件订阅的[长生命周期工作项](run-long-lived-task.md)。`solve` 预设在单次运行结束后不会持续监听 PR。
+适用于实现单个 issue、评审单个 PR 或修复审查反馈。对于持续跟踪的审查闭环或 CI 监控，请参阅[搭建持续跟进 PR 的本地 Code Reviewer](build-code-reviewer.md)或使用带有显式事件订阅的[长生命周期工作项](run-long-lived-task.md)。`solve` 预设在单次运行结束后不会持续监听 PR。
 
 ## 环境配置
 
@@ -142,6 +142,7 @@ fi
 
 ## 另见
 
+- [搭建持续跟进 PR 的本地 Code Reviewer](build-code-reviewer.md)
 - [CLI 参考](../reference/cli.md)
 - [运行长生命周期任务](run-long-lived-task.md)
 - [故障排查](troubleshooting.md)

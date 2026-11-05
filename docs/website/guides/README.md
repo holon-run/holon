@@ -56,6 +56,10 @@ Use [Reference](../reference/) for complete command syntax and schemas.
   Reuse the Research Steward template and multi-workspace mechanism. Learn the autonomous knowledge base design, auto-clone workspace attach, concise task prompts, and mobile link sharing workflows.
   <!-- mdorigin:index kind=article -->
 
+- [Build a local Code Reviewer that follows PRs](./build-code-reviewer.md)
+  Create a reviewer agent from the code-reviewer template, then ask it in conversation to attach your repository, record merge permissions, subscribe to GitHub events, and follow commits and CI through merge.
+  <!-- mdorigin:index kind=article -->
+
 - [Run a GitHub task with holon solve](./run-github-task.md)
   Scope an issue, review, or PR fix; run it once; then verify its artifacts and GitHub side effects.
   <!-- mdorigin:index kind=article -->
