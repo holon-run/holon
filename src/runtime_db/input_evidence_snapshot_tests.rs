@@ -3154,3 +3154,124 @@ fn dispatch_briefs_follow_current_digest_and_pruning_and_never_successor_history
     })?;
     Ok(())
 }
+
+fn legacy_linked_brief(tx: &Transaction<'_>, id: &str) -> Result<BriefRecord> {
+    use crate::runtime_db::evidence::{append_audit_event_tx, insert_brief_evidence_tx};
+    let mut brief = BriefRecord::new(
+        "agent-a",
+        crate::types::BriefKind::Result,
+        "fixed result",
+        None,
+        None,
+    );
+    brief.id = id.into();
+    brief.created_at = time();
+    insert_brief_evidence_tx(tx, &brief)?;
+    tx.execute("INSERT OR IGNORE INTO runtime_metadata(key,value,created_at,updated_at) VALUES('event_log_epoch','fixture-epoch',?1,?1)", [time().to_rfc3339()])?;
+    let event = crate::types::brief_created_event_for(&brief)?;
+    let (event, _) = append_audit_event_tx(tx, Some("agent-a"), &event)?;
+    brief.created_event_seq = Some(event.event_seq);
+    // Reproduce the historical migration: additive linkage, stale pre-link hash.
+    tx.execute(
+        "UPDATE briefs SET created_event_seq=?1,payload_json=?2 WHERE evidence_id=?3",
+        params![
+            i64::try_from(event.event_seq)?,
+            serde_json::to_string(&brief)?,
+            id
+        ],
+    )?;
+    Ok(brief)
+}
+
+#[test]
+fn fixed_brief_linkage_backfill_uses_exact_prelink_hash_without_repairing_history() -> Result<()> {
+    let mut fixed = None;
+    let (_directory, db) = legacy(|tx| {
+        fixed = Some(legacy_linked_brief(tx, "fixed-linked")?);
+        Ok(())
+    })?;
+    let fixed = fixed.unwrap();
+    db.transaction(|tx| {
+        let before: (String, String) = tx.query_row(
+            "SELECT content_hash,payload_json FROM briefs WHERE evidence_id=?1",
+            [&fixed.id],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )?;
+        assert_ne!(
+            before.0,
+            crate::runtime_db::evidence::content_hash(&before.1)
+        );
+        assert_eq!(
+            qualified_dispatch_briefs_tx(tx, &scope(), 64, 1024 * 1024)?,
+            vec![fixed.clone()]
+        );
+        let key = Key::new(Family::Brief, &fixed.id);
+        validate_existing_input_evidence_tx(tx, &scope(), &key)?;
+        let mut policy = request(InputWindowSelector::RecentBriefs, 64);
+        policy.mandatory_roots.insert(key);
+        let prepared = current(prepare_input_evidence_snapshot_tx(tx, &scope(), &policy)?);
+        assert!(!prepared.resident.capture()?.records.is_empty());
+        load_input_evidence_snapshot_tx(tx, &scope(), &policy)?;
+        let after: (String, String) = tx.query_row(
+            "SELECT content_hash,payload_json FROM briefs WHERE evidence_id=?1",
+            [&fixed.id],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )?;
+        assert_eq!(before, after);
+        Ok(())
+    })
+}
+
+#[test]
+fn fixed_brief_linkage_proof_rejects_body_linkage_and_event_changes() -> Result<()> {
+    for change in ["body", "linkage", "event"] {
+        let mut fixed = None;
+        let (_directory, db) = legacy(|tx| {
+            fixed = Some(legacy_linked_brief(tx, "fixed-linked")?);
+            Ok(())
+        })?;
+        let mut fixed = fixed.unwrap();
+        db.transaction(|tx| {
+            match change {
+                "body" => { fixed.text = "other result".into(); tx.execute("UPDATE briefs SET payload_json=?1 WHERE evidence_id=?2", params![serde_json::to_string(&fixed)?,fixed.id])?; }
+                "linkage" => { fixed.created_event_seq = Some(fixed.created_event_seq.unwrap()+1); tx.execute("UPDATE briefs SET payload_json=?1,created_event_seq=?2 WHERE evidence_id=?3",params![serde_json::to_string(&fixed)?,i64::try_from(fixed.created_event_seq.unwrap())?,fixed.id])?; }
+                _ => { tx.execute("DELETE FROM audit_events WHERE agent_id='agent-a' AND event_seq=?1", [i64::try_from(fixed.created_event_seq.unwrap())?])?; }
+            }
+            let key = Key::new(Family::Brief,&fixed.id);
+            assert!(validate_existing_input_evidence_tx(tx,&scope(),&key).is_err());
+            assert!(qualified_dispatch_briefs_tx(tx,&scope(),64,1024*1024).is_err());
+            Ok(())
+        })?;
+    }
+    Ok(())
+}
+
+#[test]
+fn fresh_or_late_brief_cannot_borrow_legacy_linkage_proof() -> Result<()> {
+    for old in [false, true] {
+        let (_directory, db) = if old { legacy(|_| Ok(()))? } else { fresh()? };
+        db.transaction(|tx| {
+            let brief = legacy_linked_brief(tx, "late-linked")?;
+            let key = Key::new(Family::Brief, &brief.id);
+            let fp = fingerprint_on(tx, "agent-a", &key)?.unwrap();
+            let payload = payload_on(tx, "agent-a", &key)?.unwrap();
+            assert!(legacy_brief::validate_payload_digest(
+                tx,
+                "agent-a",
+                &key,
+                &fp,
+                &payload,
+                &bytes_digest(payload.as_bytes())
+            )
+            .is_err());
+            assert!(register_committed_input_evidence_tx(
+                tx,
+                &scope(),
+                &[CanonicalInputEvidence::Brief(brief)]
+            )
+            .is_err());
+            Ok(())
+        })?;
+    }
+    Ok(())
+}

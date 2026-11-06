@@ -49,6 +49,9 @@ use attempt_turn::AttemptTurnProof;
 #[path = "input_evidence_provider_replay.rs"]
 mod provider_replay;
 
+#[path = "input_evidence_legacy_brief.rs"]
+mod legacy_brief;
+
 #[path = "input_evidence_dispatch_briefs.rs"]
 mod dispatch_briefs;
 pub(crate) use dispatch_briefs::{
@@ -1738,7 +1741,14 @@ fn prepare_input_records_tx(
             )?,
         };
         if key.family != Family::ToolExecution {
-            validate_canonical_payload_digest(&key, &fingerprint, &actual_digest)?;
+            legacy_brief::validate_payload_digest(
+                tx,
+                &scope.agent_id,
+                &key,
+                &fingerprint,
+                payload.as_deref().context("selected input body missing")?,
+                &actual_digest,
+            )?;
             if alias.is_none() && requires_frozen_body_digest(&key, &fingerprint) {
                 validate_fixed_body_digest(&key, &fixed_body_digests, &actual_digest)?;
             }
@@ -2380,8 +2390,9 @@ fn require_eligible(
                 .context("fixed input seed missing")?],
             |row| row.get(0),
         )?;
-        let digest = bounded_body_digest(tx, &agent, key, current)?;
-        validate_canonical_payload_digest(key, current, &digest)?;
+        let payload = bounded_body_payload(tx, &agent, key, current)?;
+        let digest = bytes_digest(payload.as_bytes());
+        legacy_brief::validate_payload_digest(tx, &agent, key, current, &payload, &digest)?;
         if requires_frozen_body_digest(key, current) {
             validate_fixed_body_digest(key, &digests, &digest)?;
         }
@@ -2394,13 +2405,22 @@ fn bounded_body_digest(
     key: &Key,
     fingerprint: &Fingerprint,
 ) -> Result<String> {
+    Ok(bytes_digest(
+        bounded_body_payload(tx, agent, key, fingerprint)?.as_bytes(),
+    ))
+}
+fn bounded_body_payload(
+    tx: &Transaction<'_>,
+    agent: &str,
+    key: &Key,
+    fingerprint: &Fingerprint,
+) -> Result<String> {
     if fingerprint.payload_bytes > MAX_METADATA_BYTES {
         return Err(
             InputEvidenceSnapshotError::ResourceExhausted("input validation body bytes").into(),
         );
     }
-    let payload = payload_on(tx, agent, key)?.context("qualified input body missing")?;
-    Ok(bytes_digest(payload.as_bytes()))
+    payload_on(tx, agent, key)?.context("qualified input body missing")
 }
 fn validate_alias_body(
     tx: &Transaction<'_>,
@@ -2409,8 +2429,9 @@ fn validate_alias_body(
     fingerprint: &Fingerprint,
     expected: Option<&str>,
 ) -> Result<()> {
-    let actual = bounded_body_digest(tx, agent, key, fingerprint)?;
-    validate_canonical_payload_digest(key, fingerprint, &actual)?;
+    let payload = bounded_body_payload(tx, agent, key, fingerprint)?;
+    let actual = bytes_digest(payload.as_bytes());
+    legacy_brief::validate_payload_digest(tx, agent, key, fingerprint, &payload, &actual)?;
     if expected != Some(actual.as_str()) {
         return Err(InputEvidenceSnapshotError::ProjectionChanged(key.id.clone()).into());
     }

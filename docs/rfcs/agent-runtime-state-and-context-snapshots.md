@@ -242,6 +242,14 @@ its metadata and byte-budget preflight, before its first materialization.
 Payload hints do not establish a Turn assignment or authorize loading another
 record; only the canonical relationship or a validated recovery proof does.
 
+A fixed historical Brief affected by the old linkage backfill may retain its
+pre-link hash. Accept it only when that hash verifies every raw byte except the
+single added `created_event_seq` field, its original seed fingerprint still
+matches in the current incarnation, and the SQL/payload sequence identifies its
+same-scope creating audit event. Do not repair or reseed history on lookup.
+Prepared aliases retain the full raw digest; fresh, late or otherwise changed
+records cannot use this proof.
+
 An interrupted TaskResult dispatch may carry scheduler-generated replay refs
 without changing its canonical Message. Only the successful original Claim
 can pass that projection onward, with a private, budgeted proof bound to the

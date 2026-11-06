@@ -42,3 +42,14 @@ individual oversized bodies and invalid sequences still fail. An agent's total
 archived history can span multiple pages without dropping old ACKs or qualifying
 those Events as live Current. Digest checks, scope and the one-time cut remain
 unchanged.
+
+The historical Brief linkage backfill added `created_event_seq` to the payload
+without updating its pre-link content hash. Original fixed Briefs can verify
+that exact old hash by omitting only the serialized additive linkage field
+from the digest stream. This requires unchanged fixed-seed metadata in the
+current incarnation, matching SQL/payload linkage, and the same-scope creating
+audit event. It does not rewrite hashes, seed fingerprints, bodies or Events.
+Fresh records, late raw history, changed text/linkage, missing Events and other
+hash mismatches retain strict rejection. A prepared alias still freezes the
+full actual raw payload digest, and existing byte preflight/materialization
+bounds remain unchanged.

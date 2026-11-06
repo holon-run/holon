@@ -46,7 +46,14 @@ pub(crate) fn qualified_dispatch_briefs_tx(
         let payload = payload_on(tx, &scope.agent_id, &key)?
             .context("qualified dispatch Brief payload disappeared")?;
         let actual_digest = bytes_digest(payload.as_bytes());
-        validate_canonical_payload_digest(&key, &fingerprint, &actual_digest)?;
+        legacy_brief::validate_payload_digest(
+            tx,
+            &scope.agent_id,
+            &key,
+            &fingerprint,
+            &payload,
+            &actual_digest,
+        )?;
         if let Some(alias) = alias {
             ensure!(
                 alias.digest.as_deref() == Some(actual_digest.as_str()),
