@@ -7,8 +7,11 @@ use anyhow::Result;
 struct StructuredMaterialCounter {
     bytes: u64,
     slots: usize,
+    cells: usize,
+    cells_peak: usize,
     quoted: bool,
     escaped: bool,
+    literal: bool,
 }
 
 impl std::io::Write for StructuredMaterialCounter {
@@ -28,6 +31,25 @@ impl std::io::Write for StructuredMaterialCounter {
                     self.quoted = false;
                 }
             } else {
+                // Count JSON values, not struct field names or punctuation.
+                // A colon removes the preceding key string; nested values and
+                // array entries each retain their own cell. No parser allocates.
+                if matches!(*byte, b'"' | b'{' | b'[')
+                    || (!self.literal && matches!(*byte, b'-' | b'0'..=b'9' | b't' | b'f' | b'n'))
+                {
+                    self.cells = self.cells.checked_add(1).ok_or_else(exhausted)?;
+                    self.cells_peak = self.cells_peak.max(self.cells);
+                }
+                if *byte == b':' {
+                    self.cells = self.cells.saturating_sub(1);
+                }
+                if matches!(*byte, b'"' | b'{' | b'}' | b'[' | b']' | b':' | b',')
+                    || byte.is_ascii_whitespace()
+                {
+                    self.literal = false;
+                } else {
+                    self.literal = true;
+                }
                 if matches!(*byte, b'"' | b'{' | b'}' | b'[' | b']' | b':' | b',') {
                     self.slots = self.slots.checked_add(1).ok_or_else(exhausted)?;
                 }
@@ -129,6 +151,18 @@ pub(crate) fn admit_json_payload(payload: &str) -> Result<()> {
     let mut counter = StructuredMaterialCounter::default();
     counter.write_all(payload.as_bytes())?;
     counter.admit()
+}
+
+/// One direct typed decode, with no completion aggregate/resolver copies.
+/// Inline scalars still count as cells; the original eightfold allowance covers
+/// owning strings, map entries and container capacity. Keep the bytes envelope.
+pub(crate) fn admit_typed_json_payload(payload: &str) -> Result<()> {
+    use std::io::Write;
+    let mut counter = StructuredMaterialCounter::default();
+    counter.write_all(payload.as_bytes())?;
+    // Malformed suffixes must not erase an already admitted decode prefix.
+    let records = counter.cells_peak;
+    counter.admit_records(records)
 }
 
 #[cfg(holon_lib_test_shard = "d")]
@@ -249,6 +283,92 @@ mod tests {
         assert!(phase.finish().is_err());
         drop(phase);
         assert_eq!(ledger.report()?.observed_bytes, 0);
+        Ok(())
+    }
+
+    #[test]
+    fn direct_decode_counts_cells_without_completion_copies_and_latches_limits() -> Result<()> {
+        use serde_json::{json, Value};
+        use std::io::Write;
+        fn cells(value: &Value) -> usize {
+            1 + match value {
+                Value::Object(fields) => fields.values().map(cells).sum::<usize>(),
+                Value::Array(values) => values.iter().map(cells).sum::<usize>(),
+                _ => 0,
+            }
+        }
+        let ledger = InputEvidenceBudgetLedger::new(StateMemoryLimits::default())?;
+        let scope = InputEvidenceScope {
+            agent_id: "direct-json".into(),
+            identity_incarnation: 1,
+        };
+        for value in [
+            json!(null),
+            json!(false),
+            json!(-1.25e-100),
+            json!("\\\"{,:} 汉🦀"),
+            json!({"": [], "nested": [null, true, 42, {"key\\\"": "\\\"{,:}"}]}),
+            json!({"metadata": {"nested": [[], {}, "", false, -2.0e20]}}),
+        ] {
+            let payload = serde_json::to_string_pretty(&value)?;
+            let mut whole = StructuredMaterialCounter::default();
+            whole.write_all(payload.as_bytes())?;
+            assert_eq!(whole.cells, cells(&value));
+            assert_eq!(whole.cells_peak, whole.cells);
+            for size in 1..=17 {
+                let mut chunks = StructuredMaterialCounter::default();
+                for bytes in payload.as_bytes().chunks(size) {
+                    chunks.write_all(bytes)?;
+                }
+                assert_eq!(
+                    (chunks.bytes, chunks.slots, chunks.cells, chunks.cells_peak),
+                    (whole.bytes, whole.slots, whole.cells, whole.cells_peak),
+                );
+            }
+            let phase = ResourceReadMaterial::new(&ledger, &scope)?;
+            let header = phase.finish()?;
+            {
+                let _entry = phase.enter();
+                admit_typed_json_payload(&payload)?;
+            }
+            let exact = phase.finish()?;
+            assert_eq!(exact.0 - header.0, whole.material_bytes()? * 8);
+            assert_eq!(exact.1 - header.1, cells(&value) * 8);
+            drop(phase);
+            let completion = ResourceReadMaterial::new(&ledger, &scope)?;
+            {
+                let _entry = completion.enter();
+                admit_json_payload(&payload)?;
+            }
+            assert_eq!(completion.finish()?.0, exact.0);
+            assert_eq!(
+                completion.finish()?.1 - header.1,
+                (whole.slots * 4 + 16) * 8,
+            );
+            drop(completion);
+            for (bytes, records, succeeds) in [
+                (exact.0, exact.1, true),
+                (exact.0 - 1, exact.1, false),
+                (exact.0, exact.1 - 1, false),
+            ] {
+                let phase =
+                    ResourceReadMaterial::with_test_limits(&ledger, &scope, bytes, records)?;
+                {
+                    let _entry = phase.enter();
+                    if succeeds {
+                        admit_typed_json_payload(&payload)?;
+                        assert_eq!(phase.finish()?, exact);
+                    } else {
+                        assert!(admit_typed_json_payload(&payload).is_err());
+                        assert!(admit_typed_json_payload(&payload).is_err());
+                        assert!(ResourceReadMaterial::active_guard().is_err());
+                        assert!(phase.finish().is_err());
+                    }
+                }
+                drop(phase);
+                assert_eq!(ledger.report()?.observed_bytes, 0);
+            }
+        }
         Ok(())
     }
 

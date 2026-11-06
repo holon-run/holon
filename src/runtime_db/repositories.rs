@@ -5658,7 +5658,7 @@ impl EvidenceRepository<'_> {
         let mut records = Vec::new();
         for row in payloads {
             reserve_source_vec_slot(&mut records)?;
-            crate::diagnostics::resource_io::admit_json_payload(&row.payload_json)?;
+            crate::diagnostics::resource_io::admit_typed_json_payload(&row.payload_json)?;
             records.push(serde_json::from_str(&row.payload_json)?);
         }
         Ok(records)
@@ -8900,7 +8900,7 @@ fn work_queue_records_into(
             )?;
             records.try_reserve_exact(additional)?;
         }
-        crate::diagnostics::resource_io::admit_json_payload(payload)?;
+        crate::diagnostics::resource_io::admit_typed_json_payload(payload)?;
         records.push(decode_work_item_payload(payload)?);
     }
     Ok(())

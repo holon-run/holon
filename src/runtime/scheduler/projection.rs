@@ -1,12 +1,67 @@
 use super::*;
+use crate::runtime::resident_work::StateWorkRecord;
 use std::borrow::Cow;
 
-/// Exact owned Work bodies used by a scheduler decision, not a display inventory.
+/// Preserve State loans instead of deep-copying bodies already held by the response.
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(untagged)]
+pub(crate) enum SchedulerRunnableWork {
+    Owned(Vec<WorkItemRecord>),
+    Shared(Vec<StateWorkRecord>),
+}
+
+impl SchedulerRunnableWork {
+    pub(crate) fn iter(&self) -> impl Iterator<Item = &WorkItemRecord> {
+        let (owned, shared): (&[WorkItemRecord], &[StateWorkRecord]) = match self {
+            Self::Owned(items) => (items, &[]),
+            Self::Shared(items) => (&[], items),
+        };
+        owned.iter().chain(shared.iter().map(|item| &**item))
+    }
+
+    pub(crate) fn len(&self) -> usize {
+        match self {
+            Self::Owned(items) => items.len(),
+            Self::Shared(items) => items.len(),
+        }
+    }
+
+    pub(crate) fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
+    pub(crate) fn retain(&mut self, mut keep: impl FnMut(&WorkItemRecord) -> bool) {
+        match self {
+            Self::Owned(items) => items.retain(keep),
+            Self::Shared(items) => items.retain(|item| keep(item)),
+        }
+    }
+}
+
+impl From<Vec<WorkItemRecord>> for SchedulerRunnableWork {
+    fn from(items: Vec<WorkItemRecord>) -> Self {
+        Self::Owned(items)
+    }
+}
+
+impl FromIterator<WorkItemRecord> for SchedulerRunnableWork {
+    fn from_iter<T: IntoIterator<Item = WorkItemRecord>>(items: T) -> Self {
+        Self::Owned(items.into_iter().collect())
+    }
+}
+
+impl PartialEq for SchedulerRunnableWork {
+    fn eq(&self, other: &Self) -> bool {
+        self.iter().eq(other.iter())
+    }
+}
+
+/// Exact Work bodies used by a scheduler decision, not a display inventory.
 #[derive(Debug, Clone, PartialEq, serde::Serialize)]
 pub(crate) struct SchedulerWorkSelection {
     pub current: Option<WorkItemRecord>,
     pub current_scheduling_state: Option<WorkItemSchedulingState>,
-    pub queued_runnable: Vec<WorkItemRecord>,
+    pub queued_runnable: SchedulerRunnableWork,
     pub waiting: Option<WorkItemRecord>,
     pub waiting_scheduling_state: Option<WorkItemSchedulingState>,
 }
@@ -24,7 +79,7 @@ pub(crate) struct SchedulerProjection {
     pub has_blocking_active_tasks: bool,
     pub current_work_item: Option<WorkItemRecord>,
     pub current_work_item_scheduling_state: Option<WorkItemSchedulingState>,
-    pub queued_runnable_work_items: Vec<WorkItemRecord>,
+    pub queued_runnable_work_items: SchedulerRunnableWork,
     pub queued_work_items: usize,
     pub pending_wake_hint: bool,
     pub active_waiting_intents: usize,
@@ -191,6 +246,7 @@ impl SchedulerProjection {
     }
     /// Cold named query keeps the original remaining adapters but supplies its
     /// qualified Scheduling count, never another Timer body read.
+    #[cfg(test)]
     pub(crate) fn from_state_with_scheduling_observation(
         storage: &AppStorage,
         state: &AgentState,
@@ -213,6 +269,7 @@ impl SchedulerProjection {
 
     /// Cold Host responses retain the queue; borrow it without cloning all
     /// display groups just to derive the scheduler's retained fields.
+    #[cfg(test)]
     pub(crate) fn from_state_with_borrowed_scheduling_observation(
         storage: &AppStorage,
         state: &AgentState,
@@ -233,6 +290,71 @@ impl SchedulerProjection {
         )
     }
 
+    /// State retains shared runnable bodies; only current/waiting copies are owned.
+    pub(crate) fn from_state_with_shared_scheduling_observation(
+        storage: &AppStorage,
+        state: &AgentState,
+        work_queue: &crate::runtime::resident_work::StateWorkQueue,
+        active_timers: usize,
+        work_material: &crate::diagnostics::resource_io::ResourceReadMaterial,
+    ) -> Result<Self> {
+        use crate::diagnostics::resource_io::{admit_cloned_value, charge_owned_metadata};
+        let _entry = work_material.enter();
+        admit_cloned_value(&(&state.id, &state.current_run_id))?;
+        let snapshot = SchedulerAgentSnapshot::from_state(state);
+        let now = Utc::now();
+        Self::with_loaded_observations(
+            storage,
+            snapshot,
+            Some(active_timers),
+            Some(work_material),
+            |snapshot, observations| {
+                let count = work_queue.queued_runnable.len();
+                let bytes = count
+                    .checked_mul(std::mem::size_of::<StateWorkRecord>())
+                    .context("scheduler retained Work slots overflow")?;
+                charge_owned_metadata(u64::try_from(bytes)?, count)?;
+                if let Some(current) = &work_queue.current {
+                    admit_cloned_value(&**current)?;
+                }
+                let waiting_index = Self::waiting_work_item_index(work_queue);
+                if let Some(index) = waiting_index {
+                    admit_cloned_value(&*work_queue.items[index].work_item)?;
+                }
+                work_material.finish()?;
+                Self::admit_canonical_slots(
+                    observations.execution_snapshot.as_ref(),
+                    work_material,
+                )?;
+                let current_scheduling_state = work_queue
+                    .items
+                    .iter()
+                    .find(|item| item.is_current)
+                    .map(|item| item.scheduling_state);
+                let waiting_scheduling_state =
+                    waiting_index.map(|index| work_queue.items[index].scheduling_state);
+                let mut queued_runnable = Vec::with_capacity(count);
+                for item in &work_queue.queued_runnable {
+                    queued_runnable.push(item.work_item.clone());
+                }
+                Ok(Self::from_selected_observations(
+                    snapshot,
+                    state.pending,
+                    SchedulerWorkSelection {
+                        current: work_queue.current.as_ref().map(|item| (**item).clone()),
+                        current_scheduling_state,
+                        queued_runnable: SchedulerRunnableWork::Shared(queued_runnable),
+                        waiting: waiting_index
+                            .map(|index| (*work_queue.items[index].work_item).clone()),
+                        waiting_scheduling_state,
+                    },
+                    observations,
+                    now,
+                ))
+            },
+        )
+    }
+
     fn from_snapshot_with_timer_observation(
         storage: &AppStorage,
         snapshot: SchedulerAgentSnapshot,
@@ -241,6 +363,42 @@ impl SchedulerProjection {
         now: DateTime<Utc>,
         observed_timers: Option<usize>,
         work_material: Option<&crate::diagnostics::resource_io::ResourceReadMaterial>,
+    ) -> Result<Self> {
+        Self::with_loaded_observations(
+            storage,
+            snapshot,
+            observed_timers,
+            work_material,
+            |snapshot, observations| {
+                if let Some(material) = work_material {
+                    Self::admit_retained_work(&work_queue, material)?;
+                    Self::admit_canonical_slots(
+                        observations.execution_snapshot.as_ref(),
+                        material,
+                    )?;
+                }
+                Ok(match work_queue {
+                    Cow::Owned(queue) => {
+                        Self::from_observations(snapshot, queue_len, queue, observations, now)
+                    }
+                    Cow::Borrowed(queue) => Self::from_borrowed_observations(
+                        snapshot,
+                        queue_len,
+                        queue,
+                        observations,
+                        now,
+                    ),
+                })
+            },
+        )
+    }
+
+    fn with_loaded_observations(
+        storage: &AppStorage,
+        snapshot: SchedulerAgentSnapshot,
+        observed_timers: Option<usize>,
+        work_material: Option<&crate::diagnostics::resource_io::ResourceReadMaterial>,
+        build: impl FnOnce(SchedulerAgentSnapshot, SchedulerObservations<'_>) -> Result<Self>,
     ) -> Result<Self> {
         let active_tasks =
             storage.latest_active_task_records_for_agent(&snapshot.id, usize::MAX)?;
@@ -296,6 +454,13 @@ impl SchedulerProjection {
             })
             .transpose()?
             .flatten();
+        // Briefs can clear an observed error, but cannot create one.
+        let runtime_error = match latest_error {
+            Some(error_at) => {
+                runtime_error_active_at(Some(error_at), &storage.read_recent_briefs(64)?)
+            }
+            None => false,
+        };
         let observations = SchedulerObservations {
             active_tasks,
             has_interrupted_replay,
@@ -303,20 +468,9 @@ impl SchedulerProjection {
             activation_waits,
             execution_snapshot,
             active_timers,
-            runtime_error: runtime_error_active_at(latest_error, &storage.read_recent_briefs(64)?),
+            runtime_error,
         };
-        if let Some(material) = work_material {
-            Self::admit_retained_work(&work_queue, material)?;
-            Self::admit_canonical_slots(observations.execution_snapshot.as_ref(), material)?;
-        }
-        Ok(match work_queue {
-            Cow::Owned(queue) => {
-                Self::from_observations(snapshot, queue_len, queue, observations, now)
-            }
-            Cow::Borrowed(queue) => {
-                Self::from_borrowed_observations(snapshot, queue_len, queue, observations, now)
-            }
-        })
+        build(snapshot, observations)
     }
 
     /// Pure scheduler derivation. Loaded callers supply one owner capture and
@@ -355,7 +509,7 @@ impl SchedulerProjection {
         )
     }
 
-    fn waiting_work_item_index(queue: &WorkQueueReadModel) -> Option<usize> {
+    fn waiting_work_item_index<W>(queue: &WorkQueueReadModel<W>) -> Option<usize> {
         queue.items.iter().position(|item| {
             (item.is_current || item.has_active_waits || item.has_active_task_waits)
                 && matches!(
@@ -454,7 +608,7 @@ impl SchedulerProjection {
             SchedulerWorkSelection {
                 current,
                 current_scheduling_state,
-                queued_runnable,
+                queued_runnable: queued_runnable.into(),
                 waiting,
                 waiting_scheduling_state,
             },

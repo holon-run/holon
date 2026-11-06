@@ -4,7 +4,7 @@
 mod context_queue;
 mod scheduler_queue;
 mod state_queue;
-pub(crate) use state_queue::StateWorkQueue;
+pub(crate) use state_queue::{StateWorkQueue, StateWorkRecord};
 
 use std::{
     collections::{BTreeMap, BTreeSet},

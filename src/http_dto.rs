@@ -373,6 +373,29 @@ impl From<&AgentState> for SlimAgentRuntimeDto {
     }
 }
 
+impl From<AgentState> for SlimAgentRuntimeDto {
+    fn from(agent: AgentState) -> Self {
+        Self {
+            id: agent.id,
+            status: agent.status,
+            sleeping_until: agent.sleeping_until,
+            current_run_id: agent.current_run_id,
+            pending: agent.pending,
+            last_wake_reason: agent.last_wake_reason,
+            last_brief_at: agent.last_brief_at,
+            attached_workspaces: agent.attached_workspaces,
+            active_workspace_entry: agent.active_workspace_entry.as_ref().map(Into::into),
+            turn_index: agent.turn_index,
+            current_turn_id: agent.current_turn_id,
+            current_turn_work_item_id: agent.current_turn_work_item_id,
+            current_work_item_id: agent.current_work_item_id,
+            provider_cooldown_wait: agent.provider_cooldown_wait,
+            last_turn_terminal: None,
+            last_runtime_failure: None,
+        }
+    }
+}
+
 impl From<&ActiveWorkspaceEntry> for SlimActiveWorkspaceDto {
     fn from(workspace: &ActiveWorkspaceEntry) -> Self {
         Self {
@@ -399,6 +422,24 @@ impl From<&crate::types::AgentModelState> for SlimAgentModelDto {
             effective_fallback_models: model.effective_fallback_models.clone(),
             override_model: model.override_model.clone(),
             override_reasoning_effort: model.override_reasoning_effort.clone(),
+            override_service_tier: model.override_service_tier,
+            effective_service_tier: model.effective_service_tier,
+        }
+    }
+}
+
+impl From<crate::types::AgentModelState> for SlimAgentModelDto {
+    fn from(model: crate::types::AgentModelState) -> Self {
+        Self {
+            source: model.source,
+            runtime_default_model: model.runtime_default_model,
+            effective_model: model.effective_model,
+            requested_model: model.requested_model,
+            active_model: model.active_model,
+            fallback_active: model.fallback_active,
+            effective_fallback_models: model.effective_fallback_models,
+            override_model: model.override_model,
+            override_reasoning_effort: model.override_reasoning_effort,
             override_service_tier: model.override_service_tier,
             effective_service_tier: model.effective_service_tier,
         }

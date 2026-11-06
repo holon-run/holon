@@ -18,14 +18,15 @@ fn scope() -> InputEvidenceScope {
 }
 
 fn sql_cost(item: &WorkItemRecord) -> Result<(u64, usize)> {
-    let cells = shape(&serde_json::to_value(item)?);
+    let value = serde_json::to_value(item)?;
+    let slots = shape(&value);
     Ok((
         (4 * std::mem::size_of::<WorkItemRecord>() as u64
             + serde_json::to_vec(item)?.len() as u64 * 4
-            + cells as u64 * 128
+            + slots as u64 * 128
             + 512)
             * 8,
-        (4 + cells * 4 + 16) * 8,
+        (4 + typed_cells(&value)) * 8,
     ))
 }
 
@@ -277,20 +278,20 @@ fn shape(value: &serde_json::Value) -> usize {
     }
 }
 
+// Independent AST oracle for the direct typed decode, not completion copies.
+fn typed_cells(value: &serde_json::Value) -> usize {
+    1 + match value {
+        serde_json::Value::Object(fields) => fields.values().map(typed_cells).sum::<usize>(),
+        serde_json::Value::Array(values) => values.iter().map(typed_cells).sum::<usize>(),
+        _ => 0,
+    }
+}
+
 #[test]
 fn latest_key_sql_and_coherent_callers_reject_both_axes_on_open_and_terminal_rows() -> Result<()> {
     for terminal in [false, true] {
         let (_home, db, item) = fixture(terminal)?;
-        let cells = shape(&serde_json::to_value(&item)?);
-        let sql = (
-            (4 * std::mem::size_of::<WorkItemRecord>() as u64
-                + serde_json::to_vec(&item)?.len() as u64 * 4
-                + cells as u64 * 128
-                + 512)
-                * 8,
-            (4 + cells * 4 + 16) * 8,
-        );
-        let prefix = add(header(), sql);
+        let prefix = add(header(), sql_cost(&item)?);
         let full = add(prefix, key_cost(&item.id));
         for route in 0..3 {
             for bytes in [true, false] {

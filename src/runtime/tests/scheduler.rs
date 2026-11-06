@@ -1218,7 +1218,7 @@ fn autonomous_selection_hook_can_choose_another_legal_candidate() {
 #[test]
 fn autonomous_selection_bypasses_hook_for_zero_or_one_candidate() {
     let mut projection = autonomous_selection_projection();
-    projection.queued_runnable_work_items.clear();
+    projection.queued_runnable_work_items = Vec::new().into();
     let selection =
         scheduler::select_autonomous_continuation_with_hook(&projection, Some(&UnexpectedHook))
             .unwrap();

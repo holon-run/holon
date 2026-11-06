@@ -7,6 +7,59 @@ mod canonical_tests;
 #[path = "cold_scheduler_activation_wait_tests.rs"]
 mod activation_wait_tests;
 
+#[tokio::test]
+async fn cold_scheduler_briefs_only_clear_observed_errors_within_original_window() -> Result<()> {
+    use crate::types::{AuditEvent, BriefKind, BriefRecord};
+
+    let mut outside_window = vec![(BriefKind::Result, 1)];
+    outside_window.extend((2..=65).map(|offset| (BriefKind::Failure, offset)));
+    for (has_error, briefs, expected) in [
+        (false, vec![], false),
+        (false, vec![(BriefKind::Result, 1)], false),
+        (true, vec![], true),
+        (true, vec![(BriefKind::Result, -1)], true),
+        (true, vec![(BriefKind::Result, 0)], false),
+        (true, vec![(BriefKind::Result, 1)], false),
+        (true, vec![(BriefKind::Failure, 1)], true),
+        (true, outside_window, true),
+    ] {
+        let (_home, host, identity, state, storage) = fixture(false)?;
+        let at = Utc::now();
+        if has_error {
+            let mut event = AuditEvent::legacy("runtime_error", json!({}));
+            event.created_at = at;
+            host.runtime_db()
+                .audit_events()
+                .append(Some(&identity.agent_id), &event)?;
+        }
+        for (kind, offset) in briefs {
+            let mut brief = BriefRecord::new(
+                &identity.agent_id,
+                kind,
+                "scheduler error boundary",
+                None,
+                None,
+            );
+            brief.created_at = at + chrono::Duration::seconds(offset);
+            host.runtime_db().evidence().append_brief(&brief)?;
+        }
+        let queue = storage.work_queue_with_observed_scheduling(&state, &[])?;
+        let read = host.acquire_cold_scheduling_query(&identity, 0).await?;
+        let (projection, material) = host.cold_scheduler_with_observed_scheduling(
+            &identity,
+            &storage,
+            &state,
+            Cow::Owned(queue),
+            read.material,
+        )?;
+        assert_eq!(projection.runtime_error, expected);
+        drop(projection);
+        drop(material);
+        host.shutdown().await?;
+    }
+    Ok(())
+}
+
 fn shape(value: &serde_json::Value) -> usize {
     use serde_json::Value;
     match value {
@@ -98,7 +151,11 @@ async fn standalone_cost_guard_and_queue_ownership() -> Result<()> {
             )?;
             assert_eq!(projection.current_work_item, queue.current);
             assert_eq!(
-                projection.queued_runnable_work_items,
+                projection
+                    .queued_runnable_work_items
+                    .iter()
+                    .cloned()
+                    .collect::<Vec<_>>(),
                 queue
                     .queued_runnable
                     .iter()

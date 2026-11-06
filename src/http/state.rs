@@ -449,16 +449,7 @@ fn build_agent_state_projection(
     let snapshot = material
         .acquisition
         .read(|| {
-            // These DTO fields clone from selected values; admit before conversion.
-            crate::diagnostics::resource_io::admit_cloned_value(&(
-                &projection.agent,
-                &projection.model,
-                &projection.closure,
-                &projection.active_children,
-                &projection.agent.last_turn_terminal,
-                &projection.agent.last_turn_terminal,
-                &projection.agent.last_runtime_failure,
-            ))?;
+            crate::diagnostics::resource_io::admit_cloned_value(&projection.active_children)?;
             let waits = state_projection
                 .waits
                 .into_iter()
@@ -479,34 +470,16 @@ fn build_agent_state_projection(
             let work_items_started = std::time::Instant::now();
             let work_items = slim_state_work_items(&work_queue.items)?;
             crate::diagnostics::record_projection_state_work_items(work_items_started.elapsed());
-            let mut agent_dto = crate::http_dto::SlimAgentDto {
+            let (agent, session) = slim_state_agent_runtime_dto(projection.agent)?;
+            let agent_dto = crate::http_dto::SlimAgentDto {
                 identity: projection.identity,
-                agent: (&projection.agent).into(),
+                agent,
                 scheduling_posture: projection.scheduling_posture,
                 active_task_count: projection.active_task_count,
                 lifecycle: projection.lifecycle,
-                model: (&projection.model).into(),
+                model: projection.model.into(),
                 closure: (&projection.closure).into(),
                 active_children: projection.active_children.iter().map(Into::into).collect(),
-            };
-            agent_dto.agent.last_turn_terminal = projection
-                .agent
-                .last_turn_terminal
-                .clone()
-                .map(slim_state_turn_terminal_record);
-            agent_dto.agent.last_runtime_failure = projection
-                .agent
-                .last_runtime_failure
-                .clone()
-                .map(slim_state_runtime_failure);
-            let session = crate::http_dto::StateSessionSnapshotDto {
-                current_run_id: projection.agent.current_run_id.clone(),
-                pending_count: projection.agent.pending,
-                last_turn: projection
-                    .agent
-                    .last_turn_terminal
-                    .clone()
-                    .map(slim_state_turn_terminal_record),
             };
             tracing::debug!(
                 agent_id,
@@ -537,6 +510,43 @@ fn build_agent_state_projection(
         .map_err(error_response)
         .map_err(ProjectionFailure::from)?;
     Ok(bytes)
+}
+
+fn slim_state_agent_runtime_dto(
+    mut agent: crate::types::AgentState,
+) -> Result<(
+    crate::http_dto::SlimAgentRuntimeDto,
+    crate::http_dto::StateSessionSnapshotDto,
+)> {
+    // Move owned fields; admit only workspace conversion, session duplication,
+    // and the conservative envelopes for terminal/failure slimming.
+    crate::diagnostics::resource_io::admit_cloned_value(&(
+        &agent.active_workspace_entry,
+        &agent.current_run_id,
+        &agent.last_turn_terminal,
+        &agent.last_turn_terminal,
+        &agent.last_runtime_failure,
+    ))?;
+    let session = crate::http_dto::StateSessionSnapshotDto {
+        current_run_id: agent.current_run_id.clone(),
+        pending_count: agent.pending,
+        last_turn: agent
+            .last_turn_terminal
+            .clone()
+            .map(slim_state_turn_terminal_record),
+    };
+    let terminal = agent
+        .last_turn_terminal
+        .take()
+        .map(slim_state_turn_terminal_record);
+    let failure = agent
+        .last_runtime_failure
+        .take()
+        .map(slim_state_runtime_failure);
+    let mut dto = crate::http_dto::SlimAgentRuntimeDto::from(agent);
+    dto.last_turn_terminal = terminal;
+    dto.last_runtime_failure = failure;
+    Ok((dto, session))
 }
 
 type StateWorkItemDto<'a> =

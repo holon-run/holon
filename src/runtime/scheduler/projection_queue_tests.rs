@@ -39,7 +39,7 @@ fn presence_projection(
             projection
                 .current_work_item
                 .iter()
-                .chain(&projection.queued_runnable_work_items)
+                .chain(projection.queued_runnable_work_items.iter())
                 .map(|record| {
                     (
                         record.id.clone(),
@@ -249,7 +249,11 @@ fn borrowed_queue_matches_owned_scheduler_and_preserves_all_groups() {
             assert_eq!(borrowed, owned);
             assert_eq!(borrowed.current_work_item, original.current);
             assert_eq!(
-                borrowed.queued_runnable_work_items,
+                borrowed
+                    .queued_runnable_work_items
+                    .iter()
+                    .cloned()
+                    .collect::<Vec<_>>(),
                 original
                     .queued_runnable
                     .iter()
@@ -331,7 +335,11 @@ fn assert_retained_clone_oracle(actual: &SchedulerProjection, queue: &WorkQueueR
             .map(|item| item.scheduling_state)
     );
     assert_eq!(
-        actual.queued_runnable_work_items,
+        actual
+            .queued_runnable_work_items
+            .iter()
+            .cloned()
+            .collect::<Vec<_>>(),
         queue
             .queued_runnable
             .iter()
@@ -340,7 +348,10 @@ fn assert_retained_clone_oracle(actual: &SchedulerProjection, queue: &WorkQueueR
     );
     assert_eq!(actual.queued_work_items, queue.queued_runnable.len());
     assert_eq!(
-        actual.queued_runnable_work_items.capacity(),
+        match &actual.queued_runnable_work_items {
+            SchedulerRunnableWork::Owned(items) => items.capacity(),
+            SchedulerRunnableWork::Shared(_) => panic!("owned adapter must move its records"),
+        },
         queue.queued_runnable.len()
     );
     assert_eq!(
@@ -380,6 +391,57 @@ fn retained_queue() -> WorkQueueReadModel {
         .collect();
     queue.queued_runnable = queue.items.iter().rev().cloned().collect();
     queue
+}
+
+#[test]
+fn shared_runnable_selection_preserves_values_order_filter_and_last_holder() -> Result<()> {
+    use crate::{
+        config::StateMemoryLimits,
+        diagnostics::resource_io::ResourceReadMaterial,
+        runtime::{
+            input_evidence_budget::InputEvidenceBudgetLedger,
+            resident_input_evidence::InputEvidenceScope,
+        },
+    };
+    let ledger = InputEvidenceBudgetLedger::new(StateMemoryLimits::default())?;
+    let phase = ResourceReadMaterial::new(
+        &ledger,
+        &InputEvidenceScope {
+            agent_id: "agent".into(),
+            identity_incarnation: 1,
+        },
+    )?;
+    let source = retained_queue().into_state_queue(&phase)?;
+    let mut shared = SchedulerRunnableWork::Shared(
+        source
+            .queued_runnable
+            .iter()
+            .map(|item| item.work_item.clone())
+            .collect(),
+    );
+    let mut owned: SchedulerRunnableWork = shared.iter().cloned().collect();
+    assert_eq!(shared, owned);
+    assert_eq!(
+        serde_json::to_value(&shared)?,
+        serde_json::to_value(&owned)?
+    );
+    for (record, original) in shared.iter().zip(&source.queued_runnable) {
+        assert!(std::ptr::eq(record, &*original.work_item));
+    }
+    shared.retain(|item| !item.objective.ends_with('1'));
+    owned.retain(|item| !item.objective.ends_with('1'));
+    assert_eq!(shared.len(), 2);
+    assert_eq!(shared, owned);
+    let last = shared.clone();
+    drop((source, phase));
+    let held = ledger.report()?.observed_bytes;
+    assert!(held > 0);
+    drop(shared);
+    assert_eq!(ledger.report()?.observed_bytes, held);
+    assert_eq!(last, owned);
+    drop(last);
+    assert_eq!(ledger.report()?.observed_bytes, 0);
+    Ok(())
 }
 
 #[test]
@@ -504,7 +566,10 @@ fn borrowed_retained_payloads_are_independent_and_preserve_source_queue() {
             .zip(payload_addresses(&source.work_item))
             .all(|(copy, source)| *copy != source));
     }
-    borrowed.queued_runnable_work_items[0].objective.push('!');
+    match &mut borrowed.queued_runnable_work_items {
+        SchedulerRunnableWork::Owned(items) => items[0].objective.push('!'),
+        SchedulerRunnableWork::Shared(_) => panic!("borrowed owned adapter must clone its records"),
+    }
     borrowed.waiting_work_item.as_mut().unwrap().todo_list[0]
         .text
         .push('!');

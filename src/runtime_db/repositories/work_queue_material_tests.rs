@@ -47,12 +47,20 @@ fn shape(value: &serde_json::Value) -> usize {
     }
 }
 
+fn cells(value: &serde_json::Value) -> usize {
+    1 + match value {
+        serde_json::Value::Object(fields) => fields.values().map(cells).sum::<usize>(),
+        serde_json::Value::Array(values) => values.iter().map(cells).sum::<usize>(),
+        _ => 0,
+    }
+}
+
 fn body(record: &WorkItemRecord) -> Result<(u64, usize)> {
     let payload = serde_json::to_string(record)?;
     let slots = shape(&serde_json::to_value(record)?);
     Ok((
         (payload.len() as u64 * 4 + slots as u64 * 128 + 512) * 8,
-        (slots * 4 + 16) * 8,
+        cells(&serde_json::to_value(record)?) * 8,
     ))
 }
 
@@ -83,6 +91,17 @@ fn fixture(
         record.id = format!("work_{index:03}");
         record.created_at = "2026-10-01T00:00:00Z".parse()?;
         record.updated_at = record.created_at;
+        record.todo_list.push(crate::types::TodoItem {
+            text: "quoted \\\"{,:} 汉🦀".into(),
+            state: crate::types::TodoItemState::Pending,
+        });
+        record
+            .work_refs
+            .push(serde_json::from_value(serde_json::json!({
+                "kind": "file", "ref": "notes/plan.md", "reason": "nested metadata",
+                "status": "active", "last_seen_at": record.created_at,
+                "metadata": {"quoted \\\"{,:}": [null, false, -1.5e20, {"nested": ["汉🦀"]}]}
+            }))?);
         if terminal {
             record.result_brief_id = Some(format!("result-{index:03}"));
             record.completion_intent = Some(crate::types::WorkItemCompletionIntent {
@@ -250,6 +269,44 @@ fn queue_sql_bad_later_json_is_all_or_nothing_and_keeps_original_error_holder() 
         drop(phase);
         assert_eq!(ledger.report()?.observed_bytes, exact.0);
         drop(holder);
+        assert_eq!(ledger.report()?.observed_bytes, 0);
+    }
+    Ok(())
+}
+
+#[test]
+fn queue_sql_rejects_large_decode_prefix_before_malformed_suffix_can_erase_cells() -> Result<()> {
+    for route in 0..4 {
+        let (_home, db, mut expected) = fixture(1, route % 2 == 1)?;
+        expected[0].work_refs[0].metadata.insert(
+            "rows".into(),
+            serde_json::Value::Array(vec![serde_json::Value::Null; 10_000]),
+        );
+        let record = &expected[0];
+        let suffix = ":".repeat(body(record)?.1 / 8);
+        let payload = serde_json::to_string(record)? + &suffix;
+        let slots = shape(&serde_json::to_value(record)?) + suffix.len();
+        let bytes = (payload.len() as u64 * 4 + slots as u64 * 128 + 512) * 8;
+        assert!(add(header(), slot(4)).0 + bytes < 64 * 1024 * 1024);
+        assert!(body(record)?.1 > 65_536);
+        db.connection()?.execute(
+            "UPDATE work_items SET payload_json=?1 WHERE work_item_id='work_000'",
+            [&payload],
+        )?;
+        let ledger = InputEvidenceBudgetLedger::new(StateMemoryLimits::default())?;
+        let phase = ResourceReadMaterial::new(&ledger, &scope())?;
+        {
+            let _entry = phase.enter();
+            let error = read(&db, route).unwrap_err();
+            assert!(exhausted(&error));
+            assert!(error.downcast_ref::<serde_json::Error>().is_none());
+            assert!(exhausted(&read(&db, route).unwrap_err()));
+            assert!(ResourceReadMaterial::active_guard().is_err());
+        }
+        // The bytes budget fits; only the header and first Vec growth admitted.
+        assert_eq!(ledger.report()?.observed_bytes, add(header(), slot(4)).0);
+        assert!(phase.finish().is_err());
+        drop(phase);
         assert_eq!(ledger.report()?.observed_bytes, 0);
     }
     Ok(())

@@ -224,7 +224,7 @@ fn posture_final_fields_have_exact_cost_and_atomic_bytes_records_refusal() -> Re
         ];
         let fields = || AgentPostureFields {
             posture: AgentSchedulingPosture::WaitingForTask,
-            reason: PostureReason::WorkItem(&item),
+            reason: PostureReason::work_item(&item),
             work_item_id: ids[0],
             task_id: ids[1],
             run_id: ids[2],

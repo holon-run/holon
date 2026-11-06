@@ -45,6 +45,19 @@ fn wire_cost(value: &impl serde::Serialize) -> Result<(u64, usize)> {
     let payload = serde_json::to_string(value)?;
     Ok(cost(payload.len(), slots(&serde_json::from_str(&payload)?)))
 }
+fn typed_wire_cost(value: &impl serde::Serialize) -> Result<(u64, usize)> {
+    fn cells(value: &serde_json::Value) -> usize {
+        1 + match value {
+            serde_json::Value::Object(fields) => fields.values().map(cells).sum::<usize>(),
+            serde_json::Value::Array(values) => values.iter().map(cells).sum::<usize>(),
+            _ => 0,
+        }
+    }
+    Ok((
+        wire_cost(value)?.0,
+        cells(&serde_json::to_value(value)?) * 8,
+    ))
+}
 fn state_read_cost(value: &AgentState) -> Result<(u64, usize)> {
     fn nodes(value: &serde_json::Value) -> usize {
         1 + match value {
@@ -247,7 +260,7 @@ fn brief_and_event_sources_preserve_order_and_admit_raw_and_typed_material() -> 
     );
     for brief in &expected[2..] {
         exact = add(exact, (serde_json::to_string(brief)?.len() as u64 * 8, 8));
-        exact = add(exact, wire_cost(brief)?);
+        exact = add(exact, typed_wire_cost(brief)?);
     }
     for event in &events {
         exact = add(exact, wire_cost(event)?);

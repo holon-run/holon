@@ -26,6 +26,8 @@ use tower::ServiceExt;
 
 #[path = "support/child_state.rs"]
 mod child_state;
+#[path = "support/http_observation.rs"]
+mod observation;
 
 const DEFAULT_SAMPLES: usize = 10;
 const WARMUP_SAMPLES: usize = 1;
@@ -51,6 +53,8 @@ struct BenchmarkArtifact {
 struct Environment {
     git_revision: Option<String>,
     git_dirty: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    build_source_sha256: Option<&'static str>,
     os: &'static str,
     arch: &'static str,
     cpu_model: Option<String>,
@@ -69,6 +73,8 @@ struct BenchmarkConfig {
     performance_requests_per_sample: usize,
     work_item_requests_per_sample: usize,
     transport: &'static str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    observation_seconds: Option<u64>,
 }
 
 #[derive(Serialize)]
@@ -77,6 +83,8 @@ struct BenchmarkResult {
     operations_per_sample: usize,
     samples: Vec<Sample>,
     summary: Summary,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    observation: Option<observation::Observation>,
 }
 
 #[derive(Clone, Serialize)]
@@ -113,6 +121,14 @@ fn main() -> Result<()> {
         .context("HOLON_BENCH_SAMPLES must be a positive integer")?
         .unwrap_or(DEFAULT_SAMPLES);
     anyhow::ensure!(samples > 0, "HOLON_BENCH_SAMPLES must be positive");
+    let observation = observation::Settings::load(samples)?;
+    if observation.is_some() {
+        let fingerprint = option_env!("HOLON_BENCH_SOURCE_SHA256").unwrap_or_default();
+        anyhow::ensure!(
+            fingerprint.len() == 64 && fingerprint.bytes().all(|byte| byte.is_ascii_hexdigit()),
+            "window observations require HOLON_BENCH_SOURCE_SHA256 at compile time"
+        );
+    }
 
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
@@ -127,7 +143,11 @@ fn main() -> Result<()> {
         && (filter.is_empty() || filter.iter().any(|id| !id.starts_with("http.child_state.")))
     {
         let fixture = runtime.block_on(build_fixture())?;
-        run_benchmarks(&runtime, &fixture, samples, &filter)?
+        if let Some(settings) = observation {
+            observation::run(&runtime, &fixture, settings, &filter)?
+        } else {
+            run_benchmarks(&runtime, &fixture, samples, &filter)?
+        }
     } else {
         Vec::new()
     };
@@ -138,7 +158,11 @@ fn main() -> Result<()> {
     let artifact = BenchmarkArtifact {
         schema_version: "holon.performance.v0",
         benchmark_suite: "http_control",
-        workload_version: "v2",
+        workload_version: if observation.is_some() {
+            "v3-window"
+        } else {
+            "v2"
+        },
         started_at: Utc::now().to_rfc3339(),
         environment: environment(),
         config: BenchmarkConfig {
@@ -149,6 +173,7 @@ fn main() -> Result<()> {
             performance_requests_per_sample: PERFORMANCE_REQUESTS_PER_SAMPLE,
             work_item_requests_per_sample: WORK_ITEM_REQUESTS_PER_SAMPLE,
             transport: "tower.oneshot.in_process",
+            observation_seconds: observation.map(|settings| settings.seconds),
         },
         results,
         child_state,
@@ -357,6 +382,7 @@ fn measure_projection_gate(
             operations_per_sample: 1,
             summary: summarize(&samples, 1),
             samples,
+            observation: None,
         })
         .collect())
 }
@@ -447,6 +473,7 @@ fn measure(
         operations_per_sample,
         samples,
         summary,
+        observation: None,
     })
 }
 
@@ -520,6 +547,7 @@ fn environment() -> Environment {
         git_revision: command_output("git", &["rev-parse", "HEAD"]),
         git_dirty: command_output("git", &["status", "--porcelain"])
             .map(|output| !output.is_empty()),
+        build_source_sha256: option_env!("HOLON_BENCH_SOURCE_SHA256"),
         os: std::env::consts::OS,
         arch: std::env::consts::ARCH,
         cpu_model: cpu_model(),

@@ -6832,7 +6832,7 @@ impl RuntimeHandle {
                         idle_read.work.next_work_recheck_at()?,
                         idle_read.work.next_agent_wait_recheck_at()?,
                         self.next_queued_available_retry_at(
-                            &idle_read.projection.queued_runnable_work_items,
+                            idle_read.projection.queued_runnable_work_items.iter(),
                         )?,
                     ]
                     .into_iter()

@@ -449,11 +449,12 @@ impl RuntimeHandle {
         Ok(())
     }
 
-    pub(super) fn next_queued_available_retry_at(
+    pub(super) fn next_queued_available_retry_at<'a>(
         &self,
-        work_items: &[crate::types::WorkItemRecord],
+        work_items: impl IntoIterator<Item = &'a crate::types::WorkItemRecord>,
     ) -> Result<Option<chrono::DateTime<chrono::Utc>>> {
-        if work_items.is_empty() {
+        let mut work_items = work_items.into_iter().peekable();
+        if work_items.peek().is_none() {
             return Ok(None);
         }
         let recent_messages = self
@@ -579,7 +580,7 @@ impl RuntimeHandle {
         };
         let mut retry_statuses =
             std::collections::HashMap::with_capacity(projection.queued_runnable_work_items.len());
-        for work_item in &projection.queued_runnable_work_items {
+        for work_item in projection.queued_runnable_work_items.iter() {
             let status = Self::queued_available_retry_status(work_item, &now, &recent_messages);
             match &status {
                 QueuedAvailableRetryStatus::Backoff {

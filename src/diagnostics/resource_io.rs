@@ -1,8 +1,8 @@
 //! Allocation gate for the existing synchronous context-resource preparation.
 mod structured;
 pub(crate) use structured::{
-    admit_cloned_value, admit_json_payload, admit_serialized_value, cloned_value_material,
-    json_payload_material,
+    admit_cloned_value, admit_json_payload, admit_serialized_value, admit_typed_json_payload,
+    cloned_value_material, json_payload_material,
 };
 
 use crate::runtime::{

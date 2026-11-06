@@ -30,7 +30,7 @@ fn clone_oracle(
         has_blocking_active_tasks: false,
         current_work_item: queue.current.clone(),
         current_work_item_scheduling_state: None,
-        queued_runnable_work_items: Vec::new(),
+        queued_runnable_work_items: Vec::new().into(),
         queued_work_items: 0,
         pending_wake_hint: snapshot.pending_wake_hint,
         active_waiting_intents: 0,

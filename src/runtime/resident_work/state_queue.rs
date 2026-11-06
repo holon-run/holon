@@ -14,6 +14,29 @@ enum StateWorkOwner {
     Cold(Arc<WorkItemRecord>),
 }
 
+impl StateWorkRecord {
+    pub(crate) fn cold_mapper(
+        acquisition: &crate::diagnostics::resource_io::ResourceReadMaterial,
+    ) -> Result<impl Fn(WorkItemRecord) -> Result<Self> + '_> {
+        crate::diagnostics::resource_io::charge_owned_metadata(
+            std::mem::size_of::<Vec<Arc<BudgetViewGuard>>>() as u64 + 2 * 16,
+            1,
+        )?;
+        let pins = Arc::new(Vec::new());
+        Ok(move |work| {
+            crate::diagnostics::resource_io::charge_owned_metadata(
+                std::mem::size_of::<WorkItemRecord>() as u64 + 2 * 16,
+                1,
+            )?;
+            Ok(Self {
+                owner: StateWorkOwner::Cold(Arc::new(work)),
+                _pins: pins.clone(),
+                _acquisition: acquisition.clone(),
+            })
+        })
+    }
+}
+
 #[derive(Debug, Clone)]
 pub(crate) struct StateWorkRecord {
     owner: StateWorkOwner,
@@ -132,6 +155,15 @@ impl CapturedWork {
                 },
             )?);
         }
+        StateWorkQueue::from_items(items, yielded)
+    }
+}
+
+impl StateWorkQueue {
+    pub(crate) fn from_items(
+        items: Vec<WorkItemSchedulingProjection<StateWorkRecord>>,
+        yielded: impl Fn(&str) -> bool,
+    ) -> Result<Self> {
         let select = |class, limit| -> Result<Vec<_>> {
             let rows = items
                 .iter()
@@ -154,7 +186,7 @@ impl CapturedWork {
             .map(|item| item.work_item.clone());
         let rows = items.iter().filter(|item| {
             item.state == WorkItemState::Open
-                && state.current_work_item_id.as_deref() != Some(item.id.as_str())
+                && !item.is_current
                 && !yielded(&item.id)
                 && !item.has_active_task_waits
         });
@@ -185,6 +217,7 @@ impl CapturedWork {
     }
 }
 
+#[cfg(test)]
 impl WorkQueueReadModel {
     /// Cold adapters already own their records. Move them; do not decode or clone again.
     pub(crate) fn into_state_queue(
@@ -192,22 +225,7 @@ impl WorkQueueReadModel {
         acquisition: &crate::diagnostics::resource_io::ResourceReadMaterial,
     ) -> Result<StateWorkQueue> {
         acquisition.read(|| {
-            crate::diagnostics::resource_io::charge_owned_metadata(
-                std::mem::size_of::<Vec<Arc<BudgetViewGuard>>>() as u64 + 2 * 16,
-                1,
-            )?;
-            let pins = Arc::new(Vec::new());
-            let record = |work: WorkItemRecord| -> Result<StateWorkRecord> {
-                crate::diagnostics::resource_io::charge_owned_metadata(
-                    std::mem::size_of::<WorkItemRecord>() as u64 + 2 * 16,
-                    1,
-                )?;
-                Ok(StateWorkRecord {
-                    owner: StateWorkOwner::Cold(Arc::new(work)),
-                    _pins: pins.clone(),
-                    _acquisition: acquisition.clone(),
-                })
-            };
+            let record = StateWorkRecord::cold_mapper(acquisition)?;
             let projection =
                 |item: WorkItemSchedulingProjection| -> Result<_> { item.try_map_record(&record) };
             let records = |rows: Vec<WorkItemRecord>| -> Result<Vec<_>> {

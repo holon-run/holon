@@ -4619,7 +4619,7 @@ impl RuntimeHost {
             .map_err(PublicAgentError::Runtime)?;
         let agent = state.unwrap_or_else(|| stopped_unloaded_agent(agent_id));
         let (work_queue, scheduling_material) = self
-            .cold_work_queue_with_observed_scheduling(
+            .cold_state_work_queue_with_observed_scheduling(
                 &identity,
                 &storage,
                 &agent,
@@ -4632,11 +4632,11 @@ impl RuntimeHost {
             .agent_posture_projection_with_work_queue(&agent, &work_queue)
             .map_err(PublicAgentError::Runtime)?;
         let (closure_projection, scheduling_material) = self
-            .cold_scheduler_with_observed_scheduling(
+            .cold_scheduler_with_shared_scheduling(
                 &identity,
                 &storage,
                 &agent,
-                std::borrow::Cow::Borrowed(&work_queue),
+                &work_queue,
                 scheduling_material,
             )
             .map_err(PublicAgentError::Runtime)?;
@@ -4677,9 +4677,7 @@ impl RuntimeHost {
             model,
             closure,
             active_children,
-            work_queue: work_queue
-                .into_state_queue(&acquisition)
-                .map_err(PublicAgentError::Runtime)?,
+            work_queue,
             _work_budget: None,
             _scheduling_material: Some(scheduling_material),
         })
@@ -5165,7 +5163,7 @@ impl RuntimeHost {
         let agent_state = state.unwrap_or_else(|| stopped_unloaded_agent(agent_id));
         let (work_queue, scheduling_material) = acquisition
             .read(|| {
-                self.cold_work_queue_with_observed_scheduling(
+                self.cold_state_work_queue_with_observed_scheduling(
                     &identity,
                     &storage,
                     &agent_state,
@@ -5179,11 +5177,11 @@ impl RuntimeHost {
             .map_err(PublicAgentError::Runtime)?;
         let (closure_projection, scheduling_material) = acquisition
             .read(|| {
-                self.cold_scheduler_with_observed_scheduling(
+                self.cold_scheduler_with_shared_scheduling(
                     &identity,
                     &storage,
                     &agent_state,
-                    std::borrow::Cow::Borrowed(&work_queue),
+                    &work_queue,
                     scheduling_material,
                 )
             })
@@ -5232,9 +5230,7 @@ impl RuntimeHost {
             scheduling_posture,
             closure,
             active_children,
-            work_queue: work_queue
-                .into_state_queue(&acquisition)
-                .map_err(PublicAgentError::Runtime)?,
+            work_queue,
             _work_budget: None,
             _scheduling_material: None,
         };

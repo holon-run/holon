@@ -1055,6 +1055,7 @@ impl AppStorage {
         self.read_models().work_queue()
     }
 
+    #[cfg(test)]
     pub(crate) fn work_queue_with_observed_scheduling<'a, I>(
         &self,
         state: &AgentState,
@@ -1072,14 +1073,28 @@ impl AppStorage {
         self.read_models().work_queue()
     }
 
+    pub(crate) fn state_work_queue_with_observed_scheduling<'a, I>(
+        &self,
+        state: &AgentState,
+        triggers: I,
+        material: &crate::diagnostics::resource_io::ResourceReadMaterial,
+    ) -> Result<crate::runtime::resident_work::StateWorkQueue>
+    where
+        I: IntoIterator<Item = &'a ExternalTriggerRecord>,
+        I::IntoIter: Clone,
+    {
+        self.read_models()
+            .state_work_queue_with_observed_scheduling(state, triggers, material)
+    }
+
     pub fn agent_posture_projection(&self, agent: &AgentState) -> Result<AgentPostureProjection> {
         self.read_models().agent_posture(agent)
     }
 
-    pub fn agent_posture_projection_with_work_queue(
+    pub fn agent_posture_projection_with_work_queue<W: std::borrow::Borrow<WorkItemRecord>>(
         &self,
         agent: &AgentState,
-        work_queue: &WorkQueueReadModel,
+        work_queue: &WorkQueueReadModel<W>,
     ) -> Result<AgentPostureProjection> {
         self.read_models()
             .agent_posture_with_work_queue(agent, work_queue)

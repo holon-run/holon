@@ -2036,7 +2036,7 @@ fn load_payload_map<T: DeserializeOwned>(
             .and_then(|bytes| bytes.checked_add(64))
             .context("execution source map metadata overflow")?;
         crate::diagnostics::resource_io::charge_owned_metadata(u64::try_from(metadata)?, 1)?;
-        crate::diagnostics::resource_io::admit_json_payload(payload)?;
+        crate::diagnostics::resource_io::admit_typed_json_payload(payload)?;
         let value = serde_json::from_str(payload)
             .with_context(|| format!("decoding execution protocol record {id}"))?;
         records.insert(id.to_owned(), value);

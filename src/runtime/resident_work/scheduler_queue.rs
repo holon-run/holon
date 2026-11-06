@@ -36,7 +36,7 @@ impl CapturedWork {
                 .map(|rank| clone_queue_work_record(rank.work_item))
                 .transpose()?,
             current_scheduling_state: current.map(|rank| rank.scheduling_state),
-            queued_runnable,
+            queued_runnable: queued_runnable.into(),
             waiting: waiting
                 .map(|rank| clone_queue_work_record(rank.work_item))
                 .transpose()?,

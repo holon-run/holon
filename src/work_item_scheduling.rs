@@ -166,6 +166,7 @@ impl<W> Default for WorkQueueReadModel<W> {
 }
 
 impl<W> WorkItemSchedulingProjection<W> {
+    #[cfg(test)]
     pub(crate) fn try_map_record<R>(
         self,
         map: impl FnOnce(W) -> anyhow::Result<R>,
@@ -717,20 +718,20 @@ pub fn readiness_for_scheduling_state(state: WorkItemSchedulingState) -> WorkIte
     }
 }
 
-pub fn compare_scheduling_projection_order(
-    left: &WorkItemSchedulingProjection,
-    right: &WorkItemSchedulingProjection,
+pub fn compare_scheduling_projection_order<W: Borrow<WorkItemRecord>>(
+    left: &WorkItemSchedulingProjection<W>,
+    right: &WorkItemSchedulingProjection<W>,
 ) -> std::cmp::Ordering {
     compare_queue_work_rank(
         &QueueWorkRank {
-            work_item: &left.work_item,
+            work_item: left.work_item.borrow(),
             candidate_class: left.candidate_class,
             scheduling_state: left.scheduling_state,
             has_active_waits: left.has_active_waits,
             last_triggered_at: left.last_triggered_at,
         },
         &QueueWorkRank {
-            work_item: &right.work_item,
+            work_item: right.work_item.borrow(),
             candidate_class: right.candidate_class,
             scheduling_state: right.scheduling_state,
             has_active_waits: right.has_active_waits,

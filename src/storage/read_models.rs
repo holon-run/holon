@@ -603,6 +603,7 @@ impl RuntimeReadModelView<'_> {
         )
     }
 
+    #[cfg(test)]
     pub(crate) fn work_queue_with_observed_scheduling<'a, I>(
         &self,
         state: &AgentState,
@@ -622,6 +623,89 @@ impl RuntimeReadModelView<'_> {
             state.current_work_item_id.as_deref(),
             Some(triggers),
         )
+    }
+
+    pub(crate) fn state_work_queue_with_observed_scheduling<'a, I>(
+        &self,
+        state: &AgentState,
+        triggers: I,
+        material: &crate::diagnostics::resource_io::ResourceReadMaterial,
+    ) -> Result<crate::runtime::resident_work::StateWorkQueue>
+    where
+        I: IntoIterator<Item = &'a crate::types::ExternalTriggerRecord>,
+        I::IntoIter: Clone,
+    {
+        let triggers = triggers.into_iter();
+        anyhow::ensure!(
+            self.agent_id.as_deref() == Some(state.id.as_str())
+                && triggers.clone().all(|row| row.target_agent_id == state.id),
+            "WorkQueue Scheduling observation scope differs"
+        );
+        material.read(|| {
+            let _timer = attribution::WORK_QUEUE.start();
+            let mut latest = queue_latest::StateQueueWorkBuilder::default();
+            let mut timer = attribution::WORK_ITEMS.start();
+            for record in self.runtime_db.work_items().open_for_agent(&state.id)? {
+                latest.push(record)?;
+            }
+            for record in self
+                .runtime_db
+                .work_items()
+                .latest_non_open_for_agent(&state.id, WORK_QUEUE_NON_OPEN_WINDOW)?
+            {
+                latest.push(record)?;
+            }
+            let latest = latest.finish();
+            timer.rows(latest.len());
+            drop(timer);
+            let deliveries = queue_observed_trigger_deliveries(triggers)?;
+            let waits = group_queue_waits(self.active_wait_conditions_for_scope()?);
+            let suspended_ids = queue_continuation_suspended_ids(
+                self.runtime_db
+                    .work_item_continuations()
+                    .active_for_agent(&state.id)?,
+            )?;
+            let mut items = Vec::new();
+            if !latest.is_empty() {
+                let bytes = latest
+                    .len()
+                    .checked_mul(std::mem::size_of::<
+                        WorkItemSchedulingProjection<
+                            crate::runtime::resident_work::StateWorkRecord,
+                        >,
+                    >())
+                    .and_then(|bytes| u64::try_from(bytes).ok())
+                    .ok_or_else(|| std::io::Error::other("ResourceExhausted: queue items slots"))?;
+                crate::diagnostics::resource_io::charge_owned_metadata(bytes, latest.len())
+                    .context("queue items slots admission")?;
+                items.try_reserve_exact(latest.len()).map_err(|_| {
+                    std::io::Error::other("ResourceExhausted: queue items allocation")
+                })?;
+            }
+            let share = crate::runtime::resident_work::StateWorkRecord::cold_mapper(material)?;
+            for record in latest.into_values() {
+                let current = state.current_work_item_id.as_deref() == Some(record.id.as_str())
+                    && record.state == WorkItemState::Open;
+                let yielded = record.state == WorkItemState::Open
+                    && suspended_ids.binary_search(&record.id).is_ok();
+                let record_waits = queue_waits_for_item(&waits, &record.id);
+                items.push(
+                    crate::work_item_scheduling::derive_borrowed_queue_work_item_scheduling(
+                        share(record)?,
+                        current,
+                        yielded,
+                        record_waits.iter(),
+                        &|id| queue_trigger_delivery(&deliveries, id),
+                    )?,
+                );
+            }
+            items.sort_unstable_by(compare_scheduling_projection_order);
+            crate::runtime::resident_work::StateWorkQueue::from_items(items, |id| {
+                suspended_ids
+                    .binary_search_by(|value| value.as_str().cmp(id))
+                    .is_ok()
+            })
+        })
     }
 
     fn work_queue_with_trigger_observation<'a>(
@@ -706,10 +790,10 @@ impl RuntimeReadModelView<'_> {
         self.agent_posture_from_work_queue(&work_queue, admit_material)
     }
 
-    pub fn agent_posture_with_work_queue(
+    pub fn agent_posture_with_work_queue<W: std::borrow::Borrow<WorkItemRecord>>(
         &self,
         agent: &AgentState,
-        work_queue: &WorkQueueReadModel,
+        work_queue: &WorkQueueReadModel<W>,
     ) -> Result<AgentPostureProjection> {
         if let Some(posture) = self.agent_posture_before_work_queue(agent, false)? {
             return Ok(posture);
@@ -735,9 +819,9 @@ impl RuntimeReadModelView<'_> {
         .transpose()
     }
 
-    fn agent_posture_from_work_queue(
+    fn agent_posture_from_work_queue<W: std::borrow::Borrow<WorkItemRecord>>(
         &self,
-        work_queue: &WorkQueueReadModel,
+        work_queue: &WorkQueueReadModel<W>,
         admit_material: bool,
     ) -> Result<AgentPostureProjection> {
         let needs_task_wait = work_queue.current_runnable.is_none()
@@ -1327,15 +1411,25 @@ pub(crate) fn derive_agent_posture_from_state(
 
 enum PostureReason<'a> {
     Text(&'static str),
-    WorkItem(&'a super::work_queue::WorkItemSchedulingProjection),
     WorkItemFacts(crate::work_item_scheduling::WorkItemPostureReason<'a>),
+}
+
+impl<'a> PostureReason<'a> {
+    fn work_item<W: std::borrow::Borrow<WorkItemRecord>>(
+        item: &'a WorkItemSchedulingProjection<W>,
+    ) -> Self {
+        Self::WorkItemFacts(crate::work_item_scheduling::WorkItemPostureReason {
+            id: &item.id,
+            is_current: item.is_current,
+            scheduling_state: item.scheduling_state,
+        })
+    }
 }
 
 impl std::fmt::Display for PostureReason<'_> {
     fn fmt(&self, output: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Text(text) => output.write_str(text),
-            Self::WorkItem(item) => std::fmt::Display::fmt(&item.posture_reason_display(), output),
             Self::WorkItemFacts(item) => std::fmt::Display::fmt(item, output),
         }
     }
@@ -1479,8 +1573,8 @@ fn derive_agent_posture_before_work_queue(
     })
 }
 
-fn derive_agent_posture_from_work_queue<'a>(
-    work_queue: &'a WorkQueueReadModel,
+fn derive_agent_posture_from_work_queue<'a, W: std::borrow::Borrow<WorkItemRecord>>(
+    work_queue: &'a WorkQueueReadModel<W>,
     active_waits: &'a [WaitConditionRecord],
 ) -> AgentPostureFields<'a> {
     if let Some(item) = work_queue
@@ -1490,8 +1584,8 @@ fn derive_agent_posture_from_work_queue<'a>(
     {
         return AgentPostureFields {
             posture: AgentSchedulingPosture::HasRunnableWork,
-            reason: PostureReason::WorkItem(item),
-            work_item_id: Some(item.work_item.id.as_str()),
+            reason: PostureReason::work_item(item),
+            work_item_id: Some(item.id.as_str()),
             task_id: None,
             run_id: None,
         };
@@ -1505,13 +1599,13 @@ fn derive_agent_posture_from_work_queue<'a>(
             .find(|condition| {
                 condition.status == WaitConditionStatus::Active
                     && condition.kind == WaitConditionKind::Task
-                    && condition.work_item_id.as_deref() == Some(item.work_item.id.as_str())
+                    && condition.work_item_id.as_deref() == Some(item.id.as_str())
             })
             .and_then(|condition| condition.subject_ref.as_deref());
         return AgentPostureFields {
             posture: AgentSchedulingPosture::WaitingForTask,
-            reason: PostureReason::WorkItem(item),
-            work_item_id: Some(item.work_item.id.as_str()),
+            reason: PostureReason::work_item(item),
+            work_item_id: Some(item.id.as_str()),
             task_id,
             run_id: None,
         };
@@ -1522,8 +1616,8 @@ fn derive_agent_posture_from_work_queue<'a>(
     }) {
         return AgentPostureFields {
             posture: AgentSchedulingPosture::WaitingForExternal,
-            reason: PostureReason::WorkItem(item),
-            work_item_id: Some(item.work_item.id.as_str()),
+            reason: PostureReason::work_item(item),
+            work_item_id: Some(item.id.as_str()),
             task_id: None,
             run_id: None,
         };
@@ -1536,8 +1630,8 @@ fn derive_agent_posture_from_work_queue<'a>(
     {
         return AgentPostureFields {
             posture: AgentSchedulingPosture::WaitingForOperator,
-            reason: PostureReason::WorkItem(item),
-            work_item_id: Some(item.work_item.id.as_str()),
+            reason: PostureReason::work_item(item),
+            work_item_id: Some(item.id.as_str()),
             task_id: None,
             run_id: None,
         };
@@ -1556,8 +1650,8 @@ fn derive_agent_posture_from_work_queue<'a>(
     {
         return AgentPostureFields {
             posture: AgentSchedulingPosture::Blocked,
-            reason: PostureReason::WorkItem(item),
-            work_item_id: Some(item.work_item.id.as_str()),
+            reason: PostureReason::work_item(item),
+            work_item_id: Some(item.id.as_str()),
             task_id: None,
             run_id: None,
         };

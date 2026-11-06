@@ -13,6 +13,7 @@ pub(super) struct HeldColdSchedulingRead {
 }
 impl RuntimeHost {
     /// Sources and retained scheduler material share the caller's allowance.
+    #[cfg(test)]
     pub(super) fn cold_scheduler_with_observed_scheduling(
         &self,
         identity: &AgentIdentityRecord,
@@ -49,6 +50,40 @@ impl RuntimeHost {
         ))
     }
 
+    /// Cold State retains shared bodies before display grouping.
+    pub(super) fn cold_scheduler_with_shared_scheduling(
+        &self,
+        identity: &AgentIdentityRecord,
+        storage: &AppStorage,
+        state: &AgentState,
+        queue: &crate::runtime::resident_work::StateWorkQueue,
+        material: crate::runtime::SchedulingReadMaterial,
+    ) -> Result<(
+        crate::runtime::SchedulerProjection,
+        crate::runtime::SchedulingReadMaterial,
+    )> {
+        let active_timers = material.active_timer_count()?;
+        let phase =
+            crate::diagnostics::resource_io::ResourceReadMaterial::current_or_new_for_identity(
+                &self.inner.input_evidence_budget,
+                &identity.agent_id,
+                identity.incarnation,
+            )?;
+        let projection = phase.read(|| {
+            crate::runtime::SchedulerProjection::from_state_with_shared_scheduling_observation(
+                storage,
+                state,
+                queue,
+                active_timers,
+                &phase,
+            )
+        })?;
+        Ok((
+            projection,
+            material.with_scheduler_work_material(phase.guard()?)?,
+        ))
+    }
+
     /// Only capture's owning selection metadata enters this synchronous phase.
     /// CapturedScheduling already retains the original guard through consumption.
     pub(super) fn capture_cold_scheduling(
@@ -73,6 +108,7 @@ impl RuntimeHost {
 
     /// Only the synchronous Work queue adapter enters the resource phase.
     /// Its original guard follows the existing Scheduling response holder.
+    #[cfg(test)]
     pub(super) fn cold_work_queue_with_observed_scheduling(
         &self,
         identity: &AgentIdentityRecord,
@@ -93,6 +129,35 @@ impl RuntimeHost {
         let queue = {
             let _entry = phase.enter();
             storage.work_queue_with_observed_scheduling(state, triggers.iter().map(|row| &**row))?
+        };
+        Ok((queue, material.with_work_queue_material(phase.guard()?)?))
+    }
+
+    /// Share each canonical body before constructing State display groups.
+    pub(super) fn cold_state_work_queue_with_observed_scheduling(
+        &self,
+        identity: &AgentIdentityRecord,
+        storage: &AppStorage,
+        state: &AgentState,
+        triggers: &[crate::runtime::ExternalTriggerRecordLoan],
+        material: crate::runtime::SchedulingReadMaterial,
+    ) -> Result<(
+        crate::runtime::resident_work::StateWorkQueue,
+        crate::runtime::SchedulingReadMaterial,
+    )> {
+        let phase =
+            crate::diagnostics::resource_io::ResourceReadMaterial::current_or_new_for_identity(
+                &self.inner.input_evidence_budget,
+                &identity.agent_id,
+                identity.incarnation,
+            )?;
+        let queue = {
+            let _entry = phase.enter();
+            storage.state_work_queue_with_observed_scheduling(
+                state,
+                triggers.iter().map(|row| &**row),
+                &phase,
+            )?
         };
         Ok((queue, material.with_work_queue_material(phase.guard()?)?))
     }
