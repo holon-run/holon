@@ -3710,6 +3710,35 @@
       "source": "conservative_builtin"
     },
     {
+      "model_ref": "opencode-go/crouton-alpha-free",
+      "display_name": "Crouton Alpha Free",
+      "description": "OpenCode Go native Responses Crouton Alpha Free; context, output ceiling, vision and effort follow the official Go listing; service output default remains unconfirmed.",
+      "context_window_tokens": 1048576,
+      "effective_context_window_percent": 95,
+      "auto_compact_token_limit": null,
+      "default_max_output_tokens": null,
+      "max_output_tokens_upper_limit": 270000,
+      "default_verbosity": null,
+      "tool_output_truncation_estimated_tokens": 2500,
+      "capabilities": {
+        "agent_turn": true,
+        "parallel_tool_calls": false,
+        "image_input": true,
+        "image_generation": false,
+        "supports_reasoning": true,
+        "interactive_exec": false
+      },
+      "reasoning_effort_options": [
+        "minimal",
+        "low",
+        "medium",
+        "high",
+        "xhigh",
+        "max"
+      ],
+      "source": "conservative_builtin"
+    },
+    {
       "model_ref": "opencode-go/deepseek-v4-flash",
       "display_name": "DeepSeek V4 Flash",
       "description": "Holon conservative built-in metadata for the OpenCode Go deepseek-v4-flash route.",
@@ -10095,6 +10124,31 @@
       }
     },
     {
+      "route_ref": "opencode-go@default/crouton-alpha-free",
+      "policy": {
+        "cache_capabilities": {
+          "cache_control": false
+        },
+        "display_name": null,
+        "description": "OpenCode Go translated text route; capacity, vision, reasoning controls, and explicit cache support are unconfirmed.",
+        "context_window_tokens": null,
+        "effective_context_window_percent": null,
+        "auto_compact_token_limit": null,
+        "default_max_output_tokens": null,
+        "max_output_tokens_upper_limit": null,
+        "default_verbosity": null,
+        "capabilities": {
+          "agent_turn": false,
+          "parallel_tool_calls": false,
+          "image_input": false,
+          "image_generation": false,
+          "supports_reasoning": false,
+          "interactive_exec": false
+        },
+        "reasoning_effort_options": []
+      }
+    },
+    {
       "route_ref": "opencode-go@default/deepseek-v4-flash",
       "policy": {
         "display_name": null,
@@ -10612,6 +10666,31 @@
         "effective_context_window_percent": null,
         "capabilities": {},
         "reasoning_effort_options": null
+      }
+    },
+    {
+      "route_ref": "opencode-go@messages/crouton-alpha-free",
+      "policy": {
+        "cache_capabilities": {
+          "cache_control": false
+        },
+        "display_name": null,
+        "description": "OpenCode Go translated text route; capacity, vision, reasoning controls, and explicit cache support are unconfirmed.",
+        "context_window_tokens": null,
+        "effective_context_window_percent": null,
+        "auto_compact_token_limit": null,
+        "default_max_output_tokens": null,
+        "max_output_tokens_upper_limit": null,
+        "default_verbosity": null,
+        "capabilities": {
+          "agent_turn": false,
+          "parallel_tool_calls": false,
+          "image_input": false,
+          "image_generation": false,
+          "supports_reasoning": false,
+          "interactive_exec": false
+        },
+        "reasoning_effort_options": []
       }
     },
     {
@@ -11341,6 +11420,16 @@
           "interactive_exec": false
         },
         "reasoning_effort_options": []
+      }
+    },
+    {
+      "route_ref": "opencode-go@responses/crouton-alpha-free",
+      "policy": {
+        "display_name": null,
+        "description": null,
+        "effective_context_window_percent": null,
+        "capabilities": {},
+        "reasoning_effort_options": null
       }
     },
     {
@@ -16207,6 +16296,10 @@
     {
       "model_ref": "opencode-go/claude-haiku-5-5",
       "route_ref": "opencode-go@messages/claude-haiku-5-5"
+    },
+    {
+      "model_ref": "opencode-go/crouton-alpha-free",
+      "route_ref": "opencode-go@responses/crouton-alpha-free"
     },
     {
       "model_ref": "opencode-go/deepseek-v4-flash",

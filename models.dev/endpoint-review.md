@@ -9,6 +9,76 @@ reviewed routes unless there is affirmative removal evidence. New routes require
 their own endpoint evidence; missing capability flags are conservative omissions,
 not proof that a model lacks the feature.
 
+## 2026-11-07 incremental review
+
+Baseline main is `fbaf6c6a`; November 6 UTC sampling corresponds to the
+November 7 Beijing cycle. The fixed models.dev payload is
+`91a77f08f7e88368aa75455a33e7074abcc04c330b1cb7b41c1778961c75a312`.
+[Exact field evidence](metadata-evidence.md#incremental-review-2026-11-07)
+separates discovery projections from the one new native Go admission.
+All 30 endpoints were independently rechecked: the existing 332 first-group
+and 172 second-group complete review objects have no field changes.
+First-group sampling obtained 87 HTTP 200 responses; three Xiaomi bodies
+are still JavaScript shells, not capability evidence. The second group
+verified 88 request receipts and 75 response-body hashes. HTTP failures,
+listing omissions and successful document access do not establish retirement,
+subscription eligibility or successful inference.
+
+| Endpoints | New evidence and preserved boundary |
+| --- | --- |
+| `dashscope@default` | The Kimi guide only corrects a Chat Python SDK effort example. Existing Messages `output_config.effort`, capacity and defaults remain unchanged. |
+| `dashscope@token-plan`, `@coding-plan`, `@coding-plan-intl` | Independently reviewed personal/team, legacy Coding and international plan bodies are unchanged. No generic K3.1 eligibility is copied into these plans. |
+| `volcengine@default` | Existing Responses evidence is unchanged. Removal of a structured-output section from the separate Messages guide does not retire a Responses capability. The Models API still requires credentials and was not called. |
+| `volcengine@coding`, `@plan` | Separate overviews and discount pages describe a same-ID `deepseek-v4.1-flash` upgrade to version 261101. This does not publish a new exact wire ID, capacity or effort enum. November 7–December 15 discounts and November 8/9 promotion deadlines are pricing boundaries, not retirement or restored eligibility for old models. |
+| `tencent-tokenhub@default`, `@messages`, `@responses` | Model, effort and retirement bodies are unchanged. Keep Chat-specific reasoning controls separate from image support across protocols. The exact M2.7 cutoff remains November 17, 2026, 23:59:59 Beijing time; do not remove its three routes early. |
+| `qianfan@default` | Article bodies are identical after navigation changes; no newly confirmed thinking-exp retirement or capacity. |
+| `bigmodel@default`, `zai@default` | Domestic and international bodies remain independently unchanged; Legal Messages IDs and exact capacity remain unresolved. |
+| `xiaomi@default`, `@token-plan` | Readable model, protocol and plan bodies are unchanged; JavaScript shells neither certify new fields nor retire ultraspeed. |
+| `minimax@default`, `minimax-cn@default`, both `@m-plan` | Regional evidence only removes an unrelated H3-Max video entry. November 18 API retirement remains future; keep text routes and unknown Preview limits/defaults. |
+| `moonshot@default` | Keep six existing routes. Pre-November-1 account restrictions do not certify access for new accounts or retire retained models. |
+| `byteplus@default`, `@coding` | Independently decoded official model/plan bodies are unchanged. A failed SSL request followed by HTTP 200 is retained as such. November 11 remains future; keep 13 Coding routes without copying them into ordinary API. |
+| `stepfun@default`, `@plan` | Existing four ordinary and five plan routes are unchanged. Router budgets, output defaults and Messages effort remain unresolved. |
+| `opencode-go@default`, `@messages`, `@responses` | The official listing grows 29→30 with exact `crouton-alpha-free`, native **Responses only**. Add its native route and two conservative translations under the existing translation policy; preserve all existing model and endpoint preferred selections. Old listing omissions do not remove retained routes. |
+| `kilocode@default` | All five complete auto objects and pool members are unchanged. Non-auto listing changes and OpenRouter batch records do not alter auto admission or metadata. |
+| `together@default` | Existing twelve static routes unchanged. Documentation 403/404 responses do not establish retirement or substitute for exact admission evidence. |
+| `fireworks@default` | Existing ten static routes unchanged. Ripple has a published base-model resource path and Function Calling, but Serverless remains unsupported and deployment is On-demand only; do not add a public serverless route. |
+
+The [official Go listing](https://opencode.ai/inference/go/v1/models),
+sampled November 6 at 20:35:11 UTC, has raw SHA-256
+`cbc5fe208831cde8ffe71d425079e038dbe1ae5ea9c0a204dbc2acef82792e18`.
+Its sole Crouton object declares only `api.responses`, with base URL
+`https://opencode.ai/inference/go/openai/v1`, exactly the registered endpoint.
+Native context is 1,048,576, output **ceiling** 270,000, image input and
+reasoning are supported, and effort is exactly
+`minimal/low/medium/high/xhigh/max`. The service output default is unknown.
+The literal `image` modality is supported by the existing parser; video/PDF
+listing modalities are not new Holon multimodal certifications. Default and
+Messages translations keep unknown capacity, no image/reasoning controls,
+and `agent_turn=false`; none inherits native or OpenRouter Crouton metadata.
+No credentials or inference calls were used.
+
+### Final verification
+
+The final serial gate passed 319 test executions with one intentional
+snapshot-writing test ignored: `cargo test --locked models_dev` (86),
+`cargo test --locked --lib model_catalog::` (186, one ignored),
+`cargo test --locked --lib model_discovery::` (35),
+`cargo test --locked --test models_dev_adapter` (11), and
+`cargo test --locked --test context_budget` (1). The exact protocol/host
+discovery regression also passed separately after correcting two test-only
+field references. Earlier focused green tests passed five executions.
+
+`models-dev validate --input-dir models.dev`, `models-dev coverage --check`
+(632 reviewed rows), strict complete-object prediction, `cargo fmt --all
+-- --check`, `RUSTFLAGS="-D warnings" cargo check --all-targets --locked`,
+`git diff --check`, and all 11 frozen-file hashes passed. Cargo still reports
+existing manifest notices about redundant homepage/documentation and unused
+`rpassword`; the Rust warning-denial build passed. Independent frozen review
+and the test-field/documentation deltas have no unresolved confirmed P1/P2.
+The nonblocking Ripple source-label wording was corrected and rechecked.
+Existing preferred mappings remain unchanged. This is local verification,
+not live endpoint inference or a remote CI result.
+
 ## 2026-11-06 incremental review
 
 Baseline main is `8bc65e0b`; November 5 UTC sampling corresponds to the

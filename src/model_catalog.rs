@@ -2048,7 +2048,7 @@ fn built_in_route_definitions() -> Vec<BuiltInModelRouteDefinition> {
                         image_generation: Some(false),
                         supports_reasoning: Some(false),
                         interactive_exec: Some(false),
-                        agent_turn: (id == "hy4").then_some(false),
+                        agent_turn: matches!(id, "hy4" | "crouton-alpha-free").then_some(false),
                         ..ModelCapabilityOverride::default()
                     },
                     reasoning_effort_options: Some(Vec::new()),
@@ -5496,7 +5496,7 @@ mod tests {
             .filter(|model| model.model_ref.provider == provider)
             .collect::<Vec<_>>();
 
-        assert_eq!(models.len(), 43);
+        assert_eq!(models.len(), 44);
         for model in &models {
             assert_eq!(
                 model.capabilities.supports_reasoning,
@@ -5509,7 +5509,7 @@ mod tests {
                 .iter()
                 .filter(|model| !model.reasoning_effort_options.is_empty())
                 .count(),
-            21
+            22
         );
 
         for model in [

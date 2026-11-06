@@ -5,6 +5,65 @@ unchanged catalog facts are preserved, not newly certified as vendor hard
 limits. An upstream candidate is evidence to review, not permission to change
 an endpoint, region, subscription entitlement, or runtime output policy.
 
+## Incremental review: 2026-11-07
+
+The fixed models.dev payload is
+`91a77f08f7e88368aa75455a33e7074abcc04c330b1cb7b41c1778961c75a312`,
+sampled November 6 UTC for the November 7 Beijing cycle. The
+[endpoint review](endpoint-review.md#2026-11-07-incremental-review) records
+the separate 30-endpoint evidence audit and preserved regional/plan boundaries.
+The first four output-capacity projections below agree with the
+[official listing](https://openrouter.ai/api/v1/models), sampled November 6
+at 20:34:21 UTC, raw SHA-256
+`6c6a59e12e87011eb5c4b1a26c0dde46ca10b8cca639fa011faaa9750239f6e3`:
+
+| OpenRouter model ID | Reviewed projection |
+| --- | --- |
+| `deepseek/deepseek-chat` | Top-provider output 16,000 → 16,384. |
+| `deepseek/deepseek-v4-flash-vision-exp` | Top-provider output 262,144 → 943,717. |
+| `deepseek/deepseek-v4-pro` | Top-provider output 393,216 → 384,000. |
+| `nvidia/nemotron-3-super-120b-a12b` | Top-provider output 262,144 → 16,384. |
+| `ricursiveai/ripple-65b-preview` | Fixed models.dev display name becomes `Ripple 65B Preview`; the official listing names it `Ricursive: Ripple 65B Preview`. No capability or capacity change. |
+| `nvidia/nemotron-3.5-content-safety:free` | Missing from both new discovery sources; remove only its remote projection, not static endpoint routes. |
+
+Global context fields are unchanged even where `top_provider.context_length`
+differs: the adapter uses the listing's global context. The five newly listed
+OpenRouter `:batch` IDs are absent from the fixed models.dev payload and are
+not admitted as real-time agent routes. These remote output projections are
+not independent certifications of service defaults.
+
+The fixed Venice source adds `deepseek-v4-1-flash-1017-ultrafast` as a
+discovery-only record: context 1,000,000, output projection 131,072,
+text input, reasoning and tools, effort `none/low/high/max`. It is not a
+special-plan grant or a separately exercised native service contract.
+Supplemental membership and all existing static/default mappings are preserved.
+
+### Go native Crouton versus conservative translations
+
+The [official Go model object](https://opencode.ai/inference/go/v1/models)
+(November 6, 20:35:11 UTC; raw SHA-256
+`cbc5fe208831cde8ffe71d425079e038dbe1ae5ea9c0a204dbc2acef82792e18`)
+publishes exact ID `crouton-alpha-free`, name `Crouton Alpha Free`, and only
+`api.responses`. Its base URL matches the registered Go Responses endpoint.
+This independently supports the provider-local native route:
+context 1,048,576; output ceiling 270,000; image input, tools and reasoning;
+effort `minimal/low/medium/high/xhigh/max`. Do not invent a service output
+default, cache control, parallel tool use, video/PDF certification or identity
+with another provider's Crouton model.
+
+The two existing-policy translations use `opencode-go@default` and
+`@messages`; capacity and output defaults/ceilings stay unknown, image input
+and reasoning stay false, effort stays empty, explicit cache control stays
+false, and native tool metadata does not certify translated agent turns.
+All previous preferred model/route selections must remain byte-for-byte
+equivalent; only the new model gains its own Responses preferred mapping.
+
+Codex's fixed upstream revision and model body are unchanged. DeepSeek's
+slashless pricing request returned a home-page body despite HTTP 200;
+the canonical trailing-slash pricing body and Responses documentation
+were separately verified unchanged. A fallback response is not evidence
+for deleting pricing or capability fields.
+
 ## Incremental review: 2026-11-06
 
 The immutable models.dev payload is
