@@ -226,6 +226,44 @@ fn domain() -> Result<ResidentSchedulingDomain> {
 }
 
 #[test]
+fn capture_source_reuse_requires_complete_content_policy_and_ledger_equality() -> Result<()> {
+    let original = domain()?;
+    assert!(original.same_capture_source(&domain()?));
+    for change in 0..7 {
+        let mut changed = domain()?;
+        match change {
+            0 => changed.scope.identity_incarnation += 1,
+            1 => changed.coverage.revision += 1,
+            2 => changed.coverage.active_timers_complete = false,
+            3 => changed.record_limit += 1,
+            4 => changed.byte_limit += 1,
+            5 => {
+                let record = changed.records.values_mut().next().unwrap();
+                Arc::make_mut(record).locator.content_digest = "c".repeat(64);
+            }
+            6 => {
+                let record = changed.records.values_mut().next().unwrap();
+                let CanonicalSchedulingFact::Timer(timer) = &mut Arc::make_mut(record).fact else {
+                    unreachable!()
+                };
+                timer.status = TimerStatus::Cancelled;
+            }
+            _ => unreachable!(),
+        }
+        assert!(!original.same_capture_source(&changed), "change {change}");
+    }
+    let ledger = InputEvidenceBudgetLedger::new(StateMemoryLimits::default())?;
+    let a = domain()?.with_budget(ledger.clone())?;
+    let b = domain()?.with_budget(ledger)?;
+    assert!(a.same_capture_source(&b));
+    let foreign =
+        domain()?.with_budget(InputEvidenceBudgetLedger::new(StateMemoryLimits::default())?)?;
+    assert!(!a.same_capture_source(&foreign));
+    assert!(!original.same_capture_source(&a));
+    Ok(())
+}
+
+#[test]
 fn closure_admits_new_parent_and_validation_key_without_copying_roots() -> Result<()> {
     let domain = domain()?;
     let wake = domain

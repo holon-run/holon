@@ -430,6 +430,20 @@ fn insert_validation_reference<'a, T: Ord + ?Sized>(
 }
 
 impl ResidentSchedulingDomain {
+    pub(in crate::runtime) fn same_capture_source(&self, other: &Self) -> bool {
+        let ledger_matches = match (&self.budget, &other.budget) {
+            (Some(a), Some(b)) => a.same_ledger(b),
+            (None, None) => true,
+            _ => false,
+        };
+        ledger_matches
+            && self.scope == other.scope
+            && self.record_limit == other.record_limit
+            && self.byte_limit == other.byte_limit
+            && self.coverage == other.coverage
+            && self.records == other.records
+    }
+
     fn validate_bootstrap_header(
         scope: &InputEvidenceScope,
         coverage: &SchedulingCoverage,

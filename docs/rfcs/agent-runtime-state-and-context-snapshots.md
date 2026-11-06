@@ -5048,6 +5048,12 @@ discarded clones or consume the acquisition allowance repeatedly.
 Wake-parent expansion walks borrowed facts without a second owned root list;
 new parents are admitted before insertion and all selected keys and qualified
 parent bodies are still validated.
+Context planning moves its admitted Scheduling capture into the final context
+when the source allocation is unchanged or its complete scope, coverage,
+qualified bodies, limits and ledger still match. A changed source requires a
+fresh capture; revision alone grants no reuse. The temporary source-domain
+witness is released before returning the final context, which retains only
+selected facts and their original allocation guards.
 
 An unchanged shared skill inventory keeps its original data allocation guard;
 its new candidate header/scan has a separate last-holder guard. Initial data
