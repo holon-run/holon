@@ -23,6 +23,10 @@ fn cost(bytes: usize, slots: usize) -> (u64, usize) {
         (slots * 4 + 16) * 8,
     )
 }
+fn decode_cost(bytes: usize, slots: usize, cells: usize) -> (u64, usize) {
+    // Direct typed reads keep the bytes envelope without completion copies.
+    (cost(bytes, slots).0, cells * 8)
+}
 fn add(a: (u64, usize), b: (u64, usize)) -> (u64, usize) {
     (a.0 + b.0, a.1 + b.1)
 }
@@ -157,7 +161,8 @@ fn borrowed_transaction_read_has_one_envelope_and_never_refreshes_original_remai
     let (_home, db) = fixture()?;
     seed(&db, BODY)?;
     let budget = ledger()?;
-    let exact = add(header(), cost(BODY.len(), 41));
+    // One object and its eleven field values, not serialization shape slots.
+    let exact = add(header(), decode_cost(BODY.len(), 41, 12));
     let phase = ResourceReadMaterial::with_test_limits(&budget, &scope(), exact.0, exact.1)?;
     let record = {
         let _entry = phase.enter();
@@ -193,7 +198,8 @@ fn missing_row_is_free_decode_gate_precedes_parser_and_errors_release_transactio
     drop(phase);
     seed(&db, "{")?;
     for bytes in [true, false] {
-        let next = cost(1, 1);
+        // An unfinished object still reserves its first decode cell.
+        let next = decode_cost(1, 1, 1);
         let prefix = add(header(), header());
         let phase = ResourceReadMaterial::with_test_limits(
             &budget,
@@ -227,7 +233,7 @@ fn missing_row_is_free_decode_gate_precedes_parser_and_errors_release_transactio
         let error = db.transaction(|tx| timer_tx(tx, "sql-timer")).unwrap_err();
         assert!(format!("{error:#}").contains("decoding timer payload"));
     }
-    assert_eq!(transaction.finish()?, add(header(), cost(1, 1)));
+    assert_eq!(transaction.finish()?, add(header(), decode_cost(1, 1, 1)));
     drop(transaction);
     assert_eq!(budget.report()?.observed_bytes, header().0);
     drop(phase);

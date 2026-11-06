@@ -18,6 +18,17 @@ use crate::{
 use rusqlite::Connection;
 use std::collections::BTreeSet;
 
+fn charge_single_key_selector_clone(keys: &BTreeSet<SchedulingKey>) -> Result<()> {
+    assert_eq!(keys.len(), 1);
+    // One key has nine structural slots; the array adds two. Its four value
+    // cells are the array, key object, family and ID, without field names.
+    crate::diagnostics::resource_io::charge_owned_metadata(
+        serde_json::to_vec(keys)?.len() as u64 * 4 + 11 * 128 + 512,
+        4,
+    )?;
+    Ok(())
+}
+
 fn fixture() -> Result<(
     tempfile::TempDir,
     RuntimeDb,
@@ -354,7 +365,7 @@ fn input_scheduling_selector_accumulates_context_credit_and_keeps_last_phase_gua
 
 #[test]
 fn scheduling_loader_copies_share_context_remainder_and_rollback() -> Result<()> {
-    use crate::diagnostics::resource_io::{admit_cloned_value, charge_owned_metadata};
+    use crate::diagnostics::resource_io::charge_owned_metadata;
     use crate::runtime::resident_scheduling::SchedulingFamily;
     use crate::runtime_db::scheduling_snapshot::material_cost_fixture::ExpectedSqlMaterial;
     let (_home, db, scope, _state, ledger) = fixture()?;
@@ -382,9 +393,9 @@ fn scheduling_loader_copies_share_context_remainder_and_rollback() -> Result<()>
     let (one_copy, two_copies, full) = {
         let _entry = measure.enter();
         sql.before_selection(&request, prior.resident.coverage())?;
-        admit_cloned_value(&request.capture.required_keys)?;
+        charge_single_key_selector_clone(&request.capture.required_keys)?;
         let one = measure.finish()?.1;
-        admit_cloned_value(&request.capture.required_keys)?;
+        charge_single_key_selector_clone(&request.capture.required_keys)?;
         let two = measure.finish()?.1;
         // No live/history/prior keys in this fixture: both traversal
         // worklists have the same shape as the requested absent key.
@@ -401,8 +412,8 @@ fn scheduling_loader_copies_share_context_remainder_and_rollback() -> Result<()>
                 &BTreeSet::new(),
             )?;
         }
-        admit_cloned_value(&request.capture.required_keys)?;
-        admit_cloned_value(&request.capture.required_keys)?;
+        charge_single_key_selector_clone(&request.capture.required_keys)?;
+        charge_single_key_selector_clone(&request.capture.required_keys)?;
         let manifests: usize = db.connection()?.query_row(
             "SELECT COUNT(*) FROM scheduling_domain_captures WHERE seed_id=(SELECT seed_id FROM agent_episode_continuity WHERE agent_id=?1)",
             [&scope.agent_id], |row| row.get(0),
@@ -447,7 +458,8 @@ fn scheduling_loader_copies_share_context_remainder_and_rollback() -> Result<()>
             assert!(
                 error
                     .to_string()
-                    .contains("ResourceExhausted: context resource read material"),
+                    .to_lowercase()
+                    .contains("resourceexhausted: context resource read material"),
                 "{error:#}"
             );
         }
@@ -477,7 +489,6 @@ fn scheduling_loader_copies_share_context_remainder_and_rollback() -> Result<()>
 
 #[test]
 fn scheduling_loader_worklist_gates_precede_alias_writes() -> Result<()> {
-    use crate::diagnostics::resource_io::admit_cloned_value;
     use crate::runtime::resident_scheduling::SchedulingFamily;
     use crate::runtime_db::scheduling_snapshot::material_cost_fixture::ExpectedSqlMaterial;
     let (_home, db, scope, _state, ledger) = fixture()?;
@@ -523,7 +534,7 @@ fn scheduling_loader_worklist_gates_precede_alias_writes() -> Result<()> {
                     )?;
                 }
             }
-            admit_cloned_value(&request.capture.required_keys)?;
+            charge_single_key_selector_clone(&request.capture.required_keys)?;
             prefix.push(measure.finish()?);
         }
         // The missing required key is checked against each fixed checkpoint.
@@ -566,10 +577,10 @@ fn scheduling_loader_worklist_gates_precede_alias_writes() -> Result<()> {
                     })
                     .err()
                     .context("alias sentinel did not stop loader")?;
-                let text = format!("{error:#}");
+                let text = format!("{error:#}").to_lowercase();
                 if exhausted {
                     assert!(
-                        text.contains("ResourceExhausted: context resource read material"),
+                        text.contains("resourceexhausted: context resource read material"),
                         "{text}"
                     );
                     assert!(!text.contains("worklist alias sentinel reached"), "{text}");

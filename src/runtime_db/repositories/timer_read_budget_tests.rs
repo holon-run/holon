@@ -17,12 +17,10 @@ fn header() -> (u64, usize) {
     ((scope().agent_id.len() as u64 + 256) * 8, 64)
 }
 fn body_cost() -> (u64, usize) {
-    // Eleven keys/colons, ten commas, two braces, seven string values.
+    // Eleven keys/colons, ten commas, two braces, seven string values;
+    // one object and eleven field values are twelve typed-decode cells.
     // Escaped quotes, punctuation and UTF-8 within summary add no shape slots.
-    (
-        (BODY.len() as u64 * 4 + 41 * 128 + 512) * 8,
-        (41 * 4 + 16) * 8,
-    )
+    ((BODY.len() as u64 * 4 + 41 * 128 + 512) * 8, 12 * 8)
 }
 fn cell() -> (u64, usize) {
     (std::mem::size_of::<TimerRecord>() as u64 * 8, 8)
