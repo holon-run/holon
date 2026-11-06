@@ -1588,6 +1588,13 @@ Nonempty live/history merge copies, the retained loaded-order fallback and
 prior-key worklist also consume that remainder before cloning. Each wake's
 parent-key copy and pending Message root, including its subsequent Input request
 copy, is admitted separately. Moving existing keys does not mint new credit.
+Direct typed Scheduling and Timer clones count their JSON value cells once,
+including scalar and empty-container cells, rather than completion-parser or
+resolver copies. State persistence's `serde_json::to_string` admits one owned
+buffer, not a decoded tree. Both retain the original conservative byte envelope
+and eightfold allowance; every later copy consumes the same phase remainder,
+and exhaustion remains latched through the original ACK/publication holders.
+Completion/resolver admission and the configured byte/record limits are unchanged.
 Scheduling SQL `Material::charge` also consumes the same phase remainder before
 its existing raw key/body, scope, saved-coverage, manifest and alias reads. Its
 original scope header, eightfold allowance and independent bounds remain intact;

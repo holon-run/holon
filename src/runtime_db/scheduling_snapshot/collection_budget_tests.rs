@@ -1,6 +1,7 @@
 use super::*;
 use crate::diagnostics::resource_io::{
-    admit_cloned_value, assert_retryable_resource_error, ResourceReadMaterial,
+    admit_typed_cloned_value as admit_cloned_value, assert_retryable_resource_error,
+    ResourceReadMaterial,
 };
 use crate::runtime_db::scheduling_snapshot::material_cost_fixture::ExpectedSqlMaterial;
 

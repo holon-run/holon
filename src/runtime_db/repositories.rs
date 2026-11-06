@@ -103,7 +103,7 @@ mod wait_owner_budget_tests;
 mod wait_writes_budget_tests;
 
 pub(in crate::runtime_db) fn clone_timer_body<T: Clone + serde::Serialize>(value: &T) -> Result<T> {
-    crate::diagnostics::resource_io::admit_cloned_value(value)?;
+    crate::diagnostics::resource_io::admit_typed_cloned_value(value)?;
     Ok(value.clone())
 }
 
@@ -8715,7 +8715,7 @@ pub(crate) fn decode_timer_payload(payload: &str) -> Result<TimerRecord> {
 // Inspection without an active phase remains unaccounted and unqualified.
 fn timer_row(row: &rusqlite::Row<'_>) -> Result<TimerRecord> {
     let payload = row.get_ref(0)?.as_str()?;
-    crate::diagnostics::resource_io::admit_json_payload(payload)?;
+    crate::diagnostics::resource_io::admit_typed_json_payload(payload)?;
     decode_timer_payload(payload)
 }
 

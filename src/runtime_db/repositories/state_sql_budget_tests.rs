@@ -313,7 +313,7 @@ fn state_sql_read_write_read_uses_original_allowance_and_last_ack_holder() -> Re
     changed.status = AgentStatus::AwakeIdle;
     let body = add(
         add(state_read_cost(&record())?, state_read_cost(&changed)?),
-        add(wire_cost(&changed)?, wire_cost(&now())?),
+        add((wire_cost(&changed)?.0, 8), wire_cost(&now())?),
     );
     assert_eq!(
         wire_cost(&now())?,
@@ -401,7 +401,7 @@ fn each_state_output_gate_rejects_before_sql_and_releases_failed_transaction() -
     let mut changed = record();
     changed.turn_index = 2;
     let mut prefix = add(header(), header());
-    for next in [wire_cost(&changed)?, wire_cost(&now())?] {
+    for next in [(wire_cost(&changed)?.0, 8), wire_cost(&now())?] {
         for bytes in [true, false] {
             let budget = ledger()?;
             let phase = ResourceReadMaterial::with_test_limits(

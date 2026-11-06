@@ -137,6 +137,29 @@ pub(crate) fn admit_cloned_value(value: &impl serde::Serialize) -> Result<()> {
     counter.admit_clone()
 }
 
+/// One direct typed clone whose serialized fields cover its owning material.
+/// Count values rather than JSON punctuation, as for a direct typed decode.
+pub(crate) fn admit_typed_cloned_value(value: &impl serde::Serialize) -> Result<()> {
+    if !super::ACTIVE.with(|slot| slot.borrow().is_some()) {
+        return Ok(());
+    }
+    let mut counter = StructuredMaterialCounter::default();
+    serde_json::to_writer(&mut counter, value)?;
+    let records = counter.cells_peak;
+    counter.admit_records(records)
+}
+
+/// Admit only serde_json::to_string's owned buffer, without a decoded tree.
+/// Preserve the conservative bytes envelope and count that one allocation.
+pub(crate) fn admit_json_buffer(value: &impl serde::Serialize) -> Result<()> {
+    if !super::ACTIVE.with(|slot| slot.borrow().is_some()) {
+        return Ok(());
+    }
+    let mut counter = StructuredMaterialCounter::default();
+    serde_json::to_writer(&mut counter, value)?;
+    counter.admit_records(1)
+}
+
 pub(crate) fn admit_serialized_value(value: &impl serde::Serialize) -> Result<()> {
     if !super::ACTIVE.with(|slot| slot.borrow().is_some()) {
         return Ok(());
@@ -216,6 +239,77 @@ mod tests {
         Ok(())
     }
 
+    #[test]
+    fn direct_typed_copies_and_json_buffers_keep_bytes_and_original_remainder() -> Result<()> {
+        let ledger = InputEvidenceBudgetLedger::new(StateMemoryLimits::default())?;
+        let scope = InputEvidenceScope {
+            agent_id: "direct-copy".into(),
+            identity_incarnation: 1,
+        };
+        // Seven JSON values, including the root and each empty container.
+        let value = serde_json::json!({"nested": [null, {}, [], {"body": "\\\"{}[]:,路"}]});
+        let bytes = u64::try_from(cloned_value_material(&value)?.0)? * 8;
+        let header = ResourceReadMaterial::new(&ledger, &scope)?.finish()?;
+        for buffer in [false, true] {
+            let records = if buffer { 8 } else { 7 * 8 };
+            let admit = || {
+                if buffer {
+                    admit_json_buffer(&value)
+                } else {
+                    admit_typed_cloned_value(&value)
+                }
+            };
+            for bytes_bound in [false, true] {
+                let phase = ResourceReadMaterial::with_test_limits(
+                    &ledger,
+                    &scope,
+                    if bytes_bound {
+                        header.0 + bytes - 1
+                    } else {
+                        header.0 + bytes
+                    },
+                    if bytes_bound {
+                        header.1 + records
+                    } else {
+                        header.1 + records - 1
+                    },
+                )?;
+                {
+                    let _entry = phase.enter();
+                    assert!(admit().is_err());
+                    assert!(admit().is_err());
+                }
+                assert!(phase.finish().is_err());
+            }
+            let phase = ResourceReadMaterial::with_test_limits(
+                &ledger,
+                &scope,
+                header.0 + bytes * 2,
+                header.1 + records * 2,
+            )?;
+            let held = phase.guard()?;
+            {
+                let _entry = phase.enter();
+                admit()?;
+                admit()?;
+            }
+            assert_eq!(
+                phase.finish()?,
+                (header.0 + bytes * 2, header.1 + records * 2)
+            );
+            {
+                let _entry = phase.enter();
+                assert!(admit().is_err());
+            }
+            assert!(phase.finish().is_err());
+            drop(phase);
+            assert!(ledger.report()?.observed_bytes > 0);
+            drop(held);
+            assert_eq!(ledger.report()?.observed_bytes, 0);
+        }
+        Ok(())
+    }
+
     #[cfg(unix)]
     #[test]
     fn no_phase_keeps_non_utf8_current_paths_outside_the_json_gate() -> Result<()> {
@@ -223,6 +317,8 @@ mod tests {
         let path = std::path::PathBuf::from(std::ffi::OsString::from_vec(vec![0xff]));
         assert!(serde_json::to_string(&path).is_err());
         admit_serialized_value(&path)?;
+        admit_json_buffer(&path)?;
+        admit_typed_cloned_value(&path)?;
         admit_cloned_value(&path)
     }
 

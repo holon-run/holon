@@ -22,12 +22,12 @@ fn resident_map_key_uses_original_remainder_before_duplicate_insert() -> Result<
         &"k".repeat(16 * 1024),
         TimerStatus::Active,
     )))?;
-    // A SchedulingKey has two string fields: 13 structural JSON slots.
+    // A SchedulingKey owns its object, inline family and identifier: three cells.
     // This scalar oracle never runs bootstrap/loader or its admission helper.
     // Four string starts, two braces, two colons, and one comma. Closing
     // quotes are consumed inside strings, not counted as structural slots.
     let bytes = (serde_json::to_vec(&record.locator.key)?.len() as u64 * 4 + 9 * 128 + 512) * 8;
-    let records = (9 + 16) * 8;
+    let records = 3 * 8;
     let ledger = ledger()?;
     let byte_limit = 8 * 1024 * 1024;
     let record_limit = 4096;

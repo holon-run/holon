@@ -16,11 +16,8 @@ fn scope() -> InputEvidenceScope {
 fn header() -> (u64, usize) {
     ((scope().agent_id.len() as u64 + 256) * 8, 64)
 }
-fn cost(bytes: usize, slots: usize) -> (u64, usize) {
-    (
-        (bytes as u64 * 4 + slots as u64 * 128 + 512) * 8,
-        (slots + 16) * 8,
-    )
+fn cost(bytes: usize, slots: usize, cells: usize) -> (u64, usize) {
+    ((bytes as u64 * 4 + slots as u64 * 128 + 512) * 8, cells * 8)
 }
 fn add(a: (u64, usize), b: (u64, usize)) -> (u64, usize) {
     (a.0 + b.0, a.1 + b.1)
@@ -38,8 +35,8 @@ fn timer_and_message_effects_charge_exact_transaction_and_last_holder() -> Resul
     // Timer: eleven fields, six string values. Message: fifteen fields over
     // three objects, ten string values. Quoted punctuation is not structure.
     let body = add(
-        add(cost(TIMER.len(), 40), cost(MESSAGE.len(), 58)),
-        add(cost(MESSAGE.len(), 58), cost(11, 1)),
+        add(cost(TIMER.len(), 40, 12), cost(MESSAGE.len(), 58, 16)),
+        add(cost(MESSAGE.len(), 58, 16), cost(11, 1, 1)),
     );
     let exact = add(add(header(), header()), body);
     let budget = InputEvidenceBudgetLedger::new(StateMemoryLimits::default())?;
@@ -77,7 +74,7 @@ fn each_wake_effect_copy_refuses_before_publication_and_keeps_failure() -> Resul
     for copy in 0..2 {
         for bytes_bound in [false, true] {
             let budget = InputEvidenceBudgetLedger::new(StateMemoryLimits::default())?;
-            let one = cost(MESSAGE.len(), 58);
+            let one = cost(MESSAGE.len(), 58, 16);
             let limit = add(header(), (one.0 * (copy + 1), one.1 * (copy as usize + 1)));
             let phase = ResourceReadMaterial::with_test_limits(
                 &budget,

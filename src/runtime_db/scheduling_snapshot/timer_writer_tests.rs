@@ -1156,3 +1156,67 @@ fn timer_fire_keeps_actual_wait_source_metadata_and_all_domain_acks_in_one_tx() 
     assert_eq!(counts(&budget), 0);
     Ok(())
 }
+
+#[test]
+fn timer_fire_with_retained_history_fits_default_resource_record_budget() -> Result<()> {
+    let (_home, db) = legacy(true, |tx| {
+        for i in 0..80 {
+            let mut old = timer(&format!("history-{i:03}"), TimerStatus::Completed);
+            old.next_fire_at = None;
+            repositories::upsert_timer_tx(tx, &old)?;
+        }
+        repositories::upsert_timer_tx(tx, &timer("recovered", TimerStatus::Active))?;
+        let mut state = AgentState::new(&scope().agent_id);
+        state.working_memory.current_working_memory.scope_hints =
+            (0..128).map(|i| format!("scope-{i:03}")).collect();
+        crate::runtime_db::evidence::upsert_agent_state_tx(tx, &state)
+    })?;
+    let budget = ledger()?;
+    let mut request = request();
+    request.record_limit = 65_536;
+    request.byte_limit = 64 * 1024 * 1024;
+    drop(db.transaction(|tx| {
+        prepare_scheduling_domain_snapshot_tx(tx, &scope(), &request, &budget)
+    })?);
+    let original: Vec<String> = {
+        let c = db.connection()?;
+        let mut q = c.prepare(
+            "SELECT payload_json FROM timers WHERE timer_id LIKE 'history-%' ORDER BY timer_id",
+        )?;
+        let rows = q
+            .query_map([], |row| row.get(0))?
+            .collect::<rusqlite::Result<_>>()?;
+        rows
+    };
+    let p = freeze(
+        "history-budget-fire",
+        PreparedTimerTransition::fire(fire(&db, "recovered", "history-budget-wake")?, None, None),
+    )?;
+    let InputMutationExecution::Committed { value, receipt } =
+        execute_with_scheduling_request(&db, &p, &budget, &request)?
+    else {
+        anyhow::bail!("fresh Timer fire must commit");
+    };
+    assert!(value.applied);
+    assert!(
+        matches!(&receipt.outcome.result, InputMutationResult::Timer { outcome }
+        if matches!(outcome.as_ref(), TimerMutationOutcome::Fired { result }
+            if result.advanced && result.wake_created))
+    );
+    assert_eq!(
+        db.timers().pending_wake("recovered")?.unwrap().message_id,
+        "history-budget-wake"
+    );
+    drop((value, receipt));
+    let c = db.connection()?;
+    let mut q = c.prepare(
+        "SELECT payload_json FROM timers WHERE timer_id LIKE 'history-%' ORDER BY timer_id",
+    )?;
+    assert_eq!(
+        q.query_map([], |row| row.get::<_, String>(0))?
+            .collect::<rusqlite::Result<Vec<_>>>()?,
+        original
+    );
+    assert_eq!(budget.report()?.observed_bytes, 0);
+    Ok(())
+}
