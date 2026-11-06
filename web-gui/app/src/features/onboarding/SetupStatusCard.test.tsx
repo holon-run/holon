@@ -19,13 +19,12 @@ afterEach(async () => {
   vi.unstubAllGlobals();
 });
 
-async function render(config: RuntimeConfigState, saving = false) {
+async function render(config: RuntimeConfigState, saving = false, start?: () => void) {
   vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
   const container = document.createElement("div");
   root = createRoot(container);
   const repair = vi.fn();
   const retry = vi.fn();
-  const start = vi.fn();
   await act(async () => root!.render(
     <SetupStatusCard config={config} saving={saving} onRepair={repair} onRetry={retry} onStart={start} />,
   ));
@@ -34,11 +33,18 @@ async function render(config: RuntimeConfigState, saving = false) {
 
 describe("authoritative first-run setup", () => {
   it("shows readiness separately from untested connectivity", async () => {
-    const { container, start } = await render(ready);
+    const { container, start } = await render(ready, false, vi.fn());
     expect(container.textContent).toContain("Configuration ready");
     expect(container.textContent).toContain("have not been tested");
     await act(async () => container.querySelector("button")!.click());
     expect(start).toHaveBeenCalledOnce();
+  });
+
+  it("hides the first-agent action when no start handler is wired", async () => {
+    const { container } = await render(ready, false, undefined);
+    expect(container.textContent).toContain("Configuration ready");
+    expect(container.textContent).not.toContain("Set up your first Agent");
+    expect(container.querySelector("button")).toBeNull();
   });
 
   it("directs missing credentials to the default provider, not optional services", async () => {
