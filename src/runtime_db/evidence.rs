@@ -493,7 +493,7 @@ pub(crate) fn upsert_agent_state_at_tx(
     if record.current_run_id.is_some() || record.status == crate::types::AgentStatus::AwakeRunning {
         super::reclamation::ensure_work_admission_tx(tx, &record.id)?;
     }
-    crate::diagnostics::resource_io::admit_serialized_value(record)?;
+    crate::diagnostics::resource_io::admit_json_buffer(record)?;
     let payload_json = serde_json::to_string(record)?;
     let status = match record.status {
         crate::types::AgentStatus::Booting => "booting",

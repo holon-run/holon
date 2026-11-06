@@ -37,7 +37,7 @@ pub(crate) fn prepare_scheduling_with_context_scope_tx(
         }),
         SchedulingSnapshotError::RetiredScope
     );
-    crate::diagnostics::resource_io::admit_cloned_value(&(
+    crate::diagnostics::resource_io::admit_typed_cloned_value(&(
         &facts.identity,
         facts.control_revision,
     ))?;
@@ -537,9 +537,9 @@ pub(super) fn load_with_revision(
     let mut coverage = SchedulingCoverage::empty(revision);
     let selector_bytes = usize::try_from(serialized_bytes(&request.capture.required_keys)?)?;
     material.charge(selector_bytes, request.capture.required_keys.len())?;
-    crate::diagnostics::resource_io::admit_cloned_value(&request.capture.required_keys)?;
+    crate::diagnostics::resource_io::admit_typed_cloned_value(&request.capture.required_keys)?;
     coverage.required_keys = request.capture.required_keys.clone();
-    crate::diagnostics::resource_io::admit_cloned_value(&request.capture.required_keys)?;
+    crate::diagnostics::resource_io::admit_typed_cloned_value(&request.capture.required_keys)?;
     let mut selected = request.capture.required_keys.clone();
     for family in [
         SchedulingFamily::Timer,
@@ -550,7 +550,7 @@ pub(super) fn load_with_revision(
             .into_iter()
             .collect();
         if !live.is_empty() {
-            crate::diagnostics::resource_io::admit_cloned_value(&live)?;
+            crate::diagnostics::resource_io::admit_typed_cloned_value(&live)?;
         }
         selected.extend(live.iter().cloned());
         match family {
@@ -574,7 +574,7 @@ pub(super) fn load_with_revision(
             || request.capture.history_limit == 0
         {
             if !history.is_empty() {
-                crate::diagnostics::resource_io::admit_cloned_value(&history)?;
+                crate::diagnostics::resource_io::admit_typed_cloned_value(&history)?;
             }
             Some(history.clone())
         } else {
@@ -604,7 +604,7 @@ pub(super) fn load_with_revision(
                 .filter(|prior| prior.keys == cohort && prior.loaded_keys.len() == cohort.len());
             if let Some(prior) = prior {
                 if !prior.loaded_keys.is_empty() {
-                    crate::diagnostics::resource_io::admit_cloned_value(&prior.loaded_keys)?;
+                    crate::diagnostics::resource_io::admit_typed_cloned_value(&prior.loaded_keys)?;
                 }
                 prior.loaded_keys.clone()
             } else {
@@ -614,11 +614,11 @@ pub(super) fn load_with_revision(
         history.truncate(request.capture.history_limit);
         loaded_history.truncate(request.capture.history_limit);
         if !history.is_empty() {
-            crate::diagnostics::resource_io::admit_cloned_value(&history)?;
+            crate::diagnostics::resource_io::admit_typed_cloned_value(&history)?;
         }
         selected.extend(history.iter().cloned());
         if !loaded_history.is_empty() {
-            crate::diagnostics::resource_io::admit_cloned_value(&loaded_history)?;
+            crate::diagnostics::resource_io::admit_typed_cloned_value(&loaded_history)?;
         }
         selected.extend(loaded_history.iter().cloned());
         coverage.history.insert(
@@ -632,7 +632,7 @@ pub(super) fn load_with_revision(
     }
     // Recheck the finite prior heads as well: canonical/header drift must not
     // hide a previously observed key by moving it below the new cutoff.
-    crate::diagnostics::resource_io::admit_cloned_value(&selected)?;
+    crate::diagnostics::resource_io::admit_typed_cloned_value(&selected)?;
     let mut core = selected.clone();
     let old_live = if let Some(previous) = &previous {
         for keys in [
@@ -641,13 +641,13 @@ pub(super) fn load_with_revision(
             &previous.active_triggers,
         ] {
             if !keys.is_empty() {
-                crate::diagnostics::resource_io::admit_cloned_value(keys)?;
+                crate::diagnostics::resource_io::admit_typed_cloned_value(keys)?;
             }
         }
         for history in previous.history.values() {
             for keys in [&history.keys, &history.loaded_keys] {
                 if !keys.is_empty() {
-                    crate::diagnostics::resource_io::admit_cloned_value(keys)?;
+                    crate::diagnostics::resource_io::admit_typed_cloned_value(keys)?;
                 }
             }
         }
@@ -670,7 +670,7 @@ pub(super) fn load_with_revision(
     selected.extend(old_live);
     let mut records = BTreeMap::new();
     let mut observations = BTreeMap::new();
-    crate::diagnostics::resource_io::admit_cloned_value(&selected)?;
+    crate::diagnostics::resource_io::admit_typed_cloned_value(&selected)?;
     let mut pending: Vec<_> = selected.iter().cloned().collect();
     let mut inputs = BTreeSet::new();
     while let Some(key) = pending.pop() {
@@ -721,16 +721,16 @@ pub(super) fn load_with_revision(
             let value = stored.qualified(scope, member_revision)?;
             if core.contains(&key) {
                 if let CanonicalSchedulingFact::TimerWake(w) = &value.fact {
-                    crate::diagnostics::resource_io::admit_cloned_value(&w.timer_id)?;
+                    crate::diagnostics::resource_io::admit_typed_cloned_value(&w.timer_id)?;
                     let parent = SchedulingKey::new(SchedulingFamily::Timer, &w.timer_id);
-                    crate::diagnostics::resource_io::admit_cloned_value(&parent)?;
+                    crate::diagnostics::resource_io::admit_typed_cloned_value(&parent)?;
                     core.insert(parent.clone());
-                    crate::diagnostics::resource_io::admit_cloned_value(&parent)?;
+                    crate::diagnostics::resource_io::admit_typed_cloned_value(&parent)?;
                     if selected.insert(parent.clone()) {
                         pending.push(parent);
                     }
                     if w.status == SchedulingWakeStatus::Pending {
-                        crate::diagnostics::resource_io::admit_cloned_value(&w.message_id)?;
+                        crate::diagnostics::resource_io::admit_typed_cloned_value(&w.message_id)?;
                         inputs.insert(InputEvidenceKey::new(
                             InputEvidenceFamily::Message,
                             &w.message_id,

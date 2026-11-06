@@ -329,7 +329,7 @@ fn extend_selection_keys<'a>(
     keys: impl IntoIterator<Item = &'a SchedulingKey>,
 ) -> Result<()> {
     for key in keys {
-        crate::diagnostics::resource_io::admit_cloned_value(key)?;
+        crate::diagnostics::resource_io::admit_typed_cloned_value(key)?;
         selected.insert(key.clone());
     }
     Ok(())
@@ -448,7 +448,7 @@ impl ResidentSchedulingDomain {
                 record.locator.revision <= coverage.revision,
                 "Scheduling fact revision exceeds its domain"
             );
-            crate::diagnostics::resource_io::admit_cloned_value(&record.locator.key)?;
+            crate::diagnostics::resource_io::admit_typed_cloned_value(&record.locator.key)?;
             ensure!(
                 map.insert(record.locator.key.clone(), record).is_none(),
                 "duplicate Scheduling body"
@@ -520,7 +520,7 @@ impl ResidentSchedulingDomain {
                 && !self.coverage.pending_wakes.contains(key)
                 && !self.coverage.active_triggers.contains(key)
         };
-        crate::diagnostics::resource_io::admit_cloned_value(&keys)?;
+        crate::diagnostics::resource_io::admit_typed_cloned_value(&keys)?;
         let initial: Vec<_> = keys.iter().cloned().collect();
         for key in initial {
             if optional_pruned(&key) {
@@ -528,7 +528,7 @@ impl ResidentSchedulingDomain {
             }
             if let Some(record) = self.lookup(&key)? {
                 if let CanonicalSchedulingFact::TimerWake(w) = &record.fact {
-                    crate::diagnostics::resource_io::admit_cloned_value(&w.timer_id)?;
+                    crate::diagnostics::resource_io::admit_typed_cloned_value(&w.timer_id)?;
                     keys.insert(SchedulingKey::new(SchedulingFamily::Timer, &w.timer_id));
                 }
             }
@@ -545,7 +545,7 @@ impl ResidentSchedulingDomain {
             .filter(|r| keys.contains(&r.locator.key))
         {
             if let CanonicalSchedulingFact::TimerWake(w) = &record.fact {
-                crate::diagnostics::resource_io::admit_cloned_value(&w.timer_id)?;
+                crate::diagnostics::resource_io::admit_typed_cloned_value(&w.timer_id)?;
                 let parent = self
                     .lookup(&SchedulingKey::new(SchedulingFamily::Timer, &w.timer_id))?
                     .context("Scheduling Wake has no qualified Timer body")?;
@@ -561,18 +561,18 @@ impl ResidentSchedulingDomain {
         match self.coverage.availability(key) {
             Some(SchedulingAvailability::Absent) => Ok(None),
             Some(SchedulingAvailability::Pruned) => {
-                crate::diagnostics::resource_io::admit_cloned_value(key)?;
+                crate::diagnostics::resource_io::admit_typed_cloned_value(key)?;
                 Err(SchedulingReadError::Pruned(key.clone()).into())
             }
             Some(SchedulingAvailability::HistoricalUnavailable) => {
-                crate::diagnostics::resource_io::admit_cloned_value(key)?;
+                crate::diagnostics::resource_io::admit_typed_cloned_value(key)?;
                 Err(SchedulingReadError::HistoricalUnavailable(key.clone()).into())
             }
             Some(SchedulingAvailability::Present) if self.records.contains_key(key) => {
                 Ok(self.records.get(key))
             }
             _ => {
-                crate::diagnostics::resource_io::admit_cloned_value(key)?;
+                crate::diagnostics::resource_io::admit_typed_cloned_value(key)?;
                 Err(SchedulingReadError::NeedsPreparation(key.clone()).into())
             }
         }
@@ -632,7 +632,7 @@ impl ResidentSchedulingDomain {
             .visit_roots(true, 0, &self.coverage.required_keys, |key| {
                 if let Some(record) = self.lookup(key)? {
                     if let CanonicalSchedulingFact::TimerWake(wake) = &record.fact {
-                        crate::diagnostics::resource_io::admit_cloned_value(&wake.timer_id)?;
+                        crate::diagnostics::resource_io::admit_typed_cloned_value(&wake.timer_id)?;
                         let parent = self
                             .lookup(&SchedulingKey::new(SchedulingFamily::Timer, &wake.timer_id))?
                             .context("Scheduling Wake has no qualified Timer body")?;
@@ -778,8 +778,8 @@ impl ResidentSchedulingDomain {
                     .unwrap_or_else(|| r.clone())
             })
             .collect();
-        crate::diagnostics::resource_io::admit_cloned_value(&self.scope)?;
-        crate::diagnostics::resource_io::admit_cloned_value(&delta.coverage)?;
+        crate::diagnostics::resource_io::admit_typed_cloned_value(&self.scope)?;
+        crate::diagnostics::resource_io::admit_typed_cloned_value(&delta.coverage)?;
         let mut next = Self::bootstrap(
             self.scope.clone(),
             delta.coverage.clone(),
@@ -835,9 +835,9 @@ impl ResidentSchedulingDomain {
         admit_capture_vec::<Arc<QualifiedSchedulingFact>>(selected.len())?;
         let mut records = Vec::with_capacity(selected.len());
         records.extend(selected.iter().filter_map(|k| self.records.get(k).cloned()));
-        crate::diagnostics::resource_io::admit_cloned_value(&self.coverage)?;
+        crate::diagnostics::resource_io::admit_typed_cloned_value(&self.coverage)?;
         let mut coverage = self.coverage.clone();
-        crate::diagnostics::resource_io::admit_cloned_value(&request.required_keys)?;
+        crate::diagnostics::resource_io::admit_typed_cloned_value(&request.required_keys)?;
         coverage.required_keys = request.required_keys.clone();
         coverage.observations.retain(|o| selected.contains(&o.key));
         if !request.include_live {
@@ -868,7 +868,7 @@ impl ResidentSchedulingDomain {
                 records.iter(),
             )?);
         }
-        crate::diagnostics::resource_io::admit_cloned_value(&self.scope)?;
+        crate::diagnostics::resource_io::admit_typed_cloned_value(&self.scope)?;
         let capture_material =
             crate::diagnostics::resource_io::ResourceReadMaterial::active_guard()?;
         Ok(CapturedScheduling {
