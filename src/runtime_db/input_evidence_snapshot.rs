@@ -1734,6 +1734,21 @@ fn prepare_input_records_tx(
         if key.family != Family::ToolExecution
             && fingerprint.payload_bytes > request.byte_limit.saturating_sub(bytes)
         {
+            tracing::warn!(
+                agent_id = %scope.agent_id,
+                family = key.family.as_str(),
+                body_bytes = fingerprint.payload_bytes,
+                prepared_bytes = bytes,
+                byte_limit = request.byte_limit,
+                prepared_records = records.len(),
+                mandatory_roots = mandatory_roots.len(),
+                selected_keys = selected.len(),
+                turn_records = records.keys().filter(|key| key.family == Family::Turn).count(),
+                transcript_records = records.keys().filter(|key| key.family == Family::Transcript).count(),
+                tool_records = records.keys().filter(|key| key.family == Family::ToolExecution).count(),
+                depth,
+                "input evidence body exceeds preparation allowance"
+            );
             return Err(
                 InputEvidenceSnapshotError::ResourceExhausted("prepared body bytes").into(),
             );
