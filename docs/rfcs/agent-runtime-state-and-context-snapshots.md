@@ -236,6 +236,10 @@ metadata independently of a narrow prompt capture.
 Input qualification tracks the canonical payload and its actual dependency
 relationships. Observer revisions, such as a conversation display revision
 advanced by a queue status change, do not invalidate an unchanged input body.
+The original fixed capture includes the reader-required latest Attempt and
+terminal Turn candidates for each mandatory Message source, together with their
+ordinary typed closure. The source ordering index alone never grants those body
+IDs, and a later read cannot extend a sealed cut from raw history.
 A fixed upgrade checkpoint must include a body digest for records without a
 canonical content hash. A selected body is checked against that digest after
 its metadata and byte-budget preflight, before its first materialization.

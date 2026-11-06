@@ -53,3 +53,11 @@ Fresh records, late raw history, changed text/linkage, missing Events and other
 hash mismatches retain strict rejection. A prepared alias still freezes the
 full actual raw payload digest, and existing byte preflight/materialization
 bounds remain unchanged.
+
+The fixed Input capture must freeze the same latest Attempt and matching
+terminal Turn candidates that its ordinary reader requires for mandatory
+Message sources. A source ordering index alone grants no body access. Capture
+those exact bodies and their Outcome/Turn closure before sealing the original
+cut, using an already frozen source index when present. Do not retroactively
+extend a sealed checkpoint from current raw history; an installation already
+past the faulty cut requires a separately approved, backup-proven repair.

@@ -632,6 +632,19 @@ pub(super) fn capture_input_evidence_seed_tx(
     let (work_keys, execution_work_digest, execution_work_count, execution_work_bytes) =
         execution_work::capture_seed_tx(tx, seed_id, phase, &agent_id, &mandatory, &root_work_ids)?;
     selected.extend(work_keys);
+    if !captured_tables
+        .as_ref()
+        .is_some_and(|tables| !tables.contains("execution_protocol_attempts"))
+    {
+        let execution_keys =
+            execution::fixed_required_body_keys_tx(tx, seed_id, &agent_id, &mandatory)?;
+        extend_metadata_selection(
+            &mut selected,
+            &mut selected_bytes,
+            execution_keys.iter().cloned(),
+        )?;
+        extend_metadata_selection(&mut mandatory, &mut mandatory_bytes, execution_keys)?;
+    }
     let selected = metadata_closure(tx, &agent_id, selected, captured_tables.as_ref())?;
     let selected_count = selected.len();
     let mut bytes = 0usize;

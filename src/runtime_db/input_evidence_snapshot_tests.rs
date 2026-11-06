@@ -3275,3 +3275,74 @@ fn fresh_or_late_brief_cannot_borrow_legacy_linkage_proof() -> Result<()> {
     }
     Ok(())
 }
+
+#[test]
+fn fixed_mandatory_message_captures_its_settled_latest_attempt_and_outcome_bodies() -> Result<()> {
+    use crate::domain::execution_protocol::{ConversationOutcome, ExecutionOutcome};
+    let (_fresh_dir, fresh_db) = fresh()?;
+    let mut attempt = claim_only_attempt(&fresh_db)?;
+    attempt.state = ExecutionAttemptState::Settled;
+    attempt.terminal_outcome_id = Some("fixed-settled-outcome".into());
+    attempt.terminal_at = Some(time().to_rfc3339());
+    let (_directory, db) = legacy(|tx| {
+        let mut source = message("claim-source");
+        source.turn_id = Some("claim-turn".into());
+        let (source, _) = append_message_tx(tx, &source)?;
+        assert_eq!(source.message_seq, Some(attempt.source.generation));
+        let mut turn = TurnRecord::new("agent-a", "claim-turn", 1);
+        turn.created_at = time();
+        turn.input_message_ids.push(source.id.clone());
+        turn.trigger = Some(crate::types::TurnTriggerSummary::from_message(&source));
+        turn.terminal = Some(crate::types::TurnTerminalSummary {
+            kind: crate::types::TurnTerminalKind::Completed,
+            reason: None,
+            no_brief_reason: None,
+            completed_at: time(),
+            duration_ms: 1,
+        });
+        upsert_turn_record_tx(tx, &turn)?;
+        store_attempt(tx, &attempt)?;
+        let outcome = ExecutionOutcomeRecord {
+            outcome_id: attempt.terminal_outcome_id.clone().unwrap(),
+            attempt_id: attempt.attempt_id.clone(),
+            outcome: ExecutionOutcome::Conversation(ConversationOutcome::Replied),
+            created_at: time().to_rfc3339(),
+        };
+        tx.execute("INSERT INTO execution_protocol_outcomes(agent_id,outcome_id,attempt_id,payload_json) VALUES(?1,?2,?3,?4)",params![attempt.agent_id,outcome.outcome_id,outcome.attempt_id,serde_json::to_string(&outcome)?])?;
+        crate::runtime_db::repositories::upsert_queue_entry_tx(
+            tx,
+            &crate::types::QueueEntryRecord {
+                agent_id: "agent-a".into(),
+                message_id: source.id,
+                priority: Priority::Normal,
+                status: crate::types::QueueEntryStatus::Queued,
+                created_at: time(),
+                updated_at: time(),
+            },
+        )?;
+        Ok(())
+    })?;
+    let mut policy = request(InputWindowSelector::GlobalTurns, 1);
+    policy.windows.clear();
+    policy
+        .mandatory_roots
+        .insert(Key::new(Family::Message, "claim-source"));
+    let captured =
+        current(db.transaction(|tx| prepare_input_evidence_snapshot_tx(tx, &scope(), &policy))?)
+            .resident
+            .capture()?;
+    for (family, id) in [
+        (Family::Attempt, attempt.attempt_id.as_str()),
+        (Family::Outcome, "fixed-settled-outcome"),
+    ] {
+        assert!(captured
+            .records
+            .iter()
+            .any(|r| r.locator.key == Key::new(family, id)));
+    }
+    db.transaction(|tx| {
+        tx.execute("UPDATE execution_protocol_attempts SET payload_json=replace(payload_json,'fixed-settled-outcome','other-settled-outcome') WHERE attempt_id=?1",[&attempt.attempt_id])?;
+        assert!(load_input_evidence_snapshot_tx(tx,&scope(),&policy).is_err());
+        Ok(())
+    })
+}

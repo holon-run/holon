@@ -146,6 +146,49 @@ fn check_budget(count: usize, bytes: usize, record_limit: usize, byte_limit: usi
     }
     Ok(())
 }
+/// Freeze the bodies the ordinary reader requires for mandatory sources,
+/// not merely their ordering metadata. Existing fixed sources keep their cut.
+pub(super) fn fixed_required_body_keys_tx(
+    tx: &Transaction<'_>,
+    seed: &str,
+    agent: &str,
+    mandatory: &BTreeSet<Key>,
+) -> Result<BTreeSet<Key>> {
+    let mut sources = BTreeMap::new();
+    let mut count = 0usize;
+    let mut bytes = 0usize;
+    for key in mandatory.iter().filter(|key| key.family == Family::Message) {
+        let coverage = if let Some(fixed) = fixed_seed_source_on(
+            tx,
+            Some(seed),
+            &key.id,
+            MAX_RECORDS.saturating_sub(count),
+            MAX_METADATA_BYTES.saturating_sub(bytes),
+        )? {
+            fixed
+        } else {
+            let mut attempts =
+                source_raw_metadata(tx, agent, &key.id, MAX_RECORDS.saturating_sub(count))?;
+            let allocation_highwater = freeze_ordinals(&key.id, &mut attempts)?;
+            ExecutionSourceCoverage {
+                source_message_id: key.id.clone(),
+                revision: 0,
+                allocation_highwater,
+                attempts,
+            }
+        };
+        count = count.saturating_add(1 + coverage.attempts.len());
+        bytes = bytes.saturating_add(coverage.metadata_bytes()?);
+        check_budget(count, bytes, MAX_RECORDS, MAX_METADATA_BYTES)?;
+        sources.insert(key.id.clone(), coverage);
+    }
+    Ok(ExecutionInputCoverage {
+        sources,
+        ..Default::default()
+    }
+    .required_body_keys(mandatory))
+}
+
 /// Only a fixed seed actor calls this; a second phase cannot replace a source
 /// already frozen in that seed. Metadata grants no Attempt/Outcome body IDs.
 pub(super) fn capture_sources_tx(
