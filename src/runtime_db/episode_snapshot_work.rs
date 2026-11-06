@@ -238,7 +238,15 @@ pub(in crate::runtime_db::episode_snapshot) fn capture(
                         depth + 1,
                     )?;
                 }
-                inputs.wait_record(&wait);
+                if tables.is_none()
+                    || matches!(
+                        wait.status,
+                        crate::types::WaitConditionStatus::Active
+                            | crate::types::WaitConditionStatus::Triggered
+                    )
+                {
+                    inputs.wait_record(&wait);
+                }
             }
             "continuation" => {
                 let frame: WorkItemContinuationFrame = serde_json::from_str(&payload)?;

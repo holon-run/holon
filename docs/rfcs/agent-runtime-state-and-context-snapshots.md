@@ -792,6 +792,20 @@ original import actor's mandatory closure and actual received or changed
 records. A later body, duplicate append, or ordinary acquisition cannot grant
 old records new scope. Fresh durable identities start with empty coverage.
 
+At the fixed upgrade boundary, a persisted provider recovery whose semantic
+source linkage or binding fails current validation remains Message evidence;
+it does not grant its asserted WorkItem or source Episode ownership. Runtime
+recovery admission remains strict. Terminal Wait bodies also remain evidence,
+but their old Turn/trigger back-links are not new live continuation roots.
+Active or Triggered waits and independently proven execution/input references
+retain their required closure. Canonical scope/decoding failures and the existing
+closure resource limits still reject the upgrade. A pre-Turn interrupted claim
+with a quarantined exact source, matching terminal outcome and fences, no actual
+Turn or Run, and no assignment, current binding or recovery successor is not a
+live upgrade root. This neither rewrites its history nor mints an absent-Turn
+proof; an independent current reference retains strict qualification. See
+[the implementation decision](../implementation-decisions/legacy-recovery-upgrade-evidence.md).
+
 The latest completion head follows the canonical nonempty Result Brief query,
 including its deterministic timestamp and ID ordering. An explicit empty head
 is a proved observation; an absent index entry requires preparation. Head

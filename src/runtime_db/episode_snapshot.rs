@@ -1623,6 +1623,11 @@ fn collect_live_episode_roots_with_schema(
     for payload in root_payloads(connection, tables, "execution_protocol_attempts", "SELECT payload_json FROM execution_protocol_attempts WHERE agent_id = ?1 AND lifecycle_state != 'settled'", agent_id)? {
         let record: ExecutionAttempt = serde_json::from_str(&payload)?;
         ensure!(record.agent_id == agent_id, "execution attempt scope projection mismatch");
+        if let Some(tables) = tables {
+            if quarantined_unstarted_claim_is_closed(connection, &record, tables)? {
+                continue;
+            }
+        }
         collector.digest("attempt", &record.attempt_id, &payload)?;
         collector.attempt_record(&record);
     }
@@ -1697,6 +1702,140 @@ fn collect_live_episode_roots_with_schema(
             connection, agent_id, tables, None,
         )?);
     Ok(collector.roots)
+}
+
+// A quarantined pre-Turn claim has no remaining admission or recovery owner.
+// An independent current reference still resolves it through the strict closure.
+fn quarantined_unstarted_claim_is_closed(
+    connection: &Connection,
+    attempt: &ExecutionAttempt,
+    tables: &BTreeSet<String>,
+) -> Result<bool> {
+    if [
+        "turn_records",
+        "conversation_input_assignments",
+        "execution_protocol_attempts",
+        "agent_states",
+        "queue_entries",
+        "messages",
+        "execution_protocol_outcomes",
+    ]
+    .iter()
+    .any(|table| !tables.contains(*table))
+    {
+        return Ok(false);
+    }
+    use crate::domain::execution_protocol::{
+        ConversationOutcome, ExecutionAttemptState, ExecutionOutcome, ExecutionOutcomeRecord,
+        WorkItemOutcome,
+    };
+    if attempt.state != ExecutionAttemptState::Interrupted || attempt.run_id.is_some() {
+        return Ok(false);
+    }
+    let (Some(source), Some(turn), Some(outcome_id)) = (
+        attempt.source_message_id.as_deref(),
+        attempt.turn_id.as_deref(),
+        attempt.terminal_outcome_id.as_deref(),
+    ) else {
+        return Ok(false);
+    };
+    if !matches!(&attempt.source.identity,
+        ExecutionSourceIdentity::QueueMessage { message_id }
+            | ExecutionSourceIdentity::InternalFollowup { message_id } if message_id == source)
+    {
+        return Ok(false);
+    }
+    let has_owner: bool = connection.query_row(
+        "SELECT EXISTS(SELECT 1 FROM turn_records WHERE turn_id=?1)
+            OR EXISTS(SELECT 1 FROM conversation_input_assignments WHERE message_id=?2)
+            OR EXISTS(SELECT 1 FROM execution_protocol_attempts WHERE agent_id=?3 AND recovery_of_attempt_id=?4)",
+        params![turn, source, attempt.agent_id, attempt.attempt_id], |r|r.get(0),
+    )?;
+    if has_owner {
+        return Ok(false);
+    }
+    if let Some(state) = load_state(connection, &attempt.agent_id)?.0 {
+        if state.current_turn_id.as_deref() == Some(turn)
+            || state
+                .current_execution_binding
+                .as_ref()
+                .is_some_and(|binding| {
+                    binding.activation_id.as_deref() == Some(attempt.attempt_id.as_str())
+                        || binding.turn_id == turn
+                        || binding.source_message_id == source
+                })
+        {
+            return Ok(false);
+        }
+    }
+    let queue: Option<(String, String)> = connection
+        .query_row(
+            "SELECT status,payload_json FROM queue_entries WHERE agent_id=?1 AND message_id=?2",
+            params![attempt.agent_id, source],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .optional()?;
+    let Some((status, payload)) = queue else {
+        return Ok(false);
+    };
+    let queue: crate::types::QueueEntryRecord = serde_json::from_str(&payload)?;
+    ensure!(
+        queue.agent_id == attempt.agent_id
+            && queue.message_id == source
+            && serde_json::to_value(&queue.status)?.as_str() == Some(status.as_str()),
+        "quarantined claim Queue projection mismatch"
+    );
+    if queue.status != crate::types::QueueEntryStatus::Quarantined {
+        return Ok(false);
+    }
+    let message: Option<String> = connection
+        .query_row(
+            "SELECT payload_json FROM messages WHERE agent_id=?1 AND evidence_id=?2",
+            params![attempt.agent_id, source],
+            |r| r.get(0),
+        )
+        .optional()?;
+    let Some(message) = message else {
+        return Ok(false);
+    };
+    let message: MessageEnvelope = serde_json::from_str(&message)?;
+    ensure!(
+        message.agent_id == attempt.agent_id && message.id == source,
+        "quarantined claim Message projection mismatch"
+    );
+    if message.turn_id.as_deref() != Some(turn)
+        || message.message_seq != Some(attempt.source.generation)
+        || attempt.admitted_fences.source_revision != attempt.source.generation
+    {
+        return Ok(false);
+    }
+    let outcome: Option<String> = connection.query_row(
+        "SELECT payload_json FROM execution_protocol_outcomes WHERE agent_id=?1 AND attempt_id=?2 AND outcome_id=?3",
+        params![attempt.agent_id,attempt.attempt_id,outcome_id], |r|r.get(0),
+    ).optional()?;
+    let Some(outcome) = outcome else {
+        return Ok(false);
+    };
+    let outcome: ExecutionOutcomeRecord = serde_json::from_str(&outcome)?;
+    ensure!(
+        outcome.attempt_id == attempt.attempt_id && outcome.outcome_id == outcome_id,
+        "quarantined claim Outcome projection mismatch"
+    );
+    Ok(match (&attempt.binding, &outcome.outcome) {
+        (
+            ExecutionBinding::AgentLifecycle { agent_id },
+            ExecutionOutcome::Conversation(ConversationOutcome::Interrupted { .. }),
+        ) => agent_id == &attempt.agent_id,
+        (
+            ExecutionBinding::Conversation { .. },
+            ExecutionOutcome::Conversation(ConversationOutcome::Interrupted { .. }),
+        )
+        | (
+            ExecutionBinding::WorkItem { .. },
+            ExecutionOutcome::WorkItem(WorkItemOutcome::Interrupted { .. }),
+        ) => true,
+        _ => false,
+    })
 }
 
 fn root_table_available(tables: Option<&BTreeSet<String>>, table: &str) -> bool {
@@ -1805,7 +1944,16 @@ fn expand_episode_root_refs(
                     record.agent_id == agent_id && record.id == id,
                     "wait continuity projection mismatch"
                 );
-                collector.wait_record(&record);
+                // A terminal Wait is evidence, not another live continuation.
+                if tables.is_none()
+                    || matches!(
+                        record.status,
+                        crate::types::WaitConditionStatus::Active
+                            | crate::types::WaitConditionStatus::Triggered
+                    )
+                {
+                    collector.wait_record(&record);
+                }
             }
             "attempt" => {
                 let record: ExecutionAttempt = serde_json::from_str(&payload)?;
@@ -1821,6 +1969,29 @@ fn expand_episode_root_refs(
                     message.agent_id == agent_id && message.id == id,
                     "message continuity projection mismatch"
                 );
+                if let Ok(Some((source_turn_id, source_message_id, terminal_kind))) =
+                    crate::runtime::provider_recovery::continuity_sources(&message)
+                {
+                    match collect_provider_recovery_refs(
+                        connection,
+                        &message,
+                        &source_turn_id,
+                        &source_message_id,
+                        terminal_kind,
+                        collector,
+                    ) {
+                        Ok(()) => {}
+                        Err(error)
+                            if tables.is_some()
+                                && error.is::<ProviderRecoveryContinuityMismatch>() =>
+                        {
+                            // Freeze the rejected Message, not its asserted owners.
+                            // Runtime admission must still reject this old directive.
+                            continue;
+                        }
+                        Err(error) => return Err(error),
+                    }
+                }
                 collector.work_item(message.work_item_id.as_deref());
                 // A preallocated/replay hint grants no old Turn. Historical
                 // schemas without assignments have no proven owning edge.
@@ -1843,20 +2014,6 @@ fn expand_episode_root_refs(
                 collector.optional_ref("task", message.task_id.as_deref());
                 for source_ref in message.source_refs.values() {
                     collector.source_ref(source_ref);
-                }
-                // A typed Message may carry invalid recovery authority. Its
-                // scheduler rejection must remain reachable after cutover.
-                if let Ok(Some((source_turn_id, source_message_id, terminal_kind))) =
-                    crate::runtime::provider_recovery::continuity_sources(&message)
-                {
-                    collect_provider_recovery_refs(
-                        connection,
-                        &message,
-                        &source_turn_id,
-                        &source_message_id,
-                        terminal_kind,
-                        collector,
-                    )?;
                 }
             }
             "turn" => {
@@ -1926,6 +2083,10 @@ fn expand_episode_root_refs(
     collector.ensure_budget()
 }
 
+#[derive(Debug, thiserror::Error)]
+#[error("{0}")]
+struct ProviderRecoveryContinuityMismatch(&'static str);
+
 // Trusted directive fields are raw IDs, unlike generic RuntimeRef source values.
 // Resolve their canonical linkage on this same migration/import read snapshot.
 fn collect_provider_recovery_refs(
@@ -1955,16 +2116,19 @@ fn collect_provider_recovery_refs(
     ensure!(
         source_message.agent_id == recovery.agent_id
             && source_message.id == source_message_id
-            && source_message.turn_id.as_deref() == Some(source_turn_id)
             && source_turn.agent_id == recovery.agent_id
-            && source_turn.turn_id == source_turn_id
+            && source_turn.turn_id == source_turn_id,
+        "provider recovery continuity source projection mismatch"
+    );
+    ensure!(
+        source_message.turn_id.as_deref() == Some(source_turn_id)
             && source_turn
                 .trigger
                 .as_ref()
                 .and_then(|trigger| trigger.message_id.as_deref())
                 == Some(source_message_id)
             && source_turn.terminal.as_ref().map(|terminal| terminal.kind) == Some(terminal_kind),
-        "provider recovery continuity source linkage mismatch"
+        ProviderRecoveryContinuityMismatch("provider recovery continuity source linkage mismatch")
     );
     let mut statement = connection.prepare(
         "SELECT a.payload_json FROM execution_protocol_attempts a
@@ -1982,9 +2146,15 @@ fn collect_provider_recovery_refs(
     let mut predecessors = rows.collect::<rusqlite::Result<Vec<_>>>()?;
     ensure!(
         predecessors.len() == 1,
-        "provider recovery continuity predecessor is missing or ambiguous"
+        ProviderRecoveryContinuityMismatch(
+            "provider recovery continuity predecessor is missing or ambiguous"
+        )
     );
     let predecessor: ExecutionAttempt = serde_json::from_str(&predecessors.remove(0))?;
+    ensure!(
+        predecessor.agent_id == recovery.agent_id,
+        "provider recovery continuity predecessor scope mismatch"
+    );
     let owner = match &predecessor.binding {
         ExecutionBinding::WorkItem { work_item_id } => crate::types::TurnOwner::WorkItem {
             work_item_id: work_item_id.clone(),
@@ -2000,12 +2170,11 @@ fn collect_provider_recovery_refs(
         ExecutionBinding::Command => crate::types::TurnOwner::Command,
     };
     ensure!(
-        predecessor.agent_id == recovery.agent_id
-            && predecessor.source_message_id.as_deref() == Some(source_message_id)
+        predecessor.source_message_id.as_deref() == Some(source_message_id)
             && predecessor.turn_id.as_deref() == Some(source_turn_id)
             && source_turn.owner.as_ref() == Some(&owner)
             && recovery.work_item_id.as_deref() == owner.work_item_id(),
-        "provider recovery continuity binding mismatch"
+        ProviderRecoveryContinuityMismatch("provider recovery continuity binding mismatch")
     );
     collector.reference("attempt", &predecessor.attempt_id);
     collector.reference("turn", source_turn_id);
@@ -2581,6 +2750,13 @@ mod tests {
     }
 
     fn recovery_fixture(queued_only: bool) -> Fixture {
+        recovery_fixture_with(queued_only, |_, _| {})
+    }
+
+    fn recovery_fixture_with(
+        queued_only: bool,
+        mutate: impl FnOnce(&Transaction<'_>, &mut MessageEnvelope),
+    ) -> Fixture {
         Fixture::legacy(|tx| {
             upsert_agent_identity_tx(tx, &identity("agent-a")).unwrap();
             upsert_agent_state_tx(tx, &state("agent-a")).unwrap();
@@ -2670,6 +2846,7 @@ mod tests {
                 "fallback_model_ref": "openai/gpt-5.4", "source_message_id": root.id,
                 "source_turn_id": turn.turn_id, "source_terminal_kind": "deferred_to_fallback", "source_round": 1,
             }}));
+            mutate(tx, &mut recovery);
             let recovery = crate::runtime_db::evidence::append_message_tx(tx, &recovery)
                 .unwrap()
                 .0;
@@ -2733,6 +2910,289 @@ mod tests {
             .episodes
             .iter()
             .any(|episode| episode.id == "recovery-root-episode"));
+    }
+
+    fn assert_rejected_recovery_is_frozen(fixture: &Fixture, expected: &str) {
+        assert!(!fixture
+            .current("agent-a", 1, 30)
+            .episodes
+            .iter()
+            .any(|episode| episode.id == "recovery-root-episode"));
+        fixture.db.read_for_preparation(|tx| {
+            let roots_json: String = tx.query_row(
+                "SELECT roots_json FROM episode_continuity_seeds WHERE agent_id='agent-a'",
+                [], |row| row.get(0),
+            )?;
+            let roots: EpisodeContinuityRoots = serde_json::from_str(&roots_json)?;
+            assert!(roots.record_digests.contains_key("message:queued-recovery"));
+            assert!(!roots.source_refs.contains("episode:recovery-root-episode"));
+            assert!(!roots.work_item_ids.contains("asserted-work"));
+
+            let mut protocol = crate::domain::execution_protocol::ExecutionProtocolState::empty("agent-a");
+            for payload in payloads(tx,
+                "SELECT payload_json FROM execution_protocol_attempts WHERE agent_id=?1", "agent-a")? {
+                let attempt: ExecutionAttempt = serde_json::from_str(&payload)?;
+                protocol.attempts.insert(attempt.attempt_id.clone(), attempt);
+            }
+            for payload in payloads(tx,
+                "SELECT payload_json FROM execution_protocol_outcomes WHERE agent_id=?1", "agent-a")? {
+                let outcome: crate::domain::execution_protocol::ExecutionOutcomeRecord = serde_json::from_str(&payload)?;
+                protocol.outcomes.insert(outcome.outcome_id.clone(), outcome);
+            }
+            let recovery: MessageEnvelope = serde_json::from_str(&tx.query_row(
+                "SELECT payload_json FROM messages WHERE agent_id='agent-a' AND evidence_id='queued-recovery'",
+                [], |row| row.get::<_, String>(0),
+            )?)?;
+            let error = crate::runtime::provider_recovery::resolve_with(
+                &recovery, &protocol,
+                |id| tx.query_row("SELECT payload_json FROM messages WHERE agent_id='agent-a' AND evidence_id=?1",
+                    [id], |row| row.get::<_, String>(0)).optional()?.map(|payload| serde_json::from_str(&payload).map_err(anyhow::Error::from)).transpose(),
+                |id| tx.query_row("SELECT payload_json FROM turn_records WHERE agent_id='agent-a' AND turn_id=?1",
+                    [id], |row| row.get::<_, String>(0)).optional()?.map(|payload| serde_json::from_str(&payload).map_err(anyhow::Error::from)).transpose(),
+            ).unwrap_err();
+            assert!(error.to_string().contains(expected), "{error:#}");
+            let error = collect_live_episode_roots(tx, "agent-a").unwrap_err();
+            assert!(error.is::<ProviderRecoveryContinuityMismatch>(), "{error:#}");
+            Ok(())
+        }).unwrap();
+    }
+
+    #[test]
+    fn upgrade_freezes_recovery_binding_rejection_without_adopting_its_asserted_owners() {
+        let fixture = recovery_fixture_with(true, |_, recovery| {
+            recovery.work_item_id = Some("asserted-work".into());
+        });
+        assert_rejected_recovery_is_frozen(&fixture, "provider recovery binding mismatch");
+        fixture.db.read_for_preparation(|tx| {
+            let work: String = tx.query_row(
+                "SELECT work_item_id FROM messages WHERE agent_id='agent-a' AND evidence_id='queued-recovery'",
+                [], |row| row.get(0),
+            )?;
+            assert_eq!(work, "asserted-work", "upgrade must not rewrite recovery authority");
+            Ok(())
+        }).unwrap();
+    }
+
+    #[test]
+    fn upgrade_keeps_missing_legacy_turn_owner_rejected_without_backfilling_it() {
+        let fixture = recovery_fixture_with(true, |tx, _| {
+            tx.execute("UPDATE turn_records SET owner_kind=NULL, owner_id=NULL,
+                payload_json=json_remove(payload_json,'$.owner') WHERE agent_id='agent-a' AND turn_id='root-turn'", []).unwrap();
+            tx.execute(
+                "UPDATE execution_protocol_attempts SET payload_json=json_set(payload_json,
+                '$.binding',json('{\"kind\":\"agent_lifecycle\",\"agent_id\":\"agent-a\"}'))
+                WHERE agent_id='agent-a' AND attempt_id='settled-predecessor'",
+                [],
+            )
+            .unwrap();
+        });
+        assert_rejected_recovery_is_frozen(&fixture, "provider recovery binding mismatch");
+    }
+
+    #[test]
+    fn upgrade_keeps_ambiguous_recovery_predecessors_rejected() {
+        let fixture = recovery_fixture_with(true, |tx, _| {
+            tx.execute("INSERT INTO execution_protocol_attempts SELECT agent_id,'other-predecessor',
+                lifecycle_state,source_identity_json,source_generation,recovery_of_attempt_id,'other-outcome',
+                json_set(payload_json,'$.attempt_id','other-predecessor','$.terminal_outcome_id','other-outcome')
+                FROM execution_protocol_attempts WHERE attempt_id='settled-predecessor'", []).unwrap();
+            tx.execute("INSERT INTO execution_protocol_outcomes SELECT agent_id,'other-outcome','other-predecessor',
+                json_set(payload_json,'$.outcome_id','other-outcome','$.attempt_id','other-predecessor')
+                FROM execution_protocol_outcomes WHERE outcome_id='root-outcome'", []).unwrap();
+        });
+        assert_rejected_recovery_is_frozen(&fixture, "provider recovery predecessor ambiguous");
+    }
+
+    #[test]
+    fn upgrade_does_not_hide_malformed_recovery_source_payload() {
+        let fixture = recovery_fixture(true);
+        fixture.db.transaction(|tx| {
+            tx.execute("UPDATE turn_records SET payload_json='{}' WHERE agent_id='agent-a' AND turn_id='root-turn'", [])?;
+            let tables = tx.prepare("SELECT name FROM sqlite_master WHERE type='table'")?
+                .query_map([], |row| row.get::<_, String>(0))?
+                .collect::<rusqlite::Result<BTreeSet<_>>>()?;
+            let error = collect_live_episode_roots_with_schema(tx, "agent-a", Some(&tables)).unwrap_err();
+            assert!(!error.is::<ProviderRecoveryContinuityMismatch>(), "{error:#}");
+            assert!(error.to_string().contains("missing field"), "{error:#}");
+            Ok(())
+        }).unwrap();
+    }
+
+    #[test]
+    fn upgrade_does_not_hide_foreign_recovery_source_projection() {
+        let fixture = recovery_fixture(true);
+        fixture.db.transaction(|tx| {
+            tx.execute("UPDATE turn_records SET payload_json=json_set(payload_json,'$.agent_id','foreign-agent')
+                WHERE agent_id='agent-a' AND turn_id='root-turn'", [])?;
+            let tables = tx.prepare("SELECT name FROM sqlite_master WHERE type='table'")?
+                .query_map([], |row| row.get::<_, String>(0))?
+                .collect::<rusqlite::Result<BTreeSet<_>>>()?;
+            let error = collect_live_episode_roots_with_schema(tx, "agent-a", Some(&tables)).unwrap_err();
+            assert!(!error.is::<ProviderRecoveryContinuityMismatch>(), "{error:#}");
+            assert!(error.to_string().contains("source projection mismatch"), "{error:#}");
+            Ok(())
+        }).unwrap();
+    }
+
+    fn historical_wait_chain_fixture(first_active: bool) -> Fixture {
+        Fixture::legacy(|tx| {
+            upsert_agent_identity_tx(tx, &identity("agent-a")).unwrap();
+            let mut agent = state("agent-a");
+            agent.current_turn_id = Some("history-turn-0".into());
+            upsert_agent_state_tx(tx, &agent).unwrap();
+            for index in 0..72 {
+                let mut turn =
+                    TurnRecord::new("agent-a", &format!("history-turn-{index}"), index + 1);
+                turn.waiting_condition_ids
+                    .push(format!("history-wait-{index}"));
+                turn.terminal = Some(crate::types::TurnTerminalSummary {
+                    kind: crate::types::TurnTerminalKind::Completed,
+                    reason: None,
+                    no_brief_reason: None,
+                    completed_at: time(),
+                    duration_ms: 0,
+                });
+                crate::runtime_db::repositories::upsert_turn_record_tx(tx, &turn).unwrap();
+                let wait: WaitConditionRecord = serde_json::from_value(serde_json::json!({
+                    "id": format!("history-wait-{index}"), "agent_id": "agent-a",
+                    "status": if first_active && index == 0 { "active" } else { "resolved" },
+                    "kind": "operator", "waiting_for": "fixture", "wake_sources": [],
+                    "created_at": time(), "updated_at": time(),
+                    "turn_id": (index < 71).then(|| format!("history-turn-{}", index + 1)),
+                }))
+                .unwrap();
+                tx.execute("INSERT INTO wait_conditions(wait_condition_id,agent_id,status,kind,
+                    waiting_for,created_at,updated_at,payload_json) VALUES(?1,'agent-a',?2,'operator','fixture',?3,?3,?4)",
+                    params![wait.id, if first_active && index == 0 { "active" } else { "resolved" },
+                        time().to_rfc3339(), serde_json::to_string(&wait).unwrap()]).unwrap();
+            }
+            import_complete(tx);
+        })
+    }
+
+    #[test]
+    fn upgrade_keeps_terminal_wait_evidence_without_unbounded_historical_backlinks() {
+        let fixture = historical_wait_chain_fixture(false);
+        fixture
+            .db
+            .read_for_preparation(|tx| {
+                let roots_json: String = tx.query_row(
+                    "SELECT roots_json FROM episode_continuity_seeds WHERE agent_id='agent-a'",
+                    [],
+                    |r| r.get(0),
+                )?;
+                let roots: EpisodeContinuityRoots = serde_json::from_str(&roots_json)?;
+                assert!(roots.record_digests.contains_key("wait:history-wait-0"));
+                assert!(!roots.record_digests.contains_key("turn:history-turn-1"));
+                let error = collect_live_episode_roots(tx, "agent-a").unwrap_err();
+                assert_eq!(
+                    error.downcast_ref::<EpisodeSnapshotError>(),
+                    Some(&EpisodeSnapshotError::ClosureResourceExhausted {
+                        limit: "reference depth"
+                    })
+                );
+                Ok(())
+            })
+            .unwrap();
+    }
+
+    #[test]
+    fn upgrade_still_expands_active_waits_into_their_actual_continuations() {
+        let fixture = historical_wait_chain_fixture(true);
+        fixture
+            .db
+            .read_for_preparation(|tx| {
+                let roots_json: String = tx.query_row(
+                    "SELECT roots_json FROM episode_continuity_seeds WHERE agent_id='agent-a'",
+                    [],
+                    |r| r.get(0),
+                )?;
+                let roots: EpisodeContinuityRoots = serde_json::from_str(&roots_json)?;
+                assert!(roots.record_digests.contains_key("wait:history-wait-0"));
+                assert!(roots.record_digests.contains_key("turn:history-turn-1"));
+                assert!(roots.record_digests.contains_key("wait:history-wait-1"));
+                assert!(!roots.record_digests.contains_key("turn:history-turn-2"));
+                Ok(())
+            })
+            .unwrap();
+    }
+
+    #[test]
+    fn upgrade_does_not_mint_turn_proof_for_a_closed_quarantined_pre_turn_claim() {
+        let fixture = Fixture::legacy(|tx| {
+            upsert_agent_identity_tx(tx, &identity("agent-a")).unwrap();
+            upsert_agent_state_tx(tx, &state("agent-a")).unwrap();
+            let mut source = MessageEnvelope::new(
+                "agent-a",
+                crate::types::MessageKind::SystemTick,
+                crate::types::MessageOrigin::System {
+                    subsystem: "fixture".into(),
+                },
+                crate::types::AuthorityClass::RuntimeInstruction,
+                crate::types::Priority::Normal,
+                crate::types::MessageBody::Text {
+                    text: "fixture".into(),
+                },
+            );
+            source.id = "quarantined-source".into();
+            source.turn_id = Some("never-started-turn".into());
+            let source = crate::runtime_db::evidence::append_message_tx(tx, &source)
+                .unwrap()
+                .0;
+            let queue = crate::types::QueueEntryRecord {
+                message_id: source.id.clone(),
+                agent_id: source.agent_id.clone(),
+                priority: source.priority,
+                status: crate::types::QueueEntryStatus::Quarantined,
+                created_at: time(),
+                updated_at: time(),
+            };
+            tx.execute("INSERT INTO queue_entries(message_id,agent_id,priority,status,created_at,updated_at,payload_json)
+                VALUES(?1,'agent-a','normal','quarantined',?2,?2,?3)",
+                params![source.id,time().to_rfc3339(),serde_json::to_string(&queue).unwrap()]).unwrap();
+            let attempt: ExecutionAttempt = serde_json::from_value(serde_json::json!({
+                "attempt_id":"closed-claim","agent_id":"agent-a","source_message_id":source.id,
+                "source":{"identity":{"kind":"queue_message","message_id":source.id},"generation":source.message_seq.unwrap()},
+                "binding":{"kind":"agent_lifecycle","agent_id":"agent-a"},
+                "provenance":{"origin":"system","trust":"runtime_instruction","priority":"normal"},
+                "admitted_fences":{"source_revision":source.message_seq.unwrap(),"agent_control_revision":1,"host_registry_revision":1},
+                "state":"interrupted","turn_id":"never-started-turn","terminal_outcome_id":"closed-outcome","admitted_at":time().to_rfc3339()
+            })).unwrap();
+            insert_attempt(tx, &attempt);
+            tx.execute("INSERT INTO execution_protocol_outcomes(agent_id,outcome_id,attempt_id,payload_json)
+                VALUES('agent-a','closed-outcome','closed-claim',?1)",
+                [serde_json::json!({"outcome_id":"closed-outcome","attempt_id":"closed-claim",
+                    "outcome":{"owner":"conversation","outcome":{"kind":"interrupted","reason":"fixture"}},
+                    "created_at":time().to_rfc3339()}).to_string()]).unwrap();
+            import_complete(tx);
+        });
+        fixture.db.transaction(|tx| {
+            let roots: String = tx.query_row("SELECT roots_json FROM episode_continuity_seeds WHERE agent_id='agent-a'", [], |r|r.get(0))?;
+            let roots: EpisodeContinuityRoots = serde_json::from_str(&roots)?;
+            assert!(!roots.record_digests.contains_key("attempt:closed-claim"));
+            let proof_count: usize = tx.query_row("SELECT count(*) FROM input_evidence_seed_attempt_turns WHERE attempt_id='closed-claim'", [], |r|r.get(0))?;
+            assert_eq!(proof_count, 0, "no authority is invented from a missing Turn");
+            let payload: String = tx.query_row("SELECT payload_json FROM execution_protocol_attempts WHERE attempt_id='closed-claim'", [], |r|r.get(0))?;
+            let attempt: ExecutionAttempt = serde_json::from_str(&payload)?;
+            let tables = tx.prepare("SELECT name FROM sqlite_master WHERE type='table'")?
+                .query_map([], |r|r.get::<_,String>(0))?.collect::<rusqlite::Result<BTreeSet<_>>>()?;
+            assert!(quarantined_unstarted_claim_is_closed(tx, &attempt, &tables)?);
+            let mut started = attempt.clone(); started.run_id = Some("actual-run".into());
+            assert!(!quarantined_unstarted_claim_is_closed(tx, &started, &tables)?);
+            let mut changed = attempt.clone(); changed.admitted_fences.source_revision += 1;
+            assert!(!quarantined_unstarted_claim_is_closed(tx, &changed, &tables)?);
+            let mut other_source = attempt.clone();
+            other_source.source.identity = ExecutionSourceIdentity::QueueMessage { message_id: "different-source".into() };
+            assert!(!quarantined_unstarted_claim_is_closed(tx, &other_source, &tables)?);
+            let mut independent = RootCollector::default();
+            independent.reference("attempt", "closed-claim");
+            expand_episode_root_refs(tx, "agent-a", &mut independent, Some(&tables))?;
+            assert!(independent.roots.record_digests.contains_key("attempt:closed-claim"),
+                "an independent live reference cannot be dropped");
+            tx.execute("UPDATE queue_entries SET status='queued',payload_json=json_set(payload_json,'$.status','queued') WHERE message_id='quarantined-source'", [])?;
+            assert!(!quarantined_unstarted_claim_is_closed(tx, &attempt, &tables)?, "live input must keep its attempt");
+            Ok(())
+        }).unwrap();
     }
 
     #[test]
