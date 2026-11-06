@@ -41,6 +41,90 @@ async fn fixture() -> Result<(tempfile::TempDir, RuntimeHost)> {
     Ok((home, host))
 }
 
+#[tokio::test]
+async fn cold_state_closure_does_not_decode_historical_dispatch_bodies() -> Result<()> {
+    let (_home, host) = fixture().await?;
+    let connection = host.runtime_db().connection()?;
+    // These deliberately unreadable historical rows distinguish observer facts
+    // from the complete protocol audit. The observer must not open these bodies.
+    connection.execute("INSERT INTO execution_protocol_attempts (agent_id,attempt_id,lifecycle_state,source_identity_json,source_generation,payload_json) VALUES ('web','settled-history','settled','{}',1,'{}')",[])?;
+    connection.execute("INSERT INTO execution_protocol_outcomes (agent_id,outcome_id,attempt_id,payload_json) VALUES ('web','historical-outcome','settled-history','{}')",[])?;
+    connection.execute("INSERT INTO execution_protocol_work_items (agent_id,work_item_id,source_revision,generation,lifecycle_state,payload_json) VALUES ('web','completed-history',1,1,'terminal','{}')",[])?;
+    drop(connection);
+    let projection = host
+        .operator_agent_state_projection("web", 50, 50)
+        .await
+        .map_err(|error| anyhow!("{error:?}"))?;
+    assert_eq!(
+        projection.agent.scheduling_posture.posture,
+        AgentSchedulingPosture::Idle
+    );
+    let router = crate::http::router(crate::http::AppState::for_tcp(host));
+    use tower::ServiceExt;
+    let response = router
+        .oneshot(
+            axum::http::Request::builder()
+                .uri("/api/agents/web/state")
+                .body(axum::body::Body::empty())?,
+        )
+        .await?;
+    assert_eq!(response.status(), axum::http::StatusCode::OK);
+    Ok(())
+}
+
+#[tokio::test]
+async fn roster_uses_per_agent_allowances_and_retains_them_through_last_wire_owner() -> Result<()> {
+    let (_home, host) = fixture().await?;
+    for index in 0..16 {
+        let id = format!("history-{index}");
+        host.create_named_agent(&id, None).await?;
+        let mut state = AgentState::new(&id);
+        state.status = AgentStatus::AwakeIdle;
+        state.working_memory.current_working_memory.recent_decisions =
+            vec!["retained metadata".into(); 512];
+        host.runtime_db()
+            .agent_states()
+            .upsert_for_fixture(&state)?;
+    }
+    let mut snapshot = host.agent_roster_snapshot()?;
+    assert_eq!(snapshot.agents.len(), 17);
+    assert_eq!(snapshot.agent_materials.len(), 17);
+    assert!(
+        snapshot
+            .agent_materials
+            .iter()
+            .map(|source| source.finish().unwrap().1)
+            .sum::<usize>()
+            > 65536
+    );
+    assert!(snapshot
+        .agent_materials
+        .iter()
+        .all(|source| source.finish().unwrap().1 <= 65536));
+    let sources = std::mem::take(&mut snapshot.agent_materials);
+    let weak = sources
+        .iter()
+        .map(|source| source.guard().map(|guard| Arc::downgrade(&guard)))
+        .collect::<Result<Vec<_>>>()?;
+    let bytes = crate::host::observer_json_bytes_with_sources(
+        &snapshot
+            .agents
+            .iter()
+            .map(|entry| &entry.agent)
+            .collect::<Vec<_>>(),
+        snapshot.acquisition.clone(),
+        sources,
+    )?;
+    drop(snapshot);
+    assert!(weak.iter().all(|guard| guard.upgrade().is_some()));
+    let last = bytes.clone();
+    drop(bytes);
+    assert!(weak.iter().all(|guard| guard.upgrade().is_some()));
+    drop(last);
+    assert!(weak.iter().all(|guard| guard.upgrade().is_none()));
+    Ok(())
+}
+
 fn snapshot_entry(
     host: &RuntimeHost,
     roster: bool,

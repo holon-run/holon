@@ -391,6 +391,7 @@ pub async fn agent_roster_snapshot(
                     // and serialization. Before this move, rejection drops the holder
                     // last as part of the original snapshot.
                     let _material = snapshot._material;
+                    let agent_materials = snapshot.agent_materials;
                     let acquisition = snapshot.acquisition;
                     let snapshot = acquisition
                         .read(|| {
@@ -442,9 +443,13 @@ pub async fn agent_roster_snapshot(
                         .map_err(error_response)
                         .map_err(ProjectionFailure::from)?;
                     let agent_count = snapshot.agents.len();
-                    let bytes = crate::host::observer_json_bytes(&snapshot, acquisition)
-                        .map_err(error_response)
-                        .map_err(ProjectionFailure::from)?;
+                    let bytes = crate::host::observer_json_bytes_with_sources(
+                        &snapshot,
+                        acquisition,
+                        agent_materials,
+                    )
+                    .map_err(error_response)
+                    .map_err(ProjectionFailure::from)?;
                     if bytes.len() > limits.max_serialized_bytes {
                         return Err(ProjectionFailure::from(http_error(
                             StatusCode::PAYLOAD_TOO_LARGE,

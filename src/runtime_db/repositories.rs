@@ -2663,6 +2663,21 @@ impl ExternalTriggerRepository<'_> {
         })
     }
 
+    pub(crate) fn active_for_agent(&self, agent_id: &str) -> Result<Vec<ExternalTriggerRecord>> {
+        self.db.with_read(|connection| {
+            let mut statement = connection.prepare("SELECT payload_json FROM external_triggers WHERE target_agent_id=?1 AND status='active' ORDER BY created_at DESC, external_trigger_id ASC")?;
+            let mut rows = statement.query([agent_id])?;
+            let mut records = Vec::new();
+            while let Some(row) = rows.next()? {
+                reserve_source_vec_slot(&mut records)?;
+                let payload = row.get_ref(0)?.as_str()?;
+                crate::diagnostics::resource_io::admit_typed_json_payload(payload)?;
+                records.push(decode_external_trigger_payload(payload)?);
+            }
+            Ok(records)
+        })
+    }
+
     pub fn active_default_for_agent(
         &self,
         agent_id: &str,

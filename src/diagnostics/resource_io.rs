@@ -64,6 +64,17 @@ pub(crate) struct ResourceReadBudget {
     _thread: PhantomData<Rc<()>>,
 }
 impl ResourceReadMaterial {
+    pub(crate) fn current() -> anyhow::Result<Option<Self>> {
+        ACTIVE
+            .with(|slot| slot.borrow().clone())
+            .map(|active| {
+                let material = Self { active };
+                material.finish()?;
+                Ok(material)
+            })
+            .transpose()
+    }
+
     /// Reserve an owning result's independent copy before cloning its fields.
     /// The copy neither retains its source acquisition nor inherits TLS.
     pub(crate) fn fork_owned(&self) -> Self {

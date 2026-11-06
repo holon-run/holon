@@ -17,6 +17,7 @@ impl RuntimeHost {
 pub(crate) struct ObserverWire {
     bytes: Vec<u8>,
     _material: ResourceReadMaterial,
+    _sources: Vec<ResourceReadMaterial>,
 }
 
 impl AsRef<[u8]> for ObserverWire {
@@ -29,6 +30,17 @@ pub(crate) fn observer_json_bytes<T: serde::Serialize>(
     value: &T,
     material: ResourceReadMaterial,
 ) -> Result<tokio_util::bytes::Bytes> {
+    observer_json_bytes_with_sources(value, material, Vec::new())
+}
+
+pub(crate) fn observer_json_bytes_with_sources<T: serde::Serialize>(
+    value: &T,
+    material: ResourceReadMaterial,
+    sources: Vec<ResourceReadMaterial>,
+) -> Result<tokio_util::bytes::Bytes> {
+    for source in &sources {
+        source.finish()?;
+    }
     let bytes = material.read(|| {
         let size = crate::runtime::input_evidence_budget::serialized_bytes(value)?;
         resource_io::charge_owned_payload(size)?;
@@ -45,6 +57,7 @@ pub(crate) fn observer_json_bytes<T: serde::Serialize>(
     Ok(tokio_util::bytes::Bytes::from_owner(ObserverWire {
         bytes,
         _material: material,
+        _sources: sources,
     }))
 }
 
@@ -80,5 +93,6 @@ pub(crate) fn observer_hint_bytes(
     Ok(tokio_util::bytes::Bytes::from_owner(ObserverWire {
         bytes,
         _material: material,
+        _sources: Vec::new(),
     }))
 }

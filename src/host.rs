@@ -5,7 +5,9 @@ pub(crate) use task_stop_original::OriginalTaskStopMetadataRead;
 mod agent_list_read;
 mod cold_summary;
 mod observer_read;
-pub(crate) use observer_read::{observer_hint_bytes, observer_json_bytes};
+pub(crate) use observer_read::{
+    observer_hint_bytes, observer_json_bytes, observer_json_bytes_with_sources,
+};
 mod child_monitor_binding;
 mod child_task_producer;
 #[cfg(holon_lib_test_shard = "d")]
@@ -148,6 +150,7 @@ pub(crate) struct AgentRosterSnapshotData {
     pub agents: Vec<AgentRosterEntryData>,
     pub(crate) _material: Option<Arc<crate::runtime::input_evidence_budget::BudgetViewGuard>>,
     pub(crate) acquisition: crate::diagnostics::resource_io::ResourceReadMaterial,
+    pub(crate) agent_materials: Vec<crate::diagnostics::resource_io::ResourceReadMaterial>,
 }
 
 impl Clone for AgentRosterSnapshotData {
@@ -161,6 +164,11 @@ impl Clone for AgentRosterSnapshotData {
             agents: self.agents.clone(),
             _material: material,
             acquisition,
+            agent_materials: self
+                .agent_materials
+                .iter()
+                .map(|material| material.fork_owned())
+                .collect(),
         }
     }
 }
@@ -7348,8 +7356,11 @@ impl RuntimeHost {
     /// canonical state instead of in-memory runtime watchers.
     #[cfg(test)]
     pub(crate) fn agent_roster_snapshot(&self) -> Result<AgentRosterSnapshotData> {
+        let per_agent = crate::diagnostics::resource_io::ResourceReadMaterial::current()?.is_none();
         let acquisition = self.observer_inventory_material()?;
-        acquisition.read(|| self.agent_roster_snapshot_in(&acquisition))
+        acquisition.read(|| {
+            self.agent_roster_snapshot_in_scoped(&acquisition, self.runtime_db(), per_agent)
+        })
     }
 
     pub(crate) fn agent_roster_snapshot_scoped(
@@ -7357,27 +7368,22 @@ impl RuntimeHost {
         db: &RuntimeDb,
     ) -> Result<AgentRosterSnapshotData> {
         db.check_read_scope()?;
+        let per_agent = crate::diagnostics::resource_io::ResourceReadMaterial::current()?.is_none();
         let acquisition = self.observer_inventory_material()?;
-        acquisition.read(|| self.agent_roster_snapshot_in_scoped(&acquisition, db))
-    }
-
-    #[cfg(test)]
-    fn agent_roster_snapshot_in(
-        &self,
-        acquisition: &crate::diagnostics::resource_io::ResourceReadMaterial,
-    ) -> Result<AgentRosterSnapshotData> {
-        self.agent_roster_snapshot_in_scoped(acquisition, self.runtime_db())
+        acquisition.read(|| self.agent_roster_snapshot_in_scoped(&acquisition, db, per_agent))
     }
 
     fn agent_roster_snapshot_in_scoped(
         &self,
         acquisition: &crate::diagnostics::resource_io::ResourceReadMaterial,
         db: &RuntimeDb,
+        per_agent: bool,
     ) -> Result<AgentRosterSnapshotData> {
         let rows = db.agent_roster_snapshot_rows()?;
         let config = self.config();
         let catalog = crate::config::ModelListCatalog::from_config(&config);
         let mut agents = Vec::new();
+        let mut agent_materials = Vec::new();
         crate::diagnostics::resource_io::charge_owned_metadata(
             (rows.rows.len() * std::mem::size_of::<AgentRosterEntryData>()) as u64,
             rows.rows.len(),
@@ -7385,7 +7391,7 @@ impl RuntimeHost {
         agents.try_reserve_exact(rows.rows.len())?;
         for row in rows.rows {
             db.check_read_cancellation()?;
-            crate::diagnostics::resource_io::admit_json_payload(&row.identity_json)?;
+            crate::diagnostics::resource_io::admit_typed_json_payload(&row.identity_json)?;
             let identity: AgentIdentityRecord =
                 serde_json::from_str(&row.identity_json).map_err(|error| {
                     anyhow!(
@@ -7393,52 +7399,84 @@ impl RuntimeHost {
                         row.agent_id
                     )
                 })?;
-            let agent_state = row
-                .agent_state_json
-                .as_deref()
-                .map(|payload| {
-                    crate::diagnostics::resource_io::admit_json_payload(payload)?;
-                    serde_json::from_str::<AgentState>(payload).map_err(|error| {
-                        anyhow!(
-                            "unreadable roster agent state payload for {}: {error}",
-                            row.agent_id
-                        )
+            // Each Agent owns its transient State/posture reads; the inventory
+            // phase owns only fleet rows and wire framing. An explicit enclosing
+            // allowance still applies to the complete read when supplied.
+            let agent_material = if per_agent {
+                Some(crate::diagnostics::resource_io::ResourceReadMaterial::new(
+                    &self.inner.input_evidence_budget,
+                    &crate::runtime::resident_input_evidence::InputEvidenceScope {
+                        agent_id: identity.agent_id.clone(),
+                        identity_incarnation: identity.incarnation,
+                    },
+                )?)
+            } else {
+                None
+            };
+            let build = || -> Result<AgentRosterEntryData> {
+                let agent_state = row
+                    .agent_state_json
+                    .as_deref()
+                    .map(|payload| {
+                        crate::diagnostics::resource_io::admit_typed_json_payload(payload)?;
+                        serde_json::from_str::<AgentState>(payload).map_err(|error| {
+                            anyhow!(
+                                "unreadable roster agent state payload for {}: {error}",
+                                row.agent_id
+                            )
+                        })
                     })
-                })
-                .transpose()?;
-            let latest_brief = row
-                .latest_brief
-                .map(|brief| -> Result<AgentRosterLatestBriefData> {
-                    Ok(AgentRosterLatestBriefData {
-                        brief_id: brief.brief_id,
-                        created_event_seq: brief
-                            .created_event_seq
-                            .map(|seq| {
-                                u64::try_from(seq).map_err(|_| {
-                                    anyhow!("negative latest brief linkage for {}", row.agent_id)
+                    .transpose()?;
+                let latest_brief = row
+                    .latest_brief
+                    .map(|brief| -> Result<AgentRosterLatestBriefData> {
+                        Ok(AgentRosterLatestBriefData {
+                            brief_id: brief.brief_id,
+                            created_event_seq: brief
+                                .created_event_seq
+                                .map(|seq| {
+                                    u64::try_from(seq).map_err(|_| {
+                                        anyhow!(
+                                            "negative latest brief linkage for {}",
+                                            row.agent_id
+                                        )
+                                    })
                                 })
-                            })
-                            .transpose()?,
-                        created_at: chrono::DateTime::parse_from_rfc3339(&brief.created_at)
-                            .map(|parsed| parsed.with_timezone(&Utc))
-                            .map_err(|error| {
-                                anyhow!(
-                                    "unreadable latest brief timestamp for {}: {error}",
-                                    row.agent_id
-                                )
-                            })?,
-                        preview: brief_preview(brief.preview),
+                                .transpose()?,
+                            created_at: chrono::DateTime::parse_from_rfc3339(&brief.created_at)
+                                .map(|parsed| parsed.with_timezone(&Utc))
+                                .map_err(|error| {
+                                    anyhow!(
+                                        "unreadable latest brief timestamp for {}: {error}",
+                                        row.agent_id
+                                    )
+                                })?,
+                            preview: brief_preview(brief.preview),
+                        })
                     })
+                    .transpose()?;
+                let agent = self.agent_list_entry_from_committed_state_in(
+                    identity,
+                    agent_state,
+                    catalog,
+                    db,
+                )?;
+                Ok(AgentRosterEntryData {
+                    agent,
+                    event_head_seq: row.event_head_seq,
+                    oldest_retained_seq: row.oldest_retained_seq,
+                    latest_brief,
                 })
-                .transpose()?;
-            let agent =
-                self.agent_list_entry_from_committed_state_in(identity, agent_state, catalog, db)?;
-            agents.push(AgentRosterEntryData {
-                agent,
-                event_head_seq: row.event_head_seq,
-                oldest_retained_seq: row.oldest_retained_seq,
-                latest_brief,
-            });
+            };
+            let entry = match &agent_material {
+                Some(material) => material.read(build)?,
+                None => build()?,
+            };
+            if let Some(material) = agent_material {
+                crate::runtime_db::repositories::reserve_source_vec_slot(&mut agent_materials)?;
+                agent_materials.push(material);
+            }
+            agents.push(entry);
         }
         db.check_read_scope()?;
         Ok(AgentRosterSnapshotData {
@@ -7448,6 +7486,7 @@ impl RuntimeHost {
             agents,
             _material: rows._material,
             acquisition: acquisition.clone(),
+            agent_materials,
         })
     }
 
@@ -7496,7 +7535,7 @@ impl RuntimeHost {
             Some(row) => row,
             None => return Ok(None),
         };
-        crate::diagnostics::resource_io::admit_json_payload(&row.identity_json)?;
+        crate::diagnostics::resource_io::admit_typed_json_payload(&row.identity_json)?;
         let identity: AgentIdentityRecord =
             serde_json::from_str(&row.identity_json).map_err(|error| {
                 anyhow!(
@@ -7508,7 +7547,7 @@ impl RuntimeHost {
             .agent_state_json
             .as_deref()
             .map(|payload| {
-                crate::diagnostics::resource_io::admit_json_payload(payload)?;
+                crate::diagnostics::resource_io::admit_typed_json_payload(payload)?;
                 serde_json::from_str::<AgentState>(payload).map_err(|error| {
                     anyhow!(
                         "unreadable projection agent state payload for {}: {error}",

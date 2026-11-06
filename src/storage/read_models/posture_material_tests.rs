@@ -165,6 +165,36 @@ fn snapshot_posture_uses_selected_state_without_redecoding_storage() -> Result<(
 }
 
 #[test]
+fn snapshot_posture_does_not_acquire_completed_work_history() -> Result<()> {
+    let home = tempfile::tempdir()?;
+    let db = RuntimeDb::open_and_migrate(
+        home.path().join("runtime.sqlite"),
+        home.path().join("runtime.lock"),
+    )?;
+    let mut selected = AgentState::new("web");
+    selected.status = AgentStatus::AwakeIdle;
+    let mut ready = WorkItemRecord::new("web", "ready", WorkItemState::Open);
+    ready.plan_status = crate::types::WorkItemPlanStatus::Ready;
+    db.work_items().insert_new(&ready)?;
+    let mut completed = WorkItemRecord::new("web", "history", WorkItemState::Completed);
+    completed.todo_list = (0..4096)
+        .map(|_| crate::types::TodoItem {
+            text: "completed historical step".into(),
+            state: crate::types::TodoItemState::Completed,
+        })
+        .collect();
+    db.work_items().insert_new(&completed)?;
+    let view = RuntimeReadModels::borrowed_for_agent(&db, "web")?;
+    let ledger = InputEvidenceBudgetLedger::new(StateMemoryLimits::default())?;
+    let phase = ResourceReadMaterial::new(&ledger, &scope())?;
+    let posture = phase.read(|| view.agent_posture_for_snapshot(&selected))?;
+    assert_eq!(posture.posture, AgentSchedulingPosture::HasRunnableWork);
+    assert_eq!(posture.work_item_id.as_deref(), Some(ready.id.as_str()));
+    assert!(phase.finish()?.1 < 65536);
+    Ok(())
+}
+
+#[test]
 fn scheduler_posture_kernel_uses_original_allowance_before_allocating_fields() -> Result<()> {
     let mut agent = AgentState::new("web");
     agent.status = AgentStatus::AwakeIdle;

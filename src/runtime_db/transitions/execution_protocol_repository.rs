@@ -1563,6 +1563,15 @@ impl RuntimeTransitionRepository<'_> {
             .read_for_preparation(|tx| authority_fences_tx(tx, agent_id))
     }
 
+    /// Observer closure needs live Work authority, not historical Attempts/outcomes.
+    pub(crate) fn observer_live_work_execution(
+        &self,
+        agent_id: &str,
+    ) -> Result<BTreeMap<String, crate::domain::execution_protocol::WorkItemExecutionRecord>> {
+        self.db.with_read(|connection| load_payload_map(connection,
+            "SELECT work_item_id, payload_json FROM execution_protocol_work_items WHERE agent_id=?1 AND lifecycle_state!='terminal' AND EXISTS(SELECT 1 FROM execution_protocol_partitions WHERE agent_id=?1)", agent_id))
+    }
+
     pub(crate) fn load_execution_protocol_state_if_initialized(
         &self,
         agent_id: &str,
