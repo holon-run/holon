@@ -61,3 +61,8 @@ those exact bodies and their Outcome/Turn closure before sealing the original
 cut, using an already frozen source index when present. Do not retroactively
 extend a sealed checkpoint from current raw history; an installation already
 past the faulty cut requires a separately approved, backup-proven repair.
+
+A selected historical Turn's persisted idle-input activation is also an Input
+closure edge. Freeze that Attempt and its Outcome/Turn dependencies at the
+original cut, matching the existing resident Turn reader. The edge does not
+make a terminal activation live or authorize another admission.

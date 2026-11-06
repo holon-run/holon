@@ -3074,6 +3074,7 @@ fn metadata_closure(
                 ("$.tool_execution_ids", Family::ToolExecution, true),
                 ("$.produced_brief_ids", Family::Brief, true),
                 ("$.replay.source_message_id", Family::Message, false),
+                ("$.idle_input_batch.activation_id", Family::Attempt, false),
             ],
             Family::Brief => &[
                 ("$.related_message_id", Family::Message, false),

@@ -3276,8 +3276,7 @@ fn fresh_or_late_brief_cannot_borrow_legacy_linkage_proof() -> Result<()> {
     Ok(())
 }
 
-#[test]
-fn fixed_mandatory_message_captures_its_settled_latest_attempt_and_outcome_bodies() -> Result<()> {
+fn fixed_settled_source_fixture(queued_source: bool) -> Result<()> {
     use crate::domain::execution_protocol::{ConversationOutcome, ExecutionOutcome};
     let (_fresh_dir, fresh_db) = fresh()?;
     let mut attempt = claim_only_attempt(&fresh_db)?;
@@ -3300,6 +3299,18 @@ fn fixed_mandatory_message_captures_its_settled_latest_attempt_and_outcome_bodie
             completed_at: time(),
             duration_ms: 1,
         });
+        if !queued_source {
+            turn.idle_input_batch = Some(crate::types::IdleInputBatchRecord {
+                anchor_message_id: source.id.clone(),
+                activation_id: Some(attempt.attempt_id.clone()),
+                sender_agent_id: "operator".into(),
+                cutoff: time(),
+                max_items: 1,
+                max_bytes: 1024,
+                rendered_bytes: 0,
+                items: Vec::new(),
+            });
+        }
         upsert_turn_record_tx(tx, &turn)?;
         store_attempt(tx, &attempt)?;
         let outcome = ExecutionOutcomeRecord {
@@ -3309,24 +3320,28 @@ fn fixed_mandatory_message_captures_its_settled_latest_attempt_and_outcome_bodie
             created_at: time().to_rfc3339(),
         };
         tx.execute("INSERT INTO execution_protocol_outcomes(agent_id,outcome_id,attempt_id,payload_json) VALUES(?1,?2,?3,?4)",params![attempt.agent_id,outcome.outcome_id,outcome.attempt_id,serde_json::to_string(&outcome)?])?;
-        crate::runtime_db::repositories::upsert_queue_entry_tx(
-            tx,
-            &crate::types::QueueEntryRecord {
-                agent_id: "agent-a".into(),
-                message_id: source.id,
-                priority: Priority::Normal,
-                status: crate::types::QueueEntryStatus::Queued,
-                created_at: time(),
-                updated_at: time(),
-            },
-        )?;
+        if queued_source {
+            crate::runtime_db::repositories::upsert_queue_entry_tx(
+                tx,
+                &crate::types::QueueEntryRecord {
+                    agent_id: "agent-a".into(),
+                    message_id: source.id,
+                    priority: Priority::Normal,
+                    status: crate::types::QueueEntryStatus::Queued,
+                    created_at: time(),
+                    updated_at: time(),
+                },
+            )?;
+        }
         Ok(())
     })?;
     let mut policy = request(InputWindowSelector::GlobalTurns, 1);
-    policy.windows.clear();
-    policy
-        .mandatory_roots
-        .insert(Key::new(Family::Message, "claim-source"));
+    if queued_source {
+        policy.windows.clear();
+        policy
+            .mandatory_roots
+            .insert(Key::new(Family::Message, "claim-source"));
+    }
     let captured =
         current(db.transaction(|tx| prepare_input_evidence_snapshot_tx(tx, &scope(), &policy))?)
             .resident
@@ -3345,4 +3360,13 @@ fn fixed_mandatory_message_captures_its_settled_latest_attempt_and_outcome_bodie
         assert!(load_input_evidence_snapshot_tx(tx,&scope(),&policy).is_err());
         Ok(())
     })
+}
+
+#[test]
+fn fixed_mandatory_message_captures_its_settled_latest_attempt_and_outcome_bodies() -> Result<()> {
+    fixed_settled_source_fixture(true)
+}
+#[test]
+fn fixed_optional_turn_captures_its_idle_batch_activation_and_outcome() -> Result<()> {
+    fixed_settled_source_fixture(false)
 }
