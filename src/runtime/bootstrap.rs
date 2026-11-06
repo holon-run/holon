@@ -2868,7 +2868,12 @@ fn prepare_runtime_storage_owned(
                 && work.facts.control_revision == current.control_revision,
             "bootstrap Work domain differs from its canonical State ACK"
         );
-        request.mandatory_roots.extend(work.owning_input_roots);
+        // Historical display Work does not own current Input preparation.
+        let input_roots = crate::runtime_db::work_snapshot::current_recovery_owning_input_roots(
+            &work.resident,
+            &state,
+        )?;
+        request.mandatory_roots.extend(input_roots);
         let work = Arc::new(work.resident.with_budget(input_budget.clone())?);
         let scheduling =
             crate::runtime_db::scheduling_snapshot::prepare_scheduling_domain_snapshot_tx(

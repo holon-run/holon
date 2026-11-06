@@ -868,6 +868,28 @@ fn bound_result_head_is_one_completion_edge_while_intent_source_stays_strict() -
             InputEvidenceFamily::Turn,
             "independent-turn"
         )));
+        let snapshot =
+            prepare_work_domain_snapshot_tx(tx, &scope(), &request())?.require_current()?;
+        let idle_roots = current_recovery_owning_input_roots(&snapshot.resident, &state)?;
+        assert!(!idle_roots.contains(&InputEvidenceKey::new(
+            InputEvidenceFamily::Message,
+            "independent-source"
+        )));
+        assert!(!idle_roots.contains(&InputEvidenceKey::new(
+            InputEvidenceFamily::Turn,
+            "independent-turn"
+        )));
+        let mut focused = state.clone();
+        focused.current_work_item_id = Some(value.id.clone());
+        let current_roots = current_recovery_owning_input_roots(&snapshot.resident, &focused)?;
+        assert!(current_roots.contains(&InputEvidenceKey::new(
+            InputEvidenceFamily::Message,
+            "independent-source"
+        )));
+        assert!(current_roots.contains(&InputEvidenceKey::new(
+            InputEvidenceFamily::Turn,
+            "independent-turn"
+        )));
         // A genuinely different previous result remains a strict owning edge.
         let mut later = brief("later-result", &value.id);
         later.created_at += chrono::Duration::seconds(1);

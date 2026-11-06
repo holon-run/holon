@@ -13,6 +13,12 @@ projection reads live Work execution authority without acquiring historical
 Attempt, outcome or activation-wait bodies. Dispatch retains its full protocol
 read and validation path. Observer reads do not grant execution authority.
 
+Startup retains the bounded Work display window, but only the current owning
+Work closure contributes mandatory Input roots. Completion source Messages and
+Turns belonging only to historical display Work do not become startup inputs.
+Current Work, live waits/frames, pending inputs and independently selected
+history keep their existing strict qualification and closure rules.
+
 Direct typed State/identity decoding and child DTO cloning use the typed
 allocation envelope. Byte limits, record limits, cumulative rejection, schema
 and qualification checks remain unchanged. This change requires no data repair.
