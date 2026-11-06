@@ -858,6 +858,7 @@ pub(crate) const OPENCODE_GO_TEXT_MODELS: &[(&str, &str)] = &[
     ("grok-4.7", "responses"),
     ("gpt-6-luna", "responses"),
     ("gpt-5.6-luna", "responses"),
+    ("crouton-alpha-free", "responses"),
     ("claude-haiku-5-5", "messages"),
     ("gemini-4-argon", "default"),
     ("glm-5.3-flash", "default"),
@@ -2522,7 +2523,45 @@ mod tests {
         responses["api"] = serde_json::json!({"responses": {"base_url": "https://opencode.ai/inference/go/openai/v1"}});
         assert_eq!(decode(responses).context_window_tokens, Some(1_048_576));
 
+        let mut crouton = native.clone();
+        crouton["id"] = serde_json::json!("crouton-alpha-free");
+        crouton["modalities"]["input"] = serde_json::json!(["text", "image"]);
+        crouton["limit"]["output"] = serde_json::json!(270_000);
+        crouton["capabilities"]["reasoning"]["effort"] =
+            serde_json::json!(["minimal", "low", "medium", "high", "xhigh", "max"]);
+        crouton["api"] = serde_json::json!({"responses": {"base_url": "https://opencode.ai/inference/go/openai/v1"}});
+        let model = decode(crouton);
+        assert_eq!(
+            model.endpoint,
+            Some(ProviderEndpointId::parse("responses").unwrap())
+        );
+        assert_eq!(model.context_window_tokens, Some(1_048_576));
+        assert_eq!(model.max_output_tokens_upper_limit, Some(270_000));
+        assert_eq!(model.default_max_output_tokens, None);
+        assert!(model.capabilities.image_input);
+        assert!(model.capabilities.supports_reasoning);
+        assert_eq!(
+            model.reasoning_effort_options,
+            ["minimal", "low", "medium", "high", "xhigh", "max"]
+        );
+
         for (id, api) in [
+            (
+                "crouton-alpha-free",
+                serde_json::json!({"chat-completions": {"base_url": "https://opencode.ai/inference/go/openai/v1"}}),
+            ),
+            (
+                "crouton-alpha-free",
+                serde_json::json!({"messages": {"base_url": "https://opencode.ai/inference/go/anthropic/v1"}}),
+            ),
+            (
+                "crouton-alpha-free",
+                serde_json::json!({"responses": {"base_url": "https://example.invalid/inference/go/openai/v1"}}),
+            ),
+            (
+                "crouton-alpha-free",
+                serde_json::json!({"responses": {"base_url": "https://opencode.ai/inference/zen/openai/v1"}}),
+            ),
             (
                 "kimi-k3.1-pro",
                 serde_json::json!({"messages": {"base_url": "https://opencode.ai/inference/go/anthropic/v1"}}),
@@ -2612,6 +2651,15 @@ mod tests {
                 500_000,
                 500_000,
                 vec!["low", "medium", "high", "xhigh"],
+            ),
+            (
+                "crouton-alpha-free",
+                "responses",
+                "responses",
+                "https://opencode.ai/inference/go/openai/v1",
+                1_048_576,
+                270_000,
+                vec!["minimal", "low", "medium", "high", "xhigh", "max"],
             ),
         ] {
             let decoded =
@@ -2706,7 +2754,7 @@ mod tests {
 
     #[test]
     fn opencode_go_discovery_accepts_reviewed_text_ids_without_inventing_capabilities() {
-        assert_eq!(OPENCODE_GO_TEXT_MODELS.len(), 31);
+        assert_eq!(OPENCODE_GO_TEXT_MODELS.len(), 32);
         let mut data = OPENCODE_GO_TEXT_MODELS
             .iter()
             .map(|(id, _)| serde_json::json!({"id": id}))
@@ -2723,7 +2771,7 @@ mod tests {
             serde_json::from_value(serde_json::json!({"data": data})).unwrap();
         let models = payload.into_model_metadata(&ProviderId::parse("opencode-go").unwrap());
         // Discovery is model-keyed, not route-keyed: retain one preferred record.
-        assert_eq!(models.len(), 31);
+        assert_eq!(models.len(), 32);
         assert!(models
             .windows(2)
             .all(|pair| pair[0].model_ref.model < pair[1].model_ref.model));

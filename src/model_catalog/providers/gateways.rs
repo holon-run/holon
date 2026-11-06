@@ -361,6 +361,19 @@ pub(super) fn opencode_entries() -> Vec<BuiltInModelMetadata> {
         source: ModelMetadataSource::ConservativeBuiltin,
         endpoint: None,
     });
+    entries.push(BuiltInModelMetadata {
+        description: "OpenCode Go native Responses Crouton Alpha Free; context, output ceiling, vision and effort follow the official Go listing; service output default remains unconfirmed.".into(),
+        default_max_output_tokens: None,
+        ..opencode_go_model(
+            "crouton-alpha-free",
+            "Crouton Alpha Free",
+            1_048_576,
+            Some(270_000),
+            true,
+            true,
+            Some("responses"),
+        )
+    });
     entries.extend(opencode_go_models_dev_entries());
     for entry in &mut entries {
         if entry.model_ref.provider != provider_id("opencode-go") {
@@ -389,6 +402,7 @@ pub(super) fn opencode_entries() -> Vec<BuiltInModelMetadata> {
                 &["minimal", "low", "medium", "high", "xhigh"]
             }
             "gpt-5.6-luna" | "gpt-6-luna" => &["none", "low", "medium", "high", "xhigh", "max"],
+            "crouton-alpha-free" => &["minimal", "low", "medium", "high", "xhigh", "max"],
             _ => &[],
         };
         entry.reasoning_effort_options = efforts.iter().map(|effort| (*effort).into()).collect();
@@ -417,6 +431,47 @@ mod tests {
             assert!(metadata.capabilities.supports_reasoning);
             for endpoint in ["messages", "responses"] {
                 let route = ModelRouteRef::parse(&format!("opencode-go@{endpoint}/hy4")).unwrap();
+                assert!(catalog.get_route(&route).is_some());
+                let policy = catalog.resolve_route_policy(
+                    &route,
+                    &HashMap::new(),
+                    &HashMap::new(),
+                    None,
+                    &ContextConfig::default(),
+                    8_192,
+                );
+                assert_eq!(policy.context_window_tokens, None);
+                assert_eq!(policy.max_output_tokens_upper_limit, None);
+                assert!(!policy.capabilities.supports_reasoning);
+                assert!(!policy.capabilities.image_input);
+                assert!(!policy.agent_turn);
+                assert!(policy.reasoning_effort_options.is_empty());
+            }
+        }
+    }
+
+    #[test]
+    fn opencode_go_crouton_alpha_free_native_responses_metadata_does_not_certify_translation() {
+        for catalog in [
+            BuiltInModelCatalog::from_legacy_definitions(),
+            BuiltInModelCatalog::new(),
+        ] {
+            let route = ModelRouteRef::parse("opencode-go@responses/crouton-alpha-free").unwrap();
+            assert!(catalog.get_route(&route).is_some());
+            let metadata = catalog.get(&route.model_ref()).unwrap();
+            assert_eq!(metadata.context_window_tokens, Some(1_048_576));
+            assert_eq!(metadata.default_max_output_tokens, None);
+            assert_eq!(metadata.max_output_tokens_upper_limit, Some(270_000));
+            assert_eq!(
+                metadata.reasoning_effort_options,
+                ["minimal", "low", "medium", "high", "xhigh", "max"]
+            );
+            assert!(metadata.capabilities.image_input);
+            assert!(metadata.capabilities.supports_reasoning);
+            for endpoint in ["default", "messages"] {
+                let route =
+                    ModelRouteRef::parse(&format!("opencode-go@{endpoint}/crouton-alpha-free"))
+                        .unwrap();
                 assert!(catalog.get_route(&route).is_some());
                 let policy = catalog.resolve_route_policy(
                     &route,
@@ -513,6 +568,11 @@ mod tests {
                 "gpt-6-luna",
                 "responses",
                 &["none", "low", "medium", "high", "xhigh", "max"][..],
+            ),
+            (
+                "crouton-alpha-free",
+                "responses",
+                &["minimal", "low", "medium", "high", "xhigh", "max"][..],
             ),
         ] {
             let model = find(id);

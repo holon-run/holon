@@ -54,7 +54,7 @@
 
 ## Route metadata review (offline)
 
-Routes: 629; unknown context: 223; unknown output ceiling: 259.
+Routes: 632; unknown context: 225; unknown output ceiling: 261.
 Runtime output policy is not output capacity. Existing builtin fields are not automatically overwritten.
 
 | Route | Upstream source | Fields requiring review |
@@ -180,6 +180,7 @@ Runtime output policy is not output capacity. Existing builtin fields are not au
 | `openai@default/gpt-5.3` | Known | Unknown | openai@default/gpt-5.3: Missing capacity is retained as unknown. No exact endpoint upstream capacity evidence is associated; generic API, other region, plan, or protocol limits are not borrowed. Existing known fields and local output policy are preserved, not newly vendor-verified. |
 | `openai@default/gpt-image-2` | NotApplicable | NotApplicable | openai@default/gpt-image-2: Images API route; text token context/output ceilings are not the image generation capacity. Existing executable policy is retained, not a capacity assertion. |
 | `opencode-go@default/claude-haiku-5-5` | Unknown | Unknown | Exact native API fields reviewed against the official Go listing. Translated routes retain unknown capacity and conservative controls; native metadata is not inherited across protocols. Existing output defaults and local execution policy are preserved. |
+| `opencode-go@default/crouton-alpha-free` | Unknown | Unknown | no_exact_endpoint_upstream_evidence; no_exact_endpoint_upstream_evidence |
 | `opencode-go@default/gemini-4-argon` | Unknown | Unknown | Official OpenCode Go text eligibility includes translated Chat, Messages and Responses. Translation does not certify capacities, vision, reasoning controls, explicit cache controls or parallel tools. |
 | `opencode-go@default/gpt-5.6-luna` | Unknown | Unknown | Exact native API fields reviewed against the official Go listing. Translated routes retain unknown capacity and conservative controls; native metadata is not inherited across protocols. Existing output defaults and local execution policy are preserved. |
 | `opencode-go@default/gpt-6-luna` | Unknown | Unknown | Exact native API fields reviewed against the official Go listing. Translated routes retain unknown capacity and conservative controls; native metadata is not inherited across protocols. Existing output defaults and local execution policy are preserved. |
@@ -191,6 +192,7 @@ Runtime output policy is not output capacity. Existing builtin fields are not au
 | `opencode-go@default/qwen3.8-flash` | Unknown | Unknown | Exact native API fields reviewed against the official Go listing. Translated routes retain unknown capacity and conservative controls; native metadata is not inherited across protocols. Existing output defaults and local execution policy are preserved. |
 | `opencode-go@default/qwen3.8-max` | Unknown | Unknown | Exact native API fields reviewed against the official Go listing. Translated routes retain unknown capacity and conservative controls; native metadata is not inherited across protocols. Existing output defaults and local execution policy are preserved. |
 | `opencode-go@messages/beam-free` | Unknown | Unknown | Exact native API fields reviewed against the official Go listing. Translated routes retain unknown capacity and conservative controls; native metadata is not inherited across protocols. Existing output defaults and local execution policy are preserved. |
+| `opencode-go@messages/crouton-alpha-free` | Unknown | Unknown | no_exact_endpoint_upstream_evidence; no_exact_endpoint_upstream_evidence |
 | `opencode-go@messages/deepseek-v4-pro` | Unknown | Unknown | Exact native API fields reviewed against the official Go listing. Translated routes retain unknown capacity and conservative controls; native metadata is not inherited across protocols. Existing output defaults and local execution policy are preserved. |
 | `opencode-go@messages/deepseek-v4.1-flash` | Unknown | Unknown | Exact native API fields reviewed against the official Go listing. Translated routes retain unknown capacity and conservative controls; native metadata is not inherited across protocols. Existing output defaults and local execution policy are preserved. |
 | `opencode-go@messages/gemini-4-argon` | Unknown | Unknown | Official OpenCode Go text eligibility includes translated Chat, Messages and Responses. Translation does not certify capacities, vision, reasoning controls, explicit cache controls or parallel tools. |
@@ -415,8 +417,8 @@ Runtime output policy is not output capacity. Existing builtin fields are not au
 - `deepseek@responses`: 3 checked-in routes; not proof of live subscription support.
 - `minimax-cn@m-plan`: 2 checked-in routes; not proof of live subscription support.
 - `minimax@m-plan`: 2 checked-in routes; not proof of live subscription support.
-- `opencode-go@messages`: 35 checked-in routes; not proof of live subscription support.
-- `opencode-go@responses`: 31 checked-in routes; not proof of live subscription support.
+- `opencode-go@messages`: 36 checked-in routes; not proof of live subscription support.
+- `opencode-go@responses`: 32 checked-in routes; not proof of live subscription support.
 - `stepfun@plan`: 5 checked-in routes; not proof of live subscription support.
 - `tencent-tokenhub@messages`: 36 checked-in routes; not proof of live subscription support.
 - `tencent-tokenhub@responses`: 28 checked-in routes; not proof of live subscription support.
