@@ -26,6 +26,7 @@ order: 1
 <a class="home-button home-button--quiet" href="https://github.com/holon-run/holon/releases/download/v0.59.0/holon-android-v0.59.0.apk">Download Android APK ↗</a>
 </div>
 <p>Connect to Holon on your computer or server. Keep the Holon service running.</p>
+<p>Also available: <a href="https://testflight.apple.com/join/XkTfN12S">iOS beta via TestFlight ↗</a> (subject to beta availability).</p>
 </div>
 
 <p class="home-hero__note">Give each assistant a role and a task. Check progress, provide input when needed, and review the result.</p>

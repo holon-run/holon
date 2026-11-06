@@ -69,9 +69,16 @@ for (const route of ["/", "/zh-CN/"]) {
   const downloads = html.slice(clients, html.indexOf("</section>", clients));
   assert.match(downloads, /href="https:\/\/apps\.apple\.com\/[^"]*id6819978897"/);
   assert.match(downloads, /href="https:\/\/github\.com\/holon-run\/holon\/releases\/download\/[^"]+\.apk"/);
-  assert.ok(!html.includes("testflight.apple.com"), `Use the public iOS release: ${route}`);
+  assert.match(downloads, /<a href="https:\/\/testflight\.apple\.com\/join\/XkTfN12S">/);
+  assert.ok(downloads.indexOf("apps.apple.com") < downloads.indexOf("testflight.apple.com"),
+    `App Store precedes the secondary TestFlight link: ${route}`);
   assert.ok(!downloads.includes("groups.google.com"), `No testing-group detour: ${route}`);
   assert.ok(!html.includes("groups.google.com/g/holon-pioneers/c/Cgs_KEAjdN0"), route);
+}
+for (const route of ["/guides/connect-ios-client", "/zh-CN/guides/connect-ios-client"]) {
+  const html = await fetchPage(route);
+  assert.ok(html.includes("apps.apple.com/us/app/holon-agent-remote/id6819978897"), route);
+  assert.ok(html.includes("testflight.apple.com/join/XkTfN12S"), route);
 }
 const blogRoute = [...blogIndex.matchAll(/href="(\/blog\/[^"#?]+)"/g)]
   .map((match) => match[1]).find((href) => !href.endsWith("/") && !href.endsWith(".md"));

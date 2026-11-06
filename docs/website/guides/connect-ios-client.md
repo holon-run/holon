@@ -25,6 +25,14 @@ Install [Holon Agent Remote from the App Store](https://apps.apple.com/us/app/ho
 on your iPhone or iPad. The app connects to your own Holon daemon; it does
 not run the agents on your phone.
 
+### Try the TestFlight beta
+
+If the App Store version is unavailable in your region, or you want to try
+the beta, open the [Holon TestFlight invitation](https://testflight.apple.com/join/XkTfN12S)
+on your iPhone or iPad and follow Apple's instructions to install TestFlight
+and join. Installation depends on available tester slots and an active beta
+build; this is not a guarantee of availability in every region.
+
 ### Build from Source
 
 The Xcode build and run steps have moved to

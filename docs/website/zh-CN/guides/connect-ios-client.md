@@ -21,6 +21,10 @@ order: 200
 
 在 iPhone 或 iPad 上从 [App Store 安装 Holon Agent Remote](https://apps.apple.com/us/app/holon-agent-remote/id6819978897)。应用连接你自己的 Holon 守护进程，不在手机上运行 Agent。
 
+### 尝试 TestFlight 测试版
+
+如果所在地区的 App Store 暂不可用，或想体验测试版，可在 iPhone 或 iPad 上打开 [Holon TestFlight 邀请](https://testflight.apple.com/join/XkTfN12S)，按 Apple 页面提示安装 TestFlight 并加入测试。能否安装取决于测试名额和有效测试版本，不保证所有地区均可使用。
+
 ### 从源码构建
 
 Xcode 本地构建与运行步骤已归档至[构建移动端客户端](../maintainers/build-mobile-clients.md#ios)。

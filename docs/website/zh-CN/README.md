@@ -26,6 +26,7 @@ order: 1
 <a class="home-button home-button--quiet" href="https://github.com/holon-run/holon/releases/download/v0.59.0/holon-android-v0.59.0.apk">下载 Android APK ↗</a>
 </div>
 <p>连接电脑或服务器上的 Holon，使用时请保持 Holon 服务运行。</p>
+<p>备用渠道：<a href="https://testflight.apple.com/join/XkTfN12S">iOS · TestFlight 测试版 ↗</a>（以测试名额和版本可用性为准）。</p>
 </div>
 
 <p class="home-hero__note">给助手明确的职责和任务。查看进展，在需要时补充信息，并验收结果。</p>
