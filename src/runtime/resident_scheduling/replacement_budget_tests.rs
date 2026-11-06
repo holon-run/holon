@@ -43,6 +43,13 @@ fn delta(domain: &ResidentSchedulingDomain) -> CommittedSchedulingDelta {
 
 // Independent JSON tree/scalar formula, not a successful replacement sample.
 fn clone_cost(value: &impl Serialize) -> Result<(u64, usize)> {
+    fn cells(value: &serde_json::Value) -> usize {
+        1 + match value {
+            serde_json::Value::Array(values) => values.iter().map(cells).sum::<usize>(),
+            serde_json::Value::Object(values) => values.values().map(cells).sum::<usize>(),
+            _ => 0,
+        }
+    }
     fn slots(value: &serde_json::Value) -> usize {
         match value {
             serde_json::Value::String(_) => 1,
@@ -57,10 +64,11 @@ fn clone_cost(value: &impl Serialize) -> Result<(u64, usize)> {
             _ => 0,
         }
     }
-    let slots = slots(&serde_json::to_value(value)?);
+    let tree = serde_json::to_value(value)?;
+    let slots = slots(&tree);
     Ok((
         (serde_json::to_vec(value)?.len() as u64 * 4 + slots as u64 * 128 + 512) * 8,
-        (slots + 16) * 8,
+        cells(&tree) * 8,
     ))
 }
 

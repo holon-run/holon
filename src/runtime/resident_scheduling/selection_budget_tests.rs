@@ -13,16 +13,13 @@ fn scope() -> InputEvidenceScope {
 }
 
 // Scalar JSON envelopes, not calls to admission/bootstrap/loader.
-fn cost(bytes: usize, slots: usize) -> (u64, usize) {
-    (
-        (bytes as u64 * 4 + slots as u64 * 128 + 512) * 8,
-        (slots + 16) * 8,
-    )
+fn cost(bytes: usize, slots: usize, cells: usize) -> (u64, usize) {
+    ((bytes as u64 * 4 + slots as u64 * 128 + 512) * 8, cells * 8)
 }
 
 fn key_cost(key: &SchedulingKey) -> Result<(u64, usize)> {
-    // Four string starts, two braces, two colons, one comma.
-    Ok(cost(serde_json::to_vec(key)?.len(), 9))
+    // Four string starts, two braces, two colons, one comma; three value cells.
+    Ok(cost(serde_json::to_vec(key)?.len(), 9, 3))
 }
 
 fn sum(parts: &[(u64, usize)]) -> (u64, usize) {
@@ -229,9 +226,9 @@ fn closure_clone_and_both_parent_ids_share_original_remainder() -> Result<()> {
         .find(|k| k.family == SchedulingFamily::TimerWake)
         .unwrap();
     let roots = BTreeSet::from([wake.clone()]);
-    // One key (9 slots) plus two brackets: 11 slots.
-    let initial = cost(serde_json::to_vec(&roots)?.len(), 11);
-    let parent_id = cost(serde_json::to_vec("parent\"雪")?.len(), 1);
+    // One key plus an array: 11 slots and four value cells.
+    let initial = cost(serde_json::to_vec(&roots)?.len(), 11, 4);
+    let parent_id = cost(serde_json::to_vec("parent\"雪")?.len(), 1, 1);
     let selected = assert_gates(&[initial, parent_id, parent_id], || {
         domain.required_closure(roots.clone())
     })?;
@@ -303,6 +300,13 @@ fn selection_policy_checks_still_precede_unneeded_clones() -> Result<()> {
 
 // Count the fixture's JSON tree, independently of the streaming admission sink.
 fn capture_clone_cost(value: &impl Serialize) -> Result<(u64, usize)> {
+    fn cells(value: &serde_json::Value) -> usize {
+        1 + match value {
+            serde_json::Value::Array(values) => values.iter().map(cells).sum::<usize>(),
+            serde_json::Value::Object(values) => values.values().map(cells).sum::<usize>(),
+            _ => 0,
+        }
+    }
     fn slots(value: &serde_json::Value) -> usize {
         match value {
             serde_json::Value::String(_) => 1,
@@ -317,9 +321,11 @@ fn capture_clone_cost(value: &impl Serialize) -> Result<(u64, usize)> {
             _ => 0,
         }
     }
+    let tree = serde_json::to_value(value)?;
     Ok(cost(
         serde_json::to_vec(value)?.len(),
-        slots(&serde_json::to_value(value)?),
+        slots(&tree),
+        cells(&tree),
     ))
 }
 
@@ -381,10 +387,10 @@ fn selected_install_moves_coverage_and_admits_only_body_arc_slots() -> Result<()
 
 fn empty_capture_parts(domain: &ResidentSchedulingDomain) -> Result<Vec<(u64, usize)>> {
     Ok(vec![
-        cost(2, 2), // closure's initial empty Vec
+        cost(2, 2, 1), // closure's initial empty Vec
         capture_vec_cost::<Arc<QualifiedSchedulingFact>>(0),
         capture_clone_cost(&domain.coverage)?,
-        cost(2, 2), // required selector clone
+        cost(2, 2, 1), // required selector clone
         capture_vec_cost::<Arc<BudgetViewGuard>>(0),
         capture_clone_cost(&domain.scope)?,
     ])
