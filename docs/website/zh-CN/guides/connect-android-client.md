@@ -21,7 +21,9 @@ order: 190
 
 在 [Holon GitHub Releases](https://github.com/holon-run/holon/releases) 页面查找对应版本的 Android APK。`.apk` 可直接安装；`.aab` 是分发打包格式，并非直接可安装文件。
 
-通过命令行直接将 APK 安装到设备：
+用手机下载 `.apk` 文件，打开后按系统提示安装。如 Android 要求授权，请允许本次使用的浏览器或文件管理器安装应用，安装后可关闭该权限。无需加入内测群组。
+
+如果从电脑通过 `adb` 安装：
 
 ```bash
 adb install /path/to/downloaded-holon.apk

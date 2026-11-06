@@ -19,6 +19,15 @@ order: 1
 <a class="home-button home-button--quiet" href="#capabilities">了解工作原理 ↓</a>
 </div>
 
+<div class="home-mobile" id="clients" role="group" aria-labelledby="clients-title">
+<h2 id="clients-title">下载手机客户端</h2>
+<div class="home-actions">
+<a class="home-button home-button--quiet" href="https://apps.apple.com/us/app/holon-agent-remote/id6819978897">iOS · App Store ↗</a>
+<a class="home-button home-button--quiet" href="https://github.com/holon-run/holon/releases/download/v0.59.0/holon-android-v0.59.0.apk">下载 Android APK ↗</a>
+</div>
+<p>连接电脑或服务器上的 Holon，使用时请保持 Holon 服务运行。</p>
+</div>
+
 <p class="home-hero__note">给助手明确的职责和任务。查看进展，在需要时补充信息，并验收结果。</p>
 
 <div class="home-litepaper" role="group" aria-label="Holon 产品概览 PDF">
@@ -126,15 +135,6 @@ holon daemon start
 <figcaption>Web 工作台：查看已完成的工作、正在等待的结果和下一步。截图使用演示数据，点击可查看大图。</figcaption>
 </figure>
 <p class="home-product__caption">持续跟进需要运行 Holon 的电脑或服务器及后台服务保持开启。Agent 可使用的文件与工具取决于你的配置。</p>
-<div class="home-mobile">
-<h3>移动客户端 · 测试版</h3>
-<p>用手机连接电脑或服务器上已运行的 Holon。Android 测试说明帖需 Google Group 访问权限，也可直接下载 APK 安装。</p>
-<div class="home-actions">
-<a class="home-button home-button--quiet" href="https://testflight.apple.com/join/XkTfN12S">iOS · TestFlight ↗</a>
-<a class="home-button home-button--quiet" href="https://groups.google.com/g/holon-pioneers/c/Cgs_KEAjdN0">Android · 加入测试 ↗</a>
-<a class="home-button home-button--quiet" href="https://github.com/holon-run/holon/releases/download/v0.59.0/holon-android-v0.59.0.apk">下载 Android APK ↗</a>
-</div>
-</div>
 </section>
 
 <!-- TEMPLATES:START -->

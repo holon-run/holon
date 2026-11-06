@@ -1073,17 +1073,23 @@ img.article-architecture {
 }
 
 .home-mobile {
-  margin-top: 2rem;
-  padding-top: 1.5rem;
+  margin-top: 1.5rem;
+  padding-top: 1.25rem;
   border-top: 1px solid var(--home-line);
+  scroll-margin-top: 5rem;
 }
 
-.home-mobile h3 {
+.home-mobile h2 {
   margin: 0;
+  font-size: 1.05rem;
+}
+
+.home-mobile .home-actions {
+  margin-top: 0.75rem;
 }
 
 .home-mobile p {
-  margin: 0.75rem 0 1.25rem;
+  margin: 0.75rem 0 0;
   color: var(--home-muted);
   line-height: 1.65;
 }

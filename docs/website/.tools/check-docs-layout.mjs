@@ -60,6 +60,19 @@ for (const route of ["/", "/zh-CN/", "/blog/", "/zh-CN/blog/", "/templates/", "/
   assert.ok(!(await fetchPage(route)).includes('<div class="docs-layout'), route);
 }
 const blogIndex = await fetchPage("/blog/");
+// Keep client downloads ahead of setup and feature details on both homepages.
+for (const route of ["/", "/zh-CN/"]) {
+  const html = await fetchPage(route);
+  const clients = html.indexOf('id="clients"');
+  assert.ok(clients >= 0 && clients < html.indexOf('id="install"'), `Client downloads near the top: ${route}`);
+  assert.ok(clients < html.indexOf("</section>", html.indexOf('class="home-hero"')), `Downloads inside hero: ${route}`);
+  const downloads = html.slice(clients, html.indexOf("</section>", clients));
+  assert.match(downloads, /href="https:\/\/apps\.apple\.com\/[^"]*id6819978897"/);
+  assert.match(downloads, /href="https:\/\/github\.com\/holon-run\/holon\/releases\/download\/[^"]+\.apk"/);
+  assert.ok(!html.includes("testflight.apple.com"), `Use the public iOS release: ${route}`);
+  assert.ok(!downloads.includes("groups.google.com"), `No testing-group detour: ${route}`);
+  assert.ok(!html.includes("groups.google.com/g/holon-pioneers/c/Cgs_KEAjdN0"), route);
+}
 const blogRoute = [...blogIndex.matchAll(/href="(\/blog\/[^"#?]+)"/g)]
   .map((match) => match[1]).find((href) => !href.endsWith("/") && !href.endsWith(".md"));
 assert.ok(blogRoute, "Blog has at least one article");

@@ -19,6 +19,15 @@ order: 1
 <a class="home-button home-button--quiet" href="#capabilities">See how it works ↓</a>
 </div>
 
+<div class="home-mobile" id="clients" role="group" aria-labelledby="clients-title">
+<h2 id="clients-title">Mobile apps</h2>
+<div class="home-actions">
+<a class="home-button home-button--quiet" href="https://apps.apple.com/us/app/holon-agent-remote/id6819978897">iOS · App Store ↗</a>
+<a class="home-button home-button--quiet" href="https://github.com/holon-run/holon/releases/download/v0.59.0/holon-android-v0.59.0.apk">Download Android APK ↗</a>
+</div>
+<p>Connect to Holon on your computer or server. Keep the Holon service running.</p>
+</div>
+
 <p class="home-hero__note">Give each assistant a role and a task. Check progress, provide input when needed, and review the result.</p>
 
 <div class="home-litepaper" role="group" aria-label="Holon product overview PDF">
@@ -126,15 +135,6 @@ Keep project files and outputs in separate workspaces. Agents work in the backgr
 <figcaption>See what’s done, what’s pending, and what happens next. Screenshot uses demo data. Click to enlarge.</figcaption>
 </figure>
 <p class="home-product__caption">Ongoing work requires the computer or server and the Holon background service to stay running. Your configuration determines which files and tools agents can use.</p>
-<div class="home-mobile">
-<h3>Mobile clients · Beta</h3>
-<p>Connect your phone to Holon running on your computer or server. Android testing instructions require Google Group access. You can also install the APK directly.</p>
-<div class="home-actions">
-<a class="home-button home-button--quiet" href="https://testflight.apple.com/join/XkTfN12S">iOS · TestFlight ↗</a>
-<a class="home-button home-button--quiet" href="https://groups.google.com/g/holon-pioneers/c/Cgs_KEAjdN0">Android · Join testing ↗</a>
-<a class="home-button home-button--quiet" href="https://github.com/holon-run/holon/releases/download/v0.59.0/holon-android-v0.59.0.apk">Download Android APK ↗</a>
-</div>
-</div>
 </section>
 
 <!-- TEMPLATES:START -->

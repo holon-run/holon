@@ -17,9 +17,9 @@ order: 200
 
 ## 安装客户端
 
-### 安装官方分发包
+### 从 App Store 安装
 
-若你收到了 TestFlight 邀请，请在设备上打开兑换链接进行安装。其他分发渠道请关注官方发布通告；本指南不代表 App Store 已上架正式包。
+在 iPhone 或 iPad 上从 [App Store 安装 Holon Agent Remote](https://apps.apple.com/us/app/holon-agent-remote/id6819978897)。应用连接你自己的 Holon 守护进程，不在手机上运行 Agent。
 
 ### 从源码构建
 

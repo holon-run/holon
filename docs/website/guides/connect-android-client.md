@@ -26,7 +26,11 @@ Check the [Holon GitHub Releases](https://github.com/holon-run/holon/releases)
 page for an Android APK attached to your chosen release. An `.apk` installs
 directly; an `.aab` is a distribution bundle, not an installable APK.
 
-Install the APK directly on your device:
+Download the `.apk` on your phone and open it to install. If Android asks,
+allow installation from the browser or file manager you used, then turn
+that permission off after installation. No testing-group enrollment is required.
+
+For installation from a computer with `adb`:
 
 ```bash
 adb install /path/to/downloaded-holon.apk

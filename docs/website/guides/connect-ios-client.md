@@ -19,11 +19,11 @@ but they do not confirm that the runtime is reachable.
 
 ## Installation
 
-### Install Official Packages
+### Install from the App Store
 
-If you have a TestFlight invitation, follow its redemption link on your device.
-For other distribution channels, check the project's announced availability;
-this guide does not imply that an App Store build is available.
+Install [Holon Agent Remote from the App Store](https://apps.apple.com/us/app/holon-agent-remote/id6819978897)
+on your iPhone or iPad. The app connects to your own Holon daemon; it does
+not run the agents on your phone.
 
 ### Build from Source
 
