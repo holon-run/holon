@@ -65,6 +65,7 @@ impl std::io::Write for StructuredMaterialCounter {
 }
 
 impl StructuredMaterialCounter {
+    #[track_caller]
     fn admit(self) -> Result<()> {
         // Completion decoding also covers aggregate/resolver/projection copies.
         let records = self
@@ -75,6 +76,7 @@ impl StructuredMaterialCounter {
         self.admit_records(records)
     }
 
+    #[track_caller]
     fn admit_clone(self) -> Result<()> {
         // No parser or resolver is run for this one typed clone. Structural
         // punctuation bounds its owning cells; the phase's original eightfold
@@ -86,6 +88,7 @@ impl StructuredMaterialCounter {
         self.admit_records(records)
     }
 
+    #[track_caller]
     fn admit_records(self, records: usize) -> Result<()> {
         let bytes = self.material_bytes()?;
         crate::diagnostics::resource_io::charge_owned_metadata(bytes, records)?;
@@ -128,6 +131,7 @@ pub(crate) fn cloned_value_material(value: &impl serde::Serialize) -> Result<(us
 
 /// Only for existing Context types whose owning fields are serialized. This is
 /// not the admission gate for parsing JSON or resolving completion aggregates.
+#[track_caller]
 pub(crate) fn admit_cloned_value(value: &impl serde::Serialize) -> Result<()> {
     if !super::ACTIVE.with(|slot| slot.borrow().is_some()) {
         return Ok(());
@@ -139,6 +143,7 @@ pub(crate) fn admit_cloned_value(value: &impl serde::Serialize) -> Result<()> {
 
 /// One direct typed clone whose serialized fields cover its owning material.
 /// Count values rather than JSON punctuation, as for a direct typed decode.
+#[track_caller]
 pub(crate) fn admit_typed_cloned_value(value: &impl serde::Serialize) -> Result<()> {
     if !super::ACTIVE.with(|slot| slot.borrow().is_some()) {
         return Ok(());
@@ -151,6 +156,7 @@ pub(crate) fn admit_typed_cloned_value(value: &impl serde::Serialize) -> Result<
 
 /// Admit only serde_json::to_string's owned buffer, without a decoded tree.
 /// Preserve the conservative bytes envelope and count that one allocation.
+#[track_caller]
 pub(crate) fn admit_json_buffer(value: &impl serde::Serialize) -> Result<()> {
     if !super::ACTIVE.with(|slot| slot.borrow().is_some()) {
         return Ok(());
@@ -160,6 +166,7 @@ pub(crate) fn admit_json_buffer(value: &impl serde::Serialize) -> Result<()> {
     counter.admit_records(1)
 }
 
+#[track_caller]
 pub(crate) fn admit_serialized_value(value: &impl serde::Serialize) -> Result<()> {
     if !super::ACTIVE.with(|slot| slot.borrow().is_some()) {
         return Ok(());
@@ -169,6 +176,7 @@ pub(crate) fn admit_serialized_value(value: &impl serde::Serialize) -> Result<()
     counter.admit()
 }
 
+#[track_caller]
 pub(crate) fn admit_json_payload(payload: &str) -> Result<()> {
     use std::io::Write;
     let mut counter = StructuredMaterialCounter::default();
@@ -179,6 +187,7 @@ pub(crate) fn admit_json_payload(payload: &str) -> Result<()> {
 /// One direct typed decode, with no completion aggregate/resolver copies.
 /// Inline scalars still count as cells; the original eightfold allowance covers
 /// owning strings, map entries and container capacity. Keep the bytes envelope.
+#[track_caller]
 pub(crate) fn admit_typed_json_payload(payload: &str) -> Result<()> {
     use std::io::Write;
     let mut counter = StructuredMaterialCounter::default();
