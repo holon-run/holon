@@ -157,6 +157,11 @@ impl Clone for AgentRosterSnapshotData {
     fn clone(&self) -> Self {
         let acquisition = self.acquisition.fork_owned();
         let material = Some(acquisition.guard().expect("roster clone acquisition"));
+        let agent_materials = self
+            .agent_materials
+            .iter()
+            .map(|material| material.fork_owned())
+            .collect();
         Self {
             runtime_id: self.runtime_id.clone(),
             event_log_epoch: self.event_log_epoch.clone(),
@@ -164,11 +169,7 @@ impl Clone for AgentRosterSnapshotData {
             agents: self.agents.clone(),
             _material: material,
             acquisition,
-            agent_materials: self
-                .agent_materials
-                .iter()
-                .map(|material| material.fork_owned())
-                .collect(),
+            agent_materials,
         }
     }
 }
