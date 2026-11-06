@@ -4518,8 +4518,15 @@ owner, including reentry after an asynchronous continuation hook. A loop that
 observed open admission before awaiting the owner cannot republish prepared
 domains after cleanup closes admission. Explicitly admitted cleanup/recovery
 preparation remains available; this is not a blanket gate in the generic
-preparation API. Cold deletion Scheduling maintenance still rejects an actual
-prepared root rather than clearing or overwriting its domains.
+preparation API. An admitted cleanup may still publish prepared domains while
+the original identity is Deleting; an unloaded runtime does not imply an
+unprepared owner. Cold deletion Task/Scheduling maintenance therefore rechecks
+the unloaded boundary under the bootstrap lock and original owner reservation.
+Its transaction must qualify the exact deletion job, phase and incarnation.
+Only the acknowledged metadata commit invalidates those prepared views; it
+does not publish empty Ready domains or retain stale Scheduling/Input/Task
+coverage. A rejected transaction retains the old root, and an unknown commit
+remains fenced for reconciliation rather than replaying cleanup SQL.
 Post-dispatch episode planning likewise prepares its own scheduler view under
 one owner reservation after the reducer, result Brief and posture ACKs. Those
 ACKs may invalidate Input even for a reducer-only child result. Closure is

@@ -131,24 +131,11 @@ impl RuntimeHost {
         let original_scope = scope.clone();
         let budget = ledger.clone();
         let ack: DeletionSchedulingAck = self
-            .commit_deletion_identity_metadata_checked(
+            .commit_deletion_metadata(
                 agent.into(),
                 Some(scope.identity_incarnation),
                 vec![],
-                |reservations| {
-                    for reservation in reservations {
-                        if let Some(root) = reservation.capture_ready_snapshot()? {
-                            anyhow::ensure!(
-                                root.episodes.is_none()
-                                    && root.input_evidence.is_none()
-                                    && root.work.is_none()
-                                    && root.tasks.is_none(),
-                                "deletion Scheduling maintenance cannot overwrite prepared domains"
-                            );
-                        }
-                    }
-                    Ok(())
-                },
+                true,
                 move |host| {
                     let (mut ack, identity) = match operation {
                         Operation::Timer(id) => host.runtime_db().cancel_timer_for_deletion(
@@ -201,6 +188,7 @@ async fn ensure_unloaded(host: &RuntimeHost, agent: &str) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::host::AgentBootstrapExecution;
     use crate::runtime::resident_input_evidence::InputEvidenceScope;
     use crate::{
         runtime::resident_scheduling::{SchedulingCaptureRequest, SchedulingFamily, SchedulingKey},
@@ -315,7 +303,8 @@ mod tests {
         Ok(())
     }
     #[tokio::test]
-    async fn scheduling_deletion_prepared_root_rejects_before_original_sql() -> Result<()> {
+    async fn scheduling_deletion_invalidates_prepared_domains_only_after_original_ack() -> Result<()>
+    {
         let (_home, host) = crate::deletion::tests::metadata_test_host();
         let (id, job, timer) = original(&host, "scheduling-delete-prepared")?;
         let owner = host
@@ -365,24 +354,13 @@ mod tests {
             [&id.agent_id],
             |row| row.get(0),
         )?;
-        let error = host
-            .cancel_deletion_timers(&id.agent_id, &job, Utc::now())
+        let mut stale_job = job.clone();
+        stale_job.phase = AgentDeletionPhase::Ingress;
+        assert!(host
+            .cancel_deletion_timers(&id.agent_id, &stale_job, Utc::now())
             .await
-            .unwrap_err();
-        assert!(
-            format!("{error:#}")
-                .contains("deletion Scheduling maintenance cannot overwrite prepared domains"),
-            "{error:#}"
-        );
-        assert_eq!(
-            serde_json::to_value(
-                host.runtime_db()
-                    .timers()
-                    .latest(&timer.id)?
-                    .context("original Timer missing")?
-            )?,
-            serde_json::to_value(&timer)?
-        );
+            .is_err());
+        assert!(Arc::ptr_eq(&root, &owner.capture()?.unwrap()));
         assert_eq!(
             host.runtime_db().connection()?.query_row(
                 "SELECT revision FROM scheduling_domain_current WHERE agent_id=?1",
@@ -391,20 +369,59 @@ mod tests {
             )?,
             before
         );
-        assert!(Arc::ptr_eq(
-            &root,
-            &owner
-                .capture()?
-                .context("prepared root missing after rejection")?
-        ));
+        // A Known ACK must invalidate the old views even if its first install
+        // fails; retrying publication must not repeat the original SQL.
+        host.fail_next_external_mutation_publication();
+        assert_eq!(
+            host.cancel_deletion_timers(&id.agent_id, &job, Utc::now())
+                .await?,
+            1
+        );
+        let after = owner.capture()?.context("deletion metadata ACK missing")?;
+        assert!(
+            after.episodes.is_none()
+                && after.input_evidence.is_none()
+                && after.work.is_none()
+                && after.tasks.is_none()
+                && after.scheduling.is_none()
+        );
+        assert_eq!(
+            host.runtime_db()
+                .timers()
+                .latest(&timer.id)?
+                .context("original Timer missing")?
+                .status,
+            TimerStatus::Cancelled
+        );
+        let revision: u64 = host.runtime_db().connection()?.query_row(
+            "SELECT revision FROM scheduling_domain_current WHERE agent_id=?1",
+            [&id.agent_id],
+            |row| row.get(0),
+        )?;
+        assert!(revision > before);
+        assert_eq!(
+            host.cancel_deletion_timers(&id.agent_id, &job, Utc::now())
+                .await?,
+            0
+        );
+        assert_eq!(
+            host.runtime_db().connection()?.query_row(
+                "SELECT revision FROM scheduling_domain_current WHERE agent_id=?1",
+                [&id.agent_id],
+                |row| row.get::<_, u64>(0)
+            )?,
+            revision
+        );
         assert!(owner.try_reserve().is_ok());
         host.shutdown().await?;
         Ok(())
     }
     #[tokio::test]
-    async fn scheduling_deletion_maintenance_rejects_real_prepared_root() -> Result<()> {
+    async fn parent_cleanup_invalidates_prepared_domains_after_original_timer_ack() -> Result<()> {
         let (_home, host) = crate::deletion::tests::metadata_test_host();
-        let (id, job, timer) = original(&host, "scheduling-delete-prepared")?;
+        let (id, mut job, timer) = original(&host, "scheduling-delete-prepared")?;
+        job.mode = AgentDeletionMode::ParentCleanup;
+        host.runtime_db().agent_deletions().update(&job)?;
         let snapshot = host.runtime_db().transaction(|tx| {
             crate::runtime_db::episode_snapshot::load_episode_memory_for_input_recovery_in(
                 tx,
@@ -439,37 +456,110 @@ mod tests {
             [&id.agent_id],
             |row| row.get(0),
         )?;
-        for operation in [Operation::Timer(timer.id.clone()), Operation::ParentTimers] {
-            let error = host
-                .commit_deletion_scheduling_operation(&id.agent_id, &job, operation, Utc::now())
-                .await
-                .unwrap_err();
-            assert!(
-                format!("{error:#}")
-                    .contains("deletion Scheduling maintenance cannot overwrite prepared domains"),
-                "{error:#}"
-            );
-            let after = owner.capture()?.context("prepared original root lost")?;
-            assert_eq!(before.token, after.token);
-            assert!(Arc::ptr_eq(after.episodes.as_ref().unwrap(), &episodes));
-            assert_eq!(
-                host.runtime_db().connection()?.query_row(
-                    "SELECT revision FROM scheduling_domain_current WHERE agent_id=?1",
-                    [&id.agent_id],
-                    |row| row.get::<_, u64>(0),
-                )?,
-                revision
-            );
-            assert_eq!(
-                host.runtime_db()
-                    .timers()
-                    .latest(&timer.id)?
-                    .unwrap()
-                    .status,
-                TimerStatus::Active
-            );
-            assert!(owner.try_reserve().is_ok());
+        assert_eq!(
+            host.cancel_deletion_timers(&id.agent_id, &job, Utc::now())
+                .await?,
+            1
+        );
+        let after = owner.capture()?.context("deletion metadata ACK missing")?;
+        assert_ne!(before.token, after.token);
+        assert!(after.episodes.is_none() && after.scheduling.is_none());
+        assert!(
+            host.runtime_db().connection()?.query_row(
+                "SELECT revision FROM scheduling_domain_current WHERE agent_id=?1",
+                [&id.agent_id],
+                |row| row.get::<_, u64>(0),
+            )? > revision
+        );
+        assert_eq!(
+            host.runtime_db()
+                .timers()
+                .latest(&timer.id)?
+                .unwrap()
+                .status,
+            TimerStatus::Cancelled
+        );
+        assert!(owner.try_reserve().is_ok());
+        host.shutdown().await?;
+        Ok(())
+    }
+    #[tokio::test]
+    async fn deletion_job_finishes_when_admitted_cleanup_prepares_before_ingress() -> Result<()> {
+        let (_home, host) = crate::deletion::tests::metadata_test_host();
+        let agent = "delete-prepared-ingress";
+        host.default_runtime().await?;
+        host.create_public_named_agent_with_name(
+            agent,
+            None,
+            None,
+            None,
+            None,
+            AgentBootstrapExecution::Inline,
+            true,
+        )
+        .await?;
+        host.get_public_agent(agent)
+            .await?
+            .default_external_trigger(crate::types::CallbackDeliveryMode::WakeHint)
+            .await?;
+        let (identity, mut job, _) = host
+            .begin_public_agent_deletion(agent, false, "test")
+            .await?;
+        job.status = AgentDeletionStatus::Running;
+        for phase in [AgentDeletionPhase::Fence, AgentDeletionPhase::Quiesce] {
+            job.phase = phase;
+            host.runtime_db().agent_deletions().update(&job)?;
+            host.execute_deletion_phase(agent, phase, &job).await?;
         }
+        job.phase = AgentDeletionPhase::Ingress;
+        host.runtime_db().agent_deletions().update(&job)?;
+        let active: usize = host.runtime_db().connection()?.query_row(
+            "SELECT COUNT(*) FROM external_triggers WHERE target_agent_id=?1 AND status='active'",
+            [agent],
+            |row| row.get(0),
+        )?;
+        assert!(
+            active > 0,
+            "exercise the actual Ingress maintenance transaction"
+        );
+        // Deterministically order a legal admitted-cleanup publication between
+        // Quiesce and Ingress; no timing sleeps or probabilistic stress loop.
+        let owner = host
+            .bridge()
+            .mutation_owner_for(agent, identity.incarnation)?;
+        let state = Arc::new(host.runtime_db().agent_states().latest(agent)?.unwrap());
+        let episodes = Arc::new(crate::runtime::resident_state::ResidentEpisodes::bootstrap(
+            agent,
+            identity.incarnation,
+            12,
+            true,
+            Vec::new(),
+        )?);
+        let mut reservation = owner.reserve().await?;
+        reservation.begin(crate::ids::audit_event_id())?;
+        reservation.committed_prepared(state.clone(), Some(episodes), None)?;
+        reservation.publish(state)?;
+        drop(reservation);
+        // Resume the persisted Ingress checkpoint through the real job claim.
+        job.status = AgentDeletionStatus::Pending;
+        host.runtime_db().agent_deletions().update(&job)?;
+        host.execute_deletion_job(job.clone()).await?;
+        assert_eq!(
+            host.runtime_db()
+                .agent_deletions()
+                .latest_for_agent(agent)?
+                .unwrap()
+                .status,
+            AgentDeletionStatus::Completed
+        );
+        assert_eq!(
+            host.agent_identity_record(agent)?.unwrap().status,
+            AgentRegistryStatus::Deleted
+        );
+        assert!(
+            owner.capture()?.is_none(),
+            "finalize must retire the original State"
+        );
         host.shutdown().await?;
         Ok(())
     }

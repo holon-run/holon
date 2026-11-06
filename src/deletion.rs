@@ -89,24 +89,16 @@ impl RuntimeHost {
         scopes: Vec<String>,
         persist: impl FnOnce(&RuntimeHost) -> Result<(T, AgentIdentityRecord)> + Send + 'static,
     ) -> Result<T> {
-        self.commit_deletion_identity_metadata_checked(
-            agent_id,
-            expected_incarnation,
-            scopes,
-            |_| Ok(()),
-            persist,
-        )
-        .await
+        self.commit_deletion_metadata(agent_id, expected_incarnation, scopes, false, persist)
+            .await
     }
 
-    async fn commit_deletion_identity_metadata_checked<T: Send + 'static>(
+    async fn commit_deletion_metadata<T: Send + 'static>(
         &self,
         agent_id: String,
         expected_incarnation: Option<u64>,
         mut scopes: Vec<String>,
-        preflight: impl FnOnce(&[crate::runtime::mutation_owner::MutationReservation]) -> Result<()>
-            + Send
-            + 'static,
+        require_unloaded: bool,
         persist: impl FnOnce(&RuntimeHost) -> Result<(T, AgentIdentityRecord)> + Send + 'static,
     ) -> Result<T> {
         scopes.push(agent_id.clone());
@@ -150,7 +142,16 @@ impl RuntimeHost {
                     "deletion target identity incarnation changed"
                 );
             }
-            preflight(&reservations)?;
+            if require_unloaded {
+                anyhow::ensure!(
+                    host.try_get_loaded_runtime(&agent_id).await.is_none(),
+                    "deletion maintenance requires the original unloaded boundary"
+                );
+            }
+            // Admitted cleanup may have published prepared domains after the
+            // deletion fence. The original job/phase transaction below must
+            // qualify its authority; only its exact metadata ACK invalidates
+            // those views. A rejected SQL attempt retains the original root.
             let mut committed_value = None;
             let result = host
                 .commit_external_metadata(&mut reservations, crate::ids::audit_event_id(), || {

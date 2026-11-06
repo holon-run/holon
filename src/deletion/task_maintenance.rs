@@ -52,19 +52,11 @@ impl RuntimeHost {
                 let task_id = id.clone();
                 let budget = ledger.clone();
                 let ack: DeletionTaskAck = self
-                    .commit_deletion_identity_metadata_checked(
+                    .commit_deletion_metadata(
                         agent_id.into(),
                         Some(scope.identity_incarnation),
                         vec![],
-                        |reservations| {
-                            for reservation in reservations {
-                                if let Some(root)=reservation.capture_ready_snapshot()? {
-                                    anyhow::ensure!(root.episodes.is_none() && root.input_evidence.is_none() && root.work.is_none() && root.tasks.is_none(),
-                                        "deletion Task maintenance cannot overwrite prepared domains");
-                                }
-                            }
-                            Ok(())
-                        },
+                        true,
                         move |host| {
                             let (mut ack, identity) = host.runtime_db().cancel_task_for_deletion(
                                 &frozen_scope,
@@ -175,6 +167,24 @@ mod tests {
         let owner = host
             .bridge()
             .mutation_owner_for(&identity.agent_id, identity.incarnation)?;
+        let state = Arc::new(
+            host.runtime_db()
+                .agent_states()
+                .latest(&identity.agent_id)?
+                .unwrap(),
+        );
+        let episodes = Arc::new(crate::runtime::resident_state::ResidentEpisodes::bootstrap(
+            &identity.agent_id,
+            identity.incarnation,
+            12,
+            true,
+            Vec::new(),
+        )?);
+        let mut reservation = owner.reserve().await?;
+        reservation.begin(crate::ids::audit_event_id())?;
+        reservation.committed_prepared(state.clone(), Some(episodes), None)?;
+        reservation.publish(state)?;
+        drop(reservation);
         host.fail_next_external_mutation_publication();
         assert_eq!(
             host.terminalize_deletion_tasks(&identity.agent_id, &job, Utc::now())
@@ -184,7 +194,7 @@ mod tests {
         let root = owner
             .capture()?
             .context("cold metadata publication missing")?;
-        assert!(root.tasks.is_none());
+        assert!(root.tasks.is_none() && root.episodes.is_none());
         assert_eq!(
             host.runtime_db().tasks().latest(&task.id)?.unwrap().status,
             TaskStatus::Cancelled
