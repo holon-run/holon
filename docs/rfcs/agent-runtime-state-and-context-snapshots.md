@@ -805,6 +805,10 @@ Turn or Run, and no assignment, current binding or recovery successor is not a
 live upgrade root. This neither rewrites its history nor mints an absent-Turn
 proof; an independent current reference retains strict qualification. See
 [the implementation decision](../implementation-decisions/legacy-recovery-upgrade-evidence.md).
+Archived Event ACK adoption uses bounded keyset pages on that original SQL
+transaction. Total retained history may span pages; a single oversized record,
+invalid sequence, scope mismatch or changed digest still rejects acquisition.
+It does not promote archived Events into live Current qualification.
 
 The latest completion head follows the canonical nonempty Result Brief query,
 including its deterministic timestamp and ID ordering. An explicit empty head

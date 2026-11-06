@@ -452,3 +452,104 @@ fn current_upgrade_is_not_a_startup_requalification_path() -> Result<()> {
     assert!(capture_tx(&tx).is_err());
     Ok(())
 }
+
+#[test]
+fn current_upgrade_streams_event_histories_larger_than_one_record_page() -> Result<()> {
+    let (mut connection, _) = legacy(1)?;
+    migrate_to(&mut connection, current_read_writes::VERSION - 1)?;
+    let original: usize = connection.query_row(
+        "SELECT COUNT(*) FROM audit_events WHERE agent_id=?1",
+        [AGENT],
+        |r| r.get(0),
+    )?;
+    {
+        let tx = connection.transaction()?;
+        let last: i64 = tx.query_row(
+            "SELECT COALESCE(MAX(event_seq),0) FROM audit_events WHERE agent_id=?1",
+            [AGENT],
+            |r| r.get(0),
+        )?;
+        let mut insert = tx.prepare(
+            "INSERT INTO audit_events(audit_event_id,event_seq,agent_id,kind,created_at,data_json)
+            VALUES(?1,?2,?3,'fixture','2026-10-01T00:00:00Z','{}')",
+        )?;
+        for index in 0..=CONTINUITY_MAX_RECORDS {
+            insert.execute(params![
+                format!("bulk-event-{index}"),
+                last + i64::try_from(index)? + 1,
+                AGENT
+            ])?;
+        }
+        drop(insert);
+        tx.commit()?;
+    }
+    apply_migration(&mut connection, current_migration())?;
+    let acked: usize = connection.query_row(
+        "SELECT COUNT(*) FROM event_history_acks WHERE agent_id=?1",
+        [AGENT],
+        |r| r.get(0),
+    )?;
+    assert_eq!(acked, original + CONTINUITY_MAX_RECORDS + 1);
+    let changed: usize = connection.query_row("SELECT COUNT(*) FROM event_history_acks WHERE agent_id=?1 AND audit_event_id LIKE 'bulk-event-%' AND content_digest!=?2",params![AGENT,bytes_digest(b"{}")],|r|r.get(0))?;
+    assert_eq!(changed, 0);
+    Ok(())
+}
+
+#[test]
+fn event_upgrade_byte_pages_preserve_every_ack_and_reject_oversized_records() -> Result<()> {
+    let (mut connection, _) = legacy(0)?;
+    migrate_to(&mut connection, current_read_writes::VERSION - 1)?;
+    connection.execute_batch(current_migration().sql)?;
+    // Isolate the deliberately small byte-page fixture from legacy event framing.
+    connection.execute("DELETE FROM audit_events", [])?;
+    let scope = InputEvidenceScope {
+        agent_id: AGENT.into(),
+        identity_incarnation: 1,
+    };
+    {
+        let tx = connection.transaction()?;
+        for index in 0..5 {
+            tx.execute("INSERT INTO audit_events(audit_event_id,event_seq,agent_id,kind,created_at,data_json)
+                VALUES(?1,?2,?3,'fixture','2026-10-01T00:00:00Z',?4)",params![format!("byte-event-{index}"),100+index,AGENT,serde_json::json!({"padding":"x".repeat(20)}).to_string()])?;
+        }
+        capture_event_history_tx(&tx, &scope, 2, 64)?;
+        let events: usize = tx.query_row(
+            "SELECT COUNT(*) FROM audit_events WHERE agent_id=?1",
+            [AGENT],
+            |r| r.get(0),
+        )?;
+        let acks: usize = tx.query_row(
+            "SELECT COUNT(*) FROM event_history_acks WHERE agent_id=?1",
+            [AGENT],
+            |r| r.get(0),
+        )?;
+        assert_eq!(events, acks);
+        tx.commit()?;
+    }
+    let before: usize =
+        connection.query_row("SELECT COUNT(*) FROM event_history_acks", [], |r| r.get(0))?;
+    {
+        let tx = connection.transaction()?;
+        tx.execute(
+            "INSERT INTO audit_events(audit_event_id,event_seq,agent_id,kind,created_at,data_json)
+            VALUES('oversized-event',200,?1,'fixture','2026-10-01T00:00:00Z',?2)",
+            params![AGENT, "x".repeat(65)],
+        )?;
+        let error = capture_event_history_tx(&tx, &scope, 2, 64).unwrap_err();
+        assert!(error.to_string().contains("page byte limit"));
+        // Failed original transaction is rolled back, including any ACK writes.
+    }
+    let after: usize =
+        connection.query_row("SELECT COUNT(*) FROM event_history_acks", [], |r| r.get(0))?;
+    assert_eq!(before, after);
+    {
+        let tx = connection.transaction()?;
+        tx.execute(
+            "INSERT INTO audit_events(audit_event_id,event_seq,agent_id,kind,created_at,data_json)
+            VALUES('invalid-sequence',0,?1,'fixture','2026-10-01T00:00:00Z','{}')",
+            [AGENT],
+        )?;
+        assert!(capture_event_history_tx(&tx, &scope, 2, 64).is_err());
+    }
+    Ok(())
+}

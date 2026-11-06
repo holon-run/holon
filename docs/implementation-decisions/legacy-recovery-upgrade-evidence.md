@@ -35,3 +35,10 @@ claim-only Turn proof is minted. An independent current reference still selects
 the Attempt through the strict closure and qualification checks. Missing tables
 or witnesses, live queues and inconsistent canonical projections cannot use this
 exclusion.
+
+Event history ACK adoption streams keyset pages inside the original Current
+upgrade transaction. Each page retains the existing record and byte bounds;
+individual oversized bodies and invalid sequences still fail. An agent's total
+archived history can span multiple pages without dropping old ACKs or qualifying
+those Events as live Current. Digest checks, scope and the one-time cut remain
+unchanged.
