@@ -5045,6 +5045,9 @@ strict. The source domain and its prepared windows remain unchanged.
 Root selection borrows duplicate required/live/history keys and admits an owned
 key only before its first insertion, so overlapping indexes do not create
 discarded clones or consume the acquisition allowance repeatedly.
+Wake-parent expansion walks borrowed facts without a second owned root list;
+new parents are admitted before insertion and all selected keys and qualified
+parent bodies are still validated.
 
 An unchanged shared skill inventory keeps its original data allocation guard;
 its new candidate header/scan has a separate last-holder guard. Initial data

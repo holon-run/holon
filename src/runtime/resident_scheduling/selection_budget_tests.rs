@@ -226,7 +226,7 @@ fn domain() -> Result<ResidentSchedulingDomain> {
 }
 
 #[test]
-fn closure_clone_and_both_parent_ids_share_original_remainder() -> Result<()> {
+fn closure_admits_new_parent_and_validation_key_without_copying_roots() -> Result<()> {
     let domain = domain()?;
     let wake = domain
         .records
@@ -234,14 +234,16 @@ fn closure_clone_and_both_parent_ids_share_original_remainder() -> Result<()> {
         .find(|k| k.family == SchedulingFamily::TimerWake)
         .unwrap();
     let roots = BTreeSet::from([wake.clone()]);
-    // One key (9 slots) plus two brackets: 11 slots.
-    let initial = cost(serde_json::to_vec(&roots)?.len(), 11, 1 + 3 * roots.len());
     let parent_id = cost(serde_json::to_vec("parent\"雪")?.len(), 1, 1);
-    let selected = assert_gates(&[initial, parent_id, parent_id], || {
+    let selected = assert_gates(&[parent_id, parent_id], || {
         domain.required_closure(roots.clone())
     })?;
     assert_eq!(selected.len(), 2);
     assert!(selected.contains(&SchedulingKey::new(SchedulingFamily::Timer, "parent\"雪")));
+    // An already selected parent needs no new owned key, but still undergoes
+    // the qualified-body validation with its separately admitted lookup key.
+    let retained = assert_gates(&[parent_id], || domain.required_closure(selected.clone()))?;
+    assert_eq!(retained, selected);
     Ok(())
 }
 
@@ -394,7 +396,6 @@ fn selected_install_moves_coverage_and_map_and_admits_only_shared_header() -> Re
 
 fn empty_capture_parts(domain: &ResidentSchedulingDomain) -> Result<Vec<(u64, usize)>> {
     Ok(vec![
-        cost(2, 2, 1), // closure's initial empty Vec
         capture_vec_cost::<Arc<QualifiedSchedulingFact>>(0),
         capture_clone_cost(&capture_coverage::CaptureCoverage {
             coverage: &domain.coverage,

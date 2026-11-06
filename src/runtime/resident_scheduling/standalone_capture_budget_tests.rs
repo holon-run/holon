@@ -55,8 +55,7 @@ fn empty_capture_cost(domain: &ResidentSchedulingDomain) -> Result<(u64, usize)>
     };
     let parts = [
         ((domain.scope.agent_id.len() as u64 + 256) * 8, 64),
-        clone_cost(&Vec::<SchedulingKey>::new())?, // closure worklist
-        (128 * 8, 8),                              // empty records Vec
+        (128 * 8, 8), // empty records Vec
         clone_cost(&projected)?,
         (
             (128 + views as u64 * std::mem::size_of::<Arc<BudgetViewGuard>>() as u64) * 8,

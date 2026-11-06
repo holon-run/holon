@@ -570,16 +570,21 @@ impl ResidentSchedulingDomain {
         mut keys: BTreeSet<SchedulingKey>,
     ) -> Result<BTreeSet<SchedulingKey>> {
         let optional_pruned = |key: &SchedulingKey| self.optional_pruned(key);
-        crate::diagnostics::resource_io::admit_typed_cloned_value(&keys)?;
-        let initial: Vec<_> = keys.iter().cloned().collect();
-        for key in initial {
-            if optional_pruned(&key) {
+        // Only Timer parents can be added. Walk the immutable fact map rather
+        // than cloning every selected key to permit insertion into the set.
+        for key in self.records.keys() {
+            if !keys.contains(key) || optional_pruned(key) {
                 continue;
             }
-            if let Some(record) = self.lookup(&key)? {
+            if let Some(record) = self.lookup(key)? {
                 if let CanonicalSchedulingFact::TimerWake(w) = &record.fact {
-                    crate::diagnostics::resource_io::admit_typed_cloned_value(&w.timer_id)?;
-                    keys.insert(SchedulingKey::new(SchedulingFamily::Timer, &w.timer_id));
+                    if !keys
+                        .iter()
+                        .any(|key| key.family == SchedulingFamily::Timer && key.id == w.timer_id)
+                    {
+                        crate::diagnostics::resource_io::admit_typed_cloned_value(&w.timer_id)?;
+                        keys.insert(SchedulingKey::new(SchedulingFamily::Timer, &w.timer_id));
+                    }
                 }
             }
         }
