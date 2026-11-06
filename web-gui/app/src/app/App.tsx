@@ -1038,7 +1038,7 @@ export function App() {
             runtimeConfigLoading={runtimeConfigLoading}
             runtimeConfigSaving={runtimeConfigSaving}
             runtimeConfigError={runtimeConfigError}
-            onStartOnboarding={openOnboarding}
+            onStartOnboarding={bootstrap.agents.length === 0 ? openOnboarding : undefined}
             setupTarget={setupTarget}
             onRefreshModels={refreshModelCatalog}
             onRefreshRuntimeConfig={refreshRuntimeConfig}
