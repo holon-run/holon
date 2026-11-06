@@ -46,6 +46,15 @@ fn shape(value: &serde_json::Value) -> usize {
     }
 }
 
+// Independent AST oracle for the direct typed decode, not completion copies.
+fn typed_cells(value: &serde_json::Value) -> usize {
+    1 + match value {
+        serde_json::Value::Object(fields) => fields.values().map(typed_cells).sum::<usize>(),
+        serde_json::Value::Array(values) => values.iter().map(typed_cells).sum::<usize>(),
+        _ => 0,
+    }
+}
+
 fn lookup_gates(items: &[WorkItemRecord]) -> Result<Vec<(u64, usize)>> {
     let mut gates = Vec::new();
     let mut capacity = 0;
@@ -56,10 +65,11 @@ fn lookup_gates(items: &[WorkItemRecord]) -> Result<Vec<(u64, usize)>> {
             capacity += additional;
         }
         let payload = serde_json::to_string(item)?;
-        let shape = shape(&serde_json::to_value(item)?);
+        let value = serde_json::to_value(item)?;
+        let shape = shape(&value);
         gates.push((
             (payload.len() as u64 * 4 + shape as u64 * 128 + 512) * 8,
-            (shape * 4 + 16) * 8,
+            typed_cells(&value) * 8,
         ));
     }
     Ok(gates)
