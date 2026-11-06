@@ -509,17 +509,18 @@ impl ResidentSchedulingDomain {
             })
             .transpose()
     }
+    fn optional_pruned(&self, key: &SchedulingKey) -> bool {
+        self.coverage.availability(key) == Some(SchedulingAvailability::Pruned)
+            && !self.coverage.required_keys.contains(key)
+            && !self.coverage.active_timers.contains(key)
+            && !self.coverage.pending_wakes.contains(key)
+            && !self.coverage.active_triggers.contains(key)
+    }
     fn required_closure(
         &self,
         mut keys: BTreeSet<SchedulingKey>,
     ) -> Result<BTreeSet<SchedulingKey>> {
-        let optional_pruned = |key: &SchedulingKey| {
-            self.coverage.availability(key) == Some(SchedulingAvailability::Pruned)
-                && !self.coverage.required_keys.contains(key)
-                && !self.coverage.active_timers.contains(key)
-                && !self.coverage.pending_wakes.contains(key)
-                && !self.coverage.active_triggers.contains(key)
-        };
+        let optional_pruned = |key: &SchedulingKey| self.optional_pruned(key);
         crate::diagnostics::resource_io::admit_typed_cloned_value(&keys)?;
         let initial: Vec<_> = keys.iter().cloned().collect();
         for key in initial {
@@ -794,7 +795,8 @@ impl ResidentSchedulingDomain {
             crate::diagnostics::resource_io::ResourceReadMaterial::active_guard()?;
         Ok(next)
     }
-    pub(crate) fn capture(&self, request: &SchedulingCaptureRequest) -> Result<CapturedScheduling> {
+    fn capture_request_metadata(&self, request: &SchedulingCaptureRequest) -> Result<u64> {
+        crate::diagnostics::resource_io::check_active()?;
         let request_bytes = serialized_bytes(&request.required_keys)?
             .checked_mul(4)
             .context("Scheduling capture selector overflow")?;
@@ -810,6 +812,33 @@ impl ResidentSchedulingDomain {
             capture_metadata <= u64::try_from(self.byte_limit)?,
             "Scheduling capture ResourceExhausted"
         );
+        Ok(capture_metadata)
+    }
+    /// Readiness borrows the same qualified roots and Wake parents. Only the
+    /// actual consumer constructs and admits the owning capture.
+    pub(crate) fn validate_capture_request(
+        &self,
+        request: &SchedulingCaptureRequest,
+    ) -> Result<()> {
+        self.capture_request_metadata(request)?;
+        for key in &request.required_keys {
+            self.lookup(key)?;
+        }
+        self.coverage.visit_roots(request.include_live, request.history_limit, &request.required_keys, |key| {
+            if self.optional_pruned(key) { return Ok(()); }
+            if let Some(record) = self.lookup(key)? {
+                if let CanonicalSchedulingFact::TimerWake(wake) = &record.fact {
+                    crate::diagnostics::resource_io::admit_typed_cloned_value(&wake.timer_id)?;
+                    let parent = self.lookup(&SchedulingKey::new(SchedulingFamily::Timer, &wake.timer_id))?
+                        .context("Scheduling Wake has no qualified Timer body")?;
+                    ensure!(matches!(&parent.fact, CanonicalSchedulingFact::Timer(timer) if timer.id == wake.timer_id), "Scheduling Wake parent family differs");
+                }
+            }
+            Ok(())
+        })
+    }
+    pub(crate) fn capture(&self, request: &SchedulingCaptureRequest) -> Result<CapturedScheduling> {
+        let capture_metadata = self.capture_request_metadata(request)?;
         let metadata = self
             .budget
             .as_ref()

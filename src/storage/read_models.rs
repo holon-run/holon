@@ -1390,7 +1390,7 @@ fn derive_work_queue_with_trigger_index<K: AsRef<str>>(
 }
 
 fn clone_queue_display_value<T: Clone + serde::Serialize>(value: &T) -> Result<T> {
-    crate::diagnostics::resource_io::admit_cloned_value(value)
+    crate::diagnostics::resource_io::admit_typed_cloned_value(value)
         .context("queue display clone admission")?;
     Ok(value.clone())
 }

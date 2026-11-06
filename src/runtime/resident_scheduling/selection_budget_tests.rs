@@ -13,16 +13,16 @@ fn scope() -> InputEvidenceScope {
 }
 
 // Scalar JSON envelopes, not calls to admission/bootstrap/loader.
-fn cost(bytes: usize, slots: usize) -> (u64, usize) {
+fn cost(bytes: usize, slots: usize, values: usize) -> (u64, usize) {
     (
         (bytes as u64 * 4 + slots as u64 * 128 + 512) * 8,
-        (slots + 16) * 8,
+        values * 8,
     )
 }
 
 fn key_cost(key: &SchedulingKey) -> Result<(u64, usize)> {
     // Four string starts, two braces, two colons, one comma.
-    Ok(cost(serde_json::to_vec(key)?.len(), 9))
+    Ok(cost(serde_json::to_vec(key)?.len(), 9, 3))
 }
 
 fn sum(parts: &[(u64, usize)]) -> (u64, usize) {
@@ -230,8 +230,8 @@ fn closure_clone_and_both_parent_ids_share_original_remainder() -> Result<()> {
         .unwrap();
     let roots = BTreeSet::from([wake.clone()]);
     // One key (9 slots) plus two brackets: 11 slots.
-    let initial = cost(serde_json::to_vec(&roots)?.len(), 11);
-    let parent_id = cost(serde_json::to_vec("parent\"雪")?.len(), 1);
+    let initial = cost(serde_json::to_vec(&roots)?.len(), 11, 1 + 3 * roots.len());
+    let parent_id = cost(serde_json::to_vec("parent\"雪")?.len(), 1, 1);
     let selected = assert_gates(&[initial, parent_id, parent_id], || {
         domain.required_closure(roots.clone())
     })?;
@@ -320,6 +320,7 @@ fn capture_clone_cost(value: &impl Serialize) -> Result<(u64, usize)> {
     Ok(cost(
         serde_json::to_vec(value)?.len(),
         slots(&serde_json::to_value(value)?),
+        owned_value_cells(&serde_json::to_value(value)?),
     ))
 }
 
@@ -381,10 +382,10 @@ fn selected_install_moves_coverage_and_admits_only_body_arc_slots() -> Result<()
 
 fn empty_capture_parts(domain: &ResidentSchedulingDomain) -> Result<Vec<(u64, usize)>> {
     Ok(vec![
-        cost(2, 2), // closure's initial empty Vec
+        cost(2, 2, 1), // closure's initial empty Vec
         capture_vec_cost::<Arc<QualifiedSchedulingFact>>(0),
         capture_clone_cost(&domain.coverage)?,
-        cost(2, 2), // required selector clone
+        cost(2, 2, 1), // required selector clone
         capture_vec_cost::<Arc<BudgetViewGuard>>(0),
         capture_clone_cost(&domain.scope)?,
     ])
@@ -802,4 +803,37 @@ fn validation_reference_nodes_preserve_wake_status_and_parent_deduplication() ->
         })?;
     }
     Ok(())
+}
+
+#[test]
+fn selection_preflight_preserves_missing_and_history_checks_without_capture_copies() -> Result<()> {
+    let domain =
+        ResidentSchedulingDomain::bootstrap(scope(), coverage(), vec![], 4096, 16 * 1024 * 1024)?;
+    let ledger = InputEvidenceBudgetLedger::new(StateMemoryLimits::default())?;
+    let selection = ResourceReadMaterial::new(&ledger, &scope())?;
+    let request = SchedulingCaptureRequest::current();
+    selection.read(|| domain.validate_capture_request(&request))?;
+    let owning = ResourceReadMaterial::new(&ledger, &scope())?;
+    let _capture = owning.read(|| domain.capture(&request))?;
+    assert!(owning.finish()?.1 > selection.finish()?.1);
+    let mut missing = request.clone();
+    missing
+        .required_keys
+        .insert(SchedulingKey::new(SchedulingFamily::Timer, "missing"));
+    assert!(domain.validate_capture_request(&missing).is_err());
+    assert!(domain.capture(&missing).is_err());
+    let mut incomplete = domain;
+    incomplete.coverage.history.clear();
+    assert!(incomplete.validate_capture_request(&request).is_err());
+    assert!(incomplete.capture(&request).is_err());
+    Ok(())
+}
+
+// Independent decoded-value oracle: keys/punctuation are not owned value cells.
+fn owned_value_cells(value: &serde_json::Value) -> usize {
+    1 + match value {
+        serde_json::Value::Array(values) => values.iter().map(owned_value_cells).sum::<usize>(),
+        serde_json::Value::Object(values) => values.values().map(owned_value_cells).sum::<usize>(),
+        _ => 0,
+    }
 }

@@ -766,7 +766,7 @@ impl CapturedInputEvidence {
         if let Some(record) = self.find_address(family, id) {
             return Ok(record);
         }
-        crate::diagnostics::resource_io::admit_cloned_value(&(family, id))?;
+        crate::diagnostics::resource_io::admit_typed_cloned_value(&(family, id))?;
         Err(InputEvidenceReadError::NeedsPreparation(InputEvidenceKey::new(family, id)).into())
     }
     fn find_address(
@@ -1141,7 +1141,7 @@ impl ResidentInputEvidence {
     pub(crate) fn capture(&self) -> Result<CapturedInputEvidence> {
         if let Some(material) = &self.query_acquisition {
             material.read(|| {
-                crate::diagnostics::resource_io::admit_cloned_value(&(
+                crate::diagnostics::resource_io::admit_typed_cloned_value(&(
                     &self.scope,
                     &self.coverage,
                 ))?;
@@ -1157,7 +1157,10 @@ impl ResidentInputEvidence {
     ) -> Result<CapturedInputEvidence> {
         self.validate_capture_material(material)?;
         material.read(|| {
-            crate::diagnostics::resource_io::admit_cloned_value(&(&self.scope, &self.coverage))?;
+            crate::diagnostics::resource_io::admit_typed_cloned_value(&(
+                &self.scope,
+                &self.coverage,
+            ))?;
             self.capture_inner()
         })
     }
@@ -1302,7 +1305,8 @@ impl ResidentInputEvidence {
                 .context("Input query omitted original acquisition")?;
             return self.capture_for_request_with_material(request, material);
         }
-        self.capture_request_inner(request, None)
+        self.capture_request_inner(request, None, false)?
+            .context("owning Input capture omitted its result")
     }
     /// Explicit preparation owns its temporary capture, while the original
     /// query still supplies qualification and its failure latch.
@@ -1315,8 +1319,24 @@ impl ResidentInputEvidence {
         // A known selector miss is a preparation need, not an owning probe.
         self.validate_capture_selectors(request)?;
         material.read(|| {
-            crate::diagnostics::resource_io::admit_cloned_value(request)?;
-            self.capture_request_inner(request, Some(material))
+            crate::diagnostics::resource_io::admit_typed_cloned_value(request)?;
+            self.capture_request_inner(request, Some(material), false)?
+                .context("owning Input capture omitted its result")
+        })
+    }
+    /// Check selected availability at preparation without constructing and
+    /// discarding an owning capture. Consumers still perform the complete
+    /// capture, protocol validation and allocation admission before use.
+    pub(crate) fn validate_prepared_request(
+        &self,
+        request: &crate::runtime_db::input_evidence_snapshot::InputEvidenceLoadRequest,
+        material: &crate::diagnostics::resource_io::ResourceReadMaterial,
+    ) -> Result<()> {
+        self.validate_request_material(request, material)?;
+        material.read(|| {
+            crate::diagnostics::resource_io::admit_typed_cloned_value(request)?;
+            self.capture_request_inner(request, Some(material), true)
+                .map(|_| ())
         })
     }
     fn validate_capture_selectors(
@@ -1516,7 +1536,8 @@ impl ResidentInputEvidence {
         &self,
         request: &crate::runtime_db::input_evidence_snapshot::InputEvidenceLoadRequest,
         material: Option<&crate::diagnostics::resource_io::ResourceReadMaterial>,
-    ) -> Result<CapturedInputEvidence> {
+        validation_only: bool,
+    ) -> Result<Option<CapturedInputEvidence>> {
         use InputEvidenceReadError::WindowNotPrepared;
         self.validate_capture_selectors(request)?;
         // A writer may have supplied the incoming body without observing its
@@ -1624,6 +1645,9 @@ impl ResidentInputEvidence {
             if !self.records.contains_key(key) && !self.coverage.unavailable.contains(key) {
                 return Err(InputEvidenceReadError::NeedsPreparation(key.clone()).into());
             }
+        }
+        if validation_only {
+            return Ok(None);
         }
         let turns = self
             .coverage
@@ -1736,7 +1760,7 @@ impl ResidentInputEvidence {
         for source in &request.interrupted_sources {
             captured.execution_interrupted_attempts_for_source(source)?;
         }
-        Ok(captured)
+        Ok(Some(captured))
     }
     /// `mandatory_roots` is the actual committed queue/protocol/root selection,
     /// supplied by the owner installer, never inferred from command arguments.
@@ -2765,6 +2789,56 @@ mod tests {
             },
         )
         .unwrap()
+    }
+
+    #[test]
+    fn selection_preflight_does_not_copy_capture_or_replace_owning_limits() -> Result<()> {
+        use crate::diagnostics::resource_io::ResourceReadMaterial;
+        use crate::runtime_db::input_evidence_snapshot::{
+            InputEvidenceLoadRequest, InputWindowRequest,
+        };
+        let ledger = InputEvidenceBudgetLedger::new(crate::config::StateMemoryLimits::default())?;
+        let original = resident(true).with_budget(ledger.clone())?;
+        let request = InputEvidenceLoadRequest {
+            query: None,
+            windows: vec![InputWindowRequest {
+                selector: InputWindowSelector::GlobalTurns,
+                limit: 2,
+            }],
+            mandatory_roots: Default::default(),
+            interrupted_sources: Default::default(),
+            selected_completion_brief_ids: Default::default(),
+            record_limit: 8,
+            byte_limit: 4096,
+        };
+        let record = original.records.values().next().unwrap();
+        let references = Arc::strong_count(record);
+        let selection = ResourceReadMaterial::new(&ledger, &scope())?;
+        original.validate_prepared_request(&request, &selection)?;
+        assert_eq!(Arc::strong_count(record), references);
+        let owning = ResourceReadMaterial::new(&ledger, &scope())?;
+        let captured = original.capture_for_request_with_material(&request, &owning)?;
+        assert!(owning.finish()?.1 > selection.finish()?.1);
+        assert!(captured
+            .records
+            .iter()
+            .any(|candidate| Arc::ptr_eq(candidate, record)));
+        drop(captured);
+        let mut missing = request.clone();
+        missing
+            .mandatory_roots
+            .insert(InputEvidenceKey::new(InputEvidenceFamily::Turn, "missing"));
+        assert!(original
+            .validate_prepared_request(&missing, &selection)
+            .is_err());
+        // Availability is not an owning-read budget waiver.
+        let mut narrow = request;
+        narrow.byte_limit = 1;
+        original.validate_prepared_request(&narrow, &selection)?;
+        assert!(original
+            .capture_for_request_with_material(&narrow, &owning)
+            .is_err());
+        Ok(())
     }
 
     #[test]

@@ -36,7 +36,7 @@ fn clone_cost(work: &WorkItemRecord) -> Result<(u64, usize)> {
     let count = cells(&serde_json::to_value(work)?);
     Ok((
         (serde_json::to_vec(work)?.len() as u64 * 4 + count as u64 * 128 + 512) * 8,
-        (count + 16) * 8,
+        owned_value_cells(&serde_json::to_value(work)?) * 8,
     ))
 }
 
@@ -419,4 +419,13 @@ fn resident_queue_success_moves_admitted_records_through_consumption_and_last_ho
     drop(holder);
     assert_eq!(ledger.report()?.observed_bytes, 0);
     Ok(())
+}
+
+// Independent decoded-value oracle: keys/punctuation are not owned value cells.
+fn owned_value_cells(value: &serde_json::Value) -> usize {
+    1 + match value {
+        serde_json::Value::Array(values) => values.iter().map(owned_value_cells).sum::<usize>(),
+        serde_json::Value::Object(values) => values.values().map(owned_value_cells).sum::<usize>(),
+        _ => 0,
+    }
 }

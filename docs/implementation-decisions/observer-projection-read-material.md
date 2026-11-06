@@ -19,6 +19,21 @@ Turns belonging only to historical display Work do not become startup inputs.
 Current Work, live waits/frames, pending inputs and independently selected
 history keep their existing strict qualification and closure rules.
 
+Scheduler preparation retains the owner's display window and derives execution
+Input roots from only live Work plus explicitly addressed Work, Wait, Task and
+binding roots. The canonical planner still consumes its full Work queue. Unrelated completed display records do not become mandatory execution
+Work inputs. Explicitly addressed terminal execution records remain strict.
+
+Owner preparation checks Scheduling and Input selection availability without
+constructing an owning capture that would immediately be discarded. The actual
+consumer still captures under the original allowance and performs complete
+protocol, closure and allocation validation before making a decision. This
+removes duplicate temporary allocations rather than resetting an allowance.
+
 Direct typed State/identity decoding and child DTO cloning use the typed
 allocation envelope. Byte limits, record limits, cumulative rejection, schema
 and qualification checks remain unchanged. This change requires no data repair.
+
+Direct typed selector, coverage, Work queue, Todo and current-input clones count
+owned value cells, retaining the existing conservative byte envelope. Tests use
+an independent decoded-value oracle and cover rejection on both resource axes.

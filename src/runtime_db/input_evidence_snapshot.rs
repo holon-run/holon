@@ -217,7 +217,7 @@ impl InputEvidenceLoadRequest {
         if self.contains_root(family, id) {
             return Ok(());
         }
-        crate::diagnostics::resource_io::admit_cloned_value(&(family, id))?;
+        crate::diagnostics::resource_io::admit_typed_cloned_value(&(family, id))?;
         self.mandatory_roots.insert(Key::new(family, id));
         Ok(())
     }
@@ -231,7 +231,7 @@ impl InputEvidenceLoadRequest {
         if !roots().any(|(family, id)| !self.contains_root(family, id)) {
             return Ok(());
         }
-        crate::diagnostics::resource_io::admit_cloned_value(&NewRequestRoots {
+        crate::diagnostics::resource_io::admit_typed_cloned_value(&NewRequestRoots {
             existing: &self.mandatory_roots,
             roots: &roots,
         })?;
@@ -288,7 +288,7 @@ fn own_request_set<T: Clone + Ord + Serialize>(set: &mut Cow<'_, BTreeSet<T>>) -
     crate::diagnostics::resource_io::check_active()?;
     if matches!(set, Cow::Borrowed(_)) {
         if !set.is_empty() {
-            crate::diagnostics::resource_io::admit_cloned_value(set.as_ref())?;
+            crate::diagnostics::resource_io::admit_typed_cloned_value(set.as_ref())?;
         }
         let _ = set.to_mut();
     }
@@ -306,7 +306,7 @@ impl InputEvidenceLoadRequestView<'_> {
             return Ok(());
         }
         own_request_set(&mut self.mandatory_roots)?;
-        crate::diagnostics::resource_io::admit_cloned_value(&(family, id))?;
+        crate::diagnostics::resource_io::admit_typed_cloned_value(&(family, id))?;
         self.mandatory_roots.to_mut().insert(Key::new(family, id));
         Ok(())
     }
@@ -317,7 +317,7 @@ impl InputEvidenceLoadRequestView<'_> {
             return Ok(());
         }
         own_request_set(&mut self.selected_completion_brief_ids)?;
-        crate::diagnostics::resource_io::admit_cloned_value(&id)?;
+        crate::diagnostics::resource_io::admit_typed_cloned_value(&id)?;
         self.selected_completion_brief_ids
             .to_mut()
             .insert(id.into());

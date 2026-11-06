@@ -296,6 +296,9 @@ impl RuntimeMutation {
             self.prepare_owner_task_domain_request(&load).await?;
         }
         self.prepare_owner_work_request(&request).await?;
+        // Execution inputs need live Work and explicitly addressed terminal
+        // records; preserve the owner's separate display window.
+        request.nonopen_limit = 0;
         let work = self.capture_work(&request)?;
         let (mut roots, record_limit, byte_limit) = self.context_input_evidence_policy()?;
         roots.extend(input_roots);
@@ -311,6 +314,9 @@ impl RuntimeMutation {
                     _ => None,
                 }),
         );
+        // The canonical planner's Work queue still includes display history;
+        // that does not promote those records into execution Input roots.
+        request.nonopen_limit = WorkCaptureRequest::current().nonopen_limit;
         // Owner preparation below retains all Queue roots independently. This
         // read needs the actual source, not every queued Message's source index.
         if let Some(source) = message {

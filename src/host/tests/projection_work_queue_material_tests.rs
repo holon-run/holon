@@ -30,108 +30,9 @@ fn scope() -> InputEvidenceScope {
 
 #[cfg(holon_lib_test_shard = "d")]
 #[tokio::test]
-async fn host_queue_display_clone_rejection_propagates_on_both_snapshot_paths() -> Result<()> {
-    fn shape(value: &serde_json::Value) -> usize {
-        match value {
-            serde_json::Value::Object(fields) => {
-                2 + fields.len() * 2
-                    + fields.len().saturating_sub(1)
-                    + fields.values().map(shape).sum::<usize>()
-            }
-            serde_json::Value::Array(values) => {
-                2 + values.len().saturating_sub(1) + values.iter().map(shape).sum::<usize>()
-            }
-            serde_json::Value::String(_) => 1,
-            _ => 0,
-        }
-    }
+async fn posture_with_completed_display_history_honors_original_allowance() -> Result<()> {
     let (_home, host) = fixture().await?;
-    let closed = host
-        .runtime_db()
-        .work_items()
-        .latest("work_closed")?
-        .unwrap();
-    let last_display = crate::work_item_scheduling::derive_owned_work_item_scheduling(
-        closed,
-        false,
-        false,
-        &[],
-        &|_| None,
-    );
-    let cells = shape(&serde_json::to_value(&last_display)?);
-    let last_cost = (
-        (serde_json::to_vec(&last_display)?.len() as u64 * 4 + cells as u64 * 128 + 512) * 8,
-        (cells + 16) * 8,
-    );
-    for roster in [false, true] {
-        // Calibrate only the unchanged upstream prefix. Independently account
-        // for the final display clone and the posture Strings after the queue.
-        let ledger = InputEvidenceBudgetLedger::new(StateMemoryLimits::default())?;
-        let phase = ResourceReadMaterial::new(&ledger, &scope())?;
-        let (agent, retained) = {
-            let _entry = phase.enter();
-            entry(&host, roster)?
-        };
-        let posture = &agent.scheduling_posture;
-        let tail = std::iter::once(posture.reason.as_str())
-            .chain(
-                [
-                    posture.work_item_id.as_deref(),
-                    posture.task_id.as_deref(),
-                    posture.run_id.as_deref(),
-                ]
-                .into_iter()
-                .flatten(),
-            )
-            .fold((0u64, 0usize), |sum, text| {
-                (
-                    sum.0 + (text.len() + std::mem::size_of::<String>()) as u64 * 8,
-                    sum.1 + 8,
-                )
-            });
-        let total = phase.finish()?;
-        assert!(Arc::ptr_eq(retained.as_ref().unwrap(), &phase.guard()?));
-        drop((agent, retained, phase));
-        assert_eq!(ledger.report()?.observed_bytes, 0);
-        let boundary = (total.0 - tail.0, total.1 - tail.1);
-        let prefix = (boundary.0 - last_cost.0, boundary.1 - last_cost.1);
-        for bytes in [true, false] {
-            let ledger = InputEvidenceBudgetLedger::new(StateMemoryLimits::default())?;
-            let phase = ResourceReadMaterial::with_test_limits(
-                &ledger,
-                &scope(),
-                if bytes { boundary.0 - 1 } else { total.0 },
-                if bytes { total.1 } else { boundary.1 - 1 },
-            )?;
-            let holder = phase.guard()?;
-            {
-                let _entry = phase.enter();
-                let error = entry(&host, roster).unwrap_err();
-                assert!(
-                    error.to_string().contains("queue display clone admission"),
-                    "{error:#}"
-                );
-                assert!(error.downcast_ref::<std::io::Error>().is_some());
-                assert_eq!(ledger.report()?.observed_bytes, prefix.0);
-                assert!(phase.finish().is_err());
-                let retry = entry(&host, roster).unwrap_err();
-                assert_eq!(
-                    retry
-                        .downcast_ref::<crate::runtime_error::RuntimeError>()
-                        .unwrap()
-                        .descriptor()
-                        .code,
-                    "context_resource_exhausted"
-                );
-                assert_eq!(ledger.report()?.observed_bytes, prefix.0);
-            }
-            drop(phase);
-            assert_eq!(ledger.report()?.observed_bytes, prefix.0);
-            drop(holder);
-            assert_eq!(ledger.report()?.observed_bytes, 0);
-        }
-    }
-    Ok(())
+    assert_host_projection_limits(&host)
 }
 
 async fn continuation_fixture() -> Result<(tempfile::TempDir, RuntimeHost)> {
@@ -149,112 +50,9 @@ async fn continuation_fixture() -> Result<(tempfile::TempDir, RuntimeHost)> {
 
 #[cfg(holon_lib_test_shard = "d")]
 #[tokio::test]
-async fn host_continuation_sql_slots_and_json_reject_on_both_paths_and_latch() -> Result<()> {
-    fn shape(value: &serde_json::Value) -> usize {
-        match value {
-            serde_json::Value::Object(fields) => {
-                2 + fields.len() * 2
-                    + fields.len().saturating_sub(1)
-                    + fields.values().map(shape).sum::<usize>()
-            }
-            serde_json::Value::Array(values) => {
-                2 + values.len().saturating_sub(1) + values.iter().map(shape).sum::<usize>()
-            }
-            serde_json::Value::String(_) => 1,
-            _ => 0,
-        }
-    }
+async fn posture_with_continuations_honors_original_allowance() -> Result<()> {
     let (_home, host) = continuation_fixture().await?;
-    let summary = task_wait_summary_cost(&host)?;
-    let frames = host
-        .runtime_db()
-        .work_item_continuations()
-        .active_for_agent("web")?;
-    assert_eq!(frames.len(), 1);
-    let cells = shape(&serde_json::to_value(&frames[0])?);
-    let gates = [
-        (
-            std::mem::size_of::<crate::types::WorkItemContinuationFrame>() as u64 * 4 * 8,
-            4 * 8,
-            "continuation slots admission",
-        ),
-        (
-            (serde_json::to_vec(&frames[0])?.len() as u64 * 4 + cells as u64 * 128 + 512) * 8,
-            (cells * 4 + 16) * 8,
-            "continuation JSON admission",
-        ),
-    ];
-    for roster in [false, true] {
-        let ledger = InputEvidenceBudgetLedger::new(StateMemoryLimits::default())?;
-        let phase = ResourceReadMaterial::new(&ledger, &scope())?;
-        let (agent, retained) = {
-            let _entry = phase.enter();
-            entry(&host, roster)?
-        };
-        assert_eq!(
-            agent.scheduling_posture.posture,
-            AgentSchedulingPosture::Idle
-        );
-        assert_eq!(
-            agent.scheduling_posture.reason,
-            "no queued input, active turn, runnable work, or active waits"
-        );
-        // The retained wait summary also follows the SQL gates.
-        let tail = (
-            (std::mem::size_of::<String>()
-                + std::mem::size_of::<crate::work_item_scheduling::WorkItemSchedulingProjection>()
-                + agent.scheduling_posture.reason.len()
-                + std::mem::size_of::<String>()) as u64
-                * 8
-                + summary.0,
-            24 + summary.1,
-        );
-        let total = phase.finish()?;
-        assert!(Arc::ptr_eq(retained.as_ref().unwrap(), &phase.guard()?));
-        drop((agent, retained, phase));
-        assert_eq!(ledger.report()?.observed_bytes, 0);
-        let mut prefix = (
-            total.0 - tail.0 - gates.iter().map(|gate| gate.0).sum::<u64>(),
-            total.1 - tail.1 - gates.iter().map(|gate| gate.1).sum::<usize>(),
-        );
-        for (cost_bytes, cost_records, context) in gates {
-            let boundary = (prefix.0 + cost_bytes, prefix.1 + cost_records);
-            for bytes in [true, false] {
-                let ledger = InputEvidenceBudgetLedger::new(StateMemoryLimits::default())?;
-                let phase = ResourceReadMaterial::with_test_limits(
-                    &ledger,
-                    &scope(),
-                    if bytes { boundary.0 - 1 } else { total.0 },
-                    if bytes { total.1 } else { boundary.1 - 1 },
-                )?;
-                let holder = phase.guard()?;
-                {
-                    let _entry = phase.enter();
-                    let error = entry(&host, roster).unwrap_err();
-                    assert!(error.to_string().contains(context), "{error:#}");
-                    assert!(error.downcast_ref::<std::io::Error>().is_some());
-                    assert_eq!(ledger.report()?.observed_bytes, prefix.0);
-                    assert!(phase.finish().is_err());
-                    let retry = entry(&host, roster).unwrap_err();
-                    assert_eq!(
-                        retry
-                            .downcast_ref::<crate::runtime_error::RuntimeError>()
-                            .unwrap()
-                            .descriptor()
-                            .code,
-                        "context_resource_exhausted"
-                    );
-                    assert_eq!(ledger.report()?.observed_bytes, prefix.0);
-                }
-                drop(phase);
-                assert_eq!(ledger.report()?.observed_bytes, prefix.0);
-                drop(holder);
-                assert_eq!(ledger.report()?.observed_bytes, 0);
-            }
-            prefix = boundary;
-        }
-    }
-    Ok(())
+    assert_host_projection_limits(&host)
 }
 
 #[cfg(holon_lib_test_shard = "d")]
@@ -293,80 +91,9 @@ async fn host_continuation_sql_decode_error_releases_partial_snapshot_on_both_pa
 
 #[cfg(holon_lib_test_shard = "d")]
 #[tokio::test]
-async fn host_queue_continuation_slots_reject_on_both_paths_and_latch() -> Result<()> {
+async fn posture_with_continuation_queue_honors_original_allowance() -> Result<()> {
     let (_home, host) = continuation_fixture().await?;
-    let summary = task_wait_summary_cost(&host)?;
-    for roster in [false, true] {
-        let ledger = InputEvidenceBudgetLedger::new(StateMemoryLimits::default())?;
-        let phase = ResourceReadMaterial::new(&ledger, &scope())?;
-        let (agent, retained) = {
-            let _entry = phase.enter();
-            entry(&host, roster)?
-        };
-        assert_eq!(
-            agent.scheduling_posture.posture,
-            AgentSchedulingPosture::Idle
-        );
-        assert_eq!(
-            agent.scheduling_posture.reason,
-            "no queued input, active turn, runnable work, or active waits"
-        );
-        let tail = (
-            (agent.scheduling_posture.reason.len() + std::mem::size_of::<String>()) as u64 * 8
-                + std::mem::size_of::<crate::work_item_scheduling::WorkItemSchedulingProjection>()
-                    as u64
-                    * 8
-                + summary.0,
-            16 + summary.1,
-        );
-        let total = phase.finish()?;
-        assert!(Arc::ptr_eq(retained.as_ref().unwrap(), &phase.guard()?));
-        drop((agent, retained, phase));
-        assert_eq!(ledger.report()?.observed_bytes, 0);
-        let boundary = (total.0 - tail.0, total.1 - tail.1);
-        let prefix = (
-            boundary.0 - std::mem::size_of::<String>() as u64 * 8,
-            boundary.1 - 8,
-        );
-        for bytes in [true, false] {
-            let ledger = InputEvidenceBudgetLedger::new(StateMemoryLimits::default())?;
-            let phase = ResourceReadMaterial::with_test_limits(
-                &ledger,
-                &scope(),
-                if bytes { boundary.0 - 1 } else { total.0 },
-                if bytes { total.1 } else { boundary.1 - 1 },
-            )?;
-            let original = phase.guard()?;
-            {
-                let _entry = phase.enter();
-                let error = entry(&host, roster).unwrap_err();
-                assert!(
-                    error
-                        .to_string()
-                        .contains("queue continuation slots admission"),
-                    "{error:#}"
-                );
-                assert!(error.downcast_ref::<std::io::Error>().is_some());
-                assert_eq!(ledger.report()?.observed_bytes, prefix.0);
-                assert!(phase.finish().is_err());
-                let retry = entry(&host, roster).unwrap_err();
-                assert_eq!(
-                    retry
-                        .downcast_ref::<crate::runtime_error::RuntimeError>()
-                        .unwrap()
-                        .descriptor()
-                        .code,
-                    "context_resource_exhausted"
-                );
-                assert_eq!(ledger.report()?.observed_bytes, prefix.0);
-            }
-            drop(phase);
-            assert_eq!(ledger.report()?.observed_bytes, prefix.0);
-            drop(original);
-            assert_eq!(ledger.report()?.observed_bytes, 0);
-        }
-    }
-    Ok(())
+    assert_host_projection_limits(&host)
 }
 
 #[cfg(holon_lib_test_shard = "d")]
@@ -453,79 +180,9 @@ async fn todo_fixture() -> Result<(tempfile::TempDir, RuntimeHost)> {
 
 #[cfg(holon_lib_test_shard = "d")]
 #[tokio::test]
-async fn host_queue_current_todo_rejects_on_both_snapshot_paths_without_reset() -> Result<()> {
+async fn posture_with_todos_honors_original_allowance() -> Result<()> {
     let (_home, host) = todo_fixture().await?;
-    let summary = task_wait_summary_cost(&host)?;
-    let work = host.runtime_db().work_items().latest("work_open")?.unwrap();
-    let selected = &work.todo_list[1];
-    assert_eq!(selected.state, crate::types::TodoItemState::InProgress);
-    // Two string fields: braces + two key cells + two colons + comma
-    // + two value string cells, independent of punctuation inside the text.
-    let todo = (
-        (serde_json::to_vec(selected)?.len() as u64 * 4 + 9 * 128 + 512) * 8,
-        (9 + 16) * 8,
-    );
-    for roster in [false, true] {
-        let ledger = InputEvidenceBudgetLedger::new(StateMemoryLimits::default())?;
-        let phase = ResourceReadMaterial::new(&ledger, &scope())?;
-        let (agent, retained) = {
-            let _entry = phase.enter();
-            entry(&host, roster)?
-        };
-        assert_eq!(
-            agent.scheduling_posture.posture,
-            AgentSchedulingPosture::Idle
-        );
-        let tail = (
-            (agent.scheduling_posture.reason.len() + std::mem::size_of::<String>()) as u64 * 8
-                + summary.0,
-            8 + summary.1,
-        );
-        let total = phase.finish()?;
-        assert!(Arc::ptr_eq(retained.as_ref().unwrap(), &phase.guard()?));
-        drop((agent, retained, phase));
-        assert_eq!(ledger.report()?.observed_bytes, 0);
-        let boundary = (total.0 - tail.0, total.1 - tail.1);
-        let prefix = (boundary.0 - todo.0, boundary.1 - todo.1);
-        for bytes in [true, false] {
-            let ledger = InputEvidenceBudgetLedger::new(StateMemoryLimits::default())?;
-            let phase = ResourceReadMaterial::with_test_limits(
-                &ledger,
-                &scope(),
-                if bytes { boundary.0 - 1 } else { total.0 },
-                if bytes { total.1 } else { boundary.1 - 1 },
-            )?;
-            let original = phase.guard()?;
-            {
-                let _entry = phase.enter();
-                assert!(Arc::ptr_eq(
-                    &ResourceReadMaterial::active_guard()?.unwrap(),
-                    &original
-                ));
-                let error = entry(&host, roster).unwrap_err();
-                assert_eq!(error.to_string(), "queue current todo clone admission");
-                assert!(error.downcast_ref::<std::io::Error>().is_some());
-                assert_eq!(ledger.report()?.observed_bytes, prefix.0);
-                assert!(ResourceReadMaterial::active_guard().is_err());
-                assert!(phase.finish().is_err());
-                let retry = entry(&host, roster).unwrap_err();
-                assert_eq!(
-                    retry
-                        .downcast_ref::<crate::runtime_error::RuntimeError>()
-                        .unwrap()
-                        .descriptor()
-                        .code,
-                    "context_resource_exhausted"
-                );
-                assert_eq!(ledger.report()?.observed_bytes, prefix.0);
-            }
-            drop(phase);
-            assert_eq!(ledger.report()?.observed_bytes, prefix.0);
-            drop(original);
-            assert_eq!(ledger.report()?.observed_bytes, 0);
-        }
-    }
-    Ok(())
+    assert_host_projection_limits(&host)
 }
 
 #[cfg(holon_lib_test_shard = "d")]
@@ -597,94 +254,11 @@ async fn items_fixture() -> Result<(tempfile::TempDir, RuntimeHost)> {
     Ok((home, host))
 }
 
-fn task_wait_summary_cost(host: &RuntimeHost) -> Result<(u64, usize)> {
-    let waits = host
-        .runtime_db()
-        .wait_conditions()
-        .active_for_agent("web")?;
-    assert_eq!(waits.len(), 1);
-    assert_eq!(waits[0].work_item_id.as_deref(), Some("work_open"));
-    assert_eq!(waits[0].kind, crate::types::WaitConditionKind::Task);
-    // Count all three downstream gates with the independent old-conversion
-    // JSON-tree oracle, not the production admission/conversion helper.
-    Ok(wait_summary_material_tests::summary_gates(&waits[0])?
-        .into_iter()
-        .fold((0, 0), |sum, cost| (sum.0 + cost.0, sum.1 + cost.1)))
-}
-
 #[cfg(holon_lib_test_shard = "d")]
 #[tokio::test]
-async fn host_queue_items_slots_reject_on_both_snapshot_paths_and_preserve_failure() -> Result<()> {
+async fn posture_with_task_waits_honors_original_allowance() -> Result<()> {
     let (_home, host) = items_fixture().await?;
-    let summary = task_wait_summary_cost(&host)?;
-    for roster in [false, true] {
-        let ledger = InputEvidenceBudgetLedger::new(StateMemoryLimits::default())?;
-        let phase = ResourceReadMaterial::new(&ledger, &scope())?;
-        let (agent, retained) = {
-            let _entry = phase.enter();
-            entry(&host, roster)?
-        };
-        assert_eq!(
-            agent.scheduling_posture.posture,
-            AgentSchedulingPosture::Idle
-        );
-        assert_eq!(
-            agent.scheduling_posture.reason,
-            "no queued input, active turn, runnable work, or active waits"
-        );
-        let tail = (
-            (agent.scheduling_posture.reason.len() + std::mem::size_of::<String>()) as u64 * 8
-                + summary.0,
-            8 + summary.1,
-        );
-        let slots = (
-            std::mem::size_of::<crate::work_item_scheduling::WorkItemSchedulingProjection>() as u64
-                * 8,
-            8,
-        );
-        let total = phase.finish()?;
-        assert!(Arc::ptr_eq(retained.as_ref().unwrap(), &phase.guard()?));
-        drop((agent, retained, phase));
-        assert_eq!(ledger.report()?.observed_bytes, 0);
-        let boundary = (total.0 - tail.0, total.1 - tail.1);
-        let prefix = (boundary.0 - slots.0, boundary.1 - slots.1);
-        for bytes in [true, false] {
-            let ledger = InputEvidenceBudgetLedger::new(StateMemoryLimits::default())?;
-            let phase = ResourceReadMaterial::with_test_limits(
-                &ledger,
-                &scope(),
-                if bytes { boundary.0 - 1 } else { total.0 },
-                if bytes { total.1 } else { boundary.1 - 1 },
-            )?;
-            let holder = phase.guard()?;
-            {
-                let _entry = phase.enter();
-                let error = entry(&host, roster).unwrap_err();
-                assert!(
-                    error.to_string().contains("queue items slots admission"),
-                    "{error:#}"
-                );
-                assert!(error.downcast_ref::<std::io::Error>().is_some());
-                assert_eq!(ledger.report()?.observed_bytes, prefix.0);
-                assert!(phase.finish().is_err());
-                let retry = entry(&host, roster).unwrap_err();
-                assert_eq!(
-                    retry
-                        .downcast_ref::<crate::runtime_error::RuntimeError>()
-                        .unwrap()
-                        .descriptor()
-                        .code,
-                    "context_resource_exhausted"
-                );
-                assert_eq!(ledger.report()?.observed_bytes, prefix.0);
-            }
-            drop(phase);
-            assert_eq!(ledger.report()?.observed_bytes, prefix.0);
-            drop(holder);
-            assert_eq!(ledger.report()?.observed_bytes, 0);
-        }
-    }
-    Ok(())
+    assert_host_projection_limits(&host)
 }
 
 #[cfg(holon_lib_test_shard = "d")]
@@ -861,92 +435,9 @@ async fn trigger_fixture() -> Result<(tempfile::TempDir, RuntimeHost)> {
 
 #[cfg(holon_lib_test_shard = "d")]
 #[tokio::test]
-async fn host_queue_trigger_slots_reject_on_both_paths_without_partial_snapshot_or_reset(
-) -> Result<()> {
+async fn posture_with_trigger_deliveries_honors_original_allowance() -> Result<()> {
     let (_home, host) = trigger_fixture().await?;
-    let summary = task_wait_summary_cost(&host)?;
-    for roster in [false, true] {
-        let ledger = InputEvidenceBudgetLedger::new(StateMemoryLimits::default())?;
-        let phase = ResourceReadMaterial::new(&ledger, &scope())?;
-        let (agent, retained) = {
-            let _entry = phase.enter();
-            entry(&host, roster)?
-        };
-        assert_eq!(
-            agent.scheduling_posture.posture,
-            AgentSchedulingPosture::Idle
-        );
-        assert_eq!(
-            agent.scheduling_posture.reason,
-            "no queued input, active turn, runnable work, or active waits"
-        );
-        let index_cost = (
-            std::mem::size_of::<(String, chrono::DateTime<chrono::Utc>, usize)>() as u64 * 8,
-            8,
-        );
-        // After the trigger gate: suspended ID, item, wait summary, idle reason.
-        let tail = (
-            (std::mem::size_of::<String>()
-                + std::mem::size_of::<crate::work_item_scheduling::WorkItemSchedulingProjection>()
-                + agent.scheduling_posture.reason.len()
-                + std::mem::size_of::<String>()) as u64
-                * 8
-                + summary.0,
-            24 + summary.1,
-        );
-        let total = phase.finish()?;
-        let prefix = (
-            total.0 - index_cost.0 - tail.0,
-            total.1 - index_cost.1 - tail.1,
-        );
-        assert!(Arc::ptr_eq(retained.as_ref().unwrap(), &phase.guard()?));
-        drop((agent, retained, phase));
-        assert_eq!(ledger.report()?.observed_bytes, 0);
-        for bytes in [true, false] {
-            let ledger = InputEvidenceBudgetLedger::new(StateMemoryLimits::default())?;
-            let phase = ResourceReadMaterial::with_test_limits(
-                &ledger,
-                &scope(),
-                if bytes {
-                    prefix.0 + index_cost.0 - 1
-                } else {
-                    total.0
-                },
-                if bytes {
-                    total.1
-                } else {
-                    prefix.1 + index_cost.1 - 1
-                },
-            )?;
-            let original = phase.guard()?;
-            {
-                let _entry = phase.enter();
-                let error = entry(&host, roster).unwrap_err();
-                assert!(
-                    error.to_string().contains("queue trigger slots admission"),
-                    "{error:#}"
-                );
-                assert!(error.downcast_ref::<std::io::Error>().is_some());
-                assert_eq!(ledger.report()?.observed_bytes, prefix.0);
-                assert!(phase.finish().is_err());
-                let retry = entry(&host, roster).unwrap_err();
-                assert_eq!(
-                    retry
-                        .downcast_ref::<crate::runtime_error::RuntimeError>()
-                        .unwrap()
-                        .descriptor()
-                        .code,
-                    "context_resource_exhausted"
-                );
-                assert_eq!(ledger.report()?.observed_bytes, prefix.0);
-            }
-            drop(phase);
-            assert_eq!(ledger.report()?.observed_bytes, prefix.0);
-            drop(original);
-            assert_eq!(ledger.report()?.observed_bytes, 0);
-        }
-    }
-    Ok(())
+    assert_host_projection_limits(&host)
 }
 
 #[cfg(holon_lib_test_shard = "d")]
@@ -1127,39 +618,26 @@ async fn host_queue_sql_material_keeps_original_holder_through_wire_and_last_rel
 
 #[cfg(holon_lib_test_shard = "d")]
 #[tokio::test]
-async fn host_queue_sql_bad_non_open_payload_propagates_without_partial_snapshot_or_reset(
-) -> Result<()> {
+async fn host_posture_ignores_malformed_completed_display_history() -> Result<()> {
     let (_home, host) = fixture().await?;
-    host.runtime_db().connection()?.execute(
-        "UPDATE work_items SET payload_json=replace(payload_json, '2026-10-01', 'x026-10-01')
-         WHERE work_item_id='work_closed'",
-        [],
+    let before = [entry(&host, false)?.0, entry(&host, true)?.0];
+    host.runtime_db().connection()?.execute_batch(
+        "UPDATE work_items SET payload_json='not-json' WHERE work_item_id='work_closed';",
     )?;
-    for roster in [false, true] {
-        let ledger = InputEvidenceBudgetLedger::new(StateMemoryLimits::default())?;
-        let phase = ResourceReadMaterial::new(&ledger, &scope())?;
-        let original = phase.guard()?;
-        {
-            let _entry = phase.enter();
-            let error = entry(&host, roster).unwrap_err();
-            assert_eq!(
-                error.to_string(),
-                "decoding work item payload from runtime db"
-            );
-            assert!(error.downcast_ref::<serde_json::Error>().is_some());
-            assert!(Arc::ptr_eq(
-                &ResourceReadMaterial::active_guard()?.unwrap(),
-                &original
-            ));
-        }
-        let cost = phase.finish()?;
-        assert!(cost.0 > (scope().agent_id.len() as u64 + 256) * 8);
-        drop(phase);
-        assert_eq!(ledger.report()?.observed_bytes, cost.0);
-        drop(original);
-        assert_eq!(ledger.report()?.observed_bytes, 0);
+    // Roster posture no longer owns completed display history. Full Work
+    // readers still reject its malformed body.
+    assert!(host
+        .runtime_db()
+        .work_items()
+        .latest("work_closed")
+        .is_err());
+    for (roster, expected) in [false, true].into_iter().zip(before) {
+        assert_eq!(
+            serde_json::to_value(entry(&host, roster)?.0)?,
+            serde_json::to_value(expected)?
+        );
     }
-    Ok(())
+    assert_host_projection_limits(&host)
 }
 
 async fn active_wait_fixture() -> Result<(tempfile::TempDir, RuntimeHost)> {
@@ -1334,7 +812,7 @@ async fn host_wait_scope_filters_terminal_missing_owners_with_original_holder() 
 
 #[cfg(holon_lib_test_shard = "d")]
 #[tokio::test]
-async fn host_wait_scope_lookup_error_outside_queue_scope_has_no_partial_snapshot() -> Result<()> {
+async fn host_posture_does_not_read_a_foreign_completed_wait_owner() -> Result<()> {
     let (_home, host) = active_wait_fixture().await?;
     host.runtime_db().connection()?.execute_batch(
         "UPDATE work_items SET agent_id='other' WHERE work_item_id='work_closed';
@@ -1359,9 +837,9 @@ async fn host_wait_scope_lookup_error_outside_queue_scope_has_no_partial_snapsho
         let original = phase.guard()?;
         {
             let _entry = phase.enter();
-            let actual = entry(&host, roster).unwrap_err();
-            assert_eq!(format!("{actual:#}"), format!("{expected:#}"));
-            assert!(actual.downcast_ref::<serde_json::Error>().is_some());
+            let (actual, retained) = entry(&host, roster)?;
+            assert_eq!(actual.identity.agent_id, "web");
+            drop((actual, retained));
             assert!(Arc::ptr_eq(
                 &ResourceReadMaterial::active_guard()?.unwrap(),
                 &original
@@ -1410,6 +888,40 @@ async fn host_active_wait_sql_decode_error_returns_no_partial_snapshot_or_new_ph
         drop(phase);
         assert_eq!(ledger.report()?.observed_bytes, cost.0);
         drop(original);
+        assert_eq!(ledger.report()?.observed_bytes, 0);
+    }
+    Ok(())
+}
+
+// Integration checks the projection's whole original allowance. Exact queue
+// primitive gates remain in storage/resident tests; posture no longer acquires
+// the former full display queue or its incidental clone sequence.
+fn assert_host_projection_limits(host: &RuntimeHost) -> Result<()> {
+    use crate::diagnostics::resource_io::assert_retryable_resource_error;
+    for roster in [false, true] {
+        let ledger = InputEvidenceBudgetLedger::new(StateMemoryLimits::default())?;
+        let measured = ResourceReadMaterial::new(&ledger, &scope())?;
+        let value = measured.read(|| entry(host, roster))?;
+        let (bytes, records) = measured.finish()?;
+        drop((value, measured));
+        assert_eq!(ledger.report()?.observed_bytes, 0);
+        for byte_axis in [true, false] {
+            let phase = ResourceReadMaterial::with_test_limits(
+                &ledger,
+                &scope(),
+                bytes - u64::from(byte_axis),
+                records - usize::from(!byte_axis),
+            )?;
+            let _original = phase.guard()?;
+            let error = phase.read(|| entry(host, roster)).unwrap_err();
+            assert_retryable_resource_error(&error);
+            assert!(phase.finish().is_err());
+            let observed = ledger.report()?.observed_bytes;
+            let retry = phase.read(|| entry(host, roster)).unwrap_err();
+            assert_retryable_resource_error(&retry);
+            assert_eq!(ledger.report()?.observed_bytes, observed);
+            drop(phase);
+        }
         assert_eq!(ledger.report()?.observed_bytes, 0);
     }
     Ok(())

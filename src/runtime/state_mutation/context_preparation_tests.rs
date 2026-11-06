@@ -129,12 +129,12 @@ async fn scheduling_context_request_shares_constructor_and_downstream_remainder(
         constructor_bytes,
         constructor_records,
     )?;
-    let error = mutation
+    // A fully prepared empty selection needs only its constructor; do not
+    // create and discard a second owning capture merely to check readiness.
+    mutation
         .prepare_owner_scheduling_request_with_material(&capture, &limited)
-        .await
-        .unwrap_err();
-    crate::diagnostics::resource_io::assert_retryable_resource_error(&error);
-    assert!(limited.finish().is_err());
+        .await?;
+    assert_eq!(limited.finish()?, (constructor_bytes, constructor_records));
     assert_eq!(mutation.capture_published_root()?.token, before.token);
     assert_eq!(mutation.state, *before.state);
     drop(limited);
@@ -145,7 +145,7 @@ async fn scheduling_context_request_shares_constructor_and_downstream_remainder(
         .prepare_owner_scheduling_request_with_material(&capture, &material)
         .await?;
     assert!(mutation.capture_scheduling_read(&capture).is_ok());
-    assert!(material.finish()?.0 > constructor_bytes);
+    assert_eq!(material.finish()?, (constructor_bytes, constructor_records));
     drop(material);
     let measure = ResourceReadMaterial::new(ledger, &scope)?;
     mutation

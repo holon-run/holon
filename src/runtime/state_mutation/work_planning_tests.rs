@@ -939,6 +939,78 @@ async fn child_observability_keeps_exact_active_tasks_and_brief_window_without_b
 }
 
 #[tokio::test]
+async fn scheduler_does_not_acquire_unaddressed_terminal_work_execution() -> Result<()> {
+    let (_home, runtime) = fixture();
+    let historical = WorkItemRecord::new(
+        "scheduler-resident",
+        "old completed work",
+        crate::types::WorkItemState::Completed,
+    );
+    assert!(runtime
+        .runtime_db()
+        .work_items()
+        .insert_new_qualified_for_fixture(&historical, runtime.inner.identity_incarnation)?);
+    // A historical protocol row is present but has no Input body qualification.
+    let execution = crate::domain::execution_protocol::WorkItemExecutionRecord {
+        source_revision: historical.revision,
+        state: crate::domain::execution_protocol::WorkItemExecutionState::Terminal {
+            generation: 1,
+            completion: "fixture completion".into(),
+        },
+    };
+    runtime.runtime_db().transaction(|tx| {
+        tx.execute(
+            "INSERT INTO execution_protocol_work_items(agent_id,work_item_id,source_revision,generation,lifecycle_state,payload_json) VALUES(?1,?2,?3,1,'terminal',?4)",
+            rusqlite::params![historical.agent_id, historical.id, historical.revision, serde_json::to_string(&execution)?],
+        )?;
+        Ok(())
+    })?;
+    // The canonical fixture writer has no Runtime owner publication. Invalidate
+    // only Work so preparation must load its real bounded display history.
+    let mut owner = runtime.inner.mutation_owner.reserve().await?;
+    let root = runtime
+        .inner
+        .mutation_owner
+        .capture()?
+        .context("fixture root missing")?;
+    owner.begin(crate::ids::audit_event_id())?;
+    owner.committed_prepared_with_scheduling_domains(
+        root.state.clone(),
+        root.episodes.clone(),
+        root.input_evidence.clone(),
+        None,
+        root.tasks.clone(),
+        root.scheduling.clone(),
+    )?;
+    owner.publish(root.state.clone())?;
+    drop(owner);
+    let mut mutation = runtime.begin_mutation().await?;
+    mutation.work = None;
+    let read = mutation
+        .prepare_scheduler_read(None, Default::default(), Default::default(), runtime.now())
+        .await?;
+    assert_eq!(read.work.work_item(&historical.id)?, Some(&historical));
+    assert!(read
+        .inputs
+        .lookup_borrowed(Family::WorkExecution, &historical.id)
+        .is_err());
+    drop(read);
+    // Explicitly addressed terminal Work still requires its execution proof.
+    let error = mutation
+        .prepare_scheduler_read(
+            None,
+            BTreeSet::from([Key::new(Family::WorkExecution, &historical.id)]),
+            Default::default(),
+            runtime.now(),
+        )
+        .await
+        .err()
+        .context("unqualified terminal execution must remain refused")?;
+    assert!(error.to_string().contains(&historical.id));
+    Ok(())
+}
+
+#[tokio::test]
 async fn scheduler_acquisition_matches_legacy_live_work_and_active_wait_projection() -> Result<()> {
     let (_home, runtime) = fixture();
     let work = runtime
