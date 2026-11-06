@@ -1,4 +1,5 @@
 //! Timer, pending wake and ingress facts selected from one owner publication.
+mod capture_coverage;
 #[cfg(holon_lib_test_shard = "a")]
 #[cfg(test)]
 #[path = "resident_scheduling/replacement_budget_tests.rs"]
@@ -920,24 +921,8 @@ impl ResidentSchedulingDomain {
         admit_capture_vec::<Arc<QualifiedSchedulingFact>>(selected.len())?;
         let mut records = Vec::with_capacity(selected.len());
         records.extend(selected.iter().filter_map(|k| self.records.get(k).cloned()));
-        crate::diagnostics::resource_io::admit_typed_cloned_value(&self.coverage)?;
-        let mut coverage = self.coverage.clone();
-        crate::diagnostics::resource_io::admit_typed_cloned_value(&request.required_keys)?;
-        coverage.required_keys = request.required_keys.clone();
-        coverage.observations.retain(|o| selected.contains(&o.key));
-        if !request.include_live {
-            coverage.active_timers_complete = false;
-            coverage.pending_wakes_complete = false;
-            coverage.active_triggers_complete = false;
-            coverage.active_timers.clear();
-            coverage.pending_wakes.clear();
-            coverage.active_triggers.clear();
-        }
-        for history in coverage.history.values_mut() {
-            history.is_exhaustive &= history.keys.len() <= request.history_limit;
-            history.keys.truncate(request.history_limit);
-            history.loaded_keys.truncate(request.history_limit);
-        }
+        let coverage =
+            capture_coverage::clone_selected_coverage(&self.coverage, request, &selected)?;
         let view_capacity = usize::from(self.context_material.is_some())
             + usize::from(self.replacement_material.is_some())
             + 2 * usize::from(self.budget.is_some());

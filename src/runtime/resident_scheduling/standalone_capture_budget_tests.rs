@@ -47,12 +47,17 @@ fn empty_capture_cost(domain: &ResidentSchedulingDomain) -> Result<(u64, usize)>
     let views = usize::from(domain.context_material.is_some())
         + usize::from(domain.replacement_material.is_some())
         + 2 * usize::from(domain.budget.is_some());
+    let projected = SchedulingCoverage {
+        active_timers_complete: false,
+        pending_wakes_complete: false,
+        active_triggers_complete: false,
+        ..domain.coverage.clone()
+    };
     let parts = [
         ((domain.scope.agent_id.len() as u64 + 256) * 8, 64),
         clone_cost(&Vec::<SchedulingKey>::new())?, // closure worklist
         (128 * 8, 8),                              // empty records Vec
-        clone_cost(&domain.coverage)?,
-        clone_cost(&BTreeSet::<SchedulingKey>::new())?,
+        clone_cost(&projected)?,
         (
             (128 + views as u64 * std::mem::size_of::<Arc<BudgetViewGuard>>() as u64) * 8,
             (views + 1) * 8,

@@ -5035,3 +5035,16 @@ ignored. A terminal result returns before control-handle registration; admission
 does not register a monitor from the discarded queued candidate. The original
 mutation serializes the writers, and Task ACK, generation and control-registration
 fences remain unchanged.
+
+Scheduling captures meter and clone their final selected coverage directly.
+Unselected named observations, inherited required keys, excluded live indexes
+and history beyond the requested window are not copied only to be discarded.
+The borrowed accounting shape matches the owned capture; explicit absence,
+Wake-parent closure, revision/completeness and both resource limits remain
+strict. The source domain and its prepared windows remain unchanged.
+
+An unchanged shared skill inventory keeps its original data allocation guard;
+its new candidate header/scan has a separate last-holder guard. Initial data
+without a receipt and actual copy-on-write mutations still admit the full
+candidate before installation. Unrelated shared roots are never cleared to
+make a per-agent refresh fit, and guard replacement does not accumulate chains.

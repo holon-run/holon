@@ -391,8 +391,11 @@ fn empty_capture_parts(domain: &ResidentSchedulingDomain) -> Result<Vec<(u64, us
     Ok(vec![
         cost(2, 2, 1), // closure's initial empty Vec
         capture_vec_cost::<Arc<QualifiedSchedulingFact>>(0),
-        capture_clone_cost(&domain.coverage)?,
-        cost(2, 2, 1), // required selector clone
+        capture_clone_cost(&capture_coverage::CaptureCoverage {
+            coverage: &domain.coverage,
+            request: &empty_capture_request(),
+            selected: &BTreeSet::new(),
+        })?,
         capture_vec_cost::<Arc<BudgetViewGuard>>(0),
         capture_clone_cost(&domain.scope)?,
     ])
@@ -846,4 +849,61 @@ fn owned_value_cells(value: &serde_json::Value) -> usize {
         serde_json::Value::Object(values) => values.values().map(owned_value_cells).sum::<usize>(),
         _ => 0,
     }
+}
+
+#[test]
+fn focused_capture_does_not_clone_unselected_qualified_observations() -> Result<()> {
+    let mut coverage = coverage();
+    for i in 0..2048 {
+        let key = SchedulingKey::new(SchedulingFamily::Timer, format!("unselected-{i:04}"));
+        coverage.required_keys.insert(key.clone());
+        coverage.observations.push(SchedulingObservation {
+            key,
+            availability: SchedulingAvailability::Absent,
+        });
+    }
+    let domain =
+        ResidentSchedulingDomain::bootstrap(scope(), coverage, vec![], 8192, 16 * 1024 * 1024)?;
+    let required = SchedulingKey::new(SchedulingFamily::Timer, "unselected-0000");
+    let request = SchedulingCaptureRequest {
+        required_keys: BTreeSet::from([required.clone()]),
+        ..empty_capture_request()
+    };
+    let ledger = InputEvidenceBudgetLedger::new(StateMemoryLimits::default())?;
+    let phase = ResourceReadMaterial::with_test_limits(&ledger, &scope(), 1024 * 1024, 2048)?;
+    let captured = phase.read(|| domain.capture(&request))?;
+    assert!(captured.records.is_empty());
+    assert_eq!(captured.coverage.observations.len(), 1);
+    assert_eq!(captured.coverage.required_keys, request.required_keys);
+    assert_eq!(
+        serde_json::to_value(capture_coverage::CaptureCoverage {
+            coverage: &domain.coverage,
+            request: &request,
+            selected: &request.required_keys,
+        })?,
+        serde_json::to_value(&captured.coverage)?,
+    );
+    assert!(captured.lookup(&required)?.is_none());
+    assert!(captured
+        .lookup(&SchedulingKey::new(
+            SchedulingFamily::Timer,
+            "unselected-0001"
+        ))
+        .is_err());
+    assert_eq!(domain.coverage.observations.len(), 2048);
+    assert_eq!(domain.coverage.required_keys.len(), 2048);
+    drop((captured, phase));
+    assert_eq!(ledger.report()?.observed_bytes, 0);
+
+    // Explicitly requesting that metadata still has to fit the same allowance.
+    let full = SchedulingCaptureRequest {
+        required_keys: domain.coverage.required_keys.clone(),
+        ..empty_capture_request()
+    };
+    let phase = ResourceReadMaterial::with_test_limits(&ledger, &scope(), 1024 * 1024, 2048)?;
+    assert!(phase.read(|| domain.capture(&full)).is_err());
+    assert!(phase.finish().is_err());
+    drop(phase);
+    assert_eq!(ledger.report()?.observed_bytes, 0);
+    Ok(())
 }

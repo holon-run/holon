@@ -1028,7 +1028,6 @@ impl RuntimeHandle {
                         ResourceReadMaterial::host(&self.inner.input_evidence_budget)?;
                     let (mut catalogue, roots) = {
                         let _io = host_material.enter();
-                        base.admit_candidate()?;
                         let mut catalogue = base.clone();
                         resource_io::charge_owned_metadata(16384, 256)?;
                         let roots = effective_skill_root_registrations(
@@ -1053,7 +1052,13 @@ impl RuntimeHandle {
                         host_material.finish()?;
                         (catalogue, roots)
                     };
-                    catalogue.retain_material(host_material.guard()?);
+                    if base.has_material() && catalogue.same_snapshot(&base) {
+                        // Unchanged data keeps its original guard; only this
+                        // candidate's header/scan belongs to the new phase.
+                        catalogue.retain_shared_material(host_material.guard()?)?;
+                    } else {
+                        catalogue.retain_material(host_material.guard()?);
+                    }
                     let catalogue = Arc::new(catalogue);
                     let mut skills = skills_runtime_view_from_catalog(
                         catalogue.catalog_for_roots(&roots, None),

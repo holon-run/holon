@@ -257,6 +257,10 @@ pub(crate) struct BudgetViewGuard {
     _registration_budget: Option<Arc<BudgetViewGuard>>,
 }
 impl BudgetViewGuard {
+    pub(crate) fn shares_ledger(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.ledger, &other.ledger)
+    }
+
     /// Validate an existing owned allocation, without granting record authority.
     pub(crate) fn validate_owned_material_binding(
         &self,

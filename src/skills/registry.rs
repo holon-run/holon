@@ -10,7 +10,7 @@ use std::{
     collections::BTreeMap,
     fs,
     path::{Path, PathBuf},
-    sync::Arc,
+    sync::{Arc, Weak},
     time::UNIX_EPOCH,
 };
 use tracing::warn;
@@ -48,6 +48,20 @@ struct FileMetadataFingerprint {
     modified_ns: Option<u128>,
 }
 
+#[derive(Debug, Clone)]
+struct MaterialSnapshot {
+    roots: Weak<Vec<SkillRootRegistration>>,
+    entries: Weak<Vec<SkillCatalogEntry>>,
+    fingerprints: Weak<BTreeMap<PathBuf, RootInputFingerprint>>,
+}
+impl MaterialSnapshot {
+    fn matches(&self, registry: &SkillsRegistry) -> bool {
+        self.roots.as_ptr() == Arc::as_ptr(&registry.roots)
+            && self.entries.as_ptr() == Arc::as_ptr(&registry.entries)
+            && self.fingerprints.as_ptr() == Arc::as_ptr(&registry.root_fingerprints)
+    }
+}
+
 /// Read-only skills registry.
 ///
 /// The registry maintains skill entries from registered roots and provides
@@ -58,6 +72,9 @@ pub struct SkillsRegistry {
     entries: Arc<Vec<SkillCatalogEntry>>,
     root_fingerprints: Arc<BTreeMap<PathBuf, RootInputFingerprint>>,
     material: Option<Arc<crate::runtime::input_evidence_budget::BudgetViewGuard>>,
+    material_snapshot: Option<MaterialSnapshot>,
+    // A shared-data candidate owns a new header while retaining the data's original phase.
+    snapshot_material: Option<Arc<crate::runtime::input_evidence_budget::BudgetViewGuard>>,
 }
 
 #[cfg(test)]
@@ -91,6 +108,9 @@ impl SkillsRegistry {
 
     /// Admit COW copies before any candidate mutation, outside the inventory lock.
     pub(crate) fn admit_candidate(&self) -> Result<()> {
+        if crate::diagnostics::resource_io::ResourceReadMaterial::current()?.is_none() {
+            return Ok(());
+        }
         use crate::runtime::input_evidence_budget::serialized_bytes;
         let mut bytes = serialized_bytes(self.roots.as_ref())?
             .checked_add(serialized_bytes(self.entries.as_ref())?)
@@ -116,6 +136,46 @@ impl SkillsRegistry {
         material: Arc<crate::runtime::input_evidence_budget::BudgetViewGuard>,
     ) {
         self.material = Some(material);
+        self.material_snapshot = Some(MaterialSnapshot {
+            roots: Arc::downgrade(&self.roots),
+            entries: Arc::downgrade(&self.entries),
+            fingerprints: Arc::downgrade(&self.root_fingerprints),
+        });
+        self.snapshot_material = None;
+    }
+
+    pub(crate) fn has_material(&self) -> bool {
+        let Some(material) = self.material.as_ref() else {
+            return false;
+        };
+        if !self
+            .material_snapshot
+            .as_ref()
+            .is_some_and(|snapshot| snapshot.matches(self))
+        {
+            return false;
+        }
+        match crate::diagnostics::resource_io::ResourceReadMaterial::active_guard() {
+            Ok(Some(active)) => material.shares_ledger(&active),
+            Ok(None) => true,
+            Err(_) => false,
+        }
+    }
+
+    pub(crate) fn retain_shared_material(
+        &mut self,
+        material: Arc<crate::runtime::input_evidence_budget::BudgetViewGuard>,
+    ) -> Result<()> {
+        anyhow::ensure!(
+            self.has_material()
+                && self
+                    .material
+                    .as_ref()
+                    .is_some_and(|data| data.shares_ledger(&material)),
+            "shared skills data has no matching allocation receipt"
+        );
+        self.snapshot_material = Some(material);
+        Ok(())
     }
 
     /// Register a skill root and scan it for skills.
@@ -177,8 +237,13 @@ impl SkillsRegistry {
                 candidates.push(candidate);
             }
         }
-        // No shared root, entry or fingerprint changes until every scan is admitted.
+        // Unchanged, budgeted roots keep their original data owner. Admit
+        // initial data and actual COW copies before changing the snapshot.
         crate::diagnostics::resource_io::check_active()?;
+        if !candidates.is_empty() || !self.has_material() {
+            self.admit_candidate()?;
+        }
+        // No shared root, entry or fingerprint changes until every scan is admitted.
         for candidate in candidates {
             self.install_root_scan(candidate);
         }
@@ -813,5 +878,118 @@ mod tests {
             registry.roots()[0].watch_status,
             SkillRootWatchStatus::Failed { .. }
         ));
+    }
+}
+
+#[cfg(all(test, holon_lib_test_shard = "c"))]
+mod shared_candidate_budget_tests {
+    use super::*;
+    use crate::{
+        config::StateMemoryLimits,
+        diagnostics::resource_io::ResourceReadMaterial,
+        runtime::{
+            input_evidence_budget::InputEvidenceBudgetLedger,
+            resident_input_evidence::InputEvidenceScope,
+        },
+    };
+
+    #[test]
+    fn unchanged_shared_inventory_keeps_data_guard_without_recharging_foreign_entries() -> Result<()>
+    {
+        let dir = tempfile::tempdir()?;
+        let skill = dir.path().join("local");
+        fs::create_dir(&skill)?;
+        fs::write(
+            skill.join("SKILL.md"),
+            "---\nname: local\ndescription: local skill\n---\ncontent",
+        )?;
+        let registration = SkillRootRegistration {
+            root_path: dir.path().into(),
+            source_kind: SkillRootSourceKind::AgentHome,
+            owner_agent_id: Some("test".into()),
+            scan_status: Default::default(),
+            watch_status: Default::default(),
+        };
+        let mut registry = SkillsRegistry::new();
+        registry.register_root(registration.clone())?;
+        let sample = registry.entries[0].clone();
+        for i in 0..400 {
+            let mut foreign = sample.clone();
+            foreign.skill_id = format!("foreign:{i}");
+            foreign.path = PathBuf::from(format!("/foreign/{i}/SKILL.md"));
+            Arc::make_mut(&mut registry.entries).push(foreign);
+        }
+        let ledger = InputEvidenceBudgetLedger::new(StateMemoryLimits::default())?;
+        let scope = InputEvidenceScope {
+            agent_id: "test".into(),
+            identity_incarnation: 1,
+        };
+        let original = ResourceReadMaterial::new(&ledger, &scope)?;
+        original.read(|| registry.admit_candidate())?;
+        registry.retain_material(original.guard()?);
+        let original_weak = Arc::downgrade(&original.guard()?);
+        let base = registry.clone();
+        let phase = ResourceReadMaterial::with_test_limits(&ledger, &scope, 1024 * 1024, 2048)?;
+        phase.read(|| registry.sync_effective_roots([registration.clone()]))?;
+        assert!(registry.same_snapshot(&base));
+        registry.retain_shared_material(phase.guard()?)?;
+        let header_weak = Arc::downgrade(&phase.guard()?);
+        drop((original, phase));
+        assert!(original_weak.upgrade().is_some());
+        assert!(header_weak.upgrade().is_some());
+
+        // A shared clone lacking a data receipt cannot claim free initial data.
+        let mut unbudgeted = registry.clone();
+        unbudgeted.material = None;
+        let refused = ResourceReadMaterial::with_test_limits(&ledger, &scope, 1024 * 1024, 2048)?;
+        assert!(refused
+            .read(|| unbudgeted.sync_effective_roots([registration.clone()]))
+            .is_err());
+        drop((unbudgeted, refused));
+
+        let foreign_ledger = InputEvidenceBudgetLedger::new(StateMemoryLimits::default())?;
+        let foreign =
+            ResourceReadMaterial::with_test_limits(&foreign_ledger, &scope, 1024 * 1024, 2048)?;
+        assert!(registry.retain_shared_material(foreign.guard()?).is_err());
+        assert!(foreign
+            .read(|| registry.sync_effective_roots([registration.clone()]))
+            .is_err());
+        drop(foreign);
+        assert_eq!(foreign_ledger.report()?.observed_bytes, 0);
+
+        // An out-of-phase mutation cannot reuse an old receipt for new data.
+        let mut changed = registry.clone();
+        Arc::make_mut(&mut changed.entries).push(sample);
+        assert!(!changed.has_material());
+        let refused = ResourceReadMaterial::with_test_limits(&ledger, &scope, 1024 * 1024, 2048)?;
+        assert!(refused
+            .read(|| changed.sync_effective_roots([registration.clone()]))
+            .is_err());
+        drop((changed, refused));
+
+        // A real mutation must still admit its COW copies before installation.
+        fs::write(
+            skill.join("SKILL.md"),
+            "---\nname: changed\ndescription: changed skill\n---\nchanged",
+        )?;
+        let refused = ResourceReadMaterial::with_test_limits(&ledger, &scope, 1024 * 1024, 2048)?;
+        assert!(refused
+            .read(|| registry.sync_effective_roots([registration]))
+            .is_err());
+        assert!(registry.same_snapshot(&base));
+        drop(refused);
+        let next = ResourceReadMaterial::new(&ledger, &scope)?;
+        let mut replacement = registry.clone();
+        replacement.retain_shared_material(next.guard()?)?;
+        let next_weak = Arc::downgrade(&next.guard()?);
+        drop((registry, base, next));
+        assert!(header_weak.upgrade().is_none());
+        assert!(original_weak.upgrade().is_some());
+        assert!(next_weak.upgrade().is_some());
+        drop(replacement);
+        assert!(original_weak.upgrade().is_none());
+        assert!(next_weak.upgrade().is_none());
+        assert_eq!(ledger.report()?.observed_bytes, 0);
+        Ok(())
     }
 }
