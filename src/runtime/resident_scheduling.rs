@@ -330,6 +330,9 @@ fn extend_selection_keys<'a>(
     keys: impl IntoIterator<Item = &'a SchedulingKey>,
 ) -> Result<()> {
     for key in keys {
+        if selected.contains(key) {
+            continue;
+        }
         crate::diagnostics::resource_io::admit_typed_cloned_value(key)?;
         selected.insert(key.clone());
     }

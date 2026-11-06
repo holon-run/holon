@@ -5042,6 +5042,9 @@ and history beyond the requested window are not copied only to be discarded.
 The borrowed accounting shape matches the owned capture; explicit absence,
 Wake-parent closure, revision/completeness and both resource limits remain
 strict. The source domain and its prepared windows remain unchanged.
+Root selection borrows duplicate required/live/history keys and admits an owned
+key only before its first insertion, so overlapping indexes do not create
+discarded clones or consume the acquisition allowance repeatedly.
 
 An unchanged shared skill inventory keeps its original data allocation guard;
 its new candidate header/scan has a separate last-holder guard. Initial data

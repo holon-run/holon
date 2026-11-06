@@ -106,7 +106,7 @@ fn coverage() -> SchedulingCoverage {
 }
 
 #[test]
-fn owning_roots_clone_each_actual_key_before_insertion() -> Result<()> {
+fn owning_roots_admit_each_unique_key_before_cloning() -> Result<()> {
     let mut coverage = coverage();
     let timer = SchedulingKey::new(SchedulingFamily::Timer, "timer\"雪");
     let wake = SchedulingKey::wake(&timer.id, "message\n");
@@ -147,7 +147,12 @@ fn owning_roots_clone_each_actual_key_before_insertion() -> Result<()> {
         Ok(visited)
     })?;
     assert_eq!(visited, sequence.len());
-    let costs: Vec<_> = sequence.into_iter().map(key_cost).collect::<Result<_>>()?;
+    // Repeated required/live/history membership borrows the existing key;
+    // only the first insertion allocates an owned key.
+    let costs: Vec<_> = [&timer, &wake, &trigger]
+        .into_iter()
+        .map(key_cost)
+        .collect::<Result<_>>()?;
     let roots = assert_gates(&costs, || coverage.roots(true, 1, &required))?;
     assert_eq!(
         roots,
