@@ -317,7 +317,7 @@ fn load_selected_with_scope_material(
     query_sources::initialize_fresh_source_inventory_tx(tx, scope)?;
     material.charge_checkpoint_metadata(tx, seed.as_deref())?;
     let fixed = manifests(tx, seed.as_deref())?;
-    let previous = material.read_current_metadata(tx)?;
+    let mut previous = material.read_current_metadata(tx)?;
     let revision = previous.as_ref().map_or(1, |c| c.revision);
     // Named reads never publish coverage; only load their requested namespaces.
     // Bootstrap and finalization still install complete current metadata.
@@ -663,9 +663,17 @@ fn load_selected_with_scope_material(
         running_sources::observe_tx(tx, scope, seed.as_deref(), &fixed, |bytes, count| {
             material.charge_ids(bytes, count)
         })?;
-    coverage.status = observe_task_status_headers_tx(tx, scope, &records, |bytes, count| {
-        material.charge_ids(bytes, count)
-    })?;
+    coverage.status = status_observation::observe_with_reused_heads_tx(
+        tx,
+        scope,
+        &records,
+        if prepare || preflight {
+            previous.as_mut().map(|old| &mut old.status)
+        } else {
+            None
+        },
+        |bytes, count| material.charge_ids(bytes, count),
+    )?;
     coverage.recovery_sources =
         recovery_sources::observe_tx(tx, scope, request, &records, material)?;
     if !request.capture.recovery_source_ids.is_empty() {
@@ -702,7 +710,14 @@ fn load_selected_with_scope_material(
         bytes,
         Some(request),
     )?;
-    material.charge_final_metadata(bytes, coverage.owned_metadata_record_count()?)?;
+    if previous.is_some() {
+        // The comparison is complete. Retire the old decoded coverage before
+        // its envelope is reused for the final resident/encoding copies.
+        drop(previous);
+        material.charge_reused_current_metadata(&coverage)?;
+    } else {
+        material.charge_final_metadata(bytes, coverage.owned_metadata_record_count()?)?;
+    }
     if prepare {
         sync_child_observers_tx(tx, scope, &records)?;
     }

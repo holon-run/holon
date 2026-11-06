@@ -1600,6 +1600,14 @@ fn check(
     limit: u64,
 ) -> Result<()> {
     if add(used, requested)? > limit {
+        tracing::warn!(
+            ?resource,
+            ?scope,
+            used,
+            requested,
+            limit,
+            "Input evidence allowance exceeded"
+        );
         return Err(InputEvidenceBudgetError::ResourceExhausted {
             resource,
             scope: scope.cloned(),

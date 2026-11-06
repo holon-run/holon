@@ -69,9 +69,9 @@ pub(in crate::runtime_db) use status_delegation_source::register_delegation_writ
 pub(in crate::runtime_db) use status_metadata::refresh_task_status_metadata_tx;
 pub(in crate::runtime_db) use status_metadata_recovery::read_status_metadata_using_material_tx as read_child_status_metadata_using_material_tx;
 pub(crate) use status_metadata_recovery::read_task_status_metadata_recovery_tx;
-pub(in crate::runtime_db) use status_observation::{
-    observe_tx as observe_task_status_headers_tx, sync_child_observers_tx,
-};
+#[cfg(all(test, holon_lib_test_shard = "b"))]
+pub(in crate::runtime_db) use status_observation::observe_tx as observe_task_status_headers_tx;
+pub(in crate::runtime_db) use status_observation::sync_child_observers_tx;
 pub(in crate::runtime_db) use status_upgrade::capture_status_sources_upgrade_tx;
 #[cfg(holon_lib_test_shard = "b")]
 #[cfg(test)]

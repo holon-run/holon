@@ -1137,6 +1137,33 @@ fn business_terminal_noop_still_finishes_original_memory_and_writes_whole_receip
 #[test]
 fn nonempty_final_work_observations_are_metered_and_released() -> Result<()> {
     let f = Fixture::new(true)?;
+    // Two large completed display records must fit the queue envelope without
+    // being multiplied into current working-memory/planner snapshots.
+    let template = f.db.work_items().latest("work:dispatch-memory")?.unwrap();
+    f.db.transaction(|tx| {
+        for index in 0..2 {
+            let mut historical = template.clone();
+            historical.id = format!("historical-display-{index}");
+            historical.state = WorkItemState::Completed;
+            historical.objective = "x".repeat(1024 * 1024);
+            let keys = BTreeSet::from([WorkKey::new(WorkFamily::Work, &historical.id)]);
+            let proof = prepare_work_write_tx(tx, &f.scope, &keys)?;
+            crate::runtime_db::repositories::insert_new_work_item_tx(tx, &historical)?;
+            let state = ContextDurableRead::new(tx, &f.scope.agent_id)
+                .scope_facts()?
+                .state
+                .unwrap();
+            register_work_writes_tx(
+                tx,
+                &proof,
+                &keys,
+                &BTreeSet::new(),
+                &state,
+                &memory_request(),
+            )?;
+        }
+        Ok(())
+    })?;
     let ledger = memory_ledger()?;
     let before = ledger.report()?.owned;
     f.db.transaction(|tx| {
@@ -1161,7 +1188,7 @@ fn nonempty_final_work_observations_are_metered_and_released() -> Result<()> {
                 total + crate::runtime::input_evidence_budget::serialized_bytes(&record.record)?,
             )
         })?;
-        // Independently preserve the old sequence encoding and exact 48-copy allowance.
+        // Independently preserve the sequence encoding and split snapshot envelope.
         let metadata_bytes = crate::runtime::input_evidence_budget::serialized_bytes(&(
             &selected.scope,
             selected.revision,
@@ -1176,8 +1203,34 @@ fn nonempty_final_work_observations_are_metered_and_released() -> Result<()> {
             &selected.latest_results,
             selected.observations.iter().collect::<Vec<_>>(),
         ))?;
-        let admitted = budget.capture_final_work(tx, &selected)?;
+        let final_state = ContextDurableRead::new(tx, &f.scope.agent_id)
+            .scope_facts()?
+            .state
+            .unwrap();
+        let snapshot_work = selected
+            .records
+            .iter()
+            .filter(|record| match &record.record {
+                crate::runtime::resident_work::CanonicalWorkRecord::Work(work) => {
+                    final_state.current_work_item_id.as_deref() == Some(work.id.as_str())
+                        && work.state == WorkItemState::Open
+                }
+                crate::runtime::resident_work::CanonicalWorkRecord::Wait(_) => true,
+                _ => false,
+            })
+            .try_fold(0u64, |n, record| {
+                Ok::<_, anyhow::Error>(
+                    n + crate::runtime::input_evidence_budget::serialized_bytes(&record.record)?,
+                )
+            })?;
+        let expected_work_material =
+            (work_bytes + metadata_bytes) * 8 + (snapshot_work + metadata_bytes) * 40;
+        let admitted = budget.capture_final_work(tx, &selected, &final_state)?;
         assert!(std::ptr::eq(admitted.work(), &selected));
+        admitted.validate_final_state(&final_state)?;
+        assert!(admitted
+            .validate_final_state(&final_state.as_ref().clone())
+            .is_err());
         admitted.validate_closure_scope(&f.scope.agent_id)?;
         assert_eq!(
             admitted
@@ -1213,12 +1266,12 @@ fn nonempty_final_work_observations_are_metered_and_released() -> Result<()> {
         >() + 2 * std::mem::size_of::<usize>()) as u64;
         assert_eq!(
             ledger.report()?.owned.payload_bytes,
-            seed_bytes + (work_bytes + metadata_bytes) * 48 + shared_header
+            seed_bytes + expected_work_material + shared_header
         );
         drop(admitted);
         assert_eq!(
             ledger.report()?.owned.payload_bytes,
-            seed_bytes + (work_bytes + metadata_bytes) * 48 + shared_header
+            seed_bytes + expected_work_material + shared_header
         );
         let weak = Arc::downgrade(&material);
         drop(budget);

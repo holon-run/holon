@@ -373,7 +373,7 @@ pub(crate) struct CommittedSchedulingDelta {
     pub base_revision: u64,
     pub revision: u64,
     pub coverage: SchedulingCoverage,
-    pub records: Vec<Arc<QualifiedSchedulingFact>>,
+    pub records: Arc<BTreeMap<SchedulingKey, Arc<QualifiedSchedulingFact>>>,
 }
 #[derive(Debug)]
 pub(crate) struct ResidentSchedulingDomain {
@@ -426,13 +426,12 @@ fn insert_validation_reference<'a, T: Ord + ?Sized>(
 }
 
 impl ResidentSchedulingDomain {
-    pub(crate) fn bootstrap(
-        scope: InputEvidenceScope,
-        coverage: SchedulingCoverage,
-        records: Vec<Arc<QualifiedSchedulingFact>>,
+    fn validate_bootstrap_header(
+        scope: &InputEvidenceScope,
+        coverage: &SchedulingCoverage,
         record_limit: usize,
         byte_limit: usize,
-    ) -> Result<Self> {
+    ) -> Result<()> {
         ensure!(
             !scope.agent_id.is_empty()
                 && scope.identity_incarnation > 0
@@ -441,6 +440,17 @@ impl ResidentSchedulingDomain {
                 && byte_limit > 0,
             "invalid Scheduling bootstrap"
         );
+        Ok(())
+    }
+
+    pub(crate) fn bootstrap(
+        scope: InputEvidenceScope,
+        coverage: SchedulingCoverage,
+        records: Vec<Arc<QualifiedSchedulingFact>>,
+        record_limit: usize,
+        byte_limit: usize,
+    ) -> Result<Self> {
+        Self::validate_bootstrap_header(&scope, &coverage, record_limit, byte_limit)?;
         let mut map = BTreeMap::new();
         for record in records {
             record.validate(&scope)?;
@@ -452,6 +462,30 @@ impl ResidentSchedulingDomain {
             ensure!(
                 map.insert(record.locator.key.clone(), record).is_none(),
                 "duplicate Scheduling body"
+            );
+        }
+        Self::bootstrap_from_map(scope, coverage, map, record_limit, byte_limit)
+    }
+
+    /// The original loader already owns these keys and map nodes. Transfer
+    /// them intact instead of collecting a Vec and cloning every key again.
+    pub(crate) fn bootstrap_from_map(
+        scope: InputEvidenceScope,
+        coverage: SchedulingCoverage,
+        map: BTreeMap<SchedulingKey, Arc<QualifiedSchedulingFact>>,
+        record_limit: usize,
+        byte_limit: usize,
+    ) -> Result<Self> {
+        Self::validate_bootstrap_header(&scope, &coverage, record_limit, byte_limit)?;
+        for (key, record) in &map {
+            record.validate(&scope)?;
+            ensure!(
+                key == &record.locator.key,
+                "Scheduling map key differs from fact"
+            );
+            ensure!(
+                record.locator.revision <= coverage.revision,
+                "Scheduling fact revision exceeds its domain"
             );
         }
         let domain = Self {
@@ -482,9 +516,20 @@ impl ResidentSchedulingDomain {
     }
     pub(crate) fn into_selected_install(
         self,
-    ) -> Result<(SchedulingCoverage, Vec<Arc<QualifiedSchedulingFact>>)> {
-        admit_capture_vec::<Arc<QualifiedSchedulingFact>>(self.records.len())?;
-        Ok((self.coverage, self.records.into_values().collect()))
+    ) -> Result<(
+        SchedulingCoverage,
+        Arc<BTreeMap<SchedulingKey, Arc<QualifiedSchedulingFact>>>,
+    )> {
+        // Move the owned map into the ACK. Only its shared ownership header
+        // is new; no body-slot Vec or key copy is constructed.
+        crate::diagnostics::resource_io::charge_owned_metadata(
+            u64::try_from(
+                std::mem::size_of::<BTreeMap<SchedulingKey, Arc<QualifiedSchedulingFact>>>()
+                    + 2 * std::mem::size_of::<usize>(),
+            )?,
+            1,
+        )?;
+        Ok((self.coverage, Arc::new(self.records)))
     }
     pub(crate) fn with_budget(mut self, budget: InputEvidenceBudgetLedger) -> Result<Self> {
         self.budget = Some(budget);
@@ -579,12 +624,23 @@ impl ResidentSchedulingDomain {
         }
     }
     fn validate(&self) -> Result<()> {
+        crate::diagnostics::resource_io::check_active()?;
+        let ordered = self
+            .coverage
+            .observations
+            .windows(2)
+            .all(|pair| pair[0].key <= pair[1].key);
+        let mut previous = None;
         let mut unique = BTreeSet::new();
         for o in &self.coverage.observations {
-            ensure!(
-                insert_validation_reference(&mut unique, &o.key)?,
-                "duplicate Scheduling observation"
-            );
+            let distinct = if ordered {
+                let distinct = previous != Some(&o.key);
+                previous = Some(&o.key);
+                distinct
+            } else {
+                insert_validation_reference(&mut unique, &o.key)?
+            };
+            ensure!(distinct, "duplicate Scheduling observation");
             ensure!(
                 self.records.contains_key(&o.key)
                     == (o.availability == SchedulingAvailability::Present),
@@ -748,7 +804,7 @@ impl ResidentSchedulingDomain {
                 b.register_scheduling_view(
                     &self.scope,
                     InputMemoryCategory::Candidate,
-                    delta.records.iter(),
+                    delta.records.values(),
                 )
             })
             .transpose()?;
@@ -770,7 +826,7 @@ impl ResidentSchedulingDomain {
         admit_capture_vec::<Arc<QualifiedSchedulingFact>>(delta.records.len())?;
         let records = delta
             .records
-            .iter()
+            .values()
             .map(|r| {
                 self.records
                     .get(&r.locator.key)

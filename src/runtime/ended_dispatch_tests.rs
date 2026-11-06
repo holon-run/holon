@@ -331,3 +331,28 @@ async fn retired_original_dispatch_hands_off_memory_before_releasing_original_ru
     })
     .await
 }
+
+#[tokio::test]
+async fn legacy_current_identity_is_not_a_retired_dispatch() -> Result<()> {
+    let f = Fixture::started().await?;
+    let connection = f.runtime.runtime_db().connection()?;
+    connection.execute(
+        "UPDATE agent_identities SET payload_json=json_remove(payload_json,'$.incarnation') WHERE agent_id='default'", [],
+    )?;
+    assert!(
+        !f.runtime
+            .finish_retired_stopped_dispatch(&f.original)
+            .await?
+    );
+    for value in ["null", "\"1\"", "0"] {
+        connection.execute(
+            "UPDATE agent_identities SET payload_json=json_set(payload_json,'$.incarnation',json(?1)) WHERE agent_id='default'", [value],
+        )?;
+        assert!(f
+            .runtime
+            .finish_retired_stopped_dispatch(&f.original)
+            .await
+            .is_err());
+    }
+    Ok(())
+}

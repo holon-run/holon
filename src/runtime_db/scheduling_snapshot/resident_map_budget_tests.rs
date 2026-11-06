@@ -254,7 +254,12 @@ fn resident_map_key_phase_survives_input_install_and_last_capture() -> Result<()
         base_revision: installed.coverage().revision,
         revision: installed.coverage().revision,
         coverage: installed.coverage().clone(),
-        records: installed.records_for_test().cloned().collect(),
+        records: Arc::new(
+            installed
+                .records_for_test()
+                .map(|record| (record.locator.key.clone(), record.clone()))
+                .collect(),
+        ),
     };
     let replacement = installed.with_committed(&delta)?;
     drop(installed);
@@ -269,5 +274,62 @@ fn resident_map_key_phase_survives_input_install_and_last_capture() -> Result<()
     drop(last);
     assert!(weak.upgrade().is_none());
     assert_eq!(ledger.report()?.observed_bytes, 0);
+    Ok(())
+}
+
+#[test]
+fn original_loader_transfers_its_map_without_recloning_key_material() -> Result<()> {
+    let record = qualified(CanonicalSchedulingFact::Timer(timer(
+        &"k".repeat(16384),
+        TimerStatus::Active,
+    )))?;
+    let key = record.locator.key.clone();
+    let mut coverage = SchedulingCoverage::empty(1);
+    for family in [
+        SchedulingFamily::Timer,
+        SchedulingFamily::TimerWake,
+        SchedulingFamily::ExternalTrigger,
+    ] {
+        coverage.history.insert(
+            family,
+            SchedulingHistory {
+                keys: Vec::new(),
+                loaded_keys: Vec::new(),
+                is_exhaustive: true,
+            },
+        );
+    }
+    coverage.active_timers.insert(key.clone());
+    coverage.observations.push(SchedulingObservation {
+        key: key.clone(),
+        availability: SchedulingAvailability::Present,
+    });
+    let map = BTreeMap::from([(key.clone(), record.clone())]);
+    let ledger = ledger()?;
+    let phase = ResourceReadMaterial::with_test_limits(&ledger, &scope(), 8 * 1024 * 1024, 4096)?;
+    let baseline = phase.finish()?;
+    let domain = phase.read(|| {
+        // The original map moves and ordered duplicate validation borrows the vector. No
+        // fresh key clone or validation set can fit this exhausted remainder.
+        charge_owned_metadata(0, (4096 - baseline.1) / 8)?;
+        ResidentSchedulingDomain::bootstrap_from_map(scope(), coverage, map, 4096, 16 * 1024 * 1024)
+    })?;
+    assert_eq!(phase.finish()?.1, 4096);
+    assert_eq!(domain.scope(), &scope());
+    drop(domain);
+    drop(phase);
+    assert_eq!(ledger.report()?.observed_bytes, 0);
+    let wrong = BTreeMap::from([(
+        SchedulingKey::new(SchedulingFamily::Timer, "different"),
+        record,
+    )]);
+    assert!(ResidentSchedulingDomain::bootstrap_from_map(
+        scope(),
+        SchedulingCoverage::empty(1),
+        wrong,
+        4096,
+        16 * 1024 * 1024
+    )
+    .is_err());
     Ok(())
 }

@@ -211,6 +211,7 @@ pub(crate) fn finish_dispatch_memory_tx(
     final_work: super::AdmittedFinalWork<'_, '_>,
     request: &WorkDomainLoadRequest,
 ) -> Result<TransitionCommit> {
+    final_work.validate_final_state(final_business_state)?;
     let tx = validated.tx;
     let start = validated
         .record
@@ -366,7 +367,7 @@ fn final_closure_tx(
             .then_with(|| a.id.cmp(&b.id))
     });
     let active_tasks = read.active_tasks(&state.id)?;
-    let execution_snapshot = read.execution_protocol_state(&state.id)?;
+    let execution = super::super::transitions::execution_protocol_repository::read_validated_closure_protocol_tx(tx, &state.id, admitted)?;
     let (queue_len, has_interrupted_replay): (usize, bool) = tx.query_row(
         "SELECT COUNT(*),COALESCE(MAX(status='interrupted'),0) FROM queue_entries WHERE agent_id=?1 AND status IN ('queued','interrupted')",
         [&state.id], |r| Ok((r.get(0)?,r.get(1)?)))?;
@@ -402,12 +403,13 @@ fn final_closure_tx(
             has_interrupted_replay,
             active_wait_conditions: &active_waits,
             activation_waits: Vec::new(),
-            execution_snapshot,
+            execution_snapshot: None,
             active_timers,
             runtime_error,
         },
         now,
-    );
+    )
+    .with_validated_closure_protocol(execution)?;
     let closure = RuntimeHandle::closure_decision_from_final_work(state, &projection, admitted)?;
     Ok((closure, work_queue, active_waits))
 }

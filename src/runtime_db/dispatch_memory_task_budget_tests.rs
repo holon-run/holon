@@ -209,3 +209,155 @@ fn original_task_material_combined_limit_precedes_proof_decode_and_business_sql(
     assert_eq!(f.db.connection()?.query_row("SELECT lifecycle_state FROM execution_protocol_attempts WHERE attempt_id='no-such-new-attempt'",[],|r|r.get::<_,String>(0)).optional()?,None);
     Ok(())
 }
+
+#[test]
+fn task_material_shares_its_owner_with_memory_without_duplicate_charge() -> Result<()> {
+    let f = Fixture::new(true)?;
+    let ledger = InputEvidenceBudgetLedger::new(StateMemoryLimits::default())?;
+    f.db.transaction(|tx| {
+        let intent = DispatchMemoryIntent::Deferred {
+            binding: DispatchMemoryBinding::from_start(&f.start),
+            frozen: f.frozen("shared-task-material"),
+        };
+        let mut memory = DispatchMemoryTransactionBudget::prepare_tx(
+            tx,
+            &intent,
+            &memory_request(64 * 1024 * 1024),
+            &ledger,
+        )?;
+        let baseline = memory.input_material_usage();
+        let observed = ledger.report()?.observed_bytes;
+        let request = task_request();
+        let mut standalone =
+            tasks::read_preparation::TaskReadMaterial::new(&f.scope, &request, Some(&ledger));
+        standalone.charge(4096, 100, 2, false)?;
+        let task_observed = ledger.report()?.observed_bytes - observed;
+        drop(standalone);
+        assert_eq!(ledger.report()?.observed_bytes, observed);
+        let mut material =
+            tasks::read_preparation::TaskReadMaterial::new(&f.scope, &request, Some(&ledger))
+                .with_memory_budget(Some(&mut memory));
+        material.charge(4096, 100, 2, false)?;
+        material.charge(1024, 4, 1, true)?;
+        drop(material);
+        assert_eq!(
+            memory.input_material_usage(),
+            (baseline.0 + 9216, baseline.1 + 204)
+        );
+        assert_eq!(
+            ledger.report()?.observed_bytes - observed,
+            task_observed + 1024
+        );
+        // Memory retains the original Task owner through the outer transaction.
+        drop(memory);
+        assert_eq!(ledger.report()?.observed_bytes, 0);
+        Ok(())
+    })
+}
+
+#[test]
+fn task_material_memory_preflight_rejects_one_short_or_foreign_before_ownership() -> Result<()> {
+    let f = Fixture::new(true)?;
+    let ledger = InputEvidenceBudgetLedger::new(StateMemoryLimits::default())?;
+    f.db.transaction(|tx| {
+        let intent = DispatchMemoryIntent::Deferred {
+            binding: DispatchMemoryBinding::from_start(&f.start),
+            frozen: f.frozen("task-material-boundary"),
+        };
+        let baseline = {
+            let memory = DispatchMemoryTransactionBudget::prepare_tx(
+                tx,
+                &intent,
+                &memory_request(64 * 1024 * 1024),
+                &ledger,
+            )?;
+            memory.input_material_usage().0
+        };
+        let request = task_request();
+        let mut memory = DispatchMemoryTransactionBudget::prepare_tx(
+            tx,
+            &intent,
+            &memory_request(baseline + 8191),
+            &ledger,
+        )?;
+        let observed = ledger.report()?.observed_bytes;
+        let mut material =
+            tasks::read_preparation::TaskReadMaterial::new(&f.scope, &request, Some(&ledger))
+                .with_memory_budget(Some(&mut memory));
+        let error = material.charge(4096, 1, 2, false).unwrap_err();
+        assert!(matches!(
+            error.downcast_ref::<DispatchMemoryError>(),
+            Some(DispatchMemoryError::ResourceExhausted)
+        ));
+        drop(material);
+        assert_eq!(ledger.report()?.observed_bytes, observed);
+        let foreign = InputEvidenceBudgetLedger::new(StateMemoryLimits::default())?;
+        let mut material =
+            tasks::read_preparation::TaskReadMaterial::new(&f.scope, &request, Some(&foreign))
+                .with_memory_budget(Some(&mut memory));
+        assert!(material.charge(1, 1, 1, false).is_err());
+        drop(material);
+        assert_eq!(foreign.report()?.observed_bytes, 0);
+        let mut wrong_scope = f.scope.clone();
+        wrong_scope.identity_incarnation += 1;
+        let mut material =
+            tasks::read_preparation::TaskReadMaterial::new(&wrong_scope, &request, Some(&ledger))
+                .with_memory_budget(Some(&mut memory));
+        assert!(material.charge(1, 1, 1, false).is_err());
+        drop(material);
+        assert_eq!(ledger.report()?.observed_bytes, observed);
+        drop(memory);
+        assert_eq!(ledger.report()?.observed_bytes, 0);
+        Ok(())
+    })
+}
+
+#[test]
+fn in_place_task_output_metadata_reuses_admission_and_charges_growth() -> Result<()> {
+    let f = Fixture::new(true)?;
+    install_task(&f)?;
+    let ledger = InputEvidenceBudgetLedger::new(StateMemoryLimits::default())?;
+    f.db.transaction(|tx| {
+        let request = task_request();
+        let mut material =
+            tasks::read_preparation::TaskReadMaterial::new(&f.scope, &request, Some(&ledger));
+        let mut coverage = material
+            .read_current_metadata(tx)?
+            .context("Task coverage missing")?;
+        let baseline = material.material_estimate();
+        material.charge_reused_current_metadata(&coverage)?;
+        assert_eq!(material.material_estimate().bytes, baseline.bytes);
+        assert_eq!(material.material_estimate().records, baseline.records);
+        let encoded_before = serde_json::to_vec(&coverage)?.len();
+        let records_before = coverage.owned_metadata_record_count()?;
+        coverage
+            .output
+            .window
+            .get_or_insert(crate::runtime::resident_task::TaskOutputWindowObservation {
+                message_ids: Vec::new(),
+                is_exhaustive: true,
+            })
+            .message_ids
+            .push("new-output-source".into());
+        let byte_growth = serde_json::to_vec(&coverage)?.len() - encoded_before;
+        let record_growth = coverage.owned_metadata_record_count()? - records_before;
+        material.charge_reused_current_metadata(&coverage)?;
+        assert_eq!(
+            material.material_estimate().bytes,
+            baseline.bytes + byte_growth * 4
+        );
+        assert_eq!(
+            material.material_estimate().records,
+            baseline.records + record_growth * 4
+        );
+        drop(material);
+        assert_eq!(ledger.report()?.observed_bytes, 0);
+        let mut unadmitted =
+            tasks::read_preparation::TaskReadMaterial::new(&f.scope, &request, Some(&ledger));
+        assert!(unadmitted
+            .charge_reused_current_metadata(&coverage)
+            .is_err());
+        assert_eq!(ledger.report()?.observed_bytes, 0);
+        Ok(())
+    })
+}

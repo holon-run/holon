@@ -796,10 +796,10 @@ pub(super) fn load_with_revision(
         .collect();
     let metadata = usize::try_from(serialized_bytes(&coverage)?)?;
     material.charge(metadata, 1)?;
-    let resident = ResidentSchedulingDomain::bootstrap(
+    let resident = ResidentSchedulingDomain::bootstrap_from_map(
         scope.clone(),
         coverage,
-        records.into_values().collect(),
+        records,
         request.record_limit,
         request.byte_limit,
     )?

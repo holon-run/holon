@@ -19,6 +19,16 @@ pub(in crate::runtime_db) fn observe_tx(
     selected: &[Arc<QualifiedTaskFact>],
     mut charge: impl FnMut(usize, usize) -> Result<()>,
 ) -> Result<TaskStatusProjectionCoverage> {
+    observe_with_reused_heads_tx(tx, scope, selected, None, &mut charge)
+}
+
+pub(super) fn observe_with_reused_heads_tx(
+    tx: &Transaction<'_>,
+    scope: &InputEvidenceScope,
+    selected: &[Arc<QualifiedTaskFact>],
+    mut previous: Option<&mut TaskStatusProjectionCoverage>,
+    mut charge: impl FnMut(usize, usize) -> Result<()>,
+) -> Result<TaskStatusProjectionCoverage> {
     let (control_complete, delegation_complete): (bool, bool) = tx.query_row(
         "SELECT control_observed,delegation_observed FROM task_status_source_inventory WHERE singleton=1 AND sealed=1 AND length(metadata_digest)=64", [], |row| Ok((row.get(0)?,row.get(1)?)),
     )?;
@@ -31,6 +41,40 @@ pub(in crate::runtime_db) fn observe_tx(
             record.locator.scope == *scope && task.agent_id == scope.agent_id,
             "TaskStatus observation crossed its selected Task scope"
         );
+        // With no cleanup artifact or child relation the projection is a pure
+        // function of this exact Task version. Move its admitted head instead
+        // of cloning/recharging it during original preflight/final readback.
+        let inert = child_id(task).is_none()
+            && (!matches!(
+                task.status,
+                TaskStatus::Completed
+                    | TaskStatus::Failed
+                    | TaskStatus::Cancelled
+                    | TaskStatus::Interrupted
+            ) || !task
+                .detail
+                .as_ref()
+                .and_then(|v| v.get("worktree"))
+                .is_some_and(Value::is_object));
+        if let Some(old) = previous.as_deref_mut().filter(|_| inert) {
+            let reusable = old.heads.get(&task.id).is_some_and(|head|
+                head.task == record.locator
+                && matches!(&head.worktree, TaskWorktreeObservation::Observed { fields } if fields.is_empty())
+                && matches!(&head.delegation, TaskDelegationObservation::Observed { latest: None }));
+            if reusable {
+                // Only the destination map node is new; key and head move.
+                charge(128, 1)?;
+                let (key, head) = old
+                    .heads
+                    .remove_entry(&task.id)
+                    .expect("checked original head");
+                ensure!(
+                    coverage.heads.insert(key, head).is_none(),
+                    "duplicate selected TaskStatus observation"
+                );
+                continue;
+            }
+        }
         charge(
             usize::try_from(serialized_bytes(&record.locator)?)?
                 .checked_add(task.id.len() + 256)
@@ -342,5 +386,56 @@ mod tests {
             !rejoin_matches(&serde_json::json!({"rejoin":null}), &task),
             "an invalid marker is not a legacy unbound metadata authority"
         );
+    }
+    #[test]
+    fn inert_status_head_moves_its_owned_strings_but_dynamic_heads_are_reobserved() -> Result<()> {
+        let (_home, db) = super::super::tests::fresh()?;
+        let scope = super::super::tests::scope();
+        db.transaction(|tx| {
+            let task = super::super::tests::task("inert-status", TaskStatus::Completed);
+            let keys = BTreeSet::from([TaskKey::new(TaskFamily::Task, &task.id)]);
+            let proof = prepare_task_write_tx(tx, &scope, &keys)?;
+            repositories::upsert_task_tx(tx, &task)?;
+            let facts = register_task_writes_tx(
+                tx,
+                &proof,
+                &keys,
+                &AgentState::new(&scope.agent_id),
+                &super::super::tests::request(),
+            )?;
+            let records = facts.delta.records;
+            let mut old = observe_tx(tx, &scope, &records, |_, _| Ok(()))?;
+            let expected = old.clone();
+            let pointer = old.heads[&task.id].task.key.id.as_ptr();
+            let mut charged = (0, 0);
+            let next =
+                observe_with_reused_heads_tx(tx, &scope, &records, Some(&mut old), |b, r| {
+                    charged.0 += b;
+                    charged.1 += r;
+                    Ok(())
+                })?;
+            assert!(old.heads.is_empty());
+            assert_eq!(next, expected);
+            assert_eq!(next.heads[&task.id].task.key.id.as_ptr(), pointer);
+            assert_eq!(charged, (128, 1));
+            let dynamic = selected(tx)?;
+            let mut old = observe_tx(tx, &scope, std::slice::from_ref(&dynamic), |_, _| Ok(()))?;
+            let expected = old.clone();
+            let mut count = 0;
+            let next = observe_with_reused_heads_tx(
+                tx,
+                &scope,
+                std::slice::from_ref(&dynamic),
+                Some(&mut old),
+                |_, r| {
+                    count += r;
+                    Ok(())
+                },
+            )?;
+            assert_eq!(next, expected);
+            assert_eq!(old, expected);
+            assert!(count >= 20);
+            Ok(())
+        })
     }
 }

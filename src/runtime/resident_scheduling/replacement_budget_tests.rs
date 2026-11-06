@@ -37,7 +37,7 @@ fn delta(domain: &ResidentSchedulingDomain) -> CommittedSchedulingDelta {
         base_revision: domain.coverage.revision,
         revision: domain.coverage.revision,
         coverage: domain.coverage.clone(),
-        records: domain.records.values().cloned().collect(),
+        records: Arc::new(domain.records.clone()),
     }
 }
 

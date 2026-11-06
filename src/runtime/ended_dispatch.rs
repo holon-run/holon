@@ -238,7 +238,7 @@ impl RuntimeHandle {
         self.inner.runtime_db.transaction(|tx| {
             let identity: Option<(u64, String, String, String, String)> = tx
                 .query_row(
-                    "SELECT json_extract(payload_json,'$.incarnation'),status,agent_id,json_extract(payload_json,'$.agent_id'),json_extract(payload_json,'$.status') FROM agent_identities WHERE agent_id=?1",
+                    "SELECT CASE WHEN json_type(payload_json,'$.incarnation') IS NULL THEN 1 WHEN json_type(payload_json,'$.incarnation')='integer' AND json_extract(payload_json,'$.incarnation')>0 THEN json_extract(payload_json,'$.incarnation') END,status,agent_id,json_extract(payload_json,'$.agent_id'),json_extract(payload_json,'$.status') FROM agent_identities WHERE agent_id=?1",
                     [&scope.agent_id],
                     |row| Ok((row.get(0)?, row.get(1)?,row.get(2)?,row.get(3)?,row.get(4)?)),
                 )

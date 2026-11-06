@@ -450,7 +450,7 @@ fn selected_install(
     guards.push(proof.ledger.register_scheduling_view(
         &proof.scope,
         InputMemoryCategory::Candidate,
-        records.iter(),
+        records.values(),
     )?);
     crate::diagnostics::resource_io::admit_cloned_value(&proof.scope)?;
     let scope = proof.scope.clone();

@@ -332,7 +332,7 @@ fn capture_vec_cost<T>(capacity: usize) -> (u64, usize) {
 }
 
 #[test]
-fn selected_install_moves_coverage_and_admits_only_body_arc_slots() -> Result<()> {
+fn selected_install_moves_coverage_and_map_and_admits_only_shared_header() -> Result<()> {
     let ledger = InputEvidenceBudgetLedger::new(StateMemoryLimits::default())?;
     for deny in [true, false] {
         let mut domain = domain()?;
@@ -353,7 +353,13 @@ fn selected_install_moves_coverage_and_admits_only_body_arc_slots() -> Result<()
             .keys
             .as_ptr();
         let count = domain.records.len();
-        let expected = capture_vec_cost::<Arc<QualifiedSchedulingFact>>(count);
+        let original_key = domain.records.keys().next().unwrap().id.as_ptr();
+        let expected = (
+            ((std::mem::size_of::<BTreeMap<SchedulingKey, Arc<QualifiedSchedulingFact>>>()
+                + 2 * std::mem::size_of::<usize>()) as u64
+                * 8),
+            8,
+        );
         let phase = ResourceReadMaterial::with_test_limits(&ledger, &scope(), 1024 * 1024, 4096)?;
         let baseline = phase.finish()?;
         let _entry = phase.enter();
@@ -371,6 +377,7 @@ fn selected_install_moves_coverage_and_admits_only_body_arc_slots() -> Result<()
                 original
             );
             assert_eq!(records.len(), count);
+            assert_eq!(records.keys().next().unwrap().id.as_ptr(), original_key);
             assert_eq!(
                 phase.finish()?,
                 (baseline.0 + expected.0, baseline.1 + expected.1,)
@@ -616,7 +623,11 @@ fn validation_reference_nodes_charge_only_distinct_borrowed_cells() -> Result<()
 fn validation_reference_nodes_share_the_successful_validation_phase() -> Result<()> {
     let domain = domain()?;
     let node = (128 * 8, 8);
-    // Only the two distinct observation reference nodes are allocated.
+    // Canonical order needs no validation set; legacy unsorted coverage keeps
+    // the same distinct borrowed-node allowance and acceptance rules.
+    assert_gates(&[], || domain.validate())?;
+    let mut domain = domain;
+    domain.coverage.observations.reverse();
     assert_gates(&[node, node], || domain.validate())?;
     Ok(())
 }
@@ -715,7 +726,6 @@ fn live_budget_classification_borrows_indexes_and_includes_wake_parent() -> Resu
 
 #[test]
 fn validation_reference_nodes_preserve_observation_error_order() -> Result<()> {
-    let node = (128 * 8, 8);
     for duplicate in [false, true] {
         let mut domain = domain()?;
         let expected = if duplicate {
@@ -726,8 +736,8 @@ fn validation_reference_nodes_preserve_observation_error_order() -> Result<()> {
             domain.coverage.observations[0].availability = SchedulingAvailability::Pruned;
             "Scheduling availability/body mismatch"
         };
-        // The first reference is admitted; neither error allocates another node.
-        assert_gates(&[node], || {
+        // Ordered duplicate/membership validation allocates no reference set.
+        assert_gates(&[], || {
             let error = domain.validate().unwrap_err();
             if error.to_string() == expected {
                 Ok(())
@@ -788,7 +798,7 @@ fn validation_reference_nodes_preserve_wake_status_and_parent_deduplication() ->
                 }),
             );
         }
-        let mut parts = vec![node; domain.coverage.observations.len()];
+        let mut parts = Vec::new();
         if !invalid_status {
             // Only the first pending wake inserts its borrowed parent ID.
             parts.push(node);

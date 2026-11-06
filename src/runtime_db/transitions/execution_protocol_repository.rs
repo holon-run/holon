@@ -1,3 +1,8 @@
+#[path = "execution_protocol_closure_read.rs"]
+mod closure_read;
+pub(in crate::runtime_db) use closure_read::closure_protocol_material_tx;
+pub(crate) use closure_read::{read_validated_closure_protocol_tx, ValidatedClosureProtocol};
+
 use std::collections::{BTreeMap, BTreeSet};
 
 use anyhow::{anyhow, bail, Context, Result};

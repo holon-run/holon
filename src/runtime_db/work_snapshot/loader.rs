@@ -457,7 +457,21 @@ pub(crate) fn current_recovery_owning_input_roots(
     resident: &ResidentWorkDomain,
     state: &AgentState,
 ) -> Result<BTreeSet<InputEvidenceKey>> {
-    let mut mandatory = BTreeSet::new();
+    current_owning_input_roots_for_writes(resident, state, &BTreeSet::new())
+}
+
+pub(super) fn current_owning_input_roots_for_writes(
+    resident: &ResidentWorkDomain,
+    state: &AgentState,
+    written: &BTreeSet<WorkKey>,
+) -> Result<BTreeSet<InputEvidenceKey>> {
+    let mut mandatory = written
+        .iter()
+        .filter(|key| {
+            resident.coverage().observations.get(*key) == Some(&WorkAvailability::Present)
+        })
+        .cloned()
+        .collect::<BTreeSet<_>>();
     mandatory.extend(
         state
             .current_work_item_id

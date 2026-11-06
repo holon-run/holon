@@ -197,11 +197,7 @@ fn live_history_prior_and_pruned_copies_use_original_phase_before_sql_writes() -
             if variant == "pruned" {
                 sql.charge(serde_json::to_vec(&coverage)?.len(), 1)?;
                 // Coverage moves into the resident; no clone or alias write for Pruned.
-                // Pruned observations still allocate borrowed validation nodes.
-                for _ in &coverage.observations {
-                    crate::diagnostics::resource_io::charge_owned_metadata(128, 1)?;
-                    prefix.push(phase.finish()?);
-                }
+                // Observation validation sorts the owned vector in place.
                 // Validation and budget refresh borrow the validated closure;
                 // neither allocates an empty captured-closure Vec.
                 // The resident's owned metadata view has one ledger node;

@@ -149,6 +149,44 @@ pub(crate) struct SchedulerObservations<'a> {
 }
 
 impl SchedulerProjection {
+    pub(crate) fn with_validated_closure_protocol(
+        mut self,
+        protocol: Option<
+            crate::runtime_db::transitions::execution_protocol_repository::ValidatedClosureProtocol,
+        >,
+    ) -> Result<Self> {
+        self.canonical_work_states = Some(
+            protocol
+                .map(|p| {
+                    Ok::<_, anyhow::Error>(
+                        p.into_work_items(&self.agent_id)?
+                            .into_iter()
+                            .map(|(id, record)| {
+                                let state = match record.state {
+                                    WorkItemExecutionState::Runnable { generation, .. } => {
+                                        CanonicalWorkExecutionState::Runnable {
+                                            source_revision: record.source_revision,
+                                            generation,
+                                        }
+                                    }
+                                    WorkItemExecutionState::Waiting { wait, .. } => {
+                                        CanonicalWorkExecutionState::Waiting {
+                                            wait_id: wait.wait_id,
+                                        }
+                                    }
+                                    _ => CanonicalWorkExecutionState::Other,
+                                };
+                                (id, state)
+                            })
+                            .collect(),
+                    )
+                })
+                .transpose()?
+                .unwrap_or_default(),
+        );
+        Ok(self)
+    }
+
     #[cfg(test)]
     pub(crate) fn activation_waits_for_test(&self) -> &[WaitConditionRecord] {
         &self.activation_waits

@@ -643,7 +643,12 @@ fn scheduling_loader_context_guard_survives_input_install_replacement_and_last_c
         base_revision: installed.coverage().revision,
         revision: installed.coverage().revision,
         coverage: installed.coverage().clone(),
-        records: installed.records_for_test().cloned().collect(),
+        records: Arc::new(
+            installed
+                .records_for_test()
+                .map(|record| (record.locator.key.clone(), record.clone()))
+                .collect(),
+        ),
     };
     let replacement = installed.with_committed(&delta)?;
     drop(installed);

@@ -465,6 +465,11 @@ fn register_work_writes_inner_tx(
         }
         .require_current()?
     };
+    let mut snapshot = snapshot;
+    // The ACK owns live/current closure and its actual writes. Historical
+    // display-only Work must not repopulate execution Input dependencies.
+    snapshot.owning_input_roots =
+        loader::current_owning_input_roots_for_writes(&snapshot.resident, final_state, actual)?;
     finish_delta_inner(
         tx,
         &proof.scope,

@@ -190,7 +190,7 @@ fn proof_phase_survives_finalizer_receipt_until_last_guard_holder() -> Result<()
     })?;
     assert!(ResourceReadMaterial::active_guard()?.is_none());
     assert!(source.upgrade().is_some());
-    assert!(receipt.delta.records.iter().any(
+    assert!(receipt.delta.records.values().any(
         |body| matches!(&body.fact, CanonicalSchedulingFact::Timer(actual) if actual == &record)
     ));
     let guards = receipt.take_budget_views();

@@ -1662,82 +1662,110 @@ fn plan_work_item_outcome(
 }
 
 pub fn assert_invariants(state: &ExecutionProtocolState) -> Result<(), String> {
-    let open_attempts = state
+    if state
         .attempts
         .values()
-        .filter(|attempt| attempt.state == ExecutionAttemptState::Open)
-        .collect::<Vec<_>>();
-    if open_attempts.len() > 1 {
+        .filter(|a| a.state == ExecutionAttemptState::Open)
+        .count()
+        > 1
+    {
         return Err("execution partition contains more than one open attempt".into());
     }
+    for (id, attempt) in &state.attempts {
+        validate_attempt_invariants(
+            &state.agent_id,
+            id,
+            attempt,
+            &state.work_items,
+            attempt
+                .terminal_outcome_id
+                .as_ref()
+                .and_then(|id| state.outcomes.get(id)),
+        )?;
+    }
+    for record in state.work_items.values() {
+        let attempt = match &record.state {
+            WorkItemExecutionState::InFlight { attempt_id, .. } => state.attempts.get(attempt_id),
+            _ => None,
+        };
+        validate_work_invariants(record, attempt)?;
+    }
+    for (id, outcome) in &state.outcomes {
+        validate_outcome_invariants(id, outcome, state.attempts.get(&outcome.attempt_id))?;
+    }
+    Ok(())
+}
 
-    for (attempt_id, attempt) in &state.attempts {
-        if attempt_id != &attempt.attempt_id || attempt.agent_id != state.agent_id {
-            return Err("attempt identity does not match its execution partition".into());
+// Shared by aggregate validation and bounded closure-history traversal.
+pub(crate) fn validate_attempt_invariants(
+    agent_id: &str,
+    id: &str,
+    attempt: &ExecutionAttempt,
+    works: &BTreeMap<String, WorkItemExecutionRecord>,
+    outcome: Option<&ExecutionOutcomeRecord>,
+) -> Result<(), String> {
+    if id != attempt.attempt_id || attempt.agent_id != agent_id {
+        return Err("attempt identity does not match its execution partition".into());
+    }
+    if attempt.state == ExecutionAttemptState::Open {
+        if attempt.terminal_outcome_id.is_some() || attempt.terminal_at.is_some() {
+            return Err("open attempt contains terminal evidence".into());
         }
-        match attempt.state {
-            ExecutionAttemptState::Open => {
-                if attempt.terminal_outcome_id.is_some() || attempt.terminal_at.is_some() {
-                    return Err("open attempt contains terminal evidence".into());
-                }
-            }
-            _ => {
-                let outcome_id = attempt
-                    .terminal_outcome_id
-                    .as_ref()
-                    .ok_or_else(|| "terminal attempt is missing its outcome".to_string())?;
-                let outcome = state
-                    .outcomes
-                    .get(outcome_id)
-                    .ok_or_else(|| "terminal attempt references an unknown outcome".to_string())?;
-                if outcome.attempt_id != attempt.attempt_id || attempt.terminal_at.is_none() {
-                    return Err("terminal attempt outcome evidence is inconsistent".into());
-                }
-            }
-        }
-        if let ExecutionBinding::WorkItem { work_item_id } = &attempt.binding {
-            if attempt.state == ExecutionAttemptState::Open
-                && !matches!(
-                    state.work_items.get(work_item_id).map(|record| &record.state),
-                    Some(WorkItemExecutionState::InFlight {
-                        attempt_id: linked_attempt,
-                        ..
-                    }) if linked_attempt == attempt_id
-                )
-            {
-                return Err("open WorkItem attempt lacks reciprocal InFlight state".into());
-            }
+    } else {
+        attempt
+            .terminal_outcome_id
+            .as_ref()
+            .ok_or("terminal attempt is missing its outcome")?;
+        let outcome = outcome.ok_or("terminal attempt references an unknown outcome")?;
+        if outcome.attempt_id != attempt.attempt_id || attempt.terminal_at.is_none() {
+            return Err("terminal attempt outcome evidence is inconsistent".into());
         }
     }
-
-    for work_record in state.work_items.values() {
-        if work_record.source_revision == 0 || work_record.generation() == 0 {
-            return Err("WorkItem execution record contains a zero revision or generation".into());
-        }
-        if let WorkItemExecutionState::InFlight { attempt_id, .. } = &work_record.state {
-            if !matches!(
-                state.attempts.get(attempt_id),
-                Some(ExecutionAttempt {
-                    state: ExecutionAttemptState::Open,
-                    binding: ExecutionBinding::WorkItem { .. },
-                    ..
-                })
-            ) {
-                return Err("InFlight WorkItem lacks reciprocal open attempt".into());
-            }
+    if let ExecutionBinding::WorkItem { work_item_id } = &attempt.binding {
+        if attempt.state == ExecutionAttemptState::Open
+            && !matches!(
+                works.get(work_item_id).map(|record| &record.state),
+                Some(WorkItemExecutionState::InFlight { attempt_id, .. }) if attempt_id == id
+            )
+        {
+            return Err("open WorkItem attempt lacks reciprocal InFlight state".into());
         }
     }
+    Ok(())
+}
 
-    for (outcome_id, outcome) in &state.outcomes {
-        if outcome_id != &outcome.outcome_id {
-            return Err("outcome identity does not match its map key".into());
-        }
-        if !matches!(
-            state.attempts.get(&outcome.attempt_id),
-            Some(attempt) if attempt.terminal_outcome_id.as_deref() == Some(outcome_id)
-        ) {
-            return Err("outcome lacks reciprocal terminal attempt".into());
-        }
+pub(crate) fn validate_work_invariants(
+    record: &WorkItemExecutionRecord,
+    attempt: Option<&ExecutionAttempt>,
+) -> Result<(), String> {
+    if record.source_revision == 0 || record.generation() == 0 {
+        return Err("WorkItem execution record contains a zero revision or generation".into());
+    }
+    if matches!(&record.state, WorkItemExecutionState::InFlight { .. })
+        && !matches!(
+            attempt,
+            Some(ExecutionAttempt {
+                state: ExecutionAttemptState::Open,
+                binding: ExecutionBinding::WorkItem { .. },
+                ..
+            })
+        )
+    {
+        return Err("InFlight WorkItem lacks reciprocal open attempt".into());
+    }
+    Ok(())
+}
+
+pub(crate) fn validate_outcome_invariants(
+    id: &str,
+    outcome: &ExecutionOutcomeRecord,
+    attempt: Option<&ExecutionAttempt>,
+) -> Result<(), String> {
+    if id != outcome.outcome_id {
+        return Err("outcome identity does not match its map key".into());
+    }
+    if !matches!(attempt, Some(a) if a.terminal_outcome_id.as_deref() == Some(id)) {
+        return Err("outcome lacks reciprocal terminal attempt".into());
     }
     Ok(())
 }
