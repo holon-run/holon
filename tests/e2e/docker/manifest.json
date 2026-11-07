@@ -2,6 +2,21 @@
   "version": 2,
   "scheduler_fixture_corpus_revision": "scheduler-release-gate-online-timer-v3",
   "profiles": {
+    "runtime-lifecycle-required": {
+      "gate_kind": "required",
+      "provider_mode": "stub",
+      "tool_assertion_mode": "strict",
+      "case_ids": [
+        "runtime-agent-lifecycle",
+        "runtime-shared-credential-delete",
+        "runtime-upgrade-v030"
+      ],
+      "required_coverage_ids": [
+        "runtime-agent-lifecycle",
+        "runtime-shared-credential-delete",
+        "runtime-upgrade-v030"
+      ]
+    },
     "scheduler-required": {
       "gate_kind": "required",
       "provider_mode": "stub",
@@ -122,6 +137,7 @@
     },
     {
       "id": "runtime-agent-lifecycle",
+      "coverage_ids": ["runtime-agent-lifecycle"],
       "tier": "core",
       "tags": ["runtime", "agent", "lifecycle", "restart", "deletion"],
       "timeout_seconds": 300,
@@ -145,7 +161,27 @@
       ]
     },
     {
+      "id": "runtime-shared-credential-delete",
+      "coverage_ids": ["runtime-shared-credential-delete"],
+      "tier": "core",
+      "tags": ["runtime", "agent", "deletion", "credential", "restart"],
+      "timeout_seconds": 300,
+      "requires_model": false,
+      "provider_mode": "stub",
+      "stub_scenario": "runtime-shared-credential-delete",
+      "description": "Real parent InvokeAgent/GetAgent/DeleteAgent with a shared credential profile; completed safe deletion, retained sibling Results, restart tombstone, idempotent replay, same-id recreation and stale-incarnation rejection.",
+      "phases": [
+        {
+          "id": "safe-shared-credential-delete",
+          "prompt": "Exercise safe supervised deletion with a shared credential profile.",
+          "required_tools": ["InvokeAgent", "GetAgent", "DeleteAgent"],
+          "forbidden_tools": ["ExecCommand"]
+        }
+      ]
+    },
+    {
       "id": "runtime-upgrade-v030",
+      "coverage_ids": ["runtime-upgrade-v030"],
       "tier": "core",
       "tags": ["runtime", "upgrade", "migration", "persistence"],
       "timeout_seconds": 300,
@@ -153,7 +189,7 @@
       "requires_previous_image": true,
       "provider_mode": "stub",
       "stub_scenario": "runtime-upgrade-v030",
-      "description": "Run the previous release against a shared volume, persist one agent turn, upgrade the same database to the candidate, verify baseline provenance and preserved data, then complete a new agent turn.",
+      "description": "Persist five previous-release agent turns, upgrade the same database, preserve migration/backfill provenance, page all old inputs and Results through public cursors, cold-restart and read them before new execution, then complete and persist a new Result.",
       "phases": [
         {
           "id": "old-release",

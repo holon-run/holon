@@ -258,6 +258,7 @@ class DockerE2ERunnerTests(unittest.TestCase):
             [
                 "runtime-auth-model-delivery",
                 "runtime-agent-lifecycle",
+                "runtime-shared-credential-delete",
                 "runtime-upgrade-v030",
                 "runtime-upgrade-interrupted-schema47",
                 "memory-agent-home-persistence",
@@ -1406,6 +1407,19 @@ class DockerE2ERunnerTests(unittest.TestCase):
         )
         self.assertEqual(scenario.phase, 1)
 
+        for index in range(1, 5):
+            status, response = scenario.consume(
+                stub_batch_request(
+                    ({}, f"Reply with the exact marker UPGRADE-V030-OLD-{index:08x}."),
+                    recent_turns="UPGRADE-V030-OLD-0011aabb",
+                )
+            )
+            self.assertEqual(status, 200)
+            self.assertEqual(
+                response["output"][0]["content"][0]["text"],
+                f"UPGRADE-V030-OLD-{index:08x}",
+            )
+
         new_prompt = {
             "instructions": "agent instructions",
             "input": [
@@ -1434,7 +1448,8 @@ class DockerE2ERunnerTests(unittest.TestCase):
             response["output"][0]["content"][0]["text"],
             "UPGRADE-V030-NEW-0022ccdd",
         )
-        self.assertEqual(scenario.phase, 2)
+        self.assertEqual(scenario.phase, 6)
+        self.assertTrue(scenario.status()["complete"])
 
         status, response = scenario.consume(new_prompt)
         self.assertEqual(status, 409)
@@ -3194,6 +3209,7 @@ class DockerE2ERunnerTests(unittest.TestCase):
             [
                 ("runtime-auth-model-delivery", None),
                 ("runtime-agent-lifecycle", None),
+                ("runtime-shared-credential-delete", None),
                 ("runtime-upgrade-v030", None),
                 ("runtime-upgrade-interrupted-schema47", None),
                 ("memory-agent-home-persistence", None),
@@ -4701,6 +4717,10 @@ class LiveAcceptanceEvidenceTests(unittest.TestCase):
         })()
         with self.assertRaisesRegex(AssertionError, "forbidden TaskOutput"):
             runner.live_events(harness, 0)
+
+
+# The Makefile names this module explicitly rather than using discovery.
+from tests.test_docker_e2e_shared_credential_delete import SharedCredentialDeletionTests
 
 
 if __name__ == "__main__":

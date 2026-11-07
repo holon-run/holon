@@ -3029,6 +3029,96 @@ def run_runtime_agent_lifecycle_case(
     harness.agent_id = default_agent_id
 
 
+def require_upgrade_history(
+    harness: CaseHarness,
+    label: str,
+    expected_turns: dict[str, dict[str, str]],
+) -> dict[str, Any]:
+    """Read every old turn through public cursors and resolve its durable Result."""
+    cursor: str | None = None
+    cursors: set[str] = set()
+    turn_ids: set[str] = set()
+    message_ids: set[str] = set()
+    brief_ids: set[str] = set()
+    old_turns: dict[str, Any] = {}
+    for page_index in range(100):
+        query = "conversation?limit=2"
+        if cursor is not None:
+            query += "&before=" + urllib.parse.quote(cursor, safe="")
+        page = harness.request("GET", harness.agent_path(query))
+        write_json(harness.evidence / f"{label}-page-{page_index}.json", page)
+        require(not page.get("active_turns"), f"{label} has unsettled turns: {page}")
+        for turn in page["turns"]:
+            turn_id = turn["turn_id"]
+            require(turn_id not in turn_ids, f"{label} repeated turn {turn_id}")
+            turn_ids.add(turn_id)
+            inputs = [item["message_id"] for item in turn["inputs"]]
+            results = turn["brief_ids"]
+            require(
+                len(set(inputs)) == len(inputs)
+                and not message_ids.intersection(inputs)
+                and len(set(results)) == len(results)
+                and not brief_ids.intersection(results),
+                f"{label} repeated message or brief IDs: {turn}",
+            )
+            message_ids.update(inputs)
+            brief_ids.update(results)
+            expected = expected_turns.get(turn_id)
+            if expected is not None:
+                require(
+                    turn["settled"] and expected["message_id"] in inputs and results,
+                    f"{label} lost a settled old input or Result: {turn}",
+                )
+                result_texts = [
+                    harness.brief(brief_id, f"{label}-{page_index}-{index}").get("text", "")
+                    for index, brief_id in enumerate(results)
+                ]
+                require(
+                    any(expected["marker"] in text for text in result_texts),
+                    f"{label} cannot read old Result {expected['marker']}: {result_texts}",
+                )
+                old_turns[turn_id] = {
+                    "message_id": expected["message_id"],
+                    "brief_ids": sorted(results),
+                    "marker": expected["marker"],
+                }
+        coverage = page["coverage"]
+        next_cursor = page.get("next_before_cursor")
+        if coverage["reaches_oldest"]:
+            require(
+                not coverage["has_older"] and next_cursor is None,
+                f"{label} oldest coverage contradicts its cursor: {page}",
+            )
+            break
+        require(
+            coverage["has_older"]
+            and isinstance(next_cursor, str)
+            and next_cursor
+            and next_cursor not in cursors,
+            f"{label} missing or repeated history cursor: {page}",
+        )
+        cursors.add(next_cursor)
+        cursor = next_cursor
+    else:
+        raise AssertionError(f"{label} did not reach oldest history in 100 pages")
+    require(
+        page_index >= 2 and set(old_turns) == set(expected_turns),
+        f"{label} omitted old history: pages={page_index + 1}, "
+        f"missing={set(expected_turns) - set(old_turns)}",
+    )
+    report = {"pages": page_index + 1, "old_turns": old_turns, "reaches_oldest": True}
+    write_json(harness.evidence / f"{label}-history.json", report)
+    return report
+
+
+def run_runtime_shared_credential_delete_case(
+    harness: CaseHarness, case: dict[str, Any]
+) -> None:
+    from .shared_credential_delete import run_case
+
+    run_case(harness, case)
+
+
 def run_runtime_upgrade_previous_release_case(
     harness: CaseHarness, case: dict[str, Any]
 ) -> None:
@@ -3060,10 +3150,20 @@ def run_runtime_upgrade_previous_release_case(
     )
     harness.agent_id = legacy_agent_id
     harness.wait_default_bootstrap_turn_settled()
-    harness.prompt(
-        "upgrade-v030-old",
-        case["phases"][0]["prompt"].format(marker=old_marker),
-    )
+    expected_turns: dict[str, dict[str, str]] = {}
+    for index in range(5):
+        marker = f"{old_marker}{index:02x}"
+        label = f"upgrade-v030-old-{index}"
+        harness.prompt(label, case["phases"][0]["prompt"].format(marker=marker))
+        scope = harness.prompt_scope(label)
+        require(
+            scope["turn_id"] not in expected_turns,
+            f"previous release reused an old turn: {scope}",
+        )
+        expected_turns[scope["turn_id"]] = {
+            "message_id": scope["message_id"],
+            "marker": marker,
+        }
     old_snapshot = harness.upgrade_db_snapshot("upgrade-v030-old", old_marker)
     require(
         old_snapshot["integrity_check"] == "ok",
@@ -3074,6 +3174,11 @@ def run_runtime_upgrade_previous_release_case(
         old_snapshot["messages"] and old_snapshot["briefs"],
         f"previous release did not persist the marker: {old_snapshot}",
     )
+    for expected in expected_turns.values():
+        require(
+            any(expected["marker"] in row["payload_json"] for row in old_snapshot["briefs"]),
+            f"previous release did not persist Result {expected['marker']}",
+        )
     old_agent_ids = set(old_snapshot["agent_ids"])
     old_message_ids = {row["message_id"] for row in old_snapshot["messages"]}
     old_brief_ids = {row["evidence_id"] for row in old_snapshot["briefs"]}
@@ -3110,6 +3215,7 @@ def run_runtime_upgrade_previous_release_case(
         and old_brief_ids.issubset({row["evidence_id"] for row in migrated["briefs"]}),
         f"release data was not preserved: old={old_snapshot}, migrated={migrated}",
     )
+    warm_history = require_upgrade_history(harness, "upgrade-v030-migrated", expected_turns)
 
     harness.stop()
     # Releases at or after the relation-write cutover (#2825, first shipped
@@ -3211,6 +3317,11 @@ def run_runtime_upgrade_previous_release_case(
 
     harness.start()
     harness.agent_id = legacy_agent_id
+    cold_history = require_upgrade_history(harness, "upgrade-v030-cold", expected_turns)
+    require(
+        cold_history["old_turns"] == warm_history["old_turns"],
+        f"old history identities changed after cold restart: {cold_history}",
+    )
     before_turn = int(
         harness.state("upgrade-v030-before-new")["agent"]["agent"]["turn_index"]
     )
@@ -6524,6 +6635,7 @@ def run_scheduler_timer_online_admission_case(
 CASE_RUNNERS = {
     "runtime-auth-model-delivery": run_runtime_case,
     "runtime-agent-lifecycle": run_runtime_agent_lifecycle_case,
+    "runtime-shared-credential-delete": run_runtime_shared_credential_delete_case,
     "runtime-upgrade-v030": run_runtime_upgrade_previous_release_case,
     "runtime-upgrade-interrupted-schema47": (
         run_runtime_upgrade_interrupted_schema47_case
