@@ -39,26 +39,36 @@ fn add(a: (u64, usize), b: (u64, usize)) -> (u64, usize) {
     (a.0 + b.0, a.1 + b.1)
 }
 
+// Independent decoded-value oracle: keys/punctuation are not owned value cells.
+fn owned_value_cells(value: &serde_json::Value) -> usize {
+    1 + match value {
+        serde_json::Value::Array(values) => values.iter().map(owned_value_cells).sum::<usize>(),
+        serde_json::Value::Object(values) => values.values().map(owned_value_cells).sum::<usize>(),
+        _ => 0,
+    }
+}
+
 fn clone_cost(work: &WorkItemRecord) -> Result<(u64, usize)> {
-    // Independent decoded-tree oracle, not the production streaming counter.
-    fn cells(value: &serde_json::Value) -> usize {
+    // Independent punctuation oracle for the unchanged byte envelope.
+    fn slots(value: &serde_json::Value) -> usize {
         match value {
             serde_json::Value::String(_) => 1,
             serde_json::Value::Array(values) => {
-                2 + values.len().saturating_sub(1) + values.iter().map(cells).sum::<usize>()
+                2 + values.len().saturating_sub(1) + values.iter().map(slots).sum::<usize>()
             }
             serde_json::Value::Object(values) => {
                 2 + 2 * values.len()
                     + values.len().saturating_sub(1)
-                    + values.values().map(cells).sum::<usize>()
+                    + values.values().map(slots).sum::<usize>()
             }
             _ => 0,
         }
     }
-    let count = cells(&serde_json::to_value(work)?);
+    let value = serde_json::to_value(work)?;
+    let count = slots(&value);
     Ok((
         (serde_json::to_vec(work)?.len() as u64 * 4 + count as u64 * 128 + 512) * 8,
-        (count + 16) * 8,
+        owned_value_cells(&value) * 8,
     ))
 }
 

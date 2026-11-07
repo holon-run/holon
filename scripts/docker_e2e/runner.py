@@ -3215,6 +3215,8 @@ def run_runtime_upgrade_previous_release_case(
         and old_brief_ids.issubset({row["evidence_id"] for row in migrated["briefs"]}),
         f"release data was not preserved: old={old_snapshot}, migrated={migrated}",
     )
+    # start() selects the bootstrap agent; history belongs to the legacy agent.
+    harness.agent_id = legacy_agent_id
     warm_history = require_upgrade_history(harness, "upgrade-v030-migrated", expected_turns)
 
     harness.stop()

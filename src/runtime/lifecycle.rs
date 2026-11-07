@@ -2353,11 +2353,17 @@ impl RuntimeHandle {
     }
 
     async fn observe_indefinite_sleep_without_wake_source(&self, state: &AgentState) -> Result<()> {
-        let read = self.capture_scheduler_projection().await?;
+        let mut owner = self.begin_mutation().await?;
         // This warning describes the committed transition, not a newer posture.
-        if read.state.as_ref() != state {
+        if &owner.state != state {
             return Ok(());
         }
+        // A related metadata ACK can invalidate Scheduling during the turn.
+        // This original observation prepares its view; ordinary captures stay pure.
+        let read = owner
+            .prepare_scheduler_read(None, Default::default(), Default::default(), self.now())
+            .await?;
+        drop(owner);
         let projection = &read.projection;
         let has_runnable_work = projection.work_reactivation_work_item().is_some();
         let has_queue_entries = projection.queue_len > 0 || projection.queued_work_items > 0;
@@ -2406,7 +2412,11 @@ impl RuntimeHandle {
             Arc<super::input_evidence_budget::BudgetViewGuard>,
         )>,
     > {
-        let read = self.capture_scheduler_projection().await?;
+        let mut owner = self.begin_mutation().await?;
+        let read = owner
+            .prepare_scheduler_read(None, Default::default(), Default::default(), self.now())
+            .await?;
+        drop(owner);
         let Some((work_item, mode, generation)) = read
             .projection
             .work_reactivation_work_item_with_generation()
@@ -2668,6 +2678,89 @@ mod current_state_reads_tests;
 mod tests {
     use super::*;
     use chrono::Utc;
+
+    #[tokio::test]
+    async fn sleep_boundaries_prepare_scheduling_after_related_metadata_ack() {
+        use crate::runtime::{
+            mutation_owner::{IdentityMutationFacts, KnownCommit, MutationReservation},
+            tests::support::{context_config, seed_bound_work_item, CountingProvider},
+        };
+        use tempfile::tempdir;
+
+        async fn metadata_ack(runtime: &RuntimeHandle) {
+            let root = runtime.inner.mutation_owner.capture().unwrap().unwrap();
+            let identity = runtime
+                .inner
+                .runtime_db
+                .agent_identities()
+                .latest_for_mutation(&root.state.id)
+                .unwrap()
+                .unwrap();
+            let mut reservations = vec![runtime.inner.mutation_owner.reserve().await.unwrap()];
+            MutationReservation::begin_all(&mut reservations, crate::ids::audit_event_id())
+                .unwrap();
+            MutationReservation::committed_all(
+                &mut reservations,
+                vec![KnownCommit::Metadata(Arc::new(IdentityMutationFacts {
+                    identity: Some(Arc::new(identity)),
+                    state: Some(root.state.clone()),
+                }))],
+            )
+            .unwrap();
+            let published = MutationReservation::publish_all_known(&mut reservations)
+                .unwrap()
+                .remove(0)
+                .unwrap();
+            assert_eq!(published.state, root.state);
+            assert!(published.scheduling.is_none());
+        }
+
+        for runnable in [false, true] {
+            let dir = tempdir().unwrap();
+            let workspace = tempdir().unwrap();
+            let provider = Arc::new(CountingProvider {
+                calls: Mutex::new(0),
+                reply: "unused",
+            });
+            let runtime = RuntimeHandle::new(
+                "default",
+                dir.path().to_path_buf(),
+                workspace.path().to_path_buf(),
+                "http://127.0.0.1:7878".into(),
+                provider.clone(),
+                "default".into(),
+                context_config(),
+            )
+            .unwrap();
+            if runnable {
+                seed_bound_work_item(&runtime, WorkItemState::Open, None, None).await;
+            }
+            let state = runtime.agent_state().await.unwrap();
+            metadata_ack(&runtime).await;
+            assert!(runtime.capture_scheduler_projection().await.is_err());
+            let work = runtime.indefinite_sleep_runnable_work().await.unwrap();
+            assert_eq!(work.is_some(), runnable);
+            drop(work);
+            assert_eq!(runtime.agent_state().await.unwrap(), state);
+
+            metadata_ack(&runtime).await;
+            assert!(runtime.capture_scheduler_projection().await.is_err());
+            let mut stale = state.clone();
+            stale.status = AgentStatus::Stopped;
+            runtime
+                .observe_indefinite_sleep_without_wake_source(&stale)
+                .await
+                .unwrap();
+            assert!(runtime.capture_scheduler_projection().await.is_err());
+            runtime
+                .observe_indefinite_sleep_without_wake_source(&state)
+                .await
+                .unwrap();
+            assert!(runtime.capture_scheduler_projection().await.is_ok());
+            assert_eq!(runtime.agent_state().await.unwrap(), state);
+            assert_eq!(*provider.calls.lock().await, 0);
+        }
+    }
 
     #[tokio::test]
     async fn orphan_sleep_presence_borrows_current_work_and_preserves_committed_state_gate() {

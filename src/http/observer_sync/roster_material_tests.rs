@@ -113,7 +113,16 @@ fn model_cost(summary: &crate::types::AgentListModelSummary) -> (u64, usize) {
     )
 }
 
-// Independent cost oracle: count only punctuation outside JSON strings.
+// Independent decoded-value oracle: keys/punctuation are not owned value cells.
+fn owned_value_cells(value: &serde_json::Value) -> usize {
+    1 + match value {
+        serde_json::Value::Array(values) => values.iter().map(owned_value_cells).sum::<usize>(),
+        serde_json::Value::Object(values) => values.values().map(owned_value_cells).sum::<usize>(),
+        _ => 0,
+    }
+}
+
+// Independent byte oracle: count only punctuation outside JSON strings.
 fn decode_cost(payload: &str) -> (u64, usize) {
     let (mut quoted, mut escaped, mut slots) = (false, false, 0);
     for byte in payload.bytes() {
@@ -133,9 +142,10 @@ fn decode_cost(payload: &str) -> (u64, usize) {
             quoted = byte == b'"';
         }
     }
+    let cells = owned_value_cells(&serde_json::from_str(payload).expect("valid fixture JSON"));
     (
         (payload.len() as u64 * 4 + slots as u64 * 128 + 512) * 8,
-        (slots * 4 + 16) * 8,
+        cells * 8,
     )
 }
 

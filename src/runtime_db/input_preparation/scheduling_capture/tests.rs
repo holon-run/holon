@@ -424,9 +424,7 @@ fn scheduling_loader_copies_share_context_remainder_and_rollback() -> Result<()>
         // The final coverage moves into the resident; it is not cloned.
         // This fixture changes only an equal-length absent key, not its shape.
         sql.charge(serde_json::to_vec(prior.resident.coverage())?.len(), 1)?;
-        // One absent observation still inserts one borrowed validation node.
-        charge_owned_metadata(128, 1)?;
-        // Validation and budget classification both borrow their root indexes.
+        // Ordered observation validation and budget classification borrow their root indexes.
         // The resident metadata view owns one scope registration as well.
         charge_owned_metadata((scope.agent_id.len() + 256) as u64, 8)?;
         (one, two, measure.finish()?.1)

@@ -48,6 +48,53 @@ class UpgradeHistoryTests(unittest.TestCase):
             )
             harness.restart_with_image.assert_called_once_with("candidate")
 
+    def test_warm_history_restores_legacy_agent_after_bootstrap_restart(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            harness = Mock(evidence=Path(temp), image="candidate", previous_image="old")
+            harness.agent_id = "main"
+            harness.request.return_value = {"receipt": {"created": True}}
+            harness.prompt_scope.side_effect = [
+                {"turn_id": f"turn-{index}", "message_id": f"msg-{index}"}
+                for index in range(5)
+            ]
+            snapshot = {
+                "integrity_check": "ok",
+                "schema_revision": 25,
+                "agent_ids": ["main", "upgrade-agent-abcd"],
+                "messages": [{"message_id": f"msg-{index}"} for index in range(5)],
+                "briefs": [
+                    {
+                        "evidence_id": f"brief-{index}",
+                        "payload_json": json.dumps(
+                            {"text": f"UPGRADE-V030-OLD-abcd{index:02x}"}
+                        ),
+                    }
+                    for index in range(5)
+                ],
+                "baseline": [{}],
+            }
+            harness.upgrade_db_snapshot.return_value = snapshot
+            harness.fresh_schema_revision.return_value = 25
+
+            def restart(_image: str) -> None:
+                harness.agent_id = "main"
+
+            def history(current, label, expected) -> None:
+                self.assertIs(current, harness)
+                self.assertEqual(current.agent_id, "upgrade-agent-abcd")
+                self.assertEqual(label, "upgrade-v030-migrated")
+                self.assertEqual(len(expected), 5)
+                raise RuntimeError("scoped history boundary")
+
+            harness.restart_with_image.side_effect = restart
+            case = {"id": "runtime-upgrade-v030", "phases": [{"prompt": "{marker}"}]}
+            with (
+                patch.object(runner.secrets, "token_hex", return_value="abcd"),
+                patch.object(runner, "require_upgrade_history", side_effect=history),
+            ):
+                with self.assertRaisesRegex(RuntimeError, "scoped history boundary"):
+                    runner.run_runtime_upgrade_previous_release_case(harness, case)
+
     def test_required_lifecycle_profile_selects_all_three_strict_stub_cases(self) -> None:
         manifest = json.loads(runner.DEFAULT_MANIFEST.read_text())
         profile = runner.resolve_profile(manifest, "runtime-lifecycle-required")
