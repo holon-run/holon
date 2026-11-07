@@ -239,6 +239,7 @@ pub(crate) fn normalize_web_asset_path(request_path: &str) -> Option<String> {
     normalized.to_str().map(|path| path.replace('\\', "/"))
 }
 
+#[cfg(holon_lib_test_shard = "c")]
 #[cfg(test)]
 mod tests {
     use super::*;

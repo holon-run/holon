@@ -64,6 +64,7 @@ fn first_run_intro_prompt() -> &'static str {
         claim certainty, and adapt if the user replies in another language."
 }
 
+#[cfg(holon_lib_test_shard = "a")]
 #[cfg(test)]
 mod tests {
     use super::*;

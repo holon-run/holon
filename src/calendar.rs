@@ -172,6 +172,7 @@ fn parse_timezone(timezone: &str) -> Result<Tz> {
         .map_err(|_| anyhow::anyhow!("unknown IANA calendar timezone: {timezone}"))
 }
 
+#[cfg(holon_lib_test_shard = "c")]
 #[cfg(test)]
 mod tests {
     use super::*;

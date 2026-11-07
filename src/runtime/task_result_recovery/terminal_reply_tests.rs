@@ -102,11 +102,12 @@ async fn late_dropped_agent_reply_uses_new_exact_recovery_once() {
         WaitForRegistrationOutcome::TaskResultClaimedByOtherWaiter { .. }
     ));
     harness.assert_unchanged(&before_other);
-    seed_waiting_work_execution(
-        runtime.storage(),
+    seed_live_waiting_work_execution(
+        runtime,
         &runtime.latest_work_item(&waiter.id).await.unwrap().unwrap(),
         &wait_condition_id,
-    );
+    )
+    .await;
     let scheduled = claim_model(runtime).await;
     assert_eq!(scheduled.message.id, recovery_message_id);
     process(runtime, scheduled).await;
@@ -206,8 +207,8 @@ async fn late_dropped_reply_exact_wait_survives_restart_for_work_and_agent_scope
             panic!("expected exact recovery: {outcome:?}");
         };
         if let Some(waiter) = &waiter {
-            seed_waiting_work_execution(
-                harness.runtime().storage(),
+            seed_live_waiting_work_execution(
+                harness.runtime(),
                 &harness
                     .runtime()
                     .latest_work_item(&waiter.id)
@@ -215,7 +216,8 @@ async fn late_dropped_reply_exact_wait_survives_restart_for_work_and_agent_scope
                     .unwrap()
                     .unwrap(),
                 &wait_condition_id,
-            );
+            )
+            .await;
         }
         let original_queue = harness
             .runtime()
@@ -318,6 +320,92 @@ fn damage_source(runtime: &RuntimeHandle, reply_id: &str, damage: &str) {
         .unwrap();
 }
 
+// Pre-wait revocation is a committed writer change, unlike the raw corruption
+// deliberately used after preparation to verify the exact writer fence.
+async fn revoke_source(runtime: &RuntimeHandle, reply_id: &str, damage: &str) {
+    if damage == "missing_queue" {
+        let db = runtime.inner.runtime_db.clone();
+        let ledger = runtime.inner.input_evidence_budget.clone();
+        let id = reply_id.to_owned();
+        runtime
+            .commit_input_evidence(crate::ids::audit_event_id(), move |scope| {
+                crate::runtime_db::current_query::remove_qualified_terminal_queue_for_fixture(
+                    &db, scope, &ledger, &id,
+                )
+            })
+            .await
+            .unwrap();
+        return;
+    }
+    if !matches!(damage, "message" | "missing_message") {
+        damage_source(runtime, reply_id, damage);
+        return;
+    }
+    if damage == "message" {
+        let mut reply = runtime
+            .storage()
+            .read_message_by_id(reply_id)
+            .unwrap()
+            .unwrap();
+        reply.metadata = Some(serde_json::json!({}));
+        // Append preparation is idempotent for an existing Message ID. Revoke
+        // the canonical body and publish its qualified projection atomically.
+        let db = runtime.inner.runtime_db.clone();
+        runtime
+            .commit_input_evidence(crate::ids::audit_event_id(), move |scope| {
+                db.transaction(|tx| {
+                    crate::runtime_db::evidence::upsert_message_tx(tx, &reply)?;
+                    let committed = crate::runtime_db::evidence::committed_message_tx(
+                        tx,
+                        &reply.agent_id,
+                        &reply.id,
+                    )?;
+                    crate::runtime_db::input_evidence_writes::acknowledge_input_evidence_tx(
+                        tx,
+                        scope,
+                        (),
+                        &[crate::runtime_db::input_evidence_snapshot::CanonicalInputEvidence::Message(
+                            committed,
+                        )],
+                    )
+                })
+            })
+            .await
+            .unwrap();
+        assert_eq!(
+            runtime
+                .storage()
+                .read_message_by_id(reply_id)
+                .unwrap()
+                .unwrap()
+                .metadata,
+            Some(serde_json::json!({})),
+            "pre-wait fixture must actually revoke the persisted delivery reference"
+        );
+        return;
+    }
+    let db = runtime.inner.runtime_db.clone();
+    let id = reply_id.to_owned();
+    runtime.commit_input_evidence(crate::ids::audit_event_id(), move |scope| {
+        db.transaction(|tx| {
+            assert!(tx.execute("DELETE FROM messages WHERE message_id = ?1", [&id])? > 0);
+            let delta = crate::runtime_db::input_evidence_snapshot::register_pruned_input_evidence_tx(
+                tx,
+                scope,
+                &[crate::runtime::resident_input_evidence::InputEvidenceKey::new(
+                    crate::runtime::resident_input_evidence::InputEvidenceFamily::Message,
+                    id.clone(),
+                )],
+            )?;
+            let mut commit = crate::runtime_db::input_evidence_writes::acknowledge_input_evidence_tx(
+                tx, scope, (), &[],
+            )?;
+            commit.input_delta = delta;
+            Ok(commit)
+        })
+    }).await.unwrap();
+}
+
 #[tokio::test(start_paused = true)]
 async fn dropped_reply_missing_or_revoked_source_evidence_is_unavailable() {
     for damage in [
@@ -329,7 +417,7 @@ async fn dropped_reply_missing_or_revoked_source_evidence_is_unavailable() {
     ] {
         let harness = LifecycleHarness::new();
         let (_, task, reply_id) = dropped_reply(&harness).await;
-        damage_source(harness.runtime(), &reply_id, damage);
+        revoke_source(harness.runtime(), &reply_id, damage).await;
         let before = harness.snapshot();
         assert!(
             matches!(

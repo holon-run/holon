@@ -25,16 +25,21 @@ use crate::{
 };
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq)]
-pub struct AgentStateSnapshotDto {
+#[serde(bound(deserialize = "Timer: Deserialize<'de>, WorkItem: Deserialize<'de>"))]
+#[schemars(
+    rename = "AgentStateSnapshotDto",
+    bound = "Timer: JsonSchema + Serialize, WorkItem: JsonSchema + Serialize"
+)]
+pub struct AgentStateSnapshotDto<Timer = TimerRecord, WorkItem = SlimWorkItemDto> {
     pub agent: SlimAgentDto,
     pub session: StateSessionSnapshotDto,
     pub tasks: Vec<SlimTaskDto>,
     #[serde(default)]
     pub waits: Vec<SlimWaitDto>,
     #[serde(default)]
-    pub timers: Vec<TimerRecord>,
+    pub timers: Vec<Timer>,
     #[serde(default)]
-    pub work_items: Vec<SlimWorkItemDto>,
+    pub work_items: Vec<WorkItem>,
     #[serde(default)]
     pub external_triggers: Vec<ExternalTriggerStateSnapshot>,
     #[serde(default)]
@@ -282,26 +287,28 @@ impl From<TaskRecord> for TaskRecordDto {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
-pub struct SlimWorkItemDto {
-    pub id: String,
-    pub agent_id: String,
-    pub workspace_id: String,
+#[serde(bound(deserialize = "Text: Deserialize<'de>, Todo: Deserialize<'de>"))]
+#[schemars(rename = "SlimWorkItemDto")]
+pub struct SlimWorkItemDto<Text = String, Todo = TodoItem> {
+    pub id: Text,
+    pub agent_id: Text,
+    pub workspace_id: Text,
     pub revision: u64,
-    pub objective: String,
+    pub objective: Text,
     pub state: WorkItemState,
     pub plan_status: WorkItemPlanStatus,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub blocked_by: Option<String>,
+    pub blocked_by: Option<Text>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub recheck_at: Option<DateTime<Utc>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub result_brief_id: Option<String>,
+    pub result_brief_id: Option<Text>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub result_summary: Option<String>,
+    pub result_summary: Option<Text>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub turn_id: Option<String>,
+    pub turn_id: Option<Text>,
     pub scheduling_state: WorkItemSchedulingState,
     pub readiness: WorkItemReadiness,
     pub candidate_class: WorkItemCandidateClass,
@@ -309,7 +316,7 @@ pub struct SlimWorkItemDto {
     pub is_current: bool,
     pub is_runnable: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub current_todo: Option<TodoItem>,
+    pub current_todo: Option<Todo>,
     pub reason_code: WorkItemSchedulingReasonCode,
 }
 
@@ -366,6 +373,29 @@ impl From<&AgentState> for SlimAgentRuntimeDto {
     }
 }
 
+impl From<AgentState> for SlimAgentRuntimeDto {
+    fn from(agent: AgentState) -> Self {
+        Self {
+            id: agent.id,
+            status: agent.status,
+            sleeping_until: agent.sleeping_until,
+            current_run_id: agent.current_run_id,
+            pending: agent.pending,
+            last_wake_reason: agent.last_wake_reason,
+            last_brief_at: agent.last_brief_at,
+            attached_workspaces: agent.attached_workspaces,
+            active_workspace_entry: agent.active_workspace_entry.as_ref().map(Into::into),
+            turn_index: agent.turn_index,
+            current_turn_id: agent.current_turn_id,
+            current_turn_work_item_id: agent.current_turn_work_item_id,
+            current_work_item_id: agent.current_work_item_id,
+            provider_cooldown_wait: agent.provider_cooldown_wait,
+            last_turn_terminal: None,
+            last_runtime_failure: None,
+        }
+    }
+}
+
 impl From<&ActiveWorkspaceEntry> for SlimActiveWorkspaceDto {
     fn from(workspace: &ActiveWorkspaceEntry) -> Self {
         Self {
@@ -392,6 +422,24 @@ impl From<&crate::types::AgentModelState> for SlimAgentModelDto {
             effective_fallback_models: model.effective_fallback_models.clone(),
             override_model: model.override_model.clone(),
             override_reasoning_effort: model.override_reasoning_effort.clone(),
+            override_service_tier: model.override_service_tier,
+            effective_service_tier: model.effective_service_tier,
+        }
+    }
+}
+
+impl From<crate::types::AgentModelState> for SlimAgentModelDto {
+    fn from(model: crate::types::AgentModelState) -> Self {
+        Self {
+            source: model.source,
+            runtime_default_model: model.runtime_default_model,
+            effective_model: model.effective_model,
+            requested_model: model.requested_model,
+            active_model: model.active_model,
+            fallback_active: model.fallback_active,
+            effective_fallback_models: model.effective_fallback_models,
+            override_model: model.override_model,
+            override_reasoning_effort: model.override_reasoning_effort,
             override_service_tier: model.override_service_tier,
             effective_service_tier: model.effective_service_tier,
         }
@@ -561,6 +609,38 @@ impl From<WorkItemSchedulingProjection> for SlimWorkItemDto {
     }
 }
 
+impl<W: std::borrow::Borrow<crate::types::WorkItemRecord>> From<&WorkItemSchedulingProjection<W>>
+    for SlimWorkItemDto
+{
+    fn from(projection: &WorkItemSchedulingProjection<W>) -> Self {
+        let record = projection.record();
+        Self {
+            id: record.id.clone(),
+            agent_id: record.agent_id.clone(),
+            workspace_id: record.workspace_id.clone(),
+            revision: record.revision,
+            objective: record.objective.clone(),
+            state: record.state.clone(),
+            plan_status: record.plan_status,
+            blocked_by: record.blocked_by.clone(),
+            recheck_at: record.recheck_at,
+            result_brief_id: record.result_brief_id.clone(),
+            result_summary: record.result_summary.clone(),
+            created_at: record.created_at,
+            updated_at: record.updated_at,
+            turn_id: record.turn_id.clone(),
+            scheduling_state: projection.scheduling_state,
+            readiness: projection.readiness,
+            candidate_class: projection.candidate_class,
+            focus: projection.focus,
+            is_current: projection.is_current,
+            is_runnable: projection.is_runnable,
+            current_todo: projection.current_todo.clone(),
+            reason_code: projection.reason_code,
+        }
+    }
+}
+
 impl SlimAgentDto {
     pub fn into_agent_summary(self) -> AgentSummary {
         let active_workspace_entry = self.agent.active_workspace_entry.clone().map(Into::into);
@@ -659,10 +739,13 @@ impl From<SlimChildObservabilityDto> for ChildAgentObservabilitySnapshot {
             work_summary: observability.work_summary,
             last_progress_brief: observability.last_progress_brief,
             last_result_brief: observability.last_result_brief,
+            _read_material: None,
+            _source_material: None,
         }
     }
 }
 
+#[cfg(holon_lib_test_shard = "c")]
 #[cfg(test)]
 mod work_status_tests {
     use super::*;

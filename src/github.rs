@@ -474,6 +474,7 @@ fn map_api_url(api_base: &Url, url: &str) -> anyhow::Result<String> {
     Ok(target.into())
 }
 
+#[cfg(holon_lib_test_shard = "c")]
 #[cfg(test)]
 mod tests {
     use super::*;

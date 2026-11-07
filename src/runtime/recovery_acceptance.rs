@@ -5,7 +5,6 @@ use super::*;
 use crate::runtime_db::task_result_settlement::{
     TaskResultSettlementRecord, TASK_RESULT_RECOVERY_LIMIT,
 };
-use clap::CommandFactory;
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::PathBuf;
@@ -16,8 +15,24 @@ pub(super) struct Fence {
     result_message_id: String,
     result_identity: String,
     rejoin_generation: u64,
-    parent_turn_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    parent_turn_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    command_creation_id: Option<String>,
     recovery_epoch: u64,
+}
+
+impl From<&TaskResultSettlementRecord> for Fence {
+    fn from(record: &TaskResultSettlementRecord) -> Self {
+        Self {
+            result_message_id: record.message_id.clone(),
+            result_identity: record.result_identity.clone(),
+            rejoin_generation: record.rejoin_generation,
+            parent_turn_id: record.source.parent_turn_id().map(str::to_owned),
+            command_creation_id: record.source.command_creation_id().map(str::to_owned),
+            recovery_epoch: record.recovery_epoch,
+        }
+    }
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -68,7 +83,8 @@ fn matches(control: &Control, record: &TaskResultSettlementRecord) -> bool {
             fence.result_message_id == record.message_id
                 && fence.result_identity == record.result_identity
                 && fence.rejoin_generation == record.rejoin_generation
-                && fence.parent_turn_id == record.parent_turn_id
+                && fence.parent_turn_id.as_deref() == record.source.parent_turn_id()
+                && fence.command_creation_id.as_deref() == record.source.command_creation_id()
                 && fence.recovery_epoch == record.recovery_epoch
         })
 }
@@ -86,19 +102,18 @@ fn evidence(
 ) -> serde_json::Value {
     serde_json::json!({
         "protocol": 1,
-        "build": crate::cli::Cli::command().render_long_version().trim(),
+        // Match the CLI version without building its full subcommand tree on
+        // the scheduler's stack.
+        "build": clap::Command::new("holon")
+            .version(env!("HOLON_VERSION"))
+            .render_long_version()
+            .trim(),
         "event": event,
         "request_id": control.request_id,
         "agent_id": record.agent_id,
         "task_id": record.task_id,
         "work_item_id": record.work_item_id,
-        "fence": {
-            "result_message_id": record.message_id,
-            "result_identity": record.result_identity,
-            "rejoin_generation": record.rejoin_generation,
-            "parent_turn_id": record.parent_turn_id,
-            "recovery_epoch": record.recovery_epoch,
-        },
+        "fence": Fence::from(record),
         "recovery_attempts": record.recovery_attempts,
         "last_recovery_root_attempt_id": record.last_recovery_root_attempt_id,
         "activation_id": record.activation_id,
@@ -222,8 +237,7 @@ pub(super) async fn service(runtime: &RuntimeHandle) -> Result<(Option<Control>,
             && task.effective_work_item_id() == record.work_item_id.as_deref()
             && super::task_state_reducer::is_terminal_task_status(&task.status)
             && task.rejoin_fence().is_ok_and(|fence| {
-                fence.generation == record.rejoin_generation
-                    && fence.parent_turn_id == record.parent_turn_id
+                fence.generation == record.rejoin_generation && fence.source == record.source
             }),
         "sixth recovery source task/result fence mismatch"
     );
@@ -376,4 +390,99 @@ pub(super) fn budget_rejected(
         "budget-rejected",
         Some(&expected),
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::domain::execution_protocol::TaskRejoinSource;
+
+    fn record(source: TaskRejoinSource) -> TaskResultSettlementRecord {
+        let mut value = serde_json::json!({
+            "result_identity": "result",
+            "agent_id": "agent",
+            "task_id": "task",
+            "message_id": "message",
+            "work_item_id": "work",
+            "rejoin_generation": 1,
+            "task_status": "completed",
+            "state": "persisted_pending",
+            "created_at": "2026-11-04T00:00:00Z",
+            "updated_at": "2026-11-04T00:00:00Z",
+            "recovery_epoch": 2,
+        });
+        value.as_object_mut().unwrap().extend(
+            serde_json::to_value(source)
+                .unwrap()
+                .as_object()
+                .unwrap()
+                .clone(),
+        );
+        serde_json::from_value(value).unwrap()
+    }
+
+    fn control(fence: serde_json::Value) -> Control {
+        serde_json::from_value(serde_json::json!({
+            "protocol": 1,
+            "request_id": "request",
+            "agent_id": "agent",
+            "task_id": "task",
+            "work_item_id": "work",
+            "hold_scanner": true,
+            "inject_sixth": false,
+            "fence": fence,
+        }))
+        .unwrap()
+    }
+
+    #[test]
+    fn parent_turn_ack_uses_exact_control_fence_shape() {
+        let record = record(TaskRejoinSource::ParentTurn {
+            parent_turn_id: "turn".into(),
+        });
+        let actual = serde_json::to_value(Fence::from(&record)).unwrap();
+        assert_eq!(
+            actual,
+            serde_json::json!({
+                "result_message_id": "message",
+                "result_identity": "result",
+                "rejoin_generation": 1,
+                "parent_turn_id": "turn",
+                "recovery_epoch": 2,
+            })
+        );
+        assert!(matches(&control(actual.clone()), &record));
+        for (field, stale) in [
+            ("result_message_id", serde_json::json!("other")),
+            ("result_identity", serde_json::json!("other")),
+            ("rejoin_generation", serde_json::json!(2)),
+            ("parent_turn_id", serde_json::json!("other")),
+            ("recovery_epoch", serde_json::json!(3)),
+        ] {
+            let mut value = actual.clone();
+            value[field] = stale;
+            assert!(!matches(&control(value), &record), "{field}");
+        }
+    }
+
+    #[test]
+    fn command_ack_keeps_exact_creation_identity() {
+        let record = record(TaskRejoinSource::CommandCreation {
+            command_creation_id: "task".into(),
+        });
+        let mut actual = serde_json::to_value(Fence::from(&record)).unwrap();
+        assert_eq!(
+            actual,
+            serde_json::json!({
+                "result_message_id": "message",
+                "result_identity": "result",
+                "rejoin_generation": 1,
+                "command_creation_id": "task",
+                "recovery_epoch": 2,
+            })
+        );
+        assert!(matches(&control(actual.clone()), &record));
+        actual["command_creation_id"] = serde_json::json!("another-task");
+        assert!(!matches(&control(actual), &record));
+    }
 }

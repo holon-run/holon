@@ -597,6 +597,7 @@ pub(crate) fn success_from_value(tool_name: &str, mut value: Value) -> ToolResul
     ToolResult::success(tool_name, value, summary_text)
 }
 
+#[cfg(holon_lib_test_shard = "c")]
 #[cfg(test)]
 mod tests {
     use super::*;

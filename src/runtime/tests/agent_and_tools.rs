@@ -1,5 +1,6 @@
 use super::super::*;
 use super::support::*;
+use crate::tool::ToolSpec;
 
 struct FreeformPromptProvider;
 
@@ -7,6 +8,7 @@ struct FreeformPromptProvider;
 impl AgentProvider for FreeformPromptProvider {
     async fn complete_turn(&self, _request: ProviderTurnRequest) -> Result<ProviderTurnResponse> {
         Ok(ProviderTurnResponse {
+            material: Default::default(),
             blocks: vec![ModelBlock::Text {
                 text: "done".into(),
             }],
@@ -23,6 +25,59 @@ impl AgentProvider for FreeformPromptProvider {
     fn supports_freeform_grammar_tools(&self) -> bool {
         true
     }
+}
+
+struct FilteredPromptProvider {
+    projections: std::sync::atomic::AtomicUsize,
+}
+
+#[async_trait]
+impl AgentProvider for FilteredPromptProvider {
+    async fn complete_turn(&self, request: ProviderTurnRequest) -> Result<ProviderTurnResponse> {
+        StubProvider::new("done").complete_turn(request).await
+    }
+
+    fn prompt_tool_specs(&self, tools: &[ToolSpec]) -> Vec<ToolSpec> {
+        self.projections.fetch_add(1, Ordering::SeqCst);
+        tools
+            .iter()
+            .filter(|tool| tool.name == "GetAgent")
+            .cloned()
+            .collect()
+    }
+}
+
+#[tokio::test]
+async fn provider_tool_selection_projects_once_for_prompt_capture_and_continuations() {
+    let dir = tempdir().unwrap();
+    let workspace = tempdir().unwrap();
+    let provider = Arc::new(FilteredPromptProvider {
+        projections: std::sync::atomic::AtomicUsize::new(0),
+    });
+    let runtime = RuntimeHandle::new(
+        "default",
+        dir.path().to_path_buf(),
+        workspace.path().to_path_buf(),
+        "http://127.0.0.1:7878".into(),
+        provider.clone(),
+        "default".into(),
+        context_config(),
+    )
+    .unwrap();
+
+    let (_, tools, _, _, _) = runtime.provider_tool_selection().await.unwrap();
+    assert_eq!(tools.len(), 1);
+    assert_eq!(tools[0].name, "GetAgent");
+    assert_eq!(provider.projections.load(Ordering::SeqCst), 1);
+
+    runtime
+        .preview_prompt(
+            "inspect this agent".into(),
+            AuthorityClass::OperatorInstruction,
+        )
+        .await
+        .unwrap();
+    assert_eq!(provider.projections.load(Ordering::SeqCst), 2);
 }
 
 #[tokio::test]
@@ -60,7 +115,7 @@ async fn attached_workspace_inheritance_preserves_execution_boundary() {
         guard.state.model_override = Some(
             crate::config::ModelRouteRef::parse_compatible("anthropic/claude-haiku-4-5").unwrap(),
         );
-        parent.inner.storage.write_agent(&guard.state).unwrap();
+        guard.persist_state(&parent.inner.storage).unwrap();
     }
     let parent_state = parent.agent_state().await.unwrap();
 
@@ -117,6 +172,7 @@ async fn agent_summary_reports_agents_md_sources_without_content() {
         context_config(),
     )
     .unwrap();
+    isolate_test_user_home(&runtime);
 
     let summary = runtime.agent_summary().await.unwrap();
     assert_eq!(
@@ -189,7 +245,7 @@ async fn loaded_agents_md_uses_active_workspace_entry_anchor_without_legacy_anch
             occupancy_id: None,
             projection_metadata: None,
         });
-        runtime.inner.storage.write_agent(&guard.state).unwrap();
+        guard.persist_state(&runtime.inner.storage).unwrap();
     }
 
     let loaded = runtime.loaded_agents_md().await.unwrap();
@@ -266,7 +322,7 @@ async fn detached_agent_home_guidance_is_deduplicated_in_summary_and_preview() {
         .await
         .unwrap();
     assert_eq!(
-        crate::types::LoadedAgentsMdView::from(&preview.loaded_agents_md),
+        crate::types::LoadedAgentsMdView::from(&*preview.loaded_agents_md),
         *loaded
     );
     assert_eq!(preview.rendered_system_prompt.matches(marker).count(), 1);
@@ -355,12 +411,12 @@ async fn preview_prompt_uses_codex_apply_patch_surface_even_when_prompt_tools_ar
     )
     .unwrap();
     {
-        let mut guard = runtime.inner.agent.lock().await;
+        let mut guard = runtime.begin_mutation().await.unwrap();
         guard.state.model_override = Some(
             crate::config::ModelRouteRef::parse_compatible("openai-codex/gpt-5.3-codex-spark")
                 .unwrap(),
         );
-        runtime.inner.storage.write_agent(&guard.state).unwrap();
+        guard.persist_state(&runtime.inner.storage).await.unwrap();
     }
 
     let preview = runtime
@@ -402,7 +458,7 @@ async fn filtered_tool_specs_keep_exec_command_visible_when_process_execution_di
     {
         let mut guard = runtime.inner.agent.lock().await;
         guard.state.execution_profile.process_execution_exposed = false;
-        runtime.inner.storage.write_agent(&guard.state).unwrap();
+        guard.persist_state(&runtime.inner.storage).unwrap();
     }
     let tools = runtime.filtered_tool_specs().await.unwrap();
 
@@ -420,6 +476,7 @@ async fn filtered_tool_specs_expose_x_search_only_after_xai_activation() {
         .any(|tool| tool.name == crate::tool::names::X_SEARCH));
 
     let mut config = AppConfig::load_with_home(Some(home.path().to_path_buf())).unwrap();
+    config.user_home_dir = None;
     config
         .providers
         .get_mut(&crate::config::ProviderId::openai())
@@ -464,7 +521,7 @@ async fn filtered_tool_specs_do_not_expose_worktree_discard() {
     {
         let mut guard = runtime.inner.agent.lock().await;
         guard.state.execution_profile.supports_managed_worktrees = false;
-        runtime.inner.storage.write_agent(&guard.state).unwrap();
+        guard.persist_state(&runtime.inner.storage).unwrap();
     }
     let tools = runtime.filtered_tool_specs().await.unwrap();
 
@@ -607,7 +664,8 @@ async fn canonical_capability_policy_agrees_across_provider_preview_and_dispatch
             r#"{"model":{"default":"openai/gpt-5.4"}}"#,
         )
         .unwrap();
-        let config = AppConfig::load_with_home(Some(home.path().to_path_buf())).unwrap();
+        let mut config = AppConfig::load_with_home(Some(home.path().to_path_buf())).unwrap();
+        config.user_home_dir = None;
         let provider = Arc::new(ToolCaptureProvider {
             requests: Mutex::new(Vec::new()),
         });
@@ -723,23 +781,54 @@ async fn canonical_capability_policy_agrees_across_provider_preview_and_dispatch
                 == "agent_capability_not_allowed",
             !allowed
         );
-        runtime
-            .run_agent_loop(
-                &agent_id,
-                AuthorityClass::OperatorInstruction,
-                test_effective_prompt(),
-                LoopControlOptions {
-                    max_tool_rounds: None,
-                },
+        // The host owns this runtime's scheduler; do not race it with a fixture poll.
+        let message = runtime
+            .enqueue(
+                MessageEnvelope::new(
+                    &agent_id,
+                    MessageKind::OperatorPrompt,
+                    MessageOrigin::Operator {
+                        actor_id: None,
+                        actor_display_name: None,
+                    },
+                    AuthorityClass::OperatorInstruction,
+                    Priority::Normal,
+                    MessageBody::Text {
+                        text: "inspect tools".into(),
+                    },
+                )
+                .with_admission(
+                    MessageDeliverySurface::HttpControlPrompt,
+                    AdmissionContext::ControlAuthenticated,
+                ),
             )
             .await
             .unwrap();
+        tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            loop {
+                if host
+                    .runtime_db()
+                    .queue_entries()
+                    .latest(&message.id)
+                    .unwrap()
+                    .is_some_and(|entry| entry.status == QueueEntryStatus::Processed)
+                {
+                    break;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("host did not process the capability-policy probe");
         let requests = provider.requests.lock().await;
+        assert_eq!(requests.len(), 1);
         let names = requests.last().unwrap();
         assert_eq!(names.iter().any(|name| name == "CreateAgent"), allowed);
         assert_eq!(names.iter().any(|name| name == "InvokeAgent"), allowed);
         assert!(!names.iter().any(|name| name == "GetAgent"));
         assert!(!names.iter().any(|name| name == "RemoveWorktree"));
+        drop(requests);
+        host.shutdown().await.unwrap();
     }
 }
 
@@ -914,7 +1003,7 @@ async fn schedule_command_task_rejects_when_process_execution_disabled() {
     {
         let mut guard = runtime.inner.agent.lock().await;
         guard.state.execution_profile.process_execution_exposed = false;
-        runtime.inner.storage.write_agent(&guard.state).unwrap();
+        guard.persist_state(&runtime.inner.storage).unwrap();
     }
 
     let err = runtime
@@ -955,7 +1044,7 @@ async fn schedule_inherited_child_agent_task_rejects_when_background_tasks_disab
     {
         let mut guard = runtime.inner.agent.lock().await;
         guard.state.execution_profile.allow_background_tasks = false;
-        runtime.inner.storage.write_agent(&guard.state).unwrap();
+        guard.persist_state(&runtime.inner.storage).unwrap();
     }
 
     let err = runtime
@@ -987,7 +1076,7 @@ async fn schedule_command_task_rejects_when_background_tasks_disabled() {
     {
         let mut guard = runtime.inner.agent.lock().await;
         guard.state.execution_profile.allow_background_tasks = false;
-        runtime.inner.storage.write_agent(&guard.state).unwrap();
+        guard.persist_state(&runtime.inner.storage).unwrap();
     }
 
     let err = runtime
@@ -1258,8 +1347,9 @@ async fn cancelling_task_ignores_late_running_status_update() {
         })),
         recovery: None,
     };
-    runtime.storage().append_task(&task).unwrap();
-    runtime.inner.runtime_db.tasks().upsert(&task).unwrap();
+    persist_task_transition(&runtime, &task, "cancelling_task_fixture")
+        .await
+        .unwrap();
 
     let stale_running = TaskRecord {
         status: TaskStatus::Running,
@@ -1332,8 +1422,10 @@ async fn latest_task_list_entries_return_compact_projection() {
             promoted_from_exec_command: false,
         }),
     };
-    runtime.storage().append_task(&task).unwrap();
-    runtime.inner.runtime_db.tasks().upsert(&task).unwrap();
+    runtime
+        .persist_task_transition(&task, "task_list_projection_fixture")
+        .await
+        .unwrap();
 
     let entries = runtime.latest_task_list_entries().await.unwrap();
     assert_eq!(entries.len(), 1);
@@ -1392,12 +1484,9 @@ async fn latest_task_list_entries_filters_to_active_statuses_only() {
         })),
         recovery: None,
     };
-    runtime.storage().append_task(&active_task).unwrap();
     runtime
-        .inner
-        .runtime_db
-        .tasks()
-        .upsert(&active_task)
+        .persist_task_transition(&active_task, "task_list_active_fixture")
+        .await
         .unwrap();
 
     let historical_running = TaskRecord {
@@ -1416,12 +1505,9 @@ async fn latest_task_list_entries_filters_to_active_statuses_only() {
         })),
         recovery: None,
     };
-    runtime.storage().append_task(&historical_running).unwrap();
     runtime
-        .inner
-        .runtime_db
-        .tasks()
-        .upsert(&historical_running)
+        .persist_task_transition(&historical_running, "task_list_history_fixture")
+        .await
         .unwrap();
 
     let historical_completed = TaskRecord {
@@ -1456,14 +1542,8 @@ async fn latest_task_list_entries_filters_to_active_statuses_only() {
         }),
     };
     runtime
-        .storage()
-        .append_task(&historical_completed)
-        .unwrap();
-    runtime
-        .inner
-        .runtime_db
-        .tasks()
-        .upsert(&historical_completed)
+        .persist_task_transition(&historical_completed, "task_list_completed_fixture")
+        .await
         .unwrap();
 
     let other_agent_task = TaskRecord {
@@ -1583,8 +1663,10 @@ async fn list_tasks_tool_returns_bounded_metadata_and_accepts_legacy_alias() {
             })),
             recovery: None,
         };
-        runtime.storage().append_task(&task).unwrap();
-        runtime.inner.runtime_db.tasks().upsert(&task).unwrap();
+        runtime
+            .persist_task_transition(&task, "task_list_tool_fixture")
+            .await
+            .unwrap();
     }
     let other_agent_task = TaskRecord {
         id: "task-other-agent".into(),
@@ -1666,9 +1748,9 @@ async fn enter_git_worktree_root_rejects_when_managed_worktrees_disabled() {
     )
     .unwrap();
     {
-        let mut guard = runtime.inner.agent.lock().await;
+        let mut guard = runtime.begin_mutation().await.unwrap();
         guard.state.execution_profile.supports_managed_worktrees = false;
-        runtime.inner.storage.write_agent(&guard.state).unwrap();
+        guard.persist_state(&runtime.inner.storage).await.unwrap();
     }
     let workspace_entry = WorkspaceEntry::new("ws-1", workspace.path().to_path_buf(), None);
     runtime.attach_workspace(&workspace_entry).await.unwrap();
@@ -1703,7 +1785,7 @@ async fn schedule_worktree_child_agent_task_rejects_when_background_tasks_disabl
     {
         let mut guard = runtime.inner.agent.lock().await;
         guard.state.execution_profile.allow_background_tasks = false;
-        runtime.inner.storage.write_agent(&guard.state).unwrap();
+        guard.persist_state(&runtime.inner.storage).unwrap();
     }
 
     let err = runtime
@@ -1751,8 +1833,8 @@ fn current_input_summary_extracts_body_from_context_section() {
             worktree_root: None,
             execution_roots: Vec::new(),
         },
-        loaded_agents_md: LoadedAgentsMd::default(),
-        loaded_agent_memory: LoadedAgentMemory::default(),
+        loaded_agents_md: LoadedAgentsMd::default().into(),
+        loaded_agent_memory: LoadedAgentMemory::default().into(),
         cache_identity: crate::prompt::PromptCacheIdentity {
             agent_id: "default".into(),
             prompt_cache_key: "default".into(),
@@ -1778,6 +1860,10 @@ fn current_input_summary_extracts_body_from_context_section() {
         projection_evidence: Default::default(),
         context_plan_evidence: Default::default(),
         recent_turns_reprojection: None,
+        frozen_history_policy: crate::context::ContextHistoryPreparation::default(),
+        frozen_projection_budget: None,
+        frozen_recent_message_limit: None,
+        _resource_read_material: None,
     };
 
     assert_eq!(
@@ -1950,15 +2036,14 @@ async fn timer_tools_manage_only_the_current_agent_lifecycle() {
             .code,
         "timer_not_found"
     );
-    assert_eq!(
-        other_runtime
+    {
+        let other_read = other_runtime
             .latest_timer(&other_timer.id)
             .await
             .unwrap()
-            .unwrap()
-            .status,
-        TimerStatus::Active
-    );
+            .unwrap();
+        assert_eq!(other_read.status, TimerStatus::Active);
+    }
 
     let cancel = crate::tool::tools::execute_builtin_tool(
         &runtime,
@@ -2141,7 +2226,7 @@ async fn get_agent_with_agent_id_returns_requested_agent() {
         .unwrap();
     let observer_storage = host.agent_storage("observer-bot").unwrap();
     observer_storage
-        .write_agent(&crate::types::AgentState::new("observer-bot"))
+        .write_agent_for_fixture(&crate::types::AgentState::new("observer-bot"))
         .unwrap();
     assert!(host.try_get_loaded_runtime("observer-bot").await.is_none());
 
@@ -2192,7 +2277,7 @@ async fn get_agent_with_agent_id_can_access_child() {
     let child_storage = host.agent_storage("child_agentget_test").unwrap();
     let mut child_state = crate::types::AgentState::new("child_agentget_test");
     child_state.status = crate::types::AgentStatus::AwakeRunning;
-    child_storage.write_agent(&child_state).unwrap();
+    child_storage.write_agent_for_fixture(&child_state).unwrap();
 
     let result = crate::tool::tools::execute_builtin_tool(
         &runtime,

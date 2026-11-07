@@ -122,21 +122,16 @@ impl RuntimeHandle {
                 .generation()
                 .checked_add(1)
                 .ok_or_else(|| anyhow!("WorkItem scheduling generation overflow"))?;
-            let _outcome = self
-                .inner
-                .runtime_db
-                .transitions()
-                .commit_execution_protocol_recovery_plan(
-                    &agent_id,
-                    &[ExecutionProtocolCommand::RecheckContextBudgetStop(
-                        Box::new(RecheckContextBudgetStop {
-                            command_id: format!("context_budget_recheck:{id}:{generation}"),
-                            work_item_id: id.clone(),
-                            expected,
-                            configured_estimated_tokens: configured_budget,
-                        }),
-                    )],
-                    &[AuditEvent::legacy(
+            let mut mutation = self.begin_mutation().await?;
+            let _outcome = mutation
+                .commit_context_budget_stop_recovery(
+                    RecheckContextBudgetStop {
+                        command_id: format!("context_budget_recheck:{id}:{generation}"),
+                        work_item_id: id.clone(),
+                        expected,
+                        configured_estimated_tokens: configured_budget,
+                    },
+                    vec![AuditEvent::legacy(
                         "context_budget_stop_recheck",
                         serde_json::json!({
                             "work_item_id": id,
@@ -145,7 +140,8 @@ impl RuntimeHandle {
                             "source_revision": work.revision,
                         }),
                     )],
-                )?;
+                )
+                .await?;
         }
         Ok(())
     }

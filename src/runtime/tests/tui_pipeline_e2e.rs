@@ -513,11 +513,13 @@ async fn e2e_tui_concurrent_agents_attribution() {
     )
     .unwrap();
 
+    let mut prompt_a = test_effective_prompt();
+    prompt_a.identity = runtime_a.agent_summary().await.unwrap().identity.clone();
     let outcome_a = runtime_a
         .run_agent_loop(
             "agent-a",
             AuthorityClass::OperatorInstruction,
-            test_effective_prompt(),
+            prompt_a,
             LoopControlOptions {
                 max_tool_rounds: Some(2),
             },
@@ -549,11 +551,13 @@ async fn e2e_tui_concurrent_agents_attribution() {
     )
     .unwrap();
 
+    let mut prompt_b = test_effective_prompt();
+    prompt_b.identity = runtime_b.agent_summary().await.unwrap().identity.clone();
     let outcome_b = runtime_b
         .run_agent_loop(
             "agent-b",
             AuthorityClass::OperatorInstruction,
-            test_effective_prompt(),
+            prompt_b,
             LoopControlOptions {
                 max_tool_rounds: Some(2),
             },

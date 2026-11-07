@@ -8,6 +8,67 @@ use crate::types::{
     QueueEntryStatus, TaskKind, TaskRecoverySpec, TaskStatus, TurnRecord,
 };
 
+#[path = "source_predicate.rs"]
+mod source_predicate;
+
+#[test]
+fn exact_wait_continuation_uses_canonical_columns_with_or_without_wait_ref() {
+    let (_dir, db) = runtime_db();
+    let precise = DateTime::parse_from_rfc3339("2026-10-30T12:00:00.123456789Z")
+        .unwrap()
+        .with_timezone(&Utc);
+    let wait: crate::types::WaitConditionRecord = serde_json::from_value(serde_json::json!({
+        "id": "canonical-exact-wait",
+        "agent_id": "agent-a",
+        "status": "resolved",
+        "kind": "task",
+        "waiting_for": "retain the original exact promise",
+        "wake_sources": [{"kind": "task_result", "task_id": "canonical-exact-task"}],
+        "trigger_message_id": "canonical-exact-source",
+        "created_at": precise,
+        "updated_at": precise,
+        "resolved_at": precise,
+        "triggered_at": precise,
+    }))
+    .unwrap();
+    db.wait_conditions().upsert(&wait).unwrap();
+    let canonical = db
+        .wait_conditions()
+        .latest_for_agent("agent-a")
+        .unwrap()
+        .remove(0);
+    assert_ne!(canonical.updated_at, wait.updated_at);
+    assert_ne!(canonical.resolved_at, wait.resolved_at);
+    let mut source = MessageEnvelope::new(
+        "agent-a",
+        MessageKind::InternalFollowup,
+        MessageOrigin::System {
+            subsystem: "task_result_recovery".into(),
+        },
+        AuthorityClass::RuntimeInstruction,
+        Priority::Background,
+        MessageBody::Text {
+            text: "recover the exact promise".into(),
+        },
+    )
+    .with_admission(
+        MessageDeliverySurface::RuntimeSystem,
+        AdmissionContext::RuntimeOwned,
+    );
+    source.id = "canonical-exact-source".into();
+    for explicit_ref in [false, true] {
+        if explicit_ref {
+            source.source_refs.insert("wait_id".into(), wait.id.clone());
+        }
+        let actual = db
+            .transaction(|tx| {
+                super::super::exact_waiter::exact_wait_for_source_tx(tx, &source, Some(&wait.id))
+            })
+            .unwrap();
+        assert_eq!(actual, Some(canonical.clone()), "{explicit_ref}");
+    }
+}
+
 fn live_result(
     db: &RuntimeDb,
     index: usize,
@@ -55,6 +116,92 @@ fn live_result(
     message.task_id = Some(task.id.clone());
     // Envelope turn identity is not the durable task's parent fence.
     message.turn_id = Some("synthetic-result-turn".into());
+    message.metadata = Some(serde_json::json!({
+        "task_id": task.id, "task_kind": task.kind, "task_status": task.status,
+        "task_detail": task.detail,
+    }));
+    db.tasks().upsert(&task).unwrap();
+    db.messages().upsert(&message).unwrap();
+    queue(db, &message.id, QueueEntryStatus::Queued);
+    db.task_result_settlements()
+        .ensure_pending(&task, &message, now)
+        .unwrap()
+        .unwrap()
+}
+
+fn command_creation_result(db: &RuntimeDb, index: usize) -> TaskResultSettlementRecord {
+    use crate::runtime::resident_input_evidence::InputEvidenceScope;
+    use crate::runtime_db::command_task_creation::OriginalCommandTaskCreation;
+    use crate::types::{
+        AgentIdentityRecord, AgentKind, AgentOwnership, AgentProfilePreset, AgentState,
+        AgentVisibility,
+    };
+
+    let now = pending_record(index).created_at;
+    let identity = AgentIdentityRecord::new(
+        "agent-a",
+        AgentKind::Named,
+        AgentVisibility::Public,
+        AgentOwnership::SelfOwned,
+        AgentProfilePreset::PublicNamed,
+        None,
+        None,
+    );
+    let original = TaskRecord {
+        id: format!("creation-task-{index}"),
+        agent_id: "agent-a".into(),
+        kind: TaskKind::CommandTask,
+        status: TaskStatus::Queued,
+        created_at: now,
+        updated_at: now,
+        parent_message_id: None,
+        work_item_id: None,
+        summary: None,
+        detail: Some(serde_json::json!({
+            "rejoin_obligation_id": format!("creation-task-{index}"),
+            "rejoin_generation": 1,
+            "cmd": "true",
+        })),
+        recovery: None,
+    };
+    let creation = OriginalCommandTaskCreation::new(
+        InputEvidenceScope {
+            agent_id: identity.agent_id.clone(),
+            identity_incarnation: identity.incarnation,
+        },
+        original,
+    )
+    .unwrap();
+    db.transaction(|tx| {
+        crate::runtime_db::evidence::upsert_agent_identity_tx(tx, &identity)?;
+        crate::runtime_db::evidence::upsert_agent_state_tx(tx, &AgentState::new("agent-a"))?;
+        creation.write_tx(tx)
+    })
+    .unwrap();
+    let mut task = creation.task().clone();
+    task.status = TaskStatus::Completed;
+    task.parent_message_id = Some(format!("creation-result-{index}"));
+    task.detail.as_mut().unwrap()["result_execution_turn_id"] = serde_json::json!("live-parent");
+    let mut message = MessageEnvelope::new(
+        "agent-a",
+        MessageKind::TaskResult,
+        MessageOrigin::Task {
+            task_id: task.id.clone(),
+        },
+        AuthorityClass::RuntimeInstruction,
+        Priority::Next,
+        MessageBody::Text {
+            text: "turnless command result".into(),
+        },
+    )
+    .with_admission(
+        MessageDeliverySurface::TaskRejoin,
+        AdmissionContext::RuntimeOwned,
+    );
+    message.id = task.parent_message_id.clone().unwrap();
+    message.created_at = now;
+    message.task_id = Some(task.id.clone());
+    message.turn_id = Some("live-parent".into());
     message.metadata = Some(serde_json::json!({
         "task_id": task.id, "task_kind": task.kind, "task_status": task.status,
         "task_detail": task.detail,
@@ -361,6 +508,64 @@ fn interrupted_result_selection_requires_its_own_canonical_snapshot() {
     }
 }
 
+#[test]
+fn paused_recovery_observation_keeps_the_canonical_interrupted_anchor() -> Result<()> {
+    let (_dir, db) = runtime_db();
+    let record = live_result(&db, 0, TaskKind::CommandTask, "live-parent", None);
+    prepare_recovery(&db, &[record.clone()], false);
+    let mut turn = interrupted_turn("live-parent", &[record.clone()], false);
+    turn.idle_input_batch = Some(crate::types::IdleInputBatchRecord {
+        anchor_message_id: "live-anchor".into(),
+        activation_id: Some("live-activation".into()),
+        sender_agent_id: "agent-a".into(),
+        cutoff: record.created_at - Duration::nanoseconds(1),
+        max_items: 8,
+        max_bytes: 24 * 1024,
+        rendered_bytes: 0,
+        items: vec![crate::types::IdleInputBatchItem {
+            message_id: "live-anchor".into(),
+            source_ref: "message:live-anchor".into(),
+            rendered: String::new(),
+        }],
+    });
+    rewrite_turn(&db, &turn);
+    queue(&db, "live-anchor", QueueEntryStatus::Interrupted);
+    let mut source = MessageEnvelope::new(
+        "agent-a",
+        MessageKind::InternalFollowup,
+        MessageOrigin::System {
+            subsystem: "task_result_recovery".into(),
+        },
+        AuthorityClass::RuntimeInstruction,
+        Priority::Next,
+        MessageBody::Text {
+            text: "replay interrupted result".into(),
+        },
+    );
+    source.id = "live-anchor".into();
+    db.transaction(|tx| {
+        let mut paused = latest_for_message_tx(tx, &record.message_id)?.unwrap();
+        paused.recovery_paused_at = Some(Utc::now());
+        update_tx(tx, &paused)?;
+        tx.execute(
+            "INSERT INTO task_result_recovery_admissions
+             (result_identity,recovery_epoch,root_attempt_id,admitted_at)
+             VALUES(?1,?2,'activation:message:live-anchor',?3)",
+            params![
+                paused.result_identity,
+                paused.recovery_epoch,
+                timestamp(Utc::now())
+            ],
+        )?;
+        let observed = observe_recovery_source_tx(tx, &source, &[&paused], Utc::now())?;
+        let replay = &observed.paused_replays[&paused.result_identity];
+        assert!(replay.root_is_charged);
+        assert_eq!(replay.interrupted_anchor.as_deref(), Some("live-anchor"));
+        assert_eq!(latest_for_message_tx(tx, &record.message_id)?, Some(paused));
+        Ok(())
+    })
+}
+
 fn assert_pending(db: &RuntimeDb, record: &TaskResultSettlementRecord) {
     let actual = db
         .task_result_settlements()
@@ -589,7 +794,7 @@ fn assert_admitted_to(db: &RuntimeDb, record: &TaskResultSettlementRecord, activ
         .unwrap();
     assert_eq!(actual.state, TaskResultSettlementState::CallerAdmitted);
     assert_eq!(actual.activation_id.as_deref(), Some(activation));
-    assert_eq!(actual.parent_turn_id, record.parent_turn_id);
+    assert_eq!(actual.source, record.source);
     assert_eq!(actual.rejoin_generation, record.rejoin_generation);
     assert_eq!(actual.work_item_id, record.work_item_id);
     assert!(actual.admitted_at.is_some());
@@ -1723,6 +1928,231 @@ fn interjected_reply_requires_one_completed_canonical_attachment_even_without_de
 }
 
 #[test]
+fn initial_command_creation_recovers_twice_with_empty_or_live_selections() {
+    for has_live in [false, true] {
+        let (_dir, db) = runtime_db();
+        let initial = command_creation_result(&db, 0);
+        let task_before = db.tasks().latest(&initial.task_id).unwrap().unwrap();
+        let live = if has_live {
+            vec![live_result(
+                &db,
+                1,
+                TaskKind::ChildAgentTask,
+                "live-parent",
+                None,
+            )]
+        } else {
+            Vec::new()
+        };
+        admit_initial(&db, &initial);
+        prepare_recovery(&db, &live, false);
+        assert!(recover(&db, "live-activation", "recovery-a", &live));
+        assert_admitted_to(&db, &initial, "recovery-a");
+        for record in &live {
+            assert_admitted_to(&db, record, "recovery-a");
+        }
+        interrupted_attachment(&db, "recovery-turn-a", &live, false);
+        recovery_attempt(
+            &db,
+            "recovery-a",
+            "recovery-turn-a",
+            ExecutionAttemptState::Interrupted,
+            Some("live-activation"),
+        );
+        recovery_attempt(
+            &db,
+            "recovery-b",
+            "recovery-turn-b",
+            ExecutionAttemptState::Open,
+            Some("recovery-a"),
+        );
+        assert!(recover(&db, "recovery-a", "recovery-b", &live));
+        assert_admitted_to(&db, &initial, "recovery-b");
+        for record in &live {
+            assert_admitted_to(&db, record, "recovery-b");
+        }
+        assert_eq!(
+            db.tasks().latest(&initial.task_id).unwrap().unwrap(),
+            task_before
+        );
+        assert_eq!(
+            db.queue_entries()
+                .latest(&initial.message_id)
+                .unwrap()
+                .unwrap()
+                .status,
+            QueueEntryStatus::Queued
+        );
+    }
+}
+
+#[test]
+fn command_creation_is_not_a_same_turn_grant_or_live_recovery_selection() {
+    let (_dir, db) = runtime_db();
+    let initial = command_creation_result(&db, 0);
+    for turn_id in ["live-parent", initial.task_id.as_str(), ""] {
+        assert!(db
+            .task_result_settlements()
+            .same_turn_candidates("agent-a", turn_id, Utc::now(), 64)
+            .unwrap()
+            .is_empty());
+    }
+    assert!(!admit(&db, &[initial.clone()], "live-activation"));
+    assert_pending(&db, &initial);
+    admit_initial(&db, &initial);
+    prepare_recovery(&db, &[], false);
+    assert!(!recover(
+        &db,
+        "live-activation",
+        "recovery-a",
+        &[initial.clone()]
+    ));
+    assert_admitted_to(&db, &initial, "live-activation");
+    assert!(recover(&db, "live-activation", "recovery-a", &[]));
+    assert_admitted_to(&db, &initial, "recovery-a");
+}
+
+#[test]
+fn initial_command_creation_rechecks_identity_source_fields_and_time_atomically() {
+    for invalid in [
+        "task_creation",
+        "message_creation",
+        "task_mixed",
+        "message_mixed",
+        "message_mixed_null",
+        "non_command",
+        "missing_creation",
+        "creation_incarnation",
+        "creation_original_identity",
+        "normalized_creation",
+        "task_created_at",
+        "task_updated_at",
+        "message_created_at",
+        "result_created_at",
+        "result_admitted_at",
+    ] {
+        let (_dir, db) = runtime_db();
+        let initial = command_creation_result(&db, 0);
+        let live = live_result(&db, 1, TaskKind::ChildAgentTask, "live-parent", None);
+        admit_initial(&db, &initial);
+        prepare_recovery(&db, &[live.clone()], false);
+        let future = Utc::now() + Duration::days(1);
+        let mut task = db.tasks().latest(&initial.task_id).unwrap().unwrap();
+        let mut message = db
+            .messages()
+            .by_id(None, &initial.message_id)
+            .unwrap()
+            .unwrap();
+        match invalid {
+            "task_creation" => {
+                task.detail.as_mut().unwrap()["command_creation_id"] =
+                    serde_json::json!("another-command");
+            }
+            "message_creation" => {
+                message.metadata.as_mut().unwrap()["task_detail"]["command_creation_id"] =
+                    serde_json::json!("another-command");
+            }
+            "task_mixed" => {
+                task.detail.as_mut().unwrap()["parent_turn_id"] = serde_json::json!("live-parent");
+            }
+            "message_mixed" | "message_mixed_null" => {
+                message.metadata.as_mut().unwrap()["task_detail"]["parent_turn_id"] =
+                    if invalid == "message_mixed" {
+                        serde_json::json!("live-parent")
+                    } else {
+                        serde_json::Value::Null
+                    };
+            }
+            "non_command" => {
+                task.kind = TaskKind::ChildAgentTask;
+                message.metadata.as_mut().unwrap()["task_kind"] =
+                    serde_json::to_value(&task.kind).unwrap();
+            }
+            "task_created_at" => task.created_at = future,
+            "task_updated_at" => task.updated_at = future,
+            "message_created_at" => message.created_at = future,
+            "result_created_at" | "result_admitted_at" => {
+                let mut record = db
+                    .task_result_settlements()
+                    .latest_for_message(&initial.message_id)
+                    .unwrap()
+                    .unwrap();
+                if invalid == "result_created_at" {
+                    record.created_at = future;
+                } else {
+                    record.admitted_at = Some(future);
+                }
+                db.transaction(|tx| {
+                    tx.execute(
+                        "UPDATE task_result_settlements
+                         SET created_at = ?2, admitted_at = ?3, payload_json = ?4
+                         WHERE result_identity = ?1",
+                        params![
+                            record.result_identity,
+                            timestamp(record.created_at),
+                            record.admitted_at.map(timestamp),
+                            serde_json::to_string(&record)?,
+                        ],
+                    )?;
+                    Ok(())
+                })
+                .unwrap();
+            }
+            _ => {
+                let sql = match invalid {
+                    "missing_creation" => {
+                        "DELETE FROM command_task_creation_sources WHERE task_id = ?1"
+                    }
+                    "creation_incarnation" => {
+                        "UPDATE command_task_creation_sources
+                         SET identity_incarnation = identity_incarnation + 1 WHERE task_id = ?1"
+                    }
+                    "creation_original_identity" => {
+                        "UPDATE command_task_creation_sources
+                         SET original_task_json = json_set(original_task_json, '$.id', 'another-command')
+                         WHERE task_id = ?1"
+                    }
+                    "normalized_creation" => {
+                        "UPDATE task_result_settlements
+                         SET command_creation_id = NULL WHERE task_id = ?1"
+                    }
+                    _ => unreachable!(),
+                };
+                db.transaction(|tx| {
+                    assert_eq!(tx.execute(sql, [&initial.task_id])?, 1);
+                    Ok(())
+                })
+                .unwrap();
+            }
+        }
+        rewrite_task(&db, &task);
+        db.messages().upsert(&message).unwrap();
+        let before = db
+            .task_result_settlements()
+            .admitted_for_activation("agent-a", "live-activation")
+            .unwrap();
+        assert!(
+            !recover(&db, "live-activation", "recovery-a", &[live.clone()]),
+            "{invalid}"
+        );
+        assert_eq!(
+            db.task_result_settlements()
+                .admitted_for_activation("agent-a", "live-activation")
+                .unwrap(),
+            before,
+            "{invalid}"
+        );
+        assert!(
+            db.task_result_settlements()
+                .admitted_for_activation("agent-a", "recovery-a")
+                .unwrap()
+                .is_empty(),
+            "{invalid}"
+        );
+    }
+}
+
+#[test]
 fn mixed_initial_live_recovery_restores_entire_ledger_twice() {
     let (_dir, db) = runtime_db();
     let command = live_result(&db, 0, TaskKind::CommandTask, "older-command-parent", None);
@@ -1941,7 +2371,14 @@ fn recovery_transfers_three_sources_and_survives_a_second_interruption() {
         assert_admitted_to(&db, record, "recovery-a");
         let task = db.tasks().latest(&record.task_id).unwrap().unwrap();
         assert_eq!(task.work_item_id, record.work_item_id);
-        assert_eq!(task.rejoin_fence().unwrap().parent_turn_id, "live-parent");
+        assert_eq!(
+            task.rejoin_fence()
+                .unwrap()
+                .source
+                .parent_turn_id()
+                .unwrap(),
+            "live-parent"
+        );
     }
     assert!(!recover(&db, "live-activation", "recovery-a", &records));
     interrupted_attachment(&db, "recovery-turn-a", &records, true);

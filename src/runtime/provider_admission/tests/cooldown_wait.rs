@@ -146,6 +146,16 @@ async fn cooling_replan_case(case: ReplanCase) {
     else {
         panic!("initial input must be admitted");
     };
+    let source_message = runtime
+        .runtime_db()
+        .transaction(|tx| {
+            crate::runtime_db::evidence::committed_message_tx(
+                tx,
+                &scheduled.message.agent_id,
+                &scheduled.message.id,
+            )
+        })
+        .unwrap();
     let admission = scheduled.dispatch_plan.provider_admission.unwrap();
     let _active = runtime
         .activate_provider_admission(Some(admission.clone()))
@@ -172,6 +182,7 @@ async fn cooling_replan_case(case: ReplanCase) {
     let cooling_until = scope_cooling_deadline(&error).unwrap();
     assert!(dispatch_pause(&error).is_none());
     let before = admission.episode().unwrap().total_requests;
+    let mut source_fingerprint = None;
     let expected = match case {
         ReplanCase::AllCooling => {
             use crate::runtime_db::provider_admission::ProviderAdmissionReservation;
@@ -192,7 +203,7 @@ async fn cooling_replan_case(case: ReplanCase) {
                     is_continuation_input_changed(&latest),
                     matches!(denial, LocalDispatchDenial::InputChanged)
                 );
-                let described = runtime.local_provider_dispatch_error(latest);
+                let described = runtime.local_provider_dispatch_error(latest).await;
                 let descriptor = crate::runtime_error::describe_runtime_error(&described);
                 assert_eq!(descriptor.code, "provider_dispatch_rejected");
                 assert_eq!(
@@ -241,12 +252,8 @@ async fn cooling_replan_case(case: ReplanCase) {
                 }
                 assert_eq!(server.calls.load(Ordering::SeqCst), 0);
                 assert_eq!(admission.episode().unwrap().total_requests, before);
-                let wait = runtime
-                    .agent_summary()
-                    .await
-                    .unwrap()
-                    .provider_cooldown_wait
-                    .unwrap();
+                let summary = runtime.agent_summary().await.unwrap();
+                let wait = summary.provider_cooldown_wait.as_ref().unwrap();
                 assert!(wait.not_before >= cooling_until);
                 assert_eq!(
                     wait.not_before,
@@ -306,8 +313,10 @@ async fn cooling_replan_case(case: ReplanCase) {
             return;
         }
         ReplanCase::Chain => {
-            runtime.inner.agent.lock().await.state.model_override =
+            let mut guard = runtime.begin_mutation().await.unwrap();
+            guard.state.model_override =
                 Some(ModelRouteRef::parse("anthropic@default/claude-sonnet-4-6").unwrap());
+            guard.persist_state(&runtime.inner.storage).await.unwrap();
             "provider chain changed during candidate replan"
         }
         ReplanCase::Episode => {
@@ -321,6 +330,11 @@ async fn cooling_replan_case(case: ReplanCase) {
             "provider episode changed during candidate replan"
         }
         ReplanCase::SourceMissing => {
+            let scope = runtime
+                .begin_mutation()
+                .await
+                .unwrap()
+                .input_evidence_scope();
             runtime
                 .runtime_db()
                 .transaction(|tx| {
@@ -328,22 +342,56 @@ async fn cooling_replan_case(case: ReplanCase) {
                         "DELETE FROM messages WHERE evidence_id = ?1",
                         [&scheduled.message.id],
                     )?;
-                    Ok(())
-                })
-                .unwrap();
-            "cooling provider source message not persisted"
-        }
-        ReplanCase::StorageRead => {
-            runtime
-                .runtime_db()
-                .transaction(|tx| {
-                    tx.execute(
-                        "UPDATE messages SET payload_json = '{}' WHERE evidence_id = ?1",
-                        [&scheduled.message.id],
+                    crate::runtime_db::input_evidence_snapshot::register_pruned_input_evidence_tx(
+                        tx,
+                        &scope,
+                        &[crate::runtime::resident_input_evidence::InputEvidenceKey::new(
+                            crate::runtime::resident_input_evidence::InputEvidenceFamily::Message,
+                            &scheduled.message.id,
+                        )],
                     )?;
                     Ok(())
                 })
                 .unwrap();
+            // Force the replan to observe the fault instead of the resident Message.
+            let mut guard = runtime.begin_mutation().await.unwrap();
+            guard.unprepare_input_evidence_fixture().await.unwrap();
+            "cooling provider source message not persisted"
+        }
+        ReplanCase::StorageRead => {
+            let mut guard = runtime.begin_mutation().await.unwrap();
+            let scope = guard.input_evidence_scope();
+            // Corrupt the stored read proof, not a canonical body rejected before decode.
+            source_fingerprint = Some(
+                runtime
+                    .runtime_db()
+                    .transaction(|tx| {
+                        let params = rusqlite::params![
+                            &scope.agent_id,
+                            i64::try_from(scope.identity_incarnation)?,
+                            &scheduled.message.id,
+                        ];
+                        let fingerprint: String = tx.query_row(
+                            "SELECT fingerprint_json FROM input_evidence_current
+                             WHERE agent_id = ?1 AND identity_incarnation = ?2
+                               AND family = 'message' AND record_id = ?3",
+                            params,
+                            |row| row.get(0),
+                        )?;
+                        assert_eq!(
+                            tx.execute(
+                                "UPDATE input_evidence_current SET fingerprint_json = '{}'
+                                 WHERE agent_id = ?1 AND identity_incarnation = ?2
+                                   AND family = 'message' AND record_id = ?3",
+                                params,
+                            )?,
+                            1
+                        );
+                        Ok(fingerprint)
+                    })
+                    .unwrap(),
+            );
+            guard.unprepare_input_evidence_fixture().await.unwrap();
             "missing field"
         }
         ReplanCase::AuditAfterReplacement => {
@@ -393,6 +441,52 @@ async fn cooling_replan_case(case: ReplanCase) {
     assert_eq!(clock.sleeps.load(Ordering::SeqCst), 0);
     assert_eq!(server.calls.load(Ordering::SeqCst), 0);
     assert_eq!(admission.episode().unwrap().total_requests, before);
+    if matches!(case, ReplanCase::SourceMissing | ReplanCase::StorageRead) {
+        // Restore a qualified source only after verifying the injected failure.
+        let mut guard = runtime.begin_mutation().await.unwrap();
+        let scope = guard.input_evidence_scope();
+        runtime
+            .runtime_db()
+            .transaction(|tx| {
+                if let Some(fingerprint) = source_fingerprint.as_deref() {
+                    assert_eq!(
+                        tx.execute(
+                            "UPDATE input_evidence_current SET fingerprint_json = ?1
+                             WHERE agent_id = ?2 AND identity_incarnation = ?3
+                               AND family = 'message' AND record_id = ?4",
+                            rusqlite::params![
+                                fingerprint,
+                                &scope.agent_id,
+                                i64::try_from(scope.identity_incarnation)?,
+                                &source_message.id,
+                            ],
+                        )?,
+                        1
+                    );
+                }
+                crate::runtime_db::evidence::upsert_message_tx(tx, &source_message)?;
+                let committed = crate::runtime_db::evidence::committed_message_tx(
+                    tx,
+                    &source_message.agent_id,
+                    &source_message.id,
+                )?;
+                crate::runtime_db::input_evidence_snapshot::register_committed_input_evidence_tx(
+                    tx,
+                    &scope,
+                    &[
+                        crate::runtime_db::input_evidence_snapshot::CanonicalInputEvidence::Message(
+                            committed,
+                        ),
+                    ],
+                )?;
+                Ok(())
+            })
+            .unwrap();
+        guard
+            .prepare_owner_inputs(Default::default(), Default::default())
+            .await
+            .unwrap();
+    }
     assert!(runtime
         .agent_summary()
         .await
@@ -701,9 +795,10 @@ async fn native_tool_round(seconds: u64, action: WaitAction) {
     let summary = runtime.agent_summary().await.unwrap();
     let wait = summary
         .provider_cooldown_wait
+        .as_ref()
         .expect("queryable active wait");
     assert_eq!(
-        wait.model.unwrap().as_string(),
+        wait.model.as_ref().unwrap().as_string(),
         "anthropic@default/claude-sonnet-4-6"
     );
     assert!(wait.not_before > clock.now());
@@ -734,6 +829,13 @@ async fn native_tool_round(seconds: u64, action: WaitAction) {
         "local waiting must not charge or refund requests"
     );
     if action == WaitAction::Stop {
+        let workspace = runtime
+            .agent_state()
+            .await
+            .unwrap()
+            .active_workspace_entry
+            .expect("the native continuation must have a selected workspace");
+        assert!(workspace.occupancy_id.is_none());
         runtime
             .control(crate::types::ControlAction::Stop)
             .await
@@ -746,6 +848,11 @@ async fn native_tool_round(seconds: u64, action: WaitAction) {
             "stop cannot complete as a successful model round"
         );
         assert_eq!(calls.load(Ordering::SeqCst), 1);
+        assert_eq!(
+            runtime.agent_state().await.unwrap().active_workspace_entry,
+            Some(workspace),
+            "Stop must preserve the source of the current resource observation"
+        );
         assert!(runtime
             .agent_summary()
             .await
@@ -753,9 +860,15 @@ async fn native_tool_round(seconds: u64, action: WaitAction) {
             .provider_cooldown_wait
             .is_none());
         let events = runtime.storage().read_recent_events(256).unwrap();
-        assert!(events
+        let ended = events
             .iter()
-            .any(|event| event.data["provider_cooldown_wait_ended"]["outcome"] == "cancelled"));
+            .filter(|event| event.data["provider_cooldown_wait_ended"]["outcome"] == "cancelled")
+            .collect::<Vec<_>>();
+        assert_eq!(ended.len(), 1, "Stop and waiter must share one end event");
+        assert_eq!(
+            ended[0].data["status"],
+            serde_json::to_value(crate::types::AgentStatus::Stopped).unwrap()
+        );
         server.abort();
         return;
     }
@@ -854,7 +967,10 @@ async fn native_tool_round(seconds: u64, action: WaitAction) {
             _ = tokio::time::sleep(std::time::Duration::from_secs(10)) => panic!("extension was not observed"),
         }
         let state = runtime.agent_summary().await.unwrap();
-        assert_eq!(state.provider_cooldown_wait.unwrap().not_before, extended);
+        assert_eq!(
+            state.provider_cooldown_wait.as_ref().unwrap().not_before,
+            extended
+        );
         assert_eq!(calls.load(Ordering::SeqCst), 1);
     }
     if matches!(

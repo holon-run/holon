@@ -6,6 +6,7 @@ use super::*;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
+#[cfg(holon_lib_test_shard = "b")]
 #[cfg(test)]
 mod tests;
 

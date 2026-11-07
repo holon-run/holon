@@ -230,6 +230,7 @@ fn path_to_slash_string(path: &Path) -> String {
         .join("/")
 }
 
+#[cfg(holon_lib_test_shard = "c")]
 #[cfg(test)]
 mod tests {
     use super::*;

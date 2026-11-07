@@ -21,7 +21,7 @@ mod worktree_storage_tests {
         });
         session.last_turn_token_usage = Some(TokenUsage::new(100, 50));
 
-        storage.write_agent(&session).unwrap();
+        storage.write_agent_for_fixture(&session).unwrap();
 
         let restored = storage.read_agent().unwrap().unwrap();
 
@@ -50,7 +50,7 @@ mod worktree_storage_tests {
         let storage = AppStorage::new_for_test_with_agent(dir.path(), agent_id).unwrap();
 
         let session = AgentState::new(agent_id);
-        storage.write_agent(&session).unwrap();
+        storage.write_agent_for_fixture(&session).unwrap();
 
         let restored = storage.read_agent().unwrap().unwrap();
         assert_eq!(restored.id, "normal-session");

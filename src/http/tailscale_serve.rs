@@ -407,6 +407,7 @@ pub async fn disable(
     Ok(Json(status))
 }
 
+#[cfg(holon_lib_test_shard = "c")]
 #[cfg(test)]
 mod tests {
     use super::*;

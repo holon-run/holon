@@ -410,6 +410,7 @@ pub(super) fn opencode_entries() -> Vec<BuiltInModelMetadata> {
     entries
 }
 
+#[cfg(holon_lib_test_shard = "c")]
 #[cfg(test)]
 mod tests {
     use super::*;

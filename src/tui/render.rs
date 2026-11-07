@@ -231,7 +231,7 @@ pub(super) fn render_agent_state_text(app: &TuiApp) -> String {
     if agent.skills.discoverable_skills.is_empty() {
         lines.push("  No skills".into());
     } else {
-        for skill in &agent.skills.discoverable_skills {
+        for skill in agent.skills.discoverable_skills.iter() {
             lines.push(format!(
                 "  - {} [{}]",
                 skill.name,
@@ -1041,6 +1041,7 @@ pub(super) fn render_summary(agent: &AgentSummary) -> String {
     lines.join("\n")
 }
 
+#[cfg(holon_lib_test_shard = "d")]
 #[cfg(test)]
 mod tests {
     use super::{
@@ -1178,6 +1179,8 @@ mod tests {
                 pending: 0,
                 active_task_count: 1,
                 observability: ChildAgentObservabilitySnapshot {
+                    _read_material: None,
+                    _source_material: None,
                     phase: ChildAgentPhase::Running,
                     blocked_reason: None,
                     waiting_reason: None,

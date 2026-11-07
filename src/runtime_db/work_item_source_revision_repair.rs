@@ -420,6 +420,7 @@ fn evidence_fingerprint(
     Ok(format!("{:x}", hasher.finalize()))
 }
 
+#[cfg(holon_lib_test_shard = "b")]
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -44,29 +44,7 @@ async fn retain_source_then_clear_revision_drift(
         .latest(&work.id)
         .unwrap()
         .unwrap();
-    let mut changed = original.clone();
-    changed.revision += 1;
-    runtime
-        .runtime_db()
-        .transaction(|tx| {
-            tx.execute(
-                "UPDATE work_items SET revision = ?1, payload_json = ?2
-                 WHERE work_item_id = ?3",
-                rusqlite::params![
-                    changed.revision,
-                    serde_json::to_string(&changed)?,
-                    changed.id
-                ],
-            )?;
-            Ok(())
-        })
-        .unwrap();
-    assert!(runtime
-        .runtime_db()
-        .source_revision_repair_blocks_source(source, Utc::now())
-        .unwrap());
-    // Repair registration only: preserve its owner state and monotonic revision.
-    let mut registration = runtime
+    let registration = runtime
         .runtime_db()
         .transitions()
         .load_execution_protocol_state_if_initialized(&source.agent_id)
@@ -74,22 +52,38 @@ async fn retain_source_then_clear_revision_drift(
         .unwrap()
         .work_items[&work.id]
         .clone();
-    registration.source_revision = changed.revision;
-    runtime
-        .runtime_db()
-        .transaction(|tx| {
-            tx.execute(
-                "UPDATE execution_protocol_work_items SET payload_json = ?1
-                 WHERE agent_id = ?2 AND work_item_id = ?3",
-                rusqlite::params![
-                    serde_json::to_string(&registration)?,
-                    source.agent_id,
-                    work.id
-                ],
-            )?;
-            Ok(())
-        })
+    let changed = runtime
+        .update_work_item_fields(
+            work.id.clone(),
+            Some(original.objective.clone()),
+            None,
+            None,
+            None,
+            None,
+        )
+        .await
         .unwrap();
+    crate::runtime::tests::support::seed_live_work_execution(
+        runtime,
+        &original,
+        registration.state,
+    )
+    .await;
+    assert!(runtime
+        .runtime_db()
+        .source_revision_repair_blocks_source(source, Utc::now())
+        .unwrap());
+    // Repair registration only: preserve its owner state and monotonic revision.
+    let registration = runtime
+        .runtime_db()
+        .transitions()
+        .load_execution_protocol_state_if_initialized(&source.agent_id)
+        .unwrap()
+        .unwrap()
+        .work_items[&work.id]
+        .clone();
+    crate::runtime::tests::support::seed_live_work_execution(runtime, &changed, registration.state)
+        .await;
     assert!(runtime
         .runtime_db()
         .source_revision_drifts(&source.agent_id)

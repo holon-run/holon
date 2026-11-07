@@ -563,6 +563,36 @@ pub fn config_schema() -> Vec<ConfigSchemaEntry> {
             allowed_values: vec!["true", "false"],
         },
         ConfigSchemaEntry {
+            key: "runtime.state_memory.history_per_agent_bytes", kind: "positive_integer",
+            description: "Historical allocation budget per Agent; does not cap current facts, pending bodies, pins or RSS. Changes take effect when the next Host is constructed.",
+            default: json!(33554432), allowed_values: vec![],
+        },
+        ConfigSchemaEntry {
+            key: "runtime.state_memory.history_host_bytes", kind: "positive_integer",
+            description: "Host historical allocation budget with shared allocations counted once; not a total RSS limit. Changes take effect when the next Host is constructed.",
+            default: json!(536870912), allowed_values: vec![],
+        },
+        ConfigSchemaEntry {
+            key: "runtime.state_memory.pending_per_agent_count", kind: "positive_integer",
+            description: "Maximum accepted or pre-reserved pending inputs per Agent incarnation. Changes take effect when the next Host is constructed.",
+            default: json!(1024), allowed_values: vec![],
+        },
+        ConfigSchemaEntry {
+            key: "runtime.state_memory.pending_per_agent_bytes", kind: "positive_integer",
+            description: "Maximum accepted or pre-reserved pending body bytes per Agent incarnation. Changes take effect when the next Host is constructed.",
+            default: json!(33554432), allowed_values: vec![],
+        },
+        ConfigSchemaEntry {
+            key: "runtime.state_memory.pending_host_bytes", kind: "positive_integer",
+            description: "Host maximum accepted or pre-reserved pending body bytes. Changes take effect when the next Host is constructed.",
+            default: json!(268435456), allowed_values: vec![],
+        },
+        ConfigSchemaEntry {
+            key: "runtime.state_memory.record_limit", kind: "positive_integer",
+            description: "Maximum prepared input/evidence closure records. Changes take effect when the next Host is constructed.",
+            default: json!(65536), allowed_values: vec![],
+        },
+        ConfigSchemaEntry {
             key: "runtime.reclamation.idle_retirement_enabled", kind: "boolean",
             description: "Enable safe idle exit of supervised ephemeral runtimes. Identity and history remain retained.",
             default: json!(false), allowed_values: vec!["true", "false"],
@@ -1183,6 +1213,42 @@ pub fn get_config_key(config: &HolonConfigFile, key: &str) -> Result<Value> {
             .disable_provider_fallback
             .map(Value::Bool)
             .unwrap_or(Value::Null)),
+        "runtime.state_memory.history_per_agent_bytes" => Ok(config
+            .runtime
+            .state_memory
+            .history_per_agent_bytes
+            .map(|value| json!(value))
+            .unwrap_or(Value::Null)),
+        "runtime.state_memory.history_host_bytes" => Ok(config
+            .runtime
+            .state_memory
+            .history_host_bytes
+            .map(|value| json!(value))
+            .unwrap_or(Value::Null)),
+        "runtime.state_memory.pending_per_agent_count" => Ok(config
+            .runtime
+            .state_memory
+            .pending_per_agent_count
+            .map(|value| json!(value))
+            .unwrap_or(Value::Null)),
+        "runtime.state_memory.pending_per_agent_bytes" => Ok(config
+            .runtime
+            .state_memory
+            .pending_per_agent_bytes
+            .map(|value| json!(value))
+            .unwrap_or(Value::Null)),
+        "runtime.state_memory.pending_host_bytes" => Ok(config
+            .runtime
+            .state_memory
+            .pending_host_bytes
+            .map(|value| json!(value))
+            .unwrap_or(Value::Null)),
+        "runtime.state_memory.record_limit" => Ok(config
+            .runtime
+            .state_memory
+            .record_limit
+            .map(|value| json!(value))
+            .unwrap_or(Value::Null)),
         "runtime.reclamation.idle_retirement_enabled" => Ok(config
             .runtime
             .reclamation
@@ -1715,6 +1781,30 @@ pub fn set_config_key(config: &mut HolonConfigFile, key: &str, raw_value: &str) 
                 parse_bool_value(raw_value)?.ok_or_else(|| anyhow!("{key} expects a boolean"))?,
             );
         }
+        "runtime.state_memory.history_per_agent_bytes" => {
+            config.runtime.state_memory.history_per_agent_bytes =
+                Some(parse_positive_u64_key(key, raw_value)?);
+        }
+        "runtime.state_memory.history_host_bytes" => {
+            config.runtime.state_memory.history_host_bytes =
+                Some(parse_positive_u64_key(key, raw_value)?);
+        }
+        "runtime.state_memory.pending_per_agent_count" => {
+            config.runtime.state_memory.pending_per_agent_count =
+                Some(parse_positive_u64_key(key, raw_value)?);
+        }
+        "runtime.state_memory.pending_per_agent_bytes" => {
+            config.runtime.state_memory.pending_per_agent_bytes =
+                Some(parse_positive_u64_key(key, raw_value)?);
+        }
+        "runtime.state_memory.pending_host_bytes" => {
+            config.runtime.state_memory.pending_host_bytes =
+                Some(parse_positive_u64_key(key, raw_value)?);
+        }
+        "runtime.state_memory.record_limit" => {
+            config.runtime.state_memory.record_limit =
+                Some(parse_positive_u64_key(key, raw_value)?);
+        }
         "runtime.reclamation.idle_retirement_enabled" => {
             config.runtime.reclamation.idle_retirement_enabled = Some(
                 parse_bool_value(raw_value)?.ok_or_else(|| anyhow!("{key} expects a boolean"))?,
@@ -2058,6 +2148,7 @@ pub fn set_config_key(config: &mut HolonConfigFile, key: &str, raw_value: &str) 
     validate_api_cors_config(&config.api.cors)?;
     validate_api_csrf_config(&config.api.csrf)?;
     super::resolve_runtime_db_retention_policy(config)?;
+    config.runtime.state_memory.resolve()?;
     Ok(())
 }
 
@@ -2144,6 +2235,22 @@ pub fn unset_config_key(config: &mut HolonConfigFile, key: &str) -> Result<()> {
             config.runtime.command_task_min_free_disk_percent = None;
         }
         "runtime.disable_provider_fallback" => config.runtime.disable_provider_fallback = None,
+        "runtime.state_memory.history_per_agent_bytes" => {
+            config.runtime.state_memory.history_per_agent_bytes = None
+        }
+        "runtime.state_memory.history_host_bytes" => {
+            config.runtime.state_memory.history_host_bytes = None
+        }
+        "runtime.state_memory.pending_per_agent_count" => {
+            config.runtime.state_memory.pending_per_agent_count = None
+        }
+        "runtime.state_memory.pending_per_agent_bytes" => {
+            config.runtime.state_memory.pending_per_agent_bytes = None
+        }
+        "runtime.state_memory.pending_host_bytes" => {
+            config.runtime.state_memory.pending_host_bytes = None
+        }
+        "runtime.state_memory.record_limit" => config.runtime.state_memory.record_limit = None,
         "runtime.reclamation.idle_retirement_enabled" => {
             config.runtime.reclamation.idle_retirement_enabled = None
         }
@@ -2321,6 +2428,7 @@ pub fn unset_config_key(config: &mut HolonConfigFile, key: &str) -> Result<()> {
     validate_api_cors_config(&config.api.cors)?;
     validate_api_csrf_config(&config.api.csrf)?;
     validate_api_projection_config(&config.api.projection)?;
+    config.runtime.state_memory.resolve()?;
     validate_api_prompt_config(&config.api.prompt)?;
     validate_local_apps_config(&config.local_apps)?;
     Ok(())

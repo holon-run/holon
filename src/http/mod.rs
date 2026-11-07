@@ -1,5 +1,5 @@
 pub(crate) use std::{
-    collections::{BTreeMap, VecDeque},
+    collections::BTreeMap,
     path::{Component, PathBuf},
     sync::{
         atomic::{AtomicUsize, Ordering},
@@ -88,18 +88,18 @@ pub(crate) use crate::{
     system::{ExecutionScopeKind, HostLocalBoundary},
     types::{
         AdmissionContext, AgentRegistryStatus, AgentState, AuditEvent, AuthorityClass, BriefRecord,
-        CallbackDeliveryPayload, CallbackDeliveryResult, ControlAction,
-        ExternalTriggerStateSnapshot, MessageBody, MessageDeliverySurface, MessageEnvelope,
-        MessageKind, MessageOrigin, OperatorTransportBinding, OperatorTransportBindingStatus,
-        OperatorTransportCapabilities, OperatorTransportDeliveryAuth,
-        OperatorTransportDeliveryAuthKind, Priority, TaskStatus, TaskStatusSnapshot,
-        TaskStopResult, TodoItem, TranscriptEntry, TurnTerminalRecord, WorkItemPlanStatus,
-        WorkItemRecord, WorkItemState,
+        CallbackDeliveryPayload, CallbackDeliveryResult, ControlAction, MessageBody,
+        MessageDeliverySurface, MessageEnvelope, MessageKind, MessageOrigin,
+        OperatorTransportBinding, OperatorTransportBindingStatus, OperatorTransportCapabilities,
+        OperatorTransportDeliveryAuth, OperatorTransportDeliveryAuthKind, Priority, TaskStatus,
+        TaskStatusSnapshot, TaskStopResult, TodoItem, TranscriptEntry, TurnTerminalRecord,
+        WorkItemPlanStatus, WorkItemRecord, WorkItemState,
     },
 };
 mod agents;
 mod apps;
 mod auth;
+#[cfg(holon_lib_test_shard = "c")]
 #[cfg(test)]
 mod authentication_tests;
 mod content_reports;
@@ -2413,6 +2413,7 @@ pub async fn serve_unix(
     }
 }
 
+#[cfg(holon_lib_test_shard = "c")]
 #[cfg(test)]
 mod subagent_observability_tests;
 
@@ -2423,6 +2424,7 @@ mod tests {
         authenticate_session, error_response, if_none_match_satisfied, origin_guard_allows,
         projection_gate_error_response, redact_request_path, router, session_credential,
         tailscale_serve, AppState, HttpErrorEnvelope, ProjectionGate, ProjectionGateError,
+        STATE_BOOTSTRAP_WORK_ITEM_LIMIT,
     };
     use crate::{
         config::{AppConfig, ControlAuthMode},
@@ -2444,10 +2446,11 @@ mod tests {
         response::IntoResponse,
         Json,
     };
-    use std::{fs, path::Path, sync::Arc, time::Duration};
+    use std::{collections::BTreeMap, fs, path::Path, sync::Arc, time::Duration};
     use tempfile::tempdir;
     use tower::ServiceExt;
 
+    #[cfg(holon_lib_test_shard = "c")]
     #[test]
     fn callback_paths_hide_capabilities() {
         assert_eq!(
@@ -2474,6 +2477,7 @@ mod tests {
         (home, host)
     }
 
+    #[cfg(holon_lib_test_shard = "c")]
     #[tokio::test]
     async fn status_default_reports_missing_default_agent() {
         let (_home, host) = test_host();
@@ -2496,6 +2500,7 @@ mod tests {
         assert_eq!(body["error"], "no default agent configured");
     }
 
+    #[cfg(holon_lib_test_shard = "c")]
     #[test]
     fn origin_guard_is_disabled_by_default_for_cookie_writes() {
         let (_home, host) = test_host();
@@ -2574,6 +2579,7 @@ mod tests {
         assert!(origin_guard_allows(&browser_exchange_without_source, &state).unwrap());
     }
 
+    #[cfg(holon_lib_test_shard = "c")]
     #[test]
     fn origin_guard_accepts_configured_origins_and_native_bearer_requests() {
         let home = tempdir().unwrap();
@@ -2659,6 +2665,7 @@ mod tests {
         assert!(!origin_guard_allows(&invalid_bearer_with_cookie, &state).unwrap());
     }
 
+    #[cfg(holon_lib_test_shard = "c")]
     #[tokio::test]
     async fn pairing_ticket_exchanges_once_for_a_session_cookie() {
         let (_home, host) = control_token_test_host();
@@ -2705,6 +2712,7 @@ mod tests {
         }
     }
 
+    #[cfg(holon_lib_test_shard = "c")]
     #[tokio::test]
     async fn native_auth_endpoints_do_not_set_browser_cookies() {
         let (_home, host) = control_token_test_host();
@@ -2763,6 +2771,7 @@ mod tests {
         assert!(!redeem.headers().contains_key(header::SET_COOKIE));
     }
 
+    #[cfg(holon_lib_test_shard = "c")]
     #[tokio::test]
     async fn pairing_ticket_exchanges_across_tcp_and_unix_listeners_once() {
         let (_home, host) = control_token_test_host();
@@ -2806,6 +2815,7 @@ mod tests {
         }
     }
 
+    #[cfg(holon_lib_test_shard = "c")]
     #[test]
     fn tailscale_changes_serialize_inspection_command_and_save() {
         use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
@@ -2865,6 +2875,7 @@ mod tests {
         );
     }
 
+    #[cfg(holon_lib_test_shard = "c")]
     #[tokio::test]
     async fn pairing_issue_requires_control_admission() {
         let (_home, host) = control_token_test_host();
@@ -2901,6 +2912,7 @@ mod tests {
         assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
     }
 
+    #[cfg(holon_lib_test_shard = "c")]
     #[tokio::test]
     async fn pairing_redeem_rejects_oidc_mode() {
         let (home, _) = test_host();
@@ -2951,6 +2963,7 @@ mod tests {
         assert_ne!(response.status(), StatusCode::UNAUTHORIZED);
     }
 
+    #[cfg(holon_lib_test_shard = "c")]
     #[tokio::test]
     async fn json_rejections_use_machine_error_envelope() {
         let (_home, host) = test_host();
@@ -3083,6 +3096,7 @@ mod tests {
         (home, host)
     }
 
+    #[cfg(holon_lib_test_shard = "c")]
     #[test]
     fn tailscale_serve_checks_tcp_auth_even_for_unix_control_requests() {
         let (_home, host) = control_token_test_host();
@@ -3091,6 +3105,7 @@ mod tests {
         assert!(tailscale_serve::serve_authentication_available(&state));
     }
 
+    #[cfg(holon_lib_test_shard = "c")]
     #[test]
     fn http_error_envelope_always_serializes_machine_code() {
         let value = serde_json::to_value(HttpErrorEnvelope::new(
@@ -3103,6 +3118,7 @@ mod tests {
         assert_eq!(value["code"], "invalid_request");
     }
 
+    #[cfg(holon_lib_test_shard = "c")]
     #[tokio::test]
     async fn runtime_trace_queries_require_control_auth_and_return_recent_trace() {
         let (_home, host) = control_token_test_host();
@@ -3202,6 +3218,7 @@ mod tests {
             .any(|trace| trace["trace_id"].as_str() == Some(context.trace_id.as_str())));
     }
 
+    #[cfg(holon_lib_test_shard = "c")]
     #[test]
     fn session_credential_accepts_bearer_or_session_cookie() {
         let mut headers = HeaderMap::new();
@@ -3225,6 +3242,7 @@ mod tests {
         );
     }
 
+    #[cfg(holon_lib_test_shard = "c")]
     #[test]
     fn session_credential_rejects_empty_or_wrong_credentials() {
         for value in ["Bearer ", "Basic session-secret"] {
@@ -3241,6 +3259,7 @@ mod tests {
         assert!(session_credential(&headers).is_none());
     }
 
+    #[cfg(holon_lib_test_shard = "c")]
     #[test]
     fn auth_error_codes_distinguish_session_failures() {
         assert_eq!(
@@ -3258,6 +3277,7 @@ mod tests {
         assert_eq!(auth_error_code("invalid control token"), "auth_required");
     }
 
+    #[cfg(holon_lib_test_shard = "c")]
     #[test]
     fn auth_required_preserves_stable_code_and_exposes_reason_code() {
         let (status, Json(body)) = auth_required("invalid or expired session");
@@ -3301,6 +3321,7 @@ mod tests {
         (home, host, session_secret)
     }
 
+    #[cfg(holon_lib_test_shard = "c")]
     #[test]
     fn authenticate_session_falls_back_to_cookie_when_bearer_is_stale() {
         let (_home, host, session_secret) = oidc_test_host_with_session();
@@ -3319,6 +3340,7 @@ mod tests {
         assert_eq!(session.user_id, "user-1");
     }
 
+    #[cfg(holon_lib_test_shard = "c")]
     #[test]
     fn authenticate_session_keeps_bearer_priority_and_rejects_stale_credentials() {
         let (_home, host, session_secret) = oidc_test_host_with_session();
@@ -3353,6 +3375,7 @@ mod tests {
         assert!(authenticate_session(&headers, &app).is_err());
     }
 
+    #[cfg(holon_lib_test_shard = "c")]
     #[tokio::test]
     async fn get_search_serves_web_app_instead_of_api_method_not_allowed() {
         let (_home, host) = test_host();
@@ -3377,6 +3400,7 @@ mod tests {
         assert_eq!(&body[..], b"<html>holon ui</html>");
     }
 
+    #[cfg(holon_lib_test_shard = "c")]
     #[tokio::test]
     async fn oidc_routes_require_session_and_web_redirects_to_login() {
         let (_home, host) = oidc_test_host();
@@ -3439,6 +3463,7 @@ mod tests {
         assert_eq!(login_response.status(), StatusCode::OK);
     }
 
+    #[cfg(holon_lib_test_shard = "c")]
     #[tokio::test]
     async fn projection_capacity_response_is_retryable_with_retry_after() {
         let response =
@@ -3453,6 +3478,7 @@ mod tests {
         assert_eq!(body["retryable"], true);
     }
 
+    #[cfg(holon_lib_test_shard = "c")]
     #[tokio::test]
     async fn listener_projection_owner_drains_real_worker_before_shutdown() {
         use std::future::Future;
@@ -3501,6 +3527,107 @@ mod tests {
         tcp.close_projection_reads().await;
     }
 
+    #[cfg(holon_lib_test_shard = "c")]
+    #[tokio::test]
+    async fn operator_state_route_serializes_owned_projection_without_changing_the_wire() {
+        let (_home, host, runtime) =
+            crate::runtime::tests::support::host_backed_test_runtime().await;
+        let timer = runtime
+            .schedule_timer(3_600_000, None, Some("State wire".into()))
+            .await
+            .unwrap();
+        let id = runtime.instance_agent_id();
+        let app = router(AppState::for_tcp(host.clone()));
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri(format!("/api/agents/{id}/state"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let bytes = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let wire: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(wire["agent"]["agent"]["id"], id);
+        assert!(wire["tasks"].is_array() && wire["waits"].is_array());
+        assert_eq!(wire["timers"][0]["id"], timer.id);
+        assert!(wire.get("material").is_none());
+        host.shutdown().await.unwrap();
+    }
+
+    #[cfg(holon_lib_test_shard = "c")]
+    #[tokio::test]
+    async fn operator_state_route_preserves_large_inventory_with_default_material_limits() {
+        let (_home, host, runtime) =
+            crate::runtime::tests::support::host_backed_test_runtime().await;
+        let run_loop = runtime.pause_run_loop_for_monitor_test().await;
+        let mut objectives = BTreeMap::new();
+        for index in 0..200 {
+            let objective = format!("HTTP benchmark work item {index}");
+            let item = runtime
+                .create_work_item(objective.clone(), None, None, Vec::new())
+                .await
+                .unwrap();
+            objectives.insert(item.id, objective);
+        }
+        let projection = runtime
+            .operator_state_read_projection(40, 50)
+            .await
+            .unwrap();
+        assert_eq!(projection.agent.work_queue.items.len(), 200);
+        drop(projection);
+
+        let id = runtime.instance_agent_id();
+        for _ in 0..3 {
+            // A new gate reproduces a miss without waiting for a cache timeout.
+            let app = router(AppState::for_unix(host.clone()));
+            let mut prior = None;
+            for _ in 0..2 {
+                let response = app
+                    .clone()
+                    .oneshot(
+                        Request::builder()
+                            .uri(format!("/api/agents/{id}/state"))
+                            .body(Body::empty())
+                            .unwrap(),
+                    )
+                    .await
+                    .unwrap();
+                let status = response.status();
+                let bytes = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+                assert_eq!(
+                    status,
+                    StatusCode::OK,
+                    "{}",
+                    String::from_utf8_lossy(&bytes)
+                );
+                let wire: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+                assert_eq!(wire["agent"]["agent"]["id"], id);
+                let items = wire["work_items"].as_array().unwrap();
+                assert_eq!(items.len(), STATE_BOOTSTRAP_WORK_ITEM_LIMIT);
+                let mut seen = std::collections::BTreeSet::new();
+                for item in items {
+                    let item_id = item["id"].as_str().unwrap();
+                    assert!(seen.insert(item_id));
+                    assert_eq!(item["objective"], objectives[item_id]);
+                }
+                assert!(wire.get("material").is_none());
+                if let Some(prior) = prior {
+                    assert_eq!(
+                        bytes, prior,
+                        "a fresh State wire must survive the cache hit"
+                    );
+                }
+                prior = Some(bytes);
+            }
+        }
+        drop(run_loop);
+        host.shutdown().await.unwrap();
+    }
+
+    #[cfg(holon_lib_test_shard = "c")]
     #[tokio::test]
     async fn projection_routes_authorize_before_checking_capacity() {
         let (_home, host) = test_host();
@@ -3534,6 +3661,7 @@ mod tests {
         }
     }
 
+    #[cfg(holon_lib_test_shard = "c")]
     #[tokio::test]
     async fn operator_agent_tree_requires_auth_and_does_not_expand_public_roster() {
         let (_home, host) = control_token_test_host();
@@ -3626,6 +3754,7 @@ mod tests {
         );
     }
 
+    #[cfg(holon_lib_test_shard = "c")]
     #[tokio::test]
     async fn oidc_event_reads_require_session_before_private_child_lookup() {
         let (_home, host, session_secret) = oidc_test_host_with_session();
@@ -3670,6 +3799,7 @@ mod tests {
         assert_eq!(response.status(), StatusCode::OK);
     }
 
+    #[cfg(holon_lib_test_shard = "c")]
     #[test]
     fn typed_runtime_errors_map_to_compatible_http_envelope() {
         let (status, axum::Json(body)) = error_response(
@@ -3692,6 +3822,7 @@ mod tests {
         );
     }
 
+    #[cfg(holon_lib_test_shard = "c")]
     #[tokio::test]
     async fn quarantined_runtime_db_maps_to_typed_503_with_retry_after() {
         let response = error_response(
@@ -3712,6 +3843,7 @@ mod tests {
         assert_eq!(body["context"]["protection_state"], "quarantined");
     }
 
+    #[cfg(holon_lib_test_shard = "c")]
     #[test]
     fn unknown_runtime_errors_remain_internal_server_errors() {
         let (status, axum::Json(body)) =
@@ -3723,6 +3855,7 @@ mod tests {
         assert_eq!(body["retryable"], false);
     }
 
+    #[cfg(holon_lib_test_shard = "c")]
     #[test]
     fn github_limits_project_safe_typed_sources_for_skills_and_templates() {
         use crate::github::{AuthSource, RateLimit, RateLimitKind};
@@ -3769,6 +3902,7 @@ mod tests {
         }
     }
 
+    #[cfg(holon_lib_test_shard = "c")]
     #[test]
     fn github_limits_without_deadlines_do_not_invent_recovery_times() {
         let limit = crate::github::RateLimit {
@@ -3787,6 +3921,7 @@ mod tests {
         assert!(!body["hint"].as_str().unwrap().contains("GITHUB_TOKEN"));
     }
 
+    #[cfg(holon_lib_test_shard = "c")]
     #[test]
     fn archive_skill_failures_keep_compatibility_fields_and_recovery_policy() {
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
@@ -3847,6 +3982,7 @@ mod tests {
         }
     }
 
+    #[cfg(holon_lib_test_shard = "c")]
     #[test]
     fn archive_skill_http_errors_do_not_expose_sensitive_source_text() {
         let source = anyhow::anyhow!(
@@ -3873,6 +4009,7 @@ mod tests {
         assert!(!body["stderr"].as_str().unwrap().contains('\n'));
     }
 
+    #[cfg(holon_lib_test_shard = "c")]
     #[test]
     fn non_limit_skill_failures_keep_existing_status_and_codes() {
         for (upstream, status, code) in [
@@ -3903,6 +4040,7 @@ mod tests {
         assert_eq!(body["code"], "remote_skill_install_timeout");
     }
 
+    #[cfg(holon_lib_test_shard = "c")]
     #[test]
     fn if_none_match_satisfied_uses_weak_comparison() {
         let headers = |value: &str| {

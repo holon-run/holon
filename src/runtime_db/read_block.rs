@@ -139,6 +139,12 @@ impl Drop for ReadScopeGuard {
     }
 }
 
+/// Scope nested synchronous reads inside an already registered blocking worker.
+pub(crate) fn with_scope<T>(scope: RuntimeDbReadScope, work: impl FnOnce() -> T) -> T {
+    let _scope = ReadScopeGuard::enter(scope);
+    work()
+}
+
 fn current_context() -> Option<ReadContext> {
     READ_CONTEXT.with(|slot| *slot.borrow())
 }
@@ -260,6 +266,7 @@ fn parse_slow_read_ms(raw: Option<&str>) -> u64 {
         .unwrap_or(DEFAULT_SLOW_READ_MS)
 }
 
+#[cfg(holon_lib_test_shard = "b")]
 #[cfg(test)]
 pub(crate) mod tests {
     use std::io;

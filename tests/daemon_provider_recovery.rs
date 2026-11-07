@@ -930,7 +930,10 @@ impl Fixture {
     }
 
     fn wait_input_completed(&self, message_id: &str) {
-        let deadline = Instant::now() + DEADLINE;
+        self.wait_input_completed_until(message_id, Instant::now() + DEADLINE);
+    }
+
+    fn wait_input_completed_until(&self, message_id: &str, deadline: Instant) {
         loop {
             let completed: i64 = self
                 .database()
@@ -942,12 +945,38 @@ impl Fixture {
                     |row| row.get(0),
                 )
                 .unwrap();
-            if completed > 0 {
+            let status: String = self
+                .database()
+                .query_row(
+                    "SELECT status FROM queue_entries WHERE agent_id = ?1 AND message_id = ?2",
+                    [AGENT_ID, message_id],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            if completed > 0 && status == "processed" {
                 assert_eq!(completed, 1, "input must complete only once");
                 self.assert_source_processed(message_id);
                 return;
             }
-            assert!(Instant::now() < deadline, "input did not complete");
+            if Instant::now() >= deadline {
+                let db = self.database();
+                let mut query = db
+                    .prepare(
+                        "SELECT turn_id, terminal_kind FROM turn_records
+                         WHERE agent_id = ?1 AND trigger_message_id = ?2",
+                    )
+                    .unwrap();
+                let turns = query
+                    .query_map([AGENT_ID, message_id], |row| {
+                        Ok((row.get::<_, String>(0)?, row.get::<_, Option<String>>(1)?))
+                    })
+                    .unwrap()
+                    .collect::<Result<Vec<_>, _>>()
+                    .unwrap();
+                panic!(
+                    "input did not complete: source={message_id}, completed_turns={completed}, queue_status={status}, turns={turns:?}"
+                );
+            }
             thread::sleep(Duration::from_millis(100));
         }
     }
@@ -983,7 +1012,10 @@ impl Fixture {
             .env("HOLON_SOCKET_PATH", self.path("run/control.sock"))
             .env("HOLON_AGENT_ID", AGENT_ID)
             .env("HOLON_DAEMON_START_TIMEOUT_SECS", "60")
-            .env("RUST_LOG", "info")
+            .env(
+                "RUST_LOG",
+                "info,holon::agent_summary=debug,holon::resource_refresh=debug",
+            )
             .envs(self.provider_env.iter().cloned())
             .current_dir(self.home.path())
             .stdin(Stdio::null())
@@ -1071,7 +1103,13 @@ impl Fixture {
             .get(format!("http://{address}{path}"))
             .bearer_auth(TOKEN)
             .send()
-            .map_err(|error| StatusProbeFailure::Transport(error.to_string()))?;
+            .map_err(|error| {
+                StatusProbeFailure::Transport(format!(
+                    "timeout={}, connect={}, error={error:?}",
+                    error.is_timeout(),
+                    error.is_connect()
+                ))
+            })?;
         let http_status = response.status();
         let body = response
             .text()
@@ -1181,13 +1219,16 @@ impl Fixture {
             .send()
             .expect("set agent model through the production control API");
         assert!(response.status().is_success(), "{:?}", response.text());
-        self.assert_primary_override(address);
+        self.assert_primary_override(address, "after setting override");
     }
 
-    fn assert_primary_override(&self, address: &str) {
+    fn assert_primary_override(&self, address: &str, phase: &str) {
         let status = self.wait_for_agent_status(address, STATUS_PROBE_BUDGET);
-        assert_eq!(status["model"]["source"], "agent_override");
-        assert_eq!(status["agent"]["model_override"], "openai@default/gpt-5.4");
+        assert_eq!(status["model"]["source"], "agent_override", "phase={phase}");
+        assert_eq!(
+            status["agent"]["model_override"], "openai@default/gpt-5.4",
+            "phase={phase}"
+        );
         let persisted: String = self
             .database()
             .query_row(
@@ -1219,12 +1260,44 @@ impl Fixture {
     }
 
     fn events(&self, address: &str) -> Vec<Value> {
-        let page = self
-            .try_get(
-                address,
-                &format!("/api/agents/{AGENT_ID}/events?limit=256&order=desc"),
-            )
-            .expect("HTTP event page must be available");
+        let response = self
+            .client
+            .get(format!(
+                "http://{address}/api/agents/{AGENT_ID}/events?limit=256&order=desc"
+            ))
+            .bearer_auth(TOKEN)
+            .send()
+            .expect("HTTP event page request must succeed");
+        let status = response.status();
+        let body = response.text().expect("HTTP event page body");
+        if !status.is_success() {
+            let db = self.database();
+            let mut query = db
+                .prepare(
+                    "SELECT e.event_seq, e.kind, q.qualification_state
+                     FROM audit_events e
+                     LEFT JOIN current_read_qualification q
+                       ON q.agent_id=e.agent_id AND q.family='event'
+                      AND q.record_id=e.audit_event_id
+                     WHERE e.agent_id=?1 ORDER BY e.event_seq DESC LIMIT 32",
+                )
+                .expect("event qualification diagnostic");
+            let events = query
+                .query_map([AGENT_ID], |row| {
+                    Ok((
+                        row.get::<_, u64>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, Option<String>>(2)?,
+                    ))
+                })
+                .expect("event qualification rows")
+                .collect::<Result<Vec<_>, _>>()
+                .expect("event qualification values");
+            panic!(
+                "HTTP event page unavailable: {status}: {body}; event qualifications: {events:?}"
+            );
+        }
+        let page: Value = serde_json::from_str(&body).expect("HTTP event page JSON");
         let events = page["events"]
             .as_array()
             .expect("HTTP event page must contain events");
@@ -1394,7 +1467,7 @@ fn payment_required_override_uses_fallback_tools_and_delivers_once() {
         ["claude-sonnet-4-6"; 3],
         "the HTTP model must agree with the admitted fallback route"
     );
-    fixture.assert_primary_override(&address);
+    fixture.assert_primary_override(&address, "after fallback task continuation");
     fixture.assert_one_brief(&address, "payment-fallback-final");
     assert!(fixture.parked_inputs().is_empty());
     assert!(fixture.paused_events(&address).is_empty());
@@ -1532,7 +1605,7 @@ fn payment_required_chain_parks_within_budget_and_restart_preserves_deadline() {
     assert_eq!(snapshot["episode"]["budget_kind"], "operator");
     let turns = fixture.turn_count();
     assert!(turns - initial_turns <= 3);
-    fixture.assert_primary_override(&address);
+    fixture.assert_primary_override(&address, "after payment park");
     thread::sleep(Duration::from_millis(300));
     assert_eq!(fixture.recovery_snapshot(&source), snapshot);
 
@@ -1545,7 +1618,7 @@ fn payment_required_chain_parks_within_budget_and_restart_preserves_deadline() {
             "restart observation must remain before the persisted retry deadline"
         );
         fixture.assert_park_retained(&parked);
-        fixture.assert_primary_override(&address);
+        fixture.assert_primary_override(&address, "after payment restart");
         assert_eq!(
             primary.requested_models().len() + fallback.requested_models().len(),
             2,
@@ -1693,7 +1766,9 @@ fn cooldown_park_survives_sigkill_and_resumes_on_schedule_without_new_input() {
     fixture.assert_park_retained(&parked);
     // No new message is submitted: recovery must be driven by the persisted
     // park deadline alone.
+    let recovery_deadline = Instant::now() + DEADLINE;
     wait_for_brief_marker(&fixture, &address, "primary-recovered-final", DEADLINE);
+    fixture.wait_input_completed_until(&parked.message_id, recovery_deadline);
     let final_dispatch_at = primary
         .last_success_at()
         .expect("recovered dispatch must reach the provider");

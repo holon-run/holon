@@ -50,10 +50,10 @@ impl RuntimeHandle {
             "task_result_rejoin_generation".into(),
             record.rejoin_generation.to_string(),
         );
-        message.source_refs.insert(
-            "task_result_parent_turn_id".into(),
-            record.parent_turn_id.clone(),
-        );
+        let (source_key, source_id) = record.source.result_source_ref();
+        message
+            .source_refs
+            .insert(source_key.into(), source_id.into());
         message
             .source_refs
             .insert("task_result_message_id".into(), record.message_id.clone());

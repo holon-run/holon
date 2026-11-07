@@ -209,7 +209,7 @@ fn exact_root_fixture_with_source(
         ),
         (
             "task_result_parent_turn_id".into(),
-            record.parent_turn_id.clone(),
+            record.source.parent_turn_id().unwrap().to_string(),
         ),
         (
             "task_result_rejoin_generation".into(),

@@ -41,6 +41,47 @@ The base image contains Holon plus basic shell, Git, SSH, CA, archive, and HTTP
 utilities. Project-specific acceptance fixtures may derive from it to install
 additional language toolchains.
 
+## Required deterministic daemon lifecycle gate
+
+`runtime-lifecycle-required` uses a scripted provider and the real candidate
+daemon, not a process-local runtime fixture. Pull-request CI and Release E2E run
+all three cases with strict tool assertions:
+
+- `runtime-agent-lifecycle`: public creation, restart, operator deletion and
+  durable tombstone.
+- `runtime-shared-credential-delete`: actual supervised child creation and
+  tool deletion under a shared credential profile, deletion convergence,
+  same-ID recreation and stale-incarnation rejection, with the parent and a
+  retained sibling still able to complete Results after restart.
+- `runtime-upgrade-v030`: five previous-release turns, unchanged migration and
+  backfill assertions, at least three public conversation pages with no missing
+  or duplicated old turn/input/Result identities, then a cold restart and old
+  Result reads **before** a new candidate prompt completes a durable Result.
+
+```bash
+python3 scripts/prepare-previous-release-image.py --ref v0.30.0 \
+  --expected-sha256 20d5b7c544c9d55977188e69e03fc90825748c5d26dd47e9d5b32c9146c4e32c
+python3 scripts/docker-e2e.py --image holon:candidate --skip-build \
+  --previous-image holon-e2e-previous:0.30.0 \
+  --profile runtime-lifecycle-required \
+  --evidence-dir target/docker-e2e/runtime-lifecycle-required
+```
+
+The previous image is mandatory; missing or invalid fixtures fail rather than
+skip. CI builds v0.30.0 from its pinned, checksum-verified release archive;
+there is no published v0.30.0 container tag. Release E2E uses its explicitly
+selected, validated previous-release image or the same asset builder.
+Both workflows reject missing or failed
+required cases. The release attestation binds the lifecycle summary and its
+hash to the candidate revision and image digest.
+
+`make docker-e2e-validate` validates manifests and Python/mock oracles only.
+It is not daemon execution evidence. Five synthetic old turns establish a
+pagination boundary, not production-scale or long-running node coverage; a
+shared offline credential profile does not establish real-provider safety or
+performance. Keep real-model results, old-node operational evidence, and
+same-condition performance baselines separate.
+
 ## Release real-LLM suite
 
 `make docker-e2e` runs the core production-image suite against a real model.
@@ -50,8 +91,9 @@ The default route is:
 deepseek/deepseek-v4-flash
 ```
 
-The suite requires network access and provider quota, so ordinary pull-request
-CI only validates its manifest and Python runner. Each release candidate runs
+The real-model suite requires network access and provider quota; ordinary
+pull-request CI instead runs deterministic scheduler and lifecycle daemon
+gates in addition to manifest and Python-oracle checks. Each release candidate runs
 the core cases plus all scheduler-tagged cases through the protected
 `Release E2E` workflow. Scheduler cases run once with the canonical scheduler.
 The runner retains `scheduler_engine="canonical"` in attestation evidence for
@@ -159,7 +201,7 @@ When a candidate image is already published, use an immutable reference:
 ```bash
 python3 scripts/docker-e2e.py \
   --image-digest ghcr.io/holon-run/holon@sha256:... \
-  --previous-image ghcr.io/holon-run/holon:v0.30.0 \
+  --previous-image holon-e2e-previous:0.30.0 \
   --skip-build \
   --suite core
 ```

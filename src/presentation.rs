@@ -2211,6 +2211,7 @@ fn provider_round_item(event: &ProjectionEventRecord) -> Option<PresentationItem
     })
 }
 
+#[cfg(holon_lib_test_shard = "c")]
 #[cfg(test)]
 mod tests {
     use super::*;

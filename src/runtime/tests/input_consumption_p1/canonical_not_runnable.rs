@@ -101,7 +101,7 @@ async fn issue_3773_task_result_settles_pending_when_execution_not_runnable() {
     runtime.pick_work_item(owner.id.clone()).await.unwrap();
     let message_id = publish_owner_terminal_result(runtime, &owner.id, "issue-3773-result").await;
     let owner_latest = runtime.latest_work_item(&owner.id).await.unwrap().unwrap();
-    seed_paused_work_execution(runtime.storage(), &owner_latest, "issue-3773 lane paused");
+    seed_live_paused_work_execution(runtime, &owner_latest, "issue-3773 lane paused").await;
 
     let scheduled = match scheduler_executor::SchedulerDecisionExecutor::new(runtime)
         .poll()
@@ -201,6 +201,19 @@ async fn work_queue_tick(runtime: &RuntimeHandle, work_item_id: &str) -> String 
     runtime.enqueue(tick).await.unwrap().id
 }
 
+fn assert_single_deferred_advisory(runtime: &RuntimeHandle, work_item_id: &str) {
+    let events = runtime.storage().read_recent_events(64).unwrap();
+    let count = events
+        .iter()
+        .filter(|event| {
+            event.kind == "scheduling_advisory"
+                && event.data["kind"] == "canonical_activation_deferred_not_runnable"
+                && event.data["work_item_id"] == work_item_id
+        })
+        .count();
+    assert_eq!(count, 1, "deferred input must retain one durable advisory");
+}
+
 #[tokio::test(start_paused = true)]
 async fn issue_3773_internal_followup_defers_without_drop_or_starvation() {
     let provider = Arc::new(BatchProvider::default());
@@ -233,13 +246,13 @@ async fn issue_3773_internal_followup_defers_without_drop_or_starvation() {
         .await
         .unwrap()
         .unwrap();
-    seed_paused_work_execution(runtime.storage(), &blocked_latest, "issue-3773 lane paused");
+    seed_live_paused_work_execution(runtime, &blocked_latest, "issue-3773 lane paused").await;
     let runnable_latest = runtime
         .latest_work_item(&runnable.id)
         .await
         .unwrap()
         .unwrap();
-    seed_runnable_work_execution(runtime.storage(), &runnable_latest);
+    seed_live_runnable_work_execution(runtime, &runnable_latest).await;
 
     // The deferred followup is skipped within the same poll and the later
     // legal input still advances.
@@ -282,6 +295,7 @@ async fn issue_3773_internal_followup_defers_without_drop_or_starvation() {
         queue_status(runtime, &followup_id),
         QueueEntryStatus::Dropped
     );
+    assert_single_deferred_advisory(runtime, &blocked.id);
 }
 
 #[tokio::test(start_paused = true)]
@@ -302,7 +316,7 @@ async fn issue_3773_deferred_followup_survives_restart_and_claims_when_runnable(
     runtime.pick_work_item(owner.id.clone()).await.unwrap();
     let followup_id = bound_internal_followup(runtime, &owner.id).await;
     let owner_latest = runtime.latest_work_item(&owner.id).await.unwrap().unwrap();
-    seed_paused_work_execution(runtime.storage(), &owner_latest, "issue-3773 lane paused");
+    seed_live_paused_work_execution(runtime, &owner_latest, "issue-3773 lane paused").await;
     assert!(matches!(
         scheduler_executor::SchedulerDecisionExecutor::new(runtime)
             .poll()
@@ -310,6 +324,7 @@ async fn issue_3773_deferred_followup_survives_restart_and_claims_when_runnable(
             .unwrap(),
         scheduler_executor::RunLoopPoll::Idle
     ));
+    assert_single_deferred_advisory(runtime, &owner.id);
 
     harness.restart();
     let runtime = harness.runtime();
@@ -318,11 +333,12 @@ async fn issue_3773_deferred_followup_survives_restart_and_claims_when_runnable(
         queue_status(runtime, &followup_id),
         QueueEntryStatus::Queued
     );
+    assert_single_deferred_advisory(runtime, &owner.id);
 
     // Once the canonical execution is runnable again the retained input
     // claims through its original path.
     let owner_latest = runtime.latest_work_item(&owner.id).await.unwrap().unwrap();
-    seed_runnable_work_execution(runtime.storage(), &owner_latest);
+    seed_live_runnable_work_execution(runtime, &owner_latest).await;
     let scheduled = match scheduler_executor::SchedulerDecisionExecutor::new(runtime)
         .poll()
         .await
@@ -336,4 +352,5 @@ async fn issue_3773_deferred_followup_survives_restart_and_claims_when_runnable(
     };
     assert_eq!(scheduled.message.id, followup_id);
     assert!(scheduled.scheduler_decision.model_reentry);
+    assert_single_deferred_advisory(runtime, &owner.id);
 }

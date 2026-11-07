@@ -733,6 +733,7 @@ fn copy_dir_recursive(source: &Path, destination: &Path) -> anyhow::Result<()> {
     Ok(())
 }
 
+#[cfg(holon_lib_test_shard = "c")]
 #[cfg(test)]
 mod tests {
     use super::*;

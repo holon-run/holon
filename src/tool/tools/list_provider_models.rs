@@ -145,6 +145,7 @@ fn page_provider_models(
     (page, next_cursor)
 }
 
+#[cfg(holon_lib_test_shard = "c")]
 #[cfg(test)]
 mod tests {
     use crate::config::ModelRef;

@@ -107,7 +107,7 @@ async fn phase_timeout_openai_operations_preserve_non_text_headers_budgets() {
 
         let (url, server) = serve(json!({"data":[{"b64_json":"b2s="}]}), false).await;
         images::send_openai_images_request(
-            &client, url, json!({"model":"test"}), vec![], "openai", None, None,
+            &client, url, &json!({"model":"test"}), vec![], "openai", None, None, &Default::default(),
         ).await.expect("Images JSON retains its send-only deadline");
         server.abort();
 
@@ -120,14 +120,14 @@ async fn phase_timeout_openai_operations_preserve_non_text_headers_budgets() {
         }});
         let (url, server) = serve(image, true).await;
         images::send_openai_codex_image_generation_request(
-            &client, url, json!({"model":"test","tools":[{"type":"image_generation"}]}),
-            vec![], None, None,
+            &client, url, &json!({"model":"test","tools":[{"type":"image_generation"}]}),
+            vec![], None, None, &Default::default(),
         ).await.expect("Responses image tool retains its send-only deadline");
         server.abort();
 
         let (url, server) = serve(json!({"output":[{"type":"compaction","encrypted_content":"opaque"}]}), false).await;
         super::compaction::send_openai_compact_request(
-            &client, url, json!({"model":"test"}), vec![], None, None, "openai", "openai/test", None,
+            &client, url, json!({"model":"test"}), vec![], None, None, "openai", "openai/test", None, &Default::default(),
         ).await.expect("compaction retains its full-request deadline");
         server.abort();
     }).await;

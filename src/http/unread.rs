@@ -4,10 +4,12 @@ use anyhow::Context;
 use serde::Deserialize;
 use std::time::Instant;
 
+#[cfg(holon_lib_test_shard = "c")]
 #[cfg(test)]
 #[path = "unread_tests.rs"]
 mod tests;
 
+#[cfg(holon_lib_test_shard = "c")]
 #[cfg(test)]
 #[path = "unread_benchmark.rs"]
 mod benchmark;

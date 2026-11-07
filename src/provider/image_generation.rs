@@ -539,6 +539,7 @@ pub fn parse_image_dimensions(value: &str) -> Option<(u32, u32)> {
     Some((w.parse().ok()?, h.parse().ok()?))
 }
 
+#[cfg(holon_lib_test_shard = "c")]
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -611,6 +612,7 @@ mod tests {
 
     fn quota_test_request() -> ProviderGenerateImageRequest {
         ProviderGenerateImageRequest {
+            material: Default::default(),
             prompt: "test".into(),
             size: None,
             aspect_ratio: None,

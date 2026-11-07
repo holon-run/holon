@@ -3,42 +3,32 @@
 use anyhow::Result;
 use rusqlite::{params, OptionalExtension, Transaction};
 
-use super::{
-    record_matches_durable_task_tx, TaskResultSettlementRecord, TaskResultSettlementRepository,
-};
+use super::{record_matches_durable_task_tx, TaskResultSettlementRecord};
 use crate::types::{
     AgentMessageDeliveryOutcome, AgentMessageDeliveryRecord, AgentMessageDeliveryState,
     MessageEnvelope, QueueEntryRecord, QueueEntryStatus, TaskKind, TaskRecord, TaskStatus,
 };
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
 pub(crate) struct DroppedReplySource {
-    task: TaskRecord,
-    result: MessageEnvelope,
-    reply: MessageEnvelope,
-    queue: QueueEntryRecord,
-    delivery: AgentMessageDeliveryRecord,
-    rejection_id: String,
-    rejection_data: serde_json::Value,
+    pub(super) task: TaskRecord,
+    pub(super) result: MessageEnvelope,
+    pub(super) reply: MessageEnvelope,
+    pub(super) queue: QueueEntryRecord,
+    pub(super) delivery: AgentMessageDeliveryRecord,
+    pub(super) rejection_id: String,
+    pub(super) rejection_data: serde_json::Value,
 }
 
-impl TaskResultSettlementRepository<'_> {
-    pub(crate) fn dropped_reply_source(
-        &self,
-        record: &TaskResultSettlementRecord,
-    ) -> Result<Option<DroppedReplySource>> {
-        self.db
-            .transaction(|tx| dropped_reply_source_tx(tx, record))
-    }
-
-    /// Only an independently validated exact wait may use this unconsumed source.
-    pub(crate) fn reply_source_is_available_for_exact_wait(
-        &self,
-        record: &TaskResultSettlementRecord,
-    ) -> Result<bool> {
-        Ok(self.reply_source_is_consumed(record)? || self.dropped_reply_source(record)?.is_some())
-    }
-}
+pub(super) const CANONICAL_REJECTION_SQL: &str =
+    "SELECT audit_event_id, data_json FROM audit_events
+         WHERE kind = 'scheduler_authority_input_rejected'
+           AND json_extract(data_json, '$.data.agent_id') = ?1
+           AND json_extract(data_json, '$.data.message_id') = ?2
+           AND json_extract(data_json, '$.data.reason') =
+               'canonical_internal_followup_work_item_not_runnable'
+           AND json_extract(data_json, '$.data.queue_disposition') = 'dropped'
+         ORDER BY rowid DESC LIMIT 1";
 
 fn load<T: serde::de::DeserializeOwned>(
     tx: &Transaction<'_>,
@@ -110,7 +100,53 @@ pub(crate) fn dropped_reply_source_tx(
     else {
         return Ok(None);
     };
-    if result.agent_id != record.agent_id
+    if !source_matches(record, &task, &result, &reply, &queue, &delivery) {
+        return Ok(None);
+    }
+    // A terminal queue enum alone is not authority to bypass failed delivery.
+    // Missing/reclaimed rejection evidence deliberately makes repair unavailable.
+    let rejection: Option<(String, String)> = tx
+        .query_row(
+            CANONICAL_REJECTION_SQL,
+            params![record.agent_id, reply_id],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .optional()?;
+    let Some((rejection_id, rejection_data)) = rejection else {
+        return Ok(None);
+    };
+    Ok(Some(DroppedReplySource {
+        task,
+        result,
+        reply,
+        queue,
+        delivery,
+        rejection_id,
+        rejection_data: serde_json::from_str(&rejection_data)?,
+    }))
+}
+
+pub(super) fn source_matches(
+    record: &TaskResultSettlementRecord,
+    task: &TaskRecord,
+    result: &MessageEnvelope,
+    reply: &MessageEnvelope,
+    queue: &QueueEntryRecord,
+    delivery: &AgentMessageDeliveryRecord,
+) -> bool {
+    let Some(reply_id) = crate::wake_contract::agent_message_reply_reference(result) else {
+        return false;
+    };
+    let Some(delivery_id) = reply
+        .metadata
+        .as_ref()
+        .and_then(|metadata| metadata.get("agent_message_delivery"))
+        .and_then(|delivery| delivery.get("delivery_id"))
+        .and_then(serde_json::Value::as_str)
+    else {
+        return false;
+    };
+    !(result.agent_id != record.agent_id
         || result.work_item_id != record.work_item_id
         || result.task_id.as_deref() != Some(record.task_id.as_str())
         || task.kind != TaskKind::AgentMessageWait
@@ -132,7 +168,7 @@ pub(crate) fn dropped_reply_source_tx(
             .as_ref()
             .and_then(|metadata| metadata.get("task_detail"))
             != task.detail.as_ref()
-        || !crate::wake_contract::is_agent_message(&reply)
+        || !crate::wake_contract::is_agent_message(reply)
         || reply.id != reply_id
         || reply.agent_id != record.agent_id
         || !reply.routing_context.as_ref().is_some_and(|route| {
@@ -152,41 +188,11 @@ pub(crate) fn dropped_reply_source_tx(
         || delivery.turn_id.is_some()
         || queue.message_id != reply_id
         || queue.agent_id != record.agent_id
-        || queue.status != QueueEntryStatus::Dropped
-    {
-        return Ok(None);
-    }
-    // A terminal queue enum alone is not authority to bypass failed delivery.
-    // Missing/reclaimed rejection evidence deliberately makes repair unavailable.
-    let rejection: Option<(String, String)> = tx
-        .query_row(
-            "SELECT audit_event_id, data_json FROM audit_events
-         WHERE kind = 'scheduler_authority_input_rejected'
-           AND json_extract(data_json, '$.data.agent_id') = ?1
-           AND json_extract(data_json, '$.data.message_id') = ?2
-           AND json_extract(data_json, '$.data.reason') =
-               'canonical_internal_followup_work_item_not_runnable'
-           AND json_extract(data_json, '$.data.queue_disposition') = 'dropped'
-         ORDER BY rowid DESC LIMIT 1",
-            params![record.agent_id, reply_id],
-            |row| Ok((row.get(0)?, row.get(1)?)),
-        )
-        .optional()?;
-    let Some((rejection_id, rejection_data)) = rejection else {
-        return Ok(None);
-    };
-    Ok(Some(DroppedReplySource {
-        task,
-        result,
-        reply,
-        queue,
-        delivery,
-        rejection_id,
-        rejection_data: serde_json::from_str(&rejection_data)?,
-    }))
+        || queue.status != QueueEntryStatus::Dropped)
 }
 
 /// Recheck the terminal source in the transaction that admits rendered bytes.
+#[cfg(test)]
 pub(super) fn terminal_source_admits_tx(
     tx: &Transaction<'_>,
     record: &TaskResultSettlementRecord,

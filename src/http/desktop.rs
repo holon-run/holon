@@ -115,6 +115,7 @@ pub(crate) async fn reveal(
     Ok(Json(json!({ "ok": true })))
 }
 
+#[cfg(holon_lib_test_shard = "c")]
 #[cfg(test)]
 mod tests {
     use super::*;

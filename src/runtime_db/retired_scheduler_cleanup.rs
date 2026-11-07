@@ -13,7 +13,7 @@ use crate::ids;
 use crate::runtime_db::evidence::{append_audit_event_tx, append_message_tx};
 use crate::runtime_db::repositories::upsert_queue_entry_tx;
 use crate::runtime_db::transitions::execution_protocol_repository::{
-    load_state_unchecked_tx, persist_state_tx,
+    load_state_unchecked_tx, persist_repaired_state_tx,
 };
 use crate::types::{
     AuditEvent, AuthorityClass, MessageBody, MessageEnvelope, MessageKind, MessageOrigin, Priority,
@@ -155,7 +155,9 @@ fn collect_blockers(
 
 pub(crate) fn apply_retired_scheduler_cleanup_fallback(
     tx: &Transaction<'_>,
+    db: &super::RuntimeDb,
     agent_id: &str,
+    maintenance: Option<&super::OfflineInputMaintenance<'_>>,
 ) -> Result<RetiredSchedulerFallbackResult> {
     let inventory = retired_scheduler_cleanup_inventory(tx)?;
     let blockers = inventory
@@ -174,6 +176,7 @@ pub(crate) fn apply_retired_scheduler_cleanup_fallback(
 
     let mut state = load_state_unchecked_tx(tx, agent_id)
         .with_context(|| format!("loading damaged execution partition for agent {agent_id}"))?;
+    let previous = state.clone();
     let now = Utc::now();
     let now_text = now.to_rfc3339();
     let recovery_message_id = ids::message_id();
@@ -197,6 +200,20 @@ pub(crate) fn apply_retired_scheduler_cleanup_fallback(
         require_message_evidence(tx, agent_id, &blocker.record_id)?;
         protected_message_ids.insert(blocker.record_id.clone());
     }
+
+    let input = super::input_evidence_snapshot::maintenance::fallback::prepare_tx(
+        tx,
+        db,
+        agent_id,
+        &state,
+        &blockers
+            .iter()
+            .filter(|b| b.kind == RetiredSchedulerCleanupBlockerKind::DequeuedQueueEntry)
+            .map(|b| b.record_id.clone())
+            .collect::<Vec<_>>(),
+        &recovery_message_id,
+        maintenance,
+    )?;
 
     for work_item in state
         .work_items
@@ -235,28 +252,7 @@ pub(crate) fn apply_retired_scheduler_cleanup_fallback(
             .cloned()
             .ok_or_else(|| anyhow!("open execution attempt disappeared from recovery state"))?;
         let outcome_id = format!("retired-scheduler-cleanup:{attempt_id}");
-        let outcome = ExecutionOutcomeRecord {
-            outcome_id: outcome_id.clone(),
-            attempt_id: attempt_id.clone(),
-            outcome: match attempt.binding {
-                ExecutionBinding::WorkItem { .. } => {
-                    ExecutionOutcome::WorkItem(WorkItemOutcome::Interrupted {
-                        reason: "retired_scheduler_cleanup".into(),
-                    })
-                }
-                ExecutionBinding::Conversation { .. } | ExecutionBinding::AgentLifecycle { .. } => {
-                    ExecutionOutcome::Conversation(ConversationOutcome::Interrupted {
-                        reason: "retired_scheduler_cleanup".into(),
-                    })
-                }
-                ExecutionBinding::Command => {
-                    ExecutionOutcome::Command(CommandResult::Quarantined {
-                        reason: "retired_scheduler_cleanup".into(),
-                    })
-                }
-            },
-            created_at: now_text.clone(),
-        };
+        let outcome = fallback_outcome(&attempt, &now_text);
         let attempt = state
             .attempts
             .get_mut(&attempt_id)
@@ -274,7 +270,7 @@ pub(crate) fn apply_retired_scheduler_cleanup_fallback(
     execution_protocol::assert_invariants(&state).map_err(|error| {
         anyhow!("retired scheduler fallback could not repair execution partition: {error}")
     })?;
-    persist_state_tx(tx, &state)?;
+    persist_repaired_state_tx(tx, &previous, &state)?;
 
     let mut dequeued = tx.prepare(
         "SELECT payload_json
@@ -330,7 +326,7 @@ pub(crate) fn apply_retired_scheduler_cleanup_fallback(
             .source_refs
             .insert(message_id.clone(), format!("message:{message_id}"));
     }
-    let (recovery_message, _) = append_message_tx(tx, &recovery_message)?;
+    let (recovery_message, inserted) = append_message_tx(tx, &recovery_message)?;
     upsert_queue_entry_tx(
         tx,
         &QueueEntryRecord {
@@ -356,12 +352,40 @@ pub(crate) fn apply_retired_scheduler_cleanup_fallback(
         ),
     )?;
 
+    input.finish_tx(tx, &recovery_message, inserted)?;
+
     Ok(RetiredSchedulerFallbackResult {
         agent_id: agent_id.to_string(),
         recovery_message_id: Some(recovery_message.id),
         protected_message_ids,
         actions,
     })
+}
+
+pub(super) fn fallback_outcome(
+    attempt: &crate::domain::execution_protocol::ExecutionAttempt,
+    now: &str,
+) -> ExecutionOutcomeRecord {
+    ExecutionOutcomeRecord {
+        outcome_id: format!("retired-scheduler-cleanup:{}", attempt.attempt_id),
+        attempt_id: attempt.attempt_id.clone(),
+        outcome: match &attempt.binding {
+            ExecutionBinding::WorkItem { .. } => {
+                ExecutionOutcome::WorkItem(WorkItemOutcome::Interrupted {
+                    reason: "retired_scheduler_cleanup".into(),
+                })
+            }
+            ExecutionBinding::Conversation { .. } | ExecutionBinding::AgentLifecycle { .. } => {
+                ExecutionOutcome::Conversation(ConversationOutcome::Interrupted {
+                    reason: "retired_scheduler_cleanup".into(),
+                })
+            }
+            ExecutionBinding::Command => ExecutionOutcome::Command(CommandResult::Quarantined {
+                reason: "retired_scheduler_cleanup".into(),
+            }),
+        },
+        created_at: now.into(),
+    }
 }
 
 fn require_message_evidence(tx: &Transaction<'_>, agent_id: &str, message_id: &str) -> Result<()> {

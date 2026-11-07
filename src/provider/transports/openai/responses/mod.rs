@@ -1,6 +1,7 @@
 mod compaction;
 mod continuation;
 mod parse;
+#[cfg(holon_lib_test_shard = "c")]
 #[cfg(test)]
 mod phase_timeout_tests;
 mod plan;
@@ -27,5 +28,6 @@ pub(crate) use plan::build_openai_responses_request;
 pub(super) use plan::plan_openai_responses_request;
 pub(super) use send::{
     retry_openai_responses_with_lossless_replay, send_openai_responses_request,
-    send_openai_responses_streaming_request,
+    send_openai_responses_request_with_material, send_openai_responses_streaming_request,
+    send_openai_responses_streaming_request_with_material,
 };

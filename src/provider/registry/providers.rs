@@ -502,6 +502,7 @@ pub(crate) fn provider_definition(legacy_provider: &str) -> Option<&'static Prov
         .find(|definition| definition.legacy_provider == legacy_provider)
 }
 
+#[cfg(holon_lib_test_shard = "c")]
 #[cfg(test)]
 mod tests {
     use super::*;

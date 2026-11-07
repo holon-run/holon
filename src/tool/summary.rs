@@ -189,6 +189,7 @@ fn summary_from_result_payload(value: Option<&Value>) -> Option<String> {
     None
 }
 
+#[cfg(holon_lib_test_shard = "c")]
 #[cfg(test)]
 mod tests {
     use serde_json::json;

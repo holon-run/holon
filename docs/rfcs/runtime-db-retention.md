@@ -23,6 +23,13 @@ row floor. Active runtime evidence, active WorkItem references, context
 episode references, pending memory-index outbox sources, and a recent completed
 turn tail are protected by typed business logic.
 
+Transcript and tool evidence belonging to a current `Deleting` identity is
+protected until that retirement finishes. Reports count these rows under
+`identity_deleting`; a stalled retirement can therefore delay reclamation.
+After the identity becomes `Deleted`, the usual age, row-floor, and reference
+rules apply. This protection does not change audit-event retention or authorize
+new evidence writes for a deleting identity.
+
 Online maintenance uses bounded transactions and optional incremental vacuum.
 Full `VACUUM` is an explicit offline operation.
 
@@ -89,6 +96,8 @@ Strong roots are:
 - `WorkItemRef.status == active` runtime source refs;
 - `ContextEpisodeRecord.source_refs`;
 - every unconsumed `runtime_index_outbox` source;
+- transcript and tool evidence of a current Deleting identity, until retirement
+  completes;
 - the configured table and audit-scope row floors.
 
 The collector reads typed records and normalized evidence columns. It must not
@@ -133,6 +142,13 @@ continues to use the authoritative `cursor_not_found` recovery contract.
 Rows must be older than the age cutoff, outside the global table floor, and
 unreferenced by the strong-root set. Candidate discovery is deterministic and
 oldest-first. Each transaction deletes at most a fixed internal batch.
+
+The planner protects evidence of current Deleting identities in the same
+database view used for candidate selection and deletion, with protection reason
+`identity_deleting`. This preserves unfinished retirement and recovery
+responsibilities without granting those identities new execution or write
+authority. A stalled retirement delays reclamation; once the identity becomes
+Deleted, the normal age, floor, and strong-root checks apply.
 
 Deleting a tool execution also writes memory-index delete intents in the same
 transaction for every index source derived from that record. A rollback

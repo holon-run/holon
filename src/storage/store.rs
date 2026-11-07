@@ -83,12 +83,17 @@ impl RuntimeStore {
         Ok(self.agent_id.clone())
     }
 
-    pub fn append_brief(&self, brief: &BriefRecord) -> Result<()> {
+    /// Commits canonical evidence and index intent; does not publish or notify.
+    pub fn commit_brief_evidence(&self, brief: &BriefRecord) -> Result<BriefRecord> {
         let changes = self.index_outbox.changes_for_brief(brief);
         self.runtime_db
             .evidence()
-            .append_brief_with_index_changes(brief, &changes)?;
-        self.index_outbox.enqueue_brief_best_effort(brief)
+            .append_brief_with_index_changes_committed(brief, &changes)
+    }
+
+    pub fn append_brief(&self, brief: &BriefRecord) -> Result<()> {
+        let brief = self.commit_brief_evidence(brief)?;
+        self.index_outbox.enqueue_brief_best_effort(&brief)
     }
 
     /// Single-transition Brief publication. The Brief record, its audit
@@ -102,15 +107,8 @@ impl RuntimeStore {
         brief: &BriefRecord,
         event: &crate::types::AuditEvent,
     ) -> Result<crate::runtime_db::evidence::BriefCreatedCommit> {
-        self.ensure_writable()?;
-        let changes = self.index_outbox.changes_for_brief(brief);
         let agent_id = self.current_agent_id()?;
-        let commit = self.runtime_db.evidence().append_brief_with_created_event(
-            agent_id.as_deref(),
-            brief,
-            event,
-            &changes,
-        )?;
+        let commit = self.commit_brief_with_created_event(brief, event)?;
         self.index_outbox.enqueue_brief_best_effort(&commit.brief)?;
         if commit.event_inserted {
             if let Err(error) = self
@@ -130,13 +128,33 @@ impl RuntimeStore {
         Ok(commit)
     }
 
-    pub fn append_message(&self, message: &MessageEnvelope) -> Result<()> {
+    /// SQL-only counterpart; the caller owns post-commit publication.
+    pub fn commit_brief_with_created_event(
+        &self,
+        brief: &BriefRecord,
+        event: &crate::types::AuditEvent,
+    ) -> Result<crate::runtime_db::evidence::BriefCreatedCommit> {
+        self.ensure_writable()?;
+        let changes = self.index_outbox.changes_for_brief(brief);
+        let agent_id = self.current_agent_id()?;
+        self.runtime_db.evidence().append_brief_with_created_event(
+            agent_id.as_deref(),
+            brief,
+            event,
+            &changes,
+        )
+    }
+
+    pub fn commit_message_evidence(&self, message: &MessageEnvelope) -> Result<MessageEnvelope> {
         self.ensure_writable()?;
         let changes = self.index_outbox.changes_for_message(message);
-        let message = self
-            .runtime_db
+        self.runtime_db
             .messages()
-            .append_with_index_changes(message, &changes)?;
+            .append_with_index_changes(message, &changes)
+    }
+
+    pub fn append_message(&self, message: &MessageEnvelope) -> Result<()> {
+        let message = self.commit_message_evidence(message)?;
         self.index_outbox.enqueue_message_best_effort(&message)
     }
 
@@ -203,39 +221,40 @@ impl RuntimeStore {
         self.runtime_db.timers().upsert(timer)
     }
 
-    pub fn append_tool_execution(&self, record: &ToolExecutionRecord) -> Result<()> {
+    pub fn commit_tool_execution_evidence(
+        &self,
+        record: &ToolExecutionRecord,
+    ) -> Result<ToolExecutionRecord> {
         let changes = self.index_outbox.changes_for_tool_execution(record);
         self.runtime_db
             .evidence()
-            .append_tool_execution_with_index_changes(record, &changes)?;
-        self.index_outbox.enqueue_tool_execution_best_effort(record)
+            .append_tool_execution_with_index_changes_committed(record, &changes)
+    }
+
+    pub fn append_tool_execution(&self, record: &ToolExecutionRecord) -> Result<()> {
+        let record = self.commit_tool_execution_evidence(record)?;
+        self.index_outbox
+            .enqueue_tool_execution_best_effort(&record)
+    }
+
+    pub fn commit_turn_record(
+        &self,
+        record: &TurnRecord,
+    ) -> Result<crate::runtime_db::evidence::CommittedTurnRecord> {
+        self.runtime_db.turn_records().upsert_committed(record)
     }
 
     pub fn append_turn(&self, record: &TurnRecord) -> Result<()> {
-        self.runtime_db.turn_records().upsert(record)
+        self.commit_turn_record(record).map(|_| ())
     }
 
-    pub(crate) fn start_turn(
-        &self,
-        expected: &AgentState,
-        state: &AgentState,
-        record: &TurnRecord,
-        incarnation: u64,
-    ) -> Result<AgentState> {
+    pub fn commit_transcript_evidence(&self, entry: &TranscriptEntry) -> Result<TranscriptEntry> {
         self.ensure_writable()?;
-        anyhow::ensure!(
-            self.agent_id.as_deref().is_none_or(|id| id == state.id),
-            "agent-scoped storage cannot start another agent's turn"
-        );
-        self.runtime_db
-            .turn_records()
-            .start(Some(expected), state, record, incarnation)
+        self.runtime_db.transcript_entries().append(entry)
     }
 
     pub fn append_transcript_entry(&self, entry: &TranscriptEntry) -> Result<()> {
-        self.ensure_writable()?;
-        self.runtime_db.transcript_entries().append(entry)?;
-        Ok(())
+        self.commit_transcript_evidence(entry).map(|_| ())
     }
 
     pub fn append_queue_entry(&self, record: &QueueEntryRecord) -> Result<()> {
@@ -340,7 +359,9 @@ impl RuntimeStore {
             .collect()
     }
 
-    pub fn write_agent(&self, agent: &AgentState) -> Result<()> {
+    /// Fixture setup only. Live agents must use their mutation coordinator.
+    #[doc(hidden)]
+    pub fn write_agent_for_fixture(&self, agent: &AgentState) -> Result<()> {
         self.ensure_writable()?;
         if let Some(storage_agent_id) = self.agent_id.as_deref() {
             anyhow::ensure!(
@@ -350,6 +371,106 @@ impl RuntimeStore {
                 agent.id
             );
         }
-        self.runtime_db.agent_states().upsert(agent)
+        self.runtime_db.agent_states().upsert_for_fixture(agent)
+    }
+}
+
+impl RuntimeStore {
+    /// Pure freezing step: preserve the existing index policy, then move the
+    /// original body into one typed command before the owner ticket begins.
+    pub(crate) fn prepare_input_evidence(
+        &self,
+        scope: crate::runtime::resident_input_evidence::InputEvidenceScope,
+        nonce: String,
+        at: chrono::DateTime<chrono::Utc>,
+        write: crate::runtime_db::prepared_input_evidence::InputEvidenceWrite,
+    ) -> Result<crate::runtime_db::prepared_input_evidence::PreparedInputEvidence> {
+        use crate::runtime_db::prepared_input_evidence::{
+            InputEvidenceWrite as Write, PreparedInputEvidence as Prepared,
+        };
+        self.ensure_writable()?;
+        anyhow::ensure!(
+            self.agent_id
+                .as_deref()
+                .is_none_or(|id| id == scope.agent_id),
+            "prepared evidence differs from its storage scope"
+        );
+        match write {
+            Write::Transcript(record) => Prepared::transcript(scope, nonce, at, record),
+            Write::Tool(record) => {
+                let changes = self.index_outbox.changes_for_tool_execution(&record);
+                Prepared::tool(scope, nonce, at, record, changes)
+            }
+            Write::BriefCreated { brief, event } => {
+                anyhow::ensure!(
+                    self.agent_id.as_deref() == Some(scope.agent_id.as_str()),
+                    "Brief audit owner differs from its storage scope"
+                );
+                let changes = self.index_outbox.changes_for_brief(&brief);
+                Prepared::brief_created(scope, nonce, at, brief, event, changes)
+            }
+        }
+    }
+    #[cfg(test)]
+    pub(crate) fn commit_prepared_input_evidence_with_work_request(
+        &self,
+        prepared: &crate::runtime_db::prepared_input_evidence::PreparedInputEvidence,
+        work_request: &crate::runtime_db::work_snapshot::WorkDomainLoadRequest,
+    ) -> Result<
+        crate::runtime_db::transitions::InputMutationExecution<
+            crate::runtime_db::input_evidence_writes::InputEvidenceCommit<
+                crate::runtime_db::prepared_input_evidence::PreparedEvidenceValue,
+            >,
+        >,
+    > {
+        self.ensure_writable()?;
+        let scope = prepared.primary_scope();
+        anyhow::ensure!(
+            self.agent_id
+                .as_deref()
+                .is_none_or(|id| id == scope.agent_id),
+            "prepared evidence differs from its storage scope"
+        );
+        self.runtime_db
+            .evidence()
+            .commit_prepared_input_evidence_with_work_request(prepared, work_request)
+    }
+    pub(crate) fn commit_prepared_input_evidence_with_task_budget(
+        &self,
+        prepared: &crate::runtime_db::prepared_input_evidence::PreparedInputEvidence,
+        work_request: &crate::runtime_db::work_snapshot::WorkDomainLoadRequest,
+        task_request: &crate::runtime_db::task_snapshot::TaskDomainLoadRequest,
+        ledger: &crate::runtime::input_evidence_budget::InputEvidenceBudgetLedger,
+        input_query_source: Option<
+            &crate::runtime::resident_input_evidence::OriginalInputQuerySource,
+        >,
+        current_query_source: Option<
+            &std::sync::Arc<crate::runtime_db::current_query::CurrentQuerySource>,
+        >,
+    ) -> Result<
+        crate::runtime_db::transitions::InputMutationExecution<
+            crate::runtime_db::input_evidence_writes::InputEvidenceCommit<
+                crate::runtime_db::prepared_input_evidence::PreparedEvidenceValue,
+            >,
+        >,
+    > {
+        self.ensure_writable()?;
+        let scope = prepared.primary_scope();
+        anyhow::ensure!(
+            self.agent_id
+                .as_deref()
+                .is_none_or(|id| id == scope.agent_id),
+            "prepared evidence differs from its storage scope"
+        );
+        self.runtime_db
+            .evidence()
+            .commit_prepared_input_evidence_with_task_budget(
+                prepared,
+                work_request,
+                task_request,
+                ledger,
+                input_query_source,
+                current_query_source,
+            )
     }
 }

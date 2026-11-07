@@ -10,6 +10,7 @@ use std::{
     collections::BTreeMap,
     fs,
     path::{Path, PathBuf},
+    sync::{Arc, Weak},
     time::UNIX_EPOCH,
 };
 use tracing::warn;
@@ -47,15 +48,50 @@ struct FileMetadataFingerprint {
     modified_ns: Option<u128>,
 }
 
+#[derive(Debug, Clone)]
+struct MaterialSnapshot {
+    roots: Weak<Vec<SkillRootRegistration>>,
+    entries: Weak<Vec<SkillCatalogEntry>>,
+    fingerprints: Weak<BTreeMap<PathBuf, RootInputFingerprint>>,
+}
+impl MaterialSnapshot {
+    fn matches(&self, registry: &SkillsRegistry) -> bool {
+        self.roots.as_ptr() == Arc::as_ptr(&registry.roots)
+            && self.entries.as_ptr() == Arc::as_ptr(&registry.entries)
+            && self.fingerprints.as_ptr() == Arc::as_ptr(&registry.root_fingerprints)
+    }
+}
+
 /// Read-only skills registry.
 ///
 /// The registry maintains skill entries from registered roots and provides
 /// a catalog view with precedence resolution (workspace > agent > user).
 #[derive(Debug, Clone, Default)]
 pub struct SkillsRegistry {
-    roots: Vec<SkillRootRegistration>,
+    roots: Arc<Vec<SkillRootRegistration>>,
+    entries: Arc<Vec<SkillCatalogEntry>>,
+    root_fingerprints: Arc<BTreeMap<PathBuf, RootInputFingerprint>>,
+    material: Option<Arc<crate::runtime::input_evidence_budget::BudgetViewGuard>>,
+    material_snapshot: Option<MaterialSnapshot>,
+    // A shared-data candidate owns a new header while retaining the data's original phase.
+    snapshot_material: Option<Arc<crate::runtime::input_evidence_budget::BudgetViewGuard>>,
+}
+
+#[cfg(test)]
+impl PartialEq for SkillsRegistry {
+    fn eq(&self, other: &Self) -> bool {
+        self.roots == other.roots
+            && self.entries == other.entries
+            && self.root_fingerprints == other.root_fingerprints
+    }
+}
+#[cfg(test)]
+impl Eq for SkillsRegistry {}
+
+struct RootScanCandidate {
+    registration: SkillRootRegistration,
     entries: Vec<SkillCatalogEntry>,
-    root_fingerprints: BTreeMap<PathBuf, RootInputFingerprint>,
+    fingerprint: Option<RootInputFingerprint>,
 }
 
 impl SkillsRegistry {
@@ -64,10 +100,96 @@ impl SkillsRegistry {
         Self::default()
     }
 
+    pub(crate) fn same_snapshot(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.roots, &other.roots)
+            && Arc::ptr_eq(&self.entries, &other.entries)
+            && Arc::ptr_eq(&self.root_fingerprints, &other.root_fingerprints)
+    }
+
+    /// Admit COW copies before any candidate mutation, outside the inventory lock.
+    pub(crate) fn admit_candidate(&self) -> Result<()> {
+        if crate::diagnostics::resource_io::ResourceReadMaterial::current()?.is_none() {
+            return Ok(());
+        }
+        use crate::runtime::input_evidence_budget::serialized_bytes;
+        let mut bytes = serialized_bytes(self.roots.as_ref())?
+            .checked_add(serialized_bytes(self.entries.as_ref())?)
+            .and_then(|bytes| bytes.checked_mul(4))
+            .ok_or_else(|| anyhow::anyhow!("skill snapshot material overflow"))?;
+        let mut records = self.roots.len() + self.entries.len() * 8 + 16;
+        for (path, fingerprint) in self.root_fingerprints.iter() {
+            bytes = bytes
+                .checked_add(path.as_os_str().len() as u64 * 4 + 512)
+                .ok_or_else(|| anyhow::anyhow!("skill fingerprint material overflow"))?;
+            for child in &fingerprint.children {
+                bytes = bytes
+                    .checked_add(child.path.as_os_str().len() as u64 * 4 + 512)
+                    .ok_or_else(|| anyhow::anyhow!("skill fingerprint material overflow"))?;
+                records += 8;
+            }
+        }
+        crate::diagnostics::resource_io::charge_owned_metadata(bytes + 4096, records)?;
+        Ok(())
+    }
+    pub(crate) fn retain_material(
+        &mut self,
+        material: Arc<crate::runtime::input_evidence_budget::BudgetViewGuard>,
+    ) {
+        self.material = Some(material);
+        self.material_snapshot = Some(MaterialSnapshot {
+            roots: Arc::downgrade(&self.roots),
+            entries: Arc::downgrade(&self.entries),
+            fingerprints: Arc::downgrade(&self.root_fingerprints),
+        });
+        self.snapshot_material = None;
+    }
+
+    pub(crate) fn has_material(&self) -> bool {
+        let Some(material) = self.material.as_ref() else {
+            return false;
+        };
+        if !self
+            .material_snapshot
+            .as_ref()
+            .is_some_and(|snapshot| snapshot.matches(self))
+        {
+            return false;
+        }
+        match crate::diagnostics::resource_io::ResourceReadMaterial::active_guard() {
+            Ok(Some(active)) => material.shares_ledger(&active),
+            Ok(None) => true,
+            Err(_) => false,
+        }
+    }
+
+    pub(crate) fn retain_shared_material(
+        &mut self,
+        material: Arc<crate::runtime::input_evidence_budget::BudgetViewGuard>,
+    ) -> Result<()> {
+        anyhow::ensure!(
+            self.has_material()
+                && self
+                    .material
+                    .as_ref()
+                    .is_some_and(|data| data.shares_ledger(&material)),
+            "shared skills data has no matching allocation receipt"
+        );
+        self.snapshot_material = Some(material);
+        Ok(())
+    }
+
     /// Register a skill root and scan it for skills.
     pub fn register_root(&mut self, registration: SkillRootRegistration) -> Result<()> {
-        if !registration.root_path.exists() {
-            return Ok(());
+        self.sync_effective_roots(std::iter::once(registration))
+    }
+
+    fn prepare_registration(
+        &self,
+        registration: SkillRootRegistration,
+    ) -> Result<Option<RootScanCandidate>> {
+        crate::diagnostics::resource_io::check_active()?;
+        if !registration.root_path.try_exists()? {
+            return Ok(None);
         }
 
         let root_key = normalize_path(&registration.root_path);
@@ -75,7 +197,8 @@ impl SkillsRegistry {
         let registration_changed = existing_index.is_some_and(|root_index| {
             !same_root_registration(&self.roots[root_index], &registration)
         });
-        let input_fingerprint = Self::root_input_fingerprint(&registration);
+        let input_fingerprint = Self::root_input_fingerprint(&registration)?;
+        crate::diagnostics::resource_io::check_active()?;
         let input_changed = match (
             self.root_fingerprints.get(&root_key),
             input_fingerprint.as_ref(),
@@ -84,19 +207,10 @@ impl SkillsRegistry {
             _ => true,
         };
 
-        match existing_index {
-            Some(root_index) if registration_changed => {
-                self.roots[root_index] = registration.clone();
-                self.root_fingerprints.remove(&root_key);
-            }
-            None => self.upsert_root(registration.clone()),
-            Some(_) => {}
-        }
-
         if registration_changed || input_changed {
-            self.refresh_root(&registration.root_path)?;
+            return Self::prepare_root_scan(registration, input_fingerprint).map(Some);
         }
-        Ok(())
+        Ok(None)
     }
 
     /// Synchronize lifecycle-owned effective roots into the registry snapshot.
@@ -109,8 +223,29 @@ impl SkillsRegistry {
         &mut self,
         registrations: impl IntoIterator<Item = SkillRootRegistration>,
     ) -> Result<()> {
+        let mut candidates: Vec<RootScanCandidate> = Vec::new();
         for registration in registrations {
-            self.register_root(registration)?;
+            // An effective set may name one path as both agent and workspace
+            // scope. Its last registration wins, even when unchanged from live.
+            candidates.retain(|candidate| {
+                normalize_path(&candidate.registration.root_path)
+                    != normalize_path(&registration.root_path)
+            });
+            let candidate = self.prepare_registration(registration);
+            crate::diagnostics::resource_io::check_active()?;
+            if let Some(candidate) = candidate? {
+                candidates.push(candidate);
+            }
+        }
+        // Unchanged, budgeted roots keep their original data owner. Admit
+        // initial data and actual COW copies before changing the snapshot.
+        crate::diagnostics::resource_io::check_active()?;
+        if !candidates.is_empty() || !self.has_material() {
+            self.admit_candidate()?;
+        }
+        // No shared root, entry or fingerprint changes until every scan is admitted.
+        for candidate in candidates {
+            self.install_root_scan(candidate);
         }
         Ok(())
     }
@@ -120,9 +255,9 @@ impl SkillsRegistry {
     /// This keeps shared registries scoped to the current caller's effective
     /// roots instead of accumulating stale roots from other agents or workspaces.
     pub fn replace_roots(&mut self, registrations: Vec<SkillRootRegistration>) -> Result<()> {
-        self.roots.clear();
-        self.entries.clear();
-        self.root_fingerprints.clear();
+        Arc::make_mut(&mut self.roots).clear();
+        Arc::make_mut(&mut self.entries).clear();
+        Arc::make_mut(&mut self.root_fingerprints).clear();
         for registration in registrations {
             if registration.root_path.exists() {
                 self.upsert_root(registration);
@@ -134,32 +269,70 @@ impl SkillsRegistry {
 
     /// Refresh a single registered root, replacing that root's snapshot entries.
     ///
-    /// Scan failures are recorded on the root and remove stale entries for that
-    /// root, but do not make the registry operation fail for catalog readers.
+    /// Ordinary scan failures remove stale entries; a resource quota failure
+    /// rejects the candidate without changing the shared root snapshot.
     pub fn refresh_root(&mut self, root_path: &Path) -> Result<bool> {
         let Some(root_index) = self.root_index(root_path) else {
             return Ok(false);
         };
         let registration = self.roots[root_index].clone();
         let input_fingerprint_before = Self::root_input_fingerprint(&registration);
-        let (entries, scan_status) = Self::scan_root(&registration);
-        let input_fingerprint_after = Self::root_input_fingerprint(&registration);
-
-        self.entries
-            .retain(|entry| !entry.path.starts_with(&registration.root_path));
-        self.entries.extend(entries);
-        self.roots[root_index].scan_status = scan_status;
-        let root_key = normalize_path(&registration.root_path);
-        if input_fingerprint_before == input_fingerprint_after {
-            if let Some(fingerprint) = input_fingerprint_after {
-                self.root_fingerprints.insert(root_key, fingerprint);
-            } else {
-                self.root_fingerprints.remove(&root_key);
-            }
-        } else {
-            self.root_fingerprints.remove(&root_key);
-        }
+        crate::diagnostics::resource_io::check_active()?;
+        let candidate = Self::prepare_root_scan(registration, input_fingerprint_before?);
+        crate::diagnostics::resource_io::check_active()?;
+        let candidate = candidate?;
+        self.install_root_scan(candidate);
         Ok(true)
+    }
+
+    fn prepare_root_scan(
+        mut registration: SkillRootRegistration,
+        input_fingerprint_before: Option<RootInputFingerprint>,
+    ) -> Result<RootScanCandidate> {
+        crate::diagnostics::resource_io::charge_owned_metadata(
+            std::mem::size_of::<RootScanCandidate>() as u64,
+            1,
+        )?;
+        let (entries, scan_status) = Self::scan_root(&registration);
+        crate::diagnostics::resource_io::check_active()?;
+        let input_fingerprint_after = Self::root_input_fingerprint(&registration)?;
+        crate::diagnostics::resource_io::check_active()?;
+        registration.scan_status = scan_status;
+        Ok(RootScanCandidate {
+            registration,
+            entries,
+            fingerprint: if input_fingerprint_before == input_fingerprint_after {
+                input_fingerprint_after
+            } else {
+                None
+            },
+        })
+    }
+
+    fn install_root_scan(&mut self, candidate: RootScanCandidate) {
+        let RootScanCandidate {
+            mut registration,
+            entries,
+            fingerprint,
+        } = candidate;
+        Arc::make_mut(&mut self.entries)
+            .retain(|entry| !entry.path.starts_with(&registration.root_path));
+        Arc::make_mut(&mut self.entries).extend(entries);
+        let root_key = normalize_path(&registration.root_path);
+        if let Some(index) = self.root_index(&registration.root_path) {
+            if same_root_registration(&self.roots[index], &registration) {
+                std::mem::swap(
+                    &mut registration.watch_status,
+                    &mut Arc::make_mut(&mut self.roots)[index].watch_status,
+                );
+            }
+        }
+        self.upsert_root(registration);
+        if let Some(fingerprint) = fingerprint {
+            Arc::make_mut(&mut self.root_fingerprints).insert(root_key, fingerprint);
+        } else {
+            Arc::make_mut(&mut self.root_fingerprints).remove(&root_key);
+        }
     }
 
     /// Rescan all registered roots and replace the complete registry snapshot.
@@ -168,21 +341,21 @@ impl SkillsRegistry {
     /// catalog reads fail.
     pub fn rescan(&mut self) {
         let mut next_entries = Vec::new();
-        self.root_fingerprints.clear();
-        for root in &mut self.roots {
-            let input_fingerprint_before = Self::root_input_fingerprint(root);
+        Arc::make_mut(&mut self.root_fingerprints).clear();
+        for root in Arc::make_mut(&mut self.roots) {
+            let input_fingerprint_before = Self::root_input_fingerprint(root).ok().flatten();
             let (entries, scan_status) = Self::scan_root(root);
-            let input_fingerprint_after = Self::root_input_fingerprint(root);
+            let input_fingerprint_after = Self::root_input_fingerprint(root).ok().flatten();
             next_entries.extend(entries);
             root.scan_status = scan_status;
             if input_fingerprint_before == input_fingerprint_after {
                 if let Some(fingerprint) = input_fingerprint_after {
-                    self.root_fingerprints
+                    Arc::make_mut(&mut self.root_fingerprints)
                         .insert(normalize_path(&root.root_path), fingerprint);
                 }
             }
         }
-        self.entries = next_entries;
+        self.entries = Arc::new(next_entries);
     }
 
     /// Record watcher setup or delivery failure without affecting catalog reads.
@@ -200,7 +373,8 @@ impl SkillsRegistry {
             error = %error,
             "skill root watcher failed; registry will rely on manual rescan"
         );
-        self.roots[root_index].watch_status = SkillRootWatchStatus::Failed { error };
+        Arc::make_mut(&mut self.roots)[root_index].watch_status =
+            SkillRootWatchStatus::Failed { error };
         true
     }
 
@@ -209,15 +383,15 @@ impl SkillsRegistry {
         let Some(root_index) = self.root_index(root_path.as_ref()) else {
             return false;
         };
-        self.roots[root_index].watch_status = SkillRootWatchStatus::Watching;
+        Arc::make_mut(&mut self.roots)[root_index].watch_status = SkillRootWatchStatus::Watching;
         true
     }
 
     fn upsert_root(&mut self, registration: SkillRootRegistration) {
         if let Some(root_index) = self.root_index(&registration.root_path) {
-            self.roots[root_index] = registration;
+            Arc::make_mut(&mut self.roots)[root_index] = registration;
         } else {
-            self.roots.push(registration);
+            Arc::make_mut(&mut self.roots).push(registration);
         }
     }
 
@@ -230,12 +404,17 @@ impl SkillsRegistry {
 
     fn root_input_fingerprint(
         registration: &SkillRootRegistration,
-    ) -> Option<RootInputFingerprint> {
+    ) -> Result<Option<RootInputFingerprint>> {
         let mut children = Vec::new();
-        for child in fs::read_dir(&registration.root_path).ok()? {
-            let child = child.ok()?;
+        let entries = match crate::diagnostics::io_probe::read_dir(&registration.root_path) {
+            Ok(entries) => entries,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            Err(error) => return Err(error.into()),
+        };
+        for child in entries {
+            let child = child?;
             let child_path = child.path();
-            let file_type = child.file_type().ok()?;
+            let file_type = child.file_type()?;
             let kind = if file_type.is_file() {
                 RootChildKind::File
             } else if file_type.is_dir() {
@@ -250,6 +429,7 @@ impl SkillsRegistry {
             } else {
                 None
             };
+            crate::diagnostics::resource_io::charge_owned_metadata(512, 8)?;
             children.push(RootChildFingerprint {
                 path: child_path,
                 kind,
@@ -257,11 +437,11 @@ impl SkillsRegistry {
             });
         }
         children.sort_by(|left, right| left.path.cmp(&right.path));
-        Some(RootInputFingerprint {
+        Ok(Some(RootInputFingerprint {
             source_kind: registration.source_kind.clone(),
             owner_agent_id: registration.owner_agent_id.clone(),
             children,
-        })
+        }))
     }
 
     fn scan_root(
@@ -331,11 +511,26 @@ impl SkillsRegistry {
                 if existing.map_or(true, |existing| {
                     crate::skills::skill_wins_catalog_selection(entry, existing)
                 }) {
+                    if crate::diagnostics::resource_io::charge_owned_metadata(
+                        entry.name.len() as u64
+                            + std::mem::size_of::<(String, &SkillCatalogEntry)>() as u64,
+                        4,
+                    )
+                    .is_err()
+                    {
+                        return acc;
+                    }
                     acc.insert(entry.name.clone(), entry);
                 }
                 acc
             });
-        selected_by_name.into_values().cloned().collect()
+        selected_by_name
+            .into_values()
+            .filter_map(|entry| {
+                crate::diagnostics::resource_io::charge_skill_catalog_entry(entry).ok()?;
+                Some(entry.clone())
+            })
+            .collect()
     }
 
     /// Get all registered roots.
@@ -350,11 +545,11 @@ fn same_root_registration(left: &SkillRootRegistration, right: &SkillRootRegistr
         && normalize_path(&left.root_path) == normalize_path(&right.root_path)
 }
 
-fn skill_file_fingerprint(path: &Path) -> Option<Option<FileMetadataFingerprint>> {
+fn skill_file_fingerprint(path: &Path) -> Result<Option<FileMetadataFingerprint>> {
     match fs::metadata(path) {
-        Ok(metadata) => Some(Some(file_metadata_fingerprint(&metadata))),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Some(None),
-        Err(_) => None,
+        Ok(metadata) => Ok(Some(file_metadata_fingerprint(&metadata))),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(error.into()),
     }
 }
 
@@ -373,6 +568,7 @@ fn normalize_path(path: &Path) -> PathBuf {
     path.components().collect()
 }
 
+#[cfg(holon_lib_test_shard = "c")]
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -422,7 +618,7 @@ mod tests {
     fn test_catalog_precedence() {
         let mut registry = SkillsRegistry::new();
 
-        registry.entries.push(SkillCatalogEntry {
+        Arc::make_mut(&mut registry.entries).push(SkillCatalogEntry {
             skill_id: "user_skill".to_string(),
             root_id: "user_global:test-root".to_string(),
             skill_dir: "test".to_string(),
@@ -432,7 +628,7 @@ mod tests {
             scope: SkillScope::UserGlobal,
         });
 
-        registry.entries.push(SkillCatalogEntry {
+        Arc::make_mut(&mut registry.entries).push(SkillCatalogEntry {
             skill_id: "agent_skill".to_string(),
             root_id: "agent_home:test-root".to_string(),
             skill_dir: "test".to_string(),
@@ -442,7 +638,7 @@ mod tests {
             scope: SkillScope::Agent,
         });
 
-        registry.entries.push(SkillCatalogEntry {
+        Arc::make_mut(&mut registry.entries).push(SkillCatalogEntry {
             skill_id: "workspace_skill".to_string(),
             root_id: "workspace:test-root".to_string(),
             skill_dir: "test".to_string(),
@@ -462,7 +658,7 @@ mod tests {
     fn test_catalog_with_filter() {
         let mut registry = SkillsRegistry::new();
 
-        registry.entries.push(SkillCatalogEntry {
+        Arc::make_mut(&mut registry.entries).push(SkillCatalogEntry {
             skill_id: "skill1".to_string(),
             root_id: "agent_home:test-root".to_string(),
             skill_dir: "skill_a".to_string(),
@@ -472,7 +668,7 @@ mod tests {
             scope: SkillScope::Agent,
         });
 
-        registry.entries.push(SkillCatalogEntry {
+        Arc::make_mut(&mut registry.entries).push(SkillCatalogEntry {
             skill_id: "skill2".to_string(),
             root_id: "user_global:test-root".to_string(),
             skill_dir: "skill_b".to_string(),
@@ -523,7 +719,7 @@ mod tests {
         let registration = registration(root.clone(), SkillRootSourceKind::UserGlobal);
         let mut registry = SkillsRegistry::new();
         registry.register_root(registration.clone()).unwrap();
-        registry.entries[0].description = "cached".to_string();
+        Arc::make_mut(&mut registry.entries)[0].description = "cached".to_string();
 
         registry
             .sync_effective_roots([registration.clone()])
@@ -622,6 +818,48 @@ mod tests {
     }
 
     #[test]
+    fn sync_duplicate_effective_path_keeps_the_last_registration() {
+        let temp = TempDir::new().unwrap();
+        let root = temp.path().join("skills");
+        write_skill(&root, "demo", "demo", "original");
+        let agent = registration(root.clone(), SkillRootSourceKind::AgentHome);
+        let workspace = registration(root.clone(), SkillRootSourceKind::Workspace);
+        let mut registry = SkillsRegistry::new();
+        registry
+            .sync_effective_roots([agent.clone(), workspace.clone()])
+            .unwrap();
+        assert_eq!(registry.catalog()[0].scope, SkillScope::Workspace);
+        assert!(registry.record_watcher_started(&root));
+        let before = registry.clone();
+        registry.sync_effective_roots([agent, workspace]).unwrap();
+        assert_eq!(registry, before);
+    }
+
+    #[test]
+    fn content_refresh_preserves_watching_and_failed_registration_status() {
+        for failed in [false, true] {
+            let temp = TempDir::new().unwrap();
+            let root = temp.path().join("skills");
+            write_skill(&root, "demo", "demo", "original");
+            let registration = registration(root.clone(), SkillRootSourceKind::AgentHome);
+            let mut registry = SkillsRegistry::new();
+            registry.register_root(registration.clone()).unwrap();
+            assert!(registry.record_watcher_started(&root));
+            if failed {
+                assert!(registry.record_watcher_failure(&root, "watch backend failed"));
+            }
+            let status = registry.roots()[0].watch_status.clone();
+            write_skill(&root, "demo", "demo", "successfully refreshed content");
+            registry.sync_effective_roots([registration]).unwrap();
+            assert_eq!(
+                registry.catalog()[0].description,
+                "successfully refreshed content"
+            );
+            assert_eq!(registry.roots()[0].watch_status, status);
+        }
+    }
+
+    #[test]
     fn watcher_failure_is_recorded_without_changing_catalog() {
         let temp = TempDir::new().unwrap();
         let root = temp.path().join("skills");
@@ -640,5 +878,118 @@ mod tests {
             registry.roots()[0].watch_status,
             SkillRootWatchStatus::Failed { .. }
         ));
+    }
+}
+
+#[cfg(all(test, holon_lib_test_shard = "c"))]
+mod shared_candidate_budget_tests {
+    use super::*;
+    use crate::{
+        config::StateMemoryLimits,
+        diagnostics::resource_io::ResourceReadMaterial,
+        runtime::{
+            input_evidence_budget::InputEvidenceBudgetLedger,
+            resident_input_evidence::InputEvidenceScope,
+        },
+    };
+
+    #[test]
+    fn unchanged_shared_inventory_keeps_data_guard_without_recharging_foreign_entries() -> Result<()>
+    {
+        let dir = tempfile::tempdir()?;
+        let skill = dir.path().join("local");
+        fs::create_dir(&skill)?;
+        fs::write(
+            skill.join("SKILL.md"),
+            "---\nname: local\ndescription: local skill\n---\ncontent",
+        )?;
+        let registration = SkillRootRegistration {
+            root_path: dir.path().into(),
+            source_kind: SkillRootSourceKind::AgentHome,
+            owner_agent_id: Some("test".into()),
+            scan_status: Default::default(),
+            watch_status: Default::default(),
+        };
+        let mut registry = SkillsRegistry::new();
+        registry.register_root(registration.clone())?;
+        let sample = registry.entries[0].clone();
+        for i in 0..400 {
+            let mut foreign = sample.clone();
+            foreign.skill_id = format!("foreign:{i}");
+            foreign.path = PathBuf::from(format!("/foreign/{i}/SKILL.md"));
+            Arc::make_mut(&mut registry.entries).push(foreign);
+        }
+        let ledger = InputEvidenceBudgetLedger::new(StateMemoryLimits::default())?;
+        let scope = InputEvidenceScope {
+            agent_id: "test".into(),
+            identity_incarnation: 1,
+        };
+        let original = ResourceReadMaterial::new(&ledger, &scope)?;
+        original.read(|| registry.admit_candidate())?;
+        registry.retain_material(original.guard()?);
+        let original_weak = Arc::downgrade(&original.guard()?);
+        let base = registry.clone();
+        let phase = ResourceReadMaterial::with_test_limits(&ledger, &scope, 1024 * 1024, 2048)?;
+        phase.read(|| registry.sync_effective_roots([registration.clone()]))?;
+        assert!(registry.same_snapshot(&base));
+        registry.retain_shared_material(phase.guard()?)?;
+        let header_weak = Arc::downgrade(&phase.guard()?);
+        drop((original, phase));
+        assert!(original_weak.upgrade().is_some());
+        assert!(header_weak.upgrade().is_some());
+
+        // A shared clone lacking a data receipt cannot claim free initial data.
+        let mut unbudgeted = registry.clone();
+        unbudgeted.material = None;
+        let refused = ResourceReadMaterial::with_test_limits(&ledger, &scope, 1024 * 1024, 2048)?;
+        assert!(refused
+            .read(|| unbudgeted.sync_effective_roots([registration.clone()]))
+            .is_err());
+        drop((unbudgeted, refused));
+
+        let foreign_ledger = InputEvidenceBudgetLedger::new(StateMemoryLimits::default())?;
+        let foreign =
+            ResourceReadMaterial::with_test_limits(&foreign_ledger, &scope, 1024 * 1024, 2048)?;
+        assert!(registry.retain_shared_material(foreign.guard()?).is_err());
+        assert!(foreign
+            .read(|| registry.sync_effective_roots([registration.clone()]))
+            .is_err());
+        drop(foreign);
+        assert_eq!(foreign_ledger.report()?.observed_bytes, 0);
+
+        // An out-of-phase mutation cannot reuse an old receipt for new data.
+        let mut changed = registry.clone();
+        Arc::make_mut(&mut changed.entries).push(sample);
+        assert!(!changed.has_material());
+        let refused = ResourceReadMaterial::with_test_limits(&ledger, &scope, 1024 * 1024, 2048)?;
+        assert!(refused
+            .read(|| changed.sync_effective_roots([registration.clone()]))
+            .is_err());
+        drop((changed, refused));
+
+        // A real mutation must still admit its COW copies before installation.
+        fs::write(
+            skill.join("SKILL.md"),
+            "---\nname: changed\ndescription: changed skill\n---\nchanged",
+        )?;
+        let refused = ResourceReadMaterial::with_test_limits(&ledger, &scope, 1024 * 1024, 2048)?;
+        assert!(refused
+            .read(|| registry.sync_effective_roots([registration]))
+            .is_err());
+        assert!(registry.same_snapshot(&base));
+        drop(refused);
+        let next = ResourceReadMaterial::new(&ledger, &scope)?;
+        let mut replacement = registry.clone();
+        replacement.retain_shared_material(next.guard()?)?;
+        let next_weak = Arc::downgrade(&next.guard()?);
+        drop((registry, base, next));
+        assert!(header_weak.upgrade().is_none());
+        assert!(original_weak.upgrade().is_some());
+        assert!(next_weak.upgrade().is_some());
+        drop(replacement);
+        assert!(original_weak.upgrade().is_none());
+        assert!(next_weak.upgrade().is_none());
+        assert_eq!(ledger.report()?.observed_bytes, 0);
+        Ok(())
     }
 }

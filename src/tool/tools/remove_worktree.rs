@@ -115,6 +115,7 @@ pub(crate) async fn execute(
     serialize_success(NAME, &removal)
 }
 
+#[cfg(holon_lib_test_shard = "c")]
 #[cfg(test)]
 mod tests {
     use super::validate_path_selector;

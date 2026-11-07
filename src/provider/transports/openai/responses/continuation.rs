@@ -5,11 +5,18 @@ pub(in super::super) fn request_shape_without_input(
     body: &Value,
     request: &ProviderTurnRequest,
 ) -> OpenAiRequestShape {
-    let mut wire_shape = body.clone();
-    if let Some(object) = wire_shape.as_object_mut() {
-        object.remove("input");
-        object.remove("previous_response_id");
-    }
+    let wire_shape = body.as_object().map_or_else(
+        || body.clone(),
+        |object| {
+            Value::Object(
+                object
+                    .iter()
+                    .filter(|(key, _)| !matches!(key.as_str(), "input" | "previous_response_id"))
+                    .map(|(key, value)| (key.clone(), value.clone()))
+                    .collect(),
+            )
+        },
+    );
     OpenAiRequestShape {
         wire_shape,
         prompt_frame: request.prompt_frame.clone(),
@@ -170,7 +177,7 @@ pub(in super::super) fn openai_item_stable_id(item: &Value) -> Option<String> {
 }
 
 pub(in super::super) fn openai_item_hash(item: &Value) -> String {
-    sha256_hex(canonical_json(item).as_bytes())
+    canonical_json_hash(item)
 }
 
 pub(in super::super) fn latest_openai_compaction_index(items: &[Value]) -> Option<usize> {
@@ -219,16 +226,25 @@ pub(in super::super) fn update_openai_continuation(
     provider_input: Vec<Value>,
     prior_replay_loss_reason: Option<String>,
     parsed: &ParsedOpenAiResponse,
-) {
+    material: &crate::provider::ProviderRequestMaterial,
+) -> Result<()> {
     let Some(scope) = scope else {
-        return;
+        return Ok(());
     };
+    material.read(|| {
+        crate::diagnostics::resource_io::admit_cloned_value(&provider_input)?;
+        crate::diagnostics::resource_io::admit_cloned_value(&parsed.output_items)?;
+        crate::diagnostics::resource_io::admit_cloned_value(&parsed.output_items)?;
+        Ok(())
+    })?;
+    admit_openai_window_header(material)?;
+    let response_id = material.cloned(&parsed.response_id)?;
     let mut state = lock_openai_continuation(continuation);
     let latest_input_tokens = parsed.response.input_tokens;
-    let next = match (parsed.response_id.as_ref(), parsed.output_items.is_empty()) {
+    let next = match (response_id, parsed.output_items.is_empty()) {
         (Some(response_id), false) => {
             state.next_generation = state.next_generation.saturating_add(1);
-            let response_id = Some(response_id.clone());
+            let response_id = Some(response_id);
             let mut items = provider_input
                 .into_iter()
                 .map(|item| canonicalize_openai_provider_item(&item))
@@ -242,6 +258,7 @@ pub(in super::super) fn update_openai_continuation(
             let mut append_match_items = append_match_input;
             append_match_items.extend(openai_append_match_output_items(&parsed.output_items));
             Some(OpenAiProviderWindow {
+                material: material.clone(),
                 response_id,
                 request_shape,
                 latest_compaction_index: latest_openai_compaction_index(&items),
@@ -261,10 +278,11 @@ pub(in super::super) fn update_openai_continuation(
         _ => None,
     };
     if let Some(next) = next {
-        state.windows.insert(scope, next);
+        state.windows.insert(scope, Arc::new(next));
     } else {
         state.windows.remove(&scope);
     }
+    Ok(())
 }
 
 pub(in super::super) fn openai_append_match_output_items(output_items: &[Value]) -> Vec<Value> {

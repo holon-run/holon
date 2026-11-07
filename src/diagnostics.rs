@@ -7,6 +7,8 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 pub mod attribution;
+pub mod io_probe;
+pub(crate) mod resource_io;
 
 const HISTOGRAM_UPPER_BOUNDS_MS: [u64; 27] = [
     0,
@@ -1198,6 +1200,7 @@ fn histogram_quantile(histogram: &[u64; HISTOGRAM_UPPER_BOUNDS_MS.len()], percen
     u64::MAX
 }
 
+#[cfg(holon_lib_test_shard = "d")]
 #[cfg(test)]
 mod tests {
     use super::*;

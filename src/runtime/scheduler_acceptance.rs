@@ -318,6 +318,11 @@ async fn seed_scheduler_claim_admission_restart_fixture(
                 .await?
             {
                 scheduler_executor::RunLoopPoll::Message(scheduled) => scheduled,
+                scheduler_executor::RunLoopPoll::ContextPreparationInterrupted => {
+                    return Err(anyhow!(
+                        "scheduler claim restart replay context preparation was interrupted"
+                    ));
+                }
                 scheduler_executor::RunLoopPoll::Idle
                 | scheduler_executor::RunLoopPoll::AuthorityBlocked => {
                     return Err(anyhow!(
@@ -556,6 +561,11 @@ async fn seed_scheduler_waiting_work(
         .await?
     {
         scheduler_executor::RunLoopPoll::Message(scheduled) => scheduled,
+        scheduler_executor::RunLoopPoll::ContextPreparationInterrupted => {
+            return Err(anyhow!(
+                "scheduler waiting restart fixture context preparation was interrupted"
+            ));
+        }
         scheduler_executor::RunLoopPoll::Idle
         | scheduler_executor::RunLoopPoll::AuthorityBlocked => {
             return Err(anyhow!(
@@ -601,9 +611,10 @@ async fn seed_scheduler_waiting_work(
     turn_record.terminal = Some(TurnTerminalSummary::from_terminal(&terminal));
     let terminal_transition = super::turn::TurnTerminalTransition {
         terminal,
-        turn_record,
+        turn_record: runtime.own_produced_turn_record(turn_record).await?,
         prepared_work_item_completion: None,
         prepared_wait_for: None,
+        provider_recovery_message: None,
         terminal_tool_executions: Vec::new(),
     };
     let task_id = format!("scheduler-restart-task-{agent_id}");
@@ -618,10 +629,10 @@ async fn seed_scheduler_waiting_work(
         )
         .await?;
     {
-        let mut guard = runtime.inner.agent.lock().await;
+        let mut guard = runtime.begin_mutation().await?;
         scheduler::apply_idle_projection(&mut guard.state, &runtime.inner.storage)?;
         guard.current_run_abort = None;
-        guard.persist_state(&runtime.inner.storage)?;
+        guard.persist_state(&runtime.inner.storage).await?;
     }
     if let Some(fault) = settlement_fault {
         runtime.inject_next_acceptance_transition_fault(fault)?;
@@ -761,10 +772,14 @@ fn execution_work_status_name(
 }
 
 async fn finish_scheduler_acceptance_run(runtime: &RuntimeHandle) -> Result<()> {
-    let mut guard = runtime.inner.agent.lock().await;
+    let mut guard = runtime.begin_mutation().await?;
     scheduler::apply_idle_projection(&mut guard.state, &runtime.inner.storage)?;
     guard.current_run_abort = None;
-    guard.persist_state(&runtime.inner.storage)
+    if guard.state == guard.last_persisted_state {
+        guard.install_transient().await
+    } else {
+        guard.persist_state(&runtime.inner.storage).await
+    }
 }
 
 async fn scheduler_acceptance_terminal_transition(
@@ -802,9 +817,10 @@ async fn scheduler_acceptance_terminal_transition(
     turn_record.terminal = Some(TurnTerminalSummary::from_terminal(&terminal));
     Ok(super::turn::TurnTerminalTransition {
         terminal,
-        turn_record,
+        turn_record: runtime.own_produced_turn_record(turn_record).await?,
         prepared_work_item_completion: None,
         prepared_wait_for: None,
+        provider_recovery_message: None,
         terminal_tool_executions: Vec::new(),
     })
 }
@@ -893,6 +909,11 @@ async fn claim_scheduler_message(
         .await?
     {
         scheduler_executor::RunLoopPoll::Message(scheduled) => scheduled,
+        scheduler_executor::RunLoopPoll::ContextPreparationInterrupted => {
+            return Err(anyhow!(
+                "scheduler restart fixture context preparation was interrupted"
+            ));
+        }
         scheduler_executor::RunLoopPoll::Idle
         | scheduler_executor::RunLoopPoll::AuthorityBlocked => {
             return Err(anyhow!(
@@ -1403,6 +1424,11 @@ async fn seed_scheduler_wait_trigger_restart_fixture(
             .await?
         {
             scheduler_executor::RunLoopPoll::Message(scheduled) => scheduled,
+            scheduler_executor::RunLoopPoll::ContextPreparationInterrupted => {
+                return Err(anyhow!(
+                    "scheduler wait trigger replay context preparation was interrupted"
+                ));
+            }
             scheduler_executor::RunLoopPoll::Idle
             | scheduler_executor::RunLoopPoll::AuthorityBlocked => {
                 return Err(anyhow!(
@@ -1628,6 +1654,11 @@ async fn seed_scheduler_post_commit_notification_restart_fixture(
             .await?
         {
             scheduler_executor::RunLoopPoll::Message(scheduled) => scheduled,
+            scheduler_executor::RunLoopPoll::ContextPreparationInterrupted => {
+                return Err(anyhow!(
+                    "scheduler post-commit replay context preparation was interrupted"
+                ));
+            }
             scheduler_executor::RunLoopPoll::Idle
             | scheduler_executor::RunLoopPoll::AuthorityBlocked => {
                 return Err(anyhow!(
@@ -2050,6 +2081,11 @@ pub async fn seed_scheduler_terminal_recovery_fixture(
         .await?
     {
         scheduler_executor::RunLoopPoll::Message(scheduled) => scheduled,
+        scheduler_executor::RunLoopPoll::ContextPreparationInterrupted => {
+            return Err(anyhow!(
+                "scheduler recovery fixture context preparation was interrupted"
+            ));
+        }
         scheduler_executor::RunLoopPoll::Idle
         | scheduler_executor::RunLoopPoll::AuthorityBlocked => {
             return Err(anyhow!(
@@ -2111,11 +2147,11 @@ pub async fn seed_scheduler_terminal_recovery_fixture(
     turn.terminal = Some(TurnTerminalSummary::from_terminal(&terminal));
     runtime.inner.storage.append_turn(&turn)?;
 
-    let mut stopped = runtime.agent_state().await?;
-    stopped.status = AgentStatus::Stopped;
-    stopped.current_run_id = None;
-    stopped.pending = 0;
-    runtime.inner.storage.write_agent(&stopped)?;
+    let mut stopped = runtime.begin_mutation().await?;
+    stopped.state.status = AgentStatus::Stopped;
+    stopped.state.current_run_id = None;
+    stopped.state.pending = 0;
+    stopped.persist_state(&runtime.inner.storage).await?;
 
     Ok(SchedulerTerminalRecoveryFixture {
         agent_id: agent_id.to_string(),

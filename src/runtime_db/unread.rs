@@ -7,10 +7,12 @@ use serde::{Deserialize, Serialize};
 use std::borrow::Cow;
 use std::time::Instant;
 
+#[cfg(holon_lib_test_shard = "b")]
 #[cfg(test)]
 #[path = "unread_scope_tests.rs"]
 mod scope_tests;
 
+#[cfg(holon_lib_test_shard = "b")]
 #[cfg(test)]
 #[path = "unread_fast_path_tests.rs"]
 mod fast_path_tests;

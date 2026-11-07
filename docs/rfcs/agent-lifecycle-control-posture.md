@@ -281,6 +281,10 @@ This RFC preserves the scheduler RFC boundary:
 `decide_next_action` should produce `Stop` or a liveness-only no-op decision and
 must not produce `StartModelTurn`, `ReduceMessageOnly`, or `EmitSystemTick`.
 
+Sleep commits must recheck this gate under the mutation owner. A completed turn's
+late cleanup must not overwrite `Stopped` with `Asleep`, append sleep-transition
+evidence, or register a session-owned sleep wakeup after Stop has committed.
+
 `Start` does not bypass the scheduler. It changes lifecycle posture to runnable
 and notifies the run loop. The next actual action must still come from
 `SchedulerProjection -> decide_next_action -> execute`.

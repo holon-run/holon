@@ -43,6 +43,7 @@ use ratatui::{backend::TestBackend, layout::Rect, Terminal};
 use serde_json::json;
 use std::{path::PathBuf, time::Instant};
 
+#[cfg(holon_lib_test_shard = "d")]
 mod startup;
 
 pub(super) fn test_config() -> AppConfig {
@@ -102,6 +103,7 @@ pub(super) fn test_config() -> AppConfig {
     }
 }
 
+#[cfg(holon_lib_test_shard = "d")]
 #[test]
 fn local_tui_restores_persisted_selected_agent_on_initial_agent_list() {
     let config = test_config();
@@ -123,6 +125,7 @@ fn local_tui_restores_persisted_selected_agent_on_initial_agent_list() {
     assert_eq!(app.selected_agent_id(), Some("beta"));
 }
 
+#[cfg(holon_lib_test_shard = "d")]
 #[test]
 fn missing_persisted_agent_falls_back_to_default_agent() {
     let config = test_config();
@@ -142,6 +145,7 @@ fn missing_persisted_agent_falls_back_to_default_agent() {
     assert_eq!(app.selected_agent_id(), Some("default"));
 }
 
+#[cfg(holon_lib_test_shard = "d")]
 #[test]
 fn remote_tui_state_scope_uses_hashed_connect_target_without_token() {
     let config = test_config();
@@ -166,6 +170,7 @@ fn remote_tui_state_scope_uses_hashed_connect_target_without_token() {
     assert!(!raw.contains("example.test"));
 }
 
+#[cfg(holon_lib_test_shard = "d")]
 #[test]
 fn recording_selected_agent_preserves_selection() {
     let config = test_config();
@@ -589,6 +594,7 @@ fn rendered_buffer_rows(terminal: &Terminal<TestBackend>) -> Vec<String> {
         .collect()
 }
 
+#[cfg(holon_lib_test_shard = "d")]
 #[test]
 fn operator_origin_detection_accepts_structured_origin() {
     assert!(is_operator_origin_value(&json!({
@@ -601,6 +607,7 @@ fn operator_origin_detection_accepts_structured_origin() {
     })));
 }
 
+#[cfg(holon_lib_test_shard = "d")]
 #[test]
 fn collect_chat_items_does_not_write_presentation_debug_log() {
     let client = LocalClient::new(test_config()).unwrap();
@@ -631,6 +638,7 @@ fn collect_chat_items_does_not_write_presentation_debug_log() {
     assert!(!app.log_writer.root().join("presentation.jsonl").exists());
 }
 
+#[cfg(holon_lib_test_shard = "d")]
 #[test]
 fn collect_chat_items_includes_local_command_outputs() {
     let client = LocalClient::new(test_config()).unwrap();
@@ -660,6 +668,7 @@ fn collect_chat_items_includes_local_command_outputs() {
     )));
 }
 
+#[cfg(holon_lib_test_shard = "d")]
 #[test]
 fn header_view_model_shows_agent_status_without_contract() {
     let client = LocalClient::new(test_config()).unwrap();
@@ -679,6 +688,7 @@ fn header_view_model_shows_agent_status_without_contract() {
     assert!(!view_model.line.contains("public_named"));
 }
 
+#[cfg(holon_lib_test_shard = "d")]
 #[test]
 fn header_view_model_prefers_operator_waiting_label() {
     let client = LocalClient::new(test_config()).unwrap();
@@ -698,6 +708,7 @@ fn header_view_model_prefers_operator_waiting_label() {
     assert_eq!(view_model.line, "holon-dev  waiting for you");
 }
 
+#[cfg(holon_lib_test_shard = "d")]
 #[test]
 fn statusbar_view_model_shows_workspace_label_execution_root_and_model() {
     let client = LocalClient::new(test_config()).unwrap();
@@ -744,6 +755,7 @@ fn statusbar_view_model_shows_workspace_label_execution_root_and_model() {
     assert!(!view_model.context_line.contains("model:"));
 }
 
+#[cfg(holon_lib_test_shard = "d")]
 #[test]
 fn statusbar_view_model_converges_from_workspace_used_event() {
     let client = LocalClient::new(test_config()).unwrap();
@@ -783,6 +795,7 @@ fn statusbar_view_model_converges_from_workspace_used_event() {
     assert!(view_model.context_line.contains("/tmp/agent-home)"));
 }
 
+#[cfg(holon_lib_test_shard = "d")]
 #[test]
 fn statusbar_view_model_converges_from_provider_round_model_event() {
     let client = LocalClient::new(test_config()).unwrap();
@@ -818,6 +831,7 @@ fn statusbar_view_model_converges_from_provider_round_model_event() {
         .contains("anthropic/claude-sonnet-4-6 (fallback from openai/gpt-5.4)"));
 }
 
+#[cfg(holon_lib_test_shard = "d")]
 #[test]
 fn statusbar_view_model_uses_workspace_label_for_worktree_execution_root() {
     let client = LocalClient::new(test_config()).unwrap();
@@ -865,6 +879,7 @@ fn statusbar_view_model_uses_workspace_label_for_worktree_execution_root() {
         .starts_with("issue-960-working-switch"));
 }
 
+#[cfg(holon_lib_test_shard = "d")]
 #[test]
 fn statusbar_view_model_prompts_for_active_tasks() {
     let client = LocalClient::new(test_config()).unwrap();
@@ -897,6 +912,7 @@ fn statusbar_view_model_prompts_for_active_tasks() {
         .contains("1 active task · /tasks to inspect"));
 }
 
+#[cfg(holon_lib_test_shard = "d")]
 #[test]
 fn statusbar_view_model_prefers_overlay_hint_over_transient_status() {
     let client = LocalClient::new(test_config()).unwrap();
@@ -919,6 +935,7 @@ fn statusbar_view_model_prefers_overlay_hint_over_transient_status() {
     assert!(!view_model.status_line.contains("Opened tasks overlay"));
 }
 
+#[cfg(holon_lib_test_shard = "d")]
 #[test]
 fn statusbar_view_model_prefers_transient_status_over_vim_hint() {
     let client = LocalClient::new(test_config()).unwrap();
@@ -935,6 +952,7 @@ fn statusbar_view_model_prefers_transient_status_over_vim_hint() {
     assert!(!view_model.status_line.contains("VIM NORMAL"));
 }
 
+#[cfg(holon_lib_test_shard = "d")]
 #[test]
 fn build_chat_text_includes_structured_operator_messages() {
     let client = LocalClient::new(test_config()).unwrap();
@@ -990,6 +1008,7 @@ fn build_chat_text_includes_structured_operator_messages() {
         .any(|line| line.contains("I started a worktree task.")));
 }
 
+#[cfg(holon_lib_test_shard = "d")]
 #[test]
 fn build_chat_text_renders_message_block_header_above_body() {
     let client = LocalClient::new(test_config()).unwrap();
@@ -1031,6 +1050,7 @@ fn build_chat_text_renders_message_block_header_above_body() {
     assert!(lines.iter().any(|line| line.starts_with("  Second line")));
 }
 
+#[cfg(holon_lib_test_shard = "d")]
 #[test]
 fn build_chat_text_groups_activity_by_kind_not_minute() {
     let first_created_at = Utc::now();
@@ -1086,6 +1106,7 @@ fn build_chat_text_groups_activity_by_kind_not_minute() {
         .any(|line| line.starts_with("  narrative line")));
 }
 
+#[cfg(holon_lib_test_shard = "d")]
 #[test]
 fn build_chat_text_wraps_body_lines_with_indent() {
     let ts = Utc::now();
@@ -1115,6 +1136,7 @@ fn build_chat_text_wraps_body_lines_with_indent() {
     );
 }
 
+#[cfg(holon_lib_test_shard = "d")]
 #[test]
 fn alternate_screen_mode_respects_override_and_zellij() {
     assert!(!determine_alt_screen_mode_for_terminal(
@@ -1144,6 +1166,7 @@ fn alternate_screen_mode_respects_override_and_zellij() {
     ));
 }
 
+#[cfg(holon_lib_test_shard = "d")]
 #[tokio::test]
 async fn characters_append_to_prompt_by_default() {
     let client = LocalClient::new(test_config()).unwrap();
@@ -1160,6 +1183,7 @@ async fn characters_append_to_prompt_by_default() {
     assert_eq!(app.composer.as_str(), "hi");
 }
 
+#[cfg(holon_lib_test_shard = "d")]
 #[tokio::test]
 async fn shift_enter_adds_new_line_to_prompt() {
     let client = LocalClient::new(test_config()).unwrap();
@@ -1179,6 +1203,7 @@ async fn shift_enter_adds_new_line_to_prompt() {
     assert_eq!(app.composer.as_str(), "h\ni");
 }
 
+#[cfg(holon_lib_test_shard = "d")]
 #[tokio::test]
 async fn shift_enter_adds_new_line_when_slash_menu_is_visible() {
     let client = LocalClient::new(test_config()).unwrap();
@@ -1195,6 +1220,7 @@ async fn shift_enter_adds_new_line_when_slash_menu_is_visible() {
     assert_eq!(app.composer.as_str(), "/de\n");
 }
 
+#[cfg(holon_lib_test_shard = "d")]
 #[tokio::test]
 async fn paste_inserts_multiline_text_without_submitting() {
     let client = LocalClient::new(test_config()).unwrap();
@@ -1208,6 +1234,7 @@ async fn paste_inserts_multiline_text_without_submitting() {
     assert_eq!(app.composer.as_str(), "first\nsecond");
 }
 
+#[cfg(holon_lib_test_shard = "d")]
 #[tokio::test]
 async fn rapid_enter_after_large_key_burst_inserts_newline_for_paste_fallback() {
     let client = LocalClient::new(test_config()).unwrap();
@@ -1227,6 +1254,7 @@ async fn rapid_enter_after_large_key_burst_inserts_newline_for_paste_fallback() 
     assert_eq!(app.composer.as_str(), "pasted text\n");
 }
 
+#[cfg(holon_lib_test_shard = "d")]
 #[tokio::test]
 async fn non_bracketed_multiline_paste_fallback_keeps_short_lines_in_composer() {
     let client = LocalClient::new(test_config()).unwrap();
@@ -1248,6 +1276,7 @@ async fn non_bracketed_multiline_paste_fallback_keeps_short_lines_in_composer() 
     assert_eq!(app.composer.as_str(), "a\nb");
 }
 
+#[cfg(holon_lib_test_shard = "d")]
 #[tokio::test]
 async fn non_bracketed_slash_prefixed_paste_fallback_does_not_run_menu_command() {
     let client = LocalClient::new(test_config()).unwrap();
@@ -1274,6 +1303,7 @@ async fn non_bracketed_slash_prefixed_paste_fallback_does_not_run_menu_command()
     assert_eq!(app.overlay, OverlayState::None);
 }
 
+#[cfg(holon_lib_test_shard = "d")]
 #[tokio::test]
 async fn enter_after_normal_text_still_submits_when_not_paste_burst() {
     let client = LocalClient::new(test_config()).unwrap();
@@ -1292,6 +1322,7 @@ async fn enter_after_normal_text_still_submits_when_not_paste_burst() {
     assert_eq!(app.composer.as_str(), "short");
 }
 
+#[cfg(holon_lib_test_shard = "d")]
 #[tokio::test]
 async fn paste_updates_model_picker_filter() {
     let client = LocalClient::new(test_config()).unwrap();
@@ -1317,6 +1348,7 @@ async fn paste_updates_model_picker_filter() {
     );
 }
 
+#[cfg(holon_lib_test_shard = "d")]
 #[tokio::test]
 async fn paste_into_debug_prompt_stays_single_line() {
     let client = LocalClient::new(test_config()).unwrap();
@@ -1338,6 +1370,7 @@ async fn paste_into_debug_prompt_stays_single_line() {
     );
 }
 
+#[cfg(holon_lib_test_shard = "d")]
 #[tokio::test]
 async fn enter_submits_instead_of_inserting_new_line() {
     let client = LocalClient::new(test_config()).unwrap();
@@ -1356,6 +1389,7 @@ async fn enter_submits_instead_of_inserting_new_line() {
     assert_eq!(app.composer.as_str(), "hi");
 }
 
+#[cfg(holon_lib_test_shard = "d")]
 #[tokio::test]
 async fn empty_composer_up_and_down_navigate_input_history() {
     let client = LocalClient::new(test_config()).unwrap();
@@ -1378,6 +1412,7 @@ async fn empty_composer_up_and_down_navigate_input_history() {
     assert_eq!(app.history_index, None);
 }
 
+#[cfg(holon_lib_test_shard = "d")]
 #[tokio::test]
 async fn non_empty_single_line_composer_up_down_do_not_scroll_chat() {
     let client = LocalClient::new(test_config()).unwrap();
@@ -1400,6 +1435,7 @@ async fn non_empty_single_line_composer_up_down_do_not_scroll_chat() {
     assert!(app.chat_scroll.is_following_tail());
 }
 
+#[cfg(holon_lib_test_shard = "d")]
 #[tokio::test]
 async fn multiline_composer_up_down_move_cursor_between_lines() {
     let client = LocalClient::new(test_config()).unwrap();
@@ -1426,6 +1462,7 @@ async fn multiline_composer_up_down_move_cursor_between_lines() {
     assert!(app.chat_scroll.is_following_tail());
 }
 
+#[cfg(holon_lib_test_shard = "d")]
 #[tokio::test]
 async fn page_keys_still_scroll_chat_when_composer_has_content() {
     let client = LocalClient::new(test_config()).unwrap();
@@ -1444,6 +1481,7 @@ async fn page_keys_still_scroll_chat_when_composer_has_content() {
     assert!(!app.chat_scroll.is_following_tail());
 }
 
+#[cfg(holon_lib_test_shard = "d")]
 #[tokio::test]
 async fn agent_overlay_stays_open_while_navigating() {
     let client = LocalClient::new(test_config()).unwrap();
@@ -1471,6 +1509,7 @@ async fn agent_overlay_stays_open_while_navigating() {
     assert_eq!(app.status_line, "Streaming native events for agent alpha");
 }
 
+#[cfg(holon_lib_test_shard = "d")]
 #[tokio::test]
 async fn agent_overlay_enter_starts_switch_without_awaiting_snapshot() {
     let client = LocalClient::new(test_config()).unwrap();
@@ -1492,6 +1531,7 @@ async fn agent_overlay_enter_starts_switch_without_awaiting_snapshot() {
     assert!(app.snapshot_refresh_in_flight);
 }
 
+#[cfg(holon_lib_test_shard = "d")]
 #[tokio::test]
 async fn agent_overlay_enter_clamps_stale_selection() {
     let client = LocalClient::new(test_config()).unwrap();
@@ -1514,6 +1554,7 @@ async fn agent_overlay_enter_clamps_stale_selection() {
     assert!(app.snapshot_refresh_in_flight);
 }
 
+#[cfg(holon_lib_test_shard = "d")]
 #[tokio::test]
 async fn esc_closes_active_overlay_before_touching_prompt() {
     let client = LocalClient::new(test_config()).unwrap();
@@ -1530,6 +1571,7 @@ async fn esc_closes_active_overlay_before_touching_prompt() {
     assert_eq!(app.composer.as_str(), "draft");
 }
 
+#[cfg(holon_lib_test_shard = "d")]
 #[tokio::test]
 async fn colon_behaves_as_normal_input_after_action_menu_removal() {
     let client = LocalClient::new(test_config()).unwrap();
@@ -1556,6 +1598,7 @@ async fn colon_behaves_as_normal_input_after_action_menu_removal() {
     assert_eq!(app.composer.as_str(), "draft:");
 }
 
+#[cfg(holon_lib_test_shard = "d")]
 #[tokio::test]
 async fn slash_menu_navigation_and_tab_complete_selected_command() {
     let client = LocalClient::new(test_config()).unwrap();
@@ -1577,6 +1620,7 @@ async fn slash_menu_navigation_and_tab_complete_selected_command() {
     assert_eq!(app.overlay, OverlayState::None);
 }
 
+#[cfg(holon_lib_test_shard = "d")]
 #[tokio::test]
 async fn slash_menu_esc_dismisses_without_clearing_prompt() {
     let client = LocalClient::new(test_config()).unwrap();
@@ -1595,6 +1639,7 @@ async fn slash_menu_esc_dismisses_without_clearing_prompt() {
     assert_eq!(app.slash_menu_dismissed_for.as_deref(), Some("/mo"));
 }
 
+#[cfg(holon_lib_test_shard = "d")]
 #[tokio::test]
 async fn slash_menu_esc_clears_unknown_command_like_regular_input() {
     let client = LocalClient::new(test_config()).unwrap();
@@ -1613,6 +1658,7 @@ async fn slash_menu_esc_clears_unknown_command_like_regular_input() {
     assert_eq!(app.slash_menu_dismissed_for.as_deref(), None);
 }
 
+#[cfg(holon_lib_test_shard = "d")]
 #[tokio::test]
 async fn slash_menu_cursor_movement_preserves_dismissal() {
     let client = LocalClient::new(test_config()).unwrap();
@@ -1633,6 +1679,7 @@ async fn slash_menu_cursor_movement_preserves_dismissal() {
     assert_eq!(app.slash_menu_dismissed_for.as_deref(), Some("/mo"));
 }
 
+#[cfg(holon_lib_test_shard = "d")]
 #[tokio::test]
 async fn slash_debug_prompt_opens_overlay() {
     let client = LocalClient::new(test_config()).unwrap();
@@ -1653,6 +1700,7 @@ async fn slash_debug_prompt_opens_overlay() {
     assert_eq!(app.composer.as_str(), "");
 }
 
+#[cfg(holon_lib_test_shard = "d")]
 #[tokio::test]
 async fn slash_model_opens_model_picker_overlay() {
     let client = LocalClient::new(test_config()).unwrap();
@@ -1676,6 +1724,7 @@ async fn slash_model_opens_model_picker_overlay() {
     assert!(app.model_availability_load_in_flight);
 }
 
+#[cfg(holon_lib_test_shard = "d")]
 #[tokio::test]
 async fn initialize_does_not_eagerly_load_model_availability() {
     let client = LocalClient::new(test_config()).unwrap();
@@ -1689,6 +1738,7 @@ async fn initialize_does_not_eagerly_load_model_availability() {
     assert!(!app.model_availability_load_in_flight);
 }
 
+#[cfg(holon_lib_test_shard = "d")]
 #[test]
 fn loaded_models_clear_lazy_load_in_flight_flag() {
     let client = LocalClient::new(test_config()).unwrap();
@@ -1703,6 +1753,7 @@ fn loaded_models_clear_lazy_load_in_flight_flag() {
     assert!(!app.model_availability_load_in_flight);
 }
 
+#[cfg(holon_lib_test_shard = "d")]
 #[tokio::test]
 async fn model_picker_enter_opens_provider_model_page() {
     let client = LocalClient::new(test_config()).unwrap();
@@ -1737,6 +1788,7 @@ async fn model_picker_enter_opens_provider_model_page() {
     );
 }
 
+#[cfg(holon_lib_test_shard = "d")]
 #[tokio::test]
 async fn model_picker_opens_effort_for_models_with_reasoning_support() {
     let client = LocalClient::new(test_config()).unwrap();
@@ -1773,6 +1825,7 @@ async fn model_picker_opens_effort_for_models_with_reasoning_support() {
     );
 }
 
+#[cfg(holon_lib_test_shard = "d")]
 #[test]
 fn model_picker_omits_unavailable_provider_choices() {
     let agent = sample_agent_summary("default");
@@ -1789,6 +1842,7 @@ fn model_picker_omits_unavailable_provider_choices() {
     assert!(!rows.iter().any(|row| row.title == "openrouter"));
 }
 
+#[cfg(holon_lib_test_shard = "d")]
 #[tokio::test]
 async fn model_effort_picker_esc_returns_to_provider_model_page() {
     let client = LocalClient::new(test_config()).unwrap();
@@ -1818,6 +1872,7 @@ async fn model_effort_picker_esc_returns_to_provider_model_page() {
     );
 }
 
+#[cfg(holon_lib_test_shard = "d")]
 #[tokio::test]
 async fn slash_state_opens_agent_state_overlay() {
     let client = LocalClient::new(test_config()).unwrap();
@@ -1834,6 +1889,7 @@ async fn slash_state_opens_agent_state_overlay() {
     assert_eq!(app.status_line, "Opened agent state overlay");
 }
 
+#[cfg(holon_lib_test_shard = "d")]
 #[tokio::test]
 async fn agent_state_overlay_scrolls_and_esc_closes() {
     let client = LocalClient::new(test_config()).unwrap();
@@ -1854,6 +1910,7 @@ async fn agent_state_overlay_scrolls_and_esc_closes() {
     assert_eq!(app.overlay, OverlayState::None);
 }
 
+#[cfg(holon_lib_test_shard = "d")]
 #[tokio::test]
 async fn slash_vim_toggles_session_local_composer_mode() {
     let client = LocalClient::new(test_config()).unwrap();
@@ -1880,6 +1937,7 @@ async fn slash_vim_toggles_session_local_composer_mode() {
     assert!(app.status_line.contains("disabled"));
 }
 
+#[cfg(holon_lib_test_shard = "d")]
 #[tokio::test]
 async fn slash_vim_enters_normal_mode_without_repositioning_submitted_command_text() {
     let client = LocalClient::new(test_config()).unwrap();
@@ -1898,6 +1956,7 @@ async fn slash_vim_enters_normal_mode_without_repositioning_submitted_command_te
     assert_eq!(app.composer_edit_mode, ComposerEditMode::VimNormal);
 }
 
+#[cfg(holon_lib_test_shard = "d")]
 #[tokio::test]
 async fn vim_mode_preserves_page_scroll_keys() {
     let client = LocalClient::new(test_config()).unwrap();
@@ -1925,6 +1984,7 @@ async fn vim_mode_preserves_page_scroll_keys() {
     assert_eq!(app.composer.as_str(), "draft");
 }
 
+#[cfg(holon_lib_test_shard = "d")]
 #[tokio::test]
 async fn vim_page_scroll_clears_pending_normal_command() {
     let client = LocalClient::new(test_config()).unwrap();
@@ -1951,6 +2011,7 @@ async fn vim_page_scroll_clears_pending_normal_command() {
     assert_eq!(app.chat_scroll.effective_scroll(12), 2);
 }
 
+#[cfg(holon_lib_test_shard = "d")]
 #[tokio::test]
 async fn vim_mode_preserves_empty_composer_help_shortcut() {
     let client = LocalClient::new(test_config()).unwrap();
@@ -1970,6 +2031,7 @@ async fn vim_mode_preserves_empty_composer_help_shortcut() {
     assert!(app.composer.is_empty());
 }
 
+#[cfg(holon_lib_test_shard = "d")]
 #[tokio::test]
 async fn vim_mode_preserves_empty_composer_history_shortcuts() {
     let client = LocalClient::new(test_config()).unwrap();
@@ -1995,6 +2057,7 @@ async fn vim_mode_preserves_empty_composer_history_shortcuts() {
     assert_eq!(app.history_index, None);
 }
 
+#[cfg(holon_lib_test_shard = "d")]
 #[tokio::test]
 async fn ctrl_o_prefix_opens_overlay_without_touching_composer() {
     let client = LocalClient::new(test_config()).unwrap();
@@ -2020,6 +2083,7 @@ async fn ctrl_o_prefix_opens_overlay_without_touching_composer() {
     assert_eq!(app.composer.as_str(), "draft");
 }
 
+#[cfg(holon_lib_test_shard = "d")]
 #[tokio::test]
 async fn ctrl_o_prefix_can_cancel_or_reject_unknown_shortcut() {
     let client = LocalClient::new(test_config()).unwrap();
@@ -2049,6 +2113,7 @@ async fn ctrl_o_prefix_can_cancel_or_reject_unknown_shortcut() {
     assert!(app.status_line.contains("Unknown overlay shortcut"));
 }
 
+#[cfg(holon_lib_test_shard = "d")]
 #[tokio::test]
 async fn ctrl_o_k_shows_selected_agent_skills_not_global_catalog() {
     let client = LocalClient::new(test_config()).unwrap();
@@ -2076,6 +2141,7 @@ async fn ctrl_o_k_shows_selected_agent_skills_not_global_catalog() {
     );
 }
 
+#[cfg(holon_lib_test_shard = "d")]
 #[test]
 fn default_keymap_documents_overlay_shortcuts_and_mac_paging() {
     let default_keymap = DEFAULT_BINDING_HINTS
@@ -2087,6 +2153,7 @@ fn default_keymap_documents_overlay_shortcuts_and_mac_paging() {
     assert!(default_keymap.contains("Mac: Fn+Up/Fn+Down"));
 }
 
+#[cfg(holon_lib_test_shard = "d")]
 #[tokio::test]
 async fn vim_insert_esc_takes_precedence_over_slash_menu_dismissal() {
     let client = LocalClient::new(test_config()).unwrap();
@@ -2106,6 +2173,7 @@ async fn vim_insert_esc_takes_precedence_over_slash_menu_dismissal() {
     assert_eq!(app.slash_menu_dismissed_for, None);
 }
 
+#[cfg(holon_lib_test_shard = "d")]
 #[tokio::test]
 async fn vim_insert_and_normal_modes_switch_without_changing_default_behavior() {
     let client = LocalClient::new(test_config()).unwrap();
@@ -2144,6 +2212,7 @@ async fn vim_insert_and_normal_modes_switch_without_changing_default_behavior() 
     assert_eq!(default_app.composer.as_str(), "h");
 }
 
+#[cfg(holon_lib_test_shard = "d")]
 #[tokio::test]
 async fn vim_undo_restores_insert_entry_snapshot() {
     let client = LocalClient::new(test_config()).unwrap();
@@ -2172,6 +2241,7 @@ async fn vim_undo_restores_insert_entry_snapshot() {
     assert_eq!(app.composer.as_str(), "hi");
 }
 
+#[cfg(holon_lib_test_shard = "d")]
 #[tokio::test]
 async fn vim_normal_mode_moves_over_multiline_utf8_text() {
     let client = LocalClient::new(test_config()).unwrap();
@@ -2204,6 +2274,7 @@ async fn vim_normal_mode_moves_over_multiline_utf8_text() {
     assert_eq!(app.composer.cursor(), "你 好\n".len());
 }
 
+#[cfg(holon_lib_test_shard = "d")]
 #[tokio::test]
 async fn vim_normal_mode_edits_lines_words_and_undoes_last_change() {
     let client = LocalClient::new(test_config()).unwrap();
@@ -2257,6 +2328,7 @@ async fn vim_normal_mode_edits_lines_words_and_undoes_last_change() {
     assert_eq!(app.composer.as_str(), "amma");
 }
 
+#[cfg(holon_lib_test_shard = "d")]
 #[tokio::test]
 async fn vim_open_line_commands_enter_insert_mode() {
     let client = LocalClient::new(test_config()).unwrap();
@@ -2288,6 +2360,7 @@ async fn vim_open_line_commands_enter_insert_mode() {
     assert_eq!(app.composer.as_str(), "alpha\nx\nb");
 }
 
+#[cfg(holon_lib_test_shard = "d")]
 #[tokio::test]
 async fn vim_normal_enter_submits_non_empty_composer() {
     let client = LocalClient::new(test_config()).unwrap();
@@ -2307,6 +2380,7 @@ async fn vim_normal_enter_submits_non_empty_composer() {
     assert_eq!(app.composer.as_str(), "hi");
 }
 
+#[cfg(holon_lib_test_shard = "d")]
 #[tokio::test]
 async fn vim_normal_slash_enters_insert_mode_and_keeps_slash_menu_usable() {
     let client = LocalClient::new(test_config()).unwrap();
@@ -2333,6 +2407,7 @@ async fn vim_normal_slash_enters_insert_mode_and_keeps_slash_menu_usable() {
     assert_eq!(app.composer.as_str(), "/agents");
 }
 
+#[cfg(holon_lib_test_shard = "d")]
 #[tokio::test]
 async fn slash_menu_enter_runs_selected_prefix_command() {
     let client = LocalClient::new(test_config()).unwrap();
@@ -2357,6 +2432,7 @@ async fn slash_menu_enter_runs_selected_prefix_command() {
     assert_eq!(app.composer.as_str(), "");
 }
 
+#[cfg(holon_lib_test_shard = "d")]
 #[tokio::test]
 async fn slash_menu_enter_runs_selected_command_from_root_menu() {
     let client = LocalClient::new(test_config()).unwrap();
@@ -2375,6 +2451,7 @@ async fn slash_menu_enter_runs_selected_command_from_root_menu() {
     assert_eq!(app.composer.as_str(), "");
 }
 
+#[cfg(holon_lib_test_shard = "d")]
 #[test]
 fn centered_rect_rows_uses_fixed_height() {
     let area = Rect::new(0, 0, 100, 40);
@@ -2383,12 +2460,14 @@ fn centered_rect_rows_uses_fixed_height() {
     assert_eq!(popup.height, 7);
 }
 
+#[cfg(holon_lib_test_shard = "d")]
 #[test]
 fn chat_scroll_defaults_to_follow_tail() {
     let scroll = ChatScrollState::new();
     assert_eq!(scroll.effective_scroll(12), 12);
 }
 
+#[cfg(holon_lib_test_shard = "d")]
 #[test]
 fn chat_scroll_moves_away_from_and_back_to_tail() {
     let mut scroll = ChatScrollState::new();
@@ -2401,6 +2480,7 @@ fn chat_scroll_moves_away_from_and_back_to_tail() {
     assert!(scroll.is_following_tail());
 }
 
+#[cfg(holon_lib_test_shard = "d")]
 #[test]
 fn chat_scroll_moves_predictably_toward_tail_after_home() {
     let mut scroll = ChatScrollState::new();
@@ -2420,6 +2500,7 @@ fn chat_scroll_moves_predictably_toward_tail_after_home() {
     assert!(scroll.is_following_tail());
 }
 
+#[cfg(holon_lib_test_shard = "d")]
 #[test]
 fn paragraph_max_scroll_tracks_wrapped_chat_height() {
     let area = Rect::new(0, 0, 20, 6);
@@ -2431,6 +2512,7 @@ fn paragraph_max_scroll_tracks_wrapped_chat_height() {
     assert_eq!(paragraph_max_scroll(&text, area), 1);
 }
 
+#[cfg(holon_lib_test_shard = "d")]
 #[test]
 fn paragraph_max_scroll_matches_word_wrapped_paragraph_height() {
     let area = Rect::new(0, 0, 14, 5);
@@ -2438,6 +2520,7 @@ fn paragraph_max_scroll_matches_word_wrapped_paragraph_height() {
     assert_eq!(paragraph_max_scroll(&text, area), 0);
 }
 
+#[cfg(holon_lib_test_shard = "d")]
 #[test]
 fn paragraph_max_scroll_counts_unicode_display_width() {
     let area = Rect::new(0, 0, 6, 4);
@@ -2445,6 +2528,7 @@ fn paragraph_max_scroll_counts_unicode_display_width() {
     assert_eq!(paragraph_max_scroll(&text, area), 1);
 }
 
+#[cfg(holon_lib_test_shard = "d")]
 #[test]
 fn paragraph_max_scroll_counts_wide_graphemes_in_narrow_panes() {
     let area = Rect::new(0, 0, 3, 3);
@@ -2452,6 +2536,7 @@ fn paragraph_max_scroll_counts_wide_graphemes_in_narrow_panes() {
     assert_eq!(paragraph_max_scroll(&text, area), 0);
 }
 
+#[cfg(holon_lib_test_shard = "d")]
 #[test]
 fn paragraph_max_scroll_handles_long_whitespace_runs() {
     let area = Rect::new(0, 0, 6, 3);
@@ -2459,6 +2544,7 @@ fn paragraph_max_scroll_handles_long_whitespace_runs() {
     assert_eq!(paragraph_max_scroll(&text, area), 1);
 }
 
+#[cfg(holon_lib_test_shard = "d")]
 #[test]
 fn paragraph_max_scroll_unframed_uses_full_area() {
     let area = Rect::new(0, 0, 12, 2);
@@ -2467,6 +2553,7 @@ fn paragraph_max_scroll_unframed_uses_full_area() {
     assert_eq!(paragraph_max_scroll(&text, area), 0);
 }
 
+#[cfg(holon_lib_test_shard = "d")]
 #[test]
 fn default_tui_render_omits_agent_state_panel_and_box_borders() {
     let client = LocalClient::new(test_config()).unwrap();
@@ -2491,6 +2578,7 @@ fn default_tui_render_omits_agent_state_panel_and_box_borders() {
     assert!(!main_rows.iter().any(|row| row.contains('│')));
 }
 
+#[cfg(holon_lib_test_shard = "d")]
 #[test]
 fn prompt_render_preserves_blank_multiline_rows() {
     let client = LocalClient::new(test_config()).unwrap();
@@ -2518,6 +2606,7 @@ fn prompt_render_preserves_blank_multiline_rows() {
     assert!(rows[first_row + 2].starts_with("  second"));
 }
 
+#[cfg(holon_lib_test_shard = "d")]
 #[test]
 fn chat_text_uses_placeholder_when_empty() {
     let client = LocalClient::new(test_config()).unwrap();
@@ -2533,6 +2622,7 @@ fn chat_text_uses_placeholder_when_empty() {
     assert!(rendered.contains("No chat history yet"));
 }
 
+#[cfg(holon_lib_test_shard = "d")]
 #[test]
 fn chat_text_renders_markdown_body() {
     let client = LocalClient::new(test_config()).unwrap();
@@ -2572,6 +2662,7 @@ fn chat_text_renders_markdown_body() {
     assert!(lines.iter().any(|line| line.contains("second")));
 }
 
+#[cfg(holon_lib_test_shard = "d")]
 #[test]
 fn chat_text_renders_brief_events_from_projection() {
     let client = LocalClient::new(test_config()).unwrap();
@@ -2610,6 +2701,7 @@ fn chat_text_renders_brief_events_from_projection() {
     assert!(rendered.contains("Body"));
 }
 
+#[cfg(holon_lib_test_shard = "d")]
 #[test]
 fn chat_text_ignores_ack_lifecycle_event_but_keeps_result_brief_events() {
     let client = LocalClient::new(test_config()).unwrap();
@@ -2657,6 +2749,7 @@ fn chat_text_ignores_ack_lifecycle_event_but_keeps_result_brief_events() {
     assert!(rendered.contains("Real response"));
 }
 
+#[cfg(holon_lib_test_shard = "d")]
 #[test]
 fn chat_text_summarizes_task_brief_output() {
     let client = LocalClient::new(test_config()).unwrap();
@@ -2695,6 +2788,7 @@ fn chat_text_summarizes_task_brief_output() {
     assert!(rendered.contains("line two"));
 }
 
+#[cfg(holon_lib_test_shard = "d")]
 #[test]
 fn chat_text_shows_active_assistant_preview_without_durable_system_event() {
     let client = LocalClient::new(test_config()).unwrap();
@@ -2770,6 +2864,7 @@ fn chat_text_shows_active_assistant_preview_without_durable_system_event() {
     assert!(!rendered.contains("Current   "));
 }
 
+#[cfg(holon_lib_test_shard = "d")]
 #[test]
 fn chat_display_mode_info_shows_hidden_stream_activity_in_working_body() {
     let client = LocalClient::new(test_config()).unwrap();
@@ -2815,6 +2910,7 @@ fn chat_display_mode_info_shows_hidden_stream_activity_in_working_body() {
     assert!(rendered.contains("cargo test tui"));
 }
 
+#[cfg(holon_lib_test_shard = "d")]
 #[test]
 fn chat_display_mode_info_suppresses_successful_work_item_tool_activity() {
     let client = LocalClient::new(test_config()).unwrap();
@@ -2862,6 +2958,7 @@ fn chat_display_mode_info_suppresses_successful_work_item_tool_activity() {
     }
 }
 
+#[cfg(holon_lib_test_shard = "d")]
 #[test]
 fn chat_display_mode_info_uses_rendered_list_work_items_activity() {
     let client = LocalClient::new(test_config()).unwrap();
@@ -2923,6 +3020,7 @@ fn chat_display_mode_info_uses_rendered_list_work_items_activity() {
     }
 }
 
+#[cfg(holon_lib_test_shard = "d")]
 #[test]
 fn chat_text_omits_task_system_events() {
     let client = LocalClient::new(test_config()).unwrap();
@@ -2970,6 +3068,7 @@ fn chat_text_omits_task_system_events() {
     assert!(!rendered.contains("System (work)"));
 }
 
+#[cfg(holon_lib_test_shard = "d")]
 #[test]
 fn chat_text_keeps_active_activity_after_brief_event() {
     let client = LocalClient::new(test_config()).unwrap();
@@ -3054,6 +3153,7 @@ fn chat_text_keeps_active_activity_after_brief_event() {
     assert!(!rendered.contains("Action    Waiting for activity"));
 }
 
+#[cfg(holon_lib_test_shard = "d")]
 #[test]
 fn chat_text_keeps_active_action_after_snapshot_refresh() {
     let client = LocalClient::new(test_config()).unwrap();
@@ -3105,6 +3205,7 @@ fn chat_text_keeps_active_action_after_snapshot_refresh() {
     assert!(!rendered.contains("Current   "));
 }
 
+#[cfg(holon_lib_test_shard = "d")]
 #[test]
 fn chat_text_uses_selected_agent_events_tail_after_switch() {
     let client = LocalClient::new(test_config()).unwrap();
@@ -3180,6 +3281,7 @@ fn chat_text_uses_selected_agent_events_tail_after_switch() {
     assert!(!rendered.contains("cargo test agent-a"));
 }
 
+#[cfg(holon_lib_test_shard = "d")]
 #[test]
 fn chat_text_does_not_show_stale_activity_when_agent_is_idle() {
     let client = LocalClient::new(test_config()).unwrap();
@@ -3225,6 +3327,7 @@ fn chat_text_does_not_show_stale_activity_when_agent_is_idle() {
     assert!(!rendered.contains("cargo test stale"));
 }
 
+#[cfg(holon_lib_test_shard = "d")]
 #[test]
 fn chat_text_shows_pending_queue_as_active_activity() {
     let client = LocalClient::new(test_config()).unwrap();
@@ -3250,6 +3353,7 @@ fn chat_text_shows_pending_queue_as_active_activity() {
     assert!(!rendered.contains("Queue: pending 1, active tasks 0"));
 }
 
+#[cfg(holon_lib_test_shard = "d")]
 #[test]
 fn active_activity_timestamp_does_not_sort_before_tail_history() {
     let client = LocalClient::new(test_config()).unwrap();
@@ -3324,6 +3428,7 @@ fn active_activity_timestamp_does_not_sort_before_tail_history() {
     }
 }
 
+#[cfg(holon_lib_test_shard = "d")]
 #[test]
 fn chat_keeps_distinct_operator_messages_with_same_timestamp_and_body() {
     let client = LocalClient::new(test_config()).unwrap();
@@ -3360,6 +3465,7 @@ fn chat_keeps_distinct_operator_messages_with_same_timestamp_and_body() {
     assert_eq!(matching_messages, 2);
 }
 
+#[cfg(holon_lib_test_shard = "d")]
 #[test]
 fn active_activity_cells_stay_stable_without_new_events() {
     let client = LocalClient::new(test_config()).unwrap();
@@ -3399,6 +3505,7 @@ fn active_activity_cells_stay_stable_without_new_events() {
     );
 }
 
+#[cfg(holon_lib_test_shard = "d")]
 #[test]
 fn sleeping_agent_activity_cell_does_not_display_working() {
     let client = LocalClient::new(test_config()).unwrap();
@@ -3432,6 +3539,7 @@ fn sleeping_agent_activity_cell_does_not_display_working() {
     assert!(!rendered.contains("Working"));
 }
 
+#[cfg(holon_lib_test_shard = "d")]
 #[test]
 fn collect_chat_items_orders_equal_timestamps_deterministically() {
     let client = LocalClient::new(test_config()).unwrap();
@@ -3481,6 +3589,7 @@ fn collect_chat_items_orders_equal_timestamps_deterministically() {
     assert!(matches!(items[1], ConversationCell::SystemNotice { .. }));
 }
 
+#[cfg(holon_lib_test_shard = "d")]
 #[test]
 fn chat_includes_pending_operator_message_from_snapshot() {
     let client = LocalClient::new(test_config()).unwrap();
@@ -3518,6 +3627,7 @@ fn chat_includes_pending_operator_message_from_snapshot() {
     ));
 }
 
+#[cfg(holon_lib_test_shard = "d")]
 #[test]
 fn conversation_events_overlay_uses_event_projection() {
     let client = LocalClient::new(test_config()).unwrap();
@@ -3545,6 +3655,7 @@ fn conversation_events_overlay_uses_event_projection() {
         .any(|line| line.contains("event sourced transcript")));
 }
 
+#[cfg(holon_lib_test_shard = "d")]
 #[test]
 fn chat_dedupes_pending_operator_message_when_event_log_contains_it() {
     let client = LocalClient::new(test_config()).unwrap();
@@ -3583,6 +3694,7 @@ fn chat_dedupes_pending_operator_message_when_event_log_contains_it() {
     ));
 }
 
+#[cfg(holon_lib_test_shard = "d")]
 #[test]
 fn chat_deduplicates_replayed_projected_work_item_events() {
     let client = LocalClient::new(test_config()).unwrap();
@@ -3624,6 +3736,7 @@ fn chat_deduplicates_replayed_projected_work_item_events() {
     assert_eq!(matching, 1);
 }
 
+#[cfg(holon_lib_test_shard = "d")]
 #[test]
 fn chat_deduplicates_bootstrap_event_when_stream_replays_it() {
     let client = LocalClient::new(test_config()).unwrap();
@@ -3659,6 +3772,7 @@ fn chat_deduplicates_bootstrap_event_when_stream_replays_it() {
     assert_eq!(matching, 1);
 }
 
+#[cfg(holon_lib_test_shard = "d")]
 #[test]
 fn projection_deduplicates_stream_events_using_outer_id_fallback() {
     let mut projection = TuiProjection::from_snapshot(sample_snapshot("default", "evt-0"));
@@ -3682,6 +3796,7 @@ fn projection_deduplicates_stream_events_using_outer_id_fallback() {
     assert_eq!(projection.event_log()[0].id, "sse-event-1");
 }
 
+#[cfg(holon_lib_test_shard = "d")]
 #[test]
 fn projection_deduplicates_duplicates_within_history_page() {
     let mut projection = TuiProjection::from_snapshot(sample_snapshot("default", "evt-0"));
@@ -3695,6 +3810,7 @@ fn projection_deduplicates_duplicates_within_history_page() {
     assert_eq!(projection.event_log()[0].id, "evt-history-work");
 }
 
+#[cfg(holon_lib_test_shard = "d")]
 #[test]
 fn chat_text_omits_processing_and_processed_operator_status_labels() {
     for _status in [
@@ -3731,6 +3847,7 @@ fn chat_text_omits_processing_and_processed_operator_status_labels() {
     }
 }
 
+#[cfg(holon_lib_test_shard = "d")]
 #[test]
 fn projection_operator_message_prunes_reconciled_optimistic_entry() {
     let client = LocalClient::new(test_config()).unwrap();
@@ -3782,6 +3899,7 @@ fn projection_operator_message_prunes_reconciled_optimistic_entry() {
     ));
 }
 
+#[cfg(holon_lib_test_shard = "d")]
 #[test]
 fn slim_projection_operator_message_hydrates_from_message_evidence() {
     let client = LocalClient::new(test_config()).unwrap();
@@ -3855,6 +3973,7 @@ fn slim_projection_operator_message_hydrates_from_message_evidence() {
     ));
 }
 
+#[cfg(holon_lib_test_shard = "d")]
 #[tokio::test]
 async fn stale_message_hydration_completion_does_not_block_selected_agent() {
     let client = LocalClient::new(test_config()).unwrap();
@@ -3881,6 +4000,7 @@ async fn stale_message_hydration_completion_does_not_block_selected_agent() {
     assert_eq!(app.message_hydration_in_flight, Some("default".to_string()));
 }
 
+#[cfg(holon_lib_test_shard = "d")]
 #[test]
 fn projection_operator_message_deduplicates_unreconciled_optimistic_entry_by_body() {
     let client = LocalClient::new(test_config()).unwrap();
@@ -3930,6 +4050,7 @@ fn projection_operator_message_deduplicates_unreconciled_optimistic_entry_by_bod
     ));
 }
 
+#[cfg(holon_lib_test_shard = "d")]
 #[test]
 fn projection_operator_message_filters_optimistic_entries_to_selected_agent() {
     let client = LocalClient::new(test_config()).unwrap();
@@ -3980,6 +4101,7 @@ fn projection_operator_message_filters_optimistic_entries_to_selected_agent() {
     ));
 }
 
+#[cfg(holon_lib_test_shard = "d")]
 #[test]
 fn projection_operator_message_keeps_distinct_durable_messages_with_same_body() {
     let client = LocalClient::new(test_config()).unwrap();
@@ -4014,6 +4136,7 @@ fn projection_operator_message_keeps_distinct_durable_messages_with_same_body() 
     assert_eq!(user_message_count, 2);
 }
 
+#[cfg(holon_lib_test_shard = "d")]
 #[test]
 fn events_overlay_selection_stays_pinned_to_same_event_id() {
     let client = LocalClient::new(test_config()).unwrap();
@@ -4081,6 +4204,7 @@ fn events_overlay_selection_stays_pinned_to_same_event_id() {
     );
 }
 
+#[cfg(holon_lib_test_shard = "d")]
 #[test]
 fn snapshot_refresh_failure_updates_status_line() {
     let client = LocalClient::new(test_config()).unwrap();
@@ -4104,6 +4228,7 @@ fn snapshot_refresh_failure_updates_status_line() {
     ));
 }
 
+#[cfg(holon_lib_test_shard = "d")]
 #[test]
 fn chat_text_renders_full_long_brief_events() {
     let client = LocalClient::new(test_config()).unwrap();
@@ -4147,6 +4272,7 @@ fn chat_text_renders_full_long_brief_events() {
     assert!(rendered.contains("tail marker that used to be trimmed away"));
 }
 
+#[cfg(holon_lib_test_shard = "d")]
 #[test]
 fn chat_text_cache_reuses_unchanged_content_and_replaces_stale_entries() {
     fn normalize_active_activity_spinners(mut text: Text<'static>) -> Text<'static> {
@@ -4266,6 +4392,7 @@ fn chat_text_cache_reuses_unchanged_content_and_replaces_stale_entries() {
     assert!(app.chat_text_cache.borrow().is_none());
 }
 
+#[cfg(holon_lib_test_shard = "d")]
 #[test]
 fn heartbeat_interval_is_less_than_client_stream_idle_timeout() {
     assert!(
@@ -4273,6 +4400,7 @@ fn heartbeat_interval_is_less_than_client_stream_idle_timeout() {
     );
 }
 
+#[cfg(holon_lib_test_shard = "d")]
 #[test]
 fn remote_read_idle_timeout_allows_slow_tailnet_responses() {
     assert_eq!(
@@ -4285,6 +4413,7 @@ fn remote_read_idle_timeout_allows_slow_tailnet_responses() {
     );
 }
 
+#[cfg(holon_lib_test_shard = "d")]
 #[test]
 fn reconnect_backoff_increases_and_caps() {
     assert_eq!(
@@ -4317,16 +4446,19 @@ fn reconnect_backoff_increases_and_caps() {
     );
 }
 
+#[cfg(holon_lib_test_shard = "d")]
 #[test]
 fn bootstrap_event_tail_limit_stays_small_for_remote_startup() {
     assert_eq!(BOOTSTRAP_EVENT_TAIL_LIMIT, 20);
 }
 
+#[cfg(holon_lib_test_shard = "d")]
 #[test]
 fn event_history_page_limit_stays_screen_sized_for_filtered_loads() {
     assert_eq!(EVENT_HISTORY_PAGE_LIMIT, 32);
 }
 
+#[cfg(holon_lib_test_shard = "d")]
 #[test]
 fn reader_idle_timeout_message_schedules_reconnect() {
     let client = LocalClient::new(test_config()).unwrap();
@@ -4354,6 +4486,7 @@ fn reader_idle_timeout_message_schedules_reconnect() {
     assert!(app.reconnect_deadline.is_some());
 }
 
+#[cfg(holon_lib_test_shard = "d")]
 #[test]
 fn disconnect_message_schedules_reconnect() {
     let client = LocalClient::new(test_config()).unwrap();
@@ -4378,6 +4511,7 @@ fn disconnect_message_schedules_reconnect() {
     assert!(app.reconnect_deadline.is_some());
 }
 
+#[cfg(holon_lib_test_shard = "d")]
 #[test]
 fn cursor_expiry_marks_refresh_required() {
     let client = LocalClient::new(test_config()).unwrap();
@@ -4398,6 +4532,7 @@ fn cursor_expiry_marks_refresh_required() {
     assert!(app.refresh_deadline.is_some());
 }
 
+#[cfg(holon_lib_test_shard = "d")]
 #[test]
 fn cursor_not_found_detection_uses_typed_http_error() {
     let err = crate::client::LocalHttpError {
@@ -4415,6 +4550,7 @@ fn cursor_not_found_detection_uses_typed_http_error() {
     assert!(is_cursor_not_found_error(&err));
 }
 
+#[cfg(holon_lib_test_shard = "d")]
 #[test]
 fn stale_projection_event_schedules_refresh() {
     let client = LocalClient::new(test_config()).unwrap();
@@ -4463,6 +4599,7 @@ fn stale_projection_event_schedules_refresh() {
     assert!(app.refresh_deadline.is_some());
 }
 
+#[cfg(holon_lib_test_shard = "d")]
 #[test]
 fn apply_agent_list_preserves_selected_agent_by_id() {
     let client = LocalClient::new(test_config()).unwrap();
@@ -4487,6 +4624,7 @@ fn apply_agent_list_preserves_selected_agent_by_id() {
     assert!(app.projection.is_some());
 }
 
+#[cfg(holon_lib_test_shard = "d")]
 #[test]
 fn slim_agent_list_refresh_preserves_selected_projection_summary() {
     let client = LocalClient::new(test_config()).unwrap();
@@ -4513,6 +4651,7 @@ fn slim_agent_list_refresh_preserves_selected_projection_summary() {
     assert!(app.projection.is_some());
 }
 
+#[cfg(holon_lib_test_shard = "d")]
 #[test]
 fn apply_agent_list_clears_stale_projection_when_selected_agent_disappears() {
     let client = LocalClient::new(test_config()).unwrap();
@@ -4554,6 +4693,7 @@ fn apply_agent_list_clears_stale_projection_when_selected_agent_disappears() {
     assert!(app.projection.is_none());
 }
 
+#[cfg(holon_lib_test_shard = "d")]
 #[test]
 fn roster_replacement_prunes_removed_agent_inputs() {
     let client = LocalClient::new(test_config()).unwrap();
@@ -4572,6 +4712,7 @@ fn roster_replacement_prunes_removed_agent_inputs() {
     assert_eq!(app.optimistic_operator_messages[0].agent_id, "alpha");
 }
 
+#[cfg(holon_lib_test_shard = "d")]
 #[tokio::test]
 async fn agent_switch_starts_snapshot_refresh_without_awaiting_network() {
     let client = LocalClient::new(test_config()).unwrap();
@@ -4595,6 +4736,7 @@ async fn agent_switch_starts_snapshot_refresh_without_awaiting_network() {
     assert_eq!(app.status_line, "Loading agent state for beta");
 }
 
+#[cfg(holon_lib_test_shard = "d")]
 #[tokio::test]
 async fn remote_tick_does_not_await_slow_agent_list_refresh() {
     let client = slow_remote_client().await;
@@ -4612,21 +4754,25 @@ async fn remote_tick_does_not_await_slow_agent_list_refresh() {
     assert!(app.agent_list_refresh_in_flight);
 }
 
+#[cfg(holon_lib_test_shard = "d")]
 #[tokio::test]
 async fn initial_agent_roster_load_uses_public_snapshot() {
     assert_public_agent_roster_loading(false, true, axum::http::StatusCode::OK).await;
 }
 
+#[cfg(holon_lib_test_shard = "d")]
 #[tokio::test]
 async fn populated_agent_roster_refresh_uses_public_snapshot() {
     assert_public_agent_roster_loading(true, true, axum::http::StatusCode::OK).await;
 }
 
+#[cfg(holon_lib_test_shard = "d")]
 #[tokio::test]
 async fn empty_agent_roster_reload_uses_public_snapshot() {
     assert_public_agent_roster_loading(false, false, axum::http::StatusCode::OK).await;
 }
 
+#[cfg(holon_lib_test_shard = "d")]
 #[tokio::test]
 async fn failed_agent_roster_reload_does_not_fall_back_to_private_list() {
     assert_public_agent_roster_loading(false, true, axum::http::StatusCode::SERVICE_UNAVAILABLE)
@@ -4730,6 +4876,7 @@ async fn assert_public_agent_roster_loading(
     server.abort();
 }
 
+#[cfg(holon_lib_test_shard = "d")]
 #[test]
 fn remote_agent_list_refresh_failures_back_off() {
     let client = LocalClient::remote(test_config(), "http://example.test:7878", "secret").unwrap();
@@ -4749,6 +4896,7 @@ fn remote_agent_list_refresh_failures_back_off() {
     assert!(second_deadline > first_deadline + std::time::Duration::from_secs(1));
 }
 
+#[cfg(holon_lib_test_shard = "d")]
 #[tokio::test]
 async fn remote_tick_does_not_await_slow_snapshot_refresh() {
     let client = slow_remote_client().await;
@@ -4773,6 +4921,7 @@ async fn remote_tick_does_not_await_slow_snapshot_refresh() {
     ));
 }
 
+#[cfg(holon_lib_test_shard = "d")]
 #[tokio::test]
 async fn remote_tick_does_not_await_slow_event_stream_reconnect() {
     let client = slow_remote_client().await;
@@ -4818,6 +4967,7 @@ fn test_app() -> TuiApp {
     )
 }
 
+#[cfg(holon_lib_test_shard = "d")]
 #[test]
 fn history_navigation_browses_multiple_entries() {
     let mut app = test_app();
@@ -4890,6 +5040,7 @@ fn pipeline_event(
 /// turn (`echo hello`) and verify all expected entries land in
 /// `presentation.jsonl` with valid JSON structure and correct display-level
 /// decisions.
+#[cfg(holon_lib_test_shard = "d")]
 #[test]
 fn pipeline_single_turn_presentation_jsonl() {
     let client = LocalClient::new(test_config()).unwrap();
@@ -5032,6 +5183,7 @@ fn pipeline_single_turn_presentation_jsonl() {
 /// `decision=shown|hidden` filtering across all three operator display
 /// levels (Info=3, Verbose=4, Debug=5), and that invalid level values are
 /// handled gracefully.
+#[cfg(holon_lib_test_shard = "d")]
 #[test]
 fn pipeline_display_level_filtering() {
     let client = LocalClient::new(test_config()).unwrap();
@@ -5269,6 +5421,7 @@ fn pipeline_display_level_filtering() {
 /// - 0 summaries → empty array, no panic
 /// - Truncation marker when summaries exceed configured limit
 /// - `reducer_event_summaries_truncated` field present only when truncated
+#[cfg(holon_lib_test_shard = "d")]
 #[test]
 fn pipeline_reducer_aggregation() {
     let client = LocalClient::new(test_config()).unwrap();
@@ -5594,6 +5747,7 @@ fn pipeline_reducer_aggregation() {
 /// - Events across turns are ordered by timestamp (monotonic `ts`)
 /// - No turns are dropped (turn count matches)
 /// - `presentation.jsonl` is append-only with no corruption at boundaries
+#[cfg(holon_lib_test_shard = "d")]
 #[test]
 fn pipeline_multi_turn_continuity() {
     let client = LocalClient::new(test_config()).unwrap();
@@ -5916,6 +6070,7 @@ fn pipeline_multi_turn_continuity() {
 /// Stress test: drive 50+ tool calls through the TUI pipeline in a single
 /// turn and verify performance boundaries — JSON record size, JSONL
 /// validity, reducer completeness, and bounded execution time.
+#[cfg(holon_lib_test_shard = "d")]
 #[test]
 fn pipeline_stress_50_tool_calls() {
     let client = LocalClient::new(test_config()).unwrap();

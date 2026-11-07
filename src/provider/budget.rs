@@ -333,6 +333,7 @@ fn safety_headroom_tokens(context_window_tokens: usize) -> usize {
         .min(MAX_SAFETY_HEADROOM_TOKENS)
 }
 
+#[cfg(holon_lib_test_shard = "c")]
 #[cfg(test)]
 mod tests {
     use super::{effective_output_tokens, estimate_context_budget, estimate_input_tokens};

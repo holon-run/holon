@@ -1,4 +1,4 @@
-"""Opt-in timer acceptance through the real daemon's provider admission path."""
+"""Online and restart timer acceptance through real daemon provider admission."""
 from __future__ import annotations
 
 import json
@@ -182,7 +182,9 @@ def require_dispatch(
     }
 
 
-def run_case(harness: Any, case: dict[str, Any]) -> None:
+def run_case(
+    harness: Any, case: dict[str, Any], *, restart_before_first_dispatch: bool = True,
+) -> None:
     require(harness.provider_mode == "stub", "timer admission case is stub-only")
     harness.initialize_workspace()
     harness.start()
@@ -205,27 +207,35 @@ def run_case(harness: Any, case: dict[str, Any]) -> None:
     require(
         timer["agent_id"] == harness.agent_id and timer["repeat"]
         and timer["interval_ms"] == 30000 and timer["fire_count"] == 0,
-        f"first exact wait missed the pre-fire restart barrier: {timer}",
+        f"first exact wait missed the pre-fire barrier: {timer}",
     )
     timer_id, wid, wait1 = timer["id"], first["id"], first.get("blocked_by_wait_id")
     require(bool(wait1), f"first timer wait omitted blocker ownership: {first}")
-    # Inspect the stopped database so a fire during graceful shutdown cannot
-    # accidentally count as the required post-restart dispatch.
-    harness.stop()
-    initial = snapshot(harness, "timer-before-restart", stopped=True)
+    started_at = None
+    if restart_before_first_dispatch:
+        # A fire during shutdown cannot count as the post-restart dispatch.
+        harness.stop()
+        initial = snapshot(harness, "timer-before-restart", stopped=True)
+    else:
+        started_at = harness.docker(
+            "inspect", "--format", "{{.State.StartedAt}}", harness.container,
+        ).stdout.strip()
+        require(bool(started_at), "online timer case omitted daemon start identity")
+        initial = snapshot(harness, "timer-before-online-dispatch")
     stopped_timers = [row for row in initial["timers"] if row["timer_id"] == timer_id]
     require(
         len(stopped_timers) == 1 and stopped_timers[0]["fire_count"] == 0,
-        "timer fired before the daemon reached the stopped restart barrier",
+        "timer fired before the daemon reached the first-dispatch barrier",
     )
     owned_wait(initial, harness.agent_id, wid, timer_id, wait1, "active")
     require(
         len([row for row in initial["work_items"] if row["agent_id"] == harness.agent_id]) == 1,
         "timer scenario created more than one WorkItem",
     )
-    harness.start(wait_idle=False)
+    if restart_before_first_dispatch:
+        harness.start(wait_idle=False)
     second = wait_rearmed(harness, marker, wait1)
-    require(second["id"] == wid, "restart changed timer WorkItem owner")
+    require(second["id"] == wid, "timer dispatch changed WorkItem owner")
     harness.wait_agent_idle()
     middle = snapshot(harness, "timer-after-dispatch-1")
     wait2 = second["blocked_by_wait_id"]
@@ -269,9 +279,18 @@ def run_case(harness: Any, case: dict[str, Any]) -> None:
     )
     brief = harness.brief(completed["result_brief_id"], "timer-result")
     require(f"{marker}-COMPLETE" in json.dumps(brief), "timer completion brief is missing")
+    if not restart_before_first_dispatch:
+        require(
+            harness.docker(
+                "inspect", "--format", "{{.State.StartedAt}}", harness.container,
+            ).stdout.strip() == started_at,
+            "online timer case restarted the daemon before business completion",
+        )
     write_json(harness.evidence / "timer-admission-oracle.json", {
         "agent_id": harness.agent_id, "work_item_id": wid, "timer_id": timer_id,
-        "restart_after_wait_id": wait1, "rearmed_wait_id": wait2,
+        "restart_before_first_dispatch": restart_before_first_dispatch,
+        "restart_after_wait_id": wait1 if restart_before_first_dispatch else None,
+        "online_daemon_started_at": started_at, "rearmed_wait_id": wait2,
         "dispatches": [dispatch1, dispatch2], "stub_status": status,
         "business_todos": completed["todo_list"], "timer_status": final_timer["status"],
     })

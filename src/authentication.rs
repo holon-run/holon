@@ -179,6 +179,7 @@ pub fn digest_secret(secret: &str) -> String {
     format!("{:x}", digest.finalize())
 }
 
+#[cfg(holon_lib_test_shard = "d")]
 #[cfg(test)]
 mod tests {
     use super::*;

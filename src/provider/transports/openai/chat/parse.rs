@@ -49,6 +49,7 @@ pub(crate) fn parse_chat_completion_response(response: Value) -> Result<ParsedOp
     Ok(ParsedOpenAiResponse {
         served_service_tier,
         response: ProviderTurnResponse {
+            material: Default::default(),
             blocks,
             stop_reason: parsed.finish_reason,
             input_tokens: usage.map(|usage| usage.input_tokens).unwrap_or(0),

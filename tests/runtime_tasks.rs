@@ -61,6 +61,7 @@ macro_rules! runtime_async_tests {
         $(
             #[tokio::test]
             async fn $name() -> anyhow::Result<()> {
+                support::init_test_tracing();
                 // Each fixture starts a full runtime with background workers.
                 // Bound suite-local concurrency so fixed protocol timeouts do
                 // not become host-load dependent when the harness runs all
@@ -97,6 +98,7 @@ runtime_async_tests!(
     task_output_returns_completed_command_task_output,
     task_output_non_blocking_reports_running_command_task,
     task_output_waits_for_command_task_completion,
+    completed_command_result_reenters_after_original_queue_closes,
     task_input_delivers_stdin_to_managed_command_task,
     task_output_times_out_for_long_running_task,
     task_output_prefers_terminal_task_record_over_stale_task_message,
@@ -106,9 +108,9 @@ runtime_async_tests!(
     task_status_and_task_output_keep_lifecycle_and_output_boundaries,
     command_task_output_truncation_preserves_path_artifact_reference,
     command_task_stop_cancels_running_command,
-    background_command_task_persists_terminal_state_while_runtime_stopped,
+    completed_background_command_task_preserves_terminal_state_after_runtime_stop,
     command_task_result_enqueue_retries_stale_agent_state,
-    blocking_command_task_clears_active_state_while_runtime_stopped,
+    completed_blocking_command_task_stays_inactive_after_runtime_stop,
     command_task_result_is_canonical_lifecycle_nudge_on_completion,
     task_result_rejoin_preserves_runtime_provenance_not_operator_authority,
     command_terminal_reentry_does_not_set_awaiting_task_closure,

@@ -44,6 +44,7 @@ async fn resume_deletion_after_archive_failure(host: &RuntimeHost, agent_id: &st
     .unwrap();
 }
 
+#[cfg(holon_lib_test_shard = "d")]
 #[tokio::test]
 async fn deletion_terminalizes_triggered_waits_and_external_operation_ownership() {
     use crate::runtime_db::DestructiveOperationRecord;
@@ -228,6 +229,7 @@ async fn deletion_terminalizes_triggered_waits_and_external_operation_ownership(
     }
 }
 
+#[cfg(holon_lib_test_shard = "d")]
 #[tokio::test]
 async fn recreated_agent_initializes_each_incarnation_without_old_bootstrap_replay() {
     let fixture = provider_test_config(Some("dummy-token"));
@@ -292,6 +294,7 @@ async fn recreated_agent_initializes_each_incarnation_without_old_bootstrap_repl
     }
 }
 
+#[cfg(holon_lib_test_shard = "d")]
 #[tokio::test]
 async fn deleting_a_provider_blocked_turn_leaves_no_working_state_after_recreation() {
     let fixture = provider_test_config(Some("dummy-token"));
@@ -384,6 +387,7 @@ async fn deleting_a_provider_blocked_turn_leaves_no_working_state_after_recreati
     host.shutdown().await.unwrap();
 }
 
+#[cfg(holon_lib_test_shard = "d")]
 #[tokio::test]
 async fn bootstrap_admission_retry_does_not_duplicate_an_already_enqueued_intro() {
     let fixture = provider_test_config(Some("dummy-token"));
@@ -428,6 +432,7 @@ async fn bootstrap_admission_retry_does_not_duplicate_an_already_enqueued_intro(
     );
 }
 
+#[cfg(holon_lib_test_shard = "d")]
 #[tokio::test]
 async fn deletion_archive_is_opt_in_and_is_not_replacement_context() {
     let (_home, host) = test_host();
@@ -485,6 +490,7 @@ async fn deletion_archive_is_opt_in_and_is_not_replacement_context() {
     assert!(archive.is_file(), "explicit archive is user-retained");
 }
 
+#[cfg(holon_lib_test_shard = "d")]
 #[tokio::test]
 async fn failed_deletion_archive_preserves_source_and_blocks_recreation() {
     let (_home, host) = test_host();
@@ -531,6 +537,7 @@ async fn failed_deletion_archive_preserves_source_and_blocks_recreation() {
         .is_err());
 }
 
+#[cfg(holon_lib_test_shard = "d")]
 #[tokio::test]
 async fn host_restart_does_not_rebuild_bootstrap_row_for_deleted_tombstone() {
     let fixture = provider_test_config(Some("dummy-token"));
@@ -629,6 +636,7 @@ async fn host_restart_does_not_rebuild_bootstrap_row_for_deleted_tombstone() {
     .unwrap();
 }
 
+#[cfg(holon_lib_test_shard = "d")]
 #[tokio::test]
 async fn cleanup_repair_repurges_residue_after_completed_purge() {
     let fixture = provider_test_config(Some("dummy-token"));
@@ -708,6 +716,7 @@ async fn cleanup_repair_repurges_residue_after_completed_purge() {
     assert_eq!(repeated.created, 0);
 }
 
+#[cfg(holon_lib_test_shard = "d")]
 #[tokio::test]
 async fn daemon_coordinator_paces_legacy_residue_drain() {
     let (_home, host) = test_host();
@@ -824,6 +833,7 @@ async fn daemon_coordinator_paces_legacy_residue_drain() {
     host.shutdown_daemon_deletion_coordinator().await;
 }
 
+#[cfg(holon_lib_test_shard = "d")]
 #[tokio::test]
 async fn daemon_coordinator_runs_later_residue_without_repeating_maintenance() {
     let (_home, host) = test_host();
@@ -907,6 +917,7 @@ async fn daemon_coordinator_runs_later_residue_without_repeating_maintenance() {
     host.shutdown_daemon_deletion_coordinator().await;
 }
 
+#[cfg(holon_lib_test_shard = "d")]
 #[tokio::test]
 async fn daemon_coordinator_notified_before_residue_cursor_commit() {
     let (_home, host) = test_host();
@@ -983,6 +994,7 @@ async fn daemon_coordinator_notified_before_residue_cursor_commit() {
     .expect("committed admission must notify even when the scan later fails");
 }
 
+#[cfg(holon_lib_test_shard = "d")]
 #[tokio::test]
 async fn daemon_coordinator_defers_failed_residue_scan_to_safety_sweep() {
     let (_home, host) = test_host();
@@ -1033,9 +1045,15 @@ async fn daemon_coordinator_defers_failed_residue_scan_to_safety_sweep() {
     })
     .await
     .expect("scan errors must not prevent responsibility observations");
+    // Restore deliberately corrupted storage without asking the identity writer
+    // to accept an invalid previous incarnation.
     host.runtime_db()
-        .agent_identities()
-        .upsert(&identity)
+        .connection()
+        .unwrap()
+        .execute(
+            "UPDATE agent_identities SET payload_json = ?1 WHERE agent_id = ?2",
+            rusqlite::params![serde_json::to_string(&identity).unwrap(), identity.agent_id],
+        )
         .unwrap();
     tokio::time::sleep(Duration::from_millis(500)).await;
     let cursor_count: i64 = host

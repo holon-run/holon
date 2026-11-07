@@ -26,6 +26,7 @@ async fn live_xai_grok_imagine_generates_image_with_openai_images_api() -> Resul
     )?;
     let output = provider
         .generate_image(ProviderGenerateImageRequest {
+            material: Default::default(),
             prompt: "Create a simple flat icon of a red kite on a white background.".into(),
             size: Some("1024x1024".into()),
             aspect_ratio: None,

@@ -14,6 +14,7 @@
 //! (matching the previous per-agent read-error behavior) while the rest of
 //! the roster stays servable.
 
+#[cfg(holon_lib_test_shard = "b")]
 #[cfg(test)]
 #[path = "agent_list_tests.rs"]
 mod tests;
@@ -204,6 +205,7 @@ impl RuntimeDb {
         Ok(rows)
     }
 
+    #[cfg(test)]
     pub(crate) async fn agent_list_posture_rows_async(
         &self,
         agent_ids: Vec<String>,

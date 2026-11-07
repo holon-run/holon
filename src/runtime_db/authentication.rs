@@ -366,6 +366,7 @@ fn row_to_bootstrap(row: &rusqlite::Row<'_>) -> rusqlite::Result<BootstrapCreden
     })
 }
 
+#[cfg(holon_lib_test_shard = "b")]
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -389,6 +389,7 @@ pub(super) fn validate_model_entry(model: &BuiltInModelMetadata) -> Result<(), S
     Ok(())
 }
 
+#[cfg(holon_lib_test_shard = "c")]
 #[cfg(test)]
 mod tests {
     use super::*;

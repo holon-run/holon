@@ -1,9 +1,89 @@
 use super::*;
 
+async fn unrelated_interrupted_dispatch(runtime: &RuntimeHandle) -> String {
+    let mut message = MessageEnvelope::new(
+        "batch-target",
+        MessageKind::OperatorPrompt,
+        MessageOrigin::Operator {
+            actor_id: Some("control".into()),
+            actor_display_name: None,
+        },
+        AuthorityClass::OperatorInstruction,
+        Priority::Normal,
+        MessageBody::Text {
+            text: "unrelated predecessor fixture".into(),
+        },
+    )
+    .with_admission(
+        MessageDeliverySurface::HttpControlPrompt,
+        AdmissionContext::ControlAuthenticated,
+    );
+    // Keep the redaction sentinel in a real dispatch's canonical activation ID.
+    message.id = "sentinel-secret?token=credential".into();
+    let message = runtime.enqueue(message).await.unwrap();
+    let anchor = start_without_provider(runtime).await;
+    assert_eq!(anchor.id, message.id);
+    let terminal = runtime
+        .build_turn_interrupted_record("unrelated predecessor fixture", None, 0)
+        .await;
+    let turn_record = runtime.build_turn_record(&terminal).await.unwrap();
+    let transition = turn::TurnTerminalTransition {
+        terminal,
+        turn_record,
+        prepared_work_item_completion: None,
+        prepared_wait_for: None,
+        provider_recovery_message: None,
+        terminal_tool_executions: Vec::new(),
+    };
+    finish_claimed_test_run(runtime).await;
+    assert!(runtime
+        .commit_queue_terminal_settlement(
+            QueueEntryRecord {
+                message_id: anchor.id.clone(),
+                agent_id: anchor.agent_id,
+                priority: anchor.priority,
+                status: QueueEntryStatus::Aborted,
+                created_at: anchor.created_at,
+                updated_at: transition.terminal.completed_at,
+            },
+            Vec::new(),
+            true,
+            Some(&transition),
+        )
+        .await
+        .unwrap());
+    let execution = runtime
+        .runtime_db()
+        .transitions()
+        .load_execution_protocol_state_if_initialized("batch-target")
+        .unwrap()
+        .unwrap();
+    let attempt = execution
+        .attempts
+        .values()
+        .find(|attempt| attempt.source_message_id.as_deref() == Some(anchor.id.as_str()))
+        .unwrap();
+    assert_eq!(
+        attempt.state,
+        crate::domain::execution_protocol::ExecutionAttemptState::Interrupted
+    );
+    assert!(attempt
+        .attempt_id
+        .contains("sentinel-secret?token=credential"));
+    assert_eq!(attempt.turn_id.as_deref(), anchor.turn_id.as_deref());
+    assert!(attempt.terminal_outcome_id.is_some());
+    attempt.attempt_id.clone()
+}
+
 async fn rejected_idle_recovery_fixture(
     mutation: &str,
 ) -> (TempDir, RuntimeHandle, Arc<BatchProvider>, String, String) {
     let (home, host, sender, target, provider) = fixture().await;
+    let unrelated = if mutation == "activation" {
+        Some(unrelated_interrupted_dispatch(&target).await)
+    } else {
+        None
+    };
     let first = send(&sender, &target, "one", "sentinel-private-anchor").await;
     let second = send(&sender, &target, "two", "sentinel-private-follower").await;
     let anchor = start_without_provider(&target).await;
@@ -14,25 +94,30 @@ async fn rejected_idle_recovery_fixture(
     let mut source = target.storage().read_recent_turns(1).unwrap().remove(0);
     match mutation {
         "activation" => {
-            source.idle_input_batch.as_mut().unwrap().activation_id =
-                Some("sentinel-secret?token=credential".into());
+            // Keep the malformed relation readable after cold bootstrap:
+            // a separate original dispatch exists, not a clone of this one.
+            source.idle_input_batch.as_mut().unwrap().activation_id = Some(unrelated.unwrap());
         }
         "attachment" => source.input_message_ids.retain(|id| id != &second),
         _ => unreachable!(),
     }
-    target
-        .inner
-        .runtime_db
-        .connection()
-        .unwrap()
-        .execute(
-            "UPDATE turn_records SET payload_json = ?1 WHERE turn_id = ?2",
-            rusqlite::params![serde_json::to_string(&source).unwrap(), source.turn_id],
-        )
+    let mut mutation = target.begin_mutation().await.unwrap();
+    let prepared = crate::runtime_db::prepared_input_evidence::PreparedInputEvidence::turn(
+        mutation.input_evidence_scope(),
+        crate::ids::audit_event_id(),
+        target.now(),
+        source,
+    )
+    .unwrap();
+    mutation
+        .commit_prepared_evidence(prepared, None)
+        .await
         .unwrap();
+    drop(mutation);
     drop(target);
     drop(sender);
     drop(host);
+    recover_stopped_target(home.path(), provider.clone()).await;
     let runtime = RuntimeHandle::new(
         "batch-target",
         home.path().join("batch-target-state"),
@@ -43,6 +128,7 @@ async fn rejected_idle_recovery_fixture(
         context_config(),
     )
     .unwrap();
+    isolate_test_user_home(&runtime);
     (home, runtime, provider, first, second)
 }
 
@@ -338,6 +424,7 @@ async fn p1_idle_recovery_rejection_terminal_fault_rolls_back_metadata_and_evide
             turn_record,
             prepared_work_item_completion: None,
             prepared_wait_for: None,
+            provider_recovery_message: None,
             terminal_tool_executions: Vec::new(),
         };
         let mut state = runtime.inner.agent.lock().await.state.clone();
@@ -380,7 +467,9 @@ async fn p1_idle_recovery_rejection_terminal_fault_rolls_back_metadata_and_evide
                 )],
                 true,
                 Some(&transition),
-                Some(state.clone()),
+                Some(TerminalAgentStateUpdate {
+                    last_runtime_failure: state.last_runtime_failure.clone(),
+                }),
                 vec![artifacts.transcript.clone()],
                 vec![artifacts.brief.clone()],
                 None,
@@ -438,7 +527,9 @@ async fn p1_idle_recovery_rejection_terminal_fault_rolls_back_metadata_and_evide
                 Vec::new(),
                 true,
                 Some(&transition),
-                Some(state),
+                Some(TerminalAgentStateUpdate {
+                    last_runtime_failure: state.last_runtime_failure,
+                }),
                 vec![artifacts.transcript],
                 vec![artifacts.brief],
                 None,

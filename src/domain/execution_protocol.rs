@@ -396,7 +396,97 @@ pub struct AdmittedFences {
 pub struct RejoinFence {
     pub obligation_id: String,
     pub generation: u64,
-    pub parent_turn_id: String,
+    #[serde(flatten)]
+    pub source: TaskRejoinSource,
+}
+
+/// Creation provenance is independent of the future result execution.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(untagged)]
+pub enum TaskRejoinSource {
+    ParentTurn { parent_turn_id: String },
+    CommandCreation { command_creation_id: String },
+}
+
+impl<'de> Deserialize<'de> for TaskRejoinSource {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        fn present_identity<'de, D: serde::Deserializer<'de>>(
+            deserializer: D,
+        ) -> Result<Option<String>, D::Error> {
+            String::deserialize(deserializer).map(Some)
+        }
+
+        #[derive(Deserialize)]
+        struct Source {
+            #[serde(default, deserialize_with = "present_identity")]
+            parent_turn_id: Option<String>,
+            #[serde(default, deserialize_with = "present_identity")]
+            command_creation_id: Option<String>,
+        }
+        let source = Source::deserialize(deserializer)?;
+        match (source.parent_turn_id, source.command_creation_id) {
+            (Some(parent_turn_id), None) if !parent_turn_id.is_empty() => {
+                Ok(Self::ParentTurn { parent_turn_id })
+            }
+            (None, Some(command_creation_id)) if !command_creation_id.is_empty() => {
+                Ok(Self::CommandCreation {
+                    command_creation_id,
+                })
+            }
+            _ => Err(serde::de::Error::custom(
+                "rejoin requires exactly one creation source",
+            )),
+        }
+    }
+}
+
+impl TaskRejoinSource {
+    pub fn parent_turn_id(&self) -> Option<&str> {
+        match self {
+            Self::ParentTurn { parent_turn_id } => Some(parent_turn_id),
+            Self::CommandCreation { .. } => None,
+        }
+    }
+
+    pub fn command_creation_id(&self) -> Option<&str> {
+        match self {
+            Self::CommandCreation {
+                command_creation_id,
+            } => Some(command_creation_id),
+            Self::ParentTurn { .. } => None,
+        }
+    }
+
+    pub fn validates_identity(&self, task_id: &str) -> bool {
+        match self {
+            Self::ParentTurn { parent_turn_id } => !parent_turn_id.is_empty(),
+            Self::CommandCreation {
+                command_creation_id,
+            } => !task_id.is_empty() && command_creation_id == task_id,
+        }
+    }
+
+    pub fn result_source_ref(&self) -> (&'static str, &str) {
+        match self {
+            Self::ParentTurn { parent_turn_id } => ("task_result_parent_turn_id", parent_turn_id),
+            Self::CommandCreation {
+                command_creation_id,
+            } => ("task_result_command_creation_id", command_creation_id),
+        }
+    }
+
+    pub fn matches_result_source_refs(
+        &self,
+        refs: &std::collections::BTreeMap<String, String>,
+    ) -> bool {
+        let (key, id) = self.result_source_ref();
+        let other = if self.parent_turn_id().is_some() {
+            "task_result_command_creation_id"
+        } else {
+            "task_result_parent_turn_id"
+        };
+        refs.get(key).is_some_and(|value| value == id) && !refs.contains_key(other)
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -1059,8 +1149,11 @@ fn validate_source_binding(
 fn validate_rejoin_fence(fence: Option<&RejoinFence>) -> Result<(), String> {
     let fence =
         fence.ok_or_else(|| "task or child result requires a live rejoin fence".to_string())?;
-    if fence.obligation_id.is_empty() || fence.parent_turn_id.is_empty() || fence.generation == 0 {
-        return Err("rejoin fence requires identity, parent turn, and generation".into());
+    if fence.obligation_id.is_empty()
+        || !fence.source.validates_identity(&fence.obligation_id)
+        || fence.generation == 0
+    {
+        return Err("rejoin fence requires identity, creation source, and generation".into());
     }
     Ok(())
 }
@@ -1569,89 +1662,180 @@ fn plan_work_item_outcome(
 }
 
 pub fn assert_invariants(state: &ExecutionProtocolState) -> Result<(), String> {
-    let open_attempts = state
+    if state
         .attempts
         .values()
-        .filter(|attempt| attempt.state == ExecutionAttemptState::Open)
-        .collect::<Vec<_>>();
-    if open_attempts.len() > 1 {
+        .filter(|a| a.state == ExecutionAttemptState::Open)
+        .count()
+        > 1
+    {
         return Err("execution partition contains more than one open attempt".into());
     }
+    for (id, attempt) in &state.attempts {
+        validate_attempt_invariants(
+            &state.agent_id,
+            id,
+            attempt,
+            &state.work_items,
+            attempt
+                .terminal_outcome_id
+                .as_ref()
+                .and_then(|id| state.outcomes.get(id)),
+        )?;
+    }
+    for record in state.work_items.values() {
+        let attempt = match &record.state {
+            WorkItemExecutionState::InFlight { attempt_id, .. } => state.attempts.get(attempt_id),
+            _ => None,
+        };
+        validate_work_invariants(record, attempt)?;
+    }
+    for (id, outcome) in &state.outcomes {
+        validate_outcome_invariants(id, outcome, state.attempts.get(&outcome.attempt_id))?;
+    }
+    Ok(())
+}
 
-    for (attempt_id, attempt) in &state.attempts {
-        if attempt_id != &attempt.attempt_id || attempt.agent_id != state.agent_id {
-            return Err("attempt identity does not match its execution partition".into());
+// Shared by aggregate validation and bounded closure-history traversal.
+pub(crate) fn validate_attempt_invariants(
+    agent_id: &str,
+    id: &str,
+    attempt: &ExecutionAttempt,
+    works: &BTreeMap<String, WorkItemExecutionRecord>,
+    outcome: Option<&ExecutionOutcomeRecord>,
+) -> Result<(), String> {
+    if id != attempt.attempt_id || attempt.agent_id != agent_id {
+        return Err("attempt identity does not match its execution partition".into());
+    }
+    if attempt.state == ExecutionAttemptState::Open {
+        if attempt.terminal_outcome_id.is_some() || attempt.terminal_at.is_some() {
+            return Err("open attempt contains terminal evidence".into());
         }
-        match attempt.state {
-            ExecutionAttemptState::Open => {
-                if attempt.terminal_outcome_id.is_some() || attempt.terminal_at.is_some() {
-                    return Err("open attempt contains terminal evidence".into());
-                }
-            }
-            _ => {
-                let outcome_id = attempt
-                    .terminal_outcome_id
-                    .as_ref()
-                    .ok_or_else(|| "terminal attempt is missing its outcome".to_string())?;
-                let outcome = state
-                    .outcomes
-                    .get(outcome_id)
-                    .ok_or_else(|| "terminal attempt references an unknown outcome".to_string())?;
-                if outcome.attempt_id != attempt.attempt_id || attempt.terminal_at.is_none() {
-                    return Err("terminal attempt outcome evidence is inconsistent".into());
-                }
-            }
-        }
-        if let ExecutionBinding::WorkItem { work_item_id } = &attempt.binding {
-            if attempt.state == ExecutionAttemptState::Open
-                && !matches!(
-                    state.work_items.get(work_item_id).map(|record| &record.state),
-                    Some(WorkItemExecutionState::InFlight {
-                        attempt_id: linked_attempt,
-                        ..
-                    }) if linked_attempt == attempt_id
-                )
-            {
-                return Err("open WorkItem attempt lacks reciprocal InFlight state".into());
-            }
+    } else {
+        attempt
+            .terminal_outcome_id
+            .as_ref()
+            .ok_or("terminal attempt is missing its outcome")?;
+        let outcome = outcome.ok_or("terminal attempt references an unknown outcome")?;
+        if outcome.attempt_id != attempt.attempt_id || attempt.terminal_at.is_none() {
+            return Err("terminal attempt outcome evidence is inconsistent".into());
         }
     }
-
-    for work_record in state.work_items.values() {
-        if work_record.source_revision == 0 || work_record.generation() == 0 {
-            return Err("WorkItem execution record contains a zero revision or generation".into());
-        }
-        if let WorkItemExecutionState::InFlight { attempt_id, .. } = &work_record.state {
-            if !matches!(
-                state.attempts.get(attempt_id),
-                Some(ExecutionAttempt {
-                    state: ExecutionAttemptState::Open,
-                    binding: ExecutionBinding::WorkItem { .. },
-                    ..
-                })
-            ) {
-                return Err("InFlight WorkItem lacks reciprocal open attempt".into());
-            }
-        }
-    }
-
-    for (outcome_id, outcome) in &state.outcomes {
-        if outcome_id != &outcome.outcome_id {
-            return Err("outcome identity does not match its map key".into());
-        }
-        if !matches!(
-            state.attempts.get(&outcome.attempt_id),
-            Some(attempt) if attempt.terminal_outcome_id.as_deref() == Some(outcome_id)
-        ) {
-            return Err("outcome lacks reciprocal terminal attempt".into());
+    if let ExecutionBinding::WorkItem { work_item_id } = &attempt.binding {
+        if attempt.state == ExecutionAttemptState::Open
+            && !matches!(
+                works.get(work_item_id).map(|record| &record.state),
+                Some(WorkItemExecutionState::InFlight { attempt_id, .. }) if attempt_id == id
+            )
+        {
+            return Err("open WorkItem attempt lacks reciprocal InFlight state".into());
         }
     }
     Ok(())
 }
 
+pub(crate) fn validate_work_invariants(
+    record: &WorkItemExecutionRecord,
+    attempt: Option<&ExecutionAttempt>,
+) -> Result<(), String> {
+    if record.source_revision == 0 || record.generation() == 0 {
+        return Err("WorkItem execution record contains a zero revision or generation".into());
+    }
+    if matches!(&record.state, WorkItemExecutionState::InFlight { .. })
+        && !matches!(
+            attempt,
+            Some(ExecutionAttempt {
+                state: ExecutionAttemptState::Open,
+                binding: ExecutionBinding::WorkItem { .. },
+                ..
+            })
+        )
+    {
+        return Err("InFlight WorkItem lacks reciprocal open attempt".into());
+    }
+    Ok(())
+}
+
+pub(crate) fn validate_outcome_invariants(
+    id: &str,
+    outcome: &ExecutionOutcomeRecord,
+    attempt: Option<&ExecutionAttempt>,
+) -> Result<(), String> {
+    if id != outcome.outcome_id {
+        return Err("outcome identity does not match its map key".into());
+    }
+    if !matches!(attempt, Some(a) if a.terminal_outcome_id.as_deref() == Some(id)) {
+        return Err("outcome lacks reciprocal terminal attempt".into());
+    }
+    Ok(())
+}
+
+#[cfg(holon_lib_test_shard = "c")]
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn task_rejoin_source_preserves_parent_wire_and_command_creation_wire() {
+        for (wire, parent, creation) in [
+            (
+                serde_json::json!({
+                    "obligation_id": "task-a",
+                    "generation": 1,
+                    "parent_turn_id": "turn-parent"
+                }),
+                Some("turn-parent"),
+                None,
+            ),
+            (
+                serde_json::json!({
+                    "obligation_id": "task-a",
+                    "generation": 1,
+                    "command_creation_id": "task-a"
+                }),
+                None,
+                Some("task-a"),
+            ),
+        ] {
+            let fence: RejoinFence = serde_json::from_value(wire.clone()).unwrap();
+            assert_eq!(fence.source.parent_turn_id(), parent);
+            assert_eq!(fence.source.command_creation_id(), creation);
+            assert_eq!(serde_json::to_value(fence).unwrap(), wire);
+        }
+    }
+
+    #[test]
+    fn task_rejoin_source_rejects_null_ambiguous_and_duplicate_fields() {
+        for wire in [
+            r#"{}"#,
+            r#"{"parent_turn_id":null}"#,
+            r#"{"command_creation_id":null}"#,
+            r#"{"parent_turn_id":"turn-parent","command_creation_id":null}"#,
+            r#"{"parent_turn_id":null,"command_creation_id":"task-a"}"#,
+            r#"{"parent_turn_id":null,"command_creation_id":null}"#,
+            r#"{"parent_turn_id":"turn-parent","command_creation_id":"task-a"}"#,
+            r#"{"parent_turn_id":""}"#,
+            r#"{"command_creation_id":""}"#,
+            r#"{"parent_turn_id":42}"#,
+            r#"{"command_creation_id":false}"#,
+            r#"{"parent_turn_id":"turn-parent","parent_turn_id":"turn-parent"}"#,
+            r#"{"command_creation_id":"task-a","command_creation_id":"task-a"}"#,
+            r#"{"result_execution_turn_id":"future-turn"}"#,
+        ] {
+            assert!(
+                serde_json::from_str::<TaskRejoinSource>(wire).is_err(),
+                "{wire}"
+            );
+            let fields = &wire[1..wire.len() - 1];
+            let separator = if fields.is_empty() { "" } else { "," };
+            let flattened =
+                format!(r#"{{"obligation_id":"task-a","generation":1{separator}{fields}}}"#);
+            assert!(
+                serde_json::from_str::<RejoinFence>(&flattened).is_err(),
+                "{flattened}"
+            );
+        }
+    }
 
     #[test]
     fn context_budget_recheck_requires_exact_pause_changed_condition_and_preserves_source() {
@@ -2234,7 +2418,9 @@ mod tests {
         fences.rejoin = Some(RejoinFence {
             obligation_id: "rejoin-task-1".into(),
             generation: 1,
-            parent_turn_id: "turn-parent".into(),
+            source: crate::domain::execution_protocol::TaskRejoinSource::ParentTurn {
+                parent_turn_id: "turn-parent".into(),
+            },
         });
         assert!(validate_source_binding(&task, &binding, &fences).is_ok());
 
@@ -2242,7 +2428,9 @@ mod tests {
         fences.rejoin = Some(RejoinFence {
             obligation_id: String::new(),
             generation: 1,
-            parent_turn_id: "turn-parent".into(),
+            source: crate::domain::execution_protocol::TaskRejoinSource::ParentTurn {
+                parent_turn_id: "turn-parent".into(),
+            },
         });
         assert!(validate_source_binding(&child, &binding, &fences)
             .unwrap_err()

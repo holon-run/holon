@@ -287,6 +287,7 @@ pub(super) async fn serve_file(
     builder.body(body).map_err(io::Error::other)
 }
 
+#[cfg(holon_lib_test_shard = "c")]
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -4,7 +4,7 @@ use super::RuntimeHandle;
 use crate::observability::TraceContext;
 use crate::types::{
     AuthorityClass, CommandTaskSpec, ExecCommandDuplicatePolicy, ExecCommandResult,
-    TaskInputResult, TaskListEntry, TaskOutputResult, TaskRecord, TaskStatusSnapshot,
+    TaskInputResult, TaskRecord,
 };
 
 pub(crate) struct ManagedTaskSupervisor<'a> {
@@ -42,21 +42,26 @@ impl ManagedTaskSupervisor<'_> {
             .await
     }
 
-    pub(crate) async fn latest_task_list_entries(&self) -> Result<Vec<TaskListEntry>> {
-        self.runtime.latest_task_list_entries().await
+    pub(crate) async fn latest_task_list_entries(&self) -> Result<super::task_reads::TaskListRead> {
+        self.runtime.active_task_list_snapshot(usize::MAX).await
     }
 
-    pub(crate) async fn task_status_snapshot(&self, task_id: &str) -> Result<TaskStatusSnapshot> {
-        self.runtime.task_status_snapshot(task_id).await
+    pub(crate) async fn task_status_read(
+        &self,
+        task_id: &str,
+    ) -> Result<super::task_reads::TaskStatusRead> {
+        self.runtime.task_status_read(task_id).await
     }
 
-    pub(crate) async fn task_output(
+    pub(crate) async fn task_output_read(
         &self,
         task_id: &str,
         block: bool,
         timeout_ms: u64,
-    ) -> Result<TaskOutputResult> {
-        self.runtime.task_output(task_id, block, timeout_ms).await
+    ) -> Result<super::tasks::TaskOutputResultRead> {
+        self.runtime
+            .task_output_read(task_id, block, timeout_ms)
+            .await
     }
 
     pub(crate) async fn stop_task(

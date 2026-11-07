@@ -266,6 +266,7 @@ fn bounded_snapshot(snapshot: &str) -> (String, bool) {
     (bounded, truncated)
 }
 
+#[cfg(holon_lib_test_shard = "b")]
 #[cfg(test)]
 mod tests {
     use super::*;

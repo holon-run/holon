@@ -37,6 +37,7 @@ pub(crate) enum TaskResultObligation {
 }
 
 impl TaskResultSettlementRepository<'_> {
+    #[cfg(test)]
     pub(crate) fn settled_recovery_source(&self, source: &MessageEnvelope) -> Result<bool> {
         self.db
             .transaction(|tx| settled_recovery_source_tx(tx, source))
@@ -60,6 +61,7 @@ impl TaskResultSettlementRepository<'_> {
         })
     }
 
+    #[cfg(test)]
     pub(crate) fn exact_waiter_recovery_source(
         &self,
         source: &MessageEnvelope,
@@ -71,6 +73,7 @@ impl TaskResultSettlementRepository<'_> {
     /// The exact wait that owns this validated recovery source. Scanner-queued
     /// sources reach the waiter before they can carry a `wait_id` ref, so the
     /// triggered wait is the durable join and must be resolvable from it too.
+    #[cfg(test)]
     pub(crate) fn exact_waiter_recovery_wait(
         &self,
         source: &MessageEnvelope,
@@ -79,6 +82,7 @@ impl TaskResultSettlementRepository<'_> {
             .transaction(|tx| exact_waiter_recovery_wait_tx(tx, source, None))
     }
 
+    #[cfg(test)]
     pub(crate) fn exact_waiter_recovery_replay_wait(
         &self,
         source: &MessageEnvelope,
@@ -116,6 +120,7 @@ impl TaskResultSettlementRepository<'_> {
         })
     }
 
+    #[cfg(test)]
     pub(crate) fn exact_waiter_recovery_candidate(
         &self,
         agent_id: &str,
@@ -180,7 +185,9 @@ pub(crate) fn settled_recovery_source_tx(
         || record.state != TaskResultSettlementState::Settled
         || record.disposition.is_none()
         || source.source_refs.get("task_result_identity") != Some(&record.result_identity)
-        || source.source_refs.get("task_result_parent_turn_id") != Some(&record.parent_turn_id)
+        || !record
+            .source
+            .matches_result_source_refs(&source.source_refs)
         || source.source_refs.get("task_result_rejoin_generation")
             != Some(&record.rejoin_generation.to_string())
         || !record_matches_durable_task_tx(tx, &record)?
@@ -228,7 +235,7 @@ pub(crate) fn exact_waiter_recovery_wait_tx(
     super::exact_waiter::exact_wait_for_source_tx(tx, source, None)
 }
 
-fn exact_waiter_recovery_source_tx(
+pub(super) fn exact_waiter_recovery_source_tx(
     tx: &Transaction<'_>,
     source: &MessageEnvelope,
     current_activation_id: Option<&str>,
@@ -256,6 +263,7 @@ fn exact_waiter_recovery_source_tx(
             "task_result_message_id",
             "task_result_identity",
             "task_result_parent_turn_id",
+            "task_result_command_creation_id",
             "task_result_rejoin_generation",
             "task_result_owner_key",
         ]
@@ -316,7 +324,9 @@ pub(super) fn recovery_wake_admits_tx(
     };
     if anchor.agent_id != record.agent_id
         || source.source_refs.get("task_result_identity") != Some(&anchor.result_identity)
-        || source.source_refs.get("task_result_parent_turn_id") != Some(&anchor.parent_turn_id)
+        || !anchor
+            .source
+            .matches_result_source_refs(&source.source_refs)
         || source.source_refs.get("task_result_rejoin_generation")
             != Some(&anchor.rejoin_generation.to_string())
         || (anchor.result_identity != record.result_identity
@@ -342,6 +352,39 @@ pub(crate) fn classify_obligation_tx(
     current_activation_id: Option<&str>,
     waiter_work_item_id: Option<&str>,
 ) -> Result<TaskResultObligation> {
+    classify_obligation_inner_tx(
+        tx,
+        expected,
+        current_activation_id,
+        waiter_work_item_id,
+        None,
+    )
+}
+
+/// The caller validates completeness and the Work revision in this transaction.
+pub(crate) fn classify_obligation_with_waits_tx(
+    tx: &Transaction<'_>,
+    expected: &TaskResultSettlementRecord,
+    current_activation_id: Option<&str>,
+    waiter_work_item_id: Option<&str>,
+    waits: &[&WaitConditionRecord],
+) -> Result<TaskResultObligation> {
+    classify_obligation_inner_tx(
+        tx,
+        expected,
+        current_activation_id,
+        waiter_work_item_id,
+        Some(waits),
+    )
+}
+
+fn classify_obligation_inner_tx(
+    tx: &Transaction<'_>,
+    expected: &TaskResultSettlementRecord,
+    current_activation_id: Option<&str>,
+    waiter_work_item_id: Option<&str>,
+    observed_waits: Option<&[&WaitConditionRecord]>,
+) -> Result<TaskResultObligation> {
     let payload: Option<String> = tx
         .query_row(
             "SELECT payload_json FROM task_result_settlements WHERE result_identity = ?1",
@@ -358,7 +401,7 @@ pub(crate) fn classify_obligation_tx(
         || record.message_id != expected.message_id
         || record.work_item_id != expected.work_item_id
         || record.rejoin_generation != expected.rejoin_generation
-        || record.parent_turn_id != expected.parent_turn_id
+        || record.source != expected.source
     {
         return Ok(TaskResultObligation::InvalidOrStale);
     }
@@ -467,16 +510,7 @@ pub(crate) fn classify_obligation_tx(
             return Ok(TaskResultObligation::InvalidOrStale);
         }
     }
-    let mut statement = tx.prepare(
-        "SELECT payload_json FROM wait_conditions
-         WHERE agent_id = ?1 AND status IN ('active', 'triggered', 'resolved')
-         ORDER BY created_at ASC, wait_condition_id ASC",
-    )?;
-    let waits = statement
-        .query_map([&record.agent_id], |row| row.get::<_, String>(0))?
-        .collect::<std::result::Result<Vec<_>, _>>()?;
-    for payload in waits {
-        let wait: WaitConditionRecord = serde_json::from_str(&payload)?;
+    let classify_wait = |wait: &WaitConditionRecord| -> Result<Option<TaskResultObligation>> {
         if wait.kind != WaitConditionKind::Task
             || wait.work_item_id.as_deref() == waiter_work_item_id
             || !wait.wake_sources.iter().any(
@@ -486,7 +520,7 @@ pub(crate) fn classify_obligation_tx(
                 && wait.trigger_message_id() != Some(record.message_id.as_str())
                 && !super::exact_waiter::wait_claims_result_tx(tx, &wait, &record)?)
         {
-            continue;
+            return Ok(None);
         }
         if let Some(owner_id) = wait.work_item_id.as_deref() {
             let owner: Option<String> = tx
@@ -510,15 +544,37 @@ pub(crate) fn classify_obligation_tx(
                     && (super::exact_waiter::direct_wait_claims_result(&message, &wait, &record)
                         || super::exact_waiter::wait_claims_result_tx(tx, &wait, &record)?)
                 {
-                    return Ok(TaskResultObligation::InvalidOrStale);
+                    return Ok(Some(TaskResultObligation::InvalidOrStale));
                 }
-                continue;
+                return Ok(None);
             }
         }
-        return Ok(TaskResultObligation::ClaimedByOtherWaiter {
-            wait_condition_id: wait.id,
-            work_item_id: wait.work_item_id,
-        });
+        Ok(Some(TaskResultObligation::ClaimedByOtherWaiter {
+            wait_condition_id: wait.id.clone(),
+            work_item_id: wait.work_item_id.clone(),
+        }))
+    };
+    if let Some(waits) = observed_waits {
+        for wait in waits {
+            if let Some(obligation) = classify_wait(wait)? {
+                return Ok(obligation);
+            }
+        }
+    } else {
+        let mut statement = tx.prepare(
+            "SELECT payload_json FROM wait_conditions
+             WHERE agent_id = ?1 AND status IN ('active', 'triggered', 'resolved')
+             ORDER BY created_at ASC, wait_condition_id ASC",
+        )?;
+        let waits = statement
+            .query_map([&record.agent_id], |row| row.get::<_, String>(0))?
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+        for payload in waits {
+            let wait: WaitConditionRecord = serde_json::from_str(&payload)?;
+            if let Some(obligation) = classify_wait(&wait)? {
+                return Ok(obligation);
+            }
+        }
     }
     if record.recovery_paused_at.is_some() {
         return Ok(TaskResultObligation::Paused);

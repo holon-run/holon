@@ -2121,6 +2121,7 @@ fn decode_chunked_body(body: &[u8]) -> Result<Vec<u8>> {
     Ok(decoded)
 }
 
+#[cfg(holon_lib_test_shard = "c")]
 #[cfg(test)]
 mod tests {
     use super::{
