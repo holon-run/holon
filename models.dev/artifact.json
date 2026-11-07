@@ -1,12 +1,12 @@
 {
   "schema_version": 1,
-  "revision": "models-dev-91a77f08f7e88368aa75455a33e7074abcc04c330b1cb7b41c1778961c75a312",
+  "revision": "models-dev-6a3f0abfcc9a357d8f29230659697e4ba1a3793ebebb3d9838ecd4160e6f84a6",
   "upstream": {
     "source": "models.dev",
-    "revision": "91a77f08f7e88368aa75455a33e7074abcc04c330b1cb7b41c1778961c75a312",
-    "fetched_at": "2026-11-06T21:13:45.917740019+00:00",
-    "content_sha256": "91a77f08f7e88368aa75455a33e7074abcc04c330b1cb7b41c1778961c75a312",
-    "adapter_version": "0.59.0 (fbaf6c6a-dirty)"
+    "revision": "6a3f0abfcc9a357d8f29230659697e4ba1a3793ebebb3d9838ecd4160e6f84a6",
+    "fetched_at": "2026-11-07T20:54:21.435017921+00:00",
+    "content_sha256": "6a3f0abfcc9a357d8f29230659697e4ba1a3793ebebb3d9838ecd4160e6f84a6",
+    "adapter_version": "0.59.0 (08b4d452-dirty)"
   },
   "models": [
     {
@@ -13695,6 +13695,48 @@
       "source": "remote_discovered"
     },
     {
+      "model_ref": "openrouter/liquid/lfm-3-1.7b",
+      "display_name": "LFM3-1.7B",
+      "description": "Reasoning model for deliberate analysis, multi-step problem solving, and tool use",
+      "context_window_tokens": 262144,
+      "effective_context_window_percent": 95,
+      "auto_compact_token_limit": 249036,
+      "default_max_output_tokens": 8192,
+      "max_output_tokens_upper_limit": 8192,
+      "default_verbosity": null,
+      "tool_output_truncation_estimated_tokens": 2500,
+      "capabilities": {
+        "agent_turn": true,
+        "parallel_tool_calls": false,
+        "image_input": false,
+        "image_generation": false,
+        "supports_reasoning": true,
+        "interactive_exec": false
+      },
+      "source": "remote_discovered"
+    },
+    {
+      "model_ref": "openrouter/liquid/lfm-3-1.7b:free",
+      "display_name": "LFM3-1.7B (free)",
+      "description": "Free provider route for experiments, demos, and cost-sensitive chat workloads",
+      "context_window_tokens": 262144,
+      "effective_context_window_percent": 95,
+      "auto_compact_token_limit": 249036,
+      "default_max_output_tokens": 8192,
+      "max_output_tokens_upper_limit": 8192,
+      "default_verbosity": null,
+      "tool_output_truncation_estimated_tokens": 2500,
+      "capabilities": {
+        "agent_turn": true,
+        "parallel_tool_calls": false,
+        "image_input": false,
+        "image_generation": false,
+        "supports_reasoning": true,
+        "interactive_exec": false
+      },
+      "source": "remote_discovered"
+    },
+    {
       "model_ref": "openrouter/mancer/weaver",
       "display_name": "Weaver (alpha)",
       "description": "General-purpose chat model for instruction following, writing, and analysis",
@@ -14178,8 +14220,8 @@
       "context_window_tokens": 204800,
       "effective_context_window_percent": 95,
       "auto_compact_token_limit": 194560,
-      "default_max_output_tokens": 32768,
-      "max_output_tokens_upper_limit": 32768,
+      "default_max_output_tokens": 58982,
+      "max_output_tokens_upper_limit": 58982,
       "default_verbosity": null,
       "tool_output_truncation_estimated_tokens": 2500,
       "capabilities": {
@@ -14806,8 +14848,8 @@
       "context_window_tokens": 262144,
       "effective_context_window_percent": 95,
       "auto_compact_token_limit": 249036,
-      "default_max_output_tokens": 235929,
-      "max_output_tokens_upper_limit": 235929,
+      "default_max_output_tokens": 65536,
+      "max_output_tokens_upper_limit": 65536,
       "default_verbosity": null,
       "tool_output_truncation_estimated_tokens": 2500,
       "capabilities": {
@@ -21587,7 +21629,7 @@
       "capabilities": {
         "agent_turn": true,
         "parallel_tool_calls": false,
-        "image_input": false,
+        "image_input": true,
         "image_generation": false,
         "supports_reasoning": true,
         "interactive_exec": false

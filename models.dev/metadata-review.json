@@ -19928,8 +19928,8 @@
       "output_status": "unknown",
       "review": {
         "owner": "holon-model-provider",
-        "reviewed_at": "2026-11-05",
-        "reason": "Only native Go Chat Hy4 context/output ceiling, vision and none/high effort are independently evidenced. Translated Messages/Responses keep unknown capacity, disabled vision/reasoning and agent_turn=false until their protocol-specific tool semantics are reviewed; native limits are not inherited.",
+        "reviewed_at": "2026-11-08",
+        "reason": "Only native Go Responses Crouton context/output ceiling, vision and minimal/low/medium/high/xhigh/max effort are independently evidenced. Translated Chat/Messages keep unknown capacity, disabled vision/reasoning and agent_turn=false until their protocol-specific tool semantics are reviewed; native limits are not inherited.",
         "recheck": "Recheck each missing field independently at the next exact endpoint/model documentation change or before increasing a local execution budget.",
         "evidence": [
           "models.dev/endpoint-review.md",
@@ -23308,8 +23308,8 @@
       "output_status": "unknown",
       "review": {
         "owner": "holon-model-provider",
-        "reviewed_at": "2026-11-05",
-        "reason": "Only native Go Chat Hy4 context/output ceiling, vision and none/high effort are independently evidenced. Translated Messages/Responses keep unknown capacity, disabled vision/reasoning and agent_turn=false until their protocol-specific tool semantics are reviewed; native limits are not inherited.",
+        "reviewed_at": "2026-11-08",
+        "reason": "Only native Go Responses Crouton context/output ceiling, vision and minimal/low/medium/high/xhigh/max effort are independently evidenced. Translated Chat/Messages keep unknown capacity, disabled vision/reasoning and agent_turn=false until their protocol-specific tool semantics are reviewed; native limits are not inherited.",
         "recheck": "Recheck each missing field independently at the next exact endpoint/model documentation change or before increasing a local execution budget.",
         "evidence": [
           "models.dev/endpoint-review.md",

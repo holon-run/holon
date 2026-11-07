@@ -9,6 +9,95 @@ reviewed routes unless there is affirmative removal evidence. New routes require
 their own endpoint evidence; missing capability flags are conservative omissions,
 not proof that a model lacks the feature.
 
+## 2026-11-08 incremental review
+
+Baseline main is `08b4d452`; November 7 UTC sampling corresponds to the
+November 8 Beijing cycle. The fixed models.dev SHA-256 is
+`6a3f0abfcc9a357d8f29230659697e4ba1a3793ebebb3d9838ecd4160e6f84a6`.
+[Exact field evidence](metadata-evidence.md#incremental-review-2026-11-08)
+describes two OpenRouter discovery additions, two output projections and one
+Venice discovery image flag. There are no static additions or removals.
+
+All 30 endpoints were reviewed independently of the general API refresh:
+
+| Endpoint | Complete stored objects | Evidence and preserved boundary |
+| --- | ---: | --- |
+| `dashscope@default` | 47 | Models/Kimi/thinking/Messages body unchanged; K3.1 unknowns retained. |
+| `dashscope@token-plan` | 26 | Personal/team/quick-start unchanged; no ordinary-API entitlement copied. |
+| `dashscope@coding-plan` | 13 | Legacy Coding qualification independently unchanged. |
+| `dashscope@coding-plan-intl` | 6 | International qualification retained independently of domestic host. |
+| `volcengine@default` | 16 | Models/cache/retirement/Responses unchanged; no key-required Models API called. |
+| `volcengine@coding` | 23 | Coding/discount/retirement unchanged; 261101 same-ID upgrade is not a new wire ID. |
+| `volcengine@plan` | 31 | Agent Plan remains separate; its Evolving qualification is not ordinary Responses evidence. |
+| `tencent-tokenhub@default` | 39 | Matrix/thinking/notices unchanged; Chat efforts remain protocol-specific. |
+| `tencent-tokenhub@messages` | 36 | No Chat reasoning/effort copied; existing Hy4 image fact retained. |
+| `tencent-tokenhub@responses` | 28 | Same protocol isolation; no exact integer Hy4 capacity invented. |
+| `qianfan@default` | 15 | Only navigation removed; article unchanged, no exact thinking-exp retirement evidence. |
+| `bigmodel@default` | 23 | Domestic models/compatibility/plan/index unchanged; Legal qualification unknown. |
+| `zai@default` | 22 | International models/DevPack/tools/index unchanged; no domestic qualification copied. |
+| `xiaomi@default` | 4 | Readable documentation unchanged; three JS shells cannot certify fields. |
+| `xiaomi@token-plan` | 3 | Plan/Responses unchanged; ordinary API, other region and audio rights not inherited. |
+| `minimax@default` | 6 | Anthropic page deletions do not prove early retirement or image support. |
+| `minimax@m-plan` | 2 | Independently sampled plan unchanged; Preview output ceiling/default unknown. |
+| `minimax-cn@default` | 2 | Domestic evidence separate; M3/M3.1 recommendation is not request-omission default. |
+| `minimax-cn@m-plan` | 2 | Domestic plan unchanged; no ordinary-API qualification copied. |
+| `moonshot@default` | 6 | Models/Chat/pricing/cache unchanged; legacy-account restrictions retained. |
+| `byteplus@default` | 0 | Ordinary `/api/v3` does not inherit Coding membership. |
+| `byteplus@coding` | 13 | Six decoded bodies unchanged except one punctuation difference; separate `/api/coding/v3`. |
+| `stepfun@default` | 4 | Models/API body unchanged. |
+| `stepfun@plan` | 5 | Independent plan paths reviewed; registered Chat contract and router unknowns retained. |
+| `opencode-go@default` | 40 | Go listing unchanged except creation timestamps; conservative translations retained. |
+| `opencode-go@messages` | 36 | Crouton annotation corrected to Chat/Messages translation; facts unchanged. |
+| `opencode-go@responses` | 32 | Native Crouton exact protocol/base URL and fields still match. |
+| `kilocode@default` | 5 | Five auto objects and routing pool unchanged; two Liquid dynamic IDs are not auto admission. |
+| `together@default` | 12 | Sidebar names do not establish wire IDs; protocol/account evidence still incomplete. |
+| `fireworks@default` | 10 | New Beam card explicitly lacks Serverless/function calling; no public Serverless route added. |
+
+The two evidence groups compared **332 + 175 = 507** complete stored objects,
+including facts, inputs, review/evidence attribution and unknowns, against
+the baseline. All are unchanged before the two annotation-only corrections.
+This is preservation, not a claim that every historical field was newly
+certified by HTTP. Group one sampled 87 unique URLs (all HTTP 200); group two
+sampled 95 (68 HTTP 200, 8 HTTP 403, 7 HTTP 404, 12 network failures).
+Raw bodies, receipts and full-object comparisons were hash-checked; failures
+have no fabricated body/status/final URL. Together remains incomplete;
+12 supplemental Mistral native requests failed and certify no new version.
+
+MiniMax's FAQ still sets November 18, 2026 as retirement, and BytePlus's
+November 11 cutoff is also future at this cycle. Tencent M2.7 remains until
+November 17 at 23:59:59 Beijing time. Volcengine November 8/9 discount ends
+are not retirements. Moonshot K2.6/K2.7 still require an account registered
+before November 1 and are expected to retire in late December. No route is
+removed early or revived from an older affirmative retirement.
+
+Kilo's new Liquid records and existing model metadata do not alter its auto
+pool. Fireworks Beam and Ripple require On-demand deployment rather than
+the registered public Serverless contract; Ripple's function calling is
+supported, not the missing qualification. Go's 29 current native projections
+and 61 conservative translations remain separate; listing omissions do not
+retire historical routes.
+
+Codex's fixed official file at revision `126a0ee9` is byte/JSON unchanged;
+DeepSeek's canonical Models & Pricing and Responses bodies are unchanged.
+No credentials, paid inference or account configuration were used. Static
+routes, aliases, preferred models/routes and unknown service defaults remain
+unchanged.
+
+Validation for this cycle passed: fixed-byte refresh, `models-dev validate
+--input-dir models.dev`, `models-dev coverage --check` (632 reviewed routes),
+and strict complete-object comparisons. The serial gates ran
+`cargo test --locked models_dev`, the `model_catalog::` and
+`model_discovery::` library tests, and the `models_dev_adapter` and
+`context_budget` integration targets: **319 test executions passed, 1
+snapshot-regeneration test ignored**. `cargo fmt --all -- --check`,
+`RUSTFLAGS="-D warnings" cargo check --all-targets --locked`,
+`git diff --check`, and initial/final frozen hashes passed. Existing Cargo
+target-directory and manifest diagnostics (redundant homepage and unused
+`rpassword`) remain; this is not a warning-free Cargo manifest claim.
+Independent read-only review found no unresolved P1/P2. Its non-blocking
+source-link mismatch was corrected to the sampled Go listing URL; no
+source code, generated facts, static routes or defaults changed afterward.
+
 ## 2026-11-07 incremental review
 
 Baseline main is `fbaf6c6a`; November 6 UTC sampling corresponds to the
