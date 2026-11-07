@@ -479,6 +479,7 @@ fn exclusive_startup_event_time_preserves_future_turn_timestamp_and_authority() 
                     &scopes,
                     &capability,
                     &ledger,
+                    None,
                     at + chrono::Duration::seconds(seconds),
                 )?;
             }
@@ -487,6 +488,7 @@ fn exclusive_startup_event_time_preserves_future_turn_timestamp_and_authority() 
                     &scopes,
                     &capability,
                     &ledger,
+                    None,
                 )?;
             }
         }
@@ -513,6 +515,7 @@ fn exclusive_startup_event_time_preserves_future_turn_timestamp_and_authority() 
                     &scopes,
                     &capability,
                     &ledger,
+                    None,
                     at + chrono::Duration::seconds(1),
                 )?;
             assert_eq!(second.report.interrupted_turns, 0);

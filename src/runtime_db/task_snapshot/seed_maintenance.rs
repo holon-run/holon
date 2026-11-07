@@ -1,11 +1,9 @@
 //! Exclusive pre-activation maintenance of immutable unbound fixed members.
 use super::*;
-#[cfg(test)]
 use crate::runtime_db::input_evidence_snapshot::legacy_recovery::{
     legacy_seed_recovery_scope_tx, ExclusiveStartupInputRecovery, LegacySeedRecoveryScope,
 };
 
-#[cfg(test)]
 pub(crate) struct UnboundTaskMaintenanceProof<'tx, 'connection, 'lease> {
     tx: &'tx Transaction<'connection>,
     cap: &'tx ExclusiveStartupInputRecovery<'lease>,
@@ -14,7 +12,6 @@ pub(crate) struct UnboundTaskMaintenanceProof<'tx, 'connection, 'lease> {
     original_overlays: BTreeMap<TaskKey, Option<SeedOverlay>>,
 }
 #[derive(Debug)]
-#[cfg(test)]
 pub(crate) struct SeedTaskMaintenanceAck {
     pub seed: LegacySeedRecoveryScope,
     pub actual_fixed_keys: BTreeSet<TaskKey>,
@@ -22,7 +19,6 @@ pub(crate) struct SeedTaskMaintenanceAck {
 
 /// Lengths only. The original actor owns its actual shared-ledger preparation
 /// guard; this API does not invent an identity incarnation for an unbound seed.
-#[cfg(test)]
 pub(crate) fn unbound_task_maintenance_material_tx(
     tx: &Transaction<'_>,
     seed: &LegacySeedRecoveryScope,
@@ -53,7 +49,6 @@ pub(crate) fn unbound_task_maintenance_material_tx(
     bound(records, bytes, None)?;
     Ok(TaskMaintenanceMaterial { bytes, records })
 }
-#[cfg(test)]
 fn validate_seed_tx(tx: &Transaction<'_>, seed: &LegacySeedRecoveryScope) -> Result<()> {
     ensure!(
         legacy_seed_recovery_scope_tx(tx, &seed.agent_id)? == *seed,
@@ -64,7 +59,6 @@ fn validate_seed_tx(tx: &Transaction<'_>, seed: &LegacySeedRecoveryScope) -> Res
 }
 /// Observe only the original fixed subset of a real cleanup's finite keys.
 /// Raw old targets keep their business behavior without becoming members.
-#[cfg(test)]
 pub(crate) fn qualified_unbound_task_maintenance_keys_tx(
     tx: &Transaction<'_>,
     cap: &ExclusiveStartupInputRecovery<'_>,
@@ -89,7 +83,6 @@ pub(crate) fn qualified_unbound_task_maintenance_keys_tx(
     }
     Ok(qualified)
 }
-#[cfg(test)]
 pub(crate) fn prepare_unbound_task_maintenance_tx<'tx, 'connection, 'lease>(
     tx: &'tx Transaction<'connection>,
     cap: &'tx ExclusiveStartupInputRecovery<'lease>,
@@ -122,7 +115,6 @@ pub(crate) fn prepare_unbound_task_maintenance_tx<'tx, 'connection, 'lease>(
         original_overlays,
     })
 }
-#[cfg(test)]
 pub(crate) fn register_unbound_task_maintenance_tx(
     tx: &Transaction<'_>,
     proof: UnboundTaskMaintenanceProof<'_, '_, '_>,

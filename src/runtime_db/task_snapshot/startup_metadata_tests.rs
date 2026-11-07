@@ -196,7 +196,317 @@ fn recover(
 ) -> Result<()> {
     let cap = ExclusiveStartupInputRecovery::for_pre_activation_host(db, lease, path, guard)?;
     let scopes = vec![StartupInputRecoveryScope::Current(scope())];
-    db.recover_interrupted_runtime_state_at_startup_with_tasks_in_scopes(&scopes, &cap, ledger)?;
+    db.recover_interrupted_runtime_state_at_startup_with_tasks_in_scopes(
+        &scopes, &cap, ledger, None,
+    )?;
+    Ok(())
+}
+
+fn attach_terminal_source(db: &RuntimeDb, kind: crate::types::TurnTerminalKind) -> Result<()> {
+    use crate::types::{
+        LiveInputBatchRecord, LiveInputSafePoint, TurnOwner, TurnRecord, TurnTerminalSummary,
+        TurnTriggerSummary,
+    };
+    db.transaction(|tx| {
+        let source = crate::runtime_db::context_inputs::ContextDurableRead::new(tx, "task-agent")
+            .message_by_id("startup-task-source")?
+            .context("source missing")?;
+        let mut turn = TurnRecord::new("task-agent", "startup-terminal-turn", 1);
+        turn.owner = Some(TurnOwner::Conversation {
+            interaction_id: source.id.clone(),
+        });
+        turn.trigger = Some(TurnTriggerSummary {
+            message_id: Some(source.id.clone()),
+            kind: source.kind,
+            origin: source.origin,
+            authority_class: source.authority_class,
+            priority: source.priority,
+            trigger_kind: None,
+            task_id: None,
+        });
+        turn.input_message_ids = vec![source.id];
+        turn.live_input_batches.push(LiveInputBatchRecord {
+            activation_id: "activation:message:startup-task-source".into(),
+            safe_point: LiveInputSafePoint::new("activation:message:startup-task-source", 1),
+            cutoff: at(),
+            max_items: 1,
+            max_bytes: 1024,
+            rendered_bytes: 0,
+            result_identities: vec![],
+            ordinary_message_ids: vec![],
+            items: vec![],
+        });
+        turn.terminal = Some(TurnTerminalSummary {
+            kind,
+            reason: None,
+            no_brief_reason: None,
+            completed_at: at(),
+            duration_ms: 1,
+        });
+        crate::runtime_db::repositories::upsert_turn_record_tx(tx, &turn)?;
+        register_committed_input_evidence_tx(tx, &scope(), &[CanonicalInputEvidence::Turn(turn)])?;
+        Ok(())
+    })
+}
+
+#[test]
+fn startup_finalization_registers_original_task_result_version() -> Result<()> {
+    for kind in [
+        crate::types::TurnTerminalKind::Aborted,
+        crate::types::TurnTerminalKind::Completed,
+    ] {
+        for initially_interrupted in [false, true] {
+            for has_coverage in [false, true] {
+                let (dir, db) = fresh()?;
+                let ledger = InputEvidenceBudgetLedger::new(StateMemoryLimits::default())?;
+                let (_, id) = seed(&db, &ledger)?;
+                let path = dir.path().join("startup-maintenance.lock");
+                let lease = RuntimeDbLock::try_lock(&path)?;
+                let handoff = tokio::sync::Mutex::new(());
+                let guard = handoff.try_lock().unwrap();
+                if initially_interrupted {
+                    recover(&db, &lease, &path, &guard, &ledger)?;
+                }
+                if !has_coverage {
+                    db.connection()?
+                        .execute_batch("DELETE FROM task_domain_current; UPDATE task_domain_records SET revision=1;")?;
+                }
+                attach_terminal_source(&db, kind)?;
+                recover(&db, &lease, &path, &guard, &ledger)?;
+                db.transaction(|tx| {
+                    let key = TaskKey::new(TaskFamily::ResultSettlement, &id);
+                    let stored =
+                        stored_on(tx, "task-agent", &key)?.context("settled Result missing")?;
+                    let CanonicalTaskFact::ResultSettlement(result) = &stored.fact else {
+                        unreachable!()
+                    };
+                    assert_eq!(result.state, TaskResultSettlementState::Settled);
+                    qualification::validate_member(
+                        tx,
+                        &scope(),
+                        binding(tx, &scope())?.as_deref(),
+                        &key,
+                        &stored,
+                    )?;
+                    prepare_task_domain_snapshot_with_budget_tx(tx, &scope(), &request(), &ledger)?
+                        .require_current()?;
+                    Ok(())
+                })?;
+                recover(&db, &lease, &path, &guard, &ledger)?;
+            }
+        }
+    }
+    Ok(())
+}
+
+#[test]
+fn startup_finalization_result_ack_failure_rolls_back_original_writes() -> Result<()> {
+    let (dir, db) = fresh()?;
+    let ledger = InputEvidenceBudgetLedger::new(StateMemoryLimits::default())?;
+    let (_, id) = seed(&db, &ledger)?;
+    attach_terminal_source(&db, crate::types::TurnTerminalKind::Aborted)?;
+    let original = db.transaction(|tx| {
+        stored_on(
+            tx,
+            "task-agent",
+            &TaskKey::new(TaskFamily::ResultSettlement, &id),
+        )
+    })?;
+    db.connection()?.execute_batch("CREATE TRIGGER fail_startup_result_ack BEFORE INSERT ON task_domain_records WHEN NEW.family='result_settlement' BEGIN SELECT RAISE(ABORT,'startup Result ACK failed'); END;")?;
+    let path = dir.path().join("startup-maintenance.lock");
+    let lease = RuntimeDbLock::try_lock(&path)?;
+    let handoff = tokio::sync::Mutex::new(());
+    let guard = handoff.try_lock().unwrap();
+    assert!(format!(
+        "{:#}",
+        recover(&db, &lease, &path, &guard, &ledger).unwrap_err()
+    )
+    .contains("startup Result ACK failed"));
+    db.transaction(|tx| {
+        assert_eq!(stored_on(tx, "task-agent", &TaskKey::new(TaskFamily::ResultSettlement, &id))?, original);
+        assert_eq!(tx.query_row("SELECT lifecycle_state FROM execution_protocol_attempts WHERE attempt_id='activation:message:startup-task-source'", [], |r| r.get::<_,String>(0))?, "open");
+        assert_eq!(tx.query_row("SELECT COUNT(*) FROM audit_events WHERE kind='startup_interrupted_attempt_finalized'", [], |r| r.get::<_,u64>(0))?, 0);
+        Ok(())
+    })?;
+    assert_eq!(current_queue(&db, &ledger)?.0, QueueEntryStatus::Dequeued);
+    Ok(())
+}
+
+#[test]
+fn startup_finalization_does_not_adopt_unqualified_result() -> Result<()> {
+    let (dir, db) = fresh()?;
+    let ledger = InputEvidenceBudgetLedger::new(StateMemoryLimits::default())?;
+    let (_, id) = seed(&db, &ledger)?;
+    attach_terminal_source(&db, crate::types::TurnTerminalKind::Aborted)?;
+    db.connection()?.execute(
+        "DELETE FROM task_domain_records WHERE family='result_settlement' AND record_id=?1",
+        [&id],
+    )?;
+    let path = dir.path().join("startup-maintenance.lock");
+    let lease = RuntimeDbLock::try_lock(&path)?;
+    let handoff = tokio::sync::Mutex::new(());
+    let guard = handoff.try_lock().unwrap();
+    recover(&db, &lease, &path, &guard, &ledger)?;
+    db.transaction(|tx| {
+        let key = TaskKey::new(TaskFamily::ResultSettlement, &id);
+        assert!(alias(tx, &scope(), &key)?.is_none());
+        assert!(qualification::validate_member(
+            tx,
+            &scope(),
+            None,
+            &key,
+            &stored_on(tx, "task-agent", &key)?.unwrap()
+        )
+        .is_err());
+        Ok(())
+    })
+}
+
+#[test]
+fn startup_finalization_rejects_changed_original_result_version() -> Result<()> {
+    let (dir, db) = fresh()?;
+    let ledger = InputEvidenceBudgetLedger::new(StateMemoryLimits::default())?;
+    seed(&db, &ledger)?;
+    attach_terminal_source(&db, crate::types::TurnTerminalKind::Aborted)?;
+    db.connection()?.execute("UPDATE task_result_settlements SET updated_at='2026-10-02T00:00:00.000Z',payload_json=json_set(payload_json,'$.updated_at','2026-10-02T00:00:00Z')", [])?;
+    let path = dir.path().join("startup-maintenance.lock");
+    let lease = RuntimeDbLock::try_lock(&path)?;
+    let handoff = tokio::sync::Mutex::new(());
+    let guard = handoff.try_lock().unwrap();
+    assert!(format!(
+        "{:#}",
+        recover(&db, &lease, &path, &guard, &ledger).unwrap_err()
+    )
+    .contains("Task canonical body/projection changed"));
+    assert_eq!(db.connection()?.query_row("SELECT lifecycle_state FROM execution_protocol_attempts WHERE attempt_id='activation:message:startup-task-source'", [], |r| r.get::<_,String>(0))?, "open");
+    Ok(())
+}
+
+#[test]
+fn startup_finalization_unbound_result_advances_only_original_fixed_version() -> Result<()> {
+    use crate::runtime_db::input_evidence_snapshot::legacy_recovery::legacy_seed_recovery_scope_tx;
+    let dir = tempfile::tempdir()?;
+    let path = dir.path().join("runtime.sqlite");
+    let mut connection = Connection::open(&path)?;
+    ensure_migration_table(&connection)?;
+    for migration in MIGRATIONS.iter().filter(|m| m.version <= 89) {
+        apply_migration(&mut connection, migration)?;
+    }
+    let id;
+    {
+        let tx = connection.transaction()?;
+        upsert_agent_state_tx(&tx, &AgentState::new("task-agent"))?;
+        let mut terminal = task("unbound-startup-task", TaskStatus::Completed);
+        terminal.detail = Some(
+            serde_json::json!({"rejoin_obligation_id":terminal.id,"rejoin_generation":1,"parent_turn_id":"original-parent"}),
+        );
+        let mut message = MessageEnvelope::new(
+            "task-agent",
+            MessageKind::TaskResult,
+            MessageOrigin::Task {
+                task_id: terminal.id.clone(),
+            },
+            AuthorityClass::RuntimeInstruction,
+            Priority::Next,
+            MessageBody::Text {
+                text: "original result".into(),
+            },
+        );
+        message.id = "unbound-startup-result".into();
+        message.task_id = Some(terminal.id.clone());
+        terminal.parent_message_id = Some(message.id.clone());
+        let (message, _) = append_message_tx(&tx, &message)?;
+        let mut result = TaskResultSettlementRecord::pending(&terminal, &message, at())?.unwrap();
+        result.state = TaskResultSettlementState::CallerAdmitted;
+        result.activation_id = Some("unbound-original-activation".into());
+        result.admitted_at = Some(at());
+        id = result.result_identity.clone();
+        repositories::upsert_task_tx(&tx, &terminal)?;
+        upsert_pending_tx(&tx, &result)?;
+        tx.execute("INSERT INTO storage_domains(domain,schema_version,import_status,canonical_source,updated_at) VALUES('context_episode_anchors',1,'complete','db',?1)", [repositories::timestamp(at())])?;
+        tx.commit()?;
+    }
+    drop(connection);
+    let db = RuntimeDb::open_and_migrate(&path, dir.path().join("runtime.lock"))?;
+    let ledger = InputEvidenceBudgetLedger::new(StateMemoryLimits::default())?;
+    let lock_path = dir.path().join("startup-maintenance.lock");
+    let lease = RuntimeDbLock::try_lock(&lock_path)?;
+    let handoff = tokio::sync::Mutex::new(());
+    let held = handoff.try_lock().unwrap();
+    let cap =
+        ExclusiveStartupInputRecovery::for_pre_activation_host(&db, &lease, &lock_path, &held)?;
+    db.transaction(|tx| {
+        let seed = legacy_seed_recovery_scope_tx(tx, "task-agent")?;
+        let mut metadata = prepare_exclusive_startup_task_metadata_tx(
+            tx,
+            &cap,
+            &[StartupInputRecoveryScope::Unbound(seed.clone())],
+            &ledger,
+            Some(&[scope()]),
+        )?;
+        let before_owned_bytes = ledger.report()?.observed_bytes;
+        assert_eq!(
+            metadata.settle_finalized_activation(
+                tx,
+                "task-agent",
+                "unbound-original-activation",
+                results::TaskResultSettlementDisposition::InterruptedReplaySourceFinal,
+                at() + Duration::seconds(1)
+            )?,
+            1
+        );
+        assert_eq!(
+            ledger.report()?.observed_bytes,
+            before_owned_bytes,
+            "temporary Result bodies must release their guards before the next activation"
+        );
+        metadata.finish(tx, &BTreeMap::new())?;
+        let key = TaskKey::new(TaskFamily::ResultSettlement, &id);
+        let actual = stored_on(tx, "task-agent", &key)?.unwrap();
+        assert_eq!(
+            qualification::eligible_digest(tx, Some(&seed.seed_id), &key)?,
+            Some((actual.digest(), actual.projection_digest))
+        );
+        assert_eq!(
+            tx.query_row("SELECT COUNT(*) FROM agent_identities", [], |r| r
+                .get::<_, u64>(0))?,
+            0
+        );
+        assert_eq!(
+            tx.query_row("SELECT COUNT(*) FROM task_domain_current", [], |r| r
+                .get::<_, u64>(0))?,
+            0
+        );
+        assert_eq!(
+            tx.query_row("SELECT COUNT(*) FROM task_domain_records", [], |r| r
+                .get::<_, u64>(0))?,
+            0
+        );
+        Ok(())
+    })
+}
+
+#[test]
+fn startup_finalization_result_budget_precedes_damaged_body_decode() -> Result<()> {
+    let (dir, db) = fresh()?;
+    let ledger = InputEvidenceBudgetLedger::new(StateMemoryLimits::default())?;
+    seed(&db, &ledger)?;
+    attach_terminal_source(&db, crate::types::TurnTerminalKind::Aborted)?;
+    db.connection()?.execute("UPDATE task_result_settlements SET payload_json=json_set(payload_json,'$.source_projection',hex(zeroblob(3*1024*1024)))", [])?;
+    let path = dir.path().join("startup-maintenance.lock");
+    let lease = RuntimeDbLock::try_lock(&path)?;
+    let handoff = tokio::sync::Mutex::new(());
+    let guard = handoff.try_lock().unwrap();
+    let error = recover(&db, &lease, &path, &guard, &ledger).unwrap_err();
+    assert!(
+        matches!(
+            error.downcast_ref::<TaskSnapshotError>(),
+            Some(TaskSnapshotError::ResourceExhausted(_))
+        ),
+        "{error:#}"
+    );
+    assert_eq!(db.connection()?.query_row("SELECT lifecycle_state FROM execution_protocol_attempts WHERE attempt_id='activation:message:startup-task-source'", [], |r| r.get::<_,String>(0))?, "open");
+    assert_eq!(ledger.report()?.observed_bytes, 0);
     Ok(())
 }
 
@@ -415,6 +725,7 @@ fn exclusive_startup_task_tuple_budget_precedes_large_damaged_projection_decode(
                 &cap,
                 &[StartupInputRecoveryScope::Current(scope())],
                 &ledger,
+                None,
             )
             .map(|_| ())
         })
@@ -477,6 +788,7 @@ fn exclusive_startup_identity_rejects_null_string_zero_and_foreign_incarnation()
                     &cap,
                     &[StartupInputRecoveryScope::Current(scope())],
                     &ledger,
+                    None,
                 )
                 .map(|_| ())
             })

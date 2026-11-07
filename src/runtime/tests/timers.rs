@@ -2497,6 +2497,7 @@ async fn recovery_reactivates_incorporated_wake_for_restored_timer_message() {
             &scopes,
             &capability,
             &ledger,
+            None,
         )
         .unwrap()
     };

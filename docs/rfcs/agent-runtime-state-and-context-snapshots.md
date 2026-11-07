@@ -4633,6 +4633,13 @@ the actor publishes only the last readback. Existing membership checks remain
 mandatory; this does not qualify raw history or reconcile previously stale
 projections. See [the focused decision](../implementation-decisions/startup-finalization-input-acknowledgements.md).
 
+The same startup finalization transaction acknowledges its actual TaskResult
+settlement writes. It reserves finite original material before decoding, checks
+each existing qualified before-version, and advances only actual native writer
+ACK keys before invalidating derived Task coverage. Unbound fixed members use
+their original seed recovery overlay and held accounting reservation; neither
+raw history nor the absence of current coverage grants new membership.
+
 Exclusive startup recovery prepares existing Queue address authority before its
 first CAS, then qualifies only actual changed addresses in that same transaction.
 Its ACK retains the original material; a raw/unprepared preimage remains
@@ -5088,6 +5095,8 @@ current closure or repeatedly cloning keys shared by the live/history indexes.
 Original child Running envelopes bind typed Work ownership from their current
 qualified Task. Inherited operator authority still cannot promote ownership
 from metadata; original scope, generation and source seals remain unchanged.
+The AgentMessageWait monitor follows the same contract when constructing its
+accepted Running input; metadata alone cannot supply that Work binding.
 
 An unchanged shared skill inventory keeps its original data allocation guard;
 its new candidate header/scan has a separate last-holder guard. Initial data

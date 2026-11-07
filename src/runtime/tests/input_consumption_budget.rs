@@ -515,6 +515,7 @@ async fn context_admission_compact_survives_restart_and_reaches_provider_with_or
                 &scopes,
                 &capability,
                 &ledger,
+                None,
             )
             .unwrap()
             .report

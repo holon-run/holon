@@ -591,10 +591,16 @@ fn actual_restart_clock() -> std::pin::Pin<Box<dyn std::future::Future<Output = 
 #[tokio::test]
 async fn actual_message_wait_running_preserves_original_control_lease_through_public_stop(
 ) -> Result<()> {
-    wait_stop_birth().await
+    wait_stop_birth(false).await
 }
-fn wait_stop_birth() -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<()>> + Send>> {
-    Box::pin(async {
+#[tokio::test]
+async fn operator_message_wait_running_keeps_qualified_work_binding() -> Result<()> {
+    wait_stop_birth(true).await
+}
+fn wait_stop_birth(
+    work_scoped: bool,
+) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<()>> + Send>> {
+    Box::pin(async move {
         struct PendingTarget;
         #[async_trait::async_trait]
         impl crate::provider::AgentProvider for PendingTarget {
@@ -617,6 +623,17 @@ fn wait_stop_birth() -> std::pin::Pin<Box<dyn std::future::Future<Output = Resul
         let gate = Arc::new(Semaphore::new(0));
         host.set_clock_recovery_dispatch_gate_for_test("default", gate.clone());
         let parent = host.default_runtime().await?;
+        let work = if work_scoped {
+            let work = parent
+                .create_work_item("original message wait owner".into(), None, None, Vec::new())
+                .await?;
+            let mut mutation = parent.begin_mutation().await?;
+            mutation.state.current_turn_work_item_id = Some(work.id.clone());
+            mutation.persist_state(&parent.inner.storage).await?;
+            Some(work.id)
+        } else {
+            None
+        };
         let target = host
             .create_named_agent("wait-original-clock-target", None)
             .await?;
@@ -628,7 +645,11 @@ fn wait_stop_birth() -> std::pin::Pin<Box<dyn std::future::Future<Output = Resul
                     agent_id: target.agent_id.clone(),
                 },
                 message: "actual message wait remains waiting until original cancellation".into(),
-                authority_class: AuthorityClass::RuntimeInstruction,
+                authority_class: if work_scoped {
+                    AuthorityClass::OperatorInstruction
+                } else {
+                    AuthorityClass::RuntimeInstruction
+                },
             })
             .await?;
         let task_id = receipt.task_handle.task_id;
@@ -649,33 +670,60 @@ fn wait_stop_birth() -> std::pin::Pin<Box<dyn std::future::Future<Output = Resul
             .context("actual Wait monitor did not register its original Control lease")?;
         let original_generation = lease.domain_generation().clone();
         let running = wait_queued_running(&parent, &task_id, 1).await?.remove(0);
+        assert_eq!(original.work_item_id, work);
+        assert_eq!(running.work_item_id, original.work_item_id, "the original producer must stamp typed Work ownership even with inherited operator authority");
+        if work_scoped {
+            let owner = parent.begin_mutation().await?;
+            let tasks = owner.capture_tasks(&TaskCaptureRequest::current())?;
+            let inputs = owner.capture_input_evidence()?;
+            let accepted = inputs
+                .lookup(&InputEvidenceKey::new(
+                    InputEvidenceFamily::Message,
+                    &running.id,
+                ))?
+                .context("accepted Running source missing")?;
+            let PreparedInputEvidence::Message(message) = &accepted.record else {
+                unreachable!()
+            };
+            let parsed = crate::runtime::tasks::task_from_message(message, "default")?;
+            assert!(qualify(&inputs, &tasks, message, &parsed, None)?.is_some());
+        }
         assert_eq!(
             running.metadata.as_ref().unwrap()["task_created_at"],
             serde_json::to_value(original.created_at)?
         );
-        gate.add_permits(1);
-        tokio::time::timeout(Duration::from_secs(15), async {
-            loop {
-                if parent
-                    .runtime_db()
-                    .queue_entries()
-                    .latest(&running.id)?
-                    .unwrap()
-                    .status
-                    == QueueEntryStatus::Processed
-                {
-                    break Ok::<(), anyhow::Error>(());
+        if !work_scoped {
+            gate.add_permits(1);
+            tokio::time::timeout(Duration::from_secs(15), async {
+                loop {
+                    if parent
+                        .runtime_db()
+                        .queue_entries()
+                        .latest(&running.id)?
+                        .unwrap()
+                        .status
+                        == QueueEntryStatus::Processed
+                    {
+                        break Ok::<(), anyhow::Error>(());
+                    }
+                    tokio::task::yield_now().await;
                 }
-                tokio::task::yield_now().await;
-            }
-        })
-        .await
-        .context("real Wait Running did not complete its Start/commonFinish ACK")??;
+            })
+            .await
+            .context("real Wait Running did not complete its Start/commonFinish ACK")??;
+        }
         let selected = parent
             .with_task_publication(|| parent.capture_current_task_record(&task_id))
             .await?;
         let current = selected.record().unwrap();
-        assert_eq!(current.status, TaskStatus::Running);
+        assert_eq!(
+            current.status,
+            if work_scoped {
+                TaskStatus::Queued
+            } else {
+                TaskStatus::Running
+            }
+        );
         assert_eq!(current.created_at, original.created_at);
         assert_eq!(current.recovery, original.recovery);
         assert_eq!(

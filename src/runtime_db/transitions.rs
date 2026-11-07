@@ -716,12 +716,13 @@ impl RuntimeDb {
             '_,
         >,
         ledger: &crate::runtime::input_evidence_budget::InputEvidenceBudgetLedger,
+        accounting: Option<&[InputEvidenceScope]>,
     ) -> Result<StartupInputRecoveryCommit> {
         admission.validate_database(self)?;
         self.recover_interrupted_runtime_state_at_startup_inner(
             None,
             Some(scopes),
-            Some((admission, ledger)),
+            Some((admission, ledger, accounting)),
             None,
         )
     }
@@ -734,13 +735,14 @@ impl RuntimeDb {
             '_,
         >,
         ledger: &crate::runtime::input_evidence_budget::InputEvidenceBudgetLedger,
+        accounting: Option<&[InputEvidenceScope]>,
         recovered_at: chrono::DateTime<Utc>,
     ) -> Result<StartupInputRecoveryCommit> {
         admission.validate_database(self)?;
         self.recover_interrupted_runtime_state_at_startup_inner(
             None,
             Some(scopes),
-            Some((admission, ledger)),
+            Some((admission, ledger, accounting)),
             Some(recovered_at),
         )
     }
@@ -762,6 +764,7 @@ impl RuntimeDb {
         task_metadata: Option<(
             &super::input_evidence_snapshot::legacy_recovery::ExclusiveStartupInputRecovery<'_>,
             &crate::runtime::input_evidence_budget::InputEvidenceBudgetLedger,
+            Option<&[InputEvidenceScope]>,
         )>,
         recovered_at: Option<chrono::DateTime<Utc>>,
     ) -> Result<StartupInputRecoveryCommit> {
@@ -805,10 +808,10 @@ impl RuntimeDb {
                     }
                 }
             }
-            let current_ledger = task_metadata.map(|(_, ledger)| ledger);
-            let task_metadata = task_metadata.map(|(capability, ledger)|
+            let current_ledger = task_metadata.map(|(_, ledger, _)| ledger);
+            let mut task_metadata = task_metadata.map(|(capability, ledger, accounting)|
                 super::task_snapshot::prepare_exclusive_startup_task_metadata_tx(tx, capability,
-                    input_scopes.context("startup Task metadata requires original scopes")?, ledger)
+                    input_scopes.context("startup Task metadata requires original scopes")?, ledger, accounting)
             ).transpose()?;
             // Retain original Queue address authority before any startup CAS.
             // The post-write readback alone must never qualify a raw body.
@@ -1174,7 +1177,7 @@ impl RuntimeDb {
             }
             // Repair pairs left inconsistent by a crash between the runtime
             // abort write and its attempt settlement (#3607).
-            let finalized = finalize_interrupted_replay_sources_at_startup_tx(tx, recovered_at, &mut report)?;
+            let finalized = finalize_interrupted_replay_sources_at_startup_tx(tx, recovered_at, &mut report, task_metadata.as_mut())?;
             if input_scopes.is_some() {
                 for (agent, facts) in finalized.input_facts {
                     input_facts.entry(agent).or_default().extend(facts);
@@ -1292,6 +1295,7 @@ fn finalize_interrupted_replay_sources_at_startup_tx(
     tx: &Transaction<'_>,
     recovered_at: chrono::DateTime<Utc>,
     report: &mut StartupRuntimeRecoveryReport,
+    mut task_metadata: Option<&mut super::task_snapshot::StartupTaskMetadataProof<'_, '_, '_>>,
 ) -> Result<FinalizedInterruptedWrites> {
     use crate::domain::execution_protocol::{
         ExecutionAttemptState, ExecutionProtocolCommand, FinalizeInterruptedExecution,
@@ -1375,13 +1379,23 @@ fn finalize_interrupted_replay_sources_at_startup_tx(
             } else {
                 TaskResultSettlementDisposition::InterruptedReplaySourceFinal
             };
-            let settled = settle_activation_tx(
-                tx,
-                &agent_id,
-                &attempt.attempt_id,
-                disposition,
-                recovered_at,
-            )?;
+            let settled = if let Some(metadata) = task_metadata.as_mut() {
+                metadata.settle_finalized_activation(
+                    tx,
+                    &agent_id,
+                    &attempt.attempt_id,
+                    disposition,
+                    recovered_at,
+                )?
+            } else {
+                settle_activation_tx(
+                    tx,
+                    &agent_id,
+                    &attempt.attempt_id,
+                    disposition,
+                    recovered_at,
+                )?
+            };
 
             let mut queue_status: Option<String> = None;
             if let Some(message_id) = attempt.source_message_id.as_deref() {
@@ -9918,7 +9932,7 @@ mod tests {
         let failed = db.recover_interrupted_runtime_state_at_startup_inner(
             Some(TransitionFaultPoint::BeforeCommit),
             Some(&scopes),
-            Some((&capability, &ledger)),
+            Some((&capability, &ledger, None)),
             None,
         );
         assert!(format!("{:#}", failed.expect_err("fault must roll back"))
@@ -9928,6 +9942,7 @@ mod tests {
             &scopes,
             &capability,
             &ledger,
+            None,
         )?;
         assert_eq!(result.report.interrupted_attempts_finalized, 1);
         db.transaction(|tx| {

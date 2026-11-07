@@ -714,6 +714,7 @@ impl RuntimeHost {
                         &input_scopes,
                         &capability,
                         &self.inner.input_evidence_budget,
+                        Some(&scopes),
                         at,
                     )
             } else {
@@ -722,6 +723,7 @@ impl RuntimeHost {
                         &input_scopes,
                         &capability,
                         &self.inner.input_evidence_budget,
+                        Some(&scopes),
                     )
             };
             #[cfg(not(test))]
@@ -732,6 +734,7 @@ impl RuntimeHost {
                         &input_scopes,
                         &capability,
                         &self.inner.input_evidence_budget,
+                        Some(&scopes),
                     )
             };
             let global = match global {

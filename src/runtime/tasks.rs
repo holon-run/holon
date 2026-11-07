@@ -1505,6 +1505,7 @@ impl RuntimeHandle {
         };
         let agent_id = self.agent_id().await?;
         let running_message = MessageEnvelope {
+            work_item_id: task_record.work_item_id.clone(),
             metadata: Some(serde_json::json!({
                 "task_id": task_record.id,
                 "task_created_at": task_record.created_at,

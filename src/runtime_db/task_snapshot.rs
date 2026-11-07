@@ -126,7 +126,9 @@ pub(crate) use seed_maintenance::{
     prepare_unbound_task_maintenance_tx, qualified_unbound_task_maintenance_keys_tx,
     register_unbound_task_maintenance_tx, unbound_task_maintenance_material_tx,
 };
-pub(crate) use startup_metadata::prepare_exclusive_startup_task_metadata_tx;
+pub(crate) use startup_metadata::{
+    prepare_exclusive_startup_task_metadata_tx, StartupTaskMetadataProof,
+};
 pub(crate) use task_stop_readback::prepare_task_sql_readback_tx;
 pub(in crate::runtime_db) use writes::register_original_task_writes_using_material_tx;
 #[cfg(test)]
