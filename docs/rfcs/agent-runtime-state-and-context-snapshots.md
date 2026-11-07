@@ -5072,3 +5072,7 @@ Completion edge reads preserve Input's exact fixed Brief linkage proof: a stale
 pre-link hash is accepted only for original fixed membership, byte-exact additive
 linkage and its creating event. Qualified raw digests remain mandatory. This
 avoids rewriting canonical hashes independently of frozen qualification metadata.
+
+Completion report projections retain the exact qualified Brief through the same
+material-owning read view as history. Resident reports do not duplicate the full
+body after Input qualification; cold owned sources still move into their view.

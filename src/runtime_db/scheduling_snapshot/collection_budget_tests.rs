@@ -171,8 +171,7 @@ fn live_history_prior_and_pruned_copies_use_original_phase_before_sql_writes() -
                 if variant == "pruned" {
                     checkpoint(phase, &mut prefix, &history)?; // saved loaded order
                 }
-                checkpoint(phase, &mut prefix, &history)?; // history -> selected
-                checkpoint(phase, &mut prefix, &history)?; // loaded -> selected
+                checkpoint(phase, &mut prefix, keys.first().unwrap())?; // one missing history key
             }
             for family in [
                 SchedulingFamily::TimerWake,
@@ -205,7 +204,7 @@ fn live_history_prior_and_pruned_copies_use_original_phase_before_sql_writes() -
                 )?;
                 prefix.push(phase.finish()?);
             } else {
-                sql.stored(keys.first().unwrap())?;
+                sql.stored_body(keys.first().unwrap())?;
                 *prefix.last_mut().unwrap() = phase.finish()?;
             }
             Ok(prefix)
@@ -284,7 +283,7 @@ fn wake_parent_and_input_root_copies_use_original_phase_before_alias_write() -> 
         checkpoint(phase, &mut prefix, &wakes)?; // core
         checkpoint(phase, &mut prefix, &wakes)?; // pending
         sql.alias(wakes.first().unwrap())?;
-        sql.stored(wakes.first().unwrap())?;
+        sql.stored_body(wakes.first().unwrap())?;
         checkpoint(phase, &mut prefix, &timer_id)?; // new parent
         checkpoint(phase, &mut prefix, &parent)?; // parent -> core
         checkpoint(phase, &mut prefix, &parent)?; // parent -> selected/pending

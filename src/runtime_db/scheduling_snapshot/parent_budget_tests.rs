@@ -94,3 +94,24 @@ fn repeated_wake_parents_admit_only_actual_owning_insertions() -> Result<()> {
     }
     Ok(())
 }
+
+#[test]
+fn overlapping_history_keys_admit_only_one_actual_insertion() -> Result<()> {
+    let key = SchedulingKey::new(SchedulingFamily::Timer, "history雪");
+    let cost = cost(serde_json::to_vec(&key)?.len(), 9, 3);
+    let ledger = ledger()?;
+    let phase = ResourceReadMaterial::with_test_limits(&ledger, &scope(), 1024 * 1024, 4096)?;
+    let baseline = phase.finish()?;
+    let mut selected = BTreeSet::new();
+    {
+        let _entered = phase.enter();
+        for _ in 0..256 {
+            include_missing_key(&mut selected, &key)?;
+        }
+    }
+    assert_eq!(phase.finish()?, (baseline.0 + cost.0, baseline.1 + cost.1));
+    assert_eq!(selected, BTreeSet::from([key]));
+    drop(phase);
+    assert_eq!(ledger.report()?.observed_bytes, 0);
+    Ok(())
+}

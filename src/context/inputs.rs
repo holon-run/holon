@@ -126,6 +126,12 @@ pub(crate) trait ContextInputs {
         &self,
         id: &str,
     ) -> Result<Option<CompletionBriefInput<'_>>>;
+    fn completion_brief_source(
+        &self,
+        input: CompletionBriefInput<'_>,
+    ) -> Result<ContextHistoryBrief> {
+        ContextHistoryBrief::owned(input.into_brief()?)
+    }
     fn tools(&self, limit: usize) -> Result<Vec<ToolContextProjection>>;
     fn tool_by_id(&self, id: &str) -> Result<Option<ToolContextProjection>>;
     fn history_tools(&self, limit: usize) -> Result<Vec<ContextHistoryTool>> {
@@ -854,6 +860,19 @@ impl ContextInputs for ResidentContextInputs<'_, '_> {
         id: &str,
     ) -> Result<Option<CompletionBriefInput<'_>>> {
         work::completion_input(self.work, self.captured, id)
+    }
+    fn completion_brief_source(
+        &self,
+        input: CompletionBriefInput<'_>,
+    ) -> Result<ContextHistoryBrief> {
+        let source = self
+            .history_brief_by_id(&input.brief.id)?
+            .ok_or_else(|| anyhow::anyhow!("qualified completion Brief is absent"))?;
+        ensure!(
+            &*source == input.brief.as_ref(),
+            "completion Brief source changed"
+        );
+        Ok(source)
     }
     fn tools(&self, limit: usize) -> Result<Vec<ToolContextProjection>> {
         self.records(
@@ -3999,7 +4018,7 @@ mod resident_tests {
         let mut brief = BriefRecord::new(
             "default",
             BriefKind::Result,
-            "stale Brief fallback",
+            "stale Brief fallback".repeat(32 * 1024),
             None,
             None,
         );
@@ -4045,13 +4064,40 @@ mod resident_tests {
             inputs.briefs(1).is_err(),
             "a focused completion head does not grant a history window"
         );
-        let reports = crate::context::latest_completion_report_by_work_item(
-            &inputs,
-            "default",
-            &BTreeSet::from(["cold-work".into()]),
+        let ledger = crate::runtime::input_evidence_budget::InputEvidenceBudgetLedger::new(
+            Default::default(),
         )
         .unwrap();
+        let phase = crate::diagnostics::resource_io::ResourceReadMaterial::with_test_limits(
+            &ledger,
+            &resident.scope,
+            64 * 1024,
+            2048,
+        )
+        .unwrap();
+        let held = std::sync::Arc::downgrade(&phase.guard().unwrap());
+        let reports = phase
+            .read(|| {
+                crate::context::latest_completion_report_by_work_item(
+                    &inputs,
+                    "default",
+                    &BTreeSet::from(["cold-work".into()]),
+                )
+            })
+            .unwrap();
+        phase.finish().unwrap();
         let report = reports.get("cold-work").unwrap();
+        let original = resident
+            .lookup_borrowed(Family::Brief, &brief.id)
+            .unwrap()
+            .unwrap();
+        let PreparedInputEvidence::Brief(original_brief) = &original.record else {
+            unreachable!()
+        };
+        assert!(std::ptr::eq(
+            &**report.source_brief.as_ref().unwrap(),
+            original_brief
+        ));
         assert_eq!(
             report.text,
             "exact incoming body for the cold completion report"
@@ -4061,6 +4107,10 @@ mod resident_tests {
             report.source_brief.as_ref().unwrap().content_source,
             brief.content_source
         );
+        drop(phase);
+        assert!(held.upgrade().is_some());
+        drop(reports);
+        assert!(held.upgrade().is_none());
     }
 
     #[test]

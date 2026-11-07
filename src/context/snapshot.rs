@@ -1403,7 +1403,7 @@ fn descriptors(
         .chain(
             data.completion_reports
                 .values()
-                .filter_map(|report| report.source_brief.as_ref()),
+                .filter_map(|report| report.source_brief.as_deref()),
         )
     {
         let mut item = base(

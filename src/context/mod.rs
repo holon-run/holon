@@ -2446,7 +2446,7 @@ fn completion_report_for_work_item(
 struct CompletionReportProjection {
     text: String,
     brief_id: Option<String>,
-    source_brief: Option<BriefRecord>,
+    source_brief: Option<ContextHistoryBrief>,
 }
 
 fn latest_completion_report_by_work_item(
@@ -2469,7 +2469,7 @@ fn latest_completion_report_by_work_item(
                 input.content_source.as_deref(),
                 input.source_message.as_deref(),
             )?;
-            let brief = input.into_brief()?;
+            let brief = inputs.completion_brief_source(input)?;
             summaries.insert(
                 work_item_id.clone(),
                 CompletionReportProjection {

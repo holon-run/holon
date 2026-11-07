@@ -155,7 +155,7 @@ impl<'a> ExpectedSqlMaterial<'a> {
         self.charge(bytes, 1)
     }
 
-    pub(in crate::runtime_db) fn stored(&self, key: &SchedulingKey) -> Result<()> {
+    pub(in crate::runtime_db) fn stored_body(&self, key: &SchedulingKey) -> Result<()> {
         // Reuse only canonical schema projections, not the loader's admission path.
         let (from, id, owner, _, sort) = stored::source(key.family);
         let projection = stored::projection(key.family);
@@ -168,8 +168,7 @@ impl<'a> ExpectedSqlMaterial<'a> {
         &format!("SELECT length(CAST({raw} AS BLOB))+length(CAST({projection} AS BLOB))+length(CAST({owner} AS BLOB))+length(CAST({id} AS BLOB))+length(CAST({sort} AS BLOB))+length(CAST(c.created_at AS BLOB))+128 FROM {from} WHERE {id}=?1"),
         [&key.id], |r| r.get(0),
     )?;
-        self.charge(bytes, 1)?;
-        self.alias(key)
+        self.charge(bytes, 1)
     }
 
     pub(in crate::runtime_db) fn loaded_history(
