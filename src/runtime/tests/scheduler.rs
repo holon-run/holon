@@ -1585,11 +1585,29 @@ fn scheduling_advisory_append_dedupes_interleaved_recent_events() {
 
 #[test]
 fn queue_head_starved_advisory_rate_limits_per_message() {
+    let append_fixture_advisory = |storage: &AppStorage,
+                                   agent: &str,
+                                   message: &str,
+                                   status: &'static str,
+                                   waiting: i64,
+                                   len: usize,
+                                   now: DateTime<Utc>|
+     -> Result<bool> {
+        let event = scheduler::pending_queue_head_starved_advisory(
+            storage, agent, message, status, waiting, len, now,
+        )?;
+        if let Some(event) = event {
+            storage.append_event(&event)?;
+            Ok(true)
+        } else {
+            Ok(false)
+        }
+    };
     let dir = tempdir().unwrap();
     let storage = AppStorage::new_for_test(dir.path()).unwrap();
     let now = Utc::now();
 
-    assert!(scheduler::append_queue_head_starved_advisory(
+    assert!(append_fixture_advisory(
         &storage,
         "default",
         "message-head",
@@ -1600,7 +1618,7 @@ fn queue_head_starved_advisory_rate_limits_per_message() {
     )
     .unwrap());
     // Immediate re-check for the same head stays silent inside the window.
-    assert!(!scheduler::append_queue_head_starved_advisory(
+    assert!(!append_fixture_advisory(
         &storage,
         "default",
         "message-head",
@@ -1611,7 +1629,7 @@ fn queue_head_starved_advisory_rate_limits_per_message() {
     )
     .unwrap());
     // A different head is a distinct starvation and is reported.
-    assert!(scheduler::append_queue_head_starved_advisory(
+    assert!(append_fixture_advisory(
         &storage,
         "default",
         "message-other",
@@ -1622,7 +1640,7 @@ fn queue_head_starved_advisory_rate_limits_per_message() {
     )
     .unwrap());
     // After the window the same head is reported again.
-    assert!(scheduler::append_queue_head_starved_advisory(
+    assert!(append_fixture_advisory(
         &storage,
         "default",
         "message-head",

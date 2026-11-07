@@ -275,12 +275,12 @@ pub(crate) fn ambiguous_wait_advisory_event(
     scheduling_advisory_event(&diagnostic)
 }
 
-pub(crate) fn append_deferred_activation_advisory(
+pub(crate) fn pending_deferred_activation_advisory(
     storage: &AppStorage,
     message: &MessageEnvelope,
     scenario_class: crate::domain::scheduler::SchedulerScenarioClass,
     reason: &str,
-) -> Result<()> {
+) -> Result<Option<AuditEvent>> {
     let diagnostic = SchedulingAdvisory::warning(
         "canonical_activation_deferred_not_runnable",
         "canonical activation input waits for a runnable execution and remains queued",
@@ -294,17 +294,14 @@ pub(crate) fn append_deferred_activation_advisory(
         .read_recent_events(64)?
         .iter()
         .any(|latest| latest.kind == event.kind && latest.data == event.data);
-    if !duplicate {
-        storage.append_event(&event)?;
-    }
-    Ok(())
+    Ok((!duplicate).then_some(event))
 }
 
-pub(crate) fn append_interrupted_replay_source_advisory(
+pub(crate) fn pending_interrupted_replay_source_advisory(
     storage: &AppStorage,
     message: &MessageEnvelope,
     invalid: &crate::runtime_db::task_result_settlement::live_turn::InterruptedReplaySourceInvalid,
-) -> Result<()> {
+) -> Result<Option<AuditEvent>> {
     let diagnostic = SchedulingAdvisory::warning(
         "interrupted_replay_source_invalid",
         "interrupted replay source no longer satisfies the replay invariant and stays queued",
@@ -326,16 +323,13 @@ pub(crate) fn append_interrupted_replay_source_advisory(
         .read_recent_events(64)?
         .iter()
         .any(|latest| latest.kind == event.kind && latest.data == event.data);
-    if !duplicate {
-        storage.append_event(&event)?;
-    }
-    Ok(())
+    Ok((!duplicate).then_some(event))
 }
 
 /// Rate-limited advisory for a queue head that has waited too long without
 /// dequeue progress. While it stays first, every later wake starves, and the
 /// incident class can otherwise stay silent for days (#3607).
-pub(crate) fn append_queue_head_starved_advisory(
+pub(crate) fn pending_queue_head_starved_advisory(
     storage: &AppStorage,
     agent_id: &str,
     message_id: &str,
@@ -343,7 +337,7 @@ pub(crate) fn append_queue_head_starved_advisory(
     waiting_ms: i64,
     queue_len: usize,
     now: DateTime<Utc>,
-) -> Result<bool> {
+) -> Result<Option<AuditEvent>> {
     let diagnostic = SchedulingAdvisory::warning(
         "queue_head_starved",
         "queue head has waited without dequeue progress and blocks every later wake",
@@ -360,10 +354,9 @@ pub(crate) fn append_queue_head_starved_advisory(
         now - chrono::Duration::milliseconds(QUEUE_HEAD_STARVED_ADVISORY_INTERVAL_MS),
     )?;
     if duplicate {
-        return Ok(false);
+        return Ok(None);
     }
-    storage.append_event(&event)?;
-    Ok(true)
+    Ok(Some(event))
 }
 
 trait SchedulingAdvisoryExt {

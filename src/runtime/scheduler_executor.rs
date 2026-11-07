@@ -533,23 +533,23 @@ impl<'a> SchedulerDecisionExecutor<'a> {
     /// Observability hook for the run-loop idle poll: a queue head stuck in
     /// queued/interrupted without dequeue progress starves every later wake
     /// (#3607). Rate limiting happens in the advisory itself.
-    pub(super) fn append_queue_head_starved_advisory_if_due(
+    pub(super) fn pending_queue_head_starved_advisory_if_due(
         &self,
         entry: &super::input_consumption::read::QualifiedQueueRead,
         queue_len: usize,
-    ) -> Result<()> {
+    ) -> Result<Option<AuditEvent>> {
         let status = match entry.status {
             QueueEntryStatus::Queued => "queued",
             QueueEntryStatus::Interrupted => "interrupted",
-            _ => return Ok(()),
+            _ => return Ok(None),
         };
         let waiting_ms = (self.runtime.now() - entry.updated_at)
             .num_milliseconds()
             .max(0);
         if waiting_ms < scheduler::QUEUE_HEAD_STARVATION_AFTER_MS {
-            return Ok(());
+            return Ok(None);
         }
-        scheduler::append_queue_head_starved_advisory(
+        scheduler::pending_queue_head_starved_advisory(
             &self.runtime.inner.storage,
             &entry.agent_id,
             &entry.message_id,
@@ -557,8 +557,7 @@ impl<'a> SchedulerDecisionExecutor<'a> {
             waiting_ms,
             queue_len,
             self.runtime.now(),
-        )?;
-        Ok(())
+        )
     }
 
     pub(super) async fn reconcile_stale_run_projection(
@@ -992,12 +991,15 @@ impl<'a> SchedulerDecisionExecutor<'a> {
                                     read.queue(&head.id)
                                 })?;
                         if let Some(entry) = entry {
-                            material.read(|| {
-                                self.append_queue_head_starved_advisory_if_due(
+                            let event = material.read(|| {
+                                self.pending_queue_head_starved_advisory_if_due(
                                     &entry,
                                     guard.queue.len(),
                                 )
                             })?;
+                            if let Some(event) = event {
+                                guard.append_original_audit_event(event).await?;
+                            }
                         }
                     }
                     let poll = RunLoopPoll::Idle;
@@ -1262,12 +1264,14 @@ impl<'a> SchedulerDecisionExecutor<'a> {
                 // retention obligation and the decision is recomputed on every
                 // poll, so nothing is mutated here; the deduplicated advisory
                 // is the observable evidence.
-                scheduler::append_deferred_activation_advisory(
+                if let Some(event) = scheduler::pending_deferred_activation_advisory(
                     &self.runtime.inner.storage,
                     &persisted_message,
                     scenario_class,
                     reason,
-                )?;
+                )? {
+                    self.runtime.append_original_audit_event(event).await?;
+                }
                 return Ok(PrepareMessageOutcome::DeferredUntilRunnable);
             }
             Ok(CanonicalClaimOutcome::RetainQueued {
@@ -1427,11 +1431,13 @@ impl<'a> SchedulerDecisionExecutor<'a> {
                                 return Err(error);
                             };
                         drop(planning_guard.take());
-                        scheduler::append_interrupted_replay_source_advisory(
+                        if let Some(event) = scheduler::pending_interrupted_replay_source_advisory(
                             &self.runtime.inner.storage,
                             &persisted_message,
                             invalid,
-                        )?;
+                        )? {
+                            self.runtime.append_original_audit_event(event).await?;
+                        }
                         self.runtime
                             .append_prepared_scheduling_advisories(&read.advisories)
                             .await?;

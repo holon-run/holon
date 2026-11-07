@@ -31,6 +31,17 @@ proof, including bootstrap normalization. Archive proof never grants live
 Current authority. Publication retains the complete Current Event membership check: a missing producer ACK is
 an error, never permission to omit an event or qualify it after the write.
 
+Scheduler advisory builders must not append through raw storage. Queue-head
+starvation reuses the held owner; deferred activation and interrupted-replay
+observations publish through the original Audit writer after releasing their
+planning guard. Original proof and qualified notifications remain mandatory.
+
+Parent cleanup also classifies original Queue admissions that reuse an owned
+supervised child through a terminal `agent_message_wait`. Only the exact
+receipt, delivery, parent Task-only ACK, typed target, recovery and canonical
+lineage group may be removed as one receipt. Parent result rows and unrelated
+history remain owned by the parent; unknown shared groups stay fail-closed.
+
 ## Resource estimates and runtime availability
 
 Cumulative `ResourceReadMaterial` estimates are diagnostic observations only.

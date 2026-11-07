@@ -1345,6 +1345,9 @@ async fn queue_head_starvation_uses_qualified_queue_age_and_rate_limit() -> Resu
     assert_eq!(actual.data, advisory.data);
     full_history.finish()?;
     let executor = crate::runtime::scheduler_executor::SchedulerDecisionExecutor::new(runtime);
+    let bus = crate::storage::EventBus::new(8);
+    runtime.storage().enable_event_bus(bus.clone())?;
+    let mut notifications = bus.subscribe();
     let count = || -> Result<usize> {
         Ok(runtime
             .inner
@@ -1356,16 +1359,35 @@ async fn queue_head_starvation_uses_qualified_queue_age_and_rate_limit() -> Resu
             })
             .count())
     };
+    let append_if_due = || async {
+        let event =
+            material.read(|| executor.pending_queue_head_starved_advisory_if_due(&entry, 1))?;
+        if let Some(event) = event {
+            runtime.append_original_audit_event(event).await?;
+        }
+        Ok::<(), anyhow::Error>(())
+    };
     harness
         .clock()
         .advance(std::time::Duration::from_millis(10 * 60 * 1000 - 1));
-    material.read(|| executor.append_queue_head_starved_advisory_if_due(&entry, 1))?;
+    append_if_due().await?;
     assert_eq!(count()?, 0);
     harness.clock().advance(std::time::Duration::from_millis(1));
-    material.read(|| executor.append_queue_head_starved_advisory_if_due(&entry, 1))?;
+    append_if_due().await?;
     assert_eq!(count()?, 1);
-    material.read(|| executor.append_queue_head_starved_advisory_if_due(&entry, 1))?;
+    append_if_due().await?;
     assert_eq!(count()?, 1);
+    let event = notifications.try_recv()?;
+    let scope = crate::runtime::resident_input_evidence::InputEvidenceScope {
+        agent_id: "default".into(),
+        identity_incarnation: runtime.inner.identity_incarnation,
+    };
+    event
+        .qualified
+        .as_ref()
+        .context("starvation advisory lost original Current ACK")?
+        .validate(&scope, &runtime.inner.input_evidence_budget)?;
+    assert!(notifications.try_recv().is_err());
     Ok(())
 }
 
