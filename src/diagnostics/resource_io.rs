@@ -1,4 +1,5 @@
-//! Allocation gate for the existing synchronous context-resource preparation.
+//! Scoped observations of synchronous context-resource preparation.
+//! Estimates describe ownership and diagnostics; they never limit runtime reads.
 mod structured;
 pub(crate) use structured::{
     admit_cloned_value, admit_json_buffer, admit_json_payload, admit_serialized_value,
@@ -29,8 +30,9 @@ struct ReadMaterial {
     records: usize,
     scratch_bytes: u64,
     scratch_records: usize,
-    byte_limit: u64,
-    record_limit: usize,
+    // Explicit fault injection only. Production observations have no quota.
+    #[cfg(test)]
+    limits: Option<(u64, usize)>,
     material: OwnedCompletionBudget,
     failed: bool,
     parent: Option<Arc<Mutex<ReadMaterial>>>,
@@ -39,14 +41,36 @@ struct ReadMaterial {
     after_file_metadata: Option<Box<dyn FnOnce() + Send>>,
 }
 impl ReadMaterial {
-    fn remaining_bytes(&self) -> u64 {
-        self.byte_limit - self.bytes - self.scratch_bytes
+    fn fits(&self, bytes: u64, records: usize) -> bool {
+        #[cfg(test)]
+        if let Some((byte_limit, record_limit)) = self.limits {
+            return bytes
+                <= byte_limit
+                    .saturating_sub(self.bytes)
+                    .saturating_sub(self.scratch_bytes)
+                && records
+                    <= record_limit
+                        .saturating_sub(self.records)
+                        .saturating_sub(self.scratch_records);
+        }
+        let _ = (bytes, records);
+        true
     }
+    #[cfg(test)]
+    fn remaining_bytes(&self) -> u64 {
+        self.limits.expect("explicit test fault limit").0 - self.bytes - self.scratch_bytes
+    }
+    #[cfg(test)]
     fn remaining_records(&self) -> usize {
-        self.record_limit - self.records - self.scratch_records
+        self.limits.expect("explicit test fault limit").1 - self.records - self.scratch_records
+    }
+    #[cfg(test)]
+    fn child_limits(&self) -> Option<(u64, usize)> {
+        self.limits
+            .map(|_| (self.remaining_bytes(), self.remaining_records()))
     }
 }
-/// Explicit allowance for synchronous acquisition and its owning projections.
+/// Scoped ownership observation for synchronous acquisition and projections.
 /// Named callers share it with source adapters; this is not a publication cut.
 /// The synchronous TLS entry is never held across an await.
 #[derive(Clone)]
@@ -89,8 +113,8 @@ impl ResourceReadMaterial {
                 records: source.records,
                 scratch_bytes: source.scratch_bytes,
                 scratch_records: source.scratch_records,
-                byte_limit: source.byte_limit,
-                record_limit: source.record_limit,
+                #[cfg(test)]
+                limits: source.limits,
                 material: source.material.fork_owned(),
                 failed: false,
                 parent: None,
@@ -131,7 +155,7 @@ impl ResourceReadMaterial {
             Self::after_identity(ledger, agent_id, identity_incarnation, (0, 0))
         }
     }
-    /// A source key and its candidate share one resource-phase allowance.
+    /// A source key retains its own observation; estimates do not grant credit.
     pub(crate) fn after(
         ledger: &InputEvidenceBudgetLedger,
         scope: &InputEvidenceScope,
@@ -145,22 +169,10 @@ impl ResourceReadMaterial {
         identity_incarnation: u64,
         prior: (u64, usize),
     ) -> anyhow::Result<Self> {
-        let limits = ledger.limits();
-        let bytes = limits
-            .history_per_agent_bytes
-            .checked_add(limits.pending_per_agent_bytes)
-            .ok_or_else(resource_exhausted)?
-            .min(64 * 1024 * 1024);
-        let records = usize::try_from(limits.record_limit.min(65_536))?;
-        Self::with_identity_limits(
-            ledger,
-            agent_id,
-            identity_incarnation,
-            bytes.checked_sub(prior.0).ok_or_else(resource_exhausted)?,
-            records
-                .checked_sub(prior.1)
-                .ok_or_else(resource_exhausted)?,
-        )
+        // The prior source retains its own observation. Estimates are not a
+        // remaining resource allowance and cannot reject this acquisition.
+        let _ = prior;
+        Self::observe_identity(ledger, agent_id, identity_incarnation)
     }
     #[cfg(test)]
     fn with_limits(
@@ -177,6 +189,7 @@ impl ResourceReadMaterial {
             records,
         )
     }
+    #[cfg(test)]
     fn with_identity_limits(
         ledger: &InputEvidenceBudgetLedger,
         agent_id: &str,
@@ -184,15 +197,27 @@ impl ResourceReadMaterial {
         bytes: u64,
         records: usize,
     ) -> anyhow::Result<Self> {
-        // Gate the exact original header before ScopeKey clones or Arc/Mutex allocation.
         let header_bytes = u64::try_from(agent_id.len())?
             .checked_add(256)
             .and_then(|bytes| bytes.checked_mul(8))
             .ok_or_else(resource_exhausted)?;
-        let header_records = 8 * 8;
-        if header_bytes > bytes || header_records > records {
+        if header_bytes > bytes || 64 > records {
             return Err(resource_exhausted());
         }
+        let observed = Self::observe_identity(ledger, agent_id, identity_incarnation)?;
+        observed.active.lock().unwrap().limits = Some((bytes, records));
+        Ok(observed)
+    }
+    fn observe_identity(
+        ledger: &InputEvidenceBudgetLedger,
+        agent_id: &str,
+        identity_incarnation: u64,
+    ) -> anyhow::Result<Self> {
+        let header_bytes = u64::try_from(agent_id.len())?
+            .checked_add(256)
+            .and_then(|bytes| bytes.checked_mul(8))
+            .ok_or_else(resource_exhausted)?;
+        let header_records = 64;
         let material = ledger.reserve_owned_identity_completion(
             agent_id,
             identity_incarnation,
@@ -208,8 +233,8 @@ impl ResourceReadMaterial {
                 records: header_records,
                 scratch_bytes: 0,
                 scratch_records: 0,
-                byte_limit: bytes,
-                record_limit: records,
+                #[cfg(test)]
+                limits: None,
                 material,
                 failed: false,
                 parent: None,
@@ -236,7 +261,7 @@ impl ResourceReadMaterial {
         self.finish()?;
         Ok(value)
     }
-    /// Transaction ownership releases separately, without refunding its original allowance.
+    /// Transaction ownership releases separately from its parent's observation.
     pub(crate) fn transaction(&self) -> anyhow::Result<Self> {
         self.finish()?;
         let mut phase = self
@@ -245,8 +270,8 @@ impl ResourceReadMaterial {
             .unwrap_or_else(|error| error.into_inner());
         let bytes = phase.material.sibling_header_bytes()?;
         let records = 64;
-        let byte_limit = phase.remaining_bytes();
-        let record_limit = phase.remaining_records();
+        #[cfg(test)]
+        let limits = phase.child_limits();
         reserve_allowance(&mut phase, bytes, records).map_err(|_| resource_exhausted())?;
         let material = phase.material.reserve_sibling(OwnedBytesEstimate {
             payload_bytes: 0,
@@ -259,8 +284,8 @@ impl ResourceReadMaterial {
                 records,
                 scratch_bytes: 0,
                 scratch_records: 0,
-                byte_limit,
-                record_limit,
+                #[cfg(test)]
+                limits,
                 material,
                 failed: false,
                 parent: Some(self.active.clone()),
@@ -270,7 +295,7 @@ impl ResourceReadMaterial {
             })),
         })
     }
-    /// Real Host ownership, sharing this phase's remaining allowance.
+    /// Real Host ownership, observed in both the Host and its parent phase.
     pub(crate) fn host(ledger: &InputEvidenceBudgetLedger) -> anyhow::Result<Self> {
         let parent = ACTIVE
             .with(|slot| slot.borrow().clone())
@@ -278,8 +303,8 @@ impl ResourceReadMaterial {
         let mut phase = parent.lock().unwrap_or_else(|error| error.into_inner());
         let bytes = 2048;
         let records = 64;
-        let byte_limit = phase.remaining_bytes();
-        let record_limit = phase.remaining_records();
+        #[cfg(test)]
+        let limits = phase.child_limits();
         reserve_allowance(&mut phase, bytes, records).map_err(|_| resource_exhausted())?;
         // Ledger registration admits its metadata against this same parent.
         drop(phase);
@@ -296,8 +321,8 @@ impl ResourceReadMaterial {
                 records,
                 scratch_bytes: 0,
                 scratch_records: 0,
-                byte_limit,
-                record_limit,
+                #[cfg(test)]
+                limits,
                 material,
                 failed: false,
                 parent: Some(parent),
@@ -332,8 +357,8 @@ impl ResourceReadMaterial {
             return Err(io::Error::new(kind, "context resource reader failed").into());
         }
         Ok((
-            material.bytes + material.scratch_bytes,
-            material.records + material.scratch_records,
+            material.bytes.saturating_add(material.scratch_bytes),
+            material.records.saturating_add(material.scratch_records),
         ))
     }
     pub(crate) fn guard(&self) -> anyhow::Result<Arc<BudgetViewGuard>> {
@@ -416,25 +441,11 @@ impl ResourceReadMaterial {
         }
         let added_bytes = retained_bytes.saturating_sub(material.bytes);
         let added_records = retained_records.saturating_sub(material.records);
-        let next = material.bytes.checked_add(added_bytes);
-        let count = material.records.checked_add(added_records);
-        let (Some(next), Some(count)) = (next, count) else {
-            tracing::warn!(caller = %std::panic::Location::caller(), retained_bytes, retained_records,
-                used_bytes = material.bytes, byte_limit = material.byte_limit,
-                used_records = material.records, record_limit = material.record_limit,
-                "Context retained resource allowance exceeded");
-            material.failed = true;
-            return Err(resource_exhausted());
-        };
-        if added_bytes > material.remaining_bytes() || added_records > material.remaining_records()
-        {
-            tracing::warn!(caller = %std::panic::Location::caller(), retained_bytes, retained_records,
-                used_bytes = material.bytes, byte_limit = material.byte_limit,
-                used_records = material.records, record_limit = material.record_limit,
-                "Context retained resource allowance exceeded");
-            material.failed = true;
-            return Err(resource_exhausted());
+        if !material.fits(added_bytes, added_records) {
+            return Err(exhausted(&mut material).into());
         }
+        let next = material.bytes.saturating_add(added_bytes);
+        let count = material.records.saturating_add(added_records);
         // All fallible checks precede changes to either dimension or the ledger.
         material.material.observe_material(0, added_bytes);
         material.bytes = next;
@@ -518,10 +529,8 @@ fn exhausted(material: &mut ReadMaterial) -> io::Error {
             caller = %std::panic::Location::caller(),
             used_bytes = material.bytes,
             scratch_bytes = material.scratch_bytes,
-            byte_limit = material.byte_limit,
             used_records = material.records,
             scratch_records = material.scratch_records,
-            record_limit = material.record_limit,
             "Context resource acquisition allowance exceeded"
         );
     }
@@ -534,10 +543,7 @@ fn exhausted(material: &mut ReadMaterial) -> io::Error {
 }
 #[track_caller]
 fn reserve_allowance(material: &mut ReadMaterial, bytes: u64, records: usize) -> io::Result<()> {
-    if material.failed
-        || bytes > material.remaining_bytes()
-        || records > material.remaining_records()
-    {
+    if material.failed || !material.fits(bytes, records) {
         return Err(exhausted(material));
     }
     if let Some(parent) = &material.parent {
@@ -551,8 +557,8 @@ fn reserve_allowance(material: &mut ReadMaterial, bytes: u64, records: usize) ->
             return Err(error);
         }
     }
-    material.bytes += bytes;
-    material.records += records;
+    material.bytes = material.bytes.saturating_add(bytes);
+    material.records = material.records.saturating_add(records);
     Ok(())
 }
 #[track_caller]
@@ -623,7 +629,7 @@ pub(crate) fn admit_file_bytes(declared: u64) -> io::Result<()> {
     };
     let mut material = active.lock().unwrap_or_else(|error| error.into_inner());
     let required = declared.checked_add(512);
-    if material.failed || required.is_none_or(|bytes| bytes > material.remaining_bytes() / 8) {
+    if material.failed || required.is_none_or(|bytes| !material.fits(bytes.saturating_mul(8), 0)) {
         return Err(exhausted(&mut material));
     }
     Ok(())
@@ -737,14 +743,8 @@ pub(crate) fn admit_owned_metadata(bytes: u64, records: usize) -> io::Result<()>
         return Ok(());
     };
     let mut material = active.lock().unwrap_or_else(|error| error.into_inner());
-    if material.failed
-        || bytes
-            .checked_mul(8)
-            .is_none_or(|n| n > material.remaining_bytes())
-        || records
-            .checked_mul(8)
-            .is_none_or(|n| n > material.remaining_records())
-    {
+    let estimate = bytes.checked_mul(8).zip(records.checked_mul(8));
+    if material.failed || estimate.is_none_or(|(bytes, records)| !material.fits(bytes, records)) {
         return Err(exhausted(&mut material));
     }
     Ok(())
@@ -914,16 +914,17 @@ fn reserve_template_scratch(
     let bytes = bytes
         .checked_add(header)
         .ok_or_else(|| exhausted(&mut phase))?;
-    if phase.failed || bytes > phase.remaining_bytes() || records > phase.remaining_records() {
+    if phase.failed || !phase.fits(bytes, records) {
         return Err(exhausted(&mut phase));
     }
     let parent_phase = phase.parent.clone();
     let mut parent = parent_phase
         .as_ref()
         .map(|parent| parent.lock().unwrap_or_else(|error| error.into_inner()));
-    if parent.as_ref().is_some_and(|parent| {
-        parent.failed || bytes > parent.remaining_bytes() || records > parent.remaining_records()
-    }) {
+    if parent
+        .as_ref()
+        .is_some_and(|parent| parent.failed || !parent.fits(bytes, records))
+    {
         drop(parent);
         return Err(exhausted(&mut phase));
     }
@@ -1013,6 +1014,60 @@ mod tests {
                 identity_incarnation: 1,
             },
         )
+    }
+    #[test]
+    fn runtime_observations_do_not_reject_reads_at_estimated_byte_or_node_thresholds(
+    ) -> anyhow::Result<()> {
+        let (_, scope) = fixture();
+        let ledger = InputEvidenceBudgetLedger::new(crate::config::StateMemoryLimits {
+            history_per_agent_bytes: 1,
+            pending_per_agent_bytes: 1,
+            record_limit: 1,
+            ..Default::default()
+        })?;
+        let phase = ResourceReadMaterial::after(&ledger, &scope, (128 * 1024 * 1024, 131_072))?;
+        phase.read(|| {
+            // Estimates exceed both former phase caps while physical data is small.
+            for _ in 0..4 {
+                charge_owned_metadata(4 * 1024 * 1024, 8192)?;
+            }
+            let tx = phase.transaction()?;
+            tx.read(|| {
+                admit_typed_json_payload(r#"{"value":"valid data"}"#)?;
+                Ok(())
+            })?;
+            Ok(())
+        })?;
+        let (bytes, records) = phase.finish()?;
+        assert!(bytes > 64 * 1024 * 1024 && records > 65_536);
+        assert!(phase.matches_owner_identity(&ledger, &scope.agent_id, scope.identity_incarnation));
+        let guard = phase.guard()?;
+        drop(phase);
+        assert!(ledger.report()?.observed_bytes > 0);
+        drop(guard);
+        assert_eq!(ledger.report()?.observed_bytes, 0);
+        Ok(())
+    }
+
+    #[test]
+    fn runtime_template_observation_accepts_large_comment_and_releases_parser_scratch(
+    ) -> anyhow::Result<()> {
+        let (ledger, scope) = fixture();
+        let phase = ResourceReadMaterial::new(&ledger, &scope)?;
+        phase.read(|| {
+            let text = format!("#{}", "a".repeat(100_000));
+            let parser = template_parse(&text)?;
+            let parsed: toml::Value = toml::from_str(&text)?;
+            assert!(parsed.as_table().unwrap().is_empty());
+            assert!(phase.finish()?.0 > 64 * 1024 * 1024);
+            drop(parser);
+            assert_eq!(phase.active.lock().unwrap().scratch_bytes, 0);
+            check_active()?;
+            Ok(())
+        })?;
+        drop(phase);
+        assert_eq!(ledger.report()?.observed_bytes, 0);
+        Ok(())
     }
     #[test]
     fn fixed_buffer_admission_is_exact_cumulative_and_keeps_original_latch() -> anyhow::Result<()> {
@@ -1336,7 +1391,7 @@ mod tests {
     #[test]
     fn template_parent_rejection_latches_both_phases_without_a_scratch_view() {
         let (ledger, scope) = fixture();
-        let parent = ResourceReadMaterial::new(&ledger, &scope).unwrap();
+        let parent = ResourceReadMaterial::with_limits(&ledger, &scope, 1024 * 1024, 4096).unwrap();
         let _io = parent.enter();
         let host = ResourceReadMaterial::host(&ledger).unwrap();
         // Another real owner consumes parent allowance after the Host was made.
@@ -1384,7 +1439,8 @@ mod tests {
     #[test]
     fn template_parse_long_comment_and_overflow_fail_closed() {
         let (ledger, scope) = fixture();
-        let phase = ResourceReadMaterial::new(&ledger, &scope).unwrap();
+        let phase =
+            ResourceReadMaterial::with_limits(&ledger, &scope, 64 * 1024 * 1024, 65536).unwrap();
         let _io = phase.enter();
         assert!(template_parse(&format!("#{}", "a".repeat(100_000))).is_err());
         assert!(check_active().is_err());
@@ -2115,7 +2171,7 @@ mod tests {
         let error = ResourceReadMaterial::current_or_new_for_identity(&ledger, &large_id, 0)
             .err()
             .unwrap();
-        assert_retryable_resource_error(&error);
+        assert!(error.to_string().contains("nonzero incarnation"));
         assert!(ledger.report().unwrap().scopes.is_empty());
         let exact = ResourceReadMaterial::with_identity_limits(
             &ledger,

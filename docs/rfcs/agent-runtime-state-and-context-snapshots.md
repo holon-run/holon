@@ -9,6 +9,24 @@ issue:
 
 # Agent Runtime State and Context Snapshots
 
+## Resource estimates and runtime availability
+
+Cumulative `ResourceReadMaterial` estimates are diagnostic observations only.
+They cannot reject a runtime read, bootstrap, refresh, state projection, message
+admission, or tool operation. There is no production resource-phase byte/node
+quota, configurable enable switch, or replacement larger threshold. This policy
+supersedes references below to cumulative resource-phase admission, eightfold
+allowances, and quota failure latches. Those references describe ownership
+accounting and the existing explicit test fault-injection harness, not an
+availability condition.
+
+Selected-source query limits, per-body/input limits, actual pending admission,
+resident-history sizing, protocol/identity validation, canonical hashes,
+qualification and real I/O errors retain their separate contracts. Observation
+ownership remains scope/ledger-bound and follows its last holder; observing an
+allocation never grants authority to read or mutate a record. See
+[the implementation decision](../implementation-decisions/resource-estimates-are-observational.md).
+
 ## Prompt fingerprint materialization
 
 Fingerprinting borrows section text and streams canonical JSON into SHA-256,
@@ -3027,103 +3045,34 @@ finite accepted heads are revalidated so drift cannot hide a previously observed
 member below a later cutoff. None of these observations grants new membership,
 activation, identity mutation or historical Input authority.
 
-### Context resource read allowance
+### Context resource observations
 
-The public Work query captures an already-covered selection once, or prepares
-its missing exact live roots and history window under the same owner mutation
-and original read material before recapture. It does not create and discard an
-extra charged view just to probe a warm selection. A consumer does not need to
-warm that selection first. Preparation preserves canonical business state and
-does not reset the allowance or authorize unqualified rows.
-Async Wait preparation and Agent-message reply reconciliation acquire their
-finite canonical reader through the native async pool boundary. They retain the
-same SQL selection, acquisition deadline and retryable failure; reader pressure
-must not block the executor task that releases capacity.
+Work queries prepare missing live roots and the exact history selection before
+capture, without changing canonical state or qualifying additional rows. Async
+Wait preparation and Agent-message reply reconciliation retain their native
+async reader-pool boundary, SQL selection and acquisition deadline. Reader
+pressure must not block the executor task that releases capacity.
 
 Synchronous catalog, plan, notes, guidance and agent-memory reads share one
-resource allowance backed by the Runtime's existing ledger. File buffers,
-directory entries, parser collections and cached catalog copies are admitted
-before allocation. Thread-local entries cover synchronous operations only;
-latched quota failures remain typed and retryable even when an optional reader
-omits an unreadable source. The original guard retains the observed peak through
-the last prompt or reprojection holder. Template TOML preparation alone separates
-temporary parser/Serde/conversion storage into an independent reservation before
-its first allocation. Its length-based allowance includes lexer input capacity,
-EOF/recovery growth and simultaneous intermediate representations, not just
-punctuation. It shares the existing source/Host/agent phase remaining allowance
-and exact ledger ownership; only that reservation is released at physical parser
-exit. Success values, input-carrying errors and conversion/name copies receive
-separate retained admission before parsing and keep the original last-holder
-lifetime. Dropping scratch cannot decrease previous Candidate charges, restore
-source-prior allowance, clear a sticky failure or release a running worker.
-These allowances remain owned-material estimates, not allocator or RSS caps.
-The completion aggregate borrows its qualified resident Brief, Transcript and
-Message bodies through resolution instead of deep-copying a temporary bundle.
-Only the final owning Brief and resolved text are admitted at their actual copy
-boundaries. Cold adapters retain owning decoded rows and admit the Brief before
-its original JSON decoder; borrowing never changes head, source, absence or
-scope validation. The final Context/Prompt still retains the original material
-through its last holder.
-Refresh finishes independent template parsing before acquiring the Host skills
-candidate and projecting its owned catalog copies. Only parser scratch is
-released between these steps; all template output and earlier source charges
-remain admitted against the same shared phase, and publication still uses the
-original source/generation fence. Acquisition order must not force independent
-temporary and later-retained peaks to coexist.
-For the locked TOML 1.1.2 parser, template scratch records distinguish the
-length-reserved lexer from token-shaped collections: with `n` input bytes,
-reserve `3(n+1)` lexer slots (including the
-old/new allocations during EOF growth), `12t` event slots (up to four events
-per token, including recovery and old/new capacity growth), `32(t+1)`
-DOM/key-path/Serde/conversion slots, and 64 fixed slots. Raw punctuation is
-not a bound on malformed DOM collections: missing-comma recovery synthesizes
-array separators. Omitting input length would undercount lexer capacity.
-For empty input the lexer has a minimum capacity of four slots; its fourth
-slot uses one of the 64 fixed slots, not another length-based allowance.
-Here `t` is an
-allocation-free token upper bound: one EOF, each raw lexer delimiter or quote
-byte, and each maximal run of other bytes. The locked atom lexer consumes a
-whole run; quote/comment/whitespace tokens can only merge these counted pieces.
-This is not an alternative parser and never changes TOML acceptance. Events
-reserve by token count, not the lexer's length-based initial capacity.
-During skill conversion the lexer, events and DOM have already been dropped.
-The `3(n+1)` slots can then cover the old/new slash-split reference vector;
-this conversion vector is not bounded by TOML token count.
-Scratch bytes separately
-reserve `8192(n+1)` plus the ledger-view header. Dependency or template-schema
-changes require rechecking these representation allowances, not silently
-increasing the shared phase limits.
-Retained template records instead reserve `128 + 8(a+d)`, where `a` and `d`
-are the numbers of raw `=` and `.` bytes. This gate is limited to `TemplateManifest` (five strings)
-and `TemplateSkillsManifest`: each skill needs a `kind` and value assignment,
-so each entry receives at least 16 slots for fields, vector capacity and
-normalized names. Counting these bytes inside strings/comments overestimates entries.
-Internally-tagged skill deserialization buffers unknown fields in Serde Content:
-conversion errors there can retain nested dotted key paths, not only the
-template's typed fields. Dot admission covers that escaping path before parsing;
-the fixed portion also covers bounded array nesting and error/context wrappers.
-Syntax errors have no key path. Ignored
-DOM trees and lexer capacity remain scratch, not retained objects. Retained
-bytes still cover input-carrying errors and decoded/normalized string copies
-before parsing, independently of the retained record estimate.
-Pathname error context uses the reader's separate pre-I/O path admission, not
-the template scratch constant. A failed path/body admission propagates before
-formatting that context; ordinary I/O diagnostics retain their existing context.
-File permissions and business outcomes
-are preserved. Loaded refresh/capture deliberately no longer creates plans:
-creation and its initial body stay in the original owning Work workflow, while
-recorded-missing preparation fails explicitly. Cold adapters and Get/List retain
-their existing independent file policies; they are not loaded registry hits.
-This allowance covers resource preparation only: it does not establish a joint
-Context/State/SQL budget, versioned resource publication, or a zero-file-read
-Context path. A shared registry sync prepares all changed-root candidates and
-admits the complete sync before installing any root, entry or fingerprint.
-Content refreshes of the same registration preserve its existing watch status;
-ordinary filesystem failures retain their existing stale-entry removal semantics.
-Reader and directory headers are admitted before opening or reading, including
-empty bodies. Plan metadata and declared body length are checked before body
-reads, and a latched failure stops later optional plans before filesystem work.
-The I/O probe counts instrumented operations, not OS syscalls or physical I/O.
+scope-bound observation backed by the runtime ledger. File buffers, directory
+entries, parser collections and cached copies contribute estimates for
+inspection. These values are not allocator/RSS measurements and have no
+production byte/node rejection threshold. Prior observations do not subtract
+credit from a later phase. Transactions and Host adapters retain the same
+identity, last-holder ownership and original I/O error propagation.
+
+Template parser scratch has an independent lifetime; its estimates are released
+when parsing exits while returned values retain their own observation. Long
+comments, punctuation shape, repeated reads or copied objects cannot fail an
+otherwise valid operation because of these estimates. Explicit finite limits
+remain available only in test builds for exercising failure propagation; the
+normal constructor is observational in both production and tests.
+
+Plan creation remains in the owning Work workflow. Loaded refresh/capture does
+not create a recorded-missing plan. Registry refresh preserves source epochs,
+fingerprints and publication fences; unchanged data may be shared, and actual
+filesystem/parser failures retain their established handling. No resource
+observation qualifies source bodies or replaces canonical business validation.
 
 Resident Brief history resolution borrows its already captured Transcript and
 Message sources instead of cloning whole records to extract text. Exact source
