@@ -5067,3 +5067,8 @@ its new candidate header/scan has a separate last-holder guard. Initial data
 without a receipt and actual copy-on-write mutations still admit the full
 candidate before installation. Unrelated shared roots are never cleared to
 make a per-agent refresh fit, and guard replacement does not accumulate chains.
+
+Completion edge reads preserve Input's exact fixed Brief linkage proof: a stale
+pre-link hash is accepted only for original fixed membership, byte-exact additive
+linkage and its creating event. Qualified raw digests remain mandatory. This
+avoids rewriting canonical hashes independently of frozen qualification metadata.

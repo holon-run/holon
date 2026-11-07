@@ -216,12 +216,13 @@ fn qualified_payload(
         digest(payload.as_bytes()) == expected,
         "completion source raw body changed without a qualified writer"
     );
-    if let Some(hash) = hash {
-        ensure!(
-            hash == super::super::evidence::content_hash(&payload),
-            "completion source canonical hash differs from its body"
-        );
-    }
+    super::super::input_evidence_snapshot::validate_completion_payload_hash_tx(
+        tx,
+        scope,
+        key,
+        &payload,
+        hash.as_deref(),
+    )?;
     Ok((
         EvidenceLocator {
             scope: scope.clone(),

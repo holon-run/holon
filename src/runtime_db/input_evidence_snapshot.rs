@@ -2468,6 +2468,38 @@ fn validate_alias_body(
 fn requires_frozen_body_digest(key: &Key, fingerprint: &Fingerprint) -> bool {
     key.family != Family::ToolExecution && fingerprint.content_hash.is_none()
 }
+/// Completion edges have already qualified the exact raw digest. Preserve the
+/// fixed linkage proof used by Input instead of requiring a history rewrite.
+pub(super) fn validate_completion_payload_hash_tx(
+    tx: &Transaction<'_>,
+    scope: &InputEvidenceScope,
+    key: &Key,
+    payload: &str,
+    hash: Option<&str>,
+) -> Result<()> {
+    if hash.is_none() || hash == Some(super::evidence::content_hash(payload).as_str()) {
+        return Ok(());
+    }
+    ensure!(
+        key.family == Family::Brief,
+        "completion source canonical hash differs from its body"
+    );
+    let fingerprint =
+        fingerprint_on(tx, &scope.agent_id, key)?.context("completion Brief metadata absent")?;
+    ensure!(
+        fingerprint.content_hash.as_deref() == hash,
+        "completion Brief hash changed"
+    );
+    legacy_brief::validate_payload_digest(
+        tx,
+        &scope.agent_id,
+        key,
+        &fingerprint,
+        payload,
+        &bytes_digest(payload.as_bytes()),
+    )
+    .context("completion source canonical hash differs from its body")
+}
 fn validate_canonical_payload_digest(
     key: &Key,
     fingerprint: &Fingerprint,

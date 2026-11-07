@@ -221,3 +221,47 @@ fn two_fixed_heads_can_materialize_aliases_in_order_without_adopting_new_sources
     })?;
     Ok(())
 }
+
+#[test]
+fn fixed_linkage_completion_keeps_hash_and_qualification_unchanged() -> Result<()> {
+    use crate::runtime_db::evidence::append_audit_event_tx;
+    let mut head = result_with_source("fixed-link-head", "fixed-link-work", "absent-source");
+    let (_dir, db) = legacy(|tx| {
+        raw_legacy_work(tx, &work("fixed-link-work", WorkItemState::Completed))?;
+        insert_brief_evidence_tx(tx, &head)?;
+        tx.execute("INSERT OR IGNORE INTO runtime_metadata(key,value,created_at,updated_at) VALUES('event_log_epoch','fixture-epoch',?1,?1)", [time().to_rfc3339()])?;
+        let event = crate::types::brief_created_event_for(&head)?;
+        let (event, _) = append_audit_event_tx(tx, Some("agent-a"), &event)?;
+        head.created_event_seq = Some(event.event_seq);
+        tx.execute(
+            "UPDATE briefs SET created_event_seq=?1,payload_json=?2 WHERE evidence_id=?3",
+            params![
+                i64::try_from(event.event_seq)?,
+                serde_json::to_string(&head)?,
+                head.id
+            ],
+        )?;
+        Ok(())
+    })?;
+    db.transaction(|tx| {
+        let mut policy=request();
+        policy.capture.latest_result_work_ids.insert("fixed-link-work".into());
+        prepare_work_domain_snapshot_tx(tx, &scope(), &policy)?.require_current()?;
+        let before:(String,String)=tx.query_row("SELECT content_hash,payload_json FROM briefs WHERE evidence_id=?1",[&head.id],|r|Ok((r.get(0)?,r.get(1)?)))?;
+        assert_ne!(before.0, crate::runtime_db::evidence::content_hash(&before.1));
+        let captured=input_resident(tx,&input_request(&[&head.id]))?.capture()?;
+        assert_eq!(captured.completion_source_observations.len(),1);
+        let before_alias:(i64,String,String)=tx.query_row("SELECT revision,content_digest,fingerprint_json FROM input_evidence_current WHERE family='brief' AND record_id=?1",[&head.id],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?)))?;
+        let selected=BTreeSet::from([head.id.clone()]);
+        let key=InputEvidenceKey::new(InputEvidenceFamily::Brief,&head.id);
+        for _ in 0..2 {
+            assert_eq!(completion_source_observations_tx(tx,&scope(),&selected,&key)?.len(),1);
+        }
+        let after:(String,String)=tx.query_row("SELECT content_hash,payload_json FROM briefs WHERE evidence_id=?1",[&head.id],|r|Ok((r.get(0)?,r.get(1)?)))?;
+        let after_alias:(i64,String,String)=tx.query_row("SELECT revision,content_digest,fingerprint_json FROM input_evidence_current WHERE family='brief' AND record_id=?1",[&head.id],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?)))?;
+        assert_eq!(before,after); assert_eq!(before_alias,after_alias);
+        tx.execute("DELETE FROM audit_events WHERE agent_id='agent-a' AND event_seq=?1", [i64::try_from(head.created_event_seq.unwrap())?])?;
+        assert!(completion_source_observations_tx(tx,&scope(),&selected,&key).is_err());
+        Ok(())
+    })
+}
