@@ -52,7 +52,7 @@ import { SearchPage } from "../features/search/SearchPage";
 import { SettingsPage } from "../features/settings/SettingsPage";
 import { SkillDetailPage, SkillsPage } from "../features/skills/SkillsPage";
 import { TemplateDetailPage, TemplatesPage } from "../features/templates/TemplatesPage";
-import { deriveAgentDisplayStatus } from "../runtime/agent-status";
+import { deriveAgentAvatarExpression, deriveAgentDisplayStatus } from "../runtime/agent-status";
 import {
   getRuntimeTraceRevision,
   isRuntimeTraceEnabled,
@@ -716,7 +716,10 @@ export function App() {
                       type="button"
                       onClick={() => navigateAgent(agent.id)}
                     >
-                      <AgentAvatar agentId={agent.id} />
+                      <AgentAvatar
+                        agentId={agent.id}
+                        expression={deriveAgentAvatarExpression(agent, !bootstrap.connection.error && discovery.freshness === "fresh")}
+                      />
                       <span className="agent-row-main">
                         <span className="agent-row-title">
                           <strong>{agent.name ?? agent.id}</strong>

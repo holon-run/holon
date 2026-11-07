@@ -10,7 +10,7 @@ describe("AgentAvatar", () => {
     expect(markup).toContain('alt=""');
     expect(markup).toContain('aria-hidden="true"');
     expect(markup).toContain('width="36" height="36"');
-    expect(markup).toContain(encodeURIComponent(renderAgentAvatar("holon-product")));
+    expect(markup).toContain(encodeURIComponent(renderAgentAvatar("holon-product", "neutral")));
     expect(markup).not.toContain("/api/");
   });
 
@@ -20,5 +20,13 @@ describe("AgentAvatar", () => {
     );
     const image = (markup: string) => markup.match(/<img[^>]+>/)?.[0];
     expect(image(card("Original name"))).toBe(image(card("Renamed agent")));
+  });
+
+  it("renders the requested expression without replacing its decorative semantics", () => {
+    const markup = renderToStaticMarkup(<AgentAvatar agentId="holon-product" expression="questioning" />);
+    expect(markup).toContain('data-expression="questioning"');
+    expect(markup).toContain(encodeURIComponent(renderAgentAvatar("holon-product", "questioning")));
+    expect(markup).toContain('alt=""');
+    expect(markup).toContain('aria-hidden="true"');
   });
 });

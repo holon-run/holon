@@ -2,6 +2,8 @@
 export const AGENT_AVATAR_VERSION = "light-mech-1-vivid";
 const SEED_VERSION = "light-mech-1";
 
+export type AgentAvatarExpression = "neutral" | "focused" | "questioning" | "waiting" | "sleeping";
+
 const palettes = [
   ["#ff9826", "#d96a10", "#faecdc"], ["#28a9ef", "#1279be", "#e4f0f7"],
   ["#36cf9e", "#189b72", "#e4f1e9"], ["#8561df", "#5c3bb1", "#eee9f8"],
@@ -88,8 +90,8 @@ function path(d: string, fill: string, stroke = "none", width = 3): string {
   return `<path d="${d}" fill="${fill}" stroke="${stroke}" stroke-width="${width}"/>`;
 }
 
-/** Agent IDs only select fixed artwork; no caller text is interpolated into SVG. */
-export function renderAgentAvatar(agentId: string): string {
+/** Omit the expression to retain the original static V8.1 artwork. */
+export function renderAgentAvatar(agentId: string, stateExpression?: AgentAvatarExpression): string {
   const index = agentAvatarIndex(agentId);
   const shell = shells[index % shells.length];
   const [body, shade, background] = palettes[Math.floor(index / shells.length) % palettes.length];
@@ -108,7 +110,9 @@ export function renderAgentAvatar(agentId: string): string {
   art += path(shell.side, shade, INK) + path(shell.head, body, INK)
     + path(shell.shade, shade) + path(shell.face, SCREEN, INK, 2.8);
   const [x, y, gap] = shell.eyes;
-  if (expression === 0) {
+  if (stateExpression !== undefined) {
+    art += `<g data-avatar-part="expression">${renderStatusEyes(stateExpression, x, y, gap)}</g>`;
+  } else if (expression === 0) {
     art += `<rect x="${x - gap - 2.7}" y="${y - 4.5}" width="5.4" height="9" rx="2.7" fill="${INK}"/><rect x="${x + gap - 2.7}" y="${y - 4.5}" width="5.4" height="9" rx="2.7" fill="${INK}"/>`;
   } else if (expression === 1) {
     art += path(`M${x - gap - 4} ${y + 1}Q${x - gap} ${y - 6} ${x - gap + 4} ${y + 1} M${x + gap - 4} ${y + 1}Q${x + gap} ${y - 6} ${x + gap + 4} ${y + 1}`, "none", INK, 3.8);
@@ -119,4 +123,24 @@ export function renderAgentAvatar(agentId: string): string {
       + path(`M${x + gap - 3} ${y + 1}Q${x + gap} ${y - 5} ${x + gap + 3} ${y - 1}`, "none", INK, 3.6);
   }
   return `<svg xmlns="http://www.w3.org/2000/svg" width="100" height="100" viewBox="0 0 100 100"><rect width="100" height="100" fill="${background}"/><g stroke-linecap="round" stroke-linejoin="round">${art}</g></svg>`;
+}
+
+function renderStatusEyes(expression: AgentAvatarExpression, x: number, y: number, gap: number): string {
+  const left = x - gap;
+  const right = x + gap;
+  switch (expression) {
+    case "focused":
+      return path(`M${left - 4} ${y - 5}H${left + 4} M${right - 4} ${y - 5}H${right + 4}`, "none", INK, 3)
+        + `<rect x="${left - 3}" y="${y - 1}" width="6" height="4" rx="1.5" fill="${INK}"/><rect x="${right - 3}" y="${y - 1}" width="6" height="4" rx="1.5" fill="${INK}"/>`;
+    case "questioning":
+      return `<circle cx="${left}" cy="${y + 1}" r="3" fill="${INK}"/><rect x="${right - 3}" y="${y - 5}" width="6" height="10" rx="3" fill="${INK}"/>`
+        + path(`M${right - 4} ${y - 9}Q${right} ${y - 12} ${right + 4} ${y - 9}`, "none", INK, 2.5);
+    case "waiting":
+      return `<circle cx="${left + 2}" cy="${y}" r="3.5" fill="${INK}"/><circle cx="${right + 2}" cy="${y}" r="3.5" fill="${INK}"/>`;
+    case "sleeping":
+      return path(`M${left - 4} ${y}Q${left} ${y + 4} ${left + 4} ${y} M${right - 4} ${y}Q${right} ${y + 4} ${right + 4} ${y}`, "none", INK, 3.5);
+    default:
+      // Unknown inputs are neutral too; never interpolate caller text into SVG.
+      return `<rect x="${left - 2.7}" y="${y - 4.5}" width="5.4" height="9" rx="2.7" fill="${INK}"/><rect x="${right - 2.7}" y="${y - 4.5}" width="5.4" height="9" rx="2.7" fill="${INK}"/>`;
+  }
 }

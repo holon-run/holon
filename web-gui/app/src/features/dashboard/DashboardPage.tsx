@@ -8,6 +8,7 @@ import { EmptyState } from "../../components/ui/EmptyState";
 import { Skeleton } from "../../components/ui/Skeleton";
 import { AgentStateBadge, StatusBadge } from "../../components/ui/StatusChip";
 import { ROSTER_STALE_EXTENDED_RETRY_ATTEMPTS } from "../../runtime/global-sync-coordinator";
+import { deriveAgentAvatarExpression } from "../../runtime/agent-status";
 import type { RosterDiscoveryState } from "../../runtime/types";
 import { compactModelRouteDisplay } from "../../lib/model-route-ref";
 import type { AgentSummary, DashboardMetric, RuntimeConnection } from "../../runtime/types";
@@ -112,7 +113,10 @@ export function DashboardPage({ agents, metrics, connection, discovery, loading,
               {agents.map((agent) => (
                 <Card className="agent-card" key={agent.id}>
                   <div className="agent-card-head">
-                    <AgentAvatar agentId={agent.id} />
+                    <AgentAvatar
+                      agentId={agent.id}
+                      expression={deriveAgentAvatarExpression(agent, !connection.error && (!discovery || discovery.freshness === "fresh"))}
+                    />
                     <div className="agent-card-title" title={agent.name ? agent.profile : undefined}>
                       <strong>{agent.name ?? agent.id}</strong>
                       <small>{agent.name ? agent.id : agent.profile}</small>

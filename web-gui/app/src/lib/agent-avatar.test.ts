@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { describe, expect, it } from "vitest";
-import { AGENT_AVATAR_VERSION, agentAvatarIndex, renderAgentAvatar } from "./agent-avatar";
+import { AGENT_AVATAR_VERSION, agentAvatarIndex, renderAgentAvatar, type AgentAvatarExpression } from "./agent-avatar";
 
 // Golden vectors from the reviewed V8.1 vivid generator, excluding its descriptive title.
 const vectors = [
@@ -30,5 +30,19 @@ describe("fixed V8.1 Agent avatars", () => {
     expect(svg).not.toContain(attack);
     expect(svg).not.toMatch(/<script|<image|href=|onload=|evil\.invalid|NaN|undefined/);
     expect(svg).toContain('viewBox="0 0 100 100"');
+  });
+
+  it.each(vectors)("changes only the eyes, never the identity artwork for %s", (id) => {
+    const expressions: AgentAvatarExpression[] = ["neutral", "focused", "questioning", "waiting", "sleeping"];
+    const images = expressions.map((expression) => renderAgentAvatar(id, expression));
+    const identity = (svg: string) => svg.replace(/<g data-avatar-part="expression">.*?<\/g>/, "");
+    expect(new Set(images.map(identity)).size).toBe(1);
+    expect(new Set(images).size).toBe(expressions.length);
+    expect(images.join("")).not.toMatch(/<animate|<script|href=|NaN|undefined/);
+  });
+
+  it("does not interpolate an unrecognized expression into SVG", () => {
+    expect(renderAgentAvatar("agent", '"><script>evil</script>' as AgentAvatarExpression))
+      .toBe(renderAgentAvatar("agent", "neutral"));
   });
 });
