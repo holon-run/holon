@@ -1,6 +1,6 @@
 {
   "version": 2,
-  "scheduler_fixture_corpus_revision": "scheduler-release-gate-split-v2",
+  "scheduler_fixture_corpus_revision": "scheduler-release-gate-online-timer-v3",
   "profiles": {
     "scheduler-required": {
       "gate_kind": "required",
@@ -17,6 +17,7 @@
         "scheduler-compaction-continuity",
         "scheduler-worktree-isolation",
         "scheduler-spawn-agent-supervision",
+        "scheduler-timer-online-admission",
         "scheduler-checkpoint-replay"
       ],
       "required_coverage_ids": [
@@ -30,6 +31,7 @@
         "scheduler-compaction-continuity",
         "scheduler-worktree-isolation",
         "scheduler-spawn-agent-supervision",
+        "scheduler-timer-online-admission",
         "scheduler-checkpoint-replay"
       ]
     },
@@ -606,6 +608,25 @@
           "required_tools": ["CreateWorkItem", "PickWorkItem", "CreateTimer", "WaitFor", "GetWorkItem", "UpdateWorkItem", "CancelTimer", "CompleteWorkItem"],
           "forbidden_tools": ["ApplyPatch", "ExecCommand"],
           "prompt": "Scheduler Docker E2E case {case_id}. Create exactly one ready WorkItem with objective {marker} and two pending todos timer-dispatch-1 and timer-dispatch-2. Pick it. In its autonomous turn create one repeating timer with duration_ms=30000 and interval_ms=30000 and summary {marker}, then WaitFor wake=timer resource=<the returned exact timer id> delivery=silent. The harness restarts the daemon after this committed wait. Only when this exact timer dispatch resumes the WorkItem: GetWorkItem, complete the first todo, and register a new exact WaitFor for the same timer. On the second exact timer dispatch: GetWorkItem, complete both todos, CancelTimer, and CompleteWorkItem with result {marker}-COMPLETE. Do not create another timer or WorkItem, run commands, modify files, poll a timer, or advance business todos without a timer dispatch."
+        }
+      ]
+    },
+    {
+      "id": "scheduler-timer-online-admission",
+      "coverage_ids": ["scheduler-timer-online-admission"],
+      "provider_mode": "stub",
+      "stub_scenario": "scheduler-timer-admission",
+      "tier": "core",
+      "tags": ["scheduler", "timer", "admission", "online"],
+      "timeout_seconds": 120,
+      "description": "Require a newly created timer to dispatch twice without a daemon restart, consume exact waits and complete business progress.",
+      "scheduler_protocol_commands_enabled": true,
+      "phases": [
+        {
+          "id": "timer-two-online-dispatches",
+          "required_tools": ["CreateWorkItem", "PickWorkItem", "CreateTimer", "WaitFor", "GetWorkItem", "UpdateWorkItem", "CancelTimer", "CompleteWorkItem"],
+          "forbidden_tools": ["ApplyPatch", "ExecCommand"],
+          "prompt": "Scheduler Docker E2E case {case_id}. Create exactly one ready WorkItem with objective {marker} and two pending todos timer-dispatch-1 and timer-dispatch-2. Pick it. Create one repeating timer with duration_ms=30000 and interval_ms=30000 and summary {marker}, then WaitFor wake=timer resource=<the returned exact timer id> delivery=silent. The daemon stays online throughout; do not restart it or inject a wake. Only when this exact timer dispatch resumes the WorkItem: GetWorkItem, complete the first todo, and register a new exact WaitFor for the same timer. On the second exact timer dispatch: GetWorkItem, complete both todos, CancelTimer, and CompleteWorkItem with result {marker}-COMPLETE. Do not create another timer or WorkItem, run commands, modify files, poll a timer, or advance business todos without a timer dispatch."
         }
       ]
     },

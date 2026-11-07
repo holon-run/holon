@@ -6513,6 +6513,14 @@ def run_scheduler_timer_admission_recovery_case(
     run_case(harness, case)
 
 
+def run_scheduler_timer_online_admission_case(
+    harness: CaseHarness, case: dict[str, Any]
+) -> None:
+    from .timer_admission import run_case
+
+    run_case(harness, case, restart_before_first_dispatch=False)
+
+
 CASE_RUNNERS = {
     "runtime-auth-model-delivery": run_runtime_case,
     "runtime-agent-lifecycle": run_runtime_agent_lifecycle_case,
@@ -6538,6 +6546,7 @@ CASE_RUNNERS = {
     "scheduler-spawn-agent-supervision": run_scheduler_spawn_agent_supervision_case,
     "scheduler-checkpoint-replay": run_scheduler_checkpoint_replay_case,
     "scheduler-timer-admission-recovery": run_scheduler_timer_admission_recovery_case,
+    "scheduler-timer-online-admission": run_scheduler_timer_online_admission_case,
     "live-command-output-reentry": run_live_command_observation_case,
     "live-input-batch-safe-point": run_live_input_batch_case,
 }

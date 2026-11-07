@@ -263,6 +263,7 @@ class DockerE2ERunnerTests(unittest.TestCase):
                 "memory-agent-home-persistence",
                 "workspace-restart-lifecycle",
                 "workitem-wait-restart-complete",
+                "scheduler-timer-online-admission",
             ],
         )
 
@@ -3198,6 +3199,7 @@ class DockerE2ERunnerTests(unittest.TestCase):
                 ("memory-agent-home-persistence", None),
                 ("workspace-restart-lifecycle", None),
                 ("workitem-wait-restart-complete", None),
+                ("scheduler-timer-online-admission", "canonical"),
                 ("scheduler-task-wait-resume", "canonical"),
             ],
         )
