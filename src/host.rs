@@ -5804,6 +5804,17 @@ impl RuntimeHost {
                 .ensure_default_agent_identity()
                 .map(|record| NamedAgentPreparation::Ready(record, false));
         }
+        let existing = self.agent_identity_record(agent_id)?;
+        if existing_behavior == NamedAgentExistingBehavior::Reject {
+            if let Some(tombstone) = existing
+                .as_ref()
+                .filter(|record| record.status == AgentRegistryStatus::Deleted)
+            {
+                // Released ids, including former temporary children, use the
+                // same fenced reincarnation transaction, not new-id allocation.
+                return Ok(NamedAgentPreparation::Reincarnate(tombstone.clone()));
+            }
+        }
         if Self::is_temporary_agent_id(agent_id) {
             return Err(anyhow!(
                 "agent id {} uses reserved temporary prefix {}",
@@ -5811,15 +5822,8 @@ impl RuntimeHost {
                 TEMP_AGENT_PREFIX
             ));
         }
-        let existing = self.agent_identity_record(agent_id)?;
         if let Some(existing) = existing {
             if existing_behavior == NamedAgentExistingBehavior::Reject {
-                if existing.status == AgentRegistryStatus::Deleted {
-                    // A fully deleted id is creatable again: route through
-                    // the reincarnation transaction when the deletion job
-                    // completed, or fail closed with a typed error.
-                    return Ok(NamedAgentPreparation::Reincarnate(existing));
-                }
                 if existing.status == AgentRegistryStatus::Deleting {
                     let job = self
                         .runtime_db()
@@ -19831,6 +19835,100 @@ mod tests {
             .err()
             .expect("temporary prefix should be reserved");
         assert!(error.to_string().contains("reserved temporary prefix"));
+    }
+
+    #[cfg(holon_lib_test_shard = "d")]
+    #[tokio::test]
+    async fn create_reincarnates_deleted_temporary_child_without_old_supervision() {
+        let (_home, host) = test_host();
+        let parent = host.default_runtime().await.unwrap();
+        let child = retained_cleanup_fixture(&host, "tmp_child_reincarnation");
+        let request = || CreateAgentRequest {
+            agent_id: child.agent_id.clone(),
+            name: None,
+            template: None,
+            initial_message: None,
+            authority_class: AuthorityClass::OperatorInstruction,
+            model_resolution: None,
+            lineage_parent_agent_id: None,
+            inherit_parent_runtime: false,
+        };
+        let active_error = parent
+            .agent_creation_service()
+            .create(request())
+            .await
+            .unwrap_err();
+        assert!(
+            active_error
+                .to_string()
+                .contains("incompatible identity or lifecycle"),
+            "unexpected error: {active_error:#}"
+        );
+        let job = host
+            .begin_parent_agent_deletion(&parent, &child.agent_id, child.incarnation)
+            .await
+            .unwrap();
+        let pending_error = parent
+            .agent_creation_service()
+            .create(request())
+            .await
+            .unwrap_err();
+        assert!(
+            pending_error.to_string().contains("deletion_incomplete"),
+            "unexpected error: {pending_error:#}"
+        );
+        host.execute_deletion_job(job.clone()).await.unwrap();
+        assert_eq!(
+            host.runtime_db()
+                .agent_deletions()
+                .latest_for_agent(&child.agent_id)
+                .unwrap()
+                .unwrap()
+                .status,
+            AgentDeletionStatus::Completed
+        );
+
+        let recreated = parent
+            .agent_creation_service()
+            .create(request())
+            .await
+            .unwrap();
+        let fresh = recreated.identity;
+        assert!(recreated.receipt.created);
+        assert_eq!(fresh.agent_id, child.agent_id);
+        assert_eq!(fresh.incarnation, child.incarnation + 1);
+        assert_eq!(fresh.status, AgentRegistryStatus::Active);
+        assert_eq!(fresh.kind, AgentKind::Named);
+        assert_eq!(fresh.visibility, AgentVisibility::Public);
+        assert_eq!(fresh.ownership, AgentOwnership::SelfOwned);
+        assert_eq!(fresh.parent_agent_id, None);
+        let fresh_record = host
+            .agent_identity_record(&child.agent_id)
+            .unwrap()
+            .unwrap();
+        assert_eq!(fresh_record.delegated_from_task_id, None);
+
+        let stale = host
+            .begin_parent_agent_deletion(&parent, &child.agent_id, child.incarnation)
+            .await
+            .unwrap_err();
+        assert!(stale.to_string().contains("stale_incarnation"));
+        assert_eq!(
+            host.agent_identity_record(&child.agent_id)
+                .unwrap()
+                .unwrap(),
+            fresh_record
+        );
+        assert_eq!(
+            host.runtime_db()
+                .agent_deletions()
+                .latest_for_agent(&child.agent_id)
+                .unwrap()
+                .unwrap()
+                .deletion_id,
+            job.deletion_id
+        );
+        host.shutdown().await.unwrap();
     }
 
     #[cfg(holon_lib_test_shard = "d")]

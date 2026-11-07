@@ -192,6 +192,10 @@ a new incarnation with a fresh AgentHome bootstrap and no inherited
 WorkItems, tasks, waits, timers, triggers, queue entries, occupancy, or
 workspace bindings.
 
+This explicit recreation also accepts a released temporary child id; the
+temporary prefix remains reserved for new ids and active identities. Recreation
+creates a public self-owned named agent, not a restored supervised child.
+
 Retained turns remain historical evidence keyed by agent id. Their `turn_index`
 high-water mark survives recreation without restoring the previous runtime state.
 The first new canonical turn allocates above that mark; creation itself does not
