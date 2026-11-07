@@ -1232,6 +1232,186 @@ DELETE FROM schema_migrations WHERE version = 66;
 }
 
 #[test]
+fn schema_25_upgrade_restores_only_sealed_legacy_results() -> Result<()> {
+    use crate::runtime_db::migrations::{
+        apply_migration, ensure_migration_table, MIGRATIONS, PUBLISHED_MIGRATION_FLOOR,
+    };
+
+    let temp_dir = tempfile::tempdir()?;
+    let db_path = temp_dir.path().join("runtime.sqlite");
+    let lock_path = temp_dir.path().join("runtime.lock");
+    let mut connection = rusqlite::Connection::open(&db_path)?;
+    ensure_migration_table(&connection)?;
+    for migration in MIGRATIONS
+        .iter()
+        .filter(|migration| migration.version <= PUBLISHED_MIGRATION_FLOOR)
+    {
+        apply_migration(&mut connection, migration)?;
+    }
+    let cases = [
+        ("result", Some(BriefKind::Result), true),
+        ("failure", Some(BriefKind::Failure), true),
+        ("no-brief", None, true),
+        ("pending", None, false),
+        ("active", Some(BriefKind::Result), false),
+        ("ack", Some(BriefKind::Ack), false),
+        ("dangling", Some(BriefKind::Result), false),
+        ("foreign-agent", Some(BriefKind::Result), false),
+        ("foreign-turn", Some(BriefKind::Result), false),
+        ("unlinked", Some(BriefKind::Result), false),
+        ("terminal-mismatch", Some(BriefKind::Result), false),
+    ];
+    for (index, (case, brief_kind, _)) in cases.iter().enumerate() {
+        let turn_id = format!("legacy-{case}");
+        let mut record = turn(&turn_id, index as u64 + 1);
+        if *case != "active" {
+            record = terminal(
+                record,
+                if *case == "failure" {
+                    TurnTerminalKind::Aborted
+                } else {
+                    TurnTerminalKind::Completed
+                },
+                (*case == "no-brief").then_some(TurnNoBriefReason::ToolOnlyWait),
+            );
+        }
+        if let Some(kind) = brief_kind {
+            let mut brief = BriefRecord::new(AGENT_ID, *kind, "legacy final", None, None);
+            brief.id = format!("brief-{case}");
+            brief.turn_id = Some(turn_id.clone());
+            brief.turn_index = Some(record.turn_index);
+            brief.created_at = record.created_at;
+            if *case == "foreign-agent" {
+                brief.agent_id = "another-agent".into();
+            }
+            if *case == "foreign-turn" {
+                brief.turn_id = Some("another-turn".into());
+            }
+            if *case != "unlinked" {
+                record.produced_brief_ids = vec![if *case == "dangling" {
+                    "missing-brief".into()
+                } else {
+                    brief.id.clone()
+                }];
+            }
+            connection.execute(
+                "INSERT INTO briefs (
+                   evidence_id, agent_id, turn_id, created_at, kind, payload_json
+                 ) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                params![
+                    brief.id,
+                    brief.agent_id,
+                    brief.turn_id,
+                    brief.created_at.to_rfc3339(),
+                    serde_json::to_value(brief.kind)?.as_str().unwrap(),
+                    serde_json::to_string(&brief)?,
+                ],
+            )?;
+        }
+        connection.execute(
+            "INSERT INTO turn_records (
+               turn_id, turn_index, agent_id, terminal_kind,
+               created_at, completed_at, payload_json
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            params![
+                record.turn_id,
+                record.turn_index,
+                record.agent_id,
+                record
+                    .terminal
+                    .as_ref()
+                    .map(|terminal| {
+                        serde_json::to_value(if *case == "terminal-mismatch" {
+                            TurnTerminalKind::Aborted
+                        } else {
+                            terminal.kind
+                        })
+                    })
+                    .transpose()?
+                    .and_then(|kind| kind.as_str().map(str::to_owned)),
+                record.created_at.to_rfc3339(),
+                record
+                    .terminal
+                    .as_ref()
+                    .map(|t| t.completed_at.to_rfc3339()),
+                serde_json::to_string(&record)?,
+            ],
+        )?;
+    }
+    assert_eq!(
+        connection.query_row("SELECT COUNT(*) FROM delivery_summaries", [], |row| {
+            row.get::<_, i64>(0)
+        })?,
+        0
+    );
+    drop(connection);
+
+    let db = RuntimeDb::open_and_migrate(&db_path, &lock_path)?;
+    let page = db.conversation().summary_page(AGENT_ID, 20, None, None)?;
+    assert_eq!(page.turns.len() + page.active_turns.len(), cases.len());
+    for (case, _, expected_settled) in cases {
+        let summary = page
+            .turns
+            .iter()
+            .chain(&page.active_turns)
+            .find(|summary| summary.turn_id == format!("legacy-{case}"))
+            .expect("migrated legacy turn");
+        let stored: bool = db.connection()?.query_row(
+            "SELECT result_settled FROM conversation_turn_revisions
+             WHERE agent_id = ?1 AND turn_id = ?2",
+            params![AGENT_ID, summary.turn_id],
+            |row| row.get(0),
+        )?;
+        assert_eq!(stored, expected_settled, "{case}: durable settlement");
+        assert_eq!(summary.settled, expected_settled, "{case}: conversation");
+        if matches!(case, "result" | "failure") {
+            assert_eq!(summary.result, ResultState::Available);
+        }
+    }
+    Ok(())
+}
+
+#[test]
+fn conversation_schema_backfill_preserves_existing_unsettled_results() -> Result<()> {
+    let (_temp_dir, db_path, lock_path, db) = runtime_db()?;
+    let mut record = terminal(
+        turn("native-unsettled", 1),
+        TurnTerminalKind::Completed,
+        None,
+    );
+    let mut brief = BriefRecord::new(AGENT_ID, BriefKind::Result, "not settled", None, None);
+    brief.turn_id = Some(record.turn_id.clone());
+    brief.turn_index = Some(record.turn_index);
+    record.produced_brief_ids = vec![brief.id.clone()];
+    db.turn_records().upsert(&record)?;
+    db.evidence().append_brief(&brief)?;
+    let revision = db.connection()?.query_row(
+        "SELECT summary_revision, detail_revision FROM conversation_turn_revisions
+         WHERE agent_id = ?1 AND turn_id = ?2",
+        params![AGENT_ID, record.turn_id],
+        |row| Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?)),
+    )?;
+    db.connection()?
+        .execute("DELETE FROM schema_migrations WHERE version = 64", [])?;
+    drop(db);
+
+    let db = RuntimeDb::open_and_migrate(&db_path, &lock_path)?;
+    let page = db.conversation().summary_page(AGENT_ID, 1, None, None)?;
+    assert_eq!(page.turns[0].result, ResultState::Available);
+    assert!(!page.turns[0].settled);
+    assert_eq!(
+        db.connection()?.query_row(
+            "SELECT summary_revision, detail_revision FROM conversation_turn_revisions
+             WHERE agent_id = ?1 AND turn_id = ?2",
+            params![AGENT_ID, record.turn_id],
+            |row| Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?)),
+        )?,
+        revision
+    );
+    Ok(())
+}
+
+#[test]
 fn terminal_result_attention_matrix_is_typed() -> Result<()> {
     let (_temp_dir, _db_path, _lock_path, db) = runtime_db()?;
     let cases = [

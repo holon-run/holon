@@ -2333,6 +2333,62 @@ class DockerE2ERunnerTests(unittest.TestCase):
             self.assertIn("after_seq=10", paths[0])
             self.assertIn("after_seq=12", paths[1])
 
+    def test_tool_assertion_reads_target_after_first_event_page(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            harness = runner.CaseHarness(
+                case_id="paged-tool-assertion",
+                image="holon:test",
+                model="deepseek/deepseek-v4-flash",
+                credential_envs=[],
+                env_file=None,
+                runtime_env={},
+                evidence_root=Path(directory),
+                timeout_seconds=1,
+                keep=False,
+            )
+            harness.agent_id = "main"
+            old_events = [
+                {"type": "turn_started", "payload": {
+                    "turn_id": "old-turn", "turn_index": 1,
+                    "message_id": "old-message",
+                }},
+                *[{"type": "tool_executed", "payload": {
+                    "turn_id": "old-turn", "tool_name": "DeleteAgent",
+                    "status": "success",
+                }} for _ in range(runner.CONTEXT_EVENT_LIMIT - 1)],
+            ]
+            target_events = [
+                {"type": "turn_started", "payload": {
+                    "turn_id": "target-turn", "turn_index": 4,
+                    "message_id": "target-message",
+                }},
+                {"type": "tool_executed", "payload": {
+                    "turn_id": "target-turn", "tool_name": "DeleteAgent",
+                    "status": "success",
+                }},
+            ]
+            pages = [
+                {"events": old_events, "newest_seq": 300, "cursor_seq": 302,
+                 "has_newer": True},
+                {"events": target_events, "newest_seq": 302, "cursor_seq": 302,
+                 "has_newer": False},
+            ]
+            harness.request = Mock(side_effect=pages)
+
+            events = harness.assert_tools(
+                "repeat-delete", 3, ["DeleteAgent"], message_id="target-message",
+            )
+
+            self.assertEqual(events, [target_events[1]])
+            self.assertEqual(harness.request.call_count, 2)
+            paths = [call.args[1] for call in harness.request.call_args_list]
+            self.assertIn("after_seq=0", paths[0])
+            self.assertIn("after_seq=300", paths[1])
+            evidence = json.loads(
+                (harness.evidence / "repeat-delete-tool-check-events.json").read_text()
+            )
+            self.assertEqual(evidence["events"], old_events + target_events)
+
     def test_cleanup_fails_when_resource_still_exists(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             harness = runner.CaseHarness(

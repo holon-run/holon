@@ -5152,12 +5152,32 @@ CREATE INDEX IF NOT EXISTS idx_conversation_input_assignments_agent_turn
         } else {
             "json_extract(payload_json, '$.terminal.no_brief_reason') IS NOT NULL"
         };
+        // v0.30 persisted the terminal turn after its final brief, without a
+        // delivery summary. Require both that sealed linkage and canonical
+        // terminal evidence; a terminal or an early/ACK brief alone is not proof.
+        let legacy_result_settled = if table_exists_tx(transaction, "briefs")? {
+            "json_extract(turn_records.payload_json, '$.terminal.kind') =
+               turn_records.terminal_kind
+             AND json_type(turn_records.payload_json, '$.produced_brief_ids') = 'array'
+             AND EXISTS (
+               SELECT 1
+               FROM json_each(turn_records.payload_json, '$.produced_brief_ids') AS produced
+               JOIN briefs ON briefs.evidence_id = produced.value
+               WHERE produced.type = 'text'
+                 AND briefs.agent_id = turn_records.agent_id
+                 AND briefs.turn_id = turn_records.turn_id
+                 AND briefs.kind IN ('result', 'failure')
+             )"
+        } else {
+            "0"
+        };
         transaction.execute_batch(&format!(
             "INSERT OR IGNORE INTO conversation_turn_revisions (
                agent_id, turn_id, summary_revision, detail_revision, result_settled, updated_at
              )
              SELECT agent_id, turn_id, 1, 1,
-                    CASE WHEN {result_settled} THEN 1 ELSE 0 END,
+                    CASE WHEN ({result_settled}) OR ({legacy_result_settled})
+                         THEN 1 ELSE 0 END,
                     COALESCE(completed_at, created_at)
              FROM turn_records;
 
