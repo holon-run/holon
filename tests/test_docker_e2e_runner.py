@@ -2257,6 +2257,38 @@ class DockerE2ERunnerTests(unittest.TestCase):
             self.assertFalse(any("/briefs?" in path for path in paths))
             self.assertFalse(any("/transcript?" in path for path in paths))
 
+    def test_tool_assertion_reads_turn_beyond_first_event_page(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            harness = runner.CaseHarness(
+                case_id="late-tool-page", image="holon:test",
+                model="deepseek/deepseek-v4-flash", credential_envs=[], env_file=None,
+                runtime_env={}, evidence_root=Path(directory), timeout_seconds=1, keep=False,
+            )
+            harness.agent_id = "default"
+            first = [{"type": "old_event", "payload": {}}] * runner.CONTEXT_EVENT_LIMIT
+            pages = [
+                {"events": first, "newest_seq": 300, "has_newer": True},
+                {"events": [
+                    {"type": "turn_started", "payload": {
+                        "turn_id": "turn-after-300", "turn_index": 11,
+                        "message_id": "message-after-300"}},
+                    {"type": "tool_executed", "payload": {
+                        "turn_id": "turn-after-300", "tool_name": "DeleteAgent",
+                        "status": "success"}},
+                ], "newest_seq": 302, "has_newer": False},
+            ]
+            paths = []
+            def request(method, path, *args, **kwargs):
+                self.assertEqual(method, "GET")
+                paths.append(path)
+                return pages.pop(0)
+            harness.request = request
+            events = harness.assert_tools("repeat-delete", 10, ["DeleteAgent"],
+                                          message_id="message-after-300")
+            self.assertEqual([e["payload"]["tool_name"] for e in events], ["DeleteAgent"])
+            self.assertIn("after_seq=0", paths[0])
+            self.assertIn("after_seq=300", paths[1])
+
     def test_event_batch_pages_until_the_latest_event(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             harness = runner.CaseHarness(

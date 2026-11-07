@@ -1350,12 +1350,10 @@ class CaseHarness:
         after_seq: int | None = None,
         limit: int = CONTEXT_EVENT_LIMIT,
     ) -> list[dict[str, Any]]:
-        query = f"events?limit={limit}&order=asc"
-        if after_seq is not None:
-            query += f"&after_seq={after_seq}"
-        page = self.request("GET", self.agent_path(query))
-        write_json(self.evidence / f"{label}-events.json", page)
-        return page["events"]
+        # The per-page window must not hide later Turns in longer scenarios.
+        return self.event_batch(
+            label, after_seq=after_seq if after_seq is not None else 0, limit=limit
+        )["events"]
 
     def event_cursor(self) -> int:
         page = self.request("GET", self.agent_path("events?limit=1&order=desc"))
