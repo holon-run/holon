@@ -7,6 +7,19 @@ draft: true
 Static files used by the documentation shell. This directory is intentionally
 excluded from mdorigin-managed indexes.
 
+## Holon robot avatar
+
+`holonbot.svg` is generated from the Web Agent avatar renderer with the exact,
+case-sensitive ID `holonbot` and the `neutral` expression. Use this asset for
+brand materials, not a separately redrawn or seed-randomized version.
+
+Run `npm --prefix web-gui/app run export:brand-avatar` from the repository root
+after intentionally changing the renderer. The Web unit tests check byte-for-byte
+equality with the generated avatar. Render PNG copies from this SVG without
+changing its square canvas; it also supports circular profile-picture crops.
+Product avatars may still use runtime-driven expressions. This asset does not
+automatically replace the website logo or any external account's profile image.
+
 ## WorkItem article diagrams
 
 `workitem-abstract-flow-cover.webp` is an AI-generated editorial illustration

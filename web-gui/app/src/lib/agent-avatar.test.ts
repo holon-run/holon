@@ -1,21 +1,34 @@
 import { createHash } from "node:crypto";
+import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import { AGENT_AVATAR_VERSION, agentAvatarIndex, renderAgentAvatar, type AgentAvatarExpression } from "./agent-avatar";
 
-// Golden vectors from the reviewed V8.1 vivid generator, excluding its descriptive title.
+// Original V8 seed indices, with compact vivid artwork and neutral default eyes.
 const vectors = [
-  ["holon-product", 607, "357693e47a8fe69cb23bdadf4437a0ad96363e8fbc8ab15ae26426745125c2de"],
-  ["holon-auto-dev", 181, "65b3aaaf4babb480098cc2203206774ec7a6d7f1e653d67f05e108423346931a"],
-  ["holon-integrations", 515, "9a77f1a344fb0484ed1b43c04e83c554886d7e846d966e668204c521a7094c2b"],
-  ["bootstrap-agent", 173, "0f7988a7725274c1c7b289d4d18adc151cb0d316234e16831d50da2112c5d2a9"],
-  ["智能助手", 1016, "f550c7bd806ab36bcb1de9ed0ee07f44655c597cad0842aa6c1495df7a4d5217"],
-  ["agent-🤖", 477, "ec6ebcc01094d1eb07d0f7cc315d9bdca1907f4e71964ec880cf54bca5696fe9"],
-  ["", 1133, "923906b98f600ba04c118b7a863cc84faba48c040e2f4167e30316c660637e17"],
+  ["holon-product", 607, "da13eb4780e9f0119736872fdb912b9db5fcd1015b24fd87ea3da73cad7debe4"],
+  ["holon-auto-dev", 181, "5292e3cb8a474e235e0a41e7c41c489deffdd88ee97c8d90bc0cb76d8bc59b71"],
+  ["holon-integrations", 515, "e8298aad6a1f32194e9ba1d9c5ba941d1282f4969899cd626701979a5ecbba7d"],
+  ["bootstrap-agent", 173, "0be8c9238df7891739ded55a609bb6fc7c00a2d56d72ad553e04d62e939c923d"],
+  ["智能助手", 1016, "27184e020e3fad89d4fa323c2852011ea8d1887e332d314693f9897060de1752"],
+  ["agent-🤖", 477, "08b13a9bb9bf223eb2c1da31cac4ed5e5e06e0d503fc284d1fcfbe2fbe39e10b"],
+  ["", 1133, "04b9e88c937703dfc2142038e4375559c9e2ef74a42676d2a8fc6ba2bdc8e3c2"],
+  ["holonbot", 502, "9f07b9e5c1ca0a0e5dfc7436dc2fcb9929e0e211e20281ddb92516c28512796a"],
 ] as const;
 
-describe("fixed V8.1 Agent avatars", () => {
+describe("deterministic Agent avatars and brand artwork", () => {
   it("freezes the vivid rendering version independently of the identity seed namespace", () => {
-    expect(AGENT_AVATAR_VERSION).toBe("light-mech-1-vivid");
+    expect(AGENT_AVATAR_VERSION).toBe("light-mech-1-vivid-2");
+  });
+
+  it.each(vectors)("defaults to the same neutral expression as the UI for %s", (id) => {
+    expect(renderAgentAvatar(id)).toBe(renderAgentAvatar(id, "neutral"));
+  });
+
+  it("keeps the exported brand SVG byte-identical to the holonbot avatar", () => {
+    const brand = readFileSync(new URL("../../../../docs/website/assets/holonbot.svg", import.meta.url), "utf8");
+    expect(brand).toBe(renderAgentAvatar("holonbot"));
+    expect(brand).toContain('fill="#36cf9e"');
+    expect(renderAgentAvatar("Holonbot")).not.toBe(brand);
   });
 
   it.each(vectors)("preserves the reviewed mapping and SVG for %s", (id, index, digest) => {

@@ -10,6 +10,7 @@
     "build:e2e": "npm run build:sdk && npm run typecheck && vite build --mode e2e",
     "build:e2e:real-daemon": "npm run build:sdk && npm run typecheck && vite build --mode e2e --outDir dist-e2e",
     "preview": "vite preview --host 127.0.0.1",
+    "export:brand-avatar": "node scripts/export-brand-avatar.mjs",
     "test": "vitest run",
     "test:e2e": "playwright test",
     "test:e2e:real-daemon": "playwright test --config playwright.real-daemon.config.ts",

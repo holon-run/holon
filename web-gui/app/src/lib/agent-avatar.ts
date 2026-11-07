@@ -1,5 +1,5 @@
-// Fixed V8.1 vivid artwork. Identity mapping deliberately retains the V8 seed namespace.
-export const AGENT_AVATAR_VERSION = "light-mech-1-vivid";
+// Compact vivid artwork. Identity mapping deliberately retains the V8 seed namespace.
+export const AGENT_AVATAR_VERSION = "light-mech-1-vivid-2";
 const SEED_VERSION = "light-mech-1";
 
 export type AgentAvatarExpression = "neutral" | "focused" | "questioning" | "waiting" | "sleeping";
@@ -58,10 +58,10 @@ const shells = [
   },
   {
     head: "M40 25H60Q67 25 71 36L83 62Q89 80 72 85Q50 92 28 85Q11 80 17 62L29 36Q33 25 40 25Z",
-    side: "M16 58L22 61L19 77L12 73Q7 70 10 65Z M84 58L90 65Q93 70 88 73L81 77L78 61Z",
+    side: "M17 59H22V73H17Q13 73 13 69V63Q13 59 17 59Z M78 59H83Q87 59 87 63V69Q87 73 83 73H78Z",
     shade: "M16 71Q24 81 50 81Q76 81 84 71Q84 82 72 85Q50 92 28 85Q16 82 16 71Z",
-    face: "M40 39H60Q65 39 67 46L73 62Q77 73 66 75H34Q23 73 27 62L33 46Q35 39 40 39Z",
-    eyes: [50, 58, 10], anchor: [50, 25]
+    face: "M39 38H61Q66 38 68 45L74 62Q78 74 66 76H34Q22 74 26 62L32 45Q34 38 39 38Z",
+    eyes: [50, 57, 10], anchor: [50, 25]
   },
   {
     head: "M27 27H57V34H73L82 43V73L72 83H28L18 73V37Z",
@@ -73,6 +73,7 @@ const shells = [
 ] as const;
 
 const CORE = shells.length * palettes.length;
+// Retain the original index space, including its former expression slots.
 const TOTAL = CORE * 4 * 3;
 const INK = "#243442";
 const SCREEN = "#fffdf5";
@@ -90,12 +91,11 @@ function path(d: string, fill: string, stroke = "none", width = 3): string {
   return `<path d="${d}" fill="${fill}" stroke="${stroke}" stroke-width="${width}"/>`;
 }
 
-/** Omit the expression to retain the original static V8.1 artwork. */
-export function renderAgentAvatar(agentId: string, stateExpression?: AgentAvatarExpression): string {
+/** Neutral by default, matching the UI and exported brand artwork. */
+export function renderAgentAvatar(agentId: string, stateExpression: AgentAvatarExpression = "neutral"): string {
   const index = agentAvatarIndex(agentId);
   const shell = shells[index % shells.length];
   const [body, shade, background] = palettes[Math.floor(index / shells.length) % palettes.length];
-  const expression = Math.floor(index / CORE) % 4;
   const crown = Math.floor(index / (CORE * 4)) % 3;
   const [cx, cy] = shell.anchor;
   let art: string;
@@ -110,18 +110,7 @@ export function renderAgentAvatar(agentId: string, stateExpression?: AgentAvatar
   art += path(shell.side, shade, INK) + path(shell.head, body, INK)
     + path(shell.shade, shade) + path(shell.face, SCREEN, INK, 2.8);
   const [x, y, gap] = shell.eyes;
-  if (stateExpression !== undefined) {
-    art += `<g data-avatar-part="expression">${renderStatusEyes(stateExpression, x, y, gap)}</g>`;
-  } else if (expression === 0) {
-    art += `<rect x="${x - gap - 2.7}" y="${y - 4.5}" width="5.4" height="9" rx="2.7" fill="${INK}"/><rect x="${x + gap - 2.7}" y="${y - 4.5}" width="5.4" height="9" rx="2.7" fill="${INK}"/>`;
-  } else if (expression === 1) {
-    art += path(`M${x - gap - 4} ${y + 1}Q${x - gap} ${y - 6} ${x - gap + 4} ${y + 1} M${x + gap - 4} ${y + 1}Q${x + gap} ${y - 6} ${x + gap + 4} ${y + 1}`, "none", INK, 3.8);
-  } else if (expression === 2) {
-    art += path(`M${x - gap - 3} ${y}H${x - gap + 3} M${x + gap - 3} ${y}H${x + gap + 3}`, "none", INK, 4.5);
-  } else {
-    art += `<circle cx="${x - gap}" cy="${y - 1}" r="3.3" fill="${INK}"/>`
-      + path(`M${x + gap - 3} ${y + 1}Q${x + gap} ${y - 5} ${x + gap + 3} ${y - 1}`, "none", INK, 3.6);
-  }
+  art += `<g data-avatar-part="expression">${renderStatusEyes(stateExpression, x, y, gap)}</g>`;
   return `<svg xmlns="http://www.w3.org/2000/svg" width="100" height="100" viewBox="0 0 100 100"><rect width="100" height="100" fill="${background}"/><g stroke-linecap="round" stroke-linejoin="round">${art}</g></svg>`;
 }
 
