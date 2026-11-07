@@ -1536,6 +1536,21 @@ fn validate_admission_authority_tx(
     Ok(())
 }
 
+fn load_initialized_state(
+    connection: &Connection,
+    agent_id: &str,
+) -> Result<Option<ExecutionProtocolState>> {
+    let transaction =
+        Transaction::new_unchecked(connection, rusqlite::TransactionBehavior::Deferred)?;
+    if !partition_exists_tx(&transaction, agent_id)? {
+        transaction.commit()?;
+        return Ok(None);
+    }
+    let state = load_state_tx(&transaction, agent_id)?;
+    transaction.commit()?;
+    Ok(Some(state))
+}
+
 impl RuntimeTransitionRepository<'_> {
     /// Read historical canonical evidence without loading the execution partition.
     pub(crate) fn execution_attempt_by_id(
@@ -1581,17 +1596,18 @@ impl RuntimeTransitionRepository<'_> {
         &self,
         agent_id: &str,
     ) -> Result<Option<ExecutionProtocolState>> {
-        self.db.with_read(|connection| {
-            let transaction =
-                Transaction::new_unchecked(connection, rusqlite::TransactionBehavior::Deferred)?;
-            if !partition_exists_tx(&transaction, agent_id)? {
-                transaction.commit()?;
-                return Ok(None);
-            }
-            let state = load_state_tx(&transaction, agent_id)?;
-            transaction.commit()?;
-            Ok(Some(state))
-        })
+        self.db
+            .with_read(|connection| load_initialized_state(connection, agent_id))
+    }
+
+    pub(crate) async fn load_execution_protocol_state_if_initialized_async(
+        &self,
+        agent_id: &str,
+    ) -> Result<Option<ExecutionProtocolState>> {
+        let agent_id = agent_id.to_owned();
+        self.db
+            .with_read_async(move |connection| load_initialized_state(connection, &agent_id))
+            .await
     }
 
     pub(crate) fn commit_execution_protocol_recovery_plan_with_maintenance(
