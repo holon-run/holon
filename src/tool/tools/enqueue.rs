@@ -90,6 +90,7 @@ pub(crate) async fn execute(
     )
 }
 
+#[cfg(holon_lib_test_shard = "c")]
 #[cfg(test)]
 mod tests {
     use super::*;

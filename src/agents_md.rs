@@ -102,7 +102,7 @@ fn load_source(
     kind: AgentsMdKind,
     path: &Path,
 ) -> Result<(Option<AgentsMdSource>, AgentsMdLoadStatus)> {
-    let content = match std::fs::read_to_string(path) {
+    let content = match crate::diagnostics::io_probe::read_to_string(path) {
         Ok(content) => content,
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
             return Ok((None, AgentsMdLoadStatus::NotFound));
@@ -136,6 +136,7 @@ fn agents_md_scope_name(scope: &AgentsMdScope) -> &'static str {
     }
 }
 
+#[cfg(holon_lib_test_shard = "d")]
 #[cfg(test)]
 mod tests {
     use tempfile::tempdir;

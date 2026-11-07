@@ -32,6 +32,23 @@ conditions below are the existing contracts as of 2026-10-07.
 
 ## Gate boundaries
 
+### Real-daemon timer coverage
+
+The required `scheduler-required` profile includes
+`scheduler-timer-online-admission`: a timer is created after daemon startup,
+fires twice without a restart or injected wake, resumes exact owned waits,
+reaches the provider transport, settles both canonical attempts, and completes
+the business todos before cancellation. The oracle also checks that the
+container's start identity is unchanged. `scheduler-timer-admission-recovery`
+remains a separate opt-in restart scenario; a restart-only pass cannot prove
+that newly registered timers are observed while the daemon stays online.
+
+`make docker-e2e-validate` validates selection, transcripts, and negative
+oracles without Docker. It is not execution of either daemon scenario.
+Report the candidate revision, actual selected/executed cases, provider mode,
+and oracle artifacts separately; deterministic stub coverage is not live-model
+acceptance, a legacy-node soak, or a performance result.
+
 ### Local deterministic subset
 
 `make ci` is the local deterministic subset:

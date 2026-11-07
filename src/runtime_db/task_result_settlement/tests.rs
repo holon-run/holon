@@ -7,6 +7,7 @@ mod local_dispatch;
 mod obligation;
 mod recovery_admission;
 mod recovery_budget;
+mod recovery_observation;
 
 fn runtime_db() -> (tempfile::TempDir, RuntimeDb) {
     let dir = tempdir().unwrap();
@@ -30,7 +31,9 @@ fn pending_record(index: usize) -> TaskResultSettlementRecord {
         message_id: format!("message-{index:02}"),
         work_item_id: Some("work-a".into()),
         rejoin_generation: 1,
-        parent_turn_id: "turn-parent".into(),
+        source: crate::domain::execution_protocol::TaskRejoinSource::ParentTurn {
+            parent_turn_id: "turn-parent".into(),
+        },
         task_status: "completed".into(),
         state: TaskResultSettlementState::PersistedPending,
         activation_id: None,
@@ -74,7 +77,7 @@ fn insert_with_kind(
             detail: Some(serde_json::json!({
                 "rejoin_obligation_id": record.task_id,
                 "rejoin_generation": record.rejoin_generation,
-                "parent_turn_id": record.parent_turn_id,
+                "parent_turn_id": record.source.parent_turn_id().unwrap(),
             })),
             recovery: None,
         })

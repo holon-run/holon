@@ -10,6 +10,9 @@ async fn publish_result_with_ingress(
     ingress_turn: bool,
 ) -> String {
     let agent_id = runtime.agent_id().await.unwrap();
+    persist_completed_task_parent_fixture(runtime, "p1-mixed-parent", Some(owner_id))
+        .await
+        .unwrap();
     let detail = serde_json::json!({
         "rejoin_obligation_id": task_id,
         "rejoin_generation": 1,
@@ -79,14 +82,6 @@ async fn interrupted_result(
 ) -> (LifecycleHarness, Arc<BatchProvider>, String, TurnRecord) {
     let provider = Arc::new(BatchProvider::default());
     let mut harness = LifecycleHarness::with_provider(provider.clone());
-    // Turn creation still uses wall time. Keep test-clock terminals after it.
-    let offset = Utc::now()
-        .signed_duration_since(harness.now())
-        .to_std()
-        .unwrap();
-    harness
-        .advance(offset + std::time::Duration::from_secs(60))
-        .await;
     let runtime = harness.runtime();
     let owner = runtime
         .create_work_item(
@@ -101,6 +96,14 @@ async fn interrupted_result(
     let task_id = format!("replay-source-{}", kind.as_str());
     let message_id =
         publish_result_with_ingress(runtime, &owner.id, &task_id, kind, ingress_turn).await;
+    // Keep the historical parent before the first live dispatch.
+    let offset = Utc::now()
+        .signed_duration_since(harness.now())
+        .to_std()
+        .unwrap();
+    harness
+        .advance(offset + std::time::Duration::from_secs(60))
+        .await;
     if exact_wait {
         let outcome = runtime
             .register_wait_for_outcome(
@@ -120,7 +123,7 @@ async fn interrupted_result(
             panic!("terminal task must queue its exact waiter");
         };
         let owner = runtime.latest_work_item(&owner.id).await.unwrap().unwrap();
-        seed_waiting_work_execution(runtime.storage(), &owner, &wait_condition_id);
+        seed_live_waiting_work_execution(runtime, &owner, &wait_condition_id).await;
     }
     let anchor = start_without_provider(runtime).await;
     let activation = runtime
@@ -131,11 +134,21 @@ async fn interrupted_result(
         .unwrap()
         .activation_id
         .unwrap();
+    let now = runtime.now();
     runtime
-        .runtime_db()
-        .task_result_settlements()
-        .admit_message("default", &message_id, &activation, runtime.now())
+        .apply_task_result_operation((&message_id, &activation, now), || {
+            crate::runtime_db::transitions::TaskResultOperation::AdmitMessage {
+                message_id: message_id.clone(),
+                activation_id: activation.clone(),
+                projection: None,
+                at: now,
+            }
+        })
+        .await
         .unwrap()
+        .record()
+        .unwrap()
+        .as_ref()
         .unwrap();
     if snapshot {
         runtime
@@ -173,7 +186,11 @@ async fn interrupted_result(
         snapshot.then(|| source.turn_id.clone())
     );
     assert!(provider.requests.lock().await.is_empty());
-    harness.restart();
+    finish_claimed_test_run(runtime).await;
+    let (recovered_harness, startup) = Box::pin(harness.recover_daemon_startup()).await;
+    harness = recovered_harness;
+    assert_eq!(startup.interrupted_execution_attempts, 1);
+    assert_eq!(startup.interrupted_turns, 1);
     harness
         .runtime()
         .recover_scheduler_bootstrap_claims()
@@ -279,6 +296,12 @@ async fn check_frozen_companion_recovery(with_follower: bool) {
         Priority::Next,
     )
     .await;
+    // Delivery uses wall time; the fixed cutoff follows both accepted messages.
+    let offset = Utc::now()
+        .signed_duration_since(harness.now())
+        .to_std()
+        .unwrap();
+    harness.advance(offset).await;
     let anchor = start_without_provider(runtime).await;
     assert_eq!(anchor.id, prepared.message.id);
     let predecessor = runtime
@@ -342,18 +365,52 @@ async fn check_frozen_companion_recovery(with_follower: bool) {
     }
     // Seed the crash window after the notification was drained but before
     // its separately admitted source was delivered to the model.
-    let mut notification = runtime
-        .runtime_db()
-        .queue_entries()
-        .latest(&companion_id)
-        .unwrap()
-        .unwrap();
-    notification.status = QueueEntryStatus::Processed;
-    runtime.storage().append_queue_entry(&notification).unwrap();
-    let startup = runtime
-        .runtime_db()
-        .recover_interrupted_runtime_state_at_startup()
-        .unwrap();
+    let commit = {
+        use crate::runtime_db::transitions::{
+            AgentStateMutation, PreparedQueueTransition, QueueMutation, QueueOperation,
+            QueueTransitionCommand,
+        };
+        let mut mutation = runtime.begin_mutation().await.unwrap();
+        let mut notification = runtime
+            .runtime_db()
+            .queue_entries()
+            .latest(&companion_id)
+            .unwrap()
+            .unwrap();
+        mutation
+            .queue
+            .pop_next_matching(|queued| queued.id == companion_id);
+        mutation.state.pending = mutation.queue.len();
+        notification.status = QueueEntryStatus::Processed;
+        notification.updated_at = runtime.now().max(notification.updated_at);
+        let prepared = PreparedQueueTransition::new(QueueTransitionCommand {
+            agent_id: notification.agent_id.clone(),
+            operation: QueueOperation::Settle,
+            mutation: QueueMutation::Upsert(notification),
+            scheduler_claim_work_item: None,
+            agent_state: Some(AgentStateMutation {
+                expected: Some(Box::new(mutation.last_persisted_state.clone())),
+                record: Box::new(mutation.state.clone()),
+            }),
+            message_evidence: Vec::new(),
+            transcript_entries: Vec::new(),
+            turn_record: None,
+            audit_events: Vec::new(),
+            notify_scheduler: false,
+            fault: None,
+            brief_evidence: Vec::new(),
+        });
+        let commit = mutation
+            .commit_prepared_queue(crate::ids::audit_event_id(), prepared)
+            .await
+            .unwrap();
+        assert!(commit.applied);
+        commit
+    };
+    runtime.apply_transition_commit(commit).await;
+    finish_claimed_test_run(runtime).await;
+    let (recovered_harness, startup) = Box::pin(harness.recover_daemon_startup()).await;
+    harness = recovered_harness;
     assert_eq!(startup.interrupted_execution_attempts, 1);
     assert_eq!(startup.interrupted_turns, 1);
     harness.advance(std::time::Duration::from_secs(60)).await;
@@ -591,8 +648,32 @@ async fn issue_3484_consumed_task_result_keeps_backlog_live_across_restart() {
             .await;
             runner.abort();
             let _ = runner.await;
-            drained.expect("a consumed task notification must not strand queued input");
+            assert!(
+                drained.is_ok(),
+                "a consumed task notification must not strand queued input: restart={restart}, \
+                 kind={kind:?}, state={:?}, queue={:?}, runtime_errors={:?}",
+                runtime.agent_state().await.unwrap(),
+                runtime.storage().latest_queue_entries().unwrap(),
+                runtime
+                    .storage()
+                    .read_recent_events(128)
+                    .unwrap()
+                    .into_iter()
+                    .filter(|event| event.kind == "runtime_error")
+                    .map(|event| event.data)
+                    .collect::<Vec<_>>(),
+            );
             assert_eq!(provider.requests.lock().await.len(), 2);
+            let late_turn = runtime
+                .storage()
+                .read_recent_turns(16)
+                .unwrap()
+                .into_iter()
+                .find(|turn| turn.input_message_ids.contains(&late.id))
+                .expect("consumed notification must have its own actual reducer Turn");
+            assert_ne!(late_turn.turn_id, delivered.turn_id);
+            assert!(late_turn.turn_index > delivered.turn_index);
+            assert!(late_turn.replay.is_none());
             assert_eq!(
                 runtime
                     .storage()
@@ -688,6 +769,11 @@ async fn p1_issue_3669_queued_exact_recovery_quarantines_invalid_attachment() {
             .read_turn_by_id(&source.turn_id)
             .unwrap()
             .unwrap();
+        let parent = runtime
+            .storage()
+            .read_turn_by_id("p1-mixed-parent")
+            .unwrap()
+            .unwrap();
         match corruption {
             "owner" => source.owner = Some(TurnOwner::Command),
             "agent" => source.agent_id = "foreign-agent".into(),
@@ -732,7 +818,7 @@ async fn p1_issue_3669_queued_exact_recovery_quarantines_invalid_attachment() {
         assert!(provider.requests.lock().await.is_empty());
         assert_eq!(
             runtime.storage().read_recent_turns(2).unwrap(),
-            vec![source]
+            vec![parent, source]
         );
         assert_eq!(
             runtime
@@ -824,10 +910,18 @@ async fn assert_exact_wait_restart(kind: TaskKind, ingress_turn: bool, snapshot:
     );
     process_result_batch(runtime, scheduled).await;
     let recovered = runtime.storage().read_recent_turns(1).unwrap().remove(0);
-    assert_eq!(
-        recovered.replay.map(|edge| edge.source_turn_id),
-        expected_source
-    );
+    // A real StartedDispatch keeps its actual assignment even without a batch
+    // or ingress hint. Host startup has now closed that exact original Turn.
+    let original = runtime
+        .storage()
+        .read_turn_by_id(&source.turn_id)
+        .unwrap()
+        .unwrap();
+    let replay = recovered.replay.as_ref().unwrap();
+    assert_eq!(replay.source_turn_id, source.turn_id,);
+    assert_eq!(replay.source_message_id, message_id);
+    assert_eq!(replay.prior_terminal, original.terminal);
+    assert_eq!(replay.reason, "interrupted_queue_claim_reentry",);
     if snapshot {
         assert_eq!(
             recovered.idle_input_batch.unwrap().items,

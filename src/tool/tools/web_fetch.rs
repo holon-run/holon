@@ -54,6 +54,7 @@ pub(crate) async fn execute(
     serialize_success(NAME, &result)
 }
 
+#[cfg(holon_lib_test_shard = "c")]
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -4,7 +4,7 @@ use anyhow::{ensure, Context, Result};
 use chrono::Utc;
 use holon::{
     diagnostics::performance_snapshot,
-    runtime_db::RuntimeDb,
+    runtime_db::{cold_fixture, RuntimeDb},
     storage::AppStorage,
     types::{
         AgentState, WaitConditionKind, WaitConditionRecord, WaitConditionStatus, WakeSource,
@@ -38,9 +38,9 @@ impl Fixture {
             root.path().join("runtime.lock"),
         )?;
         let storage = AppStorage::new_for_agent(root.path(), AGENT, db.clone())?;
-        storage.write_agent(&AgentState::new(AGENT))?;
+        storage.write_agent_for_fixture(&AgentState::new(AGENT))?;
         let other = AppStorage::new_for_agent(root.path(), OTHER, db.clone())?;
-        other.write_agent(&AgentState::new(OTHER))?;
+        other.write_agent_for_fixture(&AgentState::new(OTHER))?;
         for (store, agent, count) in [
             (&storage, AGENT, own_completed),
             (&other, OTHER, other_completed),
@@ -220,29 +220,7 @@ fn queue_case(
     let rows = fixture.verify_rows(own, other, waits)?;
     let _held_connection = fixture.db.connection()?;
     verify_queue(&fixture.storage, projected_item_count(own))?;
-    let warmup_barrier = Barrier::new(workers);
-    thread::scope(|scope| -> Result<()> {
-        let handles: Vec<_> = (0..workers)
-            .map(|_| {
-                let db = &fixture.db;
-                let storage = &fixture.storage;
-                let barrier = &warmup_barrier;
-                scope.spawn(move || -> Result<()> {
-                    let connection = db.connection()?;
-                    barrier.wait();
-                    verify_queue(storage, projected_item_count(own))?;
-                    drop(connection);
-                    Ok(())
-                })
-            })
-            .collect();
-        for handle in handles {
-            handle
-                .join()
-                .map_err(|_| anyhow::anyhow!("warmup reader panicked"))??;
-        }
-        Ok(())
-    })?;
+    cold_fixture::warm_readers(&fixture.db)?;
     let before_fds = fd_count();
     let before = performance_snapshot();
     let barrier = Barrier::new(workers);

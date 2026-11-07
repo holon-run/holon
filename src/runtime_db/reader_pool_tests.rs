@@ -26,6 +26,26 @@ fn read_one(db: &RuntimeDb) -> Result<i64> {
     db.with_read(|connection| Ok(connection.query_row("SELECT 1", [], |row| row.get(0))?))
 }
 
+#[tokio::test(start_paused = true)]
+async fn advanced_runtime_clock_preserves_original_reader_acquisition_budget() -> Result<()> {
+    let (_directory, db) = fixture(1)?;
+    tokio::time::advance(Duration::from_secs(60)).await;
+    let scope = RuntimeDbReadScope::new(Instant::now() + Duration::from_millis(100));
+    let scoped = db.with_read_scope(scope);
+    let value: i64 = scoped
+        .with_read_async(|connection| Ok(connection.query_row("SELECT 1", [], |row| row.get(0))?))
+        .await?;
+    assert_eq!(value, 1);
+    let expired = db.with_read_scope(RuntimeDbReadScope::new(Instant::now()));
+    assert!(expired
+        .with_read_async(|_| Ok(()))
+        .await
+        .unwrap_err()
+        .is::<RuntimeDbRetryableError>());
+    assert_eq!(read_one(&db)?, 1);
+    Ok(())
+}
+
 #[test]
 fn scoped_checkpoint_needs_no_reader_or_sql() -> Result<()> {
     let (_directory, db) = fixture(1)?;
@@ -569,12 +589,6 @@ fn migrated_repository_saturation_never_becomes_missing_or_success() -> Result<(
                 .map(drop),
         ),
         (
-            "authority",
-            db.transitions()
-                .load_execution_authority_fences("missing")
-                .map(drop),
-        ),
-        (
             "outbox",
             db.runtime_index_outbox()
                 .produced_watermark_for_agent("missing")
@@ -611,6 +625,16 @@ fn migrated_repository_saturation_never_becomes_missing_or_success() -> Result<(
         ),
         ("metadata", db.runtime_id().map(drop)),
     ];
+    // Named authority preparation has its own FIFO writer read, not a pooled
+    // repository fallback. It must still reject missing canonical authority.
+    let authority_error = db
+        .transitions()
+        .load_execution_authority_fences("missing")
+        .unwrap_err();
+    assert_eq!(
+        authority_error.to_string(),
+        "execution admission requires durable agent control state"
+    );
     release_tx.send(())?;
     worker.join().expect("reader thread panicked")?;
     for (name, result) in reads {
@@ -1003,7 +1027,7 @@ fn protection_loss_rejects_inflight_result_and_all_future_read_closures() -> Res
 async fn list_sync_and_async_share_committed_fact_contract() -> Result<()> {
     let (_directory, db) = fixture(1)?;
     db.agent_states()
-        .upsert(&crate::types::AgentState::new("pool-agent"))?;
+        .upsert_for_fixture(&crate::types::AgentState::new("pool-agent"))?;
     let ids = vec!["pool-agent".to_owned(), "absent-agent".to_owned()];
     let synchronous = db.agent_list_posture_rows(&ids)?;
     let asynchronous = db.agent_list_posture_rows_async(ids).await?;

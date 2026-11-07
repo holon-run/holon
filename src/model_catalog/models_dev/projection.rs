@@ -295,6 +295,7 @@ fn project_reasoning_effort_options(model_ref: &ModelRef, model: &ModelsDevModel
         .collect()
 }
 
+#[cfg(holon_lib_test_shard = "c")]
 #[cfg(test)]
 mod tests {
     use super::*;

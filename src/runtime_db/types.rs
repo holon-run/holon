@@ -8,14 +8,14 @@ use crate::types::{
 };
 use chrono::{DateTime, Utc};
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum TimerWakeStatus {
     Pending,
     Incorporated,
     Cancelled,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct TimerWakeRecord {
     pub timer_id: String,
     pub message_id: String,
@@ -27,7 +27,7 @@ pub struct TimerWakeRecord {
     pub cancelled_at: Option<DateTime<Utc>>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize)]
 pub struct TimerFire {
     pub expected: TimerRecord,
     pub record: TimerRecord,
@@ -36,7 +36,7 @@ pub struct TimerFire {
     pub agent_state: (AgentState, AgentState),
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize)]
 pub struct TimerCancel {
     pub expected: TimerRecord,
     pub record: TimerRecord,
@@ -44,20 +44,36 @@ pub struct TimerCancel {
     pub cancelled_at: DateTime<Utc>,
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct TimerFireResult {
     pub advanced: bool,
     pub wake_created: bool,
     pub message: Option<MessageEnvelope>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct TimerCancelResult {
     pub cancelled: bool,
     pub dropped_message_id: Option<String>,
+    #[serde(default)]
     pub cancelled_wait_condition_ids: Vec<String>,
+    #[serde(default)]
+    pub blocked_work_item_ids: Vec<String>,
+    // Delivery effects are transient; the durable receipt stores only the outcome.
+    #[serde(skip)]
     pub(crate) effects: PostCommitEffects,
 }
+
+impl PartialEq for TimerCancelResult {
+    fn eq(&self, other: &Self) -> bool {
+        self.cancelled == other.cancelled
+            && self.dropped_message_id == other.dropped_message_id
+            && self.cancelled_wait_condition_ids == other.cancelled_wait_condition_ids
+            && self.blocked_work_item_ids == other.blocked_work_item_ids
+    }
+}
+
+impl Eq for TimerCancelResult {}
 
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct TimerWakeRecoveryResult {
@@ -182,4 +198,13 @@ pub struct OperatorTransportBindingRepository<'a> {
 
 pub struct OperatorDeliveryRepository<'a> {
     pub(crate) db: &'a RuntimeDb,
+}
+
+/// This observation grants no Scheduling authority; original writer proof is separate.
+#[cfg(test)]
+#[derive(Debug)]
+pub(crate) struct PendingTimerWakeObservation {
+    pub record: Option<TimerWakeRecord>,
+    pub(in crate::runtime_db) _material:
+        std::sync::Arc<crate::runtime::input_evidence_budget::BudgetViewGuard>,
 }

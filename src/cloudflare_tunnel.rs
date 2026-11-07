@@ -438,6 +438,7 @@ fn observe_line(line: &[u8], connections: &mut [bool; 256], status: &watch::Send
     }
 }
 
+#[cfg(holon_lib_test_shard = "c")]
 #[cfg(all(test, unix))]
 mod tests {
     use super::*;

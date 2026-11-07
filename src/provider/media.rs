@@ -234,6 +234,7 @@ pub(crate) fn resolved_media_capabilities(
     }
 }
 
+#[cfg(holon_lib_test_shard = "c")]
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -125,6 +125,7 @@ fn waiting_reason_matches(
     )
 }
 
+#[cfg(holon_lib_test_shard = "a")]
 #[cfg(test)]
 mod tests {
     use super::*;

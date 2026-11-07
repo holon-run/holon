@@ -134,6 +134,7 @@ fn invalid_source_ref_error(source_ref: &str, validation_error: &'static str) ->
     )
 }
 
+#[cfg(holon_lib_test_shard = "c")]
 #[cfg(test)]
 mod tests {
     use std::sync::Arc;

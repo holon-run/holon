@@ -129,12 +129,18 @@ BEARER_SECRET_PATTERN = re.compile(
 )
 
 
-def redact_evidence(value: Any) -> Any:
+def redact_evidence(value: Any, secrets_to_redact: list[str] | None = None) -> Any:
     if isinstance(value, dict):
-        return {key: redact_evidence(item) for key, item in value.items()}
+        return {
+            key: redact_evidence(item, secrets_to_redact)
+            for key, item in value.items()
+        }
     if isinstance(value, list):
-        return [redact_evidence(item) for item in value]
+        return [redact_evidence(item, secrets_to_redact) for item in value]
     if isinstance(value, str):
+        for secret in secrets_to_redact or []:
+            if len(secret) >= 8:
+                value = value.replace(secret, "<redacted>")
         return CALLBACK_CAPABILITY_PATTERN.sub(r"\1<redacted>", value)
     return value
 
@@ -1344,12 +1350,10 @@ class CaseHarness:
         after_seq: int | None = None,
         limit: int = CONTEXT_EVENT_LIMIT,
     ) -> list[dict[str, Any]]:
-        query = f"events?limit={limit}&order=asc"
-        if after_seq is not None:
-            query += f"&after_seq={after_seq}"
-        page = self.request("GET", self.agent_path(query))
-        write_json(self.evidence / f"{label}-events.json", page)
-        return page["events"]
+        # The per-page window must not hide later Turns in longer scenarios.
+        return self.event_batch(
+            label, after_seq=after_seq if after_seq is not None else 0, limit=limit
+        )["events"]
 
     def event_cursor(self) -> int:
         page = self.request("GET", self.agent_path("events?limit=1&order=desc"))
@@ -3023,6 +3027,96 @@ def run_runtime_agent_lifecycle_case(
     harness.agent_id = default_agent_id
 
 
+def require_upgrade_history(
+    harness: CaseHarness,
+    label: str,
+    expected_turns: dict[str, dict[str, str]],
+) -> dict[str, Any]:
+    """Read every old turn through public cursors and resolve its durable Result."""
+    cursor: str | None = None
+    cursors: set[str] = set()
+    turn_ids: set[str] = set()
+    message_ids: set[str] = set()
+    brief_ids: set[str] = set()
+    old_turns: dict[str, Any] = {}
+    for page_index in range(100):
+        query = "conversation?limit=2"
+        if cursor is not None:
+            query += "&before=" + urllib.parse.quote(cursor, safe="")
+        page = harness.request("GET", harness.agent_path(query))
+        write_json(harness.evidence / f"{label}-page-{page_index}.json", page)
+        require(not page.get("active_turns"), f"{label} has unsettled turns: {page}")
+        for turn in page["turns"]:
+            turn_id = turn["turn_id"]
+            require(turn_id not in turn_ids, f"{label} repeated turn {turn_id}")
+            turn_ids.add(turn_id)
+            inputs = [item["message_id"] for item in turn["inputs"]]
+            results = turn["brief_ids"]
+            require(
+                len(set(inputs)) == len(inputs)
+                and not message_ids.intersection(inputs)
+                and len(set(results)) == len(results)
+                and not brief_ids.intersection(results),
+                f"{label} repeated message or brief IDs: {turn}",
+            )
+            message_ids.update(inputs)
+            brief_ids.update(results)
+            expected = expected_turns.get(turn_id)
+            if expected is not None:
+                require(
+                    turn["settled"] and expected["message_id"] in inputs and results,
+                    f"{label} lost a settled old input or Result: {turn}",
+                )
+                result_texts = [
+                    harness.brief(brief_id, f"{label}-{page_index}-{index}").get("text", "")
+                    for index, brief_id in enumerate(results)
+                ]
+                require(
+                    any(expected["marker"] in text for text in result_texts),
+                    f"{label} cannot read old Result {expected['marker']}: {result_texts}",
+                )
+                old_turns[turn_id] = {
+                    "message_id": expected["message_id"],
+                    "brief_ids": sorted(results),
+                    "marker": expected["marker"],
+                }
+        coverage = page["coverage"]
+        next_cursor = page.get("next_before_cursor")
+        if coverage["reaches_oldest"]:
+            require(
+                not coverage["has_older"] and next_cursor is None,
+                f"{label} oldest coverage contradicts its cursor: {page}",
+            )
+            break
+        require(
+            coverage["has_older"]
+            and isinstance(next_cursor, str)
+            and next_cursor
+            and next_cursor not in cursors,
+            f"{label} missing or repeated history cursor: {page}",
+        )
+        cursors.add(next_cursor)
+        cursor = next_cursor
+    else:
+        raise AssertionError(f"{label} did not reach oldest history in 100 pages")
+    require(
+        page_index >= 2 and set(old_turns) == set(expected_turns),
+        f"{label} omitted old history: pages={page_index + 1}, "
+        f"missing={set(expected_turns) - set(old_turns)}",
+    )
+    report = {"pages": page_index + 1, "old_turns": old_turns, "reaches_oldest": True}
+    write_json(harness.evidence / f"{label}-history.json", report)
+    return report
+
+
+def run_runtime_shared_credential_delete_case(
+    harness: CaseHarness, case: dict[str, Any]
+) -> None:
+    from .shared_credential_delete import run_case
+
+    run_case(harness, case)
+
+
 def run_runtime_upgrade_previous_release_case(
     harness: CaseHarness, case: dict[str, Any]
 ) -> None:
@@ -3054,10 +3148,20 @@ def run_runtime_upgrade_previous_release_case(
     )
     harness.agent_id = legacy_agent_id
     harness.wait_default_bootstrap_turn_settled()
-    harness.prompt(
-        "upgrade-v030-old",
-        case["phases"][0]["prompt"].format(marker=old_marker),
-    )
+    expected_turns: dict[str, dict[str, str]] = {}
+    for index in range(5):
+        marker = f"{old_marker}{index:02x}"
+        label = f"upgrade-v030-old-{index}"
+        harness.prompt(label, case["phases"][0]["prompt"].format(marker=marker))
+        scope = harness.prompt_scope(label)
+        require(
+            scope["turn_id"] not in expected_turns,
+            f"previous release reused an old turn: {scope}",
+        )
+        expected_turns[scope["turn_id"]] = {
+            "message_id": scope["message_id"],
+            "marker": marker,
+        }
     old_snapshot = harness.upgrade_db_snapshot("upgrade-v030-old", old_marker)
     require(
         old_snapshot["integrity_check"] == "ok",
@@ -3068,6 +3172,11 @@ def run_runtime_upgrade_previous_release_case(
         old_snapshot["messages"] and old_snapshot["briefs"],
         f"previous release did not persist the marker: {old_snapshot}",
     )
+    for expected in expected_turns.values():
+        require(
+            any(expected["marker"] in row["payload_json"] for row in old_snapshot["briefs"]),
+            f"previous release did not persist Result {expected['marker']}",
+        )
     old_agent_ids = set(old_snapshot["agent_ids"])
     old_message_ids = {row["message_id"] for row in old_snapshot["messages"]}
     old_brief_ids = {row["evidence_id"] for row in old_snapshot["briefs"]}
@@ -3104,6 +3213,9 @@ def run_runtime_upgrade_previous_release_case(
         and old_brief_ids.issubset({row["evidence_id"] for row in migrated["briefs"]}),
         f"release data was not preserved: old={old_snapshot}, migrated={migrated}",
     )
+    # start() selects the bootstrap agent; history belongs to the legacy agent.
+    harness.agent_id = legacy_agent_id
+    warm_history = require_upgrade_history(harness, "upgrade-v030-migrated", expected_turns)
 
     harness.stop()
     # Releases at or after the relation-write cutover (#2825, first shipped
@@ -3205,6 +3317,11 @@ def run_runtime_upgrade_previous_release_case(
 
     harness.start()
     harness.agent_id = legacy_agent_id
+    cold_history = require_upgrade_history(harness, "upgrade-v030-cold", expected_turns)
+    require(
+        cold_history["old_turns"] == warm_history["old_turns"],
+        f"old history identities changed after cold restart: {cold_history}",
+    )
     before_turn = int(
         harness.state("upgrade-v030-before-new")["agent"]["agent"]["turn_index"]
     )
@@ -4050,6 +4167,18 @@ def require_provider_retry_recovery(
         and (row.get("owner_id") == work_item_id
              or row.get("trigger_message_id") in messages)
     ]
+    # ExecutionAttempt.turn_id is only a preallocated hint copied from the
+    # source message; runtime-owned recovery envelopes carry none. The
+    # authoritative completion link is the Turn that consumed the exact
+    # parked source with the original owner.
+    completing = [
+        row for row in turns
+        if row.get("trigger_message_id") == parked["id"]
+        and parked["id"] in (
+            json.loads(row.get("payload_json") or "{}").get("input_message_ids")
+            or []
+        )
+    ]
     require(
         len(turns) == 2
         and {row["trigger_message_id"] for row in turns} == set(messages)
@@ -4057,11 +4186,9 @@ def require_provider_retry_recovery(
             row.get("owner_kind") == "work_item"
             and row.get("owner_id") == work_item_id for row in turns
         )
-        and any(
-            row["turn_id"] == recovered[0].get("turn_id")
-            and row["trigger_message_id"] == parked["id"]
-            and row["terminal_kind"] == "completed" for row in turns
-        ),
+        and len(completing) == 1
+        and completing[0]["terminal_kind"] == "completed"
+        and recovered[0].get("turn_id") in (None, completing[0]["turn_id"]),
         f"recovery did not complete the exact parked source with its owner: {turns}",
     )
     require(
@@ -4074,7 +4201,7 @@ def require_provider_retry_recovery(
         ],
         "provider recovery emitted a runtime_error",
     )
-    return recovered[0]["turn_id"]
+    return completing[0]["turn_id"]
 
 
 def run_scheduler_task_wait_resume_case(
@@ -4385,11 +4512,28 @@ def run_scheduler_provider_failure_retry_case(
         parking_events = [
             event for event in events
             if event["type"] == "provider_queue_parked"
-            and event["payload"].get("message_id") in target_message_ids
             and event["payload"].get("reason") == "chain_cooling"
         ]
         if parking_events:
-            parked_message_id = parking_events[0]["payload"]["message_id"]
+            # Runtime-owned recoveries do not emit message_admitted. Resolve
+            # their owner and original source from the persisted envelope.
+            failed = harness.runtime_db_snapshot("provider-retry-failed")
+            messages = {
+                row["message_id"]: row for row in failed["messages"]
+                if row["agent_id"] == harness.agent_id
+                and row.get("work_item_id") == work_item_id
+            }
+            for event in parking_events:
+                message_id = event["payload"].get("message_id")
+                row = messages.get(message_id)
+                if row is None:
+                    continue
+                message = json.loads(row["payload_json"])
+                recovery = (message.get("metadata") or {}).get("provider_recovery") or {}
+                if recovery.get("root_message_id") in target_message_ids:
+                    parked_message_id = message_id
+                    break
+        if parked_message_id is not None:
             break
         time.sleep(0.1)
     require(
@@ -4399,7 +4543,6 @@ def run_scheduler_provider_failure_retry_case(
     )
     # Observe the first cooldown before shutdown. Agent stop would abort the
     # exact queued source whose restart recovery this case must prove.
-    failed = harness.runtime_db_snapshot("provider-retry-failed")
     parking = require_provider_retry_parking(
         failed, agent_id=harness.agent_id,
         work_item_id=work_item_id,
@@ -6369,7 +6512,10 @@ def run_live_input_batch_case(harness: CaseHarness, case: dict[str, Any]) -> Non
     marker = secrets.token_hex(4)
     sender = copy.copy(harness)
     sender.agent_id = f"batch-sender-{marker}"
-    harness.request("POST", sender.agent_path("create", control=True), {})
+    harness.request(
+        "POST", sender.agent_path("create", control=True), {},
+        expected_status=(200, 202),
+    )
     sender.wait_default_bootstrap_turn_settled()
     gates = [
         harness.workspace_parent / f".{stage}-{marker}"
@@ -6478,9 +6624,18 @@ def run_scheduler_timer_admission_recovery_case(
     run_case(harness, case)
 
 
+def run_scheduler_timer_online_admission_case(
+    harness: CaseHarness, case: dict[str, Any]
+) -> None:
+    from .timer_admission import run_case
+
+    run_case(harness, case, restart_before_first_dispatch=False)
+
+
 CASE_RUNNERS = {
     "runtime-auth-model-delivery": run_runtime_case,
     "runtime-agent-lifecycle": run_runtime_agent_lifecycle_case,
+    "runtime-shared-credential-delete": run_runtime_shared_credential_delete_case,
     "runtime-upgrade-v030": run_runtime_upgrade_previous_release_case,
     "runtime-upgrade-interrupted-schema47": (
         run_runtime_upgrade_interrupted_schema47_case
@@ -6503,6 +6658,7 @@ CASE_RUNNERS = {
     "scheduler-spawn-agent-supervision": run_scheduler_spawn_agent_supervision_case,
     "scheduler-checkpoint-replay": run_scheduler_checkpoint_replay_case,
     "scheduler-timer-admission-recovery": run_scheduler_timer_admission_recovery_case,
+    "scheduler-timer-online-admission": run_scheduler_timer_online_admission_case,
     "live-command-output-reentry": run_live_command_observation_case,
     "live-input-batch-safe-point": run_live_input_batch_case,
 }
@@ -7458,7 +7614,9 @@ def main(argv: list[str] | None = None) -> int:
             print(f"PASS {case_id}")
         except Exception as error:
             status = "fail"
-            error_text = f"{type(error).__name__}: {error}"
+            error_text = redact_evidence(
+                f"{type(error).__name__}: {error}", secret_values + control_tokens
+            )
             if isinstance(error, TimeoutError):
                 failure_kind = "case_timeout"
             (harness.evidence / "failure.txt").write_text(error_text + "\n")
@@ -7469,8 +7627,9 @@ def main(argv: list[str] | None = None) -> int:
             try:
                 harness.runtime_db_snapshot("failure-final")
             except Exception as snapshot_error:
-                evidence_collection_error = (
-                    f"{type(snapshot_error).__name__}: {snapshot_error}"
+                evidence_collection_error = redact_evidence(
+                    f"{type(snapshot_error).__name__}: {snapshot_error}",
+                    secret_values + control_tokens,
                 )
                 write_json(
                     harness.evidence / "failure-evidence-collection.json",
@@ -7483,10 +7642,12 @@ def main(argv: list[str] | None = None) -> int:
                 harness.capture_logs()
             except Exception:
                 pass
-            print(f"FAIL {case_id}: {error}", file=sys.stderr)
+            print(f"FAIL {case_id}: {error_text}", file=sys.stderr)
         finally:
             harness.keep = keep_on_failure and status == "fail"
-            cleanup_result = harness.cleanup()
+            cleanup_result = redact_evidence(
+                harness.cleanup(), secret_values + control_tokens
+            )
             if cleanup_result["status"] == "fail":
                 status = "fail"
                 cleanup_error = "; ".join(cleanup_result["errors"])

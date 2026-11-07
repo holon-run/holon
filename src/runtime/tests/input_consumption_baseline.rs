@@ -24,8 +24,10 @@ async fn reply_wait_terminal_result_preaccumulation_baseline() {
 #[async_trait]
 impl AgentProvider for BaselineProvider {
     async fn complete_turn(&self, request: ProviderTurnRequest) -> Result<ProviderTurnResponse> {
+        let material = request.material.clone();
         self.requests.lock().await.push(request);
         Ok(ProviderTurnResponse {
+            material,
             blocks: vec![ModelBlock::Text {
                 text: "baseline fixture response".into(),
             }],

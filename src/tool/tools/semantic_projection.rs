@@ -396,6 +396,7 @@ pub(crate) fn project(
     None
 }
 
+#[cfg(holon_lib_test_shard = "c")]
 #[cfg(test)]
 mod tests {
     use super::*;

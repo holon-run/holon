@@ -11,6 +11,7 @@ CALLBACK_CAPABILITY_PATTERN = re.compile(
 )
 SCENARIOS = (
     "runtime-agent-lifecycle",
+    "runtime-shared-credential-delete",
     "runtime-upgrade-v030",
     "runtime-upgrade-interrupted-schema47",
     "scheduler-task-wait",
@@ -79,6 +80,10 @@ class Scenario:
         self.interrupted_schema47_kinds: set[str] = set()
         self.timer_ids: list[str] = []
         self.timer_dispatch_requests: list[dict[str, Any]] = []
+        self.shared_delete_operations: dict[str, dict[str, Any]] = {}
+        self.shared_delete_children: set[str] = set()
+        self.shared_delete_pending: dict[str, str] = {}
+        self.upgrade_markers_seen: set[str] = set()
 
     def observe(self, request: dict[str, Any]) -> str:
         raw = json.dumps(request, ensure_ascii=False)
@@ -299,15 +304,27 @@ class Scenario:
                     "resp_agent_bootstrap_intro",
                 )
             if self.name == "runtime-upgrade-v030":
-                # Serialized history carries the earlier phase marker, so the
-                # current prompt's marker is the last occurrence in the payload.
-                markers = re.findall(r"UPGRADE-V030-(?:OLD|NEW)-[0-9a-f]+", raw)
-                if markers and self.phase < self.expected_phase():
+                # History must never consume a phase intended for a new prompt.
+                markers = re.findall(
+                    r"UPGRADE-V030-(?:OLD|NEW)-[0-9a-f]+", current_input
+                )
+                if (
+                    markers
+                    and markers[-1] not in self.upgrade_markers_seen
+                    and self.phase < self.expected_phase()
+                ):
+                    self.upgrade_markers_seen.add(markers[-1])
                     self.phase += 1
                     return 200, response(
                         [text_item(markers[-1])],
                         f"resp_runtime_upgrade_v030_{self.phase}",
                     )
+                self.extra_requests += 1
+                return 409, {
+                    "error": {"type": "transcript_exhausted", "message": str(self.phase)}
+                }
+            if self.name == "runtime-shared-credential-delete":
+                return self.shared_credential_delete(request, current_input)
             if self.name == "runtime-agent-lifecycle":
                 markers = re.findall(
                     r"AGENT-LIFECYCLE-(?:BEFORE|AFTER)-[0-9a-f]+",
@@ -1189,10 +1206,91 @@ class Scenario:
             "error": {"type": "transcript_exhausted", "message": str(self.phase)}
         }
 
+    def shared_credential_delete(
+        self, request: dict[str, Any], current_input: str,
+    ) -> tuple[int, dict[str, Any]]:
+        """Route concurrent children by current input, never serialized history."""
+        child = re.search(r"SHARED-DELETE-CHILD-(?:target|sibling)-[0-9a-f]+", current_input)
+        marker = re.search(r"SHARED-DELETE-RESULT-[A-Za-z0-9-]+", current_input)
+        if child and marker is None:
+            if child[0] in self.shared_delete_children:
+                self.extra_requests += 1
+                return 409, {"error": {"type": "duplicate_child_request"}}
+            self.shared_delete_children.add(child[0])
+            self.phase += 1
+            return 200, response([text_item(child[0])], f"resp_{child[0]}")
+
+        outputs = {
+            item.get("call_id"): item.get("output")
+            for item in request.get("input", [])
+            if isinstance(item, dict) and item.get("type") == "function_call_output"
+        }
+        pending = [cid for cid in outputs if cid in self.shared_delete_pending]
+        if pending:
+            cid = pending[-1]
+            key = self.shared_delete_pending.pop(cid)
+            operation = self.shared_delete_operations[key]
+            output = outputs[cid]
+            if isinstance(output, str):
+                try:
+                    output = json.loads(output)
+                except json.JSONDecodeError:
+                    pass
+            if isinstance(output, dict):
+                output = output.get("envelope", {}).get("result", output.get("result", output))
+            if operation["operation"] == "spawn" and operation["stage"] == 1:
+                if not isinstance(output, dict) or not isinstance(output.get("agent_id"), str):
+                    return 409, {"error": {"type": "missing_invoke_identity"}}
+                operation["stage"] = 2
+                return self.shared_delete_call(
+                    key, "GetAgent", {"agent_id": output["agent_id"], "detail": "full"},
+                )
+            if operation["operation"] == "stale" and "agent_cleanup_stale_incarnation" not in json.dumps(output):
+                return 409, {"error": {"type": "missing_stale_rejection"}}
+            operation["stage"] = 3
+            self.phase += 1
+            return 200, response([text_item(key)], f"resp_{key}")
+        if marker is None:
+            self.extra_requests += 1
+            return 409, {"error": {"type": "missing_current_delete_operation"}}
+        key = marker[0]
+        if key in self.shared_delete_operations:
+            self.extra_requests += 1
+            return 409, {"error": {"type": "duplicate_delete_operation"}}
+        operation_match = re.search(r"SHARED-DELETE-OP:(spawn|delete|stale|alive)", current_input)
+        data_match = re.search(r"SHARED-DELETE-DATA:(\{[^\n]*\})", current_input)
+        if operation_match is None or data_match is None:
+            return 409, {"error": {"type": "missing_delete_operation_data"}}
+        operation = operation_match[1]
+        data = json.loads(data_match[1])
+        self.shared_delete_operations[key] = {"operation": operation, "stage": 1}
+        if operation == "spawn":
+            return self.shared_delete_call(key, "InvokeAgent", {
+                "target": {"kind": "new_subagent", "workspace_mode": "inherit"},
+                "initial_message": (
+                    f"Reply exactly {data['child_marker']}. Do not create any files "
+                    "or user deliverables; do not call tools."
+                ),
+            })
+        if operation in {"delete", "stale"}:
+            return self.shared_delete_call(key, "DeleteAgent", data)
+        self.shared_delete_operations[key]["stage"] = 3
+        self.phase += 1
+        return 200, response([text_item(key)], f"resp_{key}")
+
+    def shared_delete_call(
+        self, marker: str, name: str, args: dict[str, Any],
+    ) -> tuple[int, dict[str, Any]]:
+        cid = f"shared-delete-{self.phase}-{name}"
+        self.shared_delete_pending[cid] = marker
+        self.phase += 1
+        return 200, response([call_item(cid, name, args)], f"resp_{cid}")
+
     def expected_phase(self) -> int:
         return {
             "runtime-agent-lifecycle": 2,
-            "runtime-upgrade-v030": 2,
+            "runtime-shared-credential-delete": 21,
+            "runtime-upgrade-v030": 6,
             "runtime-upgrade-interrupted-schema47": 0,
             "scheduler-task-wait": 9,
             "scheduler-provider-retry": 2,
@@ -1268,6 +1366,14 @@ def make_handler(scenario: Scenario, log: Path) -> type[BaseHTTPRequestHandler]:
                     raise ValueError
             except (ValueError, json.JSONDecodeError):
                 self.send_json(400, {"error": {"type": "invalid_json"}})
+                return
+            if (
+                scenario.name == "runtime-shared-credential-delete"
+                and "SHARED-DELETE-" in json.dumps(request)
+                and self.headers.get("Authorization") != "Bearer deterministic-shared-credential"
+            ):
+                scenario.extra_requests += 1
+                self.send_json(401, {"error": {"type": "shared_credential_required"}})
                 return
             log.parent.mkdir(parents=True, exist_ok=True)
             with log.open("a") as stream:

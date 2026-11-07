@@ -307,6 +307,39 @@ def monitor_xcodebuild(command, env, idle_budget, subprocess_module=None,
     return returncode
 
 
+def wait_for_agent_bootstrap(local, created, timeout=30):
+    """A create receipt admits bootstrap; verify a terminal or durable ready state."""
+    receipt = created["receipt"]
+    if receipt["stage"] == "bootstrapped" and receipt["bootstrap"]["status"] == "ready":
+        return
+    job_id = receipt.get("job_id")
+    agent_id = receipt.get("agent_id")
+    if receipt["stage"] != "provisioning" or not (job_id or agent_id):
+        raise RuntimeError("fixture agent bootstrap has no ready receipt or job")
+    deadline = time.monotonic() + timeout
+    status = "queued"
+    while True:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise RuntimeError(f"fixture agent bootstrap timed out (job status: {status})")
+        if not job_id:
+            # Bootstrap may finish between creation and the HTTP handler's job attachment.
+            detail = local("GET", f"/control/agents/{agent_id}/detail", timeout=min(10, remaining))
+            if (detail.get("bootstrap") or {}).get("status") == "ready":
+                return
+            raise RuntimeError("fixture agent bootstrap has no ready durable state or job")
+        job = local("GET", f"/jobs/{job_id}", timeout=min(10, remaining))["job"]
+        status = job["status"]
+        if status == "completed":
+            if job.get("result", {}).get("bootstrap", {}).get("status") != "ready":
+                raise RuntimeError("fixture agent bootstrap completed without ready state")
+            return
+        if status not in {"queued", "running"}:
+            # Job errors may contain provider/configuration details; do not echo them.
+            raise RuntimeError("fixture agent bootstrap failed or returned an invalid status")
+        time.sleep(min(.1, max(0, deadline - time.monotonic())))
+
+
 @contextmanager
 def fixture_directory(repo):
     """Retain only an explicitly requested, new, private directory outside the repo."""
@@ -897,8 +930,8 @@ with fixture_directory(repo) as root:
             finally:
                 control.close()
 
-            def local(method, path, payload=None, ok=(200,)):
-                connection = LocalControlConnection("localhost", timeout=10)
+            def local(method, path, payload=None, ok=(200,), timeout=10):
+                connection = LocalControlConnection("localhost", timeout=timeout)
                 try:
                     connection.request(method, "/api" + path,
                         body=json.dumps(payload).encode() if payload is not None else None,
@@ -912,7 +945,8 @@ with fixture_directory(repo) as root:
                     connection.close()
 
             agent = "holon-tester"
-            local("POST", f"/control/agents/{agent}/create", {}, ok=(200, 202))
+            created = local("POST", f"/control/agents/{agent}/create", {}, ok=(200, 202))
+            wait_for_agent_bootstrap(local, created)
             work = local("POST", f"/control/agents/{agent}/work-items", {"objective": "IOS_POPULATED_WORK"})
             work_id = work["id"]
             plan = pathlib.Path(work["plan_artifact"]["path"])
@@ -1648,7 +1682,10 @@ with fixture_directory(repo) as root:
         finally:
             try:
                 if task_id is not None:
-                    local("POST", f"/control/agents/{agent}/tasks/{task_id}/stop", {})
+                    # UI lifecycle controls may already have interrupted this probe.
+                    task = local("GET", f"/agents/{agent}/tasks/{task_id}")
+                    if task["status"] not in ("completed", "failed", "cancelled", "interrupted"):
+                        local("POST", f"/control/agents/{agent}/tasks/{task_id}/stop", {})
             finally:
                 release_held_run.set()
                 if proxy:

@@ -306,7 +306,8 @@ final class HolonUITests: XCTestCase {
             if destination.exists && destination.isHittable { return true }
             // The menu identifies the route; only the Back button needs to be hittable.
             if conversation.exists {
-                let back = app.navigationBars.buttons.element(boundBy: 0)
+                let back = app.navigationBars.buttons.matching(
+                    NSPredicate(format: "identifier != %@", "conversation.more")).firstMatch
                 if back.exists && back.isEnabled && back.isHittable { back.tap() }
             } else if home.exists && home.isEnabled && home.isHittable {
                 home.tap()

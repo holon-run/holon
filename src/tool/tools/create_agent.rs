@@ -106,6 +106,7 @@ fn reject_legacy_agent_creation_input(input: &Value) -> Result<()> {
     ))
 }
 
+#[cfg(holon_lib_test_shard = "c")]
 #[cfg(test)]
 mod tests {
     use serde_json::json;

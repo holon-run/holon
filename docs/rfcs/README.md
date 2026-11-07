@@ -21,6 +21,7 @@ implementation and tests.
 - [Agent Lifecycle Control Posture](./agent-lifecycle-control-posture.md)
 - [Subagent Residency And Reclamation (draft)](./subagent-residency-and-reclamation.md)
 - [Agent State Model And Runtime Projection](./agent-state-model.md)
+- [Agent Runtime State and Context Snapshots (draft)](./agent-runtime-state-and-context-snapshots.md)
 - [Agent Status Display Projection](./agent-status-display-projection.md)
 - [Agent Profile Model](./agent-profile-model.md)
 - [Canonical Agent Create Contract](./agent-create-contract.md)

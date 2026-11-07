@@ -149,14 +149,15 @@ async fn assert_pre_cutoff_batches(kind: TaskKind, count: usize, path: EntryPath
         // obligations so this scan actually exercises the occupied lane.
         for (source, _) in sources.values() {
             runtime
-                .runtime_db()
-                .task_result_settlements()
-                .mark_deferred(
-                    source,
-                    "awaiting_canonical_admission",
-                    runtime.now(),
-                    runtime.now() + chrono::Duration::seconds(30),
-                )
+                .apply_task_result_operation((source, runtime.now()), || {
+                    crate::runtime_db::transitions::TaskResultOperation::Defer {
+                        message_id: source.clone(),
+                        reason: "awaiting_canonical_admission".into(),
+                        at: runtime.now(),
+                        deadline: runtime.now() + chrono::Duration::seconds(30),
+                    }
+                })
+                .await
                 .unwrap();
         }
         harness.advance(std::time::Duration::from_secs(31)).await;
@@ -569,7 +570,7 @@ async fn p1_exact_waiter_admits_only_its_identity_from_nine_same_owner_results()
     };
     assert_eq!(result_message_id, exact_source);
     let waiter = runtime.latest_work_item(&waiter.id).await.unwrap().unwrap();
-    seed_waiting_work_execution(runtime.storage(), &waiter, &wait_condition_id);
+    seed_live_waiting_work_execution(runtime, &waiter, &wait_condition_id).await;
     let scheduled = Box::pin(claim_model_input(runtime)).await;
     assert_eq!(scheduled.message.id, exact_source);
     let (_, records) = Box::pin(deliver_batch(

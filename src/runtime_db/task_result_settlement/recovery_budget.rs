@@ -3,17 +3,16 @@ use super::*;
 pub(crate) const TASK_RESULT_RECOVERY_LIMIT: u32 = 5;
 
 // Filter before LIMIT; final admission still checks the exact timestamp.
-pub(super) fn candidates_for_owner_tx(
+pub(crate) fn candidate_identities_for_owner_tx(
     tx: &Transaction<'_>,
     agent_id: &str,
     work_item_id: Option<&str>,
     root_attempt_id: &str,
     now: DateTime<Utc>,
     limit: usize,
-) -> Result<Vec<TaskResultSettlementRecord>> {
-    records_tx(
-        tx,
-        "SELECT settlements.payload_json
+) -> Result<Vec<String>> {
+    let mut statement = tx.prepare(
+        "SELECT settlements.result_identity
          FROM task_result_settlements AS settlements
          WHERE settlements.agent_id = ?1 AND settlements.work_item_id IS ?2
            AND (
@@ -45,15 +44,45 @@ pub(super) fn candidates_for_owner_tx(
            )
          ORDER BY settlements.created_at ASC, settlements.result_identity ASC
          LIMIT ?6",
-        params![
-            agent_id,
-            work_item_id,
-            root_attempt_id,
-            TASK_RESULT_RECOVERY_LIMIT,
-            timestamp(now),
-            limit.min(64) as i64,
-        ],
-    )
+    )?;
+    let mut rows = statement.query(params![
+        agent_id,
+        work_item_id,
+        root_attempt_id,
+        TASK_RESULT_RECOVERY_LIMIT,
+        timestamp(now),
+        limit.min(64) as i64,
+    ])?;
+    let mut identities = Vec::new();
+    while let Some(row) = rows.next()? {
+        let id = row.get_ref(0)?.as_str()?;
+        crate::diagnostics::resource_io::charge_owned_metadata(
+            u64::try_from(id.len())?
+                .checked_add(128)
+                .ok_or_else(|| anyhow::anyhow!("recovery selector material overflow"))?,
+            1,
+        )?;
+        identities.push(id.to_owned());
+    }
+    Ok(identities)
+}
+
+#[cfg(test)]
+pub(crate) fn candidates_for_owner_tx(
+    tx: &Transaction<'_>,
+    agent_id: &str,
+    work_item_id: Option<&str>,
+    root_attempt_id: &str,
+    now: DateTime<Utc>,
+    limit: usize,
+) -> Result<Vec<TaskResultSettlementRecord>> {
+    candidate_identities_for_owner_tx(tx, agent_id, work_item_id, root_attempt_id, now, limit)?
+        .iter()
+        .map(|id| {
+            by_identity_tx(tx, id)?
+                .ok_or_else(|| anyhow::anyhow!("selected recovery Result is absent"))
+        })
+        .collect()
 }
 
 fn recheck_delay(attempts: u32) -> Duration {
@@ -74,7 +103,7 @@ fn by_identity_tx(
     .transpose()
 }
 
-pub(super) fn recovery_admission_eligible_tx(
+pub(crate) fn recovery_admission_eligible_tx(
     tx: &Transaction<'_>,
     record: &TaskResultSettlementRecord,
     root_attempt_id: &str,
@@ -155,6 +184,7 @@ pub(crate) fn charge_recovery_admission_tx(
 }
 
 impl TaskResultSettlementRepository<'_> {
+    #[cfg(test)]
     pub(crate) fn recovery_root_is_charged(
         &self,
         record: &TaskResultSettlementRecord,
@@ -204,27 +234,6 @@ impl TaskResultSettlementRepository<'_> {
         })
     }
 
-    pub(crate) fn mark_recovery_diagnostic(
-        &self,
-        result_identity: &str,
-        epoch: u64,
-        now: DateTime<Utc>,
-    ) -> Result<()> {
-        self.db.transaction(|tx| {
-            if let Some(mut record) = by_identity_tx(tx, result_identity)? {
-                if record.recovery_epoch == epoch
-                    && record.recovery_paused_at.is_some()
-                    && record.recovery_diagnostic_at.is_none()
-                {
-                    record.recovery_diagnostic_at = Some(now);
-                    record.updated_at = now;
-                    update_tx(tx, &record)?;
-                }
-            }
-            Ok(())
-        })
-    }
-
     /// Caller must be the operator-only, identity-targeted repair control path.
     pub(crate) fn rearm_recovery(
         &self,
@@ -232,43 +241,49 @@ impl TaskResultSettlementRepository<'_> {
         result_identity: &str,
         now: DateTime<Utc>,
     ) -> Result<bool> {
-        self.db.transaction(|tx| {
-            let Some(mut record) = by_identity_tx(tx, result_identity)? else {
-                bail!("task result identity not found: {result_identity}");
-            };
-            anyhow::ensure!(record.agent_id == agent_id, "task result owner mismatch");
-            if record.state == TaskResultSettlementState::Settled
-                || record.recovery_paused_at.is_none()
-            {
-                return Ok(false);
-            }
-            record.recovery_epoch = record
-                .recovery_epoch
-                .checked_add(1)
-                .ok_or_else(|| anyhow::anyhow!("task result recovery epoch overflow"))?;
-            record.recovery_attempts = 0;
-            record.last_recovery_root_attempt_id = None;
-            record.last_recovery_admitted_at = None;
-            record.recovery_paused_at = None;
-            record.recovery_diagnostic_at = None;
-            record.deferred_reason = Some("operator_rearmed".into());
-            record.deferred_at = Some(now);
-            record.next_recheck_at = Some(now + recheck_delay(0));
-            record.updated_at = now;
-            update_tx(tx, &record)?;
-            let mut event = crate::types::AuditEvent::legacy(
-                "task_result_recovery_rearmed",
-                serde_json::json!({
-                    "agent_id": agent_id,
-                    "result_identity": result_identity,
-                    "recovery_epoch": record.recovery_epoch,
-                    "task_id": record.task_id,
-                    "work_item_id": record.work_item_id,
-                }),
-            );
-            event.created_at = now;
-            crate::runtime_db::evidence::append_audit_event_tx(tx, Some(agent_id), &event)?;
-            Ok(true)
-        })
+        self.db
+            .transaction(|tx| rearm_recovery_tx(tx, agent_id, result_identity, now))
     }
+}
+
+pub(crate) fn rearm_recovery_tx(
+    tx: &Transaction<'_>,
+    agent_id: &str,
+    result_identity: &str,
+    now: DateTime<Utc>,
+) -> Result<bool> {
+    let Some(mut record) = by_identity_tx(tx, result_identity)? else {
+        bail!("task result identity not found: {result_identity}");
+    };
+    anyhow::ensure!(record.agent_id == agent_id, "task result owner mismatch");
+    if record.state == TaskResultSettlementState::Settled || record.recovery_paused_at.is_none() {
+        return Ok(false);
+    }
+    record.recovery_epoch = record
+        .recovery_epoch
+        .checked_add(1)
+        .ok_or_else(|| anyhow::anyhow!("task result recovery epoch overflow"))?;
+    record.recovery_attempts = 0;
+    record.last_recovery_root_attempt_id = None;
+    record.last_recovery_admitted_at = None;
+    record.recovery_paused_at = None;
+    record.recovery_diagnostic_at = None;
+    record.deferred_reason = Some("operator_rearmed".into());
+    record.deferred_at = Some(now);
+    record.next_recheck_at = Some(now + recheck_delay(0));
+    record.updated_at = now;
+    update_tx(tx, &record)?;
+    let mut event = crate::types::AuditEvent::legacy(
+        "task_result_recovery_rearmed",
+        serde_json::json!({
+            "agent_id": agent_id,
+            "result_identity": result_identity,
+            "recovery_epoch": record.recovery_epoch,
+            "task_id": record.task_id,
+            "work_item_id": record.work_item_id,
+        }),
+    );
+    event.created_at = now;
+    crate::runtime_db::evidence::append_audit_event_tx(tx, Some(agent_id), &event)?;
+    Ok(true)
 }

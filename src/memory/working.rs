@@ -17,12 +17,19 @@ pub fn refresh_working_memory(
     agent: &mut AgentState,
     current_closure: &ClosureDecision,
 ) -> Result<WorkingMemoryRefresh> {
+    Ok(refresh_working_memory_from_snapshot(
+        agent,
+        derive_working_memory_snapshot(storage, current_closure)?,
+    ))
+}
+
+pub(crate) fn refresh_working_memory_from_snapshot(
+    agent: &mut AgentState,
+    next_snapshot: WorkingMemorySnapshot,
+) -> WorkingMemoryRefresh {
     let previous_snapshot =
         normalize_working_memory_snapshot(agent.working_memory.current_working_memory.clone());
-    let next_snapshot = normalize_working_memory_snapshot(derive_working_memory_snapshot(
-        storage,
-        current_closure,
-    )?);
+    let next_snapshot = normalize_working_memory_snapshot(next_snapshot);
     let scrubbed_legacy_fields = previous_snapshot != agent.working_memory.current_working_memory;
     if scrubbed_legacy_fields || previous_snapshot != next_snapshot {
         agent.working_memory.current_working_memory = next_snapshot.clone();
@@ -30,11 +37,11 @@ pub fn refresh_working_memory(
     let working_memory_updated =
         scrubbed_legacy_fields || agent.working_memory.current_working_memory != previous_snapshot;
 
-    Ok(WorkingMemoryRefresh {
+    WorkingMemoryRefresh {
         previous_snapshot,
         current_snapshot: next_snapshot,
         working_memory_updated,
-    })
+    }
 }
 
 fn normalize_working_memory_snapshot(mut snapshot: WorkingMemorySnapshot) -> WorkingMemorySnapshot {
@@ -48,10 +55,22 @@ pub fn derive_working_memory_snapshot(
     current_closure: &ClosureDecision,
 ) -> Result<WorkingMemorySnapshot> {
     let projection = storage.work_queue_prompt_projection()?;
+    let active_waiting = storage.active_wait_conditions()?;
+    Ok(derive_working_memory_snapshot_from_observations(
+        &projection,
+        &active_waiting,
+        current_closure,
+    ))
+}
+
+pub(crate) fn derive_working_memory_snapshot_from_observations(
+    projection: &crate::storage::WorkQueueReadModel,
+    active_waits: &[crate::types::WaitConditionRecord],
+    current_closure: &ClosureDecision,
+) -> WorkingMemorySnapshot {
     let current_work_item = projection.current.as_ref();
-    let active_waiting = storage
-        .active_wait_conditions()?
-        .into_iter()
+    let active_waiting = active_waits
+        .iter()
         .filter(|record| record.work_item_id.is_some())
         .collect::<Vec<_>>();
     let current_work_item_id = current_work_item.map(|item| item.id.as_str());
@@ -97,7 +116,7 @@ pub fn derive_working_memory_snapshot(
         })
         .unwrap_or_default();
 
-    Ok(WorkingMemorySnapshot {
+    WorkingMemorySnapshot {
         current_work_item_id: current_work_item.map(|item| item.id.clone()),
         objective: current_work_item.map(|item| item.objective.clone()),
         work_summary: current_work_item.map(|item| item.objective.clone()),
@@ -112,5 +131,5 @@ pub fn derive_working_memory_snapshot(
         pending_followups,
         waiting_on,
         ..WorkingMemorySnapshot::default()
-    })
+    }
 }

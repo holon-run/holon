@@ -700,6 +700,7 @@ fn optional_u64(value: Option<i64>, label: &str) -> Result<Option<u64>> {
     value.map(|value| to_u64(value, label)).transpose()
 }
 
+#[cfg(holon_lib_test_shard = "b")]
 #[cfg(test)]
 mod tests {
     use super::*;

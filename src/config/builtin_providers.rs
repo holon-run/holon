@@ -1383,6 +1383,7 @@ pub(crate) fn validate_openai_reasoning_effort(value: &str) -> Result<()> {
     }
 }
 
+#[cfg(holon_lib_test_shard = "d")]
 #[cfg(test)]
 mod reasoning_effort_tests {
     use super::*;

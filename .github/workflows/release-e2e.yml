@@ -246,46 +246,10 @@ jobs:
             echo "previous_ref must be a release tag such as v0.31.1: ${PREVIOUS_REF}" >&2
             exit 1
           fi
-          echo "Building previous release image from release assets for ${PREVIOUS_REF}"
-          version="${PREVIOUS_REF#v}"
-          workdir="$(mktemp -d)"
-          trap 'rm -rf "${workdir}"' EXIT
-          base_url="https://github.com/${GITHUB_REPOSITORY}/releases/download/${PREVIOUS_REF}"
-          curl -fsSL -o "${workdir}/checksums.txt" "${base_url}/checksums.txt"
-          curl -fsSL -o "${workdir}/holon-linux-amd64.tar.gz" "${base_url}/holon-linux-amd64.tar.gz"
-          (
-            cd "${workdir}"
-            expected="$(awk 'match($0, /holon-linux-amd64\.tar\.gz$/) { print $1 }' checksums.txt)"
-            if [ -z "${expected}" ]; then
-              echo "checksums.txt has no entry for holon-linux-amd64.tar.gz" >&2
-              exit 1
-            fi
-            printf '%s  holon-linux-amd64.tar.gz\n' "${expected}" | sha256sum --check --strict -
-            tar -xzf holon-linux-amd64.tar.gz
-            test -x holon || chmod +x holon
-          )
-          cat > "${workdir}/Dockerfile" <<'DOCKERFILE'
-          FROM debian:trixie-slim
-          RUN apt-get update \
-              && apt-get install -y --no-install-recommends \
-                 bash ca-certificates curl git gzip openssh-client tar \
-              && rm -rf /var/lib/apt/lists/* \
-              && useradd --create-home --home-dir /var/lib/holon --uid 10001 holon \
-              && mkdir -p /workspace \
-              && chown holon:holon /workspace
-          COPY holon /usr/local/bin/holon
-          RUN chmod +x /usr/local/bin/holon
-          ENV HOME=/var/lib/holon \
-              HOLON_HOME=/var/lib/holon \
-              HOLON_WORKSPACE_DIR=/workspace
-          WORKDIR /workspace
-          USER holon
-          EXPOSE 7878
-          ENTRYPOINT ["holon"]
-          CMD ["serve", "--listen", "0.0.0.0:7878"]
-          DOCKERFILE
-          tag="holon-e2e-previous:${version}"
-          docker build --tag "${tag}" "${workdir}"
+          tag="holon-e2e-previous:${PREVIOUS_REF#v}"
+          python3 scripts/prepare-previous-release-image.py \
+            --ref "${PREVIOUS_REF}" --image "${tag}" \
+            --output target/docker-e2e/previous-release-source.json
           {
             echo "image=${tag}"
             echo "source=previous_ref"
@@ -313,6 +277,29 @@ jobs:
             args+=(--previous-image "${HOLON_E2E_PREVIOUS_IMAGE}")
           fi
           python3 scripts/docker-e2e.py "${args[@]}"
+
+      - name: Run deterministic runtime lifecycle release gate
+        env:
+          HOLON_E2E_PREVIOUS_IMAGE: ${{ steps.previous.outputs.image }}
+        run: |
+          set -euo pipefail
+          test -n "${HOLON_E2E_PREVIOUS_IMAGE}"
+          python3 scripts/docker-e2e.py \
+            --image-digest "${CANDIDATE_IMAGE}" --skip-build \
+            --previous-image "${HOLON_E2E_PREVIOUS_IMAGE}" \
+            --profile runtime-lifecycle-required \
+            --evidence-dir target/docker-e2e/runtime-lifecycle-required
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          report = json.loads(Path("target/docker-e2e/runtime-lifecycle-required/summary.json").read_text())
+          expected = {"runtime-agent-lifecycle", "runtime-shared-credential-delete", "runtime-upgrade-v030"}
+          results = report["case_results"]
+          if (report["status"] != "pass" or len(results) != len(expected)
+              or {case["id"] for case in results} != expected
+              or any(case["status"] != "pass" for case in results)):
+              raise SystemExit("Runtime lifecycle gate omitted or failed a required case")
+          PY
 
       - name: Run deterministic scheduler release gate
         run: |
@@ -363,6 +350,8 @@ jobs:
                   "scheduler-acceptance-report.json"
               ).read_text()
           )
+          lifecycle_path = Path("target/docker-e2e/runtime-lifecycle-required/summary.json")
+          lifecycle = json.loads(lifecycle_path.read_text()) if lifecycle_path.is_file() else None
           canary_path = Path(
               "target/docker-e2e/scheduler-live-canary/"
               "scheduler-live-canary-report.json"
@@ -378,6 +367,7 @@ jobs:
               f"- Previous release source: `{os.environ['PREVIOUS_SOURCE']}`",
               f"- Previous release ref: `{os.environ['PREVIOUS_REF'] or 'n/a'}`",
               f"- Deterministic scheduler gate: **{scheduler_report['status']}**",
+              f"- Deterministic runtime lifecycle gate: **{lifecycle['status'] if lifecycle else 'missing'}**",
               f"- Scheduler live canary: **{canary['status'] if canary else 'missing'}**",
               f"- Runtime schema revision: `{scheduler_report['runtime_schema_revision']}`",
               f"- Fixture corpus: `{scheduler_report['fixture_corpus_revision']}`",
@@ -430,6 +420,19 @@ jobs:
               if canary_report_path.is_file()
               else None
           )
+          lifecycle_report_path = Path("target/docker-e2e/runtime-lifecycle-required/summary.json")
+          lifecycle_report = json.loads(lifecycle_report_path.read_text())
+          expected_lifecycle_cases = {"runtime-agent-lifecycle", "runtime-shared-credential-delete", "runtime-upgrade-v030"}
+          lifecycle_cases = lifecycle_report["case_results"]
+          if (
+              lifecycle_report["status"] != "pass"
+              or lifecycle_report["git_sha"] != os.environ["CANDIDATE_SHA"]
+              or lifecycle_report["image_digest"] != summary["image_digest"]
+              or len(lifecycle_cases) != len(expected_lifecycle_cases)
+              or {case["id"] for case in lifecycle_cases} != expected_lifecycle_cases
+              or any(case["status"] != "pass" for case in lifecycle_cases)
+          ):
+              raise SystemExit("Runtime lifecycle acceptance is incomplete or from another candidate")
           if scheduler_report["status"] != "pass":
               raise SystemExit(
                   f"Scheduler acceptance did not pass: {scheduler_report['status']}"
@@ -526,6 +529,11 @@ jobs:
               },
               "scheduler_acceptance": scheduler_report,
               "scheduler_coverage": coverage_report,
+              "runtime_lifecycle": {
+                  "summary": lifecycle_report,
+                  "evidence_path": str(lifecycle_report_path),
+                  "evidence_sha256": hashlib.sha256(lifecycle_report_path.read_bytes()).hexdigest(),
+              },
               "scheduler_live_canary": canary_report,
               "interrupted_schema47_upgrade": {
                   "case": interrupted_case,
@@ -572,6 +580,7 @@ jobs:
               path
               for path in (
                   Path("target/docker-e2e/release-core"),
+                  Path("target/docker-e2e/runtime-lifecycle-required"),
                   Path("target/docker-e2e/scheduler-required"),
                   Path("target/docker-e2e/scheduler-live-canary"),
               )

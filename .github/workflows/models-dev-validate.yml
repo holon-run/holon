@@ -14,6 +14,7 @@ on:
       - "tests/fixtures/models_dev/**"
       - ".github/workflows/models-dev-validate.yml"
       - "Cargo.toml"
+      - "build.rs"
 
 permissions:
   contents: read
@@ -21,9 +22,20 @@ permissions:
 jobs:
   validate:
     name: Validate models.dev mapping and artifact
+
+    # Compile under the 16 GB runner budget; see docs/implementation-decisions/ci-rust-memory-budget.md.
     runs-on: ubuntu-latest
     env:
+      # All models_dev library tests belong to this compile group.
+      HOLON_LIB_TEST_SHARD: c
       RUSTFLAGS: -D warnings
+      CARGO_INCREMENTAL: "0"
+      CARGO_PROFILE_DEV_DEBUG: "line-tables-only"
+      CARGO_PROFILE_DEV_CODEGEN_UNITS: "1"
+      CARGO_PROFILE_TEST_DEBUG: "line-tables-only"
+      CARGO_PROFILE_TEST_CODEGEN_UNITS: "1"
+      CARGO_PROFILE_RELEASE_CODEGEN_UNITS: "1"
+      CARGO_BUILD_JOBS: "2"
     steps:
       - uses: actions/checkout@v4
 
@@ -47,7 +59,9 @@ jobs:
           fi
 
       - name: Run models.dev tests
-        run: cargo test --locked models_dev
+        run: |
+          cargo test --locked --lib --no-run
+          cargo test --locked models_dev
 
       - name: Check reviewed route metadata and runtime budget policies (offline)
         run: cargo run --locked -- models-dev coverage --check

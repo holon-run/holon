@@ -161,6 +161,9 @@ the runtime does not wait for that task to finish.
 Each safe point admits at most one fixed batch. New P2 attachments per turn are
 bounded by four batches, 32 identities, and 96 KiB, additionally respecting
 round/context limits. Prioritize eligible same-turn results within this budget.
+Candidate discovery retains the fixed scan order without preparing every Task
+body. Qualify each selected original within the same read cut before using it;
+the batch limit stops further body preparation, not source validation.
 
 Ordinary inputs only attach before an otherwise-required next provider request.
 One exception mirrors operator interjection: after a pure final candidate and

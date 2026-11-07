@@ -725,6 +725,7 @@ pub(crate) fn truncate_output_with_flag(
     truncate_output_to_char_budget(text, output_char_budget(max_output_tokens))
 }
 
+#[cfg(holon_lib_test_shard = "c")]
 #[cfg(test)]
 mod tests {
     use super::*;

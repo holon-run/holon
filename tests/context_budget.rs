@@ -266,7 +266,7 @@ async fn exercise_budget_lifecycle() -> Result<()> {
 
 async fn assert_unknown_budget(runtime: &RuntimeHandle) -> Result<()> {
     let summary = runtime.agent_summary().await?;
-    let policy = summary.model.resolved_policy;
+    let policy = &summary.model.resolved_policy;
     assert_eq!(policy.context_window_tokens, None);
     assert_eq!(policy.prompt_budget_estimated_tokens, 128_000);
     assert_eq!(policy.compaction_trigger_estimated_tokens, 115_200);

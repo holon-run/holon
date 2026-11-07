@@ -295,6 +295,7 @@ pub fn normalize_path(path: &Path) -> Result<PathBuf> {
     Ok(normalized)
 }
 
+#[cfg(holon_lib_test_shard = "c")]
 #[cfg(test)]
 mod tests {
     use tempfile::tempdir;

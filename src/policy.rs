@@ -68,6 +68,7 @@ pub fn default_authority_for_origin(origin: &MessageOrigin) -> AuthorityClass {
     }
 }
 
+#[cfg(holon_lib_test_shard = "c")]
 #[cfg(test)]
 mod tests {
     use crate::types::MessageOrigin;

@@ -3,7 +3,9 @@
 Decision:
 
 - keep `RuntimeHandle::apply_transition_commit` as a thin wrapper and box the
-  guarded implementation it delegates to
+  notification implementation it delegates to
+- install committed State and queued sources together under the original
+  `RuntimeMutation` reservation, before releasing it for notifications
 - do not insert an extra async layer behind a future that many runtime call
   sites await inline
 
@@ -17,6 +19,6 @@ Reason:
   1.2 KiB, which pushed the deepest runtime test chain past the default 2 MiB
   thread stack; the chain then aborted with a stack overflow instead of
   reporting its assertion result
-- boxing the delegated future keeps the guarded implementation state on the
-  heap, so callers keep the smaller future they had before the guard existed
-  and the pause path still holds the agent lock across its own projection
+- boxing the delegated future keeps notification state on the heap, so callers
+  retain a small future; pause projection belongs to the original mutation,
+  not a second raw agent-lock projection after its commit

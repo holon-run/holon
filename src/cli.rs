@@ -1220,6 +1220,7 @@ fn snapshot_entry_for_command(cmd: &clap::Command, path: &str) -> CommandSnapsho
     }
 }
 
+#[cfg(holon_lib_test_shard = "d")]
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -1061,6 +1061,7 @@ fn openai_codex_responses_request_lowers_native_web_search_tool() {
 #[test]
 fn openai_codex_image_generation_request_uses_hosted_tool() {
     let request = ProviderGenerateImageRequest {
+        material: Default::default(),
         prompt: "draw a small holon".into(),
         size: Some("1024x1024".into()),
         aspect_ratio: None,
@@ -1094,38 +1095,44 @@ fn openai_codex_image_generation_request_uses_hosted_tool() {
 
 #[test]
 fn openai_codex_image_generation_response_parses_result_items() {
-    let images = parse_openai_codex_image_generation_response_items(vec![
-        json!({
-            "type": "message",
-            "content": [],
-        }),
-        json!({
-            "type": "image_generation_call",
-            "id": "ig_1",
-            "status": "completed",
-            "revised_prompt": "draw a tiny holon",
-            "result": BASE64_STANDARD.encode(b"fake_png"),
-        }),
-    ])
+    let images = parse_openai_codex_image_generation_response_items(
+        vec![
+            json!({
+                "type": "message",
+                "content": [],
+            }),
+            json!({
+                "type": "image_generation_call",
+                "id": "ig_1",
+                "status": "completed",
+                "revised_prompt": "draw a tiny holon",
+                "result": BASE64_STANDARD.encode(b"fake_png"),
+            }),
+        ],
+        &Default::default(),
+    )
     .expect("image_generation_call should parse");
 
     assert_eq!(images.len(), 1);
-    assert_eq!(images[0].bytes, b"fake_png");
+    assert_eq!(images[0].bytes.as_ref(), b"fake_png");
     assert_eq!(images[0].mime.as_deref(), Some("image/png"));
 }
 
 #[test]
 fn openai_codex_image_generation_response_accepts_done_item_with_generating_status() {
-    let images = parse_openai_codex_image_generation_response_items(vec![json!({
-        "type": "image_generation_call",
-        "id": "ig_1",
-        "status": "generating",
-        "result": BASE64_STANDARD.encode(b"fake_png"),
-    })])
+    let images = parse_openai_codex_image_generation_response_items(
+        vec![json!({
+            "type": "image_generation_call",
+            "id": "ig_1",
+            "status": "generating",
+            "result": BASE64_STANDARD.encode(b"fake_png"),
+        })],
+        &Default::default(),
+    )
     .expect("image_generation_call with a final result should parse");
 
     assert_eq!(images.len(), 1);
-    assert_eq!(images[0].bytes, b"fake_png");
+    assert_eq!(images[0].bytes.as_ref(), b"fake_png");
 }
 
 #[test]
@@ -1180,6 +1187,7 @@ fn image_dialect_uses_canonical_provider_not_endpoint_display_id() {
 #[test]
 fn openai_images_request_uses_contract_not_a_compatible_superset() {
     let request = ProviderGenerateImageRequest {
+        material: Default::default(),
         prompt: "draw".into(),
         size: Some("1536x864".into()),
         aspect_ratio: None,
@@ -1200,6 +1208,7 @@ fn openai_images_request_uses_contract_not_a_compatible_superset() {
 #[test]
 fn xai_images_request_maps_size_and_omits_openai_fields() {
     let request = ProviderGenerateImageRequest {
+        material: Default::default(),
         prompt: "draw a small holon".into(),
         size: Some("1536x1024".into()),
         aspect_ratio: None,
@@ -1228,6 +1237,7 @@ fn xai_images_request_maps_size_and_omits_openai_fields() {
 #[test]
 fn xai_images_request_uses_provider_defaults_without_size() {
     let request = ProviderGenerateImageRequest {
+        material: Default::default(),
         prompt: "draw".into(),
         size: None,
         aspect_ratio: None,
@@ -1244,6 +1254,7 @@ fn xai_images_request_uses_provider_defaults_without_size() {
 #[test]
 fn xai_images_request_rejects_unsupported_openai_options() {
     let background = ProviderGenerateImageRequest {
+        material: Default::default(),
         prompt: "draw".into(),
         size: None,
         aspect_ratio: None,
@@ -1255,6 +1266,7 @@ fn xai_images_request_rejects_unsupported_openai_options() {
         .expect_err("background must be rejected");
     assert!(error.to_string().contains("background"));
     let output_format = ProviderGenerateImageRequest {
+        material: Default::default(),
         prompt: "draw".into(),
         size: None,
         aspect_ratio: None,
@@ -1409,7 +1421,8 @@ async fn openai_compaction_dispatch_rejection_is_not_best_effort() {
     let continuation = Arc::new(Mutex::new(OpenAiContinuationState::default()));
     continuation.lock().unwrap().windows.insert(
         scope.clone(),
-        OpenAiProviderWindow {
+        Arc::new(OpenAiProviderWindow {
+            material: Default::default(),
             response_id: Some("resp_1".into()),
             request_shape: request_shape.clone(),
             items: vec![json!({ "type": "message", "content": "complete message" })],
@@ -1418,7 +1431,7 @@ async fn openai_compaction_dispatch_rejection_is_not_best_effort() {
             latest_input_tokens: 512,
             replay_loss_reason: None,
             generation: 1,
-        },
+        }),
     );
     let guard = RejectGuard::default();
     let policy = OpenAiCompactionPolicy {
@@ -1447,6 +1460,7 @@ async fn openai_compaction_dispatch_rejection_is_not_best_effort() {
     );
 
     let mut plan = OpenAiRequestPlan {
+        material: Default::default(),
         body: json!({ "model": "gpt-test", "input": [] }),
         fallback_replay: None,
         scope: Some(scope),
@@ -1497,6 +1511,7 @@ async fn openai_compaction_dispatch_rejection_is_not_best_effort() {
 fn openai_compaction_trigger_skips_many_small_items_below_budget() {
     let request_shape = test_request_shape();
     let window = OpenAiProviderWindow {
+        material: Default::default(),
         response_id: Some("resp_1".into()),
         request_shape: request_shape.clone(),
         items: (0..24)
@@ -1523,6 +1538,7 @@ fn openai_compaction_trigger_skips_many_small_items_below_budget() {
 fn openai_compaction_candidate_allows_single_large_item() {
     let request_shape = test_request_shape();
     let window = OpenAiProviderWindow {
+        material: Default::default(),
         response_id: Some("resp_1".into()),
         request_shape: request_shape.clone(),
         items: vec![json!({
@@ -1555,6 +1571,7 @@ fn openai_compaction_candidate_allows_single_large_item() {
 fn openai_compaction_trigger_prefers_provider_usage_tokens() {
     let request_shape = test_request_shape();
     let window = OpenAiProviderWindow {
+        material: Default::default(),
         response_id: Some("resp_1".into()),
         request_shape: request_shape.clone(),
         items: vec![json!({ "type": "message", "content": "small" })],
@@ -1581,6 +1598,7 @@ fn openai_compaction_trigger_prefers_provider_usage_tokens() {
 fn openai_compaction_trigger_skips_immediate_compacted_replay_before_usage() {
     let request_shape = test_request_shape();
     let previous = OpenAiProviderWindow {
+        material: Default::default(),
         response_id: Some("resp_1".into()),
         request_shape: request_shape.clone(),
         items: vec![
@@ -1594,6 +1612,7 @@ fn openai_compaction_trigger_skips_immediate_compacted_replay_before_usage() {
         generation: 1,
     };
     let plan = OpenAiRequestPlan {
+        material: Default::default(),
         body: json!({ "model": "gpt-test", "input": [] }),
         fallback_replay: None,
         scope: None,

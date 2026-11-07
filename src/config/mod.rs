@@ -330,6 +330,7 @@ impl AppConfig {
         let disable_provider_fallback = resolve_disable_provider_fallback(&stored_config)?;
         validate_retired_scheduler_selector(&stored_config)?;
         resolve_runtime_db_retention_policy(&stored_config)?;
+        stored_config.runtime.state_memory.resolve()?;
         let validated_model_overrides = resolve_model_catalog(&stored_config)?;
         resolve_model_route_overrides(&stored_config)?;
         let validated_unknown_model_fallback =
@@ -954,5 +955,6 @@ fn parse_anthropic_cache_strategy(raw_value: &str) -> Result<AnthropicCacheStrat
     }
 }
 
+#[cfg(holon_lib_test_shard = "d")]
 #[cfg(test)]
 mod tests;

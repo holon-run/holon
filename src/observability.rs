@@ -390,6 +390,7 @@ fn validate_trace_state(value: &str) -> Result<String, TraceContextError> {
     Ok(value.to_owned())
 }
 
+#[cfg(holon_lib_test_shard = "d")]
 #[cfg(test)]
 mod tests {
     use super::*;

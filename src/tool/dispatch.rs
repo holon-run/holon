@@ -320,6 +320,7 @@ fn catalog_entry(family: ToolCapabilityFamily, spec: ToolSpec) -> ToolCatalogEnt
     ToolCatalogEntry { family, spec }
 }
 
+#[cfg(holon_lib_test_shard = "c")]
 #[cfg(test)]
 mod tests {
     use super::{build_tool_spec_catalog, ToolRegistry};

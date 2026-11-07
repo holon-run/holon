@@ -161,6 +161,7 @@ pub fn provider_turn_request_with_tools(tools: Vec<ToolSpec>) -> ProviderTurnReq
 pub fn provider_turn_request_with_prompt_frame() -> ProviderTurnRequest {
     ProviderTurnRequest {
         dispatch_guard: None,
+        material: Default::default(),
         continuation_scope_id: ContinuationScopeId::new("default"),
         prompt_frame: ProviderPromptFrame::structured(
             "rendered system",

@@ -68,6 +68,7 @@ fn short_sha256_hex(value: &str) -> String {
         .collect()
 }
 
+#[cfg(holon_lib_test_shard = "d")]
 #[cfg(test)]
 mod tests {
     use super::*;

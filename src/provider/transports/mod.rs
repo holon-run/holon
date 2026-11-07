@@ -1,4 +1,5 @@
 mod anthropic;
+#[cfg(holon_lib_test_shard = "c")]
 #[cfg(test)]
 mod dispatch_guard_tests;
 mod gemini;

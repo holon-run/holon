@@ -1696,6 +1696,7 @@ fn trim_preview(input: &str, max_chars: usize) -> String {
     trimmed
 }
 
+#[cfg(holon_lib_test_shard = "d")]
 #[cfg(test)]
 mod tests {
     use super::{

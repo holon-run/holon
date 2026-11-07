@@ -152,6 +152,8 @@ snapshots-refresh: ## Refresh CLI, OpenAPI, HTTP route, runtime status, and mode
 	cargo test --test tool_schema_inventory_snapshot refresh_tool_schema_inventory_snapshot -- --ignored
 
 build: ## Build all Rust targets (cargo build --all-targets)
+	cargo build --lib
+	cargo test --lib --no-run
 	cargo build --all-targets
 
 all: web app-sdk build ## Build everything: web GUI, App SDK, then Rust
@@ -269,7 +271,8 @@ docker-e2e-validate: ## Validate the Docker E2E manifest and runner unit tests
 	python3 -m unittest tests.test_docker_e2e_runner tests.test_scheduler_drill \
 		tests.test_fallback_storm tests.test_continuation_interjection tests.test_continuation_cooldown \
 		tests.test_docker_task_recovery tests.test_docker_identified_build tests.test_docker_route_throttle \
-		tests.test_docker_timer_admission
+		tests.test_docker_timer_admission tests.test_docker_upgrade_history \
+		tests.test_docker_e2e_shared_credential_delete tests.test_docker_previous_release
 
 .PHONY: docker-e2e-task-result-fast docker-e2e-task-result-slow
 docker-e2e-task-result-fast: ## Run owned exact/fallback drills with prebuilt isolated images

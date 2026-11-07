@@ -200,6 +200,7 @@ fn base_context_config_for_candidate(config: &AppConfig) -> ContextConfig {
     }
 }
 
+#[cfg(holon_lib_test_shard = "c")]
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -22,6 +22,7 @@ fn validate_native_pkce_method(method: Option<&str>) -> Result<(), (StatusCode, 
     Ok(())
 }
 
+#[cfg(holon_lib_test_shard = "c")]
 #[cfg(test)]
 mod native_oidc_tests {
     use super::*;
@@ -646,6 +647,7 @@ pub async fn start_codex_device_login(
     ))
 }
 
+#[cfg(holon_lib_test_shard = "c")]
 #[cfg(test)]
 mod pairing_tests {
     use super::*;
@@ -703,6 +705,7 @@ mod pairing_tests {
     }
 }
 
+#[cfg(holon_lib_test_shard = "c")]
 #[cfg(test)]
 mod oidc_tests {
     use super::*;

@@ -258,11 +258,13 @@ class DockerE2ERunnerTests(unittest.TestCase):
             [
                 "runtime-auth-model-delivery",
                 "runtime-agent-lifecycle",
+                "runtime-shared-credential-delete",
                 "runtime-upgrade-v030",
                 "runtime-upgrade-interrupted-schema47",
                 "memory-agent-home-persistence",
                 "workspace-restart-lifecycle",
                 "workitem-wait-restart-complete",
+                "scheduler-timer-online-admission",
             ],
         )
 
@@ -405,7 +407,7 @@ class DockerE2ERunnerTests(unittest.TestCase):
     def provider_retry_snapshot(*, recovered: bool = False) -> dict:
         root = {
             "id": "root", "agent_id": "main", "work_item_id": "work-1",
-            "kind": "system_tick",
+            "kind": "system_tick", "turn_id": "turn-root",
             "origin": {"kind": "system", "subsystem": "work_queue"},
             "authority_class": "runtime_instruction",
             "metadata": {"work_queue": {
@@ -443,7 +445,7 @@ class DockerE2ERunnerTests(unittest.TestCase):
             "messages": [
                 {
                     "message_id": message["id"], "agent_id": "main",
-                    "work_item_id": "work-1", "turn_id": f"turn-{message['id']}",
+                    "work_item_id": "work-1", "turn_id": message.get("turn_id"),
                     "payload_json": json.dumps(message),
                 } for message in (root, parked)
             ],
@@ -460,6 +462,7 @@ class DockerE2ERunnerTests(unittest.TestCase):
                 "turn_id": "turn-root", "agent_id": "main",
                 "owner_kind": "work_item", "owner_id": "work-1",
                 "trigger_message_id": "root", "terminal_kind": "deferred_to_fallback",
+                "payload_json": json.dumps({"input_message_ids": ["root"]}),
             }],
             "audit_events": [
                 audit("provider_attempt_failed", {
@@ -481,6 +484,8 @@ class DockerE2ERunnerTests(unittest.TestCase):
                 "turn_id": "turn-parked", "agent_id": "main",
                 "owner_kind": "work_item", "owner_id": "work-1",
                 "trigger_message_id": "parked", "terminal_kind": "completed",
+                "payload_json": json.dumps(
+                    {"input_message_ids": ["parked", "root"]}),
             })
         for mid in ("root", "parked") if recovered else ("root",):
             attempt_id = f"activation:message:{mid}"
@@ -494,7 +499,8 @@ class DockerE2ERunnerTests(unittest.TestCase):
                         "work_item_continuation" if mid == "root" else "runtime_recovery"
                     )}},
                     "binding": {"kind": "work_item", "work_item_id": "work-1"},
-                    "turn_id": f"turn-{mid}",
+                    # Runtime-owned recovery envelopes carry no turn hint.
+                    "turn_id": "turn-root" if mid == "root" else None,
                     "recovery_of_attempt_id": (
                         None if mid == "root" else "activation:message:root"
                     ),
@@ -633,18 +639,28 @@ class DockerE2ERunnerTests(unittest.TestCase):
 
     def test_provider_retry_recovery_rejects_replacement_foreign_root_or_owner(self) -> None:
         parking = self.provider_retry_parking(self.provider_retry_snapshot())
-        for evidence in ("replacement", "foreign_root", "foreign_owner", "unprocessed"):
+        for evidence in (
+            "replacement", "foreign_root", "foreign_owner", "unprocessed",
+            "unconsumed", "stale_hint",
+        ):
             with self.subTest(evidence=evidence):
                 snapshot = self.provider_retry_snapshot(recovered=True)
                 if evidence == "replacement":
                     snapshot["messages"][1]["message_id"] = "replacement"
                 elif evidence == "unprocessed":
                     snapshot["queue_entries"][1]["status"] = "queued"
+                elif evidence == "unconsumed":
+                    row = snapshot["turn_records"][1]
+                    payload = json.loads(row["payload_json"])
+                    payload["input_message_ids"] = ["root"]
+                    row["payload_json"] = json.dumps(payload)
                 else:
                     row = snapshot["execution_protocol_attempts"][1]
                     payload = json.loads(row["payload_json"])
                     if evidence == "foreign_root":
                         payload["recovery_of_attempt_id"] = "foreign-attempt"
+                    elif evidence == "stale_hint":
+                        payload["turn_id"] = "turn-root"
                     else:
                         payload["binding"]["work_item_id"] = "foreign-work"
                     row["payload_json"] = json.dumps(payload)
@@ -681,9 +697,12 @@ class DockerE2ERunnerTests(unittest.TestCase):
                 harness.event_cursor.return_value = 0
                 harness.events.return_value = [
                     {"type": "message_admitted", "payload": {
-                        "message_id": mid, "work_item_id": "work-1",
-                    }} for mid in ("root", "parked")
+                        "message_id": "root", "work_item_id": "work-1",
+                    }},
                 ] + [
+                    {"type": "provider_queue_parked", "payload": {
+                        "message_id": "foreign-parked", "reason": "chain_cooling",
+                    }},
                     {"type": "provider_queue_parked", "payload": {
                         "message_id": "parked", "reason": "chain_cooling",
                     }},
@@ -695,8 +714,16 @@ class DockerE2ERunnerTests(unittest.TestCase):
                         "turn_id": "turn-parked", "tool_name": tool, "status": "success",
                     }} for tool in ("ListWorkItems", "CompleteWorkItem")
                 ]
+                failed = self.provider_retry_snapshot()
+                failed["messages"].append({
+                    "message_id": "foreign-parked", "agent_id": "main",
+                    "work_item_id": "work-other",
+                    "payload_json": json.dumps({
+                        "metadata": {"provider_recovery": {"root_message_id": "root"}},
+                    }),
+                })
                 harness.runtime_db_snapshot.side_effect = [
-                    self.provider_retry_snapshot(),
+                    failed,
                     self.provider_retry_snapshot(recovered=True),
                 ]
                 harness.wait_work_item.return_value = {"result_brief_id": "brief-result"}
@@ -1380,6 +1407,19 @@ class DockerE2ERunnerTests(unittest.TestCase):
         )
         self.assertEqual(scenario.phase, 1)
 
+        for index in range(1, 5):
+            status, response = scenario.consume(
+                stub_batch_request(
+                    ({}, f"Reply with the exact marker UPGRADE-V030-OLD-{index:08x}."),
+                    recent_turns="UPGRADE-V030-OLD-0011aabb",
+                )
+            )
+            self.assertEqual(status, 200)
+            self.assertEqual(
+                response["output"][0]["content"][0]["text"],
+                f"UPGRADE-V030-OLD-{index:08x}",
+            )
+
         new_prompt = {
             "instructions": "agent instructions",
             "input": [
@@ -1408,7 +1448,8 @@ class DockerE2ERunnerTests(unittest.TestCase):
             response["output"][0]["content"][0]["text"],
             "UPGRADE-V030-NEW-0022ccdd",
         )
-        self.assertEqual(scenario.phase, 2)
+        self.assertEqual(scenario.phase, 6)
+        self.assertTrue(scenario.status()["complete"])
 
         status, response = scenario.consume(new_prompt)
         self.assertEqual(status, 409)
@@ -1939,6 +1980,40 @@ class DockerE2ERunnerTests(unittest.TestCase):
             "http://localhost/api/callbacks/wake/<redacted>",
         )
 
+    def test_evidence_redacts_secrets_in_subprocess_failures(self) -> None:
+        token = "temporary-docker-control-token"
+        credential = "temporary-provider-credential"
+        command = [
+            "docker", "run", "--env", f"HOLON_CONTROL_TOKEN={token}",
+            "--env", f"OPENAI_API_KEY={credential}", "holon:test",
+        ]
+        for error in (
+            subprocess.TimeoutExpired(command, 30),
+            subprocess.CalledProcessError(1, command),
+        ):
+            with (
+                self.subTest(error=type(error).__name__),
+                tempfile.TemporaryDirectory() as directory,
+            ):
+                root = Path(directory)
+                evidence = runner.redact_evidence(
+                    {"error": str(error), "cleanup_errors": [str(error)]},
+                    [token, credential],
+                )
+                runner.write_json(root / "case.json", evidence)
+                (root / "failure.txt").write_text(evidence["error"])
+                self.assertNotIn(token, evidence["error"])
+                self.assertNotIn(credential, evidence["error"])
+                self.assertIn("docker", evidence["error"])
+                self.assertIn("holon:test", evidence["error"])
+                self.assertEqual(
+                    runner.secret_scan(root, [token, credential])["status"], "pass"
+                )
+                (root / "unrelated.txt").write_text(credential)
+                self.assertEqual(
+                    runner.secret_scan(root, [token, credential])["status"], "fail"
+                )
+
     def test_capture_logs_redacts_callback_capability(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             harness = runner.CaseHarness(
@@ -2181,6 +2256,38 @@ class DockerE2ERunnerTests(unittest.TestCase):
             )
             self.assertFalse(any("/briefs?" in path for path in paths))
             self.assertFalse(any("/transcript?" in path for path in paths))
+
+    def test_tool_assertion_reads_turn_beyond_first_event_page(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            harness = runner.CaseHarness(
+                case_id="late-tool-page", image="holon:test",
+                model="deepseek/deepseek-v4-flash", credential_envs=[], env_file=None,
+                runtime_env={}, evidence_root=Path(directory), timeout_seconds=1, keep=False,
+            )
+            harness.agent_id = "default"
+            first = [{"type": "old_event", "payload": {}}] * runner.CONTEXT_EVENT_LIMIT
+            pages = [
+                {"events": first, "newest_seq": 300, "has_newer": True},
+                {"events": [
+                    {"type": "turn_started", "payload": {
+                        "turn_id": "turn-after-300", "turn_index": 11,
+                        "message_id": "message-after-300"}},
+                    {"type": "tool_executed", "payload": {
+                        "turn_id": "turn-after-300", "tool_name": "DeleteAgent",
+                        "status": "success"}},
+                ], "newest_seq": 302, "has_newer": False},
+            ]
+            paths = []
+            def request(method, path, *args, **kwargs):
+                self.assertEqual(method, "GET")
+                paths.append(path)
+                return pages.pop(0)
+            harness.request = request
+            events = harness.assert_tools("repeat-delete", 10, ["DeleteAgent"],
+                                          message_id="message-after-300")
+            self.assertEqual([e["payload"]["tool_name"] for e in events], ["DeleteAgent"])
+            self.assertIn("after_seq=0", paths[0])
+            self.assertIn("after_seq=300", paths[1])
 
     def test_event_batch_pages_until_the_latest_event(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -3134,11 +3241,13 @@ class DockerE2ERunnerTests(unittest.TestCase):
             [
                 ("runtime-auth-model-delivery", None),
                 ("runtime-agent-lifecycle", None),
+                ("runtime-shared-credential-delete", None),
                 ("runtime-upgrade-v030", None),
                 ("runtime-upgrade-interrupted-schema47", None),
                 ("memory-agent-home-persistence", None),
                 ("workspace-restart-lifecycle", None),
                 ("workitem-wait-restart-complete", None),
+                ("scheduler-timer-online-admission", "canonical"),
                 ("scheduler-task-wait-resume", "canonical"),
             ],
         )
@@ -3957,6 +4066,36 @@ class DockerE2ERunnerTests(unittest.TestCase):
 
 
 class LiveAcceptanceEvidenceTests(unittest.TestCase):
+    def test_live_input_batch_accepts_async_sender_creation_before_bootstrap(self) -> None:
+        for status in (200, 202):
+            with self.subTest(status=status):
+                harness = Mock()
+                sender = Mock()
+                sender.agent_path.return_value = "/api/control/agents/sender/create"
+                sender.wait_default_bootstrap_turn_settled.side_effect = RuntimeError(
+                    "sender bootstrap reached"
+                )
+
+                def request(method, path, body, *, expected_status=200):
+                    accepted = (
+                        (expected_status,) if isinstance(expected_status, int)
+                        else expected_status
+                    )
+                    self.assertIn(status, accepted)
+                    return {"receipt": {"created": True}}
+
+                harness.request.side_effect = request
+                with (
+                    patch.object(runner.copy, "copy", return_value=sender),
+                    self.assertRaisesRegex(RuntimeError, "sender bootstrap reached"),
+                ):
+                    runner.run_live_input_batch_case(harness, {"timeout_seconds": 480})
+                harness.request.assert_called_once_with(
+                    "POST", sender.agent_path.return_value, {},
+                    expected_status=(200, 202),
+                )
+                sender.wait_default_bootstrap_turn_settled.assert_called_once_with()
+
     def test_agent_tail_checks_bounds_scope_cursor_and_null_device(self) -> None:
         for case in ("good", "foreign-agent", "task-scope", "oversized", "null-error"):
             with self.subTest(case=case), tempfile.TemporaryDirectory() as directory:
@@ -4610,6 +4749,10 @@ class LiveAcceptanceEvidenceTests(unittest.TestCase):
         })()
         with self.assertRaisesRegex(AssertionError, "forbidden TaskOutput"):
             runner.live_events(harness, 0)
+
+
+# The Makefile names this module explicitly rather than using discovery.
+from tests.test_docker_e2e_shared_credential_delete import SharedCredentialDeletionTests
 
 
 if __name__ == "__main__":

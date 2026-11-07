@@ -234,6 +234,7 @@ fn system_tick_is_contentful(message: &MessageEnvelope) -> bool {
     body_is_contentful(&message.body)
 }
 
+#[cfg(holon_lib_test_shard = "a")]
 #[cfg(test)]
 mod tests {
     use crate::types::{ClosureDecision, ClosureOutcome, RuntimePosture, WaitingReason};

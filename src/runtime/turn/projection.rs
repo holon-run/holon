@@ -1451,6 +1451,7 @@ pub(super) fn build_turn_local_projection_with_time(
     })
 }
 
+#[cfg(holon_lib_test_shard = "a")]
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1460,7 +1461,7 @@ mod tests {
         let image = |bytes| ConversationMessage::UserImage {
             prompt: "look".into(),
             media_type: "image/png".into(),
-            data_base64: "x".repeat(bytes),
+            data_base64: "x".repeat(bytes).into(),
             optional_history: false,
         };
         let frame = prompt_frame();
@@ -1495,7 +1496,7 @@ mod tests {
         let image = ConversationMessage::UserImage {
             prompt: "look".into(),
             media_type: "image/png".into(),
-            data_base64,
+            data_base64: data_base64.into(),
             optional_history: true,
         };
         assert_eq!(

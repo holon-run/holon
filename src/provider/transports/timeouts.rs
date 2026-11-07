@@ -42,6 +42,7 @@ tokio::task_local! {
     pub(crate) static HTTP_TIMEOUTS_OVERRIDE: HttpTimeouts;
 }
 
+#[cfg(holon_lib_test_shard = "c")]
 #[cfg(test)]
 mod tests {
     use super::*;

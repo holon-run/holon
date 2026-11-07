@@ -247,6 +247,103 @@ class BuildToolContracts(unittest.TestCase):
         self.assertFalse(self.log.exists())
 
 
+class UIFixtureBootstrapContracts(unittest.TestCase):
+    def setUp(self):
+        self.helpers = fixture_helpers()
+        self.wait = self.helpers["wait_for_agent_bootstrap"]
+        self.created = {"receipt": {"stage": "provisioning", "job_id": "bootstrap-fixture"}}
+        self.now = 0
+        self.clock = patch.object(self.helpers["time"], "monotonic", side_effect=lambda: self.now)
+        self.sleeper = patch.object(self.helpers["time"], "sleep", side_effect=self.advance)
+        self.clock.start()
+        self.sleeper.start()
+        self.addCleanup(self.clock.stop)
+        self.addCleanup(self.sleeper.stop)
+
+    def advance(self, seconds):
+        self.now += seconds
+
+    def create_fixture_work(self, local):
+        # Execute the real create/wait/work statements, not a source-string assertion.
+        source = ROOT / "scripts/ios_ui_fixture.py"
+        tree = ast.parse(source.read_text(), filename=str(source))
+        setup = next(node for node in ast.walk(tree) if isinstance(getattr(node, "body", None), list)
+                     and any(isinstance(child, ast.Assign)
+                             and any(isinstance(target, ast.Name) and target.id == "created"
+                                     for target in child.targets) for child in node.body))
+        start = next(index for index, node in enumerate(setup.body)
+                     if isinstance(node, ast.Assign)
+                     and any(isinstance(target, ast.Name) and target.id == "created"
+                             for target in node.targets))
+        namespace = dict(self.helpers, local=local, agent="holon-tester")
+        exec(compile(ast.Module(body=setup.body[start:start + 3], type_ignores=[]),
+                     str(source), "exec"), namespace)
+        return namespace["work"]
+
+    def test_background_creation_waits_for_ready_before_work_mutation(self):
+        def local(method, path, **kwargs):
+            self.assertEqual((method, path), ("GET", "/jobs/bootstrap-fixture"))
+            self.assertLessEqual(kwargs["timeout"], 30 - self.now)
+            if self.now < 10.8:
+                return {"job": {"status": "running"}}
+            return {"job": {"status": "completed", "result": {"bootstrap": {"status": "ready"}}}}
+
+        self.wait(local, self.created)
+        self.assertGreaterEqual(self.now, 10.8, "202 must not stand in for bootstrap readiness")
+        source = (ROOT / "scripts/ios_ui_fixture.py").read_text()
+        self.assertIn('wait_for_agent_bootstrap(local, created)\n'
+                      '            work = local("POST"', source)
+
+    def test_inline_ready_receipt_needs_no_poll(self):
+        local = Mock()
+        self.wait(local, {"receipt": {"stage": "bootstrapped", "bootstrap": {"status": "ready"}}})
+        local.assert_not_called()
+
+    def test_failed_or_degraded_bootstrap_stops_without_echoing_details(self):
+        for job in ({"status": "failed", "error": "PRIVATE"},
+                    {"status": "completed", "result": {"bootstrap": {"status": "degraded"}}},
+                    {"status": "completed"}, {"status": "PRIVATE"}):
+            with self.subTest(job=job), self.assertRaises(RuntimeError) as failure:
+                self.wait(Mock(return_value={"job": job}), self.created)
+            self.assertNotIn("PRIVATE", str(failure.exception))
+
+    def test_pending_bootstrap_has_total_deadline_and_bounded_requests(self):
+        local = Mock(return_value={"job": {"status": "queued"}})
+        with self.assertRaisesRegex(RuntimeError, "timed out"):
+            self.wait(local, self.created, timeout=.25)
+        self.assertAlmostEqual(self.now, .25)
+        self.assertEqual(local.call_count, 3)
+        self.assertTrue(all(0 < request.kwargs["timeout"] <= .25
+                            for request in local.call_args_list))
+
+    def test_missing_job_with_durable_ready_allows_work_creation(self):
+        created = {"receipt": {"stage": "provisioning", "agent_id": "holon-tester"}}
+        local = Mock(side_effect=[created, {"bootstrap": {"status": "ready"}}, {"id": "work"}])
+        self.assertEqual(self.create_fixture_work(local), {"id": "work"})
+        self.assertEqual([(call.args[0], call.args[1]) for call in local.call_args_list], [
+            ("POST", "/control/agents/holon-tester/create"),
+            ("GET", "/control/agents/holon-tester/detail"),
+            ("POST", "/control/agents/holon-tester/work-items")])
+        self.assertEqual(local.call_args_list[1].kwargs["timeout"], 10)
+
+    def test_missing_job_without_durable_ready_never_creates_work(self):
+        for bootstrap in ({"status": "provisioning"}, {"status": "degraded"}, None, {}):
+            with self.subTest(bootstrap=bootstrap):
+                created = {"receipt": {"stage": "provisioning", "agent_id": "holon-tester"}}
+                local = Mock(side_effect=[created, {"bootstrap": bootstrap}])
+                with self.assertRaisesRegex(RuntimeError, "no ready durable state or job"):
+                    self.create_fixture_work(local)
+                self.assertEqual(local.call_count, 2)
+
+    def test_missing_identity_or_nonready_terminal_receipt_fails_immediately(self):
+        for receipt in ({"stage": "provisioning"}, {"stage": "degraded"},
+                        {"stage": "bootstrapped", "bootstrap": {"status": "degraded"}}):
+            local = Mock()
+            with self.assertRaisesRegex(RuntimeError, "no ready receipt or job"):
+                self.wait(local, {"receipt": receipt})
+            local.assert_not_called()
+
+
 class UIFixtureSetupContracts(unittest.TestCase):
     def run_loss_scenarios(self, invalid_receipts=None):
         # Execute the real per-case loop; only external XCTest/services are mocked.
@@ -494,6 +591,22 @@ class UIFixtureSetupContracts(unittest.TestCase):
         printed = "\n".join(str(call) for call in output.call_args_list)
         self.assertIn("UI sweep telemetry:", printed)
         self.assertIn("testAuthenticatedNativeWorkflow", printed)
+
+    def test_ci_uploads_the_telemetry_written_by_the_fixture(self):
+        workflow = (ROOT / ".github/workflows/ci.yml").read_text()
+        step = workflow.split("- name: Preserve the UI sweep telemetry", 1)[1]
+        step = step.split("\n      - name:", 1)[0]
+        upload = re.search(r"^\s+path:\s*(.+)$", step, re.MULTILINE)
+        self.assertIsNotNone(upload)
+        with tempfile.TemporaryDirectory() as temporary:
+            evidence = Path(temporary) / "holon-ios-ui-evidence" / "evidence"
+            evidence.mkdir(parents=True)
+            record = {"cases": 1, "attempts": [{"outcome": "failed"}]}
+            fixture_helpers()["write_fixture_json"](evidence, "ui-sweep-telemetry.json", record)
+            path = Path(upload.group(1).replace("${{ runner.temp }}", temporary))
+            self.assertEqual(path, evidence / "ui-sweep-telemetry.json",
+                             "Upload only the telemetry file, not the private fixture")
+            self.assertEqual(json.loads(path.read_text()), record)
 
     def test_app_side_reset_failure_reaches_the_host(self):
         """A reset that failed in the app process must still fail the case.
@@ -2051,18 +2164,29 @@ class UIFixtureEvidenceContracts(unittest.TestCase):
                        and any(isinstance(item, ast.Call) and isinstance(item.func, ast.Attribute)
                                and item.func.attr == "terminate"
                                for item in ast.walk(ast.Module(body=node.finalbody, type_ignores=[]))))
-        for fail in (False, True):
+        terminal = ("completed", "failed", "cancelled", "interrupted")
+        cases = [(status, False) for status in terminal + ("queued", "running", "cancelling")]
+        cases.append(("running", True))
+        for status, fail in cases:
             daemon = Mock()
             daemon.wait.side_effect = [subprocess.TimeoutExpired("isolated daemon", 8), None]
             release, proxy, provider = threading.Event(), Mock(), Mock()
+            snapshot = {"status": status}
+            local = Mock(return_value=snapshot)
+            if fail:
+                local.side_effect = [snapshot, RuntimeError("stop failed")]
             namespace = dict(task_id="fixture-task", agent="holon-tester", daemon=daemon,
                              release_held_run=release, proxy=proxy, provider=provider,
-                             subprocess=subprocess, local=Mock(side_effect=RuntimeError("stop failed") if fail else None))
+                             subprocess=subprocess, local=local)
             if fail:
                 with self.assertRaisesRegex(RuntimeError, "stop failed"):
                     self.execute(cleanup, namespace)
             else:
                 self.execute(cleanup, namespace)
+            calls = [call("GET", "/agents/holon-tester/tasks/fixture-task")]
+            if status not in terminal:
+                calls.append(call("POST", "/control/agents/holon-tester/tasks/fixture-task/stop", {}))
+            self.assertEqual(local.call_args_list, calls, (status, fail))
             self.assertTrue(release.is_set())
             for server in (proxy, provider):
                 server.shutdown.assert_called_once()

@@ -31,9 +31,9 @@ pub(crate) fn pause_local_dispatch_rejected_tx(
     turn: &TurnRecord,
     activation_id: &str,
     delivery: Option<&TaskResultActivationSettlement>,
-) -> Result<usize> {
+) -> Result<Vec<String>> {
     if queue.status != QueueEntryStatus::Aborted || !is_local_dispatch_rejection(turn) {
-        return Ok(0);
+        return Ok(Vec::new());
     }
     anyhow::ensure!(
         delivery.is_none(),
@@ -41,7 +41,7 @@ pub(crate) fn pause_local_dispatch_rejected_tx(
     );
     let records = admitted_for_activation_tx(tx, &queue.agent_id, activation_id)?;
     if records.is_empty() {
-        return Ok(0);
+        return Ok(Vec::new());
     }
     let attempt = reply_admission_attempt_tx(tx, &queue.agent_id, activation_id)?
         .ok_or_else(|| anyhow::anyhow!("local dispatch stop lost its execution attempt"))?;
@@ -60,7 +60,7 @@ pub(crate) fn pause_local_dispatch_rejected_tx(
         }
     }
     let now = queue.updated_at;
-    let mut changed = 0;
+    let mut changed = Vec::new();
     for mut record in records {
         if !record_matches_durable_task_tx(tx, &record)?
             || (record.recovery_paused_at.is_some()
@@ -74,8 +74,9 @@ pub(crate) fn pause_local_dispatch_rejected_tx(
         record.deferred_at = Some(now);
         record.next_recheck_at = None;
         record.updated_at = now;
-        update_tx(tx, &record)?;
-        changed += 1;
+        if update_tx(tx, &record)? {
+            changed.push(record.result_identity);
+        }
     }
     Ok(changed)
 }

@@ -302,6 +302,7 @@ fn active_tasks_hint(app: &TuiApp) -> Option<String> {
     }
 }
 
+#[cfg(holon_lib_test_shard = "d")]
 #[cfg(test)]
 mod tests {
     use super::{ellipsize, shorten_home_path_with_home, workspace_label, StatusbarViewModel};

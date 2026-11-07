@@ -230,6 +230,7 @@ fn is_metadata_ip(ip: &IpAddr) -> bool {
     }
 }
 
+#[cfg(holon_lib_test_shard = "d")]
 #[cfg(test)]
 mod tests {
     use super::*;

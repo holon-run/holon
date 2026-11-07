@@ -222,6 +222,7 @@ impl AgentProvider for DelayedSuccessProvider {
             })
             .unwrap_or("worktree attempt");
         Ok(ProviderTurnResponse {
+            material: Default::default(),
             blocks: vec![ModelBlock::Text {
                 text: format!("Completed worktree attempt for: {}", prompt),
             }],

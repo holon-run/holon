@@ -5,6 +5,8 @@ import json
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import Mock, patch
 
 from scripts.docker_e2e import timer_admission as timer
 from tests.test_docker_e2e_runner import ROOT, runner, stub, stub_batch_request
@@ -91,6 +93,90 @@ class TimerAdmissionTests(unittest.TestCase):
         self.assertNotIn(
             selected[0]["id"], manifest["profiles"]["scheduler-required"]["case_ids"],
         )
+
+    def test_first_online_timer_is_in_required_profile(self) -> None:
+        manifest = json.loads((ROOT / "tests/e2e/docker/manifest.json").read_text())
+        profile = runner.resolve_profile(manifest, "scheduler-required")
+        selected = runner.select_cases(
+            manifest, requested=profile["case_ids"], suite="core", tags=[],
+        )
+        online = next(
+            case for case in selected if case["id"] == "scheduler-timer-online-admission"
+        )
+        self.assertEqual(online["provider_mode"], "stub")
+        self.assertIn(online["id"], profile["required_coverage_ids"])
+        with patch.object(timer, "run_case") as run:
+            runner.CASE_RUNNERS[online["id"]]("harness", online)
+        run.assert_called_once_with(
+            "harness", online, restart_before_first_dispatch=False,
+        )
+
+    def test_online_orchestration_never_restarts_and_rejects_changed_daemon(self) -> None:
+        # This checks the harness branch, not a real daemon execution.
+        for restarted in (False, True):
+            with self.subTest(restarted=restarted), tempfile.TemporaryDirectory() as tmp:
+                evidence = Path(tmp)
+                status = {"timer_dispatch_requests": [
+                    {"phase": 4, "message_id": "tick-1"},
+                    {"phase": 7, "message_id": "tick-2"},
+                ]}
+                (evidence / "stub-status.json").write_text(json.dumps(status))
+                pending = [{"state": "pending"}, {"state": "pending"}]
+                harness = Mock(
+                    provider_mode="stub", agent_id="main", evidence=evidence,
+                    container="daemon-under-test",
+                )
+                harness.assert_stub_complete = Mock()
+                harness.wait_work_item_scheduling_state.return_value = {
+                    "id": WID, "blocked_by_wait_id": "wait-1", "todo_list": pending,
+                }
+                harness.request.side_effect = [[{
+                    "id": TID, "agent_id": "main", "repeat": True,
+                    "interval_ms": 30000, "fire_count": 0,
+                }], {"status": "cancelled"}]
+                harness.wait_work_item.return_value = {
+                    "id": WID, "result_brief_id": "brief-1",
+                    "todo_list": [{"state": "completed"}, {"state": "completed"}],
+                }
+                harness.brief.return_value = {"body": f"{MARKER}-COMPLETE"}
+                harness.docker.side_effect = [
+                    SimpleNamespace(stdout="boot-1"),
+                    SimpleNamespace(stdout="boot-2" if restarted else "boot-1"),
+                ]
+                with (
+                    patch.object(timer.secrets, "token_hex", return_value="abcd"),
+                    patch.object(timer, "snapshot", side_effect=[
+                        {"timers": [{"timer_id": TID, "fire_count": 0}],
+                         "work_items": [{"agent_id": "main"}]},
+                        {}, {"execution_protocol_attempts": []},
+                    ]) as snapshots,
+                    patch.object(timer, "owned_wait"),
+                    patch.object(timer, "wait_rearmed", return_value={
+                        "id": WID, "blocked_by_wait_id": "wait-2",
+                    }),
+                    patch.object(timer, "require_dispatch", side_effect=[
+                        {"message_id": "tick-1"}, {"message_id": "tick-2"},
+                    ]) as dispatches,
+                    patch.object(timer, "provider_requests", return_value=[1]),
+                ):
+                    case = {"id": "scheduler-timer-online-admission",
+                            "phases": [{"prompt": "{marker}"}]}
+                    if restarted:
+                        with self.assertRaisesRegex(AssertionError, "restarted the daemon"):
+                            timer.run_case(harness, case, restart_before_first_dispatch=False)
+                        self.assertFalse((evidence / "timer-admission-oracle.json").exists())
+                    else:
+                        timer.run_case(harness, case, restart_before_first_dispatch=False)
+                        oracle = json.loads(
+                            (evidence / "timer-admission-oracle.json").read_text()
+                        )
+                        self.assertFalse(oracle["restart_before_first_dispatch"])
+                        self.assertIsNone(oracle["restart_after_wait_id"])
+                        self.assertEqual(oracle["online_daemon_started_at"], "boot-1")
+                    harness.start.assert_called_once_with()
+                    harness.stop.assert_not_called()
+                    self.assertEqual(dispatches.call_count, 2)
+                    self.assertTrue(all(not call.kwargs for call in snapshots.call_args_list))
 
     def test_complete_transcript_has_two_real_ticks_and_cancels_timer(self) -> None:
         scenario = stub.Scenario("scheduler-timer-admission")

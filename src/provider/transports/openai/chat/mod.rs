@@ -8,6 +8,9 @@ pub(crate) use parse::{accumulate_chat_completion_stream_events, parse_chat_comp
 pub(crate) use plan::build_chat_completion_messages;
 pub(crate) use plan::build_chat_completion_request;
 pub(super) use plan::plan_chat_completion_request;
-pub(super) use send::send_chat_completion_request;
+pub(super) use send::send_chat_completion_request_with_material;
 #[cfg(test)]
-pub(crate) use send::{classify_openai_chat_completion_error, send_chat_completion_stream_request};
+pub(crate) use send::{
+    classify_openai_chat_completion_error, send_chat_completion_request,
+    send_chat_completion_stream_request,
+};

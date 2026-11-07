@@ -479,6 +479,7 @@ fn timestamp_nanos(value: chrono::DateTime<chrono::Utc>) -> u64 {
         .unwrap_or_default()
 }
 
+#[cfg(holon_lib_test_shard = "c")]
 #[cfg(test)]
 mod tests {
     use std::time::{Duration, Instant};

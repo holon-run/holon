@@ -275,6 +275,7 @@ fn estimated_tokens(text: &str) -> usize {
     text.chars().count().saturating_add(3) / 4
 }
 
+#[cfg(holon_lib_test_shard = "c")]
 #[cfg(test)]
 mod tests {
     use chrono::{Duration, Utc};

@@ -128,13 +128,14 @@ pub(crate) async fn execute(
     Ok(result)
 }
 
-pub(crate) async fn prepare_settlement(
-    runtime: &RuntimeHandle,
-    agent_id: &str,
+#[inline(never)]
+pub(crate) fn prepare_settlement<'a>(
+    runtime: &'a RuntimeHandle,
+    agent_id: &'a str,
     _authority_class: &AuthorityClass,
     args: WaitForArgs,
-) -> Result<ToolResult> {
-    settle_impl(runtime, agent_id, args, true).await
+) -> std::pin::Pin<Box<impl std::future::Future<Output = Result<ToolResult>> + Send + 'a>> {
+    Box::pin(settle_impl(runtime, agent_id, args, true))
 }
 
 async fn settle_impl(
@@ -642,6 +643,7 @@ impl From<WaitForWakeArg> for WaitForWakeKind {
     }
 }
 
+#[cfg(holon_lib_test_shard = "c")]
 #[cfg(test)]
 mod tests {
     use super::*;
