@@ -31,3 +31,8 @@ it would orphan the parent's `task_stop_effects` foreign key and recovery source
 Parent purge may own it only after the child's private cleanup proof is complete.
 Unknown or nonempty child effects remain blocked. Scope membership alone does
 not imply private content ownership.
+
+Every receipt excluded by the private-content selector still enters original
+ownership validation, even if malformed normalized scope membership hides its
+claimed other-scope Stop owner. Retention predicates cannot become a path
+around whole-receipt checksum and normalized-descriptor checks.

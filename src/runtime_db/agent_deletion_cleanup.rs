@@ -1327,12 +1327,15 @@ fn assert_command_ownership_tx(tx: &Transaction<'_>, agent_id: &str) -> Result<(
         return Ok(());
     }
     let candidates = {
+        // Every retained row needs validation, even if malformed normalized
+        // membership conceals its claimed other-scope Stop owner.
         let mut statement = tx.prepare(&format!(
             "SELECT command_nonce,prepared_json FROM input_mutation_receipts
              WHERE {RECEIPT_MEMBER}
-               AND EXISTS(SELECT 1 FROM json_each(scopes_json) s
+               AND (NOT ({RECEIPT_OWNER})
+                 OR EXISTS(SELECT 1 FROM json_each(scopes_json) s
                  WHERE json_type(s.value,'$.agent_id') IS NOT 'text'
-                    OR json_extract(s.value,'$.agent_id') != ?1)"
+                    OR json_extract(s.value,'$.agent_id') != ?1))"
         ))?;
         let rows = statement
             .query_map([agent_id], |row| {

@@ -778,6 +778,7 @@ async fn child_cleanup_readonly_stop_rejects_mutated_effects_and_generations() -
         "child-parent",
         "parent-incarnation",
         "parent-task-nonterminal",
+        "missing-parent-membership",
         "typed-target-wrong-incarnation",
         "typed-target-foreign-child",
         "typed-target-unknown-incarnation",
@@ -798,9 +799,9 @@ async fn child_cleanup_readonly_stop_rejects_mutated_effects_and_generations() -
             false,
         )?;
         let saved = db.transaction(|tx| {
-            let receipt: (String, String) = tx.query_row(
-                "SELECT outcome_json,result_digest FROM input_mutation_receipts WHERE command_nonce=?1",
-                [f.original.prepared.command_nonce()], |r| Ok((r.get(0)?, r.get(1)?)),
+            let receipt: (String, String, String) = tx.query_row(
+                "SELECT outcome_json,result_digest,scopes_json FROM input_mutation_receipts WHERE command_nonce=?1",
+                [f.original.prepared.command_nonce()], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
             )?;
             let child_row: (String, String) = tx.query_row(
                 "SELECT parent_agent_id,payload_json FROM agent_identities WHERE agent_id=?1",
@@ -822,6 +823,7 @@ async fn child_cleanup_readonly_stop_rejects_mutated_effects_and_generations() -
                     tx.execute("UPDATE input_mutation_receipts SET outcome_json=?2,result_digest=?3 WHERE command_nonce=?1",
                         rusqlite::params![f.original.prepared.command_nonce(),serde_json::to_string(&receipt.outcome)?,digest])?;
                 }
+                "missing-parent-membership" => { tx.execute("UPDATE input_mutation_receipts SET scopes_json=?2 WHERE command_nonce=?1", rusqlite::params![f.original.prepared.command_nonce(), serde_json::to_string(&vec![child.scope.clone()])?])?; }
                 "child-incarnation" => { tx.execute("UPDATE agent_identities SET payload_json=json_set(payload_json,'$.incarnation',2) WHERE agent_id=?1", [&child.scope.agent_id])?; }
                 "child-parent" => { tx.execute("UPDATE agent_identities SET parent_agent_id='foreign-parent',payload_json=json_set(payload_json,'$.parent_agent_id','foreign-parent') WHERE agent_id=?1", [&child.scope.agent_id])?; }
                 "parent-incarnation" => { tx.execute("UPDATE agent_identities SET payload_json=json_set(payload_json,'$.incarnation',2) WHERE agent_id=?1", [&f.scope.agent_id])?; }
@@ -862,7 +864,7 @@ async fn child_cleanup_readonly_stop_rejects_mutated_effects_and_generations() -
         // Restore the synthetic mutations so shutdown can drain its original
         // valid Stop continuation, rather than ignore a teardown failure.
         db.transaction(|tx| {
-            tx.execute("UPDATE input_mutation_receipts SET outcome_json=?2,result_digest=?3 WHERE command_nonce=?1", rusqlite::params![f.original.prepared.command_nonce(),saved.0.0,saved.0.1])?;
+            tx.execute("UPDATE input_mutation_receipts SET outcome_json=?2,result_digest=?3,scopes_json=?4 WHERE command_nonce=?1", rusqlite::params![f.original.prepared.command_nonce(),saved.0.0,saved.0.1,saved.0.2])?;
             tx.execute("UPDATE agent_identities SET parent_agent_id=?2,payload_json=?3 WHERE agent_id=?1", rusqlite::params![child.scope.agent_id,saved.1.0,saved.1.1])?;
             tx.execute("UPDATE agent_identities SET payload_json=?2 WHERE agent_id=?1", rusqlite::params![f.scope.agent_id,saved.2])?;
             tx.execute("UPDATE tasks SET status=?2,payload_json=?3 WHERE task_id=?1", rusqlite::params![f.original.intent.task.key.id,saved.3.0,saved.3.1])?;
