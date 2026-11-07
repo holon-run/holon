@@ -1270,7 +1270,12 @@ impl<'a> SchedulerDecisionExecutor<'a> {
                     scenario_class,
                     reason,
                 )? {
-                    self.runtime.append_original_audit_event(event).await?;
+                    // Reuse the planning owner instead of waiting on ourselves.
+                    planning_guard
+                        .as_mut()
+                        .expect("planning reservation")
+                        .append_original_audit_event(event)
+                        .await?;
                 }
                 return Ok(PrepareMessageOutcome::DeferredUntilRunnable);
             }
