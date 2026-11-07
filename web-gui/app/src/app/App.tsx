@@ -40,6 +40,7 @@ import { setupIsReady } from "../features/onboarding/SetupStatusCard";
 import { FilePreviewPage } from "../features/right-panel/FilePreviewPage";
 import { LoginPage } from "../features/auth/LoginPage";
 import { Button } from "../components/ui/Button";
+import { AgentAvatar } from "../components/ui/AgentAvatar";
 import { EmptyState } from "../components/ui/EmptyState";
 import { StatusBadge } from "../components/ui/StatusChip";
 import { DashboardPage } from "../features/dashboard/DashboardPage";
@@ -715,7 +716,7 @@ export function App() {
                       type="button"
                       onClick={() => navigateAgent(agent.id)}
                     >
-                      <span className={`agent-badge ${agent.badgeTone ?? ""}`} style={agent.badgeHue != null && !agent.badgeTone ? ({ "--badge-hue": `${agent.badgeHue}` } as CSSProperties) : undefined}>{agent.badge}</span>
+                      <AgentAvatar agentId={agent.id} />
                       <span className="agent-row-main">
                         <span className="agent-row-title">
                           <strong>{agent.name ?? agent.id}</strong>
