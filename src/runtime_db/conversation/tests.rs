@@ -1348,12 +1348,15 @@ fn schema_25_upgrade_restores_only_sealed_legacy_results() -> Result<()> {
 
     let db = RuntimeDb::open_and_migrate(&db_path, &lock_path)?;
     let page = db.conversation().summary_page(AGENT_ID, 20, None, None)?;
-    assert_eq!(page.turns.len() + page.active_turns.len(), cases.len());
+    assert_eq!(page.turns.len(), cases.len());
+    assert!(!page.has_more);
+    assert_eq!(page.active_turns.len(), 1);
+    assert_eq!(page.active_turns[0].turn_id, "legacy-active");
+    assert!(!page.active_turns[0].settled);
     for (case, _, expected_settled) in cases {
         let summary = page
             .turns
             .iter()
-            .chain(&page.active_turns)
             .find(|summary| summary.turn_id == format!("legacy-{case}"))
             .expect("migrated legacy turn");
         let stored: bool = db.connection()?.query_row(
