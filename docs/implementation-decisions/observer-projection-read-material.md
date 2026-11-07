@@ -1,5 +1,10 @@
 # Observer projection read material
 
+Cumulative resource estimates are now observational, as defined in
+[the current resource policy](resource-estimates-are-observational.md).
+References below to phase allowances and admission retain their ownership and
+test fault-injection meaning; they do not impose production read quotas.
+
 Roster inventory and wire framing use the Host accounting scope. Each Agent's
 State and posture acquisition uses that Agent's unchanged phase allowance and
 the shared Host ledger. The roster retains every Agent acquisition through the

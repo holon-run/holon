@@ -133,6 +133,26 @@ fn read(db: &crate::runtime_db::RuntimeDb, route: usize) -> Result<Vec<WorkItemR
     }
 }
 
+#[test]
+fn work_queue_read_preserves_full_records_above_former_cumulative_estimate_caps() -> Result<()> {
+    let (_home, db, mut expected) = fixture(128, true)?;
+    for record in &mut expected {
+        record.objective = "history detail ".repeat(2300);
+        record.revision += 1;
+        assert!(db
+            .work_items()
+            .update_expected(record, record.revision - 1)?);
+    }
+    let ledger = InputEvidenceBudgetLedger::new(StateMemoryLimits::default())?;
+    let phase = ResourceReadMaterial::new(&ledger, &scope())?;
+    let actual = phase.read(|| context_non_open_work_items_on(&db.connection()?, "web", 128))?;
+    assert_eq!(actual, expected);
+    assert!(phase.finish()?.0 > 64 * 1024 * 1024);
+    drop(phase);
+    assert_eq!(ledger.report()?.observed_bytes, 0);
+    Ok(())
+}
+
 fn gates(expected: &[WorkItemRecord]) -> Result<Vec<(u64, usize)>> {
     let mut gates = Vec::new();
     for (index, record) in expected.iter().enumerate() {
@@ -294,7 +314,17 @@ fn queue_sql_rejects_large_decode_prefix_before_malformed_suffix_can_erase_cells
             [&payload],
         )?;
         let ledger = InputEvidenceBudgetLedger::new(StateMemoryLimits::default())?;
+        // Normal reads report the actual malformed JSON, even above the former
+        // estimated node cap. Finite limits below only inject an earlier fault.
         let phase = ResourceReadMaterial::new(&ledger, &scope())?;
+        let error = phase.read(|| read(&db, route)).unwrap_err();
+        assert!(error.downcast_ref::<serde_json::Error>().is_some());
+        assert!(!exhausted(&error));
+        assert!(phase.finish()?.1 > 65_536);
+        drop(phase);
+        assert_eq!(ledger.report()?.observed_bytes, 0);
+        let phase =
+            ResourceReadMaterial::with_test_limits(&ledger, &scope(), 64 * 1024 * 1024, 65_536)?;
         {
             let _entry = phase.enter();
             let error = read(&db, route).unwrap_err();
