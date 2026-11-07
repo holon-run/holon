@@ -26,11 +26,8 @@ impl RuntimeHost {
             .map_err(PublicAgentError::Runtime)?;
         if let Some(runtime) = runtime {
             crate::diagnostics::record_projection_state_source_loaded();
-            runtime
-                .prepare_operator_current_scoped(db, handle)
-                .map_err(PublicAgentError::Runtime)?;
             return runtime
-                .operator_state_read_projection_scoped(task_limit, timer_limit, db, handle)
+                .acquire_operator_state_read_projection_scoped(task_limit, timer_limit, db, handle)
                 .map_err(PublicAgentError::Runtime);
         }
         let identity = self.active_agent_identity(agent_id)?;
@@ -170,8 +167,8 @@ impl RuntimeHost {
             if let Some(runtime) =
                 handle.block_on(self.try_get_loaded_runtime_scoped(&identity.agent_id, db))?
             {
-                runtime.prepare_operator_current_scoped(db, handle)?;
-                let mut read = runtime.child_agent_summary_observation_scoped(db, handle)?;
+                let mut read =
+                    runtime.acquire_child_agent_summary_observation_scoped(db, handle)?;
                 read.observability._source_material = Some(material.guard()?);
                 read.acquisition.read(|| {
                     crate::diagnostics::resource_io::admit_cloned_value(

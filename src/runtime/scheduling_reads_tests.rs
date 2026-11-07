@@ -449,3 +449,55 @@ async fn summary_query_after_active_metadata_ack_rejects_unqualified_canonical_d
     assert_eq!(read.scheduling.timer(&timer.id)?, Some(&timer));
     Ok(())
 }
+
+#[tokio::test]
+async fn scoped_http_state_prepares_scheduling_after_active_metadata_ack() -> Result<()> {
+    let home = tempdir()?;
+    let runtime = runtime(home.path())?;
+    runtime.await_initial_resources().await;
+    publish_active_metadata_ack(&runtime).await?;
+    let db = runtime
+        .inner
+        .runtime_db
+        .with_read_scope(crate::runtime_db::RuntimeDbReadScope::new(
+            std::time::Instant::now() + std::time::Duration::from_secs(30),
+        ));
+    let handle = tokio::runtime::Handle::current();
+    let reader = runtime.clone();
+    let id = tokio::task::spawn_blocking(move || -> Result<String> {
+        // Exactly the loaded production /state preparation and capture path;
+        // do not warm through agent_summary or an unscoped State read.
+        let projection =
+            reader.acquire_operator_state_read_projection_scoped(10, 10, &db, &handle)?;
+        Ok(projection.agent.agent.id.clone())
+    })
+    .await??;
+    assert_eq!(id, "scheduling-reader");
+    Ok(())
+}
+
+#[tokio::test]
+async fn scoped_child_summary_prepares_scheduling_after_active_metadata_ack() -> Result<()> {
+    let home = tempdir()?;
+    let runtime = runtime(home.path())?;
+    runtime.await_initial_resources().await;
+    publish_active_metadata_ack(&runtime).await?;
+    let db = runtime
+        .inner
+        .runtime_db
+        .with_read_scope(crate::runtime_db::RuntimeDbReadScope::new(
+            std::time::Instant::now() + std::time::Duration::from_secs(30),
+        ));
+    let handle = tokio::runtime::Handle::current();
+    let reader = runtime.clone();
+    let id = tokio::task::spawn_blocking(move || -> Result<String> {
+        Ok(reader
+            .acquire_child_agent_summary_observation_scoped(&db, &handle)?
+            .state
+            .id
+            .clone())
+    })
+    .await??;
+    assert_eq!(id, "scheduling-reader");
+    Ok(())
+}

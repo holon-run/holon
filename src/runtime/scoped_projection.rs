@@ -6,35 +6,60 @@ use crate::runtime_db::RuntimeDb;
 use tokio::runtime::Handle;
 
 impl RuntimeHandle {
-    pub(crate) fn prepare_operator_current_scoped(
+    /// Accepted State/child query preparation and final capture share one owner.
+    /// Release that parent owner before the caller acquires any child owner.
+    fn with_scoped_scheduler_query<T>(
         &self,
         db: &RuntimeDb,
         handle: &Handle,
-    ) -> Result<()> {
-        let needs_preparation = self.with_scoped_ready_root(db, handle, |root| {
-            Ok(root
+        read: impl FnOnce(&resident_state::AgentSnapshot) -> Result<T>,
+    ) -> Result<T> {
+        let reservations = handle.block_on(db.wait_for_memory_lock(
+            mutation_owner::MutationOwner::reserve_all(vec![self.inner.mutation_owner.clone()]),
+        ))??;
+        let root = self
+            .inner
+            .mutation_owner
+            .capture()?
+            .context("scoped scheduler query needs a Ready publication")?;
+        anyhow::ensure!(
+            root.state.id == self.inner.mutation_owner.agent_id()
+                && root.token.identity_incarnation == self.inner.identity_incarnation,
+            "scoped scheduler query publication scope differs"
+        );
+        let needs_preparation = root.scheduling.is_none()
+            || root
                 .current
                 .as_ref()
                 .and_then(|current| current.query.as_ref())
-                .is_none())
-        })?;
-        if needs_preparation {
-            // This is an explicit preparation boundary, not a cancellable
-            // future inside with_scoped_ready_root's memory-lock waiter.
+                .is_none();
+        let result = if needs_preparation {
+            drop(root);
+            drop(reservations);
+            // Preparation runs under this query's original cancellation scope,
+            // outside the cancellable owner-lock future. Capture before release
+            // so another metadata ACK cannot invalidate the prepared cut.
             let mut owner = handle.block_on(self.begin_scoped_projection_preparation(db))?;
-            if owner
-                .capture_published_root()?
-                .current
-                .as_ref()
-                .and_then(|current| current.query.as_ref())
-                .is_none()
-            {
-                handle.block_on(owner.prepare_current_query_scoped(db))?;
+            let current = owner.capture_published_root()?;
+            let needs_preparation = current.scheduling.is_none()
+                || current
+                    .current
+                    .as_ref()
+                    .and_then(|current| current.query.as_ref())
+                    .is_none();
+            drop(current);
+            if needs_preparation {
+                handle.block_on(owner.prepare_current_scheduler_query(Some(db)))?;
             }
-        }
-        db.check_read_scope()
+            read(owner.capture_published_root()?.as_ref())?
+        } else {
+            read(&root)?
+        };
+        db.check_read_scope()?;
+        Ok(result)
     }
 
+    #[cfg(test)]
     fn with_scoped_ready_root<T>(
         &self,
         db: &RuntimeDb,
@@ -61,6 +86,7 @@ impl RuntimeHandle {
         Ok(result)
     }
 
+    #[cfg(test)]
     pub(crate) fn operator_state_read_projection_scoped(
         &self,
         task_limit: usize,
@@ -73,9 +99,36 @@ impl RuntimeHandle {
             timer_limit <= resident_scheduling::SCHEDULING_HISTORY_WINDOW,
             resident_scheduling::SchedulingReadError::NeedsHistory
         );
-        let mut projection = self.with_scoped_ready_root(db, handle, |root| {
+        let projection = self.with_scoped_ready_root(db, handle, |root| {
             self.operator_state_from_root(root, task_limit, timer_limit)
         })?;
+        self.finish_scoped_state_projection(projection, db, handle)
+    }
+
+    pub(crate) fn acquire_operator_state_read_projection_scoped(
+        &self,
+        task_limit: usize,
+        timer_limit: usize,
+        db: &RuntimeDb,
+        handle: &Handle,
+    ) -> Result<crate::host::AgentStateReadProjection> {
+        db.check_read_scope()?;
+        anyhow::ensure!(
+            timer_limit <= resident_scheduling::SCHEDULING_HISTORY_WINDOW,
+            resident_scheduling::SchedulingReadError::NeedsHistory
+        );
+        let projection = self.with_scoped_scheduler_query(db, handle, |root| {
+            self.operator_state_from_root(root, task_limit, timer_limit)
+        })?;
+        self.finish_scoped_state_projection(projection, db, handle)
+    }
+
+    fn finish_scoped_state_projection(
+        &self,
+        mut projection: crate::host::AgentStateReadProjection,
+        db: &RuntimeDb,
+        handle: &Handle,
+    ) -> Result<crate::host::AgentStateReadProjection> {
         // Release the parent reservation before taking any child owner.
         let children_timer = attribution::CHILDREN.start();
         projection.agent.active_children = match &self.inner.host_bridge {
@@ -92,67 +145,79 @@ impl RuntimeHandle {
         Ok(projection)
     }
 
+    #[cfg(test)]
     pub(crate) fn child_agent_summary_observation_scoped(
         &self,
         db: &RuntimeDb,
         handle: &Handle,
     ) -> Result<lifecycle::ChildAgentSummaryObservation> {
-        self.with_scoped_ready_root(db, handle, |root| {
-            let read = self.capture_operator_scheduler_from_root(root, self.now())?;
-            let material = read.acquisition.clone();
-            material.read(|| {
-                let active_task_count = task_reads::active_task_count(&read.tasks)?;
-                anyhow::ensure!(
-                    active_task_count == read.projection.active_tasks.len(),
-                    "scoped child Task metadata differs from selected active facts"
-                );
-                let closure = Self::closure_decision_from_projection(
-                    &read.state,
-                    &read.projection,
-                    None,
-                    &read.acquisition,
-                )?;
-                let metadata_bytes = std::mem::size_of::<Vec<&TaskRecord>>()
-                    .checked_add(
-                        active_task_count
-                            .checked_mul(std::mem::size_of::<&TaskRecord>())
-                            .context("scoped child Task reference slots overflow")?,
-                    )
-                    .context("scoped child Task metadata overflow")?;
-                crate::diagnostics::resource_io::charge_owned_metadata(
-                    u64::try_from(metadata_bytes)?,
-                    active_task_count,
-                )?;
-                let _references = self.inner.input_evidence_budget.register_owned_bytes(
-                    &read.tasks.scope,
-                    input_evidence_budget::InputMemoryCategory::Pins,
-                    input_evidence_budget::OwnedBytesEstimate {
-                        payload_bytes: 0,
-                        metadata_estimate_bytes: u64::try_from(metadata_bytes)?,
-                    },
-                )?;
-                let active_tasks = read.projection.active_tasks.iter().collect::<Vec<_>>();
-                let briefs =
-                    read.observability_briefs
-                        .iter()
-                        .filter_map(|record| match &record.record {
-                            resident_input_evidence::PreparedInputEvidence::Brief(brief) => {
-                                Some(brief)
-                            }
-                            _ => None,
-                        });
-                let observability = lifecycle::build_child_agent_observability_with_active_tasks(
-                    &read.state,
-                    closure.waiting_reason,
-                    &active_tasks,
-                    briefs,
-                )?;
-                Ok(lifecycle::ChildAgentSummaryObservation {
-                    state: read.state.clone(),
-                    active_task_count,
-                    observability,
-                    acquisition: material.clone(),
-                })
+        self.with_scoped_ready_root(db, handle, |root| self.child_summary_from_root(root))
+    }
+
+    pub(crate) fn acquire_child_agent_summary_observation_scoped(
+        &self,
+        db: &RuntimeDb,
+        handle: &Handle,
+    ) -> Result<lifecycle::ChildAgentSummaryObservation> {
+        self.with_scoped_scheduler_query(db, handle, |root| self.child_summary_from_root(root))
+    }
+
+    fn child_summary_from_root(
+        &self,
+        root: &resident_state::AgentSnapshot,
+    ) -> Result<lifecycle::ChildAgentSummaryObservation> {
+        let read = self.capture_operator_scheduler_from_root(root, self.now())?;
+        let material = read.acquisition.clone();
+        material.read(|| {
+            let active_task_count = task_reads::active_task_count(&read.tasks)?;
+            anyhow::ensure!(
+                active_task_count == read.projection.active_tasks.len(),
+                "scoped child Task metadata differs from selected active facts"
+            );
+            let closure = Self::closure_decision_from_projection(
+                &read.state,
+                &read.projection,
+                None,
+                &read.acquisition,
+            )?;
+            let metadata_bytes = std::mem::size_of::<Vec<&TaskRecord>>()
+                .checked_add(
+                    active_task_count
+                        .checked_mul(std::mem::size_of::<&TaskRecord>())
+                        .context("scoped child Task reference slots overflow")?,
+                )
+                .context("scoped child Task metadata overflow")?;
+            crate::diagnostics::resource_io::charge_owned_metadata(
+                u64::try_from(metadata_bytes)?,
+                active_task_count,
+            )?;
+            let _references = self.inner.input_evidence_budget.register_owned_bytes(
+                &read.tasks.scope,
+                input_evidence_budget::InputMemoryCategory::Pins,
+                input_evidence_budget::OwnedBytesEstimate {
+                    payload_bytes: 0,
+                    metadata_estimate_bytes: u64::try_from(metadata_bytes)?,
+                },
+            )?;
+            let active_tasks = read.projection.active_tasks.iter().collect::<Vec<_>>();
+            let briefs =
+                read.observability_briefs
+                    .iter()
+                    .filter_map(|record| match &record.record {
+                        resident_input_evidence::PreparedInputEvidence::Brief(brief) => Some(brief),
+                        _ => None,
+                    });
+            let observability = lifecycle::build_child_agent_observability_with_active_tasks(
+                &read.state,
+                closure.waiting_reason,
+                &active_tasks,
+                briefs,
+            )?;
+            Ok(lifecycle::ChildAgentSummaryObservation {
+                state: read.state.clone(),
+                active_task_count,
+                observability,
+                acquisition: material.clone(),
             })
         })
     }

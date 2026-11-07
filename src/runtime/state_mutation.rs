@@ -946,10 +946,6 @@ impl RuntimeMutation {
         Ok(())
     }
 
-    pub(super) async fn prepare_current_query_scoped(&mut self, db: &RuntimeDb) -> Result<()> {
-        self.prepare_current_query_in(None, Some(db), false).await
-    }
-
     /// Accepted scheduler-facing queries may restore only an already-qualified
     /// Scheduling publication. Pure captures and Current-only reads stay pure.
     pub(in crate::runtime) async fn prepare_current_scheduler_query(

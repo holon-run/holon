@@ -5107,3 +5107,8 @@ owner. Scoped reads keep their original cancellation and read-only pool.
 Metadata invalidation, pure captures and rejection of changed/unqualified bodies
 remain mandatory. A committed Work write is not retried to repair its result
 projection.
+
+The blocking State projection and nested child summary acquisition retain the
+same read scope through preparation and final capture under one owner. Release
+the parent reservation before collecting child observations. No intervening
+metadata publication may separate a prepared cut from its capture.

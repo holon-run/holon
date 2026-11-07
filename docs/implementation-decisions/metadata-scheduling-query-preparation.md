@@ -16,3 +16,9 @@ sidecars and never adopts changed or unqualified canonical bodies.
 Keep metadata invalidation and pure capture behavior unchanged. Ready reads
 reuse their existing publication. A missing or changed current proof still
 fails closed; querying cannot turn status or an arbitrary row into an ACK.
+
+The registered blocking `/state` worker and nested child summaries use an
+explicit scoped acquisition. Preparation and the final parent capture share one
+owner reservation, so a second metadata ACK cannot invalidate the cut between
+them. Release that parent owner before taking any child owner. Pure scoped
+capture components remain separate and continue to reject preparation debt.
