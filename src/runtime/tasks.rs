@@ -2204,6 +2204,9 @@ impl RuntimeHandle {
                 if task_state_reducer::is_terminal_task_status(&latest.status) {
                     return Ok(());
                 }
+                // Inherited operator authority cannot promote metadata binding.
+                // The qualified Task supplies typed Work ownership directly.
+                running_message.work_item_id = latest.work_item_id.clone();
                 if let Some(metadata) = running_message.metadata.as_mut() {
                     let staged = metadata
                         .get("task_detail")

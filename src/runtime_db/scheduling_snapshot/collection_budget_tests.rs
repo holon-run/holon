@@ -186,11 +186,8 @@ fn live_history_prior_and_pruned_copies_use_original_phase_before_sql_writes() -
                 &mut prefix,
                 if variant == "prior" { &empty } else { &keys },
             )?;
-            if active {
-                checkpoint(phase, &mut prefix, &keys)?; // prior live -> old_live
-            } else {
-                checkpoint(phase, &mut prefix, &history)?; // prior history -> old_live
-                checkpoint(phase, &mut prefix, &history)?; // prior loaded -> old_live
+            if variant == "prior" {
+                checkpoint(phase, &mut prefix, keys.first().unwrap())?;
             }
             checkpoint(phase, &mut prefix, &keys)?; // selected -> pending
             sql.alias(keys.first().unwrap())?;
@@ -285,7 +282,6 @@ fn wake_parent_and_input_root_copies_use_original_phase_before_alias_write() -> 
             &empty,
         )?;
         checkpoint(phase, &mut prefix, &wakes)?; // core
-        checkpoint(phase, &mut prefix, &wakes)?; // prior wakes
         checkpoint(phase, &mut prefix, &wakes)?; // pending
         sql.alias(wakes.first().unwrap())?;
         sql.stored(wakes.first().unwrap())?;

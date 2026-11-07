@@ -5054,6 +5054,13 @@ qualified bodies, limits and ledger still match. A changed source requires a
 fresh capture; revision alone grants no reuse. The temporary source-domain
 witness is released before returning the final context, which retains only
 selected facts and their original allocation guards.
+Scheduling reloads insert only missing prior heads and Wake parents. Prior
+heads still undergo canonical drift checks, without promoting them into the
+current closure or repeatedly cloning keys shared by the live/history indexes.
+
+Original child Running envelopes bind typed Work ownership from their current
+qualified Task. Inherited operator authority still cannot promote ownership
+from metadata; original scope, generation and source seals remain unchanged.
 
 An unchanged shared skill inventory keeps its original data allocation guard;
 its new candidate header/scan has a separate last-holder guard. Initial data
