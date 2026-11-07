@@ -16966,6 +16966,233 @@ mod tests {
     include!("host/agent_message_reply_tests.rs");
 
     #[cfg(holon_lib_test_shard = "d")]
+    async fn reused_child_parent_cleanup_fixture() -> (
+        tempfile::TempDir,
+        RuntimeHost,
+        RuntimeHandle,
+        TaskRecord,
+        TaskRecord,
+        AgentIdentityRecord,
+        AgentDeletionJob,
+    ) {
+        let (_home, host) = test_host();
+        let parent = host.default_runtime().await.unwrap();
+        let created = parent
+            .agent_invocation_service()
+            .invoke(InvokeAgentRequest {
+                target: InvokeAgentTarget::NewSubagent {
+                    template: None,
+                    workspace_mode: ChildAgentWorkspaceMode::Inherit,
+                    model_resolution: Some(inherited_model_resolution("openai", "gpt-5.4")),
+                },
+                message: "first retained child invocation".into(),
+                authority_class: AuthorityClass::OperatorInstruction,
+            })
+            .await
+            .unwrap();
+        let first = wait_for_terminal_task(&parent, &created.task_handle.task_id).await;
+        assert_eq!(first.status, TaskStatus::Completed);
+        let reused = parent
+            .agent_invocation_service()
+            .invoke(InvokeAgentRequest {
+                target: InvokeAgentTarget::ExistingAgent {
+                    reply_timeout_ms: None,
+                    agent_id: created.agent_id.clone(),
+                },
+                message: "reuse retained child before parent cleanup".into(),
+                authority_class: AuthorityClass::OperatorInstruction,
+            })
+            .await
+            .unwrap();
+        let second = wait_for_terminal_task(&parent, &reused.task_handle.task_id).await;
+        assert_eq!(second.status, TaskStatus::Completed);
+        let child = host.get_or_create_agent(&created.agent_id).await.unwrap();
+        wait_for_agent_inputs_settled(&child).await;
+        let identity = host
+            .agent_identity_record(&created.agent_id)
+            .unwrap()
+            .unwrap();
+        let job = tokio::time::timeout(Duration::from_secs(10), async {
+            loop {
+                match host
+                    .begin_parent_agent_deletion(&parent, &identity.agent_id, identity.incarnation)
+                    .await
+                {
+                    Ok(job) => break job,
+                    Err(error)
+                        if error.to_string().contains("live_execution")
+                            || error.to_string().contains("runtime_execution_or_wake")
+                            || error.to_string().contains("queued_or_claimed_input")
+                            || error.to_string().contains("resource_refresh_exit_pending")
+                            || error.to_string().contains("open_execution") =>
+                    {
+                        tokio::time::sleep(Duration::from_millis(10)).await;
+                    }
+                    Err(error) => panic!("unexpected cleanup rejection: {error:#}"),
+                }
+            }
+        })
+        .await
+        .unwrap();
+        (_home, host, parent, first, second, identity, job)
+    }
+
+    #[cfg(holon_lib_test_shard = "d")]
+    #[tokio::test]
+    async fn reused_child_parent_cleanup_preserves_both_results() {
+        let (_home, host, _parent, first, second, identity, job) =
+            reused_child_parent_cleanup_fixture().await;
+        host.execute_deletion_job(job)
+            .await
+            .unwrap_or_else(|error| {
+                panic!(
+                    "{error:#}; original deletion diagnostic={:?}",
+                    host.runtime_db()
+                        .agent_deletions()
+                        .latest_for_agent(&identity.agent_id)
+                        .unwrap()
+                        .unwrap()
+                        .last_error
+                )
+            });
+        assert_eq!(
+            host.agent_identity_record(&identity.agent_id)
+                .unwrap()
+                .unwrap()
+                .status,
+            AgentRegistryStatus::Deleted
+        );
+        assert!(!host.agent_data_dir(&identity.agent_id).exists());
+        assert_eq!(
+            host.runtime_db()
+                .tasks()
+                .latest(&first.id)
+                .unwrap()
+                .unwrap(),
+            first
+        );
+        assert_eq!(
+            host.runtime_db()
+                .tasks()
+                .latest(&second.id)
+                .unwrap()
+                .unwrap(),
+            second
+        );
+        host.shutdown().await.unwrap();
+    }
+
+    #[cfg(holon_lib_test_shard = "d")]
+    #[tokio::test]
+    async fn reused_child_cleanup_rejects_changed_original_message_wait_binding() {
+        for scenario in [
+            "delivery-incarnation",
+            "delivery-correlation",
+            "task-target-incarnation",
+            "task-target-unknown",
+            "task-recovery-incarnation",
+            "parent-extra-task",
+        ] {
+            let (_home, host, _parent, _first, second, identity, _job) =
+                reused_child_parent_cleanup_fixture().await;
+            let db = host.runtime_db();
+            crate::runtime_db::agent_deletion_cleanup::settle_execution(
+                db,
+                &identity.agent_id,
+                identity.incarnation,
+                Utc::now(),
+            )
+            .unwrap();
+            let delivery_id = second.detail.as_ref().unwrap()["request_delivery_id"]
+                .as_str()
+                .unwrap();
+            db.transaction(|tx| {
+                if scenario.starts_with("delivery-") {
+                    let raw: String = tx.query_row(
+                        "SELECT payload_json FROM agent_message_deliveries WHERE delivery_id=?1",
+                        [delivery_id], |row| row.get(0))?;
+                    let mut delivery: crate::types::AgentMessageDeliveryRecord = serde_json::from_str(&raw)?;
+                    if scenario == "delivery-incarnation" {
+                        delivery.expected_incarnation = Some(identity.incarnation + 1);
+                    } else { delivery.correlation_id = Some("unrelated-task".into()); }
+                    tx.execute("UPDATE agent_message_deliveries SET payload_json=?2 WHERE delivery_id=?1",
+                        rusqlite::params![delivery_id, serde_json::to_string(&delivery)?])?;
+                } else if scenario.starts_with("task-") {
+                    let raw: String = tx.query_row("SELECT payload_json FROM tasks WHERE task_id=?1",
+                        [&second.id], |row| row.get(0))?;
+                    let mut task: TaskRecord = serde_json::from_str(&raw)?;
+                    if scenario == "task-recovery-incarnation" {
+                        let Some(TaskRecoverySpec::AgentMessageWait { requester_incarnation, .. }) =
+                            task.recovery.as_mut() else { panic!("native message wait recovery") };
+                        *requester_incarnation = Some(99);
+                    } else {
+                        let target = &mut task.detail.as_mut().unwrap()["target"];
+                        if scenario == "task-target-unknown" {
+                            target.as_object_mut().unwrap().remove("incarnation");
+                        } else { target["incarnation"] = json!(identity.incarnation + 1); }
+                    }
+                    tx.execute("UPDATE tasks SET payload_json=?2 WHERE task_id=?1",
+                        rusqlite::params![second.id, serde_json::to_string(&task)?])?;
+                } else {
+                    use crate::runtime_db::input_mutation_receipts::{
+                        lookup_input_mutation_receipt_tx, PreparedInputMutation, canonical_command_digest};
+                    let raw: String = tx.query_row(
+                        "SELECT prepared_json FROM input_mutation_receipts
+                         WHERE json_extract(outcome_json,'$.delivery_receipt.delivery_id')=?1",
+                        [delivery_id], |row| row.get(0))?;
+                    let prepared: PreparedInputMutation = serde_json::from_str(&raw)?;
+                    let mut receipt = lookup_input_mutation_receipt_tx(tx, &prepared)?.unwrap();
+                    receipt.outcome.scopes.iter_mut().find(|s| s.scope.agent_id == second.agent_id)
+                        .unwrap().install_keys.tasks.insert("unrelated-task".into());
+                    let digest = canonical_command_digest(&json!({"prepared":receipt.prepared,
+                        "outcome":receipt.outcome,"committed_at":receipt.committed_at}))?;
+                    tx.execute("UPDATE input_mutation_receipts SET outcome_json=?2,result_digest=?3 WHERE command_nonce=?1",
+                        rusqlite::params![prepared.command_nonce(), serde_json::to_string(&receipt.outcome)?, digest])?;
+                }
+                Ok(())
+            }).unwrap();
+            let before: u64 = db
+                .connection()
+                .unwrap()
+                .query_row("SELECT COUNT(*) FROM input_mutation_receipts", [], |r| {
+                    r.get(0)
+                })
+                .unwrap();
+            let error = crate::runtime_db::agent_deletion_cleanup::export_private_history(
+                db,
+                &identity.agent_id,
+                identity.incarnation,
+            )
+            .unwrap_err();
+            assert!(
+                format!("{error:#}").contains("shared command history"),
+                "{scenario}: {error:#}"
+            );
+            let error = crate::runtime_db::agent_deletion_cleanup::purge_private_history(
+                db,
+                &identity.agent_id,
+                identity.incarnation,
+                Utc::now(),
+            )
+            .unwrap_err();
+            assert!(
+                format!("{error:#}").contains("shared command history"),
+                "{scenario}: {error:#}"
+            );
+            assert_eq!(
+                db.connection()
+                    .unwrap()
+                    .query_row("SELECT COUNT(*) FROM input_mutation_receipts", [], |r| r
+                        .get::<_, u64>(0))
+                    .unwrap(),
+                before
+            );
+            assert!(db.tasks().latest(&second.id).unwrap().is_some());
+            host.shutdown().await.unwrap();
+        }
+    }
+
+    #[cfg(holon_lib_test_shard = "d")]
     #[tokio::test]
     async fn agent_message_wait_for_existing_agent_captures_reply_before_invoke_returns() {
         let _delivery_checkpoint_test_lock = DELIVERY_CHECKPOINT_TEST_LOCK.lock().await;

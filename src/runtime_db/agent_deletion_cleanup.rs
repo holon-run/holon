@@ -938,6 +938,185 @@ fn assert_safe_ownership_tx(tx: &Transaction<'_>, agent_id: &str) -> Result<()> 
     Ok(())
 }
 
+// Reusing a supervised child admits its request and parent wait Task in one
+// original Queue group. The immutable delivery receipt binds the Task by its
+// correlation ID; target history alone is never deletion ownership.
+fn assert_child_message_wait_receipt_owner_tx(
+    tx: &Transaction<'_>,
+    purge_agent_id: &str,
+    prepared: &super::input_mutation_receipts::PreparedInputMutation,
+    receipt: &super::input_mutation_receipts::InputMutationReceipt,
+) -> Result<()> {
+    use super::input_mutation_receipts::InputMutationFamily;
+    use crate::types::{
+        AgentKind, AgentMessageDeliveryOutcome, AgentMessageDeliveryRecord,
+        AgentMessageDeliveryState, AgentMessagePrincipalKind, AgentOwnership, AgentVisibility,
+        MessageOrigin, TaskKind, TaskRecoverySpec, TaskTargetKind,
+    };
+    let original = receipt
+        .outcome
+        .delivery_receipt
+        .as_ref()
+        .context("shared Queue has no original delivery ACK")?;
+    ensure!(
+        prepared.family() == InputMutationFamily::Queue
+            && receipt.outcome.applied
+            && original.target_agent_id == purge_agent_id
+            && original.outcome == AgentMessageDeliveryOutcome::Accepted
+            && original.state == AgentMessageDeliveryState::Queued
+            && original.message_id.is_some()
+            && original.accepted_at.is_some()
+            && !original.idempotent_replay
+            && prepared.scopes().len() == 2,
+        "message wait receipt is not the exact original child admission"
+    );
+    let child_scope = prepared
+        .scopes()
+        .iter()
+        .find(|s| s.agent_id == purge_agent_id)
+        .context("message wait ACK omitted child scope")?;
+    let parent_scope = prepared
+        .scopes()
+        .iter()
+        .find(|s| s.agent_id != purge_agent_id)
+        .context("message wait ACK omitted parent scope")?;
+    let parent = identity_tx(tx, &parent_scope.agent_id)?;
+    let child = fenced_identity_tx(tx, purge_agent_id, child_scope.identity_incarnation)?;
+    let relations =
+        super::agent_relations::canonical_relations_from_connection(tx, purge_agent_id)?
+            .context("message wait child has no canonical supervision")?;
+    ensure!(
+        parent.incarnation == parent_scope.identity_incarnation
+            && child.kind == AgentKind::Child
+            && child.visibility == AgentVisibility::Private
+            && child.ownership() == AgentOwnership::ParentSupervised
+            && child.parent_agent_id.as_deref() == Some(parent.agent_id.as_str())
+            && child.delegated_from_task_id.is_some()
+            && relations
+                .lineage
+                .as_ref()
+                .is_some_and(|l| l.parent_agent_id == parent.agent_id)
+            && relations
+                .supervision
+                .as_ref()
+                .is_some_and(|s| s.supervisor_agent_id == parent.agent_id
+                    && s.delegated_from_task_id == child.delegated_from_task_id),
+        "message wait child lineage differs from the original scope group"
+    );
+    let task_id = original
+        .correlation_id
+        .as_deref()
+        .filter(|id| !id.is_empty())
+        .context("original message wait receipt omitted Task correlation")?;
+    // The original other-scope ACK changed this exact parent wait Task only.
+    let parent_ack = receipt
+        .outcome
+        .scopes
+        .iter()
+        .find(|s| &s.scope == parent_scope)
+        .context("message wait receipt omitted parent ACK")?;
+    let mut expected_keys = super::input_recovery_install::InputMutationInstallKeys::default();
+    expected_keys.tasks.insert(task_id.to_owned());
+    ensure!(
+        parent_ack.install_keys == expected_keys
+            && parent_ack.audit_events.is_empty()
+            && !parent_ack.notify_memory_index
+            && !parent_ack.notify_scheduler,
+        "message wait parent ACK includes unrelated history"
+    );
+    // The frozen scope group and original parent Task ACK bind incarnation.
+    // Older delivery rows can omit their compatibility field; an explicit
+    // value must agree and the typed Task target below may never be unknown.
+    let payload: String = tx.query_row(
+        "SELECT payload_json FROM agent_message_deliveries WHERE delivery_id=?1",
+        [&original.delivery_id],
+        |r| r.get(0),
+    )?;
+    let delivery: AgentMessageDeliveryRecord = serde_json::from_str(&payload)?;
+    let mut frozen_fields = delivery.receipt(false);
+    // State and terminal timestamp can advance after the original admission;
+    // every immutable receipt field must retain the exact original value.
+    frozen_fields.state = original.state;
+    frozen_fields.terminal_at = original.terminal_at;
+    ensure!(
+        frozen_fields == *original
+            && delivery.expected_incarnation.is_none_or(|inc| inc == child_scope.identity_incarnation)
+            && delivery.state.is_terminal()
+            && delivery.caller.caller_agent_id.as_deref() == Some(parent.agent_id.as_str())
+            && delivery.caller.caller_principal == format!("agent:{}", parent.agent_id)
+            && delivery.caller.principal_kind == original.lifecycle_snapshot.principal_kind
+            && delivery.caller.route == original.lifecycle_snapshot.route
+            && matches!((delivery.caller.principal_kind, delivery.caller.route.as_str()),
+                (AgentMessagePrincipalKind::SupervisingParent, "supervision_follow_up")
+                | (AgentMessagePrincipalKind::PeerAgent, "agent_invocation"))
+            && delivery.caller.current_task_id.as_deref() == Some(task_id)
+            && matches!(&delivery.caller.origin, MessageOrigin::Task { task_id: id } if id == task_id),
+        "message wait delivery differs from its original child ACK: immutable={}, incarnation={}, terminal={}, caller={}, task={}",
+        frozen_fields == *original,
+        delivery.expected_incarnation.is_none_or(|inc| inc == child_scope.identity_incarnation),
+        delivery.state.is_terminal(),
+        delivery.caller.caller_agent_id.as_deref() == Some(parent.agent_id.as_str()),
+        delivery.caller.current_task_id.as_deref() == Some(task_id)
+    );
+    let (owner, linked_child, kind, status, payload): (
+        String,
+        Option<String>,
+        String,
+        String,
+        String,
+    ) = tx.query_row(
+        "SELECT owner_agent_id,child_agent_id,kind,status,payload_json FROM tasks WHERE task_id=?1",
+        [task_id],
+        |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)),
+    )?;
+    let task = super::repositories::decode_task_payload(&payload)?;
+    let target = task
+        .target()
+        .context("message wait Task has no typed target")?;
+    let detail = task
+        .detail
+        .as_ref()
+        .context("message wait Task has no admission binding")?;
+    ensure!(
+        task.id == task_id
+            && task.agent_id == parent.agent_id
+            && owner == task.agent_id
+            && task.kind == TaskKind::AgentMessageWait
+            && task.kind.as_str() == kind
+            && serde_json::to_value(&task.status)?.as_str() == Some(status.as_str())
+            && super::repositories::is_terminal_task_status(&task.status)
+            && linked_child.as_deref() == Some(child.agent_id.as_str())
+            && detail
+                .get("child_agent_id")
+                .and_then(serde_json::Value::as_str)
+                == Some(child.agent_id.as_str())
+            && detail.get("target").is_some()
+            && target.kind == TaskTargetKind::AgentMessageWait
+            && target.agent_id == child.agent_id
+            && target.incarnation == Some(child_scope.identity_incarnation)
+            && detail
+                .get("request_delivery_id")
+                .and_then(serde_json::Value::as_str)
+                == Some(original.delivery_id.as_str())
+            && matches!(&task.recovery, Some(TaskRecoverySpec::AgentMessageWait {
+            target_agent_id, delivery_id: Some(delivery_id), requester_incarnation: Some(inc), ..
+        }) if target_agent_id == &child.agent_id && delivery_id == &original.delivery_id
+            && *inc == parent_scope.identity_incarnation),
+        "canonical parent terminal message wait differs from its original ACK"
+    );
+    if table_exists(tx, "dispatch_memory_auto_commands")? {
+        ensure!(
+            !exists(
+                tx,
+                "SELECT EXISTS(SELECT 1 FROM dispatch_memory_auto_commands WHERE command_nonce=?1)",
+                prepared.command_nonce()
+            )?,
+            "message wait receipt unexpectedly owns automatic command history"
+        );
+    }
+    Ok(())
+}
+
 // No receipt rewrite or per-scope deletion: the accepted child owns the
 // complete, checksum-validated original receipt, including its parent scope.
 fn assert_child_receipt_owner_tx(
@@ -960,6 +1139,9 @@ fn assert_child_receipt_owner_tx(
     // Reuse normalized-column, descriptor, full outcome and result-digest checks.
     let receipt = lookup_input_mutation_receipt_tx(tx, &prepared)?
         .context("original shared receipt disappeared")?;
+    if matches!(&receipt.outcome.result, InputMutationResult::Transition) {
+        return assert_child_message_wait_receipt_owner_tx(tx, purge_agent_id, &prepared, &receipt);
+    }
     let (parent, child, parent_task_id, admission, terminal) = match &receipt.outcome.result {
         InputMutationResult::ChildTaskTerminal { ack } => {
             let deletion = ack
