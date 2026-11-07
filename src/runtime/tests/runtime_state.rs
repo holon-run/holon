@@ -3674,6 +3674,8 @@ struct OperatorInterjectionProbeProvider {
     calls: Mutex<usize>,
     requests: Mutex<Vec<ProviderTurnRequest>>,
     first_tool_round: Arc<tokio::sync::Notify>,
+    release_first_tool_round: Arc<tokio::sync::Notify>,
+    tool_name: &'static str,
 }
 
 struct TerminalWaitInterjectionProvider {
@@ -4178,15 +4180,17 @@ impl AgentProvider for OperatorInterjectionProbeProvider {
         self.requests.lock().await.push(request);
         if call == 1 {
             self.first_tool_round.notify_one();
-            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+            self.release_first_tool_round.notified().await;
             Ok(ProviderTurnResponse {
                 material: Default::default(),
                 blocks: vec![ModelBlock::ToolUse {
                     id: "sleep".into(),
-                    name: "Sleep".into(),
-                    input: serde_json::json!({
-                        "reason": "wait for operator interjection",
-                    }),
+                    name: self.tool_name.into(),
+                    input: if self.tool_name == "WaitFor" {
+                        serde_json::json!({"reason":"wait for operator interjection", "wake":"operator_input", "delivery":"silent"})
+                    } else {
+                        serde_json::json!({"reason":"wait for operator interjection"})
+                    },
                     kind: crate::provider::ModelToolCallKind::Function,
                     provider_data: None,
                 }],
@@ -20848,13 +20852,27 @@ async fn abort_current_run_idle_after_abort_keeps_agent_awake_and_accepts_next_p
 #[cfg(holon_lib_test_shard = "a")]
 #[tokio::test]
 async fn operator_interjection_prompt_is_interjected_before_next_provider_round() {
+    assert_interjection_visible_before_terminal_tool("Sleep").await;
+}
+
+#[cfg(holon_lib_test_shard = "a")]
+#[tokio::test]
+async fn operator_interjection_is_observed_before_wait_for_can_settle() {
+    assert_interjection_visible_before_terminal_tool("WaitFor").await;
+}
+
+#[cfg(holon_lib_test_shard = "a")]
+async fn assert_interjection_visible_before_terminal_tool(tool_name: &'static str) {
     let dir = tempdir().unwrap();
     let workspace = tempdir().unwrap();
     let first_tool_round = Arc::new(tokio::sync::Notify::new());
+    let release_first_tool_round = Arc::new(tokio::sync::Notify::new());
     let provider = Arc::new(OperatorInterjectionProbeProvider {
         calls: Mutex::new(0),
         requests: Mutex::new(Vec::new()),
         first_tool_round: first_tool_round.clone(),
+        release_first_tool_round: release_first_tool_round.clone(),
+        tool_name,
     });
     let runtime = RuntimeHandle::new(
         "default",
@@ -20911,6 +20929,7 @@ async fn operator_interjection_prompt_is_interjected_before_next_provider_round(
     );
     let interjection_id = interjection.id.clone();
     runtime.enqueue(interjection).await.unwrap();
+    release_first_tool_round.notify_one();
 
     tokio::time::timeout(std::time::Duration::from_secs(2), async {
         loop {

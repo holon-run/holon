@@ -4075,8 +4075,25 @@ impl RuntimeHandle {
                 };
                 let tool_started_at = chrono::Utc::now();
                 let tool_exec_started = std::time::Instant::now();
-                let tool_execution = if let Some(snapshot) = runtime.current_run_abort_token().await
-                {
+                // These decisions predate the newly admitted input. Settling
+                // them now would consume that input without a provider round.
+                let stale_terminal_decision = !before_tool_execution_interjections.is_empty()
+                    && matches!(
+                        call.name.as_str(),
+                        crate::tool::names::WAIT_FOR
+                            | crate::tool::names::COMPLETE_WORK_ITEM
+                            | crate::tool::names::PICK_WORK_ITEM
+                    );
+                let tool_execution = if stale_terminal_decision {
+                    Err(ToolError::new(
+                        "operator_input_changed",
+                        "New operator input must be observed before this terminal decision",
+                    )
+                    .with_recovery_hint(
+                        "Read the new operator message in the next model round, then choose whether to wait, complete, or switch work",
+                    )
+                    .into())
+                } else if let Some(snapshot) = runtime.current_run_abort_token().await {
                     tokio::select! {
                         result = runtime.inner.tools.execute_with_context(runtime, agent_id, &authority_class, &call, &tool_execution_context) => result,
                         _ = snapshot.token.cancelled() => Err(CurrentRunAborted {
