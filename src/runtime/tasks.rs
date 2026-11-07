@@ -3311,6 +3311,29 @@ impl RuntimeHandle {
         plan: Option<String>,
         todo_list: Vec<TodoItem>,
     ) -> Result<WorkItemRecord> {
+        self.create_work_item_inner(objective, plan_status, plan, todo_list, None)
+            .await
+    }
+
+    #[cfg(test)]
+    pub(super) async fn create_work_item_with_plan_material(
+        &self,
+        objective: String,
+        plan: String,
+        material: crate::diagnostics::resource_io::ResourceReadMaterial,
+    ) -> Result<WorkItemRecord> {
+        self.create_work_item_inner(objective, None, Some(plan), vec![], Some(material))
+            .await
+    }
+
+    async fn create_work_item_inner(
+        &self,
+        objective: String,
+        plan_status: Option<WorkItemPlanStatus>,
+        plan: Option<String>,
+        todo_list: Vec<TodoItem>,
+        plan_material: Option<crate::diagnostics::resource_io::ResourceReadMaterial>,
+    ) -> Result<WorkItemRecord> {
         let _admission = self.execution_admission_lease()?;
         let agent_id = self.agent_id().await?;
         let mut record = WorkItemRecord::new(agent_id.clone(), objective, WorkItemState::Open);
@@ -3318,7 +3341,7 @@ impl RuntimeHandle {
             record.plan_status = plan_status;
         }
         let (_, plan_preparation) = self
-            .prepare_work_plan_file(&mut record, plan.as_deref())
+            .prepare_work_plan_file_with_material(&mut record, plan.as_deref(), plan_material)
             .await?;
         record.todo_list = todo_list;
         record.workspace_id = self

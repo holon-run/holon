@@ -628,8 +628,10 @@ pub(crate) fn admit_file_bytes(declared: u64) -> io::Result<()> {
         return Ok(());
     };
     let mut material = active.lock().unwrap_or_else(|error| error.into_inner());
-    let required = declared.checked_add(512);
-    if material.failed || required.is_none_or(|bytes| !material.fits(bytes.saturating_mul(8), 0)) {
+    let required = declared
+        .checked_add(512)
+        .and_then(|bytes| bytes.checked_mul(8));
+    if material.failed || required.is_none_or(|bytes| !material.fits(bytes, 0)) {
         return Err(exhausted(&mut material));
     }
     Ok(())
@@ -917,6 +919,13 @@ fn reserve_template_scratch(
     if phase.failed || !phase.fits(bytes, records) {
         return Err(exhausted(&mut phase));
     }
+    let Some((scratch_bytes, scratch_records)) = phase
+        .scratch_bytes
+        .checked_add(bytes)
+        .zip(phase.scratch_records.checked_add(records))
+    else {
+        return Err(exhausted(&mut phase));
+    };
     let parent_phase = phase.parent.clone();
     let mut parent = parent_phase
         .as_ref()
@@ -925,6 +934,16 @@ fn reserve_template_scratch(
         .as_ref()
         .is_some_and(|parent| parent.failed || !parent.fits(bytes, records))
     {
+        drop(parent);
+        return Err(exhausted(&mut phase));
+    }
+    let parent_scratch = parent.as_ref().map(|parent| {
+        parent
+            .scratch_bytes
+            .checked_add(bytes)
+            .zip(parent.scratch_records.checked_add(records))
+    });
+    if matches!(parent_scratch, Some(None)) {
         drop(parent);
         return Err(exhausted(&mut phase));
     }
@@ -939,11 +958,11 @@ fn reserve_template_scratch(
             return Err(exhausted(&mut phase));
         }
     };
-    phase.scratch_bytes += bytes;
-    phase.scratch_records += records;
-    if let Some(parent) = parent.as_mut() {
-        parent.scratch_bytes += bytes;
-        parent.scratch_records += records;
+    phase.scratch_bytes = scratch_bytes;
+    phase.scratch_records = scratch_records;
+    if let (Some(parent), Some(Some((bytes, records)))) = (parent.as_mut(), parent_scratch) {
+        parent.scratch_bytes = bytes;
+        parent.scratch_records = records;
     }
     drop(parent);
     drop(phase);
@@ -1069,6 +1088,69 @@ mod tests {
         assert_eq!(ledger.report()?.observed_bytes, 0);
         Ok(())
     }
+    #[test]
+    fn normal_file_preflight_preserves_arithmetic_failure_latch() -> anyhow::Result<()> {
+        let (ledger, scope) = fixture();
+        let largest_declared = u64::MAX / 8 - 512;
+        for declared in [largest_declared + 1, u64::MAX] {
+            let phase = ResourceReadMaterial::new(&ledger, &scope)?;
+            let header = phase.finish()?;
+            {
+                let _entry = phase.enter();
+                admit_file_bytes(largest_declared)?;
+                assert_eq!(phase.finish()?, header);
+                assert!(admit_file_bytes(declared).is_err());
+                assert!(admit_file_bytes(0).is_err());
+            }
+            assert!(phase.finish().is_err());
+            drop(phase);
+            assert_eq!(ledger.report()?.observed_bytes, 0);
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn normal_template_scratch_overflow_latches_before_registration() -> anyhow::Result<()> {
+        let (ledger, scope) = fixture();
+        for inherited in [false, true] {
+            for byte_overflow in [false, true] {
+                let parent = ResourceReadMaterial::new(&ledger, &scope)?;
+                let phase = if inherited {
+                    parent.transaction()?
+                } else {
+                    parent.clone()
+                };
+                let target = if inherited { &parent } else { &phase };
+                {
+                    let mut target = target.active.lock().unwrap();
+                    if byte_overflow {
+                        target.scratch_bytes = u64::MAX;
+                    } else {
+                        target.scratch_records = usize::MAX;
+                    }
+                }
+                let before = {
+                    let phase = phase.active.lock().unwrap();
+                    (phase.scratch_bytes, phase.scratch_records)
+                };
+                let observed = ledger.report()?.observed_bytes;
+                assert!(reserve_template_scratch(phase.active.clone(), 1, 1).is_err());
+                assert!(phase.finish().is_err());
+                assert!(parent.finish().is_err());
+                let after = {
+                    let phase = phase.active.lock().unwrap();
+                    (phase.scratch_bytes, phase.scratch_records)
+                };
+                assert_eq!(after, before);
+                assert_eq!(ledger.report()?.observed_bytes, observed);
+                assert!(ResourceReadMaterial::current()?.is_none());
+                drop((phase, parent));
+                assert_eq!(ledger.report()?.observed_bytes, 0);
+            }
+        }
+        Ok(())
+    }
+
     #[test]
     fn fixed_buffer_admission_is_exact_cumulative_and_keeps_original_latch() -> anyhow::Result<()> {
         let (ledger, scope) = fixture();

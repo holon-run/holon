@@ -332,11 +332,20 @@ impl PreparedSource {
         ledger: &InputEvidenceBudgetLedger,
         prior: (u64, usize),
     ) -> Result<Arc<Self>> {
+        Self::with_material(source, prior, || {
+            ResourceReadMaterial::after(ledger, &source.scope, prior)
+        })
+    }
+    fn with_material(
+        source: &ContextResourceSource,
+        prior: (u64, usize),
+        material: impl FnOnce() -> Result<ResourceReadMaterial>,
+    ) -> Result<Arc<Self>> {
         // Measure borrowed identity before reserving, cloning or allocating Arc.
         let bytes = serialized_bytes(source)?
             .checked_add(1024)
             .context("resource source bytes overflow")?;
-        let material = ResourceReadMaterial::after(ledger, &source.scope, prior)?;
+        let material = material()?;
         let _io = material.enter();
         resource_io::charge_owned_metadata(bytes, 32)?;
         let measured = material.finish()?;
@@ -646,6 +655,30 @@ impl ContextResourceRegistry {
         validate: impl FnOnce(&MutationReservation, &ContextResourceSource) -> Result<F>,
     ) -> Result<Arc<ResourceObservation>> {
         let prepared = self.prepare_refresh_after(source, prior, read)?;
+        self.publish_refresh_after_owner(prepared, try_owner, validate)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn refresh_with_material_for_test<F>(
+        &self,
+        source: &ContextResourceSource,
+        material: &ResourceReadMaterial,
+        read: impl FnOnce() -> Result<ContextResourceBody>,
+        try_owner: impl FnOnce() -> Result<MutationReservation>,
+        validate: impl FnOnce(&MutationReservation, &ContextResourceSource) -> Result<F>,
+    ) -> Result<Arc<ResourceObservation>> {
+        let prepared =
+            self.prepare_refresh_after_with_material_for_test(source, (0, 0), material, read)?;
+        self.publish_refresh_after_owner(prepared, try_owner, validate)
+    }
+
+    #[cfg(test)]
+    fn publish_refresh_after_owner<F>(
+        &self,
+        prepared: PreparedResourceRefresh,
+        try_owner: impl FnOnce() -> Result<MutationReservation>,
+        validate: impl FnOnce(&MutationReservation, &ContextResourceSource) -> Result<F>,
+    ) -> Result<Arc<ResourceObservation>> {
         let owner = match try_owner() {
             Ok(owner) => owner,
             Err(error) => {
@@ -671,15 +704,45 @@ impl ContextResourceRegistry {
         read: impl FnOnce() -> Result<ContextResourceBody>,
     ) -> Result<PreparedResourceRefresh> {
         let prepared = PreparedSource::after(source, &self.ledger, prior)?;
+        self.prepare_refresh_with_material(prepared, read, |usage| {
+            ResourceReadMaterial::after(&self.ledger, &source.scope, usage)
+        })
+    }
+
+    #[cfg(test)]
+    pub(crate) fn prepare_refresh_after_with_material_for_test(
+        &self,
+        source: &ContextResourceSource,
+        prior: (u64, usize),
+        material: &ResourceReadMaterial,
+        read: impl FnOnce() -> Result<ContextResourceBody>,
+    ) -> Result<PreparedResourceRefresh> {
+        anyhow::ensure!(
+            material.matches_owner_identity(
+                &self.ledger,
+                &source.scope.agent_id,
+                source.scope.identity_incarnation,
+            ),
+            ResourceObservationError::SourceChanged
+        );
+        let prepared = PreparedSource::with_material(source, prior, || material.transaction())?;
+        self.prepare_refresh_with_material(prepared, read, |_| material.transaction())
+    }
+
+    fn prepare_refresh_with_material(
+        &self,
+        prepared: Arc<PreparedSource>,
+        read: impl FnOnce() -> Result<ContextResourceBody>,
+        material: impl FnOnce((u64, usize)) -> Result<ResourceReadMaterial>,
+    ) -> Result<PreparedResourceRefresh> {
         let ticket = self.begin_refresh(prepared)?;
-        let material =
-            match ResourceReadMaterial::after(&self.ledger, &source.scope, ticket.source.usage) {
-                Ok(material) => material,
-                Err(error) => {
-                    self.fail(ticket)?;
-                    return Err(error);
-                }
-            };
+        let material = match material(ticket.source.usage) {
+            Ok(material) => material,
+            Err(error) => {
+                self.fail(ticket)?;
+                return Err(error);
+            }
+        };
         let body = (|| {
             let _io = material.enter();
             // Admit fixed body/digest/Arc/container headers before the reader.

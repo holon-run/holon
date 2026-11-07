@@ -32,6 +32,8 @@ pub(super) struct RuntimeResources {
     retry_owner: AtomicBool,
     last_failure: StdMutex<Option<RefreshFailure>>,
     #[cfg(test)]
+    test_material: StdMutex<Option<ResourceReadMaterial>>,
+    #[cfg(test)]
     checkpoint: StdMutex<Option<Arc<RefreshIoBarrier>>>,
     #[cfg(test)]
     attempts: AtomicUsize,
@@ -59,6 +61,19 @@ struct ResourceRefreshSource {
     state: Arc<AgentState>,
     source: ContextResourceSource,
     material: ResourceReadMaterial,
+    #[cfg(test)]
+    test_material: Option<ResourceReadMaterial>,
+}
+
+#[cfg(test)]
+// Instance-local input for refresh and preview's retry, not an async TLS scope.
+pub(crate) struct ContextResourceTestMaterial<'a>(&'a RuntimeResources);
+
+#[cfg(test)]
+impl Drop for ContextResourceTestMaterial<'_> {
+    fn drop(&mut self) {
+        drop(self.0.test_material.lock().unwrap().take());
+    }
 }
 
 struct PreparedContextResources {
@@ -193,6 +208,8 @@ impl RuntimeResources {
             retry_owner: AtomicBool::new(false),
             last_failure: StdMutex::new(None),
             #[cfg(test)]
+            test_material: StdMutex::new(None),
+            #[cfg(test)]
             checkpoint: StdMutex::new(None),
             #[cfg(test)]
             attempts: AtomicUsize::new(0),
@@ -296,8 +313,21 @@ impl RuntimeHandle {
         record: &mut WorkItemRecord,
         initial: Option<&str>,
     ) -> Result<(bool, Arc<WorkPlanPreparation>)> {
+        self.prepare_work_plan_file_with_material(record, initial, None)
+            .await
+    }
+
+    pub(super) async fn prepare_work_plan_file_with_material(
+        &self,
+        record: &mut WorkItemRecord,
+        initial: Option<&str>,
+        material: Option<ResourceReadMaterial>,
+    ) -> Result<(bool, Arc<WorkPlanPreparation>)> {
         let writer = self.begin_context_resource_write()?;
-        let material = self.context_resource_material()?;
+        let material = match material {
+            Some(material) => material,
+            None => self.context_resource_material()?,
+        };
         let (owned_record, initial, home) = {
             let _io = material.enter();
             let admission = resource_io::charge_owned_metadata(
@@ -534,6 +564,32 @@ impl RuntimeHandle {
     #[cfg(test)]
     pub(crate) async fn refresh_context_resources(&self) -> Result<Arc<ResourceObservation>> {
         self.run_context_resource_refresh(true).await
+    }
+    #[cfg(test)]
+    pub(crate) async fn refresh_context_resources_with_material_for_test(
+        &self,
+        material: ResourceReadMaterial,
+    ) -> Result<Arc<ResourceObservation>> {
+        let _fault = self.hold_context_resource_material_for_test(material)?;
+        self.refresh_context_resources().await
+    }
+    #[cfg(test)]
+    pub(crate) fn hold_context_resource_material_for_test(
+        &self,
+        material: ResourceReadMaterial,
+    ) -> Result<ContextResourceTestMaterial<'_>> {
+        anyhow::ensure!(
+            material.matches_owner_identity(
+                &self.inner.input_evidence_budget,
+                &self.inner.resources.scope.agent_id,
+                self.inner.resources.scope.identity_incarnation,
+            ),
+            ResourceObservationError::SourceChanged
+        );
+        let mut slot = self.inner.resources.test_material.lock().unwrap();
+        anyhow::ensure!(slot.is_none(), "resource test material already installed");
+        *slot = Some(material);
+        Ok(ContextResourceTestMaterial(&self.inner.resources))
     }
     #[cfg(test)]
     pub(crate) async fn try_refresh_context_resources_for_test(
@@ -957,6 +1013,10 @@ impl RuntimeHandle {
             &self.inner.input_evidence_budget,
             &self.inner.resources.scope,
         )?;
+        #[cfg(test)]
+        let test_material = self.inner.resources.test_material.lock().unwrap().clone();
+        #[cfg(test)]
+        let source_material = test_material.clone().unwrap_or(source_material);
         let source = {
             let _io = source_material.enter();
             self.context_resource_source(&state, &config)?
@@ -966,6 +1026,8 @@ impl RuntimeHandle {
             state,
             source,
             material: source_material,
+            #[cfg(test)]
+            test_material,
         })
     }
 
@@ -985,6 +1047,8 @@ impl RuntimeHandle {
             state,
             source,
             material: source_material,
+            #[cfg(test)]
+            test_material,
         } = captured;
         let inventory = match self.inner.host_bridge.as_ref() {
             Some(bridge) => bridge.skills_registry()?,
@@ -995,117 +1059,119 @@ impl RuntimeHandle {
             .map_err(|_| ResourceObservationError::InventoryContended)?
             .clone();
         let mut candidate = None;
-        let prepared =
-            resources
-                .registry
-                .prepare_refresh_after(&source, source_material.finish()?, || {
-                    #[cfg(test)]
-                    resources.reads.fetch_add(1, Ordering::AcqRel);
-                    #[cfg(test)]
-                    let checkpoint = resources.checkpoint.lock().unwrap().take();
-                    #[cfg(test)]
-                    if let Some(checkpoint) = checkpoint {
-                        *checkpoint.inventory_base.lock().unwrap() = Some(base.clone());
-                        checkpoint.reached.notify_one();
-                        let mut released = checkpoint.released.lock().unwrap();
-                        while !*released {
-                            released = checkpoint.release.wait(released).unwrap();
-                        }
-                    }
-                    resource_io::charge_owned_metadata(
-                        input_evidence_budget::serialized_bytes(&state.active_skills)? + 16384,
-                        256,
-                    )?;
-                    // Parser scratch exits before the independent Host skill inventory is retained.
-                    self.trace_resource_refresh("templates_start");
-                    let agent_templates_catalog = discover_agent_templates_catalog(
-                        source.user_home.as_deref(),
-                        &source.agent_home,
-                    );
-                    resource_io::check_active()?;
-                    self.trace_resource_refresh("catalogue_start");
-                    let host_material =
-                        ResourceReadMaterial::host(&self.inner.input_evidence_budget)?;
-                    let (mut catalogue, roots) = {
-                        let _io = host_material.enter();
-                        let mut catalogue = base.clone();
-                        resource_io::charge_owned_metadata(16384, 256)?;
-                        let roots = effective_skill_root_registrations(
-                            if source.include_user_skills {
-                                SkillVisibility::DefaultAgent
-                            } else {
-                                SkillVisibility::NonDefaultAgent
-                            },
-                            source.user_home.as_deref(),
-                            &source.scope.agent_id,
-                            &source.agent_home,
-                            source.execution_root.as_deref(),
-                        );
-                        catalogue.sync_effective_roots(roots.clone())?;
-                        for root in catalogue.roots() {
-                            if let crate::types::SkillRootScanStatus::Failed { error } =
-                                &root.scan_status
-                            {
-                                bail!("context skill catalogue read failed: {error}");
-                            }
-                        }
-                        host_material.finish()?;
-                        (catalogue, roots)
-                    };
-                    if base.has_material() && catalogue.same_snapshot(&base) {
-                        // Unchanged data keeps its original guard; only this
-                        // candidate's header/scan belongs to the new phase.
-                        catalogue.retain_shared_material(host_material.guard()?)?;
+        let read = || {
+            #[cfg(test)]
+            resources.reads.fetch_add(1, Ordering::AcqRel);
+            #[cfg(test)]
+            let checkpoint = resources.checkpoint.lock().unwrap().take();
+            #[cfg(test)]
+            if let Some(checkpoint) = checkpoint {
+                *checkpoint.inventory_base.lock().unwrap() = Some(base.clone());
+                checkpoint.reached.notify_one();
+                let mut released = checkpoint.released.lock().unwrap();
+                while !*released {
+                    released = checkpoint.release.wait(released).unwrap();
+                }
+            }
+            resource_io::charge_owned_metadata(
+                input_evidence_budget::serialized_bytes(&state.active_skills)? + 16384,
+                256,
+            )?;
+            // Parser scratch exits before the independent Host skill inventory is retained.
+            self.trace_resource_refresh("templates_start");
+            let agent_templates_catalog =
+                discover_agent_templates_catalog(source.user_home.as_deref(), &source.agent_home);
+            resource_io::check_active()?;
+            self.trace_resource_refresh("catalogue_start");
+            let host_material = ResourceReadMaterial::host(&self.inner.input_evidence_budget)?;
+            let (mut catalogue, roots) = {
+                let _io = host_material.enter();
+                let mut catalogue = base.clone();
+                resource_io::charge_owned_metadata(16384, 256)?;
+                let roots = effective_skill_root_registrations(
+                    if source.include_user_skills {
+                        SkillVisibility::DefaultAgent
                     } else {
-                        catalogue.retain_material(host_material.guard()?);
+                        SkillVisibility::NonDefaultAgent
+                    },
+                    source.user_home.as_deref(),
+                    &source.scope.agent_id,
+                    &source.agent_home,
+                    source.execution_root.as_deref(),
+                );
+                catalogue.sync_effective_roots(roots.clone())?;
+                for root in catalogue.roots() {
+                    if let crate::types::SkillRootScanStatus::Failed { error } = &root.scan_status {
+                        bail!("context skill catalogue read failed: {error}");
                     }
-                    let catalogue = Arc::new(catalogue);
-                    let mut skills = skills_runtime_view_from_catalog(
-                        catalogue.catalog_for_roots(&roots, None),
-                        &roots,
-                        &state.active_skills,
-                    )?;
-                    skills.agent_templates_catalog = agent_templates_catalog;
-                    resource_io::check_active()?;
-                    self.trace_resource_refresh("plans_start");
-                    let mut plans = std::collections::BTreeMap::new();
-                    for plan in &source.plans {
-                        resource_io::charge_owned_metadata(
-                            (plan.work_item_id.len() + 512) as u64,
-                            16,
-                        )?;
-                        let observed = crate::work_item_plan::observe_plan_artifact(
-                            &source.agent_home,
-                            &source.scope.agent_id,
-                            &plan.work_item_id,
-                            plan.recorded,
-                        )?;
-                        plans.insert(plan.work_item_id.clone(), observed);
-                    }
-                    self.trace_resource_refresh("guidance_start");
-                    let guidance = load_agents_md(
-                        source.user_home.as_deref(),
-                        &source.agent_home,
-                        source.workspace_anchor.as_deref(),
-                    )?;
-                    self.trace_resource_refresh("memory_start");
-                    let memory = load_agent_memory(&source.agent_home)?;
-                    self.trace_resource_refresh("notes_start");
-                    let notes = crate::notes_catalog::render_agent_home_notes_catalog_checked(
-                        &source.agent_home,
-                    )?;
-                    self.trace_resource_refresh("body_done");
-                    let body = ContextResourceBody {
-                        guidance,
-                        memory,
-                        notes,
-                        skills,
-                        plans,
-                        _host_catalogue: Some(catalogue.clone()),
-                    };
-                    candidate = Some(catalogue);
-                    Ok(body)
-                })?;
+                }
+                host_material.finish()?;
+                (catalogue, roots)
+            };
+            if base.has_material() && catalogue.same_snapshot(&base) {
+                // Unchanged data keeps its original guard; only this
+                // candidate's header/scan belongs to the new phase.
+                catalogue.retain_shared_material(host_material.guard()?)?;
+            } else {
+                catalogue.retain_material(host_material.guard()?);
+            }
+            let catalogue = Arc::new(catalogue);
+            let mut skills = skills_runtime_view_from_catalog(
+                catalogue.catalog_for_roots(&roots, None),
+                &roots,
+                &state.active_skills,
+            )?;
+            skills.agent_templates_catalog = agent_templates_catalog;
+            resource_io::check_active()?;
+            self.trace_resource_refresh("plans_start");
+            let mut plans = std::collections::BTreeMap::new();
+            for plan in &source.plans {
+                resource_io::charge_owned_metadata((plan.work_item_id.len() + 512) as u64, 16)?;
+                let observed = crate::work_item_plan::observe_plan_artifact(
+                    &source.agent_home,
+                    &source.scope.agent_id,
+                    &plan.work_item_id,
+                    plan.recorded,
+                )?;
+                plans.insert(plan.work_item_id.clone(), observed);
+            }
+            self.trace_resource_refresh("guidance_start");
+            let guidance = load_agents_md(
+                source.user_home.as_deref(),
+                &source.agent_home,
+                source.workspace_anchor.as_deref(),
+            )?;
+            self.trace_resource_refresh("memory_start");
+            let memory = load_agent_memory(&source.agent_home)?;
+            self.trace_resource_refresh("notes_start");
+            let notes =
+                crate::notes_catalog::render_agent_home_notes_catalog_checked(&source.agent_home)?;
+            self.trace_resource_refresh("body_done");
+            let body = ContextResourceBody {
+                guidance,
+                memory,
+                notes,
+                skills,
+                plans,
+                _host_catalogue: Some(catalogue.clone()),
+            };
+            candidate = Some(catalogue);
+            Ok(body)
+        };
+        let prior = source_material.finish()?;
+        #[cfg(test)]
+        let prepared = match test_material {
+            Some(material) => resources
+                .registry
+                .prepare_refresh_after_with_material_for_test(&source, prior, &material, read)?,
+            None => resources
+                .registry
+                .prepare_refresh_after(&source, prior, read)?,
+        };
+        #[cfg(not(test))]
+        let prepared = resources
+            .registry
+            .prepare_refresh_after(&source, prior, read)?;
         Ok(PreparedContextResources {
             prepared,
             inventory,

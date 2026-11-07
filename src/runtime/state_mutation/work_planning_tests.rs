@@ -267,7 +267,21 @@ async fn scheduler_error_metadata_never_reads_or_materializes_event_bodies() -> 
         .audit_events()
         .append(Some(&scope.agent_id), &event)?;
     let connection = runtime.runtime_db().connection()?;
-    let body_phase = ResourceReadMaterial::new(&runtime.inner.input_evidence_budget, &scope)?;
+    let ordinary = ResourceReadMaterial::new(&runtime.inner.input_evidence_budget, &scope)?;
+    let events = ordinary.read(|| {
+        let mut query =
+            connection.prepare("SELECT data_json FROM audit_events WHERE agent_id=?1")?;
+        crate::runtime_db::repositories::audit_event_records(&mut query, [&scope.agent_id])
+    })?;
+    assert_eq!(events.len(), 1);
+    assert_eq!(events[0].data, event.data);
+    ordinary.finish()?;
+    let body_phase = ResourceReadMaterial::with_test_limits(
+        &runtime.inner.input_evidence_budget,
+        &scope,
+        64 * 1024 * 1024,
+        65_536,
+    )?;
     let error = body_phase
         .read(|| {
             let mut query =
@@ -572,6 +586,13 @@ async fn scheduler_capture_does_not_spend_retained_input_query_acquisition() -> 
     })?;
     let baseline = original.finish()?;
     assert_eq!(baseline.1, limit);
+    // The former cap is an observation, not a rejected next acquisition.
+    original.read(|| {
+        crate::diagnostics::resource_io::charge_owned_metadata(0, 1)?;
+        Ok(())
+    })?;
+    let baseline = original.finish()?;
+    assert_eq!(baseline.1, limit + 8);
     for _ in 0..3 {
         let prepared = mutation
             .prepare_scheduler_read(None, Default::default(), Default::default(), runtime.now())
@@ -602,9 +623,10 @@ async fn scheduler_capture_does_not_spend_retained_input_query_acquisition() -> 
         assert_eq!(original.finish()?, baseline);
         drop(read);
     }
+    // A real arithmetic failure still poisons the retained source.
     assert!(original
         .read(|| {
-            crate::diagnostics::resource_io::charge_owned_metadata(0, 1)?;
+            crate::diagnostics::resource_io::charge_owned_metadata(u64::MAX, 0)?;
             Ok(())
         })
         .is_err());

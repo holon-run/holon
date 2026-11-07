@@ -22,19 +22,43 @@ fn proof_header_and_selector_admission_precede_canonical_decode() -> Result<()> 
     let scope = scope();
     let request = request();
     let keys = BTreeSet::from([SchedulingKey::new(SchedulingFamily::Timer, &record.id)]);
-    // 63 rejects the header; 64 admits only that header, not selector material.
-    for records in [63, 64, 65_536] {
+    // Ledger settings are observational. Only injected limits reject the
+    // constructor at 63 or selector material after entering the 64 header.
+    for (records, injected) in [
+        (63, false),
+        (64, false),
+        (65_536, false),
+        (63, true),
+        (64, true),
+    ] {
         let ledger = InputEvidenceBudgetLedger::new(StateMemoryLimits {
             record_limit: records,
             ..StateMemoryLimits::default()
         })?;
         let error = db
             .transaction(|tx| {
-                prepare_scheduling_write_tx(tx, &scope, &keys, &request, &ledger).map(|_| ())
+                let phase = injected
+                    .then(|| {
+                        ResourceReadMaterial::with_test_limits(
+                            &ledger,
+                            &scope,
+                            64 * 1024 * 1024,
+                            records as usize,
+                        )
+                    })
+                    .transpose()?;
+                let _entry = phase.as_ref().map(|phase| phase.enter());
+                let result =
+                    prepare_scheduling_write_tx(tx, &scope, &keys, &request, &ledger).map(|_| ());
+                if let Some(phase) = &phase {
+                    assert!(result.is_err());
+                    assert!(phase.finish().is_err());
+                }
+                result
             })
             .unwrap_err();
-        assert_eq!(exhausted(&error), records < 65_536, "{error:#}");
-        if records == 65_536 {
+        assert_eq!(exhausted(&error), injected, "{error:#}");
+        if !injected {
             assert!(
                 format!("{error:#}").contains("decoding timer payload from runtime db"),
                 "{error:#}"

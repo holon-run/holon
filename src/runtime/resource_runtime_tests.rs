@@ -642,6 +642,24 @@ async fn actual_work_plan_quota_rejects_before_file_work_or_receipt_side_effects
             })?,
         ))
     };
+    let original = counts()?;
+    for repeats in [8 * 1024, 32 * 1024] {
+        let plan = "budget plan\n".repeat(repeats);
+        let work = runtime
+            .create_work_item(
+                "observational plan".into(),
+                None,
+                Some(plan.clone()),
+                vec![],
+            )
+            .await?;
+        assert_eq!(
+            std::fs::read_to_string(work.plan_artifact.as_ref().unwrap().path.clone())?,
+            plan
+        );
+    }
+    assert_eq!(counts()?.0, original.0 + 2);
+    assert!(counts()?.1 > original.1);
     let before = counts()?;
     let directory = runtime.agent_home().join("work-items");
     let existed = directory.exists();
@@ -656,19 +674,27 @@ async fn actual_work_plan_quota_rejects_before_file_work_or_receipt_side_effects
         Ok(paths)
     };
     let previous = children()?;
+    let header = runtime.context_resource_material()?.finish()?;
     for repeats in [8 * 1024, 32 * 1024] {
+        let material = crate::diagnostics::resource_io::ResourceReadMaterial::with_test_limits(
+            &runtime.inner.input_evidence_budget,
+            &runtime.inner.resources.scope,
+            header.0,
+            header.1,
+        )?;
+        let failure = material.clone();
         let error = runtime
-            .create_work_item(
+            .create_work_item_with_plan_material(
                 "first file quota".into(),
-                None,
-                Some("budget plan\n".repeat(repeats)),
-                vec![],
+                "budget plan\n".repeat(repeats),
+                material,
             )
             .await
             .unwrap_err();
         let descriptor = crate::runtime_error::describe_runtime_error(&error);
         assert_eq!(descriptor.code, "context_resource_exhausted");
         assert!(descriptor.retryable);
+        assert!(failure.finish().is_err());
         assert_eq!(counts()?, before);
         assert_eq!(directory.exists(), existed);
         assert_eq!(children()?, previous);

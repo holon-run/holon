@@ -77,14 +77,19 @@ fn idle_recovery_digest_keeps_original_shape_and_fits_64_result_phase_remainder(
     let prior = prior_turn(&f, true)?;
     let ledger = InputEvidenceBudgetLedger::new(Default::default())?;
     // The frozen 64-result recovery failed at 61,336 records / 20,483,336
-    // bytes. Keep that original used allowance, including its eightfold gates.
+    // bytes. Inject that original remainder, including its eightfold gates.
     let used = (20_483_336, 61_336);
     for count in [1usize, 2, 8, 9, 64] {
         let mut seen = std::collections::BTreeSet::new();
         for first in (0..count).step_by(8) {
             let record = recovered_turn(&prior, first, (count - first).min(8));
             seen.extend(record.input_message_ids.iter().cloned());
-            let phase = ResourceReadMaterial::after(&ledger, &f.scope, used)?;
+            let phase = ResourceReadMaterial::with_test_limits(
+                &ledger,
+                &f.scope,
+                64 * 1024 * 1024 - used.0,
+                65_536 - used.1,
+            )?;
             let before = phase.finish()?;
             let prepared = phase.read(|| prepare(&f, &prior, record, &ledger))?;
             let after = phase.finish()?;
@@ -117,11 +122,23 @@ fn idle_recovery_digest_keeps_original_shape_and_fits_64_result_phase_remainder(
         prior_digest: canonical_command_digest(&prior)?,
     };
     let phase = ResourceReadMaterial::after(&ledger, &f.scope, used)?;
+    phase.read(|| crate::diagnostics::resource_io::admit_serialized_value(&command))?;
+    phase.finish()?;
+    drop(phase);
+    assert_eq!(ledger.report()?.observed_bytes, 0);
+    let phase = ResourceReadMaterial::with_test_limits(
+        &ledger,
+        &f.scope,
+        64 * 1024 * 1024 - used.0,
+        65_536 - used.1,
+    )?;
     let error = phase
         .read(|| crate::diagnostics::resource_io::admit_serialized_value(&command))
         .unwrap_err();
     assert!(format!("{error:#}").contains("ResourceExhausted"));
     assert!(phase.finish().is_err());
+    drop(phase);
+    assert_eq!(ledger.report()?.observed_bytes, 0);
     Ok(())
 }
 

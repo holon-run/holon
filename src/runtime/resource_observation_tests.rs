@@ -552,11 +552,39 @@ fn oversized_invalid_utf8_and_directory_count_reject_before_owned_decode() {
     let ledger = InputEvidenceBudgetLedger::new(limits).unwrap();
     let registry = ContextResourceRegistry::new(ledger);
     let source = source();
+    // State-memory estimates are observations, not a production reader quota.
     let probe = IoProbe::start();
     let error = registry
         .refresh(
             &source,
             || {
+                Ok(ContextResourceBody {
+                    notes: read_optional_text(&oversized)?,
+                    ..Default::default()
+                })
+            },
+            || reserve(&source),
+            |_, _| Ok(()),
+        )
+        .unwrap_err();
+    assert_eq!(
+        error.downcast_ref::<io::Error>().unwrap().kind(),
+        io::ErrorKind::InvalidData
+    );
+    assert_eq!(probe.snapshot().counters.file_read_attempts, 1);
+    drop(probe);
+
+    let material =
+        ResourceReadMaterial::with_test_limits(&registry.ledger, &source.scope, 128 * 1024, 65_536)
+            .unwrap();
+    let body_started = Cell::new(false);
+    let probe = IoProbe::start();
+    let error = registry
+        .refresh_with_material_for_test(
+            &source,
+            &material,
+            || {
+                body_started.set(true);
                 Ok(ContextResourceBody {
                     notes: read_optional_text(&oversized)?,
                     ..Default::default()
@@ -568,7 +596,13 @@ fn oversized_invalid_utf8_and_directory_count_reject_before_owned_decode() {
         .unwrap_err();
     let described = crate::runtime_error::describe_runtime_error(&error);
     assert_eq!(described.code, "context_resource_exhausted");
+    assert!(body_started.get(), "source and body headers must fit first");
+    assert!(
+        material.finish().is_err(),
+        "the injected fault stays latched"
+    );
     assert_eq!(probe.snapshot().counters.file_read_bytes, 0);
+    drop(probe);
     assert_eq!(
         registry.freshness().unwrap(),
         ResourceFreshness::RefreshFailed
@@ -600,11 +634,67 @@ fn oversized_invalid_utf8_and_directory_count_reject_before_owned_decode() {
     for index in 0..8 {
         std::fs::write(dir.path().join(format!("entry-{index}")), "").unwrap();
     }
+    let mut complete = 0;
+    registry
+        .refresh(
+            &source,
+            || {
+                complete = io_probe::read_dir(dir.path())?
+                    .collect::<io::Result<Vec<_>>>()?
+                    .len();
+                Ok(ContextResourceBody::default())
+            },
+            || reserve(&source),
+            |_, _| Ok(()),
+        )
+        .unwrap();
+    assert_eq!(complete, 10, "ordinary inventories must not be truncated");
+
+    // Calibrate the same source and fixed body headers before injecting a
+    // record fault. Source and body retain separate child ownership while
+    // charging the one explicit phase cumulatively.
+    let header_material = ResourceReadMaterial::with_test_limits(
+        &registry.ledger,
+        &source.scope,
+        64 * 1024 * 1024,
+        65_536,
+    )
+    .unwrap();
+    let headers = Cell::new((0, 0));
+    registry
+        .refresh_with_material_for_test(
+            &source,
+            &header_material,
+            || {
+                headers.set(header_material.finish()?);
+                Ok(ContextResourceBody::default())
+            },
+            || reserve(&source),
+            |_, _| Ok(()),
+        )
+        .unwrap();
+    let header_bytes = (source.scope.agent_id.len() as u64 + 256) * 8;
+    assert_eq!(
+        headers.get(),
+        (
+            header_bytes * 3 + (serialized_bytes(&source).unwrap() + 1024 + 8192) * 8,
+            64 * 3 + (32 + 128) * 8,
+        )
+    );
+    let material = ResourceReadMaterial::with_test_limits(
+        &registry.ledger,
+        &source.scope,
+        64 * 1024 * 1024,
+        // One path record, then exactly two eight-record iterator entries.
+        headers.get().1 + 8 + 2 * 8 * 8,
+    )
+    .unwrap();
     let decoded = Cell::new(0usize);
     let admitted = Cell::new(0usize);
     let error = registry
-        .refresh(
+        .refresh_with_material_for_test(
             &source,
+            &material,
             || {
                 // Iterator admission must fail before this collected inventory is decoded.
                 let entries = io_probe::read_dir(dir.path())?
@@ -625,6 +715,7 @@ fn oversized_invalid_utf8_and_directory_count_reject_before_owned_decode() {
         crate::runtime_error::describe_runtime_error(&error).code,
         "context_resource_exhausted"
     );
+    assert!(material.finish().is_err());
     assert_eq!(decoded.get(), 0);
     assert_eq!(admitted.get(), 2);
 }

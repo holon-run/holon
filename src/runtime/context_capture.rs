@@ -2185,12 +2185,14 @@ mod resource_read_tests {
             record_limit: records,
             ..Default::default()
         })?;
-        let material = ResourceReadMaterial::new(
+        let material = ResourceReadMaterial::with_test_limits(
             &ledger,
             &InputEvidenceScope {
                 agent_id: identity.agent_id.clone(),
                 identity_incarnation: identity.incarnation,
             },
+            bytes,
+            usize::try_from(records)?,
         )?;
         Ok((ledger, material))
     }
@@ -2730,6 +2732,11 @@ mod resource_read_tests {
         let mut config = (*runtime.inner.config_snapshot.load_full()).clone();
         config.user_home_dir = None;
         runtime.inner.config_snapshot.store(Arc::new(config));
+        let identity = runtime.agent_identity_view().await?;
+        let scope = InputEvidenceScope {
+            agent_id: identity.agent_id,
+            identity_incarnation: identity.incarnation,
+        };
         for relative in [
             "skills/sample/SKILL.md",
             "notes/oversized.md",
@@ -2740,8 +2747,26 @@ mod resource_read_tests {
             std::fs::create_dir_all(path.parent().unwrap())?;
             // Sparse length admission must reject before allocating the body.
             std::fs::File::create(&path)?.set_len(64 * 1024 * 1024 + 1)?;
-            // External file fixtures require the explicit refresh boundary now.
-            assert!(runtime.refresh_context_resources().await.is_err());
+            let material = ResourceReadMaterial::with_test_limits(
+                &runtime.inner.input_evidence_budget,
+                &scope,
+                64 * 1024 * 1024,
+                65_536,
+            )?;
+            // Move the explicit fault phase to the real physical worker; no TLS
+            // entry may survive either await or substitute a capture helper.
+            assert!(ResourceReadMaterial::active_guard()?.is_none());
+            let error = runtime
+                .refresh_context_resources_with_material_for_test(material.clone())
+                .await
+                .err()
+                .expect("the physical refresh must reject before loading the sparse body");
+            assert_resource_quota(&error);
+            assert_resource_quota(&material.finish().unwrap_err());
+            assert!(ResourceReadMaterial::active_guard()?.is_none());
+            // Preview may explicitly re-prepare a failed observation. Keep that
+            // attempt in the same latched fault phase without an async TLS entry.
+            let fault = runtime.hold_context_resource_material_for_test(material)?;
             let error = runtime
                 .preview_prompt("inspect".into(), AuthorityClass::OperatorInstruction)
                 .await
@@ -2755,7 +2780,12 @@ mod resource_read_tests {
             );
             assert_eq!(descriptor.code, "context_resource_exhausted", "{relative}");
             assert!(descriptor.retryable, "{relative}");
+            drop(fault);
             std::fs::remove_file(path)?;
+            runtime.refresh_context_resources().await?;
+            runtime
+                .preview_prompt("inspect".into(), AuthorityClass::OperatorInstruction)
+                .await?;
         }
         // A genuine non-quota reader error must not be rewritten as exhaustion.
         std::fs::write(home.path().join("AGENTS.md"), [0xff])?;
@@ -2783,12 +2813,21 @@ mod resource_read_tests {
         runtime.refresh_context_resources().await?;
         let plan = crate::work_item_plan::plan_path(runtime.inner.storage.data_dir(), &work.id);
         std::fs::File::create(plan)?.set_len(64 * 1024 * 1024 + 1)?;
+        let material = ResourceReadMaterial::with_test_limits(
+            &runtime.inner.input_evidence_budget,
+            &scope,
+            64 * 1024 * 1024,
+            65_536,
+        )?;
         let error = runtime
-            .refresh_context_resources()
+            .refresh_context_resources_with_material_for_test(material.clone())
             .await
             .err()
             .expect("explicit plan observation must preserve a quota failure");
         assert_resource_quota(&error);
+        assert_resource_quota(&material.finish().unwrap_err());
+        assert!(ResourceReadMaterial::active_guard()?.is_none());
+        let fault = runtime.hold_context_resource_material_for_test(material)?;
         let error = runtime
             .preview_prompt("inspect".into(), AuthorityClass::OperatorInstruction)
             .await
@@ -2802,6 +2841,15 @@ mod resource_read_tests {
         );
         assert_eq!(descriptor.code, "context_resource_exhausted");
         assert!(descriptor.retryable);
+        drop(fault);
+        std::fs::write(
+            crate::work_item_plan::plan_path(runtime.inner.storage.data_dir(), &work.id),
+            "recovered plan",
+        )?;
+        runtime.refresh_context_resources().await?;
+        runtime
+            .preview_prompt("inspect".into(), AuthorityClass::OperatorInstruction)
+            .await?;
         Ok(())
     }
 }

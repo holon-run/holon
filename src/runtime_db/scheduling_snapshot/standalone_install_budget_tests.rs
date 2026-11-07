@@ -13,8 +13,15 @@ fn standalone_install_admits_header_and_first_material_before_decode_and_rolls_b
     let request = request();
     let record = timer("standalone-rejected", TimerStatus::Active);
     let keys = BTreeSet::from([SchedulingKey::new(SchedulingFamily::Timer, &record.id)]);
-    // 64 records admit exactly the header; 63 reject before creating it.
-    for records in [63, 64, 65_536] {
+    // Ordinary ledger settings reach decode. Injected 63 rejects the
+    // constructor; injected 64 enters the header but rejects real preparation.
+    for (records, injected) in [
+        (63, false),
+        (64, false),
+        (65_536, false),
+        (63, true),
+        (64, true),
+    ] {
         let ledger = InputEvidenceBudgetLedger::new(StateMemoryLimits {
             record_limit: records,
             ..StateMemoryLimits::default()
@@ -22,7 +29,23 @@ fn standalone_install_admits_header_and_first_material_before_decode_and_rolls_b
         assert!(ResourceReadMaterial::active_guard()?.is_none());
         let error = db
             .transaction(|tx| {
-                let proof = prepare_scheduling_write_tx(tx, &scope, &keys, &request, &ledger)?;
+                let phase = injected
+                    .then(|| {
+                        ResourceReadMaterial::with_test_limits(
+                            &ledger,
+                            &scope,
+                            64 * 1024 * 1024,
+                            records as usize,
+                        )
+                    })
+                    .transpose()?;
+                let _entry = phase.as_ref().map(|phase| phase.enter());
+                let prepared = prepare_scheduling_write_tx(tx, &scope, &keys, &request, &ledger);
+                if let Some(phase) = &phase {
+                    assert!(prepared.is_err());
+                    assert!(phase.finish().is_err());
+                }
+                let proof = prepared?;
                 let state = ContextDurableRead::new(tx, &scope.agent_id)
                     .scope_facts()?
                     .state
@@ -40,9 +63,15 @@ fn standalone_install_admits_header_and_first_material_before_decode_and_rolls_b
                 .to_string()
                 .to_ascii_lowercase()
                 .contains("resourceexhausted: context resource read material"),
-            records < 65_536,
+            injected,
             "{error:#}"
         );
+        if !injected {
+            assert!(
+                format!("{error:#}").contains("decoding timer payload from runtime db"),
+                "{error:#}"
+            );
+        }
         assert!(ResourceReadMaterial::active_guard()?.is_none());
         assert_eq!(ledger.report()?.observed_bytes, 0);
         let count: usize = db.connection()?.query_row(

@@ -375,14 +375,16 @@ fn scheduler_borrows_full_inventory_and_preserves_exact_claim_outside_candidate_
         assert_eq!(ledger.report()?.observed_bytes, baseline);
     }
     let phase = ResourceReadMaterial::new(&ledger, &scope())?;
-    let error = captured
-        .work_queue_with_material(&state, &[], &phase)
-        .unwrap_err();
+    let queue = captured.work_queue_with_material(&state, &[], &phase)?;
+    assert_eq!(queue.items.len(), 200);
+    assert_eq!(queue.queued_runnable.len(), 5);
     assert_eq!(
-        crate::runtime_error::describe_runtime_error(&error).code,
-        "context_resource_exhausted"
+        queue_wire(&queue)?,
+        queue_wire(&captured.work_queue(&state, vec![])?)?
     );
-    assert!(phase.finish().is_err());
+    phase.finish()?;
+    drop((queue, phase));
+    assert_eq!(ledger.report()?.observed_bytes, baseline);
     Ok(())
 }
 

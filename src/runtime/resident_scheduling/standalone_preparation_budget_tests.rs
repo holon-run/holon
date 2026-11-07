@@ -34,7 +34,8 @@ fn binding(bytes: usize) -> WorkItemExecutionBinding {
 }
 
 #[tokio::test]
-async fn standalone_preparation_gates_constructor_before_private_candidate() -> Result<()> {
+async fn standalone_preparation_preserves_private_candidate_rejection_above_legacy_cap(
+) -> Result<()> {
     let home = tempdir()?;
     let runtime = runtime(home.path())?;
     runtime.join_resource_worker().await?;
@@ -46,7 +47,12 @@ async fn standalone_preparation_gates_constructor_before_private_candidate() -> 
         .prepare_owner_scheduling_request(&SchedulingCaptureRequest::current())
         .await
         .unwrap_err();
-    assert!(error.to_string().contains("ResourceExhausted"), "{error:#}");
+    assert!(
+        error
+            .to_string()
+            .contains("cannot publish a private candidate"),
+        "{error:#}"
+    );
     let published = runtime.inner.mutation_owner.capture()?.unwrap();
     assert_eq!(published.token, root.token);
     assert_eq!(published.state, root.state);
