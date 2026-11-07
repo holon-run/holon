@@ -27,6 +27,9 @@ use crate::types::{
 #[path = "agent_deletion_cleanup/supervised_admission_tests.rs"]
 mod supervised_admission_tests;
 
+#[path = "agent_deletion_cleanup/readonly_stop.rs"]
+mod readonly_stop;
+
 const REASON: &str = "agent_deleted";
 
 // Exact sqlite_master SQL for the branch's fixed Scheduling/Task DELETE guards.
@@ -237,8 +240,11 @@ const TASK_INVENTORY_OWNER: &str =
     "inventory_id IN (SELECT inventory_id FROM task_query_fixed_manifests WHERE agent_id = ?1)";
 const SCHEDULING_INVENTORY_OWNER: &str =
     "inventory_id IN (SELECT inventory_id FROM scheduling_fixed_manifests WHERE agent_id = ?1)";
-const RECEIPT_OWNER: &str =
+const RECEIPT_MEMBER: &str =
     "EXISTS(SELECT 1 FROM json_each(scopes_json) s WHERE json_extract(s.value,'$.agent_id') = ?1)";
+// Exact readonly Stop groups are validated by assert_command_ownership_tx in
+// the same transaction. Their whole receipt stays with the parent writer.
+const RECEIPT_OWNER: &str = "EXISTS(SELECT 1 FROM json_each(scopes_json) s WHERE json_extract(s.value,'$.agent_id') = ?1) AND NOT COALESCE(json_extract(outcome_json,'$.result.kind')='task' AND json_type(outcome_json,'$.result.stop')='object' AND json_extract(outcome_json,'$.result.stop.scope.agent_id') != ?1,0)";
 
 // Private dependent projections, child-before-source for both archive/purge.
 // Original seed ownership, not today's binding, owns legacy/unbound captures.
@@ -1139,6 +1145,17 @@ fn assert_child_receipt_owner_tx(
     // Reuse normalized-column, descriptor, full outcome and result-digest checks.
     let receipt = lookup_input_mutation_receipt_tx(tx, &prepared)?
         .context("original shared receipt disappeared")?;
+    if matches!(
+        &receipt.outcome.result,
+        InputMutationResult::Task { stop: Some(_), .. }
+    ) {
+        return readonly_stop::assert_parent_owned_readonly_stop_tx(
+            tx,
+            purge_agent_id,
+            &prepared,
+            &receipt,
+        );
+    }
     if matches!(&receipt.outcome.result, InputMutationResult::Transition) {
         return assert_child_message_wait_receipt_owner_tx(tx, purge_agent_id, &prepared, &receipt);
     }
@@ -1312,7 +1329,7 @@ fn assert_command_ownership_tx(tx: &Transaction<'_>, agent_id: &str) -> Result<(
     let candidates = {
         let mut statement = tx.prepare(&format!(
             "SELECT command_nonce,prepared_json FROM input_mutation_receipts
-             WHERE {RECEIPT_OWNER}
+             WHERE {RECEIPT_MEMBER}
                AND EXISTS(SELECT 1 FROM json_each(scopes_json) s
                  WHERE json_type(s.value,'$.agent_id') IS NOT 'text'
                     OR json_extract(s.value,'$.agent_id') != ?1)"

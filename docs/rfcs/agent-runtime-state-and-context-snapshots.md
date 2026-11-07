@@ -41,6 +41,12 @@ supervised child through a terminal `agent_message_wait`. Only the exact
 receipt, delivery, parent Task-only ACK, typed target, recovery and canonical
 lineage group may be removed as one receipt. Parent result rows and unrelated
 history remain owned by the parent; unknown shared groups stay fail-closed.
+An initial TaskStop's frozen readonly child observation does not transfer the
+parent receipt or Stop continuation to the child. Verify the exact original
+Stop source and empty child effects, then retain the whole parent-owned receipt
+through child cleanup. Parent-first purge remains blocked until child cleanup
+is proved complete; no scope or checksum is rewritten.
+
 
 ## Resource estimates and runtime availability
 

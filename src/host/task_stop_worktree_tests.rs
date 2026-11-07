@@ -702,3 +702,173 @@ async fn unfinished_original_phase_attempt_blocks_git_until_receipt_absence_is_r
     f.host.shutdown().await?;
     Ok(())
 }
+
+#[tokio::test]
+async fn child_cleanup_retains_original_readonly_parent_stop_receipt() -> Result<()> {
+    let f = Fixture::new().await?;
+    let child = f.original.intent.child.as_ref().unwrap();
+    let db = f.host.runtime_db();
+    let retired = db
+        .agent_identities()
+        .latest(&child.scope.agent_id)?
+        .unwrap();
+    // This focused fixture has already produced the original tombstone.
+    // Admit native physical cleanup before execution/history settlement.
+    db.agent_deletions().begin(
+        &child.scope.agent_id,
+        retired.revision,
+        "test_original_stop_cleanup",
+        false,
+    )?;
+    let before = db.transaction(|tx| {
+        Ok(
+            crate::runtime_db::input_mutation_receipts::lookup_input_mutation_receipt_tx(
+                tx,
+                &f.original.prepared,
+            )?
+            .context("original Stop receipt")?,
+        )
+    })?;
+    crate::runtime_db::agent_deletion_cleanup::export_private_history(
+        db,
+        &child.scope.agent_id,
+        child.scope.identity_incarnation,
+    )?;
+    crate::runtime_db::agent_deletion_cleanup::settle_execution(
+        db,
+        &child.scope.agent_id,
+        child.scope.identity_incarnation,
+        Utc::now(),
+    )?;
+    crate::runtime_db::agent_deletion_cleanup::purge_private_history(
+        db,
+        &child.scope.agent_id,
+        child.scope.identity_incarnation,
+        Utc::now(),
+    )?;
+    let after = db.transaction(|tx| {
+        Ok(
+            crate::runtime_db::input_mutation_receipts::lookup_input_mutation_receipt_tx(
+                tx,
+                &f.original.prepared,
+            )?
+            .context("parent Stop receipt must survive child purge")?,
+        )
+    })?;
+    assert_eq!(before, after);
+    let (current, _view) = f.current()?;
+    assert_eq!(current.prepared, f.original.prepared);
+    assert_eq!(current.intent, f.original.intent);
+    f.assert_worktree_retained()?;
+    // Physical child history removal must not orphan the parent's next phase.
+    f.host
+        .bridge()
+        .finish_original_task_stop_worktree(f.original.clone(), f.exit.clone(), request())
+        .await?;
+    assert!(!f.path.exists());
+    f.host.shutdown().await?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn child_cleanup_readonly_stop_rejects_mutated_effects_and_generations() -> Result<()> {
+    for scenario in [
+        "child-notification",
+        "child-incarnation",
+        "child-parent",
+        "parent-incarnation",
+        "parent-task-nonterminal",
+        "typed-target-wrong-incarnation",
+        "typed-target-foreign-child",
+        "typed-target-unknown-incarnation",
+    ] {
+        let f = Fixture::new().await?;
+        let child = f.original.intent.child.as_ref().unwrap();
+        let db = f.host.runtime_db();
+        let retired = db
+            .agent_identities()
+            .latest(&child.scope.agent_id)?
+            .unwrap();
+        // This focused fixture has already produced the original tombstone.
+        // Admit native physical cleanup before execution/history settlement.
+        db.agent_deletions().begin(
+            &child.scope.agent_id,
+            retired.revision,
+            "test_original_stop_cleanup",
+            false,
+        )?;
+        let saved = db.transaction(|tx| {
+            let receipt: (String, String) = tx.query_row(
+                "SELECT outcome_json,result_digest FROM input_mutation_receipts WHERE command_nonce=?1",
+                [f.original.prepared.command_nonce()], |r| Ok((r.get(0)?, r.get(1)?)),
+            )?;
+            let child_row: (String, String) = tx.query_row(
+                "SELECT parent_agent_id,payload_json FROM agent_identities WHERE agent_id=?1",
+                [&child.scope.agent_id], |r| Ok((r.get(0)?, r.get(1)?)),
+            )?;
+            let parent: String = tx.query_row("SELECT payload_json FROM agent_identities WHERE agent_id=?1", [&f.scope.agent_id], |r| r.get(0))?;
+            let task: (String, String) = tx.query_row("SELECT status,payload_json FROM tasks WHERE task_id=?1", [&f.original.intent.task.key.id], |r| Ok((r.get(0)?, r.get(1)?)))?;
+            Ok((receipt, child_row, parent, task))
+        })?;
+        db.transaction(|tx| {
+            match scenario {
+                "child-notification" => {
+                    use crate::runtime_db::input_mutation_receipts::{
+                        lookup_input_mutation_receipt_tx, canonical_command_digest,
+                    };
+                    let mut receipt = lookup_input_mutation_receipt_tx(tx, &f.original.prepared)?.unwrap();
+                    receipt.outcome.scopes.iter_mut().find(|s| s.scope == child.scope).unwrap().notify_scheduler = true;
+                    let digest = canonical_command_digest(&json!({"prepared":receipt.prepared,"outcome":receipt.outcome,"committed_at":receipt.committed_at}))?;
+                    tx.execute("UPDATE input_mutation_receipts SET outcome_json=?2,result_digest=?3 WHERE command_nonce=?1",
+                        rusqlite::params![f.original.prepared.command_nonce(),serde_json::to_string(&receipt.outcome)?,digest])?;
+                }
+                "child-incarnation" => { tx.execute("UPDATE agent_identities SET payload_json=json_set(payload_json,'$.incarnation',2) WHERE agent_id=?1", [&child.scope.agent_id])?; }
+                "child-parent" => { tx.execute("UPDATE agent_identities SET parent_agent_id='foreign-parent',payload_json=json_set(payload_json,'$.parent_agent_id','foreign-parent') WHERE agent_id=?1", [&child.scope.agent_id])?; }
+                "parent-incarnation" => { tx.execute("UPDATE agent_identities SET payload_json=json_set(payload_json,'$.incarnation',2) WHERE agent_id=?1", [&f.scope.agent_id])?; }
+                "parent-task-nonterminal" => { tx.execute("UPDATE tasks SET status='running',payload_json=json_set(payload_json,'$.status','running') WHERE task_id=?1", [&f.original.intent.task.key.id])?; }
+                scenario if scenario.starts_with("typed-target-") => {
+                    let mut target = json!({"kind":"child_agent","agent_id":child.scope.agent_id,"incarnation":child.scope.identity_incarnation});
+                    match scenario {
+                        "typed-target-wrong-incarnation" => target["incarnation"] = json!(child.scope.identity_incarnation + 1),
+                        "typed-target-foreign-child" => target["agent_id"] = json!("foreign-child"),
+                        "typed-target-unknown-incarnation" => { target.as_object_mut().unwrap().remove("incarnation"); }
+                        _ => unreachable!(),
+                    }
+                    tx.execute("UPDATE tasks SET payload_json=json_set(payload_json,'$.detail.target',json(?2)) WHERE task_id=?1", rusqlite::params![f.original.intent.task.key.id, serde_json::to_string(&target)?])?;
+                }
+                _ => unreachable!(),
+            }
+            Ok(())
+        })?;
+        let error = crate::runtime_db::agent_deletion_cleanup::export_private_history(
+            db,
+            &child.scope.agent_id,
+            child.scope.identity_incarnation,
+        )
+        .unwrap_err();
+        assert!(
+            format!("{error:#}").contains("shared command history")
+                || (scenario == "child-incarnation"
+                    && format!("{error:#}").contains("incarnation")),
+            "{scenario}: {error:#}"
+        );
+        let count: i64 = db.connection()?.query_row(
+            "SELECT COUNT(*) FROM input_mutation_receipts WHERE command_nonce=?1",
+            [f.original.prepared.command_nonce()],
+            |r| r.get(0),
+        )?;
+        assert_eq!(count, 1, "{scenario}: original parent receipt must survive");
+        f.assert_worktree_retained()?;
+        // Restore the synthetic mutations so shutdown can drain its original
+        // valid Stop continuation, rather than ignore a teardown failure.
+        db.transaction(|tx| {
+            tx.execute("UPDATE input_mutation_receipts SET outcome_json=?2,result_digest=?3 WHERE command_nonce=?1", rusqlite::params![f.original.prepared.command_nonce(),saved.0.0,saved.0.1])?;
+            tx.execute("UPDATE agent_identities SET parent_agent_id=?2,payload_json=?3 WHERE agent_id=?1", rusqlite::params![child.scope.agent_id,saved.1.0,saved.1.1])?;
+            tx.execute("UPDATE agent_identities SET payload_json=?2 WHERE agent_id=?1", rusqlite::params![f.scope.agent_id,saved.2])?;
+            tx.execute("UPDATE tasks SET status=?2,payload_json=?3 WHERE task_id=?1", rusqlite::params![f.original.intent.task.key.id,saved.3.0,saved.3.1])?;
+            Ok(())
+        })?;
+        f.host.shutdown().await?;
+    }
+    Ok(())
+}
