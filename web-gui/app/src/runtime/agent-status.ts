@@ -1,4 +1,5 @@
 import type { TFunction } from "i18next";
+import type { AgentAvatarExpression } from "../lib/agent-avatar";
 import type { AgentSummary } from "./types";
 
 export interface AgentDisplayStatus {
@@ -8,8 +9,6 @@ export interface AgentDisplayStatus {
 }
 
 export function deriveAgentDisplayStatus(agent: AgentSummary, t: TFunction): AgentDisplayStatus {
-  const lifecycle = normalizeAgentStatus(agent.lifecycle);
-  const posture = normalizeAgentStatus(agent.posture);
   const details = [
     agent.posture ? `${t("statusDetail.posture")}: ${agent.posture}` : undefined,
     agent.postureReason ? `${t("statusDetail.reason")}: ${agent.postureReason}` : undefined,
@@ -22,25 +21,61 @@ export function deriveAgentDisplayStatus(agent: AgentSummary, t: TFunction): Age
     agent.waitingCount > 0 ? t("statusDetail.waitingConditions", { count: agent.waitingCount }) : undefined,
   ].filter(Boolean);
   const title = details.join(" · ") || t("statusDetail.noDetails");
+  const tone = deriveAgentStatusTone(agent);
+  const labels = {
+    deleting: "badge.deleting",
+    stopped: "badge.stopped",
+    running: "badge.running",
+    "needs-input": "badge.needsInput",
+    waiting: "badge.waiting",
+    ready: "badge.ready",
+    muted: "badge.unknown",
+  } as const;
+  return { label: t(labels[tone]), title, tone };
+}
+
+/** Expressions supplement status badges, and never imply activity from stale data. */
+export function deriveAgentAvatarExpression(agent: AgentSummary, stateIsCurrent = true): AgentAvatarExpression {
+  if (!stateIsCurrent) return "neutral";
+  switch (deriveAgentStatusTone(agent)) {
+    case "running": return "focused";
+    case "needs-input": return "questioning";
+    case "waiting": return "waiting";
+    case "ready":
+      // Background tasks alone do not mean the Agent is waiting for them.
+      if (agent.activeTaskCount > 0) return "neutral";
+      if (
+        normalizeAgentStatus(agent.lifecycle) === "asleep"
+        && normalizeAgentStatus(agent.posture) === "idle"
+        && agent.pending === 0
+      ) return "sleeping";
+      return "neutral";
+    default: return "neutral";
+  }
+}
+
+function deriveAgentStatusTone(agent: AgentSummary): AgentDisplayStatus["tone"] {
+  const lifecycle = normalizeAgentStatus(agent.lifecycle);
+  const posture = normalizeAgentStatus(agent.posture);
 
   if (lifecycle === "deleting") {
-    return { label: t("badge.deleting"), title, tone: "deleting" };
+    return "deleting";
   }
 
   if (isStoppedOrArchived(lifecycle) || isStoppedOrArchived(posture)) {
-    return { label: t("badge.stopped"), title, tone: "stopped" };
+    return "stopped";
   }
 
   if (posture === "active-turn" || lifecycle === "awake-running" || lifecycle === "running" || Boolean(agent.currentRunId)) {
-    return { label: t("badge.running"), title, tone: "running" };
+    return "running";
   }
 
   if (posture === "waiting-for-operator") {
-    return { label: t("badge.needsInput"), title, tone: "needs-input" };
+    return "needs-input";
   }
 
   if (posture.startsWith("waiting") || posture === "blocked" || agent.waitingCount > 0) {
-    return { label: t("badge.waiting"), title, tone: "waiting" };
+    return "waiting";
   }
 
   if (
@@ -53,10 +88,10 @@ export function deriveAgentDisplayStatus(agent: AgentSummary, t: TFunction): Age
     lifecycle === "ready" ||
     agent.pending > 0
   ) {
-    return { label: t("badge.ready"), title, tone: "ready" };
+    return "ready";
   }
 
-  return { label: t("badge.unknown"), title, tone: "muted" };
+  return "muted";
 }
 
 function normalizeAgentStatus(value?: string | null): string {
