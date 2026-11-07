@@ -49,10 +49,9 @@ mod tests;
 #[cfg(test)]
 mod trigger_writer_tests;
 mod writes;
+pub(crate) use loader::load_scheduling_domain_snapshot_tx;
 #[cfg(test)]
-pub(crate) use loader::{
-    load_scheduling_domain_snapshot_tx, prepare_original_scheduling_recovery_snapshot_tx,
-};
+pub(crate) use loader::prepare_original_scheduling_recovery_snapshot_tx;
 pub(crate) use loader::{
     prepare_scheduling_domain_snapshot_tx, prepare_scheduling_with_context_scope_tx,
 };

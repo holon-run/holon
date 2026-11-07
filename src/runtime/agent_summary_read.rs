@@ -195,11 +195,12 @@ impl RuntimeHandle {
             .mutation_owner
             .capture()?
             .context("Summary root needs publication")?;
-        if root
-            .current
-            .as_ref()
-            .and_then(|current| current.query.as_ref())
-            .is_none()
+        if root.scheduling.is_none()
+            || root
+                .current
+                .as_ref()
+                .and_then(|current| current.query.as_ref())
+                .is_none()
         {
             drop(root);
             drop(reservations);
@@ -216,7 +217,7 @@ impl RuntimeHandle {
                 phase = "prepare_current_owner_ready",
                 "full agent summary read"
             );
-            owner.prepare_current_query(None).await?;
+            owner.prepare_current_scheduler_query(None).await?;
             tracing::debug!(
                 target: "holon::agent_summary",
                 agent_id = self.inner.mutation_owner.agent_id(),
@@ -346,16 +347,17 @@ impl RuntimeHandle {
             .mutation_owner
             .capture()?
             .context("roster root needs publication")?;
-        let (agent, identity, scheduling_posture) = if root
-            .current
-            .as_ref()
-            .and_then(|current| current.query.as_ref())
-            .is_none()
+        let (agent, identity, scheduling_posture) = if root.scheduling.is_none()
+            || root
+                .current
+                .as_ref()
+                .and_then(|current| current.query.as_ref())
+                .is_none()
         {
             drop(root);
             drop(reservations);
             let mut owner = self.begin_scoped_projection_preparation(db).await?;
-            owner.prepare_current_query(None).await?;
+            owner.prepare_current_scheduler_query(Some(db)).await?;
             db.check_read_scope()?;
             material.read(|| {
                 self.roster_list_fields_from_root(owner.capture_published_root()?.as_ref())

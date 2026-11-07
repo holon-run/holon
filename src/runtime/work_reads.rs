@@ -372,6 +372,11 @@ impl RuntimeHandle {
                 self.inner.identity_incarnation,
             )?;
         let mut mutation = self.begin_mutation().await?;
+        // Accepted list/result query: metadata can invalidate Scheduling while
+        // retaining Work. Restore its original current proof before capture.
+        if mutation.capture_published_root()?.scheduling.is_none() {
+            mutation.prepare_current_scheduler_query(None).await?;
+        }
         let request = acquisition.read(|| {
             Ok(super::context_capture::context_work_capture_request(
                 &mutation.state,

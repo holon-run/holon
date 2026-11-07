@@ -754,7 +754,7 @@ impl RuntimeHandle {
     pub(crate) async fn lightweight_agent_state_projection(
         &self,
     ) -> Result<LightweightAgentStateProjection> {
-        let mut read = self.capture_scheduler_projection().await?;
+        let mut read = self.acquire_scheduler_projection().await?;
         let (work_queue, work_budget) =
             read.full_state_work_queue(&self.inner.input_evidence_budget)?;
         let mut agent = read.state.as_ref().clone();

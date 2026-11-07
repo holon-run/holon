@@ -754,6 +754,29 @@ impl RuntimeHandle {
     }
 
     #[inline(never)]
+    pub(in crate::runtime) fn acquire_scheduler_projection(
+        &self,
+    ) -> std::pin::Pin<
+        Box<impl std::future::Future<Output = Result<PreparedSchedulerRead>> + Send + '_>,
+    > {
+        Box::pin(async move {
+            let mut owner = self.begin_mutation().await?;
+            let root = owner.capture_published_root()?;
+            let needs_preparation = root.scheduling.is_none()
+                || root
+                    .current
+                    .as_ref()
+                    .and_then(|current| current.query.as_ref())
+                    .is_none();
+            drop(root);
+            if needs_preparation {
+                owner.prepare_current_scheduler_query(None).await?;
+            }
+            owner.capture_scheduler_read(&WorkCaptureRequest::current(), self.now())
+        })
+    }
+
+    #[inline(never)]
     pub(in crate::runtime) fn capture_scheduler_projection(
         &self,
     ) -> std::pin::Pin<

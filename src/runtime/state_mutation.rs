@@ -922,7 +922,7 @@ impl RuntimeMutation {
         &mut self,
         selection: Option<&crate::runtime_db::current_query::CurrentSelection>,
     ) -> Result<()> {
-        self.prepare_current_query_in(selection, None).await
+        self.prepare_current_query_in(selection, None, false).await
     }
 
     async fn prepare_live_current_query_in(&mut self, read_db: Option<&RuntimeDb>) -> Result<()> {
@@ -941,19 +941,29 @@ impl RuntimeMutation {
                     .is_some_and(|query| query.selection.covers(roles.selection()))
         };
         if needs_preparation {
-            self.prepare_current_query_in(None, read_db).await?;
+            self.prepare_current_query_in(None, read_db, false).await?;
         }
         Ok(())
     }
 
     pub(super) async fn prepare_current_query_scoped(&mut self, db: &RuntimeDb) -> Result<()> {
-        self.prepare_current_query_in(None, Some(db)).await
+        self.prepare_current_query_in(None, Some(db), false).await
+    }
+
+    /// Accepted scheduler-facing queries may restore only an already-qualified
+    /// Scheduling publication. Pure captures and Current-only reads stay pure.
+    pub(in crate::runtime) async fn prepare_current_scheduler_query(
+        &mut self,
+        read_db: Option<&RuntimeDb>,
+    ) -> Result<()> {
+        self.prepare_current_query_in(None, read_db, true).await
     }
 
     async fn prepare_current_query_in(
         &mut self,
         selection: Option<&crate::runtime_db::current_query::CurrentSelection>,
         read_db: Option<&RuntimeDb>,
+        restore_scheduling: bool,
     ) -> Result<()> {
         let scope = self.input_evidence_scope();
         let (_, records, bytes) = self.context_input_evidence_policy()?;
@@ -983,15 +993,35 @@ impl RuntimeMutation {
                 &scope,
             )?,
         };
-        let query = material.read(|| {
+        let scheduling_request = (restore_scheduling && self.scheduling.is_none()).then(|| {
+            crate::runtime_db::scheduling_snapshot::SchedulingDomainLoadRequest {
+                capture: super::resident_scheduling::SchedulingCaptureRequest::current(),
+                record_limit: records,
+                byte_limit: bytes,
+            }
+        });
+        let (query, scheduling) = material.read(|| {
             let prepare = |tx: &rusqlite::Transaction<'_>| {
-                crate::runtime_db::current_query::prepare(
-                    tx,
-                    &scope,
-                    Some(roles.selection()),
-                    &self.runtime.inner.input_evidence_budget,
-                    (bytes, records),
-                )
+                let query = crate::runtime_db::current_query::prepare(
+                    tx, &scope, Some(roles.selection()),
+                    &self.runtime.inner.input_evidence_budget, (bytes, records),
+                )?;
+                let scheduling = scheduling_request.as_ref().map(|request| {
+                    // Metadata invalidates the resident view; it grants no new
+                    // qualification. Read the original complete current proof
+                    // and reject absent, changed or unqualified canonical rows.
+                    let loaded = crate::runtime_db::scheduling_snapshot::load_scheduling_domain_snapshot_tx(
+                        tx, &scope, request, &self.runtime.inner.input_evidence_budget,
+                    )?.require_current()?;
+                    anyhow::ensure!(
+                        loaded.facts.state.as_deref() == Some(root.state.as_ref())
+                            && loaded.facts.identity.as_ref() == Some(query.identity.as_ref())
+                            && loaded.facts.control_revision.is_some(),
+                        "Current and Scheduling query observations differ"
+                    );
+                    Ok::<_, anyhow::Error>(Arc::new(loaded.resident))
+                }).transpose()?;
+                Ok((query, scheduling))
             };
             match read_db {
                 Some(db) => db.with_read(|connection| {
@@ -1005,6 +1035,9 @@ impl RuntimeMutation {
         })?;
         if let Some(db) = read_db {
             db.check_read_scope()?;
+        }
+        if let Some(scheduling) = scheduling {
+            self.scheduling = Some(scheduling);
         }
         self.current = Some(Arc::new(
             crate::runtime_db::current_read_writes::CommittedCurrentWrites::prepared_query(query),

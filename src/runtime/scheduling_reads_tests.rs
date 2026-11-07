@@ -274,3 +274,178 @@ async fn scheduling_selected_and_trigger_output_use_one_allowance_before_clone()
     runtime.cancel_timer(&timer.id).await?;
     Ok(())
 }
+
+// A related deletion scope publishes metadata, not a new Scheduling ACK.
+async fn publish_active_metadata_ack(runtime: &RuntimeHandle) -> Result<()> {
+    use crate::runtime::mutation_owner::{
+        IdentityMutationFacts, KnownCommit, MutationOwner, MutationReservation,
+    };
+    let root = runtime.inner.mutation_owner.capture()?.unwrap();
+    let identity = runtime
+        .inner
+        .runtime_db
+        .agent_identities()
+        .latest(&root.state.id)?
+        .unwrap();
+    let mut owners = MutationOwner::reserve_all(vec![runtime.inner.mutation_owner.clone()]).await?;
+    MutationReservation::begin_all(&mut owners, crate::ids::audit_event_id())?;
+    let known = KnownCommit::Metadata(Arc::new(IdentityMutationFacts {
+        identity: Some(Arc::new(identity)),
+        state: Some(root.state.clone()),
+    }));
+    MutationReservation::committed_all(&mut owners, vec![known.clone()])?;
+    runtime.install_saved_mutation(&owners[0], &known).await?;
+    MutationReservation::reconcile_all(&mut owners, vec![Some(known)])?;
+    drop(owners);
+    let after = runtime.inner.mutation_owner.capture()?.unwrap();
+    assert_eq!(after.state, root.state);
+    assert!(after.scheduling.is_none() && after.current.is_none());
+    assert!(after.work.is_some() && after.tasks.is_some());
+    let error = runtime
+        .capture_scheduling_read(&SchedulingCaptureRequest::current())
+        .await
+        .err()
+        .unwrap();
+    assert!(matches!(
+        error.downcast_ref::<crate::runtime::resident_scheduling::SchedulingReadError>(),
+        Some(crate::runtime::resident_scheduling::SchedulingReadError::IncompleteLive)
+    ));
+    Ok(())
+}
+
+#[tokio::test]
+async fn summary_prepares_invalidated_scheduling_after_active_metadata_ack() -> Result<()> {
+    let home = tempdir()?;
+    let runtime = runtime(home.path())?;
+    runtime.await_initial_resources().await;
+    let timer = runtime.schedule_timer(3_600_000, None, None).await?;
+    publish_active_metadata_ack(&runtime).await?;
+    let summary = runtime.agent_summary().await?;
+    assert_eq!(summary.agent.id, "scheduling-reader");
+    let read = runtime
+        .capture_scheduling_read(&SchedulingCaptureRequest::current())
+        .await?;
+    assert_eq!(read.scheduling.timer(&timer.id)?, Some(&timer));
+    assert_eq!(read.scheduling.active_timer_count()?, 1);
+    Ok(())
+}
+
+#[tokio::test]
+async fn work_tool_result_prepares_scheduling_after_active_metadata_ack_without_repeating_write(
+) -> Result<()> {
+    let home = tempdir()?;
+    let runtime = runtime(home.path())?;
+    runtime.await_initial_resources().await;
+    let work = runtime
+        .create_work_item("before metadata".into(), None, None, Vec::new())
+        .await?;
+    publish_active_metadata_ack(&runtime).await?;
+    let result = crate::tool::tools::update_work_item::execute(
+        &runtime,
+        "scheduling-reader",
+        &crate::types::AuthorityClass::OperatorInstruction,
+        &serde_json::json!({"work_item_id":work.id,"objective":"one original update"}),
+    )
+    .await;
+    let stored = runtime.validate_owned_work_item("scheduling-reader", &work.id)?;
+    assert_eq!(stored.objective, "one original update");
+    assert_eq!(stored.revision, work.revision + 1);
+    let result = result?;
+    assert!(!result.is_error());
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn compact_state_prepares_scheduling_after_active_metadata_ack() -> Result<()> {
+    let home = tempdir()?;
+    let runtime = runtime(home.path())?;
+    runtime.await_initial_resources().await;
+    publish_active_metadata_ack(&runtime).await?;
+    let summary = runtime.lightweight_agent_state_projection().await?;
+    assert_eq!(summary.agent.id, "scheduling-reader");
+    assert!(runtime
+        .inner
+        .mutation_owner
+        .capture()?
+        .unwrap()
+        .scheduling
+        .is_some());
+    Ok(())
+}
+
+#[tokio::test]
+async fn readonly_scoped_roster_prepares_scheduling_after_active_metadata_ack() -> Result<()> {
+    let home = tempdir()?;
+    let runtime = runtime(home.path())?;
+    runtime.await_initial_resources().await;
+    let timer = runtime.schedule_timer(3_600_000, None, None).await?;
+    publish_active_metadata_ack(&runtime).await?;
+    let identity = runtime
+        .inner
+        .runtime_db
+        .agent_identities()
+        .latest("scheduling-reader")?
+        .unwrap();
+    let scope = crate::runtime_db::RuntimeDbReadScope::new(
+        std::time::Instant::now() + std::time::Duration::from_secs(5),
+    );
+    let db = runtime.inner.runtime_db.with_read_scope(scope);
+    let material = crate::diagnostics::resource_io::ResourceReadMaterial::new(
+        &runtime.inner.input_evidence_budget,
+        &crate::runtime::resident_input_evidence::InputEvidenceScope {
+            agent_id: "scheduling-reader".into(),
+            identity_incarnation: identity.incarnation,
+        },
+    )?;
+    // The pool enforces query_only: this reconstruction cannot write sidecars.
+    let entry = runtime
+        .agent_list_entry_read(&identity, &material, &db)
+        .await?;
+    assert_eq!(entry.identity.agent_id, "scheduling-reader");
+    let read = runtime
+        .capture_scheduling_read(&SchedulingCaptureRequest::current())
+        .await?;
+    assert_eq!(read.scheduling.timer(&timer.id)?, Some(&timer));
+    Ok(())
+}
+
+#[tokio::test]
+async fn summary_query_after_active_metadata_ack_rejects_unqualified_canonical_drift() -> Result<()>
+{
+    let home = tempdir()?;
+    let runtime = runtime(home.path())?;
+    runtime.await_initial_resources().await;
+    let timer = runtime.schedule_timer(3_600_000, None, None).await?;
+    publish_active_metadata_ack(&runtime).await?;
+    let before = runtime.inner.mutation_owner.capture()?.unwrap();
+    let mut changed = timer.clone();
+    changed.summary = Some("unowned canonical drift".into());
+    runtime.inner.runtime_db.transaction(|tx| {
+        tx.execute(
+            "UPDATE timers SET payload_json=?2 WHERE timer_id=?1",
+            rusqlite::params![timer.id, serde_json::to_string(&changed)?],
+        )?;
+        Ok(())
+    })?;
+    let error = runtime.agent_summary().await.err().unwrap();
+    eprintln!("original Scheduling drift rejected: {error:#}");
+    let after = runtime.inner.mutation_owner.capture()?.unwrap();
+    assert_eq!(after.token, before.token);
+    assert!(after.scheduling.is_none() && after.current.is_none());
+    // Restore only the deliberately changed fixture bytes. The exact same
+    // accepted query must now succeed, without adopting the corrupt body.
+    runtime.inner.runtime_db.transaction(|tx| {
+        tx.execute(
+            "UPDATE timers SET payload_json=?2 WHERE timer_id=?1",
+            rusqlite::params![timer.id, serde_json::to_string(&timer)?],
+        )?;
+        Ok(())
+    })?;
+    runtime.agent_summary().await?;
+    let read = runtime
+        .capture_scheduling_read(&SchedulingCaptureRequest::current())
+        .await?;
+    assert_eq!(read.scheduling.timer(&timer.id)?, Some(&timer));
+    Ok(())
+}

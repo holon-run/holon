@@ -5094,3 +5094,16 @@ avoids rewriting canonical hashes independently of frozen qualification metadata
 Completion report projections retain the exact qualified Brief through the same
 material-owning read view as history. Resident reports do not duplicate the full
 body after Input qualification; cold owned sources still move into their view.
+
+
+### Scheduling query preparation after metadata publication
+
+An active metadata ACK may preserve State/Input/Work/Tasks while invalidating
+Current and Scheduling. Accepted status, roster and Work result query boundaries
+must prepare both dependencies before their final capture. Missing Scheduling
+is reconstructed only from its existing complete current qualification, in the
+same read transaction as Current, with identity and State matching the held
+owner. Scoped reads keep their original cancellation and read-only pool.
+Metadata invalidation, pure captures and rejection of changed/unqualified bodies
+remain mandatory. A committed Work write is not retried to repair its result
+projection.

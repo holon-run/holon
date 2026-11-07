@@ -71,7 +71,7 @@ pub(crate) fn prepare_original_scheduling_recovery_snapshot_tx(
 ) -> Result<SchedulingBootstrapSnapshot> {
     load(tx, scope, request, ledger, true, true)
 }
-#[cfg(test)]
+/// Read-only reconstruction from existing complete current qualification.
 pub(crate) fn load_scheduling_domain_snapshot_tx(
     tx: &Transaction<'_>,
     scope: &InputEvidenceScope,
