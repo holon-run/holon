@@ -1,4 +1,5 @@
 use super::*;
+use crate::provider::{ProviderTurnRequest, ProviderTurnResponse};
 use crate::{
     runtime::resident_input_evidence::InputEvidenceScope,
     runtime::resident_task::{TaskCaptureRequest, TaskFamily, TaskKey},
@@ -19,6 +20,17 @@ use crate::{
     },
 };
 use std::process::Command;
+struct LiveChildStopProvider {
+    started: Arc<tokio::sync::Notify>,
+}
+#[async_trait::async_trait]
+impl AgentProvider for LiveChildStopProvider {
+    async fn complete_turn(&self, _: ProviderTurnRequest) -> Result<ProviderTurnResponse> {
+        self.started.notify_one();
+        std::future::pending().await
+    }
+}
+
 fn git(root: &Path, args: &[&str]) -> Result<()> {
     let output = Command::new("git").args(args).current_dir(root).output()?;
     anyhow::ensure!(
@@ -71,6 +83,7 @@ enum TargetFixture {
     DeletedMetadata,
     UnknownTarget,
     AlreadyDeletedChild,
+    LiveRunChild,
 }
 
 struct Fixture {
@@ -82,6 +95,7 @@ struct Fixture {
     repo: PathBuf,
     path: PathBuf,
     _source: Arc<BudgetViewGuard>,
+    child_runtime: RuntimeHandle,
 }
 impl Fixture {
     fn new() -> Pin<Box<dyn Future<Output = Result<Self>> + Send>> {
@@ -96,10 +110,16 @@ impl Fixture {
             )?;
             let mut config = crate::config::AppConfig::load_with_home(Some(home.path().into()))?;
             config.user_home_dir = Some(home.path().into());
-            let host = RuntimeHost::new_with_provider(
-                config,
-                Arc::new(crate::provider::StubProvider::new("done")),
-            )?;
+            let started = Arc::new(tokio::sync::Notify::new());
+            let provider: Arc<dyn AgentProvider> = if matches!(target, TargetFixture::LiveRunChild)
+            {
+                Arc::new(LiveChildStopProvider {
+                    started: started.clone(),
+                })
+            } else {
+                Arc::new(crate::provider::StubProvider::new("done"))
+            };
+            let host = RuntimeHost::new_with_provider(config, provider)?;
             let identity = host.ensure_default_agent_identity()?;
             let scope = InputEvidenceScope {
                 agent_id: identity.agent_id.clone(),
@@ -160,7 +180,9 @@ impl Fixture {
                     // An explicit malformed target must not fall back to the child id.
                     task.detail.as_mut().unwrap()["target"] = json!({});
                 }
-                TargetFixture::OriginalChild | TargetFixture::AlreadyDeletedChild => {}
+                TargetFixture::OriginalChild
+                | TargetFixture::AlreadyDeletedChild
+                | TargetFixture::LiveRunChild => {}
             }
             let runtime = host.get_or_create_agent(&child.agent_id).await?;
             runtime.wait_for_bootstrap().await?;
@@ -301,6 +323,33 @@ impl Fixture {
                     .agent_identities()
                     .tombstone_with_closed_supervision(&child.agent_id)?;
             }
+            if matches!(target, TargetFixture::LiveRunChild) {
+                runtime
+                    .enqueue(
+                        MessageEnvelope::new(
+                            &child.agent_id,
+                            MessageKind::OperatorPrompt,
+                            MessageOrigin::Operator {
+                                actor_id: None,
+                                actor_display_name: None,
+                            },
+                            AuthorityClass::OperatorInstruction,
+                            Priority::Normal,
+                            MessageBody::Text {
+                                text: "Hold this original child provider request until cancelled"
+                                    .into(),
+                            },
+                        )
+                        .with_admission(
+                            MessageDeliverySurface::CliPrompt,
+                            AdmissionContext::LocalProcess,
+                        ),
+                    )
+                    .await?;
+                tokio::time::timeout(std::time::Duration::from_secs(10), started.notified())
+                    .await?;
+                assert!(runtime.current_run_abort_token().await.is_some());
+            }
             let retired = host
                 .bridge()
                 .stop_private_agent_for_task_stop(original.clone())
@@ -308,7 +357,6 @@ impl Fixture {
             let exit = retired
                 .producer_exit()
                 .context("actual complete empty child fleet")?;
-            drop(runtime);
             drop(retired);
             Ok(Self {
                 _home: home,
@@ -319,6 +367,7 @@ impl Fixture {
                 repo: root,
                 path,
                 _source: source,
+                child_runtime: runtime,
             })
         })
     }
@@ -872,5 +921,42 @@ async fn child_cleanup_readonly_stop_rejects_mutated_effects_and_generations() -
         })?;
         f.host.shutdown().await?;
     }
+    Ok(())
+}
+
+#[tokio::test]
+async fn live_child_stop_drains_original_loop_before_metadata_recovery() -> Result<()> {
+    let f = Fixture::with_target(TargetFixture::LiveRunChild).await?;
+    assert!(
+        f.child_runtime.current_run_abort_token().await.is_none(),
+        "joined original child loop retained a stale transient run handle"
+    );
+    let child = f.original.intent.child.as_ref().unwrap();
+    let identity = f
+        .host
+        .runtime_db()
+        .agent_identities()
+        .latest(&child.scope.agent_id)?
+        .unwrap();
+    let (_, job, _) = f.host.runtime_db().agent_deletions().begin(
+        &child.scope.agent_id,
+        identity.revision,
+        "test_actual_live_stop_cleanup",
+        false,
+    )?;
+    f.host.execute_deletion_job(job).await?;
+    let job = f
+        .host
+        .runtime_db()
+        .agent_deletions()
+        .latest_for_agent(&child.scope.agent_id)?
+        .unwrap();
+    assert_eq!(
+        job.status,
+        crate::types::AgentDeletionStatus::Completed,
+        "{job:?}"
+    );
+    assert!(!f.host.agent_data_dir(&child.scope.agent_id).exists());
+    f.host.shutdown().await?;
     Ok(())
 }

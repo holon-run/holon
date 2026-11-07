@@ -9,6 +9,8 @@ use crate::types::{
 use chrono::{DateTime, Utc};
 
 mod task_result_repair;
+mod task_result_source;
+use task_result_source::TerminalTaskResultSource;
 
 struct ReplacedWaitConditions {
     records: Vec<WaitConditionRecord>,
@@ -535,15 +537,24 @@ impl RuntimeHandle {
                 work_item_id = task.work_item_id.clone();
             }
             if task_state_reducer::is_terminal_task_status(&task.status) {
-                return self
-                    .prepare_terminal_task_result(
-                        mutation,
-                        task,
-                        work_item_id,
-                        reason,
-                        condition_id,
-                    )
-                    .await;
+                match self.terminal_task_result_source(mutation, &task).await? {
+                    TerminalTaskResultSource::Message(result_message_id) => {
+                        return self
+                            .prepare_terminal_task_result(
+                                mutation,
+                                task,
+                                result_message_id,
+                                work_item_id,
+                                reason,
+                                condition_id,
+                            )
+                            .await;
+                    }
+                    // Terminal cancellation precedes its independently owned
+                    // Result publication. Register against the frozen Task;
+                    // only the original Result writer can satisfy this wait.
+                    TerminalTaskResultSource::PendingOriginalStop => {}
+                }
             }
             expected_task = Some(task_expectation(&task));
         }
@@ -848,6 +859,7 @@ impl RuntimeHandle {
         &self,
         mutation: &mut super::state_mutation::RuntimeMutation,
         task: TaskRecord,
+        result_message_id: String,
         waiter_work_item_id: Option<String>,
         reason: String,
         condition_id: Option<String>,
@@ -870,16 +882,6 @@ impl RuntimeHandle {
             }
             existing_waiter_work_item = Some(existing);
         }
-        let result_message_id = task.parent_message_id.clone().ok_or_else(|| {
-            RuntimeError::validation(
-                "task_result_evidence_missing",
-                format!(
-                    "terminal task has no exact result message identity: {}",
-                    task.id
-                ),
-            )
-            .with_safe_context("task_id", &task.id)
-        })?;
         let storage = self.inner.storage.clone();
         let read_result_message_id = result_message_id.clone();
         let result_message = tokio::task::spawn_blocking(move || {

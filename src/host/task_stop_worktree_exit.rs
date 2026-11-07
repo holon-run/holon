@@ -394,6 +394,8 @@ impl RuntimeHost {
                             }
                         }
                     }
+                    self.acknowledge_registered_loop_exit(&instance.runtime, &abort)
+                        .await?;
                 }
                 let proof = instance
                     .runtime

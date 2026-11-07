@@ -956,6 +956,8 @@ impl RuntimeHandle {
                 ),
                 suppress_next_continue_active_tick: Mutex::new(false),
                 shutdown_requested: AtomicBool::new(false),
+                original_loop_exit_observed: AtomicBool::new(false),
+                original_loop_monitor: std::sync::OnceLock::new(),
                 execution_admission: super::execution_admission::ExecutionAdmission::default(),
                 transition_faults: StdMutex::new(std::collections::VecDeque::new()),
                 #[cfg(test)]

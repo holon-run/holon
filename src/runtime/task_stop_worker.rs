@@ -570,6 +570,131 @@ mod initial_tests {
     use tokio::sync::{mpsc, oneshot};
 
     #[tokio::test]
+    async fn terminal_wait_uses_original_stop_result_before_and_after_publication() -> Result<()> {
+        for (published, bound_work) in [(false, false), (true, false), (false, true)] {
+            let home = tempfile::tempdir()?;
+            let runtime = RuntimeHandle::new(
+                "default",
+                home.path().into(),
+                None::<crate::types::WorkspaceEntry>,
+                String::new(),
+                Arc::new(StubProvider::new("unused")),
+                "default".into(),
+                crate::context::ContextConfig::default(),
+            )?;
+            let work = if bound_work {
+                Some(
+                    runtime
+                        .create_work_item(
+                            "wait for original Stop result".into(),
+                            None,
+                            None,
+                            Vec::new(),
+                        )
+                        .await?,
+                )
+            } else {
+                None
+            };
+            let at = runtime.now();
+            let task = TaskRecord {
+                id: "task:wait-original-stop-result".into(),
+                agent_id: "default".into(),
+                kind: TaskKind::ActorInvocation,
+                status: TaskStatus::Running,
+                created_at: at,
+                updated_at: at,
+                parent_message_id: None,
+                work_item_id: work.as_ref().map(|w| w.id.clone()),
+                summary: None,
+                detail: Some(if bound_work {
+                    serde_json::json!({
+                        "rejoin_obligation_id":"task:wait-original-stop-result",
+                        "rejoin_generation":1,"parent_turn_id":"original-stop-parent-turn",
+                    })
+                } else {
+                    serde_json::json!({})
+                }),
+                recovery: None,
+            };
+            runtime
+                .persist_task_transition(&task, "wait_stop_seed")
+                .await?;
+            let lease = runtime.inner.control_cancellations.task(&task);
+            lease.attach(tokio::spawn(std::future::pending::<()>()));
+            runtime.inner.task_handles.lock().await.insert(
+                task.id.clone(),
+                ManagedTaskHandle::Async(control_cancellation::SharedControlTaskHandle(
+                    lease.clone(),
+                )),
+            );
+            let accepted = runtime
+                .prepare_task_stop_commit(&task.id, "wait-original-stop".into())
+                .await?;
+            let frozen = accepted.original.intent.result.as_ref().unwrap();
+            if published {
+                runtime
+                    .commit_original_task_stop_result(&accepted.original)
+                    .await?;
+            }
+            let outcome = runtime
+                .register_wait_for_outcome(
+                    "default",
+                    work.as_ref().map(|w| w.id.clone()),
+                    WaitForWakeKind::TaskResult,
+                    Some(task.id.clone()),
+                    "wait for actual original Stop feedback".into(),
+                    None,
+                )
+                .await?;
+            if published {
+                assert!(
+                    matches!(outcome, WaitForRegistrationOutcome::TaskResultUnavailable {
+                    result_message_id, reason, ..
+                } if result_message_id == frozen.message.id && reason == "legacy_untracked_result")
+                );
+            } else {
+                assert!(matches!(
+                    outcome,
+                    WaitForRegistrationOutcome::Registered { .. }
+                ));
+                runtime
+                    .commit_original_task_stop_result(&accepted.original)
+                    .await?;
+            }
+            assert!(
+                !lease.is_finished(),
+                "a Result wait must not join the physical monitor"
+            );
+            let current = runtime.runtime_db().tasks().latest(&task.id)?.unwrap();
+            assert_eq!(current.status, TaskStatus::Cancelled);
+            assert!(
+                current.parent_message_id.is_none(),
+                "Stop's original Task ACK stays immutable"
+            );
+            let count: u64 = runtime.runtime_db().connection()?.query_row(
+                "SELECT COUNT(*) FROM messages WHERE message_id=?1",
+                [&frozen.message.id],
+                |r| r.get(0),
+            )?;
+            assert_eq!(count, 1);
+            if bound_work {
+                let results: u64 = runtime.runtime_db().connection()?.query_row(
+                    "SELECT COUNT(*) FROM task_result_settlements WHERE task_id=?1 AND message_id=?2",
+                    rusqlite::params![task.id,frozen.message.id], |r|r.get(0),
+                )?;
+                assert_eq!(
+                    results, 1,
+                    "bound Stop feedback retains the exact result obligation"
+                );
+            }
+            lease.cancel();
+            lease.join().await?;
+        }
+        Ok(())
+    }
+
+    #[tokio::test]
     async fn command_stop_keeps_owner_ahead_of_a_queued_monitor_update() -> Result<()> {
         for status in [TaskStatus::Queued, TaskStatus::Running] {
             let home = tempfile::tempdir()?;

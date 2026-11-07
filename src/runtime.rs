@@ -840,6 +840,8 @@ struct RuntimeInner {
         RwLock<Option<Arc<dyn scheduler::AsyncSemanticCandidateSelectionHook>>>,
     suppress_next_continue_active_tick: Mutex<bool>,
     shutdown_requested: AtomicBool,
+    original_loop_exit_observed: AtomicBool,
+    original_loop_monitor: std::sync::OnceLock<tokio::task::AbortHandle>,
     execution_admission: execution_admission::ExecutionAdmission,
     transition_faults: StdMutex<std::collections::VecDeque<TransitionFaultPoint>>,
     #[cfg(test)]

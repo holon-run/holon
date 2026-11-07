@@ -1,3 +1,5 @@
+mod runtime_loop_exit;
+pub(crate) use runtime_loop_exit::JoinedRuntimeLoopExit;
 mod scoped_projection;
 #[path = "host/task_stop_original.rs"]
 mod task_stop_original;
@@ -3574,8 +3576,11 @@ impl RuntimeHost {
                     .runtime
                     .retire_instance_locally("runtime_unloaded")
                     .await;
+                let original_monitor = entry.task.abort_handle();
                 entry.task.abort();
                 let _ = entry.task.await;
+                host.acknowledge_registered_loop_exit(&entry.runtime, &original_monitor)
+                    .await?;
                 let result = entry
                     .runtime
                     .join_retiring_resources_with_process_exit()
@@ -3602,6 +3607,8 @@ impl RuntimeHost {
                         break;
                     }
                 }
+                self.acknowledge_registered_loop_exit(&runtime, &abort)
+                    .await?;
                 let proof = runtime.join_retiring_resources_with_process_exit().await?;
                 let mut registry = self.inner.runtimes.write().await;
                 if proof.is_some() && registry.phase == HostRuntimePhase::Open {
@@ -11095,6 +11102,11 @@ impl RuntimeHost {
                 }
             }
         });
+        if let Err(error) = runtime.register_original_loop_monitor(runtime_task.abort_handle()) {
+            runtime_task.abort();
+            let _ = runtime_task.await;
+            return Err(error);
+        }
         Ok((runtime, runtime_task, phase_rx))
     }
 

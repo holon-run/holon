@@ -540,6 +540,53 @@ impl RuntimeHandle {
         }
     }
 
+    pub(crate) fn register_original_loop_monitor(
+        &self,
+        original: tokio::task::AbortHandle,
+    ) -> Result<()> {
+        if let Some(registered) = self.inner.original_loop_monitor.get() {
+            anyhow::ensure!(
+                registered.id() == original.id(),
+                "runtime instance already has another loop monitor"
+            );
+            return Ok(());
+        }
+        self.inner
+            .original_loop_monitor
+            .set(original)
+            .map_err(|_| anyhow::anyhow!("original runtime loop monitor raced registration"))
+    }
+
+    pub(crate) fn matches_original_loop_monitor(
+        &self,
+        original: &tokio::task::AbortHandle,
+    ) -> bool {
+        self.inner
+            .original_loop_monitor
+            .get()
+            .is_some_and(|registered| registered.id() == original.id())
+    }
+
+    /// The Host has joined this exact original loop. Only local capabilities
+    /// expire here; canonical State and terminal settlement stay with writers.
+    pub(crate) async fn acknowledge_joined_runtime_loop_exit(
+        &self,
+        exit: &crate::host::JoinedRuntimeLoopExit,
+    ) -> Result<()> {
+        anyhow::ensure!(
+            exit.matches(self),
+            "loop exit is not this closed runtime instance"
+        );
+        let mut agent = self.inner.agent.lock().await;
+        self.inner
+            .original_loop_exit_observed
+            .store(true, std::sync::atomic::Ordering::Release);
+        if let Some(handle) = agent.current_run_abort.take() {
+            handle.token.cancel();
+        }
+        Ok(())
+    }
+
     pub(crate) async fn request_service_shutdown(&self) -> Result<()> {
         self.retire_instance_locally("daemon_shutdown").await;
         let outcome = super::scheduler_executor::SchedulerDecisionExecutor::new(self)

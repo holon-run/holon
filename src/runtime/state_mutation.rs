@@ -3650,7 +3650,17 @@ impl RuntimeHandle {
             agent.last_persisted_state = facts.state.as_ref().clone();
             agent.queue = facts.queue.clone();
             agent._queue_budget_view = Some(queue_budget_view);
-            agent.current_run_abort = facts.current_run_abort.clone();
+            // An old ACK may still settle during retirement, but cannot
+            // resurrect a physical run after its exact Host loop joined.
+            agent.current_run_abort = if self
+                .inner
+                .original_loop_exit_observed
+                .load(Ordering::Acquire)
+            {
+                None
+            } else {
+                facts.current_run_abort.clone()
+            };
             if operator_input_changed {
                 self.inner.operator_interjection_notify.notify_waiters();
             }

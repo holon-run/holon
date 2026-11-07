@@ -48,6 +48,22 @@ through child cleanup. Parent-first purge remains blocked until child cleanup
 is proved complete; no scope or checksum is rewritten.
 
 
+## TaskStop result waiting and physical loop exit
+
+A cancelled TaskStop ACK and its Result publication are independently owned.
+For terminal Task waits without a parent Message pointer, use only the captured
+exact-generation Stop head: pending Result responsibility registers a wait;
+completed original Result responsibility supplies its frozen Message identity
+for the ordinary Message/settlement validation. Keep the Task ACK immutable and
+missing or mismatched evidence fail-closed.
+
+Host retirement binds the actual original loop monitor to its runtime instance.
+Only observed monitor completion with execution admission closed and the exact
+instance/epoch can expire a transient run handle. Late ACKs cannot restore an
+expired physical run. Canonical settlement, registered producer exit and full
+fleet worktree cleanup retain their separate proofs; the live-run durable
+readback guard remains unchanged.
+
 ## Resource estimates and runtime availability
 
 Cumulative `ResourceReadMaterial` estimates are diagnostic observations only.
