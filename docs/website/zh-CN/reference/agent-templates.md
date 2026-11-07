@@ -77,8 +77,9 @@ Agent 会明确报告缺失能力，不把未验证的渲染当成交付。无�
 - **卫生，不是整站重写。** 检测漂移、追问缺失的用户步骤或语言对应，授权后提交最小
   docs-only PR。发版后对用户文档做缺口对账。
 - **写作工具，不是 writer 角色。** 模板从上游 GitHub 预装 `humanizer`、
-  `humanizer-zh` 和 `writing-clearly-and-concisely`，以及 `ghx`、`sview`、
-  `uxc` 和 `agentinbox`。事实校对后再润色。
+  `humanizer-zh` 和 `writing-clearly-and-concisely`，以及 `ghx`、`sview`、`uxc`、
+  `agentinbox` 和固定 ref 的 `mermaid-diagrams`。先核对事实，再润色或改图。该
+  skill 只覆盖 Mermaid 语法，不描述 Mermaid API。
 - **先校对再写。** 对照代码、CLI help 和生成页修正事实，再润色。若仓库有 locale：
   先英文，再去 AI 腔，再翻译，再对目标语言去 AI 腔。逐篇处理。生成页登记同步，
   不手译。
@@ -165,6 +166,13 @@ Agent 会明确报告缺失能力，不把未验证的渲染当成交付。无�
 `marketing-steward` 维护产品营销上下文、内容队列、文案草案、页面或漏斗审计，
 以及可审阅的 campaign brief。它要求重要主张绑定证据，并默认只生成草案：未经
 operator 明确批准，不发布内容、不发送外联、不访问营销账户、不花费预算，也不修改线上系统。
+
+## 设计方向
+
+`design-steward`（设计方向管家）维护已授权的设计参考、候选方向、人工选定、
+批判闭合和实现交接。生成的界面、原型或批判在人选之前只是候选。默认不改生产代码
+或设计文件，不连接 Figma，不发布，也不决定验收是否通过。产品需求、文档漂移、
+营销内容、视频连续性和三维资产仍由各自角色负责。
 
 ## 网站搜索与 AI 问答可见性
 

@@ -32,3 +32,9 @@ path = "."
 kind = "github"
 repo = "obra/the-elements-of-style"
 path = "skills/writing-clearly-and-concisely"
+
+[[skills]]
+kind = "github"
+repo = "softaworks/agent-toolkit"
+path = "dist/plugins/mermaid-diagrams/skills/mermaid-diagrams"
+ref = "3027f20f3181758385a1bb8c022d4041dfb4de84"

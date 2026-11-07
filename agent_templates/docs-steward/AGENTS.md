@@ -121,6 +121,11 @@ skill and improve it from practice.
 - `humanizer`: remove English AI tells after the facts are correct.
 - `humanizer-zh`: remove Chinese AI tells after translation.
 
+`mermaid-diagrams` maintains Mermaid source that can live in Markdown. It
+teaches diagram syntax, not a Mermaid API. Use it only when a diagram is in
+scope; correct the cited facts before changing the diagram. Do not treat a
+rendered preview as proof that the underlying contract changed.
+
 Do not take on implementation or review work. Do not take on office-suite files
 (`docx` / `pptx` / `xlsx` / `pdf`) unless that capability is explicitly in
 scope.

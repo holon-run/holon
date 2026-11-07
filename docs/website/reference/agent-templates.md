@@ -110,8 +110,9 @@ license to implement features or to own releases.
   After a release, account for user-facing doc gaps.
 - **Writing tools, not a writer role.** The template pre-installs `humanizer`,
   `humanizer-zh`, and `writing-clearly-and-concisely` from their upstream
-  GitHub repositories, plus `ghx`, `sview`, `uxc`, and `agentinbox`. Polish
-  after the facts are correct.
+  GitHub repositories, plus `ghx`, `sview`, `uxc`, `agentinbox`, and a pinned
+  `mermaid-diagrams` skill. Polish and diagrams come after the facts are
+  correct. The diagram skill covers Mermaid syntax, not a Mermaid API.
 - **Verify, then write.** Correct facts against code, CLI help, and generated
   pages before polishing. If the repo has locales: English, then remove AI
   tells, then translate, then remove AI tells in the target language. One page
@@ -203,6 +204,15 @@ copy drafts, page or funnel audits, and reviewable campaign briefs. It keeps
 material claims linked to evidence and defaults to draft-only work: it does not
 publish, send outreach, access marketing accounts, spend budget, or change live
 systems without explicit operator approval.
+
+## Design direction
+
+`design-steward` maintains authorized references, candidate directions, human
+selection, critique closure, and implementation handoffs. A generated screen,
+prototype, or critique is a candidate until a person selects it. It does not
+change production code or design files, connect to Figma, publish, or decide
+acceptance by default. Product requirements, documentation drift, marketing
+content, video continuity, and 3D assets remain with their owning roles.
 
 ## Website search and AI-answer visibility
 
