@@ -57,6 +57,16 @@ pub(super) fn visit_original(
                 | QueueMutation::ConsumeSettledTaskResultRecovery { record, .. } => record,
             };
             visit(CurrentFamily::Queue, &record.message_id)?;
+            if matches!(
+                record.status,
+                QueueEntryStatus::Processed
+                    | QueueEntryStatus::Aborted
+                    | QueueEntryStatus::Dropped
+                    | QueueEntryStatus::Quarantined
+            ) {
+                let id = repositories::timer_terminal_retirement_event_id(&record.message_id)?;
+                visit(CurrentFamily::Event, &id)?;
+            }
             if let QueueMutation::SettleWithProviderRecovery { recovery, .. } =
                 &queue.command.mutation
             {
@@ -73,6 +83,9 @@ pub(super) fn visit_original(
         } => {
             visit(CurrentFamily::Event, audit_event_id)?;
             visit(CurrentFamily::Queue, &command.expected.message_id)?;
+            let id =
+                repositories::timer_terminal_retirement_event_id(&command.expected.message_id)?;
+            visit(CurrentFamily::Event, &id)?;
         }
         InputTransitionCommand::Timer(timer) => {
             if let Some(id) = timer.queue_write_address() {

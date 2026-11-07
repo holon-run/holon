@@ -2294,8 +2294,14 @@ impl RuntimeTransitionRepository<'_> {
         };
 
         validate_agent_state_mutation_tx(tx, quarantined.then_some(&command.agent_state))?;
+        let mut timer_retirement_audits = Vec::new();
         if quarantined
-            && !compare_and_set_queue_entry_tx(tx, &command.expected, &command.quarantined)?
+            && !super::repositories::compare_and_set_queue_entry_with_audits_tx(
+                tx,
+                &command.expected,
+                &command.quarantined,
+                &mut timer_retirement_audits,
+            )?
         {
             return Ok(None);
         }
@@ -2345,7 +2351,7 @@ impl RuntimeTransitionRepository<'_> {
         );
         event.id = audit_event_id.to_owned();
         event.created_at = now;
-        let commit = finish_transition_tx(
+        let mut commit = finish_transition_tx(
             tx,
             self.input_scope.as_ref(),
             true,
@@ -2354,6 +2360,19 @@ impl RuntimeTransitionRepository<'_> {
             &[],
             command.fault,
             PostCommitEffects {
+                scheduling_write_keys: timer_retirement_audits
+                    .iter()
+                    .map(|event| {
+                        Ok(crate::runtime::resident_scheduling::SchedulingKey::wake(
+                            event.data["timer_id"]
+                                .as_str()
+                                .context("Timer retirement omitted Timer ID")?,
+                            event.data["message_id"]
+                                .as_str()
+                                .context("Timer retirement omitted Message ID")?,
+                        ))
+                    })
+                    .collect::<Result<_>>()?,
                 agent_state: quarantined.then(|| command.agent_state.clone()),
                 removed_queue_message_ids: quarantined
                     .then(|| command.expected.message_id.clone())
@@ -2363,6 +2382,9 @@ impl RuntimeTransitionRepository<'_> {
                 ..PostCommitEffects::default()
             },
         )?;
+        let mut retirement_events = AuditEventAck::from_events(timer_retirement_audits)?;
+        retirement_events.append(&mut commit.effects.audit_events);
+        commit.effects.audit_events = retirement_events;
         let outcome = if quarantined {
             QueueHeadNoProgressOutcome::Quarantined {
                 attempt,
@@ -3724,6 +3746,7 @@ impl RuntimeTransitionRepository<'_> {
         } else {
             None
         };
+        let mut timer_retirement_audits = Vec::new();
         let mutation_applied = if let Some(result) = trigger_wait_and_enqueue.as_ref() {
             result.applied()
         } else {
@@ -3741,7 +3764,11 @@ impl RuntimeTransitionRepository<'_> {
                 },
                 QueueMutation::Upsert(record)
                 | QueueMutation::SettleWithProviderRecovery { record, .. } => {
-                    upsert_queue_entry_tx(tx, record)?
+                    super::repositories::upsert_queue_entry_with_audits_tx(
+                        tx,
+                        record,
+                        &mut timer_retirement_audits,
+                    )?
                 }
                 QueueMutation::CompareAndSet { expected, record }
                 | QueueMutation::ParkProviderDispatch {
@@ -3749,7 +3776,12 @@ impl RuntimeTransitionRepository<'_> {
                 }
                 | QueueMutation::ConsumeSettledTaskResultRecovery {
                     expected, record, ..
-                } => compare_and_set_queue_entry_tx(tx, expected, record)?,
+                } => super::repositories::compare_and_set_queue_entry_with_audits_tx(
+                    tx,
+                    expected,
+                    record,
+                    &mut timer_retirement_audits,
+                )?,
             }
         };
         if !matches!(
@@ -4053,10 +4085,11 @@ impl RuntimeTransitionRepository<'_> {
         }
         // Attempt/Turn settlements must be durable before retiring their wake.
         if synchronize_timer_wakes {
-            super::repositories::retire_terminal_timer_wake_tx(
+            super::repositories::retire_terminal_timer_wake_with_audits_tx(
                 tx,
                 queue_record,
                 queue_record.updated_at,
+                &mut timer_retirement_audits,
             )?;
         }
         if let Some(timer_id) = pending_timer_wake {
@@ -4159,6 +4192,9 @@ impl RuntimeTransitionRepository<'_> {
                 ..PostCommitEffects::default()
             },
         )?;
+        let mut retirement_events = AuditEventAck::from_events(timer_retirement_audits)?;
+        retirement_events.append(&mut commit.effects.audit_events);
+        commit.effects.audit_events = retirement_events;
         if let Some(result) = trigger_wait_and_enqueue {
             let mut events = AuditEventAck::from_events(result.audit_events)?;
             events.append(&mut commit.effects.audit_events);
@@ -5049,7 +5085,7 @@ fn validate_task_expectation_tx(tx: &Transaction<'_>, expected: &TaskExpectation
 
 /// Resolve the live input scope of an agent inside a writer transaction, so
 /// an offline transition can still attach its archive history ACK.
-fn active_input_scope_tx(
+pub(super) fn active_input_scope_tx(
     tx: &Transaction<'_>,
     agent_id: &str,
 ) -> Result<Option<InputEvidenceScope>> {

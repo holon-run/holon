@@ -23,8 +23,12 @@ subsequent model request.
 Timer producers must declare the exact audit addresses before their canonical
 writes. A suppressed repeated wake uses a stable timer/fire-count audit ID.
 Cancellation declares the audit for every open Work item whose exact bound
-wait will be cancelled, including the resulting Work revision. Publication
-retains the complete Current Event membership check: a missing producer ACK is
+wait will be cancelled, including the resulting Work revision. Queue terminal
+settlement and queue-head quarantine declare the exact Message-based retirement
+audit and acknowledge the changed pending Timer wake in the same transaction.
+Producer audit ACKs preserve append order and attach original archive history
+proof, including bootstrap normalization. Archive proof never grants live
+Current authority. Publication retains the complete Current Event membership check: a missing producer ACK is
 an error, never permission to omit an event or qualify it after the write.
 
 ## Resource estimates and runtime availability

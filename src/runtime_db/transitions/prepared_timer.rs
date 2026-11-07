@@ -242,6 +242,11 @@ impl PreparedTimerTransition {
                     memory,
                 )?;
                 for event in actual_audits {
+                    // This canonical producer owns archive birth as well as its
+                    // exact predeclared Current event address.
+                    crate::runtime_db::current_read_writes::append_event_history_ack_tx(
+                        tx, scope, &event.id,
+                    )?;
                     value
                         .effects
                         .audit_events
@@ -452,6 +457,9 @@ pub(super) fn prepare_tx<'tx, 'conn>(
                 queue.timer_wake_claim.as_ref(),
                 terminal.then_some(record),
             )
+        }
+        InputTransitionCommand::QueueHeadNoProgress { command, .. } => {
+            (None, None, Some(&command.quarantined))
         }
         _ => return Ok(None),
     };

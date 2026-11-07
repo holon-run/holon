@@ -4368,8 +4368,11 @@ impl TimerRepository<'_> {
                     }),
                 );
                 event.id = timer_suppression_event_id(&command.record)?;
-                actual_audits
-                    .push(append_audit_event_tx(tx, Some(&command.record.agent_id), &event)?.0);
+                actual_audits.push(append_original_timer_audit_tx(
+                    tx,
+                    &command.record.agent_id,
+                    &event,
+                )?);
             }
             upsert_timer_tx(tx, &command.record)?;
             return Ok(super::input_evidence_writes::InputEvidenceCommit {
@@ -4649,9 +4652,11 @@ impl TimerRepository<'_> {
             );
             event.id = format!("audit:timer-cancelled:{}", command.record.id);
             event.created_at = command.cancelled_at;
-            settlement
-                .audit_events
-                .push(append_audit_event_tx(tx, Some(&command.record.agent_id), &event)?.0);
+            settlement.audit_events.push(append_original_timer_audit_tx(
+                tx,
+                &command.record.agent_id,
+                &event,
+            )?);
         }
         let notify_memory_index =
             !settlement.audit_events.is_empty() || !settlement.work_items.is_empty();
@@ -4862,6 +4867,18 @@ pub(in crate::runtime_db) fn timer_cancellation_waits_tx(
     Ok(records)
 }
 
+fn append_original_timer_audit_tx(
+    tx: &Transaction<'_>,
+    agent: &str,
+    event: &AuditEvent,
+) -> Result<AuditEvent> {
+    let (actual, _) = append_audit_event_tx(tx, Some(agent), event)?;
+    if let Some(scope) = super::transitions::active_input_scope_tx(tx, agent)? {
+        super::current_read_writes::append_event_history_ack_tx(tx, &scope, &actual.id)?;
+    }
+    Ok(actual)
+}
+
 fn settle_cancelled_timer_waits_tx(
     tx: &Transaction<'_>,
     timer: &TimerRecord,
@@ -4936,9 +4953,11 @@ fn settle_cancelled_timer_waits_tx(
                 event.data["timer_id"] = serde_json::json!(timer.id);
                 event.data["wait_condition_id"] = serde_json::json!(condition.id);
                 event.data["expected_revision"] = serde_json::json!(revision);
-                result
-                    .audit_events
-                    .push(append_audit_event_tx(tx, Some(&timer.agent_id), &event)?.0);
+                result.audit_events.push(append_original_timer_audit_tx(
+                    tx,
+                    &timer.agent_id,
+                    &event,
+                )?);
                 insert_runtime_index_changes_tx(
                     tx,
                     &[RuntimeIndexChange {
@@ -4972,7 +4991,7 @@ fn settle_cancelled_timer_waits_tx(
         event.created_at = cancelled_at;
         result
             .audit_events
-            .push(append_audit_event_tx(tx, Some(&timer.agent_id), &event)?.0);
+            .push(append_original_timer_audit_tx(tx, &timer.agent_id, &event)?);
         result.wait_conditions.push(condition);
     }
     Ok(result)
@@ -7395,10 +7414,32 @@ fn timer_message_has_unsettled_consumption_tx(
     .map_err(Into::into)
 }
 
+pub(crate) fn timer_terminal_retirement_event_id(message: &str) -> Result<String> {
+    crate::diagnostics::resource_io::charge_owned_metadata(
+        u64::try_from(
+            message
+                .len()
+                .checked_add(64)
+                .context("Timer retirement ID overflow")?,
+        )?,
+        1,
+    )?;
+    Ok(format!("audit:timer-wake-terminal-retired:{message}"))
+}
+
 pub(crate) fn retire_terminal_timer_wake_tx(
     tx: &Transaction<'_>,
     entry: &QueueEntryRecord,
     retired_at: DateTime<Utc>,
+) -> Result<bool> {
+    retire_terminal_timer_wake_with_audits_tx(tx, entry, retired_at, &mut Vec::new())
+}
+
+pub(crate) fn retire_terminal_timer_wake_with_audits_tx(
+    tx: &Transaction<'_>,
+    entry: &QueueEntryRecord,
+    retired_at: DateTime<Utc>,
+    actual_audits: &mut Vec<AuditEvent>,
 ) -> Result<bool> {
     if !is_terminal_queue_entry_status(&entry.status) {
         return Ok(false);
@@ -7456,20 +7497,24 @@ pub(crate) fn retire_terminal_timer_wake_tx(
         ],
     )?;
     if changed == 1 {
-        append_audit_event_tx(
-            tx,
-            Some(&entry.agent_id),
-            &AuditEvent::legacy(
-                "timer_wake_terminal_retired",
-                serde_json::json!({
-                    "timer_id": timer_id,
-                    "message_id": entry.message_id,
-                    "fire_count": fire_count,
-                    "queue_status": entry.status,
-                    "reason": "terminal_source_without_unsettled_consumption",
-                }),
-            ),
-        )?;
+        let mut event = AuditEvent::legacy(
+            "timer_wake_terminal_retired",
+            serde_json::json!({
+                "timer_id": timer_id, "message_id": entry.message_id, "fire_count": fire_count,
+                "queue_status": entry.status, "reason": "terminal_source_without_unsettled_consumption",
+            }),
+        );
+        event.id = timer_terminal_retirement_event_id(&entry.message_id)?;
+        event.created_at = retired_at.max(entry.updated_at);
+        let (actual, inserted) =
+            super::evidence::append_audit_event_tx(tx, Some(&entry.agent_id), &event)?;
+        if inserted {
+            if let Some(scope) = super::transitions::active_input_scope_tx(tx, &entry.agent_id)? {
+                super::current_read_writes::append_event_history_ack_tx(tx, &scope, &actual.id)?;
+            }
+            reserve_source_vec_slot(actual_audits)?;
+            actual_audits.push(actual);
+        }
     }
     Ok(changed == 1)
 }
@@ -7477,6 +7522,14 @@ pub(crate) fn retire_terminal_timer_wake_tx(
 pub(crate) fn upsert_queue_entry_tx(
     tx: &Transaction<'_>,
     record: &QueueEntryRecord,
+) -> Result<bool> {
+    upsert_queue_entry_with_audits_tx(tx, record, &mut Vec::new())
+}
+
+pub(crate) fn upsert_queue_entry_with_audits_tx(
+    tx: &Transaction<'_>,
+    record: &QueueEntryRecord,
+    actual_audits: &mut Vec<AuditEvent>,
 ) -> Result<bool> {
     if matches!(
         record.status,
@@ -7526,7 +7579,7 @@ pub(crate) fn upsert_queue_entry_tx(
         ],
     )?;
     if changed == 1 {
-        retire_terminal_timer_wake_tx(tx, record, record.updated_at)?;
+        retire_terminal_timer_wake_with_audits_tx(tx, record, record.updated_at, actual_audits)?;
         let assigned_turn_id = assigned_turn_id_tx(tx, &record.agent_id, &record.message_id)?;
         let _ = bump_source_revision_tx(
             tx,
@@ -7554,6 +7607,15 @@ pub(crate) fn compare_and_set_queue_entry_tx(
     tx: &Transaction<'_>,
     expected: &QueueEntryRecord,
     record: &QueueEntryRecord,
+) -> Result<bool> {
+    compare_and_set_queue_entry_with_audits_tx(tx, expected, record, &mut Vec::new())
+}
+
+pub(crate) fn compare_and_set_queue_entry_with_audits_tx(
+    tx: &Transaction<'_>,
+    expected: &QueueEntryRecord,
+    record: &QueueEntryRecord,
+    actual_audits: &mut Vec<AuditEvent>,
 ) -> Result<bool> {
     if expected.message_id != record.message_id || expected.agent_id != record.agent_id {
         return Err(anyhow!(
@@ -7594,7 +7656,7 @@ pub(crate) fn compare_and_set_queue_entry_tx(
         ],
     )?;
     if changed == 1 {
-        retire_terminal_timer_wake_tx(tx, record, record.updated_at)?;
+        retire_terminal_timer_wake_with_audits_tx(tx, record, record.updated_at, actual_audits)?;
         let assigned_turn_id = assigned_turn_id_tx(tx, &record.agent_id, &record.message_id)?;
         let _ = bump_source_revision_tx(
             tx,

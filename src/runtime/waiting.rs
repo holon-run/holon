@@ -2893,6 +2893,275 @@ mod mutation_tests {
         (home, workspace, runtime, timer)
     }
 
+    #[tokio::test]
+    async fn terminal_timer_queue_keeps_generated_current_and_history_ack() {
+        use crate::runtime_db::transitions::{
+            AgentStateMutation, PreparedQueueTransition, QueueMutation, QueueOperation,
+            QueueTransitionCommand,
+        };
+        for status in [QueueEntryStatus::Dropped, QueueEntryStatus::Quarantined] {
+            let (_home, _workspace, runtime, mut timer) = timer_runtime().await;
+            runtime.await_initial_resources().await;
+            let _refresh = runtime.hold_resource_refresh_for_test().await.unwrap();
+            runtime.fire_timer_record(&mut timer).await.unwrap();
+            let wake = runtime
+                .runtime_db()
+                .timers()
+                .pending_wake(&timer.id)
+                .unwrap()
+                .unwrap();
+            let expected = runtime
+                .runtime_db()
+                .queue_entries()
+                .latest(&wake.message_id)
+                .unwrap()
+                .unwrap();
+            let mut terminal = expected.clone();
+            terminal.status = status;
+            let mut owner = runtime.begin_mutation().await.unwrap();
+            owner
+                .prepare_current_query(Some(&crate::runtime_db::current_query::CurrentSelection {
+                    events_after: Some(0),
+                    ..Default::default()
+                }))
+                .await
+                .unwrap();
+            let mut next = owner.state.clone();
+            next.pending = next.pending.saturating_sub(1);
+            let queue = PreparedQueueTransition::new(QueueTransitionCommand {
+                agent_id: "default".into(),
+                operation: QueueOperation::Settle,
+                mutation: QueueMutation::CompareAndSet {
+                    expected,
+                    record: terminal,
+                },
+                scheduler_claim_work_item: None,
+                agent_state: Some(AgentStateMutation {
+                    expected: Some(Box::new(owner.state.clone())),
+                    record: Box::new(next),
+                }),
+                message_evidence: Vec::new(),
+                transcript_entries: Vec::new(),
+                turn_record: None,
+                audit_events: vec![AuditEvent::legacy(
+                    "terminal_timer_test",
+                    serde_json::json!({}),
+                )],
+                notify_scheduler: false,
+                fault: None,
+                brief_evidence: Vec::new(),
+            });
+            owner
+                .commit_prepared_queue(crate::ids::audit_event_id(), queue)
+                .await
+                .unwrap();
+            drop(owner);
+            assert!(runtime
+                .runtime_db()
+                .timers()
+                .pending_wake(&timer.id)
+                .unwrap()
+                .is_none());
+            let scope = crate::runtime::resident_input_evidence::InputEvidenceScope {
+                agent_id: "default".into(),
+                identity_incarnation: runtime.inner.identity_incarnation,
+            };
+            runtime
+                .runtime_db()
+                .transaction(|tx| {
+                    tx.execute(
+                        "DELETE FROM current_read_qualification WHERE family='event'",
+                        [],
+                    )?;
+                    let page = crate::runtime_db::current_query::prepare_event_page(
+                        tx,
+                        &scope,
+                        &runtime.inner.input_evidence_budget,
+                        None,
+                        Some(0),
+                        100,
+                        crate::storage::EventLogPageOrder::Asc,
+                        |_| true,
+                    )?;
+                    assert!(page
+                        .events()
+                        .any(|event| event.kind == "timer_wake_terminal_retired"));
+                    Ok(())
+                })
+                .unwrap();
+        }
+    }
+
+    #[tokio::test]
+    async fn timer_queue_head_quarantine_keeps_current_and_scheduling_ack() {
+        use crate::runtime_db::transitions::{
+            AgentStateMutation, PreparedInputTransition, QueueHeadNoProgressCommand,
+            QueueHeadNoProgressOutcome,
+        };
+        let (_home, _workspace, runtime, mut timer) = timer_runtime().await;
+        runtime.await_initial_resources().await;
+        let _refresh = runtime.hold_resource_refresh_for_test().await.unwrap();
+        runtime.fire_timer_record(&mut timer).await.unwrap();
+        let wake = runtime
+            .runtime_db()
+            .timers()
+            .pending_wake(&timer.id)
+            .unwrap()
+            .unwrap();
+        let expected = runtime
+            .runtime_db()
+            .queue_entries()
+            .latest(&wake.message_id)
+            .unwrap()
+            .unwrap();
+        let mut terminal = expected.clone();
+        terminal.status = QueueEntryStatus::Quarantined;
+        let mut owner = runtime.begin_mutation().await.unwrap();
+        owner
+            .prepare_current_query(Some(&crate::runtime_db::current_query::CurrentSelection {
+                events_after: Some(0),
+                ..Default::default()
+            }))
+            .await
+            .unwrap();
+        let mut next = owner.state.clone();
+        next.pending = next.pending.saturating_sub(1);
+        let command = QueueHeadNoProgressCommand {
+            agent_id: "default".into(),
+            expected,
+            quarantined: terminal,
+            agent_state: AgentStateMutation {
+                expected: Some(Box::new(owner.state.clone())),
+                record: Box::new(next),
+            },
+            reason: "timer queue recovery fixture".into(),
+            scenario_class: None,
+            max_attempts: 1,
+            fault: None,
+        };
+        let prepared = PreparedInputTransition::queue_head_no_progress(
+            owner.input_evidence_scope(),
+            crate::ids::audit_event_id(),
+            runtime.now(),
+            command,
+        )
+        .unwrap();
+        let (commit, outcome) = owner
+            .commit_prepared_queue_progress(prepared)
+            .await
+            .unwrap();
+        assert!(matches!(
+            outcome,
+            Some(QueueHeadNoProgressOutcome::Quarantined { .. })
+        ));
+        // The owner consumes and strips the authoritative delta on publication.
+        let published = runtime.inner.mutation_owner.capture().unwrap().unwrap();
+        let scheduling = published
+            .scheduling
+            .as_ref()
+            .expect("published Timer domain");
+        assert!(scheduling.coverage().pending_wakes_complete);
+        assert!(scheduling.coverage().pending_wakes.is_empty());
+        assert!(commit
+            .effects
+            .audit_events
+            .iter()
+            .any(|event| event.kind == "timer_wake_terminal_retired"));
+        assert!(commit
+            .effects
+            .audit_events
+            .windows(2)
+            .all(|events| events[0].event_seq < events[1].event_seq));
+        assert!(runtime
+            .runtime_db()
+            .timers()
+            .pending_wake(&timer.id)
+            .unwrap()
+            .is_none());
+    }
+
+    #[tokio::test]
+    async fn timer_current_recovery_scheduler_consumes_wait_wake() {
+        let (_home, _workspace, runtime, mut timer) = timer_runtime().await;
+        runtime.await_initial_resources().await;
+        let _refresh = runtime.hold_resource_refresh_for_test().await.unwrap();
+        let work = Box::pin(runtime.create_work_item(
+            "original timer recovery".into(),
+            Some(crate::types::WorkItemPlanStatus::Ready),
+            None,
+            Vec::new(),
+        ))
+        .await
+        .unwrap();
+        runtime.pick_work_item(work.id.clone()).await.unwrap();
+        Box::pin(runtime.register_wait_for(
+            "default",
+            Some(work.id),
+            WaitForWakeKind::Timer,
+            Some(timer.id.clone()),
+            "wait for timer".into(),
+            None,
+        ))
+        .await
+        .unwrap();
+        let selection = crate::runtime_db::current_query::CurrentSelection {
+            events_after: Some(0),
+            ..Default::default()
+        };
+        let mut owner = runtime.begin_mutation().await.unwrap();
+        owner.prepare_current_query(Some(&selection)).await.unwrap();
+        drop(owner);
+        runtime.fire_timer_record(&mut timer).await.unwrap();
+        drop(_refresh);
+        let outcome = tokio::time::timeout(
+            Duration::from_secs(5),
+            crate::runtime::scheduler_executor::SchedulerDecisionExecutor::new(&runtime).poll(),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        let crate::runtime::scheduler_executor::RunLoopPoll::Message(scheduled) = outcome else {
+            panic!("Timer wait must be runnable")
+        };
+        assert_eq!(scheduled.message.kind, MessageKind::TimerTick);
+    }
+
+    #[tokio::test]
+    async fn timer_current_recovery_archive_keeps_original_suppression_event() {
+        let (_home, _workspace, runtime, mut timer) = timer_runtime().await;
+        runtime.await_initial_resources().await;
+        let _refresh = runtime.hold_resource_refresh_for_test().await.unwrap();
+        runtime.fire_timer_record(&mut timer).await.unwrap();
+        runtime.fire_timer_record(&mut timer).await.unwrap();
+        let scope = crate::runtime::resident_input_evidence::InputEvidenceScope {
+            agent_id: "default".into(),
+            identity_incarnation: runtime.inner.identity_incarnation,
+        };
+        runtime
+            .runtime_db()
+            .transaction(|tx| {
+                tx.execute(
+                    "DELETE FROM current_read_qualification WHERE family='event'",
+                    [],
+                )?;
+                let page = crate::runtime_db::current_query::prepare_event_page(
+                    tx,
+                    &scope,
+                    &runtime.inner.input_evidence_budget,
+                    None,
+                    Some(0),
+                    100,
+                    crate::storage::EventLogPageOrder::Asc,
+                    |_| true,
+                )?;
+                assert!(page
+                    .events()
+                    .any(|event| event.kind == "timer_wake_suppressed"));
+                Ok(())
+            })
+            .unwrap();
+    }
+
     #[tokio::test(start_paused = true)]
     async fn repeat_timer_suppressed_wake_keeps_complete_current_event_ack() {
         let (_home, _workspace, runtime, mut timer) = timer_runtime().await;
@@ -2996,6 +3265,33 @@ mod mutation_tests {
             )));
         runtime.cancel_timer(&timer.id).await.unwrap();
         assert_eq!(runtime.storage().read_recent_events(100).unwrap(), events);
+        let scope = crate::runtime::resident_input_evidence::InputEvidenceScope {
+            agent_id: "default".into(),
+            identity_incarnation: runtime.inner.identity_incarnation,
+        };
+        runtime
+            .runtime_db()
+            .transaction(|tx| {
+                tx.execute(
+                    "DELETE FROM current_read_qualification WHERE family='event'",
+                    [],
+                )?;
+                let page = crate::runtime_db::current_query::prepare_event_page(
+                    tx,
+                    &scope,
+                    &runtime.inner.input_evidence_budget,
+                    None,
+                    Some(0),
+                    100,
+                    crate::storage::EventLogPageOrder::Asc,
+                    |_| true,
+                )?;
+                assert!(page
+                    .events()
+                    .any(|event| event.kind == "wait_condition_cancelled"));
+                Ok(())
+            })
+            .unwrap();
     }
 
     #[tokio::test]

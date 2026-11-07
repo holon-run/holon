@@ -3791,22 +3791,35 @@ impl RuntimeTransitionRepository<'_> {
                     memory_ledger,
                     preflight.memory_budget.as_mut(),
                     |material| {
-                        current.finish_with_audit_acks(
-                            material,
-                            &value.effects.audit_events,
-                            |visit| {
-                                crate::runtime_db::current_read_writes::visit_effects(
-                                    &value.effects,
-                                    visit,
-                                )?;
-                                // Source audits stay durable-only notifications, but
-                                // their Current facts belong to this original ACK.
-                                if prepared.original_child_terminal().is_some() {
-                                    child_terminal::visit_source_audits(prepared, visit)?;
-                                }
-                                Ok(())
-                            },
-                        )
+                        current
+                            .finish_with_audit_acks(
+                                material,
+                                &value.effects.audit_events,
+                                |visit| {
+                                    crate::runtime_db::current_read_writes::visit_effects(
+                                        &value.effects,
+                                        visit,
+                                    )?;
+                                    // Source audits stay durable-only notifications, but
+                                    // their Current facts belong to this original ACK.
+                                    if prepared.original_child_terminal().is_some() {
+                                        child_terminal::visit_source_audits(prepared, visit)?;
+                                    }
+                                    Ok(())
+                                },
+                            )
+                            .with_context(|| {
+                                format!(
+                                    "Current {:?} publication, original audit kinds={:?}",
+                                    prepared.command.family(),
+                                    value
+                                        .effects
+                                        .audit_events
+                                        .iter()
+                                        .map(|event| event.kind.as_str())
+                                        .collect::<Vec<_>>()
+                                )
+                            })
                     },
                 )?);
             }
