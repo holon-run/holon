@@ -3026,7 +3026,9 @@ fn qualified_live_protocol_keys(
 ) -> Result<Vec<Key>> {
     let mut result = Vec::new();
     for (family, filter) in [
-        (Family::Attempt, "r.lifecycle_state!='settled'"),
+        // Interrupted and protocol-violation Attempts are terminal history.
+        // Pending inputs and recovery selectors name any needed predecessors.
+        (Family::Attempt, "r.lifecycle_state='open'"),
         (Family::WorkExecution, "r.lifecycle_state!='terminal'"),
     ] {
         let (table, id) = table(family);

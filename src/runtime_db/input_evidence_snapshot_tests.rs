@@ -1424,13 +1424,13 @@ fn interrupt_claim(db: &RuntimeDb, mut attempt: ExecutionAttempt) -> Result<()> 
 fn claim_only_interruption_and_restart_keep_verified_no_turn() -> Result<()> {
     let (_dir, db) = fresh()?;
     let attempt = claim_only_attempt(&db)?;
+    let mut policy = request(InputWindowSelector::GlobalTurns, 12);
+    policy
+        .mandatory_roots
+        .insert(Key::new(Family::Attempt, &attempt.attempt_id));
     interrupt_claim(&db, attempt)?;
     db.transaction(|tx| {
-        let current = current(load_input_evidence_snapshot_tx(
-            tx,
-            &scope(),
-            &request(InputWindowSelector::GlobalTurns, 12),
-        )?);
+        let current = current(load_input_evidence_snapshot_tx(tx, &scope(), &policy)?);
         let capture = current.resident.capture()?;
         let record = capture
             .records
@@ -1985,6 +1985,67 @@ fn cold_multihop_provider_lineage_prepares_complete_sources_without_history_wind
         .execution
         .sources
         .contains_key("lineage-original"));
+    Ok(())
+}
+
+#[test]
+fn historical_interrupted_attempts_do_not_own_input_bootstrap() -> Result<()> {
+    let (_directory, db, latest) = provider_lineage_fixture()?;
+    // Fixed legacy history can qualify a body without a complete source index.
+    // Its old interrupted Attempts must not promote that history into recovery.
+    db.connection()?.execute(
+        "DELETE FROM input_evidence_execution_current_sources WHERE source_message_id IN ('lineage-original','lineage-recovery-1')",
+        [],
+    )?;
+    let policy = request(InputWindowSelector::GlobalTurns, 1);
+    for prepare in [true, false] {
+        let snapshot = current(db.transaction(|tx| {
+            if prepare {
+                prepare_input_evidence_snapshot_tx(tx, &scope(), &policy)
+            } else {
+                load_input_evidence_snapshot_tx(tx, &scope(), &policy)
+            }
+        })?);
+        let captured = snapshot.resident.capture()?;
+        assert!(captured.execution.open_attempt_ids.is_empty());
+        assert!(captured.execution.sources.is_empty());
+        assert!(captured
+            .lookup(&Key::new(Family::Turn, "lineage-turn-1"))?
+            .is_some());
+        assert!(!captured.records.iter().any(|record| matches!(
+            record.record,
+            PreparedInputEvidence::Attempt(_) | PreparedInputEvidence::Outcome(_)
+        )));
+    }
+    // An actual recovery request still requires complete, qualified metadata.
+    assert!(db
+        .transaction(|tx| {
+            prepare_input_evidence_snapshot_tx(tx, &scope(), &provider_lineage_request(&latest))
+        })
+        .is_err());
+    Ok(())
+}
+
+#[test]
+fn open_attempt_still_owns_input_bootstrap_without_a_pending_message() -> Result<()> {
+    let (_directory, db) = fresh()?;
+    let attempt = claim_only_attempt(&db)?;
+    let mut policy = request(InputWindowSelector::GlobalTurns, 0);
+    policy.windows.clear();
+    let captured =
+        current(db.transaction(|tx| prepare_input_evidence_snapshot_tx(tx, &scope(), &policy))?)
+            .resident
+            .capture()?;
+    assert!(captured
+        .execution
+        .open_attempt_ids
+        .contains(&attempt.attempt_id));
+    assert!(captured
+        .lookup(&Key::new(Family::Attempt, &attempt.attempt_id))?
+        .is_some());
+    assert!(captured
+        .lookup(&Key::new(Family::Message, "claim-source"))?
+        .is_some());
     Ok(())
 }
 

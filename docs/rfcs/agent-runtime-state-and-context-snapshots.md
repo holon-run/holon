@@ -4955,6 +4955,13 @@ inputs. The selected closure still qualifies every required protocol body,
 fails closed on missing preparation, and shares the original material allowance
 and failure latch. This does not narrow the full Work inventory returned by State.
 
+The automatic live Attempt frontier contains only `Open` attempts. `Interrupted`,
+`Settled`, and `ProtocolViolation` attempts are terminal history; they do not
+independently own bootstrap Input or provider recovery expansion. Pending inputs,
+current bindings, explicit interrupted-source selectors, and qualified dependency
+edges still select any required predecessor bodies with unchanged strict source
+index, qualification, and resource checks.
+
 Task recovery predicate material follows the same short-circuit boundaries as
 the original observer. A source without a selected Result reads its durable
 Message but does not expand into unrelated open Attempts, waits or Turns.
