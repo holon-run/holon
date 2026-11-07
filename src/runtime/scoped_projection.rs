@@ -584,6 +584,9 @@ mod tests {
     #[tokio::test(flavor = "current_thread")]
     async fn scoped_loaded_projection_uses_resident_cut_not_unpublished_memory_or_sql() {
         let (_home, host, runtime) = host_backed_test_runtime().await;
+        // Freeze scheduler writers as well as resource refresh across both reads.
+        runtime.wait_for_bootstrap().await.unwrap();
+        let run_loop = runtime.inner.run_loop_test_gate.write().await;
         runtime.await_initial_resources().await;
         let refresh = runtime.hold_resource_refresh_for_test().await.unwrap();
         let agent_id = runtime.agent_id().await.unwrap();
@@ -629,6 +632,8 @@ mod tests {
         );
         host.append_agent_identity(&child).unwrap();
         let child = host.get_or_create_agent(&child.agent_id).await.unwrap();
+        child.wait_for_bootstrap().await.unwrap();
+        let child_loop = child.inner.run_loop_test_gate.write().await;
         child.await_initial_resources().await;
         let child_refresh = child.hold_resource_refresh_for_test().await.unwrap();
         drop(child.operator_state_read_projection(10, 10).await.unwrap());
@@ -683,19 +688,24 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(projection_value(&scoped), projection_value(&ordinary));
-        drop((refresh, child_refresh));
+        drop((refresh, child_refresh, run_loop, child_loop));
         host.shutdown().await.unwrap();
     }
 
     #[tokio::test(flavor = "current_thread")]
     async fn scoped_host_first_loaded_state_prepares_parent_and_child_current() {
         let (_home, host, runtime) = host_backed_test_runtime().await;
+        // Only the read's preparation may publish while these roots are compared.
+        runtime.wait_for_bootstrap().await.unwrap();
+        let run_loop = runtime.inner.run_loop_test_gate.write().await;
         runtime.await_initial_resources().await;
         let refresh = runtime.hold_resource_refresh_for_test().await.unwrap();
         let agent_id = runtime.agent_id().await.unwrap();
         let identity = child_identity("scoped-first-read-child", &agent_id);
         host.append_agent_identity(&identity).unwrap();
         let child = host.get_or_create_agent(&identity.agent_id).await.unwrap();
+        child.wait_for_bootstrap().await.unwrap();
+        let child_loop = child.inner.run_loop_test_gate.write().await;
         child.await_initial_resources().await;
         let child_refresh = child.hold_resource_refresh_for_test().await.unwrap();
         // Do not warm either runtime through the ordinary test-only State read.
@@ -773,8 +783,7 @@ mod tests {
                 assert!(Arc::ptr_eq(&prepared, &after));
             }
         }
-        drop(child_refresh);
-        drop(refresh);
+        drop((refresh, child_refresh, run_loop, child_loop));
         host.shutdown().await.unwrap();
     }
 
