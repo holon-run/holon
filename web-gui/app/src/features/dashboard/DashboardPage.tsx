@@ -1,7 +1,7 @@
-import type { CSSProperties } from "react";
 import { ArrowRight } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { PageHeading } from "../../components/ui/PageHeading";
+import { AgentAvatar } from "../../components/ui/AgentAvatar";
 import { Button } from "../../components/ui/Button";
 import { Card } from "../../components/ui/Card";
 import { EmptyState } from "../../components/ui/EmptyState";
@@ -112,7 +112,7 @@ export function DashboardPage({ agents, metrics, connection, discovery, loading,
               {agents.map((agent) => (
                 <Card className="agent-card" key={agent.id}>
                   <div className="agent-card-head">
-                    <span className={`agent-badge ${agent.badgeTone ?? ""}`} style={agent.badgeHue != null && !agent.badgeTone ? ({ "--badge-hue": `${agent.badgeHue}` } as CSSProperties) : undefined}>{agent.badge}</span>
+                    <AgentAvatar agentId={agent.id} />
                     <div className="agent-card-title" title={agent.name ? agent.profile : undefined}>
                       <strong>{agent.name ?? agent.id}</strong>
                       <small>{agent.name ? agent.id : agent.profile}</small>

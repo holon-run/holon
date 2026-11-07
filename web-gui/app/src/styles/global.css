@@ -493,6 +493,13 @@ button {
   background: #73849a;
 }
 
+.agent-avatar {
+  display: block;
+  object-fit: contain;
+  background: transparent;
+  box-shadow: none;
+}
+
 .agent-row {
   position: relative;
   min-width: 0;
@@ -7274,7 +7281,7 @@ code {
 .workspace-name-link { background: transparent; border: 0; padding: 0; font: inherit; font-weight: 600; color: var(--text); cursor: pointer; text-align: left; }
 .agent-filter { width: calc(100% - 24px); margin: 0 12px 8px; padding: 7px 9px; border: 1px solid var(--line); border-radius: 6px; background: var(--surface); color: var(--text); font-size: 12px; }
 .app-shell[data-nav-collapsed="true"] .agent-filter { display: none; }
-.agent-row:not(.is-selected) .agent-badge { filter: saturate(.45); }
+.agent-row:not(.is-selected) .agent-badge:not(.agent-avatar) { filter: saturate(.45); }
 .agent-row-status-dot.success { opacity: .45; }
 .composer textarea { font-size: 15px; min-height: 48px; }
 .file-browser-panes { flex: 1; min-height: 0; min-width: 0; display: flex; flex-direction: column; overflow: hidden; }
