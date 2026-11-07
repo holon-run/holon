@@ -1210,14 +1210,18 @@ jobs:
             --evidence-dir target/docker-e2e/scheduler-required
 
       - name: Prepare previous-release lifecycle fixture (fail closed)
-        run: docker pull ghcr.io/holon-run/holon:v0.30.0
+        run: |
+          python3 scripts/prepare-previous-release-image.py \
+            --ref v0.30.0 \
+            --expected-sha256 20d5b7c544c9d55977188e69e03fc90825748c5d26dd47e9d5b32c9146c4e32c \
+            --output target/docker-e2e/previous-v030-source.json
 
       - name: Run deterministic runtime lifecycle hard gate
         run: |
           set -euo pipefail
           python3 scripts/docker-e2e.py \
             --image holon:scheduler-required --skip-build \
-            --previous-image ghcr.io/holon-run/holon:v0.30.0 \
+            --previous-image holon-e2e-previous:0.30.0 \
             --profile runtime-lifecycle-required \
             --evidence-dir target/docker-e2e/runtime-lifecycle-required
 
@@ -1261,6 +1265,7 @@ jobs:
           path: |
             target/docker-e2e/scheduler-required
             target/docker-e2e/runtime-lifecycle-required
+            target/docker-e2e/previous-v030-source.json
             target/docker-e2e/task-result-fast
 
   timing:

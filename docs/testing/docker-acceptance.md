@@ -59,15 +59,19 @@ all three cases with strict tool assertions:
   Result reads **before** a new candidate prompt completes a durable Result.
 
 ```bash
+python3 scripts/prepare-previous-release-image.py --ref v0.30.0 \
+  --expected-sha256 20d5b7c544c9d55977188e69e03fc90825748c5d26dd47e9d5b32c9146c4e32c
 python3 scripts/docker-e2e.py --image holon:candidate --skip-build \
-  --previous-image ghcr.io/holon-run/holon:v0.30.0 \
+  --previous-image holon-e2e-previous:0.30.0 \
   --profile runtime-lifecycle-required \
   --evidence-dir target/docker-e2e/runtime-lifecycle-required
 ```
 
 The previous image is mandatory; missing or invalid fixtures fail rather than
-skip. CI pins the v0.30.0 image; Release E2E uses its explicitly selected,
-validated previous-release image. Both workflows reject missing or failed
+skip. CI builds v0.30.0 from its pinned, checksum-verified release archive;
+there is no published v0.30.0 container tag. Release E2E uses its explicitly
+selected, validated previous-release image or the same asset builder.
+Both workflows reject missing or failed
 required cases. The release attestation binds the lifecycle summary and its
 hash to the candidate revision and image digest.
 
@@ -197,7 +201,7 @@ When a candidate image is already published, use an immutable reference:
 ```bash
 python3 scripts/docker-e2e.py \
   --image-digest ghcr.io/holon-run/holon@sha256:... \
-  --previous-image ghcr.io/holon-run/holon:v0.30.0 \
+  --previous-image holon-e2e-previous:0.30.0 \
   --skip-build \
   --suite core
 ```

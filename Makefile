@@ -272,7 +272,7 @@ docker-e2e-validate: ## Validate the Docker E2E manifest and runner unit tests
 		tests.test_fallback_storm tests.test_continuation_interjection tests.test_continuation_cooldown \
 		tests.test_docker_task_recovery tests.test_docker_identified_build tests.test_docker_route_throttle \
 		tests.test_docker_timer_admission tests.test_docker_upgrade_history \
-		tests.test_docker_e2e_shared_credential_delete
+		tests.test_docker_e2e_shared_credential_delete tests.test_docker_previous_release
 
 .PHONY: docker-e2e-task-result-fast docker-e2e-task-result-slow
 docker-e2e-task-result-fast: ## Run owned exact/fallback drills with prebuilt isolated images

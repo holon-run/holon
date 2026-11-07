@@ -246,46 +246,10 @@ jobs:
             echo "previous_ref must be a release tag such as v0.31.1: ${PREVIOUS_REF}" >&2
             exit 1
           fi
-          echo "Building previous release image from release assets for ${PREVIOUS_REF}"
-          version="${PREVIOUS_REF#v}"
-          workdir="$(mktemp -d)"
-          trap 'rm -rf "${workdir}"' EXIT
-          base_url="https://github.com/${GITHUB_REPOSITORY}/releases/download/${PREVIOUS_REF}"
-          curl -fsSL -o "${workdir}/checksums.txt" "${base_url}/checksums.txt"
-          curl -fsSL -o "${workdir}/holon-linux-amd64.tar.gz" "${base_url}/holon-linux-amd64.tar.gz"
-          (
-            cd "${workdir}"
-            expected="$(awk 'match($0, /holon-linux-amd64\.tar\.gz$/) { print $1 }' checksums.txt)"
-            if [ -z "${expected}" ]; then
-              echo "checksums.txt has no entry for holon-linux-amd64.tar.gz" >&2
-              exit 1
-            fi
-            printf '%s  holon-linux-amd64.tar.gz\n' "${expected}" | sha256sum --check --strict -
-            tar -xzf holon-linux-amd64.tar.gz
-            test -x holon || chmod +x holon
-          )
-          cat > "${workdir}/Dockerfile" <<'DOCKERFILE'
-          FROM debian:trixie-slim
-          RUN apt-get update \
-              && apt-get install -y --no-install-recommends \
-                 bash ca-certificates curl git gzip openssh-client tar \
-              && rm -rf /var/lib/apt/lists/* \
-              && useradd --create-home --home-dir /var/lib/holon --uid 10001 holon \
-              && mkdir -p /workspace \
-              && chown holon:holon /workspace
-          COPY holon /usr/local/bin/holon
-          RUN chmod +x /usr/local/bin/holon
-          ENV HOME=/var/lib/holon \
-              HOLON_HOME=/var/lib/holon \
-              HOLON_WORKSPACE_DIR=/workspace
-          WORKDIR /workspace
-          USER holon
-          EXPOSE 7878
-          ENTRYPOINT ["holon"]
-          CMD ["serve", "--listen", "0.0.0.0:7878"]
-          DOCKERFILE
-          tag="holon-e2e-previous:${version}"
-          docker build --tag "${tag}" "${workdir}"
+          tag="holon-e2e-previous:${PREVIOUS_REF#v}"
+          python3 scripts/prepare-previous-release-image.py \
+            --ref "${PREVIOUS_REF}" --image "${tag}" \
+            --output target/docker-e2e/previous-release-source.json
           {
             echo "image=${tag}"
             echo "source=previous_ref"
