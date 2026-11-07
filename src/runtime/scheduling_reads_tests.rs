@@ -20,6 +20,70 @@ fn runtime(home: &std::path::Path) -> Result<RuntimeHandle> {
 }
 
 #[tokio::test]
+async fn context_plan_moves_its_capture_without_second_admission_or_retaining_domain() -> Result<()>
+{
+    let home = tempdir()?;
+    let runtime = runtime(home.path())?;
+    runtime.schedule_timer(3_600_000, None, None).await?;
+    let owner = runtime.begin_mutation().await?;
+    let root = owner.capture_published_root()?;
+    let source = root.scheduling.as_ref().unwrap();
+    let holders = Arc::strong_count(source);
+    let material = crate::diagnostics::resource_io::ResourceReadMaterial::current_or_new(
+        &runtime.inner.input_evidence_budget,
+        source.scope(),
+    )?;
+    let _entered = material.enter();
+    let plan = owner.capture_context_scheduling_plan()?;
+    assert_eq!(Arc::strong_count(source), holders + 1);
+    let records = plan.read.scheduling.records.as_ptr();
+    let before = material.finish()?;
+    let captured = plan.into_current_capture(&root.state, source)?;
+    assert_eq!(captured.records.as_ptr(), records);
+    assert_eq!(material.finish()?, before);
+    assert_eq!(Arc::strong_count(source), holders);
+
+    let plan = owner.capture_context_scheduling_plan()?;
+    let previous_records = plan.read.scheduling.records.as_ptr();
+    let mut coverage = source.coverage().clone();
+    let previous_revision = coverage.revision;
+    coverage.revision += 1;
+    let changed = Arc::new(
+        source.with_committed(
+            &crate::runtime::resident_scheduling::CommittedSchedulingDelta {
+                scope: source.scope().clone(),
+                base_revision: previous_revision,
+                revision: coverage.revision,
+                coverage,
+                records: Arc::new(
+                    plan.read
+                        .scheduling
+                        .records
+                        .iter()
+                        .map(|record| (record.locator.key.clone(), record.clone()))
+                        .collect(),
+                ),
+            },
+        )?,
+    );
+    let before = material.finish()?;
+    let refreshed = plan.into_current_capture(&root.state, &changed)?;
+    assert_eq!(refreshed.revision, previous_revision + 1);
+    assert_ne!(refreshed.records.as_ptr(), previous_records);
+    assert!(material.finish()?.1 > before.1);
+
+    let plan = owner.capture_context_scheduling_plan()?;
+    let mut changed_state = root.state.as_ref().clone();
+    changed_state.id.push_str("-foreign");
+    assert!(plan
+        .into_current_capture(&Arc::new(changed_state), source)
+        .unwrap_err()
+        .to_string()
+        .contains("State changed"));
+    Ok(())
+}
+
+#[tokio::test]
 async fn scheduling_bootstrap_and_ack_publish_one_root_and_capture_never_queries_timer_tables(
 ) -> Result<()> {
     let home = tempdir()?;

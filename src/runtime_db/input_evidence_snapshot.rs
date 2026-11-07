@@ -217,7 +217,7 @@ impl InputEvidenceLoadRequest {
         if self.contains_root(family, id) {
             return Ok(());
         }
-        crate::diagnostics::resource_io::admit_cloned_value(&(family, id))?;
+        crate::diagnostics::resource_io::admit_typed_cloned_value(&(family, id))?;
         self.mandatory_roots.insert(Key::new(family, id));
         Ok(())
     }
@@ -231,7 +231,7 @@ impl InputEvidenceLoadRequest {
         if !roots().any(|(family, id)| !self.contains_root(family, id)) {
             return Ok(());
         }
-        crate::diagnostics::resource_io::admit_cloned_value(&NewRequestRoots {
+        crate::diagnostics::resource_io::admit_typed_cloned_value(&NewRequestRoots {
             existing: &self.mandatory_roots,
             roots: &roots,
         })?;
@@ -288,7 +288,7 @@ fn own_request_set<T: Clone + Ord + Serialize>(set: &mut Cow<'_, BTreeSet<T>>) -
     crate::diagnostics::resource_io::check_active()?;
     if matches!(set, Cow::Borrowed(_)) {
         if !set.is_empty() {
-            crate::diagnostics::resource_io::admit_cloned_value(set.as_ref())?;
+            crate::diagnostics::resource_io::admit_typed_cloned_value(set.as_ref())?;
         }
         let _ = set.to_mut();
     }
@@ -306,7 +306,7 @@ impl InputEvidenceLoadRequestView<'_> {
             return Ok(());
         }
         own_request_set(&mut self.mandatory_roots)?;
-        crate::diagnostics::resource_io::admit_cloned_value(&(family, id))?;
+        crate::diagnostics::resource_io::admit_typed_cloned_value(&(family, id))?;
         self.mandatory_roots.to_mut().insert(Key::new(family, id));
         Ok(())
     }
@@ -317,7 +317,7 @@ impl InputEvidenceLoadRequestView<'_> {
             return Ok(());
         }
         own_request_set(&mut self.selected_completion_brief_ids)?;
-        crate::diagnostics::resource_io::admit_cloned_value(&id)?;
+        crate::diagnostics::resource_io::admit_typed_cloned_value(&id)?;
         self.selected_completion_brief_ids
             .to_mut()
             .insert(id.into());
@@ -1734,6 +1734,21 @@ fn prepare_input_records_tx(
         if key.family != Family::ToolExecution
             && fingerprint.payload_bytes > request.byte_limit.saturating_sub(bytes)
         {
+            tracing::warn!(
+                agent_id = %scope.agent_id,
+                family = key.family.as_str(),
+                body_bytes = fingerprint.payload_bytes,
+                prepared_bytes = bytes,
+                byte_limit = request.byte_limit,
+                prepared_records = records.len(),
+                mandatory_roots = mandatory_roots.len(),
+                selected_keys = selected.len(),
+                turn_records = records.keys().filter(|key| key.family == Family::Turn).count(),
+                transcript_records = records.keys().filter(|key| key.family == Family::Transcript).count(),
+                tool_records = records.keys().filter(|key| key.family == Family::ToolExecution).count(),
+                depth,
+                "input evidence body exceeds preparation allowance"
+            );
             return Err(
                 InputEvidenceSnapshotError::ResourceExhausted("prepared body bytes").into(),
             );
@@ -2452,6 +2467,38 @@ fn validate_alias_body(
 }
 fn requires_frozen_body_digest(key: &Key, fingerprint: &Fingerprint) -> bool {
     key.family != Family::ToolExecution && fingerprint.content_hash.is_none()
+}
+/// Completion edges have already qualified the exact raw digest. Preserve the
+/// fixed linkage proof used by Input instead of requiring a history rewrite.
+pub(super) fn validate_completion_payload_hash_tx(
+    tx: &Transaction<'_>,
+    scope: &InputEvidenceScope,
+    key: &Key,
+    payload: &str,
+    hash: Option<&str>,
+) -> Result<()> {
+    if hash.is_none() || hash == Some(super::evidence::content_hash(payload).as_str()) {
+        return Ok(());
+    }
+    ensure!(
+        key.family == Family::Brief,
+        "completion source canonical hash differs from its body"
+    );
+    let fingerprint =
+        fingerprint_on(tx, &scope.agent_id, key)?.context("completion Brief metadata absent")?;
+    ensure!(
+        fingerprint.content_hash.as_deref() == hash,
+        "completion Brief hash changed"
+    );
+    legacy_brief::validate_payload_digest(
+        tx,
+        &scope.agent_id,
+        key,
+        &fingerprint,
+        payload,
+        &bytes_digest(payload.as_bytes()),
+    )
+    .context("completion source canonical hash differs from its body")
 }
 fn validate_canonical_payload_digest(
     key: &Key,

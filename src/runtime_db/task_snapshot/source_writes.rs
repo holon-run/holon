@@ -113,10 +113,7 @@ pub(crate) fn register_task_source_metadata_tx(
     coverage.revision = base_revision
         .checked_add(1)
         .context("Task source revision overflow")?;
-    material.charge_final_metadata(
-        read_preparation::encoded_metadata_bytes(&coverage)?,
-        coverage.owned_metadata_record_count()?,
-    )?;
+    material.charge_reused_current_metadata(&coverage)?;
     loader::persist_coverage(tx, scope, &coverage)?;
     Ok(Some((
         CommittedTaskDelta {

@@ -171,8 +171,7 @@ fn live_history_prior_and_pruned_copies_use_original_phase_before_sql_writes() -
                 if variant == "pruned" {
                     checkpoint(phase, &mut prefix, &history)?; // saved loaded order
                 }
-                checkpoint(phase, &mut prefix, &history)?; // history -> selected
-                checkpoint(phase, &mut prefix, &history)?; // loaded -> selected
+                checkpoint(phase, &mut prefix, keys.first().unwrap())?; // one missing history key
             }
             for family in [
                 SchedulingFamily::TimerWake,
@@ -186,22 +185,15 @@ fn live_history_prior_and_pruned_copies_use_original_phase_before_sql_writes() -
                 &mut prefix,
                 if variant == "prior" { &empty } else { &keys },
             )?;
-            if active {
-                checkpoint(phase, &mut prefix, &keys)?; // prior live -> old_live
-            } else {
-                checkpoint(phase, &mut prefix, &history)?; // prior history -> old_live
-                checkpoint(phase, &mut prefix, &history)?; // prior loaded -> old_live
+            if variant == "prior" {
+                checkpoint(phase, &mut prefix, keys.first().unwrap())?;
             }
             checkpoint(phase, &mut prefix, &keys)?; // selected -> pending
             sql.alias(keys.first().unwrap())?;
             if variant == "pruned" {
                 sql.charge(serde_json::to_vec(&coverage)?.len(), 1)?;
                 // Coverage moves into the resident; no clone or alias write for Pruned.
-                // Pruned observations still allocate borrowed validation nodes.
-                for _ in &coverage.observations {
-                    crate::diagnostics::resource_io::charge_owned_metadata(128, 1)?;
-                    prefix.push(phase.finish()?);
-                }
+                // Observation validation sorts the owned vector in place.
                 // Validation and budget refresh borrow the validated closure;
                 // neither allocates an empty captured-closure Vec.
                 // The resident's owned metadata view has one ledger node;
@@ -212,7 +204,7 @@ fn live_history_prior_and_pruned_copies_use_original_phase_before_sql_writes() -
                 )?;
                 prefix.push(phase.finish()?);
             } else {
-                sql.stored(keys.first().unwrap())?;
+                sql.stored_body(keys.first().unwrap())?;
                 *prefix.last_mut().unwrap() = phase.finish()?;
             }
             Ok(prefix)
@@ -289,10 +281,9 @@ fn wake_parent_and_input_root_copies_use_original_phase_before_alias_write() -> 
             &empty,
         )?;
         checkpoint(phase, &mut prefix, &wakes)?; // core
-        checkpoint(phase, &mut prefix, &wakes)?; // prior wakes
         checkpoint(phase, &mut prefix, &wakes)?; // pending
         sql.alias(wakes.first().unwrap())?;
-        sql.stored(wakes.first().unwrap())?;
+        sql.stored_body(wakes.first().unwrap())?;
         checkpoint(phase, &mut prefix, &timer_id)?; // new parent
         checkpoint(phase, &mut prefix, &parent)?; // parent -> core
         checkpoint(phase, &mut prefix, &parent)?; // parent -> selected/pending

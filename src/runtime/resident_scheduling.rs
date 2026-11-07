@@ -1,4 +1,5 @@
 //! Timer, pending wake and ingress facts selected from one owner publication.
+mod capture_coverage;
 #[cfg(holon_lib_test_shard = "a")]
 #[cfg(test)]
 #[path = "resident_scheduling/replacement_budget_tests.rs"]
@@ -329,6 +330,9 @@ fn extend_selection_keys<'a>(
     keys: impl IntoIterator<Item = &'a SchedulingKey>,
 ) -> Result<()> {
     for key in keys {
+        if selected.contains(key) {
+            continue;
+        }
         crate::diagnostics::resource_io::admit_typed_cloned_value(key)?;
         selected.insert(key.clone());
     }
@@ -373,7 +377,7 @@ pub(crate) struct CommittedSchedulingDelta {
     pub base_revision: u64,
     pub revision: u64,
     pub coverage: SchedulingCoverage,
-    pub records: Vec<Arc<QualifiedSchedulingFact>>,
+    pub records: Arc<BTreeMap<SchedulingKey, Arc<QualifiedSchedulingFact>>>,
 }
 #[derive(Debug)]
 pub(crate) struct ResidentSchedulingDomain {
@@ -426,13 +430,26 @@ fn insert_validation_reference<'a, T: Ord + ?Sized>(
 }
 
 impl ResidentSchedulingDomain {
-    pub(crate) fn bootstrap(
-        scope: InputEvidenceScope,
-        coverage: SchedulingCoverage,
-        records: Vec<Arc<QualifiedSchedulingFact>>,
+    pub(in crate::runtime) fn same_capture_source(&self, other: &Self) -> bool {
+        let ledger_matches = match (&self.budget, &other.budget) {
+            (Some(a), Some(b)) => a.same_ledger(b),
+            (None, None) => true,
+            _ => false,
+        };
+        ledger_matches
+            && self.scope == other.scope
+            && self.record_limit == other.record_limit
+            && self.byte_limit == other.byte_limit
+            && self.coverage == other.coverage
+            && self.records == other.records
+    }
+
+    fn validate_bootstrap_header(
+        scope: &InputEvidenceScope,
+        coverage: &SchedulingCoverage,
         record_limit: usize,
         byte_limit: usize,
-    ) -> Result<Self> {
+    ) -> Result<()> {
         ensure!(
             !scope.agent_id.is_empty()
                 && scope.identity_incarnation > 0
@@ -441,6 +458,17 @@ impl ResidentSchedulingDomain {
                 && byte_limit > 0,
             "invalid Scheduling bootstrap"
         );
+        Ok(())
+    }
+
+    pub(crate) fn bootstrap(
+        scope: InputEvidenceScope,
+        coverage: SchedulingCoverage,
+        records: Vec<Arc<QualifiedSchedulingFact>>,
+        record_limit: usize,
+        byte_limit: usize,
+    ) -> Result<Self> {
+        Self::validate_bootstrap_header(&scope, &coverage, record_limit, byte_limit)?;
         let mut map = BTreeMap::new();
         for record in records {
             record.validate(&scope)?;
@@ -452,6 +480,30 @@ impl ResidentSchedulingDomain {
             ensure!(
                 map.insert(record.locator.key.clone(), record).is_none(),
                 "duplicate Scheduling body"
+            );
+        }
+        Self::bootstrap_from_map(scope, coverage, map, record_limit, byte_limit)
+    }
+
+    /// The original loader already owns these keys and map nodes. Transfer
+    /// them intact instead of collecting a Vec and cloning every key again.
+    pub(crate) fn bootstrap_from_map(
+        scope: InputEvidenceScope,
+        coverage: SchedulingCoverage,
+        map: BTreeMap<SchedulingKey, Arc<QualifiedSchedulingFact>>,
+        record_limit: usize,
+        byte_limit: usize,
+    ) -> Result<Self> {
+        Self::validate_bootstrap_header(&scope, &coverage, record_limit, byte_limit)?;
+        for (key, record) in &map {
+            record.validate(&scope)?;
+            ensure!(
+                key == &record.locator.key,
+                "Scheduling map key differs from fact"
+            );
+            ensure!(
+                record.locator.revision <= coverage.revision,
+                "Scheduling fact revision exceeds its domain"
             );
         }
         let domain = Self {
@@ -482,9 +534,20 @@ impl ResidentSchedulingDomain {
     }
     pub(crate) fn into_selected_install(
         self,
-    ) -> Result<(SchedulingCoverage, Vec<Arc<QualifiedSchedulingFact>>)> {
-        admit_capture_vec::<Arc<QualifiedSchedulingFact>>(self.records.len())?;
-        Ok((self.coverage, self.records.into_values().collect()))
+    ) -> Result<(
+        SchedulingCoverage,
+        Arc<BTreeMap<SchedulingKey, Arc<QualifiedSchedulingFact>>>,
+    )> {
+        // Move the owned map into the ACK. Only its shared ownership header
+        // is new; no body-slot Vec or key copy is constructed.
+        crate::diagnostics::resource_io::charge_owned_metadata(
+            u64::try_from(
+                std::mem::size_of::<BTreeMap<SchedulingKey, Arc<QualifiedSchedulingFact>>>()
+                    + 2 * std::mem::size_of::<usize>(),
+            )?,
+            1,
+        )?;
+        Ok((self.coverage, Arc::new(self.records)))
     }
     pub(crate) fn with_budget(mut self, budget: InputEvidenceBudgetLedger) -> Result<Self> {
         self.budget = Some(budget);
@@ -509,27 +572,33 @@ impl ResidentSchedulingDomain {
             })
             .transpose()
     }
+    fn optional_pruned(&self, key: &SchedulingKey) -> bool {
+        self.coverage.availability(key) == Some(SchedulingAvailability::Pruned)
+            && !self.coverage.required_keys.contains(key)
+            && !self.coverage.active_timers.contains(key)
+            && !self.coverage.pending_wakes.contains(key)
+            && !self.coverage.active_triggers.contains(key)
+    }
     fn required_closure(
         &self,
         mut keys: BTreeSet<SchedulingKey>,
     ) -> Result<BTreeSet<SchedulingKey>> {
-        let optional_pruned = |key: &SchedulingKey| {
-            self.coverage.availability(key) == Some(SchedulingAvailability::Pruned)
-                && !self.coverage.required_keys.contains(key)
-                && !self.coverage.active_timers.contains(key)
-                && !self.coverage.pending_wakes.contains(key)
-                && !self.coverage.active_triggers.contains(key)
-        };
-        crate::diagnostics::resource_io::admit_typed_cloned_value(&keys)?;
-        let initial: Vec<_> = keys.iter().cloned().collect();
-        for key in initial {
-            if optional_pruned(&key) {
+        let optional_pruned = |key: &SchedulingKey| self.optional_pruned(key);
+        // Only Timer parents can be added. Walk the immutable fact map rather
+        // than cloning every selected key to permit insertion into the set.
+        for key in self.records.keys() {
+            if !keys.contains(key) || optional_pruned(key) {
                 continue;
             }
-            if let Some(record) = self.lookup(&key)? {
+            if let Some(record) = self.lookup(key)? {
                 if let CanonicalSchedulingFact::TimerWake(w) = &record.fact {
-                    crate::diagnostics::resource_io::admit_typed_cloned_value(&w.timer_id)?;
-                    keys.insert(SchedulingKey::new(SchedulingFamily::Timer, &w.timer_id));
+                    if !keys
+                        .iter()
+                        .any(|key| key.family == SchedulingFamily::Timer && key.id == w.timer_id)
+                    {
+                        crate::diagnostics::resource_io::admit_typed_cloned_value(&w.timer_id)?;
+                        keys.insert(SchedulingKey::new(SchedulingFamily::Timer, &w.timer_id));
+                    }
                 }
             }
         }
@@ -578,12 +647,23 @@ impl ResidentSchedulingDomain {
         }
     }
     fn validate(&self) -> Result<()> {
+        crate::diagnostics::resource_io::check_active()?;
+        let ordered = self
+            .coverage
+            .observations
+            .windows(2)
+            .all(|pair| pair[0].key <= pair[1].key);
+        let mut previous = None;
         let mut unique = BTreeSet::new();
         for o in &self.coverage.observations {
-            ensure!(
-                insert_validation_reference(&mut unique, &o.key)?,
-                "duplicate Scheduling observation"
-            );
+            let distinct = if ordered {
+                let distinct = previous != Some(&o.key);
+                previous = Some(&o.key);
+                distinct
+            } else {
+                insert_validation_reference(&mut unique, &o.key)?
+            };
+            ensure!(distinct, "duplicate Scheduling observation");
             ensure!(
                 self.records.contains_key(&o.key)
                     == (o.availability == SchedulingAvailability::Present),
@@ -747,7 +827,7 @@ impl ResidentSchedulingDomain {
                 b.register_scheduling_view(
                     &self.scope,
                     InputMemoryCategory::Candidate,
-                    delta.records.iter(),
+                    delta.records.values(),
                 )
             })
             .transpose()?;
@@ -769,7 +849,7 @@ impl ResidentSchedulingDomain {
         admit_capture_vec::<Arc<QualifiedSchedulingFact>>(delta.records.len())?;
         let records = delta
             .records
-            .iter()
+            .values()
             .map(|r| {
                 self.records
                     .get(&r.locator.key)
@@ -794,7 +874,8 @@ impl ResidentSchedulingDomain {
             crate::diagnostics::resource_io::ResourceReadMaterial::active_guard()?;
         Ok(next)
     }
-    pub(crate) fn capture(&self, request: &SchedulingCaptureRequest) -> Result<CapturedScheduling> {
+    fn capture_request_metadata(&self, request: &SchedulingCaptureRequest) -> Result<u64> {
+        crate::diagnostics::resource_io::check_active()?;
         let request_bytes = serialized_bytes(&request.required_keys)?
             .checked_mul(4)
             .context("Scheduling capture selector overflow")?;
@@ -810,6 +891,33 @@ impl ResidentSchedulingDomain {
             capture_metadata <= u64::try_from(self.byte_limit)?,
             "Scheduling capture ResourceExhausted"
         );
+        Ok(capture_metadata)
+    }
+    /// Readiness borrows the same qualified roots and Wake parents. Only the
+    /// actual consumer constructs and admits the owning capture.
+    pub(crate) fn validate_capture_request(
+        &self,
+        request: &SchedulingCaptureRequest,
+    ) -> Result<()> {
+        self.capture_request_metadata(request)?;
+        for key in &request.required_keys {
+            self.lookup(key)?;
+        }
+        self.coverage.visit_roots(request.include_live, request.history_limit, &request.required_keys, |key| {
+            if self.optional_pruned(key) { return Ok(()); }
+            if let Some(record) = self.lookup(key)? {
+                if let CanonicalSchedulingFact::TimerWake(wake) = &record.fact {
+                    crate::diagnostics::resource_io::admit_typed_cloned_value(&wake.timer_id)?;
+                    let parent = self.lookup(&SchedulingKey::new(SchedulingFamily::Timer, &wake.timer_id))?
+                        .context("Scheduling Wake has no qualified Timer body")?;
+                    ensure!(matches!(&parent.fact, CanonicalSchedulingFact::Timer(timer) if timer.id == wake.timer_id), "Scheduling Wake parent family differs");
+                }
+            }
+            Ok(())
+        })
+    }
+    pub(crate) fn capture(&self, request: &SchedulingCaptureRequest) -> Result<CapturedScheduling> {
+        let capture_metadata = self.capture_request_metadata(request)?;
         let metadata = self
             .budget
             .as_ref()
@@ -835,24 +943,8 @@ impl ResidentSchedulingDomain {
         admit_capture_vec::<Arc<QualifiedSchedulingFact>>(selected.len())?;
         let mut records = Vec::with_capacity(selected.len());
         records.extend(selected.iter().filter_map(|k| self.records.get(k).cloned()));
-        crate::diagnostics::resource_io::admit_typed_cloned_value(&self.coverage)?;
-        let mut coverage = self.coverage.clone();
-        crate::diagnostics::resource_io::admit_typed_cloned_value(&request.required_keys)?;
-        coverage.required_keys = request.required_keys.clone();
-        coverage.observations.retain(|o| selected.contains(&o.key));
-        if !request.include_live {
-            coverage.active_timers_complete = false;
-            coverage.pending_wakes_complete = false;
-            coverage.active_triggers_complete = false;
-            coverage.active_timers.clear();
-            coverage.pending_wakes.clear();
-            coverage.active_triggers.clear();
-        }
-        for history in coverage.history.values_mut() {
-            history.is_exhaustive &= history.keys.len() <= request.history_limit;
-            history.keys.truncate(request.history_limit);
-            history.loaded_keys.truncate(request.history_limit);
-        }
+        let coverage =
+            capture_coverage::clone_selected_coverage(&self.coverage, request, &selected)?;
         let view_capacity = usize::from(self.context_material.is_some())
             + usize::from(self.replacement_material.is_some())
             + 2 * usize::from(self.budget.is_some());

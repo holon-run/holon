@@ -935,7 +935,7 @@ impl RuntimeHost {
                 continue;
             }
             let current: Option<(String, String, u64, String)> = tx.query_row(
-                "SELECT status,json_extract(payload_json,'$.agent_id'),json_extract(payload_json,'$.incarnation'),json_extract(payload_json,'$.status') FROM agent_identities WHERE agent_id=?1",
+                "SELECT status,json_extract(payload_json,'$.agent_id'),CASE WHEN json_type(payload_json,'$.incarnation') IS NULL THEN 1 WHEN json_type(payload_json,'$.incarnation')='integer' AND json_extract(payload_json,'$.incarnation')>0 THEN json_extract(payload_json,'$.incarnation') END,json_extract(payload_json,'$.status') FROM agent_identities WHERE agent_id=?1",
                 [&scope.agent_id],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?))).optional()?;
             let Some((status, agent, inc, payload_status)) = current else {
                 anyhow::bail!("actual unfinished dispatch has no durable identity")
@@ -1820,6 +1820,28 @@ mod tests {
         assert_eq!(addresses.len(), 1);
         assert_eq!(addresses[0].turn_id, original.key().actual_dispatch_turn_id);
         assert_eq!(addresses[0].scope, original.scope());
+        Ok(())
+    }
+
+    #[test]
+    fn unfinished_startup_address_accepts_only_absent_legacy_incarnation() -> Result<()> {
+        let (_home, host) = host()?;
+        let original = seed_started_dispatch(&host)?;
+        let scope = original.scope();
+        host.runtime_db().connection()?.execute(
+            "UPDATE agent_identities SET payload_json=json_remove(payload_json,'$.incarnation') WHERE agent_id=?1", [&scope.agent_id],
+        )?;
+        let (addresses, _guards) = host.startup_memory_addresses(std::slice::from_ref(&scope))?;
+        assert_eq!(addresses.len(), 1);
+        assert_eq!(addresses[0].scope, scope);
+        for value in ["null", "\"1\"", "0", "2"] {
+            host.runtime_db().connection()?.execute(
+                "UPDATE agent_identities SET payload_json=json_set(payload_json,'$.incarnation',json(?2)) WHERE agent_id=?1", params![scope.agent_id, value],
+            )?;
+            assert!(host
+                .startup_memory_addresses(std::slice::from_ref(&scope))
+                .is_err());
+        }
         Ok(())
     }
 

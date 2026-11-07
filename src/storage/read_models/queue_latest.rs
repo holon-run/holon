@@ -55,6 +55,13 @@ impl StateQueueWorkBuilder {
 pub(super) struct StateQueueLatestWork(Vec<StateEntry>);
 
 impl StateQueueLatestWork {
+    pub(super) fn get(&self, id: &str) -> Option<&WorkItemRecord> {
+        self.0
+            .binary_search_by(|entry| entry.0.id.as_str().cmp(id))
+            .ok()
+            .map(|index| &self.0[index].0)
+    }
+
     pub(super) fn len(&self) -> usize {
         self.0.len()
     }

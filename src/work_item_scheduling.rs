@@ -342,7 +342,7 @@ pub(crate) fn derive_borrowed_queue_work_item_scheduling<'a, W: Borrow<WorkItemR
 
     let record = work_item.borrow();
     if let Some(todo) = current_todo_ref(record) {
-        crate::diagnostics::resource_io::admit_cloned_value(todo)
+        crate::diagnostics::resource_io::admit_typed_cloned_value(todo)
             .context("queue current todo clone admission")?;
     }
     let mut wait_states = ActiveWaitConditionStates::default();

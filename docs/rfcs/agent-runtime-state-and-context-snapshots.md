@@ -5042,3 +5042,44 @@ ignored. A terminal result returns before control-handle registration; admission
 does not register a monitor from the discarded queued candidate. The original
 mutation serializes the writers, and Task ACK, generation and control-registration
 fences remain unchanged.
+
+Scheduling captures meter and clone their final selected coverage directly.
+Unselected named observations, inherited required keys, excluded live indexes
+and history beyond the requested window are not copied only to be discarded.
+The borrowed accounting shape matches the owned capture; explicit absence,
+Wake-parent closure, revision/completeness and both resource limits remain
+strict. The source domain and its prepared windows remain unchanged.
+Root selection borrows duplicate required/live/history keys and admits an owned
+key only before its first insertion, so overlapping indexes do not create
+discarded clones or consume the acquisition allowance repeatedly.
+Wake-parent expansion walks borrowed facts without a second owned root list;
+new parents are admitted before insertion and all selected keys and qualified
+parent bodies are still validated.
+Context planning moves its admitted Scheduling capture into the final context
+when the source allocation is unchanged or its complete scope, coverage,
+qualified bodies, limits and ledger still match. A changed source requires a
+fresh capture; revision alone grants no reuse. The temporary source-domain
+witness is released before returning the final context, which retains only
+selected facts and their original allocation guards.
+Scheduling reloads insert only missing prior heads and Wake parents. Prior
+heads still undergo canonical drift checks, without promoting them into the
+current closure or repeatedly cloning keys shared by the live/history indexes.
+
+Original child Running envelopes bind typed Work ownership from their current
+qualified Task. Inherited operator authority still cannot promote ownership
+from metadata; original scope, generation and source seals remain unchanged.
+
+An unchanged shared skill inventory keeps its original data allocation guard;
+its new candidate header/scan has a separate last-holder guard. Initial data
+without a receipt and actual copy-on-write mutations still admit the full
+candidate before installation. Unrelated shared roots are never cleared to
+make a per-agent refresh fit, and guard replacement does not accumulate chains.
+
+Completion edge reads preserve Input's exact fixed Brief linkage proof: a stale
+pre-link hash is accepted only for original fixed membership, byte-exact additive
+linkage and its creating event. Qualified raw digests remain mandatory. This
+avoids rewriting canonical hashes independently of frozen qualification metadata.
+
+Completion report projections retain the exact qualified Brief through the same
+material-owning read view as history. Resident reports do not duplicate the full
+body after Input qualification; cold owned sources still move into their view.

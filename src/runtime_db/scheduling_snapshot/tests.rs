@@ -776,7 +776,7 @@ fn first_original_writer_initializes_final_revision_and_noop_keeps_full_install_
     assert!(facts
         .delta
         .records
-        .iter()
+        .values()
         .all(|r| r.locator.revision <= facts.delta.revision));
     let held = facts.take_budget_views();
     let current = db.transaction(|tx| {

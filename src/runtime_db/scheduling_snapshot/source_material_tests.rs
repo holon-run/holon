@@ -99,7 +99,10 @@ fn sql_source_body_outlives_effects_resident_capture_and_last_body_holder() -> R
         .any(|guard| { std::ptr::eq(Arc::as_ptr(guard), weak.as_ptr()) }));
     let next = base.with_committed(delta)?;
     let capture = next.capture(&SchedulingCaptureRequest::current())?;
-    assert!(Arc::ptr_eq(&delta.records[0], &capture.records[0]));
+    assert!(Arc::ptr_eq(
+        &delta.records.values().next().unwrap(),
+        &capture.records[0]
+    ));
     assert_eq!(capture.timer(&record.id)?, Some(&record));
     let last = capture.records[0].clone();
     drop((source, effects, base, next, capture));

@@ -449,7 +449,7 @@ fn build_agent_state_projection(
     let snapshot = material
         .acquisition
         .read(|| {
-            crate::diagnostics::resource_io::admit_cloned_value(&projection.active_children)?;
+            crate::diagnostics::resource_io::admit_typed_cloned_value(&projection.active_children)?;
             let waits = state_projection
                 .waits
                 .into_iter()

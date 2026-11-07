@@ -3657,6 +3657,11 @@ impl RuntimeTransitionRepository<'_> {
                 }
             }
             if let Some(token) = preflight.finish_memory {
+                let state =
+                    crate::runtime_db::context_inputs::ContextDurableRead::new(tx, &scope.agent_id)
+                        .scope_facts()?
+                        .state
+                        .context("memory finish requires final business State")?;
                 let final_work = preflight
                     .memory_budget
                     .as_mut()
@@ -3666,12 +3671,8 @@ impl RuntimeTransitionRepository<'_> {
                         final_work_view
                             .as_ref()
                             .context("memory finish omitted exact final Work view")?,
+                        &state,
                     )?;
-                let state =
-                    crate::runtime_db::context_inputs::ContextDurableRead::new(tx, &scope.agent_id)
-                        .scope_facts()?
-                        .state
-                        .context("memory finish requires final business State")?;
                 let memory = crate::runtime_db::dispatch_memory::finish_dispatch_memory_tx(
                     token,
                     &state,

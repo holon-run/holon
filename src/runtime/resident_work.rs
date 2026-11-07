@@ -1268,7 +1268,7 @@ fn clone_context_queue_triggers(
 ) -> Result<Vec<ExternalTriggerRecord>> {
     let mut records = Vec::new();
     if !triggers.is_empty() {
-        crate::diagnostics::resource_io::admit_cloned_value(&triggers)
+        crate::diagnostics::resource_io::admit_typed_cloned_value(&triggers)
             .context("context queue trigger clone material")?;
         records
             .try_reserve_exact(triggers.len())
@@ -1311,7 +1311,7 @@ fn queue_displayed_work_ids(captured: &CapturedWork) -> Result<Vec<&str>> {
 }
 
 fn clone_queue_work_record(work: &WorkItemRecord) -> Result<WorkItemRecord> {
-    crate::diagnostics::resource_io::admit_cloned_value(work)
+    crate::diagnostics::resource_io::admit_typed_cloned_value(work)
         .context("resident queue WorkItem clone admission")?;
     Ok(work.clone())
 }
@@ -1333,7 +1333,7 @@ fn push_queue_record_clone<T: Serialize + Clone>(records: &mut Vec<T>, record: &
             std::io::Error::other("ResourceExhausted: resident queue record allocation")
         })?;
     }
-    crate::diagnostics::resource_io::admit_cloned_value(record)
+    crate::diagnostics::resource_io::admit_typed_cloned_value(record)
         .context("resident queue record clone admission")?;
     records.push(record.clone());
     Ok(())

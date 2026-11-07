@@ -1013,6 +1013,61 @@ mod tests {
     }
 
     #[test]
+    fn active_lineage_keeps_freeform_schema_with_a_json_only_fallback() -> Result<()> {
+        use crate::provider::build_openai_responses_request;
+        use crate::provider::tool_schema::ToolSchemaContract;
+        use crate::provider::transports::OpenAiResponsesTransportContract;
+        use crate::tool::{apply_patch::ApplyPatchSurface, tools::apply_patch_tool};
+        let home = tempfile::tempdir()?;
+        let mut primary = http_candidate(
+            "http://example.invalid",
+            home.path(),
+            ProviderTransportKind::OpenAiResponses,
+        );
+        primary.model_ref = "openai-codex@default/gpt-5.4".into();
+        let mut fallback = http_candidate(
+            "http://example.invalid",
+            home.path(),
+            ProviderTransportKind::AnthropicMessages,
+        );
+        fallback.model_ref = "anthropic@default/claude-sonnet-4-6".into();
+        let provider = FallbackProvider {
+            candidates: vec![primary, fallback],
+        };
+        assert!(provider.supports_freeform_grammar_tools());
+        let dsl =
+            apply_patch_tool::definition_for_surface(ApplyPatchSurface::CodexDslFreeform)?.spec;
+        let tools = provider.prompt_tool_specs(&[dsl]);
+        assert!(tools[0].freeform_grammar.is_some());
+        let request = ProviderTurnRequest::plain("test", Vec::new(), tools);
+        let body = build_openai_responses_request(
+            "gpt-5.4",
+            256,
+            &request,
+            OpenAiResponsesTransportContract::CodexStreaming,
+            ToolSchemaContract::Relaxed,
+            None,
+            None,
+        )?;
+        assert_eq!(body["tools"][0]["type"], "custom");
+        assert_eq!(body["tools"][0]["format"]["type"], "grammar");
+        let fallback = provider
+            .select_model_lineage(&ModelRouteRef::parse(
+                "anthropic@default/claude-sonnet-4-6",
+            )?)
+            .unwrap();
+        assert!(!fallback.supports_freeform_grammar_tools());
+        let json =
+            apply_patch_tool::definition_for_surface(ApplyPatchSurface::UnifiedDiffJson)?.spec;
+        let expected = json.input_schema.clone();
+        let tools = fallback.prompt_tool_specs(&[json]);
+        assert_eq!(tools[0].input_schema, expected);
+        assert_eq!(tools[0].input_schema["type"], "object");
+        assert!(tools[0].freeform_grammar.is_none());
+        Ok(())
+    }
+
+    #[test]
     fn runtime_model_hint_compacts_only_canonical_default_routes() {
         assert_eq!(
             runtime_model_hint(
@@ -1791,11 +1846,11 @@ impl AgentProvider for FallbackProvider {
     }
 
     fn supports_freeform_grammar_tools(&self) -> bool {
-        !self.candidates.is_empty()
-            && self
-                .candidates
-                .iter()
-                .all(|candidate| candidate.provider.supports_freeform_grammar_tools())
+        // A fallback is a later turn with its own selected lineage/tool surface.
+        // Its capabilities must not strip the active route's grammar metadata.
+        self.candidates
+            .first()
+            .is_some_and(|candidate| candidate.provider.supports_freeform_grammar_tools())
     }
 
     fn builtin_web_search(&self) -> Option<ProviderBuiltinWebSearchCapability> {

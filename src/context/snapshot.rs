@@ -730,7 +730,7 @@ fn acquire_durable_context_inputs(
             ))?;
         }
         Cow::Owned(_) => {
-            crate::diagnostics::resource_io::admit_cloned_value(&(
+            crate::diagnostics::resource_io::admit_typed_cloned_value(&(
                 current_message,
                 continuation,
                 &config.callback_base_url,
@@ -1403,7 +1403,7 @@ fn descriptors(
         .chain(
             data.completion_reports
                 .values()
-                .filter_map(|report| report.source_brief.as_ref()),
+                .filter_map(|report| report.source_brief.as_deref()),
         )
     {
         let mut item = base(

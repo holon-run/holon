@@ -54,6 +54,29 @@ pub(in crate::runtime_db) struct TaskReadMaterial<'a> {
     records: usize,
     guards: Vec<Arc<BudgetViewGuard>>,
     owned: Option<OwnedCompletionBudget>,
+    current_metadata: Option<(usize, usize)>,
+}
+pub(in crate::runtime_db) struct ObservedTaskReadMaterial<'a> {
+    scope: &'a InputEvidenceScope,
+    ledger: &'a InputEvidenceBudgetLedger,
+    guard: &'a Arc<BudgetViewGuard>,
+    bytes: usize,
+    records: usize,
+}
+impl ObservedTaskReadMaterial<'_> {
+    pub(in crate::runtime_db) fn validate_accounting(
+        &self,
+        scope: &InputEvidenceScope,
+        ledger: &InputEvidenceBudgetLedger,
+    ) -> Result<(usize, usize, Arc<BudgetViewGuard>)> {
+        ensure!(
+            self.scope == scope && self.ledger.same_ledger(ledger),
+            "Task material differs from original Memory scope/ledger"
+        );
+        self.guard
+            .validate_owned_material_binding(scope, ledger, u64::try_from(self.bytes)?)?;
+        Ok((self.bytes, self.records, self.guard.clone()))
+    }
 }
 impl<'a> TaskReadMaterial<'a> {
     pub(in crate::runtime_db) fn new(
@@ -70,6 +93,7 @@ impl<'a> TaskReadMaterial<'a> {
             records: 0,
             guards: Vec::new(),
             owned: None,
+            current_metadata: None,
         }
     }
     pub(in crate::runtime_db) fn with_memory_budget(
@@ -122,17 +146,17 @@ impl<'a> TaskReadMaterial<'a> {
             .context("Task read record total overflow")?;
         bound(self.records, self.bytes, Some(self.request))?;
         if let Some(memory) = &mut self.memory_budget {
-            memory.additional_material(bytes, records, 1)?;
+            memory.preflight_observed_task_material(self.scope, budget, bytes, records)?;
         }
-        let bytes = u64::try_from(bytes)?;
+        let estimate_bytes = u64::try_from(bytes)?;
         let estimate = if metadata {
             OwnedBytesEstimate {
                 payload_bytes: 0,
-                metadata_estimate_bytes: bytes,
+                metadata_estimate_bytes: estimate_bytes,
             }
         } else {
             OwnedBytesEstimate {
-                payload_bytes: bytes,
+                payload_bytes: estimate_bytes,
                 metadata_estimate_bytes: 0,
             }
         };
@@ -148,6 +172,20 @@ impl<'a> TaskReadMaterial<'a> {
             )?;
             self.guards.push(owned.guard());
             self.owned = Some(owned);
+        }
+        if let Some(memory) = &mut self.memory_budget {
+            let guard = self
+                .owned
+                .as_ref()
+                .context("Task material omitted its owning guard")?
+                .guard();
+            memory.additional_observed_task_material(&ObservedTaskReadMaterial {
+                scope: self.scope,
+                ledger: budget,
+                guard: &guard,
+                bytes,
+                records,
+            })?;
         }
         Ok(())
     }
@@ -279,7 +317,34 @@ impl<'a> TaskReadMaterial<'a> {
             coverage.owned_metadata_record_count()? == records,
             "current Task metadata count differs from its original view"
         );
+        if scope == self.scope {
+            self.current_metadata = Some((size, records));
+        }
         Ok(Some(coverage))
+    }
+
+    /// The original current coverage is mutated and moved into its ACK. Its
+    /// four-copy envelope also covers persistence after the raw decode buffer
+    /// is gone; newly observed Output material has its own earlier admission.
+    pub(in crate::runtime_db) fn charge_reused_current_metadata(
+        &mut self,
+        coverage: &TaskCoverage,
+    ) -> Result<()> {
+        let prior = self
+            .current_metadata
+            .context("Task metadata reuse lacks original admission")?;
+        let next = (
+            encoded_metadata_bytes(coverage)?,
+            coverage.owned_metadata_record_count()?,
+        );
+        self.charge(
+            next.0.saturating_sub(prior.0),
+            next.1.saturating_sub(prior.1),
+            4,
+            true,
+        )?;
+        self.current_metadata = Some((prior.0.max(next.0), prior.1.max(next.1)));
+        Ok(())
     }
 
     pub(super) fn admitted_material(&self) -> (usize, usize) {

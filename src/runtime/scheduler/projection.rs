@@ -2,6 +2,12 @@ use super::*;
 use crate::runtime::resident_work::StateWorkRecord;
 use std::borrow::Cow;
 
+#[derive(Clone, Copy)]
+enum SchedulerReadPurpose {
+    Dispatch,
+    Observer,
+}
+
 /// Preserve State loans instead of deep-copying bodies already held by the response.
 #[derive(Debug, Clone, serde::Serialize)]
 #[serde(untagged)]
@@ -143,6 +149,44 @@ pub(crate) struct SchedulerObservations<'a> {
 }
 
 impl SchedulerProjection {
+    pub(crate) fn with_validated_closure_protocol(
+        mut self,
+        protocol: Option<
+            crate::runtime_db::transitions::execution_protocol_repository::ValidatedClosureProtocol,
+        >,
+    ) -> Result<Self> {
+        self.canonical_work_states = Some(
+            protocol
+                .map(|p| {
+                    Ok::<_, anyhow::Error>(
+                        p.into_work_items(&self.agent_id)?
+                            .into_iter()
+                            .map(|(id, record)| {
+                                let state = match record.state {
+                                    WorkItemExecutionState::Runnable { generation, .. } => {
+                                        CanonicalWorkExecutionState::Runnable {
+                                            source_revision: record.source_revision,
+                                            generation,
+                                        }
+                                    }
+                                    WorkItemExecutionState::Waiting { wait, .. } => {
+                                        CanonicalWorkExecutionState::Waiting {
+                                            wait_id: wait.wait_id,
+                                        }
+                                    }
+                                    _ => CanonicalWorkExecutionState::Other,
+                                };
+                                (id, state)
+                            })
+                            .collect(),
+                    )
+                })
+                .transpose()?
+                .unwrap_or_default(),
+        );
+        Ok(self)
+    }
+
     #[cfg(test)]
     pub(crate) fn activation_waits_for_test(&self) -> &[WaitConditionRecord] {
         &self.activation_waits
@@ -308,6 +352,7 @@ impl SchedulerProjection {
             snapshot,
             Some(active_timers),
             Some(work_material),
+            SchedulerReadPurpose::Observer,
             |snapshot, observations| {
                 let count = work_queue.queued_runnable.len();
                 let bytes = count
@@ -369,6 +414,7 @@ impl SchedulerProjection {
             snapshot,
             observed_timers,
             work_material,
+            SchedulerReadPurpose::Dispatch,
             |snapshot, observations| {
                 if let Some(material) = work_material {
                     Self::admit_retained_work(&work_queue, material)?;
@@ -398,8 +444,10 @@ impl SchedulerProjection {
         snapshot: SchedulerAgentSnapshot,
         observed_timers: Option<usize>,
         work_material: Option<&crate::diagnostics::resource_io::ResourceReadMaterial>,
+        purpose: SchedulerReadPurpose,
         build: impl FnOnce(SchedulerAgentSnapshot, SchedulerObservations<'_>) -> Result<Self>,
     ) -> Result<Self> {
+        let include_dispatch_history = matches!(purpose, SchedulerReadPurpose::Dispatch);
         let active_tasks =
             storage.latest_active_task_records_for_agent(&snapshot.id, usize::MAX)?;
         let has_interrupted_replay = storage
@@ -412,11 +460,16 @@ impl SchedulerProjection {
             .transpose()?
             .unwrap_or(false);
         let active_wait_conditions = storage.active_wait_conditions_for_agent(&snapshot.id)?;
-        let mut activation_waits = match work_material {
-            Some(material) => {
-                storage.latest_wait_conditions_for_agent_with_material(&snapshot.id, material)?
+        // Observer State/closure does not route incoming Messages. Historical
+        // activation waits belong only to the dispatch projection.
+        let mut activation_waits = if !include_dispatch_history {
+            Vec::new()
+        } else {
+            match work_material {
+                Some(material) => storage
+                    .latest_wait_conditions_for_agent_with_material(&snapshot.id, material)?,
+                None => storage.latest_wait_conditions_for_agent(&snapshot.id)?,
             }
-            None => storage.latest_wait_conditions_for_agent(&snapshot.id)?,
         };
         activation_waits.retain(|condition| {
             condition.status == WaitConditionStatus::Active
@@ -424,15 +477,19 @@ impl SchedulerProjection {
                 || (condition.status == WaitConditionStatus::Resolved
                     && condition.kind == WaitConditionKind::Task)
         });
-        let execution_snapshot = storage
-            .runtime_db()?
-            .map(|runtime_db| {
-                runtime_db
-                    .transitions()
-                    .load_execution_protocol_state_if_initialized(&snapshot.id)
-            })
-            .transpose()?
-            .flatten();
+        let execution_snapshot = if !include_dispatch_history {
+            None
+        } else {
+            storage
+                .runtime_db()?
+                .map(|runtime_db| {
+                    runtime_db
+                        .transitions()
+                        .load_execution_protocol_state_if_initialized(&snapshot.id)
+                })
+                .transpose()?
+                .flatten()
+        };
         let active_timers = match observed_timers {
             Some(count) => count,
             None => storage
@@ -470,7 +527,48 @@ impl SchedulerProjection {
             active_timers,
             runtime_error,
         };
-        build(snapshot, observations)
+        let agent_id = &snapshot.id;
+        let observer_work = if !include_dispatch_history {
+            storage
+                .runtime_db()?
+                .map(|db| db.transitions().observer_live_work_execution(agent_id))
+                .transpose()?
+        } else {
+            None
+        };
+        let mut projection = build(snapshot, observations)?;
+        if let Some(work) = observer_work {
+            crate::diagnostics::resource_io::charge_owned_metadata(
+                u64::try_from(
+                    work.len()
+                        .checked_mul(std::mem::size_of::<(String, CanonicalWorkExecutionState)>())
+                        .context("observer Work authority slots overflow")?,
+                )?,
+                work.len(),
+            )?;
+            projection.canonical_work_states = Some(
+                work.into_iter()
+                    .map(|(id, record)| {
+                        let state = match record.state {
+                            WorkItemExecutionState::Runnable { generation, .. } => {
+                                CanonicalWorkExecutionState::Runnable {
+                                    source_revision: record.source_revision,
+                                    generation,
+                                }
+                            }
+                            WorkItemExecutionState::Waiting { wait, .. } => {
+                                CanonicalWorkExecutionState::Waiting {
+                                    wait_id: wait.wait_id,
+                                }
+                            }
+                            _ => CanonicalWorkExecutionState::Other,
+                        };
+                        (id, state)
+                    })
+                    .collect(),
+            );
+        }
+        Ok(projection)
     }
 
     /// Pure scheduler derivation. Loaded callers supply one owner capture and

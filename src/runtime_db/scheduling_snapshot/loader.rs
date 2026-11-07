@@ -441,8 +441,20 @@ pub(super) fn verify_member_version(
     manifests: &[SchedulingContinuityCheckpoint],
     material: &mut Material<'_, '_>,
 ) -> Result<u64> {
+    let alias = read_alias(tx, scope, key, material)?;
+    verify_member_version_with_alias(tx, key, version, manifests, material, alias.as_ref())
+}
+
+fn verify_member_version_with_alias(
+    tx: &Transaction<'_>,
+    key: &SchedulingKey,
+    version: (&str, &str, &str, &str, &str),
+    manifests: &[SchedulingContinuityCheckpoint],
+    material: &mut Material<'_, '_>,
+    alias: Option<&Alias>,
+) -> Result<u64> {
     let (content, projection, status, sort_at, created_at) = version;
-    if let Some(alias) = read_alias(tx, scope, key, material)? {
+    if let Some(alias) = alias {
         ensure!(
             alias.availability == SchedulingAvailability::Present,
             SchedulingSnapshotError::NeedsPreparation(key.clone())
@@ -613,14 +625,9 @@ pub(super) fn load_with_revision(
         };
         history.truncate(request.capture.history_limit);
         loaded_history.truncate(request.capture.history_limit);
-        if !history.is_empty() {
-            crate::diagnostics::resource_io::admit_typed_cloned_value(&history)?;
+        for key in history.iter().chain(&loaded_history) {
+            include_missing_key(&mut selected, key)?;
         }
-        selected.extend(history.iter().cloned());
-        if !loaded_history.is_empty() {
-            crate::diagnostics::resource_io::admit_typed_cloned_value(&loaded_history)?;
-        }
-        selected.extend(loaded_history.iter().cloned());
         coverage.history.insert(
             family,
             SchedulingHistory {
@@ -634,24 +641,8 @@ pub(super) fn load_with_revision(
     // hide a previously observed key by moving it below the new cutoff.
     crate::diagnostics::resource_io::admit_typed_cloned_value(&selected)?;
     let mut core = selected.clone();
-    let old_live = if let Some(previous) = &previous {
-        for keys in [
-            &previous.active_timers,
-            &previous.pending_wakes,
-            &previous.active_triggers,
-        ] {
-            if !keys.is_empty() {
-                crate::diagnostics::resource_io::admit_typed_cloned_value(keys)?;
-            }
-        }
-        for history in previous.history.values() {
-            for keys in [&history.keys, &history.loaded_keys] {
-                if !keys.is_empty() {
-                    crate::diagnostics::resource_io::admit_typed_cloned_value(keys)?;
-                }
-            }
-        }
-        previous
+    if let Some(previous) = &previous {
+        for key in previous
             .active_timers
             .iter()
             .chain(&previous.pending_wakes)
@@ -662,12 +653,12 @@ pub(super) fn load_with_revision(
                     .values()
                     .flat_map(|history| history.keys.iter().chain(&history.loaded_keys)),
             )
-            .cloned()
-            .collect()
+        {
+            include_missing_key(&mut selected, key)?;
+        }
     } else {
-        fixed_live_keys(tx, &checkpoints, &mut material)?
-    };
-    selected.extend(old_live);
+        selected.extend(fixed_live_keys(tx, &checkpoints, &mut material)?);
+    }
     let mut records = BTreeMap::new();
     let mut observations = BTreeMap::new();
     crate::diagnostics::resource_io::admit_typed_cloned_value(&selected)?;
@@ -708,8 +699,21 @@ pub(super) fn load_with_revision(
             return Err(SchedulingSnapshotError::NeedsPreparation(key).into());
         }
         if let Some(stored) = stored::read_stored(tx, &key, &scope.agent_id, Some(&mut material))? {
-            let member_revision =
-                member_revision(tx, scope, &key, &stored, &checkpoints, &mut material)?;
+            // This alias was read in the same transaction, before this body.
+            let member_revision = verify_member_version_with_alias(
+                tx,
+                &key,
+                (
+                    &stored.content,
+                    &stored.projection,
+                    &stored.status,
+                    &stored.sort_at,
+                    &stored.created_at,
+                ),
+                &checkpoints,
+                &mut material,
+                alias.as_ref(),
+            )?;
             if !prepare {
                 ensure!(
                     alias
@@ -721,14 +725,7 @@ pub(super) fn load_with_revision(
             let value = stored.qualified(scope, member_revision)?;
             if core.contains(&key) {
                 if let CanonicalSchedulingFact::TimerWake(w) = &value.fact {
-                    crate::diagnostics::resource_io::admit_typed_cloned_value(&w.timer_id)?;
-                    let parent = SchedulingKey::new(SchedulingFamily::Timer, &w.timer_id);
-                    crate::diagnostics::resource_io::admit_typed_cloned_value(&parent)?;
-                    core.insert(parent.clone());
-                    crate::diagnostics::resource_io::admit_typed_cloned_value(&parent)?;
-                    if selected.insert(parent.clone()) {
-                        pending.push(parent);
-                    }
+                    include_wake_parent(&mut core, &mut selected, &mut pending, &w.timer_id)?;
                     if w.status == SchedulingWakeStatus::Pending {
                         crate::diagnostics::resource_io::admit_typed_cloned_value(&w.message_id)?;
                         inputs.insert(InputEvidenceKey::new(
@@ -796,10 +793,10 @@ pub(super) fn load_with_revision(
         .collect();
     let metadata = usize::try_from(serialized_bytes(&coverage)?)?;
     material.charge(metadata, 1)?;
-    let resident = ResidentSchedulingDomain::bootstrap(
+    let resident = ResidentSchedulingDomain::bootstrap_from_map(
         scope.clone(),
         coverage,
-        records.into_values().collect(),
+        records,
         request.record_limit,
         request.byte_limit,
     )?
@@ -827,3 +824,49 @@ pub(super) fn load_with_revision(
         },
     )))
 }
+
+fn include_missing_key(selected: &mut BTreeSet<SchedulingKey>, key: &SchedulingKey) -> Result<()> {
+    if !selected.contains(key) {
+        crate::diagnostics::resource_io::admit_typed_cloned_value(key)?;
+        selected.insert(key.clone());
+    }
+    Ok(())
+}
+
+// Keep the current closure separate from prior heads checked only for drift.
+// Existing Timer parents need no discarded String or key clones.
+fn include_wake_parent(
+    core: &mut BTreeSet<SchedulingKey>,
+    selected: &mut BTreeSet<SchedulingKey>,
+    pending: &mut Vec<SchedulingKey>,
+    timer_id: &str,
+) -> Result<()> {
+    let has_parent = |keys: &BTreeSet<SchedulingKey>| {
+        keys.iter()
+            .any(|key| key.family == SchedulingFamily::Timer && key.id == timer_id)
+    };
+    let add_core = !has_parent(core);
+    let add_selected = !has_parent(selected);
+    if !add_core && !add_selected {
+        return Ok(());
+    }
+    crate::diagnostics::resource_io::admit_typed_cloned_value(&timer_id)?;
+    let parent = SchedulingKey::new(SchedulingFamily::Timer, timer_id);
+    if add_selected {
+        if add_core {
+            crate::diagnostics::resource_io::admit_typed_cloned_value(&parent)?;
+            core.insert(parent.clone());
+        }
+        crate::diagnostics::resource_io::admit_typed_cloned_value(&parent)?;
+        selected.insert(parent.clone());
+        pending.push(parent);
+    } else {
+        core.insert(parent);
+    }
+    Ok(())
+}
+
+#[cfg(holon_lib_test_shard = "b")]
+#[cfg(test)]
+#[path = "parent_budget_tests.rs"]
+mod parent_budget_tests;

@@ -296,6 +296,9 @@ impl RuntimeMutation {
             self.prepare_owner_task_domain_request(&load).await?;
         }
         self.prepare_owner_work_request(&request).await?;
+        // Execution inputs need live Work and explicitly addressed terminal
+        // records; preserve the owner's separate display window.
+        request.nonopen_limit = 0;
         let work = self.capture_work(&request)?;
         let (mut roots, record_limit, byte_limit) = self.context_input_evidence_policy()?;
         roots.extend(input_roots);
@@ -311,6 +314,9 @@ impl RuntimeMutation {
                     _ => None,
                 }),
         );
+        // The canonical planner's Work queue still includes display history;
+        // that does not promote those records into execution Input roots.
+        request.nonopen_limit = WorkCaptureRequest::current().nonopen_limit;
         // Owner preparation below retains all Queue roots independently. This
         // read needs the actual source, not every queued Message's source index.
         if let Some(source) = message {
@@ -483,11 +489,24 @@ impl RuntimeMutation {
         adapter_root: SchedulerAdapterRoot,
         material: &crate::diagnostics::resource_io::ResourceReadMaterial,
     ) -> Result<PreparedSchedulerRead> {
+        let root = self.capture_published_root()?;
+        let ordinary_request;
+        let input_request = match input_request {
+            Some(request) => request,
+            None => {
+                let inputs = root
+                    .input_evidence
+                    .as_ref()
+                    .context("scheduler Input domain is unpublished")?;
+                ordinary_request = self.runtime.scheduler_input_request(inputs)?;
+                &ordinary_request
+            }
+        };
         self.runtime.capture_scheduler_read_from_root(
-            self.capture_published_root()?.as_ref(),
+            root.as_ref(),
             self.queue.len(),
             request,
-            input_request,
+            Some(input_request),
             recovery_source_ids,
             now,
             adapter_root,
@@ -516,20 +535,7 @@ impl RuntimeHandle {
                 .input_evidence
                 .as_ref()
                 .context("State scheduler Input domain is unpublished")?;
-            let (_, record_limit, byte_limit) = self.scheduler_input_limits()?;
-            let mut windows = Vec::new();
-            super::super::scheduler::include_scheduler_brief_window(&mut windows);
-            let mut input_request = InputEvidenceLoadRequest {
-                query: None,
-                windows,
-                mandatory_roots: Default::default(),
-                interrupted_sources: Default::default(),
-                selected_completion_brief_ids: Default::default(),
-                record_limit,
-                byte_limit,
-            };
-            // State needs the live protocol frontier, not unrelated Context history.
-            input_request.extend_admitted_roots(|| inputs.scheduler_execution_roots())?;
+            let input_request = self.scheduler_input_request(inputs)?;
             self.capture_scheduler_read_from_root(
                 root,
                 root.state.pending,
@@ -555,6 +561,28 @@ impl RuntimeHandle {
                     .context("input evidence byte limit overflow")?,
             )?,
         ))
+    }
+
+    fn scheduler_input_request(
+        &self,
+        inputs: &super::super::resident_input_evidence::ResidentInputEvidence,
+    ) -> Result<InputEvidenceLoadRequest> {
+        let (_, record_limit, byte_limit) = self.scheduler_input_limits()?;
+        let mut windows = Vec::new();
+        super::super::scheduler::include_scheduler_brief_window(&mut windows);
+        let mut input_request = InputEvidenceLoadRequest {
+            query: None,
+            windows,
+            mandatory_roots: Default::default(),
+            interrupted_sources: Default::default(),
+            selected_completion_brief_ids: Default::default(),
+            record_limit,
+            byte_limit,
+        };
+        // Every scheduler observation owns the live frontier and its Brief window,
+        // not the unrelated Context history kept on the same publication.
+        input_request.extend_admitted_roots(|| inputs.scheduler_execution_roots())?;
+        Ok(input_request)
     }
 
     fn capture_scheduler_read_from_root(

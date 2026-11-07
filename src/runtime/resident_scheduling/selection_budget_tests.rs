@@ -13,12 +13,15 @@ fn scope() -> InputEvidenceScope {
 }
 
 // Scalar JSON envelopes, not calls to admission/bootstrap/loader.
-fn cost(bytes: usize, slots: usize, cells: usize) -> (u64, usize) {
-    ((bytes as u64 * 4 + slots as u64 * 128 + 512) * 8, cells * 8)
+fn cost(bytes: usize, slots: usize, values: usize) -> (u64, usize) {
+    (
+        (bytes as u64 * 4 + slots as u64 * 128 + 512) * 8,
+        values * 8,
+    )
 }
 
 fn key_cost(key: &SchedulingKey) -> Result<(u64, usize)> {
-    // Four string starts, two braces, two colons, one comma; three value cells.
+    // Four string starts, two braces, two colons, one comma.
     Ok(cost(serde_json::to_vec(key)?.len(), 9, 3))
 }
 
@@ -103,7 +106,7 @@ fn coverage() -> SchedulingCoverage {
 }
 
 #[test]
-fn owning_roots_clone_each_actual_key_before_insertion() -> Result<()> {
+fn owning_roots_admit_each_unique_key_before_cloning() -> Result<()> {
     let mut coverage = coverage();
     let timer = SchedulingKey::new(SchedulingFamily::Timer, "timer\"雪");
     let wake = SchedulingKey::wake(&timer.id, "message\n");
@@ -144,7 +147,12 @@ fn owning_roots_clone_each_actual_key_before_insertion() -> Result<()> {
         Ok(visited)
     })?;
     assert_eq!(visited, sequence.len());
-    let costs: Vec<_> = sequence.into_iter().map(key_cost).collect::<Result<_>>()?;
+    // Repeated required/live/history membership borrows the existing key;
+    // only the first insertion allocates an owned key.
+    let costs: Vec<_> = [&timer, &wake, &trigger]
+        .into_iter()
+        .map(key_cost)
+        .collect::<Result<_>>()?;
     let roots = assert_gates(&costs, || coverage.roots(true, 1, &required))?;
     assert_eq!(
         roots,
@@ -218,7 +226,45 @@ fn domain() -> Result<ResidentSchedulingDomain> {
 }
 
 #[test]
-fn closure_clone_and_both_parent_ids_share_original_remainder() -> Result<()> {
+fn capture_source_reuse_requires_complete_content_policy_and_ledger_equality() -> Result<()> {
+    let original = domain()?;
+    assert!(original.same_capture_source(&domain()?));
+    for change in 0..7 {
+        let mut changed = domain()?;
+        match change {
+            0 => changed.scope.identity_incarnation += 1,
+            1 => changed.coverage.revision += 1,
+            2 => changed.coverage.active_timers_complete = false,
+            3 => changed.record_limit += 1,
+            4 => changed.byte_limit += 1,
+            5 => {
+                let record = changed.records.values_mut().next().unwrap();
+                Arc::make_mut(record).locator.content_digest = "c".repeat(64);
+            }
+            6 => {
+                let record = changed.records.values_mut().next().unwrap();
+                let CanonicalSchedulingFact::Timer(timer) = &mut Arc::make_mut(record).fact else {
+                    unreachable!()
+                };
+                timer.status = TimerStatus::Cancelled;
+            }
+            _ => unreachable!(),
+        }
+        assert!(!original.same_capture_source(&changed), "change {change}");
+    }
+    let ledger = InputEvidenceBudgetLedger::new(StateMemoryLimits::default())?;
+    let a = domain()?.with_budget(ledger.clone())?;
+    let b = domain()?.with_budget(ledger)?;
+    assert!(a.same_capture_source(&b));
+    let foreign =
+        domain()?.with_budget(InputEvidenceBudgetLedger::new(StateMemoryLimits::default())?)?;
+    assert!(!a.same_capture_source(&foreign));
+    assert!(!original.same_capture_source(&a));
+    Ok(())
+}
+
+#[test]
+fn closure_admits_new_parent_and_validation_key_without_copying_roots() -> Result<()> {
     let domain = domain()?;
     let wake = domain
         .records
@@ -226,14 +272,16 @@ fn closure_clone_and_both_parent_ids_share_original_remainder() -> Result<()> {
         .find(|k| k.family == SchedulingFamily::TimerWake)
         .unwrap();
     let roots = BTreeSet::from([wake.clone()]);
-    // One key plus an array: 11 slots and four value cells.
-    let initial = cost(serde_json::to_vec(&roots)?.len(), 11, 4);
     let parent_id = cost(serde_json::to_vec("parent\"雪")?.len(), 1, 1);
-    let selected = assert_gates(&[initial, parent_id, parent_id], || {
+    let selected = assert_gates(&[parent_id, parent_id], || {
         domain.required_closure(roots.clone())
     })?;
     assert_eq!(selected.len(), 2);
     assert!(selected.contains(&SchedulingKey::new(SchedulingFamily::Timer, "parent\"雪")));
+    // An already selected parent needs no new owned key, but still undergoes
+    // the qualified-body validation with its separately admitted lookup key.
+    let retained = assert_gates(&[parent_id], || domain.required_closure(selected.clone()))?;
+    assert_eq!(retained, selected);
     Ok(())
 }
 
@@ -300,13 +348,6 @@ fn selection_policy_checks_still_precede_unneeded_clones() -> Result<()> {
 
 // Count the fixture's JSON tree, independently of the streaming admission sink.
 fn capture_clone_cost(value: &impl Serialize) -> Result<(u64, usize)> {
-    fn cells(value: &serde_json::Value) -> usize {
-        1 + match value {
-            serde_json::Value::Array(values) => values.iter().map(cells).sum::<usize>(),
-            serde_json::Value::Object(values) => values.values().map(cells).sum::<usize>(),
-            _ => 0,
-        }
-    }
     fn slots(value: &serde_json::Value) -> usize {
         match value {
             serde_json::Value::String(_) => 1,
@@ -321,11 +362,10 @@ fn capture_clone_cost(value: &impl Serialize) -> Result<(u64, usize)> {
             _ => 0,
         }
     }
-    let tree = serde_json::to_value(value)?;
     Ok(cost(
         serde_json::to_vec(value)?.len(),
-        slots(&tree),
-        cells(&tree),
+        slots(&serde_json::to_value(value)?),
+        owned_value_cells(&serde_json::to_value(value)?),
     ))
 }
 
@@ -337,7 +377,7 @@ fn capture_vec_cost<T>(capacity: usize) -> (u64, usize) {
 }
 
 #[test]
-fn selected_install_moves_coverage_and_admits_only_body_arc_slots() -> Result<()> {
+fn selected_install_moves_coverage_and_map_and_admits_only_shared_header() -> Result<()> {
     let ledger = InputEvidenceBudgetLedger::new(StateMemoryLimits::default())?;
     for deny in [true, false] {
         let mut domain = domain()?;
@@ -358,7 +398,13 @@ fn selected_install_moves_coverage_and_admits_only_body_arc_slots() -> Result<()
             .keys
             .as_ptr();
         let count = domain.records.len();
-        let expected = capture_vec_cost::<Arc<QualifiedSchedulingFact>>(count);
+        let original_key = domain.records.keys().next().unwrap().id.as_ptr();
+        let expected = (
+            ((std::mem::size_of::<BTreeMap<SchedulingKey, Arc<QualifiedSchedulingFact>>>()
+                + 2 * std::mem::size_of::<usize>()) as u64
+                * 8),
+            8,
+        );
         let phase = ResourceReadMaterial::with_test_limits(&ledger, &scope(), 1024 * 1024, 4096)?;
         let baseline = phase.finish()?;
         let _entry = phase.enter();
@@ -376,6 +422,7 @@ fn selected_install_moves_coverage_and_admits_only_body_arc_slots() -> Result<()
                 original
             );
             assert_eq!(records.len(), count);
+            assert_eq!(records.keys().next().unwrap().id.as_ptr(), original_key);
             assert_eq!(
                 phase.finish()?,
                 (baseline.0 + expected.0, baseline.1 + expected.1,)
@@ -387,10 +434,12 @@ fn selected_install_moves_coverage_and_admits_only_body_arc_slots() -> Result<()
 
 fn empty_capture_parts(domain: &ResidentSchedulingDomain) -> Result<Vec<(u64, usize)>> {
     Ok(vec![
-        cost(2, 2, 1), // closure's initial empty Vec
         capture_vec_cost::<Arc<QualifiedSchedulingFact>>(0),
-        capture_clone_cost(&domain.coverage)?,
-        cost(2, 2, 1), // required selector clone
+        capture_clone_cost(&capture_coverage::CaptureCoverage {
+            coverage: &domain.coverage,
+            request: &empty_capture_request(),
+            selected: &BTreeSet::new(),
+        })?,
         capture_vec_cost::<Arc<BudgetViewGuard>>(0),
         capture_clone_cost(&domain.scope)?,
     ])
@@ -621,7 +670,11 @@ fn validation_reference_nodes_charge_only_distinct_borrowed_cells() -> Result<()
 fn validation_reference_nodes_share_the_successful_validation_phase() -> Result<()> {
     let domain = domain()?;
     let node = (128 * 8, 8);
-    // Only the two distinct observation reference nodes are allocated.
+    // Canonical order needs no validation set; legacy unsorted coverage keeps
+    // the same distinct borrowed-node allowance and acceptance rules.
+    assert_gates(&[], || domain.validate())?;
+    let mut domain = domain;
+    domain.coverage.observations.reverse();
     assert_gates(&[node, node], || domain.validate())?;
     Ok(())
 }
@@ -720,7 +773,6 @@ fn live_budget_classification_borrows_indexes_and_includes_wake_parent() -> Resu
 
 #[test]
 fn validation_reference_nodes_preserve_observation_error_order() -> Result<()> {
-    let node = (128 * 8, 8);
     for duplicate in [false, true] {
         let mut domain = domain()?;
         let expected = if duplicate {
@@ -731,8 +783,8 @@ fn validation_reference_nodes_preserve_observation_error_order() -> Result<()> {
             domain.coverage.observations[0].availability = SchedulingAvailability::Pruned;
             "Scheduling availability/body mismatch"
         };
-        // The first reference is admitted; neither error allocates another node.
-        assert_gates(&[node], || {
+        // Ordered duplicate/membership validation allocates no reference set.
+        assert_gates(&[], || {
             let error = domain.validate().unwrap_err();
             if error.to_string() == expected {
                 Ok(())
@@ -793,7 +845,7 @@ fn validation_reference_nodes_preserve_wake_status_and_parent_deduplication() ->
                 }),
             );
         }
-        let mut parts = vec![node; domain.coverage.observations.len()];
+        let mut parts = Vec::new();
         if !invalid_status {
             // Only the first pending wake inserts its borrowed parent ID.
             parts.push(node);
@@ -807,5 +859,95 @@ fn validation_reference_nodes_preserve_wake_status_and_parent_deduplication() ->
             }
         })?;
     }
+    Ok(())
+}
+
+#[test]
+fn selection_preflight_preserves_missing_and_history_checks_without_capture_copies() -> Result<()> {
+    let domain =
+        ResidentSchedulingDomain::bootstrap(scope(), coverage(), vec![], 4096, 16 * 1024 * 1024)?;
+    let ledger = InputEvidenceBudgetLedger::new(StateMemoryLimits::default())?;
+    let selection = ResourceReadMaterial::new(&ledger, &scope())?;
+    let request = SchedulingCaptureRequest::current();
+    selection.read(|| domain.validate_capture_request(&request))?;
+    let owning = ResourceReadMaterial::new(&ledger, &scope())?;
+    let _capture = owning.read(|| domain.capture(&request))?;
+    assert!(owning.finish()?.1 > selection.finish()?.1);
+    let mut missing = request.clone();
+    missing
+        .required_keys
+        .insert(SchedulingKey::new(SchedulingFamily::Timer, "missing"));
+    assert!(domain.validate_capture_request(&missing).is_err());
+    assert!(domain.capture(&missing).is_err());
+    let mut incomplete = domain;
+    incomplete.coverage.history.clear();
+    assert!(incomplete.validate_capture_request(&request).is_err());
+    assert!(incomplete.capture(&request).is_err());
+    Ok(())
+}
+
+// Independent decoded-value oracle: keys/punctuation are not owned value cells.
+fn owned_value_cells(value: &serde_json::Value) -> usize {
+    1 + match value {
+        serde_json::Value::Array(values) => values.iter().map(owned_value_cells).sum::<usize>(),
+        serde_json::Value::Object(values) => values.values().map(owned_value_cells).sum::<usize>(),
+        _ => 0,
+    }
+}
+
+#[test]
+fn focused_capture_does_not_clone_unselected_qualified_observations() -> Result<()> {
+    let mut coverage = coverage();
+    for i in 0..2048 {
+        let key = SchedulingKey::new(SchedulingFamily::Timer, format!("unselected-{i:04}"));
+        coverage.required_keys.insert(key.clone());
+        coverage.observations.push(SchedulingObservation {
+            key,
+            availability: SchedulingAvailability::Absent,
+        });
+    }
+    let domain =
+        ResidentSchedulingDomain::bootstrap(scope(), coverage, vec![], 8192, 16 * 1024 * 1024)?;
+    let required = SchedulingKey::new(SchedulingFamily::Timer, "unselected-0000");
+    let request = SchedulingCaptureRequest {
+        required_keys: BTreeSet::from([required.clone()]),
+        ..empty_capture_request()
+    };
+    let ledger = InputEvidenceBudgetLedger::new(StateMemoryLimits::default())?;
+    let phase = ResourceReadMaterial::with_test_limits(&ledger, &scope(), 1024 * 1024, 2048)?;
+    let captured = phase.read(|| domain.capture(&request))?;
+    assert!(captured.records.is_empty());
+    assert_eq!(captured.coverage.observations.len(), 1);
+    assert_eq!(captured.coverage.required_keys, request.required_keys);
+    assert_eq!(
+        serde_json::to_value(capture_coverage::CaptureCoverage {
+            coverage: &domain.coverage,
+            request: &request,
+            selected: &request.required_keys,
+        })?,
+        serde_json::to_value(&captured.coverage)?,
+    );
+    assert!(captured.lookup(&required)?.is_none());
+    assert!(captured
+        .lookup(&SchedulingKey::new(
+            SchedulingFamily::Timer,
+            "unselected-0001"
+        ))
+        .is_err());
+    assert_eq!(domain.coverage.observations.len(), 2048);
+    assert_eq!(domain.coverage.required_keys.len(), 2048);
+    drop((captured, phase));
+    assert_eq!(ledger.report()?.observed_bytes, 0);
+
+    // Explicitly requesting that metadata still has to fit the same allowance.
+    let full = SchedulingCaptureRequest {
+        required_keys: domain.coverage.required_keys.clone(),
+        ..empty_capture_request()
+    };
+    let phase = ResourceReadMaterial::with_test_limits(&ledger, &scope(), 1024 * 1024, 2048)?;
+    assert!(phase.read(|| domain.capture(&full)).is_err());
+    assert!(phase.finish().is_err());
+    drop(phase);
+    assert_eq!(ledger.report()?.observed_bytes, 0);
     Ok(())
 }

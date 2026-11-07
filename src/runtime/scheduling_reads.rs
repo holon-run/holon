@@ -2,8 +2,8 @@
 use super::{
     mutation_owner::PublicationToken,
     resident_scheduling::{
-        CanonicalSchedulingFact, CapturedScheduling, SchedulingCaptureRequest, SchedulingFamily,
-        SchedulingKey, SchedulingReadError,
+        CanonicalSchedulingFact, CapturedScheduling, ResidentSchedulingDomain,
+        SchedulingCaptureRequest, SchedulingFamily, SchedulingKey, SchedulingReadError,
     },
     state_mutation::RuntimeMutation,
     RuntimeHandle,
@@ -17,7 +17,50 @@ pub(crate) struct SchedulingReadSnapshot {
     pub state: Arc<AgentState>,
     pub scheduling: CapturedScheduling,
 }
+
+/// Temporary planning witness; no domain map survives final context capture.
+pub(in crate::runtime) struct ContextSchedulingPlan {
+    pub read: SchedulingReadSnapshot,
+    source: Arc<ResidentSchedulingDomain>,
+}
+impl ContextSchedulingPlan {
+    pub(in crate::runtime) fn into_current_capture(
+        self,
+        state: &Arc<AgentState>,
+        source: &Arc<ResidentSchedulingDomain>,
+    ) -> Result<CapturedScheduling> {
+        ensure!(
+            self.read.state == *state,
+            "context Scheduling State changed"
+        );
+        if Arc::ptr_eq(&self.source, source) || self.source.same_capture_source(source) {
+            Ok(self.read.scheduling)
+        } else {
+            source.capture(&SchedulingCaptureRequest::current())
+        }
+    }
+}
 impl RuntimeMutation {
+    pub(in crate::runtime) fn capture_context_scheduling_plan(
+        &self,
+    ) -> Result<ContextSchedulingPlan> {
+        let root = self.capture_published_root()?;
+        let source = root
+            .scheduling
+            .as_ref()
+            .ok_or(SchedulingReadError::IncompleteLive)?;
+        let read = self.capture_scheduling_read(&SchedulingCaptureRequest::current())?;
+        ensure!(
+            read.token == root.token,
+            "context Scheduling plan root changed"
+        );
+        crate::diagnostics::resource_io::charge_owned_metadata(128, 1)?;
+        Ok(ContextSchedulingPlan {
+            read,
+            source: source.clone(),
+        })
+    }
+
     pub(in crate::runtime) fn capture_scheduling_read(
         &self,
         request: &SchedulingCaptureRequest,

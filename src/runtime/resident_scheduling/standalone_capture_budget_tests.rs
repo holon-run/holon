@@ -22,13 +22,6 @@ fn runtime(home: &std::path::Path) -> Result<RuntimeHandle> {
 
 // Independent JSON tree/scalar formula; never sample a successful capture.
 fn clone_cost(value: &impl Serialize) -> Result<(u64, usize)> {
-    fn cells(value: &serde_json::Value) -> usize {
-        1 + match value {
-            serde_json::Value::Array(values) => values.iter().map(cells).sum::<usize>(),
-            serde_json::Value::Object(values) => values.values().map(cells).sum::<usize>(),
-            _ => 0,
-        }
-    }
     fn slots(value: &serde_json::Value) -> usize {
         match value {
             serde_json::Value::String(_) => 1,
@@ -43,11 +36,10 @@ fn clone_cost(value: &impl Serialize) -> Result<(u64, usize)> {
             _ => 0,
         }
     }
-    let tree = serde_json::to_value(value)?;
-    let slots = slots(&tree);
+    let slots = slots(&serde_json::to_value(value)?);
     Ok((
         (serde_json::to_vec(value)?.len() as u64 * 4 + slots as u64 * 128 + 512) * 8,
-        cells(&tree) * 8,
+        owned_value_cells(&serde_json::to_value(value)?) * 8,
     ))
 }
 
@@ -55,12 +47,16 @@ fn empty_capture_cost(domain: &ResidentSchedulingDomain) -> Result<(u64, usize)>
     let views = usize::from(domain.context_material.is_some())
         + usize::from(domain.replacement_material.is_some())
         + 2 * usize::from(domain.budget.is_some());
+    let projected = SchedulingCoverage {
+        active_timers_complete: false,
+        pending_wakes_complete: false,
+        active_triggers_complete: false,
+        ..domain.coverage.clone()
+    };
     let parts = [
         ((domain.scope.agent_id.len() as u64 + 256) * 8, 64),
-        clone_cost(&Vec::<SchedulingKey>::new())?, // closure worklist
-        (128 * 8, 8),                              // empty records Vec
-        clone_cost(&domain.coverage)?,
-        clone_cost(&BTreeSet::<SchedulingKey>::new())?,
+        (128 * 8, 8), // empty records Vec
+        clone_cost(&projected)?,
         (
             (128 + views as u64 * std::mem::size_of::<Arc<BudgetViewGuard>>() as u64) * 8,
             (views + 1) * 8,
@@ -192,4 +188,13 @@ async fn owner_capture_reuses_active_bytes_and_records_without_fresh_credit() ->
         }
     }
     Ok(())
+}
+
+// Independent decoded-value oracle: keys/punctuation are not owned value cells.
+fn owned_value_cells(value: &serde_json::Value) -> usize {
+    1 + match value {
+        serde_json::Value::Array(values) => values.iter().map(owned_value_cells).sum::<usize>(),
+        serde_json::Value::Object(values) => values.values().map(owned_value_cells).sum::<usize>(),
+        _ => 0,
+    }
 }

@@ -326,7 +326,7 @@ fn observation_reservation_guards_survive_real_wake_writer_receipt() -> Result<(
             .any(|guard| Arc::ptr_eq(guard, &weak.upgrade().unwrap())));
         Ok((receipt, weak))
     })?;
-    assert!(receipt.delta.records.iter().any(|body| {
+    assert!(receipt.delta.records.values().any(|body| {
         matches!(&body.fact, CanonicalSchedulingFact::TimerWake(wake) if wake.timer_id == record.id && wake.message_id == "observed-msg")
     }));
     let guards = receipt.take_budget_views();

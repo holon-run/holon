@@ -10,7 +10,8 @@ use crate::{
     runtime_db::{
         evidence::append_message_tx,
         input_evidence_snapshot::{
-            register_committed_input_evidence_tx, CanonicalInputEvidence, InputWindowRequest,
+            register_committed_input_evidence_tx, CanonicalInputEvidence, InputEvidenceLoadRequest,
+            InputWindowRequest,
         },
         repositories::upsert_turn_record_tx,
     },
@@ -129,12 +130,12 @@ async fn scheduling_context_request_shares_constructor_and_downstream_remainder(
         constructor_bytes,
         constructor_records,
     )?;
-    let error = mutation
+    // A fully prepared empty selection needs only its constructor; do not
+    // create and discard a second owning capture merely to check readiness.
+    mutation
         .prepare_owner_scheduling_request_with_material(&capture, &limited)
-        .await
-        .unwrap_err();
-    crate::diagnostics::resource_io::assert_retryable_resource_error(&error);
-    assert!(limited.finish().is_err());
+        .await?;
+    assert_eq!(limited.finish()?, (constructor_bytes, constructor_records));
     assert_eq!(mutation.capture_published_root()?.token, before.token);
     assert_eq!(mutation.state, *before.state);
     drop(limited);
@@ -145,7 +146,7 @@ async fn scheduling_context_request_shares_constructor_and_downstream_remainder(
         .prepare_owner_scheduling_request_with_material(&capture, &material)
         .await?;
     assert!(mutation.capture_scheduling_read(&capture).is_ok());
-    assert!(material.finish()?.0 > constructor_bytes);
+    assert_eq!(material.finish()?, (constructor_bytes, constructor_records));
     drop(material);
     let measure = ResourceReadMaterial::new(ledger, &scope)?;
     mutation
@@ -520,5 +521,53 @@ async fn exact_request_keeps_accepted_and_existing_owner_roots_without_mutating_
     }
     assert_eq!(mutation.state.pending, 1);
     assert_eq!(mutation.queue.len(), 1);
+    Ok(())
+}
+
+#[tokio::test]
+async fn ordinary_scheduler_capture_excludes_prepared_context_history() -> Result<()> {
+    let (_home, runtime) = fixture();
+    let mut mutation = runtime.begin_mutation().await?;
+    let scope = mutation.input_evidence_scope();
+    runtime.inner.runtime_db.transaction(|tx| {
+        for index in 1..=6 {
+            let turn = TurnRecord::new(&scope.agent_id, format!("context-only-{index}"), index);
+            upsert_turn_record_tx(tx, &turn)?;
+            register_committed_input_evidence_tx(
+                tx,
+                &scope,
+                &[CanonicalInputEvidence::Turn(turn)],
+            )?;
+        }
+        Ok(())
+    })?;
+    let (_, record_limit, byte_limit) = mutation.context_input_evidence_policy()?;
+    let mut request = InputEvidenceLoadRequest {
+        query: None,
+        windows: vec![InputWindowRequest {
+            selector: InputWindowSelector::GlobalTurns,
+            limit: 6,
+        }],
+        mandatory_roots: Default::default(),
+        interrupted_sources: Default::default(),
+        selected_completion_brief_ids: Default::default(),
+        record_limit,
+        byte_limit,
+    };
+    super::super::scheduler::include_scheduler_brief_window(&mut request.windows);
+    mutation.prepare_owner_input_request(&request, 2).await?;
+    let key = Key::new(Family::Turn, "context-only-6");
+    assert!(mutation.capture_input_evidence()?.lookup(&key)?.is_some());
+    let before = mutation.capture_published_root()?.token;
+    let read = mutation.capture_scheduler_read(
+        &crate::runtime::resident_work::WorkCaptureRequest::current(),
+        runtime.now(),
+    )?;
+    assert!(
+        read.inputs.lookup(&key).is_err(),
+        "an unrelated Context turn must not be captured"
+    );
+    assert_eq!(mutation.capture_published_root()?.token, before);
+    assert!(mutation.capture_input_evidence()?.lookup(&key)?.is_some());
     Ok(())
 }

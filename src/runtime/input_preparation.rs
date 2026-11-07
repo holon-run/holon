@@ -122,7 +122,7 @@ pub(crate) fn prepare_reserved_input_domains_with_scheduling(
                 domain.scope() == &scope,
                 "published Scheduling scope differs"
             );
-            domain.capture(scheduling).map(|_| ())
+            domain.validate_capture_request(scheduling)
         })
         .transpose();
     let scheduling_ready = match scheduling_ready {
@@ -149,9 +149,7 @@ pub(crate) fn prepare_reserved_input_domains_with_scheduling(
                     if covered {
                         Ok(())
                     } else {
-                        inputs
-                            .capture_for_request_with_material(request, &material)
-                            .map(|_| ())
+                        inputs.validate_prepared_request(request, &material)
                     }
                 });
             match ready {

@@ -37,19 +37,12 @@ fn delta(domain: &ResidentSchedulingDomain) -> CommittedSchedulingDelta {
         base_revision: domain.coverage.revision,
         revision: domain.coverage.revision,
         coverage: domain.coverage.clone(),
-        records: domain.records.values().cloned().collect(),
+        records: Arc::new(domain.records.clone()),
     }
 }
 
 // Independent JSON tree/scalar formula, not a successful replacement sample.
 fn clone_cost(value: &impl Serialize) -> Result<(u64, usize)> {
-    fn cells(value: &serde_json::Value) -> usize {
-        1 + match value {
-            serde_json::Value::Array(values) => values.iter().map(cells).sum::<usize>(),
-            serde_json::Value::Object(values) => values.values().map(cells).sum::<usize>(),
-            _ => 0,
-        }
-    }
     fn slots(value: &serde_json::Value) -> usize {
         match value {
             serde_json::Value::String(_) => 1,
@@ -64,11 +57,10 @@ fn clone_cost(value: &impl Serialize) -> Result<(u64, usize)> {
             _ => 0,
         }
     }
-    let tree = serde_json::to_value(value)?;
-    let slots = slots(&tree);
+    let slots = slots(&serde_json::to_value(value)?);
     Ok((
         (serde_json::to_vec(value)?.len() as u64 * 4 + slots as u64 * 128 + 512) * 8,
-        cells(&tree) * 8,
+        owned_value_cells(&serde_json::to_value(value)?) * 8,
     ))
 }
 
@@ -326,4 +318,13 @@ async fn replacement_owner_publication_shares_arcs_and_retains_both_last_holders
     assert!(source.upgrade().is_none());
     assert!(replacement.upgrade().is_none());
     Ok(())
+}
+
+// Independent decoded-value oracle: keys/punctuation are not owned value cells.
+fn owned_value_cells(value: &serde_json::Value) -> usize {
+    1 + match value {
+        serde_json::Value::Array(values) => values.iter().map(owned_value_cells).sum::<usize>(),
+        serde_json::Value::Object(values) => values.values().map(owned_value_cells).sum::<usize>(),
+        _ => 0,
+    }
 }

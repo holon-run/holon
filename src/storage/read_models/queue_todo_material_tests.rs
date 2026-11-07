@@ -33,7 +33,7 @@ fn cost(todo: &TodoItem) -> Result<(u64, usize)> {
     let cells = 9;
     Ok((
         (serde_json::to_vec(todo)?.len() as u64 * 4 + cells as u64 * 128 + 512) * 8,
-        (cells + 16) * 8,
+        3 * 8,
     ))
 }
 

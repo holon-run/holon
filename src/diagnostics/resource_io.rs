@@ -64,6 +64,17 @@ pub(crate) struct ResourceReadBudget {
     _thread: PhantomData<Rc<()>>,
 }
 impl ResourceReadMaterial {
+    pub(crate) fn current() -> anyhow::Result<Option<Self>> {
+        ACTIVE
+            .with(|slot| slot.borrow().clone())
+            .map(|active| {
+                let material = Self { active };
+                material.finish()?;
+                Ok(material)
+            })
+            .transpose()
+    }
+
     /// Reserve an owning result's independent copy before cloning its fields.
     /// The copy neither retains its source acquisition nor inherits TLS.
     pub(crate) fn fork_owned(&self) -> Self {
@@ -390,6 +401,7 @@ impl ResourceReadMaterial {
     /// Seal actual retained totals (coverage floors, not raw eightfold charges).
     /// Allocation gates must still admit every owned allocation beforehand.
     /// Extend only the original Candidate view; repeated/lower seals are free.
+    #[track_caller]
     pub(crate) fn seal_retained(
         &self,
         retained_bytes: u64,
@@ -407,11 +419,19 @@ impl ResourceReadMaterial {
         let next = material.bytes.checked_add(added_bytes);
         let count = material.records.checked_add(added_records);
         let (Some(next), Some(count)) = (next, count) else {
+            tracing::warn!(caller = %std::panic::Location::caller(), retained_bytes, retained_records,
+                used_bytes = material.bytes, byte_limit = material.byte_limit,
+                used_records = material.records, record_limit = material.record_limit,
+                "Context retained resource allowance exceeded");
             material.failed = true;
             return Err(resource_exhausted());
         };
         if added_bytes > material.remaining_bytes() || added_records > material.remaining_records()
         {
+            tracing::warn!(caller = %std::panic::Location::caller(), retained_bytes, retained_records,
+                used_bytes = material.bytes, byte_limit = material.byte_limit,
+                used_records = material.records, record_limit = material.record_limit,
+                "Context retained resource allowance exceeded");
             material.failed = true;
             return Err(resource_exhausted());
         }
@@ -491,7 +511,20 @@ fn latch_failure(material: &mut ReadMaterial) {
         latch_failure(&mut parent.lock().unwrap_or_else(|error| error.into_inner()));
     }
 }
+#[track_caller]
 fn exhausted(material: &mut ReadMaterial) -> io::Error {
+    if !material.failed {
+        tracing::warn!(
+            caller = %std::panic::Location::caller(),
+            used_bytes = material.bytes,
+            scratch_bytes = material.scratch_bytes,
+            byte_limit = material.byte_limit,
+            used_records = material.records,
+            scratch_records = material.scratch_records,
+            record_limit = material.record_limit,
+            "Context resource acquisition allowance exceeded"
+        );
+    }
     latch_failure(material);
     // io::Error forwards its inner error's source, not the inner error itself.
     // Keep the typed rejection visible when a reader returns before finish().
@@ -499,6 +532,7 @@ fn exhausted(material: &mut ReadMaterial) -> io::Error {
         resource_exhausted().context("ResourceExhausted: context resource read material"),
     )
 }
+#[track_caller]
 fn reserve_allowance(material: &mut ReadMaterial, bytes: u64, records: usize) -> io::Result<()> {
     if material.failed
         || bytes > material.remaining_bytes()
@@ -521,6 +555,7 @@ fn reserve_allowance(material: &mut ReadMaterial, bytes: u64, records: usize) ->
     material.records += records;
     Ok(())
 }
+#[track_caller]
 fn charge(
     active: &Arc<Mutex<ReadMaterial>>,
     bytes: u64,
@@ -581,6 +616,7 @@ pub(crate) fn admit_path(path: &Path) -> io::Result<()> {
 }
 
 /// Metadata preflight only; actual body chunks are charged before buffer growth.
+#[track_caller]
 pub(crate) fn admit_file_bytes(declared: u64) -> io::Result<()> {
     let Some(active) = ACTIVE.with(|slot| slot.borrow().clone()) else {
         return Ok(());
@@ -652,6 +688,7 @@ impl Iterator for ResourceReadDir {
         self.inner.next()
     }
 }
+#[track_caller]
 pub(crate) fn charge_owned_payload(bytes: u64) -> io::Result<()> {
     let Some(active) = ACTIVE.with(|slot| slot.borrow().clone()) else {
         return Ok(());
@@ -660,6 +697,7 @@ pub(crate) fn charge_owned_payload(bytes: u64) -> io::Result<()> {
 }
 /// A fixed final byte buffer has no decoded/resolver expansion. Its owner and
 /// container metadata still require their separate conservative admission.
+#[track_caller]
 pub(crate) fn charge_owned_buffer(bytes: u64) -> io::Result<()> {
     let Some(active) = ACTIVE.with(|slot| slot.borrow().clone()) else {
         return Ok(());
@@ -669,6 +707,7 @@ pub(crate) fn charge_owned_buffer(bytes: u64) -> io::Result<()> {
     material.material.observe_material(bytes, 0);
     Ok(())
 }
+#[track_caller]
 pub(crate) fn charge_owned_metadata(bytes: u64, records: usize) -> io::Result<()> {
     let Some(active) = ACTIVE.with(|slot| slot.borrow().clone()) else {
         return Ok(());
@@ -677,6 +716,7 @@ pub(crate) fn charge_owned_metadata(bytes: u64, records: usize) -> io::Result<()
 }
 /// Ledger bookkeeping is material too. Admit it before locking the ledger,
 /// then let the new view retain the original phase through its last owner.
+#[track_caller]
 pub(crate) fn owned_registration(
     identity_bytes: usize,
 ) -> anyhow::Result<Option<Arc<BudgetViewGuard>>> {
@@ -691,6 +731,7 @@ pub(crate) fn owned_registration(
 }
 /// Check a whole side-effecting kernel against this phase's used remainder.
 /// Its constituent allocations still use the normal charging gates.
+#[track_caller]
 pub(crate) fn admit_owned_metadata(bytes: u64, records: usize) -> io::Result<()> {
     let Some(active) = ACTIVE.with(|slot| slot.borrow().clone()) else {
         return Ok(());
@@ -709,6 +750,7 @@ pub(crate) fn admit_owned_metadata(bytes: u64, records: usize) -> io::Result<()>
     Ok(())
 }
 
+#[track_caller]
 pub(crate) fn charge_skill_catalog_entry(
     entry: &crate::types::SkillCatalogEntry,
 ) -> io::Result<()> {

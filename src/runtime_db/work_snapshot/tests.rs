@@ -868,6 +868,28 @@ fn bound_result_head_is_one_completion_edge_while_intent_source_stays_strict() -
             InputEvidenceFamily::Turn,
             "independent-turn"
         )));
+        let snapshot =
+            prepare_work_domain_snapshot_tx(tx, &scope(), &request())?.require_current()?;
+        let idle_roots = current_recovery_owning_input_roots(&snapshot.resident, &state)?;
+        assert!(!idle_roots.contains(&InputEvidenceKey::new(
+            InputEvidenceFamily::Message,
+            "independent-source"
+        )));
+        assert!(!idle_roots.contains(&InputEvidenceKey::new(
+            InputEvidenceFamily::Turn,
+            "independent-turn"
+        )));
+        let mut focused = state.clone();
+        focused.current_work_item_id = Some(value.id.clone());
+        let current_roots = current_recovery_owning_input_roots(&snapshot.resident, &focused)?;
+        assert!(current_roots.contains(&InputEvidenceKey::new(
+            InputEvidenceFamily::Message,
+            "independent-source"
+        )));
+        assert!(current_roots.contains(&InputEvidenceKey::new(
+            InputEvidenceFamily::Turn,
+            "independent-turn"
+        )));
         // A genuinely different previous result remains a strict owning edge.
         let mut later = brief("later-result", &value.id);
         later.created_at += chrono::Duration::seconds(1);
@@ -1324,4 +1346,45 @@ fn finalizer_view_selection_does_not_depend_on_working_memory_overlay() -> Resul
         Ok(())
     })?;
     Ok(())
+}
+
+#[cfg(holon_lib_test_shard = "b")]
+#[test]
+fn original_work_ack_keeps_written_terminal_roots_without_display_history_roots() -> Result<()> {
+    let (_dir, db) = fresh()?;
+    db.transaction(|tx| {
+        let mut display = work("display-only", WorkItemState::Completed);
+        display.result_brief_id = Some("display-only-input".into());
+        insert_qualified_work(tx, &display)?;
+        let mut actual = work("explicit-terminal", WorkItemState::Completed);
+        actual.result_brief_id = Some("actual-input".into());
+        let facts = insert_qualified_work(tx, &actual)?;
+        assert!(facts.owning_input_roots.contains(&InputEvidenceKey::new(
+            InputEvidenceFamily::Brief,
+            "actual-input"
+        )));
+        assert!(!facts.owning_input_roots.contains(&InputEvidenceKey::new(
+            InputEvidenceFamily::Brief,
+            "display-only-input"
+        )));
+        let captured = prepare_work_domain_snapshot_tx(tx, &scope(), &request())?
+            .require_current()?
+            .resident
+            .capture(&request().capture)?;
+        assert!(captured
+            .lookup(&WorkKey::new(WorkFamily::Work, &display.id))?
+            .is_some());
+        let keys = BTreeSet::new();
+        let proof = prepare_work_write_tx(tx, &scope(), &keys)?;
+        let facts = register_work_writes_tx(
+            tx,
+            &proof,
+            &keys,
+            &BTreeSet::new(),
+            &AgentState::new("agent-a"),
+            &request(),
+        )?;
+        assert!(facts.owning_input_roots.is_empty());
+        Ok(())
+    })
 }

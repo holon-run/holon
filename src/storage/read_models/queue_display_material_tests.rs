@@ -54,7 +54,7 @@ fn clone_cost(value: &impl serde::Serialize) -> Result<(u64, usize)> {
     let cells = shape(&serde_json::to_value(value)?);
     Ok((
         (bytes as u64 * 4 + cells as u64 * 128 + 512) * 8,
-        (cells + 16) * 8,
+        owned_value_cells(&serde_json::to_value(value)?) * 8,
     ))
 }
 
@@ -390,4 +390,13 @@ fn empty_display_lists_do_not_allocate_charge_or_qualify() -> Result<()> {
     assert_eq!(ledger.report()?.observed_bytes, 0);
     assert!(ResourceReadMaterial::active_guard()?.is_none());
     Ok(())
+}
+
+// Independent decoded-value oracle: keys/punctuation are not owned value cells.
+fn owned_value_cells(value: &serde_json::Value) -> usize {
+    1 + match value {
+        serde_json::Value::Array(values) => values.iter().map(owned_value_cells).sum::<usize>(),
+        serde_json::Value::Object(values) => values.values().map(owned_value_cells).sum::<usize>(),
+        _ => 0,
+    }
 }

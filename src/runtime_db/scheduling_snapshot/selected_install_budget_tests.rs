@@ -38,14 +38,11 @@ fn parts(
     snapshot: &SchedulingCurrentSnapshot,
 ) -> Result<[(u64, usize); 3]> {
     Ok([
-        vector_cost::<Arc<QualifiedSchedulingFact>>(
-            snapshot
-                .resident
-                .coverage()
-                .observations
-                .iter()
-                .filter(|observation| observation.availability == SchedulingAvailability::Present)
-                .count(),
+        (
+            ((std::mem::size_of::<BTreeMap<SchedulingKey, Arc<QualifiedSchedulingFact>>>()
+                + 2 * std::mem::size_of::<usize>()) as u64
+                * 8),
+            8,
         ),
         vector_cost::<Arc<BudgetViewGuard>>(proof.guards.len() + snapshot._read_material.len() + 2),
         clone_cost(&proof.scope)?,
@@ -167,7 +164,7 @@ fn selected_install_accumulates_and_receipt_last_holder_keeps_phase() -> Result<
                 assert_eq!(receipt.delta.scope, scope);
                 assert_eq!(receipt.delta.coverage.revision, receipt.delta.revision);
                 assert_eq!(receipt.delta.records.len(), source.len());
-                for (actual, original) in receipt.delta.records.iter().zip(&source) {
+                for (actual, original) in receipt.delta.records.values().zip(&source) {
                     assert!(Arc::ptr_eq(actual, original));
                 }
                 receipts.push(receipt);
@@ -230,7 +227,7 @@ fn selected_install_real_writer_preserves_revision_and_receipt_phase() -> Result
     assert!(receipt.requires_prepared_domain);
     assert_eq!(receipt.delta.records.len(), 1);
     assert!(
-        matches!(&receipt.delta.records[0].fact, CanonicalSchedulingFact::Timer(t) if t == &changed)
+        matches!(&receipt.delta.records.values().next().unwrap().fact, CanonicalSchedulingFact::Timer(t) if t == &changed)
     );
     phase.finish()?;
     assert!(ResourceReadMaterial::active_guard()?.is_none());

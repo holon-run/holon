@@ -635,6 +635,25 @@ impl RuntimeReadModelView<'_> {
         I: IntoIterator<Item = &'a crate::types::ExternalTriggerRecord>,
         I::IntoIter: Clone,
     {
+        self.state_work_queue_with_observed_scheduling_and_history(
+            state,
+            triggers,
+            material,
+            WORK_QUEUE_NON_OPEN_WINDOW,
+        )
+    }
+
+    fn state_work_queue_with_observed_scheduling_and_history<'a, I>(
+        &self,
+        state: &AgentState,
+        triggers: I,
+        material: &crate::diagnostics::resource_io::ResourceReadMaterial,
+        non_open_limit: usize,
+    ) -> Result<crate::runtime::resident_work::StateWorkQueue>
+    where
+        I: IntoIterator<Item = &'a crate::types::ExternalTriggerRecord>,
+        I::IntoIter: Clone,
+    {
         let triggers = triggers.into_iter();
         anyhow::ensure!(
             self.agent_id.as_deref() == Some(state.id.as_str())
@@ -651,15 +670,34 @@ impl RuntimeReadModelView<'_> {
             for record in self
                 .runtime_db
                 .work_items()
-                .latest_non_open_for_agent(&state.id, WORK_QUEUE_NON_OPEN_WINDOW)?
+                .latest_non_open_for_agent(&state.id, non_open_limit)?
             {
                 latest.push(record)?;
             }
             let latest = latest.finish();
             timer.rows(latest.len());
             drop(timer);
+            if non_open_limit == 0 && latest.is_empty() {
+                return Ok(crate::runtime::resident_work::StateWorkQueue::default());
+            }
             let deliveries = queue_observed_trigger_deliveries(triggers)?;
-            let waits = group_queue_waits(self.active_wait_conditions_for_scope()?);
+            let waits = if non_open_limit == 0 {
+                let mut waits = self
+                    .runtime_db
+                    .wait_conditions()
+                    .active_for_agent(&state.id)?;
+                waits.retain(|wait| {
+                    wait.work_item_id.as_deref().is_none_or(|id| {
+                        latest
+                            .get(id)
+                            .is_some_and(|work| work.state == WorkItemState::Open)
+                    })
+                });
+                waits
+            } else {
+                self.active_wait_conditions_for_scope()?
+            };
+            let waits = group_queue_waits(waits);
             let suspended_ids = queue_continuation_suspended_ids(
                 self.runtime_db
                     .work_item_continuations()
@@ -780,6 +818,16 @@ impl RuntimeReadModelView<'_> {
     ) -> Result<AgentPostureProjection> {
         if let Some(posture) = self.agent_posture_before_work_queue(agent, admit_material)? {
             return Ok(posture);
+        }
+        if let Some(material) = crate::diagnostics::resource_io::ResourceReadMaterial::current()? {
+            let triggers = self
+                .runtime_db
+                .external_triggers()
+                .active_for_agent(&agent.id)?;
+            let queue = self.state_work_queue_with_observed_scheduling_and_history(
+                agent, &triggers, &material, 0,
+            )?;
+            return self.agent_posture_from_work_queue(&queue, admit_material);
         }
         // The caller already selected State. Do not replace its focus with
         // another read (or decode the same body twice under its allowance).
@@ -1342,7 +1390,7 @@ fn derive_work_queue_with_trigger_index<K: AsRef<str>>(
 }
 
 fn clone_queue_display_value<T: Clone + serde::Serialize>(value: &T) -> Result<T> {
-    crate::diagnostics::resource_io::admit_cloned_value(value)
+    crate::diagnostics::resource_io::admit_typed_cloned_value(value)
         .context("queue display clone admission")?;
     Ok(value.clone())
 }

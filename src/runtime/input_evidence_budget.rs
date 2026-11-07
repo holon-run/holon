@@ -257,6 +257,10 @@ pub(crate) struct BudgetViewGuard {
     _registration_budget: Option<Arc<BudgetViewGuard>>,
 }
 impl BudgetViewGuard {
+    pub(crate) fn shares_ledger(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.ledger, &other.ledger)
+    }
+
     /// Validate an existing owned allocation, without granting record authority.
     pub(crate) fn validate_owned_material_binding(
         &self,
@@ -1600,6 +1604,14 @@ fn check(
     limit: u64,
 ) -> Result<()> {
     if add(used, requested)? > limit {
+        tracing::warn!(
+            ?resource,
+            ?scope,
+            used,
+            requested,
+            limit,
+            "Input evidence allowance exceeded"
+        );
         return Err(InputEvidenceBudgetError::ResourceExhausted {
             resource,
             scope: scope.cloned(),

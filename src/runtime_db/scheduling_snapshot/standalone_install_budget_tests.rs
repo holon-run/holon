@@ -152,7 +152,14 @@ fn standalone_install_source_survives_receipt_owner_capture_and_last_body() -> R
         Ok(effects)
     })?;
     let delta = effects.scheduling_delta.as_ref().unwrap();
-    let source = delta.records[0]._source_material.as_ref().unwrap();
+    let source = delta
+        .records
+        .values()
+        .next()
+        .unwrap()
+        ._source_material
+        .as_ref()
+        .unwrap();
     let weak = Arc::downgrade(source);
     assert!(effects
         .scheduling_material_budget_views
@@ -160,7 +167,10 @@ fn standalone_install_source_survives_receipt_owner_capture_and_last_body() -> R
         .any(|guard| Arc::ptr_eq(guard, source)));
     let next = base.with_committed(delta)?;
     let capture = next.capture(&SchedulingCaptureRequest::current())?;
-    assert!(Arc::ptr_eq(&delta.records[0], &capture.records[0]));
+    assert!(Arc::ptr_eq(
+        &delta.records.values().next().unwrap(),
+        &capture.records[0]
+    ));
     assert_eq!(capture.timer(&record.id)?, Some(&record));
     let last = capture.records[0].clone();
     drop((effects, base, next, capture));

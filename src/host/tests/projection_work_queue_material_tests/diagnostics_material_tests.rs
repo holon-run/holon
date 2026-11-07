@@ -1,5 +1,5 @@
 use super::*;
-use crate::work_item_scheduling::{WorkItemSchedulingProjection, WorkQueueReadModel};
+use crate::work_item_scheduling::WorkQueueReadModel;
 
 async fn fixture() -> Result<(tempfile::TempDir, RuntimeHost, WorkQueueReadModel)> {
     let (home, host) = active_wait_fixture().await?;
@@ -29,125 +29,9 @@ async fn fixture() -> Result<(tempfile::TempDir, RuntimeHost, WorkQueueReadModel
 }
 
 #[tokio::test]
-async fn diagnostics_rejects_on_both_snapshot_paths_and_latches() -> Result<()> {
-    fn cells(value: &serde_json::Value) -> usize {
-        match value {
-            serde_json::Value::Object(fields) => {
-                2 + fields.len() * 2
-                    + fields.len().saturating_sub(1)
-                    + fields.values().map(cells).sum::<usize>()
-            }
-            serde_json::Value::Array(values) => {
-                2 + values.len().saturating_sub(1) + values.iter().map(cells).sum::<usize>()
-            }
-            serde_json::Value::String(_) => 1,
-            _ => 0,
-        }
-    }
-    let (_home, host, queue) = fixture().await?;
-    let mut display = (0u64, 0usize);
-    // Wait summaries now follow diagnostic admission on this same phase.
-    for wait in host
-        .runtime_db()
-        .wait_conditions()
-        .active_for_agent("web")?
-    {
-        for next in super::wait_summary_material_tests::summary_gates(&wait)? {
-            display.0 += next.0;
-            display.1 += next.1;
-        }
-    }
-    for row in queue.yielded.iter().chain(&queue.completed_recent) {
-        // Two one-element display windows follow diagnostic admission.
-        let shape = cells(&serde_json::to_value(row)?);
-        display.0 += (std::mem::size_of::<WorkItemSchedulingProjection>() as u64
-            + serde_json::to_vec(row)?.len() as u64 * 4
-            + shape as u64 * 128
-            + 512)
-            * 8;
-        display.1 += (1 + shape + 16) * 8;
-    }
-    let diagnostic = (
-        ("yielded_work_item_marked_current".len() + std::mem::size_of::<String>()) as u64 * 8,
-        16,
-    );
-    for roster in [false, true] {
-        let ledger = InputEvidenceBudgetLedger::new(StateMemoryLimits::default())?;
-        let phase = ResourceReadMaterial::new(&ledger, &scope())?;
-        let (agent, retained) = {
-            let _entry = phase.enter();
-            entry(&host, roster)?
-        };
-        assert_eq!(
-            agent.scheduling_posture.posture,
-            AgentSchedulingPosture::Idle
-        );
-        assert_eq!(
-            agent.scheduling_posture.reason,
-            "no queued input, active turn, runnable work, or active waits"
-        );
-        let posture = &agent.scheduling_posture;
-        let tail = std::iter::once(posture.reason.as_str())
-            .chain(
-                [
-                    posture.work_item_id.as_deref(),
-                    posture.task_id.as_deref(),
-                    posture.run_id.as_deref(),
-                ]
-                .into_iter()
-                .flatten(),
-            )
-            .fold(display, |sum, text| {
-                (
-                    sum.0 + (text.len() + std::mem::size_of::<String>()) as u64 * 8,
-                    sum.1 + 8,
-                )
-            });
-        let total = phase.finish()?;
-        assert!(Arc::ptr_eq(retained.as_ref().unwrap(), &phase.guard()?));
-        drop((agent, retained, phase));
-        assert_eq!(ledger.report()?.observed_bytes, 0);
-        let boundary = (total.0 - tail.0, total.1 - tail.1);
-        let prefix = (boundary.0 - diagnostic.0, boundary.1 - diagnostic.1);
-        for bytes in [true, false] {
-            let ledger = InputEvidenceBudgetLedger::new(StateMemoryLimits::default())?;
-            let phase = ResourceReadMaterial::with_test_limits(
-                &ledger,
-                &scope(),
-                if bytes { boundary.0 - 1 } else { total.0 },
-                if bytes { total.1 } else { boundary.1 - 1 },
-            )?;
-            let original = phase.guard()?;
-            {
-                let _entry = phase.enter();
-                assert!(Arc::ptr_eq(
-                    &ResourceReadMaterial::active_guard()?.unwrap(),
-                    &original
-                ));
-                let error = entry(&host, roster).unwrap_err();
-                assert_eq!(error.to_string(), "queue diagnostics admission");
-                assert!(error.downcast_ref::<std::io::Error>().is_some());
-                assert_eq!(ledger.report()?.observed_bytes, prefix.0);
-                assert!(phase.finish().is_err());
-                assert!(ResourceReadMaterial::active_guard().is_err());
-                let retry = entry(&host, roster).unwrap_err();
-                assert_eq!(
-                    retry
-                        .downcast_ref::<crate::runtime_error::RuntimeError>()
-                        .unwrap()
-                        .descriptor()
-                        .code,
-                    "context_resource_exhausted"
-                );
-                assert_eq!(ledger.report()?.observed_bytes, prefix.0);
-            }
-            drop(phase);
-            assert_eq!(ledger.report()?.observed_bytes, prefix.0);
-            drop(original);
-            assert_eq!(ledger.report()?.observed_bytes, 0);
-        }
-    }
-    Ok(())
+async fn diagnostic_posture_honors_original_allowance() -> Result<()> {
+    let (_home, host, _queue) = fixture().await?;
+    super::assert_host_projection_limits(&host)
 }
 
 #[tokio::test]

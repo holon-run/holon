@@ -710,7 +710,7 @@ impl RuntimeMutation {
             std::borrow::Cow::Borrowed(request)
         } else {
             let _resource_io = material.map(|material| material.enter());
-            crate::diagnostics::resource_io::admit_cloned_value(request)?;
+            crate::diagnostics::resource_io::admit_typed_cloned_value(request)?;
             let mut request = request.clone();
             // Replacing Input must not invalidate the scheduler on this root.
             if !request.windows.iter().any(|window| {

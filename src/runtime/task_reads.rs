@@ -324,6 +324,7 @@ impl RuntimeMutation {
         work_request: &super::resident_work::WorkCaptureRequest,
         task_request: &TaskCaptureRequest,
         material: &crate::diagnostics::resource_io::ResourceReadMaterial,
+        scheduling_plan: super::scheduling_reads::ContextSchedulingPlan,
     ) -> Result<super::resident_state::CapturedAgentContext> {
         let root = self.capture_published_root()?;
         let inputs=root.input_evidence.as_ref().ok_or_else(||
@@ -353,7 +354,7 @@ impl RuntimeMutation {
         );
         captured.scheduling = Some({
             let _resource_io = material.enter();
-            scheduling.capture(&super::resident_scheduling::SchedulingCaptureRequest::current())?
+            scheduling_plan.into_current_capture(&root.state, scheduling)?
         });
         captured.tasks = Some(tasks.capture(task_request)?);
         Ok(captured)

@@ -422,7 +422,7 @@ fn queue_record_moves_preserve_phase_and_items_slots_do_not_reset_failure() -> R
         // string fields have nine structural cells, regardless of text.
         let selected = record("moved", WorkItemState::Open).todo_list.remove(1);
         let todo_bytes = (serde_json::to_vec(&selected)?.len() as u64 * 4 + 9 * 128 + 512) * 8;
-        let todo_records = (9 + 16) * 8;
+        let todo_records = 3 * 8;
         let task_wait = wait(
             &record("moved", WorkItemState::Open),
             WaitConditionKind::Task,

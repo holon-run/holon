@@ -14,7 +14,16 @@ struct RunningMonitorFixture {
     monitor: RegisteredChildMonitorForTest,
 }
 async fn running_monitor_fixture() -> Result<RunningMonitorFixture> {
+    running_monitor_fixture_with_work(false).await
+}
+async fn running_monitor_fixture_with_work(bound: bool) -> Result<RunningMonitorFixture> {
     let (home, host, runtime) = crate::runtime::tests::support::host_backed_test_runtime().await;
+    if bound {
+        let work = runtime
+            .create_work_item("bound child monitor".into(), None, None, Vec::new())
+            .await?;
+        runtime.pick_work_item(work.id).await?;
+    }
     let target = host
         .create_named_agent("running-original-target", None)
         .await?;
@@ -125,6 +134,52 @@ impl RunningMonitorFixture {
         self.monitor.finish().await??;
         self.host.shutdown().await
     }
+}
+
+#[cfg(holon_lib_test_shard = "a")]
+#[tokio::test]
+async fn real_running_monitor_keeps_typed_work_binding_with_operator_authority() -> Result<()> {
+    let f = running_monitor_fixture_with_work(true).await?;
+    assert!(f.task.work_item_id.is_some());
+    let source = f.monitor.source.clone();
+    let runtime = f.runtime.clone();
+    let mut worker =
+        tokio::spawn(async move { runtime.continue_original_child_monitor(source).await });
+    tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            if worker.is_finished() {
+                let result = (&mut worker).await.context("real Running worker joined")?;
+                anyhow::bail!(
+                    "real Running monitor stopped before its retained result: {result:?}"
+                );
+            }
+            if f.monitor.source.running_confirmed() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        Ok::<(), anyhow::Error>(())
+    })
+    .await
+    .context("real Running monitor did not seal")??;
+    let frozen = f
+        .monitor
+        .source
+        .frozen_running()?
+        .context("Running capsule absent")?;
+    assert_eq!(frozen.message.work_item_id, f.task.work_item_id);
+    assert_eq!(
+        frozen.message.authority_class,
+        AuthorityClass::OperatorInstruction
+    );
+    assert_eq!(
+        f.runtime.task_record(&f.task.id).await?.unwrap().status,
+        TaskStatus::Running
+    );
+    worker.abort();
+    assert!(worker.await.unwrap_err().is_cancelled());
+    f.finish().await?;
+    Ok(())
 }
 
 #[cfg(holon_lib_test_shard = "a")]

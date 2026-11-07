@@ -359,9 +359,7 @@ impl RuntimeHandle {
         let state = &mutation.state;
         let planned_scheduling = {
             let _resource_io = resource_material.enter();
-            mutation.capture_scheduling_read(
-                &super::resident_scheduling::SchedulingCaptureRequest::current(),
-            )?
+            mutation.capture_context_scheduling_plan()?
         };
         let planned_work = mutation.capture_work(&work_request)?;
         anyhow::ensure!(
@@ -369,11 +367,12 @@ impl RuntimeHandle {
             "context Work scope mismatch"
         );
         anyhow::ensure!(
-            planned_scheduling.state.as_ref() == state
-                && planned_scheduling.scheduling.scope == planned_work.scope,
+            planned_scheduling.read.state.as_ref() == state
+                && planned_scheduling.read.scheduling.scope == planned_work.scope,
             "context Scheduling publication differs"
         );
-        let owned_triggers = planned_scheduling.scheduling.clone_trigger_records(
+        let planned_scheduling_revision = planned_scheduling.read.scheduling.revision;
+        let owned_triggers = planned_scheduling.read.scheduling.clone_trigger_records(
             &self.inner.input_evidence_budget,
             record_limit,
             byte_limit,
@@ -444,6 +443,7 @@ impl RuntimeHandle {
             &work_request,
             &task_request,
             &resource_material,
+            planned_scheduling,
         )?;
         let work = captured
             .work
@@ -543,8 +543,8 @@ impl RuntimeHandle {
                 "context Work revision differs from its same-root plan"
             );
             anyhow::ensure!(
-                scheduling.scope == planned_scheduling.scheduling.scope
-                    && scheduling.revision == planned_scheduling.scheduling.revision,
+                scheduling.scope == planned_work.scope
+                    && scheduling.revision == planned_scheduling_revision,
                 "context Scheduling revision differs from its same-root plan"
             );
             let inputs =
