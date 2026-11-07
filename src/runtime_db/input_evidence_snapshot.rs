@@ -356,7 +356,7 @@ pub(crate) enum CanonicalInputEvidence {
     },
 }
 impl CanonicalInputEvidence {
-    fn key(&self) -> Key {
+    pub(super) fn key(&self) -> Key {
         match self {
             Self::Message(x) => Key::new(Family::Message, &x.id),
             Self::Turn(x) => Key::new(Family::Turn, &x.turn_id),

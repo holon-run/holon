@@ -1174,11 +1174,31 @@ impl RuntimeDb {
             }
             // Repair pairs left inconsistent by a crash between the runtime
             // abort write and its attempt settlement (#3607).
-            finalize_interrupted_replay_sources_at_startup_tx(tx, recovered_at, &mut report)?;
+            let finalized = finalize_interrupted_replay_sources_at_startup_tx(tx, recovered_at, &mut report)?;
+            if input_scopes.is_some() {
+                for (agent, facts) in finalized.input_facts {
+                    input_facts.entry(agent).or_default().extend(facts);
+                }
+                for (agent, commands) in finalized.input_commands {
+                    input_commands.entry(agent).or_default().extend(commands);
+                }
+                for (agent, event_id) in finalized.events {
+                    if let Some(scope) = startup_current_recovery_scope(input_scopes, &agent) {
+                        super::current_read_writes::append_event_history_ack_tx(tx, scope, &event_id)?;
+                    }
+                }
+            }
+            for record in finalized.queue_writes {
+                current_queue_writes.insert(record.message_id.clone(), record);
+            }
             if let Some(metadata) = task_metadata { metadata.finish(tx, &input_commands)?; }
             let mut input_deltas = Vec::new();
             if let Some(scopes)=input_scopes {
                 for (agent,facts) in input_facts {
+                    // One startup may interrupt and then finalize the same
+                    // Attempt. Only the final canonical readback is a fact.
+                    let facts = facts.into_iter().map(|fact| (fact.key(), fact))
+                        .collect::<BTreeMap<_, _>>().into_values().collect::<Vec<_>>();
                     let authority=scopes.iter().find(|scope|scope.agent_id()==agent).ok_or_else(||super::input_evidence_snapshot::legacy_recovery::NeedsLegacyRecoveryPreparation(agent.clone()))?;
                     match authority {
                         StartupInputRecoveryScope::Current(scope)=>{
@@ -1259,11 +1279,20 @@ impl RuntimeDb {
 /// non-retryable failure (#3607). Finalization keeps outcome history intact
 /// and settles queue, settlement, and delivery records in the same
 /// transaction so the recovery scanner cannot re-enqueue the poisoned claim.
+#[derive(Default)]
+struct FinalizedInterruptedWrites {
+    input_facts: BTreeMap<String, Vec<super::input_evidence_snapshot::CanonicalInputEvidence>>,
+    input_commands:
+        BTreeMap<String, Vec<crate::domain::execution_protocol::ExecutionProtocolCommand>>,
+    queue_writes: Vec<QueueEntryRecord>,
+    events: Vec<(String, String)>,
+}
+
 fn finalize_interrupted_replay_sources_at_startup_tx(
     tx: &Transaction<'_>,
     recovered_at: chrono::DateTime<Utc>,
     report: &mut StartupRuntimeRecoveryReport,
-) -> Result<()> {
+) -> Result<FinalizedInterruptedWrites> {
     use crate::domain::execution_protocol::{
         ExecutionAttemptState, ExecutionProtocolCommand, FinalizeInterruptedExecution,
     };
@@ -1272,6 +1301,7 @@ fn finalize_interrupted_replay_sources_at_startup_tx(
         settle_activation_tx, TaskResultSettlementDisposition,
     };
 
+    let mut writes = FinalizedInterruptedWrites::default();
     let interrupted_agents: Vec<String> = {
         let mut statement = tx.prepare(
             "SELECT DISTINCT agent_id FROM execution_protocol_attempts
@@ -1325,7 +1355,20 @@ fn finalize_interrupted_replay_sources_at_startup_tx(
                     attempt.attempt_id
                 )
             })?;
-            execution_protocol_repository::persist_execution_commands_tx(tx, prepared)?;
+            let (_, facts) =
+                execution_protocol_repository::persist_execution_commands_with_touched_facts_tx(
+                    tx, prepared,
+                )?;
+            writes
+                .input_facts
+                .entry(agent_id.clone())
+                .or_default()
+                .extend(facts);
+            writes
+                .input_commands
+                .entry(agent_id.clone())
+                .or_default()
+                .push(command);
 
             let disposition = if completed {
                 TaskResultSettlementDisposition::ModelDelivered
@@ -1383,7 +1426,7 @@ fn finalize_interrupted_replay_sources_at_startup_tx(
                             .then_some("startup recovery finalized interrupted replay source"),
                     )?;
                     queue_status = Some(
-                        serde_json::to_value(recovered.status)?
+                        serde_json::to_value(&recovered.status)?
                             .as_str()
                             .unwrap_or("unknown")
                             .to_string(),
@@ -1392,10 +1435,11 @@ fn finalize_interrupted_replay_sources_at_startup_tx(
                     if !report.recovered_queue_agent_ids.contains(&agent_id) {
                         report.recovered_queue_agent_ids.push(agent_id.clone());
                     }
+                    writes.queue_writes.push(recovered);
                 }
             }
 
-            append_audit_event_tx(
+            let (event, _) = append_audit_event_tx(
                 tx,
                 Some(&agent_id),
                 &AuditEvent {
@@ -1422,10 +1466,11 @@ fn finalize_interrupted_replay_sources_at_startup_tx(
                     }),
                 },
             )?;
+            writes.events.push((agent_id.clone(), event.id));
             report.interrupted_attempts_finalized += 1;
         }
     }
-    Ok(())
+    Ok(writes)
 }
 
 fn startup_claim_recovery_tx(
@@ -2007,7 +2052,7 @@ fn startup_input_recovery_targets_tx(
             }
         }
     }
-    let mut statement=tx.prepare("SELECT payload_json FROM execution_protocol_attempts WHERE agent_id=?1 AND lifecycle_state='open'")?;
+    let mut statement=tx.prepare("SELECT payload_json FROM execution_protocol_attempts WHERE agent_id=?1 AND lifecycle_state IN ('open','interrupted')")?;
     for row in statement.query_map([agent], |row| row.get::<_, String>(0))? {
         let attempt: crate::domain::execution_protocol::ExecutionAttempt =
             serde_json::from_str(&row?)?;
@@ -9756,6 +9801,151 @@ mod tests {
             )?;
             Ok(())
         })?;
+        Ok(())
+    }
+
+    #[test]
+    fn startup_finalization_keeps_qualified_execution_source_in_sync() -> Result<()> {
+        startup_finalization_input_case(false, true)
+    }
+
+    #[test]
+    fn startup_interrupt_then_finalize_publishes_only_final_input_facts() -> Result<()> {
+        startup_finalization_input_case(true, true)
+    }
+
+    #[test]
+    fn startup_finalization_does_not_qualify_untracked_history() -> Result<()> {
+        startup_finalization_input_case(false, false)
+    }
+
+    fn startup_finalization_input_case(initially_open: bool, qualify_attempt: bool) -> Result<()> {
+        use crate::runtime::resident_input_evidence::{
+            InputEvidenceFamily as Family, InputEvidenceKey as Key,
+        };
+        use crate::runtime_db::input_evidence_snapshot::{
+            legacy_recovery::ExclusiveStartupInputRecovery, register_committed_input_evidence_tx,
+            validate_existing_input_evidence_tx, CanonicalInputEvidence as Fact,
+        };
+        let (dir, db) = runtime_db()?;
+        let scope = InputEvidenceScope {
+            agent_id: "agent-a".into(),
+            identity_incarnation: 1,
+        };
+        db.agent_states()
+            .upsert_for_fixture(&AgentState::new("agent-a"))?;
+        db.agent_identities().upsert(&active_agent("agent-a"))?;
+        db.transaction(|tx| {
+            let mut message = MessageEnvelope::new(
+                "agent-a",
+                crate::types::MessageKind::OperatorPrompt,
+                crate::types::MessageOrigin::Operator {
+                    actor_id: None,
+                    actor_display_name: None,
+                },
+                AuthorityClass::OperatorInstruction,
+                Priority::Normal,
+                crate::types::MessageBody::Text {
+                    text: "synthetic startup input".into(),
+                },
+            );
+            message.id = "message-execution".into();
+            message.turn_id = Some("turn-execution".into());
+            let message = append_message_tx(tx, &message)?.0;
+            let mut turn = poisoned_replay_turn("turn-execution", TurnTerminalKind::Aborted);
+            turn.current_work_item_id = None;
+            turn.owner = Some(crate::types::TurnOwner::Conversation {
+                interaction_id: message.id.clone(),
+            });
+            upsert_turn_record_tx(tx, &turn)?;
+            let mut admission =
+                execution_admission("message-execution", "attempt-execution", "unused");
+            admission.bootstrap = Some(ExecutionProtocolState::empty("agent-a"));
+            let ExecutionProtocolCommand::Admit(admit) = &mut admission.commands[0] else {
+                unreachable!()
+            };
+            admit.attempt.binding = ExecutionBinding::Conversation {
+                interaction_id: message.id.clone(),
+            };
+            admit.attempt.turn_id = Some(turn.turn_id.clone());
+            admit.attempt.admitted_fences.work_item_generation = None;
+            admit.attempt.admitted_fences.work_item_source_revision = None;
+            if !initially_open {
+                admission.commands.push(ExecutionProtocolCommand::Interrupt(
+                    crate::domain::execution_protocol::InterruptExecution {
+                        attempt_id: "attempt-execution".into(),
+                        outcome_id: "original-interruption".into(),
+                        reason: "synthetic interruption".into(),
+                        interrupted_at: Utc::now().to_rfc3339(),
+                    },
+                ));
+            }
+            let prepared = execution_protocol_repository::validate_execution_commands_tx(
+                tx,
+                "agent-a",
+                admission.bootstrap.as_ref(),
+                &admission.commands,
+                &[],
+                &[],
+                &[],
+            )?;
+            let (_, mut facts) =
+                execution_protocol_repository::persist_execution_commands_with_touched_facts_tx(
+                    tx, prepared,
+                )?;
+            if !qualify_attempt {
+                facts.clear();
+            }
+            facts.extend([Fact::Message(message), Fact::Turn(turn)]);
+            register_committed_input_evidence_tx(tx, &scope, &facts)?;
+            Ok(())
+        })?;
+        let lease_path = dir.path().join("state/runtime-maintenance.lock");
+        let lease = super::super::RuntimeDbLock::try_lock(&lease_path)?;
+        let handoff = tokio::sync::Mutex::new(());
+        let guard = handoff.try_lock().unwrap();
+        let capability = ExclusiveStartupInputRecovery::for_pre_activation_host(
+            &db,
+            &lease,
+            &lease_path,
+            &guard,
+        )?;
+        let scopes = db.startup_input_recovery_scopes(&["agent-a".into()])?;
+        let ledger = crate::runtime::input_evidence_budget::InputEvidenceBudgetLedger::new(
+            crate::config::StateMemoryLimits::default(),
+        )?;
+        let before = db.connection()?.query_row("SELECT payload_json FROM execution_protocol_attempts WHERE agent_id='agent-a' AND attempt_id='attempt-execution'", [], |row| row.get::<_, String>(0))?;
+        let failed = db.recover_interrupted_runtime_state_at_startup_inner(
+            Some(TransitionFaultPoint::BeforeCommit),
+            Some(&scopes),
+            Some((&capability, &ledger)),
+            None,
+        );
+        assert!(format!("{:#}", failed.expect_err("fault must roll back"))
+            .contains("injected runtime transition fault"));
+        assert_eq!(db.connection()?.query_row("SELECT payload_json FROM execution_protocol_attempts WHERE agent_id='agent-a' AND attempt_id='attempt-execution'", [], |row| row.get::<_, String>(0))?, before);
+        let result = db.recover_interrupted_runtime_state_at_startup_with_tasks_in_scopes(
+            &scopes,
+            &capability,
+            &ledger,
+        )?;
+        assert_eq!(result.report.interrupted_attempts_finalized, 1);
+        db.transaction(|tx| {
+            if !qualify_attempt {
+                assert!(!super::super::input_evidence_snapshot::existing_input_evidence_member_tx(tx, &scope, &Key::new(Family::Attempt, "attempt-execution"))?);
+                return Ok(());
+            }
+            validate_existing_input_evidence_tx(tx, &scope, &Key::new(Family::Attempt, "attempt-execution"))?;
+            let state: String = tx.query_row(
+                "SELECT json_extract(a.value,'$.state') FROM input_evidence_execution_current_sources c,json_each(c.metadata_json,'$.attempts') a WHERE c.agent_id='agent-a' AND c.identity_incarnation=1 AND c.source_message_id='message-execution' AND a.key='attempt-execution'",
+                [], |row| row.get(0),
+            )?;
+            assert_eq!(state, "settled");
+            Ok(())
+        })?;
+        let repeated =
+            db.recover_interrupted_runtime_state_at_startup_in_scopes(&scopes, &capability)?;
+        assert_eq!(repeated.report.interrupted_attempts_finalized, 0);
         Ok(())
     }
 

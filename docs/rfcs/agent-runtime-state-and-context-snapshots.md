@@ -4624,6 +4624,15 @@ Original writer deltas publish this observation and invalidate it on parent or
 source Turn writes/removals, including later writes in the same transaction.
 Captures retain their original cut; preparation and candidate budgets include
 the sidecar's count and bytes.
+Exclusive startup finalization must also retain the original qualified Input
+footprint of already interrupted Attempts. A `FinalizeInterrupted` write
+publishes its final canonical SQL readback through that original actor's Input
+acknowledgement, together with any Queue readbacks and Event history ACKs in
+the same transaction. When interruption and finalization touch the same key,
+the actor publishes only the last readback. Existing membership checks remain
+mandatory; this does not qualify raw history or reconcile previously stale
+projections. See [the focused decision](../implementation-decisions/startup-finalization-input-acknowledgements.md).
+
 Exclusive startup recovery prepares existing Queue address authority before its
 first CAS, then qualifies only actual changed addresses in that same transaction.
 Its ACK retains the original material; a raw/unprepared preimage remains
