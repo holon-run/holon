@@ -675,10 +675,15 @@ async fn actual_work_plan_quota_rejects_before_file_work_or_receipt_side_effects
     };
     let previous = children()?;
     let header = runtime.context_resource_material()?.finish()?;
+    let identity = runtime.agent_identity_view().await?;
+    let scope = crate::runtime::resident_input_evidence::InputEvidenceScope {
+        agent_id: identity.agent_id,
+        identity_incarnation: identity.incarnation,
+    };
     for repeats in [8 * 1024, 32 * 1024] {
         let material = crate::diagnostics::resource_io::ResourceReadMaterial::with_test_limits(
             &runtime.inner.input_evidence_budget,
-            &runtime.inner.resources.scope,
+            &scope,
             header.0,
             header.1,
         )?;
