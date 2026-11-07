@@ -66,6 +66,13 @@
         "summary": "持续维护依赖更新策略、兼容性证据和优先级建议；不评定漏洞等级，也不替代实现工作或合并审阅。"
       }
     },
+    "design-steward": {
+      "category": "content",
+      "zh-CN": {
+        "name": "设计方向管家",
+        "summary": "持续维护已授权的设计参考、候选方向、人工选定和批判闭合；默认只导入或起草，不改生产设计文件、不实现产品代码。"
+      }
+    },
     "docs-steward": {
       "category": "content",
       "en": {
