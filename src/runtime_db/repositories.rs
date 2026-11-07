@@ -4357,23 +4357,19 @@ impl TimerRepository<'_> {
                             .max(0)
                     })
                     .unwrap_or(0);
-                actual_audits.push(
-                    append_audit_event_tx(
-                        tx,
-                        Some(&command.record.agent_id),
-                        &AuditEvent::legacy(
-                            "timer_wake_suppressed",
-                            serde_json::json!({
-                                "timer_id": command.record.id,
-                                "agent_id": command.record.agent_id,
-                                "fire_count": command.record.fire_count,
-                                "pending_message_id": pending_message_id,
-                                "pending_age_ms": pending_age_ms,
-                            }),
-                        ),
-                    )?
-                    .0,
+                let mut event = AuditEvent::legacy(
+                    "timer_wake_suppressed",
+                    serde_json::json!({
+                        "timer_id": command.record.id,
+                        "agent_id": command.record.agent_id,
+                        "fire_count": command.record.fire_count,
+                        "pending_message_id": pending_message_id,
+                        "pending_age_ms": pending_age_ms,
+                    }),
                 );
+                event.id = timer_suppression_event_id(&command.record)?;
+                actual_audits
+                    .push(append_audit_event_tx(tx, Some(&command.record.agent_id), &event)?.0);
             }
             upsert_timer_tx(tx, &command.record)?;
             return Ok(super::input_evidence_writes::InputEvidenceCommit {
@@ -4786,6 +4782,57 @@ const TIMER_CANCELLATION_WAITS_SQL: &str =
                        OR json_extract(a.payload_json, '$.source_message_id') = w.trigger_message_id))))
          ORDER BY w.wait_condition_id";
 
+pub(in crate::runtime_db) fn timer_suppression_event_id(timer: &TimerRecord) -> Result<String> {
+    crate::diagnostics::resource_io::charge_owned_metadata(
+        u64::try_from(timer.id.len())?
+            .checked_add(64)
+            .context("Timer audit address overflow")?,
+        1,
+    )?;
+    Ok(format!(
+        "audit:timer-wake-suppressed:{}:{}",
+        timer.id, timer.fire_count
+    ))
+}
+
+fn timer_work_cancellation_event_id(work_id: &str, revision: u64) -> Result<String> {
+    crate::diagnostics::resource_io::charge_owned_metadata(
+        u64::try_from(work_id.len())?
+            .checked_add(64)
+            .context("Timer audit address overflow")?,
+        1,
+    )?;
+    Ok(format!(
+        "audit:timer-work-item-cancelled:{work_id}:{revision}"
+    ))
+}
+
+pub(in crate::runtime_db) fn visit_timer_cancellation_work_event_ids_tx(
+    tx: &Transaction<'_>,
+    timer: &TimerRecord,
+    mut visit: impl FnMut(&str) -> Result<()>,
+) -> Result<()> {
+    let sql = format!(
+        "SELECT work.work_item_id, work.revision
+         FROM ({TIMER_CANCELLATION_WAITS_SQL}) selected
+         JOIN work_items work ON work.agent_id=?1
+           AND work.work_item_id=json_extract(selected.payload_json,'$.work_item_id')
+         WHERE work.state='open'
+           AND json_extract(work.payload_json,'$.blocked_by_wait_id')=selected.wait_condition_id"
+    );
+    let mut statement = tx.prepare(&sql)?;
+    let mut rows = statement.query(params![timer.agent_id, timer.id])?;
+    while let Some(row) = rows.next()? {
+        let revision = row
+            .get::<_, u64>(1)?
+            .checked_add(1)
+            .context("work item revision overflow")?;
+        let id = timer_work_cancellation_event_id(row.get_ref(0)?.as_str()?, revision)?;
+        visit(&id)?;
+    }
+    Ok(())
+}
+
 pub(in crate::runtime_db) fn visit_timer_cancellation_wait_ids_tx(
     tx: &Transaction<'_>,
     timer: &TimerRecord,
@@ -4884,10 +4931,7 @@ fn settle_cancelled_timer_waits_tx(
                     RuntimeEventKind::WorkItemWritten,
                     &WorkItemLifecycleAuditEvent::from_work_item("timer_cancelled", &work_item),
                 )?;
-                event.id = format!(
-                    "audit:timer-work-item-cancelled:{}:{}",
-                    work_item.id, work_item.revision
-                );
+                event.id = timer_work_cancellation_event_id(&work_item.id, work_item.revision)?;
                 event.created_at = cancelled_at;
                 event.data["timer_id"] = serde_json::json!(timer.id);
                 event.data["wait_condition_id"] = serde_json::json!(condition.id);

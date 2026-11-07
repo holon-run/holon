@@ -78,6 +78,15 @@ pub(super) fn visit_original(
             if let Some(id) = timer.queue_write_address() {
                 visit(CurrentFamily::Queue, id)?;
             }
+            if let PreparedTimerTransition::Fire {
+                command,
+                pending: Some(_),
+                ..
+            } = timer
+            {
+                let id = repositories::timer_suppression_event_id(&command.record)?;
+                visit(CurrentFamily::Event, &id)?;
+            }
         }
         InputTransitionCommand::TaskResult(_) => {}
         InputTransitionCommand::LiveInputAttachment(command) => {

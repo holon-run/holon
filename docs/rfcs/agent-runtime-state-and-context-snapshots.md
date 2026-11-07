@@ -9,6 +9,24 @@ issue:
 
 # Agent Runtime State and Context Snapshots
 
+## Operator input and generated Timer events
+
+Operator input admitted before tool execution has not yet been observed by the
+model that proposed the tool batch. `WaitFor`, `CompleteWorkItem` and
+`PickWorkItem` must return a recoverable tool result instead of committing that
+older terminal decision. The next model round receives the original admitted
+input and decides again. Nonterminal tools retain their existing behavior;
+input arriving after an actual terminal transition remains queued for the next
+activation. Neither path may acknowledge an input without exposing it to a
+subsequent model request.
+
+Timer producers must declare the exact audit addresses before their canonical
+writes. A suppressed repeated wake uses a stable timer/fire-count audit ID.
+Cancellation declares the audit for every open Work item whose exact bound
+wait will be cancelled, including the resulting Work revision. Publication
+retains the complete Current Event membership check: a missing producer ACK is
+an error, never permission to omit an event or qualify it after the write.
+
 ## Resource estimates and runtime availability
 
 Cumulative `ResourceReadMaterial` estimates are diagnostic observations only.

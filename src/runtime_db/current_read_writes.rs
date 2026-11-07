@@ -442,7 +442,12 @@ impl<'tx, 'conn> OriginalCurrentWrites<'tx, 'conn> {
             }
             super::repositories::visit_timer_cancellation_wait_ids_tx(tx, &command.record, |id| {
                 visit("audit:timer-wait-cancelled:", id)
-            })
+            })?;
+            super::repositories::visit_timer_cancellation_work_event_ids_tx(
+                tx,
+                &command.record,
+                |id| visit("", id),
+            )
         };
         let address_bytes = |prefix: &str, id: &str| {
             prefix

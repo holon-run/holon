@@ -2893,6 +2893,111 @@ mod mutation_tests {
         (home, workspace, runtime, timer)
     }
 
+    #[tokio::test(start_paused = true)]
+    async fn repeat_timer_suppressed_wake_keeps_complete_current_event_ack() {
+        let (_home, _workspace, runtime, mut timer) = timer_runtime().await;
+        runtime.await_initial_resources().await;
+        let _refresh = runtime.hold_resource_refresh_for_test().await.unwrap();
+        let selection = crate::runtime_db::current_query::CurrentSelection {
+            events_after: Some(0),
+            ..Default::default()
+        };
+        let mut owner = runtime.begin_mutation().await.unwrap();
+        owner.prepare_current_query(Some(&selection)).await.unwrap();
+        drop(owner);
+        runtime.fire_timer_record(&mut timer).await.unwrap();
+        let first = runtime
+            .runtime_db()
+            .timers()
+            .pending_wake(&timer.id)
+            .unwrap()
+            .unwrap();
+        tokio::time::advance(Duration::from_millis(1_000)).await;
+        runtime.fire_timer_record(&mut timer).await.unwrap();
+        assert_eq!(timer.fire_count, 2);
+        assert_eq!(
+            runtime
+                .runtime_db()
+                .timers()
+                .pending_wake(&timer.id)
+                .unwrap()
+                .unwrap()
+                .message_id,
+            first.message_id
+        );
+        assert_eq!(runtime.agent_state().await.unwrap().pending, 1);
+        assert!(runtime.inner.mutation_owner.capture().unwrap().is_some());
+        let events = runtime.storage().read_recent_events(100).unwrap();
+        assert_eq!(
+            events
+                .iter()
+                .filter(|event| event.kind == "timer_wake_suppressed")
+                .count(),
+            1
+        );
+    }
+
+    #[tokio::test]
+    async fn timer_cancel_bound_work_keeps_complete_current_event_ack() {
+        let (_home, _workspace, runtime, timer) = timer_runtime().await;
+        runtime.await_initial_resources().await;
+        let _refresh = runtime.hold_resource_refresh_for_test().await.unwrap();
+        let work = Box::pin(runtime.create_work_item(
+            "cancel exact timer wait".into(),
+            None,
+            None,
+            Vec::new(),
+        ))
+        .await
+        .unwrap();
+        let registration = Box::pin(runtime.register_wait_for(
+            "default",
+            Some(work.id.clone()),
+            WaitForWakeKind::Timer,
+            Some(timer.id.clone()),
+            "waiting".into(),
+            None,
+        ))
+        .await
+        .unwrap();
+        let selection = crate::runtime_db::current_query::CurrentSelection {
+            events_after: Some(0),
+            ..Default::default()
+        };
+        let mut owner = runtime.begin_mutation().await.unwrap();
+        owner.prepare_current_query(Some(&selection)).await.unwrap();
+        drop(owner);
+        assert_eq!(
+            runtime.cancel_timer(&timer.id).await.unwrap().status,
+            TimerStatus::Cancelled
+        );
+        let wait = runtime
+            .runtime_db()
+            .wait_conditions()
+            .latest_for_agent("default")
+            .unwrap()
+            .into_iter()
+            .find(|wait| wait.id == registration.condition.id)
+            .unwrap();
+        assert_eq!(wait.status, WaitConditionStatus::Cancelled);
+        let work = runtime.latest_work_item(&work.id).await.unwrap().unwrap();
+        assert!(work
+            .blocked_by
+            .as_deref()
+            .unwrap()
+            .starts_with("timer_cancelled:"));
+        assert!(work.blocked_by_wait_id.is_none());
+        assert!(runtime.inner.mutation_owner.capture().unwrap().is_some());
+        let events = runtime.storage().read_recent_events(100).unwrap();
+        assert!(events.iter().any(|event| event.id
+            == format!(
+                "audit:timer-work-item-cancelled:{}:{}",
+                work.id, work.revision
+            )));
+        runtime.cancel_timer(&timer.id).await.unwrap();
+        assert_eq!(runtime.storage().read_recent_events(100).unwrap(), events);
+    }
+
     #[tokio::test]
     async fn repeat_timer_cancel_preserves_first_original_audit() {
         let (_home, _workspace, runtime, timer) = timer_runtime().await;
