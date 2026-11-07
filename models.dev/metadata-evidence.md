@@ -5,6 +5,55 @@ unchanged catalog facts are preserved, not newly certified as vendor hard
 limits. An upstream candidate is evidence to review, not permission to change
 an endpoint, region, subscription entitlement, or runtime output policy.
 
+## Incremental review: 2026-11-08
+
+The fixed models.dev payload is
+`6a3f0abfcc9a357d8f29230659697e4ba1a3793ebebb3d9838ecd4160e6f84a6`,
+sampled November 7 at 20:37:27 UTC for the November 8 Beijing cycle.
+The [endpoint review](endpoint-review.md#2026-11-08-incremental-review)
+records the separate 30-endpoint audit; none needs a new static route.
+
+The [official OpenRouter listing](https://openrouter.ai/api/v1/models),
+raw SHA-256
+`4a3fd5723e060683708fbd53caf5475d95ad496dab64e9b73b7c8c6936550f28`,
+independently agrees with these models.dev discovery projections:
+
+| OpenRouter model ID | Reviewed projection |
+| --- | --- |
+| `liquid/lfm-3-1.7b` | New text-only discovery record; context 262144, output ceiling 8192, tools and reasoning. |
+| `liquid/lfm-3-1.7b:free` | Separate free discovery record with the same capacity/modality fields. |
+| `minimax/minimax-m2.5` | Output projection 32768 → 58982 from `top_provider.max_completion_tokens`; context unchanged. |
+| `moonshotai/kimi-k2.5` | Output projection 235929 → 65536 from the same provider-local field; context unchanged. |
+
+The existing adapter also populates `default_max_output_tokens` from that
+output ceiling. This remains a discovery projection, not newly established
+request-omission behavior or a subscription entitlement. Liquid's listing
+warns that prompts and outputs may be retained and used; discovery does not
+change provider selection or account settings.
+
+For `venice/deepseek-v4-1-flash-1017-ultrafast`, the fixed models.dev object
+adds `image` to input modalities. Only the remote discovery record's
+`image_input` changes to true; capacity, effort, tools and defaults are
+unchanged. No independent authenticated Venice qualification or inference
+was performed, and this does not certify another provider's DeepSeek route.
+
+### Correct Crouton review provenance without changing facts
+
+The two pre-existing `opencode-go@default/crouton-alpha-free` and
+`opencode-go@messages/crouton-alpha-free` review annotations accidentally
+described native Chat Hy4 and translated Messages/Responses. Correct only
+their reason and review date: Crouton is native **Responses**, while
+**Chat/Messages** remain conservative translations. The newly sampled
+[Go listing](https://opencode.ai/inference/go/v1/models) still has the same 30 IDs,
+and its Crouton object still publishes the exact Responses base URL, image
+input, context 1048576, output ceiling 270000 and
+`minimal/low/medium/high/xhigh/max` efforts. The service default is unknown.
+
+All 632 stored facts, inputs, status classifications, unknown fields and
+execution budgets are retained. Regenerate the summary through the real
+refresh command; do not edit its explanation separately. Neither correction
+grants the translations capacity, vision, reasoning or agent-turn support.
+
 ## Incremental review: 2026-11-07
 
 The fixed models.dev payload is
