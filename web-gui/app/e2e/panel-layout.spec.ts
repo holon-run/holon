@@ -247,7 +247,7 @@ test("work item details prioritize results and keep technical fields and plan na
     await page.getByRole("button", { name: "Context side panel", exact: true }).click();
   }
   await expect(panel).toBeVisible();
-  await panel.getByRole("button", { name: "Refresh agent and work items", exact: true }).click();
+  await page.getByRole("button", { name: "Refresh agent detail", exact: true }).click();
   await panel.locator(".work-item-button").filter({ hasText: work.objective }).click();
   const detail = panel.locator(".work-item-detail");
   await expect(detail.locator(".detail-title")).toHaveText(work.objective);
