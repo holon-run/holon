@@ -110,13 +110,25 @@ pub(crate) fn task_record<'a>(
 }
 
 pub(crate) fn task_output_status(tasks: &CapturedTasks, id: &str) -> Result<TaskStatus> {
-    let task = task_record(tasks, id)?.ok_or_else(|| {
+    Ok(task_output_status_opt(tasks, id)?.ok_or_else(|| {
         crate::runtime_error::RuntimeError::not_found(
             "task_not_found",
             format!("task {id} not found"),
         )
         .with_safe_context("task_id", id)
-    })?;
+    })?)
+}
+
+/// Status read that reports a record missing from the captured view as `None`.
+/// Stop-settle callers need this: a stopped task may settle and leave the
+/// capture, which is a settled outcome rather than a read error.
+pub(crate) fn task_output_status_opt(
+    tasks: &CapturedTasks,
+    id: &str,
+) -> Result<Option<TaskStatus>> {
+    let Some(task) = task_record(tasks, id)? else {
+        return Ok(None);
+    };
     if matches!(
         task.status,
         TaskStatus::Completed
@@ -125,12 +137,12 @@ pub(crate) fn task_output_status(tasks: &CapturedTasks, id: &str) -> Result<Task
             | TaskStatus::Interrupted
             | TaskStatus::Cancelling
     ) {
-        return Ok(task.status.clone());
+        return Ok(Some(task.status.clone()));
     }
-    Ok(tasks.output_source(id)?.map_or_else(
+    Ok(Some(tasks.output_source(id)?.map_or_else(
         || task.status.clone(),
         |source| source.message_status.clone(),
-    ))
+    )))
 }
 
 /// Original active_for_agent order, before any display limit.
