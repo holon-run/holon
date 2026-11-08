@@ -1,6 +1,7 @@
 import Foundation
 import HolonClient
 import Observation
+import UIKit
 import XCTest
 @testable import Holon
 
@@ -327,6 +328,14 @@ private actor ReadingFakeTransport: ReadingTransport {
         for value in connections.values { value.1.close() }
         connections.removeAll()
     }
+}
+
+private actor ReadingAvatarFixture: AgentAvatarTransport {
+    let data: Data
+    private(set) var handshakes = 0
+    init(data: Data) { self.data = data }
+    func supportsAvatars() async throws -> Bool { handshakes += 1; return true }
+    func image(agentID: String, expression: HolonAvatarExpression) async throws -> Data { data }
 }
 
 @MainActor
@@ -2288,6 +2297,44 @@ final class ReadingCoordinatorTests: XCTestCase {
         XCTAssertFalse(coordinator.isShowingCachedContent)
         try await wait { await fake.counts().1 == 1 }
         coordinator.disconnect()
+    }
+
+    func testConversationFirstEpochChangeInvalidatesAvatarsBeforeRosterSucceedsOrFails() async throws {
+        for rosterFails in [false, true] {
+            let (coordinator, fake, _) = try await start()
+            try await wait { coordinator.isRosterCurrent && !coordinator.isRefreshing }
+            let format = UIGraphicsImageRendererFormat()
+            format.scale = 1
+            let data = UIGraphicsImageRenderer(size: CGSize(width: 128, height: 128), format: format)
+                .pngData { $0.fill(CGRect(x: 0, y: 0, width: 128, height: 128)) }
+            let avatar = ReadingAvatarFixture(data: data)
+            coordinator.avatars.activate(transport: avatar)
+            coordinator.avatars.setOnline(true)
+            coordinator.avatars.request(agentID: "A", expression: .neutral)
+            try await wait { coordinator.avatars.cachedCount == 1 }
+            let originalSession = coordinator.avatars.sessionID
+
+            await coordinator.refresh()
+            XCTAssertEqual(coordinator.avatars.sessionID, originalSession, "Same epoch keeps the resource session")
+            await fake.replaceEpoch()
+            await fake.holdRoster()
+            if rosterFails { await fake.setRosterError(ReadingFakeTransport.Failure.offline) }
+            let refresh = Task { await coordinator.refresh() }
+            try await wait { coordinator.snapshot?.eventLogEpoch == "replacement" && coordinator.status == .live }
+            XCTAssertFalse(coordinator.isRosterCurrent)
+            XCTAssertNotEqual(coordinator.avatars.sessionID, originalSession)
+            XCTAssertEqual(coordinator.avatars.cachedCount, 0)
+            XCTAssertNil(coordinator.avatars.image(agentID: "A", expression: .neutral))
+            let replacementSession = coordinator.avatars.sessionID
+            coordinator.avatars.request(agentID: "A", expression: .neutral)
+            try await wait { coordinator.avatars.cachedCount == 1 }
+            let handshakes = await avatar.handshakes
+            XCTAssertEqual(handshakes, 2, "New epoch must renegotiate before refetch")
+            await fake.releaseRoster()
+            await refresh.value
+            XCTAssertEqual(coordinator.avatars.sessionID, replacementSession, "Matching late roster must not reset twice")
+            coordinator.disconnect()
+        }
     }
 
     func testFullRefreshInvalidatesRosterUntilCurrentRosterSucceeds() async throws {

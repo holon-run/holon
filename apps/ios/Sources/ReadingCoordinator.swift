@@ -25,6 +25,7 @@ final class ReadingCoordinator {
     private(set) var agents: [ReadingAgent] = []
     private(set) var rosterRevision = 0
     @ObservationIgnored private var rosterEpoch: String?
+    @ObservationIgnored private var observedResourceEpoch: String?
     // Only a successful roster response in the current context authorizes missing-agent decisions.
     private(set) var isRosterCurrent = false
     private(set) var selectedAgentID: String?
@@ -138,6 +139,7 @@ final class ReadingCoordinator {
 
     private func applyActivation(transport: any ReadingTransport, identity: HolonConnectionIdentity, apiBaseURL: URL) {
         avatars.disconnect()
+        observedResourceEpoch = nil
         let next = ReadingPartition(apiBaseURL: apiBaseURL, identity: identity)
         if partition != next || next == nil { cancelReconnect() }
         reportSessionID = UUID()
@@ -169,6 +171,7 @@ final class ReadingCoordinator {
 
     private func applyOfflineActivation(partition: ReadingPartition) {
         avatars.disconnect()
+        observedResourceEpoch = nil
         if self.partition != partition { cancelReconnect() }
         reportSessionID = UUID()
         reportDrafts.removeAll()
@@ -207,6 +210,7 @@ final class ReadingCoordinator {
 
     private func applyDisconnect() {
         avatars.disconnect()
+        observedResourceEpoch = nil
         cancelReconnect()
         reportSessionID = UUID()
         reportDrafts.removeAll()
@@ -468,8 +472,13 @@ final class ReadingCoordinator {
             }
     }
 
+    private func observeResourceEpoch(_ epoch: String) {
+        if let observedResourceEpoch, observedResourceEpoch != epoch { avatars.invalidateResources() }
+        observedResourceEpoch = epoch
+    }
+
     private func applyRoster(_ roster: ReadingRoster) {
-        if let rosterEpoch, rosterEpoch != roster.eventLogEpoch { avatars.invalidateResources() }
+        observeResourceEpoch(roster.eventLogEpoch)
         let previous = Dictionary(uniqueKeysWithValues: agents.map { ($0.id, $0) })
         agents = boundedRoster(roster.agents).map { agent in
             var value = agent
@@ -599,6 +608,7 @@ final class ReadingCoordinator {
                             try self.validate(value)
                             let previousActivities = self.activities
                             let displayed = try ReadingSnapshotWindow.merging(value, history: self.snapshot)
+                            self.observeResourceEpoch(value.eventLogEpoch)
                             if let old = self.snapshot, old.eventLogEpoch != value.eventLogEpoch {
                                 self.clearBriefCache()
                                 self.readingPosition = nil
@@ -686,6 +696,7 @@ final class ReadingCoordinator {
                             } else {
                                 displayed = updated
                             }
+                            self.observeResourceEpoch(updated.eventLogEpoch)
                             self.snapshot = displayed
                             if previous?.eventLogEpoch != updated.eventLogEpoch {
                                 self.clearBriefCache()
