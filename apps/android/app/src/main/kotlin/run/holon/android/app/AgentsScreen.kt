@@ -1,4 +1,7 @@
-@file:OptIn(androidx.compose.material3.ExperimentalMaterial3Api::class)
+@file:OptIn(
+    androidx.compose.material3.ExperimentalMaterial3Api::class,
+    androidx.compose.foundation.layout.ExperimentalLayoutApi::class,
+)
 
 package run.holon.android.app
 
@@ -17,13 +20,16 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
@@ -38,6 +44,7 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
+import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.material3.pulltorefresh.PullToRefreshBox
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.mutableStateOf
@@ -45,6 +52,8 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import run.holon.android.sdk.AgentSummary
@@ -72,8 +81,10 @@ internal fun AgentsScreen(state: HolonUiState, viewModel: AgentsActions) {
         containerColor = MaterialTheme.colorScheme.background,
         topBar = {
             TopAppBar(
+                expandedHeight = maxOf(64.dp, 48.dp * LocalDensity.current.fontScale),
+                colors = TopAppBarDefaults.topAppBarColors(containerColor = MaterialTheme.colorScheme.background),
                 title = {
-                    Column(Modifier.clickable { networkChooser = true }) {
+                    Column(Modifier.heightIn(min = 48.dp).clickable(role = Role.Button) { networkChooser = true }) {
                         Row(verticalAlignment = Alignment.CenterVertically) {
                             Text(state.networkProfiles.firstOrNull { it.networkId == (state.switchingNetworkId ?: state.session?.networkId) }?.displayName ?: "Holon", style = MaterialTheme.typography.titleMedium, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f, fill = false))
                             Icon(Icons.Default.ExpandMore, contentDescription = ui("切换网络"), modifier = Modifier.size(20.dp))
@@ -83,6 +94,8 @@ internal fun AgentsScreen(state: HolonUiState, viewModel: AgentsActions) {
                                 (state.lastSyncedAt?.let { " ${syncClock(it)}" } ?: ""),
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
                         )
                     }
                 },
@@ -145,8 +158,9 @@ internal fun AgentsScreen(state: HolonUiState, viewModel: AgentsActions) {
                                 else if (state.readBriefsLoaded && agent.hasUnreadBrief(state.readBriefIds)) 1
                                 else 0,
                             onClick = { viewModel.openAgent(agent) },
+                            live = state.online && state.rosterState == AgentRosterState.Synced && !switchingNetwork,
                         )
-                        HorizontalDivider(modifier = Modifier.padding(start = 16.dp), color = MaterialTheme.colorScheme.outlineVariant)
+                        HorizontalDivider(modifier = Modifier.padding(start = 76.dp, end = 16.dp), color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.6f))
                     }
                     if (filtered.isEmpty()) item {
                         when {
@@ -188,53 +202,69 @@ internal fun AgentConversationRow(
     compact: Boolean = false,
     unreadCount: Int = 0,
     operatorPreview: OperatorPreview? = null,
+    live: Boolean = true,
     onClick: () -> Unit,
 ) {
     val tone = agent.statusTone()
+    val needsReply = agent.needsReply()
     val briefPreview = plainTextPreview(agent.latestBrief?.preview.orEmpty())
     val inputPreview = agent.inputPreview(operatorPreview)?.let(::plainTextPreview)
     val postureReason = agent.postureReason.orEmpty()
+    val activityTime = (operatorPreview?.createdAt.takeIf { inputPreview != null } ?: agent.latestBrief?.createdAt)?.let(::relativeTime)
     Surface(
         modifier = Modifier.fillMaxWidth().clickable(onClick = onClick),
-        color = MaterialTheme.colorScheme.background,
+        color = if (needsReply) MaterialTheme.colorScheme.tertiaryContainer else MaterialTheme.colorScheme.background,
     ) {
-        Column(
-            modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = if (compact) 10.dp else 12.dp),
-            verticalArrangement = Arrangement.spacedBy(5.dp),
+        Row(
+            modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = if (compact) 12.dp else 16.dp),
+            horizontalArrangement = Arrangement.spacedBy(12.dp),
         ) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Text(agent.displayName, style = MaterialTheme.typography.titleMedium, modifier = Modifier.weight(1f))
-                CompactStatus(agent.statusLabel(), tone)
-            }
-            Text(
-                when {
-                    !inputPreview.isNullOrBlank() -> inputPreview
-                    agent.needsReply() -> ui("正在等你回应")
-                    briefPreview.isNotBlank() -> briefPreview
-                    postureReason.isNotBlank() -> plainTextPreview(postureReason)
-                    else -> ui("暂无新的工作摘要")
-                },
-                maxLines = if (compact) 1 else 2,
-                overflow = TextOverflow.Ellipsis,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                style = MaterialTheme.typography.bodyMedium,
-            )
-            if (!compact) {
+            AgentAvatar(agent = agent, size = 48.dp, live = live)
+            Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(5.dp)) {
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
-                    if (unreadCount > 0) {
+                    Text(agent.displayName, style = MaterialTheme.typography.titleMedium, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f))
+                    if (!compact && activityTime != null) {
                         Text(
-                            if (unreadCount == 1) ui("新结果") else ui("$unreadCount 个未读结果"),
+                            activityTime,
+                            modifier = Modifier.widthIn(max = 88.dp),
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
                             style = MaterialTheme.typography.labelSmall,
-                            color = MaterialTheme.colorScheme.primary,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
                     }
+                }
+                Text(
+                    when {
+                        !inputPreview.isNullOrBlank() -> inputPreview
+                        needsReply -> ui("正在等你回应")
+                        briefPreview.isNotBlank() -> briefPreview
+                        postureReason.isNotBlank() -> plainTextPreview(postureReason)
+                        else -> ui("暂无新的工作摘要")
+                    },
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    style = MaterialTheme.typography.bodyMedium,
+                )
+                FlowRow(horizontalArrangement = Arrangement.spacedBy(10.dp), verticalArrangement = Arrangement.spacedBy(2.dp)) {
                     Text(
-                        listOfNotNull(
-                            (operatorPreview?.createdAt.takeIf { inputPreview != null } ?: agent.latestBrief?.createdAt)?.let(::relativeTime),
-                            agent.currentWorkItemId?.let { ui("有进行中的 WorkItem") },
-                        ).joinToString(" · ").ifBlank { ui(if (inputPreview != null) "已提交输入" else "尚无活动") },
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis,
+                        agent.statusLabel(),
+                        style = MaterialTheme.typography.labelMedium,
+                        color = if (needsReply) MaterialTheme.colorScheme.onTertiaryContainer else toneColor(tone),
+                    )
+                    if (unreadCount > 0) Text(
+                        if (unreadCount == 1) ui("新结果") else ui("$unreadCount 个未读结果"),
+                        style = MaterialTheme.typography.labelMedium,
+                        color = if (needsReply) MaterialTheme.colorScheme.onSurface else MaterialTheme.colorScheme.primary,
+                    )
+                    if (!compact && agent.currentWorkItemId != null) Text(
+                        ui("有进行中的 WorkItem"),
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    if (!compact && activityTime == null && agent.currentWorkItemId == null) Text(
+                        ui(if (inputPreview != null) "已提交输入" else "尚无活动"),
                         style = MaterialTheme.typography.labelSmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )

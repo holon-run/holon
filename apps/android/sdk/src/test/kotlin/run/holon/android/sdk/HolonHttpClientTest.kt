@@ -8,6 +8,7 @@ import okhttp3.OkHttpClient
 import okhttp3.mockwebserver.MockResponse
 import okhttp3.mockwebserver.MockWebServer
 import okhttp3.mockwebserver.SocketPolicy
+import okio.Buffer
 import org.junit.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertContentEquals
@@ -17,6 +18,351 @@ import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
 class HolonHttpClientTest {
+    @Test
+    fun `avatar reads PNG with pinned defaults and bearer authentication`() {
+        MockWebServer().use { server ->
+            val bytes = byteArrayOf(0x89.toByte(), 0x50, 0x4e, 0x47)
+            server.enqueue(pngResponse(bytes).setHeader("Content-Type", "image/png; charset=binary"))
+            val client = HolonHttpClient(
+                server.url("/api/").toString(),
+                bearerTokenProvider = BearerTokenProvider { "avatar-token" },
+            )
+
+            assertContentEquals(bytes, client.readAgentAvatar("agent_1"))
+
+            val request = server.takeRequest()
+            assertEquals("GET", request.method)
+            assertEquals(
+                "/api/agents/agent_1/avatar?version=light-mech-1-vivid-2&expression=neutral&format=png&size=128",
+                request.path,
+            )
+            assertEquals("Bearer avatar-token", request.getHeader("Authorization"))
+            assertEquals("image/png", request.getHeader("Accept"))
+            assertEquals(1, server.requestCount)
+        }
+    }
+
+    @Test
+    fun `avatar expressions and supported sizes use their explicit wire values`() {
+        assertEquals(
+            listOf("neutral", "focused", "questioning", "waiting", "sleeping"),
+            HolonAvatarExpression.entries.map { it.wireValue },
+        )
+        MockWebServer().use { server ->
+            val client = HolonHttpClient(server.url("/").toString())
+            HolonAvatarExpression.entries.zip(listOf(32, 64, 128, 256, 512)).forEach { (expression, size) ->
+                server.enqueue(pngResponse())
+
+                client.readAgentAvatar("agent_1", expression, size)
+
+                val url = server.takeRequest().requestUrl
+                assertEquals(expression.wireValue, url?.queryParameter("expression"))
+                assertEquals(size.toString(), url?.queryParameter("size"))
+            }
+        }
+    }
+
+    @Test
+    fun `avatar preserves bearer precedence and stored session fallback`() {
+        MockWebServer().use { server ->
+            listOf(
+                Triple("provider-token", "stored-session", "Bearer provider-token"),
+                Triple(null, "stored-session", "Bearer stored-session"),
+                Triple(" ", "stored-session", "Bearer stored-session"),
+                Triple(null, null, null),
+            ).forEach { (provider, stored, expected) ->
+                server.enqueue(pngResponse())
+                val store = FakeSessionCredentialStore(stored)
+                val client = HolonHttpClient(
+                    server.url("/").toString(),
+                    bearerTokenProvider = BearerTokenProvider { provider },
+                    sessionCredentialStore = store,
+                )
+
+                client.readAgentAvatar("agent_1")
+
+                assertEquals(expected, server.takeRequest().getHeader("Authorization"))
+                assertEquals(stored, store.value)
+            }
+        }
+    }
+
+    @Test
+    fun `avatar credential storage failure never sends an unauthenticated request`() {
+        MockWebServer().use { server ->
+            val expected = IllegalStateException("credential storage unavailable")
+            val store = object : SessionCredentialStore {
+                override fun read(): String? = throw expected
+                override fun write(credential: String) = Unit
+                override fun clear() = Unit
+            }
+            val client = HolonHttpClient(server.url("/").toString(), sessionCredentialStore = store)
+
+            val failure = assertFailsWith<IllegalStateException> { client.readAgentAvatar("agent_1") }
+
+            assertTrue(failure === expected)
+            assertEquals(0, server.requestCount)
+        }
+    }
+
+    @Test
+    fun `avatar safely encodes Unicode and reserved characters in the agent ID`() {
+        MockWebServer().use { server ->
+            server.enqueue(pngResponse())
+            val client = HolonHttpClient(server.url("/api/").toString())
+            val agentId = "机器人🤖 #?size=512&format=svg%"
+
+            client.readAgentAvatar(agentId)
+
+            val url = server.takeRequest().requestUrl
+            assertEquals(listOf("api", "agents", agentId, "avatar"), url?.pathSegments)
+            assertEquals(setOf("version", "expression", "format", "size"), url?.queryParameterNames)
+            assertEquals("128", url?.queryParameter("size"))
+            assertEquals("png", url?.queryParameter("format"))
+            assertNull(url?.fragment)
+        }
+    }
+
+    @Test
+    fun `avatar rejects invalid sizes and agent IDs before sending a request`() {
+        MockWebServer().use { server ->
+            val client = HolonHttpClient(server.url("/").toString())
+            listOf(Int.MIN_VALUE, -1, 0, 16, 33, 1024, Int.MAX_VALUE).forEach { size ->
+                assertFailsWith<IllegalArgumentException> { client.readAgentAvatar("agent_1", size = size) }
+            }
+            listOf("", " ", "agent/other").forEach { agentId ->
+                assertFailsWith<IllegalArgumentException> { client.readAgentAvatar(agentId) }
+            }
+            assertEquals(0, server.requestCount)
+        }
+    }
+
+    @Test
+    fun `avatar rejects missing or non-PNG content types`() {
+        MockWebServer().use { server ->
+            val client = HolonHttpClient(server.url("/").toString())
+            listOf(null, "application/json", "image/svg+xml", "image/pngx", "text/plain").forEach { type ->
+                val response = MockResponse().setBody("not a PNG")
+                type?.let { response.setHeader("Content-Type", it) }
+                server.enqueue(response)
+
+                val failure = assertFailsWith<HolonProtocolException> { client.readAgentAvatar("agent_1") }
+
+                assertEquals("Holon returned a non-PNG avatar", failure.message)
+                server.takeRequest()
+            }
+        }
+    }
+
+    @Test
+    fun `avatar rejects empty bodies`() {
+        MockWebServer().use { server ->
+            server.enqueue(pngResponse(byteArrayOf()))
+            val client = HolonHttpClient(server.url("/").toString())
+
+            val failure = assertFailsWith<HolonProtocolException> { client.readAgentAvatar("agent_1") }
+
+            assertEquals("Holon returned an empty avatar", failure.message)
+        }
+    }
+
+    @Test
+    fun `avatar rejects an oversized declared body without reading it`() {
+        MockWebServer().use { server ->
+            server.enqueue(pngResponse().setHeader("Content-Length", 2 * 1024 * 1024 + 1))
+            val client = HolonHttpClient(server.url("/").toString())
+
+            val failure = assertFailsWith<HolonProtocolException> { client.readAgentAvatar("agent_1") }
+
+            assertEquals("Holon avatar exceeds the 2 MiB limit", failure.message)
+        }
+    }
+
+    @Test
+    fun `avatar rejects oversized chunked bodies without a content length`() {
+        MockWebServer().use { server ->
+            server.enqueue(
+                MockResponse()
+                    .setHeader("Content-Type", "image/png")
+                    .setChunkedBody(Buffer().write(ByteArray(2 * 1024 * 1024 + 1)), 8192),
+            )
+            val client = HolonHttpClient(server.url("/").toString())
+
+            val failure = assertFailsWith<HolonProtocolException> { client.readAgentAvatar("agent_1") }
+
+            assertEquals("Holon avatar exceeds the 2 MiB limit", failure.message)
+        }
+    }
+
+    @Test
+    fun `avatar accepts exactly two MiB for fixed length and chunked bodies`() {
+        MockWebServer().use { server ->
+            val bytes = ByteArray(2 * 1024 * 1024) { (it % 251).toByte() }
+            server.enqueue(pngResponse(bytes))
+            server.enqueue(
+                MockResponse()
+                    .setHeader("Content-Type", "image/png")
+                    .setChunkedBody(Buffer().write(bytes), 8192),
+            )
+            val client = HolonHttpClient(server.url("/").toString())
+
+            repeat(2) {
+                assertContentEquals(bytes, client.readAgentAvatar("agent_1"))
+            }
+        }
+    }
+
+    @Test
+    fun `avatar HTTP failures preserve JSON errors session identity and later requests`() {
+        MockWebServer().use { server ->
+            val store = FakeSessionCredentialStore("stored-session")
+            val client = HolonHttpClient(server.url("/").toString(), sessionCredentialStore = store)
+            listOf(401, 404, 503).forEach { status ->
+                server.enqueue(
+                    jsonResponse(
+                        """{"ok":false,"code":"avatar_error","error":"Cannot read avatar","context":{"detail":"original detail"}}""",
+                        status,
+                    ).setHeader("Retry-After", "3"),
+                )
+                val failure = assertFailsWith<HolonHttpException> { client.readAgentAvatar("agent_1") }
+
+                assertEquals(status, failure.statusCode)
+                assertEquals("avatar_error", failure.apiError?.code)
+                assertEquals("Cannot read avatar", failure.apiError?.message)
+                assertEquals("original detail", failure.apiError?.detail)
+                assertEquals("agents/agent_1/avatar", failure.requestPath)
+                assertEquals(client.instanceId, failure.clientInstanceId)
+                assertEquals(if (status == 503) 3L else null, failure.retryAfterSeconds)
+                assertEquals("stored-session", store.value)
+                assertEquals("Bearer stored-session", server.takeRequest().getHeader("Authorization"))
+
+                server.enqueue(pngResponse())
+                assertContentEquals(byteArrayOf(1), client.readAgentAvatar("agent_1"))
+                assertEquals("Bearer stored-session", server.takeRequest().getHeader("Authorization"))
+            }
+        }
+    }
+
+    @Test
+    fun `avatar exposes only valid nonnegative Retry-After seconds on service unavailable`() {
+        MockWebServer().use { server ->
+            val client = HolonHttpClient(server.url("/").toString())
+            listOf(
+                "1" to 1L,
+                "0" to 0L,
+                " 12 " to 12L,
+                Long.MAX_VALUE.toString() to Long.MAX_VALUE,
+                null to null,
+                "" to null,
+                "-1" to null,
+                "+1" to null,
+                "1.5" to null,
+                "9223372036854775808" to null,
+                "later" to null,
+                "Sun, 08 Nov 2026 10:00:00 GMT" to null,
+            ).forEachIndexed { index, (header, expected) ->
+                val response = jsonResponse("""{"ok":false,"code":"busy","error":"Try again"}""", 503)
+                header?.let { response.setHeader("Retry-After", it) }
+                server.enqueue(response)
+                server.enqueue(pngResponse())
+
+                val failure = assertFailsWith<HolonHttpException> { client.readAgentAvatar("agent_1") }
+
+                assertEquals(503, failure.statusCode)
+                assertEquals("busy", failure.apiError?.code)
+                assertEquals("Try again", failure.apiError?.message)
+                assertEquals("agents/agent_1/avatar", failure.requestPath)
+                assertEquals(client.instanceId, failure.clientInstanceId)
+                assertEquals(expected, failure.retryAfterSeconds, "Retry-After: $header")
+                assertEquals(index * 2 + 1, server.requestCount, "No implicit retry for Retry-After: $header")
+                server.takeRequest()
+
+                assertContentEquals(byteArrayOf(1), client.readAgentAvatar("agent_1"))
+                assertEquals(index * 2 + 2, server.requestCount)
+                server.takeRequest()
+            }
+        }
+    }
+
+    @Test
+    fun `avatar transport preserves inherited interceptors and authentication follow-ups`() {
+        MockWebServer().use { server ->
+            server.enqueue(
+                jsonResponse("""{"ok":false,"code":"unauthorized","error":"Authenticate"}""", 401)
+                    .setHeader("WWW-Authenticate", "Bearer"),
+            )
+            server.enqueue(
+                jsonResponse("""{"ok":false,"code":"busy","error":"Try again"}""", 503)
+                    .setHeader("Retry-After", "0"),
+            )
+            server.enqueue(pngResponse())
+            var applicationCalls = 0
+            var networkCalls = 0
+            var authenticationChallenges = 0
+            val transport =
+                HolonHttpClient.defaultHttpClient().newBuilder()
+                    .addInterceptor { chain ->
+                        applicationCalls++
+                        chain.proceed(chain.request().newBuilder().header("X-Application", "inherited").build())
+                    }
+                    .addNetworkInterceptor { chain ->
+                        networkCalls++
+                        chain.proceed(chain.request().newBuilder().header("X-Network", "inherited").build())
+                    }
+                    .authenticator { _, response ->
+                        authenticationChallenges++
+                        response.request.newBuilder().header("Authorization", "Bearer challenged").build()
+                    }
+                    .build()
+            val store = FakeSessionCredentialStore("stored-session")
+            val client =
+                HolonHttpClient(
+                    baseUrl = server.url("/").toString(),
+                    bearerTokenProvider = BearerTokenProvider { "explicit-token" },
+                    httpClient = transport,
+                    sessionCredentialStore = store,
+                    insecureHttpHosts = emptySet(),
+                )
+
+            val failure = assertFailsWith<HolonHttpException> { client.readAgentAvatar("agent_1") }
+
+            assertEquals(503, failure.statusCode)
+            assertEquals(0L, failure.retryAfterSeconds)
+            assertEquals(2, server.requestCount)
+            assertEquals(1, applicationCalls)
+            assertEquals(2, networkCalls)
+            assertEquals(1, authenticationChallenges)
+            assertEquals("stored-session", store.value)
+            listOf("Bearer explicit-token", "Bearer challenged").forEach { authorization ->
+                val request = server.takeRequest()
+                assertEquals(authorization, request.getHeader("Authorization"))
+                assertEquals("inherited", request.getHeader("X-Application"))
+                assertEquals("inherited", request.getHeader("X-Network"))
+            }
+
+            assertContentEquals(byteArrayOf(1), client.readAgentAvatar("agent_1"))
+            assertEquals(3, server.requestCount)
+            assertEquals(2, applicationCalls)
+            assertEquals(3, networkCalls)
+            assertEquals(1, authenticationChallenges)
+            assertEquals("Bearer explicit-token", server.takeRequest().getHeader("Authorization"))
+        }
+    }
+
+    @Test
+    fun `Retry-After parsing is limited to avatar requests and old exception calls remain valid`() {
+        assertNull(HolonHttpException(503, null).retryAfterSeconds)
+        assertNull(HolonHttpException(503, null, "agents/list", "legacy-client").retryAfterSeconds)
+        MockWebServer().use { server ->
+            server.enqueue(jsonResponse("""{"ok":false,"code":"busy","error":"Try again"}""", 503).setHeader("Retry-After", "5"))
+            val client = HolonHttpClient(server.url("/").toString())
+
+            val failure = assertFailsWith<HolonHttpException> { client.listAgents() }
+
+            assertNull(failure.retryAfterSeconds)
+        }
+    }
+
     @Test fun `content report posts authenticated request and decodes receipt`() {
         MockWebServer().use { server ->
             server.enqueue(jsonResponse("""{"accepted":true,"report_id":"report_1","created_at":"2026-10-09T16:00:00.000Z"}"""))
@@ -1049,6 +1395,11 @@ class HolonHttpClientTest {
             assertEquals("Holon request failed", error.message)
         }
     }
+
+    private fun pngResponse(body: ByteArray = byteArrayOf(1)): MockResponse =
+        MockResponse()
+            .setHeader("Content-Type", "image/png")
+            .setBody(Buffer().write(body))
 
     private fun jsonResponse(
         body: String,

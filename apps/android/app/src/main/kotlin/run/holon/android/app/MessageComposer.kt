@@ -22,6 +22,8 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.text.TextRange
 import androidx.compose.ui.text.input.TextFieldValue
@@ -46,6 +48,8 @@ internal fun MessageComposer(
     onImage: () -> Unit,
     onFile: () -> Unit,
     onCamera: () -> Unit,
+    modelLabel: String? = null,
+    onModel: (() -> Unit)? = null,
 ) {
     var attachmentsOpen by remember { mutableStateOf(false) }
     var expanded by remember { mutableStateOf(false) }
@@ -56,7 +60,7 @@ internal fun MessageComposer(
     }
     val edit: (TextFieldValue) -> Unit = { value -> editor = value; onDraft(value.text) }
     Surface(color = MaterialTheme.colorScheme.background) {
-        Column(Modifier.fillMaxWidth().navigationBarsPadding().padding(horizontal = 10.dp, vertical = 6.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+        Column(Modifier.fillMaxWidth().navigationBarsPadding().padding(horizontal = 12.dp, vertical = 8.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
             if (staging) LinearProgressIndicator(Modifier.fillMaxWidth())
             if (attachments.isNotEmpty()) Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 attachments.forEachIndexed { index, attachment ->
@@ -72,14 +76,16 @@ internal fun MessageComposer(
                     }
                 }
             }
-            if (canStop || draft.length > 160 || '\n' in draft) Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-                if (canStop) TextButton(onClick = { confirmStop = true }, enabled = !stopping) { Text(ui(if (stopping) "正在停止本轮…" else "停止本轮")) }
-                Spacer(Modifier.weight(1f))
-                if (draft.length > 160 || '\n' in draft) IconButton(onClick = { expanded = true }) { Icon(Icons.Default.OpenInFull, ui("展开编辑"), Modifier.size(18.dp)) }
+            if (canStop || draft.length > 160 || '\n' in draft) Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+                if (canStop) {
+                    TextButton(onClick = { confirmStop = true }, enabled = !stopping, modifier = Modifier.weight(1f, fill = false).heightIn(min = 48.dp)) {
+                        Text(ui(if (stopping) "正在停止本轮…" else "停止本轮"), maxLines = 1, overflow = TextOverflow.Ellipsis)
+                    }
+                } else Spacer(Modifier.weight(1f))
+                if (draft.length > 160 || '\n' in draft) IconButton(onClick = { expanded = true }, modifier = Modifier.size(48.dp)) { Icon(Icons.Default.OpenInFull, ui("展开编辑"), Modifier.size(18.dp)) }
             }
-            Surface(shape = RoundedCornerShape(24.dp), border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant), color = MaterialTheme.colorScheme.surface) {
-                Row(Modifier.fillMaxWidth().padding(4.dp), verticalAlignment = Alignment.Bottom) {
-                    IconButton(onClick = { attachmentsOpen = true }, enabled = !sending && !staging) { Icon(Icons.Default.Add, ui("添加附件")) }
+            Surface(shape = RoundedCornerShape(20.dp), border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant), color = MaterialTheme.colorScheme.surface) {
+                Column(Modifier.fillMaxWidth().padding(4.dp)) {
                     BasicTextField(
                         value = editor,
                         onValueChange = edit,
@@ -88,7 +94,7 @@ internal fun MessageComposer(
                         cursorBrush = SolidColor(MaterialTheme.colorScheme.primary),
                         minLines = 1,
                         maxLines = 5,
-                        modifier = Modifier.weight(1f).padding(vertical = 12.dp, horizontal = 4.dp),
+                        modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 10.dp),
                         decorationBox = { inner ->
                             Box {
                                 if (draft.isEmpty()) Text(ui("给 Agent 发送消息…"), style = MaterialTheme.typography.bodyLarge, color = MaterialTheme.colorScheme.onSurfaceVariant)
@@ -96,9 +102,28 @@ internal fun MessageComposer(
                             }
                         },
                     )
-                    FilledIconButton(onClick = onSend, enabled = !sending && !staging && (draft.isNotBlank() || attachments.isNotEmpty())) {
-                        if (sending) CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp)
-                        else Icon(Icons.AutoMirrored.Filled.Send, ui("发送"), Modifier.size(20.dp))
+                    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                        IconButton(onClick = { attachmentsOpen = true }, enabled = !sending && !staging, modifier = Modifier.size(48.dp)) {
+                            Icon(Icons.Default.Add, ui("添加附件"))
+                        }
+                        if (onModel != null && modelLabel != null) {
+                            TextButton(
+                                onClick = onModel,
+                                modifier = Modifier.weight(1f).heightIn(min = 48.dp).semantics { contentDescription = ui("选择模型") },
+                                contentPadding = PaddingValues(horizontal = 8.dp),
+                                colors = ButtonDefaults.textButtonColors(contentColor = MaterialTheme.colorScheme.onSurfaceVariant),
+                            ) {
+                                Text(modelLabel, modifier = Modifier.weight(1f), style = MaterialTheme.typography.labelMedium, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                                Spacer(Modifier.width(4.dp))
+                                Icon(Icons.Default.ExpandMore, contentDescription = null, modifier = Modifier.size(16.dp))
+                            }
+                        } else {
+                            Spacer(Modifier.weight(1f))
+                        }
+                        FilledIconButton(onClick = onSend, enabled = !sending && !staging && (draft.isNotBlank() || attachments.isNotEmpty()), modifier = Modifier.size(48.dp)) {
+                            if (sending) CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp)
+                            else Icon(Icons.AutoMirrored.Filled.Send, ui("发送"), Modifier.size(20.dp))
+                        }
                     }
                 }
             }

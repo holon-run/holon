@@ -184,18 +184,7 @@ internal fun AgentSummary.statusTone(): StatusTone =
     }
 
 internal fun AgentSummary.statusLabel(): String =
-    when {
-        needsReply() -> ui("等你回应")
-        schedulingPosture == "active_turn" -> ui("工作中")
-        schedulingPosture == "has_queued_input" -> ui("已排队")
-        schedulingPosture == "has_runnable_work" -> ui("待运行")
-        schedulingPosture == "waiting_for_external" -> ui("等外部变化")
-        schedulingPosture == "waiting_for_task" -> ui("等任务结果")
-        schedulingPosture == "blocked" -> ui("受阻")
-        schedulingPosture == "idle" -> ui("空闲")
-        runtimeStatus.lowercase() == "offline" -> ui("离线缓存")
-        else -> runtimeStatus
-    }
+    statusPresentation().label
 
 @Composable
 internal fun toneColor(tone: StatusTone): Color =

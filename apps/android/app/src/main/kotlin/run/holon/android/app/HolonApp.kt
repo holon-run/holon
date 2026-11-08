@@ -27,6 +27,13 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 @Composable
 internal fun HolonApp(viewModel: HolonViewModel) {
     val state by viewModel.state.collectAsStateWithLifecycle()
+    AgentAvatarResources(viewModel, state) {
+        HolonContent(viewModel, state)
+    }
+}
+
+@Composable
+private fun HolonContent(viewModel: HolonViewModel, state: HolonUiState) {
     Surface(
         modifier = Modifier.fillMaxSize(),
         color = MaterialTheme.colorScheme.background,

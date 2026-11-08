@@ -40,7 +40,8 @@ internal class SessionCoordinator {
         }
     }
 
-    fun acceptsFailure(error: Throwable): Boolean {
+    fun acceptsFailure(error: Throwable, lease: SessionLease? = null): Boolean {
+        if (lease != null && current !== lease) return false
         val clientId = when (error) {
             is HolonHttpException -> error.clientInstanceId
             is SessionScopeChangedException -> error.clientInstanceId

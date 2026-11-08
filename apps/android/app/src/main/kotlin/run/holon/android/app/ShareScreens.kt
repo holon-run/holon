@@ -10,6 +10,7 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -62,7 +63,9 @@ internal fun ShareToAgentDialog(state: HolonUiState, viewModel: ShareActions) {
                 }
                 if (selected != null) {
                     Row(verticalAlignment = Alignment.CenterVertically) {
-                        Text(selected.displayName, modifier = Modifier.weight(1f), style = MaterialTheme.typography.titleSmall)
+                        AgentAvatar(selected, size = 32.dp)
+                        Text(selected.displayName, modifier = Modifier.weight(1f).padding(start = 10.dp),
+                            style = MaterialTheme.typography.titleSmall, maxLines = 2, overflow = TextOverflow.Ellipsis)
                         TextButton(onClick = { selectedId = null }) { Text(ui("更换 Agent")) }
                     }
                 } else {
@@ -82,7 +85,9 @@ internal fun ShareToAgentDialog(state: HolonUiState, viewModel: ShareActions) {
                                 it.id.contains(search, ignoreCase = true)
                         }, key = AgentSummary::id) { agent ->
                             TextButton(onClick = { selectedId = agent.id }, modifier = Modifier.fillMaxWidth()) {
-                                Text(agent.displayName, modifier = Modifier.fillMaxWidth())
+                                AgentAvatar(agent, size = 32.dp)
+                                Text(agent.displayName, modifier = Modifier.weight(1f).padding(start = 10.dp),
+                                    maxLines = 2, overflow = TextOverflow.Ellipsis)
                             }
                         }
                     }

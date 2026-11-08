@@ -43,11 +43,12 @@ public fun interface BearerTokenProvider {
     public fun token(): String?
 }
 
-public class HolonHttpException(
+public class HolonHttpException @JvmOverloads constructor(
     public val statusCode: Int,
     public val apiError: HolonApiError?,
     public val requestPath: String? = null,
     public val clientInstanceId: String? = null,
+    public val retryAfterSeconds: Long? = null,
 ) : IOException(
     apiError?.let { "${it.code}: ${it.message}" }
         ?: "Holon request failed with HTTP $statusCode",
@@ -141,6 +142,86 @@ public class HolonHttpClient internal constructor(
             path = "agents/list",
             serializer = ListSerializer(AgentListEntry.serializer()),
         ).map(AgentListEntry::toAgentSummary)
+
+    /** Reads opaque PNG bytes; capability negotiation belongs to the session owner. */
+    public fun readAgentAvatar(
+        agentId: String,
+        expression: HolonAvatarExpression = HolonAvatarExpression.Neutral,
+        size: Int = 128,
+    ): ByteArray {
+        require(size in setOf(32, 64, 128, 256, 512)) { "Unsupported avatar size: $size" }
+        val path = "agents/${encodePathSegment(agentId.pathSegment())}/avatar"
+        val maxBytes = 2L * 1024 * 1024
+        try {
+            val avatarHttpClient =
+                httpClient.newBuilder()
+                    // Retry belongs to the caller, including recovery of the IOException below.
+                    .retryOnConnectionFailure(false)
+                    .addNetworkInterceptor { chain ->
+                        val response = chain.proceed(chain.request())
+                        // Observe 503 before OkHttp can follow up on Retry-After: 0.
+                        if (response.code == 503) {
+                            response.use {
+                                val retryAfterSeconds =
+                                    it.header("Retry-After")?.trim()
+                                        ?.takeIf { value ->
+                                            value.isNotEmpty() && value.all { char -> char in '0'..'9' }
+                                        }
+                                        ?.toLongOrNull()
+                                throw httpException(
+                                    it.code,
+                                    it.body?.string().orEmpty(),
+                                    requestPath = path,
+                                    retryAfterSeconds = retryAfterSeconds,
+                                )
+                            }
+                        }
+                        response
+                    }
+                    .build()
+            val response =
+                avatarHttpClient.newCall(
+                    authorizedRequest(
+                        path,
+                        query = mapOf(
+                            "version" to "light-mech-1-vivid-2",
+                            "expression" to expression.wireValue,
+                            "format" to "png",
+                            "size" to size.toString(),
+                        ),
+                    ).header("Accept", "image/png").get().build(),
+                ).execute()
+            response.use {
+                if (!it.isSuccessful) {
+                    throw httpException(
+                        it.code,
+                        it.body?.string().orEmpty(),
+                        requestPath = path,
+                    )
+                }
+                val body = it.body ?: throw HolonProtocolException("Holon returned an empty avatar")
+                val contentType = it.header("Content-Type")?.substringBefore(';')?.trim()
+                if (!contentType.equals("image/png", ignoreCase = true)) {
+                    throw HolonProtocolException("Holon returned a non-PNG avatar")
+                }
+                if (body.contentLength() > maxBytes) {
+                    throw HolonProtocolException("Holon avatar exceeds the 2 MiB limit")
+                }
+                val source = body.source()
+                if (source.request(maxBytes + 1)) {
+                    throw HolonProtocolException("Holon avatar exceeds the 2 MiB limit")
+                }
+                return source.readByteArray().also { bytes ->
+                    if (bytes.isEmpty()) throw HolonProtocolException("Holon returned an empty avatar")
+                }
+            }
+        } catch (error: IOException) {
+            if (error is HolonHttpException || error is HolonProtocolException) {
+                throw error
+            }
+            throw HolonProtocolException("Holon avatar request failed", error)
+        }
+    }
 
     public fun modelCatalog(refresh: Boolean = false): HolonModelCatalog {
         val document = (if (refresh) postJson("models/refresh") else getJson("models")).objectOrNull
@@ -1379,6 +1460,7 @@ public class HolonHttpClient internal constructor(
         statusCode: Int,
         body: String,
         requestPath: String? = null,
+        retryAfterSeconds: Long? = null,
     ): HolonHttpException {
         val apiError =
             runCatching {
@@ -1386,7 +1468,7 @@ public class HolonHttpClient internal constructor(
             }.getOrNull()?.toHolonApiError()
         // Transport reports facts. The session owner decides whether this response
         // still belongs to the active login before invalidating any credentials.
-        return HolonHttpException(statusCode, apiError, requestPath, instanceId)
+        return HolonHttpException(statusCode, apiError, requestPath, instanceId, retryAfterSeconds)
     }
 
     private fun endpoint(

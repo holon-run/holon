@@ -1,6 +1,9 @@
 package run.holon.android.app
 
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.test.runCurrent
+import kotlinx.coroutines.test.runTest
 import kotlin.test.*
 import run.holon.android.sdk.HolonCurrentUser
 import run.holon.android.sdk.HolonHttpClient
@@ -66,6 +69,22 @@ class SessionCoordinatorTest {
         assertTrue(owner.acceptsFailure(SessionScopeChangedException(second.instanceId)))
         assertTrue(owner.acceptsFailure(HolonHttpException(401, null, clientInstanceId = second.instanceId)))
         assertSame(second, owner.capture().client)
+    }
+
+    @OptIn(kotlinx.coroutines.ExperimentalCoroutinesApi::class)
+    @Test fun `dispatched authentication failure cannot invalidate a restored lease using the same client`() = runTest {
+        val owner = SessionCoordinator()
+        val client = HolonHttpClient("https://example.test/api/")
+        owner.activate(session("A"), client)
+        val old = owner.capture()
+        val error = HolonHttpException(401, null, clientInstanceId = client.instanceId)
+        assertTrue(owner.acceptsFailure(error, old))
+        var invalidated = false
+        launch { if (owner.acceptsFailure(error, old)) invalidated = true }
+        owner.restore(old)
+        runCurrent()
+        assertFalse(invalidated)
+        assertTrue(owner.acceptsFailure(error, owner.capture()))
     }
 
     @Test fun `clearing a deleted network rejects its lease and late responses`() {

@@ -4,17 +4,20 @@ import java.nio.file.Files
 import java.nio.file.Path
 import java.net.HttpURLConnection
 import java.net.URI
+import java.io.ByteArrayInputStream
 import java.time.Duration
 import java.util.concurrent.TimeUnit
+import javax.imageio.ImageIO
 import org.junit.Test
 import kotlin.io.path.readText
 import kotlin.test.assertEquals
+import kotlin.test.assertFailsWith
 import kotlin.test.assertIs
 import kotlin.test.assertTrue
 
 class HolonHttpClientDaemonTest {
     @Test
-    fun `handshake and roster work against a real daemon`() {
+    fun `handshake roster and authenticated avatars work against a real daemon`() {
         val binary = Path.of(requireNotNull(System.getProperty("holon.test.binary")))
         val home = Files.createTempDirectory("holon-android-sdk-")
         val log = home.resolve("daemon.log")
@@ -70,6 +73,18 @@ class HolonHttpClientDaemonTest {
 
             val agents = client.listAgents()
             assertTrue(agents.any { it.id == compatible.server.defaultAgentId })
+            assertTrue("agent_avatar_v1" in compatible.server.capabilities)
+            for (expression in HolonAvatarExpression.entries) {
+                val png = client.readAgentAvatar(compatible.server.defaultAgentId, expression, 64)
+                assertTrue(png.size in 1..(2 * 1024 * 1024))
+                val image = ImageIO.read(ByteArrayInputStream(png))
+                assertEquals(64, image.width)
+                assertEquals(64, image.height)
+            }
+            val anonymous = HolonHttpClient(baseUrl = "http://$address/api")
+            assertEquals(401, assertFailsWith<HolonHttpException> {
+                anonymous.readAgentAvatar(compatible.server.defaultAgentId)
+            }.statusCode)
         } finally {
             process.destroy()
             if (!process.waitFor(5, TimeUnit.SECONDS)) {
