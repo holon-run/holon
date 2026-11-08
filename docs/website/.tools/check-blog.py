@@ -17,6 +17,7 @@ ARTICLES = {
     "from-prompt-to-finished-work",
     "event-driven-kernel",
     "ai-delivery-quality-and-verification",
+    "why-agents-need-skill-isolation",
 }
 CJK = re.compile(r"[\u3400-\u9fff]")
 DRAFT = re.compile(

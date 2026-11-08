@@ -70,6 +70,13 @@ order: 4
 <p>Code generation is faster than ever, but software nobody dares deploy remains the real bottleneck. Drawing from an engineering team adopting Holon across cross-platform apps and hardware protocols, this article explores four pragmatic verification layers.</p>
 <span class="blog-read">Read the guide <span aria-hidden="true">→</span></span></div>
 </a>
+<a class="blog-story" href="/blog/why-agents-need-skill-isolation">
+<img src="/assets/team-shared-agents-cover.webp" width="1536" height="1024" alt="" loading="lazy" decoding="async">
+<div><span class="blog-category">SYSTEM DESIGN</span>
+<h3>Why your agent gets dumber with more skills (and how to fix it)</h3>
+<p>Adding 30 skills to a single agent triggers context dilution, instruction conflicts, and safety risks. Here is how Holon isolates skills across long-lived roles.</p>
+<span class="blog-read">Read the analysis <span aria-hidden="true">→</span></span></div>
+</a>
 </section>
 
 <footer class="blog-next">
@@ -106,6 +113,10 @@ order: 4
 
 - [How to Guarantee Quality in AI Delivery Pipelines: Four Layers of Verification and Acceptance in Real-World Engineering](./ai-delivery-quality-and-verification.md)
   Code generation is faster than ever, but software nobody dares deploy remains the real bottleneck. Drawing from an engineering team adopting Holon across cross-platform apps and hardware protocols, this article explores four pragmatic verification layers: role separation, automated incident triage, continuous instance patrols, and self-healing E2E testing.
+  <!-- mdorigin:index kind=article -->
+
+- [Why your agent gets dumber with more skills (and how to fix it)](./why-agents-need-skill-isolation.md)
+  Adding 30 skills to a single agent triggers context dilution, instruction conflicts, and safety risks. Here is how Holon isolates skills across long-lived roles.
   <!-- mdorigin:index kind=article -->
 
 <!-- INDEX:END -->

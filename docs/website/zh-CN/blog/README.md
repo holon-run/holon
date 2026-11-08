@@ -70,6 +70,13 @@ order: 4
 <p>代码生成速度越来越快，但无人敢把改动推上线才是真正的瓶颈。结合一个采用 Holon 的工程团队在跨端与硬件协议项目中的实践，拆解四层务实的验收防线。</p>
 <span class="blog-read">阅读实践解析 <span aria-hidden="true">→</span></span></div>
 </a>
+<a class="blog-story" href="/zh-CN/blog/why-agents-need-skill-isolation">
+<img src="/assets/team-shared-agents-cover.webp" width="1536" height="1024" alt="" loading="lazy" decoding="async">
+<div><span class="blog-category">系统设计</span>
+<h3>为什么技能塞得越多，Agent 反而越笨？聊聊技能膨胀与隔离设计</h3>
+<p>以为装满 30 个 Skill 能得到全能助手，却常遭遇上下文稀释、指令互斥与工具误调用。深入剖析技能膨胀的根源，以及 Holon 的多 Agent 技能隔离机制。</p>
+<span class="blog-read">阅读架构分析 <span aria-hidden="true">→</span></span></div>
+</a>
 </section>
 
 <footer class="blog-next">
@@ -106,6 +113,10 @@ order: 4
 
 - [AI 自动交付流如何保证质量：真实工程中的四层验证与验收防线](./ai-delivery-quality-and-verification.md)
   代码生成速度越来越快，但无人敢把改动推上线才是真正的瓶颈。本文分享一个采用 Holon 的工程团队在涉及跨端与硬件协议项目中，如何通过角色制衡、自动化排查、长周期巡检与自愈 E2E 建立四层务实的验收防线。
+  <!-- mdorigin:index kind=article -->
+
+- [为什么技能塞得越多，Agent 反而越笨？聊聊技能膨胀与隔离设计](./why-agents-need-skill-isolation.md)
+  以为装满 30 个 Skill 能得到全能助手，却常遭遇上下文稀释、指令互斥与工具误调用。深入剖析技能膨胀的根源，以及 Holon 的多 Agent 技能隔离机制。
   <!-- mdorigin:index kind=article -->
 
 <!-- INDEX:END -->

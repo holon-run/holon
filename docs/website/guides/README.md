@@ -60,6 +60,10 @@ Use [Reference](../reference/) for complete command syntax and schemas.
   Create a reviewer agent from the code-reviewer template, then ask it in conversation to attach your repository, record merge permissions, subscribe to GitHub events, and follow commits and CI through merge.
   <!-- mdorigin:index kind=article -->
 
+- [Organize agent skills across dedicated roles](./organize-agent-skills-and-roles.md)
+  Avoid tool clutter and instruction conflicts by giving each long-lived agent its own focused skills, boundaries, and workspace permissions.
+  <!-- mdorigin:index kind=article -->
+
 - [Run a GitHub task with holon solve](./run-github-task.md)
   Scope an issue, review, or PR fix; run it once; then verify its artifacts and GitHub side effects.
   <!-- mdorigin:index kind=article -->
