@@ -1207,6 +1207,20 @@ async fn second_stop_requests_force_stop_and_runner_terminates_process_before_ca
         .trim()
         .to_string();
 
+    // `kill -0` only tells that the kernel still knows the pid: a reaped child
+    // is gone, an unreaped one still answers. The runner reaps the child when it
+    // observes the process exit, so a gone pid means the process terminated.
+    let pid_alive = || {
+        std::process::Command::new("kill")
+            .arg("-0")
+            .arg(&pid)
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+            .unwrap()
+            .success()
+    };
+
     let stopped = runtime
         .stop_task(&task.id, &AuthorityClass::OperatorInstruction)
         .await
@@ -1235,44 +1249,25 @@ async fn second_stop_requests_force_stop_and_runner_terminates_process_before_ca
         Some(true)
     );
 
-    let force_stop_deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(1);
-    let mut saw_cancelling_while_pid_alive = false;
-    while tokio::time::Instant::now() < force_stop_deadline {
-        let current = runtime.task_record(&task.id).await.unwrap().unwrap();
-        let pid_probe = std::process::Command::new("kill")
-            .arg("-0")
-            .arg(&pid)
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .status()
-            .unwrap();
-        if current.status == TaskStatus::Cancelling && pid_probe.success() {
-            saw_cancelling_while_pid_alive = true;
-            break;
-        }
-        if current.status == TaskStatus::Cancelled {
-            break;
-        }
-        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-    }
-    assert!(saw_cancelling_while_pid_alive);
-
+    // The runner terminates the child process before it commits the terminal
+    // `Cancelled` state: observing the process exit reaps the child, so the pid
+    // is already gone once the terminal state becomes visible. Assert that
+    // ordering directly instead of polling for the transient "still Cancelling
+    // while the pid is alive" overlap, which the runner may legitimately finish
+    // before the first poll observes it.
     let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(5);
-    loop {
+    let terminated_before_cancelled = loop {
         let current = runtime.task_record(&task.id).await.unwrap().unwrap();
-        let pid_probe = std::process::Command::new("kill")
-            .arg("-0")
-            .arg(&pid)
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .status()
-            .unwrap();
-        if current.status == TaskStatus::Cancelled && !pid_probe.success() {
-            break;
+        if current.status == TaskStatus::Cancelled {
+            break !pid_alive();
         }
         assert!(tokio::time::Instant::now() < deadline);
         tokio::time::sleep(std::time::Duration::from_millis(25)).await;
-    }
+    };
+    assert!(
+        terminated_before_cancelled,
+        "runner committed the terminal Cancelled state before terminating the child process"
+    );
 
     assert!(!runtime
         .inner
@@ -1280,14 +1275,7 @@ async fn second_stop_requests_force_stop_and_runner_terminates_process_before_ca
         .lock()
         .await
         .contains_key(&task.id));
-    let pid_probe = std::process::Command::new("kill")
-        .arg("-0")
-        .arg(&pid)
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .status()
-        .unwrap();
-    assert!(!pid_probe.success());
+    assert!(!pid_alive());
 
     let current = runtime.task_record(&task.id).await.unwrap().unwrap();
     assert_eq!(current.status, TaskStatus::Cancelled);
