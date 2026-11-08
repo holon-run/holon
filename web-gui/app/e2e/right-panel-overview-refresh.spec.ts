@@ -282,7 +282,7 @@ for (const status of [429, 503]) {
       failureStatusByResource: {},
       timers: [timer({ summary: "Recovered timer" })], recentTasks: [recentTask("Recovered recent task")],
     });
-    await ui.timers.getByRole("button", { name: "Refresh detail", exact: true }).click();
+    await page.getByRole("button", { name: "Refresh agent detail", exact: true }).click();
     await ui.recent.getByRole("button", { name: "Refresh recent tasks", exact: true }).click();
     await ui.advance(1);
     await expect(ui.timers).toContainText("Recovered timer");

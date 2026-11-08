@@ -280,9 +280,6 @@ export function RightSidePanel({
           <strong>{title}</strong>
         </div>
         <div className="panel-actions">
-          <button type="button" onClick={() => refreshSelectedAgentResources(agent.id)}>
-            {t("rightPanel.refreshCore")}
-          </button>
           {full ? <button type="button" onClick={onClose}>{t("rightPanel.backToConversation")}</button> : null}
           {activeView.kind !== "agent_overview" || skillManagerActive ? (
             <button
