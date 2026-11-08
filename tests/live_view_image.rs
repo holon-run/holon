@@ -1,12 +1,17 @@
-use anyhow::{anyhow, bail, Context, Result};
+mod support;
+
+use anyhow::{anyhow, bail, ensure, Context, Result};
 use base64::{engine::general_purpose::STANDARD as BASE64_STANDARD, Engine as _};
 use holon::{
     config::{AppConfig, ModelRouteRef, ProviderId},
+    host::RuntimeHost,
     provider::{
         build_provider_from_model_chain, ConversationMessage, ModelBlock, ProviderTurnRequest,
     },
+    tool::{ToolCall, ToolRegistry},
+    types::AuthorityClass,
 };
-use serde_json::Value;
+use serde_json::{json, Value};
 
 fn response_text(blocks: &[ModelBlock]) -> String {
     blocks
@@ -56,6 +61,105 @@ fn accepted_uncertainty_text(value: &Value) -> Option<&str> {
     ["text", "description", "summary", "message"]
         .iter()
         .find_map(|field| object.get(*field).and_then(Value::as_str))
+}
+
+#[tokio::test]
+#[ignore = "requires explicit HOLON_LIVE_VIEW_IMAGE_MODEL, configured credentials, and network access"]
+async fn live_view_image_runtime_observation_and_cache() -> Result<()> {
+    let model = ModelRouteRef::parse_compatible(
+        &std::env::var("HOLON_LIVE_VIEW_IMAGE_MODEL")
+            .context("set HOLON_LIVE_VIEW_IMAGE_MODEL to authorize the exact live route")?,
+    )?;
+    let mut config = AppConfig::load()?;
+    let home = tempfile::tempdir()?;
+    let workspace = tempfile::tempdir()?;
+    support::init_git_repo(workspace.path())?;
+    let image_path = workspace.path().join("logo.png");
+    std::fs::copy("docs/website/assets/logo.png", &image_path)?;
+    config.default_agent_id = "default".into();
+    config.default_model = model.clone();
+    config.fallback_models.clear();
+    config.disable_provider_fallback = true;
+    config.vision_model = Some(model.clone());
+    config.vision_candidate_models.clear();
+    config.runtime_max_output_tokens = 4096;
+    config.home_dir = home.path().to_path_buf();
+    config.data_dir = home.path().to_path_buf();
+    config.config_file_path = home.path().join("config.json");
+    config.socket_path = home.path().join("run/holon.sock");
+    config.workspace_dir = workspace.path().to_path_buf();
+    let host = RuntimeHost::new(config)?;
+    support::attach_default_workspace(&host).await?;
+    let runtime = host.default_runtime().await?;
+    let registry = ToolRegistry::new(workspace.path().to_path_buf());
+    // Two distinct prompts exercise real default and explicit dispatch. The third
+    // request repeats the explicit call to verify cache reuse without more spend.
+    for (index, explicit, cached) in [(0, false, false), (1, true, false), (1, true, true)] {
+        let mut input = json!({
+            "path": image_path,
+            "prompt": format!("Describe the public HOLON logo and visible text. Inspection {index}."),
+        });
+        if explicit {
+            input["model"] = json!(model.as_string());
+        }
+        let (output, _) = registry
+            .execute(
+                &runtime,
+                "default",
+                &AuthorityClass::OperatorInstruction,
+                &ToolCall {
+                    id: format!("live-view-image-{index}-{cached}"),
+                    name: "ViewImage".into(),
+                    input,
+                },
+            )
+            .await?;
+        ensure!(
+            output.envelope.error.is_none(),
+            "runtime ViewImage failed: {:?}",
+            output.envelope.error
+        );
+        let result = output.envelope.result.context("missing ViewImage result")?;
+        ensure!(result["cache_hit"] == cached, "unexpected cache outcome");
+        ensure!(
+            result["vision_selection"]["resolved_model"] == model.as_string(),
+            "unexpected route"
+        );
+        ensure!(
+            result["vision_selection"]["selection_source"]
+                == if explicit {
+                    "explicit_call"
+                } else {
+                    "vision_default"
+                },
+            "unexpected selection source"
+        );
+        let observation = &result["observation"];
+        ensure!(
+            observation["type"] == "visual_observation",
+            "invalid observation type"
+        );
+        ensure!(
+            observation["schema"] == "visual_observation.v1",
+            "invalid observation schema"
+        );
+        let summary = observation["summary"].as_str().context("missing summary")?;
+        ensure!(
+            summary.to_ascii_lowercase().contains("holon"),
+            "logo text was not recognized"
+        );
+        ensure!(
+            observation["uncertainties"]
+                .as_array()
+                .is_some_and(|items| items.iter().all(Value::is_string)),
+            "invalid uncertainties"
+        );
+        println!(
+            "runtime ViewImage route={} explicit={explicit} cache_hit={cached} summary={summary}",
+            model.as_string()
+        );
+    }
+    Ok(())
 }
 
 #[tokio::test]

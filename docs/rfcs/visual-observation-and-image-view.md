@@ -499,9 +499,14 @@ metadata. A later RFC may add override policy if real deployments need it.
 ### Candidate Health
 
 Runtime response validation may temporarily exclude an otherwise eligible
-candidate after two consecutive `visual_observation` schema failures, counting
-only the final failure after the bounded correction retry. Provider, transport,
-network, image-read, and image-decode errors do not affect candidate health.
+candidate after two consecutive observation contract failures: either a final
+`visual_observation` schema failure after the bounded correction retry, or a
+provider-generation error classified `fail_fast` (including a rejection during
+that correction retry). Retryable provider/transport errors, image-read, and
+image-decode errors do not affect candidate health. Explicit calls count in a
+separate health bucket and refuse the same cooling route without falling back.
+The legacy diagnostic counter `consecutive_protocol_failures` includes both
+schema and fail-fast provider failures.
 The runtime cools that exact provider endpoint/model route for five minutes and
 selects the next candidate already present in the configured, authenticated,
 image-capable route list. If every eligible route is cooling, `ViewImage`
@@ -515,6 +520,21 @@ runtime-instance local and resets on process restart, config reload, or an
 eligible candidate-list change. A mutex serializes concurrent outcomes; calls
 already in flight may finish with the candidate they selected before a
 cooldown opened.
+
+Observation output strategy is selected for the effective endpoint transport,
+independently of image-input capability. DeepSeek's Anthropic Messages endpoint
+defaults to thinking and rejects forced named schema tools. For that combination
+only, ViewImage uses the JSON observation prompt without `response_format`;
+local parsing, validation, and the one correction retry remain required.
+Other endpoints retain schema output. This does not disable thinking, weaken
+the observation contract, or remove verified image-input capability.
+
+Provider-generation failures retain at most ten diagnostic candidates, including
+the selected route, plus `candidates_total` and `candidates_truncated`. The
+`provider_error` summary uses the upstream credential redactor and Unicode-safe
+size bound (at most 500 characters), with private URLs and bare API keys removed.
+Health advances only across calls; a failed invocation never dispatches a hidden
+fallback request.
 
 ### Lowering Policy
 

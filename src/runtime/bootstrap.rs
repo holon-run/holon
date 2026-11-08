@@ -61,6 +61,7 @@ pub(super) struct ViewImageCandidateHealth {
 pub(crate) struct PreparedViewImageObservation {
     pub(crate) route_selection: ResolvedViewImageVisionSelection,
     pub(crate) endpoint_config_identity: String,
+    response_format: Option<ProviderResponseFormatRequest>,
     provider: Arc<dyn AgentProvider>,
 }
 
@@ -1298,6 +1299,29 @@ impl RuntimeHandle {
         &self,
         selection: &ResolvedViewImageVisionSelection,
     ) -> Option<ViewImageCandidateFailureStatus> {
+        self.record_view_image_candidate_failure(selection, "response_validation")
+            .await
+    }
+
+    pub(crate) async fn record_view_image_candidate_provider_failure(
+        &self,
+        selection: &ResolvedViewImageVisionSelection,
+        error: &anyhow::Error,
+    ) -> Option<ViewImageCandidateFailureStatus> {
+        if crate::provider::classify_provider_error(error).disposition
+            != crate::provider::RetryDisposition::FailFast
+        {
+            return None;
+        }
+        self.record_view_image_candidate_failure(selection, "provider_generation")
+            .await
+    }
+
+    async fn record_view_image_candidate_failure(
+        &self,
+        selection: &ResolvedViewImageVisionSelection,
+        failure_stage: &str,
+    ) -> Option<ViewImageCandidateFailureStatus> {
         let status = self
             .inner
             .view_image_candidate_health
@@ -1315,7 +1339,8 @@ impl RuntimeHandle {
                 failure_threshold = VIEW_IMAGE_PROTOCOL_FAILURE_THRESHOLD,
                 cooldown_seconds = status.cooldown_seconds,
                 circuit_open = status.circuit_open,
-                "ViewImage candidate returned an invalid visual observation"
+                failure_stage,
+                "ViewImage candidate failed the visual observation contract"
             );
         }
         status
@@ -1593,6 +1618,7 @@ impl RuntimeHandle {
                 &route,
                 &reconfig.config.home_dir,
             ),
+            response_format: view_image_response_format(route.provider_config()),
             route_selection: selection,
             provider,
         })
@@ -1643,7 +1669,7 @@ impl RuntimeHandle {
             }],
             Vec::new(),
         );
-        request.response_format = Some(visual_observation_response_format());
+        request.response_format = prepared.response_format.clone();
         let response = prepared.provider.complete_turn(request).await?;
         let text = response
             .blocks
@@ -2973,6 +2999,20 @@ fn should_refresh_view_image_discovery(selection: &ResolvedViewImageVisionSelect
         && selection.selection.selection_reason != VIEW_IMAGE_CANDIDATE_COOLDOWN_FALLBACK_REASON
 }
 
+fn view_image_response_format(
+    provider: &crate::config::ProviderRuntimeConfig,
+) -> Option<ProviderResponseFormatRequest> {
+    // DeepSeek Messages defaults to thinking, which rejects forced schema tools.
+    // Keep the observation prompt and local validation; do not disable thinking
+    // or discard the model's independently verified image-input capability.
+    if provider.route_provider.as_str() == "deepseek"
+        && provider.transport == crate::config::ProviderTransportKind::AnthropicMessages
+    {
+        return None;
+    }
+    Some(visual_observation_response_format())
+}
+
 fn visual_observation_response_format() -> ProviderResponseFormatRequest {
     ProviderResponseFormatRequest::JsonSchema(ProviderJsonSchemaResponseFormat {
         name: "visual_observation_v1".into(),
@@ -3040,6 +3080,10 @@ mod view_image_route_tests {
 
     impl VisionServer {
         async fn new(label: &str, status: StatusCode) -> Self {
+            Self::new_scripted(label, status, false).await
+        }
+
+        async fn new_scripted(label: &str, status: StatusCode, correction_failure: bool) -> Self {
             let calls = Arc::new(AtomicUsize::new(0));
             let models = Arc::new(StdMutex::new(Vec::new()));
             let observed_calls = calls.clone();
@@ -3052,23 +3096,27 @@ mod view_image_route_tests {
                     let models = observed_models.clone();
                     let label = label.clone();
                     async move {
-                        calls.fetch_add(1, Ordering::SeqCst);
+                        let call = calls.fetch_add(1, Ordering::SeqCst);
                         models.lock().unwrap().push(request["model"].as_str().unwrap().to_string());
+                        let invalid_first_response = correction_failure && call % 2 == 0;
+                        let status = if invalid_first_response { StatusCode::OK } else { status };
                         let body = if status.is_success() {
                             json!({
                                 "id": "vision-test", "object": "chat.completion",
                                 "model": request["model"],
                                 "choices": [{
                                     "index": 0, "finish_reason": "stop",
-                                    "message": {"role": "assistant", "content": json!({
+                                    "message": {"role": "assistant", "content": if invalid_first_response {
+                                        "invalid observation".to_string()
+                                    } else { json!({
                                         "type": "visual_observation", "schema": "visual_observation.v1",
                                         "summary": label, "uncertainties": [],
-                                    }).to_string()},
+                                    }).to_string() }},
                                 }],
                                 "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2},
                             })
                         } else {
-                            json!({"error": {"message": "unsupported image request", "type": "invalid_request_error", "code": "invalid_request_error"}})
+                            json!({"error": {"message": label, "type": "invalid_request_error", "code": "invalid_request_error"}})
                         };
                         (status, Json(body))
                     }
@@ -3117,6 +3165,76 @@ mod view_image_route_tests {
                             }]}, "finishReason": "STOP"}],
                             "usageMetadata": {"promptTokenCount": 10, "candidatesTokenCount": 10},
                         }))
+                    }
+                }),
+            );
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let url = format!("http://{}/v1", listener.local_addr().unwrap());
+            let task = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+            Self {
+                url,
+                calls,
+                models,
+                task,
+            }
+        }
+
+        async fn new_deepseek() -> Self {
+            let calls = Arc::new(AtomicUsize::new(0));
+            let models = Arc::new(StdMutex::new(Vec::new()));
+            let observed_calls = calls.clone();
+            let observed_models = models.clone();
+            let app = Router::new().route(
+                "/v1/messages",
+                post(move |Json(request): Json<Value>| {
+                    let calls = observed_calls.clone();
+                    let models = observed_models.clone();
+                    async move {
+                        calls.fetch_add(1, Ordering::SeqCst);
+                        models
+                            .lock()
+                            .unwrap()
+                            .push(request["model"].as_str().unwrap().into());
+                        assert_eq!(request["stream"], true);
+                        assert!(request.get("tool_choice").is_none());
+                        assert!(request.get("thinking").is_none());
+                        assert!(request["tools"].as_array().is_none_or(Vec::is_empty));
+                        assert!(request["messages"][0]["content"]
+                            .as_array()
+                            .unwrap()
+                            .iter()
+                            .any(|part| part["type"] == "image"
+                                && part["source"]["type"] == "base64"));
+                        let text = json!({
+                            "type": "visual_observation", "schema": "visual_observation.v1",
+                            "summary": "DeepSeek image sample", "uncertainties": [],
+                        })
+                        .to_string();
+                        let events = [
+                            json!({"type": "message_start", "message": {
+                                "id": "vision-test", "type": "message", "role": "assistant",
+                                "model": request["model"], "content": [],
+                                "usage": {"input_tokens": 1, "output_tokens": 0}
+                            }}),
+                            json!({"type": "content_block_start", "index": 0,
+                                "content_block": {"type": "text", "text": ""}}),
+                            json!({"type": "content_block_delta", "index": 0,
+                                "delta": {"type": "text_delta", "text": text}}),
+                            json!({"type": "content_block_stop", "index": 0}),
+                            json!({"type": "message_delta", "delta": {"stop_reason": "end_turn"},
+                                "usage": {"output_tokens": 1}}),
+                            json!({"type": "message_stop"}),
+                        ];
+                        let body = events
+                            .iter()
+                            .map(|event| {
+                                format!(
+                                    "event: {}\ndata: {event}\n\n",
+                                    event["type"].as_str().unwrap()
+                                )
+                            })
+                            .collect::<String>();
+                        ([("content-type", "text/event-stream")], body)
                     }
                 }),
             );
@@ -3496,6 +3614,174 @@ mod view_image_route_tests {
         assert_eq!(details["provider_failure"]["kind"], "contract_error");
         assert_eq!(rejected.count(), 1);
         assert_eq!(primary.count(), 0);
+    }
+
+    #[tokio::test]
+    async fn view_image_provider_contract_failures_advance_on_the_next_call() {
+        for correction_retry in [false, true] {
+            let rejected = VisionServer::new_scripted(
+                "sk-review-canary is invalid; 'sk-quoted-canary' is invalid",
+                StatusCode::BAD_REQUEST,
+                correction_retry,
+            )
+            .await;
+            let healthy = VisionServer::new("healthy", StatusCode::OK).await;
+            let (home, _host, runtime) = vision_runtime(&rejected).await;
+            update_snapshot(&runtime, |snapshot| {
+                let mut endpoint = snapshot.model_catalog.provider_endpoints[0].clone();
+                endpoint.endpoint = ProviderEndpointId::parse("healthy").unwrap();
+                endpoint.runtime_config.route_endpoint = endpoint.endpoint.clone();
+                endpoint.runtime_config.base_url = healthy.url.clone();
+                snapshot.model_catalog.provider_endpoints.push(endpoint);
+                snapshot.model_catalog.vision_model = None;
+                snapshot.model_catalog.vision_candidate_models = vec![
+                    ModelRouteRef::parse_compatible("ollama/vision-a").unwrap(),
+                    ModelRouteRef::parse_compatible("ollama@healthy/vision-b").unwrap(),
+                ];
+            });
+            for count in 1..=2 {
+                let error = observe(&runtime, &home, None).await.unwrap_err();
+                let error = ToolError::from_anyhow(&error);
+                let rendered = error.render();
+                assert!(!rendered.contains("sk-review-canary"));
+                assert!(!rendered.contains("sk-quoted-canary"));
+                let details = error.details.unwrap();
+                assert!(details["provider_error"]
+                    .as_str()
+                    .unwrap()
+                    .contains("invalid"));
+                assert_eq!(details["failure_stage"], "provider_generation");
+                assert_eq!(
+                    details.get("initial_validation_error").is_some(),
+                    correction_retry,
+                );
+                assert_eq!(
+                    details["candidate_health"]["consecutive_protocol_failures"],
+                    count
+                );
+                assert_eq!(details["candidate_health"]["circuit_open"], count == 2);
+                assert_eq!(
+                    rejected.count(),
+                    count * if correction_retry { 2 } else { 1 }
+                );
+                assert_eq!(
+                    healthy.count(),
+                    0,
+                    "never dispatch a hidden same-call fallback"
+                );
+            }
+            let result = observe(&runtime, &home, None).await.unwrap();
+            assert_eq!(result.observation.summary, "healthy");
+            assert_eq!(
+                result.vision_selection.resolved_model.as_deref(),
+                Some("ollama@healthy/vision-b")
+            );
+            assert_eq!(rejected.count(), if correction_retry { 4 } else { 2 });
+            assert_eq!(healthy.count(), 1);
+        }
+    }
+
+    #[tokio::test]
+    async fn view_image_explicit_provider_failure_cools_without_fallback() {
+        let server = VisionServer::new("rejected", StatusCode::BAD_REQUEST).await;
+        let (home, _host, runtime) = vision_runtime(&server).await;
+        for _ in 0..2 {
+            let error = observe(&runtime, &home, Some("ollama/vision-a"))
+                .await
+                .unwrap_err();
+            assert_eq!(
+                ToolError::from_anyhow(&error).kind,
+                "vision_observation_failed"
+            );
+        }
+        let error = observe(&runtime, &home, Some("ollama/vision-a"))
+            .await
+            .unwrap_err();
+        assert_eq!(
+            ToolError::from_anyhow(&error).details.unwrap()["reason"],
+            "selected_route_cooling"
+        );
+        assert_eq!(server.count(), 2);
+        assert!(runtime
+            .inner
+            .view_image_candidate_health
+            .lock()
+            .await
+            .failures
+            .is_empty());
+    }
+
+    #[tokio::test]
+    async fn view_image_retryable_provider_errors_do_not_change_health() {
+        let server = VisionServer::new("unused", StatusCode::OK).await;
+        let (_home, _host, runtime) = vision_runtime(&server).await;
+        let selection = runtime
+            .current_view_image_vision_route_selection()
+            .await
+            .unwrap();
+        let error = crate::provider::provider_transport_error_with_code(
+            crate::provider::ProviderFailureClassification {
+                kind: crate::provider::ProviderFailureKind::RateLimited,
+                disposition: crate::provider::RetryDisposition::Retryable,
+            },
+            None,
+            None,
+            None,
+            "rate limited",
+        );
+        for _ in 0..3 {
+            assert!(runtime
+                .record_view_image_candidate_provider_failure(&selection, &error)
+                .await
+                .is_none());
+        }
+        let health = runtime.inner.view_image_candidate_health.lock().await;
+        assert!(health.failures.is_empty());
+        assert!(health.explicit_failures.is_empty());
+        assert_eq!(server.count(), 0);
+    }
+
+    #[tokio::test]
+    async fn view_image_deepseek_messages_preserves_images_without_forced_schema_tool() {
+        let server = VisionServer::new_deepseek().await;
+        let (home, _host, runtime) = vision_runtime(&server).await;
+        update_snapshot(&runtime, |snapshot| {
+            let config = &mut snapshot.model_catalog.provider_endpoints[0].runtime_config;
+            config.route_provider = ProviderId::parse("deepseek").unwrap();
+            config.transport = ProviderTransportKind::AnthropicMessages;
+            config.base_url = server.url.trim_end_matches("/v1").to_string();
+        });
+        let prepared = runtime
+            .prepare_view_image_observation(Some("ollama/vision-a"))
+            .await
+            .unwrap();
+        assert!(prepared.response_format.is_none());
+        let result = observe(&runtime, &home, Some("ollama/vision-a"))
+            .await
+            .unwrap();
+        assert_eq!(result.observation.summary, "DeepSeek image sample");
+        assert_eq!(server.count(), 1);
+        assert!(
+            observe(&runtime, &home, Some("ollama/vision-a"))
+                .await
+                .unwrap()
+                .cache_hit
+        );
+        let snap = runtime.inner.config_snapshot.load();
+        let mut config = snap.model_catalog.provider_endpoints[0]
+            .runtime_config
+            .clone();
+        config.transport = ProviderTransportKind::OpenAiChatCompletions;
+        assert!(
+            view_image_response_format(&config).is_some(),
+            "do not globally disable schema output for DeepSeek"
+        );
+        config.transport = ProviderTransportKind::AnthropicMessages;
+        config.route_provider = ProviderId::parse("anthropic").unwrap();
+        assert!(
+            view_image_response_format(&config).is_some(),
+            "keep other Messages routes unchanged"
+        );
     }
 
     #[tokio::test]
