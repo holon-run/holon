@@ -6,6 +6,8 @@
 //! - `tool_schema`: Tool schema contract tests and OpenAI request building tests
 //! - `openai_responses`: OpenAI Responses API request/response lowering tests
 //! - `anthropic_messages`: Anthropic Messages API cache/context-management tests
+//! - `anthropic_stream_interruption`: real-HTTP SSE stream interruption and
+//!   retry classification tests
 //! - `gemini_generate_content`: Gemini GenerateContent wire request tests
 //! - `routing_auth_doctor`: Provider routing, fallback, auth, and doctor tests
 //! - `openai_chat_completions`: OpenAI Chat Completions conversion, streaming, and error classification tests
@@ -26,6 +28,8 @@ use super::{
 mod anthropic_messages;
 #[cfg(holon_lib_test_shard = "c")]
 mod anthropic_route_cache;
+#[cfg(holon_lib_test_shard = "c")]
+mod anthropic_stream_interruption;
 #[cfg(holon_lib_test_shard = "c")]
 mod gemini_generate_content;
 #[cfg(holon_lib_test_shard = "c")]

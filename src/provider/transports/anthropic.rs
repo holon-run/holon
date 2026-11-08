@@ -995,7 +995,7 @@ async fn read_anthropic_streaming_response(
     };
     let idle_timeout = stream_idle_timeout();
 
-    loop {
+    while !accumulator.saw_message_stop {
         let next = tokio::time::timeout(idle_timeout, response.chunk())
             .await
             .map_err(|_| {
@@ -1049,20 +1049,22 @@ async fn read_anthropic_streaming_response(
         }
     }
 
-    for event in parser.finish().map_err(|error| {
-        classify_anthropic_sse_parse_error(error, |detail| {
-            invalid_response_error_with_trace(
-                "invalid Anthropic stream event",
-                "streaming_response_parse",
-                provider,
-                Some(model_ref),
-                Some(url),
-                detail,
-                trace,
-            )
-        })
-    })? {
-        accumulator.apply(event, model_ref, url, trace)?;
+    if !accumulator.saw_message_stop {
+        for event in parser.finish().map_err(|error| {
+            classify_anthropic_sse_parse_error(error, |detail| {
+                invalid_response_error_with_trace(
+                    "invalid Anthropic stream event",
+                    "streaming_response_parse",
+                    provider,
+                    Some(model_ref),
+                    Some(url),
+                    detail,
+                    trace,
+                )
+            })
+        })? {
+            accumulator.apply(event, model_ref, url, trace)?;
+        }
     }
     let response = accumulator.finish(provider, model_ref, url, trace)?;
     if let Some(trace) = trace {
@@ -1288,11 +1290,15 @@ fn provider_request_id_from_headers(headers: &HeaderMap) -> Option<String> {
 #[derive(Default)]
 struct SseParser {
     buffer: Vec<u8>,
+    saw_message_stop: bool,
     material: crate::provider::ProviderRequestMaterial,
 }
 
 impl SseParser {
     fn push(&mut self, chunk: &[u8]) -> Result<Vec<AnthropicStreamEvent>> {
+        if self.saw_message_stop {
+            return Ok(Vec::new());
+        }
         self.material.read(|| {
             crate::diagnostics::resource_io::charge_owned_payload(u64::try_from(chunk.len())?)?;
             Ok(crate::diagnostics::resource_io::charge_owned_metadata(
@@ -1320,7 +1326,13 @@ impl SseParser {
             self.buffer.drain(..separator_len);
             if let Some(event) = parse_sse_event_with_material(&raw, &self.material)? {
                 self.admit_event_slot()?;
+                self.saw_message_stop = event.kind == "message_stop";
                 events.push(event);
+                if self.saw_message_stop {
+                    // Do not parse trailing bytes from the same HTTP chunk.
+                    self.buffer.clear();
+                    break;
+                }
             }
         }
         Ok(events)
@@ -1336,7 +1348,7 @@ impl SseParser {
     }
 
     fn finish(mut self) -> Result<Vec<AnthropicStreamEvent>> {
-        if self.buffer.is_empty() {
+        if self.saw_message_stop || self.buffer.is_empty() {
             return Ok(Vec::new());
         }
         let raw = std::mem::take(&mut self.buffer);
@@ -4991,6 +5003,37 @@ mod tests {
             response.content[1].input.as_ref(),
             Some(&json!({ "cmd": "echo ok" }))
         );
+    }
+
+    #[test]
+    fn anthropic_sse_parser_stops_at_message_stop_independent_of_chunk_boundaries() {
+        let terminal = concat!(
+            "data: {\"type\":\"message_start\",\"message\":{\"content\":[]}}\n\n",
+            "data: {\"type\":\"message_stop\"}\n\n",
+        );
+        for tail in [
+            b"data: {not valid json}\n\n".as_slice(),
+            b"data: {\"type\":",
+            b"data: {\"type\":\"error\",\"error\":{\"type\":\"overloaded_error\"}}\n\n",
+            b"data: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"late\"}}\n\n",
+        ] {
+            let mut body = terminal.as_bytes().to_vec();
+            body.extend_from_slice(tail);
+            for chunk_size in [body.len(), 1, 7] {
+                let mut parser = SseParser::default();
+                let mut kinds = Vec::new();
+                for chunk in body.chunks(chunk_size) {
+                    let events = parser.push(chunk).expect("do not parse beyond message_stop");
+                    kinds.extend(events.into_iter().map(|event| event.kind));
+                    if kinds.last().map(String::as_str) == Some("message_stop") {
+                        break;
+                    }
+                }
+                assert_eq!(kinds, ["message_start", "message_stop"]);
+                assert!(parser.push(tail).expect("ignore later chunks").is_empty());
+                assert!(parser.finish().expect("ignore trailing frame").is_empty());
+            }
+        }
     }
 
     #[test]
