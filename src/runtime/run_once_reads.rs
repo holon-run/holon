@@ -114,6 +114,15 @@ impl RunOnceRead {
         super::super::task_reads::task_output_status(&self.tasks, id)
     }
 
+    /// Like [`RunOnceRead::task_output_status`] but reports a record missing
+    /// from this capture as `None`; stop-settle polling treats that as settled.
+    pub(crate) fn task_output_status_opt(
+        &self,
+        id: &str,
+    ) -> Result<Option<crate::types::TaskStatus>> {
+        super::super::task_reads::task_output_status_opt(&self.tasks, id)
+    }
+
     pub(crate) fn tools(&self) -> impl Iterator<Item = &ToolContextProjection> {
         self.inputs.records.iter().filter_map(|record| {
             if let PreparedInputEvidence::ToolExecution(tool) = &record.record {

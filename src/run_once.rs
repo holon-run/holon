@@ -812,10 +812,12 @@ async fn settle_stopped_tasks(
             let Some(remaining) = deadline.checked_duration_since(Instant::now()) else {
                 break;
             };
+            // A stopped task may settle and leave the capture entirely; its
+            // absence means settled, not `task not found`.
             let status = runtime
                 .capture_run_once_statuses(task_session)?
-                .task_output_status(task_id)?;
-            if !crate::storage::is_active_task_status(&status) {
+                .task_output_status_opt(task_id)?;
+            if !status.is_some_and(|status| crate::storage::is_active_task_status(&status)) {
                 break;
             }
 
@@ -833,10 +835,13 @@ async fn settle_stopped_tasks(
 
             let wait_started = Instant::now();
             let waited = loop {
+                // Absence here is the same settled outcome as above.
                 let status = runtime
                     .capture_run_once_statuses(task_session)?
-                    .task_output_status(task_id)?;
-                if !crate::storage::is_active_task_status(&status)
+                    .task_output_status_opt(task_id)?;
+                if !status
+                    .as_ref()
+                    .is_some_and(|status| crate::storage::is_active_task_status(status))
                     || wait_started.elapsed() >= Duration::from_millis(remaining_ms)
                 {
                     break status;
@@ -846,7 +851,7 @@ async fn settle_stopped_tasks(
                 ))
                 .await;
             };
-            if !crate::storage::is_active_task_status(&waited) {
+            if !waited.is_some_and(|status| crate::storage::is_active_task_status(&status)) {
                 break;
             }
         }

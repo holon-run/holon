@@ -165,6 +165,57 @@ fn active_task_order_and_count_survive_without_durable_task_tables() -> Result<(
     Ok(())
 }
 
+#[cfg(holon_lib_test_shard = "a")]
+#[test]
+fn task_output_status_reports_required_absence_as_none_for_stop_settle() -> Result<()> {
+    let (_dir, db) = fixture()?;
+    let removed = TaskKey::new(TaskFamily::Task, "task-settled-and-removed");
+    let retained = TaskKey::new(TaskFamily::Task, "task-still-present");
+    let mut request = load_request();
+    request.capture.required_keys = BTreeSet::from([removed.clone(), retained.clone()]);
+    let capture = db.transaction(|tx| {
+        // The retained task stopped but has not settled yet; the removed one
+        // settled and left the domain while the capture still requires its
+        // key, which is the stop-settle read of issue #3936.
+        let proof = prepare_task_write_tx(tx, &scope(), &BTreeSet::from([retained.clone()]))?;
+        repositories::upsert_task_tx(tx, &task(&retained.id, TaskStatus::Cancelled))?;
+        register_task_writes_tx(
+            tx,
+            &proof,
+            &BTreeSet::from([retained.clone()]),
+            &AgentState::new("default"),
+            &request,
+        )?;
+        let resident = prepare_task_domain_snapshot_tx(tx, &scope(), &request)?
+            .require_current()?
+            .resident;
+        resident.capture(&request.capture)
+    })?;
+    // Explicit absence in a still-required capture is a settled outcome.
+    assert_eq!(task_output_status_opt(&capture, &removed.id)?, None);
+    let strict = task_output_status(&capture, &removed.id).unwrap_err();
+    assert_eq!(
+        strict
+            .downcast_ref::<crate::runtime_error::RuntimeError>()
+            .expect("strict absence keeps the task_not_found runtime error")
+            .descriptor()
+            .code,
+        "task_not_found"
+    );
+    // A captured terminal record still reports its status through the opt read.
+    assert_eq!(
+        task_output_status_opt(&capture, &retained.id)?,
+        Some(TaskStatus::Cancelled)
+    );
+    // A key the capture never promised stays a preparation error, not settled.
+    let unknown = task_output_status_opt(&capture, "never-required").unwrap_err();
+    assert!(matches!(
+        unknown.downcast_ref::<TaskReadError>(),
+        Some(TaskReadError::NeedsPreparation(key)) if key.id == "never-required"
+    ));
+    Ok(())
+}
+
 /// Actual Task/result first writes and a real Open protocol activation. The
 /// context test borrows this capture and substitutes a database with no tables.
 pub(crate) fn admitted_fixture() -> Result<(CapturedTasks, Vec<MessageEnvelope>)> {
