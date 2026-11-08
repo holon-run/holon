@@ -180,7 +180,10 @@ final class WorkCoordinatorTests: XCTestCase {
         try await wait { coordinator.itemsState == .loaded }
         coordinator.selectAgent("B")
         await old.release()
-        try await wait { coordinator.items.first?.id == "work-B" }
+        // Items and tasks finish independently after the authority switch.
+        try await wait {
+            coordinator.items.first?.id == "work-B" && coordinator.tasks.first?.id == "task-B"
+        }
         XCTAssertEqual(coordinator.tasks.first?.id, "task-B")
         coordinator.disconnect()
     }
