@@ -1976,8 +1976,7 @@ fn borrowed_reasoning_effort_options(
         | ("fireworks", "accounts/fireworks/models/deepseek-v4-pro") => {
             &["none", "low", "medium", "high", "xhigh", "max"][..]
         }
-        ("fireworks", "accounts/fireworks/models/gpt-oss-120b")
-        | ("fireworks", "accounts/fireworks/models/minimax-m2p7") => &["low", "medium", "high"][..],
+        ("fireworks", "accounts/fireworks/models/minimax-m2p7") => &["low", "medium", "high"][..],
         ("huggingface", "openai/gpt-oss-120b") => &["low", "medium", "high"][..],
         ("venice", "zai-org-glm-4.7" | "qwen3-235b-a22b-thinking-2507") => {
             &["low", "medium", "high"][..]
@@ -3142,21 +3141,11 @@ mod tests {
             ),
             ("accounts/fireworks/models/glm-5p1", Some(202_752), false),
             (
-                "accounts/fireworks/models/gpt-oss-120b",
-                Some(131_072),
-                false,
-            ),
-            (
                 "accounts/fireworks/models/minimax-m2p7",
                 Some(196_608),
                 false,
             ),
             ("accounts/fireworks/models/minimax-m3", Some(512_000), true),
-            (
-                "accounts/fireworks/models/nemotron-3-ultra-nvfp4",
-                Some(262_144),
-                false,
-            ),
             ("accounts/fireworks/models/qwen3p6-plus", None, true),
             (
                 "accounts/fireworks/models/qwen3p7-plus",
