@@ -40,7 +40,8 @@ class PreviousReleaseTests(unittest.TestCase):
         self.calls.append(args)
         if args[0] == "curl":
             name = args[-1].rsplit("/", 1)[-1]
-            Path(args[3]).write_bytes(
+            output = args[args.index("-o") + 1]
+            Path(output).write_bytes(
                 self.checksums.encode() if name == "checksums.txt" else self.archive
             )
         elif args[:2] == ["docker", "build"]:
@@ -68,6 +69,15 @@ class PreviousReleaseTests(unittest.TestCase):
         self.assertEqual(result["archive_sha256"], self.checksum)
         self.assertEqual(result["image_id"], "sha256:" + "b" * 64)
         self.assertTrue(all("/v0.30.0/" in call[-1] for call in self.calls[:2]))
+        for call in self.calls[:2]:
+            self.assertEqual(call[0], "curl")
+            self.assertEqual(
+                call[1:9],
+                [
+                    "-fsSL", "--retry", "5", "--retry-all-errors",
+                    "--retry-delay", "5", "--retry-max-time", "300",
+                ],
+            )
         self.assertEqual(len(self.calls), 4)
 
     def test_invalid_ref_repository_and_pin_do_not_download(self):
