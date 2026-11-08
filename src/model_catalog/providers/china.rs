@@ -171,11 +171,14 @@ pub(super) fn route_definitions() -> Vec<BuiltInModelRouteDefinition> {
             );
             // GLM-5.3 documents implicit caching only; Token Plan does not
             // separately guarantee explicit breakpoints. Keep this route conservative.
-            // The two reviewed DeepSeek routes also use implicit caching (#3698).
+            // The three reviewed DeepSeek routes use implicit caching (#3698, #3925).
             // Do not generalize this policy to unreviewed models or endpoints.
             if matches!(
                 model,
-                "glm-5.3" | "deepseek-v4.1-flash" | "deepseek-v4-flash-0731"
+                "glm-5.3"
+                    | "deepseek-v4.1-flash"
+                    | "deepseek-v4-flash-0731"
+                    | "deepseek-v4.1-flash-1017"
             ) {
                 definition.policy.cache_capabilities = Some(ModelRouteCacheCapabilities {
                     cache_control: Some(false),
