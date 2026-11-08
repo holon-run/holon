@@ -655,7 +655,7 @@ export function AgentOverviewPanel({
         onOpenChange={setTimersOpen}
         badge={visibleTimers.length ? <span className="inspector-card-count">{visibleTimers.length}</span> : undefined}
       >
-        <ObjectDetailRefreshFeedback state={timerResource.state} onRefresh={timerResource.refresh} />
+        <ObjectDetailRefreshFeedback state={timerResource.state} />
         {timersLoading ? <p className="muted">{t("rightPanel.loadingTimers")}</p> : null}
         {timerError ? <p className="error-text">{t("rightPanel.timersError", { error: timerError })}</p> : null}
         {!timersLoading && !visibleTimers.length && !timerError ? <p className="muted">{t("rightPanel.noTimers")}</p> : null}

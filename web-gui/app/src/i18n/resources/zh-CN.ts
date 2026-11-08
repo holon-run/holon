@@ -1057,7 +1057,6 @@ const zh: Record<string, any> = {
     detailRefreshing: "正在刷新详情…",
     detailStale: "详情可能已过期 · 保留上次数据",
     detailLastSuccess: "上次刷新成功：{{time}}",
-    refreshCore: "刷新 Agent 与工作项",
     stateRefreshStale: "Agent 状态可能已过期",
     workItemsRefreshStale: "工作项列表可能已过期",
     loadingAgentInformation: "正在加载智能体信息…",

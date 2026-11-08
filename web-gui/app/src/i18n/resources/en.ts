@@ -1056,7 +1056,6 @@ const en = {
     detailRefreshing: "Refreshing detail…",
     detailStale: "Detail is stale · showing last known data",
     detailLastSuccess: "Last successful refresh: {{time}}",
-    refreshCore: "Refresh agent and work items",
     stateRefreshStale: "Agent status is stale",
     workItemsRefreshStale: "Work item list is stale",
     loadingAgentInformation: "Loading agent information…",
