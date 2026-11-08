@@ -1641,6 +1641,13 @@ final class HolonUITests: XCTestCase {
         let exportName = app.textFields["DOCPicker.filenameTextField"]
         XCTAssertTrue(exportName.waitForExistence(timeout: UIWaitScale.scaled(15)), "Export opens the native destination picker")
         XCTAssertEqual(exportName.value as? String, "report")
+        // Files persists across app reinstalls and fixture runs on this simulator.
+        // Keep the real save independent of earlier exports without replacing them.
+        let uniqueExportName = "report-\(UUID().uuidString)"
+        exportName.tap()
+        clearTextField(exportName)
+        exportName.typeText(uniqueExportName)
+        XCTAssertEqual(exportName.value as? String, uniqueExportName)
         let save = app.buttons["Save"].firstMatch
         XCTAssertTrue(save.isHittable); XCTAssertTrue(save.isEnabled)
         let exportHierarchy = XCTAttachment(string: app.debugDescription)
