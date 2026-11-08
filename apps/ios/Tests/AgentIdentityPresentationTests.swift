@@ -19,10 +19,21 @@ final class AgentIdentityPresentationTests: XCTestCase {
             (.incompatible, true, true, false, "reading.status.incompatible"),
         ]
         for (status, cached, refreshing, connecting, key) in cases {
-            let value = AgentIdentityPresentation.derive(agent, status: status, isCached: cached,
+            let value = AgentIdentityPresentation.derive(agent, status: status, isRosterCurrent: true,
+                                                        isCached: cached,
                                                         isRefreshing: refreshing, connecting: connecting)
             XCTAssertEqual(value.statusKey, key)
             XCTAssertEqual(value.expression, key == "avatar.status.running" ? .focused : .neutral)
+        }
+    }
+
+    func testUnconfirmedRosterStaysNeutralEvenWhenConversationIsLive() {
+        let agent = ReadingAgent(id: "stable", name: "Name", preview: "", currentRunID: "old-run")
+        for refreshing in [false, true] {
+            XCTAssertEqual(AgentIdentityPresentation.derive(
+                agent, status: .live, isRosterCurrent: false, isCached: false, isRefreshing: refreshing
+            ), .init(statusKey: refreshing ? "reading.cache.refreshing" : "reading.cache.saved",
+                     expression: .neutral))
         }
     }
 

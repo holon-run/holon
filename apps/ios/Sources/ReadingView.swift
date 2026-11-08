@@ -66,7 +66,8 @@ struct ReadingView: View {
                     ForEach(Array(matching.prefix(window))) { agent in
                         NavigationLink(value: AppRoute.conversation(agent.id)) {
                             AgentSummaryRow(agent: agent, store: reader.avatars, presentation: .derive(
-                                agent, status: reader.status, isCached: reader.rosterIsCached,
+                                agent, status: reader.status, isRosterCurrent: reader.isRosterCurrent,
+                                isCached: reader.rosterIsCached,
                                 isRefreshing: reader.isRefreshing, connecting: isConnecting
                             ))
                         }
@@ -403,7 +404,8 @@ struct ConversationReadingView: View {
             ToolbarItem(placement: .principal) {
                 if let agent = reader.agents.first(where: { $0.id == reader.selectedAgentID }) {
                     AgentConversationTitle(agent: agent, store: reader.avatars, presentation: .derive(
-                        agent, status: reader.status, isCached: reader.rosterIsCached,
+                        agent, status: reader.status, isRosterCurrent: reader.isRosterCurrent,
+                        isCached: reader.rosterIsCached,
                         isRefreshing: reader.isRefreshing
                     ))
                 } else {

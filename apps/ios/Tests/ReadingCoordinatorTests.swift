@@ -2299,6 +2299,50 @@ final class ReadingCoordinatorTests: XCTestCase {
         coordinator.disconnect()
     }
 
+    func testAgentSwitchWithFailedRosterCannotPresentOldRunAsLive() async throws {
+        for changesEpoch in [false, true] {
+            let (coordinator, fake, _) = try await start()
+            await fake.setRunID("old-run")
+            await coordinator.refresh()
+            XCTAssertTrue(coordinator.isRosterCurrent)
+            XCTAssertFalse(coordinator.rosterIsCached)
+
+            await fake.setRosterError(ReadingFakeTransport.Failure.offline)
+            await fake.holdRoster()
+            if changesEpoch { await fake.replaceEpoch() }
+            coordinator.selectAgent("B")
+            try await wait { coordinator.snapshot?.agentID == "B" && coordinator.status == .live }
+            let agent = try XCTUnwrap(coordinator.agents.first { $0.id == "B" })
+            XCTAssertEqual(agent.currentRunID, "old-run")
+            XCTAssertFalse(coordinator.isRosterCurrent)
+            XCTAssertFalse(coordinator.rosterIsCached)
+            XCTAssertTrue(coordinator.isRefreshing)
+            XCTAssertEqual(AgentIdentityPresentation.derive(
+                agent, status: coordinator.status, isRosterCurrent: coordinator.isRosterCurrent,
+                isCached: coordinator.rosterIsCached, isRefreshing: coordinator.isRefreshing
+            ), .init(statusKey: "reading.cache.refreshing", expression: .neutral))
+
+            await fake.releaseRoster()
+            try await wait { !coordinator.isRefreshing }
+            XCTAssertEqual(coordinator.status, .live)
+            XCTAssertFalse(coordinator.isRosterCurrent)
+            XCTAssertFalse(coordinator.rosterIsCached)
+            XCTAssertEqual(AgentIdentityPresentation.derive(
+                agent, status: coordinator.status, isRosterCurrent: coordinator.isRosterCurrent,
+                isCached: coordinator.rosterIsCached, isRefreshing: coordinator.isRefreshing
+            ), .init(statusKey: "reading.cache.saved", expression: .neutral))
+
+            await fake.setRosterError(nil)
+            await coordinator.refresh()
+            XCTAssertTrue(coordinator.isRosterCurrent)
+            XCTAssertEqual(AgentIdentityPresentation.derive(
+                agent, status: coordinator.status, isRosterCurrent: coordinator.isRosterCurrent,
+                isCached: coordinator.rosterIsCached, isRefreshing: coordinator.isRefreshing
+            ), .init(statusKey: "avatar.status.running", expression: .focused))
+            coordinator.disconnect()
+        }
+    }
+
     func testConversationFirstEpochChangeInvalidatesAvatarsBeforeRosterSucceedsOrFails() async throws {
         for rosterFails in [false, true] {
             let (coordinator, fake, _) = try await start()
