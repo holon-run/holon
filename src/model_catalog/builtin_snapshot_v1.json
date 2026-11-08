@@ -9176,6 +9176,9 @@
     {
       "route_ref": "dashscope@token-plan/deepseek-v4.1-flash-1017",
       "policy": {
+        "cache_capabilities": {
+          "cache_control": false
+        },
         "display_name": null,
         "description": null,
         "effective_context_window_percent": null,

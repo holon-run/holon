@@ -71,11 +71,16 @@ cache hit rate, cost or latency after this default change.
 ## Reviewed route defaults: DashScope Token Plan DeepSeek
 
 The #3698 configuration mechanism alone did not fix its original mixed-model
-case. As of 2026-10-24, these two exact routes also default to
+case. As of 2026-11-08, these three exact routes also default to
 `cache_control=false`:
 
 - `dashscope@token-plan/deepseek-v4.1-flash`
 - `dashscope@token-plan/deepseek-v4-flash-0731`
+- `dashscope@token-plan/deepseek-v4.1-flash-1017`
+
+The first two defaults were added on 2026-10-24. The `-1017` alias was reviewed
+separately in #3925: 389 production rounds reported cache reads but zero explicit
+cache-creation tokens, with outgoing breakpoints ignored.
 
 The issue's multi-day observations show cache reads but no explicit cache
 creation for these routes. This is a request-correctness default, not a promise
@@ -85,7 +90,7 @@ marker. Other DeepSeek versions, ordinary DashScope API routes and Qwen retain
 their existing policies; user overrides still take precedence.
 
 The registry-path HTTP regression covers default/true/false/true requests for
-both routes and Qwen under both cache strategies, including diagnostics and
+all three routes and Qwen under both cache strategies, including diagnostics and
 preserved implicit-usage parsing. The ignored
 `live_token_plan_coding_review_uses_builtin_cache_policy` integration target
 performs a manually driven two-turn coding review on one explicitly selected

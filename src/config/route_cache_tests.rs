@@ -301,6 +301,7 @@ fn route_cache_dashscope_deepseek_defaults_are_exact_and_overridable() {
     for route in [
         "dashscope@token-plan/deepseek-v4.1-flash",
         "dashscope@token-plan/deepseek-v4-flash-0731",
+        "dashscope@token-plan/deepseek-v4.1-flash-1017",
     ] {
         let mut catalog = cache_catalog();
         assert_eq!(
@@ -313,7 +314,7 @@ fn route_cache_dashscope_deepseek_defaults_are_exact_and_overridable() {
         for peer in [
             "dashscope@default/deepseek-v4.1-flash",
             "dashscope@default/deepseek-v4-flash-0731",
-            "dashscope@token-plan/deepseek-v4.1-flash-1017",
+            "dashscope@default/deepseek-v4.1-flash-1017",
             "dashscope@token-plan/deepseek-v4-flash",
             "dashscope@token-plan/deepseek-v3.2",
             "dashscope@token-plan/qwen3.8-flash",

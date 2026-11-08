@@ -196,6 +196,7 @@ async fn anthropic_dashscope_route_cache_defaults_preserve_implicit_usage() {
         ("dashscope@token-plan/glm-5.3", false),
         ("dashscope@token-plan/deepseek-v4.1-flash", false),
         ("dashscope@token-plan/deepseek-v4-flash-0731", false),
+        ("dashscope@token-plan/deepseek-v4.1-flash-1017", false),
         ("dashscope@token-plan/qwen3.8-flash", true),
     ] {
         assert_dashscope_route_cache_control(route, default_enabled).await;
@@ -287,7 +288,11 @@ async fn assert_dashscope_route_cache_control(route: &str, default_enabled: bool
                 .as_ref()
                 .unwrap();
             assert_eq!(diagnostics.model_route.as_deref(), Some(route));
-            assert_eq!(diagnostics.explicit_cache_control_enabled, Some(enabled));
+            assert_eq!(
+                diagnostics.explicit_cache_control_enabled,
+                Some(enabled),
+                "{route}, {strategy:?}, override={override_value:?}"
+            );
             assert_eq!(diagnostics.cache_control_source, Some(source));
             let usage = response.cache_usage.as_ref().unwrap();
             assert_eq!(usage.read_input_tokens, 2048);
