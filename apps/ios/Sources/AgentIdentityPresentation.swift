@@ -6,6 +6,18 @@ struct AgentIdentityPresentation: Equatable {
     let statusKey: String
     let expression: HolonAvatarExpression
 
+    /// Roster metadata is authoritative only after its own authenticated refresh.
+    static func derive(_ agent: ReadingAgent, status: ReadingStatus, isCached: Bool,
+                       isRefreshing: Bool, connecting: Bool = false) -> Self {
+        if status == .live, !isCached, !isRefreshing {
+            return derive(agent, current: true)
+        }
+        return .init(statusKey: ReadingPresentation.connectionStatusKey(
+            status: status, hasContent: true, isCached: isCached,
+            isRefreshing: isRefreshing, connecting: connecting
+        ) ?? "avatar.status.unknown", expression: .neutral)
+    }
+
     static func derive(_ agent: ReadingAgent, current: Bool) -> Self {
         guard current else { return .init(statusKey: "avatar.status.offline", expression: .neutral) }
         let lifecycle = normalize(agent.lifecycle), posture = normalize(agent.posture)

@@ -94,8 +94,7 @@ struct SendingView: View {
                             showStop = stopRunID != nil
                         }.disabled(sender.status != .ready).accessibilityIdentifier("sending.stop")
                     }
-                    modelPicker
-                } label: { Image(systemName: "plus.circle").font(.title2).frame(width: 44, height: 44) }
+                } label: { Image(systemName: "plus").font(.title3).frame(width: 44, height: 44) }
                 .accessibilityLabel(Text("sending.options"))
                 .accessibilityIdentifier("sending.options")
                 TextField("sending.placeholder", text: Binding(
@@ -113,9 +112,20 @@ struct SendingView: View {
                     Image(systemName: "arrow.up.circle.fill").font(.title).frame(width: 44, height: 44)
                 }
                 .disabled(sender.selectedAgentID == nil || !SendingPresentation.hasContent(sender.draft))
+                .tint(Color(uiColor: .systemBlue))
                 .accessibilityLabel(Text("sending.send"))
                 .accessibilityIdentifier("sending.enqueue")
             }
+            .padding(.horizontal, 4)
+            .background(Color(uiColor: .tertiarySystemBackground), in: RoundedRectangle(cornerRadius: 16))
+            HStack(spacing: 4) {
+                Image(systemName: "cpu").foregroundStyle(.secondary).accessibilityHidden(true)
+                modelPicker.labelsHidden().pickerStyle(.menu)
+                    .accessibilityIdentifier("sending.model")
+                Spacer(minLength: 0)
+            }
+            .font(.caption)
+            .frame(minHeight: 44)
         }
         .padding(.horizontal, 12).padding(.vertical, 8)
         .background(.bar)

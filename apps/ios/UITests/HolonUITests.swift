@@ -937,7 +937,6 @@ final class HolonUITests: XCTestCase {
             .waitForExistence(timeout: UIWaitScale.scaled(60)))
         capture(app, "authenticated-outbox")
         app.buttons["Close"].tap()
-        app.buttons["conversation.more"].tap()
         app.buttons["conversation.work"].tap()
         let item = app.buttons["work.item." + work]
         if ProcessInfo.processInfo.environment["HOLON_UI_RICH_TURN_ID"]?.isEmpty == false {
@@ -965,7 +964,6 @@ final class HolonUITests: XCTestCase {
         capture(app, "task-output")
         app.navigationBars.buttons.element(boundBy: 0).tap()
         app.navigationBars.buttons.element(boundBy: 0).tap()
-        app.buttons["conversation.more"].tap()
         let files = app.buttons["conversation.files"]
         reveal(files, in: app)
         files.tap()
@@ -1211,7 +1209,7 @@ final class HolonUITests: XCTestCase {
         XCTAssertTrue(agentRow.waitForExistence(timeout: UIWaitScale.scaled(15))); agentRow.tap()
         app.buttons["sending.options"].tap(); app.buttons["Take photo"].tap()
         XCTAssertTrue(app.staticTexts["The camera is not available on this device. Choose a photo or file instead."].waitForExistence(timeout: UIWaitScale.scaled(10)))
-        app.buttons["conversation.more"].tap(); app.buttons["conversation.work"].tap()
+        app.buttons["conversation.work"].tap()
         let moreWork = app.buttons["work.moreItems"]
         reveal(moreWork, in: app); moreWork.tap()
         let additionalWork = app.buttons["work.item." + (try required("RICH_ADDITIONAL_WORK_ID"))]

@@ -118,6 +118,7 @@ struct HolonApp: App {
                                             destination(route, connection: coordinator)
                                         }
                                 }
+                                .tint(.primary)
                                 .safeAreaInset(edge: .top, spacing: 0) {
                                     if !imports.pending.isEmpty, router.path.last != .tools {
                                         Button {

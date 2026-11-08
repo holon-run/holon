@@ -81,7 +81,7 @@ final class ReadingCoordinator {
     @ObservationIgnored var quietStreamSurvivalReset: TimeInterval = 10
     private var rosterRefreshing = false
     private var conversationRefreshing = false
-    private var rosterIsCached = false
+    private(set) var rosterIsCached = false
     private var conversationIsCached = false
     @ObservationIgnored private var rosterSavedAt: Date?
     @ObservationIgnored private var conversationSavedAt: Date?

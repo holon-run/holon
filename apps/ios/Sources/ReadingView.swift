@@ -65,32 +65,10 @@ struct ReadingView: View {
                 Section("reading.recent") {
                     ForEach(Array(matching.prefix(window))) { agent in
                         NavigationLink(value: AppRoute.conversation(agent.id)) {
-                            VStack(alignment: .leading, spacing: 6) {
-                                HStack {
-                                    Text(verbatim: agent.name).font(.headline).foregroundStyle(.primary)
-                                    Spacer()
-                                    if let date = AgentSummaryPresentation.activityDate(agent) {
-                                        Text(date, style: .relative).font(.caption2).foregroundStyle(.secondary)
-                                    }
-                                    if let unread = agent.unreadCount, unread > 0 {
-                                        Text("reading.unread \(unread)").font(.caption2).foregroundStyle(.blue)
-                                    }
-                                }
-                                let preview = AgentSummaryPresentation.preview(agent)
-                                if !preview.isEmpty {
-                                    HStack(alignment: .firstTextBaseline, spacing: 5) {
-                                        if AgentSummaryPresentation.showsOperatorPreview(agent) {
-                                            Text("reading.inputPreview").font(.caption).foregroundStyle(.secondary)
-                                        }
-                                        Text(verbatim: preview).lineLimit(2).foregroundStyle(.secondary)
-                                    }
-                                }
-                                if AgentSummaryPresentation.needsReply(agent) {
-                                    Label("agents.needsReply", systemImage: "bubble.left")
-                                        .font(.caption).foregroundStyle(.secondary)
-                                }
-                            }
-                            .padding(.vertical, 4)
+                            AgentSummaryRow(agent: agent, store: reader.avatars, presentation: .derive(
+                                agent, status: reader.status, isCached: reader.rosterIsCached,
+                                isRefreshing: reader.isRefreshing, connecting: isConnecting
+                            ))
                         }
                         .accessibilityIdentifier("agent." + agent.id)
                         .onAppear { visibleAgents.insert(agent.id) }
@@ -132,6 +110,67 @@ struct ReadingView: View {
                 do { try await Task.sleep(for: .milliseconds(150)) } catch { return }
                 await reader.loadVisiblePreviews(agentIDs: visibleAgents.sorted())
             }
+    }
+}
+
+private struct AgentSummaryRow: View {
+    let agent: ReadingAgent
+    let store: AgentAvatarStore
+    let presentation: AgentIdentityPresentation
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 12) {
+            AgentAvatarView(store: store, agentID: agent.id, presentation: presentation)
+            VStack(alignment: .leading, spacing: 5) {
+                HStack(alignment: .firstTextBaseline, spacing: 8) {
+                    Text(verbatim: agent.name).font(.headline).foregroundStyle(.primary)
+                        .lineLimit(1).layoutPriority(1)
+                    Spacer(minLength: 0)
+                    if let date = AgentSummaryPresentation.activityDate(agent) {
+                        Text(date, style: .relative).font(.caption2).foregroundStyle(.secondary)
+                            .lineLimit(1)
+                    }
+                }
+                let preview = AgentSummaryPresentation.preview(agent)
+                if !preview.isEmpty {
+                    HStack(spacing: 4) {
+                        if AgentSummaryPresentation.showsOperatorPreview(agent) {
+                            Text("reading.inputPreview")
+                        }
+                        Text(verbatim: preview)
+                    }
+                    .font(.subheadline).foregroundStyle(.secondary).lineLimit(1)
+                }
+                HStack(spacing: 8) {
+                    Text(LocalizedStringKey(presentation.statusKey))
+                    if let unread = agent.unreadCount, unread > 0 {
+                        Text("reading.unread \(unread)").fontWeight(.semibold)
+                    }
+                }
+                .font(.caption).foregroundStyle(.secondary)
+            }
+        }
+        .padding(.vertical, 8)
+        .accessibilityElement(children: .combine)
+    }
+}
+
+private struct AgentConversationTitle: View {
+    let agent: ReadingAgent
+    let store: AgentAvatarStore
+    let presentation: AgentIdentityPresentation
+
+    var body: some View {
+        HStack(spacing: 7) {
+            AgentAvatarView(store: store, agentID: agent.id, presentation: presentation, size: 28)
+            VStack(alignment: .leading, spacing: 1) {
+                Text(verbatim: agent.name).font(.subheadline.weight(.semibold)).lineLimit(1)
+                Text(LocalizedStringKey(presentation.statusKey))
+                    .font(.caption2).foregroundStyle(.secondary).lineLimit(1)
+            }
+        }
+        .accessibilityElement(children: .combine)
+        .accessibilityIdentifier("conversation.identity")
     }
 }
 
@@ -333,7 +372,7 @@ struct ConversationReadingView: View {
             newContent = false
             initializedAgent = agent
         }
-        .navigationTitle(Text(verbatim: reader.agents.first { $0.id == reader.selectedAgentID }?.name ?? "Holon"))
+        .navigationTitle("")
         .navigationBarTitleDisplayMode(.inline)
         .safeAreaInset(edge: .top, spacing: 0) {
             ConversationConnectionStatus(status: reader.status, hasSnapshot: reader.snapshot != nil,
@@ -361,14 +400,26 @@ struct ConversationReadingView: View {
             }
         }
         .toolbar {
-            ToolbarItem(placement: .primaryAction) {
-                Menu {
+            ToolbarItem(placement: .principal) {
+                if let agent = reader.agents.first(where: { $0.id == reader.selectedAgentID }) {
+                    AgentConversationTitle(agent: agent, store: reader.avatars, presentation: .derive(
+                        agent, status: reader.status, isCached: reader.rosterIsCached,
+                        isRefreshing: reader.isRefreshing
+                    ))
+                } else {
+                    Text(verbatim: reader.selectedAgentID ?? "Holon").lineLimit(1)
+                }
+            }
+            ToolbarItemGroup(placement: .primaryAction) {
                     if reader.status == .live, let agent = reader.selectedAgentID {
                         NavigationLink(value: AppRoute.work(agent)) { Label("work.title", systemImage: "checklist") }
+                            .labelStyle(.iconOnly)
                             .accessibilityIdentifier("conversation.work")
                         NavigationLink(value: AppRoute.files(agent)) { Label("files.title", systemImage: "folder") }
+                            .labelStyle(.iconOnly)
                             .accessibilityIdentifier("conversation.files")
                     }
+                Menu {
                     Button("reading.refresh") { Task { await reader.refresh() } }
                     Button("reading.markRead") { readThroughToConfirm = reader.readConfirmationForVisibleBriefs }
                         .disabled(reader.readThroughForVisibleBriefs == nil)
@@ -444,6 +495,10 @@ private struct ReadingTurnView: View {
             ForEach(turn.raw["inputs"].viewArray, id: \.viewMessageID) { input in
                 ReadingInputView(input: input, fallbackClass: turn.raw["presentation_class"].viewString)
             }
+            ForEach(turn.raw["brief_ids"].viewArray.compactMap(\.viewString), id: \.self) { briefID in
+                ReadingBriefView(briefID: briefID, reader: reader, inputs: turn.raw["inputs"].viewArray,
+                                 onReport: { reportScope = reader.contentReportScope })
+            }
             DisclosureGroup(isExpanded: $showActivities) {
                 Button("reading.fullProcess", systemImage: "arrow.up.left.and.arrow.down.right") { fullActivities = true }
                     .font(.caption).frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
@@ -474,10 +529,6 @@ private struct ReadingTurnView: View {
             }
             .sheet(item: $reportScope) { scope in
                 ContentReportView(turnID: turn.id, scope: scope, reader: reader)
-            }
-            ForEach(turn.raw["brief_ids"].viewArray.compactMap(\.viewString), id: \.self) { briefID in
-                ReadingBriefView(briefID: briefID, reader: reader, inputs: turn.raw["inputs"].viewArray,
-                                 onReport: { reportScope = reader.contentReportScope })
             }
             Divider()
         }

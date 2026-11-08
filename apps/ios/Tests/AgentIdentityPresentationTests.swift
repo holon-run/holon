@@ -3,6 +3,29 @@ import XCTest
 @testable import Holon
 
 final class AgentIdentityPresentationTests: XCTestCase {
+    func testCachedAndRefreshingIdentityUsesNeutralWithoutClaimingOffline() {
+        let agent = ReadingAgent(id: "stable", name: "Name", preview: "", currentRunID: "run")
+        let cases: [(ReadingStatus, Bool, Bool, Bool, String)] = [
+            (.live, false, false, false, "avatar.status.running"),
+            (.syncing, false, false, false, "reading.status.syncing"),
+            (.syncing, true, true, false, "reading.cache.refreshing"),
+            (.live, true, false, false, "reading.cache.saved"),
+            (.live, false, true, false, "reading.status.syncing"),
+            (.offline, true, false, false, "reading.cache.offline"),
+            (.offline, false, false, false, "reading.status.offline"),
+            (.offline, true, false, true, "reading.cache.refreshing"),
+            (.permissionDenied, true, true, true, "reading.status.permissionDenied"),
+            (.sessionExpired, true, true, false, "reading.status.sessionExpired"),
+            (.incompatible, true, true, false, "reading.status.incompatible"),
+        ]
+        for (status, cached, refreshing, connecting, key) in cases {
+            let value = AgentIdentityPresentation.derive(agent, status: status, isCached: cached,
+                                                        isRefreshing: refreshing, connecting: connecting)
+            XCTAssertEqual(value.statusKey, key)
+            XCTAssertEqual(value.expression, key == "avatar.status.running" ? .focused : .neutral)
+        }
+    }
+
     func testStatusAndExpressionSharePrecedence() {
         let cases: [(String?, String?, String?, Int?, Int?, String, HolonAvatarExpression)] = [
             ("deleting", "active_turn", "run", 0, 0, "deleting", .neutral),
