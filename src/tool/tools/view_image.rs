@@ -137,17 +137,26 @@ pub(crate) async fn execute(
             initial_validation_error: None,
             error,
             ..
-        }) => return Err(vision_observation_failed(&vision_selection, error)),
+        }) => {
+            let health = runtime
+                .record_view_image_candidate_provider_failure(&resolved_selection, &error)
+                .await;
+            return Err(vision_observation_failed(&vision_selection, error, health));
+        }
         Err(ViewImageObservationGenerationError::Provider {
             initial_validation_error: Some(first_validation_error),
             initial_response_preview,
             error,
         }) => {
+            let health = runtime
+                .record_view_image_candidate_provider_failure(&resolved_selection, &error)
+                .await;
             return Err(vision_observation_failed_after_validation_retry(
                 &vision_selection,
                 &first_validation_error,
                 initial_response_preview.as_deref().unwrap_or(""),
                 error,
+                health,
             ));
         }
         Err(ViewImageObservationGenerationError::Validation {
@@ -300,9 +309,58 @@ fn vision_adapter_unavailable(selection: ViewImageVisionSelection) -> anyhow::Er
     .into()
 }
 
+fn compact_vision_selection(selection: &ViewImageVisionSelection) -> Value {
+    const MAX_CANDIDATES: usize = 10;
+    let mut compact = selection.clone();
+    let candidates = &mut compact.candidates;
+    let total = candidates.len();
+    // Preserve the selected route even when health has advanced beyond top-N.
+    let selected = candidates
+        .iter()
+        .position(|candidate| {
+            Some(candidate.model_ref.as_str()) == selection.resolved_model.as_deref()
+        })
+        .filter(|index| *index >= MAX_CANDIDATES)
+        .map(|index| candidates[index].clone());
+    candidates.truncate(MAX_CANDIDATES);
+    if let Some(selected) = selected {
+        candidates[MAX_CANDIDATES - 1] = selected;
+    }
+    let mut value = json!(compact);
+    value["candidates_total"] = json!(total);
+    value["candidates_truncated"] = json!(total > MAX_CANDIDATES);
+    value
+}
+
+fn vision_provider_failure_details(
+    selection: &ViewImageVisionSelection,
+    error: &anyhow::Error,
+    health: Option<crate::runtime::ViewImageCandidateFailureStatus>,
+) -> Value {
+    json!({
+        "selection": compact_vision_selection(selection),
+        "provider_failure": crate::provider::classify_provider_error(error),
+        "provider_error_code": crate::provider::provider_error_code(error),
+        "provider_error": crate::provider::sanitized_provider_error(error),
+        "failure_stage": "provider_generation",
+        "selected_mode": selection.selected_mode,
+        "selection_reason": selection.selection_reason,
+        "vision_provider": selection.vision_provider,
+        "vision_model": selection.vision_model,
+        "candidate_health": {
+            "model_ref": selection.resolved_model,
+            "consecutive_protocol_failures": health.map(|status| status.consecutive_protocol_failures),
+            "failure_threshold": crate::runtime::VIEW_IMAGE_PROTOCOL_FAILURE_THRESHOLD,
+            "circuit_open": health.is_some_and(|status| status.circuit_open),
+            "cooldown_seconds": health.map_or(0, |status| status.cooldown_seconds),
+        },
+    })
+}
+
 fn vision_observation_failed(
     selection: &ViewImageVisionSelection,
     error: anyhow::Error,
+    health: Option<crate::runtime::ViewImageCandidateFailureStatus>,
 ) -> anyhow::Error {
     let failure = crate::provider::classify_provider_error(&error);
     ToolError::new(
@@ -310,16 +368,7 @@ fn vision_observation_failed(
         "ViewImage provider could not generate a visual observation",
     )
     .with_retryable(failure.disposition == crate::provider::RetryDisposition::Retryable)
-    .with_details(json!({
-        "selection": selection,
-        "provider_failure": failure,
-        "provider_error_code": crate::provider::provider_error_code(&error),
-        "failure_stage": "provider_generation",
-        "selected_mode": selection.selected_mode,
-        "selection_reason": selection.selection_reason,
-        "vision_provider": selection.vision_provider,
-        "vision_model": selection.vision_model,
-    }))
+    .with_details(vision_provider_failure_details(selection, &error, health))
     .with_recovery_hint("configure an OpenAI-compatible vision model with valid credentials, or retry after provider failures are resolved")
     .into()
 }
@@ -329,25 +378,18 @@ fn vision_observation_failed_after_validation_retry(
     first_validation_error: &anyhow::Error,
     initial_response_preview: &str,
     error: anyhow::Error,
+    health: Option<crate::runtime::ViewImageCandidateFailureStatus>,
 ) -> anyhow::Error {
     let failure = crate::provider::classify_provider_error(&error);
+    let mut details = vision_provider_failure_details(selection, &error, health);
+    details["initial_validation_error"] = json!(first_validation_error.to_string());
+    details["initial_response_preview"] = json!(bounded_response_preview(initial_response_preview));
     ToolError::new(
         "vision_observation_failed",
         "ViewImage provider failed after a response correction retry",
     )
     .with_retryable(failure.disposition == crate::provider::RetryDisposition::Retryable)
-    .with_details(json!({
-        "selection": selection,
-        "provider_failure": failure,
-        "provider_error_code": crate::provider::provider_error_code(&error),
-        "failure_stage": "provider_generation",
-        "selected_mode": selection.selected_mode,
-        "selection_reason": selection.selection_reason,
-        "vision_provider": selection.vision_provider,
-        "vision_model": selection.vision_model,
-        "initial_validation_error": first_validation_error.to_string(),
-        "initial_response_preview": initial_response_preview,
-    }))
+    .with_details(details)
     .with_recovery_hint(
         "check the configured vision provider or model credentials and retry after provider failures are resolved",
     )
@@ -1233,6 +1275,7 @@ mod tests {
             &anyhow!("initial response was invalid"),
             "not valid visual observation",
             anyhow!("provider unavailable on retry"),
+            None,
         ));
         assert_eq!(tool_error.kind, "vision_observation_failed");
         assert_eq!(
@@ -1376,9 +1419,10 @@ mod tests {
                         &anyhow!("invalid JSON"),
                         "invalid response",
                         error,
+                        None,
                     )
                 } else {
-                    vision_observation_failed(&test_vision_selection(), error)
+                    vision_observation_failed(&test_vision_selection(), error, None)
                 };
                 let error = ToolError::from_anyhow(&error);
                 assert!(!error.render().contains("private-endpoint"));
@@ -1553,6 +1597,67 @@ mod tests {
             },
             created_at: Utc::now(),
         }
+    }
+
+    #[test]
+    fn provider_failure_payload_is_bounded_redacted_and_keeps_the_selected_candidate() {
+        let mut selection = test_vision_selection();
+        selection.candidates = (0..1020)
+            .map(|index| crate::types::ViewImageVisionCandidate {
+                provider: "openai".into(),
+                model: format!("vision-{index}"),
+                model_ref: format!("openai@default/vision-{index}"),
+                image_input: true,
+                reason: "model_advertises_image_input".into(),
+            })
+            .collect();
+        selection.resolved_model = Some("openai@default/vision-1019".into());
+        let raw = format!(
+            "invalid_request_error Thinking mode does not support this tool_choice https://private-endpoint.example/?token=secret Authorization: Bearer secret-token api_key=secret-key sk-bare-secret {}",
+            "长".repeat(1000),
+        );
+        for correction_retry in [false, true] {
+            let error = if correction_retry {
+                vision_observation_failed_after_validation_retry(
+                    &selection,
+                    &anyhow!("invalid JSON"),
+                    "invalid response",
+                    anyhow!(raw.clone()),
+                    None,
+                )
+            } else {
+                vision_observation_failed(&selection, anyhow!(raw.clone()), None)
+            };
+            let error = ToolError::from_anyhow(&error);
+            let rendered = error.render();
+            for secret in [
+                "private-endpoint",
+                "token=secret",
+                "secret-token",
+                "secret-key",
+                "sk-bare-secret",
+            ] {
+                assert!(!rendered.contains(secret), "must redact {secret}");
+            }
+            let details = error.details.unwrap();
+            let candidates = details["selection"]["candidates"].as_array().unwrap();
+            assert_eq!(candidates.len(), 10);
+            assert_eq!(details["selection"]["candidates_total"], 1020);
+            assert_eq!(details["selection"]["candidates_truncated"], true);
+            assert_eq!(
+                candidates[9]["model_ref"],
+                selection.resolved_model.as_deref().unwrap()
+            );
+            let summary = details["provider_error"].as_str().unwrap();
+            assert!(summary.contains("Thinking mode does not support this tool_choice"));
+            assert!(summary.chars().count() <= 500);
+            assert!(rendered.len() < 10_000);
+        }
+        selection.candidates.clear();
+        assert_eq!(
+            compact_vision_selection(&selection)["candidates_truncated"],
+            false
+        );
     }
 
     fn test_vision_selection() -> ViewImageVisionSelection {

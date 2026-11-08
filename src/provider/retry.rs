@@ -813,6 +813,28 @@ pub(crate) fn format_upstream_error_detail(detail: &UpstreamErrorDetail) -> Stri
     fields.join(", ")
 }
 
+pub(crate) fn sanitized_provider_error(error: &anyhow::Error) -> Option<String> {
+    // Do not expose private endpoints or bare API keys in tool diagnostics.
+    // Reuse the upstream credential redactor and its Unicode-safe size bound.
+    let text = error
+        .to_string()
+        .split_whitespace()
+        .map(|token| {
+            if token.contains("://")
+                || token
+                    .split(|ch: char| !ch.is_alphanumeric() && ch != '-' && ch != '_')
+                    .any(|part| part.starts_with("sk-"))
+            {
+                "[REDACTED]"
+            } else {
+                token
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(" ");
+    sanitize_upstream_error_text(&text)
+}
+
 fn sanitize_upstream_error_text(raw: &str) -> Option<String> {
     let mut sanitized = String::new();
     let mut redact_tokens = 0usize;
