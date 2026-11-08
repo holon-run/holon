@@ -367,6 +367,7 @@ class ProvenanceTests(unittest.TestCase):
             "certificate_sha256": (ROOT / "apps/android/signing/release-certificate.sha256").read_text().strip(),
             "commit": subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=ROOT, text=True).strip(),
             "aab": self.bundle.name,
+            "aab_channel": "play",
         }
         self.write_metadata()
 
@@ -385,6 +386,7 @@ class ProvenanceTests(unittest.TestCase):
         for key, value in (
             ("package", "other.app"), ("version_code", 50002),
             ("certificate_sha256", "bad"), ("commit", "bad"), ("aab", "../outside.aab"),
+            ("aab_channel", "direct"),
         ):
             original = self.data[key]
             self.data[key] = value

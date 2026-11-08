@@ -25,8 +25,8 @@ Build the debug APK and install it on a connected device or emulator:
 
 ```bash
 cd apps/android
-./gradlew :app:assembleDebug
-adb install app/build/outputs/apk/debug/app-debug.apk
+./gradlew :app:assembleDirectDebug
+adb install app/build/outputs/apk/direct/debug/app-direct-debug.apk
 ```
 
 For a USB-connected device, forward the daemon port:

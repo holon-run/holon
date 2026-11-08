@@ -28,11 +28,14 @@ export HOLON_ANDROID_VERSION_NAME="$version_name"
   # Signing configuration contains secrets: never serialize it in Gradle's
   # configuration cache or retain signed task output in a shared build cache.
   ./gradlew --no-daemon --no-configuration-cache --no-build-cache \
-    :sdk:test :app:testReleaseUnitTest :app:lintRelease :app:assembleRelease :app:bundleRelease
+    :sdk:test :app:testDirectReleaseUnitTest :app:testPlayReleaseUnitTest \
+    :app:lintDirectRelease :app:lintPlayRelease \
+    :app:assembleDirectRelease :app:bundlePlayRelease
 )
-apk=apps/android/app/build/outputs/apk/release/app-release.apk
-aab=apps/android/app/build/outputs/bundle/release/app-release.aab
+apk=apps/android/app/build/outputs/apk/direct/release/app-direct-release.apk
+aab=apps/android/app/build/outputs/bundle/playRelease/app-play-release.aab
 tools_dir="$ANDROID_HOME/build-tools/36.0.0"
+python3 scripts/verify-android-release-channels.py "$apk" "$aab"
 apk_cert="$("$tools_dir/apksigner" verify --verbose --print-certs "$apk" | sed -n 's/^Signer #1 certificate SHA-256 digest: //p')"
 [[ "$apk_cert" == "$expected_cert" ]] || { echo 'APK signature verification failed.' >&2; exit 1; }
 badging="$("$tools_dir/aapt" dump badging "$apk")"
@@ -50,9 +53,13 @@ cp "$aab" "dist/android/$asset.aab"
 jq -n --arg version "$version_name" --argjson version_code "$version_code" \
   --arg commit "$(git rev-parse HEAD)" --arg certificate_sha256 "$expected_cert" \
   --arg apk "$asset.apk" --arg aab "$asset.aab" \
+  --arg apk_sha256 "$(shasum -a 256 "$apk" | awk '{print $1}')" \
+  --argjson apk_size "$(wc -c < "$apk" | tr -d '[:space:]')" \
   '{version: $version, version_code: $version_code, commit: $commit,
     package: "run.holon.android", certificate_sha256: $certificate_sha256,
-    min_sdk: 26, target_sdk: 36, apk: $apk, aab: $aab}' > "dist/android/$asset.json"
+    min_sdk: 26, target_sdk: 36, apk: $apk, aab: $aab,
+    apk_channel: "direct", aab_channel: "play",
+    apk_sha256: $apk_sha256, apk_size: $apk_size}' > "dist/android/$asset.json"
 (
   cd dist/android
   shasum -a 256 "$asset.apk" "$asset.aab" "$asset.json" > "$asset.sha256"

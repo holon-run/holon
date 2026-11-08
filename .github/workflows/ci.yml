@@ -25,7 +25,7 @@ on:
       - "apps/ios/**"
       - ".github/workflows/android-release.yml"
       - ".github/workflows/release.yml"
-      - "scripts/*android-release*.sh"
+      - "scripts/*android-release*"
       - "packages/client-wire-kotlin/**"
       - "packages/conversation-sdk/**"
       - "packages/api-sdk/**"
@@ -76,7 +76,7 @@ on:
       - "apps/ios/**"
       - ".github/workflows/android-release.yml"
       - ".github/workflows/release.yml"
-      - "scripts/*android-release*.sh"
+      - "scripts/*android-release*"
       - "packages/client-wire-kotlin/**"
       - "packages/conversation-sdk/**"
       - "packages/api-sdk/**"
@@ -205,7 +205,7 @@ jobs:
               - 'apps/android/**'
               - '.github/workflows/android-release.yml'
               - '.github/workflows/release.yml'
-              - 'scripts/*android-release*.sh'
+              - 'scripts/*android-release*'
               - 'packages/client-wire-kotlin/**'
               - '.github/workflows/ci.yml'
             swift_sdk:
@@ -475,11 +475,18 @@ jobs:
         run: |
           bash ../../scripts/test-android-release-version.sh
           bash ../../scripts/test-android-release-packaging.sh
-          ./gradlew --no-daemon :sdk:test :app:testDebugUnitTest :app:assembleDebug :app:assembleRelease
+          python3 ../../scripts/test-android-release-channels.py
+          ./gradlew --no-daemon :sdk:test \
+            :app:testDirectDebugUnitTest :app:testPlayDebugUnitTest \
+            :app:assembleDirectDebug :app:assemblePlayDebug \
+            :app:assembleDirectRelease :app:assemblePlayRelease :app:bundlePlayRelease
+          python3 ../../scripts/verify-android-release-channels.py \
+            app/build/outputs/apk/direct/release/app-direct-release-unsigned.apk \
+            app/build/outputs/bundle/playRelease/app-play-release.aab
 
       - name: Verify Android screenshots and lint
         working-directory: apps/android
-        run: ./gradlew --no-daemon :app:verifyPaparazziDebug :app:lintRelease
+        run: ./gradlew --no-daemon :app:verifyPaparazziDirectDebug :app:lintDirectRelease :app:lintPlayRelease
 
   conversation-sdk:
     name: Conversation SDK

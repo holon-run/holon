@@ -22,8 +22,8 @@ summary: 从本地代码检出构建并安装 Android 与 iOS 原生客户端。
 
 ```bash
 cd apps/android
-./gradlew :app:assembleDebug
-adb install app/build/outputs/apk/debug/app-debug.apk
+./gradlew :app:assembleDirectDebug
+adb install app/build/outputs/apk/direct/debug/app-direct-debug.apk
 ```
 
 对于通过 USB 连接的真机，可反向代理守护进程的端口：

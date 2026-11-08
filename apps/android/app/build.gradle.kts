@@ -42,6 +42,18 @@ android {
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
 
+    flavorDimensions += "distribution"
+    productFlavors {
+        create("direct") {
+            dimension = "distribution"
+            buildConfigField("String", "UPDATE_CHANNEL", "\"direct\"")
+        }
+        create("play") {
+            dimension = "distribution"
+            buildConfigField("String", "UPDATE_CHANNEL", "\"play\"")
+        }
+    }
+
     signingConfigs {
         if (hasReleaseSigning) {
             create("officialRelease") {
@@ -85,6 +97,7 @@ android {
 
 dependencies {
     implementation(project(":sdk"))
+    "playImplementation"("com.google.android.play:app-update:2.1.0")
     implementation("com.squareup.okhttp3:okhttp:4.12.0")
     implementation("androidx.activity:activity-compose:1.10.1")
     implementation("androidx.core:core-ktx:1.15.0")
