@@ -3407,6 +3407,31 @@ mod tests {
 
     #[cfg(holon_lib_test_shard = "c")]
     #[tokio::test]
+    async fn oidc_callback_state_mismatch_is_bad_request_not_server_error() {
+        let (_home, host) = oidc_test_host();
+        let app = router(AppState::for_tcp(host));
+        // Exact reproduction from the issue: a callback without the state
+        // cookie is a client-caused rejection, not a server fault.
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri("/api/auth/oidc/callback?code=forged&state=forged-state-xyz")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        let body: serde_json::Value =
+            serde_json::from_slice(&to_bytes(response.into_body(), usize::MAX).await.unwrap())
+                .unwrap();
+        assert_eq!(body["code"], "bad_request");
+        assert!(body["error"].as_str().unwrap().contains("does not match"));
+    }
+
+    #[cfg(holon_lib_test_shard = "c")]
+    #[tokio::test]
     async fn oidc_routes_require_session_and_web_redirects_to_login() {
         let (_home, host) = oidc_test_host();
         let app = router(AppState::for_tcp(host));

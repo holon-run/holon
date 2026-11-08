@@ -414,6 +414,15 @@ pub async fn start_native_oidc_login(
     ))
 }
 
+/// Maps `complete_login` failures to HTTP responses: deterministic,
+/// client-caused rejections become 4xx; infrastructure faults stay 5xx.
+fn oidc_callback_error_response(error: anyhow::Error) -> (StatusCode, Json<Value>) {
+    if let Some(invalid) = error.downcast_ref::<crate::oidc::InvalidOidcCallback>() {
+        return bad_request(invalid.reason.clone());
+    }
+    error_response(error)
+}
+
 pub async fn complete_oidc_login(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
@@ -421,9 +430,7 @@ pub async fn complete_oidc_login(
 ) -> Result<axum::http::Response<axum::body::Body>, (StatusCode, Json<Value>)> {
     let browser_state = oidc_state_cookie(&headers);
     if browser_state != Some(query.state.as_str()) {
-        return Err(error_response(anyhow!(
-            "OIDC login browser session does not match"
-        )));
+        return Err(bad_request("OIDC login browser session does not match"));
     }
     let config = state.host.config().auth.clone();
     let client = crate::oidc::OidcClient::new(config).map_err(error_response)?;
@@ -435,7 +442,7 @@ pub async fn complete_oidc_login(
             Utc::now(),
         )
         .await
-        .map_err(error_response)?;
+        .map_err(oidc_callback_error_response)?;
     if let Some(native_redirect_uri) = completed.native_redirect_uri {
         let mut redirect = Url::parse(&native_redirect_uri).map_err(|error| {
             error_response(anyhow!("invalid native OIDC redirect URL: {error}"))
