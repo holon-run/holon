@@ -87,6 +87,8 @@ fn view_image_route_error(
             "reason": reason,
             "selection": selection,
             "selected_mode": selection.selected_mode,
+            "requested_model": selection.requested_model,
+            "selection_source": selection.selection_source,
             "selection_reason": selection.selection_reason,
             "primary_provider": selection.primary_provider,
             "primary_model": selection.primary_model,
@@ -3542,20 +3544,52 @@ mod view_image_route_tests {
     async fn view_image_explicit_preflight_rejects_before_inference_and_before_cache() {
         let server = VisionServer::new("cached sample", StatusCode::OK).await;
         let (home, _host, runtime) = vision_runtime(&server).await;
-        observe(&runtime, &home, None).await.unwrap();
-        for (model, kind) in [
-            ("", "invalid_tool_input"),
-            ("bad-ref", "invalid_tool_input"),
-            ("ollama@missing/vision-a", "model_route_unavailable"),
-            (
-                "missing-provider@default/vision-a",
-                "model_route_unavailable",
-            ),
-            ("ollama@default/text-only", "media_capability_mismatch"),
-        ] {
-            let error = observe(&runtime, &home, Some(model)).await.unwrap_err();
-            assert_eq!(ToolError::from_anyhow(&error).kind, kind, "{model}");
-            assert_eq!(server.count(), 1);
+        for expected_requests in 0..=1 {
+            if expected_requests > 0 {
+                observe(&runtime, &home, None).await.unwrap();
+            }
+            for (model, kind) in [
+                ("", "invalid_tool_input"),
+                ("bad-ref", "invalid_tool_input"),
+                ("ollama@missing/vision-a", "model_route_unavailable"),
+                (
+                    "missing-provider@default/vision-a",
+                    "model_route_unavailable",
+                ),
+                ("ollama@default/text-only", "media_capability_mismatch"),
+            ] {
+                let error = observe(&runtime, &home, Some(model)).await.unwrap_err();
+                let error = ToolError::from_anyhow(&error);
+                assert_eq!(error.kind, kind, "{model}");
+                if kind != "invalid_tool_input" {
+                    let details = error.details.unwrap();
+                    assert_eq!(details["requested_model"], model);
+                    assert_eq!(details["selection_source"], "explicit_call");
+                    assert_eq!(details["primary_provider"], "ollama");
+                    assert_eq!(details["primary_model"], "vision-a");
+                    for field in [
+                        "requested_model",
+                        "selection_source",
+                        "primary_provider",
+                        "primary_model",
+                    ] {
+                        assert_eq!(
+                            details[field], details["selection"][field],
+                            "{model}: {field}",
+                        );
+                    }
+                    if kind == "model_route_unavailable" {
+                        assert_eq!(details["reason"], "endpoint_unavailable");
+                        if model == "missing-provider@default/vision-a" {
+                            assert_eq!(
+                                details["candidates"][0]["reason"],
+                                "model_lacks_image_input",
+                            );
+                        }
+                    }
+                }
+                assert_eq!(server.count(), expected_requests, "{model}");
+            }
         }
         update_snapshot(&runtime, |snapshot| {
             snapshot.model_catalog.provider_endpoints[0]
@@ -3582,6 +3616,21 @@ mod view_image_route_tests {
         let error = ToolError::from_anyhow(&error);
         assert_eq!(error.kind, "model_route_unavailable");
         assert_eq!(error.details.unwrap()["reason"], "credentials_unavailable");
+        let error = observe(&runtime, &home, None).await.unwrap_err();
+        let error = ToolError::from_anyhow(&error);
+        assert_eq!(error.kind, "vision_adapter_unavailable");
+        let details = error.details.unwrap();
+        assert_eq!(details["reason"], "credentials_unavailable");
+        assert!(details["requested_model"].is_null());
+        assert_eq!(details["selection_source"], "vision_default");
+        for field in [
+            "requested_model",
+            "selection_source",
+            "primary_provider",
+            "primary_model",
+        ] {
+            assert_eq!(details[field], details["selection"][field], "{field}");
+        }
         assert_eq!(
             server.count(),
             1,

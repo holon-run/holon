@@ -34,6 +34,11 @@ automatic candidate cursor.
 Results identify requested and actual canonical routes, selection source and
 contract version. New fields are compatible with historical results.
 
+`ViewImage` route errors also expose `requested_model` and `selection_source`
+in flat details, matching the nested `selection`. `primary_provider` and
+`primary_model` continue to identify the turn's primary model, not the requested
+image route.
+
 ## Discovery and authority
 
 Both list tools accept `operation=view_image|generate_image`. Without a diagnostic
