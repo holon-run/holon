@@ -1088,6 +1088,11 @@ enum InvocationSettlementCursor {
     WorkItem(String),
 }
 
+struct InvocationSettlementTraversal {
+    pending: Vec<(InvocationSettlementCursor, HashSet<String>)>,
+    remaining_steps: usize,
+}
+
 fn unique_invocation_continuation<'a>(
     candidates: impl Iterator<Item = &'a crate::domain::execution_protocol::ExecutionAttempt>,
 ) -> Result<Option<&'a crate::domain::execution_protocol::ExecutionAttempt>> {
@@ -9762,11 +9767,6 @@ impl RuntimeHost {
         task_roles: &mut Vec<crate::runtime::TaskParentTurnSession>,
         observation: &mut Value,
     ) -> Result<Option<InvocationTerminalEvidence>> {
-        use crate::domain::execution_protocol::{
-            ConversationOutcome, ExecutionAttemptState, ExecutionBinding, ExecutionOutcome,
-            ExecutionSourceIdentity, WorkItemExecutionState, WorkItemOutcome,
-        };
-
         let Some(execution) = self
             .runtime_db()
             .transitions()
@@ -9774,9 +9774,67 @@ impl RuntimeHost {
         else {
             return Ok(None);
         };
-        let mut cursor = InvocationSettlementCursor::Attempt(root_activation_id.clone());
-        let mut visited = HashSet::new();
-        for _ in 0..128 {
+        let mut traversal = InvocationSettlementTraversal {
+            pending: vec![(
+                InvocationSettlementCursor::Attempt(root_activation_id.clone()),
+                HashSet::new(),
+            )],
+            remaining_steps: 128,
+        };
+        let mut evidence: Option<InvocationTerminalEvidence> = None;
+        while !traversal.pending.is_empty() {
+            let Some(branch) = self
+                .observed_invocation_branch_terminal_evidence(
+                    storage,
+                    child_agent_id,
+                    delivery_id,
+                    root_activation_id.clone(),
+                    root_turn_id.clone(),
+                    awaiting_recovery,
+                    child_incarnation,
+                    task_roles,
+                    observation,
+                    &execution,
+                    &mut traversal,
+                )
+                .await?
+            else {
+                return Ok(None);
+            };
+            // Preserve the newest branch's terminal, but never let success
+            // mask a non-success terminal from another required consumer.
+            if evidence.as_ref().is_none_or(|current| {
+                current.status == TaskStatus::Completed && branch.status != TaskStatus::Completed
+            }) {
+                evidence = Some(branch);
+            }
+        }
+        Ok(evidence)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    async fn observed_invocation_branch_terminal_evidence(
+        &self,
+        storage: &AppStorage,
+        child_agent_id: &str,
+        delivery_id: &str,
+        root_activation_id: String,
+        root_turn_id: Option<String>,
+        awaiting_recovery: bool,
+        child_incarnation: u64,
+        task_roles: &mut Vec<crate::runtime::TaskParentTurnSession>,
+        observation: &mut Value,
+        execution: &crate::domain::execution_protocol::ExecutionProtocolState,
+        traversal: &mut InvocationSettlementTraversal,
+    ) -> Result<Option<InvocationTerminalEvidence>> {
+        use crate::domain::execution_protocol::{
+            ConversationOutcome, ExecutionAttemptState, ExecutionBinding, ExecutionOutcome,
+            ExecutionSourceIdentity, WorkItemExecutionState, WorkItemOutcome,
+        };
+
+        let (mut cursor, mut visited) = traversal.pending.pop().expect("pending invocation branch");
+        while traversal.remaining_steps > 0 {
+            traversal.remaining_steps -= 1;
             let cursor_key = match &cursor {
                 InvocationSettlementCursor::Attempt(attempt_id) => {
                     format!("attempt:{attempt_id}")
@@ -10172,15 +10230,24 @@ impl RuntimeHost {
                                 return Ok(None);
                             }
                             if !tasks.is_empty() {
+                                let results = tasks
+                                    .iter()
+                                    .map(|task| {
+                                        (
+                                            *task,
+                                            settlements
+                                                .get(task.id.as_str())
+                                                .map(|record| record.as_ref()),
+                                        )
+                                    })
+                                    .collect::<Vec<_>>();
                                 let mut continuations = Vec::new();
-                                for task in &tasks {
+                                for (task, settlement) in &results {
                                     if !self.invocation_task_result_consumed_in_turn(
                                         task,
                                         Some(&canonical_turn),
                                         &attempt.attempt_id,
-                                        settlements
-                                            .get(task.id.as_str())
-                                            .map(|record| record.as_ref()),
+                                        *settlement,
                                     )? {
                                         let Some(next) = self.invocation_task_result_continuation(
                                             storage,
@@ -10188,9 +10255,8 @@ impl RuntimeHost {
                                             &attempt,
                                             &canonical_turn,
                                             task,
-                                            settlements
-                                                .get(task.id.as_str())
-                                                .map(|record| record.as_ref()),
+                                            *settlement,
+                                            &results,
                                         )?
                                         else {
                                             return Ok(None);
@@ -10198,10 +10264,21 @@ impl RuntimeHost {
                                         continuations.push(next);
                                     }
                                 }
-                                if let Some(continuation) = continuations
-                                    .into_iter()
-                                    .max_by_key(|candidate| candidate.source.generation)
-                                {
+                                continuations.sort_by_key(|candidate| candidate.source.generation);
+                                let mut consumers = HashSet::new();
+                                continuations
+                                    .retain(|candidate| consumers.insert(&candidate.attempt_id));
+                                if let Some(continuation) = continuations.pop() {
+                                    traversal.pending.extend(continuations.into_iter().map(
+                                        |candidate| {
+                                            (
+                                                InvocationSettlementCursor::Attempt(
+                                                    candidate.attempt_id.clone(),
+                                                ),
+                                                visited.clone(),
+                                            )
+                                        },
+                                    ));
                                     cursor = InvocationSettlementCursor::Attempt(
                                         continuation.attempt_id.clone(),
                                     );
@@ -10421,6 +10498,10 @@ impl RuntimeHost {
         parent_turn: &crate::types::TurnRecord,
         task: &TaskRecord,
         settlement: Option<&crate::runtime_db::TaskResultSettlementRecord>,
+        related_results: &[(
+            &TaskRecord,
+            Option<&crate::runtime_db::TaskResultSettlementRecord>,
+        )],
     ) -> Result<Option<&'a crate::domain::execution_protocol::ExecutionAttempt>> {
         use crate::domain::execution_protocol::{
             ExecutionBinding, ExecutionOrigin, ExecutionSourceIdentity, ExecutionTrust,
@@ -10512,14 +10593,49 @@ impl RuntimeHost {
                         }
                         _ => false,
                     }
-            }))?
-            .ok_or(ChildInvocationReason::MissingTaskResultContinuation)?;
+            }))?;
         let Some(consumer) = record
             .activation_id
             .as_ref()
             .and_then(|id| execution.attempts.get(id))
         else {
             return Ok(None);
+        };
+        let next = if let Some(next) = next {
+            next
+        } else {
+            // A batch follower has no independent source attempt. Its exact
+            // consumer must descend from a sibling result's validated source.
+            let mut source = consumer;
+            let mut visited = HashSet::new();
+            while let Some(previous_id) = source.recovery_of_attempt_id.as_deref() {
+                if !visited.insert(&source.attempt_id) || visited.len() > 128 {
+                    return Err(ChildInvocationReason::CyclicContinuation.into());
+                }
+                source = execution
+                    .attempts
+                    .get(previous_id)
+                    .ok_or(ChildInvocationReason::MissingTaskResultContinuation)?;
+            }
+            let (anchor, anchor_settlement) = related_results
+                .iter()
+                .find(|(sibling, settled)| {
+                    sibling.id != task.id
+                        && sibling.parent_message_id == source.source_message_id
+                        && settled
+                            .is_some_and(|settled| settled.activation_id == record.activation_id)
+                })
+                .ok_or(ChildInvocationReason::MissingTaskResultContinuation)?;
+            self.invocation_task_result_continuation(
+                storage,
+                execution,
+                parent,
+                parent_turn,
+                anchor,
+                *anchor_settlement,
+                &[],
+            )?
+            .ok_or(ChildInvocationReason::MissingTaskResultContinuation)?
         };
         let mut cursor = consumer;
         let mut visited = HashSet::new();
@@ -10550,7 +10666,7 @@ impl RuntimeHost {
                 let recovery =
                     self.invocation_provider_recovery_source(storage, execution, cursor)?;
                 if recovery.predecessor.attempt_id != previous.attempt_id
-                    || recovery.root_message.id != message_id
+                    || Some(&recovery.root_message.id) != next.source_message_id.as_ref()
                 {
                     return Ok(None);
                 }
@@ -10559,7 +10675,13 @@ impl RuntimeHost {
             cursor = previous;
         }
         let consumes_result = |turn: &crate::types::TurnRecord| {
-            turn.input_message_ids.iter().any(|id| id == message_id)
+            (turn.input_message_ids.iter().any(|id| id == message_id)
+                && turn.idle_input_batch.as_ref().is_none_or(|batch| {
+                    batch.items.iter().any(|item| {
+                        item.message_id == message_id
+                            && item.source_ref == format!("message:{message_id}")
+                    })
+                }))
                 || turn.live_input_batches.iter().any(|batch| {
                     batch.activation_id == consumer.attempt_id
                         && batch.result_identities.contains(&record.result_identity)
@@ -10587,8 +10709,8 @@ impl RuntimeHost {
         } else {
             turn
         };
-        // A historical Replied is traversable only through this task's exact,
-        // settled consumer, never through a later task or the child's latest brief.
+        // Every result proves its own delivery; only the source edge may be
+        // shared with a sibling from the same parent turn and consumer batch.
         Ok(consumes_result(&turn).then_some(next))
     }
 
@@ -11830,6 +11952,9 @@ mod tests {
     #[cfg(holon_lib_test_shard = "d")]
     #[path = "agent_summary_scheduling_tests.rs"]
     mod agent_summary_scheduling_tests;
+    #[cfg(holon_lib_test_shard = "d")]
+    #[path = "../batched_invocation_tests.rs"]
+    mod batched_invocation_tests;
     #[cfg(holon_lib_test_shard = "d")]
     #[path = "callback_discovery_tests.rs"]
     mod callback_discovery_tests;
@@ -16258,6 +16383,7 @@ mod tests {
                     .latest_for_message(nested.parent_message_id.as_deref().unwrap())
                     .unwrap()
                     .as_ref(),
+                &[],
             )
             .unwrap()
             .map(|attempt| &attempt.attempt_id),
@@ -16291,6 +16417,7 @@ mod tests {
                             .latest_for_message(nested.parent_message_id.as_deref().unwrap())
                             .unwrap()
                             .as_ref(),
+                        &[],
                     )
                     .unwrap()
                     .is_none(),
@@ -16318,6 +16445,7 @@ mod tests {
                     .latest_for_message(nested.parent_message_id.as_deref().unwrap())
                     .unwrap()
                     .as_ref(),
+                &[],
             );
             if consumer_id != successor.attempt_id {
                 assert_eq!(
@@ -21668,6 +21796,410 @@ mod tests {
                 .unwrap(),
             ChildInvocationResolution::Ready(_)
         ));
+    }
+
+    #[cfg(holon_lib_test_shard = "d")]
+    #[tokio::test]
+    async fn supervised_invocation_batched_results_share_one_consumer() {
+        let (_home, host, invocation) = batched_invocation_fixture(2);
+        let resolution = host
+            .resolve_supervised_invocation(&invocation, "source-bound-child", false)
+            .await
+            .unwrap();
+        assert!(
+            matches!(&resolution, ChildInvocationResolution::Ready(result)
+                if result.status == TaskStatus::Completed && result.text == "batch-consumer-result"),
+            "both exact ModelDelivered results share the anchor's consumer: {resolution:?}"
+        );
+    }
+
+    #[cfg(holon_lib_test_shard = "d")]
+    #[tokio::test]
+    async fn supervised_invocation_batched_consumers_join_before_completion() {
+        use crate::domain::execution_protocol::ExecutionAttemptState;
+
+        let (_home, host, invocation) = batched_invocation_fixture(17);
+        let child_id = "source-bound-child";
+        let complete = host
+            .resolve_supervised_invocation(&invocation, child_id, false)
+            .await
+            .unwrap();
+        assert!(
+            matches!(&complete, ChildInvocationResolution::Ready(result)
+                if result.status == TaskStatus::Completed
+                    && result.text == "batch-consumer-result-2"),
+            "all three closed batches retain the newest result: {complete:?}"
+        );
+        let mut execution = host
+            .runtime_db()
+            .transitions()
+            .load_execution_protocol_state_if_initialized(child_id)
+            .unwrap()
+            .unwrap();
+        let first = execution.attempts.get_mut("batch-consumer").unwrap();
+        first.state = ExecutionAttemptState::Open;
+        let outcome_id = first.terminal_outcome_id.take().unwrap();
+        first.terminal_at = None;
+        execution.outcomes.remove(&outcome_id);
+        host.runtime_db()
+            .transaction(|tx| {
+                for table in ["execution_protocol_outcomes", "execution_protocol_attempts"] {
+                    tx.execute(
+                        &format!("DELETE FROM {table} WHERE agent_id = ?1"),
+                        [child_id],
+                    )?;
+                }
+                crate::runtime_db::transitions::persist_state_tx(tx, &execution)
+            })
+            .unwrap();
+        let resolution = host
+            .resolve_supervised_invocation(&invocation, child_id, false)
+            .await
+            .unwrap();
+        assert!(
+            matches!(
+                resolution,
+                ChildInvocationResolution::Pending(ChildInvocationReason::AwaitingContinuation)
+            ),
+            "a newer completed batch cannot discharge an earlier open consumer: {resolution:?}"
+        );
+    }
+
+    #[cfg(holon_lib_test_shard = "d")]
+    #[tokio::test]
+    async fn supervised_invocation_batched_failure_is_not_hidden_by_newer_success() {
+        use crate::domain::execution_protocol::{ConversationOutcome, ExecutionOutcome};
+
+        let (_home, host, invocation) = batched_invocation_fixture(17);
+        let child_id = "source-bound-child";
+        let mut execution = host
+            .runtime_db()
+            .transitions()
+            .load_execution_protocol_state_if_initialized(child_id)
+            .unwrap()
+            .unwrap();
+        execution
+            .outcomes
+            .get_mut("batch-consumer-outcome")
+            .unwrap()
+            .outcome = ExecutionOutcome::Conversation(ConversationOutcome::Failed {
+            policy: "earlier consumer failed".into(),
+        });
+        host.runtime_db()
+            .transaction(|tx| {
+                for table in ["execution_protocol_outcomes", "execution_protocol_attempts"] {
+                    tx.execute(
+                        &format!("DELETE FROM {table} WHERE agent_id = ?1"),
+                        [child_id],
+                    )?;
+                }
+                crate::runtime_db::transitions::persist_state_tx(tx, &execution)
+            })
+            .unwrap();
+        let resolution = host
+            .resolve_supervised_invocation(&invocation, child_id, false)
+            .await
+            .unwrap();
+        assert!(
+            matches!(&resolution, ChildInvocationResolution::Ready(result)
+                if result.status == TaskStatus::Failed
+                    && result.text.contains("earlier consumer failed")),
+            "all branches must close without hiding failure: {resolution:?}"
+        );
+    }
+
+    #[cfg(holon_lib_test_shard = "d")]
+    #[test]
+    fn supervised_invocation_batch_follower_preserves_consumption_fences() {
+        use crate::domain::execution_protocol::*;
+        use crate::runtime_db::task_result_settlement::{
+            TaskResultSettlementDisposition, TaskResultSettlementState,
+        };
+
+        let (_home, host, _) = batched_invocation_fixture(2);
+        let child_id = "source-bound-child";
+        let storage = host.agent_storage(child_id).unwrap();
+        let execution = host
+            .runtime_db()
+            .transitions()
+            .load_execution_protocol_state_if_initialized(child_id)
+            .unwrap()
+            .unwrap();
+        let root = execution
+            .attempts
+            .values()
+            .min_by_key(|attempt| attempt.source.generation)
+            .unwrap();
+        let parent_turn = storage
+            .read_turn_by_id(root.turn_id.as_ref().unwrap())
+            .unwrap()
+            .unwrap();
+        let anchor = storage.latest_task_record("batch-task-0").unwrap().unwrap();
+        let follower = storage.latest_task_record("batch-task-1").unwrap().unwrap();
+        let settlements = host.runtime_db().task_result_settlements();
+        let anchor_record = settlements
+            .latest_for_message(anchor.parent_message_id.as_ref().unwrap())
+            .unwrap()
+            .unwrap();
+        let follower_record = settlements
+            .latest_for_message(follower.parent_message_id.as_ref().unwrap())
+            .unwrap()
+            .unwrap();
+        for mismatch in 0..15 {
+            let mut task = follower.clone();
+            let mut record = follower_record.clone();
+            let mut sibling = anchor_record.clone();
+            let mut state = execution.clone();
+            match mismatch {
+                0 => task.agent_id = "unrelated-agent".into(),
+                1 => task.id = "unrelated-task".into(),
+                2 => task.work_item_id = Some("unrelated-owner".into()),
+                3 => task.detail.as_mut().unwrap()["parent_turn_id"] = json!("unrelated-turn"),
+                4 => task.detail.as_mut().unwrap()["rejoin_generation"] = json!(2),
+                5 => record.state = TaskResultSettlementState::CallerAdmitted,
+                6 => record.disposition = Some(TaskResultSettlementDisposition::OwnerClosed),
+                7 => record.activation_id = Some("unrelated-consumer".into()),
+                8 => record.task_id = "unrelated-task".into(),
+                9 => sibling.activation_id = Some("unrelated-consumer".into()),
+                10 => sibling.disposition = Some(TaskResultSettlementDisposition::OwnerClosed),
+                11 => {
+                    state.attempts.get_mut("batch-consumer").unwrap().binding =
+                        ExecutionBinding::WorkItem {
+                            work_item_id: "unrelated-owner".into(),
+                        }
+                }
+                12 => {
+                    state
+                        .attempts
+                        .get_mut("batch-consumer")
+                        .unwrap()
+                        .provenance
+                        .trust = ExecutionTrust::ExternalEvidence
+                }
+                13 => {
+                    state
+                        .attempts
+                        .get_mut("batch-consumer")
+                        .unwrap()
+                        .admitted_fences
+                        .source_revision = u64::MAX
+                }
+                14 => {
+                    state
+                        .attempts
+                        .get_mut("batch-consumer")
+                        .unwrap()
+                        .source
+                        .identity = ExecutionSourceIdentity::QueueMessage {
+                        message_id: anchor.parent_message_id.clone().unwrap(),
+                    }
+                }
+                _ => unreachable!(),
+            }
+            let result = host.invocation_task_result_continuation(
+                &storage,
+                &state,
+                root,
+                &parent_turn,
+                &task,
+                Some(&record),
+                &[(&anchor, Some(&sibling))],
+            );
+            assert!(
+                !matches!(result, Ok(Some(_))),
+                "mismatch {mismatch} must not authorize a shared source edge: {result:?}"
+            );
+        }
+        let turn = storage
+            .read_turn_by_id("batch-consumer-turn")
+            .unwrap()
+            .unwrap();
+        for mismatch in 0..3 {
+            let mut changed = turn.clone();
+            match mismatch {
+                0 => changed
+                    .input_message_ids
+                    .retain(|id| Some(id) != follower.parent_message_id.as_ref()),
+                1 => {
+                    changed.idle_input_batch.as_mut().unwrap().items.pop();
+                }
+                2 => {
+                    changed.idle_input_batch.as_mut().unwrap().items[1].source_ref =
+                        "message:unrelated".into()
+                }
+                _ => unreachable!(),
+            }
+            host.runtime_db().turn_records().upsert(&changed).unwrap();
+            let result = host.invocation_task_result_continuation(
+                &storage,
+                &execution,
+                root,
+                &parent_turn,
+                &follower,
+                Some(&follower_record),
+                &[(&anchor, Some(&anchor_record))],
+            );
+            assert!(
+                !matches!(result, Ok(Some(_))),
+                "invalid batch {mismatch}: {result:?}"
+            );
+        }
+    }
+
+    #[cfg(holon_lib_test_shard = "d")]
+    fn batched_invocation_fixture(
+        result_count: usize,
+    ) -> (tempfile::TempDir, RuntimeHost, TaskRecord) {
+        use crate::domain::execution_protocol::*;
+        use crate::runtime_db::task_result_settlement::TaskResultSettlementDisposition;
+        use crate::types::{
+            IdleInputBatchItem, IdleInputBatchRecord, TurnOwner, TurnTriggerSummary,
+        };
+
+        let (home, host, invocation) = source_bound_invocation_fixture();
+        let child_id = "source-bound-child";
+        let storage = host.agent_storage(child_id).unwrap();
+        let mut execution = host
+            .runtime_db()
+            .transitions()
+            .load_execution_protocol_state_if_initialized(child_id)
+            .unwrap()
+            .unwrap();
+        let root = execution.attempts.values().next().unwrap().clone();
+        let mut messages = Vec::new();
+        for index in 0..result_count {
+            let task_id = format!("batch-task-{index}");
+            let message = MessageEnvelope::new(
+                child_id,
+                MessageKind::TaskResult,
+                MessageOrigin::Task {
+                    task_id: task_id.clone(),
+                },
+                AuthorityClass::RuntimeInstruction,
+                Priority::Normal,
+                MessageBody::Text {
+                    text: format!("batch result {index}"),
+                },
+            );
+            let task = TaskRecord {
+                id: task_id,
+                agent_id: child_id.into(),
+                kind: if index == 0 {
+                    TaskKind::CommandTask
+                } else {
+                    TaskKind::ActorInvocation
+                },
+                status: TaskStatus::Completed,
+                created_at: Utc::now(),
+                updated_at: Utc::now(),
+                parent_message_id: Some(message.id.clone()),
+                work_item_id: None,
+                summary: None,
+                detail: Some(json!({
+                    "parent_turn_id": root.turn_id,
+                    "rejoin_obligation_id": format!("batch-task-{index}"),
+                    "rejoin_generation": 1
+                })),
+                recovery: None,
+            };
+            storage.append_task(&task).unwrap();
+            storage.append_message(&message).unwrap();
+            host.runtime_db()
+                .task_result_settlements()
+                .ensure_pending(&task, &message, Utc::now())
+                .unwrap()
+                .unwrap();
+            messages.push(storage.read_message_by_id(&message.id).unwrap().unwrap());
+        }
+        for (batch_index, batch) in messages.chunks(8).enumerate() {
+            let anchor = &batch[0];
+            let suffix = if batch_index == 0 {
+                String::new()
+            } else {
+                format!("-{batch_index}")
+            };
+            let mut consumer = root.clone();
+            consumer.attempt_id = format!("batch-consumer{suffix}");
+            consumer.source_message_id = Some(anchor.id.clone());
+            consumer.source = ExecutionSource {
+                identity: ExecutionSourceIdentity::TaskResult {
+                    task_id: format!("batch-task-{}", batch_index * 8),
+                    result_message_id: anchor.id.clone(),
+                },
+                generation: anchor.message_seq.unwrap(),
+            };
+            consumer.admitted_fences.source_revision = consumer.source.generation;
+            consumer.binding = ExecutionBinding::AgentLifecycle {
+                agent_id: child_id.into(),
+            };
+            consumer.provenance.trust = ExecutionTrust::RuntimeInstruction;
+            consumer.turn_id = Some(format!("batch-consumer-turn{suffix}"));
+            consumer.terminal_outcome_id = Some(format!("batch-consumer-outcome{suffix}"));
+            let mut turn = storage
+                .read_turn_by_id(root.turn_id.as_ref().unwrap())
+                .unwrap()
+                .unwrap();
+            turn.turn_id = consumer.turn_id.clone().unwrap();
+            turn.turn_index += batch_index as u64 + 1;
+            turn.owner = Some(TurnOwner::AgentLifecycle {
+                agent_id: child_id.into(),
+            });
+            turn.trigger = Some(TurnTriggerSummary::from_message(anchor));
+            turn.input_message_ids = batch.iter().map(|message| message.id.clone()).collect();
+            turn.terminal.as_mut().unwrap().reason = Some(format!("batch-consumer-result{suffix}"));
+            turn.idle_input_batch = Some(IdleInputBatchRecord {
+                anchor_message_id: anchor.id.clone(),
+                activation_id: Some(consumer.attempt_id.clone()),
+                sender_agent_id: child_id.into(),
+                cutoff: Utc::now(),
+                max_items: 8,
+                max_bytes: 65536,
+                rendered_bytes: 0,
+                items: batch
+                    .iter()
+                    .map(|message| IdleInputBatchItem {
+                        message_id: message.id.clone(),
+                        source_ref: format!("message:{}", message.id),
+                        rendered: "nested result".into(),
+                    })
+                    .collect(),
+            });
+            host.runtime_db().turn_records().upsert(&turn).unwrap();
+            execution.outcomes.insert(
+                consumer.terminal_outcome_id.clone().unwrap(),
+                ExecutionOutcomeRecord {
+                    outcome_id: consumer.terminal_outcome_id.clone().unwrap(),
+                    attempt_id: consumer.attempt_id.clone(),
+                    outcome: ExecutionOutcome::Conversation(ConversationOutcome::Replied),
+                    created_at: Utc::now().to_rfc3339(),
+                },
+            );
+            execution
+                .attempts
+                .insert(consumer.attempt_id.clone(), consumer.clone());
+            host.runtime_db()
+                .transaction(|tx| crate::runtime_db::transitions::persist_state_tx(tx, &execution))
+                .unwrap();
+            let settlements = host.runtime_db().task_result_settlements();
+            for message in batch {
+                settlements
+                    .admit_message(child_id, &message.id, &consumer.attempt_id, Utc::now())
+                    .unwrap()
+                    .unwrap();
+            }
+            assert_eq!(
+                settlements
+                    .settle_activation(
+                        child_id,
+                        &consumer.attempt_id,
+                        TaskResultSettlementDisposition::ModelDelivered,
+                        Utc::now()
+                    )
+                    .unwrap(),
+                batch.len()
+            );
+        }
+        (home, host, invocation)
     }
 
     #[cfg(holon_lib_test_shard = "d")]

@@ -94,6 +94,15 @@ parent turn, result identity and live batch match a settled `ModelDelivered`
 record bound to that same execution. Attachment or a terminal task alone is not
 consumption; unconsumed results still require their canonical continuation.
 
+Several nested results may share one consumer: only the batch anchor needs a
+TaskResult or exact TriggeredWait source attempt. A follower still proves its own
+settled model delivery and canonical input membership. Its source edge may be
+shared only with a captured sibling from the same parent turn and owner whose
+settlement names that same consumer; provider recovery must preserve the
+validated anchor lineage. An unrelated activation cannot substitute for this
+evidence. Distinct consumer branches must all close before publication; a newer
+completed batch cannot hide an earlier pending or failed consumer.
+
 Late task-result waits use the same exact wait settlement as ordinary waits,
 including executions without a WorkItem. The original conversation/lifecycle
 attempt records `Wait`, and its resume retains the scheduler's `TriggeredWait`
