@@ -1085,8 +1085,8 @@ internal class HolonRepository(
         runCatching { json.decodeFromString(ListSerializer(StagedAttachment.serializer()), payload) }
             .getOrDefault(emptyList()).map(StagedAttachment::localPath)
 
-    fun isCurrentFailure(error: Throwable): Boolean =
-        sessions.acceptsFailure(error)
+    fun isCurrentFailure(error: Throwable, lease: SessionLease? = null): Boolean =
+        sessions.acceptsFailure(error, lease)
 
     private suspend fun clearAuthentication(
         removeProfile: Boolean = false,

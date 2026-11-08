@@ -34,13 +34,13 @@ import kotlin.math.sin
 
 internal val HolonAccent = Color(0xFF087EA4)
 internal val HolonAccentSoft = Color(0xFFE2F3F8)
-internal val HolonPage = Color(0xFFFCFDFD)
+internal val HolonPage = Color(0xFFFCFCFA)
 internal val HolonSidebar = Color(0xFFF7F7F8)
-internal val HolonSurfaceSoft = Color(0xFFF3F7FA)
-internal val HolonLine = Color(0xFFE6E7E9)
-internal val HolonLineStrong = Color(0xFFC3D0DA)
-internal val HolonText = Color(0xFF242628)
-internal val HolonMuted = Color(0xFF5C6B7A)
+internal val HolonSurfaceSoft = Color(0xFFF1F2F0)
+internal val HolonLine = Color(0xFFE3E6E2)
+internal val HolonLineStrong = Color(0xFFA2ACAA)
+internal val HolonText = Color(0xFF252A2B)
+internal val HolonMuted = Color(0xFF626B6C)
 internal val HolonFaint = Color(0xFF8794A3)
 internal val HolonSuccess = Color(0xFF16834F)
 internal val HolonWarning = Color(0xFFA16207)
@@ -56,6 +56,8 @@ private val HolonColors =
         onSecondary = Color.White,
         secondaryContainer = HolonAccentSoft,
         onSecondaryContainer = HolonAccent,
+        tertiaryContainer = Color(0xFFF9EFDA),
+        onTertiaryContainer = Color(0xFF795014),
         background = HolonPage,
         onBackground = HolonText,
         surface = Color.White,
@@ -78,12 +80,14 @@ private val HolonDarkColors =
         onSecondary = Color(0xFF20333F),
         secondaryContainer = Color(0xFF123D4A),
         onSecondaryContainer = Color(0xFFA8E2F5),
-        background = Color(0xFF111416),
-        onBackground = Color(0xFFE4E8EA),
-        surface = Color(0xFF181C1F),
-        onSurface = Color(0xFFE4E8EA),
-        surfaceVariant = Color(0xFF20272C),
-        onSurfaceVariant = Color(0xFFB6C1C8),
+        tertiaryContainer = Color(0xFF393124),
+        onTertiaryContainer = Color(0xFFEFC982),
+        background = Color(0xFF151819),
+        onBackground = Color(0xFFE7ECE9),
+        surface = Color(0xFF1B2021),
+        onSurface = Color(0xFFE7ECE9),
+        surfaceVariant = Color(0xFF252B2C),
+        onSurfaceVariant = Color(0xFFAFBAB7),
         outline = Color(0xFF71808A),
         outlineVariant = Color(0xFF343C41),
         error = Color(0xFFFFB2BC),
@@ -116,8 +120,8 @@ private val HolonTypography =
             ),
         bodyLarge =
             Typography().bodyLarge.copy(
-                fontSize = 15.sp,
-                lineHeight = 23.sp,
+                fontSize = 16.sp,
+                lineHeight = 24.sp,
             ),
         bodyMedium =
             Typography().bodyMedium.copy(
@@ -128,7 +132,6 @@ private val HolonTypography =
             Typography().bodySmall.copy(
                 fontSize = 12.sp,
                 lineHeight = 18.sp,
-                color = HolonMuted,
             ),
         labelMedium =
             Typography().labelMedium.copy(
@@ -141,8 +144,8 @@ private val HolonTypography =
         labelSmall =
             Typography().labelSmall.copy(
                 fontFamily = FontFamily.SansSerif,
-                fontSize = 11.sp,
-                lineHeight = 15.sp,
+                fontSize = 12.sp,
+                lineHeight = 18.sp,
                 fontWeight = FontWeight.Medium,
                 letterSpacing = 0.sp,
             ),

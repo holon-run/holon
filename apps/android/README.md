@@ -5,6 +5,20 @@ for source icons and turn-header interactions; Android adoption is tracked in #3
 
 This directory contains the native Android client implementation.
 
+Agent avatars use the authenticated `agent_avatar_v1` image resource, not a
+separate native drawing algorithm. The SDK pins `light-mech-1-vivid-2` and reads
+bounded PNG responses; the app chooses a density-appropriate size and validates
+dimensions before decoding. A lease-scoped, memory-only LRU holds at most 128
+images / 8 MiB, with four concurrent loads and bounded retries. Logout, network
+switches and replacement logins retire the cache and fence late results.
+Older daemons and failed images show initials without blocking the roster;
+offline faces are neutral cached artwork or initials, never stale activity.
+Idle alone is not treated as sleeping when the roster lacks supporting fields.
+
+The conversation toolbar keeps its compact work/file icons. Model selection
+lives beside attachment and send actions in the composer; the picker and model
+selection rules are unchanged.
+
 Conversation boundaries identify each turn by its structured source, number,
 time and duration. Source inspection and execution disclosure are independent:
 the source opens a native full-screen canonical message reader, while task

@@ -78,6 +78,15 @@ internal class HolonViewModel(
     private val mutableState = MutableStateFlow(HolonUiState(baseUrl = defaultBaseUrl()))
     val state: StateFlow<HolonUiState> = mutableState.asStateFlow()
     internal val runtimeBrowserSession = repository.sessions.state
+    internal val avatarSession = repository.sessions.state
+
+    internal fun createAvatarRepository(lease: SessionLease): AgentAvatarRepository =
+        AgentAvatarRepository(
+            read = { key -> lease.client.readAgentAvatar(key.agentId, key.expression, key.pixels) },
+            isCurrent = { activeAvatarLease(state.value, repository.sessions.current) === lease },
+            isNetworkAllowed = { state.value.online && state.value.rosterState == AgentRosterState.Synced },
+            onAuthenticationFailure = { error -> handleRuntimeFailure(error, lease) },
+        )
 
     internal fun isRuntimeBrowserLeaseCurrent(lease: SessionLease): Boolean =
         repository.sessions.current === lease && state.value.phase == AppPhase.Ready &&
@@ -2591,13 +2600,13 @@ internal class HolonViewModel(
         }
     }
 
-    private fun handleRuntimeFailure(error: Throwable) {
+    private fun handleRuntimeFailure(error: Throwable, sourceLease: SessionLease? = null) {
         if (Looper.myLooper() != Looper.getMainLooper()) {
-            viewModelScope.launch { handleRuntimeFailure(error) }
+            viewModelScope.launch { handleRuntimeFailure(error, sourceLease) }
             return
         }
         if (error is CancellationException) return
-        if (!repository.isCurrentFailure(error)) return
+        if (!repository.isCurrentFailure(error, sourceLease)) return
         val httpError = error as? HolonHttpException
         state.value.session?.networkId?.let { networkId ->
             if (httpError != null) {

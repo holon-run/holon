@@ -74,6 +74,7 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
+import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.LaunchedEffect
@@ -86,7 +87,9 @@ import run.holon.android.sdk.HolonContentReportCategory
 import androidx.compose.runtime.saveable.listSaver
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.platform.LocalClipboardManager
@@ -149,13 +152,24 @@ internal fun ConversationScreen(state: HolonUiState, viewModel: ConversationActi
         topBar = {
             if (!isDetail) {
             TopAppBar(
+                expandedHeight = maxOf(64.dp, 48.dp * LocalDensity.current.fontScale),
+                colors = TopAppBarDefaults.topAppBarColors(containerColor = MaterialTheme.colorScheme.background),
                 title = {
-                    Column(Modifier.clickable { agentChooser = true }) {
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            Text(if (state.agentSection == AgentSection.Results) agent.displayName else state.agentSection.label, style = MaterialTheme.typography.titleMedium, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f, fill = false))
-                            Icon(Icons.Default.ExpandMore, contentDescription = ui("切换 Agent"), modifier = Modifier.size(18.dp))
+                    Row(
+                        Modifier.heightIn(min = 48.dp).clickable(role = Role.Button) { agentChooser = true },
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    ) {
+                        AgentAvatar(
+                            agent = agent,
+                            size = 32.dp,
+                            live = state.online && state.rosterState == AgentRosterState.Synced && state.switchingNetworkId == null,
+                        )
+                        Column(Modifier.weight(1f)) {
+                            Text(if (state.agentSection == AgentSection.Results) agent.displayName else state.agentSection.label, style = MaterialTheme.typography.titleMedium, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                            if (state.agentSection != AgentSection.Results || agent.needsReply()) Text(if (state.agentSection != AgentSection.Results) agent.displayName else agent.statusLabel(), style = MaterialTheme.typography.bodySmall, color = if (agent.needsReply()) MaterialTheme.colorScheme.onTertiaryContainer else MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, overflow = TextOverflow.Ellipsis)
                         }
-                        if (state.agentSection != AgentSection.Results || agent.needsReply()) Text(if (state.agentSection != AgentSection.Results) agent.displayName else agent.statusLabel(), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1)
+                        Icon(Icons.Default.ExpandMore, contentDescription = ui("切换 Agent"), modifier = Modifier.size(16.dp))
                     }
                 },
                 navigationIcon = {
@@ -164,9 +178,6 @@ internal fun ConversationScreen(state: HolonUiState, viewModel: ConversationActi
                     }
                 },
                 actions = {
-                    TextButton(onClick = { modelChooser = true; viewModel.loadModelCatalog() }) {
-                        Text(ui("模型"), maxLines = 1)
-                    }
                     IconButton(onClick = { viewModel.selectAgentSection(AgentSection.Work) }) {
                         Icon(Icons.Default.Description, contentDescription = ui("工作记录"))
                     }
@@ -247,6 +258,7 @@ internal fun ConversationScreen(state: HolonUiState, viewModel: ConversationActi
                                     cameraUri = createCameraUri(context)
                                     cameraUri?.let(camera::launch)
                                 },
+                                onModel = { modelChooser = true; viewModel.loadModelCatalog() },
                             )
                         }
                         AgentSection.Work -> WorkItemsScreen(state, viewModel, Modifier.fillMaxSize(), workListState)
@@ -261,7 +273,13 @@ internal fun ConversationScreen(state: HolonUiState, viewModel: ConversationActi
         OutlinedTextField(value = agentSearch, onValueChange = { agentSearch = it }, placeholder = { Text(ui("搜索名称或 ID")) }, singleLine = true, modifier = Modifier.fillMaxWidth().padding(16.dp))
         LazyColumn {
             items(state.recentAgents.filter { it.displayName.contains(agentSearch, true) || it.id.contains(agentSearch, true) }, key = AgentSummary::id) { other ->
-                AgentConversationRow(other, unreadCount = other.unreadCount(state.briefReadStates), operatorPreview = state.operatorPreviews[other.id], onClick = { agentChooser = false; viewModel.openAgent(other) })
+                AgentConversationRow(
+                    other,
+                    unreadCount = other.unreadCount(state.briefReadStates),
+                    operatorPreview = state.operatorPreviews[other.id],
+                    live = state.online && state.rosterState == AgentRosterState.Synced && state.switchingNetworkId == null,
+                    onClick = { agentChooser = false; viewModel.openAgent(other) },
+                )
             }
         }
     }
@@ -1261,6 +1279,7 @@ internal fun Composer(
     onImage: () -> Unit,
     onFile: () -> Unit,
     onCamera: () -> Unit,
+    onModel: (() -> Unit)? = null,
 ) {
     val focus = LocalFocusManager.current
     val keyboard = LocalSoftwareKeyboardController.current
@@ -1278,6 +1297,11 @@ internal fun Composer(
         onImage = onImage,
         onFile = onFile,
         onCamera = onCamera,
+        modelLabel = state.selectedAgent?.let { agent ->
+            if (agent.modelSource == "agent_override") agent.effectiveModel
+            else ui("Auto · 运行时默认")
+        },
+        onModel = onModel,
     )
 }
 
