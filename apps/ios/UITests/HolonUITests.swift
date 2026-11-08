@@ -167,10 +167,9 @@ final class HolonUITests: XCTestCase {
         reveal(toggle, in: app, fullyVisible: true)
         waitForHittable(toggle)
         XCTAssertEqual(consent.value as? String, "0", "Consent must never be preselected")
+        recordConsentControls(consent, in: app, name: "consent-before-tap")
         defer {
-            if consent.value as? String != "1" {
-                recordConsentControls(consent, name: "consent-not-selected")
-            }
+            recordConsentControls(consent, in: app, name: "consent-after-tap")
         }
         toggle.tap()
         waitForValue(consent, "1")
@@ -183,16 +182,25 @@ final class HolonUITests: XCTestCase {
             + "hittable=\(element.isHittable) frame=\(element.frame)"
     }
 
-    private func recordConsentControls(_ consent: XCUIElement, name: String) {
+    private func recordConsentControls(_ consent: XCUIElement, in app: XCUIApplication, name: String) {
         let child = consent.switches.firstMatch
+        func state(_ element: XCUIElement) -> String {
+            guard element.exists else { return "exists=false" }
+            return "enabled=\(element.isEnabled) hittable=\(element.isHittable) frame=\(element.frame)"
+        }
         func value(_ element: XCUIElement) -> String {
             guard element.exists, let value = element.value as? String,
                   value == "0" || value == "1" else { return "unavailable" }
             return value
         }
-        let attachment = XCTAttachment(string:
-            "parent: \(controlState(consent)) value=\(value(consent))\n"
-            + "child: \(controlState(child)) value=\(value(child))")
+        let summary = "parent: \(state(consent)) value=\(value(consent)); "
+            + "child: \(state(child)) value=\(value(child)); "
+            + "continueLogin: \(state(app.buttons["privacy.continueLogin"])); "
+            + "continue: \(state(app.buttons["privacy.continue"]))"
+        // CI deliberately keeps authenticated UI bundles private. Emit only this
+        // allowlisted state, never identifiers, labels, hierarchies or field values.
+        print("Holon consent [\(name)]: \(summary)")
+        let attachment = XCTAttachment(string: summary)
         attachment.name = name
         attachment.lifetime = .keepAlways
         add(attachment)
