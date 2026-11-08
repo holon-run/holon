@@ -104,7 +104,7 @@ fn sse_response_with_truncated_gzip_body() -> Vec<u8> {
     response
 }
 
-fn anthropic_provider_at(base_url: String) -> Box<dyn AgentProvider> {
+fn anthropic_provider_at(base_url: String) -> Arc<dyn AgentProvider> {
     let mut fixture = test_config(
         "anthropic/claude-sonnet-4-5",
         &[],
@@ -112,15 +112,18 @@ fn anthropic_provider_at(base_url: String) -> Box<dyn AgentProvider> {
         Some("anthropic-token"),
         false,
     );
+    fixture.config.disable_provider_fallback = true;
     fixture
         .config
         .providers
         .get_mut(&ProviderId::anthropic())
         .expect("anthropic provider should be configured by test_config")
         .base_url = base_url;
-    let provider = AnthropicProvider::from_config(&fixture.config)
-        .expect("anthropic provider should build from test config");
-    Box::new(provider)
+    // Production turns always wrap the transport in FallbackProvider, which owns
+    // same-route retry and dispatch-guard recovery deferral. Calling the raw
+    // AnthropicProvider would skip both mechanisms.
+    build_provider_from_config(&fixture.config)
+        .expect("configured anthropic route should build the production provider")
 }
 
 #[tokio::test]
