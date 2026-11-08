@@ -5807,15 +5807,53 @@ mod tests {
 
     #[test]
     fn warn_unsupported_silent_for_server_tool_blocks() {
-        // These types are handled, so warn_unsupported should return early (no warn!).
-        for kind in &["server_tool_use", "tool_result"] {
+        use std::sync::{
+            atomic::{AtomicUsize, Ordering},
+            Arc,
+        };
+        use tracing_subscriber::{layer::SubscriberExt, Layer, Registry};
+
+        struct WarningCounter(Arc<AtomicUsize>);
+
+        impl Layer<Registry> for WarningCounter {
+            fn on_event(
+                &self,
+                event: &tracing::Event<'_>,
+                _: tracing_subscriber::layer::Context<'_, Registry>,
+            ) {
+                if event.metadata().level() == &tracing::Level::WARN {
+                    self.0.fetch_add(1, Ordering::Relaxed);
+                }
+            }
+        }
+
+        let warnings = Arc::new(AtomicUsize::new(0));
+        let subscriber = Registry::default().with(WarningCounter(warnings.clone()));
+        tracing::subscriber::with_default(subscriber, || {
+            for kind in ["server_tool_use", "tool_result"] {
+                let block = ApiResponseBlock {
+                    kind: kind.to_string(),
+                    ..Default::default()
+                };
+                warn_unsupported_anthropic_response_block(&block, "test", "model", 0, None, false);
+                assert_eq!(
+                    warnings.load(Ordering::Relaxed),
+                    0,
+                    "{kind} should not warn"
+                );
+            }
+
             let block = ApiResponseBlock {
-                kind: kind.to_string(),
+                kind: "unknown_block".to_string(),
                 ..Default::default()
             };
-            // The function returns () — if it doesn't panic/warn, we're good.
             warn_unsupported_anthropic_response_block(&block, "test", "model", 0, None, false);
-        }
+            assert_eq!(
+                warnings.load(Ordering::Relaxed),
+                1,
+                "an unsupported block must warn, proving the observer is active"
+            );
+        });
     }
 
     #[test]

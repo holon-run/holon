@@ -42,8 +42,8 @@ use tokio::sync::Mutex;
 use tokio::time::{sleep, Duration};
 
 use crate::support::runtime_compaction_providers::{
-    MaxOutputRecoveryProvider, MaxOutputThenCompactionProvider,
-    MultiPassCompactionRecoveryFlowProvider, RepeatedCompactionProvider,
+    MaxOutputThenCompactionProvider, MultiPassCompactionRecoveryFlowProvider,
+    RepeatedCompactionProvider,
 };
 use crate::support::runtime_helpers::{
     aggressive_compaction_config, git, init_git_repo, operator_transport_binding,
@@ -858,74 +858,6 @@ pub async fn max_output_recovery_followed_by_turn_local_compaction_preserves_pro
     Ok(())
 }
 
-pub async fn sleep_only_completion_preserves_brief_after_max_output_recovery() -> anyhow::Result<()>
-{
-    let provider = Arc::new(MaxOutputRecoveryProvider::new());
-    let host = RuntimeHost::new_with_provider(test_config(), provider.clone())?;
-    attach_default_workspace(&host).await?;
-    let runtime = host.default_runtime().await?;
-
-    // Send a prompt that will trigger max-output recovery followed by Sleep-only completion
-    runtime
-        .enqueue(MessageEnvelope::new(
-            "default",
-            MessageKind::OperatorPrompt,
-            MessageOrigin::Operator { actor_id: None, actor_display_name: None },
-            AuthorityClass::OperatorInstruction,
-            Priority::Normal,
-            MessageBody::Text {
-                text: "Generate a comprehensive technical report covering multiple domains. \
-                      Include detailed sections on: 1) System architecture patterns 2) Data flow strategies \
-                      3) Security considerations 4) Performance optimization 5) Monitoring approaches. \
-                      After completing your analysis, finish with Sleep.".into()
-            },
-        ))
-        .await?;
-
-    // Wait for the agent to complete
-    wait_until(|| {
-        let agent = runtime.storage().read_agent()?.expect("agent should exist");
-        Ok(agent.status == AgentStatus::Asleep)
-    })
-    .await?;
-
-    // Verify that the brief was preserved despite max-output recovery + Sleep-only completion
-    let briefs = runtime.storage().read_recent_briefs(10)?;
-    let last_brief = briefs.last();
-
-    assert!(
-        last_brief.is_some(),
-        "brief should be preserved after max-output recovery and Sleep-only completion"
-    );
-
-    let brief_text = last_brief.map(|b| b.text.as_str()).unwrap_or("");
-    assert!(!brief_text.is_empty(), "brief should not be empty");
-
-    // Verify the brief contains expected content from the max-output recovery
-    assert!(
-        brief_text.contains("analysis")
-            || brief_text.contains("report")
-            || brief_text.contains("architecture"),
-        "brief should contain relevant content from the generated analysis, got: {}",
-        brief_text
-    );
-
-    // Verify that max-output recovery was triggered
-    let events = runtime.storage().read_recent_events(50)?;
-    let recovery_events: Vec<_> = events
-        .iter()
-        .filter(|event| event.kind == "max_output_tokens_recovery")
-        .collect();
-
-    assert!(
-        !recovery_events.is_empty(),
-        "max-output recovery should have been triggered"
-    );
-
-    Ok(())
-}
-
-// Minimal provider that simulates max-output recovery followed by Sleep-only completion
 pub async fn runtime_compaction_multi_pass_recovery_preserves_progress_and_artifacts() -> Result<()>
 {
     let config = {

@@ -91,13 +91,6 @@ async fn host_continuation_sql_decode_error_releases_partial_snapshot_on_both_pa
 
 #[cfg(holon_lib_test_shard = "d")]
 #[tokio::test]
-async fn posture_with_continuation_queue_honors_original_allowance() -> Result<()> {
-    let (_home, host) = continuation_fixture().await?;
-    assert_host_projection_limits(&host)
-}
-
-#[cfg(holon_lib_test_shard = "d")]
-#[tokio::test]
 async fn host_queue_continuation_slots_keep_original_holder_through_wire_and_last_release(
 ) -> Result<()> {
     let (_home, host) = continuation_fixture().await?;

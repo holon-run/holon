@@ -1,5 +1,5 @@
 
-.PHONY: help web web-ci api-sdk app-sdk android-sdk-test android-sdk-integration-test conversation-sdk-ci macos-menu-test macos-menu-package transport-types transport-types-check transport-types-kotlin-check snapshots-check snapshots-refresh build all test test-shard test-resource-lint test-concurrent test-concurrent-repeat test-live test-live-openai test-live-anthropic test-live-codex test-live-xai test-live-images test-live-runtime validate-agent-templates docker-build docker-smoke docker-e2e docker-e2e-bootstrap docker-e2e-scheduler-required docker-e2e-scheduler-live-canary docker-e2e-validate docker-live-acceptance fmt fmt-check lint check ci run clean
+.PHONY: help web web-ci api-sdk app-sdk app-sdk-test android-sdk-test android-sdk-integration-test conversation-sdk-ci macos-menu-test macos-menu-package transport-types transport-types-check transport-types-kotlin-check snapshots-check snapshots-refresh build all test test-shard test-resource-lint test-concurrent test-concurrent-repeat test-live test-live-openai test-live-anthropic test-live-codex test-live-xai test-live-images test-live-runtime validate-agent-templates docker-build docker-smoke docker-e2e docker-e2e-bootstrap docker-e2e-scheduler-required docker-e2e-scheduler-live-canary docker-e2e-validate docker-live-acceptance fmt fmt-check lint check ci run clean
 
 PYTHON ?= python3
 
@@ -45,6 +45,9 @@ api-sdk: ## Build the shared TypeScript API SDK
 app-sdk: api-sdk ## Build the hosted browser App SDK artifact
 	cd $(APP_SDK_DIR) && npm install --no-package-lock && npm run build
 
+app-sdk-test: api-sdk ## Build and test the hosted browser App SDK
+	cd $(APP_SDK_DIR) && npm install --no-package-lock && npm test
+
 web: ## Build the web GUI (requires Node.js 24). Produces web-gui/app/dist
 	@if [ -s "$$HOME/.nvm/nvm.sh" ]; then . "$$HOME/.nvm/nvm.sh" && nvm use; fi; \
 	$(MAKE) app-sdk && \
@@ -53,7 +56,7 @@ web: ## Build the web GUI (requires Node.js 24). Produces web-gui/app/dist
 
 web-ci: ## Test and build the web GUI with one clean dependency install
 	@if [ -s "$$HOME/.nvm/nvm.sh" ]; then . "$$HOME/.nvm/nvm.sh" && nvm use; fi; \
-	$(MAKE) app-sdk && \
+	$(MAKE) app-sdk-test && \
 	cd $(API_SDK_DIR) && npm test && \
 	cd ../../$(CONVERSATION_SDK_DIR) && npm_config_engine_strict=true npm ci && npm test && \
 	cd ../../$(OPENAPI_TOOLS_DIR) && npm ci && npm run check && \

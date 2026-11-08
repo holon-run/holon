@@ -240,6 +240,9 @@ function getHighlighter(): Promise<Highlighter> {
     highlighterPromise = createHighlighter({
       themes: ["github-light"],
       langs: SUPPORTED_LANGS,
+    }).catch((error) => {
+      highlighterPromise = null;
+      throw error;
     });
   }
   return highlighterPromise;
@@ -270,12 +273,10 @@ function useShikiHighlight(content: string | undefined, filePath: string | undef
     let cancelled = false;
     void getHighlighter().then((hl) => {
       if (cancelled) return;
-      try {
-        const html = normalizeShikiLineBreaks(hl.codeToHtml(content, { lang, theme: "github-light" }));
-        setState({ content, path: filePath, html });
-      } catch {
-        setState(null);
-      }
+      const html = normalizeShikiLineBreaks(hl.codeToHtml(content, { lang, theme: "github-light" }));
+      setState({ content, path: filePath, html });
+    }).catch(() => {
+      if (!cancelled) setState(null);
     });
     return () => { cancelled = true; };
   }, [content, filePath]);
