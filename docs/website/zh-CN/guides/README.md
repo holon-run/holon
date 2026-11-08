@@ -114,6 +114,10 @@ order: 30
   自托管 Keycloak 作为 Holon 的 OIDC 身份提供商：Docker 部署、创建 realm 与客户端、配置 Holon 并完成端到端验证，全程不依赖任何外部账号。
   <!-- mdorigin:index kind=article -->
 
+- [用自托管 Casdoor 配置 OIDC 单点登录](./casdoor-oidc-authentication.md)
+  自托管 Casdoor 作为 Holon 的 OIDC 身份提供商：Docker 部署、初始化组织与应用、配置 Holon 并完成端到端验证，全程不依赖任何外部账号。
+  <!-- mdorigin:index kind=article -->
+
 - [与团队共用 AI 助手](./share-with-your-team.md)
   在共享服务器部署 Holon、配置团队单点登录，全组协同交办任务给同一个长期 AI 助手并跟踪进度。
   <!-- mdorigin:index kind=article -->
