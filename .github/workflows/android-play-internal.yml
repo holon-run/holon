@@ -83,7 +83,7 @@ jobs:
             --arg cert "$expected_cert" --arg commit "$commit" --arg aab "$asset.aab" \
             '.package == "run.holon.android" and .version == $version and
              .version_code == $code and .certificate_sha256 == $cert and
-             .commit == $commit and .aab == $aab' "dist/android/$asset.json"
+             .commit == $commit and .aab == $aab and .aab_channel == "play"' "dist/android/$asset.json"
           aab="dist/android/$asset.aab"
           verification="$("$JAVA_HOME/bin/jarsigner" -J-Duser.language=en -verify "$aab")"
           [[ "$verification" == *'jar verified.'* ]] || { echo 'AAB integrity verification failed.' >&2; exit 1; }

@@ -5,6 +5,56 @@ import org.junit.Test
 
 class UiCopyTest {
     @Test
+    fun `direct update prompts explain verification and explicit installation consent in English`() {
+        val sources = listOf(
+            "系统安装器报告安装成功。",
+            "安装已取消或失败。请重新下载并校验后重试；Holon 不会卸载现有应用。",
+            "更新因应用离开前台而中断，请重新下载并校验。",
+            "无法下载或校验安装包。",
+            "无法打开系统安装器。",
+            "下载并校验此更新？Android 会在安装前再次询问。",
+            "下载大小：",
+            "正在下载或校验更新…",
+            "安装包已校验，是否继续打开 Android 系统安装器？",
+            "Android 需要允许 Holon 安装更新。仅在同意后打开设置；返回后仍需再次确认安装。",
+            "请在 Android 系统安装器中完成安装。",
+            "可自行选择在浏览器中打开发布页面；Holon 不会下载未经校验的安装包。",
+            "下载安装包",
+            "安装更新",
+            "Android 无法打开安装设置。",
+            "打开安装设置",
+            "重新下载",
+            "没有浏览器可打开发布页面。",
+            "在浏览器中打开发布页面",
+            "取消",
+            "关闭",
+        )
+        sources.forEach { source ->
+            val translated = UiCopy.translate(source, "en")
+            org.junit.Assert.assertNotEquals(source, translated)
+            org.junit.Assert.assertFalse(translated.any { it in '\u4e00'..'\u9fff' })
+            assertEquals(source, UiCopy.translate(source, "zh-CN"))
+        }
+        assertEquals(
+            "Android needs permission for Holon to install updates. Settings will open only with your consent. You must confirm installation again after returning.",
+            UiCopy.translate("Android 需要允许 Holon 安装更新。仅在同意后打开设置；返回后仍需再次确认安装。", "en"),
+        )
+    }
+
+    @Test
+    fun `channel update copy does not imply every Play user can update`() {
+        assertEquals(
+            "No update is currently available to you on Google Play.",
+            UiCopy.translate("Google Play 暂无可用更新。", "en"),
+        )
+        assertEquals("Open Google Play", UiCopy.translate("打开 Google Play", "en"))
+        assertEquals(
+            "The download will be verified before Android asks you to confirm installation.",
+            UiCopy.translate("下载后将校验安装包，再由系统确认安装。", "en"),
+        )
+    }
+
+    @Test
     fun `browser copy explains identity boundary and translates status errors`() {
         assertEquals("Copy link", UiCopy.translate("复制链接", "en"))
         assertEquals("Close", UiCopy.translate("关闭", "en"))

@@ -50,11 +50,11 @@ def main():
     if device("shell", "getprop", "ro.kernel.qemu", capture_output=True, text=True).stdout.strip() != "1":
         parser.error("Only an explicitly selected disposable emulator is permitted")
     apks = [
-        root / "apps/android/app/build/outputs/apk/debug/app-debug.apk",
-        root / "apps/android/app/build/outputs/apk/androidTest/debug/app-debug-androidTest.apk",
+        root / "apps/android/app/build/outputs/apk/direct/debug/app-direct-debug.apk",
+        root / "apps/android/app/build/outputs/apk/androidTest/direct/debug/app-direct-debug-androidTest.apk",
     ]
     if not all(apk.is_file() for apk in apks):
-        parser.error("Build :app:assembleDebug :app:assembleDebugAndroidTest first")
+        parser.error("Build :app:assembleDirectDebug :app:assembleDirectDebugAndroidTest first")
     args.artifacts.mkdir(parents=True, mode=0o700, exist_ok=False)
     # The runtime Unix socket needs a short path; long evidence paths can exceed SUN_LEN.
     runtime_directory = tempfile.TemporaryDirectory(prefix="holon-browser-")

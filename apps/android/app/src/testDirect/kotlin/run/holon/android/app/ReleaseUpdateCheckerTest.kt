@@ -73,6 +73,52 @@ class ReleaseUpdateCheckerTest {
         )
     }
 
+    @Test
+    fun `carries asset browser URL and published integrity metadata`() {
+        val result = checker.parse(
+            "[${release("1.3.0", "https://example.test/v130", "metadata-130")}]",
+            1_000_000,
+            mapOf("metadata-130" to metadata("1.3.0").dropLast(1) +
+                ""","apk_sha256":"${"a".repeat(64)}","apk_size":12345}"""),
+        )
+        val apk = assertIs<ReleaseUpdateResult.Available>(result).release
+        assertEquals("https://example.test/v130/holon-android-v1.3.0.apk", apk.apkUrl)
+        assertEquals("a".repeat(64), apk.apkSha256)
+        assertEquals(12345L, apk.apkSize)
+    }
+
+    @Test
+    fun `legacy metadata remains visible but cannot authorize in-app download`() {
+        val result = checker.parse(
+            "[${release("1.3.0", "https://example.test/v130", "metadata-130")}]",
+            1_000_000,
+            mapOf("metadata-130" to metadata("1.3.0")),
+        )
+        val apk = assertIs<ReleaseUpdateResult.Available>(result).release
+        assertEquals("", apk.apkSha256)
+        assertEquals(0L, apk.apkSize)
+        kotlin.test.assertNotNull(updateIntegrityProblem(apk.apkSize, apk.apkSha256))
+    }
+
+    @Test
+    fun `malformed release elements and enormous versions fail closed`() {
+        assertIs<ReleaseUpdateResult.InvalidRelease>(checker.parse("[false]", 1))
+        assertIs<ReleaseUpdateResult.InvalidRelease>(
+            checker.parse("[${release("999999999999999999999.0.0", "https://example.test/r", "m")}]", 1),
+        )
+    }
+
+    @Test
+    fun `metadata with wrong package or malformed size is rejected`() {
+        val payload = "[${release("1.3.0", "https://example.test/r", "m")}]"
+        assertIs<ReleaseUpdateResult.InvalidRelease>(
+            checker.parse(payload, 1, mapOf("m" to metadata("1.3.0").replace("run.holon.android", "other.app"))),
+        )
+        assertIs<ReleaseUpdateResult.InvalidRelease>(
+            checker.parse(payload, 1, mapOf("m" to metadata("1.3.0").dropLast(1) + ""","apk_size":"oops"}""")),
+        )
+    }
+
     private fun release(
         version: String,
         releaseUrl: String,

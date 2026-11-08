@@ -104,7 +104,8 @@ internal class HolonViewModel(
         application.getSharedPreferences("holon_oidc_login", Context.MODE_PRIVATE)
     private val releaseUpdatePreferences =
         application.getSharedPreferences("holon_release_updates", Context.MODE_PRIVATE)
-    private val releaseUpdateChecker = ReleaseUpdateChecker()
+    private val releaseUpdateChecker = ChannelUpdateChecker(application)
+    private val releaseUpdatePreferenceKey = "last_successful_check_${BuildConfig.UPDATE_CHANNEL}"
     private var releaseUpdateJob: Job? = null
     private val nativeProofStore = createSessionStore(application)
     private var authenticationProbeJob: Job? = null
@@ -789,9 +790,9 @@ internal class HolonViewModel(
         }
         releaseUpdateJob = viewModelScope.launch {
             val result = releaseUpdateChecker.check(BuildConfig.VERSION_CODE.toLong())
-            val successful = result is ReleaseUpdateResult.Available || result is ReleaseUpdateResult.NoUpdate
+            val successful = result.isSuccessfulCheck
             if (successful) {
-                releaseUpdatePreferences.edit { putLong("last_successful_check", startedAt) }
+                releaseUpdatePreferences.edit { putLong(releaseUpdatePreferenceKey, startedAt) }
             }
             mutableState.update {
                 it.copy(
@@ -799,7 +800,7 @@ internal class HolonViewModel(
                         isChecking = false,
                         result = result,
                         lastCheckedAt = if (successful) startedAt else it.updateState.lastCheckedAt,
-                        showPrompt = result is ReleaseUpdateResult.Available,
+                        showPrompt = result.hasUpdate,
                     ),
                 )
             }
@@ -812,8 +813,21 @@ internal class HolonViewModel(
         }
     }
 
+    fun requestUpdate() {
+        mutableState.update {
+            it.copy(updateState = it.updateState.copy(
+                actionRequest = it.updateState.result ?: ReleaseUpdateResult.NoUpdate,
+                showPrompt = false,
+            ))
+        }
+    }
+
+    fun consumeUpdateAction() {
+        mutableState.update { it.copy(updateState = it.updateState.copy(actionRequest = null)) }
+    }
+
     private fun maybeCheckForUpdates() {
-        val lastCheck = releaseUpdatePreferences.getLong("last_successful_check", 0L)
+        val lastCheck = releaseUpdatePreferences.getLong(releaseUpdatePreferenceKey, 0L)
         if (System.currentTimeMillis() - lastCheck >= RELEASE_UPDATE_CHECK_INTERVAL_MILLIS) {
             checkForUpdates()
         }

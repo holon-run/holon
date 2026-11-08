@@ -103,6 +103,39 @@ internal object UiCopy {
     private val english: Map<String, String> =
         """
         会话|Conversation
+        发现 Holon 新版本|A Holon update is available
+        通过 Google Play 下载并安装更新。|Download and install the update through Google Play.
+        下载后将校验安装包，再由系统确认安装。|The download will be verified before Android asks you to confirm installation.
+        更新|Update
+        通过 Google Play 检查新版本。|Check Google Play for updates.
+        可从 GitHub Release 检查新版本。|Check GitHub Releases for updates.
+        Google Play 有可用更新。|An update is available on Google Play.
+        Google Play 暂无可用更新。|No update is currently available to you on Google Play.
+        打开 Google Play|Open Google Play
+        Google Play 检查超时，可稍后重试或打开商店。|Google Play timed out. Retry later or open the store.
+        无法向 Google Play 检查更新，可打开商店查看。|Unable to check Google Play. You can open the store instead.
+        正在检查 Google Play 更新…|Checking Google Play…
+        无法打开 Google Play，请稍后重试。|Unable to open Google Play. Try again later.
+        无法启动应用内更新，可前往 Google Play 查看。|Unable to start the in-app update. You can open Google Play instead.
+        系统安装器报告安装成功。|The system installer reported a successful installation.
+        安装已取消或失败。请重新下载并校验后重试；Holon 不会卸载现有应用。|Installation was canceled or failed. Download and verify the update again before retrying. Holon will not uninstall the existing app.
+        更新因应用离开前台而中断，请重新下载并校验。|The update was interrupted when the app left the foreground. Download and verify it again.
+        无法下载或校验安装包。|Unable to download or verify the installation package.
+        无法打开系统安装器。|Unable to open the system installer.
+        下载并校验此更新？Android 会在安装前再次询问。|Download and verify this update? Android will ask again before installation.
+        下载大小：|Download size:
+        正在下载或校验更新…|Downloading or verifying the update…
+        安装包已校验，是否继续打开 Android 系统安装器？|The installation package has been verified. Open the Android system installer?
+        Android 需要允许 Holon 安装更新。仅在同意后打开设置；返回后仍需再次确认安装。|Android needs permission for Holon to install updates. Settings will open only with your consent. You must confirm installation again after returning.
+        请在 Android 系统安装器中完成安装。|Complete installation in the Android system installer.
+        可自行选择在浏览器中打开发布页面；Holon 不会下载未经校验的安装包。|You can choose to open the release page in your browser. Holon will not download an installation package without verification.
+        下载安装包|Download installation package
+        安装更新|Install update
+        Android 无法打开安装设置。|Android could not open installation settings.
+        打开安装设置|Open installation settings
+        重新下载|Download again
+        没有浏览器可打开发布页面。|No browser is available to open the release page.
+        在浏览器中打开发布页面|Open release page in browser
         用户消息|Operator message
         任务结果|Task result
         外部消息|External message

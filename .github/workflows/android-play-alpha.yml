@@ -7,6 +7,7 @@ on:
       - 'scripts/android-play-alpha.py'
       - 'scripts/test-android-play-alpha.py'
       - 'scripts/*android-release*.sh'
+      - 'scripts/*android-release*.py'
       - 'apps/android/signing/release-certificate.sha256'
   workflow_dispatch:
     inputs:
@@ -44,7 +45,9 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
-      - run: python3 scripts/test-android-play-alpha.py
+      - run: |
+          python3 scripts/test-android-play-alpha.py
+          python3 scripts/test-android-release-channels.py
 
   upload:
     name: Build signed candidate and upload only to Alpha
@@ -108,6 +111,7 @@ jobs:
           unset KEYSTORE_BASE64
           bash scripts/test-android-release-version.sh
           bash scripts/test-android-release-packaging.sh
+          python3 scripts/test-android-release-channels.py
           bash scripts/package-android-release.sh "$VERSION_NAME"
 
       - name: Preserve verified candidate and provenance

@@ -5,7 +5,10 @@
 Android ships with Holon's existing `vMAJOR.MINOR.PATCH` releases. The release
 workflow builds, verifies, and attaches `holon-android-vX.Y.Z.apk`, `.aab`,
 `.json` build metadata and checksums to the same GitHub Release as the runtime
-and macOS app. GitHub Release is the durable download location; Actions artifacts
+and macOS app. The APK is `directRelease` (GitHub updates and a user-confirmed
+installer); the AAB is `playRelease` (Play In-App Updates, no APK-install
+permission or direct update implementation). Both retain the same application
+ID, version code and signing identity. GitHub Release is the durable download location; Actions artifacts
 are temporary build/test outputs. AABs are for store submission, not installation.
 
 Google Play uploads are a separate, manual
@@ -73,13 +76,36 @@ HOLON_ANDROID_KEY_PASSWORD
 bash scripts/package-android-release.sh vX.Y.Z
 ```
 
-This runs SDK/release unit tests, release lint, APK/AAB builds, signature and
-manifest verification, then writes `dist/android/` assets with the source commit
-and public certificate identity. It requires the requested version to match
-Cargo.toml. Without signing variables, normal local `assembleRelease` remains
+This runs `:sdk:test`, `:app:testDirectReleaseUnitTest`,
+`:app:testPlayReleaseUnitTest`, `:app:lintDirectRelease`, `:app:lintPlayRelease`,
+`:app:assembleDirectRelease` and `:app:bundlePlayRelease`. It then verifies
+signatures and manifests and writes `dist/android/` assets with the source commit
+and public certificate identity. Metadata preserves the existing version fields
+and adds `apk_sha256` and byte-count `apk_size`, computed from the final signed
+APK, plus `apk_channel: "direct"` and `aab_channel: "play"`.
+The channel gate reads the actual APK and AAB base manifest (using `aapt2`
+proto-to-binary conversion), requires the matching distribution marker,
+installer permission only in direct, and identical non-debuggable package/version
+identities. This gate is **not signature verification**; the separate
+`apksigner`, `jarsigner` and certificate checks remain mandatory.
+It requires the requested version to match Cargo.toml. Without signing variables,
+normal local `assembleDirectRelease` / `bundlePlayRelease` remain
 unsigned and must not be published; a partially configured signing environment
 fails rather than silently falling back. Debug builds keep Android's local
 debug keystore and never use the official key.
+
+Credential-free script gates (JDK 21 required for the keystore rejection test):
+
+```sh
+bash scripts/test-android-release-version.sh
+bash scripts/test-android-release-packaging.sh
+python3 scripts/test-android-release-channels.py
+```
+
+CI additionally runs both flavors' debug unit tests, debug/release APK builds and
+release lint, builds the Play AAB, verifies its channel against the direct APK,
+and runs `:app:verifyPaparazziDirectDebug`. Signing and real device upgrade checks
+must still be performed on release candidates; script tests do not replace them.
 
 ## Existing installs and stores
 

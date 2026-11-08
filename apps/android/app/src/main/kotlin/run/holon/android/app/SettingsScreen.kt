@@ -131,9 +131,12 @@ internal fun SettingsScreen(state: HolonUiState, viewModel: SettingsActions, onB
                     Text(ui("连接已有 Holon 主机的移动工作台。打开应用后同步最新状态。"), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                     Text(
                         when (val result = state.updateState.result) {
-                            null -> ui("可从 GitHub Release 检查新版本。")
+                            null -> if (BuildConfig.UPDATE_CHANNEL == "play") ui("通过 Google Play 检查新版本。")
+                                else ui("可从 GitHub Release 检查新版本。")
                             is ReleaseUpdateResult.Available -> ui("发现新版本：${result.release.version}")
-                            ReleaseUpdateResult.NoUpdate -> ui("当前已是最新版本。")
+                            is ReleaseUpdateResult.PlayAvailable -> ui("Google Play 有可用更新。")
+                            ReleaseUpdateResult.NoUpdate -> if (BuildConfig.UPDATE_CHANNEL == "play") ui("Google Play 暂无可用更新。")
+                                else ui("当前已是最新版本。")
                             is ReleaseUpdateResult.Unavailable -> ui("暂时无法检查更新：${result.reason}")
                             is ReleaseUpdateResult.InvalidRelease -> ui("最新 Release 暂不可用：${result.reason}")
                         },
@@ -147,9 +150,12 @@ internal fun SettingsScreen(state: HolonUiState, viewModel: SettingsActions, onB
                         ) {
                             Text(if (state.updateState.isChecking) ui("检查中…") else ui("检查更新"))
                         }
-                        (state.updateState.result as? ReleaseUpdateResult.Available)?.let { available ->
-                            TextButton(onClick = { uriHandler.openUri(available.release.releaseUrl) }) {
-                                Text(ui("打开下载页面"))
+                        if (state.updateState.result?.hasUpdate == true || BuildConfig.UPDATE_CHANNEL == "play") {
+                            TextButton(onClick = viewModel::requestUpdate) {
+                                Text(
+                                    if (state.updateState.result?.hasUpdate == true) ui("更新")
+                                    else ui("打开 Google Play"),
+                                )
                             }
                         }
                     }

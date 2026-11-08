@@ -46,6 +46,7 @@ internal interface SettingsActions {
     fun logout(): Unit
     fun refresh(showProgress: Boolean = true): Unit
     fun checkForUpdates(): Unit
+    fun requestUpdate(): Unit
     fun dismissUpdatePrompt(): Unit
     fun relogin(): Unit
     fun shareTraceWithAgent(): Unit
@@ -156,6 +157,7 @@ internal class AndroidScreenActions(private val delegate: HolonViewModel) {
         override fun logout(): Unit { delegate.logout() }
         override fun refresh(showProgress: Boolean): Unit { delegate.refresh(showProgress) }
         override fun checkForUpdates(): Unit { delegate.checkForUpdates() }
+        override fun requestUpdate(): Unit { delegate.requestUpdate() }
         override fun dismissUpdatePrompt(): Unit { delegate.dismissUpdatePrompt() }
         override fun relogin(): Unit { delegate.relogin() }
         override fun shareTraceWithAgent(): Unit { delegate.shareTraceWithAgent() }

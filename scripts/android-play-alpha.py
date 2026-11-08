@@ -187,8 +187,8 @@ def verified_bundle(metadata):
     cert = (ROOT / "apps/android/signing/release-certificate.sha256").read_text().strip()
     commit = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=ROOT, text=True).strip()
     asset = f"holon-android-v{name}"
-    if (data["package"], data["version_code"], data["certificate_sha256"], data["commit"], data["aab"]) != (
-        PACKAGE, code, cert, commit, f"{asset}.aab"
+    if (data["package"], data["version_code"], data["certificate_sha256"], data["commit"], data["aab"], data.get("aab_channel")) != (
+        PACKAGE, code, cert, commit, f"{asset}.aab", "play"
     ):
         raise AlphaError("Candidate provenance does not match the verified build.")
     bundle = metadata.parent / data["aab"]

@@ -10,7 +10,6 @@ import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.SerialName
 import okhttp3.Call
 import okhttp3.Request
-import java.io.IOException
 import java.util.concurrent.TimeUnit
 
 internal const val GITHUB_RELEASES_API =
@@ -20,28 +19,6 @@ private const val RELEASE_ASSET_PREFIX = "holon-android-v"
 private const val RELEASE_ASSET_SUFFIX = ".json"
 private val STABLE_TAG = Regex("""^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$""")
 
-internal data class AndroidRelease(
-    val version: String,
-    val versionCode: Long,
-    val releaseUrl: String,
-    val releaseNotes: String,
-    val apkName: String,
-)
-
-internal sealed interface ReleaseUpdateResult {
-    data class Available(val release: AndroidRelease) : ReleaseUpdateResult
-    data object NoUpdate : ReleaseUpdateResult
-    data class Unavailable(val reason: String) : ReleaseUpdateResult
-    data class InvalidRelease(val reason: String) : ReleaseUpdateResult
-}
-
-internal data class AndroidUpdateUiState(
-    val isChecking: Boolean = false,
-    val result: ReleaseUpdateResult? = null,
-    val lastCheckedAt: Long? = null,
-    val showPrompt: Boolean = false,
-)
-
 @Serializable
 private data class ReleaseMetadata(
     val version: String? = null,
@@ -49,6 +26,8 @@ private data class ReleaseMetadata(
     @SerialName("package")
     val packageName: String? = null,
     val apk: String? = null,
+    val apk_sha256: String? = null,
+    val apk_size: Long? = null,
 )
 
 internal class ReleaseUpdateChecker(
@@ -57,6 +36,10 @@ internal class ReleaseUpdateChecker(
     private val json: Json = Json { ignoreUnknownKeys = true },
 ) {
     suspend fun check(currentVersionCode: Long): ReleaseUpdateResult =
+        kotlinx.coroutines.withTimeoutOrNull(60_000) { checkBounded(currentVersionCode) }
+            ?: ReleaseUpdateResult.Unavailable("The GitHub update check timed out")
+
+    private suspend fun checkBounded(currentVersionCode: Long): ReleaseUpdateResult =
         kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
             val request = Request.Builder()
                 .url(releasesUrl)
@@ -64,22 +47,22 @@ internal class ReleaseUpdateChecker(
                 .header("User-Agent", "Holon-Android/$currentVersionCode")
                 .build()
             try {
-                callFactory.newCall(request).execute().use { response ->
+                val body = callFactory.newCall(request).readCancellable { response, checkActive ->
                     if (!response.isSuccessful) {
-                        return@withContext ReleaseUpdateResult.Unavailable(
-                            "GitHub returned HTTP ${response.code}",
-                        )
+                        throw java.io.IOException("GitHub returned HTTP ${response.code}")
                     }
-                    val body = response.body?.string()
-                        ?: return@withContext ReleaseUpdateResult.Unavailable("GitHub returned an empty response")
-                    val candidates = parseCandidates(body)
-                    val metadata = candidates.mapNotNull { candidate ->
-                        if (candidate !is ParsedRelease.NeedsMetadata) return@mapNotNull null
-                        fetchMetadata(candidate.metadataUrl)
-                    }.toMap()
-                    parse(body, currentVersionCode, metadata)
+                    response.readBoundedText(2 * 1024 * 1024, checkActive)
                 }
-            } catch (_: IOException) {
+                val metadata = mutableMapOf<String, String>()
+                for (candidate in parseCandidates(body)) {
+                    if (candidate is ParsedRelease.NeedsMetadata) {
+                        fetchMetadata(candidate.metadataUrl)?.let { metadata[it.first] = it.second }
+                    }
+                }
+                parse(body, currentVersionCode, metadata)
+            } catch (cancelled: kotlinx.coroutines.CancellationException) {
+                throw cancelled
+            } catch (_: java.io.IOException) {
                 ReleaseUpdateResult.Unavailable("Unable to reach GitHub")
             } catch (_: RuntimeException) {
                 ReleaseUpdateResult.Unavailable("Unable to read the GitHub release list")
@@ -96,16 +79,20 @@ internal class ReleaseUpdateChecker(
         } catch (_: RuntimeException) {
             return ReleaseUpdateResult.Unavailable("GitHub returned invalid JSON")
         }
-        return selectCandidate(
-            releases.map { element -> parseRelease(element.jsonObject) },
-            currentVersionCode,
-            metadataByUrl,
-        )
+        return try {
+            selectCandidate(
+                releases.take(20).map { element -> parseRelease(element.jsonObject) },
+                currentVersionCode,
+                metadataByUrl,
+            )
+        } catch (_: RuntimeException) {
+            ReleaseUpdateResult.InvalidRelease("GitHub returned malformed release metadata")
+        }
     }
 
     private fun parseCandidates(payload: String): List<ParsedRelease> =
         try {
-            json.parseToJsonElement(payload).jsonArray.map { element ->
+            json.parseToJsonElement(payload).jsonArray.take(20).map { element ->
                 parseRelease(element.jsonObject)
             }
         } catch (_: RuntimeException) {
@@ -147,18 +134,21 @@ internal class ReleaseUpdateChecker(
         }
     }
 
-    private fun fetchMetadata(url: String): Pair<String, String>? {
+    private suspend fun fetchMetadata(url: String): Pair<String, String>? {
+        if (!isSecureUpdateUrl(url)) return null
         val request = Request.Builder()
             .url(url)
             .header("Accept", "application/json")
             .header("User-Agent", "Holon-Android")
             .build()
         return try {
-            callFactory.newCall(request).execute().use { response ->
-                if (!response.isSuccessful) return null
-                response.body?.string()?.let { url to it }
+            callFactory.newCall(request).readCancellable { response, checkActive ->
+                if (!response.isSuccessful) throw java.io.IOException("Metadata request failed")
+                url to response.readBoundedText(64 * 1024, checkActive)
             }
-        } catch (_: IOException) {
+        } catch (cancelled: kotlinx.coroutines.CancellationException) {
+            throw cancelled
+        } catch (_: java.io.IOException) {
             null
         } catch (_: RuntimeException) {
             null
@@ -175,6 +165,7 @@ internal class ReleaseUpdateChecker(
         val match = STABLE_TAG.matchEntire(tag) ?: return ParsedRelease.Irrelevant
         val version = tag.removePrefix("v")
         val versionCode = versionCode(match)
+            ?: return ParsedRelease.Invalid("Stable release $tag has an invalid version code")
         val releaseUrl = release["html_url"]?.jsonPrimitive?.contentOrNull
             ?: return ParsedRelease.Invalid("Stable release $tag has no release URL")
         val body = release["body"]?.jsonPrimitive?.contentOrNull.orEmpty()
@@ -184,9 +175,8 @@ internal class ReleaseUpdateChecker(
         val metadataAsset = assets.firstOrNull { it.jsonObject["name"]?.jsonPrimitive?.contentOrNull == metadataName }
             ?: return ParsedRelease.Invalid("Stable release $tag has no Android metadata asset")
         val apkName = "$RELEASE_ASSET_PREFIX$version.apk"
-        if (assets.none { it.jsonObject["name"]?.jsonPrimitive?.contentOrNull == apkName }) {
-            return ParsedRelease.Invalid("Stable release $tag has no matching Android APK")
-        }
+        val apkAsset = assets.firstOrNull { it.jsonObject["name"]?.jsonPrimitive?.contentOrNull == apkName }
+            ?: return ParsedRelease.Invalid("Stable release $tag has no matching Android APK")
         val metadataUrl = metadataAsset.jsonObject["browser_download_url"]?.jsonPrimitive?.contentOrNull
             ?: return ParsedRelease.Invalid("Stable release $tag has no metadata download URL")
         return ParsedRelease.NeedsMetadata(
@@ -195,14 +185,18 @@ internal class ReleaseUpdateChecker(
             releaseUrl = releaseUrl,
             releaseNotes = body,
             apkName = apkName,
+            apkUrl = apkAsset.jsonObject["browser_download_url"]?.jsonPrimitive?.contentOrNull.orEmpty(),
             metadataUrl = metadataUrl,
         )
     }
 
-    private fun versionCode(match: MatchResult): Long =
-        match.groupValues[1].toLong() * 1_000_000 +
-            match.groupValues[2].toLong() * 1_000 +
-            match.groupValues[3].toLong()
+    private fun versionCode(match: MatchResult): Long? {
+        val major = match.groupValues[1].toLongOrNull() ?: return null
+        val minor = match.groupValues[2].toLongOrNull() ?: return null
+        val patch = match.groupValues[3].toLongOrNull() ?: return null
+        if (major > 2_100 || minor > 999 || patch > 999) return null
+        return (major * 1_000_000 + minor * 1_000 + patch).takeIf { it in 1..2_100_000_000L }
+    }
 
     private sealed interface ParsedRelease {
         data class NeedsMetadata(
@@ -211,6 +205,7 @@ internal class ReleaseUpdateChecker(
             val releaseUrl: String,
             val releaseNotes: String,
             val apkName: String,
+            val apkUrl: String,
             val metadataUrl: String,
         ) : ParsedRelease
 
@@ -239,6 +234,9 @@ internal class ReleaseUpdateChecker(
                 parsed.releaseUrl,
                 parsed.releaseNotes,
                 parsed.apkName,
+                apkUrl = parsed.apkUrl,
+                apkSha256 = metadata.apk_sha256.orEmpty(),
+                apkSize = metadata.apk_size ?: 0,
             ),
         )
     }
@@ -249,4 +247,5 @@ private fun defaultReleaseCallFactory(): Call.Factory =
         .connectTimeout(10, TimeUnit.SECONDS)
         .readTimeout(15, TimeUnit.SECONDS)
         .callTimeout(20, TimeUnit.SECONDS)
+        .followSslRedirects(false)
         .build()

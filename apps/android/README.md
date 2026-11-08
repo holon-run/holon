@@ -126,16 +126,27 @@ Build the app with the Android SDK installed and `ANDROID_HOME` configured:
 
 ```sh
 cd apps/android
-./gradlew :app:assembleDebug :app:assembleRelease :sdk:test
+./gradlew :sdk:test :app:assembleDirectDebug :app:assemblePlayDebug \
+  :app:assembleDirectRelease :app:assemblePlayRelease :app:bundlePlayRelease
 ```
 
 Run ordinary tests separately from screenshot verification:
 
 ```sh
-./gradlew :sdk:test :app:testDebugUnitTest
-./gradlew :app:verifyPaparazziDebug :app:lintRelease
-./gradlew :app:connectedDebugAndroidTest
+./gradlew :sdk:test :app:testDirectDebugUnitTest :app:testPlayDebugUnitTest
+./gradlew :app:verifyPaparazziDirectDebug :app:lintDirectRelease :app:lintPlayRelease
+./gradlew :app:connectedDirectDebugAndroidTest
 ```
+
+The `distribution` dimension has `direct` and `play` flavors, with the same
+`run.holon.android` application ID and version-code scheme.
+`BuildConfig.UPDATE_CHANNEL` identifies the compiled channel. Direct builds
+contain the GitHub release checker and user-confirmed APK installer; Play builds
+use Play In-App Updates (`app-update:2.1.0`, `playImplementation` only) and exclude
+the direct checker/downloader and `REQUEST_INSTALL_PACKAGES` permission.
+Published APKs come from `directRelease`; Play AABs from `playRelease`.
+The browser integration script installs `directDebug` and its matching test APK;
+build `:app:assembleDirectDebug :app:assembleDirectDebugAndroidTest` first.
 
 The instrumented suite is for isolated test devices/emulators: it creates test
 sessions, modifies the test app's local preferences/database and verifies

@@ -21,7 +21,6 @@ import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.saveable.rememberSaveableStateHolder
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.platform.LocalUriHandler
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 
@@ -43,23 +42,21 @@ internal fun HolonApp(viewModel: HolonViewModel) {
     if (state.phase == AppPhase.Ready && state.pendingShare != null) {
         ShareToAgentDialog(state, viewModel.screenActions.share)
     }
-    val available = state.updateState.result as? ReleaseUpdateResult.Available
-    if (state.updateState.showPrompt && available != null) {
-        val uriHandler = LocalUriHandler.current
+    ChannelUpdateHost(state.updateState.actionRequest, viewModel::consumeUpdateAction)
+    val update = state.updateState.result
+    if (state.updateState.showPrompt && update?.hasUpdate == true) {
         AlertDialog(
             onDismissRequest = viewModel::dismissUpdatePrompt,
-            title = { Text(ui("发现 Holon 新版本 ${available.release.version}")) },
+            title = { Text(ui("发现 Holon 新版本")) },
             text = {
                 Text(
-                    available.release.releaseNotes.takeIf { it.isNotBlank() }
-                        ?: ui("请打开 GitHub Release 页面查看更新并下载 APK。"),
+                    (update as? ReleaseUpdateResult.Available)?.release?.releaseNotes?.takeIf { it.isNotBlank() }
+                        ?: if (update is ReleaseUpdateResult.PlayAvailable) ui("通过 Google Play 下载并安装更新。")
+                        else ui("下载后将校验安装包，再由系统确认安装。"),
                 )
             },
             confirmButton = {
-                TextButton(onClick = {
-                    viewModel.dismissUpdatePrompt()
-                    uriHandler.openUri(available.release.releaseUrl)
-                }) { Text(ui("打开下载页面")) }
+                TextButton(onClick = viewModel::requestUpdate) { Text(ui("更新")) }
             },
             dismissButton = {
                 TextButton(onClick = viewModel::dismissUpdatePrompt) { Text(ui("稍后")) }

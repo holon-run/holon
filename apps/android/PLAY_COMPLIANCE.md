@@ -31,6 +31,21 @@ Paths below are relative to `apps/android/`.
 | Local Room cache/outbox and DataStore profiles | `app/src/main/kotlin/run/holon/android/app/HolonStorage.kt` |
 | Local traces; user-initiated diagnostic sharing | `app/src/main/kotlin/run/holon/android/app/AndroidTrace.kt`, `SettingsScreen.kt` in the same directory |
 | No ad/analytics SDK declared in app build | `app/build.gradle.kts` (not a guarantee about transitively bundled SDKs or host processing) |
+| Play-only in-app updates, no direct APK installer | `app/src/play/`, `app/src/direct/AndroidManifest.xml`, `app/build.gradle.kts`; `playImplementation("com.google.android.play:app-update:2.1.0")` |
+
+## Distribution/update boundary
+
+Only the `playRelease` AAB may be submitted to Play. The `directRelease` APK is
+for direct distribution and alone declares `REQUEST_INSTALL_PACKAGES`.
+The Play variant excludes the direct GitHub checker/downloader source set and
+uses Google Play In-App Updates; it must not offer a direct APK update fallback.
+`scripts/verify-android-release-channels.py` checks actual release manifests for
+channel markers, package/version parity and installer-permission isolation.
+This is not a signature or legal-compliance check. Inspect the final Play SDK
+inventory and perform track-installed update testing before submission.
+The Play dependency version follows the official
+[Kotlin/Java in-app-update setup](https://developer.android.com/guide/playcore/in-app-updates/kotlin-java)
+(checked November 8, 2026: `app-update:2.1.0`).
 
 ## Console preparation — not submitted
 

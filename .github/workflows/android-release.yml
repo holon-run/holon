@@ -27,7 +27,7 @@ permissions:
 
 jobs:
   build:
-    name: Signed APK and AAB
+    name: Signed direct APK and Play AAB
     # No signing credentials in pull requests or arbitrary branch builds.
     if: startsWith(github.ref, 'refs/tags/v') || github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
@@ -70,6 +70,7 @@ jobs:
           fi
           bash scripts/test-android-release-version.sh
           bash scripts/test-android-release-packaging.sh
+          python3 scripts/test-android-release-channels.py
           bash scripts/package-android-release.sh "$version"
 
       - name: Upload signed Android artifacts

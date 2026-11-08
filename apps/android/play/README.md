@@ -89,7 +89,7 @@ data. Keep demo homes, tokens, APKs and emulator state outside the repository.
 2. Build with JDK 21 and the repository's Android SDK requirements:
 
    ```sh
-   apps/android/gradlew -p apps/android :app:assembleDebug
+   apps/android/gradlew -p apps/android :app:assemblePlayDebug
    ```
 
 3. Start a dedicated API 34 emulator; set `DEVICE` to its explicit adb serial.
@@ -98,7 +98,7 @@ data. Keep demo homes, tokens, APKs and emulator state outside the repository.
    ```sh
    adb -s "$DEVICE" shell wm size 1080x1920
    adb -s "$DEVICE" shell wm density 360
-   adb -s "$DEVICE" install -r apps/android/app/build/outputs/apk/debug/app-debug.apk
+   adb -s "$DEVICE" install -r apps/android/app/build/outputs/apk/play/debug/app-play-debug.apk
    adb -s "$DEVICE" reverse tcp:17980 tcp:17980
    ```
 
