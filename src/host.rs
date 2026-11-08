@@ -20493,6 +20493,23 @@ mod tests {
         }
     }
 
+    // The wall-clock heartbeat assertions below prove the async runtime stays
+    // responsive while runtime readers are saturated. The 150ms default holds
+    // deterministically on local runs, but shared CI runners can stretch a
+    // 20ms tokio sleep well past it under load without any semantic
+    // regression (#3947); CI scales the budget through this environment
+    // variable instead of weakening the assertions themselves.
+    #[cfg(holon_lib_test_shard = "d")]
+    fn saturation_heartbeat_budget() -> Duration {
+        const DEFAULT_BUDGET_MS: u64 = 150;
+        let budget_ms = std::env::var("HOLON_TEST_SATURATION_HEARTBEAT_BUDGET_MS")
+            .ok()
+            .and_then(|raw| raw.parse::<u64>().ok())
+            .filter(|ms| *ms > 0)
+            .unwrap_or(DEFAULT_BUDGET_MS);
+        Duration::from_millis(budget_ms)
+    }
+
     fn saturate_runtime_readers(host: &RuntimeHost) -> SaturatedRuntimeReaders {
         let mut held = SaturatedRuntimeReaders {
             release: Vec::new(),
@@ -20990,7 +21007,10 @@ mod tests {
             .expect("activation must take over while runtime readers are saturated")
             .unwrap()
             .expect("cold activation must return a handle under read saturation");
-        assert!(heartbeat < Duration::from_millis(150), "{heartbeat:?}");
+        assert!(
+            heartbeat < saturation_heartbeat_budget(),
+            "{heartbeat:?} exceeds saturation heartbeat budget"
+        );
         drop(held);
         // Read saturation defers the takeover's database bootstrap instead of
         // failing it: once readers are released, the takeover converges to a
@@ -21202,7 +21222,10 @@ mod tests {
         let heartbeat = started.elapsed();
         let result = tokio::time::timeout(Duration::from_secs(3), resolution).await;
         drop(held);
-        assert!(heartbeat < Duration::from_millis(150), "{heartbeat:?}");
+        assert!(
+            heartbeat < saturation_heartbeat_budget(),
+            "{heartbeat:?} exceeds saturation heartbeat budget"
+        );
         let error = result.unwrap().unwrap().unwrap_err();
         assert!(
             error
