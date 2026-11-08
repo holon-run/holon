@@ -32,7 +32,11 @@ Pool saturation must propagate before interpreting missing/consumed records.
 Invocation and message monitors retain responsibility on retryable reader
 failure instead of producing a terminal failure or initiating child cleanup.
 Activation preserves the underlying retryable error type and constructs its
-runtime storage on a blocking worker. A host-owned cold-activation task retains
+runtime storage on a blocking worker. Retained-claims bootstrap loads its initial
+execution-protocol snapshot through asynchronous reader admission with the same
+acquisition deadline. A read failure propagates before recovery mutations or
+ACKs; subsequent preparation and recovery ordering remain unchanged.
+A host-owned cold-activation task retains
 the handoff and registry guards through construction and registration, even when
 the requester is cancelled: construction can write storage. Temporary runtime
 handoff owns a cleanup guard, so cancellation also stops the unclaimed runtime

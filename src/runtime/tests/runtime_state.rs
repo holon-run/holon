@@ -305,6 +305,62 @@ async fn open_external_wake_claim_fixture() -> OpenExternalWakeClaimFixture {
 
 #[cfg(holon_lib_test_shard = "a")]
 #[tokio::test]
+async fn bootstrap_claim_read_yields_while_runtime_readers_are_saturated() {
+    let harness = LifecycleHarness::new();
+    let runtime = harness.runtime();
+    let (ready, acquired) = std::sync::mpsc::channel();
+    let mut releases = Vec::new();
+    let mut readers = Vec::new();
+    for _ in 0..4 {
+        let db = runtime.runtime_db().clone();
+        let ready = ready.clone();
+        let (release, released) = std::sync::mpsc::channel::<()>();
+        releases.push(release);
+        readers.push(std::thread::spawn(move || {
+            db.with_read(|_| {
+                ready.send(()).unwrap();
+                let _ = released.recv();
+                Ok(())
+            })
+            .unwrap();
+        }));
+    }
+    for _ in 0..4 {
+        acquired
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .unwrap();
+    }
+
+    // Poll the read itself, independent of cold-constructor scheduling.
+    let mut recovery = Box::pin(runtime.recover_scheduler_bootstrap_claims());
+    let yielded = std::future::poll_fn(|cx| {
+        std::task::Poll::Ready(std::future::Future::poll(recovery.as_mut(), cx).is_pending())
+    })
+    .await;
+    let timed_out = if yielded { Some(recovery.await) } else { None };
+    drop(releases);
+    for reader in readers {
+        reader.join().unwrap();
+    }
+    assert!(
+        yielded,
+        "bootstrap claim reads must yield under read saturation"
+    );
+    let error = timed_out.unwrap().unwrap_err();
+    assert!(
+        error
+            .downcast_ref::<crate::runtime_db::RuntimeDbRetryableError>()
+            .is_some(),
+        "bootstrap read saturation must remain retryable: {error:#}"
+    );
+    assert_eq!(
+        runtime.recover_scheduler_bootstrap_claims().await.unwrap(),
+        0
+    );
+}
+
+#[cfg(holon_lib_test_shard = "a")]
+#[tokio::test]
 async fn bootstrap_recovers_open_external_wake_claim_and_releases_execution_lane() {
     let mut fixture = open_external_wake_claim_fixture().await;
     fixture.harness.restart();

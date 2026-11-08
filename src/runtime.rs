@@ -7417,7 +7417,8 @@ impl RuntimeHandle {
             .inner
             .runtime_db
             .transitions()
-            .load_execution_protocol_state_if_initialized(&agent_id)?;
+            .load_execution_protocol_state_if_initialized_async(&agent_id)
+            .await?;
         let claimed = self
             .inner
             .runtime_db
