@@ -106,6 +106,18 @@ pub struct CompletedLogin {
     pub native_redirect_uri: Option<String>,
 }
 
+/// A deterministic, client-caused OIDC callback rejection.
+///
+/// HTTP handlers must map these failures to 4xx responses: they stem from
+/// the callback request or its browser session state (missing parameters,
+/// unknown or expired state, provider rejection of the presented code), not
+/// from Holon infrastructure.
+#[derive(Debug, thiserror::Error)]
+#[error("{reason}")]
+pub struct InvalidOidcCallback {
+    pub reason: String,
+}
+
 #[derive(Debug, Clone)]
 pub struct OidcClient {
     pub config: AuthConfig,
@@ -231,12 +243,23 @@ impl OidcClient {
         now: DateTime<Utc>,
     ) -> Result<CompletedLogin> {
         if code.is_empty() || state.is_empty() {
-            bail!("OIDC callback is missing required parameters");
+            return Err(InvalidOidcCallback {
+                reason: "OIDC callback is missing required parameters".into(),
+            }
+            .into());
         }
-        let transaction = db
+        let transaction = match db
             .authentication()
             .consume_login_transaction(&digest_secret(state), now)?
-            .context("OIDC login transaction is invalid or expired")?;
+        {
+            Some(transaction) => transaction,
+            None => {
+                return Err(InvalidOidcCallback {
+                    reason: "OIDC login transaction is invalid or expired".into(),
+                }
+                .into())
+            }
+        };
         let discovery = self.discover().await?;
         let oidc = self.config.oidc.as_ref().expect("validated OIDC config");
         let mut form = vec![
@@ -263,8 +286,18 @@ impl OidcClient {
             .form(&form)
             .send()
             .await?;
-        if !response.status().is_success() {
-            bail!("OIDC token exchange failed with HTTP {}", response.status());
+        let status = response.status();
+        if !status.is_success() {
+            if status.is_client_error() {
+                // Provider-side rejection of the presented code
+                // (invalid_grant and friends) is a deterministic client
+                // failure, not a server fault.
+                return Err(InvalidOidcCallback {
+                    reason: format!("OIDC token exchange failed with HTTP {status}"),
+                }
+                .into());
+            }
+            bail!("OIDC token exchange failed with HTTP {status}");
         }
         if response
             .content_length()
@@ -281,7 +314,10 @@ impl OidcClient {
             .await?;
         let user_id = if let Some(user) = db.authentication().find_user(&claims.iss, &claims.sub)? {
             if user.disabled_at.is_some() {
-                bail!("OIDC principal is disabled");
+                return Err(InvalidOidcCallback {
+                    reason: "OIDC principal is disabled".into(),
+                }
+                .into());
             }
             user.user_id
         } else {
@@ -554,6 +590,40 @@ mod tests {
             exchange_bootstrap_with_native_verifier(&db, &config, &code, Some(&verifier), now)
                 .is_err()
         );
+        Ok(())
+    }
+
+    #[cfg(holon_lib_test_shard = "c")]
+    #[tokio::test]
+    async fn complete_login_classifies_client_caused_failures() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        let db = RuntimeDb::open_and_migrate(
+            temp.path().join("runtime.sqlite"),
+            temp.path().join("runtime.lock"),
+        )?;
+        let client = OidcClient::new(AuthConfig::default())?;
+        let now = Utc::now();
+
+        // Missing callback parameters and unknown states are deterministic
+        // client errors; they must not surface as server faults.
+        for (state, code) in [("", "code"), ("state", "")] {
+            let error = client
+                .complete_login(&db, state, code, now)
+                .await
+                .unwrap_err();
+            let invalid = error
+                .downcast_ref::<InvalidOidcCallback>()
+                .expect("missing callback parameters must be a client rejection");
+            assert!(invalid.reason.contains("missing required parameters"));
+        }
+        let error = client
+            .complete_login(&db, "forged-state", "forged-code", now)
+            .await
+            .unwrap_err();
+        let invalid = error
+            .downcast_ref::<InvalidOidcCallback>()
+            .expect("unknown state must be a client rejection");
+        assert!(invalid.reason.contains("invalid or expired"));
         Ok(())
     }
 
