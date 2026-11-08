@@ -49,7 +49,20 @@ def prepare(ref: str, *, repository: str = "holon-run/holon",
         work = Path(temporary)
         for name in ("checksums.txt", ARCHIVE):
             subprocess.run(
-                ["curl", "-fsSL", "-o", str(work / name), f"{base_url}/{name}"],
+                [
+                    "curl",
+                    "-fsSL",
+                    "--retry",
+                    "5",
+                    "--retry-all-errors",
+                    "--retry-delay",
+                    "5",
+                    "--retry-max-time",
+                    "300",
+                    "-o",
+                    str(work / name),
+                    f"{base_url}/{name}",
+                ],
                 check=True,
             )
         matches = []
