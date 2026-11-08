@@ -126,6 +126,9 @@ A: 建议将任务作为主工单交给主责 Agent（如开发 Agent 完成功�
 ### Q: 为什么我不应该把所有技能都启用在全局环境？
 A: 全局注入会导致每个新建的 Agent 都被迫背负沉重的提示词包袱，模型在选择工具时会因为相似描述而产生混淆，甚至可能在简单任务上产生高额 Token 账单与死循环。
 
+### Q: 这套技能隔离思路能否用在其他工具（如 Claude Code / Codex）中？
+A: 完全可以。在 CLI Agent 中，你可以通过为每个角色建立专属目录（例如 `~/.agents/code-reviewer`），在目录下单独放置 `CLAUDE.md` / `AGENTS.md` 和局部的 `.mcp.json`，在启动时从角色目录指向目标项目。具体目录隔离配方与演进分析请参阅博客[《为什么技能塞得越多，Agent 反而越笨？》](../blog/why-agents-need-skill-isolation.md)。
+
 ## 下一步
 
 - 了解如何让代码审查 Agent 全自动跟进 GitHub PR 与 CI 事件：[搭建持续跟进 PR 的本地 Code Reviewer](./build-code-reviewer.md)。

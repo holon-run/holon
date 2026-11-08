@@ -109,6 +109,50 @@ Holon 采用“集中管理、按需授权”的技能机制：
 
 整个流程中，每个 Agent 都只做自己最擅长的事，每个上下文窗口都保持高度聚焦。
 
+## 不只 Holon：在 Claude Code 或 Codex 中落地“Agent Home”目录隔离
+
+这套“角色化分工与技能局部挂载”的思想，并不受限于特定的工具框架。如果你日常主要使用 Claude Code、OpenAI Codex CLI 或其他命令行 Agent，也完全不必把所有 Skill、MCP 工具全局堆在 `~/.claude.json` 或单体项目配置中。
+
+你可以借鉴 **Agent Home 目录隔离法**，用文件系统低成本打造干净的专职角色：
+
+### 1. 为专职角色创建独立的 Agent Home 目录
+
+在本地建立专门的角色工作目录，例如：
+```bash
+mkdir -p ~/.agents/code-reviewer ~/.agents/developer ~/.agents/docs-steward
+```
+
+### 2. 在角色目录下局部挂载专有规范与工具
+
+- **独立的行为边界（`CLAUDE.md` / `AGENTS.md`）**：
+  在 `~/.agents/code-reviewer/CLAUDE.md` 中写明该角色为“只读审查员”，明确“严禁直接修改业务代码”、“每条建议必须附带原代码行号与证据”；在 `~/.agents/developer/CLAUDE.md` 中则定义代码工程准则与测试规范。
+- **局部的 MCP / 工具配置**：
+  只在对应角色目录下配置 `.mcp.json` 或本地脚本。例如：
+  - `code-reviewer` 目录只启用 AST 只读解析、静态分析和 GitHub PR 读取 MCP；
+  - `developer` 目录挂载文件编辑、构建工具和单元测试 runner；
+  - `docs-steward` 目录仅挂载 Markdown 校验和文档索引工具。
+
+### 3. 在角色目录中启动会话，指向目标仓库
+
+日常使用时，不要直接在杂乱的项目根目录里全局开跑，而是**在专职角色目录下启动 Agent**，并通过提示词或参数让它去操作目标仓库或具体的 Git worktree：
+```bash
+# 启动审查专员检查目标仓库的 PR
+cd ~/.agents/code-reviewer && claude "审查 /path/to/my-repo 中的最新改动"
+```
+
+这种做法的好处立竿见影：
+- 模型每次交互时，系统提示词中永远只有该角色必需的 3~5 个工具定义；
+- 没有全局工具的干扰，模型的长文本注意力始终集中在业务代码上；
+- 工具调用命中率显著提升，彻底告别参数混淆与越权乱改。
+
+### 4. 从“手工目录隔离”到“专有运行时”的演进
+
+通过目录隔离打造专职 Agent，是每个人今天花 5 分钟就能落地的轻量实践。
+
+随着多角色协作的深入，你可能会进一步遇到更复杂的协作诉求：比如怎么让审查 Agent 审完后自动通知开发 Agent？怎么在开发 Agent 等待审查时挂起进程、不浪费 Token？怎么让跨天的长任务拥有独立的生命周期？
+
+这就是为什么 Holon 进一步将这一模式系统化：在保持每个 Agent 拥有独立配置目录（`agent_home`）与专属技能库的同时，提供了持久化工单（WorkItem）、事件等待与唤醒（Wait/Wake）以及工作区物理投影。目录隔离是基石，运行时协同则是水到渠成的进阶。
+
 ## 核心对比总结
 
 | 维度 | 单体多能 Agent（God Agent） | Holon 角色化隔离多 Agent |

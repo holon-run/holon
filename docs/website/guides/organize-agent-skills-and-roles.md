@@ -126,6 +126,9 @@ A: Keep the primary feature work item with the developer agent. When code change
 ### Q: Why not enable all skills globally?
 A: Global injection forces every agent to load every tool schema into its prompt. This causes attention dilution, parameter hallucinations between similar tools, and unnecessary token costs on every turn.
 
+### Q: Can I apply this role isolation pattern in other tools like Claude Code or Codex?
+A: Absolutely. With CLI agents, you can establish dedicated role directories (such as `~/.agents/code-reviewer`), place scoped `CLAUDE.md` / `AGENTS.md` and local `.mcp.json` configs inside them, and point the agent to target projects at runtime. For a step-by-step breakdown and architectural evolution, see the blog post [Why your agent gets dumber with more skills](../blog/why-agents-need-skill-isolation.md).
+
 ## Next steps
 
 - Set up an autonomous PR reviewer with event triggers: [Build a local Code Reviewer that follows PRs](./build-code-reviewer.md).

@@ -107,6 +107,50 @@ Instead of relying on fragile prompt switching ("Now act as a reviewer... Now ac
 
 Each agent excels at its mandate, and every context window remains clutter-free.
 
+## Beyond Holon: Role and directory isolation in Claude Code and Codex
+
+The principle of role-based skill isolation is not tied to a single platform. If you primarily work with Claude Code, OpenAI Codex CLI, or custom terminal agents, you do not have to dump every MCP server and workflow script into a global `~/.claude.json` or project root.
+
+You can adopt a lightweight **Agent Home pattern** directly on your filesystem:
+
+### 1. Create dedicated role directories
+
+Establish separate home folders for recurring responsibilities:
+```bash
+mkdir -p ~/.agents/code-reviewer ~/.agents/developer ~/.agents/docs-steward
+```
+
+### 2. Isolate instructions and tools per directory
+
+- **Scoped behavioral contracts (`CLAUDE.md` / `AGENTS.md`)**:
+  In `~/.agents/code-reviewer/CLAUDE.md`, declare the agent as a strict, read-only auditor: explicitly forbid file mutations and require line-numbered evidence for all findings. In `~/.agents/developer/CLAUDE.md`, focus on implementation guidelines, minimal diffs, and local test verification.
+- **Locally scoped MCPs and tools**:
+  Place a dedicated `.mcp.json` or local tool manifests inside each directory:
+  - `code-reviewer` mounts only read-only AST parsers, linter tools, and GitHub read MCPs.
+  - `developer` mounts patch application, build tools, and test runners.
+  - `docs-steward` mounts Markdown linters and link checkers.
+
+### 3. Launch from the role directory, target the project
+
+Instead of starting an agent in an overloaded project root with dozens of competing tools, launch it from the specialized role folder and instruct it to inspect the project workspace or a linked Git worktree:
+```bash
+# Launch a focused review session pointing to your repository
+cd ~/.agents/code-reviewer && claude "Review recent changes in /path/to/my-repo"
+```
+
+The immediate benefits:
+- Every turn injects only the 3 to 5 tools essential for that persona.
+- Attention remains concentrated on your code rather than navigating extraneous schemas.
+- Hallucinated arguments and out-of-bounds file edits vanish.
+
+### 4. From manual directory isolation to dedicated runtimes
+
+Setting up isolated role directories takes five minutes and delivers an instant boost in prompt efficiency and reliability.
+
+As your workflows scale, however, you inevitably face orchestration hurdles: How does the review agent hand findings back to the developer without manual copy-pasting? How do agents sleep while waiting for feedback instead of burning tokens? How do multi-day initiatives track verifiable milestones?
+
+This is where a dedicated agent runtime like Holon naturally fits in. It codifies the same directory-isolated design (`agent_home` per agent) while adding durable WorkItems, event-driven wait/wake cycles, and workspace projection. Directory isolation is the foundation; runtime orchestration is the natural next step.
+
 ## Comparison: Monolithic Agent vs. Role-Based Multi-Agent
 
 | Aspect | Monolithic God Agent | Holon Role-Based Agents |
