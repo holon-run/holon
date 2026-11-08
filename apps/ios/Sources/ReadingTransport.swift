@@ -108,7 +108,12 @@ actor ReadingClientTransport: ReadingTransport {
                                 currentRunID: entry["agent"]?["current_run_id"]?.readingString,
                                 posture: entry["agent"]?["scheduling_posture"]?["posture"]?.readingString,
                                 briefAt: entry["latest_brief"]?["created_at"]?.readingString.flatMap(Self.metadataDate),
-                                effectiveModel: entry["agent"]?["model"]?["effective_model"]?.readingString)
+                                effectiveModel: entry["agent"]?["model"]?["effective_model"]?.readingString,
+                                lifecycle: entry["agent"]?["status"]?.readingString,
+                                pendingCount: entry["agent"]?["pending"]?.readingInteger.flatMap(Int.init(exactly:)),
+                                activeTaskCount: entry["agent"]?["active_task_count"]?.readingInteger.flatMap(Int.init(exactly:)),
+                                waitingCount: entry["agent"]?["waiting_reason"] == nil ||
+                                    entry["agent"]?["waiting_reason"] == .null ? 0 : 1)
         }
         var counts: [String: Int] = [:]
         var readStates: [String: ReadingReadState] = [:]
@@ -128,7 +133,9 @@ actor ReadingClientTransport: ReadingTransport {
         let enriched = agents.map {
                 ReadingAgent(id: $0.id, name: $0.name, preview: $0.preview,
                              unreadCount: counts[$0.id], readState: readStates[$0.id], currentRunID: $0.currentRunID,
-                             posture: $0.posture, briefAt: $0.briefAt, effectiveModel: $0.effectiveModel)
+                             posture: $0.posture, briefAt: $0.briefAt, effectiveModel: $0.effectiveModel,
+                             lifecycle: $0.lifecycle, pendingCount: $0.pendingCount,
+                             activeTaskCount: $0.activeTaskCount, waitingCount: $0.waitingCount)
         }
         _ = try await expected()
         guard generation == rosterGeneration else { throw CancellationError() }

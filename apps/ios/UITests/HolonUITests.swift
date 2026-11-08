@@ -231,6 +231,36 @@ final class HolonUITests: XCTestCase {
         add(attachment)
     }
 
+    private func assertConversationIdentity(_ app: XCUIApplication, chinese: Bool) throws {
+        let name = try required("AGENT_NAME")
+        let identity = app.descendants(matching: .any)["conversation.identity"].firstMatch
+        XCTAssertTrue(identity.waitForExistence(timeout: UIWaitScale.scaled(15)))
+        XCTAssertTrue(identity.label.contains(name), "VoiceOver retains the full display name")
+        let statuses = chinese ? ["工作中", "等待中", "休眠中", "就绪", "等你回应"]
+            : ["Working", "Waiting", "Sleeping", "Ready", "Needs your reply"]
+        let statusVisible = XCTNSPredicateExpectation(
+            predicate: NSPredicate { _, _ in statuses.contains { identity.label.contains($0) } },
+            object: identity)
+        XCTAssertEqual(XCTWaiter.wait(for: [statusVisible], timeout: UIWaitScale.scaled(15)), .completed,
+                       "Identity exposes an authoritative text status, not only an avatar expression")
+        let work = app.buttons["conversation.work"], files = app.buttons["conversation.files"]
+        XCTAssertTrue(work.isHittable); XCTAssertTrue(files.isHittable)
+        XCTAssertFalse(work.label.isEmpty); XCTAssertFalse(files.label.isEmpty)
+        XCTAssertEqual(work.frame.midY, files.frame.midY, accuracy: 2,
+                       "Work and Files remain on the same navigation row")
+        XCTAssertGreaterThan(identity.frame.width, 0)
+        XCTAssertLessThanOrEqual(identity.frame.maxX, work.frame.minX + 2,
+                                 "A long title must not overlap the toolbar actions")
+        let model = app.buttons["sending.model"]
+        XCTAssertTrue(model.isHittable)
+        XCTAssertGreaterThanOrEqual(model.frame.minY, app.navigationBars.firstMatch.frame.maxY,
+                                    "Model selection belongs to the composer, not the title")
+        model.tap()
+        let defaultModel = app.buttons[chinese ? "服务端默认" : "Server default"]
+        XCTAssertTrue(defaultModel.waitForExistence(timeout: UIWaitScale.scaled(5)))
+        defaultModel.tap()
+    }
+
     private func reveal(_ element: XCUIElement, in app: XCUIApplication,
                         fullyVisible: Bool = false,
                         file: StaticString = #filePath, line: UInt = #line) {
@@ -885,10 +915,14 @@ final class HolonUITests: XCTestCase {
                        "Cancelled onboarding preserves the original host independently of live/offline status")
         let agentButton = app.buttons["agent." + agent]
         XCTAssertTrue(agentButton.waitForExistence(timeout: UIWaitScale.scaled(30)))
+        XCTAssertTrue(agentButton.label.contains(try required("AGENT_NAME")),
+                      "Agent home exposes the full long display name")
+        capture(app, "english-light-long-name-agent-home")
         agentButton.tap()
         let read = app.staticTexts.containing(NSPredicate(format: "label CONTAINS %@", readMarker)).firstMatch
         XCTAssertTrue(read.waitForExistence(timeout: UIWaitScale.scaled(30)))
         reveal(read, in: app)
+        try assertConversationIdentity(app, chinese: false)
         capture(app, "authenticated-reading")
         XCTAssertFalse(app.staticTexts["Loading messages…"].exists,
                        "Synchronization must be chrome, not a timeline message")
@@ -937,7 +971,6 @@ final class HolonUITests: XCTestCase {
             .waitForExistence(timeout: UIWaitScale.scaled(60)))
         capture(app, "authenticated-outbox")
         app.buttons["Close"].tap()
-        app.buttons["conversation.more"].tap()
         app.buttons["conversation.work"].tap()
         let item = app.buttons["work.item." + work]
         if ProcessInfo.processInfo.environment["HOLON_UI_RICH_TURN_ID"]?.isEmpty == false {
@@ -965,9 +998,10 @@ final class HolonUITests: XCTestCase {
         capture(app, "task-output")
         app.navigationBars.buttons.element(boundBy: 0).tap()
         app.navigationBars.buttons.element(boundBy: 0).tap()
-        app.buttons["conversation.more"].tap()
         let files = app.buttons["conversation.files"]
-        reveal(files, in: app)
+        XCTAssertTrue(files.waitForExistence(timeout: UIWaitScale.scaled(10)))
+        waitForEnabled(files)
+        XCTAssertTrue(files.isHittable, "Files is directly reachable in the navigation bar")
         files.tap()
         app.buttons["files.options"].tap()
         app.buttons["Server reference"].tap()
@@ -1211,7 +1245,7 @@ final class HolonUITests: XCTestCase {
         XCTAssertTrue(agentRow.waitForExistence(timeout: UIWaitScale.scaled(15))); agentRow.tap()
         app.buttons["sending.options"].tap(); app.buttons["Take photo"].tap()
         XCTAssertTrue(app.staticTexts["The camera is not available on this device. Choose a photo or file instead."].waitForExistence(timeout: UIWaitScale.scaled(10)))
-        app.buttons["conversation.more"].tap(); app.buttons["conversation.work"].tap()
+        app.buttons["conversation.work"].tap()
         let moreWork = app.buttons["work.moreItems"]
         reveal(moreWork, in: app); moreWork.tap()
         let additionalWork = app.buttons["work.item." + (try required("RICH_ADDITIONAL_WORK_ID"))]
@@ -1234,8 +1268,13 @@ final class HolonUITests: XCTestCase {
         // Hittable can include a sliver above the navigation bar.
         // Reveal the whole disclosure row before asking it to expand.
         reveal(activity, in: app, fullyVisible: true)
-        XCTAssertTrue(activity.isHittable); activity.tap()
         let fullProcess = app.buttons["activities.full." + turn]
+        XCTAssertFalse(fullProcess.exists, "Execution details are collapsed by default")
+        let brief = app.descendants(matching: .any)["brief." + (try required("RICH_BRIEF_ID"))].firstMatch
+        XCTAssertTrue(brief.exists)
+        XCTAssertLessThanOrEqual(brief.frame.maxY, activity.frame.minY + 2,
+                                 "The result precedes its collapsed execution details")
+        XCTAssertTrue(activity.isHittable); activity.tap()
         XCTAssertTrue(fullProcess.waitForExistence(timeout: UIWaitScale.scaled(10)))
         reveal(fullProcess, in: app); fullProcess.tap()
         let fullReader = app.scrollViews["activities.fullReader"]
@@ -1485,6 +1524,7 @@ final class HolonUITests: XCTestCase {
             reveal(agent, in: app); agent.tap()
         }
         XCTAssertTrue(app.buttons["conversation.more"].waitForExistence(timeout: UIWaitScale.scaled(30)))
+        try assertConversationIdentity(app, chinese: true)
         let editor = app.descendants(matching: .any)["sending.text"].firstMatch
         XCTAssertTrue(editor.waitForExistence(timeout: UIWaitScale.scaled(15))); XCTAssertTrue(editor.isHittable)
         editor.tap(); editor.typeText("IOS_ACCESSIBILITY_DRAFT")
@@ -1508,8 +1548,10 @@ final class HolonUITests: XCTestCase {
         let directory = try required("RICH_DIRECTORY")
         let workspace = try required("WORKSPACE_ID")
         let app = launch(language: "en", dark: false, large: false)
-        XCTAssertTrue(app.buttons["conversation.more"].waitForExistence(timeout: UIWaitScale.scaled(30)))
-        app.buttons["conversation.more"].tap(); app.buttons["conversation.files"].tap()
+        let files = app.buttons["conversation.files"]
+        XCTAssertTrue(files.waitForExistence(timeout: UIWaitScale.scaled(30)))
+        XCTAssertTrue(files.isHittable, "Files is directly reachable in the navigation bar")
+        files.tap()
         let home = app.buttons["files.workspace." + workspace].firstMatch
         reveal(home, in: app); home.tap()
         let folder = app.buttons["files.entry." + directory]
@@ -1599,6 +1641,13 @@ final class HolonUITests: XCTestCase {
         let exportName = app.textFields["DOCPicker.filenameTextField"]
         XCTAssertTrue(exportName.waitForExistence(timeout: UIWaitScale.scaled(15)), "Export opens the native destination picker")
         XCTAssertEqual(exportName.value as? String, "report")
+        // Files persists across app reinstalls and fixture runs on this simulator.
+        // Keep the real save independent of earlier exports without replacing them.
+        let uniqueExportName = "report-\(UUID().uuidString)"
+        exportName.tap()
+        clearTextField(exportName)
+        exportName.typeText(uniqueExportName)
+        XCTAssertEqual(exportName.value as? String, uniqueExportName)
         let save = app.buttons["Save"].firstMatch
         XCTAssertTrue(save.isHittable); XCTAssertTrue(save.isEnabled)
         let exportHierarchy = XCTAttachment(string: app.debugDescription)

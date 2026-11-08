@@ -40,7 +40,7 @@ private final class ReadingIdentityProtocol: URLProtocol, @unchecked Sendable {
         client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
         let body: String
         if request.url!.path.hasSuffix("/agents/snapshot") {
-            body = #"{"runtime_id":"runtime","visibility_scope_id":"private","event_log_epoch":"epoch","agents":[{"agent":{"identity":{"agent_id":"A","name":"Agent A"},"current_run_id":"run-A"}}]}"#
+            body = #"{"runtime_id":"runtime","visibility_scope_id":"private","event_log_epoch":"epoch","agents":[{"agent":{"identity":{"agent_id":"A","name":"Agent A"},"current_run_id":"run-A","status":"awake_running","pending":3,"scheduling_posture":{"posture":"active_turn"},"waiting_reason":null}}]}"#
         } else if operation == "brief-read-state" || operation == "brief-read-cursor" {
             let epoch = agentID == "new-epoch" ? "next-epoch" : "epoch"
             let invalid = agentID.hasPrefix("malformed-baseline")
@@ -97,6 +97,10 @@ final class ReadingTransportTests: XCTestCase {
         let agents = roster.agents
         XCTAssertEqual(agents.map(\.id), ["A"])
         XCTAssertEqual(agents.first?.currentRunID, "run-A")
+        XCTAssertEqual(agents.first?.lifecycle, "awake_running")
+        XCTAssertEqual(agents.first?.pendingCount, 3)
+        XCTAssertEqual(agents.first?.posture, "active_turn")
+        XCTAssertEqual(agents.first?.waitingCount, 0)
         let snapshot = try await transport.conversation(agentID: "A", before: nil)
         XCTAssertEqual(snapshot.eventLogEpoch, "epoch")
         let brief = try await transport.brief(agentID: "A", briefID: "brief")

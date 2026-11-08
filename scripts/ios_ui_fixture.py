@@ -945,7 +945,9 @@ with fixture_directory(repo) as root:
                     connection.close()
 
             agent = "holon-tester"
-            created = local("POST", f"/control/agents/{agent}/create", {}, ok=(200, 202))
+            agent_name = "Holon Native Interface Verification — Long Display Name"
+            created = local("POST", f"/control/agents/{agent}/create",
+                            {"name": agent_name}, ok=(200, 202))
             wait_for_agent_bootstrap(local, created)
             work = local("POST", f"/control/agents/{agent}/work-items", {"objective": "IOS_POPULATED_WORK"})
             work_id = work["id"]
@@ -1072,6 +1074,7 @@ with fixture_directory(repo) as root:
                         if "IOS_RICH_ACTIVITIES" in json.dumps(turn)]
                     if candidates and candidates[-1].get("brief_ids"):
                         rich_turn = candidates[-1]["turn_id"]
+                        rich_brief_id = candidates[-1]["brief_ids"][0]
                         break
                     time.sleep(.1)
                 else:
@@ -1146,7 +1149,8 @@ with fixture_directory(repo) as root:
             if mode != "--sdk-only":
                 runner_inputs = {
                     "ENDPOINT": base,
-                    "AGENT_ID": agent, "WORK_ID": work_id, "TASK_ID": task["id"], "WORKSPACE_ID": workspace_id,
+                    "AGENT_ID": agent, "AGENT_NAME": agent_name,
+                    "WORK_ID": work_id, "TASK_ID": task["id"], "WORKSPACE_ID": workspace_id,
                     "READ_MARKER": "IOS_POPULATED_BRIEF", "PLAN_MARKER": "IOS_POPULATED_FULL_PLAN",
                     "TASK_MARKER": "IOS_POPULATED_OUTPUT",
                     "FILE_REFERENCE": str(workspace / file_path), "FILE_MARKER": "IOS_POPULATED_FILE"}
@@ -1161,6 +1165,7 @@ with fixture_directory(repo) as root:
                             LOSS_CONTROL_TOKEN=proxy_control_token)
                 if rich_turn:
                     runner_inputs.update(RICH_TURN_ID=rich_turn)
+                    runner_inputs["RICH_BRIEF_ID"] = rich_brief_id
                     runner_inputs["RICH_ADDITIONAL_WORK_ID"] = rich_additional_work
                 if rich_acceptance:
                     runner_inputs["RICH_DIRECTORY"] = "rich-files"
