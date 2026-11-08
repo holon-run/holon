@@ -39,12 +39,23 @@ impl OidcProviderConfig {
         if let Some(redirect_uri) = &self.redirect_uri {
             let redirect = Url::parse(redirect_uri)?;
             if redirect.scheme() != "https"
-                && !(redirect.scheme() == "http" && redirect.host_str() == Some("localhost"))
+                && !(redirect.scheme() == "http" && is_loopback_host(&redirect))
             {
-                bail!("OIDC redirect_uri must use HTTPS or target localhost");
+                bail!(
+                    "OIDC redirect_uri must use HTTPS or target a loopback host (localhost, 127.0.0.1, or ::1)"
+                );
             }
         }
         Ok(())
+    }
+}
+
+fn is_loopback_host(url: &Url) -> bool {
+    match url.host() {
+        Some(url::Host::Domain("localhost")) => true,
+        Some(url::Host::Ipv4(address)) => address.is_loopback(),
+        Some(url::Host::Ipv6(address)) => address.is_loopback(),
+        _ => false,
     }
 }
 
@@ -215,6 +226,26 @@ mod tests {
 
         config.redirect_uri = Some("http://localhost/callback".into());
         assert!(config.validate().is_ok());
+    }
+
+    #[test]
+    fn loopback_ip_redirect_may_use_http() {
+        let mut config = OidcProviderConfig {
+            issuer_url: "https://issuer.example".into(),
+            client_id: "client".into(),
+            client_secret_env: None,
+            redirect_uri: Some("http://127.0.0.1:7879/callback".into()),
+        };
+        assert!(config.validate().is_ok());
+
+        config.redirect_uri = Some("http://[::1]:7879/callback".into());
+        assert!(config.validate().is_ok());
+
+        config.redirect_uri = Some("http://192.168.1.5:7879/callback".into());
+        assert!(config.validate().is_err());
+
+        config.redirect_uri = Some("ftp://127.0.0.1:7879/callback".into());
+        assert!(config.validate().is_err());
     }
 
     #[test]

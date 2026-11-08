@@ -14,7 +14,7 @@ Keycloak 是开源身份与访问管理平台，可以作为 Holon 的 OIDC 身�
 
 - 一台可以跑 Docker 的主机（Keycloak 生产模式容器约需 1 GB 内存，远低于 GitLab）。
 - Keycloak 站点必须以 HTTPS 对外提供。Holon 的 OIDC 客户端只信任内置的 Mozilla 根证书，**自签名 CA 不可行**；内网环境推荐用 Tailscale 的 `tailscale cert` 签发受公信 CA（Let's Encrypt）背书的证书，无需公网暴露端口。
-- 一个可访问的 Holon 实例。回调地址允许 HTTPS，或主机名严格为 `localhost` 的 HTTP（端口任意）。`127.0.0.1`、`::1` 这类 IP 字面量会被拒绝。
+- 一个可访问的 Holon 实例。回调地址允许 HTTPS，或主机名为 `localhost`、loopback IP（`127.0.0.1`、`[::1]`）的 HTTP（端口任意）。
 
 ## 第 1 步：部署 Keycloak
 

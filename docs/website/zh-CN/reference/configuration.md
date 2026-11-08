@@ -152,7 +152,7 @@ Holon 控制平面支持基于 Cookie 的 Session 认证（适用于浏览器和
 > **Session 生命周期约束：**
 > - 配置 `auth.session.absolute_ttl_seconds` 时，其数值必须大于或等于 `auth.session.idle_ttl_seconds`。
 > - 将 `auth.session.absolute_ttl_seconds` 设为 `null`（或不设置）表示不限制绝对超时，活跃会话将持续有效。为保持兼容性，配置中的 `0` 会被自动归一化为 `null`。
-> - 生产环境下 Issuer URL 与回调地址必须使用 HTTPS（仅本地测试允许 `localhost` 使用 HTTP）。
+> - 生产环境下 Issuer URL 与回调地址必须使用 HTTPS（仅本地测试允许 `localhost` 或 loopback IP 字面量 `127.0.0.1` / `[::1]` 使用 HTTP）。
 > - 变更 `auth.mode` 或 OIDC 参数后需要重启 daemon 生效。
 
 ```bash

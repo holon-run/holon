@@ -159,7 +159,7 @@ holon config set auth.oidc.issuer_url https://casdoor.example.com:9445/orgs/holo
 Three common pitfalls:
 
 - `issuer_url` must match the `issuer` returned by discovery **verbatim, character-for-character** (including ports, and for organization-level issuers, the `/orgs/<org-name>` prefix).
-- `redirect_uri` must appear verbatim in the application's Redirect URLs whitelist in Casdoor: Casdoor expects `http://localhost:7880/api/auth/oidc/callback`, exactly matching Holon's configuration (localhost is permitted with non-80 ports).
+- `redirect_uri` must appear verbatim in the application's Redirect URLs whitelist in Casdoor: Casdoor expects `http://localhost:7880/api/auth/oidc/callback`, exactly matching Holon's configuration (localhost and loopback IP hosts are permitted with non-80 ports).
 - `client_secret_env` specifies the **environment variable name**. The secret value is injected when launching Holon, rather than stored in the configuration file:
 
 ```bash

@@ -148,7 +148,7 @@ For a step-by-step guide covering IdP setup and session audits, see [Configure O
 > **Session Lifetime Rules:**
 > - When configured, `auth.session.absolute_ttl_seconds` must be greater than or equal to `auth.session.idle_ttl_seconds`.
 > - Setting `auth.session.absolute_ttl_seconds` to `null` (or omitting it) disables the absolute cutoff. For backwards compatibility, setting `0` normalizes to `null`.
-> - Production deployments require HTTPS for both `issuer_url` and callback endpoints. HTTP is only permitted when the callback host is `localhost`.
+> - Production deployments require HTTPS for both `issuer_url` and callback endpoints. HTTP is only permitted when the callback host is `localhost` or a loopback IP literal (`127.0.0.1`, `[::1]`).
 > - Daemon restart is required when changing `auth.mode` or OIDC parameters.
 
 ```bash

@@ -23,8 +23,8 @@ session timeouts, and verifying logins.
 - Administrative access in your IdP to register a new client application.
 
 > **Security note:** Holon requires HTTPS for the OIDC issuer URL and callback
-> endpoint. The callback alone may use HTTP when its host is exactly
-> `localhost`; the issuer must still use HTTPS.
+> endpoint. The callback alone may use HTTP when its host is `localhost` or a
+> loopback IP literal (`127.0.0.1`, `[::1]`); the issuer must still use HTTPS.
 
 Keep administrative access to the runtime host while changing authentication,
 so you can correct a failed configuration. OIDC identifies signed-in users; it
