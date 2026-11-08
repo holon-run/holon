@@ -33,8 +33,8 @@ configuration using `0` for the absolute lifetime is normalized to `null`.
 When `idle_ttl_seconds` is omitted, the derived default is clamped to a
 shorter explicit absolute lifetime so existing configurations keep loading.
 
-`issuer_url` and OIDC endpoints must use HTTPS. A localhost callback may use
-HTTP for local development.
+`issuer_url` and OIDC endpoints must use HTTPS. A `localhost` or loopback IP
+(`127.0.0.1`, `[::1]`) callback may use HTTP for local development.
 
 Open `/login` in a browser to begin login. In OIDC mode the page provides an
 organization-login button and starts the OIDC flow after discovering the
