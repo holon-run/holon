@@ -9,6 +9,74 @@ reviewed routes unless there is affirmative removal evidence. New routes require
 their own endpoint evidence; missing capability flags are conservative omissions,
 not proof that a model lacks the feature.
 
+## 2026-11-09 incremental review
+
+Baseline main is `4352b899`; November 8 UTC sampling corresponds to the
+November 9 Beijing cycle. The fixed models.dev SHA-256 is
+`06f904263b196dae1281b28f95963fa2fec04f0cba6d8205af13827746833412`.
+The separate endpoint audit covered all 30 special endpoints and 507 complete
+baseline objects. [Field evidence](metadata-evidence.md#incremental-review-2026-11-09)
+distinguishes discovered records from static route admission.
+
+The only static removals are the Fireworks default public Serverless routes
+for `accounts/fireworks/models/gpt-oss-120b` and
+`accounts/fireworks/models/nemotron-3-ultra-nvfp4`. The
+[October 19 retirement announcement](https://docs.fireworks.ai/updates/changelog)
+explicitly ends their Serverless availability on **November 7, 2026**;
+their exact model cards also report Serverless unsupported. Dedicated and
+Reserved Throughput deployments are unaffected. Custom deployment fallback,
+other providers' same-name models, and the preferred global MiniMax M3 route
+remain unchanged; MiniMax M3's separate US-only retirement is not global.
+Removing these two registrations also removes their two required review rows,
+leaving 630 routes. Snapshot absence alone is not the removal criterion.
+
+No new static routes are admitted:
+
+- OpenCode's `frantic-ferret-free` raw entry names a Zen URL, not Go. Fresh
+  [Go](https://opencode.ai/inference/go/v1/models) and
+  [Zen](https://opencode.ai/inference/openai/v1/models) listings did not contain
+  the exact ID. This does not prove retirement; it does not authorize copying
+  Zen modalities, limits, or effort settings into Go's three protocols.
+- Fireworks Kimi K3.1 Pro is an existing route, not a new static addition.
+  Its verified context, tools and image support remain unchanged; output
+  default/ceiling and reasoning/effort remain unverified. Discovery metadata
+  does not override these reviewed unknowns.
+- The exact Ultra-fast Preview router
+  `accounts/fireworks/routers/deepseek-v4p1-flash-1017-ultrafast`
+  is documented in the
+  [Serverless modes guide](https://docs.fireworks.ai/serverless/serverless-modes)
+  and November 3 changelog. It remains discovery-only here: the raw context
+  disagrees with the base-model index, and router-specific output and reasoning
+  limits are not established. Do not change preferred/default routes.
+
+All other reviewed routes, cache policies, endpoint/protocol/region isolation,
+unknown values and provider defaults are preserved. Public catalog sampling
+does not certify account-specific access or a successful inference call.
+
+### Verification
+
+The exact builtin regeneration test passed once; four Fireworks regressions
+and the builtin snapshot consistency test passed. Fixed refresh/validate,
+the 630-entry coverage gate, strict complete-object comparison, all 10 frozen
+file hashes, `cargo fmt --all -- --check`, and `git diff --check` passed.
+`models_dev_adapter` passed all 11 tests and `context_budget` passed its one
+test. With `RUSTFLAGS="-D warnings"` and `HOLON_LIB_TEST_SHARD=all`,
+`cargo check --all-targets --locked` passed. Independent semantic review and
+the formatting-only follow-up found no unresolved confirmed P1/P2 findings.
+
+The full CI compile-group-c library run was **not all green**: 1,943 passed,
+two unmodified `http::tailscale_serve` IPv6 tests failed, and seven were
+ignored. This host has no IPv6 loopback address; a separate bind to `::1`
+reproduced errno 99 (`Cannot assign requested address`). The failure log is
+retained; no test was disabled and no host networking was changed. Remote CI
+must still verify the complete group.
+
+These commands used the installed Rust 1.99.1 only for this cycle; the default
+1.91.1 cannot compile the baseline's existing `atomic_try_update` use.
+Existing Cargo manifest diagnostics (`package.homepage` /
+`package.documentation` redundancy and unused `rpassword`) remain; the
+successful build is not a warning-free Cargo manifest claim.
+
 ## 2026-11-08 incremental review
 
 Baseline main is `08b4d452`; November 7 UTC sampling corresponds to the

@@ -1,12 +1,12 @@
 {
   "schema_version": 1,
-  "revision": "models-dev-6a3f0abfcc9a357d8f29230659697e4ba1a3793ebebb3d9838ecd4160e6f84a6",
+  "revision": "models-dev-06f904263b196dae1281b28f95963fa2fec04f0cba6d8205af13827746833412",
   "upstream": {
     "source": "models.dev",
-    "revision": "6a3f0abfcc9a357d8f29230659697e4ba1a3793ebebb3d9838ecd4160e6f84a6",
-    "fetched_at": "2026-11-07T20:54:21.435017921+00:00",
-    "content_sha256": "6a3f0abfcc9a357d8f29230659697e4ba1a3793ebebb3d9838ecd4160e6f84a6",
-    "adapter_version": "0.59.0 (08b4d452-dirty)"
+    "revision": "06f904263b196dae1281b28f95963fa2fec04f0cba6d8205af13827746833412",
+    "fetched_at": "2026-11-08T21:10:58.698951248+00:00",
+    "content_sha256": "06f904263b196dae1281b28f95963fa2fec04f0cba6d8205af13827746833412",
+    "adapter_version": "0.59.0 (4352b899e-dirty)"
   },
   "models": [
     {
@@ -2852,40 +2852,14 @@
       "source": "remote_discovered"
     },
     {
-      "model_ref": "fireworks/accounts/fireworks/models/gpt-oss-120b",
-      "display_name": "GPT OSS 120B",
-      "description": "Open-weight GPT model for self-hosted reasoning and instruction-following workloads",
-      "context_window_tokens": 131072,
-      "effective_context_window_percent": 95,
-      "auto_compact_token_limit": 124518,
-      "default_max_output_tokens": 32768,
-      "max_output_tokens_upper_limit": 32768,
-      "default_verbosity": null,
-      "tool_output_truncation_estimated_tokens": 2500,
-      "capabilities": {
-        "agent_turn": true,
-        "parallel_tool_calls": false,
-        "image_input": false,
-        "image_generation": false,
-        "supports_reasoning": true,
-        "interactive_exec": false
-      },
-      "reasoning_effort_options": [
-        "low",
-        "medium",
-        "high"
-      ],
-      "source": "remote_discovered"
-    },
-    {
-      "model_ref": "fireworks/accounts/fireworks/models/inkling",
-      "display_name": "Inkling",
-      "description": "Multimodal MoE reasoning model (975B total, 41B active) for text, image, and audio",
+      "model_ref": "fireworks/accounts/fireworks/models/kimi-k3",
+      "display_name": "Kimi K3",
+      "description": "Multimodal Kimi model with 1M context and toggleable max-effort thinking for long-horizon agent work",
       "context_window_tokens": 1048576,
       "effective_context_window_percent": 95,
       "auto_compact_token_limit": 996147,
-      "default_max_output_tokens": 1048576,
-      "max_output_tokens_upper_limit": 1048576,
+      "default_max_output_tokens": 131072,
+      "max_output_tokens_upper_limit": 131072,
       "default_verbosity": null,
       "tool_output_truncation_estimated_tokens": 2500,
       "capabilities": {
@@ -2896,12 +2870,18 @@
         "supports_reasoning": true,
         "interactive_exec": false
       },
+      "reasoning_effort_options": [
+        "low",
+        "medium",
+        "high",
+        "max"
+      ],
       "source": "remote_discovered"
     },
     {
-      "model_ref": "fireworks/accounts/fireworks/models/kimi-k3",
-      "display_name": "Kimi K3",
-      "description": "Multimodal Kimi model with 1M context and toggleable max-effort thinking for long-horizon agent work",
+      "model_ref": "fireworks/accounts/fireworks/models/kimi-k3p1-pro",
+      "display_name": "Kimi K3.1 Pro",
+      "description": "Multimodal Kimi model with 1M context and always-on reasoning for coding, 3D creation, financial research, and agentic work",
       "context_window_tokens": 1048576,
       "effective_context_window_percent": 95,
       "auto_compact_token_limit": 996147,
@@ -3007,48 +2987,6 @@
       "source": "remote_discovered"
     },
     {
-      "model_ref": "fireworks/accounts/fireworks/models/nemotron-3-ultra-nvfp4",
-      "display_name": "Nemotron 3 Ultra 550B A55B",
-      "description": "Largest Nemotron 3 model for maximum open-weight reasoning and agent accuracy",
-      "context_window_tokens": 262144,
-      "effective_context_window_percent": 95,
-      "auto_compact_token_limit": 249036,
-      "default_max_output_tokens": 128000,
-      "max_output_tokens_upper_limit": 128000,
-      "default_verbosity": null,
-      "tool_output_truncation_estimated_tokens": 2500,
-      "capabilities": {
-        "agent_turn": true,
-        "parallel_tool_calls": false,
-        "image_input": false,
-        "image_generation": false,
-        "supports_reasoning": true,
-        "interactive_exec": false
-      },
-      "source": "remote_discovered"
-    },
-    {
-      "model_ref": "fireworks/accounts/fireworks/models/nemotron-lightning-3p5-30b-a3b",
-      "display_name": "Nemotron 3.5 Lightning 30B A3B",
-      "description": "Fast NVIDIA Nemotron MoE for reliable agentic tasks across enterprise workloads",
-      "context_window_tokens": 262144,
-      "effective_context_window_percent": 95,
-      "auto_compact_token_limit": 249036,
-      "default_max_output_tokens": 262144,
-      "max_output_tokens_upper_limit": 262144,
-      "default_verbosity": null,
-      "tool_output_truncation_estimated_tokens": 2500,
-      "capabilities": {
-        "agent_turn": true,
-        "parallel_tool_calls": false,
-        "image_input": false,
-        "image_generation": false,
-        "supports_reasoning": true,
-        "interactive_exec": false
-      },
-      "source": "remote_discovered"
-    },
-    {
       "model_ref": "fireworks/accounts/fireworks/models/qwen3p8-2p4t-a95b",
       "display_name": "Qwen3.8 2.4T A95B",
       "description": "Open-weight sparse MoE (2.4T total, 95B active), the open-weight twin of Qwen3.8 Max for coding, research, complex reasoning, and agentic workflows",
@@ -3131,6 +3069,32 @@
     {
       "model_ref": "fireworks/accounts/fireworks/routers/deepseek-v4p1-flash-1017-spot",
       "display_name": "DeepSeek V4.1 Flash 1017 Spot",
+      "description": "October 17 update of DeepSeek V4.1 Flash with improved reasoning, coding, agentic tasks, and visual understanding",
+      "context_window_tokens": 1000000,
+      "effective_context_window_percent": 95,
+      "auto_compact_token_limit": 950000,
+      "default_max_output_tokens": 384000,
+      "max_output_tokens_upper_limit": 384000,
+      "default_verbosity": null,
+      "tool_output_truncation_estimated_tokens": 2500,
+      "capabilities": {
+        "agent_turn": true,
+        "parallel_tool_calls": false,
+        "image_input": true,
+        "image_generation": false,
+        "supports_reasoning": true,
+        "interactive_exec": false
+      },
+      "reasoning_effort_options": [
+        "low",
+        "high",
+        "max"
+      ],
+      "source": "remote_discovered"
+    },
+    {
+      "model_ref": "fireworks/accounts/fireworks/routers/deepseek-v4p1-flash-1017-ultrafast",
+      "display_name": "DeepSeek V4.1 Flash 1017 Ultra-fast",
       "description": "October 17 update of DeepSeek V4.1 Flash with improved reasoning, coding, agentic tasks, and visual understanding",
       "context_window_tokens": 1000000,
       "effective_context_window_percent": 95,
@@ -12482,8 +12446,8 @@
       "context_window_tokens": 1048576,
       "effective_context_window_percent": 95,
       "auto_compact_token_limit": 996147,
-      "default_max_output_tokens": 393216,
-      "max_output_tokens_upper_limit": 393216,
+      "default_max_output_tokens": 943718,
+      "max_output_tokens_upper_limit": 943718,
       "default_verbosity": null,
       "tool_output_truncation_estimated_tokens": 2500,
       "capabilities": {
@@ -13425,87 +13389,6 @@
       "source": "remote_discovered"
     },
     {
-      "model_ref": "openrouter/inception/mercury-2",
-      "display_name": "Mercury 2",
-      "description": "Reasoning model for deliberate analysis, multi-step problem solving, and tool use",
-      "context_window_tokens": 128000,
-      "effective_context_window_percent": 95,
-      "auto_compact_token_limit": 121600,
-      "default_max_output_tokens": 50000,
-      "max_output_tokens_upper_limit": 50000,
-      "default_verbosity": null,
-      "tool_output_truncation_estimated_tokens": 2500,
-      "capabilities": {
-        "agent_turn": true,
-        "parallel_tool_calls": false,
-        "image_input": false,
-        "image_generation": false,
-        "supports_reasoning": true,
-        "interactive_exec": false
-      },
-      "reasoning_effort_options": [
-        "none",
-        "low",
-        "medium",
-        "high"
-      ],
-      "source": "remote_discovered"
-    },
-    {
-      "model_ref": "openrouter/inception/mercury-2.5",
-      "display_name": "Mercury 2.5",
-      "description": "Reasoning model for deliberate analysis, multi-step problem solving, and tool use",
-      "context_window_tokens": 260000,
-      "effective_context_window_percent": 95,
-      "auto_compact_token_limit": 247000,
-      "default_max_output_tokens": 65536,
-      "max_output_tokens_upper_limit": 65536,
-      "default_verbosity": null,
-      "tool_output_truncation_estimated_tokens": 2500,
-      "capabilities": {
-        "agent_turn": true,
-        "parallel_tool_calls": false,
-        "image_input": false,
-        "image_generation": false,
-        "supports_reasoning": true,
-        "interactive_exec": false
-      },
-      "reasoning_effort_options": [
-        "none",
-        "low",
-        "medium",
-        "high"
-      ],
-      "source": "remote_discovered"
-    },
-    {
-      "model_ref": "openrouter/inception/mercury-3",
-      "display_name": "Mercury 3",
-      "description": "Reasoning model for deliberate analysis, multi-step problem solving, and tool use",
-      "context_window_tokens": 1000000,
-      "effective_context_window_percent": 95,
-      "auto_compact_token_limit": 950000,
-      "default_max_output_tokens": 131072,
-      "max_output_tokens_upper_limit": 131072,
-      "default_verbosity": null,
-      "tool_output_truncation_estimated_tokens": 2500,
-      "capabilities": {
-        "agent_turn": true,
-        "parallel_tool_calls": false,
-        "image_input": false,
-        "image_generation": false,
-        "supports_reasoning": true,
-        "interactive_exec": false
-      },
-      "reasoning_effort_options": [
-        "none",
-        "low",
-        "medium",
-        "high"
-      ],
-      "source": "remote_discovered"
-    },
-    {
       "model_ref": "openrouter/inclusionai/ling-3.0-flash",
       "display_name": "Ling 3.0 Flash",
       "description": "Efficient model for low-latency assistance, extraction, and routine automation",
@@ -13806,8 +13689,8 @@
       "context_window_tokens": 131072,
       "effective_context_window_percent": 95,
       "auto_compact_token_limit": 124518,
-      "default_max_output_tokens": 117964,
-      "max_output_tokens_upper_limit": 117964,
+      "default_max_output_tokens": 16384,
+      "max_output_tokens_upper_limit": 16384,
       "default_verbosity": null,
       "tool_output_truncation_estimated_tokens": 2500,
       "capabilities": {
@@ -13848,8 +13731,8 @@
       "context_window_tokens": 131072,
       "effective_context_window_percent": 95,
       "auto_compact_token_limit": 124518,
-      "default_max_output_tokens": 72000,
-      "max_output_tokens_upper_limit": 72000,
+      "default_max_output_tokens": 117964,
+      "max_output_tokens_upper_limit": 117964,
       "default_verbosity": null,
       "tool_output_truncation_estimated_tokens": 2500,
       "capabilities": {
@@ -17677,8 +17560,8 @@
       "context_window_tokens": 262144,
       "effective_context_window_percent": 95,
       "auto_compact_token_limit": 249036,
-      "default_max_output_tokens": 65536,
-      "max_output_tokens_upper_limit": 65536,
+      "default_max_output_tokens": 81920,
+      "max_output_tokens_upper_limit": 81920,
       "default_verbosity": null,
       "tool_output_truncation_estimated_tokens": 2500,
       "capabilities": {
@@ -19435,8 +19318,8 @@
       "context_window_tokens": 1048576,
       "effective_context_window_percent": 95,
       "auto_compact_token_limit": 996147,
-      "default_max_output_tokens": 943717,
-      "max_output_tokens_upper_limit": 943717,
+      "default_max_output_tokens": 131072,
+      "max_output_tokens_upper_limit": 131072,
       "default_verbosity": null,
       "tool_output_truncation_estimated_tokens": 2500,
       "capabilities": {

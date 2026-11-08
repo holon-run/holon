@@ -54,7 +54,7 @@
 
 ## Route metadata review (offline)
 
-Routes: 632; unknown context: 225; unknown output ceiling: 261.
+Routes: 630; unknown context: 225; unknown output ceiling: 259.
 Runtime output policy is not output capacity. Existing builtin fields are not automatically overwritten.
 
 | Route | Upstream source | Fields requiring review |
@@ -86,8 +86,7 @@ Runtime output policy is not output capacity. Existing builtin fields are not au
 | `deepseek@responses/deepseek-flash` | `deepseek/deepseek-flash` | context_window_tokens, max_output_tokens_upper_limit |
 | `deepseek@responses/deepseek-v4-flash` | `deepseek/deepseek-v4-flash` | context_window_tokens, max_output_tokens_upper_limit |
 | `deepseek@responses/deepseek-v4-pro` | `deepseek/deepseek-v4-pro` | context_window_tokens, max_output_tokens_upper_limit |
-| `fireworks@default/accounts/fireworks/models/gpt-oss-120b` | `fireworks-ai/accounts/fireworks/models/gpt-oss-120b` | max_output_tokens_upper_limit |
-| `fireworks@default/accounts/fireworks/models/nemotron-3-ultra-nvfp4` | `fireworks-ai/accounts/fireworks/models/nemotron-3-ultra-nvfp4` | max_output_tokens_upper_limit |
+| `fireworks@default/accounts/fireworks/models/kimi-k3p1-pro` | `fireworks-ai/accounts/fireworks/models/kimi-k3p1-pro` | max_output_tokens_upper_limit |
 | `huggingface@default/openai/gpt-oss-120b` | `huggingface/openai/gpt-oss-120b` | max_output_tokens_upper_limit |
 | `minimax@default/MiniMax-M2.5` | `minimax/MiniMax-M2.5` | max_output_tokens_upper_limit |
 | `minimax@default/MiniMax-M2.5-highspeed` | `minimax/MiniMax-M2.5-highspeed` | max_output_tokens_upper_limit |
@@ -155,10 +154,8 @@ Runtime output policy is not output capacity. Existing builtin fields are not au
 | `fireworks@default/accounts/fireworks/models/deepseek-v4-flash` | Known | Unknown | fireworks@default/accounts/fireworks/models/deepseek-v4-flash: Missing capacity is retained as unknown. No exact endpoint upstream capacity evidence is associated; generic API, other region, plan, or protocol limits are not borrowed. Existing known fields and local output policy are preserved, not newly vendor-verified. |
 | `fireworks@default/accounts/fireworks/models/deepseek-v4-pro` | Known | Unknown | fireworks@default/accounts/fireworks/models/deepseek-v4-pro: Missing capacity is retained as unknown. No exact endpoint upstream capacity evidence is associated; generic API, other region, plan, or protocol limits are not borrowed. Existing known fields and local output policy are preserved, not newly vendor-verified. |
 | `fireworks@default/accounts/fireworks/models/glm-5p1` | Known | Unknown | fireworks@default/accounts/fireworks/models/glm-5p1: Missing capacity is retained as unknown. No exact endpoint upstream capacity evidence is associated; generic API, other region, plan, or protocol limits are not borrowed. Existing known fields and local output policy are preserved, not newly vendor-verified. |
-| `fireworks@default/accounts/fireworks/models/gpt-oss-120b` | Known | Unknown | fireworks@default/accounts/fireworks/models/gpt-oss-120b: Missing capacity is retained as unknown. Exact upstream candidate(s) fireworks-ai/accounts/fireworks/models/gpt-oss-120b require endpoint-specific review; no automatic backfill. Existing known fields and local output policy are preserved, not newly vendor-verified. |
 | `fireworks@default/accounts/fireworks/models/kimi-k3p1-pro` | Known | Unknown | Exact Fireworks serverless Kimi K3.1 Pro admission, 1048576 context and vision are evidenced independently of on-demand deployment. Output ceiling/default and effort remain unconfirmed; no other provider's Kimi limits or thinking controls are borrowed. |
 | `fireworks@default/accounts/fireworks/models/minimax-m2p7` | Known | Unknown | fireworks@default/accounts/fireworks/models/minimax-m2p7: Missing capacity is retained as unknown. No exact endpoint upstream capacity evidence is associated; generic API, other region, plan, or protocol limits are not borrowed. Existing known fields and local output policy are preserved, not newly vendor-verified. |
-| `fireworks@default/accounts/fireworks/models/nemotron-3-ultra-nvfp4` | Known | Unknown | fireworks@default/accounts/fireworks/models/nemotron-3-ultra-nvfp4: Missing capacity is retained as unknown. Exact upstream candidate(s) fireworks-ai/accounts/fireworks/models/nemotron-3-ultra-nvfp4 require endpoint-specific review; no automatic backfill. Existing known fields and local output policy are preserved, not newly vendor-verified. |
 | `fireworks@default/accounts/fireworks/models/qwen3p6-plus` | Unknown | Unknown | fireworks@default/accounts/fireworks/models/qwen3p6-plus: Missing capacity is retained as unknown. No exact endpoint upstream capacity evidence is associated; generic API, other region, plan, or protocol limits are not borrowed. Existing known fields and local output policy are preserved, not newly vendor-verified. |
 | `fireworks@default/accounts/fireworks/models/qwen3p7-plus` | Known | Unknown | fireworks@default/accounts/fireworks/models/qwen3p7-plus: Missing capacity is retained as unknown. No exact endpoint upstream capacity evidence is associated; generic API, other region, plan, or protocol limits are not borrowed. Existing known fields and local output policy are preserved, not newly vendor-verified. |
 | `huggingface@default/openai/gpt-oss-120b` | Known | Unknown | huggingface@default/openai/gpt-oss-120b: Missing capacity is retained as unknown. Exact upstream candidate(s) huggingface/openai/gpt-oss-120b require endpoint-specific review; no automatic backfill. Existing known fields and local output policy are preserved, not newly vendor-verified. |

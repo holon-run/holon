@@ -2298,27 +2298,6 @@
       "source": "conservative_builtin"
     },
     {
-      "model_ref": "fireworks/accounts/fireworks/models/gpt-oss-120b",
-      "display_name": "GPT-OSS 120B",
-      "description": "Holon conservative built-in metadata for the Fireworks serverless accounts/fireworks/models/gpt-oss-120b model.",
-      "context_window_tokens": 131072,
-      "effective_context_window_percent": 95,
-      "auto_compact_token_limit": null,
-      "default_max_output_tokens": null,
-      "max_output_tokens_upper_limit": null,
-      "default_verbosity": null,
-      "tool_output_truncation_estimated_tokens": 2500,
-      "capabilities": {
-        "agent_turn": true,
-        "parallel_tool_calls": false,
-        "image_input": false,
-        "image_generation": false,
-        "supports_reasoning": true,
-        "interactive_exec": false
-      },
-      "source": "conservative_builtin"
-    },
-    {
       "model_ref": "fireworks/accounts/fireworks/models/kimi-k3p1-pro",
       "display_name": "Kimi K3.1 Pro",
       "description": "Holon conservative built-in metadata for the Fireworks serverless accounts/fireworks/models/kimi-k3p1-pro model.",
@@ -2375,27 +2354,6 @@
         "agent_turn": true,
         "parallel_tool_calls": false,
         "image_input": true,
-        "image_generation": false,
-        "supports_reasoning": true,
-        "interactive_exec": false
-      },
-      "source": "conservative_builtin"
-    },
-    {
-      "model_ref": "fireworks/accounts/fireworks/models/nemotron-3-ultra-nvfp4",
-      "display_name": "Nemotron 3 Ultra NVFP4",
-      "description": "Holon conservative built-in metadata for the Fireworks serverless accounts/fireworks/models/nemotron-3-ultra-nvfp4 model.",
-      "context_window_tokens": 262144,
-      "effective_context_window_percent": 95,
-      "auto_compact_token_limit": null,
-      "default_max_output_tokens": null,
-      "max_output_tokens_upper_limit": null,
-      "default_verbosity": null,
-      "tool_output_truncation_estimated_tokens": 2500,
-      "capabilities": {
-        "agent_turn": true,
-        "parallel_tool_calls": false,
-        "image_input": false,
         "image_generation": false,
         "supports_reasoning": true,
         "interactive_exec": false
@@ -9419,16 +9377,6 @@
       }
     },
     {
-      "route_ref": "fireworks@default/accounts/fireworks/models/gpt-oss-120b",
-      "policy": {
-        "display_name": null,
-        "description": null,
-        "effective_context_window_percent": null,
-        "capabilities": {},
-        "reasoning_effort_options": null
-      }
-    },
-    {
       "route_ref": "fireworks@default/accounts/fireworks/models/kimi-k3p1-pro",
       "policy": {
         "display_name": null,
@@ -9450,16 +9398,6 @@
     },
     {
       "route_ref": "fireworks@default/accounts/fireworks/models/minimax-m3",
-      "policy": {
-        "display_name": null,
-        "description": null,
-        "effective_context_window_percent": null,
-        "capabilities": {},
-        "reasoning_effort_options": null
-      }
-    },
-    {
-      "route_ref": "fireworks@default/accounts/fireworks/models/nemotron-3-ultra-nvfp4",
       "policy": {
         "display_name": null,
         "description": null,
@@ -16041,10 +15979,6 @@
       "route_ref": "fireworks@default/accounts/fireworks/models/glm-5p1"
     },
     {
-      "model_ref": "fireworks/accounts/fireworks/models/gpt-oss-120b",
-      "route_ref": "fireworks@default/accounts/fireworks/models/gpt-oss-120b"
-    },
-    {
       "model_ref": "fireworks/accounts/fireworks/models/kimi-k3p1-pro",
       "route_ref": "fireworks@default/accounts/fireworks/models/kimi-k3p1-pro"
     },
@@ -16055,10 +15989,6 @@
     {
       "model_ref": "fireworks/accounts/fireworks/models/minimax-m3",
       "route_ref": "fireworks@default/accounts/fireworks/models/minimax-m3"
-    },
-    {
-      "model_ref": "fireworks/accounts/fireworks/models/nemotron-3-ultra-nvfp4",
-      "route_ref": "fireworks@default/accounts/fireworks/models/nemotron-3-ultra-nvfp4"
     },
     {
       "model_ref": "fireworks/accounts/fireworks/models/qwen3p6-plus",

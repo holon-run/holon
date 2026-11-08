@@ -535,24 +535,12 @@ pub(super) fn early_entries() -> Vec<BuiltInModelMetadata> {
             true,
             false,
         ),
-        fireworks_model(
-            "accounts/fireworks/models/gpt-oss-120b",
-            "GPT-OSS 120B",
-            Some(131_072),
-            true,
-            false,
-        ),
+        // gpt-oss-120b and nemotron-3-ultra-nvfp4 public serverless retired on 2026-11-07;
+        // dedicated deployments fall back to UnknownFallback metadata.
         fireworks_model(
             "accounts/fireworks/models/minimax-m2p7",
             "MiniMax M2.7",
             Some(196_608),
-            true,
-            false,
-        ),
-        fireworks_model(
-            "accounts/fireworks/models/nemotron-3-ultra-nvfp4",
-            "Nemotron 3 Ultra NVFP4",
-            Some(262_144),
             true,
             false,
         ),
@@ -1123,12 +1111,29 @@ mod tests {
                     .as_string(),
                 "fireworks@default/accounts/fireworks/models/minimax-m3"
             );
-            for model in ["kimi-k2p6", "kimi-k2p7-code", "glm-5p2"] {
+            for model in [
+                "kimi-k2p6",
+                "kimi-k2p7-code",
+                "glm-5p2",
+                "gpt-oss-120b",
+                "nemotron-3-ultra-nvfp4",
+            ] {
                 let route = ModelRouteRef::parse(&format!(
                     "fireworks@default/accounts/fireworks/models/{model}"
                 ))
                 .unwrap();
                 assert!(catalog.get_route(&route).is_none(), "{}", route.as_string());
+                assert!(
+                    catalog
+                        .get(
+                            &ModelRef::parse(&format!(
+                                "fireworks/accounts/fireworks/models/{model}"
+                            ))
+                            .unwrap()
+                        )
+                        .is_none(),
+                    "{model} must not retain public serverless metadata"
+                );
             }
             for route in [
                 "fireworks@default/accounts/fireworks/models/minimax-m3",
@@ -1200,10 +1205,7 @@ mod tests {
         assert!(model.capabilities.supports_reasoning);
         assert!(model.reasoning_effort_options.is_empty());
 
-        for id in [
-            "accounts/fireworks/models/gpt-oss-120b",
-            "accounts/fireworks/models/minimax-m2p7",
-        ] {
+        for id in ["accounts/fireworks/models/minimax-m2p7"] {
             let other = early_entries()
                 .into_iter()
                 .find(|model| model.model_ref == ModelRef::new(provider_id("fireworks"), id))

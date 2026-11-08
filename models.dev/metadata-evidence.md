@@ -5,6 +5,64 @@ unchanged catalog facts are preserved, not newly certified as vendor hard
 limits. An upstream candidate is evidence to review, not permission to change
 an endpoint, region, subscription entitlement, or runtime output policy.
 
+## Incremental review: 2026-11-09
+
+The fixed models.dev payload is
+`06f904263b196dae1281b28f95963fa2fec04f0cba6d8205af13827746833412`,
+sampled November 8 at 20:35:16 UTC for the November 9 Beijing cycle.
+The [endpoint audit](endpoint-review.md#2026-11-09-incremental-review)
+records the two affirmative Fireworks Serverless retirements and all
+30 special endpoints.
+
+The independently sampled
+[OpenRouter listing](https://openrouter.ai/api/v1/models) agrees with these
+five discovery output projections; both imported output fields change, without
+changing reviewed static defaults or certifying a server-side request default:
+
+| OpenRouter ID | Previous | Current |
+| --- | ---: | ---: |
+| `deepseek/deepseek-v4.1-flash-1017` | 393216 | 943718 |
+| `meta-llama/llama-3.1-8b-instruct` | 117964 | 16384 |
+| `meta-llama/llama-3.2-3b-instruct` | 72000 | 117964 |
+| `qwen/qwen3.6-27b` | 65536 | 81920 |
+| `z-ai/glm-5.3-flash` | 943717 | 131072 |
+
+Three Mercury records are absent from both listings. Four Fireworks discovery
+records are absent from models.dev and appear in the official November 7
+Serverless retirement table: GPT OSS 120B, Inkling, Nemotron 3 Ultra and
+Nemotron 3.5 Lightning. Only the first and third had static public registrations.
+Missing discovery records do not themselves revoke static routes.
+
+The two new Fireworks artifact records remain `remote_discovered`:
+
+- [Kimi K3.1 Pro](https://fireworks.ai/models/fireworks/kimi-k3p1-pro):
+  the exact card/index corroborates public Serverless, context 1048576,
+  tools and image. It does not substantiate the raw output 131072 or the
+  reasoning/toggle/effort claims for this exact model. The already-reviewed
+  static route keeps unknown output default/ceiling and unverified reasoning.
+  The runtime 8192 fallback is not a provider default.
+- [Ultra-fast Preview](https://docs.fireworks.ai/serverless/serverless-modes):
+  the exact router ID and Chat API endpoint are documented. Raw context
+  1000000 differs from the
+  [base-model card/index](https://fireworks.ai/models/deepseek-ai/deepseek-v4p1-flash-1017)
+  value 1048576; the router guide gives no independent capacity. Raw output
+  384000 and a request default are not established. Do not copy those fields
+  or series-level reasoning rules into a static router contract.
+
+Six raw Fireworks records only drop `budget_tokens` with minimum 1024:
+Ember 1, Kimi K3, and the `kimi-fast-latest`, `kimi-k3-fast`, `kimi-k3-spot`,
+`kimi-latest` routers. Their other complete raw fields are unchanged.
+Generic Chat schema budget support is not exact-model evidence, so it does not
+justify restoring these options. The Kimi K3 API's Low/High/Max semantics
+also do not imply four independent native tiers merely because medium is
+accepted and promoted to high. Existing static effort/defaults are unchanged.
+
+OpenCode's Frantic entry is Zen-only raw evidence, not Go protocol admission.
+The two independently fetched Zen envelopes differ in all 81 `created`
+timestamps but otherwise match; neither contains the exact candidate ID.
+All unrelated generated objects and the remaining 630 reviewed effective
+facts, raw inputs and status fields are protected by complete-object comparison.
+
 ## Incremental review: 2026-11-08
 
 The fixed models.dev payload is
