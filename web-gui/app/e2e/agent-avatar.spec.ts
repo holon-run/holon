@@ -1,6 +1,51 @@
 import { expect, test } from "@playwright/test";
 import { sessionFor } from "./test-session";
 
+test("negotiated avatar resources use authenticated bytes without blocking the roster", async ({ page, context, request }, info) => {
+  const session = sessionFor(info, "avatar-resource");
+  await context.addCookies([{ name: "holon_e2e_session", value: session, domain: "127.0.0.1", path: "/" }]);
+  await request.post(`/__e2e__/configure?session=${encodeURIComponent(session)}`, {
+    data: { visibleAgentIds: ["bootstrap-agent", "holon-product", "holon-integrations"] },
+  });
+  await page.route("**/api/handshake", async (route) => {
+    const response = await route.fetch();
+    const body = await response.json();
+    body.capabilities.push("agent_avatar_v1");
+    await route.fulfill({ response, json: body });
+  });
+  const bytes = await page.screenshot({ clip: { x: 0, y: 0, width: 1, height: 1 } });
+  const imageRequests: Array<{ url: string; cookie: string | undefined }> = [];
+  let release!: () => void;
+  const pending = new Promise<void>((resolve) => { release = resolve; });
+  await page.route("**/api/agents/*/avatar?*", async (route) => {
+    imageRequests.push({ url: route.request().url(), cookie: (await route.request().allHeaders()).cookie });
+    await pending;
+    await route.fulfill({ status: 200, contentType: "image/png", body: bytes });
+  });
+  await page.goto("/");
+  const cardAvatar = page.locator(".agent-card .agent-avatar").first();
+  const sidebarAvatar = page.locator(".sidebar .agent-avatar").first();
+  await expect(page.locator(".agent-card")).toHaveCount(3);
+  await expect(cardAvatar).toBeVisible();
+  await expect(cardAvatar).toHaveAttribute("src", /^data:image\/svg\+xml/);
+  await expect.poll(() => imageRequests.length).toBe(3);
+  expect(new Set(imageRequests.map(({ url }) => url)).size).toBe(3);
+  for (const { url, cookie } of imageRequests) {
+    const params = new URL(url).searchParams;
+    expect(params.get("version")).toBe("light-mech-1-vivid-2");
+    expect(params.get("format")).toBe("png");
+    expect(params.get("size")).toBe("128");
+    expect(params.has("token")).toBe(false);
+    expect(cookie).toContain(`holon_e2e_session=${session}`);
+  }
+  release();
+  await expect(cardAvatar).toHaveAttribute("src", /^blob:/);
+  await expect(sidebarAvatar).toHaveAttribute("src", (await cardAvatar.getAttribute("src"))!);
+  await expect(cardAvatar).toHaveJSProperty("naturalWidth", 1);
+  await expect(cardAvatar).toHaveAttribute("alt", "");
+  expect(imageRequests).toHaveLength(3);
+});
+
 test("ID avatars match across roster/navigation and survive reload without image requests", async ({ page, context, request }, info) => {
   const session = sessionFor(info, "avatar");
   await context.addCookies([{ name: "holon_e2e_session", value: session, domain: "127.0.0.1", path: "/" }]);

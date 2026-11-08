@@ -466,6 +466,7 @@ fn handshake_capabilities(state: &AppState) -> Vec<&'static str> {
         "agents.state",
         "agents.events",
         "agents.control",
+        "agent_avatar_v1",
         "auth.native-session.v1",
         "control.prompt-idempotency.v1",
         "control.prompt-attachments.v1",

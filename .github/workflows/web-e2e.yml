@@ -55,6 +55,10 @@ jobs:
           npm ci
           npm run build
 
+      - name: Build API SDK
+        working-directory: .
+        run: make api-sdk
+
       - name: Install Chromium
         run: npx playwright install --with-deps chromium
 
@@ -112,6 +116,10 @@ jobs:
         run: |
           npm ci
           npm run build
+
+      - name: Build API SDK
+        working-directory: .
+        run: make api-sdk
 
       - name: Install Chromium
         run: npx playwright install --with-deps chromium

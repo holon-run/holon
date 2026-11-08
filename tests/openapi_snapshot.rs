@@ -10,6 +10,33 @@
 const SNAPSHOT_PATH: &str = "docs/website/reference/openapi.json";
 
 #[test]
+fn avatar_resource_is_binary_conditional_and_explicitly_versioned() {
+    let api = holon::openapi::generate_openapi_json();
+    let operation = &api["paths"]["/api/agents/{agent_id}/avatar"]["get"];
+    assert_eq!(operation["operationId"], "agentAvatar");
+    for content_type in ["image/png", "image/svg+xml"] {
+        assert_eq!(
+            operation["responses"]["200"]["content"][content_type]["schema"]["format"],
+            "binary"
+        );
+    }
+    assert!(operation["responses"]["304"].get("content").is_none());
+    assert!(operation["responses"]["400"]["content"]["application/json"].is_object());
+    assert!(operation["responses"]["503"]["headers"]["Retry-After"].is_object());
+    let parameters = operation["parameters"].as_array().unwrap();
+    let version = parameters
+        .iter()
+        .find(|parameter| parameter["name"] == "version")
+        .unwrap();
+    assert_eq!(version["schema"]["default"], "light-mech-1-vivid-2");
+    let expression = parameters
+        .iter()
+        .find(|parameter| parameter["name"] == "expression")
+        .unwrap();
+    assert_eq!(expression["schema"]["enum"].as_array().unwrap().len(), 5);
+}
+
+#[test]
 fn scheduler_repair_inspection_exposes_revision_faults_and_retained_sources() {
     let openapi = holon::openapi::generate_openapi_json();
     let schemas = &openapi["components"]["schemas"];

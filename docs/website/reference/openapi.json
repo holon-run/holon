@@ -21544,6 +21544,199 @@
         "x-holon-openapi-source": "aide::axum::ApiRouter::api_route_docs"
       }
     },
+    "/api/agents/{agent_id}/avatar": {
+      "get": {
+        "description": "Read deterministic built-in artwork without loading the Agent. Session and current target access are checked before cached or conditional responses. See RFC agent-avatar-resources.",
+        "operationId": "agentAvatar",
+        "parameters": [
+          {
+            "description": "Agent id.",
+            "in": "path",
+            "name": "agent_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Omission permanently selects this exact version, not latest. Unknown or repeated parameters return 400.",
+            "in": "query",
+            "name": "version",
+            "schema": {
+              "default": "light-mech-1-vivid-2",
+              "enum": [
+                "light-mech-1-vivid-2"
+              ],
+              "type": "string"
+            }
+          },
+          {
+            "description": "Explicit artwork only; the server does not read runtime status.",
+            "in": "query",
+            "name": "expression",
+            "schema": {
+              "default": "neutral",
+              "enum": [
+                "neutral",
+                "focused",
+                "questioning",
+                "waiting",
+                "sleeping"
+              ],
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "format",
+            "schema": {
+              "default": "png",
+              "enum": [
+                "png",
+                "svg"
+              ],
+              "type": "string"
+            }
+          },
+          {
+            "description": "PNG pixel dimensions. SVG uses viewBox 0 0 100 100 and rejects size.",
+            "in": "query",
+            "name": "size",
+            "schema": {
+              "default": 128,
+              "enum": [
+                32,
+                64,
+                128,
+                256,
+                512
+              ],
+              "type": "integer"
+            }
+          },
+          {
+            "description": "Compare the actual image byte ETag, after authenticating and checking the target.",
+            "in": "header",
+            "name": "If-None-Match",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "image/png": {
+                "schema": {
+                  "format": "binary",
+                  "type": "string"
+                }
+              },
+              "image/svg+xml": {
+                "schema": {
+                  "format": "binary",
+                  "type": "string"
+                }
+              }
+            },
+            "description": "Built-in SVG or PNG, at most 2 MiB. No user strings or external resources.",
+            "headers": {
+              "Cache-Control": {
+                "schema": {
+                  "const": "private, no-cache",
+                  "type": "string"
+                }
+              },
+              "ETag": {
+                "description": "Strong SHA-256 ETag of actual bytes.",
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "X-Content-Type-Options": {
+                "schema": {
+                  "const": "nosniff",
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "304": {
+            "description": "Not modified. No response body; authorization and target access were rechecked.",
+            "headers": {
+              "Cache-Control": {
+                "schema": {
+                  "const": "private, no-cache",
+                  "type": "string"
+                }
+              },
+              "ETag": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Unknown, repeated, or invalid semantic parameter, or invalid Agent ID."
+          },
+          "4XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Existing session and Agent access errors; never image content."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Bounded image generation capacity exhausted. Retry later.",
+            "headers": {
+              "Retry-After": {
+                "schema": {
+                  "const": "1",
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "5XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Server error JSON response."
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ],
+        "summary": "Versioned agent avatar",
+        "tags": [
+          "agents"
+        ]
+      }
+    },
     "/api/agents/{agent_id}/brief-read-cursor": {
       "post": {
         "description": "Advance one Agent's Brief read cursor monotonically. Requested cursors beyond the committed event head are clamped to that head.",

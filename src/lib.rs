@@ -18,6 +18,7 @@ pub mod agent_template;
 pub mod agents_md;
 mod auth;
 pub mod authentication;
+pub mod avatar;
 mod callbacks;
 pub(crate) mod github;
 pub(crate) mod github_archive;

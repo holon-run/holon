@@ -59,6 +59,7 @@ enum ResponseKind {
     Json,
     EventStream,
     OpenMetrics,
+    Avatar,
 }
 
 #[derive(Clone, Copy)]
@@ -81,6 +82,10 @@ enum MetadataSource {
 // schema routes stay on the conservative manual baseline until their DTO
 // contracts are tightened in follow-up work.
 const ROUTES: &[RouteSpec] = &[
+    RouteSpec {
+        response_kind: ResponseKind::Avatar,
+        ..route("get", "/agents/{agent_id}/avatar", "agentAvatar", "agents", "Versioned agent avatar", "Read deterministic built-in artwork without loading the Agent. Session and current target access are checked before cached or conditional responses. See RFC agent-avatar-resources.", None, AuthKind::RemoteAccess)
+    },
     route("get", "/", "root", "discovery", "Root discovery", "Return the default agent id.", None, AuthKind::RemoteAccess),
     route_with_response("get", "/handshake", "handshake", "discovery", "Protocol handshake", "Return auth mode, protocol version, capabilities, and runtime hints.", None, "HandshakeResponse", AuthKind::RemoteAccess),
     route("get", "/models", "models", "discovery", "List available models", "Return model catalog entries and runtime availability.", None, AuthKind::RemoteAccess),
@@ -636,6 +641,15 @@ fn operation(spec: &RouteSpec) -> Value {
             }
         }));
     }
+    if spec.operation_id == "agentAvatar" {
+        parameters.extend([
+            json!({"name":"version","in":"query","schema":{"type":"string","enum":["light-mech-1-vivid-2"],"default":"light-mech-1-vivid-2"},"description":"Omission permanently selects this exact version, not latest. Unknown or repeated parameters return 400."}),
+            json!({"name":"expression","in":"query","schema":{"type":"string","enum":["neutral","focused","questioning","waiting","sleeping"],"default":"neutral"},"description":"Explicit artwork only; the server does not read runtime status."}),
+            json!({"name":"format","in":"query","schema":{"type":"string","enum":["png","svg"],"default":"png"}}),
+            json!({"name":"size","in":"query","schema":{"type":"integer","enum":[32,64,128,256,512],"default":128},"description":"PNG pixel dimensions. SVG uses viewBox 0 0 100 100 and rejects size."}),
+            json!({"name":"If-None-Match","in":"header","schema":{"type":"string"},"description":"Compare the actual image byte ETag, after authenticating and checking the target."}),
+        ]);
+    }
     let mut op = json!({
         "operationId": spec.operation_id,
         "tags": [spec.tag],
@@ -733,6 +747,44 @@ fn path_integer_param(name: &str, description: &str) -> Value {
 
 fn responses(kind: ResponseKind, response_schema: Option<&str>) -> Value {
     match kind {
+        ResponseKind::Avatar => json!({
+            "200": {
+                "description": "Built-in SVG or PNG, at most 2 MiB. No user strings or external resources.",
+                "headers": {
+                    "ETag": {"schema":{"type":"string"},"description":"Strong SHA-256 ETag of actual bytes."},
+                    "Cache-Control": {"schema":{"type":"string","const":"private, no-cache"}},
+                    "X-Content-Type-Options": {"schema":{"type":"string","const":"nosniff"}}
+                },
+                "content": {
+                    "image/png": {"schema":{"type":"string","format":"binary"}},
+                    "image/svg+xml": {"schema":{"type":"string","format":"binary"}}
+                }
+            },
+            "304": {
+                "description":"Not modified. No response body; authorization and target access were rechecked.",
+                "headers": {
+                    "ETag":{"schema":{"type":"string"}},
+                    "Cache-Control":{"schema":{"type":"string","const":"private, no-cache"}}
+                }
+            },
+            "400": {
+                "description":"Unknown, repeated, or invalid semantic parameter, or invalid Agent ID.",
+                "content":{"application/json":{"schema":{"$ref":"#/components/schemas/ErrorResponse"}}}
+            },
+            "4XX": {
+                "description":"Existing session and Agent access errors; never image content.",
+                "content":{"application/json":{"schema":{"$ref":"#/components/schemas/ErrorResponse"}}}
+            },
+            "503": {
+                "description":"Bounded image generation capacity exhausted. Retry later.",
+                "headers":{"Retry-After":{"schema":{"type":"string","const":"1"}}},
+                "content":{"application/json":{"schema":{"$ref":"#/components/schemas/ErrorResponse"}}}
+            },
+            "5XX": {
+                "description":"Server error JSON response.",
+                "content":{"application/json":{"schema":{"$ref":"#/components/schemas/ErrorResponse"}}}
+            }
+        }),
         ResponseKind::Json => {
             let success_description = if response_schema.is_some() {
                 "Successful JSON response using a stable DTO schema."

@@ -102,6 +102,7 @@ mod auth;
 #[cfg(holon_lib_test_shard = "c")]
 #[cfg(test)]
 mod authentication_tests;
+mod avatar;
 mod content_reports;
 mod control;
 mod conversation;
@@ -240,6 +241,7 @@ pub struct AppState {
     pub(crate) app_asset_streams: Arc<tokio::sync::Semaphore>,
     pub(crate) projection_gate: Arc<ProjectionGate>,
     pub(crate) models_cache: Arc<agents::ModelsResponseCache>,
+    pub(crate) avatar_resources: Arc<avatar::AvatarResources>,
 }
 
 #[derive(Debug, Clone, Serialize, JsonSchema)]
@@ -431,6 +433,7 @@ impl AppState {
             tailscale_serve_change: Arc::new(std::sync::Mutex::new(())),
             loopback_http_addr: None,
             transport: ControlTransportKind::Tcp,
+            avatar_resources: Arc::new(avatar::AvatarResources::default()),
             runtime_service,
             advertise_url: None,
             web_dist: None,
@@ -474,6 +477,7 @@ impl AppState {
             tailscale_serve_change: Arc::new(std::sync::Mutex::new(())),
             loopback_http_addr: None,
             transport: ControlTransportKind::Unix,
+            avatar_resources: Arc::new(avatar::AvatarResources::default()),
             runtime_service,
             advertise_url: None,
             web_dist: None,
@@ -518,6 +522,7 @@ pub fn router(state: AppState) -> Router {
     let api_routes = Router::new()
         .route("/", get(agents::root))
         .route("/handshake", get(agents::handshake))
+        .route("/agents/{agent_id}/avatar", get(avatar::get))
         .route("/models", get(agents::models_handler))
         .route("/models/refresh", post(agents::refresh_models_handler))
         .route("/agents/list", get(agents::list_agent_entries))
