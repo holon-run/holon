@@ -1,4 +1,5 @@
 import { connectionLocation } from "../runtime/connection-location";
+import { agentAvatarResources } from "../runtime/agent-avatar-resources";
 import type { AgentCreationResult } from "../runtime/agent-creation";
 import { shouldDismissAgentCreation } from "../runtime/agent-creation-dismiss";
 import { AgentCreationError, AgentCreationStatus } from "../features/agent/AgentCreationFeedback";
@@ -1339,6 +1340,7 @@ function SessionLogout() {
   const [error, setError] = useState(false);
 
   async function logout() {
+    agentAvatarResources.reset();
     setBusy(true);
     setError(false);
     try {

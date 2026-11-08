@@ -5,10 +5,12 @@ const mocks = vi.hoisted(() => ({
   disposeScopes: vi.fn(),
   clearCache: vi.fn(),
   notify: vi.fn(),
+  resetAvatars: vi.fn(),
 }));
 vi.mock("./agent-access-records", () => ({ clearAgentAccessRecords: mocks.clearAccess }));
 vi.mock("./conversation-scope-store", () => ({ disposeAllConversationScopes: mocks.disposeScopes }));
 vi.mock("./idb-cache", () => ({ cacheClearAll: mocks.clearCache }));
+vi.mock("./agent-avatar-resources", () => ({ agentAvatarResources: { reset: mocks.resetAvatars } }));
 
 import { clearConversationCaches } from "./conversation-cache-lifecycle";
 
@@ -24,6 +26,7 @@ describe("conversation cache authentication lifecycle", () => {
     await clearConversationCaches();
 
     expect(mocks.clearAccess).toHaveBeenCalledOnce();
+    expect(mocks.resetAvatars).toHaveBeenCalledOnce();
     expect(mocks.disposeScopes).toHaveBeenCalledWith(false);
     expect(mocks.clearCache).toHaveBeenCalledOnce();
     expect(mocks.notify).not.toHaveBeenCalled();
@@ -35,6 +38,7 @@ describe("conversation cache authentication lifecycle", () => {
     const clearing = clearConversationCaches({ notifySiblingTabs: true });
 
     expect(mocks.clearAccess).toHaveBeenCalledOnce();
+    expect(mocks.resetAvatars).toHaveBeenCalledOnce();
     expect(mocks.disposeScopes).toHaveBeenCalledWith(false);
     expect(mocks.notify).not.toHaveBeenCalled();
     finish();

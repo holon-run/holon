@@ -1,4 +1,6 @@
 import { agentDetailFixtures } from "./fixtures";
+import { ApiClient, ApiHttpError, type ApiBinaryResponse } from "@holon/api-sdk";
+import { AGENT_AVATAR_VERSION, type AgentAvatarExpression } from "../lib/agent-avatar";
 import type { ConversationSummaryResponse } from "@holon/conversation-sdk";
 import type { components } from "./generated/openapi";
 import type {
@@ -888,6 +890,46 @@ export function createRuntimeClient(options: RuntimeClientOptions = {}) {
   const hasToken = Boolean(options.token?.trim());
 
   return {
+    async getAgentAvatar(
+      agentId: string,
+      options: {
+        version?: string;
+        expression?: AgentAvatarExpression;
+        size?: 32 | 64 | 128 | 256 | 512;
+        signal?: AbortSignal;
+      } = {},
+    ): Promise<ApiBinaryResponse> {
+      if (!baseUrl) throw new Error("Agent avatars require a runtime connection.");
+      const query = new URLSearchParams({
+        version: options.version ?? AGENT_AVATAR_VERSION,
+        expression: options.expression ?? "neutral",
+        format: "png",
+        size: String(options.size ?? 128),
+      });
+      const path = `/agents/${encodeURIComponent(agentId)}/avatar?${query}`;
+      const controller = new AbortController();
+      const timeout = globalThis.setTimeout(() => controller.abort(), DEFAULT_REQUEST_TIMEOUT_MS);
+      const transport = new ApiClient({
+        baseUrl: new URL(`${baseUrl}/`, globalThis.location?.href ?? "http://localhost/"),
+        fetch: fetchImpl,
+        headers: requestHeaders,
+      });
+      try {
+        return await transport.requestBinary(path.slice(1), {
+          headers: { Accept: "image/png" },
+          signal: options.signal ? AbortSignal.any([controller.signal, options.signal]) : controller.signal,
+        });
+      } catch (error) {
+        if (error instanceof ApiHttpError) {
+          throw await httpRequestError("GET", path, {
+            status: error.status, headers: error.headers, json: async () => error.body,
+          });
+        }
+        throw error;
+      } finally {
+        globalThis.clearTimeout(timeout);
+      }
+    },
     async getBootstrap(): Promise<RuntimeBootstrap> {
       if (!baseUrl) {
         return buildDisconnectedBootstrap(undefined, "Holon API base URL is not configured.", connectionMode, hasToken);
@@ -2922,7 +2964,9 @@ export class RuntimeHttpError extends Error {
   }
 }
 
-async function httpRequestError(method: string, path: string, response: Response): Promise<RuntimeHttpError> {
+async function httpRequestError(
+  method: string, path: string, response: Pick<Response, "status" | "headers" | "json">,
+): Promise<RuntimeHttpError> {
   const envelope = await readErrorEnvelope(response);
   return new RuntimeHttpError(
     method,
@@ -2938,7 +2982,7 @@ async function httpRequestError(method: string, path: string, response: Response
 }
 
 /** Parse the delta-seconds form of the Retry-After response header. */
-function parseRetryAfterSeconds(response: Response): number | undefined {
+function parseRetryAfterSeconds(response: Pick<Response, "headers">): number | undefined {
   const raw = response.headers.get("retry-after");
   if (!raw) return undefined;
   const seconds = Number(raw.trim());
@@ -2954,7 +2998,7 @@ export function httpRetryAfterMs(error: unknown): number | undefined {
 }
 
 async function readErrorEnvelope(
-  response: Response,
+  response: Pick<Response, "headers" | "json">,
 ): Promise<
   | {
       error?: string;

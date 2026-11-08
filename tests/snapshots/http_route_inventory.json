@@ -152,6 +152,55 @@
   },
   {
     "method": "get",
+    "path": "/api/agents/{agent_id}/avatar",
+    "handler": "get",
+    "operation_id": "agentAvatar",
+    "tag": "agents",
+    "parameters": [
+      {
+        "name": "If-None-Match",
+        "location": "header",
+        "required": false
+      },
+      {
+        "name": "agent_id",
+        "location": "path",
+        "required": true
+      },
+      {
+        "name": "expression",
+        "location": "query",
+        "required": false
+      },
+      {
+        "name": "format",
+        "location": "query",
+        "required": false
+      },
+      {
+        "name": "size",
+        "location": "query",
+        "required": false
+      },
+      {
+        "name": "version",
+        "location": "query",
+        "required": false
+      }
+    ],
+    "request_schema": null,
+    "request_strict": null,
+    "response_content_types": [
+      "application/json",
+      "image/png",
+      "image/svg+xml"
+    ],
+    "security": [
+      "BearerAuth"
+    ]
+  },
+  {
+    "method": "get",
     "path": "/api/agents/{agent_id}/brief-read-state",
     "handler": "brief_read_state",
     "operation_id": "briefReadState",

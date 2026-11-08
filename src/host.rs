@@ -4129,6 +4129,15 @@ impl RuntimeHost {
         .await?
     }
 
+    /// Resource reads share the authenticated operator read surface's target
+    /// policy, without acquiring runtime state or opening an AgentHome.
+    pub(crate) fn local_agent_resource_identity(
+        &self,
+        agent_id: &str,
+    ) -> std::result::Result<AgentIdentityRecord, PublicAgentError> {
+        self.active_agent_identity(agent_id)
+    }
+
     fn public_agent_identity(
         &self,
         agent_id: &str,

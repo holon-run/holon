@@ -101,6 +101,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/agents/{agent_id}/avatar": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Versioned agent avatar
+         * @description Read deterministic built-in artwork without loading the Agent. Session and current target access are checked before cached or conditional responses. See RFC agent-avatar-resources.
+         */
+        get: operations["agentAvatar"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/agents/{agent_id}/brief-read-cursor": {
         parameters: {
             query?: never;
@@ -8806,6 +8826,91 @@ export interface operations {
                 };
             };
             /** @description Client error JSON response. */
+            "4XX": {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Server error JSON response. */
+            "5XX": {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    agentAvatar: {
+        parameters: {
+            query?: {
+                /** @description Omission permanently selects this exact version, not latest. Unknown or repeated parameters return 400. */
+                version?: "light-mech-1-vivid-2";
+                /** @description Explicit artwork only; the server does not read runtime status. */
+                expression?: "neutral" | "focused" | "questioning" | "waiting" | "sleeping";
+                format?: "png" | "svg";
+                /** @description PNG pixel dimensions. SVG uses viewBox 0 0 100 100 and rejects size. */
+                size?: 32 | 64 | 128 | 256 | 512;
+            };
+            header?: {
+                /** @description Compare the actual image byte ETag, after authenticating and checking the target. */
+                "If-None-Match"?: string;
+            };
+            path: {
+                /** @description Agent id. */
+                agent_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Built-in SVG or PNG, at most 2 MiB. No user strings or external resources. */
+            200: {
+                headers: {
+                    "Cache-Control"?: "private, no-cache";
+                    /** @description Strong SHA-256 ETag of actual bytes. */
+                    ETag?: string;
+                    "X-Content-Type-Options"?: "nosniff";
+                    [name: string]: unknown;
+                };
+                content: {
+                    "image/png": string;
+                    "image/svg+xml": string;
+                };
+            };
+            /** @description Not modified. No response body; authorization and target access were rechecked. */
+            304: {
+                headers: {
+                    "Cache-Control"?: "private, no-cache";
+                    ETag?: string;
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Unknown, repeated, or invalid semantic parameter, or invalid Agent ID. */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Bounded image generation capacity exhausted. Retry later. */
+            503: {
+                headers: {
+                    "Retry-After"?: "1";
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Existing session and Agent access errors; never image content. */
             "4XX": {
                 headers: {
                     [name: string]: unknown;

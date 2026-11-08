@@ -1,4 +1,5 @@
 import i18next from "i18next";
+import { agentAvatarResources } from "./agent-avatar-resources";
 import {
   bootstrapProgress,
   validCreationIdentity,
@@ -18,6 +19,7 @@ import { create } from "zustand";
 
 import {
   createRuntimeClient,
+  isAuthRejectionError,
   isProjectionBusyError,
   isTimeoutAbortError,
   projectRosterAgents,
@@ -578,6 +580,7 @@ const AGENT_DETAIL_RETRY_DELAYS_MS = [2_000, 5_000, 15_000] as const;
 const AGENT_SKILL_CATALOG_RETRY_DELAYS_MS = [2_000, 5_000, 15_000] as const;
 
 function nextClientGeneration(): number {
+  agentAvatarResources.reset();
   clientGeneration += 1;
   return clientGeneration;
 }
@@ -973,6 +976,22 @@ function captureClientRequest(): ClientRequest {
 
 function isCurrentClientRequest(request: ClientRequest): boolean {
   return request.client === runtimeClient && isCurrentClientGeneration(request.generation);
+}
+
+async function loadAgentAvatar(...args: Parameters<ClientRequest["client"]["getAgentAvatar"]>) {
+  const request = captureClientRequest();
+  try {
+    return await request.client.getAgentAvatar(...args);
+  } catch (error) {
+    if (isCurrentClientRequest(request) && isAuthRejectionError(error)) {
+      useRuntimeStore.setState((state) => ({
+        bootstrap: {
+          ...state.bootstrap, connection: { ...state.bootstrap.connection, authRequired: true },
+        },
+      }));
+    }
+    throw error;
+  }
 }
 
 async function observeRuntimeConfigReload(
@@ -2188,6 +2207,9 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => {
         }
         const bootstrap = await runtimeClient.getBootstrap();
         if (!isCurrentClientGeneration(generation) || presentationAuthRejected(get())) return;
+        if (bootstrap.connection.source === "http" && !bootstrap.connection.authRequired) {
+          agentAvatarResources.configure(loadAgentAvatar, bootstrap.capabilities ?? []);
+        }
         set((state) => {
           if (bootstrap.connection.source === "fixture"
             && (state.bootstrap.connection.source === "http" || state.agentRosterSource === "cache")) {
@@ -4677,6 +4699,7 @@ function presentationAuthRejected(state: RuntimeStoreState): boolean {
 useRuntimeStore.subscribe((state, previous) => {
   if (presentationAuthRejected(state)) {
     if (!presentationAuthRejected(previous)) {
+      agentAvatarResources.reset();
       // Auth rejection is terminal for both presentation and conversation
       // caches, including async hydration still in flight.
       void clearConversationCaches();

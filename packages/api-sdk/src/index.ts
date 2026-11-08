@@ -17,15 +17,23 @@ export interface ApiRequestOptions {
   headers?: HeadersInit;
 }
 
+export interface ApiBinaryResponse {
+  blob: Blob;
+  headers: Headers;
+  status: number;
+}
+
 export class ApiHttpError extends Error {
   readonly status: number;
   readonly body: unknown;
+  readonly headers: Headers;
 
-  constructor(message: string, status: number, body: unknown) {
+  constructor(message: string, status: number, body: unknown, headers = new Headers()) {
     super(message);
     this.name = "ApiHttpError";
     this.status = status;
     this.body = body;
+    this.headers = headers;
   }
 }
 
@@ -46,6 +54,19 @@ export class ApiClient {
     path: string,
     options: ApiRequestOptions = {},
   ): Promise<T> {
+    const response = await this.requestResponse(path, options);
+    return await readBody(response) as T;
+  }
+
+  async requestBinary(
+    path: string,
+    options: ApiRequestOptions = {},
+  ): Promise<ApiBinaryResponse> {
+    const response = await this.requestResponse(path, options);
+    return { blob: await response.blob(), headers: response.headers, status: response.status };
+  }
+
+  private async requestResponse(path: string, options: ApiRequestOptions): Promise<Response> {
     const url = new URL(path, this.baseUrl);
     const headers = new Headers(
       typeof this.headers === "function" ? await this.headers() : this.headers,
@@ -69,16 +90,8 @@ export class ApiClient {
     if (options.body !== undefined) requestInit.body = JSON.stringify(options.body);
 
     const response = await this.fetchImpl(url, requestInit);
-    const text = await response.text();
-    let body: unknown = null;
-    if (text) {
-      try {
-        body = JSON.parse(text) as unknown;
-      } catch {
-        body = text;
-      }
-    }
     if (!response.ok) {
+      const body = await readBody(response);
       const message =
         typeof body === "object" &&
         body !== null &&
@@ -89,8 +102,18 @@ export class ApiClient {
         typeof body.error.message === "string"
           ? body.error.message
           : `Holon API request failed (${response.status})`;
-      throw new ApiHttpError(message, response.status, body);
+      throw new ApiHttpError(message, response.status, body, response.headers);
     }
-    return body as T;
+    return response;
+  }
+}
+
+async function readBody(response: Response): Promise<unknown> {
+  const text = await response.text();
+  if (!text) return null;
+  try {
+    return JSON.parse(text) as unknown;
+  } catch {
+    return text;
   }
 }
