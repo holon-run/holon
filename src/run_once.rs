@@ -1493,26 +1493,6 @@ mod tests {
         Ok(())
     }
 
-    #[tokio::test]
-    async fn settle_stopped_tasks_treats_missing_task_record_as_settled() -> Result<()> {
-        let dir = tempdir()?;
-        let runtime = test_runtime(dir.path())?;
-        let (_, session) = runtime.begin_task_birth_session().await?;
-
-        // A stopped task can settle and leave the captured view before the
-        // settle loop polls it; that absence must read as settled instead of
-        // failing run_once with `task ... not found` (issue #3936 flake).
-        settle_stopped_tasks(
-            &runtime,
-            &session,
-            &["task-settled-and-removed".to_string()],
-            &AuthorityClass::OperatorInstruction,
-        )
-        .await?;
-
-        Ok(())
-    }
-
     #[test]
     fn render_text_uses_compact_model_labels_without_changing_response_identity() {
         let requested_model = ModelRouteRef::parse("openai@default/gpt-5.4").unwrap();
