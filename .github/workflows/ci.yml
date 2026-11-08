@@ -903,6 +903,7 @@ jobs:
       CARGO_PROFILE_TEST_CODEGEN_UNITS: "1"
       CARGO_PROFILE_RELEASE_CODEGEN_UNITS: "1"
       CARGO_BUILD_JOBS: "2"
+      HOLON_TEST_SATURATION_HEARTBEAT_BUDGET_MS: "1000"
     steps:
       - uses: actions/checkout@v4
 
