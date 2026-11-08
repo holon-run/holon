@@ -46,8 +46,11 @@ const PARK_WINDOW: Duration = Duration::from_secs(6);
 /// A daemon restart can tear the listener down between the readiness probe and
 /// the next request, so the status probe retries inside this budget. The
 /// budget is bounded: once it is spent the transport error still fails the
-/// test loudly, so a real regression is never hidden by the retry.
-const STATUS_PROBE_BUDGET: Duration = Duration::from_secs(15);
+/// test loudly, so a real regression is never hidden by the retry. The HTTP
+/// client times one request out after 10s, so a loaded CI runner needs room
+/// for several consecutive slow attempts; 60s stays well below the test-wide
+/// DEADLINE while keeping exhaustion loud (#3916).
+const STATUS_PROBE_BUDGET: Duration = Duration::from_secs(60);
 
 fn holon_bin() -> PathBuf {
     std::env::var_os("CARGO_BIN_EXE_holon")
