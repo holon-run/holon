@@ -3,12 +3,12 @@ title: "为什么技能塞得越多，Agent 反而越笨？聊聊技能膨胀与
 summary: "以为装满 30 个 Skill 能得到全能助手，却常遭遇上下文稀释、指令互斥与工具误调用。深入剖析技能膨胀的根源，以及 Holon 的多 Agent 技能隔离机制。"
 order: 35
 date: 2026-11-08
-socialImage: "/assets/team-shared-agents-cover.webp"
+socialImage: "/assets/why-agents-need-skill-isolation-cover.webp"
 ---
 
 # 为什么技能塞得越多，Agent 反而越笨？聊聊技能膨胀与隔离设计
 
-<img src="/assets/team-shared-agents-cover.webp" width="1536" height="1024" alt="团队成员与各自专职的长期 Agent 协同处理工作卡片，每个 Agent 拥有独立的职责边界与技能配置。" decoding="async" fetchpriority="high">
+<img src="/assets/why-agents-need-skill-isolation-cover.webp" width="1280" height="720" alt="左侧单体 Agent 被杂乱繁重的工具淹没不知所措，右侧三位专职 Agent 分工明确、各持专用工具高效协作。" decoding="async" fetchpriority="high">
 
 很多刚接触 Agent 扩展机制的开发者，都会经历这样一个阶段：
 
@@ -21,8 +21,6 @@ socialImage: "/assets/team-shared-agents-cover.webp"
 - 哪怕只说一句“你好”，首字响应延迟和 Token 消耗都肉眼可见地飙升。
 
 这正是社区近来广泛讨论的**技能膨胀（Skill Bloat）**与**单体 Agent（God Agent）陷阱**。本文将深入剖析技能过度堆叠导致模型智商“降级”的底层机制，并介绍 Holon 如何通过基于角色的技能隔离来解开这个死结。
-
----
 
 ## 技能过度堆叠的四大底层矛盾
 
@@ -75,8 +73,6 @@ socialImage: "/assets/team-shared-agents-cover.webp"
 
 一旦不可信内容中潜藏了恶意对抗指令，Agent 的整条防线就会瞬间被突破，恶意内容可以直接操纵本地工具执行未授权操作。把所有技能堆在一处，等同于主动拆除了所有信任边界。
 
----
-
 ## Holon 的解法：以职责定义角色，按角色隔离技能
 
 在 Holon 的架构哲学中，解决技能膨胀的核心不是发明更复杂的“动态工具路由过滤算法”，而是**回归现实世界人类团队的成熟协作范式：专业分工与职责隔离**。
@@ -113,8 +109,6 @@ Holon 采用“集中管理、按需授权”的技能机制：
 
 整个流程中，每个 Agent 都只做自己最擅长的事，每个上下文窗口都保持高度聚焦。
 
----
-
 ## 核心对比总结
 
 | 维度 | 单体多能 Agent（God Agent） | Holon 角色化隔离多 Agent |
@@ -124,8 +118,6 @@ Holon 采用“集中管理、按需授权”的技能机制：
 | **行为一致性** | 规则冲突，经常出现“只说不改”或“擅自乱改” | 行为规范固定在 `AGENTS.md`，执行坚决一致 |
 | **安全防护等级** | 零隔离，单点 Prompt 注入即可撬动全量权限 | 权限物理沙箱隔离，外部数据输入不接触破坏性工具 |
 | **协作演进能力** | 改动一处可能影响所有工作流，难以维护 | 增减独立 Agent 互不影响，支持团队渐进式扩展 |
-
----
 
 ## 从今天开始，为你的 Agent 减负
 
@@ -145,7 +137,5 @@ Holon 采用“集中管理、按需授权”的技能机制：
 - 想要手把手为不同的 Agent 分配专属技能与行为边界？请阅读实操指南：[为不同角色规划与隔离 Agent Skills](/zh-CN/guides/organize-agent-skills-and-roles)。
 - 了解 Holon 官方长期角色的配置实践：[从模板创建专属 Agent](/zh-CN/guides/create-agent)。
 - 深入理解长期事项与上下文隔离的技术原理：[为什么需要 WorkItem？](/zh-CN/blog/why-work-items)。
-
----
 
 *本文相关机制与设计验证基于 Holon 长期运行环境记录。*

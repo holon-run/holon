@@ -71,7 +71,7 @@ order: 4
 <span class="blog-read">Read the guide <span aria-hidden="true">→</span></span></div>
 </a>
 <a class="blog-story" href="/blog/why-agents-need-skill-isolation">
-<img src="/assets/team-shared-agents-cover.webp" width="1536" height="1024" alt="" loading="lazy" decoding="async">
+<img src="/assets/why-agents-need-skill-isolation-cover.webp" width="1280" height="720" alt="" loading="lazy" decoding="async">
 <div><span class="blog-category">SYSTEM DESIGN</span>
 <h3>Why your agent gets dumber with more skills (and how to fix it)</h3>
 <p>Adding 30 skills to a single agent triggers context dilution, instruction conflicts, and safety risks. Here is how Holon isolates skills across long-lived roles.</p>

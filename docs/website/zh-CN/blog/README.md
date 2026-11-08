@@ -71,7 +71,7 @@ order: 4
 <span class="blog-read">阅读实践解析 <span aria-hidden="true">→</span></span></div>
 </a>
 <a class="blog-story" href="/zh-CN/blog/why-agents-need-skill-isolation">
-<img src="/assets/team-shared-agents-cover.webp" width="1536" height="1024" alt="" loading="lazy" decoding="async">
+<img src="/assets/why-agents-need-skill-isolation-cover.webp" width="1280" height="720" alt="" loading="lazy" decoding="async">
 <div><span class="blog-category">系统设计</span>
 <h3>为什么技能塞得越多，Agent 反而越笨？聊聊技能膨胀与隔离设计</h3>
 <p>以为装满 30 个 Skill 能得到全能助手，却常遭遇上下文稀释、指令互斥与工具误调用。深入剖析技能膨胀的根源，以及 Holon 的多 Agent 技能隔离机制。</p>

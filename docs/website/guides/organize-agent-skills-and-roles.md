@@ -91,8 +91,6 @@ Implementation and local tests are complete. Create a work item delegating this 
 2. The reviewer agent activates in its clean, read-only context, evaluates the patch using `code-review`, and logs structured review evidence.
 3. Once review finishes, an event wakes the developer agent to address findings or conclude the task.
 
----
-
 ## Verification and self-checks
 
 Confirm your role and skill isolation with these verification steps:
@@ -120,8 +118,6 @@ holon skills list --agent reviewer
 
 Verify that only role-appropriate skills appear in the output.
 
----
-
 ## Frequently asked questions
 
 ### Q: What if a task requires both coding and documentation updates?
@@ -129,8 +125,6 @@ A: Keep the primary feature work item with the developer agent. When code change
 
 ### Q: Why not enable all skills globally?
 A: Global injection forces every agent to load every tool schema into its prompt. This causes attention dilution, parameter hallucinations between similar tools, and unnecessary token costs on every turn.
-
----
 
 ## Next steps
 

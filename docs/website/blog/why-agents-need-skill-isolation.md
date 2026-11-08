@@ -3,12 +3,12 @@ title: "Why your agent gets dumber with more skills (and how to fix it)"
 summary: "Adding 30 skills to a single agent triggers context dilution, instruction conflicts, and safety risks. Here is how Holon isolates skills across long-lived roles."
 order: 35
 date: 2026-11-08
-socialImage: "/assets/team-shared-agents-cover.webp"
+socialImage: "/assets/why-agents-need-skill-isolation-cover.webp"
 ---
 
 # Why your agent gets dumber with more skills (and how to fix it)
 
-<img src="/assets/team-shared-agents-cover.webp" width="1536" height="1024" alt="Team members and dedicated long-lived agents collaborate on work cards, each agent having focused responsibilities and isolated skills." decoding="async" fetchpriority="high">
+<img src="/assets/why-agents-need-skill-isolation-cover.webp" width="1280" height="720" alt="An overwhelmed agent buried under messy tools on the left contrasted with three focused, specialized agents on the right." decoding="async" fetchpriority="high">
 
 Almost every developer exploring agent extensibility goes through the same phase:
 
@@ -21,8 +21,6 @@ Then reality hits:
 - Even a simple "hello" incurs noticeable latency and a massive token bill.
 
 This is **skill bloat**—the pitfall of the monolithic "God Agent." This article breaks down why piling skills into one agent degrades model performance and how Holon solves it through role-based skill isolation.
-
----
 
 ## The four pitfalls of skill bloat
 
@@ -75,8 +73,6 @@ In a monolithic "do-it-all" agent:
 
 If a retrieved web page contains an adversarial injection payload, the agent's defenses crumble. The malicious input gains direct access to system-level execution tools. Stacking all skills into one container demolishes every trust boundary.
 
----
-
 ## Holon's design: isolate skills across dedicated roles
 
 Rather than inventing fragile runtime heuristics to filter tools dynamically, Holon adopts the proven pattern of human engineering teams: **specialization and division of labor**.
@@ -111,8 +107,6 @@ Instead of relying on fragile prompt switching ("Now act as a reviewer... Now ac
 
 Each agent excels at its mandate, and every context window remains clutter-free.
 
----
-
 ## Comparison: Monolithic Agent vs. Role-Based Multi-Agent
 
 | Aspect | Monolithic God Agent | Holon Role-Based Agents |
@@ -122,8 +116,6 @@ Each agent excels at its mandate, and every context window remains clutter-free.
 | **Instruction Consistency** | Rule conflicts; prone to unprompted code edits | Pinned to individual `AGENTS.md` contracts |
 | **Security & Blast Radius** | Zero boundaries; prompt injection compromises full system | Sandboxed per role; untrusted inputs cannot reach destructive tools |
 | **Maintainability** | Fragile prompt juggling; editing one instruction breaks another | Modular; add or update roles without side effects |
-
----
 
 ## Keep your agents focused
 
@@ -143,7 +135,5 @@ Break down your workload:
 - Learn how to configure dedicated skills and role boundaries step by step: [Organize agent skills across dedicated roles](/guides/organize-agent-skills-and-roles).
 - Explore built-in agent templates for common engineering roles: [Create an agent from a template](/guides/create-agent).
 - Understand how durable work items keep multi-agent workflows reliable: [Why WorkItems?](/blog/why-work-items).
-
----
 
 *Mechanisms and patterns described here reflect production behavior in Holon runtimes.*
