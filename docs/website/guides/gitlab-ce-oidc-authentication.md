@@ -14,7 +14,7 @@ For general OIDC concepts (issuer, client ID, redirect URI, session TTL, and pro
 
 - A host capable of running Docker (a GitLab CE container requires approximately 4 GB RAM and 15–20 GB disk space).
 - GitLab must be served over HTTPS. Holon's OIDC client only trusts the built-in Mozilla root certificates; **self-signed CAs are rejected**. For private networks, we recommend using Tailscale's `tailscale cert` to obtain public Let's Encrypt certificates without exposing ports to the public internet.
-- An accessible Holon instance. The redirect URI supports HTTPS, or HTTP strictly with the hostname `localhost` (any port). IP literals like `127.0.0.1` or `::1` are rejected.
+- An accessible Holon instance. The redirect URI supports HTTPS, or HTTP with a `localhost` or loopback IP (`127.0.0.1`, `[::1]`) host (any port).
 
 ## Step 1: Deploy GitLab CE
 

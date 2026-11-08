@@ -24,7 +24,7 @@ Google Workspace 可以作为 Holon 的 OIDC 身份提供商：团队成员用�
 ## 前置条件
 
 - Google Workspace 组织的管理员权限（能修改 OAuth 同意屏幕与 API 访问控制）。
-- 一个可访问的 Holon 地址。生产环境必须 HTTPS；仅当主机名严格为 `localhost` 时回调允许 HTTP。
+- 一个可访问的 Holon 地址。生产环境必须 HTTPS；仅当主机名为 `localhost` 或 loopback IP（`127.0.0.1`、`[::1]`）时回调允许 HTTP。
 - 本文示例使用 `example.com` 与 `holon.example.com`，请替换成自己的域名。
 
 ## 第 1 步：创建归属组织的 Cloud 项目

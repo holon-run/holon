@@ -24,7 +24,7 @@ This guide covers only user authentication (the first row). Agent data integrati
 ## Prerequisites
 
 - Administrative access in your Google Workspace organization (to configure OAuth consent screens and API access controls).
-- A reachable Holon deployment. Production environments must use HTTPS; callbacks over plain HTTP are allowed only when the host is strictly `localhost`.
+- A reachable Holon deployment. Production environments must use HTTPS; callbacks over plain HTTP are allowed only for `localhost` or loopback IP (`127.0.0.1`, `[::1]`) hosts.
 - This guide uses `example.com` and `holon.example.com` as placeholder domains. Replace them with your actual domain names.
 
 ## Step 1: Create a Google Cloud Project Under Your Organization
