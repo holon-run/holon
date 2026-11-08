@@ -125,11 +125,11 @@ private struct AgentSummaryRow: View {
             VStack(alignment: .leading, spacing: 5) {
                 HStack(alignment: .firstTextBaseline, spacing: 8) {
                     Text(verbatim: agent.name).font(.headline).foregroundStyle(.primary)
-                        .lineLimit(1).layoutPriority(1)
+                        .lineLimit(1)
                     Spacer(minLength: 0)
                     if let date = AgentSummaryPresentation.activityDate(agent) {
                         Text(date, style: .relative).font(.caption2).foregroundStyle(.secondary)
-                            .lineLimit(1)
+                            .lineLimit(1).fixedSize(horizontal: true, vertical: false)
                     }
                 }
                 let preview = AgentSummaryPresentation.preview(agent)
@@ -647,6 +647,8 @@ private struct ReadingBriefView: View {
                 )) { Task { await reader.loadBrief(briefID) } }
             }
         }
+        .accessibilityElement(children: .contain)
+        .accessibilityIdentifier("brief." + briefID)
         // Native accessibility can materialize offscreen lazy rows. Fetch/render only
         // visible results so a long history cannot exhaust the detail queue on arrival.
         .task(id: "\(isVisible)|\(reader.status.rawValue)") {

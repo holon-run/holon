@@ -273,10 +273,10 @@ class UIFixtureBootstrapContracts(unittest.TestCase):
                                      for target in child.targets) for child in node.body))
         start = next(index for index, node in enumerate(setup.body)
                      if isinstance(node, ast.Assign)
-                     and any(isinstance(target, ast.Name) and target.id == "created"
+                     and any(isinstance(target, ast.Name) and target.id == "agent_name"
                              for target in node.targets))
         namespace = dict(self.helpers, local=local, agent="holon-tester")
-        exec(compile(ast.Module(body=setup.body[start:start + 3], type_ignores=[]),
+        exec(compile(ast.Module(body=setup.body[start:start + 4], type_ignores=[]),
                      str(source), "exec"), namespace)
         return namespace["work"]
 
@@ -324,6 +324,9 @@ class UIFixtureBootstrapContracts(unittest.TestCase):
             ("POST", "/control/agents/holon-tester/create"),
             ("GET", "/control/agents/holon-tester/detail"),
             ("POST", "/control/agents/holon-tester/work-items")])
+        display_name = local.call_args_list[0].args[2]["name"]
+        self.assertGreater(len(display_name), 40)
+        self.assertIn("Long Display Name", display_name)
         self.assertEqual(local.call_args_list[1].kwargs["timeout"], 10)
 
     def test_missing_job_without_durable_ready_never_creates_work(self):
