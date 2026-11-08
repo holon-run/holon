@@ -52,6 +52,10 @@ struct ReadingAgent: Identifiable, Equatable, Codable, Sendable {
     var readState: ReadingReadState?
     var currentRunID: String?
     var posture: String?
+    var lifecycle: String?
+    var pendingCount: Int?
+    var activeTaskCount: Int?
+    var waitingCount: Int?
     var briefAt: Date?
     var operatorAt: Date?
     var effectiveModel: String?
@@ -59,7 +63,9 @@ struct ReadingAgent: Identifiable, Equatable, Codable, Sendable {
     init(id: String, name: String, preview: String,
          operatorPreview: String? = nil, unreadCount: Int? = nil, readState: ReadingReadState? = nil,
          currentRunID: String? = nil, posture: String? = nil,
-         briefAt: Date? = nil, operatorAt: Date? = nil, effectiveModel: String? = nil) {
+         briefAt: Date? = nil, operatorAt: Date? = nil, effectiveModel: String? = nil,
+         lifecycle: String? = nil, pendingCount: Int? = nil,
+         activeTaskCount: Int? = nil, waitingCount: Int? = nil) {
         self.id = id
         self.name = name
         self.preview = preview
@@ -68,6 +74,10 @@ struct ReadingAgent: Identifiable, Equatable, Codable, Sendable {
         self.readState = readState
         self.currentRunID = currentRunID
         self.posture = posture
+        self.lifecycle = lifecycle
+        self.pendingCount = pendingCount
+        self.activeTaskCount = activeTaskCount
+        self.waitingCount = waitingCount
         self.briefAt = briefAt
         self.operatorAt = operatorAt
         self.effectiveModel = effectiveModel

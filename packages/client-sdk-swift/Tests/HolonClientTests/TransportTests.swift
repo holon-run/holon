@@ -254,6 +254,149 @@ final class TransportTests: XCTestCase {
         XCTAssertTrue(exchange.requests.allSatisfy { $0.httpMethod == "GET" })
     }
 
+    func testAgentAvatarDefaultsPreservePathCredentialsAndResponseIdentity() async throws {
+        let png = Data([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a])
+        let (sdk, exchange) = try client([MockReply(body: png, contentType: "image/png; charset=binary")])
+        let identity = await sdk.identity
+        let response = try await sdk.agentAvatar(agentID: "a/b ?#%")
+        XCTAssertEqual(response.value.data, png)
+        XCTAssertEqual(response.value.mediaType, "image/png")
+        XCTAssertEqual(response.identity, identity)
+        let request = try XCTUnwrap(exchange.requests.first)
+        let url = try XCTUnwrap(request.url)
+        let parts = try XCTUnwrap(URLComponents(url: url, resolvingAgainstBaseURL: false))
+        XCTAssertEqual(parts.percentEncodedPath, "/prefix/api/agents/a%2Fb%20%3F%23%25/avatar")
+        XCTAssertEqual(parts.queryItems, [
+            URLQueryItem(name: "expression", value: "neutral"),
+            URLQueryItem(name: "format", value: "png"),
+            URLQueryItem(name: "size", value: "128"),
+            URLQueryItem(name: "version", value: "light-mech-1-vivid-2"),
+        ])
+        XCTAssertEqual(request.httpMethod, "GET")
+        XCTAssertNil(request.httpBody)
+        XCTAssertEqual(request.value(forHTTPHeaderField: "Authorization"), "Bearer test-session")
+        XCTAssertFalse(url.absoluteString.contains("test-session"))
+        XCTAssertEqual(exchange.requests.count, 1)
+    }
+
+    func testAgentAvatarSupportsEveryExpressionAndPNGSize() async throws {
+        XCTAssertEqual(HolonAvatarExpression.allCases.map(\.rawValue),
+                       ["neutral", "focused", "questioning", "waiting", "sleeping"])
+        XCTAssertEqual(Set(HolonAvatarExpression.allCases).count, 5)
+        XCTAssertEqual(HolonAvatarExpression(rawValue: "focused"), HolonAvatarExpression.focused)
+        let sizes = [32, 64, 128, 256, 512]
+        let count = HolonAvatarExpression.allCases.count * sizes.count
+        let (sdk, exchange) = try client(Array(repeating: MockReply(contentType: "image/png"), count: count))
+        for expression in HolonAvatarExpression.allCases {
+            for size in sizes {
+                _ = try await sdk.agentAvatar(agentID: "main", expression: expression, size: size)
+                let request = try XCTUnwrap(exchange.requests.last)
+                XCTAssertEqual(URLComponents(url: request.url!, resolvingAgainstBaseURL: false)?.queryItems, [
+                    URLQueryItem(name: "expression", value: expression.rawValue),
+                    URLQueryItem(name: "format", value: "png"),
+                    URLQueryItem(name: "size", value: String(size)),
+                    URLQueryItem(name: "version", value: "light-mech-1-vivid-2"),
+                ])
+            }
+        }
+        XCTAssertEqual(exchange.requests.count, count)
+    }
+
+    func testAgentAvatarRejectsInvalidSizesAndPathSegmentsBeforeTransport() async throws {
+        let (sdk, exchange) = try client([])
+        for size in [Int.min, -1, 0, 31, 33, 63, 65, 127, 129, 255, 257, 511, 513, Int.max] {
+            do { _ = try await sdk.agentAvatar(agentID: "main", size: size); XCTFail("Invalid size: \(size)") }
+            catch { XCTAssertEqual(error as? HolonClientError, .invalidRequest) }
+        }
+        for agentID in ["", ".", ".."] {
+            do { _ = try await sdk.agentAvatar(agentID: agentID); XCTFail("Invalid agent ID: \(agentID)") }
+            catch { XCTAssertEqual(error as? HolonClientError, .invalidRequest) }
+        }
+        XCTAssertTrue(exchange.requests.isEmpty)
+    }
+
+    func testAgentAvatarAcceptsOnlyPNG() async throws {
+        let types = ["application/octet-stream", "image/svg+xml", "image/jpeg", "text/html", "application/json"]
+        let (sdk, exchange) = try client(types.map { MockReply(body: Data([1]), contentType: $0) })
+        for type in types {
+            do { _ = try await sdk.agentAvatar(agentID: "main"); XCTFail("Unexpected type: \(type)") }
+            catch { XCTAssertEqual(error as? HolonClientError, .unexpectedContentType) }
+        }
+        XCTAssertEqual(exchange.requests.count, types.count)
+    }
+
+    func testAgentAvatarEnforcesTwoMiBLimitWithAndWithoutContentLength() async throws {
+        let maximumBytes = 2 * 1024 * 1024
+        let (sdk, exchange) = try client([
+            MockReply(body: Data(repeating: 0, count: maximumBytes), contentType: "image/png",
+                      headers: ["Content-Length": String(maximumBytes)]),
+            MockReply(body: Data([1]), contentType: "image/png",
+                      headers: ["Content-Length": String(maximumBytes + 1)]),
+            MockReply(body: Data(repeating: 0, count: maximumBytes + 1), contentType: "image/png"),
+        ])
+        let response = try await sdk.agentAvatar(agentID: "main")
+        XCTAssertEqual(response.value.data.count, maximumBytes)
+        for _ in 0..<2 {
+            do { _ = try await sdk.agentAvatar(agentID: "main"); XCTFail("Oversized PNG must not be returned") }
+            catch { XCTAssertEqual(error as? HolonClientError, .streamLimitExceeded) }
+        }
+        XCTAssertEqual(exchange.requests.count, 3)
+    }
+
+    func testAgentAvatarHTTPAndNetworkFailuresDoNotRetryOrClearCredentials() async throws {
+        for status in [401, 403, 404, 429, 503] {
+            let (sdk, exchange) = try client([
+                MockReply(status: status), MockReply(body: Data([1]), contentType: "image/png"),
+            ])
+            let identity = await sdk.identity
+            do { _ = try await sdk.agentAvatar(agentID: "main"); XCTFail("HTTP \(status) must be observable") }
+            catch {
+                XCTAssertEqual((error as? HolonHTTPFailure)?.statusCode, status)
+                XCTAssertEqual((error as? HolonHTTPFailure)?.identity, identity)
+            }
+            XCTAssertEqual(exchange.requests.count, 1)
+            _ = try await sdk.agentAvatar(agentID: "main")
+            XCTAssertEqual(exchange.requests.count, 2)
+            XCTAssertTrue(exchange.requests.allSatisfy {
+                $0.value(forHTTPHeaderField: "Authorization") == "Bearer test-session"
+            })
+        }
+        let (sdk, exchange) = try client([
+            MockReply(error: .networkConnectionLost), MockReply(contentType: "image/png"),
+        ])
+        do { _ = try await sdk.agentAvatar(agentID: "main"); XCTFail("Network failure must be observable") }
+        catch { XCTAssertEqual((error as? URLError)?.code, .networkConnectionLost) }
+        XCTAssertEqual(exchange.requests.count, 1)
+        _ = try await sdk.agentAvatar(agentID: "main")
+        XCTAssertEqual(exchange.requests.count, 2)
+        XCTAssertEqual(exchange.requests.last?.value(forHTTPHeaderField: "Authorization"), "Bearer test-session")
+    }
+
+    func testAgentAvatarIdentityReplacementNeverPublishesOldBytes() async throws {
+        let (sdk, exchange) = try client([
+            MockReply(body: Data([1]), contentType: "image/png", delay: 0.2),
+            MockReply(body: Data([2]), contentType: "image/png"),
+        ])
+        let oldIdentity = await sdk.identity
+        let pending = Task { try await sdk.agentAvatar(agentID: "main") }
+        try await Task.sleep(for: .milliseconds(30))
+        XCTAssertEqual(exchange.requests.count, 1)
+        let identity = try await sdk.bindIdentity(runtimeID: "new", userID: nil, visibilityScopeID: nil,
+                                                  credential: "new-session")
+        do { _ = try await pending.value; XCTFail("Old generation must not publish avatar bytes") }
+        catch {
+            XCTAssertTrue(error is CancellationError || (error as? HolonClientError) == .staleConnection ||
+                          (error as? URLError)?.code == .cancelled)
+        }
+        let response = try await sdk.agentAvatar(agentID: "main")
+        XCTAssertEqual(response.value.data, Data([2]))
+        XCTAssertEqual(response.identity, identity)
+        XCTAssertNotEqual(response.identity, oldIdentity)
+        XCTAssertEqual(exchange.requests.count, 2)
+        XCTAssertEqual(exchange.requests.first?.value(forHTTPHeaderField: "Authorization"), "Bearer test-session")
+        XCTAssertEqual(exchange.requests.last?.value(forHTTPHeaderField: "Authorization"), "Bearer new-session")
+    }
+
     func testWorkspaceRootLocatorAndResolverEncoding() async throws {
         let (sdk, exchange) = try client([
             MockReply(body: Data(#"{"workspace":{"workspaces":[],"execution_roots":[{"id":"root"}]}}"#.utf8)),

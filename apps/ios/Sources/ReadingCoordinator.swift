@@ -21,6 +21,7 @@ private enum ReadingReconnectContext {
 
 @Observable @MainActor
 final class ReadingCoordinator {
+    let avatars = AgentAvatarStore()
     private(set) var agents: [ReadingAgent] = []
     private(set) var rosterRevision = 0
     @ObservationIgnored private var rosterEpoch: String?
@@ -40,7 +41,9 @@ final class ReadingCoordinator {
     }
     private(set) var loadingActivities: Set<String> = []
     private(set) var failedActivities: Set<String> = []
-    private(set) var status: ReadingStatus = .disconnected
+    private(set) var status: ReadingStatus = .disconnected {
+        didSet { avatars.setOnline(status == .live) }
+    }
     private(set) var canLoadHistory = false
     private(set) var isLoadingHistory = false
     private(set) var readStatus: ReadingReadStatus = .idle
@@ -114,8 +117,15 @@ final class ReadingCoordinator {
     }
 
     func activate(client: HolonClient, identity: HolonConnectionIdentity, apiBaseURL: URL) {
+        guard acceptsReconnectMutation else { return }
         activate(transport: ReadingClientTransport(client: client, authority: identity),
                  identity: identity, apiBaseURL: apiBaseURL)
+        avatars.onAuthorizationFailure = { [weak self] failure in
+            guard let self else { return }
+            self.failed(failure, token: self.revision, recover: false)
+        }
+        avatars.activate(transport: AgentAvatarClientTransport(client: client, authority: identity))
+        avatars.setOnline(status == .live)
     }
 
     // Injectable only inside the app module, with identical authority fencing.
@@ -127,6 +137,7 @@ final class ReadingCoordinator {
     }
 
     private func applyActivation(transport: any ReadingTransport, identity: HolonConnectionIdentity, apiBaseURL: URL) {
+        avatars.disconnect()
         let next = ReadingPartition(apiBaseURL: apiBaseURL, identity: identity)
         if partition != next || next == nil { cancelReconnect() }
         reportSessionID = UUID()
@@ -157,6 +168,7 @@ final class ReadingCoordinator {
     }
 
     private func applyOfflineActivation(partition: ReadingPartition) {
+        avatars.disconnect()
         if self.partition != partition { cancelReconnect() }
         reportSessionID = UUID()
         reportDrafts.removeAll()
@@ -194,6 +206,7 @@ final class ReadingCoordinator {
     }
 
     private func applyDisconnect() {
+        avatars.disconnect()
         cancelReconnect()
         reportSessionID = UUID()
         reportDrafts.removeAll()
@@ -244,6 +257,7 @@ final class ReadingCoordinator {
 
     func refresh() async {
         guard !Task.isCancelled, foreground, let partition else { return }
+        avatars.retry()
         guard transport != nil else {
             if let reconnectAttempt {
                 await reconnectAttempt.task.value
@@ -448,12 +462,14 @@ final class ReadingCoordinator {
                 agent.operatorPreview = agent.operatorPreview.map { String($0.prefix(240)) }
                 agent.currentRunID = agent.currentRunID.flatMap { !$0.isEmpty && $0.utf8.count <= 512 ? $0 : nil }
                 agent.posture = agent.posture.map { String($0.prefix(64)) }
+                agent.lifecycle = agent.lifecycle.map { String($0.prefix(64)) }
                 agent.effectiveModel = agent.effectiveModel.map { String($0.prefix(512)) }
                 return agent
             }
     }
 
     private func applyRoster(_ roster: ReadingRoster) {
+        if let rosterEpoch, rosterEpoch != roster.eventLogEpoch { avatars.invalidateResources() }
         let previous = Dictionary(uniqueKeysWithValues: agents.map { ($0.id, $0) })
         agents = boundedRoster(roster.agents).map { agent in
             var value = agent

@@ -444,3 +444,12 @@
 "report.contextChanged" = "The connection, identity or conversation changed. Close this screen and reopen reporting in the correct connection.";
 "report.retryNotice" = "Retry keeps the original report and request ID. Closing this screen does not withdraw a report.";
 "privacy.required" = "Before sending, open the Holon app to review and agree to data sharing. Confirm AI providers and retention rules with your runtime administrator. You can still save this share locally without sending.";
+"avatar.status.offline" = "Offline";
+"avatar.status.deleting" = "Deleting";
+"avatar.status.stopped" = "Stopped";
+"avatar.status.running" = "Working";
+"avatar.status.needsInput" = "Needs your reply";
+"avatar.status.waiting" = "Waiting";
+"avatar.status.sleeping" = "Sleeping";
+"avatar.status.ready" = "Ready";
+"avatar.status.unknown" = "Status unavailable";
