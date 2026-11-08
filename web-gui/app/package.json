@@ -5,7 +5,7 @@
   "type": "module",
   "scripts": {
     "dev": "vite --host 127.0.0.1",
-    "build:sdk": "npm --prefix ../../packages/conversation-sdk run build",
+    "build:sdk": "npm --prefix ../../packages/api-sdk run build && npm --prefix ../../packages/conversation-sdk run build",
     "build": "npm run build:sdk && npm run typecheck && vite build",
     "build:e2e": "npm run build:sdk && npm run typecheck && vite build --mode e2e",
     "build:e2e:real-daemon": "npm run build:sdk && npm run typecheck && vite build --mode e2e --outDir dist-e2e",
