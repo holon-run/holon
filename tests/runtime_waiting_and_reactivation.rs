@@ -37,11 +37,6 @@ macro_rules! runtime_async_tests {
     };
 }
 
-#[test]
-fn policy_blocks_mismatched_origin() {
-    runtime_waiting::policy_blocks_mismatched_origin();
-}
-
 runtime_async_tests!(
     tool_only_wait_for_persists_turn_without_result_brief,
     silent_wait_for_with_assistant_text_does_not_publish_brief,

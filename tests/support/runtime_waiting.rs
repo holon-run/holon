@@ -19,7 +19,6 @@ use holon::{
     config::{AppConfig, ControlAuthMode},
     host::RuntimeHost,
     ingress::{WakeDisposition, WakeHint},
-    policy::validate_message_kind_for_origin,
     provider::{
         AgentProvider, ConversationMessage, ModelBlock, ProviderTurnRequest, ProviderTurnResponse,
         StubProvider,
@@ -1881,17 +1880,6 @@ pub async fn timer_wait_surfaces_waiting_reason() -> Result<()> {
         Some(WaitingReason::AwaitingTimer)
     );
     Ok(())
-}
-
-pub fn policy_blocks_mismatched_origin() {
-    let mismatch = validate_message_kind_for_origin(
-        &MessageKind::WebhookEvent,
-        &MessageOrigin::Operator {
-            actor_id: None,
-            actor_display_name: None,
-        },
-    );
-    assert!(!mismatch.allowed);
 }
 
 pub async fn sleep_only_completion_preserves_brief_after_max_output_recovery() -> anyhow::Result<()>

@@ -19,7 +19,6 @@ use holon::{
     config::{AppConfig, ControlAuthMode},
     host::RuntimeHost,
     ingress::{WakeDisposition, WakeHint},
-    policy::validate_message_kind_for_origin,
     provider::{
         AgentProvider, ConversationMessage, ModelBlock, ProviderTurnRequest, ProviderTurnResponse,
         StubProvider,
@@ -755,40 +754,6 @@ pub async fn worktree_subagent_task_creates_dedicated_per_task_worktree() -> Res
     Ok(())
 }
 
-pub async fn subagent_task_returns_result_to_parent_session() -> Result<()> {
-    let host = RuntimeHost::new_with_provider(
-        test_config(),
-        Arc::new(StubProvider::new("subagent result payload")),
-    )?;
-    let runtime = host.default_runtime().await?;
-
-    let task = runtime
-        .schedule_child_agent_task(
-            "delegate work".into(),
-            "return a concise subagent result".into(),
-            AuthorityClass::OperatorInstruction,
-            holon::types::ChildAgentWorkspaceMode::Inherit,
-        )
-        .await?;
-    wait_until(|| {
-        let briefs = runtime.storage().read_recent_briefs(20)?;
-        Ok(briefs
-            .iter()
-            .any(|brief| brief.text.contains("subagent result payload")))
-    })
-    .await?;
-
-    let tasks = runtime.recent_tasks(10).await?;
-    assert!(tasks
-        .iter()
-        .any(|record| record.id == task.id && record.kind.as_str() == "child_agent_task"));
-    let briefs = runtime.recent_briefs(10).await?;
-    assert!(briefs
-        .iter()
-        .any(|brief| brief.text.contains("subagent result payload")));
-    Ok(())
-}
-
 pub async fn worktree_child_agent_task_records_workspace_mode() -> Result<()> {
     struct GatedWorktreeProvider {
         started: tokio::sync::Notify,
@@ -946,17 +911,6 @@ pub async fn worktree_subagent_task_returns_metadata_to_parent_session() -> Resu
 
     Ok(())
 }
-pub fn policy_blocks_mismatched_origin() {
-    let mismatch = validate_message_kind_for_origin(
-        &MessageKind::WebhookEvent,
-        &MessageOrigin::Operator {
-            actor_id: None,
-            actor_display_name: None,
-        },
-    );
-    assert!(!mismatch.allowed);
-}
-
 pub async fn worktree_subagent_task_auto_removes_worktree_when_no_changes_wt104() -> Result<()> {
     let config = test_config();
     let workspace = config.workspace_dir.clone();

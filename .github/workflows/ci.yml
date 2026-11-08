@@ -194,6 +194,8 @@ jobs:
               - 'Cargo.toml'
               - 'Cargo.lock'
               - 'build.rs'
+              # web-ci also runs Android SDK tests against the real daemon.
+              - 'apps/android/**'
               - 'tests/fixtures/client-wire/**'
               - 'web-gui/**'
               - 'packages/client-wire-kotlin/**'
@@ -864,11 +866,14 @@ jobs:
       - name: Check controlled recovery acceptance feature
         run: cargo check --locked --features recovery-acceptance
 
-      - name: Test decision crates
+      - name: Test independent Rust crates
         run: |
           cargo test --manifest-path crates/decision-core/Cargo.toml --locked
+          cargo test --manifest-path crates/decision-clef/Cargo.toml --locked
           cargo test --manifest-path crates/decision-jev/Cargo.toml --locked
           cargo test --manifest-path crates/decision-openai/Cargo.toml --locked
+          cargo test --manifest-path crates/decision-openai-decisions/Cargo.toml --locked
+          cargo test --manifest-path crates/holon-model-client/Cargo.toml --locked
 
       - name: Package check
         run: |
