@@ -161,11 +161,41 @@ final class HolonUITests: XCTestCase {
 
     private func agreeToSharingConsent(_ app: XCUIApplication) {
         let consent = app.switches["privacy.accept"]
-        reveal(consent, in: app)
-        XCTAssertTrue(consent.isHittable)
+        let toggle = consent.switches.firstMatch
+        // The identified row and its native switch have different hit regions.
+        // Reveal and wait for the control that will actually receive the tap.
+        reveal(toggle, in: app, fullyVisible: true)
+        waitForHittable(toggle)
         XCTAssertEqual(consent.value as? String, "0", "Consent must never be preselected")
-        consent.switches.firstMatch.tap()
+        defer {
+            if consent.value as? String != "1" {
+                recordConsentControls(consent, name: "consent-not-selected")
+            }
+        }
+        toggle.tap()
         waitForValue(consent, "1")
+    }
+
+    /// Whitelist control metadata; never attach raw hierarchies or field values.
+    private func controlState(_ element: XCUIElement) -> String {
+        guard element.exists else { return "exists=false" }
+        return "id=\(element.identifier) enabled=\(element.isEnabled) "
+            + "hittable=\(element.isHittable) frame=\(element.frame)"
+    }
+
+    private func recordConsentControls(_ consent: XCUIElement, name: String) {
+        let child = consent.switches.firstMatch
+        func value(_ element: XCUIElement) -> String {
+            guard element.exists, let value = element.value as? String,
+                  value == "0" || value == "1" else { return "unavailable" }
+            return value
+        }
+        let attachment = XCTAttachment(string:
+            "parent: \(controlState(consent)) value=\(value(consent))\n"
+            + "child: \(controlState(child)) value=\(value(child))")
+        attachment.name = name
+        attachment.lifetime = .keepAlways
+        add(attachment)
     }
 
     func testPrivacyConsentCanBeWithdrawnAndExplicitlyRestored() async throws {
@@ -307,14 +337,20 @@ final class HolonUITests: XCTestCase {
             // The menu identifies the route; only the Back button needs to be hittable.
             if conversation.exists {
                 let back = app.navigationBars.buttons.matching(
-                    NSPredicate(format: "identifier != %@", "conversation.more")).firstMatch
-                if back.exists && back.isEnabled && back.isHittable { back.tap() }
+                    NSPredicate(format: "identifier != %@", "conversation.more"))
+                    .allElementsBoundByIndex.first { $0.exists && $0.isEnabled && $0.isHittable }
+                back?.tap()
             } else if home.exists && home.isEnabled && home.isHittable {
                 home.tap()
             }
             return false
         }, object: nil)
         guard XCTWaiter.wait(for: [route], timeout: UIWaitScale.scaled(30)) == .completed else {
+            let controls = app.navigationBars.buttons.allElementsBoundByIndex.map { controlState($0) }
+            let attachment = XCTAttachment(string: controls.joined(separator: "\n"))
+            attachment.name = "settings-navigation-controls"
+            attachment.lifetime = .keepAlways
+            add(attachment)
             XCTFail("Settings must finish opening before revealing its controls")
             // Async tests can continue after an assertion; do not operate on the wrong page.
             throw FixtureError.settingsNotReady
@@ -1306,6 +1342,15 @@ final class HolonUITests: XCTestCase {
         try await connectForSharing()
         let app = launch(language: "en", dark: false, large: false)
         defer { app.terminate() }
+        // Always exercise Settings from a restored conversation, even when this
+        // case runs alone and no preceding workflow has selected an Agent.
+        if !app.buttons["conversation.more"].waitForExistence(timeout: UIWaitScale.scaled(5)) {
+            let agent = app.buttons["agent." + (try required("AGENT_ID"))]
+            reveal(agent, in: app); agent.tap()
+        }
+        XCTAssertTrue(app.buttons["conversation.more"].waitForExistence(timeout: UIWaitScale.scaled(30)))
+        app.terminate(); app.launch()
+        XCTAssertTrue(app.buttons["conversation.more"].waitForExistence(timeout: UIWaitScale.scaled(30)))
         try openSettings(app)
         let revoke = app.buttons["privacy.revoke"]
         reveal(revoke, in: app); revoke.tap()
