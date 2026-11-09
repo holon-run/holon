@@ -601,12 +601,7 @@ impl RuntimeHandle {
     }
     pub(super) async fn prepare_summary_instruction_resources(&self) -> Result<()> {
         let captured = {
-            let _owner = self.reserve_resource_source().await?;
-            let root = self
-                .inner
-                .mutation_owner
-                .capture()?
-                .context("summary resource source has no published root")?;
+            let root = self.observer_ready_root(&self.inner.runtime_db)?;
             let config = self.inner.config_snapshot.load_full();
             let material = self.context_resource_material()?;
             let captured = self.capture_instruction_resources(&root.state, &config, &material);
@@ -616,7 +611,7 @@ impl RuntimeHandle {
         match captured {
             Ok(_) => Ok(()),
             Err(error) if is_repreparable_resource_error(&error) => {
-                // Explicit preparation, before the summary reserves its owner.
+                // Only an invalidated resource needs its existing refresh protocol.
                 drop(self.ensure_context_resources().await?);
                 Ok(())
             }

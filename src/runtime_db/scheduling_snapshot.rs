@@ -26,7 +26,8 @@ pub(crate) use deletion_maintenance::{DeletionSchedulingAck, DeletionSchedulingS
 mod cold_query;
 mod token_discovery;
 pub(crate) use cold_query::{
-    prepare_cold_scheduling_query_tx, read_cold_scheduling_scope_tx, ColdSchedulingQuery,
+    load_cold_scheduling_query_tx, prepare_cold_scheduling_query_tx, read_cold_scheduling_scope_tx,
+    ColdSchedulingQuery,
 };
 pub(crate) use token_discovery::{
     discover_external_trigger_token_tx, read_external_trigger_token_compatibility_tx,

@@ -280,11 +280,16 @@ async fn summary_prepares_invalidated_scheduling_after_active_metadata_ack() -> 
     publish_active_metadata_ack(&runtime).await?;
     let summary = runtime.agent_summary().await?;
     assert_eq!(summary.agent.id, "scheduling-reader");
-    let read = runtime
-        .capture_scheduling_read(&SchedulingCaptureRequest::current())
-        .await?;
-    assert_eq!(read.scheduling.timer(&timer.id)?, Some(&timer));
-    assert_eq!(read.scheduling.active_timer_count()?, 1);
+    let published = runtime.inner.mutation_owner.capture()?.unwrap();
+    assert!(published.scheduling.is_none());
+    let observed = runtime.capture_observer_root(&runtime.inner.runtime_db)?;
+    let scheduling = observed
+        .scheduling
+        .as_ref()
+        .unwrap()
+        .capture(&SchedulingCaptureRequest::current())?;
+    assert_eq!(scheduling.timer(&timer.id)?, Some(&timer));
+    assert_eq!(scheduling.active_timer_count()?, 1);
     Ok(())
 }
 
@@ -328,7 +333,7 @@ async fn compact_state_prepares_scheduling_after_active_metadata_ack() -> Result
         .capture()?
         .unwrap()
         .scheduling
-        .is_some());
+        .is_none());
     Ok(())
 }
 
@@ -361,10 +366,20 @@ async fn readonly_scoped_roster_prepares_scheduling_after_active_metadata_ack() 
         .agent_list_entry_read(&identity, &material, &db)
         .await?;
     assert_eq!(entry.identity.agent_id, "scheduling-reader");
-    let read = runtime
-        .capture_scheduling_read(&SchedulingCaptureRequest::current())
-        .await?;
-    assert_eq!(read.scheduling.timer(&timer.id)?, Some(&timer));
+    assert!(runtime
+        .inner
+        .mutation_owner
+        .capture()?
+        .unwrap()
+        .scheduling
+        .is_none());
+    let root = runtime.capture_observer_root(&runtime.inner.runtime_db)?;
+    let selected = root
+        .scheduling
+        .as_ref()
+        .unwrap()
+        .capture(&SchedulingCaptureRequest::current())?;
+    assert_eq!(selected.timer(&timer.id)?, Some(&timer));
     Ok(())
 }
 
@@ -401,10 +416,13 @@ async fn summary_query_after_active_metadata_ack_rejects_unqualified_canonical_d
         Ok(())
     })?;
     runtime.agent_summary().await?;
-    let read = runtime
-        .capture_scheduling_read(&SchedulingCaptureRequest::current())
-        .await?;
-    assert_eq!(read.scheduling.timer(&timer.id)?, Some(&timer));
+    let root = runtime.capture_observer_root(&runtime.inner.runtime_db)?;
+    let selected = root
+        .scheduling
+        .as_ref()
+        .unwrap()
+        .capture(&SchedulingCaptureRequest::current())?;
+    assert_eq!(selected.timer(&timer.id)?, Some(&timer));
     Ok(())
 }
 
@@ -457,5 +475,90 @@ async fn scoped_child_summary_prepares_scheduling_after_active_metadata_ack() ->
     })
     .await??;
     assert_eq!(id, "scheduling-reader");
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn observer_metadata_reconstruction_uses_readers_without_owner_or_writer_admission(
+) -> Result<()> {
+    let home = tempdir()?;
+    let runtime = runtime(home.path())?;
+    runtime.await_initial_resources().await;
+    let _refresh = runtime.hold_resource_refresh_for_test().await?;
+    let timer = runtime.schedule_timer(3_600_000, None, None).await?;
+    publish_active_metadata_ack(&runtime).await?;
+    let before = runtime.inner.mutation_owner.capture()?.unwrap();
+    let owner = runtime.inner.mutation_owner.reserve().await?;
+    let _agent = runtime.inner.agent.lock().await;
+    let (started, ready) = tokio::sync::oneshot::channel();
+    let mut started = Some(started);
+    let (release, resume) = std::sync::mpsc::channel();
+    let db = runtime.inner.runtime_db.clone();
+    let writer = tokio::task::spawn_blocking(move || {
+        db.transaction(|_| {
+            if let Some(started) = started.take() {
+                let _ = started.send(());
+            }
+            resume.recv()?;
+            Ok(())
+        })
+    });
+    ready.await?;
+    let observed = tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        runtime.capture_observer_root_async(&runtime.inner.runtime_db),
+    )
+    .await??;
+    assert!(Arc::ptr_eq(
+        &before,
+        &runtime.inner.mutation_owner.capture()?.unwrap()
+    ));
+    assert!(before.current.is_none() && before.scheduling.is_none());
+    let scheduling = observed
+        .scheduling
+        .as_ref()
+        .unwrap()
+        .capture(&SchedulingCaptureRequest::current())?;
+    assert_eq!(scheduling.timer(&timer.id)?, Some(&timer));
+    let reader = runtime.clone();
+    let db = runtime.runtime_db().clone();
+    let handle = tokio::runtime::Handle::current();
+    let state = tokio::task::spawn_blocking(move || {
+        reader.acquire_operator_state_read_projection_scoped(10, 10, &db, &handle)
+    });
+    let state = tokio::time::timeout(std::time::Duration::from_secs(5), state).await???;
+    assert_eq!(state.agent.agent.id, "scheduling-reader");
+    assert_eq!(state.timers.len(), 1);
+    let child = tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        runtime.child_agent_summary_observation(),
+    )
+    .await??;
+    assert_eq!(child.state.id, "scheduling-reader");
+    release.send(())?;
+    writer.await??;
+    drop(owner);
+    Ok(())
+}
+
+#[tokio::test]
+async fn observer_pending_publication_fails_without_waiting_or_reconciling() -> Result<()> {
+    use crate::runtime::mutation_owner::{MutationOwner, MutationReservation};
+    let home = tempdir()?;
+    let runtime = runtime(home.path())?;
+    runtime.await_initial_resources().await;
+    let _refresh = runtime.hold_resource_refresh_for_test().await?;
+    let mut owners = MutationOwner::reserve_all(vec![runtime.inner.mutation_owner.clone()]).await?;
+    MutationReservation::begin_all(&mut owners, "pending-observer-operation".into())?;
+    let denied = crate::diagnostics::io_probe::DenyResourceReaders::new();
+    let error = runtime
+        .capture_observer_root(runtime.runtime_db())
+        .unwrap_err();
+    assert!(error
+        .downcast_ref::<crate::runtime_db::RuntimeDbRetryableError>()
+        .is_some());
+    assert_eq!(denied.attempts(), 0);
+    assert!(runtime.inner.mutation_owner.capture().is_err());
+    MutationReservation::definitely_not_committed_all(&mut owners)?;
     Ok(())
 }

@@ -4642,6 +4642,7 @@ impl RuntimeHost {
             material: scheduling_material,
             acquisition,
             reservations,
+            observation,
             ..
         } = self
             .acquire_cold_scheduling_query(&identity, 0)
@@ -4690,6 +4691,9 @@ impl RuntimeHost {
             })
             .map_err(PublicAgentError::Runtime)?;
 
+        if let Some(observation) = observation {
+            observation.check().map_err(PublicAgentError::Runtime)?;
+        }
         drop(reservations);
         let active_children = self
             .child_agent_summaries(agent_id)
@@ -5185,6 +5189,7 @@ impl RuntimeHost {
             material: scheduling_material,
             acquisition,
             reservations,
+            observation,
         } = self
             .acquire_cold_scheduling_query(&identity, timer_limit)
             .await
@@ -5239,6 +5244,9 @@ impl RuntimeHost {
             .map_err(PublicAgentError::Runtime)?;
         crate::diagnostics::record_projection_state_tasks(tasks_started.elapsed());
         // Parent facts are frozen. Release before another agent's summary await.
+        if let Some(observation) = observation {
+            observation.check().map_err(PublicAgentError::Runtime)?;
+        }
         drop(reservations);
         let active_children = self
             .child_agent_summaries(agent_id)
@@ -15542,13 +15550,8 @@ mod tests {
         assert!(!reused.created);
         assert_eq!(reused.agent_id, created.agent_id);
         let child = host.get_or_create_agent(&created.agent_id).await.unwrap();
-        let parent_agent_id = parent
-            .agent_summary()
-            .await
-            .unwrap()
-            .identity
-            .agent_id
-            .clone();
+        // This needs only identity while the parent is processing the result.
+        let parent_agent_id = host.config().default_agent_id.clone();
         wait_for_agent_inputs_settled(&child).await;
         send_agent_message(
             &child,
@@ -15827,7 +15830,11 @@ mod tests {
             .find(|task| task.kind == TaskKind::CommandTask)
             .expect("ExecCommand must promote to a real command task");
         let command = wait_for_terminal_task(&child, &command.id).await;
-        assert_eq!(command.status, TaskStatus::Completed);
+        assert_eq!(
+            command.status,
+            TaskStatus::Completed,
+            "background command failed: {command:?}"
+        );
         tokio::time::timeout(Duration::from_secs(10), async {
             while parent
                 .storage()

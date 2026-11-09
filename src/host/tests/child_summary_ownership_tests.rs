@@ -508,25 +508,14 @@ async fn child_summary_moves_keep_parent_holder_and_fail_without_partial_return(
     })?;
     let expected_error = borrowed_summaries(&host, &parent).await.unwrap_err();
     let actual_error = host.child_agent_summaries(&parent).await.unwrap_err();
-    // Cold qualification is transactional; preserve its rollback evidence as
-    // well as the exact canonical decoder chain underneath that typed context.
-    let failure = actual_error
+    // A malformed read preserves its decoder chain and cannot enter writer preparation.
+    assert!(actual_error
         .downcast_ref::<crate::runtime_db::PersistenceFailure>()
-        .context("cold Summary omitted transaction failure evidence")?;
-    assert_eq!(
-        failure.certainty(),
-        crate::runtime_db::PersistenceCertainty::DefinitelyNotCommitted
-    );
-    assert_eq!(
-        failure.phase(),
-        crate::runtime_db::PersistenceFailurePhase::Callback
-    );
-    assert_eq!(failure.rollback_error(), None);
+        .is_none());
     assert_eq!(actual_error.to_string(), expected_error.to_string());
     assert_eq!(
         actual_error
             .chain()
-            .skip(1)
             .map(ToString::to_string)
             .collect::<Vec<_>>(),
         expected_error

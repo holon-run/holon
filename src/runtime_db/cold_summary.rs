@@ -39,6 +39,23 @@ pub(crate) fn prepare_tx(
     scope: &InputEvidenceScope,
     ledger: &InputEvidenceBudgetLedger,
 ) -> Result<ColdSummaryRead> {
+    snapshot_tx(tx, scope, ledger, true)
+}
+
+pub(crate) fn load_tx(
+    tx: &Transaction<'_>,
+    scope: &InputEvidenceScope,
+    ledger: &InputEvidenceBudgetLedger,
+) -> Result<ColdSummaryRead> {
+    snapshot_tx(tx, scope, ledger, false)
+}
+
+fn snapshot_tx(
+    tx: &Transaction<'_>,
+    scope: &InputEvidenceScope,
+    ledger: &InputEvidenceBudgetLedger,
+    prepare: bool,
+) -> Result<ColdSummaryRead> {
     let limits = ledger.limits();
     let records = usize::try_from(limits.record_limit)?;
     let bytes = usize::try_from(
@@ -47,7 +64,11 @@ pub(crate) fn prepare_tx(
             .checked_add(limits.pending_per_agent_bytes)
             .context("cold Summary limit overflow")?,
     )?;
-    let scheduling = prepare_cold_scheduling_query_tx(
+    let scheduling = (if prepare {
+        prepare_cold_scheduling_query_tx
+    } else {
+        super::scheduling_snapshot::load_cold_scheduling_query_tx
+    })(
         tx,
         scope,
         &SchedulingDomainLoadRequest {
@@ -93,7 +114,11 @@ pub(crate) fn prepare_tx(
         records,
         bytes,
     )?;
-    let tasks = super::task_snapshot::prepare_task_domain_snapshot_with_budget_tx(
+    let tasks = (if prepare {
+        super::task_snapshot::prepare_task_domain_snapshot_with_budget_tx
+    } else {
+        super::task_snapshot::load_task_domain_snapshot_with_budget_tx
+    })(
         tx,
         scope,
         &super::task_snapshot::TaskDomainLoadRequest {
@@ -117,7 +142,11 @@ pub(crate) fn prepare_tx(
     work_request
         .latest_result_work_ids
         .extend(state.current_work_item_id.clone());
-    let work = super::work_snapshot::prepare_work_domain_snapshot_tx(
+    let work = (if prepare {
+        super::work_snapshot::prepare_work_domain_snapshot_tx
+    } else {
+        super::work_snapshot::load_work_domain_snapshot_tx
+    })(
         tx,
         scope,
         &super::work_snapshot::WorkDomainLoadRequest {
@@ -148,13 +177,17 @@ pub(crate) fn prepare_tx(
         byte_limit: bytes,
     };
     let scope_read = ContextDurableRead::new(tx, &scope.agent_id).scope_read()?;
-    let input = match prepare_input_evidence_with_scope_read_tx(
-        tx,
-        scope,
-        request.borrowed(),
-        false,
-        scope_read,
-    )? {
+    let input = if prepare {
+        prepare_input_evidence_with_scope_read_tx(tx, scope, request.borrowed(), false, scope_read)
+    } else {
+        super::input_evidence_snapshot::load_input_evidence_with_scope_read_tx(
+            tx,
+            scope,
+            request.borrowed(),
+            scope_read,
+        )
+    }?;
+    let input = match input {
         InputEvidenceBootstrapSnapshot::Current(current) => current,
         InputEvidenceBootstrapSnapshot::Retired { .. } => {
             anyhow::bail!("cold Summary Input retired")

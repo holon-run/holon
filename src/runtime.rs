@@ -3257,6 +3257,7 @@ impl RuntimeHandle {
             .await
     }
 
+    #[cfg(test)]
     pub(crate) async fn clear_current_turn_external_side_effect_possible(
         &self,
         tool_name: &str,
@@ -6734,6 +6735,21 @@ impl RuntimeHandle {
             crate::runtime_db::prepared_input_evidence::InputEvidenceWrite::Transcript(
                 entry.clone(),
             ),
+        )
+        .await
+    }
+
+    pub(crate) async fn persist_tool_result_evidence(
+        &self,
+        record: &ToolExecutionRecord,
+        event: AuditEvent,
+    ) -> Result<()> {
+        self.persist_prepared_evidence(
+            crate::runtime_db::prepared_input_evidence::InputEvidenceWrite::ToolResult {
+                record: record.clone(),
+                event,
+                barrier: None,
+            },
         )
         .await
     }

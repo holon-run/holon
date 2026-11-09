@@ -3,6 +3,90 @@ use super::*;
 use crate::diagnostics::resource_io::{self, ResourceReadMaterial};
 use crate::runtime::{ColdSchedulerFacts, SchedulerAgentSnapshot, SchedulerObservations};
 
+pub(super) struct ColdObserverCut {
+    owner: crate::runtime::mutation_owner::MutationOwner,
+    token: crate::runtime::mutation_owner::PublicationToken,
+    root: Option<Arc<crate::runtime::resident_state::AgentSnapshot>>,
+    db: RuntimeDb,
+}
+impl ColdObserverCut {
+    pub(super) fn capture(
+        host: &RuntimeHost,
+        identity: &AgentIdentityRecord,
+        db: &RuntimeDb,
+    ) -> Result<Self> {
+        db.check_read_scope()?;
+        let owner = host
+            .inner
+            .mutation_owners
+            .current_owner(&identity.agent_id, identity.incarnation)?;
+        let (token, root) = owner.capture_with_token().map_err(|error| {
+            crate::runtime_db::RuntimeDbRetryableError::new(
+                "cold observer publication",
+                db.path(),
+                error,
+            )
+        })?;
+        Ok(Self {
+            owner,
+            token,
+            root,
+            db: db.clone(),
+        })
+    }
+    pub(super) fn validate_state(&self, state: Option<&AgentState>) -> Result<()> {
+        if let Some(root) = &self.root {
+            if state != Some(root.state.as_ref()) {
+                self.check()?;
+            }
+            anyhow::ensure!(
+                state == Some(root.state.as_ref()),
+                "cold observer State differs from publication"
+            );
+        }
+        Ok(())
+    }
+    pub(super) fn check(&self) -> Result<()> {
+        self.db.check_read_scope()?;
+        let (token, current) = self.owner.capture_with_token().map_err(|error| {
+            crate::runtime_db::RuntimeDbRetryableError::new(
+                "cold observer publication",
+                self.db.path(),
+                error,
+            )
+        })?;
+        let same = match (&self.root, &current) {
+            (None, None) => true,
+            (Some(prior), Some(current)) => Arc::ptr_eq(prior, current),
+            _ => false,
+        };
+        anyhow::ensure!(
+            self.token == token && same,
+            crate::runtime_db::RuntimeDbRetryableError::new(
+                "cold observer publication",
+                self.db.path(),
+                "publication changed during read"
+            )
+        );
+        Ok(())
+    }
+}
+
+pub(super) fn needs_query_preparation(error: &anyhow::Error) -> bool {
+    use crate::runtime::{
+        resident_scheduling::SchedulingReadError, resident_task::TaskReadError,
+        resident_work::WorkReadError,
+    };
+    matches!(error.downcast_ref::<SchedulingReadError>(), Some(SchedulingReadError::IncompleteLive | SchedulingReadError::NeedsPreparation(_)))
+        || matches!(error.downcast_ref::<crate::runtime_db::scheduling_snapshot::SchedulingSnapshotError>(), Some(crate::runtime_db::scheduling_snapshot::SchedulingSnapshotError::NeedsPreparation(_)))
+        || matches!(error.downcast_ref::<WorkReadError>(), Some(WorkReadError::IncompleteLive | WorkReadError::NeedsPreparation(_)))
+        || matches!(error.downcast_ref::<crate::runtime_db::work_snapshot::WorkSnapshotError>(), Some(crate::runtime_db::work_snapshot::WorkSnapshotError::NeedsPreparation(_) | crate::runtime_db::work_snapshot::WorkSnapshotError::CoverageNeedsPreparation))
+        || matches!(error.downcast_ref::<crate::runtime_db::task_snapshot::TaskSnapshotError>(), Some(crate::runtime_db::task_snapshot::TaskSnapshotError::NeedsPreparation(_) | crate::runtime_db::task_snapshot::TaskSnapshotError::CoverageNeedsPreparation))
+        || matches!(error.downcast_ref::<TaskReadError>(), Some(TaskReadError::NeedsPreparation(_) | TaskReadError::IncompleteActive | TaskReadError::IncompleteResults | TaskReadError::IncompleteStops | TaskReadError::IncompleteQuery | TaskReadError::IncompleteStatusProjection))
+        || matches!(error.downcast_ref::<crate::runtime_db::input_evidence_snapshot::InputEvidenceSnapshotError>(), Some(crate::runtime_db::input_evidence_snapshot::InputEvidenceSnapshotError::NeedsPreparation(_)))
+        || matches!(error.downcast_ref::<crate::runtime::resident_input_evidence::InputEvidenceReadError>(), Some(crate::runtime::resident_input_evidence::InputEvidenceReadError::NeedsPreparation(_) | crate::runtime::resident_input_evidence::InputEvidenceReadError::WindowNotPrepared))
+}
+
 pub(super) struct HeldColdSummary {
     pub identity: AgentIdentityRecord,
     pub state: AgentState,
@@ -94,19 +178,48 @@ impl RuntimeHost {
         identity: &AgentIdentityRecord,
         db: &RuntimeDb,
     ) -> Result<HeldColdSummary> {
-        let reservations = self
-            .reserve_mutation_scopes_in(&[(identity.agent_id.clone(), identity.incarnation)], db)
-            .await?;
+        let observation = ColdObserverCut::capture(self, identity, db)?;
         let ledger = &self.inner.input_evidence_budget;
         let scope = crate::runtime::resident_input_evidence::InputEvidenceScope {
             agent_id: identity.agent_id.clone(),
             identity_incarnation: identity.incarnation,
         };
         let acquisition = ResourceReadMaterial::current_or_new(ledger, &scope)?;
+        let read = acquisition.read(|| {
+            db.with_read(|connection| {
+                let tx = connection.transaction()?;
+                let selected = crate::runtime_db::cold_summary::load_tx(&tx, &scope, ledger)?;
+                tx.commit()?;
+                Ok(selected)
+            })
+        });
+        let (selected, reservations, observation) = match read {
+            Ok(selected) => {
+                observation.validate_state(
+                    selected
+                        .domains
+                        .as_ref()
+                        .map(|domains| domains.state.as_ref()),
+                )?;
+                (selected, Vec::new(), Some(observation))
+            }
+            Err(error) if needs_query_preparation(&error) => {
+                let reservations = self
+                    .reserve_mutation_scopes_in(
+                        &[(identity.agent_id.clone(), identity.incarnation)],
+                        db,
+                    )
+                    .await?;
+                let selected = acquisition.read(|| {
+                    db.transaction(|tx| {
+                        crate::runtime_db::cold_summary::prepare_tx(tx, &scope, ledger)
+                    })
+                })?;
+                (selected, reservations, None)
+            }
+            Err(error) => return Err(error),
+        };
         let result = acquisition.read(|| {
-            let selected = db.transaction(|tx| {
-                crate::runtime_db::cold_summary::prepare_tx(tx, &scope, ledger)
-            })?;
             let limits = ledger.limits();
             let bytes = usize::try_from(
                 limits
@@ -193,6 +306,9 @@ impl RuntimeHost {
                 triggers,
             })
         })?;
+        if let Some(observation) = observation {
+            observation.check()?;
+        }
         drop(reservations);
         Ok(result)
     }

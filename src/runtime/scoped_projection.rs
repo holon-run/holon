@@ -6,55 +6,173 @@ use crate::runtime_db::RuntimeDb;
 use tokio::runtime::Handle;
 
 impl RuntimeHandle {
-    /// Accepted State/child query preparation and final capture share one owner.
-    /// Release that parent owner before the caller acquires any child owner.
-    fn with_scoped_scheduler_query<T>(
+    /// Observers pin one Ready cut; they never reserve an execution owner.
+    pub(super) fn capture_observer_root(
         &self,
         db: &RuntimeDb,
-        handle: &Handle,
-        read: impl FnOnce(&resident_state::AgentSnapshot) -> Result<T>,
-    ) -> Result<T> {
-        let reservations = handle.block_on(db.wait_for_memory_lock(
-            mutation_owner::MutationOwner::reserve_all(vec![self.inner.mutation_owner.clone()]),
-        ))??;
+    ) -> Result<Arc<resident_state::AgentSnapshot>> {
+        let root = self.observer_ready_root(db)?;
+        self.prepare_observer_root(root, db)
+    }
+
+    pub(super) async fn capture_observer_root_async(
+        &self,
+        db: &RuntimeDb,
+    ) -> Result<Arc<resident_state::AgentSnapshot>> {
+        let root = self.observer_ready_root(db)?;
+        if !Self::observer_needs_preparation(&root) {
+            return Ok(root);
+        }
+        let runtime = self.clone();
+        let db = db.clone();
+        tokio::task::spawn_blocking(move || runtime.prepare_observer_root(root, &db)).await?
+    }
+
+    pub(super) fn observer_ready_root(
+        &self,
+        db: &RuntimeDb,
+    ) -> Result<Arc<resident_state::AgentSnapshot>> {
+        db.check_read_scope()?;
         let root = self
             .inner
             .mutation_owner
-            .capture()?
-            .context("scoped scheduler query needs a Ready publication")?;
+            .capture()
+            .map_err(|error| match error {
+                mutation_owner::MutationOwnerError::NeedsReconcile(_) => {
+                    anyhow::Error::new(crate::runtime_db::RuntimeDbRetryableError::new(
+                        "observer publication",
+                        db.path(),
+                        error,
+                    ))
+                }
+                error => error.into(),
+            })?
+            .ok_or_else(|| {
+                crate::runtime_db::RuntimeDbRetryableError::new(
+                    "observer publication",
+                    db.path(),
+                    "Ready publication is not available",
+                )
+            })?;
         anyhow::ensure!(
             root.state.id == self.inner.mutation_owner.agent_id()
                 && root.token.identity_incarnation == self.inner.identity_incarnation,
-            "scoped scheduler query publication scope differs"
+            "observer publication scope differs"
         );
-        let needs_preparation = root.scheduling.is_none()
+        Ok(root)
+    }
+
+    fn observer_needs_preparation(root: &resident_state::AgentSnapshot) -> bool {
+        root.scheduling.is_none()
             || root
                 .current
                 .as_ref()
                 .and_then(|current| current.query.as_ref())
-                .is_none();
-        let result = if needs_preparation {
-            drop(root);
-            drop(reservations);
-            // Preparation runs under this query's original cancellation scope,
-            // outside the cancellable owner-lock future. Capture before release
-            // so another metadata ACK cannot invalidate the prepared cut.
-            let mut owner = handle.block_on(self.begin_scoped_projection_preparation(db))?;
-            let current = owner.capture_published_root()?;
-            let needs_preparation = current.scheduling.is_none()
-                || current
-                    .current
-                    .as_ref()
-                    .and_then(|current| current.query.as_ref())
-                    .is_none();
-            drop(current);
-            if needs_preparation {
-                handle.block_on(owner.prepare_current_scheduler_query(Some(db)))?;
-            }
-            read(owner.capture_published_root()?.as_ref())?
-        } else {
-            read(&root)?
+                .is_none()
+    }
+
+    fn prepare_observer_root(
+        &self,
+        root: Arc<resident_state::AgentSnapshot>,
+        db: &RuntimeDb,
+    ) -> Result<Arc<resident_state::AgentSnapshot>> {
+        if !Self::observer_needs_preparation(&root) {
+            return Ok(root);
+        }
+        let scope = resident_input_evidence::InputEvidenceScope {
+            agent_id: root.state.id.clone(),
+            identity_incarnation: root.token.identity_incarnation,
         };
+        let ledger = &self.inner.input_evidence_budget;
+        let limits = ledger.limits();
+        let records = usize::try_from(limits.record_limit)?;
+        let bytes = usize::try_from(
+            limits
+                .history_per_agent_bytes
+                .checked_add(limits.pending_per_agent_bytes)
+                .context("observer material overflow")?,
+        )?;
+        let material =
+            crate::diagnostics::resource_io::ResourceReadMaterial::current_or_new(ledger, &scope)?;
+        let selected = material.read(|| {
+            db.with_read(|connection| {
+                let tx = connection.transaction()?;
+                let facts = crate::runtime_db::context_inputs::ContextDurableRead::new(
+                    &tx,
+                    &scope.agent_id,
+                )
+                .scope_facts()?;
+                anyhow::ensure!(
+                    facts.state.as_deref() == Some(root.state.as_ref()),
+                    "observer canonical State differs from its publication"
+                );
+                let query = crate::runtime_db::current_query::prepare(
+                    &tx,
+                    &scope,
+                    None,
+                    ledger,
+                    (bytes, records),
+                )?;
+                let mut selected = root.as_ref().clone();
+                if selected.scheduling.is_none() {
+                    let loaded =
+                        crate::runtime_db::scheduling_snapshot::load_scheduling_domain_snapshot_tx(
+                            &tx,
+                            &scope,
+                            &crate::runtime_db::scheduling_snapshot::SchedulingDomainLoadRequest {
+                                capture: resident_scheduling::SchedulingCaptureRequest::current(),
+                                record_limit: records,
+                                byte_limit: bytes,
+                            },
+                            ledger,
+                        )?
+                        .require_current()?;
+                    anyhow::ensure!(
+                        loaded.facts.state.as_deref() == Some(root.state.as_ref())
+                            && loaded.facts.identity.as_ref() == Some(query.identity.as_ref())
+                            && loaded.facts.control_revision.is_some(),
+                        "observer Scheduling and State observations differ"
+                    );
+                    selected.scheduling = Some(Arc::new(loaded.resident));
+                }
+                selected.current = Some(Arc::new(
+                    crate::runtime_db::current_read_writes::CommittedCurrentWrites::prepared_query(
+                        query,
+                    ),
+                ));
+                tx.commit()?;
+                Ok(selected)
+            })
+        });
+        if selected.as_ref().err().is_some_and(|error| {
+            error
+                .downcast_ref::<crate::runtime_db::RuntimeDbProtectionError>()
+                .is_some()
+        }) {
+            return selected.map(Arc::new);
+        }
+        // SQL-derived facts belong only to this response. A concurrent ACK or
+        // pending recovery must not splice them into an older published cut.
+        let current = self.observer_ready_root(db)?;
+        if !Arc::ptr_eq(&current, &root) {
+            return Err(crate::runtime_db::RuntimeDbRetryableError::new(
+                "observer publication",
+                db.path(),
+                "publication changed during read",
+            )
+            .into());
+        }
+        Ok(Arc::new(selected?))
+    }
+
+    fn with_scoped_scheduler_query<T>(
+        &self,
+        db: &RuntimeDb,
+        _handle: &Handle,
+        read: impl FnOnce(&resident_state::AgentSnapshot) -> Result<T>,
+    ) -> Result<T> {
+        let root = self.capture_observer_root(db)?;
+        let result = read(&root)?;
         db.check_read_scope()?;
         Ok(result)
     }
@@ -151,22 +269,31 @@ impl RuntimeHandle {
         db: &RuntimeDb,
         handle: &Handle,
     ) -> Result<lifecycle::ChildAgentSummaryObservation> {
-        self.with_scoped_ready_root(db, handle, |root| self.child_summary_from_root(root))
+        self.with_scoped_ready_root(db, handle, |root| self.child_summary_from_root(root, db))
     }
 
     pub(crate) fn acquire_child_agent_summary_observation_scoped(
         &self,
         db: &RuntimeDb,
-        handle: &Handle,
+        _handle: &Handle,
     ) -> Result<lifecycle::ChildAgentSummaryObservation> {
-        self.with_scoped_scheduler_query(db, handle, |root| self.child_summary_from_root(root))
+        let root = self.observer_ready_root(db)?;
+        let root = if root.scheduling.is_none() {
+            self.prepare_observer_root(root, db)?
+        } else {
+            root
+        };
+        let summary = self.child_summary_from_root(&root, db)?;
+        db.check_read_scope()?;
+        Ok(summary)
     }
 
-    fn child_summary_from_root(
+    pub(super) fn child_summary_from_root(
         &self,
         root: &resident_state::AgentSnapshot,
+        db: &RuntimeDb,
     ) -> Result<lifecycle::ChildAgentSummaryObservation> {
-        let read = self.capture_operator_scheduler_from_root(root, self.now())?;
+        let read = self.capture_child_observer_scheduler_from_root(root, self.now(), db)?;
         let material = read.acquisition.clone();
         material.read(|| {
             let active_task_count = task_reads::active_task_count(&read.tasks)?;
@@ -693,9 +820,9 @@ mod tests {
     }
 
     #[tokio::test(flavor = "current_thread")]
-    async fn scoped_host_first_loaded_state_prepares_parent_and_child_current() {
+    async fn scoped_host_first_loaded_state_derives_parent_and_child_current_without_publication() {
         let (_home, host, runtime) = host_backed_test_runtime().await;
-        // Only the read's preparation may publish while these roots are compared.
+        // Hold execution and refresh while comparing the observer's original cut.
         runtime.wait_for_bootstrap().await.unwrap();
         let run_loop = runtime.inner.run_loop_test_gate.write().await;
         runtime.await_initial_resources().await;
@@ -727,14 +854,13 @@ mod tests {
                 .unwrap()
         });
 
-        for first_read in [true, false] {
+        for _ in 0..2 {
             let db = host.runtime_db().with_read_scope(RuntimeDbReadScope::new(
                 Instant::now() + Duration::from_secs(30),
             ));
             let reader = host.clone();
             let read_id = agent_id.clone();
             let handle = Handle::current();
-            let prepared = runtime.inner.mutation_owner.capture().unwrap().unwrap();
             let projection = tokio::task::spawn_blocking(move || {
                 reader.operator_agent_state_projection_scoped(&read_id, 10, 10, &db, &handle)
             })
@@ -753,17 +879,22 @@ mod tests {
                 .any(|summary| summary.identity.agent_id == identity.agent_id));
             let after = runtime.inner.mutation_owner.capture().unwrap().unwrap();
             let child_after = child.inner.mutation_owner.capture().unwrap().unwrap();
-            for ((original, current), event_cursor) in
-                [(&before, &after), (&child_before, &child_after)]
-                    .into_iter()
-                    .zip(event_cursors)
-            {
+            for (reader, original, current, event_cursor) in [
+                (&runtime, &before, &after, event_cursors[0]),
+                (&child, &child_before, &child_after, event_cursors[1]),
+            ] {
+                assert!(Arc::ptr_eq(original, current));
+                assert!(current.current.is_none());
                 assert_eq!(original.state, current.state);
                 assert!(Arc::ptr_eq(
                     original.scheduling.as_ref().unwrap(),
                     current.scheduling.as_ref().unwrap()
                 ));
-                let query = current
+                let observed = reader
+                    .capture_observer_root_async(host.runtime_db())
+                    .await
+                    .unwrap();
+                let query = observed
                     .current
                     .as_ref()
                     .and_then(|current| current.query.as_ref())
@@ -779,47 +910,38 @@ mod tests {
                     },
                 );
             }
-            if !first_read {
-                assert!(Arc::ptr_eq(&prepared, &after));
-            }
         }
         drop((refresh, child_refresh, run_loop, child_loop));
         host.shutdown().await.unwrap();
     }
 
     #[tokio::test(flavor = "current_thread")]
-    async fn scoped_host_unprepared_current_owner_wait_cancels_or_expires_before_retry() {
+    async fn scoped_host_unprepared_current_ignores_owner_but_honors_cancellation_and_deadline() {
         let (_home, host, runtime) = host_backed_test_runtime().await;
         runtime.await_initial_resources().await;
         let refresh = runtime.hold_resource_refresh_for_test().await.unwrap();
         let agent_id = runtime.agent_id().await.unwrap();
         clear_current_for_scoped_host_read(&runtime).await;
         let unprepared = runtime.inner.mutation_owner.capture().unwrap().unwrap();
+        let reservation = runtime.inner.mutation_owner.reserve().await.unwrap();
         for expired in [false, true] {
-            let reservation = runtime.inner.mutation_owner.reserve().await.unwrap();
-            let scope = RuntimeDbReadScope::new(
-                Instant::now()
-                    + if expired {
-                        Duration::from_millis(50)
-                    } else {
-                        Duration::from_secs(30)
-                    },
-            );
+            let scope = RuntimeDbReadScope::new(if expired {
+                Instant::now() - Duration::from_millis(1)
+            } else {
+                Instant::now() + Duration::from_secs(30)
+            });
+            if !expired {
+                scope.cancel();
+            }
             let db = host.runtime_db().with_read_scope(scope.clone());
             let reader = host.clone();
             let read_id = agent_id.clone();
             let handle = Handle::current();
-            let (started, running) = tokio::sync::oneshot::channel();
             let worker = tokio::task::spawn_blocking(move || {
-                let _ = started.send(());
                 reader
                     .operator_agent_state_projection_scoped(&read_id, 10, 10, &db, &handle)
                     .map(|_| ())
             });
-            running.await.unwrap();
-            if !expired {
-                scope.cancel();
-            }
             let error = tokio::time::timeout(Duration::from_secs(5), worker)
                 .await
                 .unwrap()
@@ -830,7 +952,6 @@ mod tests {
                     if error.is::<RuntimeDbRetryableError>()),
                 "{error:?}"
             );
-            drop(reservation);
             assert!(Arc::ptr_eq(
                 &unprepared,
                 &runtime.inner.mutation_owner.capture().unwrap().unwrap()
@@ -841,18 +962,25 @@ mod tests {
         ));
         let reader = host.clone();
         let handle = Handle::current();
-        tokio::task::spawn_blocking(move || {
+        let healthy = tokio::task::spawn_blocking(move || {
             reader.operator_agent_state_projection_scoped(&agent_id, 10, 10, &db, &handle)
-        })
-        .await
-        .unwrap()
-        .unwrap();
+        });
+        tokio::time::timeout(Duration::from_secs(5), healthy)
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        assert!(Arc::ptr_eq(
+            &unprepared,
+            &runtime.inner.mutation_owner.capture().unwrap().unwrap()
+        ));
+        drop(reservation);
         drop(refresh);
         host.shutdown().await.unwrap();
     }
 
     #[tokio::test(flavor = "current_thread")]
-    async fn scoped_loaded_reads_reject_unprepared_current_without_preparation() {
+    async fn scoped_loaded_captures_leave_unprepared_current_unpublished() {
         let harness = LifecycleHarness::new();
         let runtime = harness.runtime();
         runtime.await_initial_resources().await;
@@ -890,7 +1018,7 @@ mod tests {
                 ));
             let reader = runtime.clone();
             let handle = Handle::current();
-            let error = tokio::task::spawn_blocking(move || match operation {
+            let result = tokio::task::spawn_blocking(move || match operation {
                 0 => reader
                     .operator_state_read_projection_scoped(10, 10, &db, &handle)
                     .map(|_| ()),
@@ -899,14 +1027,19 @@ mod tests {
                     .map(|_| ()),
             })
             .await
-            .unwrap()
-            .unwrap_err();
-            assert!(
-                error
-                    .to_string()
-                    .contains("Current scheduler metadata needs preparation"),
-                "{error:#}"
-            );
+            .unwrap();
+            if operation == 0 {
+                let error = result.unwrap_err();
+                assert!(
+                    error
+                        .to_string()
+                        .contains("Current scheduler metadata needs preparation"),
+                    "{error:#}"
+                );
+            } else {
+                // Child observability uses its published bodies and narrow scalars.
+                result.unwrap();
+            }
             assert!(Arc::ptr_eq(
                 &unprepared,
                 &runtime.inner.mutation_owner.capture().unwrap().unwrap()

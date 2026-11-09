@@ -46,13 +46,14 @@ pub(crate) use completion::completion_source_observations_with_scope_tx;
 pub(crate) use completion_writes::{
     finish_work_completion_write_tx, prepare_work_completion_write_tx,
 };
-pub(crate) use loader::{
-    current_recovery_owning_input_roots, preflight_named_work_snapshot_tx,
-    prepare_original_work_recovery_snapshot_tx, prepare_work_domain_snapshot_tx,
-    validate_work_domain_observation_tx, validate_work_domain_observation_with_scope_tx,
-};
 #[cfg(test)]
-pub(crate) use loader::{load_work_domain_snapshot_tx, preflight_work_domain_snapshot_tx};
+pub(crate) use loader::preflight_work_domain_snapshot_tx;
+pub(crate) use loader::{
+    current_recovery_owning_input_roots, load_work_domain_snapshot_tx,
+    preflight_named_work_snapshot_tx, prepare_original_work_recovery_snapshot_tx,
+    prepare_work_domain_snapshot_tx, validate_work_domain_observation_tx,
+    validate_work_domain_observation_with_scope_tx,
+};
 pub(super) use qualification::{
     capture_work_domain_seed_if_ready_tx, capture_work_domain_upgrade_tx,
 };
@@ -102,6 +103,8 @@ const MAX_CLOSURE_DEPTH: usize = 64;
 pub(crate) enum WorkSnapshotError {
     #[error("Work domain requires preparation: {0:?}")]
     NeedsPreparation(WorkKey),
+    #[error("Work selected coverage requires preparation")]
+    CoverageNeedsPreparation,
     #[error("qualified Work canonical record changed outside its original transaction: {0:?}")]
     CanonicalChanged(WorkKey),
     #[error("Work scope is retired")]

@@ -1315,6 +1315,15 @@ pub(crate) fn prepare_input_evidence_with_scope_read_tx(
 ) -> Result<InputEvidenceBootstrapSnapshot> {
     snapshot_request_tx(tx, scope, request, true, original_recovery, Some(read))
 }
+pub(crate) fn load_input_evidence_with_scope_read_tx(
+    tx: &Transaction<'_>,
+    scope: &InputEvidenceScope,
+    request: InputEvidenceLoadRequestView<'_>,
+    read: ContextScopeRead<'_>,
+) -> Result<InputEvidenceBootstrapSnapshot> {
+    snapshot_request_tx(tx, scope, request, false, false, Some(read))
+}
+
 fn snapshot_tx(
     tx: &Transaction<'_>,
     scope: &InputEvidenceScope,

@@ -62,6 +62,9 @@ async fn fleet_loaded_entry_uses_one_ready_cut_without_state_lock_body_sql_or_ro
     let runtime = harness.runtime();
     runtime.await_initial_resources().await;
     let _refresh = runtime.hold_resource_refresh_for_test().await?;
+    let mut prepare = runtime.begin_mutation().await?;
+    prepare.prepare_current_scheduler_query(None).await?;
+    drop(prepare);
     drop(runtime.agent_summary().await?);
     let expected = runtime.agent_list_entry().await?;
     let root = runtime.inner.mutation_owner.capture()?.unwrap();
@@ -120,16 +123,15 @@ async fn fleet_loaded_entry_uses_one_ready_cut_without_state_lock_body_sql_or_ro
 }
 
 #[tokio::test]
-async fn fleet_loaded_entry_owner_wait_observes_cancellation_and_deadline() -> Result<()> {
+async fn fleet_loaded_entry_ignores_reserved_owner_but_observes_cancellation_and_deadline(
+) -> Result<()> {
     use crate::{diagnostics::resource_io::ResourceReadMaterial, runtime_db::RuntimeDbReadScope};
-    use std::{future::poll_fn, future::Future, task::Poll, time::Duration};
-
+    use std::time::{Duration, Instant};
     let harness = LifecycleHarness::new();
     let runtime = harness.runtime();
     runtime.await_initial_resources().await;
     let _refresh = runtime.hold_resource_refresh_for_test().await?;
-    drop(runtime.agent_summary().await?);
-    let root = runtime.inner.mutation_owner.capture()?.unwrap();
+    let root = runtime.capture_observer_root(runtime.runtime_db())?;
     let identity = root
         .current
         .as_ref()
@@ -139,40 +141,35 @@ async fn fleet_loaded_entry_owner_wait_observes_cancellation_and_deadline() -> R
         .unwrap()
         .identity
         .clone();
-    drop(root);
     let phase = ResourceReadMaterial::current_or_new_for_identity(
         &runtime.inner.input_evidence_budget,
         &identity.agent_id,
         identity.incarnation,
     )?;
     let owner = runtime.inner.mutation_owner.reserve().await?;
+    let _agent = runtime.inner.agent.lock().await;
+    tokio::time::timeout(
+        Duration::from_secs(5),
+        runtime.agent_list_entry_read(&identity, &phase, runtime.runtime_db()),
+    )
+    .await??;
     for cancel in [true, false] {
-        let budget = if cancel {
-            Duration::from_secs(30)
+        let deadline = if cancel {
+            Instant::now() + Duration::from_secs(30)
         } else {
-            Duration::from_millis(100)
+            Instant::now() - Duration::from_millis(1)
         };
-        let scope = RuntimeDbReadScope::new(std::time::Instant::now() + budget);
-        let db = runtime.runtime_db().with_read_scope(scope.clone());
-        let mut read = Box::pin(runtime.agent_list_entry_read(&identity, &phase, &db));
-        poll_fn(|cx| {
-            assert!(read.as_mut().poll(cx).is_pending());
-            Poll::Ready(())
-        })
-        .await;
+        let scope = RuntimeDbReadScope::new(deadline);
         if cancel {
             scope.cancel();
         }
-        assert!(tokio::time::timeout(Duration::from_secs(5), read)
-            .await?
+        let db = runtime.runtime_db().with_read_scope(scope);
+        assert!(runtime
+            .agent_list_entry_read(&identity, &phase, &db)
+            .await
             .is_err());
-        assert!(scope.is_cancelled());
     }
-    // Neither interruption needs the unrelated writer to publish or release.
     drop(owner);
-    runtime
-        .agent_list_entry_read(&identity, &phase, runtime.runtime_db())
-        .await?;
     Ok(())
 }
 
@@ -182,6 +179,9 @@ async fn full_summary_ready_cut_avoids_body_sql_agent_lock_and_root_retention() 
     let runtime = harness.runtime();
     runtime.await_initial_resources().await;
     let _refresh = runtime.hold_resource_refresh_for_test().await?;
+    let mut prepare = runtime.begin_mutation().await?;
+    prepare.prepare_current_scheduler_query(None).await?;
+    drop(prepare);
     let first = runtime.agent_summary().await?;
     let root = runtime.inner.mutation_owner.capture()?.unwrap();
     let old_root = Arc::downgrade(&root);
@@ -209,6 +209,7 @@ async fn full_summary_ready_cut_avoids_body_sql_agent_lock_and_root_retention() 
         )?;
         Ok(())
     })?;
+    let _owner = runtime.inner.mutation_owner.reserve().await?;
     let _agent = runtime.inner.agent.lock().await;
     let denied = crate::diagnostics::io_probe::DenyResourceReaders::new();
     let next =
@@ -281,7 +282,7 @@ async fn full_summary_counts_raw_event_metadata_without_decoding_or_qualifying_b
         (summary.recent_brief_count, summary.recent_event_count),
         counts
     );
-    let root = runtime.inner.mutation_owner.capture()?.unwrap();
+    let root = runtime.capture_observer_root(runtime.runtime_db())?;
     let query = root.current.as_ref().unwrap().query.as_ref().unwrap();
     assert!(query
         .capture(

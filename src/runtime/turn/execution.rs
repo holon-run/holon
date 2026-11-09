@@ -4275,15 +4275,8 @@ impl RuntimeHandle {
                                 prepared.command.audit_events.push(tool_executed_event);
                                 *prepared_wait_for = Some(prepared);
                             } else {
-                                runtime.persist_tool_execution_evidence(&record).await?;
                                 runtime
-                                    .append_original_audit_event(tool_executed_event)
-                                    .await?;
-                                runtime
-                                    .clear_current_turn_external_side_effect_possible(
-                                        tool_name.as_str(),
-                                        &record.status,
-                                    )
+                                    .persist_tool_result_evidence(&record, tool_executed_event)
                                     .await?;
                             }
                             Ok(())

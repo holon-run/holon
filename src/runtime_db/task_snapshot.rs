@@ -92,7 +92,8 @@ pub(crate) use loader::{
     prepare_task_output_snapshot_with_budget_tx, validate_task_domain_observation_tx,
 };
 pub(crate) use loader::{
-    preflight_named_task_snapshot_tx, prepare_original_task_recovery_snapshot_with_budget_tx,
+    load_task_domain_snapshot_with_budget_tx, preflight_named_task_snapshot_tx,
+    prepare_original_task_recovery_snapshot_with_budget_tx,
     prepare_task_domain_snapshot_with_budget_tx, validate_task_domain_observation_with_scope_tx,
 };
 pub(crate) use maintenance::{
@@ -153,6 +154,8 @@ const MAX_BYTES: usize = 64 * 1024 * 1024;
 pub(crate) enum TaskSnapshotError {
     #[error("Task domain needs preparation: {0:?}")]
     NeedsPreparation(TaskKey),
+    #[error("Task coverage needs explicit preparation at unchanged revision")]
+    CoverageNeedsPreparation,
     #[error("Task canonical body/projection changed outside original transaction: {0:?}")]
     CanonicalChanged(TaskKey),
     #[error("Task ID belongs to another agent")]

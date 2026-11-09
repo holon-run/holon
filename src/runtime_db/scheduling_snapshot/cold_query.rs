@@ -9,6 +9,27 @@ pub(crate) enum ColdSchedulingQuery {
         guards: Vec<Arc<BudgetViewGuard>>,
     },
 }
+pub(crate) fn load_cold_scheduling_query_tx(
+    tx: &Transaction<'_>,
+    scope: &InputEvidenceScope,
+    request: &SchedulingDomainLoadRequest,
+    ledger: &InputEvidenceBudgetLedger,
+) -> Result<ColdSchedulingQuery> {
+    let has_state: bool = tx.query_row(
+        "SELECT EXISTS(SELECT 1 FROM agent_states WHERE agent_id=?1)",
+        [&scope.agent_id],
+        |row| row.get(0),
+    )?;
+    if has_state {
+        return Ok(ColdSchedulingQuery::Current(Box::new(
+            super::load_scheduling_domain_snapshot_tx(tx, scope, request, ledger)?
+                .require_current()?,
+        )));
+    }
+    // The no-State branch only proves original emptiness; it writes no aliases.
+    prepare_cold_scheduling_query_tx(tx, scope, request, ledger)
+}
+
 pub(crate) fn prepare_cold_scheduling_query_tx(
     tx: &Transaction<'_>,
     scope: &InputEvidenceScope,
