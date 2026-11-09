@@ -162,6 +162,13 @@ SQLite upgrade seed, member qualification, incarnation fencing, and restart
 recovery remain required. JSON fields inside SQLite and current tool/provider
 payloads are not retired storage formats.
 
+The Episode/Work upgrade closure reads and hashes historical bodies
+incrementally. Cumulative historical bytes or record counts do not reject this
+fixed cutover. Its candidate digest inventory remains complete; recent Episode
+selection, identity/content validation, reference deduplication and depth checks
+are unchanged. Ordinary current reads keep their separate bounds. See
+[incremental Episode upgrade](../implementation-decisions/incremental-episode-upgrade.md).
+
 Repository `import_legacy` entrypoints and their domain-import transaction
 wrapper are removed, rather than retained as an alternate import API. Work
 import-write bookkeeping and Task/Timer/Trigger import-inventory writers are

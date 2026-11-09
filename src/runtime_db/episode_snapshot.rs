@@ -94,12 +94,14 @@ mod seed_identity_tests;
 mod seed_timestamp_tests;
 #[path = "episode_snapshot_task.rs"]
 pub(super) mod task_checkpoint;
+#[path = "episode_snapshot_upgrade.rs"]
+mod upgrade;
 #[path = "episode_snapshot_work.rs"]
 pub(super) mod work_checkpoint;
 
 pub(crate) const EPISODE_CONTINUITY_POLICY: i64 = 1;
 pub(crate) const LEGACY_EPISODE_RECENT_CANDIDATES: usize = 12;
-// Upgrade is fail-closed rather than silently truncating mandatory lineage.
+// Current reads are bounded; the one-time upgrade streams complete history.
 const CONTINUITY_MAX_RECORDS: usize = 65_536;
 const CONTINUITY_MAX_PAYLOAD_BYTES: usize = 64 * 1024 * 1024;
 const CONTINUITY_MAX_REF_DEPTH: usize = 64;
@@ -713,24 +715,7 @@ pub(super) fn capture_episode_continuity_upgrade_tx(
     let agent_ids = if queries.is_empty() {
         Vec::new()
     } else {
-        let first_column = if queries[0].starts_with("SELECT owner_agent_id") {
-            "owner_agent_id"
-        } else if queries[0].starts_with("SELECT target_agent_id") {
-            "target_agent_id"
-        } else {
-            "agent_id"
-        };
         let selected = format!("{} ORDER BY 1", queries.join(" UNION "));
-        let (count, bytes): (usize, usize) = tx.query_row(
-            &format!("SELECT COUNT(*),COALESCE(SUM(length(CAST({first_column} AS BLOB))),0) FROM ({selected})"),
-            [], |row| Ok((row.get(0)?, row.get(1)?)),
-        )?;
-        ensure!(
-            count <= CONTINUITY_MAX_RECORDS && bytes <= CONTINUITY_MAX_PAYLOAD_BYTES,
-            EpisodeSnapshotError::ClosureResourceExhausted {
-                limit: "scope inventory"
-            }
-        );
         let mut statement = tx.prepare(&selected)?;
         let rows = statement.query_map([], |row| row.get::<_, String>(0))?;
         rows.collect::<rusqlite::Result<Vec<_>>>()?
@@ -747,12 +732,13 @@ pub(super) fn capture_episode_continuity_upgrade_tx(
         {
             continue;
         }
-        let roots = collect_live_episode_roots_with_schema(tx, &agent_id, Some(&tables))?;
-        let records = if tables.contains("context_episode_anchors") {
-            all_episode_rows(tx, &agent_id)?
-        } else {
-            Vec::new()
-        };
+        let roots = collect_live_episode_roots_with_schema(tx, &agent_id, Some(&tables))
+            .with_context(|| format!("capture upgrade continuity roots for {agent_id}"))?;
+        tracing::info!(
+            agent_id,
+            record_count = roots.record_digests.len(),
+            "captured upgrade continuity root digests"
+        );
         let seed = insert_seed_with_candidates_tx(
             tx,
             &agent_id,
@@ -765,9 +751,11 @@ pub(super) fn capture_episode_continuity_upgrade_tx(
             &roots,
             false,
             captured_at,
-            &records,
+            &[],
         )?;
-        capture_members_tx(tx, &seed.id, "upgrade", &roots, records)?;
+        if tables.contains("context_episode_anchors") {
+            upgrade::capture_episodes(tx, &agent_id, &seed.id, &roots)?;
+        }
         if let Some(identity) = identity.as_ref() {
             insert_legacy_binding_tx(tx, identity, &seed, captured_at)?;
         }
@@ -1152,6 +1140,7 @@ struct EpisodeRow {
     receipted: bool,
 }
 
+#[cfg(test)]
 fn all_episode_rows(connection: &Connection, agent_id: &str) -> Result<Vec<EpisodeRow>> {
     let mut statement = connection.prepare(
         "SELECT e.payload_json, EXISTS (SELECT 1 FROM episode_memory_results r WHERE r.finalized_episode_id = e.episode_id)
@@ -1190,6 +1179,7 @@ fn all_episode_rows(connection: &Connection, agent_id: &str) -> Result<Vec<Episo
     Ok(records)
 }
 
+#[cfg(test)]
 fn capture_members_tx(
     tx: &Transaction<'_>,
     seed_id: &str,
@@ -1235,6 +1225,7 @@ fn capture_members_tx(
     Ok(())
 }
 
+#[cfg(test)]
 fn member_capture_order(records: &[EpisodeRow]) -> Result<Vec<usize>> {
     if records.len() < 2 {
         return Ok(Vec::new());
@@ -1312,6 +1303,7 @@ fn sha256_hex(digest: sha2::digest::Output<Sha256>) -> [u8; 64] {
     hex
 }
 
+#[cfg(test)]
 fn recent_episode_ids<'a>(
     records: impl IntoIterator<Item = &'a EpisodeRow>,
 ) -> [Option<&'a str>; LEGACY_EPISODE_RECENT_CANDIDATES] {
@@ -1344,8 +1336,6 @@ impl RootCollector {
         }
         if self.current_depth > CONTINUITY_MAX_REF_DEPTH {
             self.budget_error = Some("reference depth");
-        } else if self.queued.len() >= CONTINUITY_MAX_RECORDS {
-            self.budget_error = Some("record count");
         } else {
             self.queued.insert(key.clone());
             self.pending.push_back((key.0, key.1, self.current_depth));
@@ -1395,19 +1385,10 @@ impl RootCollector {
         if self.roots.record_digests.contains_key(&key) {
             return Ok(());
         }
-        self.payload_bytes = self.payload_bytes.saturating_add(payload.len());
-        if self.roots.record_digests.len() >= CONTINUITY_MAX_RECORDS
-            || self.payload_bytes > CONTINUITY_MAX_PAYLOAD_BYTES
-        {
-            return Err(EpisodeSnapshotError::ClosureResourceExhausted {
-                limit: if self.payload_bytes > CONTINUITY_MAX_PAYLOAD_BYTES {
-                    "payload bytes"
-                } else {
-                    "record count"
-                },
-            }
-            .into());
-        }
+        self.payload_bytes = self
+            .payload_bytes
+            .checked_add(payload.len())
+            .context("continuity payload bytes overflow")?;
         self.roots
             .record_digests
             .insert(key, bytes_digest(payload.as_bytes()));
@@ -1572,46 +1553,51 @@ fn collect_live_episode_roots_with_schema(
             }
         }
     }
-    for payload in root_payloads(connection, tables, "work_items", "SELECT payload_json FROM work_items WHERE agent_id = ?1 AND (state IN ('open', 'completing') OR EXISTS (SELECT 1 FROM json_each(work_items.payload_json, '$.work_refs') r WHERE json_extract(r.value, '$.status') = 'active'))", agent_id)? {
+    visit_root_payloads(connection, tables, "work_items", "SELECT payload_json FROM work_items WHERE agent_id = ?1 AND (state IN ('open', 'completing') OR EXISTS (SELECT 1 FROM json_each(work_items.payload_json, '$.work_refs') r WHERE json_extract(r.value, '$.status') = 'active'))", agent_id, |payload| {
         let record: WorkItemRecord = serde_json::from_str(&payload)?;
         ensure!(record.agent_id == agent_id, "WorkItem scope projection mismatch");
         collector.digest("work_item", &record.id, &payload)?;
         if matches!(record.state, WorkItemState::Open | WorkItemState::Completing) { collector.work_item(Some(&record.id)); }
         // Even a terminal owner's explicitly Active references remain roots.
         collector.work_record(&record);
-    }
-    for payload in root_payloads(
+        Ok(())
+    })?;
+    visit_root_payloads(
         connection,
         tables,
         "work_item_continuations",
         "SELECT payload_json FROM work_item_continuations WHERE agent_id = ?1 AND state = 'active'",
         agent_id,
-    )? {
-        let record: WorkItemContinuationFrame = serde_json::from_str(&payload)?;
-        ensure!(
-            record.agent_id == agent_id,
-            "continuation scope projection mismatch"
-        );
-        collector.digest("continuation", &record.id, &payload)?;
-        collector.work_item(Some(&record.suspended_work_item_id));
-        collector.work_item(Some(&record.active_work_item_id));
-        collector.optional_ref("turn", record.turn_id.as_deref());
-    }
-    for payload in root_payloads(connection, tables, "wait_conditions", "SELECT payload_json FROM wait_conditions WHERE agent_id = ?1 AND status IN ('active', 'triggered')", agent_id)? {
+        |payload| {
+            let record: WorkItemContinuationFrame = serde_json::from_str(&payload)?;
+            ensure!(
+                record.agent_id == agent_id,
+                "continuation scope projection mismatch"
+            );
+            collector.digest("continuation", &record.id, &payload)?;
+            collector.work_item(Some(&record.suspended_work_item_id));
+            collector.work_item(Some(&record.active_work_item_id));
+            collector.optional_ref("turn", record.turn_id.as_deref());
+            Ok(())
+        },
+    )?;
+    visit_root_payloads(connection, tables, "wait_conditions", "SELECT payload_json FROM wait_conditions WHERE agent_id = ?1 AND status IN ('active', 'triggered')", agent_id, |payload| {
         let record: WaitConditionRecord = serde_json::from_str(&payload)?;
         ensure!(record.agent_id == agent_id, "wait scope projection mismatch");
         collector.digest("wait", &record.id, &payload)?;
         collector.wait_record(&record);
-    }
-    for payload in root_payloads(connection, tables, "tasks", "SELECT payload_json FROM tasks WHERE owner_agent_id = ?1 AND status IN ('queued', 'running', 'cancelling')", agent_id)? {
+        Ok(())
+    })?;
+    visit_root_payloads(connection, tables, "tasks", "SELECT payload_json FROM tasks WHERE owner_agent_id = ?1 AND status IN ('queued', 'running', 'cancelling')", agent_id, |payload| {
         let record: TaskRecord = serde_json::from_str(&payload)?;
         ensure!(record.agent_id == agent_id, "task scope projection mismatch");
         collector.digest("task", &record.id, &payload)?;
         collector.task_record(&record);
-    }
+        Ok(())
+    })?;
     // No terminal_reentry shortcut: queue/settlement/attempt references prove the
     // terminal task's remaining obligation, regardless of that historical flag.
-    for payload in root_payloads(connection, tables, "task_result_settlements", "SELECT payload_json FROM task_result_settlements WHERE agent_id = ?1 AND state IN ('persisted_pending', 'caller_admitted')", agent_id)? {
+    visit_root_payloads(connection, tables, "task_result_settlements", "SELECT payload_json FROM task_result_settlements WHERE agent_id = ?1 AND state IN ('persisted_pending', 'caller_admitted')", agent_id, |payload| {
         let record: super::task_result_settlement::TaskResultSettlementRecord = serde_json::from_str(&payload)?;
         ensure!(record.agent_id == agent_id, "settlement scope projection mismatch");
         collector.digest("settlement", &record.result_identity, &payload)?;
@@ -1619,18 +1605,20 @@ fn collect_live_episode_roots_with_schema(
         collector.reference("task", &record.task_id);
         collector.reference("message", &record.message_id);
         collector.optional_ref("turn", record.source.parent_turn_id());
-    }
-    for payload in root_payloads(connection, tables, "execution_protocol_attempts", "SELECT payload_json FROM execution_protocol_attempts WHERE agent_id = ?1 AND lifecycle_state != 'settled'", agent_id)? {
+        Ok(())
+    })?;
+    visit_root_payloads(connection, tables, "execution_protocol_attempts", "SELECT payload_json FROM execution_protocol_attempts WHERE agent_id = ?1 AND lifecycle_state != 'settled'", agent_id, |payload| {
         let record: ExecutionAttempt = serde_json::from_str(&payload)?;
         ensure!(record.agent_id == agent_id, "execution attempt scope projection mismatch");
         if let Some(tables) = tables {
             if quarantined_unstarted_claim_is_closed(connection, &record, tables)? {
-                continue;
+                return Ok(());
             }
         }
         collector.digest("attempt", &record.attempt_id, &payload)?;
         collector.attempt_record(&record);
-    }
+        Ok(())
+    })?;
     if root_table_available(tables, "execution_protocol_work_items") {
         let mut statement = connection.prepare("SELECT work_item_id, payload_json FROM execution_protocol_work_items WHERE agent_id = ?1 AND lifecycle_state != 'terminal'")?;
         let records = statement.query_map([agent_id], |row| {
@@ -1674,10 +1662,11 @@ fn collect_live_episode_roots_with_schema(
             collector.reference("message", &id);
         }
     }
-    for payload in root_payloads(connection, tables, "turn_records", "SELECT payload_json FROM turn_records WHERE agent_id = ?1 AND json_extract(payload_json, '$.terminal') IS NULL", agent_id)? {
+    visit_root_payloads(connection, tables, "turn_records", "SELECT payload_json FROM turn_records WHERE agent_id = ?1 AND json_extract(payload_json, '$.terminal') IS NULL", agent_id, |payload| {
         let record: TurnRecord = serde_json::from_str(&payload)?;
         collector.reference("turn", &record.turn_id);
-    }
+        Ok(())
+    })?;
     expand_episode_root_refs(connection, agent_id, &mut collector, tables)?;
     let (work, input_digests) = work_checkpoint::capture(
         connection,
@@ -1842,37 +1831,32 @@ fn root_table_available(tables: Option<&BTreeSet<String>>, table: &str) -> bool 
     tables.is_none_or(|tables| tables.contains(table))
 }
 
-fn root_payloads(
+fn visit_root_payloads(
     connection: &Connection,
     tables: Option<&BTreeSet<String>>,
     table: &str,
     sql: &str,
     agent_id: &str,
-) -> Result<Vec<String>> {
+    mut visit: impl FnMut(&str) -> Result<()>,
+) -> Result<()> {
     if !root_table_available(tables, table) {
-        return Ok(Vec::new());
+        return Ok(());
     }
-    payloads(connection, sql, agent_id)
+    let mut statement = connection.prepare(sql)?;
+    let mut rows = statement.query([agent_id])?;
+    while let Some(row) = rows.next()? {
+        visit(row.get_ref(0)?.as_str()?)?;
+    }
+    Ok(())
 }
+#[cfg(test)]
 
 fn payloads(connection: &Connection, sql: &str, agent_id: &str) -> Result<Vec<String>> {
     let mut statement = connection.prepare(sql)?;
     let rows = statement.query_map([agent_id], |row| row.get::<_, String>(0))?;
     let mut payloads = Vec::new();
-    let mut bytes = 0usize;
     for row in rows {
         let payload = row?;
-        bytes = bytes.saturating_add(payload.len());
-        if payloads.len() >= CONTINUITY_MAX_RECORDS || bytes > CONTINUITY_MAX_PAYLOAD_BYTES {
-            return Err(EpisodeSnapshotError::ClosureResourceExhausted {
-                limit: if bytes > CONTINUITY_MAX_PAYLOAD_BYTES {
-                    "payload bytes"
-                } else {
-                    "record count"
-                },
-            }
-            .into());
-        }
         payloads.push(payload);
     }
     Ok(payloads)
@@ -2372,6 +2356,75 @@ mod tests {
                 2
             );
         }
+    }
+
+    #[test]
+    fn incremental_upgrade_matches_original_candidates_and_member_qualification() {
+        let fixture = Fixture::legacy(|tx| {
+            upsert_agent_identity_tx(tx, &identity("agent-a")).unwrap();
+            let mut work = WorkItemRecord::new("agent-a", "live work", WorkItemState::Open);
+            work.id = "live-work".into();
+            insert_work(tx, &work);
+            for index in 0..30 {
+                let id = format!("episode-\"界-{index:02}");
+                let mut row = episode(
+                    "agent-a",
+                    &id,
+                    index % 4,
+                    (index % 5 == 0).then_some("live-work"),
+                );
+                // Payload timestamps, not the SQL textual sort order, select recent candidates.
+                row.created_at = time() + chrono::Duration::seconds((index % 3) as i64);
+                insert_episode(tx, &row);
+            }
+            import_complete(tx);
+        });
+        fixture.db.transaction(|tx| {
+            let roots = collect_live_episode_roots(tx, "agent-a")?;
+            let records = all_episode_rows(tx, "agent-a")?;
+            let expected = insert_seed_with_candidates_tx(tx, "reference-agent", None,
+                "upgrade_unbound", &roots, false, time(), &records)?;
+            capture_members_tx(tx, &expected.id, "upgrade", &roots, records)?;
+            let actual: String = tx.query_row(
+                "SELECT seed_id FROM episode_continuity_seeds WHERE agent_id='agent-a'", [], |r| r.get(0))?;
+            let candidates = |seed: &str| -> Result<String> {
+                Ok(tx.query_row("SELECT candidate_payloads_json FROM episode_continuity_seeds WHERE seed_id=?1", [seed], |r|r.get(0))?)
+            };
+            assert_eq!(candidates(&actual)?, candidates(&expected.id)?);
+            let members = |seed: &str| -> Result<Vec<(String,String,String)>> {
+                let mut q = tx.prepare("SELECT episode_id,content_digest,qualification_json FROM episode_continuity_members WHERE seed_id=?1 ORDER BY episode_id")?;
+                let rows = q.query_map([seed], |r|Ok((r.get(0)?,r.get(1)?,r.get(2)?)))?;
+                Ok(rows.collect::<rusqlite::Result<_>>()?)
+            };
+            assert_eq!(members(&actual)?, members(&expected.id)?);
+            Ok(())
+        }).unwrap();
+    }
+
+    #[test]
+    fn incremental_upgrade_preserves_history_above_former_payload_limit() {
+        let fixture = Fixture::legacy(|tx| {
+            upsert_agent_identity_tx(tx, &identity("agent-a")).unwrap();
+            let body = "x".repeat(1024 * 1024);
+            for index in 0..65 {
+                let mut row = episode("agent-a", &format!("episode-{index:03}"), index, None);
+                row.work_summary = Some(body.clone());
+                insert_episode(tx, &row);
+            }
+            import_complete(tx);
+        });
+        fixture.db.read_for_preparation(|tx| {
+            let candidates: String = tx.query_row("SELECT candidate_payloads_json FROM episode_continuity_seeds WHERE agent_id='agent-a'", [], |r|r.get(0))?;
+            let candidates: BTreeMap<String,String> = serde_json::from_str(&candidates)?;
+            assert_eq!(candidates.len(), 65);
+            let members: usize = tx.query_row("SELECT COUNT(*) FROM episode_continuity_members", [], |r|r.get(0))?;
+            assert_eq!(members, LEGACY_EPISODE_RECENT_CANDIDATES);
+            Ok(())
+        }).unwrap();
+        assert_eq!(
+            fixture.current("agent-a", 1, 30).episodes.len(),
+            LEGACY_EPISODE_RECENT_CANDIDATES
+        );
     }
 
     #[test]
@@ -3196,7 +3249,7 @@ mod tests {
     }
 
     #[test]
-    fn mandatory_closure_budget_fails_explicitly_instead_of_truncating() {
+    fn mandatory_closure_checks_depth_without_rejecting_cumulative_history() {
         let mut collector = RootCollector {
             current_depth: CONTINUITY_MAX_REF_DEPTH + 1,
             ..Default::default()
@@ -3211,13 +3264,20 @@ mod tests {
         );
         let mut collector = RootCollector::default();
         collector.payload_bytes = CONTINUITY_MAX_PAYLOAD_BYTES;
-        let error = collector.digest("message", "must-keep", "x").unwrap_err();
-        assert_eq!(
-            error.downcast_ref::<EpisodeSnapshotError>(),
-            Some(&EpisodeSnapshotError::ClosureResourceExhausted {
-                limit: "payload bytes"
-            })
-        );
+        collector.digest("message", "must-keep", "x").unwrap();
+        assert_eq!(collector.payload_bytes, CONTINUITY_MAX_PAYLOAD_BYTES + 1);
+        assert!(collector
+            .roots
+            .record_digests
+            .contains_key("message:must-keep"));
+        for index in 0..=CONTINUITY_MAX_RECORDS {
+            let id = format!("history-{index}");
+            collector.reference("message", &id);
+            collector.digest("message", &id, "history").unwrap();
+        }
+        collector.ensure_budget().unwrap();
+        assert!(collector.roots.record_digests.len() > CONTINUITY_MAX_RECORDS);
+        assert!(collector.pending.len() > CONTINUITY_MAX_RECORDS);
     }
     #[test]
     fn upgrade_missing_historical_table_freezes_absence_without_late_adoption() {
@@ -3633,7 +3693,7 @@ mod tests {
     }
 
     #[test]
-    fn absent_work_manifest_is_not_observed_no_result_and_combined_body_budget_is_strict() {
+    fn absent_work_manifest_is_not_observed_no_result_and_history_bytes_do_not_reject_capture() {
         let fixture = Fixture::legacy(|tx| {
             upsert_agent_identity_tx(tx, &identity("agent-a")).unwrap();
             upsert_agent_state_tx(tx, &state("agent-a")).unwrap();
@@ -3645,8 +3705,7 @@ mod tests {
             import_complete(tx);
         });
         fixture.db.transaction(|tx| {
-            let error = work_checkpoint::capture(tx, "agent-a", None, &EpisodeContinuityRoots::default(), CONTINUITY_MAX_PAYLOAD_BYTES, true).unwrap_err();
-            assert_eq!(error.downcast_ref::<EpisodeSnapshotError>(), Some(&EpisodeSnapshotError::ClosureResourceExhausted { limit: "payload bytes" }));
+            work_checkpoint::capture(tx, "agent-a", None, &EpisodeContinuityRoots::default(), CONTINUITY_MAX_PAYLOAD_BYTES, true)?;
             let (seed, payload): (String, String) = tx.query_row("SELECT seed_id,roots_json FROM episode_continuity_seeds WHERE agent_id='agent-a'", [], |row|Ok((row.get(0)?,row.get(1)?)))?;
             let mut old: serde_json::Value = serde_json::from_str(&payload)?;
             old.as_object_mut().unwrap().remove("work_domain_checkpoint");

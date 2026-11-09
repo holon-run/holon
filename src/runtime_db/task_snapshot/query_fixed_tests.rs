@@ -48,6 +48,54 @@ fn fixed(tx: &Transaction<'_>, phase: &str) -> Result<queries::TaskQueryInventor
 }
 
 #[test]
+fn fixed_message_upgrade_accepts_exact_legacy_timestamp_without_accepting_drift() -> Result<()> {
+    use crate::types::{
+        AuthorityClass, MessageBody, MessageEnvelope, MessageKind, MessageOrigin, Priority,
+    };
+    for stored in [
+        "2026-10-01T00:00:00.123456Z",
+        "2026-10-01T08:00:00.123456+08:00",
+    ] {
+        let (_home, db) = legacy(true, |tx| {
+            let mut source = MessageEnvelope::new(
+                "task-agent",
+                MessageKind::TaskResult,
+                MessageOrigin::Task {
+                    task_id: "old-task".into(),
+                },
+                AuthorityClass::RuntimeInstruction,
+                Priority::Normal,
+                MessageBody::Text {
+                    text: "old result".into(),
+                },
+            );
+            source.id = "legacy-precision".into();
+            source.created_at = "2026-10-01T00:00:00.123456Z".parse()?;
+            super::super::evidence::append_message_tx(tx, &source)?;
+            tx.execute(
+                "UPDATE messages SET created_at=?1 WHERE evidence_id=?2",
+                params![stored, source.id],
+            )?;
+            Ok(())
+        })?;
+        db.transaction(|tx| {
+            let inventory = fixed(tx, "upgrade")?;
+            assert_eq!(inventory.message_count, 1);
+            let fingerprint: String = tx.query_row("SELECT fingerprint_json FROM task_query_fixed_messages WHERE inventory_id=?1 AND evidence_id='legacy-precision'", [&inventory.id], |row|row.get(0))?;
+            assert_eq!(serde_json::from_str::<serde_json::Value>(&fingerprint)?["created_at"], stored);
+            tx.execute("UPDATE messages SET created_at='2026-10-01T00:00:00.123457Z' WHERE evidence_id='legacy-precision'", [])?;
+            let error = super::super::input_evidence_snapshot::fixed_task_query_message_on(tx, "task-agent", "legacy-precision").unwrap_err();
+            assert!(error.to_string().contains("normalized header differs"));
+            // The existing millisecond projection is still accepted independently.
+            tx.execute("UPDATE messages SET created_at='2026-10-01T00:00:00.123Z' WHERE evidence_id='legacy-precision'", [])?;
+            super::super::input_evidence_snapshot::fixed_task_query_message_on(tx, "task-agent", "legacy-precision")?;
+            Ok(())
+        })?;
+    }
+    Ok(())
+}
+
+#[test]
 fn original_query_inventory_qualifies_only_fixed_old_task_without_expanding_resident_window(
 ) -> Result<()> {
     let (_home, db) = legacy(true, |tx| {

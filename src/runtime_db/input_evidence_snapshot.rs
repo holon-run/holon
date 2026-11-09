@@ -2791,8 +2791,11 @@ pub(in crate::runtime_db) fn fixed_task_query_message_on(
         message.id == id
             && message.agent_id == agent
             && message.message_seq == fingerprint.sequence
-            && crate::runtime_db::repositories::timestamp(message.created_at)
-                == fingerprint.created_at,
+            && (crate::runtime_db::repositories::timestamp(message.created_at)
+                == fingerprint.created_at
+                // Older rows can retain exact sub-millisecond RFC3339 timestamps.
+                || DateTime::parse_from_rfc3339(&fingerprint.created_at)
+                    .is_ok_and(|stored| stored == message.created_at)),
         "fixed Task query Message normalized header differs"
     );
     let digest = bytes_digest(raw.as_bytes());
