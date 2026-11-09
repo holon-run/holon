@@ -232,8 +232,7 @@ async fn original_stop_owner_availability_is_same_view_without_ready_or_successo
     Ok(())
 }
 #[tokio::test]
-async fn original_stop_owner_identity_is_budgeted_before_its_json_or_state_scalar_observer(
-) -> Result<()> {
+async fn original_stop_owner_identity_rejects_malformed_json_without_size_quota() -> Result<()> {
     let (_home, host) = test_host();
     let (original, _source) = source(&host)?;
     host.runtime_db().connection()?.execute(
@@ -248,15 +247,14 @@ async fn original_stop_owner_identity_is_budgeted_before_its_json_or_state_scala
         .read_original_task_stop_metadata(&original, &tiny)
         .await
         .err()
-        .context("oversize bad identity")?;
-    assert!(matches!(
-        error.downcast_ref::<crate::runtime_db::task_snapshot::TaskSnapshotError>(),
-        Some(
-            crate::runtime_db::task_snapshot::TaskSnapshotError::ResourceExhausted(
-                "original Stop owner identity"
-            )
-        )
-    ));
+        .context("malformed identity must still fail without a byte quota")?;
+    assert!(
+        matches!(
+            error.downcast_ref::<rusqlite::Error>(),
+            Some(rusqlite::Error::SqliteFailure(_, Some(message))) if message.contains("malformed JSON")
+        ),
+        "{error:#}"
+    );
     assert_eq!(host.inner.input_evidence_budget.report()?.owned, before);
     // Discovery failed before any phase ACK; no Ready or business effects.
     let owner = host
@@ -313,8 +311,7 @@ async fn finished_stop_host_read_recovers_terminal_initial_ack_and_keeps_exact_o
 }
 
 #[tokio::test]
-async fn finished_stop_host_read_bounds_before_clone_and_preserves_original_after_failure(
-) -> Result<()> {
+async fn finished_stop_host_read_ignores_byte_quota_and_preserves_exact_original() -> Result<()> {
     let (_home, host) = test_host();
     let runtime = host.default_runtime().await?;
     let finished = runtime
@@ -323,26 +320,20 @@ async fn finished_stop_host_read_bounds_before_clone_and_preserves_original_afte
     let before = host.inner.input_evidence_budget.report()?.owned;
     let mut tiny = request();
     tiny.byte_limit = 1;
-    let error = host
+    let current = host
         .bridge()
         .read_finished_original_task_stop_attempt(&finished, &tiny)
-        .await
-        .err()
-        .context("selector budget must reject before owner/read")?;
-    assert!(matches!(
-        error.downcast_ref::<crate::runtime_db::task_snapshot::TaskSnapshotError>(),
-        Some(
-            crate::runtime_db::task_snapshot::TaskSnapshotError::ResourceExhausted(
-                "finished original Stop selectors"
-            )
-        )
-    ));
+        .await?
+        .context("byte quota must not reject exact original Stop selectors")?;
+    assert_eq!(current.record().prepared, *finished.prepared());
+    assert!(!current.record().progress.is_pending());
+    drop(current);
     assert_eq!(host.inner.input_evidence_budget.report()?.owned, before);
     let current = host
         .bridge()
         .read_finished_original_task_stop_attempt(&finished, &request())
         .await?
-        .context("failed budget must not release original responsibility")?;
+        .context("reading must not release original responsibility")?;
     assert_eq!(current.record().prepared, *finished.prepared());
     assert!(!current.record().progress.is_pending());
     drop(current);
