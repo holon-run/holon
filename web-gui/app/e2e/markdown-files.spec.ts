@@ -208,8 +208,8 @@ test("brief and live assistant keep the same absolute references; relative refer
     await expect(block.getByRole("link", { name: "Relative", exact: true })).toHaveCount(0);
   }
   expect(batches.flat().some((ref) => ref.type === "relative_path")).toBe(false);
-  await page.locator(".sidebar").getByRole("button", { name: /other-agent posture:/ }).click();
-  await page.locator(".sidebar").getByRole("button", { name: /bootstrap-agent posture:/ }).click();
+  await page.locator(".sidebar").getByRole("button", { name: /^other-agent\b/ }).click();
+  await page.locator(".sidebar").getByRole("button", { name: /^bootstrap-agent\b/ }).click();
   await expect(page.locator('[data-turn-id="done"]').getByRole("link", { name: "Historical", exact: true })).toHaveAttribute("href", preview(targetName));
   await page.locator('[data-turn-id="done"]').getByRole("link", { name: "Historical", exact: true }).click();
   await expect(page.locator(".side-panel .file-browser-markdown")).toContainText("Worktree contents");
