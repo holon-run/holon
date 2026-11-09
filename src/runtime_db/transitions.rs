@@ -2036,17 +2036,10 @@ fn startup_input_recovery_targets_tx(
             }
         }
         if !keys.contains(&key) {
-            anyhow::ensure!(
-                keys.len() < 65_536,
-                "startup input metadata count exceeds budget"
-            );
             key_bytes = key_bytes
                 .checked_add(key.id.len() + 32)
                 .context("startup metadata bytes overflow")?;
-            anyhow::ensure!(
-                key_bytes <= 64 * 1024 * 1024,
-                "startup input metadata bytes exceeds budget"
-            );
+
             keys.insert(key);
         }
         Ok(())
@@ -2081,10 +2074,7 @@ fn startup_input_recovery_targets_tx(
             add(Key::new(Family::WorkExecution, work_item_id))?;
         }
     }
-    anyhow::ensure!(
-        keys.len() <= 65_536,
-        "startup recovery input footprint exceeds fixed preparation limit"
-    );
+
     Ok(keys.into_iter().collect())
 }
 
@@ -2136,16 +2126,13 @@ impl RuntimeTransitionRepository<'_> {
             &turn.turn_id,
         )?;
         if self.input_scope.is_some() && turn.terminal.is_some() {
-            let mut statement=tx.prepare("SELECT evidence_id FROM tool_executions WHERE agent_id=?1 AND turn_id=?2 AND json_extract(payload_json,'$.status')='deferred' ORDER BY evidence_id LIMIT 65537")?;
+            let mut statement=tx.prepare("SELECT evidence_id FROM tool_executions WHERE agent_id=?1 AND turn_id=?2 AND json_extract(payload_json,'$.status')='deferred' ORDER BY evidence_id")?;
             let ids = statement
                 .query_map(rusqlite::params![turn.agent_id, turn.turn_id], |row| {
                     row.get::<_, String>(0)
                 })?
                 .collect::<rusqlite::Result<Vec<_>>>()?;
-            anyhow::ensure!(
-                ids.len() <= 65536,
-                "terminal tool input preflight exceeds preparation limit"
-            );
+
             for id in ids {
                 self.validate_input_key_tx(
                     tx,

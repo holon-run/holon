@@ -18,8 +18,6 @@ pub(crate) struct DispatchMemoryTransactionBudget {
     final_material: Option<Arc<DispatchAuditMaterial>>,
     bytes: usize,
     records: usize,
-    byte_limit: usize,
-    record_limit: usize,
     state_material: usize,
     adapter_material: (usize, usize),
     protocol_material: (usize, usize),
@@ -135,7 +133,7 @@ impl DispatchMemoryTransactionBudget {
     pub(crate) fn prepare_tx(
         tx: &Transaction<'_>,
         memory: &DispatchMemoryIntent,
-        request: &super::super::work_snapshot::WorkDomainLoadRequest,
+        _request: &super::super::work_snapshot::WorkDomainLoadRequest,
         ledger: &InputEvidenceBudgetLedger,
     ) -> Result<Self> {
         let scope = memory.binding_scope();
@@ -146,8 +144,6 @@ impl DispatchMemoryTransactionBudget {
             final_material: None,
             bytes: 0,
             records: 0,
-            byte_limit: request.byte_limit.min(MAX_METADATA_BYTES),
-            record_limit: request.record_limit.min(MAX_METADATA_RECORDS),
             state_material: 0,
             adapter_material: (0, 0),
             protocol_material: (0, 0),

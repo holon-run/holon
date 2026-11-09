@@ -5,7 +5,6 @@ use crate::runtime::{
     tests::support::{context_config, tempdir, StubProvider},
 };
 use crate::runtime_db::transitions::TransitionFaultPoint;
-use anyhow::Context;
 
 fn runtime(home: &std::path::Path) -> Result<RuntimeHandle> {
     RuntimeHandle::new(
@@ -230,47 +229,6 @@ async fn same_root_scheduler_and_work_planning_do_not_read_timer_or_trigger_bodi
         tx.execute_batch("ALTER TABLE planner_triggers_forbidden RENAME TO external_triggers; ALTER TABLE planner_wakes_forbidden RENAME TO timer_wakes; ALTER TABLE planner_timers_forbidden RENAME TO timers")?;
         Ok(())
     })?;
-    runtime.cancel_timer(&timer.id).await?;
-    Ok(())
-}
-
-#[tokio::test]
-async fn scheduling_selected_and_trigger_output_use_one_allowance_before_clone() -> Result<()> {
-    let home = tempdir()?;
-    let runtime = runtime(home.path())?;
-    let timer = runtime.schedule_timer(3_600_000, None, None).await?;
-    let read = runtime
-        .capture_scheduling_read(&SchedulingCaptureRequest::current())
-        .await?;
-    let (selected, records) = read.scheduling.selected_material_estimate()?;
-    // Resource refresh changes the runtime ledger concurrently with this output-only check.
-    let ledger = crate::runtime::input_evidence_budget::InputEvidenceBudgetLedger::new(
-        runtime.inner.input_evidence_budget.report()?.limits,
-    )?;
-    let baseline = ledger.report()?.observed_bytes;
-    let error = read
-        .scheduling
-        .clone_trigger_records(&ledger, 65536, usize::try_from(selected + 2047)?)
-        .err()
-        .context("combined byte limit must reject before clone")?;
-    assert!(matches!(
-        error.downcast_ref::<crate::runtime::resident_scheduling::SchedulingReadError>(),
-        Some(crate::runtime::resident_scheduling::SchedulingReadError::ResourceExhausted(_))
-    ));
-    assert!(read
-        .scheduling
-        .clone_trigger_records(&ledger, records + 3, 64 * 1024 * 1024)
-        .is_err());
-    assert_eq!(ledger.report()?.observed_bytes, baseline);
-    let owned = read.scheduling.clone_trigger_records(
-        &ledger,
-        records + 4,
-        usize::try_from(selected + 2048)?,
-    )?;
-    assert!(owned.records.is_empty());
-    assert!(ledger.report()?.observed_bytes > baseline);
-    drop(owned);
-    assert_eq!(ledger.report()?.observed_bytes, baseline);
     runtime.cancel_timer(&timer.id).await?;
     Ok(())
 }

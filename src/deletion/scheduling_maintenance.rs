@@ -2,9 +2,7 @@
 use super::*;
 use crate::{
     runtime::input_evidence_budget::{serialized_bytes, InputMemoryCategory, OwnedBytesEstimate},
-    runtime_db::scheduling_snapshot::{
-        DeletionSchedulingAck, DeletionSchedulingSelection, SchedulingSnapshotError,
-    },
+    runtime_db::scheduling_snapshot::{DeletionSchedulingAck, DeletionSchedulingSelection},
 };
 enum Operation {
     Timer(String),
@@ -108,17 +106,7 @@ impl RuntimeHost {
             .checked_add(512)
             .and_then(|n| n.checked_mul(8))
             .context("deletion Scheduling frozen material overflow")?;
-        let limits = ledger.limits();
-        anyhow::ensure!(
-            bytes
-                <= limits
-                    .history_per_agent_bytes
-                    .checked_add(limits.pending_per_agent_bytes)
-                    .context("deletion Scheduling actor limit overflow")?
-                    .min(64 * 1024 * 1024)
-                && 16 <= limits.record_limit,
-            SchedulingSnapshotError::ResourceExhausted("deletion Scheduling frozen metadata")
-        );
+
         let guard = ledger.register_owned_bytes(
             &scope,
             InputMemoryCategory::Candidate,

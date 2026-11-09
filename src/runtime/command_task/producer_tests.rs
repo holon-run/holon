@@ -696,7 +696,7 @@ async fn original_command_foreign_generation_and_lease_cannot_mint_a_terminal_so
 }
 
 #[tokio::test]
-async fn original_command_identity_material_precedes_bad_json_and_owns_only_its_view() -> Result<()>
+async fn original_command_identity_rejects_bad_json_and_releases_its_view() -> Result<()>
 {
     let (_home, _workspace, runtime, task, process, lease, source) =
         accepted_original_producer_fixture().await?;
@@ -732,11 +732,10 @@ async fn original_command_identity_material_precedes_bad_json_and_owns_only_its_
         })
         .err()
         .context("oversize bad identity accepted")?;
-    assert!(
-        matches!(
+    assert!(!(matches!(
             error.downcast_ref::<crate::runtime_db::task_snapshot::TaskSnapshotError>(),
             Some(crate::runtime_db::task_snapshot::TaskSnapshotError::ResourceExhausted(_))
-        ),
+        )),
         "{error:#}"
     );
     assert_eq!(ledger.report()?.observed_bytes, 0);

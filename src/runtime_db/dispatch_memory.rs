@@ -81,7 +81,6 @@ CREATE INDEX IF NOT EXISTS idx_dispatch_memory_unfinished
   WHERE state != 'done';
 "#;
 
-const MAX_METADATA_RECORDS: usize = 65_536;
 const MAX_METADATA_BYTES: usize = 64 * 1024 * 1024;
 
 #[derive(Debug, thiserror::Error)]

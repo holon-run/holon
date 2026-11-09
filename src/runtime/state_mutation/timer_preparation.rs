@@ -11,7 +11,6 @@ use crate::runtime::{
 };
 struct TimerReadSelector {
     request: SchedulingCaptureRequest,
-    bytes: usize,
     record_limit: usize,
     byte_limit: usize,
     _material: Arc<BudgetViewGuard>,
@@ -47,7 +46,6 @@ impl RuntimeMutation {
                     timer_id,
                 )]),
             },
-            bytes,
             record_limit,
             byte_limit,
             _material: material,

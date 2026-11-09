@@ -147,16 +147,6 @@ const WAKE_SQL: &str = "SELECT payload_json
                    AND recovery_epoch = 0 AND recovery_attempts = 0
                    AND next_recheck_at IS NOT NULL";
 
-#[cfg(test)]
-#[derive(Debug, thiserror::Error)]
-#[error("TaskResult footprint ResourceExhausted: {records}/{record_limit} records, {bytes}/{byte_limit} bytes")]
-pub(crate) struct TaskResultFootprintExhausted {
-    pub records: usize,
-    pub bytes: usize,
-    pub record_limit: usize,
-    pub byte_limit: usize,
-}
-
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct TaskResultWriteLimits {
     pub record_limit: usize,

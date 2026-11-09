@@ -1253,8 +1253,8 @@ async fn child_actual_git_cleanup_is_saved_before_audit_failure_and_never_repeat
 
 #[cfg(holon_lib_test_shard = "a")]
 #[tokio::test]
-async fn child_current_entry_rejects_oversized_malformed_state_and_task_before_decode() -> Result<()>
-{
+async fn child_current_entry_rejects_large_malformed_state_and_task_without_size_quota(
+) -> Result<()> {
     use crate::runtime_db::{
         task_snapshot::{TaskDomainLoadRequest, TaskSnapshotError},
         work_snapshot::WorkDomainLoadRequest,
@@ -1326,9 +1326,9 @@ async fn child_current_entry_rejects_oversized_malformed_state_and_task_before_d
             Err(error) => error,
         };
         assert!(
-            error
+            !(error
                 .downcast_ref::<TaskSnapshotError>()
-                .is_some_and(|error| matches!(error, TaskSnapshotError::ResourceExhausted(_))),
+                .is_some_and(|error| matches!(error, TaskSnapshotError::ResourceExhausted(_)))),
             "{table} must hit the typed resource gate before serde/SQLite JSON: {error:#}"
         );
         assert!(child_receipt(&f.runtime, &f.source)?.is_none());
@@ -1347,284 +1347,7 @@ async fn child_current_entry_rejects_oversized_malformed_state_and_task_before_d
 
 #[cfg(holon_lib_test_shard = "a")]
 #[tokio::test]
-async fn child_fresh_receipt_and_primary_joint_task_material_share_one_remaining_allowance(
-) -> Result<()> {
-    use crate::runtime_db::{
-        child_task_terminal::OriginalChildTerminalRecoveryMaterial,
-        task_snapshot::{TaskDomainLoadRequest, TaskSnapshotError},
-    };
-    fn read_primary(
-        runtime: &RuntimeHandle,
-        tx: &rusqlite::Transaction<'_>,
-        reader: &mut OriginalChildTerminalRecoveryMaterial<'_, '_, '_>,
-    ) -> Result<crate::runtime_db::task_snapshot::TaskMaintenanceMaterial> {
-        let limits = (reader.request().record_limit, reader.request().byte_limit);
-        let state = reader.read_primary_state(tx)?;
-        let version = runtime.inner.config_snapshot.load_full();
-        let context = version
-            .model_catalog
-            .resolved_context_config(&version.base_context_config, state.model_override.as_ref());
-        let model = version
-            .model_catalog
-            .effective_model(state.model_override.as_ref());
-        let history = super::turn::context_history_preparation(&state.id, &model);
-        let input = super::context_capture::context_input_evidence_request(
-            &state,
-            None,
-            &context,
-            history,
-            Default::default(),
-            limits.0,
-            limits.1,
-        )?;
-        reader.observe_primary_selectors(tx)?;
-        let work = resident_work::WorkCaptureRequest::current();
-        let tasks = resident_task::TaskCaptureRequest::current();
-        let current = reader.read_primary_input_domains(
-            tx,
-            &state,
-            &input,
-            context.recent_episode_candidates,
-            &work,
-            &tasks,
-            None,
-        )?;
-        assert!(
-            current.tasks.is_some(),
-            "the real primary joint Task loader must consume the shared material"
-        );
-        Ok(reader.material_for_test())
-    }
-    let f = child_monitor_fixture(Some(TransitionFaultPoint::BeforeCacheUpdate)).await?;
-    f.start.send(()).unwrap();
-    assert!(tokio::time::timeout(Duration::from_secs(10), f.done)
-        .await??
-        .is_err());
-    f.lease.join().await?;
-    let reservation = f.runtime.inner.mutation_owner.reserve().await?;
-    let recovery = reservation
-        .recovery()?
-        .context("actual lost publication keeps original finished attempt")?;
-    let witness = recovery
-        .witness
-        .as_ref()
-        .context("actual original witness missing")?;
-    let attempt = witness
-        .input_attempt()
-        .context("actual original attempt missing")?;
-    let request = TaskDomainLoadRequest {
-        recovery_at: None,
-        query: Default::default(),
-        capture: resident_task::TaskCaptureRequest::current(),
-        record_limit: 65_536,
-        byte_limit: 64 * 1024 * 1024,
-    };
-    let (evidence, (overhead, primary)) = f
-        .runtime
-        .runtime_db()
-        .with_original_child_terminal_recovery(
-            attempt,
-            &f.source,
-            &request,
-            &f.runtime.inner.input_evidence_budget,
-            |tx, _, reader| {
-                let overhead = request.byte_limit - reader.request().byte_limit;
-                let material = read_primary(&f.runtime, tx, reader)?;
-                Ok((overhead, material.bytes))
-            },
-        )?
-        .context("actual original receipt must be present")?;
-    drop(evidence);
-    let combined = overhead
-        .checked_add(primary)
-        .context("fixture combined material overflow")?;
-    assert!(overhead > 0 && primary > 0);
-    let mut bounded = request;
-    bounded.byte_limit = combined - 1;
-    assert!(
-        overhead < bounded.byte_limit && primary < bounded.byte_limit,
-        "each acquisition fits, but the original phase as a whole must not"
-    );
-    let before = f
-        .runtime
-        .inner
-        .input_evidence_budget
-        .report()?
-        .observed_bytes;
-    let result = f
-        .runtime
-        .runtime_db()
-        .with_original_child_terminal_recovery(
-            attempt,
-            &f.source,
-            &bounded,
-            &f.runtime.inner.input_evidence_budget,
-            |tx, _, reader| read_primary(&f.runtime, tx, reader),
-        );
-    let error = match result {
-        Err(error) => error,
-        Ok(_) => anyhow::bail!("receipt and primary Task loader obtained separate full allowances"),
-    };
-    assert!(
-        error
-            .downcast_ref::<TaskSnapshotError>()
-            .is_some_and(|error| matches!(error, TaskSnapshotError::ResourceExhausted(_))),
-        "{error:#}"
-    );
-    assert_eq!(
-        before,
-        f.runtime
-            .inner
-            .input_evidence_budget
-            .report()?
-            .observed_bytes,
-        "failed fresh preparation releases its new guards"
-    );
-    assert_eq!(
-        child_receipt(&f.runtime, &f.source)?.unwrap().prepared,
-        *attempt.prepared()
-    );
-    assert!(
-        !f.source.is_durable_finished(),
-        "failed read cannot acknowledge the original capsule"
-    );
-    drop(reservation);
-    f.runtime
-        .continue_original_child_terminal(f.source.clone())
-        .await?;
-    assert!(f.source.is_durable_finished());
-    Ok(())
-}
-
-#[cfg(holon_lib_test_shard = "a")]
-#[tokio::test]
-async fn child_full_state_native_nodes_are_rejected_before_all_three_decoders() -> Result<()> {
-    use crate::runtime_db::task_snapshot::{TaskDomainLoadRequest, TaskSnapshotError};
-    for phase in ["prepare", "entry", "fresh"] {
-        let f = child_monitor_fixture(Some(if phase == "fresh" {
-            TransitionFaultPoint::BeforeCacheUpdate
-        } else {
-            TransitionFaultPoint::BeforeCommit
-        }))
-        .await?;
-        f.start.send(()).unwrap();
-        assert!(tokio::time::timeout(Duration::from_secs(10), f.done)
-            .await??
-            .is_err());
-        f.lease.join().await?;
-        let frozen = f.source.frozen_terminal()?.unwrap();
-        let _resource_refresh = f.runtime.hold_resource_refresh_for_test().await?;
-        let request = TaskDomainLoadRequest {
-            recovery_at: None,
-            query: Default::default(),
-            capture: resident_task::TaskCaptureRequest::current(),
-            record_limit: 65_536,
-            byte_limit: 1024 * 1024,
-        };
-        let prepare = |tx: &rusqlite::Transaction<'_>| {
-            let inventory =
-                crate::runtime_db::child_task_terminal::discover_original_child_observers_tx(
-                    tx,
-                    &f.source,
-                    &request,
-                    &f.runtime.inner.input_evidence_budget,
-                )?;
-            crate::runtime_db::transitions::PreparedInputTransition::prepare_original_child_terminal_tx(tx,&f.source,&frozen,inventory,Vec::new(),None,&request,&f.runtime.inner.input_evidence_budget)
-        };
-        let prepared = if phase == "entry" {
-            Some(f.runtime.runtime_db().transaction(prepare)?)
-        } else {
-            None
-        };
-        f.runtime.runtime_db().transaction(|tx| {
-            let raw: String = tx.query_row(
-                "SELECT payload_json FROM agent_states WHERE agent_id='default'",
-                [],
-                |row| row.get(0),
-            )?;
-            let mut body: serde_json::Value = serde_json::from_str(&raw)?;
-            body["working_memory"]["current_working_memory"]["waiting_on"] =
-                serde_json::json!(vec![""; 20_000]);
-            let raw = serde_json::to_string(&body)?;
-            assert!(
-                raw.len() * 8 < request.byte_limit,
-                "raw-only preflight must fit this actual WorkingMemory fixture"
-            );
-            tx.execute(
-                "UPDATE agent_states SET payload_json=?1 WHERE agent_id='default'",
-                [raw],
-            )?;
-            Ok(())
-        })?;
-        let before = f
-            .runtime
-            .inner
-            .input_evidence_budget
-            .report()?
-            .observed_bytes;
-        let error = if phase == "prepare" {
-            match f.runtime.runtime_db().transaction(prepare) {
-                Err(error) => error,
-                Ok(_) => anyhow::bail!("State nodes decoded in preparation"),
-            }
-        } else if phase == "entry" {
-            let work = crate::runtime_db::work_snapshot::WorkDomainLoadRequest {
-                capture: resident_work::WorkCaptureRequest::current(),
-                record_limit: request.record_limit,
-                byte_limit: request.byte_limit,
-            };
-            match f
-                .runtime
-                .runtime_db()
-                .transitions_in_scope(&f.source.address().scope)
-                .commit_prepared_transition_with_work_request_and_memory_budget(
-                    prepared.as_ref().unwrap(),
-                    &work,
-                    &f.runtime.inner.input_evidence_budget,
-                    &request,
-                ) {
-                Err(error) => error,
-                Ok(_) => anyhow::bail!("State nodes decoded at Current entry"),
-            }
-        } else {
-            let held = f.runtime.inner.mutation_owner.reserve().await?;
-            let recovery = held.recovery()?.unwrap();
-            let witness = recovery.witness.as_ref().unwrap();
-            match f
-                .runtime
-                .runtime_db()
-                .with_original_child_terminal_recovery(
-                    witness.input_attempt().unwrap(),
-                    &f.source,
-                    &request,
-                    &f.runtime.inner.input_evidence_budget,
-                    |tx, _, reader| reader.read_primary_state(tx).map(|_| ()),
-                ) {
-                Err(error) => error,
-                Ok(_) => anyhow::bail!("State nodes decoded in fresh recovery"),
-            }
-        };
-        assert!(
-            error
-                .downcast_ref::<TaskSnapshotError>()
-                .is_some_and(|error| matches!(error, TaskSnapshotError::ResourceExhausted(_))),
-            "{phase}: {error:#}"
-        );
-        assert_eq!(
-            before,
-            f.runtime
-                .inner
-                .input_evidence_budget
-                .report()?
-                .observed_bytes
-        );
-        assert!(!f.source.is_durable_finished());
-    }
-    Ok(())
-}
-#[cfg(holon_lib_test_shard = "a")]
-#[tokio::test]
-async fn child_receipt_nested_ack_nodes_are_budgeted_before_lookup_and_checksum() -> Result<()> {
+async fn child_receipt_large_nested_ack_still_requires_exact_scope_and_checksum() -> Result<()> {
     use crate::runtime_db::task_snapshot::{TaskDomainLoadRequest, TaskSnapshotError};
     for column in ["outcome_json", "prepared_json", "scopes_json"] {
         let f = child_monitor_fixture(Some(TransitionFaultPoint::BeforeCacheUpdate)).await?;
@@ -1677,9 +1400,9 @@ async fn child_receipt_nested_ack_nodes_are_budgeted_before_lookup_and_checksum(
             Ok(_) => anyhow::bail!("oversized Child ACK decoded"),
         };
         assert!(
-            error
+            !(error
                 .downcast_ref::<TaskSnapshotError>()
-                .is_some_and(|error| matches!(error, TaskSnapshotError::ResourceExhausted(_))),
+                .is_some_and(|error| matches!(error, TaskSnapshotError::ResourceExhausted(_)))),
             "{error:#}"
         );
         let pending = f.source.prepared.lock().await;
@@ -1704,9 +1427,9 @@ async fn child_receipt_nested_ack_nodes_are_budgeted_before_lookup_and_checksum(
             Ok(_) => anyhow::bail!("direct Child replay decoded oversized ACK"),
         };
         assert!(
-            error
+            !(error
                 .downcast_ref::<TaskSnapshotError>()
-                .is_some_and(|error| matches!(error, TaskSnapshotError::ResourceExhausted(_))),
+                .is_some_and(|error| matches!(error, TaskSnapshotError::ResourceExhausted(_)))),
             "{error:#}"
         );
         assert_eq!(

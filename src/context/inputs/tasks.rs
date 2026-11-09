@@ -32,8 +32,8 @@ pub(crate) fn pending_task_input_roots(
     state: &AgentState,
     current_message_id: &str,
     ledger: &InputEvidenceBudgetLedger,
-    record_limit: usize,
-    byte_limit: usize,
+    _record_limit: usize,
+    _byte_limit: usize,
 ) -> Result<PendingTaskInputRoots> {
     use crate::runtime::resident_input_evidence::{
         InputEvidenceFamily as Family, InputEvidenceKey as Key,
@@ -73,10 +73,8 @@ pub(crate) fn pending_task_input_roots(
     let bytes = bytes
         .checked_mul(2)
         .context("Task input selector copies overflow")?;
-    anyhow::ensure!(
-        count <= record_limit && bytes <= u64::try_from(byte_limit)?,
-        TaskReadError::ResourceExhausted("context input selectors")
-    );
+
+    tracing::trace!(count, bytes, "observed Task input selectors");
     let owned_budget = ledger.register_owned_bytes(
         &tasks.scope,
         InputMemoryCategory::Pins,

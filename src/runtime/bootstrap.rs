@@ -4416,11 +4416,9 @@ mod mutation_bootstrap_tests {
     }
 
     #[tokio::test]
-    async fn pending_budget_preflight_keeps_same_host_bootstrap_retryable() {
+    async fn tiny_pending_hint_keeps_same_host_bootstrap_available() {
         use crate::runtime::{
-            input_evidence_budget::{
-                BudgetResource, InputEvidenceBudgetError, InputEvidenceBudgetLedger,
-            },
+            input_evidence_budget::InputEvidenceBudgetLedger,
             resident_input_evidence::InputEvidenceScope,
         };
         let home = tempfile::tempdir().unwrap();
@@ -4492,7 +4490,7 @@ mod mutation_bootstrap_tests {
             Some(host.runtime_db().clone()),
         )
         .unwrap();
-        let error = prepare_runtime_storage_owned(
+        let prepared = prepare_runtime_storage_owned(
             setup,
             Some(&mut reservation),
             &ContextConfig::default(),
@@ -4500,32 +4498,11 @@ mod mutation_bootstrap_tests {
             &tiny_budget,
             chrono::Utc::now(),
         )
-        .err()
-        .expect("metadata must reject before normalization decodes the accepted body");
-        assert!(
-            matches!(
-                error.downcast_ref::<InputEvidenceBudgetError>(),
-                Some(InputEvidenceBudgetError::ResourceExhausted {
-                    resource: BudgetResource::PendingAgentBytes,
-                    ..
-                })
-            ),
-            "{error:#}"
-        );
-        assert_eq!(
-            crate::runtime_db::persistence_certainty(&error),
-            Some(crate::runtime_db::PersistenceCertainty::DefinitelyNotCommitted)
-        );
-        assert!(reservation.recovery().unwrap().is_none());
+        .unwrap();
+        assert_eq!(prepared.state.pending, 1);
+        assert_eq!(tiny_budget.report().unwrap().pending.count, 1);
         assert!(owner.capture().unwrap().is_some());
-        assert_eq!(
-            host.runtime_db()
-                .agent_states()
-                .latest(&scope.agent_id)
-                .unwrap(),
-            Some(before)
-        );
-        assert_eq!(tiny_budget.report().unwrap().pending.count, 0);
+        drop(prepared);
         drop(reservation);
         let runtime = build_for_retry(
             &host,

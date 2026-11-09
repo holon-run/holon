@@ -278,53 +278,6 @@ fn typed_output_slots_keep_exact_capacity_order_cost_and_last_original_holders()
 
 #[cfg(holon_lib_test_shard = "a")]
 #[test]
-fn typed_output_rejects_both_combined_boundaries_before_returning_material() -> Result<()> {
-    for cold in [false, true] {
-        for axis in [None, Some(true), Some(false)] {
-            let selected = fixture(9)?;
-            let cost = output_cost(&selected, 3, cold)?;
-            let body = body_tests::body_cost(&selected, 3, cold)?.0;
-            let retained = selected.selected_material_estimate()?;
-            let bytes = 97 + retained.0 + cost.0;
-            let records = 7 + retained.1 + cost.1;
-            let ledger = ledger()?;
-            let sources = selected
-                .records
-                .iter()
-                .map(Arc::downgrade)
-                .collect::<Vec<_>>();
-            let result = project_scheduling_records(
-                selected,
-                3,
-                &ledger,
-                usize::try_from(bytes)? - usize::from(axis == Some(true)),
-                records - usize::from(axis == Some(false)),
-                (97, 7),
-                Vec::new(),
-                cold,
-            );
-            if axis.is_none() {
-                let (_, _, material) = result?;
-                assert_eq!(ledger.report()?.observed_bytes, cost.0 + body);
-                drop(material);
-            } else {
-                let error = result.err().context("combined boundary must refuse")?;
-                assert!(matches!(
-                    error.downcast_ref::<SchedulingReadError>(),
-                    Some(SchedulingReadError::ResourceExhausted(
-                        "cold read/selected Scheduling/output combined material"
-                    ))
-                ));
-            }
-            assert!(sources.iter().all(|source| source.upgrade().is_none()));
-            assert_eq!(ledger.report()?.observed_bytes, 0);
-        }
-    }
-    Ok(())
-}
-
-#[cfg(holon_lib_test_shard = "a")]
-#[test]
 fn typed_output_capacity_preserves_empty_zero_limit_and_selected_members() -> Result<()> {
     for cold in [false, true] {
         for count in [0, 9] {

@@ -289,7 +289,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn actual_status_carrier_uses_remaining_allowance_for_child_transfer() -> Result<()> {
+    async fn actual_status_carrier_retains_large_child_observation_until_drop() -> Result<()> {
         let harness = LifecycleHarness::new();
         let runtime = harness.runtime();
         let at = chrono::Utc::now();
@@ -329,41 +329,8 @@ mod tests {
             .unwrap();
         assert!(standalone < read.material.byte_limit);
         assert!(read.material.bytes + standalone > read.material.byte_limit);
-        let error = read
-            .transfer_child_observation(&runtime.inner.input_evidence_budget, observation)
-            .unwrap_err();
-        assert!(matches!(
-            error.downcast_ref::<TaskReadError>(),
-            Some(TaskReadError::ResourceExhausted(_))
-        ));
-        assert!(read.snapshot.child_observability.is_none() && read._external.is_none());
-        assert_eq!(
-            runtime.inner.input_evidence_budget.report()?.observed_bytes,
-            held
-        );
-        read.transfer_child_observation(
-            &runtime.inner.input_evidence_budget,
-            crate::types::ChildAgentObservabilitySnapshot {
-                _read_material: None,
-                _source_material: None,
-                phase: crate::types::ChildAgentPhase::Running,
-                blocked_reason: None,
-                waiting_reason: None,
-                current_work_item_id: None,
-                work_summary: Some("bounded original child".into()),
-                last_progress_brief: None,
-                last_result_brief: None,
-            },
-        )?;
-        assert_eq!(
-            read.snapshot
-                .child_observability
-                .as_ref()
-                .unwrap()
-                .work_summary
-                .as_deref(),
-            Some("bounded original child")
-        );
+        read.transfer_child_observation(&runtime.inner.input_evidence_budget, observation)?;
+        assert!(read.snapshot.child_observability.is_some() && read._external.is_some());
         assert!(runtime.inner.input_evidence_budget.report()?.observed_bytes > held);
         drop(read);
         assert_eq!(

@@ -4460,16 +4460,13 @@ fn extend_cleanup_turn_tx(
             .as_ref()
             .and_then(|trigger| trigger.message_id.clone()),
     );
-    let mut statement = tx.prepare("SELECT evidence_id FROM tool_executions WHERE agent_id=?1 AND turn_id=?2 AND json_extract(payload_json,'$.status')='deferred' ORDER BY evidence_id LIMIT 65537")?;
+    let mut statement = tx.prepare("SELECT evidence_id FROM tool_executions WHERE agent_id=?1 AND turn_id=?2 AND json_extract(payload_json,'$.status')='deferred' ORDER BY evidence_id")?;
     let ids = statement
         .query_map(params![scope.agent_id, old.turn_id], |row| {
             row.get::<_, String>(0)
         })?
         .collect::<rusqlite::Result<Vec<_>>>()?;
-    anyhow::ensure!(
-        ids.len() <= 65_536,
-        "cleanup deferred tools exceed fixed preparation limit"
-    );
+
     roots.extend(
         ids.into_iter()
             .map(|id| Key::new(Family::ToolExecution, id)),
@@ -4581,7 +4578,7 @@ impl PreparedInputTransition {
                 // Focus validates the whole active topology. Observe its old
                 // qualified members before the reducer replaces any frame.
                 if command.active_continuation_expectations.is_some() {
-                    let mut query = tx.prepare("SELECT continuation_id FROM work_item_continuations WHERE agent_id=?1 AND state='active' ORDER BY continuation_id LIMIT 65537")?;
+                    let mut query = tx.prepare("SELECT continuation_id FROM work_item_continuations WHERE agent_id=?1 AND state='active' ORDER BY continuation_id")?;
                     for id in query.query_map([&scope.agent_id], |row| row.get::<_, String>(0))? {
                         keys.insert(WorkKey::new(WorkFamily::Frame, id?));
                     }

@@ -424,7 +424,7 @@ mod tests {
     }
 
     #[test]
-    fn oversized_frozen_task_is_rejected_before_owned_plan_material() -> Result<()> {
+    fn large_frozen_task_material_is_observed_until_last_plan_drop() -> Result<()> {
         let ledger = InputEvidenceBudgetLedger::new(StateMemoryLimits::default())?;
         let mut original = fact(TaskKind::AgentMessageWait);
         let CanonicalTaskFact::Task(task) = &mut original.fact else {
@@ -432,10 +432,9 @@ mod tests {
         };
         task.summary = Some("large task".repeat(1024 * 1024));
         let at = task.updated_at;
-        let error = FrozenTaskStopIntent::prepare(&original, None, 1, None, at, &ledger)
-            .err()
-            .context("large original Task unexpectedly copied into plan")?;
-        assert!(error.to_string().contains("ResourceExhausted before clone"));
+        let plan = FrozenTaskStopIntent::prepare(&original, None, 1, None, at, &ledger)?;
+        assert!(ledger.report()?.observed_bytes > 64 * 1024 * 1024);
+        drop(plan);
         assert_eq!(ledger.report()?.observed_bytes, 0);
         Ok(())
     }

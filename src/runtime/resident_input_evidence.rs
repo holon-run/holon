@@ -2753,7 +2753,7 @@ mod tests {
     }
 
     #[test]
-    fn selection_preflight_does_not_copy_capture_or_replace_owning_limits() -> Result<()> {
+    fn selection_preflight_preserves_capture_and_owning_ledger() -> Result<()> {
         use crate::diagnostics::resource_io::ResourceReadMaterial;
         use crate::runtime_db::input_evidence_snapshot::{
             InputEvidenceLoadRequest, InputWindowRequest,
@@ -2798,7 +2798,7 @@ mod tests {
         original.validate_prepared_request(&narrow, &selection)?;
         assert!(original
             .capture_for_request_with_material(&narrow, &owning)
-            .is_err());
+            .is_ok());
         Ok(())
     }
 
@@ -4533,7 +4533,7 @@ mod tests {
         .is_err());
     }
     #[test]
-    fn committed_history_growth_checks_agent_and_shared_host_limits() {
+    fn committed_history_growth_is_observed_above_legacy_agent_and_host_hints() {
         fn delta() -> CommittedInputEvidenceDelta {
             CommittedInputEvidenceDelta {
                 query_advance: None,
@@ -4550,21 +4550,12 @@ mod tests {
         limits.history_per_agent_bytes = 300;
         let budget = InputEvidenceBudgetLedger::new(limits).unwrap();
         let original = resident(true).with_budget(budget.clone()).unwrap();
-        let error = original
-            .with_committed(&delta(), BTreeSet::new())
-            .unwrap_err();
-        assert!(matches!(
-            error.downcast_ref(),
-            Some(
-                super::super::input_evidence_budget::InputEvidenceBudgetError::ResourceExhausted {
-                    resource:
-                        super::super::input_evidence_budget::BudgetResource::HistoryAgentBytes,
-                    ..
-                }
-            )
-        ));
+        let next = original.with_committed(&delta(), BTreeSet::new()).unwrap();
+        assert!(next
+            .records
+            .contains_key(&InputEvidenceKey::new(InputEvidenceFamily::Turn, "c")));
         assert_eq!(original.capture().unwrap().windows[0].keys[0].id, "b");
-        drop(original);
+        drop((original, next));
         assert_eq!(budget.report().unwrap().observed_bytes, 0);
 
         let mut limits = crate::config::StateMemoryLimits::default();
@@ -4592,20 +4583,12 @@ mod tests {
             })
             .collect();
         let other = other.with_budget(budget.clone()).unwrap();
-        let error = original
-            .with_committed(&delta(), BTreeSet::new())
-            .unwrap_err();
-        assert!(matches!(
-            error.downcast_ref(),
-            Some(
-                super::super::input_evidence_budget::InputEvidenceBudgetError::ResourceExhausted {
-                    resource: super::super::input_evidence_budget::BudgetResource::HistoryHostBytes,
-                    ..
-                }
-            )
-        ));
-        assert_eq!(budget.report().unwrap().physical_records.allocations, 4);
-        drop((original, other));
+        let next = original.with_committed(&delta(), BTreeSet::new()).unwrap();
+        assert!(next
+            .records
+            .contains_key(&InputEvidenceKey::new(InputEvidenceFamily::Turn, "c")));
+        assert_eq!(budget.report().unwrap().physical_records.allocations, 5);
+        drop((original, other, next));
         assert_eq!(budget.report().unwrap().observed_bytes, 0);
     }
 

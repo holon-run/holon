@@ -136,11 +136,10 @@ pub(in crate::runtime_db) fn capture_tx(tx: &Transaction<'_>) -> Result<()> {
                 .checked_add(message_payload.len())
                 .context("Current upgrade bytes overflow")?;
             ensure!(
-                body_bytes <= CONTINUITY_MAX_PAYLOAD_BYTES
-                    && roots
-                        .record_digests
-                        .get(&format!("message:{id}"))
-                        .is_some_and(|digest| *digest == bytes_digest(message_payload.as_bytes())),
+                roots
+                    .record_digests
+                    .get(&format!("message:{id}"))
+                    .is_some_and(|digest| *digest == bytes_digest(message_payload.as_bytes())),
                 "Current upgrade Message fixed body changed"
             );
             let message: MessageEnvelope = serde_json::from_str(message_payload)?;

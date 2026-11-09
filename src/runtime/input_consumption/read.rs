@@ -694,10 +694,7 @@ impl<'a, 'connection> IdleRead<'a, 'connection> {
             params.clone(),
             |row| Ok((row.get(0)?, row.get(1)?)),
         )?;
-        anyhow::ensure!(
-            count <= self.record_limit,
-            "idle selector record limit exceeded"
-        );
+
         resource_io::charge_owned_metadata(
             bytes
                 .checked_add((count as u64) * 128)

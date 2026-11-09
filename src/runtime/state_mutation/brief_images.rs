@@ -45,7 +45,7 @@ impl RuntimeMutation {
                     [&scope.agent_id],
                     |row| Ok((row.get(0)?, row.get(1)?)),
                 )?;
-                anyhow::ensure!(count <= record_limit, "image Tool membership exceeds policy");
+
                 let slots = count
                     .checked_mul(std::mem::size_of::<String>())
                     .context("image Tool membership overflow")?;

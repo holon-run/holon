@@ -180,7 +180,7 @@ async fn run_once_batch_render_rejects_another_runtime_with_the_same_identity() 
 }
 
 #[tokio::test]
-async fn run_once_batch_file_and_render_allowance_is_cumulative_one_record_short() -> Result<()> {
+async fn run_once_batch_reads_both_files_above_legacy_record_hint() -> Result<()> {
     let harness = LifecycleHarness::new();
     let runtime = harness.runtime();
     let (_, session) = runtime.begin_task_birth_session().await?;
@@ -209,20 +209,9 @@ async fn run_once_batch_file_and_render_allowance_is_cumulative_one_record_short
     );
     prepared.material.record_limit = exact - 1;
     let before = runtime.inner.input_evidence_budget.report()?.observed_bytes;
-    let result = runtime.render_run_once_task_outputs(prepared).await;
-    let error = result
-        .err()
-        .context("second file must not get a replenished allowance")?;
-    assert!(
-        matches!(
-            error.downcast_ref::<TaskReadError>(),
-            Some(TaskReadError::ResourceExhausted(_))
-        ),
-        "{error:#}"
-    );
-    assert!(
-        runtime.inner.input_evidence_budget.report()?.observed_bytes < before,
-        "failed products release the original SQL, selector, rendering and file guards"
-    );
+    let result = runtime.render_run_once_task_outputs(prepared).await?;
+    assert_eq!(result.snapshots.len(), 2);
+    drop(result);
+    assert!(runtime.inner.input_evidence_budget.report()?.observed_bytes < before);
     Ok(())
 }

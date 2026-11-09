@@ -321,9 +321,6 @@ pub(crate) enum WorkReadError {
     WindowExpansion { requested: usize, prepared: usize },
     #[error("Work domain revision mismatch: expected={expected}, actual={actual}")]
     RevisionMismatch { expected: u64, actual: u64 },
-    #[cfg(test)]
-    #[error("Work domain resource exhausted: {0}")]
-    ResourceExhausted(&'static str),
 }
 
 #[derive(Debug)]
@@ -1823,20 +1820,17 @@ mod tests {
     }
 
     #[test]
-    fn insufficient_current_budget_rejects_domain_instead_of_evicting_live_work() {
+    fn current_work_survives_tiny_legacy_size_hints() {
         let record = qualified("work", WorkItemState::Open, 1);
-        let error = ResidentWorkDomain::bootstrap(
+        let domain = ResidentWorkDomain::bootstrap(
             scope(),
             coverage(&[record.clone()], 1),
             vec![record],
-            1_000,
+            0,
             1,
         )
-        .unwrap_err();
-        assert!(matches!(
-            error.downcast_ref::<WorkReadError>(),
-            Some(WorkReadError::ResourceExhausted(_))
-        ));
+        .unwrap();
+        assert_eq!(domain.records.len(), 1);
     }
 
     #[test]

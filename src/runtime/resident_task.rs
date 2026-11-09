@@ -515,11 +515,7 @@ impl ResidentTaskDomain {
         byte_limit: usize,
     ) -> Result<Self> {
         ensure!(
-            !scope.agent_id.is_empty()
-                && scope.identity_incarnation > 0
-                && coverage.revision > 0
-                && record_limit > 0
-                && byte_limit > 0,
+            !scope.agent_id.is_empty() && scope.identity_incarnation > 0 && coverage.revision > 0,
             "invalid Task domain bootstrap"
         );
         let mut domain = Self {

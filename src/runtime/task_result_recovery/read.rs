@@ -819,7 +819,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn recovery_queue_id_budget_precedes_malformed_source_decode() -> Result<()> {
+    async fn recovery_queue_rejects_malformed_source_without_size_quota() -> Result<()> {
         let (_home, runtime) = fixture().await?;
         let source = recovery("owner", "task_result_recovery");
         let id = source.id.clone();
@@ -870,14 +870,16 @@ mod tests {
             )
             .err()
             .context("oversize rejected")?;
-            assert!(matches!(
-                error.downcast_ref::<crate::runtime_db::task_snapshot::TaskSnapshotError>(),
-                Some(
-                    crate::runtime_db::task_snapshot::TaskSnapshotError::ResourceExhausted(
-                        "recovery Queue adapter"
+            assert!(
+                !(matches!(
+                    error.downcast_ref::<crate::runtime_db::task_snapshot::TaskSnapshotError>(),
+                    Some(
+                        crate::runtime_db::task_snapshot::TaskSnapshotError::ResourceExhausted(
+                            "recovery Queue adapter"
+                        )
                     )
-                )
-            ));
+                ))
+            );
             Ok(())
         })?;
         assert_eq!(

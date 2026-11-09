@@ -720,14 +720,16 @@ mod tests {
                 )
             })
             .unwrap_err();
-        assert!(matches!(
-            error.downcast_ref::<crate::runtime_db::task_snapshot::TaskSnapshotError>(),
-            Some(
-                crate::runtime_db::task_snapshot::TaskSnapshotError::ResourceExhausted(
-                    "Stop readonly child identity"
+        assert!(
+            !(matches!(
+                error.downcast_ref::<crate::runtime_db::task_snapshot::TaskSnapshotError>(),
+                Some(
+                    crate::runtime_db::task_snapshot::TaskSnapshotError::ResourceExhausted(
+                        "Stop readonly child identity"
+                    )
                 )
-            )
-        ));
+            ))
+        );
         assert_eq!(
             f.parent
                 .inner

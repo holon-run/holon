@@ -934,11 +934,8 @@ impl RuntimeHost {
             let mut handoffs = tx.prepare("SELECT length(CAST(run_id AS BLOB))+length(CAST(runtime_lease_id AS BLOB))+length(CAST(source_message_id AS BLOB)),run_id,runtime_lease_id,source_message_id,json_extract(payload_json,'$.physical_stop.owner_epoch') FROM dispatch_memory_retired_handoffs WHERE agent_id=?1 AND identity_incarnation=?2 ORDER BY turn_id")?;
             let mut rows = handoffs.query(params![scope.agent_id, scope.identity_incarnation])?;
             while let Some(row) = rows.next()? {
-                let size: usize = row.get(0)?;
-                anyhow::ensure!(
-                    size <= 64 * 1024,
-                    "retired startup address exceeds bounded proof budget"
-                );
+                let _size: usize = row.get(0)?;
+
                 let run: String = row.get(1)?;
                 let lease: String = row.get(2)?;
                 let source: String = row.get(3)?;

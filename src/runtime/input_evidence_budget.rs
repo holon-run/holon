@@ -37,15 +37,6 @@ pub(crate) enum BudgetResource {
 }
 #[derive(Debug, thiserror::Error)]
 pub(crate) enum InputEvidenceBudgetError {
-    #[cfg(test)]
-    #[error("ResourceExhausted: {resource:?}, used={used}, requested={requested}, limit={limit}")]
-    ResourceExhausted {
-        resource: BudgetResource,
-        scope: Option<InputEvidenceScope>,
-        used: u64,
-        requested: u64,
-        limit: u64,
-    },
     #[error("pending input needs original-attempt reconciliation: {message_id}")]
     NeedsReconcile {
         scope: InputEvidenceScope,

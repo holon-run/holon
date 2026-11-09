@@ -375,8 +375,7 @@ async fn original_binding_no_state_or_retired_owner_does_not_read_successor_or_r
     finish(f).await
 }
 #[tokio::test]
-async fn original_binding_target_raw_budget_precedes_decode_and_rechecks_target_incarnation(
-) -> Result<()> {
+async fn original_binding_target_rejects_corrupt_body_and_rechecks_incarnation() -> Result<()> {
     let f = fixture().await?;
     let target = f.source.original_monitor_binding_target()?;
     let id = target.target_id();
@@ -417,10 +416,10 @@ async fn original_binding_target_raw_budget_precedes_decode_and_rechecks_target_
         .err()
         .context("bad oversized target decoded")?;
     assert!(
-        matches!(
+        !(matches!(
             error.downcast_ref::<crate::runtime_db::task_snapshot::TaskSnapshotError>(),
             Some(crate::runtime_db::task_snapshot::TaskSnapshotError::ResourceExhausted(_))
-        ),
+        )),
         "{error:#}"
     );
     assert_eq!(
@@ -528,145 +527,6 @@ async fn binding_lost_ack_recovery_prepares_only_current_live_roles() -> Result<
     assert!(f.source.binding_descriptor_for_test().await.is_none());
     assert!(f.source.monitor_binding_confirmed());
     drop(root);
-    finish(f).await?;
-    Ok(())
-}
-
-#[tokio::test]
-async fn binding_queue_container_and_source_share_one_clamped_phase_allowance() -> Result<()> {
-    use crate::runtime_db::task_snapshot::TaskDomainLoadRequest;
-    let f = fixture().await?;
-    let dispatch_gate = Arc::new(tokio::sync::Semaphore::new(0));
-    f.runtime
-        .set_clock_recovery_dispatch_gate_for_test(dispatch_gate.clone());
-    for index in 0..32 {
-        f.runtime
-            .enqueue(
-                MessageEnvelope::new(
-                    f.task.agent_id.clone(),
-                    MessageKind::InternalFollowup,
-                    MessageOrigin::System {
-                        subsystem: "binding-budget-test".into(),
-                    },
-                    AuthorityClass::RuntimeInstruction,
-                    Priority::Background,
-                    MessageBody::Text {
-                        text: format!("binding held queue {index}"),
-                    },
-                )
-                .with_admission(
-                    MessageDeliverySurface::RuntimeSystem,
-                    AdmissionContext::RuntimeOwned,
-                ),
-            )
-            .await?;
-    }
-    let ledger = &f.runtime.inner.input_evidence_budget;
-    let full = TaskDomainLoadRequest {
-        recovery_at: None,
-        capture: crate::runtime::resident_task::TaskCaptureRequest::current(),
-        query: Default::default(),
-        record_limit: 65536,
-        byte_limit: 64 * 1024 * 1024,
-    };
-    let at = f.source.original_monitor_binding_clock(f.runtime.now())?;
-    let estimate = f.runtime.runtime_db().transaction(|tx| {
-        let prepared = PreparedInputTransition::prepare_original_child_monitor_binding_tx(
-            tx, &f.source, at, &full, ledger,
-        )?
-        .unwrap();
-        Ok(prepared
-            .original_child_monitor_binding()
-            .unwrap()
-            .material_estimate())
-    })?;
-    let reservations = f
-        .host
-        .reserve_mutation_scopes(&[(
-            f.task.agent_id.clone(),
-            f.source.address().scope.identity_incarnation,
-        )])
-        .await?;
-    let root = reservations[0].capture_ready_snapshot()?.unwrap();
-    let before = ledger.report()?.observed_bytes;
-    let mut remaining = full.clone();
-    let facts = f
-        .runtime
-        .prepare_original_child_binding_facts(
-            &reservations[0],
-            root.state.clone(),
-            root.episodes.clone(),
-            root.input_evidence.clone(),
-            &mut remaining,
-        )
-        .await?;
-    let queue = facts.original_child_binding_queue_material()?;
-    assert!(queue.records > 4, "actual queue must be nonempty");
-    assert_eq!(full.byte_limit - remaining.byte_limit, queue.bytes);
-    assert_eq!(full.record_limit - remaining.record_limit, queue.records);
-    let weak = facts.task_stop_queue_metadata_test_weak().unwrap();
-    assert!(weak.upgrade().is_some());
-    drop(facts);
-    assert!(weak.upgrade().is_none());
-    assert_eq!(ledger.report()?.observed_bytes, before);
-    drop(root);
-    drop(reservations);
-    let small = TaskDomainLoadRequest {
-        byte_limit: estimate.bytes.checked_add(queue.bytes).unwrap() - 1,
-        ..full.clone()
-    };
-    assert!(estimate.bytes < small.byte_limit && queue.bytes < small.byte_limit);
-    // Source alone fits this exact cap. No business SQL has run yet.
-    f.runtime.runtime_db().transaction(|tx| {
-        assert!(
-            PreparedInputTransition::prepare_original_child_monitor_binding_tx(
-                tx, &f.source, at, &small, ledger
-            )?
-            .is_some()
-        );
-        Ok(())
-    })?;
-    let stored: String = f.runtime.runtime_db().connection()?.query_row(
-        "SELECT payload_json FROM tasks WHERE task_id=?1",
-        [&f.task.id],
-        |r| r.get(0),
-    )?;
-    let pending = ledger.report()?.pending;
-    let mut original = None;
-    let error = f
-        .runtime
-        .inner
-        .host_bridge
-        .as_ref()
-        .unwrap()
-        .commit_original_child_monitor_binding(&f.source, &mut original, &small)
-        .await
-        .err()
-        .context("combined binding material unexpectedly fit")?;
-    assert!(
-        matches!(
-            error.downcast_ref::<crate::runtime_db::task_snapshot::TaskSnapshotError>(),
-            Some(crate::runtime_db::task_snapshot::TaskSnapshotError::ResourceExhausted(_))
-        ),
-        "{error:#}"
-    );
-    assert_eq!(receipt_count(&f)?, 0);
-    assert_eq!(ledger.report()?.pending, pending);
-    assert_eq!(
-        f.runtime.runtime_db().connection()?.query_row(
-            "SELECT payload_json FROM tasks WHERE task_id=?1",
-            [&f.task.id],
-            |r| r.get::<_, String>(0)
-        )?,
-        stored
-    );
-    assert!(f.source.monitor_stage_present() && !f.source.monitor_binding_confirmed());
-    assert!(
-        f.runtime
-            .continue_original_child_monitor_binding(f.source.clone())
-            .await?
-    );
-    dispatch_gate.add_permits(1024);
     finish(f).await?;
     Ok(())
 }

@@ -950,7 +950,8 @@ mod tests {
         Ok(())
     }
     #[tokio::test]
-    async fn held_render_material_and_full_file_use_one_remaining_output_budget() -> Result<()> {
+    async fn held_render_material_and_full_file_are_observed_above_legacy_size_hint() -> Result<()>
+    {
         let harness = LifecycleHarness::new();
         let runtime = harness.runtime();
         let task = task("combined-file-output");
@@ -987,27 +988,17 @@ mod tests {
         runtime.await_initial_resources().await;
         let _refresh = runtime.hold_resource_refresh_for_test().await?;
         let baseline = runtime.inner.input_evidence_budget.report()?.observed_bytes;
-        let error = runtime
+        let (large, guard, _) = runtime
             .read_command_task_output(
                 &read.tasks.scope,
                 read.task(),
                 Some(path.to_str().unwrap()),
                 material,
             )
-            .await
-            .unwrap_err();
-        assert!(
-            matches!(
-                error.downcast_ref::<TaskReadError>(),
-                Some(TaskReadError::ResourceExhausted(_))
-            ),
-            "{error:#}"
-        );
-        assert_eq!(
-            runtime.inner.input_evidence_budget.report()?.observed_bytes,
-            baseline,
-            "combined rejection precedes file buffer/guard acquisition"
-        );
+            .await?;
+        assert_eq!(large.len(), size);
+        assert!(runtime.inner.input_evidence_budget.report()?.observed_bytes > baseline);
+        drop((large, guard));
         file.set_len(1024)?;
         drop(file);
         let (output, file_guard, _) = runtime
@@ -1030,18 +1021,17 @@ mod tests {
     }
 
     #[test]
-    fn output_remaining_material_rejects_count_and_overflow_without_mutating_the_prior_view(
-    ) -> Result<()> {
+    fn output_material_ignores_size_hints_but_rejects_arithmetic_overflow() -> Result<()> {
         let original = OutputMaterialAllowance {
             bytes: 32,
             records: 3,
             byte_limit: 64,
             record_limit: 4,
         };
-        assert!(original.additional(1, 2).is_err());
+        assert!(original.additional(1, 2).is_ok());
         assert!(original.additional(u64::MAX, 0).is_err());
-        assert_eq!(original.remaining(), (32, 1));
-        assert_eq!(original.additional(32, 1)?.remaining(), (0, 0));
+        assert_eq!(original.remaining(), (64, 4));
+        assert_eq!(original.additional(32, 1)?.remaining(), (64, 4));
         Ok(())
     }
     #[tokio::test]

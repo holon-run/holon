@@ -81,6 +81,7 @@ pub(crate) use sparse_recovery::{
 pub(super) const TASK_STOP_SCHEMA: &str = include_str!("task_stop/schema.sql");
 #[cfg(test)]
 const MAX_RECORDS: usize = 65_536;
+#[cfg(test)]
 const MAX_BYTES: usize = 64 * 1024 * 1024;
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]

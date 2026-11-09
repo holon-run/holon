@@ -260,14 +260,8 @@ impl RuntimeMutation {
     ) -> Result<()> {
         let root = self.capture_published_root()?;
         let scope = self.input_evidence_scope();
-        let (_, record_limit, byte_limit) = self.context_input_evidence_policy()?;
-        anyhow::ensure!(
-            load.record_limit > 0
-                && load.record_limit <= record_limit
-                && load.byte_limit > 0
-                && load.byte_limit <= byte_limit,
-            "Task query preparation exceeds the actual owner budget"
-        );
+        let (_, _record_limit, _byte_limit) = self.context_input_evidence_policy()?;
+
         anyhow::ensure!(
             load.capture.recovery_source_ids.is_empty() || load.recovery_at.is_some(),
             "Task recovery selectors require a frozen recovery_at"

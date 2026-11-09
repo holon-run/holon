@@ -447,15 +447,11 @@ impl ResidentSchedulingDomain {
     fn validate_bootstrap_header(
         scope: &InputEvidenceScope,
         coverage: &SchedulingCoverage,
-        record_limit: usize,
-        byte_limit: usize,
+        _record_limit: usize,
+        _byte_limit: usize,
     ) -> Result<()> {
         ensure!(
-            !scope.agent_id.is_empty()
-                && scope.identity_incarnation > 0
-                && coverage.revision > 0
-                && record_limit > 0
-                && byte_limit > 0,
+            !scope.agent_id.is_empty() && scope.identity_incarnation > 0 && coverage.revision > 0,
             "invalid Scheduling bootstrap"
         );
         Ok(())

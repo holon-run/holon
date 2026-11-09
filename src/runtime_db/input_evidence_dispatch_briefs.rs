@@ -10,7 +10,6 @@ pub(crate) fn qualified_dispatch_briefs_tx(
     limit: usize,
     _byte_limit: usize,
 ) -> Result<Vec<BriefRecord>> {
-    ensure!(limit <= 64, "invalid dispatch Brief observation budget");
     require_original_input_recovery_scope(tx, scope)?;
     let binding = binding_on(tx, scope)?;
     let keys = qualified_window_keys(
@@ -79,7 +78,6 @@ pub(crate) fn qualified_dispatch_brief_material_tx(
     scope: &InputEvidenceScope,
     limit: usize,
 ) -> Result<(usize, usize)> {
-    ensure!(limit <= 64, "invalid dispatch Brief observation limit");
     require_original_input_recovery_scope(tx, scope)?;
     let binding = binding_on(tx, scope)?;
     let keys = qualified_window_keys(

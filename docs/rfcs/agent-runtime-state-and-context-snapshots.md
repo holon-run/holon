@@ -2942,7 +2942,7 @@ guard remains through sleeps, original firing and physical loop completion.
 
 原 accepted Timer writer 在既有 owner 内显式准备有限 Timer key 与必要 Work live 集合，随后只从同一个 published root 读取 Timer、完整 pending Wake 和唯一 Active Timer Wait 的 Open-owner 关联。纯 lookup 不做 SQL fallback；原 fixed/current qualification、Pruned/foreign/NoState 仍严格。初次 Timer generation/expected/cadence/source 冻结，State OCC 重试只重新观察该原 scope 的 pending 分支；actual Timer/Queue/Wait/Work/Input/Task/Source 仍由原 whole TX/receipt 与一次 finalizer 负责。merge 不投新 Input 票或新 source。
 
-最终选中 Scheduling+Work、仍活 selector 与 Timer/pending/correlation owned command 副本先 clamp64MiB/65536 后累计，actual Host Candidate guard 先于 clone并跨原 ACK。具名 hydration 继续原独立 hard bounds/ledger，不声明整个 Runtime acquire/native RSS 同时限64MiB。原低层 SQL pending observer 保留作独立writer兼容/测试，不再是这些 Runtime 路由的普通读取回退。
+最终选中 Scheduling+Work、仍活 selector 与 Timer/pending/correlation owned command 副本的累计大小只用于观测，不以 64MiB/65536 或其他累计配额拒绝处理。actual Host Candidate guard 先于 clone 并跨原 ACK，继续校验相同 scope/ledger 和真实拥有关系。具名 hydration 保留 qualification、完整集合与源版本校验；原低层 SQL pending observer 保留作独立 writer 兼容/测试，不再是这些 Runtime 路由的普通读取回退。
 
 ### WaitFor 的 Scheduling 只读边界
 

@@ -535,21 +535,11 @@ mod tests {
             let limited =
                 crate::runtime::input_evidence_budget::InputEvidenceBudgetLedger::new(limits)?;
             let registry = host.inner.runtimes.read().await;
-            let error = registry
-                .validate_retiring_process_instance_budget(
-                    &scope.agent_id,
-                    scope.identity_incarnation,
-                    &limited,
-                )
-                .unwrap_err();
-            assert!(error
-                .downcast_ref::<crate::runtime_db::task_snapshot::TaskSnapshotError>()
-                .is_some_and(|error| matches!(
-                    error,
-                    crate::runtime_db::task_snapshot::TaskSnapshotError::ResourceExhausted(
-                        "retiring original process instances"
-                    )
-                )));
+            registry.validate_retiring_process_instance_budget(
+                &scope.agent_id,
+                scope.identity_incarnation,
+                &limited,
+            )?;
             assert!(
                 registry
                     .unloading_mutations

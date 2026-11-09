@@ -30,8 +30,6 @@ use std::{
         Arc, Weak,
     },
 };
-const MAX_PROOF_BYTES: usize = 64 * 1024 * 1024;
-const MAX_PROOF_RECORDS: usize = 65_536;
 
 #[path = "startup_ended_memory_lineage.rs"]
 mod lineage;
@@ -242,15 +240,12 @@ impl StartupEndedDispatchAuthorization {
             CanonicalEnd::ControlStopped(expected) => {
                 // No latest run/lease inference: reconstruct only the frozen
                 // original address, and revalidate its immutable Stop receipt.
-                let bytes: usize = tx.query_row(
+                let _bytes: usize = tx.query_row(
                     "SELECT length(CAST(payload_json AS BLOB)) FROM messages WHERE evidence_id=?1",
                     [&invocation.message_id],
                     |r| r.get(0),
                 )?;
-                ensure!(
-                    bytes <= MAX_PROOF_BYTES,
-                    "startup Stop source exceeds proof budget"
-                );
+
                 let payload: String = tx.query_row(
                     "SELECT payload_json FROM messages WHERE evidence_id=?1",
                     [&invocation.message_id],
@@ -374,10 +369,7 @@ fn add_proof_material(material: &mut (usize, usize), bytes: usize, records: usiz
         .1
         .checked_add(records)
         .context("startup proof count overflow")?;
-    ensure!(
-        material.0 <= MAX_PROOF_BYTES && material.1 <= MAX_PROOF_RECORDS,
-        "startup ended-memory proof exceeds preparation limit"
-    );
+
     Ok(())
 }
 
@@ -458,11 +450,8 @@ fn read_startup_interruption_tx(
         "audit:startup-interrupted-turn:{}",
         key.actual_dispatch_turn_id
     );
-    let (audit_agent, audit_kind, audit_at, audit_seq, size): (String,String,String,u64,usize) = tx.query_row("SELECT agent_id,kind,created_at,event_seq,length(CAST(data_json AS BLOB)) FROM audit_events WHERE audit_event_id=?1", [&audit_id], |r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?)))?;
-    ensure!(
-        size <= 64 * 1024,
-        "startup interruption audit exceeds proof budget"
-    );
+    let (audit_agent, audit_kind, audit_at, audit_seq, _size): (String,String,String,u64,usize) = tx.query_row("SELECT agent_id,kind,created_at,event_seq,length(CAST(data_json AS BLOB)) FROM audit_events WHERE audit_event_id=?1", [&audit_id], |r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?)))?;
+
     let payload: String = tx.query_row(
         "SELECT data_json FROM audit_events WHERE audit_event_id=?1",
         [&audit_id],
@@ -491,8 +480,7 @@ fn read_startup_interruption_tx(
             |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
         )
         .optional()?;
-    let queue_digest = if let Some((agent, status, updated, size)) = queue {
-        ensure!(size <= 64 * 1024, "startup queue proof exceeds budget");
+    let queue_digest = if let Some((agent, status, updated, _size)) = queue {
         let payload: String = tx.query_row(
             "SELECT payload_json FROM queue_entries WHERE message_id=?1",
             [&invocation.message_id],
@@ -512,14 +500,11 @@ fn read_startup_interruption_tx(
     } else {
         None
     };
-    let (attempt_count, attempt_bytes): (usize,usize) = tx.query_row(
+    let (_attempt_count, _attempt_bytes): (usize,usize) = tx.query_row(
         "SELECT COUNT(*),COALESCE(SUM(length(CAST(payload_json AS BLOB))+length(CAST(attempt_id AS BLOB))),0) FROM execution_protocol_attempts WHERE agent_id=?1 AND json_extract(payload_json,'$.source_message_id')=?2 AND (lifecycle_state='open' OR json_extract(payload_json,'$.turn_id')=?3 OR json_extract(payload_json,'$.terminal_at')=?4)",
         params![key.agent_id,invocation.message_id,key.actual_dispatch_turn_id,at.to_rfc3339()], |r|Ok((r.get(0)?,r.get(1)?)))?;
-    ensure!(
-        attempt_count <= MAX_PROOF_RECORDS && attempt_bytes <= MAX_PROOF_BYTES,
-        "startup attempt proof exceeds budget"
-    );
-    let sql = "SELECT attempt_id,length(CAST(payload_json AS BLOB)) FROM execution_protocol_attempts WHERE agent_id=?1 AND json_extract(payload_json,'$.source_message_id')=?2 AND (lifecycle_state='open' OR json_extract(payload_json,'$.turn_id')=?3 OR json_extract(payload_json,'$.terminal_at')=?4) ORDER BY attempt_id LIMIT 65537";
+
+    let sql = "SELECT attempt_id,length(CAST(payload_json AS BLOB)) FROM execution_protocol_attempts WHERE agent_id=?1 AND json_extract(payload_json,'$.source_message_id')=?2 AND (lifecycle_state='open' OR json_extract(payload_json,'$.turn_id')=?3 OR json_extract(payload_json,'$.terminal_at')=?4) ORDER BY attempt_id";
     let ids = {
         let mut statement = tx.prepare(sql)?;
         let rows = statement.query_map(
@@ -533,14 +518,7 @@ fn read_startup_interruption_tx(
         )?;
         rows.collect::<rusqlite::Result<Vec<_>>>()?
     };
-    ensure!(
-        ids.len() <= MAX_PROOF_RECORDS
-            && ids
-                .iter()
-                .try_fold(0usize, |sum, (_, bytes)| sum.checked_add(*bytes))
-                .is_some_and(|bytes| bytes <= MAX_PROOF_BYTES),
-        "startup attempt proof exceeds budget"
-    );
+
     let mut attempts = Vec::new();
     for (id, _) in ids {
         let (normalized_state,identity,generation,outcome_id,payload): (String,String,u64,Option<String>,String) = tx.query_row("SELECT lifecycle_state,source_identity_json,source_generation,terminal_outcome_id,payload_json FROM execution_protocol_attempts WHERE agent_id=?1 AND attempt_id=?2", params![key.agent_id,id],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?)))?;
@@ -575,11 +553,8 @@ fn read_startup_interruption_tx(
             "startup attempt is not the original recovered dispatch"
         );
         let outcome_id = outcome_id.context("startup attempt has no outcome")?;
-        let (outcome_attempt,size): (String,usize)=tx.query_row("SELECT attempt_id,length(CAST(payload_json AS BLOB)) FROM execution_protocol_outcomes WHERE agent_id=?1 AND outcome_id=?2",params![key.agent_id,outcome_id],|r|Ok((r.get(0)?,r.get(1)?)))?;
-        ensure!(
-            size <= MAX_PROOF_BYTES,
-            "startup outcome proof exceeds budget"
-        );
+        let (outcome_attempt,_size): (String,usize)=tx.query_row("SELECT attempt_id,length(CAST(payload_json AS BLOB)) FROM execution_protocol_outcomes WHERE agent_id=?1 AND outcome_id=?2",params![key.agent_id,outcome_id],|r|Ok((r.get(0)?,r.get(1)?)))?;
+
         let payload:String=tx.query_row("SELECT payload_json FROM execution_protocol_outcomes WHERE agent_id=?1 AND outcome_id=?2",params![key.agent_id,outcome_id],|r|r.get(0))?;
         let outcome: ExecutionOutcomeRecord = serde_json::from_str(&payload)?;
         ensure!(
@@ -592,13 +567,10 @@ fn read_startup_interruption_tx(
         );
         let recovery_audit_id =
             format!("audit:startup-interrupted-attempt:{}:{}", key.agent_id, id);
-        let (audit_agent, audit_kind, audit_at, audit_size): (String,String,String,usize) = tx.query_row(
+        let (audit_agent, audit_kind, audit_at, _audit_size): (String,String,String,usize) = tx.query_row(
             "SELECT agent_id,kind,created_at,length(CAST(data_json AS BLOB)) FROM audit_events WHERE audit_event_id=?1",
             [&recovery_audit_id], |r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?)))?;
-        ensure!(
-            audit_size <= 64 * 1024,
-            "startup attempt audit exceeds proof budget"
-        );
+
         let audit_payload: String = tx.query_row(
             "SELECT data_json FROM audit_events WHERE audit_event_id=?1",
             [&recovery_audit_id],

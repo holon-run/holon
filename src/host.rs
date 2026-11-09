@@ -11349,22 +11349,12 @@ impl RuntimeHostBridge {
             "retirement scope has no original incarnation"
         );
         let host = self.host()?;
-        let limits = host.inner.input_evidence_budget.limits();
         let bytes = agent_id
             .len()
             .checked_mul(8)
             .and_then(|n| n.checked_add(1024))
             .context("retirement owner selector overflow")?;
-        anyhow::ensure!(
-            limits.record_limit >= 8
-                && u64::try_from(bytes)?
-                    <= limits
-                        .history_per_agent_bytes
-                        .checked_add(limits.pending_per_agent_bytes)
-                        .context("retirement selector limits overflow")?
-                        .min(64 * 1024 * 1024),
-            "retirement owner selector ResourceExhausted"
-        );
+
         let _selectors = host.inner.input_evidence_budget.register_host_owned_bytes(
             InputMemoryCategory::Candidate,
             OwnedBytesEstimate {
@@ -30768,7 +30758,7 @@ mod tests {
                     ],
                 )?;
                 let limits = host.inner.input_evidence_budget.limits();
-                crate::runtime_db::work_snapshot::register_work_writes_tx(
+                        crate::runtime_db::work_snapshot::register_work_writes_tx(
                     tx,
                     &work_proof,
                     &work_keys,
