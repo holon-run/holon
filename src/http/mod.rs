@@ -68,10 +68,7 @@ pub(crate) use crate::{
         ControlTransportKind, CredentialKind, CredentialProfileStatus, HolonConfigFile,
         ModelRouteRef,
     },
-    daemon::{
-        graceful_runtime_shutdown, runtime_activity_summary, RuntimeConfigSurface,
-        RuntimeServiceHandle,
-    },
+    daemon::{graceful_runtime_shutdown, RuntimeConfigSurface, RuntimeServiceHandle},
     diagnostics,
     host::{PublicAgentError, RuntimeHost},
     ingress::{InboundRequest, WakeDisposition, WakeHint},

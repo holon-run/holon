@@ -41,8 +41,12 @@ claims still reject foreign Work IDs.
 
 Startup recovery reserves registered scopes, original fixed seeds, and unfinished obligations. Closed Queue/Turn history without a registered scope or original seed remains history; its presence alone cannot require or mint recovery authority. Live orphan obligations still fail closed when their fixed seed is missing.
 
-Large original SQL preparations may wait for the serialized writer. Borrowed
+Large original SQL preparations may wait for the serialized writer or a pooled
+reader. Borrowed
 callbacks run inside `block_in_place` when called from multi-thread Tokio, so
 waiting and scanning cannot occupy all async workers needed by control requests.
 The callback, transaction and thread-local witnesses stay on their original
 thread. Synchronous and current-thread callers retain inline execution.
+
+Runtime status derives activity and last failure from one inventory observation.
+Its aggregate metadata does not require a second traversal of every agent.

@@ -16,6 +16,7 @@ pub mod agent_message_delivery;
 pub mod agent_relations;
 pub mod audit;
 pub mod authentication;
+mod blocking;
 pub(crate) mod bootstrap_inputs;
 pub mod brief_publication_repair;
 #[doc(hidden)]
@@ -705,13 +706,11 @@ impl RuntimeDb {
         self.readers.wait_for_memory_lock(lock).await
     }
 
-    /// Call only at a synchronous/blocking boundary; never nest reader checkouts.
+    /// Preserve the calling thread; never nest reader checkouts.
     #[track_caller]
     pub(crate) fn with_read<T>(&self, f: impl FnOnce(&mut Connection) -> Result<T>) -> Result<T> {
-        self.readers.with_read_at(
-            read_block::ReadOrigin::from_location(std::panic::Location::caller()),
-            f,
-        )
+        let origin = read_block::ReadOrigin::from_location(std::panic::Location::caller());
+        blocking::at_blocking_boundary(|| self.readers.with_read_at(origin, f))
     }
 
     /// Polling HTTP handlers must read through this instead of calling a

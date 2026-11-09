@@ -8,6 +8,7 @@ use std::thread;
 use std::time::Duration;
 use std::time::Instant;
 
+use super::blocking::at_blocking_boundary;
 use anyhow::{anyhow, bail, Context, Result};
 use rusqlite::{Connection, Transaction};
 
@@ -178,18 +179,6 @@ impl RuntimeDbWriteMode {
 
 static RUNTIME_DB_WRITE_QUEUES: OnceLock<Mutex<BTreeMap<PathBuf, Arc<RuntimeDbWriteQueue>>>> =
     OnceLock::new();
-
-// Borrowed callbacks and their thread-local mutation witnesses stay on this
-// thread. Multi-thread Tokio hands its worker to another thread while we wait.
-fn at_blocking_boundary<T>(f: impl FnOnce() -> T) -> T {
-    if tokio::runtime::Handle::try_current()
-        .is_ok_and(|handle| handle.runtime_flavor() == tokio::runtime::RuntimeFlavor::MultiThread)
-    {
-        tokio::task::block_in_place(f)
-    } else {
-        f()
-    }
-}
 
 impl RuntimeDbWriter {
     #[cfg(test)]
@@ -1067,7 +1056,14 @@ mod async_worker_tests {
     #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
     async fn borrowed_sql_callbacks_keep_their_thread_and_leave_the_async_worker_available(
     ) -> Result<()> {
-        for mode in ["committed", "deferred", "append", "context", "once"] {
+        for mode in [
+            "pooled",
+            "committed",
+            "deferred",
+            "append",
+            "context",
+            "once",
+        ] {
             let home = tempfile::tempdir()?;
             let db = crate::runtime_db::RuntimeDb::open_and_migrate(
                 home.path().join("runtime.sqlite"),
@@ -1091,6 +1087,7 @@ mod async_worker_tests {
                     Ok(())
                 };
                 match mode {
+                    "pooled" => db.with_read(|_| progress()),
                     "committed" => writer.read_committed(|_| progress()),
                     "deferred" => writer.read_deferred(|_| progress()),
                     "append" => writer.append_wait(|_| progress()),
