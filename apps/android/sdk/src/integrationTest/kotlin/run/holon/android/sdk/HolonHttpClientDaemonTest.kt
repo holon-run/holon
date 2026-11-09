@@ -71,7 +71,7 @@ class HolonHttpClientDaemonTest {
             assertEquals("bearer", compatible.server.authMode)
             assertTrue(compatible.server.authRequired)
 
-            val agents = client.listAgents()
+            val agents = awaitDaemon(process, log) { client.listAgents() }
             assertTrue(agents.any { it.id == compatible.server.defaultAgentId })
             assertTrue("agent_avatar_v1" in compatible.server.capabilities)
             for (expression in HolonAvatarExpression.entries) {
@@ -138,6 +138,14 @@ class HolonHttpClientDaemonTest {
             try {
                 return request()
             } catch (failure: HolonProtocolException) {
+                lastFailure = failure
+                Thread.sleep(100)
+            } catch (failure: HolonHttpException) {
+                val apiError = failure.apiError
+                val observerBusy = failure.statusCode == 503 &&
+                    apiError?.retryable == true &&
+                    apiError.code in setOf("runtime_db_busy", "projection_stale_unhandled")
+                if (!observerBusy) throw failure
                 lastFailure = failure
                 Thread.sleep(100)
             }

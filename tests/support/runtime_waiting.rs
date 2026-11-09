@@ -8,6 +8,7 @@
 // provider implementations and shared harness helpers have been moved to
 // runtime_providers.rs and runtime_helpers.rs respectively.
 
+use crate::support::runtime_helpers::ready_agent_summary;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::Arc;
@@ -131,7 +132,11 @@ async fn invoke_new_subagent(
     model_request: Option<holon::types::AgentModelRequest>,
 ) -> Result<holon::types::AgentInvocationReceipt> {
     let registry = ToolRegistry::new(std::path::PathBuf::new());
-    let caller_agent_id = runtime.agent_summary().await?.identity.agent_id.clone();
+    let caller_agent_id = ready_agent_summary(runtime)
+        .await?
+        .identity
+        .agent_id
+        .clone();
     let (result, _) = registry
         .execute(
             runtime,
@@ -1452,7 +1457,7 @@ pub async fn notify_operator_records_default_public_and_private_child_targets() 
     assert!(events
         .iter()
         .any(|event| event.kind == "operator_notification_requested"));
-    let summary = child_runtime.agent_summary().await?;
+    let summary = ready_agent_summary(&child_runtime).await?;
     assert_ne!(
         summary.closure.waiting_reason,
         Some(WaitingReason::AwaitingOperatorInput)
@@ -1676,7 +1681,7 @@ pub async fn agent_summary_last_turn_token_usage_survives_transcript_windowing()
         Some(TokenUsage::new(100, 50))
     );
 
-    let summary = runtime.agent_summary().await?;
+    let summary = ready_agent_summary(&runtime).await?;
     assert_eq!(
         summary.token_usage.last_turn,
         Some(TokenUsage::new(100, 50))
@@ -1725,7 +1730,7 @@ pub async fn default_external_ingress_register_and_revoke_state() -> Result<()> 
     let host = RuntimeHost::new_with_provider(test_config(), Arc::new(StubProvider::new("ok")))?;
     let runtime = host.default_runtime().await?;
     let registry = ToolRegistry::new(runtime.workspace_root());
-    let before = runtime.agent_summary().await?;
+    let before = ready_agent_summary(&runtime).await?;
     assert!(before.active_wait_conditions.is_empty());
     assert_ne!(before.closure.outcome, ClosureOutcome::Waiting);
 
@@ -1761,7 +1766,7 @@ pub async fn default_external_ingress_register_and_revoke_state() -> Result<()> 
     assert_eq!(descriptors.len(), 1);
     assert_eq!(descriptors[0].status, ExternalTriggerStatus::Active);
 
-    let summary = runtime.agent_summary().await?;
+    let summary = ready_agent_summary(&runtime).await?;
     assert!(summary.active_wait_conditions.is_empty());
     assert_eq!(summary.closure.outcome, before.closure.outcome);
     assert_eq!(
@@ -1832,8 +1837,7 @@ pub async fn default_external_ingress_register_and_revoke_state() -> Result<()> 
     assert!(cancelled_event.data["external_trigger_id"].is_string());
 
     let descriptors = runtime.latest_external_triggers().await?;
-    assert!(runtime
-        .agent_summary()
+    assert!(ready_agent_summary(&runtime)
         .await?
         .active_wait_conditions
         .is_empty());
@@ -1846,7 +1850,7 @@ pub async fn default_external_ingress_register_and_revoke_state() -> Result<()> 
         let runtime = runtime.clone();
         let external_trigger_id = capability.external_trigger_id.clone();
         async move {
-            let summary = runtime.agent_summary().await?;
+            let summary = ready_agent_summary(&runtime).await?;
             Ok(summary
                 .active_external_triggers
                 .iter()
@@ -1854,7 +1858,7 @@ pub async fn default_external_ingress_register_and_revoke_state() -> Result<()> 
         }
     })
     .await?;
-    let summary = runtime.agent_summary().await?;
+    let summary = ready_agent_summary(&runtime).await?;
     assert!(summary
         .active_external_triggers
         .iter()
@@ -1873,7 +1877,7 @@ pub async fn timer_wait_surfaces_waiting_reason() -> Result<()> {
         .schedule_timer(5_000, None, Some("wait for time".into()))
         .await?;
 
-    let summary = runtime.agent_summary().await?;
+    let summary = ready_agent_summary(&runtime).await?;
     assert_eq!(summary.closure.outcome, ClosureOutcome::Waiting);
     assert_eq!(
         summary.closure.waiting_reason,

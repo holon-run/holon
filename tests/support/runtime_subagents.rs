@@ -8,6 +8,7 @@
 // provider implementations and shared harness helpers have been moved to
 // runtime_providers.rs and runtime_helpers.rs respectively.
 
+use crate::support::runtime_helpers::ready_agent_summary;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::Arc;
@@ -189,7 +190,7 @@ pub async fn subagent_task_updates_parent_state_and_child_summary_during_lifecyc
 
     let mut saw_child_summary = false;
     for _ in 0..20 {
-        let summary = runtime.agent_summary().await?;
+        let summary = ready_agent_summary(&runtime).await?;
         if let Some(child) = summary.active_children.iter().find(|child| {
             child.identity.delegated_from_task_id.as_deref() == Some(task.id.as_str())
         }) {
@@ -224,7 +225,7 @@ pub async fn subagent_task_updates_parent_state_and_child_summary_during_lifecyc
     assert_eq!(output.task.status, holon::types::TaskStatus::Completed);
     assert!(output.task.output_preview.contains("slow child result"));
 
-    let final_summary = runtime.agent_summary().await?;
+    let final_summary = ready_agent_summary(&runtime).await?;
     assert!(matches!(
         final_summary.agent.status,
         AgentStatus::AwakeIdle | AgentStatus::Asleep

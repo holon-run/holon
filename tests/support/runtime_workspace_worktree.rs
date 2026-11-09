@@ -8,6 +8,7 @@
 // provider implementations and shared harness helpers have been moved to
 // runtime_providers.rs and runtime_helpers.rs respectively.
 
+use crate::support::runtime_helpers::ready_agent_summary;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::Arc;
@@ -299,7 +300,7 @@ pub async fn enter_workspace_conflict_preserves_existing_occupancy() -> Result<(
         .expect("shared_read entry should still be active");
     assert_eq!(active_entry.access_mode, WorkspaceAccessMode::SharedRead);
 
-    let summary = default_runtime.agent_summary().await?;
+    let summary = ready_agent_summary(&default_runtime).await?;
     let occupancy = summary
         .active_workspace_occupancy
         .as_ref()
