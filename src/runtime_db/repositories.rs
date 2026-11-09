@@ -443,7 +443,7 @@ impl AgentStateRepository<'_> {
              UNION SELECT agent_id FROM episode_continuity_seeds
              UNION SELECT agent_id FROM queue_entries WHERE status IN ('queued', 'dequeued', 'interrupted', 'interjected')
              UNION SELECT agent_id FROM turn_records WHERE json_extract(payload_json, '$.terminal') IS NULL
-             UNION SELECT agent_id FROM execution_protocol_attempts WHERE lifecycle_state != 'settled'
+             UNION SELECT agent_id FROM execution_protocol_attempts WHERE lifecycle_state = 'open'
              UNION SELECT agent_id FROM execution_protocol_work_items WHERE lifecycle_state != 'terminal'
              UNION SELECT agent_id FROM work_items WHERE state IN ('open', 'completing') OR EXISTS (SELECT 1 FROM json_each(work_items.payload_json, '$.work_refs') r WHERE json_extract(r.value, '$.status') = 'active')
              UNION SELECT agent_id FROM work_item_continuations WHERE state = 'active'

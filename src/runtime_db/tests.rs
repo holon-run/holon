@@ -420,6 +420,93 @@ mod tests {
         Ok(())
     }
 
+    #[test]
+    fn startup_closed_attempts_need_independent_live_obligations_to_require_a_seed() -> Result<()> {
+        for terminal in ["settled", "interrupted", "protocol_violation"] {
+            let (_home, db_path, lock_path) = temp_paths()?;
+            let db = RuntimeDb::open_and_migrate(&db_path, &lock_path)?;
+            db.connection()?.execute(
+                "INSERT INTO execution_protocol_attempts
+                 (agent_id,attempt_id,lifecycle_state,source_identity_json,source_generation,payload_json)
+                 VALUES('closed-attempt-owner','original-attempt',?1,'{}',1,'{}')",
+                [terminal],
+            )?;
+            let agents = db.agent_states().startup_mutation_agent_ids()?;
+            assert!(agents.is_empty(), "{terminal} is retained history");
+            assert!(db.startup_input_recovery_scopes(&agents)?.is_empty());
+
+            for source in ["attempt", "queue", "work_execution", "checkpoint"] {
+                db.transaction(|tx| {
+                    match source {
+                        "attempt" => tx.execute(
+                            "UPDATE execution_protocol_attempts SET lifecycle_state='open'",
+                            [],
+                        )?,
+                        "queue" => tx.execute(
+                            "INSERT INTO queue_entries
+                             (message_id,agent_id,priority,status,created_at,updated_at,payload_json)
+                             VALUES('live-input','closed-attempt-owner','normal','interrupted','2026-01-01','2026-01-01','{}')",
+                            [],
+                        )?,
+                        "work_execution" => tx.execute(
+                            "INSERT INTO execution_protocol_work_items
+                             (agent_id,work_item_id,source_revision,generation,lifecycle_state,payload_json)
+                             VALUES('closed-attempt-owner','live-work',1,1,'in_flight','{}')",
+                            [],
+                        )?,
+                        "checkpoint" => tx.execute(
+                            "INSERT INTO dispatch_memory_checkpoints
+                             (agent_id,identity_incarnation,turn_id,source_message_id,turn_index,state,seed_digest,record_digest,payload_json)
+                             VALUES('closed-attempt-owner',1,'live-turn','live-source',1,'pending',?1,?1,'{}')",
+                            ["a".repeat(64)],
+                        )?,
+                        _ => unreachable!(),
+                    };
+                    Ok(())
+                })?;
+                let agents = db.agent_states().startup_mutation_agent_ids()?;
+                assert_eq!(agents, ["closed-attempt-owner"], "{terminal}/{source}");
+                let error = db
+                    .startup_input_recovery_scopes(&agents)
+                    .err()
+                    .context("live orphan must retain the original fixed-seed requirement")?;
+                assert!(
+                    format!("{error:#}").contains("explicit fixed-seed preparation"),
+                    "{terminal}/{source}: {error:#}"
+                );
+                db.transaction(|tx| {
+                    tx.execute(
+                        "UPDATE execution_protocol_attempts SET lifecycle_state=?1",
+                        [terminal],
+                    )?;
+                    tx.execute("DELETE FROM queue_entries", [])?;
+                    tx.execute("DELETE FROM execution_protocol_work_items", [])?;
+                    tx.execute("DELETE FROM dispatch_memory_checkpoints", [])?;
+                    Ok(())
+                })?;
+                assert!(db.agent_states().startup_mutation_agent_ids()?.is_empty());
+            }
+            let connection = db.connection()?;
+            assert_eq!(
+                connection.query_row(
+                    "SELECT COUNT(*) FROM execution_protocol_attempts",
+                    [],
+                    |row| row.get::<_, usize>(0)
+                )?,
+                1
+            );
+            assert_eq!(
+                connection.query_row(
+                    "SELECT COUNT(*) FROM episode_continuity_seeds",
+                    [],
+                    |row| row.get::<_, usize>(0)
+                )?,
+                0
+            );
+        }
+        Ok(())
+    }
+
     fn wait_until(mut condition: impl FnMut() -> Result<bool>, label: &str) -> Result<()> {
         let started_at = Instant::now();
         loop {
