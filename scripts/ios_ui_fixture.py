@@ -838,6 +838,7 @@ with fixture_directory(repo) as root:
                 upstream.connect()
                 with proxy_state_lock:
                     if not proxy_available.is_set():
+                        responded = True
                         self.send_error(503, "isolated fixture node unavailable")
                         return
                     sockets = (upstream.sock, self.connection)
@@ -901,7 +902,8 @@ with fixture_directory(repo) as root:
                 # an opaque offline error. Answer 502 and name the request in
                 # the sweep log so a CI failure says which hop failed.
                 if not responded:
-                    report(f"Proxy upstream failure forwarding {self.command} {self.path}: {error!r}")
+                    path = urllib.parse.urlsplit(self.path).path
+                    report(f"Proxy upstream failure forwarding {self.command} {path}: {type(error).__name__}")
                     try:
                         self.send_error(502, "fixture proxy upstream failure")
                     except OSError:

@@ -2371,6 +2371,31 @@ class UIFixtureProxyAvailabilityContracts(unittest.TestCase):
         self.assertEqual(self.request("GET", "/api/agents")[0], 200)
         self.assertFalse(any(path.startswith("/fixture/") for _, path in self.requests))
 
+    def test_unavailability_after_connect_never_sends_a_second_response(self):
+        upstream = Mock()
+        upstream.connect.side_effect = self.namespace["proxy_available"].clear
+        handler = SimpleNamespace(command="GET", path="/api/agents", headers={},
+            send_error=Mock(side_effect=BrokenPipeError("client disconnected")))
+        self.namespace["report"] = Mock()
+        with patch("http.client.HTTPConnection", return_value=upstream):
+            self.namespace["LostResponseProxy"].forward(handler)
+        handler.send_error.assert_called_once_with(503, "isolated fixture node unavailable")
+        self.namespace["report"].assert_not_called()
+        upstream.close.assert_called_once()
+
+    def test_upstream_failure_returns_502_without_logging_query_or_error_details(self):
+        upstream = Mock()
+        upstream.connect.side_effect = ConnectionRefusedError("private upstream detail")
+        handler = SimpleNamespace(command="GET", path="/api/agents?ticket=private-ticket", headers={},
+            send_error=Mock())
+        self.namespace["report"] = Mock()
+        with patch("http.client.HTTPConnection", return_value=upstream):
+            self.namespace["LostResponseProxy"].forward(handler)
+        handler.send_error.assert_called_once_with(502, "fixture proxy upstream failure")
+        self.namespace["report"].assert_called_once_with(
+            "Proxy upstream failure forwarding GET /api/agents: ConnectionRefusedError")
+        upstream.close.assert_called_once()
+
     def test_control_requires_runner_token_and_strict_boolean_payload(self):
         for token in (None, "ordinary-app-session-token"):
             with self.subTest(token=token):
