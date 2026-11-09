@@ -609,7 +609,7 @@ mod memory_material_tests {
             if has_binding {
                 let error = observed
                     .err()
-                    .context("bound malformed Turn must fail validation")?;
+                    .expect("bound malformed Turn must fail validation");
                 assert!(format!("{error:#}").contains("malformed JSON"));
             } else {
                 let guards = observed?;
