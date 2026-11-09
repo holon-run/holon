@@ -664,3 +664,147 @@ fn terminal_rows_without_original_startup_audit_never_mint_startup_authorization
         .map(|v| v.unwrap().terminal.is_some())?);
     Ok(())
 }
+
+impl Fixture {
+    fn commit_queue_reentry(&self) -> Result<()> {
+        self.commit_queue_reentry_with_delay(chrono::Duration::zero())
+    }
+    fn commit_queue_reentry_with_delay(&self, delay: chrono::Duration) -> Result<()> {
+        use crate::domain::execution_protocol::{ExecutionProtocolCommand, InterruptExecution};
+        use crate::runtime_db::transitions::{
+            ExecutionProtocolTransition, PreparedQueueTransition, QueueMutation, QueueOperation,
+            QueueTransitionCommand,
+        };
+        self.admit_original_command()?;
+        let at = self.at + chrono::Duration::seconds(2);
+        let (mut turn, before) = self.db.transaction(|tx| {
+            let turn = ContextDurableRead::new(tx, &self.source.agent_id)
+                .turn_by_id(&self.binding.key().actual_dispatch_turn_id)?
+                .unwrap();
+            let payload: String = tx.query_row(
+                "SELECT payload_json FROM queue_entries WHERE message_id=?1",
+                [&self.source.id],
+                |r| r.get(0),
+            )?;
+            Ok((turn, serde_json::from_str::<QueueEntryRecord>(&payload)?))
+        })?;
+        turn.terminal = Some(crate::types::TurnTerminalSummary {
+            kind: TurnTerminalKind::Interrupted,
+            reason: Some("interrupted_queue_claim_reentry".into()),
+            no_brief_reason: Some(crate::types::TurnNoBriefReason::Interrupted),
+            completed_at: at,
+            duration_ms: 0,
+        });
+        let mut queued = before.clone();
+        queued.status = QueueEntryStatus::Queued;
+        queued.updated_at = at + delay;
+        let activation = format!("activation:message:{}", self.source.id);
+        let mut audit = AuditEvent::legacy(
+            "scheduler_bootstrap_claim_recovered",
+            serde_json::json!({"agent_id":self.source.agent_id,"message_id":self.source.id,"activation_id":activation,"queue_status":"queued","recovery_outcome":"task_result_attempt_requeued_for_reentry","provenance":"bootstrap_reconciliation"}),
+        );
+        audit.id = "queue-reentry-audit".into();
+        audit.created_at = at + delay * 2;
+        let mut command = PreparedQueueTransition::new(QueueTransitionCommand {
+            agent_id: self.source.agent_id.clone(),
+            operation: QueueOperation::Requeue,
+            mutation: QueueMutation::CompareAndSet {
+                expected: before,
+                record: queued,
+            },
+            scheduler_claim_work_item: None,
+            agent_state: None,
+            message_evidence: vec![],
+            transcript_entries: vec![],
+            turn_record: Some(turn),
+            audit_events: vec![audit],
+            notify_scheduler: true,
+            fault: None,
+            brief_evidence: vec![],
+        });
+        command.execution_protocol = ExecutionProtocolTransition {
+            bootstrap: None,
+            commands: vec![ExecutionProtocolCommand::Interrupt(InterruptExecution {
+                attempt_id: activation.clone(),
+                outcome_id: format!("outcome:interrupted:{activation}"),
+                reason: "runtime_interrupted".into(),
+                interrupted_at: at.to_rfc3339(),
+            })],
+        };
+        let prepared = PreparedInputTransition::queue(
+            self.binding.scope(),
+            "queue-reentry-original".into(),
+            at,
+            command,
+        )?;
+        self.db
+            .transitions_in_scope(&self.binding.scope())
+            .commit_prepared_transition(&prepared)?;
+        Ok(())
+    }
+}
+
+#[test]
+fn exclusive_startup_finishes_original_queue_reentry_without_forging_startup_audit() -> Result<()> {
+    let f = Fixture::new()?;
+    f.commit_queue_reentry_with_delay(chrono::Duration::milliseconds(20))?;
+    let lease_path = f.home.path().join("maintenance.lock");
+    let lease = RuntimeDbLock::try_lock(&lease_path)?;
+    let handoff = tokio::sync::Mutex::new(());
+    let guard = handoff.try_lock().unwrap();
+    let cap =
+        ExclusiveStartupInputRecovery::for_pre_activation_host(&f.db, &lease, &lease_path, &guard)?;
+    let session = StartupEndedMemorySession::new(&f.db, &cap)?;
+    let scopes =
+        f.db.startup_input_recovery_scopes(&[f.source.agent_id.clone()])?;
+    f.db.recover_interrupted_runtime_state_at_startup_in_scopes(&scopes, &cap)?;
+    let token =
+        f.db.transaction(|tx| session.authorize_interrupted_tx(tx, &f.binding))?;
+    assert!(matches!(token.end, CanonicalEnd::QueueReentry(_)));
+    let material =
+        f.db.transaction(|tx| session.interrupted_proof_material_tx(tx, &f.binding))?;
+    assert_eq!(
+        material,
+        f.db.transaction(|tx| token.proof_material_tx(tx))?
+    );
+    assert!(material.0 > 0 && material.1 > 5);
+    f.clear_original_posture()?;
+    f.db.transaction(|tx| token.validate_tx(tx, f.binding.key(), f.binding.invocation()))?;
+    assert_eq!(
+        f.db.connection()?.query_row(
+            "SELECT COUNT(*) FROM audit_events WHERE kind='startup_interrupted_turn_recovered'",
+            [],
+            |r| r.get::<_, usize>(0)
+        )?,
+        0
+    );
+    drop(session);
+    assert!(f
+        .db
+        .transaction(|tx| token.validate_tx(tx, f.binding.key(), f.binding.invocation()))
+        .is_err());
+    Ok(())
+}
+
+#[test]
+fn queue_reentry_requires_original_receipt_and_unchanged_native_facts() -> Result<()> {
+    for mutation in [
+        "DELETE FROM input_mutation_receipts WHERE command_nonce='queue-reentry-original'",
+        "UPDATE audit_events SET data_json=json_set(data_json,'$.data.activation_id','foreign') WHERE audit_event_id='queue-reentry-audit'",
+        "UPDATE queue_entries SET updated_at='2030-01-01T00:00:00.000Z',payload_json=json_set(payload_json,'$.updated_at','2030-01-01T00:00:00Z')",
+        "UPDATE execution_protocol_attempts SET lifecycle_state='settled'",
+        "UPDATE turn_records SET completed_at='2030-01-01T00:00:00.000Z' WHERE turn_id='startup-ended-turn'",
+    ] {
+        let f=Fixture::new()?;f.commit_queue_reentry()?;
+        let lease_path=f.home.path().join("maintenance.lock");let lease=RuntimeDbLock::try_lock(&lease_path)?;
+        let handoff=tokio::sync::Mutex::new(());let guard=handoff.try_lock().unwrap();
+        let cap=ExclusiveStartupInputRecovery::for_pre_activation_host(&f.db,&lease,&lease_path,&guard)?;
+        let session=StartupEndedMemorySession::new(&f.db,&cap)?;
+        let token=f.db.transaction(|tx|session.authorize_interrupted_tx(tx,&f.binding))?;
+        f.clear_original_posture()?;
+        f.db.connection()?.execute_batch(mutation)?;
+        assert!(f.db.transaction(|tx|session.authorize_interrupted_tx(tx,&f.binding)).is_err(),"{mutation}");
+        assert!(f.db.transaction(|tx|token.validate_tx(tx,f.binding.key(),f.binding.invocation())).is_err(),"{mutation}");
+    }
+    Ok(())
+}
