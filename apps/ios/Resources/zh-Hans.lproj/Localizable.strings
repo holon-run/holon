@@ -1,9 +1,11 @@
 "avatar.status.offline" = "离线";
 "avatar.status.deleting" = "正在删除";
 "avatar.status.stopped" = "已停止";
-"avatar.status.running" = "工作中";
-"avatar.status.needsInput" = "等你回应";
+"avatar.status.running" = "运行中";
+"avatar.status.runnable" = "可运行";
+"avatar.status.needsInput" = "需要输入";
 "avatar.status.waiting" = "等待中";
+"avatar.status.blocked" = "已阻塞";
 "avatar.status.sleeping" = "休眠中";
 "avatar.status.ready" = "就绪";
 "avatar.status.unknown" = "状态未知";

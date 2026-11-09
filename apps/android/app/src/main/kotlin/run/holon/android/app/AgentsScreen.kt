@@ -205,8 +205,8 @@ internal fun AgentConversationRow(
     live: Boolean = true,
     onClick: () -> Unit,
 ) {
-    val tone = agent.statusTone()
-    val needsReply = agent.needsReply()
+    val status = agent.statusPresentation(live)
+    val needsReply = status.kind == AgentStatusKind.NeedsInput
     val briefPreview = plainTextPreview(agent.latestBrief?.preview.orEmpty())
     val inputPreview = agent.inputPreview(operatorPreview)?.let(::plainTextPreview)
     val postureReason = agent.postureReason.orEmpty()
@@ -222,6 +222,7 @@ internal fun AgentConversationRow(
             AgentAvatar(agent = agent, size = 48.dp, live = live)
             Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(5.dp)) {
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
+                    AgentStatusIcon(status)
                     Text(agent.displayName, style = MaterialTheme.typography.titleMedium, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f))
                     if (!compact && activityTime != null) {
                         Text(
@@ -248,11 +249,6 @@ internal fun AgentConversationRow(
                     style = MaterialTheme.typography.bodyMedium,
                 )
                 FlowRow(horizontalArrangement = Arrangement.spacedBy(10.dp), verticalArrangement = Arrangement.spacedBy(2.dp)) {
-                    Text(
-                        agent.statusLabel(),
-                        style = MaterialTheme.typography.labelMedium,
-                        color = if (needsReply) MaterialTheme.colorScheme.onTertiaryContainer else toneColor(tone),
-                    )
                     if (unreadCount > 0) Text(
                         if (unreadCount == 1) ui("新结果") else ui("$unreadCount 个未读结果"),
                         style = MaterialTheme.typography.labelMedium,

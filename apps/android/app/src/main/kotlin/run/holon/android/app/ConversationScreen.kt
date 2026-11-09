@@ -167,7 +167,19 @@ internal fun ConversationScreen(state: HolonUiState, viewModel: ConversationActi
                         )
                         Column(Modifier.weight(1f)) {
                             Text(if (state.agentSection == AgentSection.Results) agent.displayName else state.agentSection.label, style = MaterialTheme.typography.titleMedium, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                            if (state.agentSection != AgentSection.Results || agent.needsReply()) Text(if (state.agentSection != AgentSection.Results) agent.displayName else agent.statusLabel(), style = MaterialTheme.typography.bodySmall, color = if (agent.needsReply()) MaterialTheme.colorScheme.onTertiaryContainer else MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                            val status = agent.statusPresentation(
+                                state.online && state.rosterState == AgentRosterState.Synced && state.switchingNetworkId == null,
+                            )
+                            Row(horizontalArrangement = Arrangement.spacedBy(4.dp), verticalAlignment = Alignment.CenterVertically) {
+                                AgentStatusIcon(status)
+                                Text(
+                                    if (state.agentSection != AgentSection.Results) "${agent.displayName} · ${status.label}" else status.label,
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = toneColor(status.kind.tone),
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis,
+                                )
+                            }
                         }
                         Icon(Icons.Default.ExpandMore, contentDescription = ui("切换 Agent"), modifier = Modifier.size(16.dp))
                     }

@@ -2729,7 +2729,7 @@ private fun AgentProjectionEntity.toAgentSummary(): AgentSummary =
     )
 
 internal fun AgentSummary.needsReply(): Boolean =
-    schedulingPosture == "waiting_for_operator" || waitingReason == "awaiting_operator_input"
+    statusPresentation().kind == AgentStatusKind.NeedsInput
 
 internal fun AgentSummary.hasUnreadBrief(readBriefIds: Map<String, String>): Boolean =
     latestBrief?.briefId?.let { it != readBriefIds[id] } ?: false

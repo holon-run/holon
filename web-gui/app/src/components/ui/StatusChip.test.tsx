@@ -2,7 +2,10 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
 
 import "../../i18n";
-import { StatusBadge, AgentStateBadge } from "./StatusChip";
+import { StatusBadge, AgentStateBadge, AgentStatusIndicator } from "./StatusChip";
+import { deriveAgentDisplayStatus } from "../../runtime/agent-status";
+import i18next from "i18next";
+import statusFixture from "../../../../../tests/fixtures/agent-status-display.json";
 
 function renderBadge(kind: Parameters<typeof StatusBadge>[0]["kind"], value: string): string {
   return renderToStaticMarkup(<StatusBadge kind={kind} value={value} />);
@@ -15,6 +18,37 @@ function hasSpin(markup: string): boolean {
 function hasIcon(markup: string, icon: string): boolean {
   return markup.includes(`lucide-${icon}`);
 }
+
+describe("AgentStatusIndicator shared projection", () => {
+  it.each(statusFixture.cases)("$name stays consistent in compact rows and headers", ({ input, expected }) => {
+    const { stateIsCurrent, ...summary } = { ...statusFixture.defaults, ...input };
+    const status = deriveAgentDisplayStatus(summary, i18next.t, stateIsCurrent);
+    for (const className of ["agent-row-status-dot", "header-status"]) {
+      const markup = renderToStaticMarkup(<AgentStatusIndicator status={status} className={className} />);
+      expect(markup).toContain(`data-status-kind="${expected.kind}"`);
+      expect(markup).toContain(`data-status-icon="${expected.icon}"`);
+      expect(markup).toContain(`data-tone="${expected.tone}"`);
+      const icon = expected.icon === "spinner" ? "loader-circle"
+        : expected.icon === "circle-help" ? "circle-question-mark" : expected.icon;
+      expect(hasIcon(markup, icon)).toBe(true);
+      expect(markup).toContain(`aria-label="${status.label}"`);
+      expect(markup).toContain('role="img"');
+      expect(markup).toContain('title="');
+      expect(markup).toContain('data-tooltip="');
+      expect(markup).toContain('aria-hidden="true"');
+      expect(hasSpin(markup)).toBe(expected.kind === "running");
+      expect(markup).not.toContain(`<span>${status.label}</span>`);
+    }
+  });
+
+  it("can show the same label without replacing the primary icon", () => {
+    const status = deriveAgentDisplayStatus({ posture: "has_queued_input" }, i18next.t);
+    const markup = renderToStaticMarkup(<AgentStatusIndicator status={status} showLabel />);
+    expect(markup).toContain(`<span>${status.label}</span>`);
+    expect(hasIcon(markup, "circle-arrow-right")).toBe(true);
+    expect(hasSpin(markup)).toBe(false);
+  });
+});
 
 describe("StatusBadge task kind", () => {
   const cases: Array<{ status: string; spins: boolean; icon: string }> = [
@@ -95,6 +129,12 @@ describe("StatusBadge terminal states never spin", () => {
 });
 
 describe("AgentStateBadge posture priority", () => {
+  it("keeps stopped lifecycle authoritative over stale posture", () => {
+    const markup = renderToStaticMarkup(<AgentStateBadge lifecycle="stopped" posture="active_turn" />);
+    expect(markup).toContain('data-status-kind="stopped"');
+    expect(hasSpin(markup)).toBe(false);
+  });
+
   it("prefers posture over lifecycle", () => {
     const markup = renderToStaticMarkup(
       <AgentStateBadge lifecycle="asleep" posture="active_turn" />,

@@ -1519,6 +1519,7 @@ const zh: Record<string, any> = {
   },
 
   statusDetail: {
+    cached: "缓存的上次已知状态",
     posture: "姿态",
     reason: "原因",
     lifecycle: "生命周期",

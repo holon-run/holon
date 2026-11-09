@@ -1,12 +1,87 @@
 import HolonClient
+import UIKit
 import XCTest
 @testable import Holon
 
 final class AgentIdentityPresentationTests: XCTestCase {
-    func testCachedAndRefreshingIdentityUsesNeutralWithoutClaimingOffline() {
+    private struct Fixture: Decodable {
+        struct Input: Decodable {
+            let lifecycle: String?
+            let posture: String?
+            let currentRunId: String?
+            let pending: Int?
+            let activeTaskCount: Int?
+            let waitingCount: Int?
+            let stateIsCurrent: Bool?
+        }
+        struct Expected: Decodable { let kind: String; let icon: String; let tone: String }
+        struct Case: Decodable { let name: String; let input: Input; let expected: Expected }
+        let defaults: Input
+        let cases: [Case]
+    }
+
+    func testNativeSymbolsAndReducedMotion() {
+        let cases: [(AgentIdentityPresentation.Kind, String)] = [
+            (.stopped, "xmark.circle"), (.needsInput, "exclamationmark.circle"),
+            (.running, "arrow.triangle.2.circlepath"), (.runnable, "arrow.right.circle"),
+            (.waiting, "clock"), (.blocked, "lock"), (.ready, "checkmark.circle"),
+            (.unknown, "questionmark.circle"), (.deleting, "minus.circle"),
+        ]
+        for (kind, symbol) in cases {
+            let value = AgentIdentityPresentation(kind: kind)
+            XCTAssertEqual(value.icon.systemName, symbol)
+            XCTAssertNotNil(UIImage(systemName: symbol))
+            XCTAssertFalse(value.animates(reduceMotion: true))
+            XCTAssertEqual(value.animates(reduceMotion: false), kind == .running)
+        }
+    }
+
+    func testPreviewAndUnreadDoNotDetermineStatus() {
+        var agent = ReadingAgent(id: "stable", name: "Name", preview: "Working", unreadCount: 10, posture: "idle")
+        let expected = AgentIdentityPresentation.derive(agent, current: true)
+        agent.preview = "Waiting for your input"
+        agent.operatorPreview = "Run now"
+        agent.unreadCount = 99
+        XCTAssertEqual(AgentIdentityPresentation.derive(agent, current: true), expected)
+        XCTAssertEqual(expected.kind, .ready)
+    }
+
+    func testSharedStatusDisplayFixture() throws {
+        var root = URL(fileURLWithPath: #filePath)
+        for _ in 0..<4 { root.deleteLastPathComponent() }
+        let data = try Data(contentsOf: root.appendingPathComponent("tests/fixtures/agent-status-display.json"))
+        let fixture = try JSONDecoder().decode(Fixture.self, from: data)
+        XCTAssertFalse(fixture.cases.isEmpty)
+        for item in fixture.cases {
+            let input = item.input, defaults = fixture.defaults
+            let agent = ReadingAgent(
+                id: item.name, name: "Name", preview: "",
+                currentRunID: input.currentRunId ?? defaults.currentRunId,
+                posture: input.posture ?? defaults.posture,
+                lifecycle: input.lifecycle ?? defaults.lifecycle,
+                pendingCount: input.pending ?? defaults.pending,
+                activeTaskCount: input.activeTaskCount ?? defaults.activeTaskCount,
+                waitingCount: input.waitingCount ?? defaults.waitingCount
+            )
+            let value = AgentIdentityPresentation.derive(
+                agent, current: input.stateIsCurrent ?? defaults.stateIsCurrent ?? false
+            )
+            XCTAssertEqual(value.kind.rawValue, item.expected.kind, item.name)
+            XCTAssertEqual(value.icon.rawValue, item.expected.icon, item.name)
+            XCTAssertEqual(value.tone.rawValue, item.expected.tone, item.name)
+        }
+    }
+
+    func testDeletedLifecycleIsStopped() {
+        let agent = ReadingAgent(id: "deleted", name: "Name", preview: "",
+                                 currentRunID: "stale-run", posture: "active_turn", lifecycle: "deleted")
+        XCTAssertEqual(AgentIdentityPresentation.derive(agent, current: true).kind, .stopped)
+    }
+
+    func testCachedAndRefreshingIdentityIsUnknownWithSecondaryConnectionDetail() {
         let agent = ReadingAgent(id: "stable", name: "Name", preview: "", currentRunID: "run")
-        let cases: [(ReadingStatus, Bool, Bool, Bool, String)] = [
-            (.live, false, false, false, "avatar.status.running"),
+        let cases: [(ReadingStatus, Bool, Bool, Bool, String?)] = [
+            (.live, false, false, false, nil),
             (.syncing, false, false, false, "reading.status.syncing"),
             (.syncing, true, true, false, "reading.cache.refreshing"),
             (.live, true, false, false, "reading.cache.saved"),
@@ -22,8 +97,10 @@ final class AgentIdentityPresentationTests: XCTestCase {
             let value = AgentIdentityPresentation.derive(agent, status: status, isRosterCurrent: true,
                                                         isCached: cached,
                                                         isRefreshing: refreshing, connecting: connecting)
-            XCTAssertEqual(value.statusKey, key)
-            XCTAssertEqual(value.expression, key == "avatar.status.running" ? .focused : .neutral)
+            XCTAssertEqual(value.connectionStatusKey, key)
+            XCTAssertEqual(value.kind, key == nil ? .running : .unknown)
+            XCTAssertEqual(value.expression, key == nil ? .focused : .neutral)
+            XCTAssertEqual(value.animates(reduceMotion: false), key == nil)
         }
     }
 
@@ -32,34 +109,31 @@ final class AgentIdentityPresentationTests: XCTestCase {
         for refreshing in [false, true] {
             XCTAssertEqual(AgentIdentityPresentation.derive(
                 agent, status: .live, isRosterCurrent: false, isCached: false, isRefreshing: refreshing
-            ), .init(statusKey: refreshing ? "reading.cache.refreshing" : "reading.cache.saved",
-                     expression: .neutral))
+            ), .init(kind: .unknown, connectionStatusKey: refreshing ? "reading.cache.refreshing" : "reading.cache.saved"))
         }
     }
 
     func testStatusAndExpressionSharePrecedence() {
-        let cases: [(String?, String?, String?, Int?, Int?, String, HolonAvatarExpression)] = [
-            ("deleting", "active_turn", "run", 0, 0, "deleting", .neutral),
-            ("stopped", "active_turn", "run", 0, 0, "stopped", .neutral),
-            ("awake_running", "waiting_for_operator", nil, 0, 0, "running", .focused),
-            (nil, "waiting_for_operator", "run", 0, 0, "running", .focused),
-            ("asleep", "waiting_for_operator", nil, 0, 0, "needsInput", .questioning),
-            ("asleep", "waiting_for_task", nil, 0, 1, "waiting", .waiting),
-            ("awake_idle", "blocked", nil, 0, 0, "waiting", .waiting),
-            ("asleep", "idle", nil, 0, 0, "sleeping", .sleeping),
-            ("asleep", "idle", nil, 1, 0, "ready", .neutral),
-            ("asleep", "idle", nil, 0, 1, "ready", .neutral),
-            ("awake_idle", "idle", nil, 0, 0, "ready", .neutral),
-            (nil, nil, nil, nil, nil, "unknown", .neutral),
+        let cases: [(String?, String?, String?, AgentIdentityPresentation.Kind, HolonAvatarExpression)] = [
+            ("deleting", "active_turn", "run", .deleting, .neutral),
+            ("stopped", "active_turn", "run", .stopped, .neutral),
+            ("awake_running", "waiting_for_operator", nil, .needsInput, .questioning),
+            (nil, "waiting_for_operator", "run", .needsInput, .questioning),
+            ("asleep", "waiting_for_task", nil, .waiting, .waiting),
+            ("awake_idle", "blocked", nil, .blocked, .neutral),
+            ("asleep", "idle", nil, .ready, .neutral),
+            (nil, "has_queued_input", nil, .runnable, .neutral),
+            (nil, nil, nil, .unknown, .neutral),
         ]
-        for (lifecycle, posture, run, pending, tasks, label, expression) in cases {
+        for (lifecycle, posture, run, kind, expression) in cases {
             let agent = ReadingAgent(id: "stable-id", name: "Name", preview: "", currentRunID: run,
-                                     posture: posture, lifecycle: lifecycle, pendingCount: pending,
-                                     activeTaskCount: tasks)
-            XCTAssertEqual(AgentIdentityPresentation.derive(agent, current: true),
-                           .init(statusKey: "avatar.status." + label, expression: expression))
+                                     posture: posture, lifecycle: lifecycle,
+                                     pendingCount: kind == .unknown ? 0 : 3, activeTaskCount: 2)
+            let value = AgentIdentityPresentation.derive(agent, current: true)
+            XCTAssertEqual(value.kind, kind)
+            XCTAssertEqual(value.expression, expression)
             XCTAssertEqual(AgentIdentityPresentation.derive(agent, current: false),
-                           .init(statusKey: "avatar.status.offline", expression: .neutral))
+                           .init(kind: .unknown))
         }
     }
 

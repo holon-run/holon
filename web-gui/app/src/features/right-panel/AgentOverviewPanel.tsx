@@ -16,7 +16,8 @@ import type React from "react";
 
 import { MarkdownContent } from "../../components/MarkdownContent";
 import { EmptyState } from "../../components/ui/EmptyState";
-import { StatusBadge } from "../../components/ui/StatusChip";
+import { AgentStatusIndicator, StatusBadge } from "../../components/ui/StatusChip";
+import { deriveAgentDisplayStatus } from "../../runtime/agent-status";
 import { agentRenameErrorKey, isAgentRenameable, validateAgentDisplayName } from "./agent-rename";
 import { ObjectDetailRefreshFeedback } from "./ObjectDetailRefreshFeedback";
 import { compactModelRouteDisplay } from "../../lib/model-route-ref";
@@ -233,6 +234,7 @@ export function AgentOverviewPanel({
 }: AgentOverviewPanelProps) {
   const { t } = useTranslation();
   const queryAgentRecentTasks = useRuntimeStore((state) => state.queryAgentRecentTasks);
+  const stateIsCurrent = useRuntimeStore((state) => !state.bootstrap.connection.error && state.discovery.freshness === "fresh");
   const queryAgentTimers = useRuntimeStore((state) => state.queryAgentTimers);
   const cancelAgentTimer = useRuntimeStore((state) => state.cancelAgentTimer);
   const workspace = agent.workspaceSummary;
@@ -351,7 +353,7 @@ export function AgentOverviewPanel({
       <CollapsibleInspectorCard
         title={agent.name ?? agent.id}
         className="agent-identity-card"
-        badge={<StatusBadge className="state-chip" kind="agent" value={agent.posture || agent.lifecycle} />}
+        badge={<AgentStatusIndicator className="state-chip" status={deriveAgentDisplayStatus(agent, t, stateIsCurrent)} />}
       >
         {renaming ? (
           <div className="agent-rename-row">

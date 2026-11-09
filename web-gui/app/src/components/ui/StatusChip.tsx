@@ -8,8 +8,10 @@ import {
   Ban,
   Circle,
   CircleAlert,
+  CircleArrowRight,
   CircleDot,
   CircleCheck,
+  CircleHelp,
   CirclePause,
   CircleX,
   Clock,
@@ -20,7 +22,6 @@ import {
   Info,
   LoaderCircle,
   Lock,
-  Moon,
   Plug,
   Radio,
   RefreshCw,
@@ -29,11 +30,11 @@ import {
   Terminal,
   TriangleAlert,
   User,
-  WifiOff,
   type LucideProps,
 } from "lucide-react";
 
 import { Badge } from "./Badge";
+import { deriveAgentDisplayStatus, type AgentDisplayStatus, type AgentStatusIcon } from "../../runtime/agent-status";
 
 type IconComponent = ComponentType<LucideProps>;
 
@@ -62,22 +63,6 @@ function toneIcon(tone: string): IconResult {
 
 /** Icon for a typed StatusBadge based on kind + normalized value. */
 function statusIcon(kind: StatusKind, value: string): IconResult {
-  if (kind === "agent") {
-    if (value === "active-turn" || value === "running" || value === "in-progress" || value === "awake-running")
-      return { Icon: LoaderCircle, spin: true };
-    if (value === "waiting-for-operator" || value === "needs-input" || value === "input")
-      return { Icon: CircleAlert, spin: false };
-    if (value === "waiting-for-task" || value === "waiting-for-external" || value === "waiting")
-      return { Icon: Clock, spin: false };
-    if (value === "blocked") return { Icon: Lock, spin: false };
-    if (value === "has-queued-input" || value === "has-runnable-work" || value === "awake-idle")
-      return { Icon: CircleDot, spin: false };
-    if (value === "asleep" || value === "idle") return { Icon: Moon, spin: false };
-    if (value === "stopped" || value === "archived") return { Icon: Square, spin: false };
-    if (value === "disconnected") return { Icon: WifiOff, spin: false };
-    if (value === "stale") return { Icon: TriangleAlert, spin: false };
-    if (value === "completed") return { Icon: CircleCheck, spin: false };
-  }
   if (kind === "work") {
     if (value === "completed") return { Icon: CircleCheck, spin: false };
     if (value === "blocked") return { Icon: Lock, spin: false };
@@ -160,6 +145,41 @@ interface AgentStateBadgeProps extends Omit<StatusBadgeProps, "kind"> {
   posture?: string | null;
 }
 
+const agentStatusIcons: Record<AgentStatusIcon, IconComponent> = {
+  "circle-x": CircleX,
+  "circle-alert": CircleAlert,
+  spinner: LoaderCircle,
+  "circle-arrow-right": CircleArrowRight,
+  clock: Clock,
+  lock: Lock,
+  "circle-check": CircleCheck,
+  "circle-help": CircleHelp,
+};
+
+/** Lists and headers consume the same semantic icon, label, and tone. */
+export function AgentStatusIndicator({
+  status, showLabel = false, className, title, ...props
+}: Omit<HTMLAttributes<HTMLSpanElement>, "children"> & { status: AgentDisplayStatus; showLabel?: boolean }) {
+  const Icon = agentStatusIcons[status.icon];
+  const tooltip = title ?? status.title;
+  return (
+    <span
+      className={`agent-status-indicator ${className ?? ""}`}
+      role="img"
+      aria-label={status.label}
+      title={tooltip}
+      data-tooltip={tooltip}
+      data-status-kind={status.kind}
+      data-status-icon={status.icon}
+      data-tone={status.tone}
+      {...props}
+    >
+      <Icon size={13} aria-hidden="true" className={status.kind === "running" ? "animate-spin agent-status-spinner" : undefined} />
+      {showLabel ? <span>{status.label}</span> : null}
+    </span>
+  );
+}
+
 function toneToBadge(tone: string) {
   if (tone === "live" || tone === "streaming" || tone === "success" || tone === "ready") return "success";
   if (tone === "connecting" || tone === "syncing" || tone === "running" || tone === "active") return "accent";
@@ -190,6 +210,9 @@ export function StatusChip({ tone = "idle", iconOnly, children, title, ...props 
 
 export function StatusBadge({ kind = "runtime", value, children, title, showLabel = false, ...props }: StatusBadgeProps) {
   const { t } = useTranslation();
+  if (kind === "agent") {
+    return <AgentStateBadge value={value} title={title} showLabel={showLabel} {...props} />;
+  }
   const status = describeStatus(kind, value, t);
   const normalizedValue = normalizeStatus(value);
   return (
@@ -200,8 +223,9 @@ export function StatusBadge({ kind = "runtime", value, children, title, showLabe
 }
 
 export function AgentStateBadge({ lifecycle, posture, value, ...props }: AgentStateBadgeProps) {
-  const state = value ?? posture ?? lifecycle;
-  return <StatusBadge kind="agent" value={state} {...props} />;
+  const { t } = useTranslation();
+  const status = deriveAgentDisplayStatus({ lifecycle: lifecycle ?? value, posture: posture ?? value }, t);
+  return <AgentStatusIndicator status={status} {...props} />;
 }
 
 function describeStatus(kind: StatusKind, rawValue: string | null | undefined, t: TFunction): { label: string; title: string; tone: string } {

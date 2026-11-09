@@ -654,25 +654,28 @@ button {
   line-height: 1;
 }
 
-.agent-row-status-dot.running {
-  color: var(--accent);
-}
-
-.agent-row-status-dot.needs-input {
-  background: color-mix(in srgb, var(--warning) 10%, transparent);
-  color: var(--warning);
-}
-
-.agent-row-status-dot.waiting {
+.agent-status-indicator {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
   color: var(--muted);
 }
 
-.agent-row-status-dot.ready {
-  color: var(--success);
+.agent-status-indicator[data-tone="accent"] {
+  color: var(--accent);
 }
 
-.agent-row-status-dot.stopped {
-  color: var(--faint);
+.agent-status-indicator[data-tone="attention"] {
+  color: var(--warning);
+}
+
+.agent-status-indicator[data-tone="danger"] {
+  color: var(--danger);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .agent-status-spinner { animation: none; }
 }
 
 .agent-row-status.input {
@@ -944,12 +947,6 @@ button {
   align-items: center;
   line-height: 1;
 }
-.header-status.running { color: var(--accent); }
-.header-status.needs-input { color: var(--warning); }
-.header-status.waiting { color: var(--muted); }
-.header-status.ready { color: var(--success); }
-.header-status.stopped { color: var(--faint); }
-.header-status.muted { color: var(--muted); }
 
 .back-button,
 .top-actions button,

@@ -102,6 +102,12 @@ internal object UiCopy {
 
     private val english: Map<String, String> =
         """
+        已停止|Stopped
+        需要回应|Needs input
+        运行中|Running
+        就绪|Ready
+        未知状态|Unknown
+        删除中|Deleting
         会话|Conversation
         发现 Holon 新版本|A Holon update is available
         通过 Google Play 下载并安装更新。|Download and install the update through Google Play.
@@ -386,7 +392,7 @@ internal object UiCopy {
         当前身份|Current identity
         当前连接|Current connection
         待发送|Pending
-        待运行|Ready to run
+        待运行|Runnable
         我确认此地址位于可信网络或加密隧道中|I confirm this address is on a trusted network or encrypted tunnel
         打开|Open
         打开完整计划|Open full plan

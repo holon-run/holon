@@ -236,8 +236,8 @@ final class HolonUITests: XCTestCase {
         let identity = app.descendants(matching: .any)["conversation.identity"].firstMatch
         XCTAssertTrue(identity.waitForExistence(timeout: UIWaitScale.scaled(15)))
         XCTAssertTrue(identity.label.contains(name), "VoiceOver retains the full display name")
-        let statuses = chinese ? ["工作中", "等待中", "休眠中", "就绪", "等你回应"]
-            : ["Working", "Waiting", "Sleeping", "Ready", "Needs your reply"]
+        let statuses = chinese ? ["运行中", "可运行", "等待中", "就绪", "需要输入", "已阻塞", "已停止"]
+            : ["Running", "Runnable", "Waiting", "Ready", "Needs input", "Blocked", "Stopped"]
         let statusVisible = XCTNSPredicateExpectation(
             predicate: NSPredicate { _, _ in statuses.contains { identity.label.contains($0) } },
             object: identity)
@@ -917,12 +917,17 @@ final class HolonUITests: XCTestCase {
         XCTAssertTrue(agentButton.waitForExistence(timeout: UIWaitScale.scaled(30)))
         XCTAssertTrue(agentButton.label.contains(try required("AGENT_NAME")),
                       "Agent home exposes the full long display name")
+        let statuses = ["Running", "Runnable", "Waiting", "Ready", "Needs input", "Blocked", "Stopped"]
+        let rosterStatus = try XCTUnwrap(statuses.first { agentButton.label.contains($0) },
+                                        "The roster exposes its primary status to VoiceOver")
         capture(app, "english-light-long-name-agent-home")
         agentButton.tap()
         let read = app.staticTexts.containing(NSPredicate(format: "label CONTAINS %@", readMarker)).firstMatch
         XCTAssertTrue(read.waitForExistence(timeout: UIWaitScale.scaled(30)))
         reveal(read, in: app)
         try assertConversationIdentity(app, chinese: false)
+        XCTAssertTrue(app.descendants(matching: .any)["conversation.identity"].firstMatch.label.contains(rosterStatus),
+                      "The selected header and roster use the same primary status")
         capture(app, "authenticated-reading")
         XCTAssertFalse(app.staticTexts["Loading messages…"].exists,
                        "Synchronization must be chrome, not a timeline message")
