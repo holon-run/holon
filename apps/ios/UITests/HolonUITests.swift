@@ -1368,7 +1368,18 @@ final class HolonUITests: XCTestCase {
                 XCTAssertTrue(confirm.waitForExistence(timeout: UIWaitScale.scaled(10))); confirm.tap()
             }
             let received = probe.staticTexts["Received by Agent"]
-            XCTAssertTrue(received.waitForExistence(timeout: UIWaitScale.scaled(35)))
+            // Fail fast with the extension's own status: a missing receipt can
+            // mean the send failed, was left unknown, or is still sending, and
+            // only the extension status distinguishes them. Continuing would
+            // tap the retry button blind and mislabel evidence as received.
+            guard received.waitForExistence(timeout: UIWaitScale.scaled(35)) else {
+                let status = probe.descendants(matching: .any)["share.status"].firstMatch
+                capture(probe, "system-share-" + kind + "-no-receipt")
+                let detail = XCTAttachment(string: probe.debugDescription)
+                detail.name = "share-no-receipt-hierarchy"; detail.lifetime = .keepAlways; add(detail)
+                return XCTFail("Share \(kind) showed no receipt; extension status: "
+                    + (status.exists ? status.label : "missing"))
+            }
             capture(probe, "system-share-" + kind + "-received")
             probe.buttons["share.send"].tap()
             probe.terminate()

@@ -818,6 +818,7 @@ with fixture_directory(repo) as root:
             self.forward()
 
         def forward(self):
+            responded = False
             if not proxy_available.is_set():
                 self.send_error(503, "isolated fixture node unavailable")
                 return
@@ -827,13 +828,17 @@ with fixture_directory(repo) as root:
             body = self.rfile.read(length) if length else None
             # Native foreground SSE can be quiet between heartbeats. The proxy
             # must not manufacture unrelated offline failures during acceptance.
+            # Non-GET requests align with the extension client's 20s request
+            # timeout so the proxy never drops a request the client would have
+            # accepted; a slower upstream surfaces as an explicit 502 below.
             upstream = http.client.HTTPConnection("127.0.0.1", port,
-                                                  timeout=90 if self.command == "GET" else 15)
+                                                  timeout=90 if self.command == "GET" else 20)
             sockets = None
             try:
                 upstream.connect()
                 with proxy_state_lock:
                     if not proxy_available.is_set():
+                        responded = True
                         self.send_error(503, "isolated fixture node unavailable")
                         return
                     sockets = (upstream.sock, self.connection)
@@ -866,6 +871,7 @@ with fixture_directory(repo) as root:
                             attempt = len(lost_receipts)
                     if is_lost_prompt:
                         print(f"Lost-response attempt {attempt}: {receipt.get('disposition')}, delivered={delivered}", flush=True)
+                    responded = True
                     self.send_response(200)
                     self.send_header("Content-Type", "application/json")
                     self.send_header("Content-Length", str(len(data)))
@@ -877,6 +883,7 @@ with fixture_directory(repo) as root:
                     # daemon but deliberately close with a truncated response body.
                     self.close_connection = True
                     return
+                responded = True
                 self.send_response(response.status)
                 for key, value in response.getheaders():
                     if key.lower() not in ("connection", "transfer-encoding"):
@@ -887,8 +894,20 @@ with fixture_directory(repo) as root:
                     if not data:
                         break
                     self.wfile.write(data); self.wfile.flush()
-            except (OSError, http.client.HTTPException):
-                pass  # Native backgrounding closes its foreground SSE connection.
+            except (OSError, http.client.HTTPException) as error:
+                # Native backgrounding closes foreground SSE connections
+                # mid-stream; once a response started, that stays silent. An
+                # upstream failure before any response would otherwise close
+                # the socket with no status, which the app can only report as
+                # an opaque offline error. Answer 502 and name the request in
+                # the sweep log so a CI failure says which hop failed.
+                if not responded:
+                    path = urllib.parse.urlsplit(self.path).path
+                    report(f"Proxy upstream failure forwarding {self.command} {path}: {type(error).__name__}")
+                    try:
+                        self.send_error(502, "fixture proxy upstream failure")
+                    except OSError:
+                        pass
             finally:
                 with proxy_state_lock:
                     proxy_connections.discard(sockets)
@@ -1422,20 +1441,21 @@ with fixture_directory(repo) as root:
                             test_env["TEST_RUNNER_HOLON_UI_TEXT_SIZE_TOKEN"] = control_token
                             test_env["TEST_RUNNER_HOLON_UI_CONTENT_SIZE"] = content_size
                             test_env["TEST_RUNNER_HOLON_UI_APPEARANCE"] = appearance
-                            if method == "testRuntimeBrowserWorkflow":
-                                # This case asserts the post-login sharing gate on a
-                                # fresh sign-in. Sharing-consent approval persists
-                                # across the prior sign-out case for the same host, so
-                                # a full sweep must reset to the clean-install state a
-                                # subset run uses. The case pairs through its own fresh
-                                # ticket, and the trailing network-management case
-                                # re-establishes its own connection.
+                            if method in {
+                                "testAuthenticatedNativeWorkflow",
+                                "testRuntimeBrowserWorkflow",
+                            }:
+                                # Match the physical clean-install boundary of a
+                                # standalone sweep, not just cleared app-owned
+                                # profiles/session/consent. Keep restore/cache cases
+                                # on the existing installation they exercise.
                                 # The App Group container outlives the uninstall, so
                                 # the consent must be cleared while the app is still
                                 # installed for the container to be reachable.
                                 reset_app_group_consent(
                                     simulator, "run.holon.ios", "group.run.holon.ios")
                                 ensure_uninstalled(simulator, "run.holon.ios")
+                            if method == "testRuntimeBrowserWorkflow":
                                 # A full sweep stacks seeded history turns (history-window,
                                 # automatic-read cases) on the shared agent, burying the
                                 # populated app-link brief. Enqueue a fresh reply so the
