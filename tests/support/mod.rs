@@ -45,6 +45,38 @@ pub fn init_test_tracing() {
     });
 }
 
+pub async fn get_ready_observer_response(
+    client: &reqwest::Client,
+    url: String,
+) -> Result<reqwest::Response> {
+    let deadline = Instant::now() + Duration::from_secs(3);
+    loop {
+        let response = tokio::time::timeout_at(deadline, client.get(&url).send()).await??;
+        if response.status() != reqwest::StatusCode::SERVICE_UNAVAILABLE {
+            return Ok(response);
+        }
+        let gzip = response
+            .headers()
+            .get(reqwest::header::CONTENT_ENCODING)
+            .is_some_and(|value| value == "gzip");
+        let bytes = tokio::time::timeout_at(deadline, response.bytes()).await??;
+        let error: serde_json::Value = if gzip {
+            serde_json::from_reader(flate2::read::GzDecoder::new(&bytes[..]))?
+        } else {
+            serde_json::from_slice(&bytes)?
+        };
+        anyhow::ensure!(
+            matches!(
+                error["code"].as_str(),
+                Some("runtime_db_busy" | "projection_stale_unhandled")
+            ) && error["retryable"] == true
+                && Instant::now() < deadline,
+            "observer GET {url} failed: {error}"
+        );
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+}
+
 pub struct TestConfigBuilder {
     data_dir: Option<PathBuf>,
     workspace_dir: Option<PathBuf>,

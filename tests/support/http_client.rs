@@ -46,10 +46,10 @@ use tokio::{
 };
 
 use super::{
-    attach_default_workspace, callback_path, connect_addr, git, init_git_repo, parse_sse_frame,
-    read_next_sse_event, spawn_server, spawn_server_for_host, spawn_server_with_config,
-    spawn_server_with_runtime_config, spawn_unix_server, tempdir, test_config,
-    test_config_with_paths, wait_until, ParsedSseEvent,
+    attach_default_workspace, callback_path, connect_addr, get_ready_observer_response, git,
+    init_git_repo, parse_sse_frame, read_next_sse_event, spawn_server, spawn_server_for_host,
+    spawn_server_with_config, spawn_server_with_runtime_config, spawn_unix_server, tempdir,
+    test_config, test_config_with_paths, wait_until, ParsedSseEvent,
 };
 
 async fn next_message_admitted_event(stream: &mut LocalEventStream) -> Result<AgentStreamEvent> {
@@ -62,24 +62,6 @@ async fn next_message_admitted_event(stream: &mut LocalEventStream) -> Result<Ag
         }
     })
     .await?
-}
-
-async fn get_ready_observer_response(client: &Client, url: String) -> Result<reqwest::Response> {
-    let deadline = Instant::now() + Duration::from_secs(3);
-    loop {
-        let response = client.get(&url).send().await?;
-        if response.status() != reqwest::StatusCode::SERVICE_UNAVAILABLE {
-            return Ok(response);
-        }
-        let error: serde_json::Value = response.json().await?;
-        anyhow::ensure!(
-            error["code"] == "runtime_db_busy"
-                && error["retryable"] == true
-                && Instant::now() < deadline,
-            "observer GET {url} failed: {error}"
-        );
-        sleep(Duration::from_millis(20)).await;
-    }
 }
 
 async fn ready_observer<T, F, Fut>(mut read: F) -> Result<T>
@@ -96,7 +78,8 @@ where
                     .downcast_ref::<holon::client::LocalHttpError>()
                     .is_some_and(|wire| {
                         wire.status_code == 503
-                            && wire.has_code("runtime_db_busy")
+                            && (wire.has_code("runtime_db_busy")
+                                || wire.has_code("projection_stale_unhandled"))
                             && wire.retryable == Some(true)
                     }) =>
             {
@@ -386,12 +369,11 @@ pub async fn http_success_response_shapes_follow_route_class_policy() -> Result<
     );
     assert!(models["available_models"].is_array());
 
-    let agents: serde_json::Value = client
-        .get(format!("{base}/api/agents/list"))
-        .send()
-        .await?
-        .json()
-        .await?;
+    let agents: serde_json::Value =
+        get_ready_observer_response(&client, format!("{base}/api/agents/list"))
+            .await?
+            .json()
+            .await?;
     assert!(
         agents.as_array().is_some(),
         "read-model list routes should return direct arrays"
@@ -669,13 +651,15 @@ pub async fn agent_list_entries_are_slim_for_tui_bootstrap() -> Result<()> {
 
 pub async fn json_responses_support_gzip_without_compressing_sse() -> Result<()> {
     let (_host, base, server) = spawn_server().await?;
-    let client = reqwest::Client::builder().no_gzip().build()?;
+    let mut headers = reqwest::header::HeaderMap::new();
+    headers.insert(reqwest::header::ACCEPT_ENCODING, "gzip".parse()?);
+    let client = reqwest::Client::builder()
+        .no_gzip()
+        .default_headers(headers)
+        .build()?;
 
-    let response = client
-        .get(format!("{base}/api/agents/list"))
-        .header(reqwest::header::ACCEPT_ENCODING, "gzip")
-        .send()
-        .await?;
+    let response = get_ready_observer_response(&client, format!("{base}/api/agents/list")).await?;
+    assert_eq!(response.status(), reqwest::StatusCode::OK);
     assert_eq!(
         response
             .headers()
@@ -850,12 +834,13 @@ pub async fn local_client_over_http_can_read_agent_state_snapshot() -> Result<()
         .iter()
         .any(|event| event.event_type == "operator_notification_requested"));
 
-    let raw_state: serde_json::Value = reqwest::Client::new()
-        .get(format!("{base}/api/agents/default/state"))
-        .send()
-        .await?
-        .json()
-        .await?;
+    let raw_state: serde_json::Value = get_ready_observer_response(
+        &reqwest::Client::new(),
+        format!("{base}/api/agents/default/state"),
+    )
+    .await?
+    .json()
+    .await?;
     let raw_agent = raw_state["agent"]
         .as_object()
         .expect("state snapshot should include an agent object");
