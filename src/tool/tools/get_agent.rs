@@ -54,18 +54,22 @@ pub(crate) async fn execute(
 ) -> Result<crate::tool::ToolResult> {
     let args: GetAgentArgs = parse_tool_args(NAME, input)?;
     let show_cleanup = args.agent_id.as_deref().is_none_or(|id| id == _agent_id);
-    let subagent_cleanup = if show_cleanup {
-        runtime.subagent_cleanup_candidates().await?
-    } else {
-        Vec::new()
-    };
     let retry_deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(1);
-    let summary = loop {
-        let read = match args.agent_id.as_deref() {
-            None => runtime.agent_summary().await,
-            // Canonical inspection does not start an unloaded target runtime.
-            Some(requested_id) => runtime.agent_summary_for(requested_id).await,
-        };
+    let (summary, subagent_cleanup) = loop {
+        let read: Result<_> = async {
+            let cleanup = if show_cleanup {
+                runtime.subagent_cleanup_candidates().await?
+            } else {
+                Vec::new()
+            };
+            let summary = match args.agent_id.as_deref() {
+                None => runtime.agent_summary().await?,
+                // Canonical inspection does not start an unloaded target runtime.
+                Some(requested_id) => runtime.agent_summary_for(requested_id).await?,
+            };
+            Ok((summary, cleanup))
+        }
+        .await;
         match read {
             Ok(summary) => break summary,
             Err(error)

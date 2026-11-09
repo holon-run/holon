@@ -20,17 +20,23 @@ Input/Current delta, and saves one idempotent receipt. Failure rolls back the
 whole result; receipt replay cannot rewrite a later Turn. Prepared Wait and
 Work completion retain their existing terminal transaction boundaries.
 
-Loaded State, summary, child summary and roster observations capture a Ready
-immutable root without acquiring its mutation reservation or reconciling an
+Loaded State, summary, child summary, runtime activity and roster observations
+capture a Ready immutable root without acquiring its mutation reservation or reconciling an
 unfinished operation. Pending responsibility returns a retryable unavailable
 result. An already captured complete root remains usable for its in-flight
 response; it never authorizes a command or a later read.
+Execution consumers keep their existing synchronized State helpers; observer
+adapters select publication cuts without changing those execution semantics.
 
 `GetAgent` retains the typed observer error across the Host bridge and may retry
 transient reads within a one-second retry budget. This tool adapter never
 reserves or reconciles an execution owner. Exhaustion preserves the retryable
 error; protection failures and unknown write outcomes are not retried. HTTP
 observers continue to return unavailable immediately.
+Default `GetAgent` cleanup inspection uses the runtime's fixed scoped identity,
+not a mutable State read merely to retrieve its ID.
+Daemon identity/authentication probes use readiness metadata, keeping agent
+publication availability separate from service identity verification.
 
 With Scheduling prepared, child observability keeps its existing published
 Task/Work/Input selection. Missing Current needs only pooled Queue/error scalar
@@ -45,8 +51,9 @@ qualification, repair canonical state, or promote its response into execution
 authority. Incarnation, owner epoch, read deadline, cancellation, protection and
 last-holder material ownership remain required.
 
-Cold observations likewise prefer pooled query-only reconstruction and validate
-the original owner epoch and generation after freezing their facts, including
+Cold State, summary and roster observations prefer pooled query-only
+reconstruction and validate the original owner epoch and generation after
+freezing their facts, including
 metadata ACKs that leave no resident root. Previously prepared qualification is
 reused without a mutation reservation or writer admission.
 Only explicit missing-preparation errors may enter the existing first-query

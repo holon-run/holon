@@ -49,9 +49,29 @@ pub async fn get_ready_observer_response(
     client: &reqwest::Client,
     url: String,
 ) -> Result<reqwest::Response> {
+    ready_observer_get(client.get(url)).await
+}
+
+pub async fn ready_observer_get(request: reqwest::RequestBuilder) -> Result<reqwest::Response> {
+    let preview = request
+        .try_clone()
+        .context("observer GET must be cloneable")?
+        .build()?;
+    anyhow::ensure!(
+        preview.method() == reqwest::Method::GET,
+        "observer retry requires GET"
+    );
+    let url = preview.url().clone();
     let deadline = Instant::now() + Duration::from_secs(3);
     loop {
-        let response = tokio::time::timeout_at(deadline, client.get(&url).send()).await??;
+        let response = tokio::time::timeout_at(
+            deadline,
+            request
+                .try_clone()
+                .context("observer GET must be cloneable")?
+                .send(),
+        )
+        .await??;
         if response.status() != reqwest::StatusCode::SERVICE_UNAVAILABLE {
             return Ok(response);
         }

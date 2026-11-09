@@ -33,6 +33,7 @@ use tokio::net::TcpListener;
 use tokio::net::UnixListener;
 use tokio::time::{sleep, Duration, Instant};
 
+use super::ready_observer_get;
 use super::runtime_helpers::wait_until_async_for;
 use super::{
     attach_default_workspace, connect_addr, get_ready_observer_response, git, init_git_repo,
@@ -2989,15 +2990,13 @@ pub async fn control_runtime_status_is_open_over_unix_socket_when_auth_required(
         Ok::<_, anyhow::Error>(())
     });
 
-    let response = unix_request(
-        &socket_path,
-        "GET",
-        "/api/control/runtime/status",
-        &[],
-        None,
+    let client = Client::builder().unix_socket(socket_path).build()?;
+    let response = get_ready_observer_response(
+        &client,
+        "http://localhost/api/control/runtime/status".into(),
     )
     .await?;
-    assert_eq!(response.status, 200);
+    assert_eq!(response.status(), reqwest::StatusCode::OK);
 
     server.abort();
     Ok(())
@@ -3140,11 +3139,12 @@ pub async fn remote_tcp_surfaces_require_bearer_token_when_required() -> Result<
     assert_eq!(handshake["auth"]["mode"], "bearer");
     assert_eq!(handshake["runtime"]["default_agent"], "default");
 
-    let agents = client
-        .get(format!("{base}/api/agents/list"))
-        .bearer_auth("secret")
-        .send()
-        .await?;
+    let agents = ready_observer_get(
+        client
+            .get(format!("{base}/api/agents/list"))
+            .bearer_auth("secret"),
+    )
+    .await?;
     assert!(agents.status().is_success());
 
     let removed_agents = client
@@ -3173,11 +3173,12 @@ pub async fn remote_tcp_surfaces_require_bearer_token_when_required() -> Result<
         .unwrap_or_default()
         .contains("invalid control token"));
 
-    let runtime_status = client
-        .get(format!("{base}/api/control/runtime/status"))
-        .bearer_auth("secret")
-        .send()
-        .await?;
+    let runtime_status = ready_observer_get(
+        client
+            .get(format!("{base}/api/control/runtime/status"))
+            .bearer_auth("secret"),
+    )
+    .await?;
     assert!(runtime_status.status().is_success());
 
     let denied_enqueue = client
@@ -3861,11 +3862,12 @@ pub async fn runtime_status_route_reports_runtime_metadata() -> Result<()> {
     });
 
     let client = reqwest::Client::new();
-    let response = client
-        .get(format!("http://{addr}/api/control/runtime/status"))
-        .bearer_auth("secret")
-        .send()
-        .await?;
+    let response = ready_observer_get(
+        client
+            .get(format!("http://{addr}/api/control/runtime/status"))
+            .bearer_auth("secret"),
+    )
+    .await?;
     assert!(response.status().is_success());
     let payload: serde_json::Value = response.json().await?;
     assert_eq!(payload["healthy"], true);
@@ -4658,11 +4660,12 @@ pub async fn runtime_status_route_reports_waiting_activity_summary() -> Result<(
         sleep(Duration::from_millis(50)).await;
     }
 
-    let response = client
-        .get(format!("http://{addr}/api/control/runtime/status"))
-        .bearer_auth("secret")
-        .send()
-        .await?;
+    let response = ready_observer_get(
+        client
+            .get(format!("http://{addr}/api/control/runtime/status"))
+            .bearer_auth("secret"),
+    )
+    .await?;
     assert!(response.status().is_success());
     let payload: serde_json::Value = response.json().await?;
     assert_eq!(payload["activity"]["state"], "waiting");
@@ -4721,11 +4724,12 @@ pub async fn runtime_status_route_reports_last_runtime_failure_summary() -> Resu
     let client = reqwest::Client::new();
     let deadline = Instant::now() + Duration::from_secs(5);
     loop {
-        let response = client
-            .get(format!("http://{addr}/api/control/runtime/status"))
-            .bearer_auth("secret")
-            .send()
-            .await?;
+        let response = ready_observer_get(
+            client
+                .get(format!("http://{addr}/api/control/runtime/status"))
+                .bearer_auth("secret"),
+        )
+        .await?;
         let payload: serde_json::Value = response.json().await?;
         if payload.get("last_failure").is_some() && !payload["last_failure"].is_null() {
             assert_eq!(payload["last_failure"]["phase"], "runtime_turn");

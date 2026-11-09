@@ -30,9 +30,10 @@ impl RuntimeHandle {
     pub(crate) async fn subagent_cleanup_candidates(
         &self,
     ) -> Result<Vec<crate::types::SubagentCleanupCandidate>> {
+        drop(self.observer_ready_root(&self.inner.runtime_db)?);
         self.inner
             .runtime_db
-            .subagent_cleanup_candidates(&self.agent_state().await?.id, 16)
+            .subagent_cleanup_candidates(self.inner.mutation_owner.agent_id(), 16)
     }
 
     pub(crate) async fn delete_supervised_child(

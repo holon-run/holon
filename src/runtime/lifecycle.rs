@@ -2498,7 +2498,7 @@ impl RuntimeHandle {
     }
 
     pub(super) async fn agent_id(&self) -> Result<String> {
-        Ok(self.inner.agent.lock().await.state.id.clone())
+        Ok(self.inner.mutation_owner.agent_id().to_owned())
     }
 }
 

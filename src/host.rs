@@ -7181,7 +7181,10 @@ impl RuntimeHost {
             let summary = self
                 .local_agent_summary(&identity.agent_id)
                 .await
-                .map_err(anyhow::Error::from)?
+                .map_err(|error| match error {
+                    PublicAgentError::Runtime(error) => error,
+                    error => error.into(),
+                })?
                 .with_fleet_inventory(&inventory)?;
             inventory.read(|| {
                 crate::runtime_db::repositories::reserve_source_vec_slot(&mut summaries)?;
@@ -7742,13 +7745,12 @@ impl RuntimeHost {
                 && record.visibility == AgentVisibility::Public
         }) {
             if let Some(runtime) = self.try_get_loaded_runtime(&identity.agent_id).await {
-                let state = runtime.agent_state().await?;
-                let active_task_count = runtime.active_tasks(usize::MAX).await?.len();
+                let observation = runtime.child_agent_summary_observation().await?;
                 snapshots.push(PublicAgentActivitySnapshot {
                     agent_id: identity.agent_id,
-                    status: state.status.clone(),
-                    active_task_count,
-                    last_runtime_failure: state.last_runtime_failure,
+                    status: observation.state.status.clone(),
+                    active_task_count: observation.active_task_count,
+                    last_runtime_failure: observation.state.last_runtime_failure.clone(),
                 });
                 continue;
             }
@@ -12076,6 +12078,30 @@ mod tests {
         _home: tempfile::TempDir,
         _workspace: tempfile::TempDir,
         config: AppConfig,
+    }
+
+    #[cfg(holon_lib_test_shard = "d")]
+    async fn ready_observer<T, F, Fut>(mut read: F) -> T
+    where
+        F: FnMut() -> Fut,
+        Fut: std::future::Future<Output = Result<T>>,
+    {
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(3);
+        loop {
+            match tokio::time::timeout_at(deadline, read())
+                .await
+                .expect("observer deadline")
+            {
+                Ok(value) => return value,
+                Err(error)
+                    if error.is::<crate::runtime_db::RuntimeDbRetryableError>()
+                        && crate::runtime_error::describe_runtime_error(&error).retryable =>
+                {
+                    tokio::time::sleep(Duration::from_millis(20)).await;
+                }
+                Err(error) => panic!("observer read failed: {error:#}"),
+            }
+        }
     }
 
     fn test_host() -> (tempfile::TempDir, RuntimeHost) {
@@ -18732,7 +18758,7 @@ mod tests {
         let child_agent_id = spawned.agent_id.clone();
         assert!(!spawned.task_handle.task_id.is_empty());
 
-        let tree = host.operator_agent_tree().await.unwrap();
+        let tree = ready_observer(|| host.operator_agent_tree()).await;
         assert_eq!(
             tree.roots.len(),
             1,
@@ -18802,7 +18828,7 @@ mod tests {
         .await
         .unwrap();
 
-        let tree = host.operator_agent_tree().await.unwrap();
+        let tree = ready_observer(|| host.operator_agent_tree()).await;
         assert_eq!(tree.roots.len(), 1);
         let root = &tree.roots[0];
         assert_eq!(root.agent.identity.agent_id, parent_agent_id);
@@ -18839,7 +18865,7 @@ mod tests {
             .unwrap();
         host.execute_deletion_job(job).await.unwrap();
 
-        let tree = host.operator_agent_tree().await.unwrap();
+        let tree = ready_observer(|| host.operator_agent_tree()).await;
         assert!(
             !tree
                 .into_agent_entries()
@@ -25857,7 +25883,7 @@ mod tests {
             "legacy age is not an expiry"
         );
         assert_eq!(
-            parent.subagent_cleanup_candidates().await.unwrap()[0].agent_id,
+            ready_observer(|| parent.subagent_cleanup_candidates()).await[0].agent_id,
             child.agent_id
         );
         assert!(host.try_get_loaded_runtime(&child.agent_id).await.is_none());

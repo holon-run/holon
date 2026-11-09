@@ -2,6 +2,119 @@ use super::*;
 use crate::runtime::tests::support::LifecycleHarness;
 
 #[tokio::test]
+async fn default_get_agent_does_not_read_mutable_state_for_cleanup_identity() -> Result<()> {
+    let (_home, host, runtime) = crate::runtime::tests::support::host_backed_test_runtime().await;
+    runtime.await_initial_resources().await;
+    let refresh = runtime.hold_resource_refresh_for_test().await?;
+    let mut owner = runtime.inner.mutation_owner.reserve().await?;
+    owner.begin("pending-default-get-agent".into())?;
+    let agent = runtime.inner.agent.lock().await;
+    let tree_error = tokio::time::timeout(Duration::from_secs(1), host.operator_agent_tree())
+        .await?
+        .err()
+        .context("pending tree summary must remain typed")?;
+    assert!(tree_error.is::<crate::runtime_db::RuntimeDbRetryableError>());
+    assert!(crate::tool::ToolError::from_anyhow(&tree_error).retryable);
+    let list_error = tokio::time::timeout(Duration::from_secs(1), host.list_agents())
+        .await?
+        .err()
+        .context("pending list summary must remain typed")?;
+    assert!(list_error.is::<crate::runtime_db::RuntimeDbRetryableError>());
+    let call = crate::tool::ToolCall {
+        id: "pending-self".into(),
+        name: "GetAgent".into(),
+        input: serde_json::json!({}),
+    };
+    let registry = crate::tool::ToolRegistry::new(runtime.workspace_root());
+    let mut read = Box::pin(registry.execute(
+        &runtime,
+        "default",
+        &AuthorityClass::OperatorInstruction,
+        &call,
+    ));
+    assert!(tokio::time::timeout(Duration::from_millis(50), &mut read)
+        .await
+        .is_err());
+    drop(agent);
+    owner.definitely_not_committed()?;
+    drop(owner);
+    let (result, _) = tokio::time::timeout(Duration::from_secs(5), read).await??;
+    assert!(!result.is_error());
+    assert_eq!(
+        result.envelope.result.unwrap()["agent"]["identity"]["agent_id"],
+        runtime.inner.mutation_owner.agent_id()
+    );
+
+    let mut owner = runtime.inner.mutation_owner.reserve().await?;
+    owner.begin("pending-default-get-agent-exhaustion".into())?;
+    let agent = runtime.inner.agent.lock().await;
+    let error = tokio::time::timeout(
+        Duration::from_secs(2),
+        registry.execute(
+            &runtime,
+            "default",
+            &AuthorityClass::OperatorInstruction,
+            &call,
+        ),
+    )
+    .await?
+    .err()
+    .context("pending default summary must remain retryable")?;
+    assert!(error.is::<crate::runtime_db::RuntimeDbRetryableError>());
+    assert!(runtime.inner.mutation_owner.capture().is_err());
+    drop(agent);
+    owner.definitely_not_committed()?;
+    drop(owner);
+    drop(refresh);
+    host.shutdown().await?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn runtime_activity_uses_one_observer_cut_without_execution_locks() -> Result<()> {
+    let (_home, host, runtime) = crate::runtime::tests::support::host_backed_test_runtime().await;
+    runtime.await_initial_resources().await;
+    let refresh = runtime.hold_resource_refresh_for_test().await?;
+    let mut prepare = runtime.begin_mutation().await?;
+    prepare.prepare_current_scheduler_query(None).await?;
+    drop(prepare);
+    let expected = runtime.child_agent_summary_observation().await?;
+    let mut owner = runtime.inner.mutation_owner.reserve().await?;
+    let agent = runtime.inner.agent.lock().await;
+    let activity = tokio::time::timeout(
+        Duration::from_secs(1),
+        host.public_agent_activity_snapshots(),
+    )
+    .await??;
+    let current = activity
+        .iter()
+        .find(|entry| entry.agent_id == expected.state.id)
+        .context("default activity must be visible")?;
+    assert_eq!(current.status, expected.state.status);
+    assert_eq!(current.active_task_count, expected.active_task_count);
+    assert_eq!(
+        current.last_runtime_failure,
+        expected.state.last_runtime_failure
+    );
+    owner.begin("pending-runtime-activity".into())?;
+    let error = tokio::time::timeout(
+        Duration::from_secs(1),
+        host.public_agent_activity_snapshots(),
+    )
+    .await?
+    .err()
+    .context("pending activity must not wait or reconcile")?;
+    assert!(error.is::<crate::runtime_db::RuntimeDbRetryableError>());
+    assert!(runtime.inner.mutation_owner.capture().is_err());
+    drop(agent);
+    owner.definitely_not_committed()?;
+    drop(owner);
+    drop(refresh);
+    host.shutdown().await?;
+    Ok(())
+}
+
+#[tokio::test]
 async fn get_agent_retries_a_pending_target_without_reconciling_its_owner() -> Result<()> {
     let (_home, host, parent) = crate::runtime::tests::support::host_backed_test_runtime().await;
     host.create_named_agent("summary-target", None).await?;
