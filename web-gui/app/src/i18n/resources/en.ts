@@ -1518,6 +1518,7 @@ const en = {
   },
 
   statusDetail: {
+    cached: "Cached last-known state",
     posture: "posture",
     reason: "reason",
     lifecycle: "lifecycle",

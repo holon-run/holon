@@ -12,11 +12,6 @@ import {
   ArrowLeft,
   Boxes,
   ChevronLeft,
-  Circle,
-  CircleAlert,
-  CircleCheck,
-  CircleX,
-  Clock,
   Copy,
   Check,
   LayoutDashboard,
@@ -28,9 +23,7 @@ import {
   Search as SearchIcon,
   Settings as SettingsIcon,
   type LucideIcon,
-  type LucideProps,
 } from "lucide-react";
-import type { ComponentType } from "react";
 
 import holonMarkUrl from "../assets/holon-mark.png";
 import { AgentPage } from "../features/agent/AgentPage";
@@ -43,7 +36,7 @@ import { LoginPage } from "../features/auth/LoginPage";
 import { Button } from "../components/ui/Button";
 import { AgentAvatar } from "../components/ui/AgentAvatar";
 import { EmptyState } from "../components/ui/EmptyState";
-import { StatusBadge } from "../components/ui/StatusChip";
+import { AgentStatusIndicator, StatusBadge } from "../components/ui/StatusChip";
 import { DashboardPage } from "../features/dashboard/DashboardPage";
 import { RightSidePanel } from "../features/right-panel/RightSidePanel";
 import { AgentOverviewPlaceholder } from "../features/right-panel/AgentOverviewPlaceholder";
@@ -335,7 +328,8 @@ export function App() {
   const activeAgent = selectedAgent;
   const selectedAgentLiveStatus = selectedAgentSession?.liveStatus ?? "idle";
   const selectedAgentLiveTitle = liveStatusTitle(selectedAgentLiveStatus, t, selectedAgentSession?.lastStreamActivityAt, selectedAgentSession?.error);
-  const selectedAgentStatus = route === "agent" && activeAgent ? deriveAgentDisplayStatus(activeAgent, t) : undefined;
+  const agentStateIsCurrent = !bootstrap.connection.error && discovery.freshness === "fresh";
+  const selectedAgentStatus = route === "agent" && activeAgent ? deriveAgentDisplayStatus(activeAgent, t, agentStateIsCurrent) : undefined;
   const selectedAgentSourceStatus =
     agentDetailLoading && !selectedAgentDetail
       ? "syncing"
@@ -702,7 +696,7 @@ export function App() {
               </div>
             ) : (
               visibleAgents.filter((agent) => navCollapsed || `${agent.name ?? ""} ${agent.id}`.toLowerCase().includes(agentFilter.toLowerCase())).map((agent) => {
-                const status = deriveAgentDisplayStatus(agent, t);
+                const status = deriveAgentDisplayStatus(agent, t, agentStateIsCurrent);
                 const workSummary = agent.currentWork?.objective;
                 const secondaryText = workSummary || (agent.name && agent.name !== agent.id ? agent.id : undefined);
                 const unreadView = briefReadStateByAgentId[agent.id]
@@ -719,7 +713,7 @@ export function App() {
                     >
                       <AgentAvatar
                         agentId={agent.id}
-                        expression={deriveAgentAvatarExpression(agent, !bootstrap.connection.error && discovery.freshness === "fresh")}
+                        expression={deriveAgentAvatarExpression(agent, agentStateIsCurrent)}
                       />
                       <span className="agent-row-main">
                         <span className="agent-row-title">
@@ -741,9 +735,7 @@ export function App() {
                             {formatUnreadBadge(unreadView.count, false)}
                           </span>
                         ) : null}
-                        <span className={`agent-row-status-dot ${status.tone}`} aria-label={status.title} title={status.title}>
-                          <StatusDotIcon tone={status.tone} />
-                        </span>
+                        <AgentStatusIndicator className="agent-row-status-dot" status={status} />
                       </span>
                     </button>
                     <AgentIdCopyButton agentId={agent.id} />
@@ -797,9 +789,7 @@ export function App() {
               <div>
                 <strong title={route === "agent" && selectedAgent?.name ? `${selectedAgent.name} (${selectedAgent.id})` : undefined}>{route === "agent" ? (selectedAgent?.name ?? selectedAgent?.id ?? selectedAgentId) || t("rightPanel.agent") : route === "search" ? t("nav.search") : route === "skills" || route === "skillDetail" ? t("nav.skills") : route === "templates" || route === "templateDetail" ? t("nav.templates") : route === "settings" ? t("nav.settings") : t("nav.dashboard")}</strong>
                 {route === "agent" && selectedAgentStatus ? (
-                  <span className={`header-status ${selectedAgentStatus.tone}`} title={selectedAgentStatus.title} data-tooltip={selectedAgentStatus.title} data-tooltip-pos="bottom">
-                    <StatusDotIcon tone={selectedAgentStatus.tone} />
-                  </span>
+                  <AgentStatusIndicator className="header-status" status={selectedAgentStatus} data-tooltip-pos="bottom" />
                 ) : route === "dashboard" ? (
                   <span>
                     {bootstrap.attentionCount > 0
@@ -1430,18 +1420,6 @@ export function formatUnreadBadge(count: number, truncated: boolean): string {
   if (count > 99) return "99+";
   return truncated ? `${count}+` : String(count);
 }
-
-function StatusDotIcon({ tone, size = 13 }: { tone: string; size?: number }) {
-  const Icon: ComponentType<LucideProps> =
-    tone === "running" ? LoaderCircle :
-    tone === "needs-input" ? CircleAlert :
-    tone === "waiting" ? Clock :
-    tone === "ready" ? CircleCheck :
-    tone === "stopped" ? CircleX :
-    Circle;
-  return <Icon size={size} className={tone === "running" ? "animate-spin" : undefined} />;
-}
-
 
 function liveStatusLabel(status: string, t: TFunction): string {
   if (status === "connecting") return t("status.connecting");

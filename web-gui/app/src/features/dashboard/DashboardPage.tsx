@@ -6,9 +6,9 @@ import { Button } from "../../components/ui/Button";
 import { Card } from "../../components/ui/Card";
 import { EmptyState } from "../../components/ui/EmptyState";
 import { Skeleton } from "../../components/ui/Skeleton";
-import { AgentStateBadge, StatusBadge } from "../../components/ui/StatusChip";
+import { AgentStatusIndicator, StatusBadge } from "../../components/ui/StatusChip";
 import { ROSTER_STALE_EXTENDED_RETRY_ATTEMPTS } from "../../runtime/global-sync-coordinator";
-import { deriveAgentAvatarExpression } from "../../runtime/agent-status";
+import { deriveAgentAvatarExpression, deriveAgentDisplayStatus } from "../../runtime/agent-status";
 import type { RosterDiscoveryState } from "../../runtime/types";
 import { compactModelRouteDisplay } from "../../lib/model-route-ref";
 import type { AgentSummary, DashboardMetric, RuntimeConnection } from "../../runtime/types";
@@ -30,6 +30,7 @@ export function DashboardPage({ agents, metrics, connection, discovery, loading,
   const isBootstrapping = loading && !hasAgents;
   const isRefreshing = loading && hasAgents;
   const isPreview = connection.source === "fixture";
+  const stateIsCurrent = !connection.error && discovery?.freshness === "fresh";
   const dashboardState = getDashboardState({ isBootstrapping, hasAgents, hasConnectionError, isPreview });
 
   return (
@@ -115,18 +116,14 @@ export function DashboardPage({ agents, metrics, connection, discovery, loading,
                   <div className="agent-card-head">
                     <AgentAvatar
                       agentId={agent.id}
-                      expression={deriveAgentAvatarExpression(agent, !connection.error && (!discovery || discovery.freshness === "fresh"))}
+                      expression={deriveAgentAvatarExpression(agent, stateIsCurrent)}
                     />
                     <div className="agent-card-title" title={agent.name ? agent.profile : undefined}>
                       <strong>{agent.name ?? agent.id}</strong>
                       <small>{agent.name ? agent.id : agent.profile}</small>
                     </div>
                     <div className="agent-card-status">
-                      <AgentStateBadge className={`state-chip ${agent.lifecycle}`} lifecycle={agent.lifecycle} posture={agent.posture} />
-                      {agent.attention !== "none" ? (
-                        <StatusBadge className="state-chip" kind="attention" value={agent.attention}>
-                        </StatusBadge>
-                      ) : null}
+                      <AgentStatusIndicator className="state-chip" status={deriveAgentDisplayStatus(agent, t, stateIsCurrent)} />
                     </div>
                   </div>
                   <p className="agent-card-summary">{agent.focusSummary}</p>
