@@ -813,9 +813,11 @@ async fn settle_stopped_tasks(
                 break;
             };
             // A stopped task may settle and leave the capture entirely; its
-            // absence means settled, not `task not found`.
+            // absence means settled, not `task not found`. Wait for its original
+            // writer just as the foreground execution poll does.
             let status = runtime
-                .capture_run_once_statuses(task_session)?
+                .capture_run_once_statuses_after_writer(task_session)
+                .await?
                 .task_output_status_opt(task_id)?;
             if !status.is_some_and(|status| crate::storage::is_active_task_status(&status)) {
                 break;
@@ -837,7 +839,8 @@ async fn settle_stopped_tasks(
             let waited = loop {
                 // Absence here is the same settled outcome as above.
                 let status = runtime
-                    .capture_run_once_statuses(task_session)?
+                    .capture_run_once_statuses_after_writer(task_session)
+                    .await?
                     .task_output_status_opt(task_id)?;
                 if !status
                     .as_ref()
