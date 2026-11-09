@@ -2013,7 +2013,12 @@ impl BootstrapTaskRecovery {
         use super::input_evidence_budget::{
             serialized_bytes, InputMemoryCategory, OwnedBytesEstimate,
         };
-        use super::resident_task::{CanonicalTaskFact, TaskReadError};
+        use super::resident_task::CanonicalTaskFact;
+        tracing::trace!(
+            record_hint = self.record_limit,
+            byte_hint = self.byte_limit,
+            "bootstrap recovery material observation"
+        );
         let count = super::task_reads::active_task_count(&self.selected)?;
         let mut bytes = 256u64;
         let mut present = 0usize;
@@ -2047,14 +2052,11 @@ impl BootstrapTaskRecovery {
         let bytes = bytes
             .checked_mul(8)
             .context("bootstrap Task copies overflow")?;
-        let records = count
+        let _records = count
             .checked_add(1)
             .and_then(|n| n.checked_mul(8))
             .context("bootstrap Task copies overflow")?;
-        anyhow::ensure!(
-            bytes <= u64::try_from(self.byte_limit)? && records <= self.record_limit,
-            TaskReadError::ResourceExhausted("bootstrap transient Task recovery")
-        );
+
         let guard = ledger.register_owned_bytes(
             &self.selected.scope,
             InputMemoryCategory::Candidate,

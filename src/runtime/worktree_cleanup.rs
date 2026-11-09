@@ -188,6 +188,11 @@ impl FrozenWorktreeCleanup {
             return Ok(());
         }
         let bytes = bytes.checked_mul(8).context("worktree material overflow")?;
+        tracing::trace!(
+            record_hint = self.record_limit,
+            byte_hint = self.byte_limit,
+            "worktree material observation"
+        );
         self.bytes = self
             .bytes
             .checked_add(bytes)
@@ -196,12 +201,7 @@ impl FrozenWorktreeCleanup {
             .records
             .checked_add(records.checked_mul(8).context("worktree record overflow")?)
             .context("worktree record overflow")?;
-        anyhow::ensure!(
-            self.bytes <= self.byte_limit && self.records <= self.record_limit,
-            crate::runtime_db::task_snapshot::TaskSnapshotError::ResourceExhausted(
-                "worktree cleanup material"
-            )
-        );
+
         self.guards.push(self.ledger.register_owned_bytes(
             &self.scope,
             InputMemoryCategory::Candidate,

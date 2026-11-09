@@ -874,7 +874,7 @@ fn transaction_owned_seed_token_guards_observe_actual_material_and_release() -> 
     Ok(())
 }
 #[test]
-fn combined_memory_preparation_limit_rolls_back_before_any_business_or_receipt() -> Result<()> {
+fn combined_memory_above_legacy_hint_commits_canonical_state_and_receipt() -> Result<()> {
     let f = Fixture::new(true)?;
     let ledger = memory_ledger()?;
     let before = state(&f)?;
@@ -886,46 +886,13 @@ fn combined_memory_preparation_limit_rolls_back_before_any_business_or_receipt()
             .query_row("SELECT COUNT(*) FROM audit_events", [], |r| r.get(0))?;
     let maximum_single:usize=f.db.connection()?.query_row(
         "SELECT MAX(size) FROM (SELECT length(CAST(payload_json AS BLOB)) size FROM agent_states UNION ALL SELECT length(CAST(payload_json AS BLOB)) FROM dispatch_memory_checkpoints UNION ALL SELECT length(CAST(payload_json AS BLOB)) FROM messages UNION ALL SELECT length(CAST(payload_json AS BLOB)) FROM turn_records)",[],|r|r.get(0))?;
-    // Each original body is individually within this limit. Their simultaneously
-    // live seed/token/State/material is not granted one separate cap per helper.
+    // The cumulative material exceeds this legacy hint.
     let mut request = memory_request();
     request.byte_limit = maximum_single + 1;
-    let error =
-        f.db.transitions_in_scope(&f.scope)
-            .commit_prepared_transition_with_work_request_and_memory_budget(
-                &update(&f, "combined-too-large", "must roll back")?,
-                &request,
-                &ledger,
-                &crate::runtime_db::task_snapshot::TaskDomainLoadRequest {
-                    recovery_at: None,
-                    query: Default::default(),
-                    capture: crate::runtime::resident_task::TaskCaptureRequest::current(),
-                    record_limit: 65_536,
-                    byte_limit: 64 * 1024 * 1024,
-                },
-            )
-            .unwrap_err();
-    assert!(matches!(
-        error.downcast_ref::<DispatchMemoryError>(),
-        Some(DispatchMemoryError::ResourceExhausted)
-    ));
-    assert_eq!(state(&f)?, before);
-    assert_eq!(f.read()?, checkpoint);
-    assert_eq!(f.db.work_items().latest("work:dispatch-memory")?, work);
-    assert_eq!(receipt_count(&f)?, count);
-    assert_eq!(
-        f.db.connection()?
-            .query_row("SELECT COUNT(*) FROM audit_events", [], |r| r
-                .get::<_, usize>(0))?,
-        audits
-    );
-    assert_eq!(ledger.report()?.owned, Default::default());
-    // Same original command can still commit with its original intent and the
-    // real larger acquisition allowance; the failed attempt created no ACK.
     f.db.transitions_in_scope(&f.scope)
         .commit_prepared_transition_with_work_request_and_memory_budget(
             &update(&f, "combined-too-large", "must roll back")?,
-            &memory_request(),
+            &request,
             &ledger,
             &crate::runtime_db::task_snapshot::TaskDomainLoadRequest {
                 recovery_at: None,
@@ -935,6 +902,16 @@ fn combined_memory_preparation_limit_rolls_back_before_any_business_or_receipt()
                 byte_limit: 64 * 1024 * 1024,
             },
         )?;
+    assert_ne!(f.read()?, checkpoint);
+    assert_ne!(f.db.work_items().latest("work:dispatch-memory")?, work);
+    assert_eq!(receipt_count(&f)?, count + 1);
+    assert_ne!(state(&f)?, before);
+    assert!(
+        f.db.connection()?
+            .query_row("SELECT COUNT(*) FROM audit_events", [], |row| row
+                .get::<_, usize>(0))?
+            >= audits
+    );
     assert_eq!(ledger.report()?.owned, Default::default());
     Ok(())
 }
@@ -1286,7 +1263,7 @@ fn nonempty_final_work_observations_are_metered_and_released() -> Result<()> {
 }
 
 #[test]
-fn new_work_memory_amplification_is_preflighted_before_planner_and_whole_ack() -> Result<()> {
+fn new_work_memory_growth_above_legacy_hint_finishes_with_complete_objective() -> Result<()> {
     let f = Fixture::new(true)?;
     let objective = "x".repeat(512 * 1024);
     f.db.transitions_in_scope(&f.scope)
@@ -1312,45 +1289,10 @@ fn new_work_memory_amplification_is_preflighted_before_planner_and_whole_ack() -
     let prepared = terminal(&f, "large-work-finish")?;
     let mut request = memory_request();
     request.byte_limit = 16 * 1024 * 1024;
-    let error =
-        f.db.transitions_in_scope(&f.scope)
-            .commit_prepared_transition_with_work_request_and_memory_budget(
-                &prepared,
-                &request,
-                &ledger,
-                &crate::runtime_db::task_snapshot::TaskDomainLoadRequest {
-                    recovery_at: None,
-                    query: Default::default(),
-                    capture: crate::runtime::resident_task::TaskCaptureRequest::current(),
-                    record_limit: 65_536,
-                    byte_limit: 64 * 1024 * 1024,
-                },
-            )
-            .unwrap_err();
-    assert!(matches!(
-        error.downcast_ref::<DispatchMemoryError>(),
-        Some(DispatchMemoryError::ResourceExhausted)
-    ));
-    assert_eq!(state(&f)?, before);
-    assert_eq!(f.read()?, checkpoint);
-    assert_eq!(
-        f.db.turn_records().by_id(
-            Some(&f.scope.agent_id),
-            &f.start.key.actual_dispatch_turn_id
-        )?,
-        turn
-    );
-    assert_eq!(receipt_count(&f)?, count);
-    assert!(f
-        .db
-        .episode_memory_receipt(f.start.key(), None, f.start.invocation())?
-        .is_none());
-    assert_eq!(ledger.report()?.owned, Default::default());
-    // The original intent is still retryable with a combined budget that fits.
     f.db.transitions_in_scope(&f.scope)
         .commit_prepared_transition_with_work_request_and_memory_budget(
             &prepared,
-            &memory_request(),
+            &request,
             &ledger,
             &crate::runtime_db::task_snapshot::TaskDomainLoadRequest {
                 recovery_at: None,
@@ -1360,6 +1302,16 @@ fn new_work_memory_amplification_is_preflighted_before_planner_and_whole_ack() -
                 byte_limit: 64 * 1024 * 1024,
             },
         )?;
+    assert_ne!(state(&f)?, before);
+    assert_ne!(f.read()?, checkpoint);
+    assert_ne!(
+        f.db.turn_records().by_id(
+            Some(&f.scope.agent_id),
+            &f.start.key.actual_dispatch_turn_id
+        )?,
+        turn
+    );
+    assert_eq!(receipt_count(&f)?, count + 1);
     assert_eq!(
         state(&f)?
             .working_memory

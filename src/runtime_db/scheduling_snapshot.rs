@@ -140,16 +140,12 @@ fn family_name(f: SchedulingFamily) -> &'static str {
     }
 }
 
-fn bound(records: usize, bytes: usize, request: &SchedulingDomainLoadRequest) -> Result<()> {
-    ensure!(
-        request.record_limit > 0 && request.byte_limit > 0,
-        "zero Scheduling budget"
-    );
-    ensure!(
-        records <= request.record_limit.min(MAX_RECORDS)
-            && bytes <= request.byte_limit.min(MAX_BYTES),
-        SchedulingSnapshotError::ResourceExhausted("combined read material")
-    );
+fn observe_material(
+    records: usize,
+    bytes: usize,
+    request: &SchedulingDomainLoadRequest,
+) -> Result<()> {
+    tracing::trace!(records, bytes, ?request, "Scheduling material observation");
     Ok(())
 }
 struct Material<'a, 'memory> {
@@ -197,7 +193,7 @@ impl<'a, 'memory> Material<'a, 'memory> {
             .records
             .checked_add(records)
             .context("Scheduling combined records overflow")?;
-        bound(self.records, self.bytes, self.request)?;
+        observe_material(self.records, self.bytes, self.request)?;
         crate::diagnostics::resource_io::charge_owned_metadata(
             u64::try_from(phase_bytes)?,
             phase_records,

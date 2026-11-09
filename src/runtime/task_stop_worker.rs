@@ -55,19 +55,8 @@ impl RuntimeHandle {
             .checked_mul(8)
             .and_then(|n| n.checked_add(1024))
             .context("owned TaskStop selector overflow")?;
-        let limits = self.inner.input_evidence_budget.limits();
-        anyhow::ensure!(
-            bytes
-                <= limits
-                    .history_per_agent_bytes
-                    .checked_add(limits.pending_per_agent_bytes)
-                    .context("owned TaskStop selector limits overflow")?
-                    .min(64 * 1024 * 1024)
-                && limits.record_limit >= 8,
-            crate::runtime_db::task_snapshot::TaskSnapshotError::ResourceExhausted(
-                "owned TaskStop selectors"
-            )
-        );
+        let _limits = self.inner.input_evidence_budget.limits();
+
         let scope = resident_input_evidence::InputEvidenceScope {
             agent_id: self.inner.mutation_owner.agent_id().to_owned(),
             identity_incarnation: self.inner.identity_incarnation,
@@ -252,11 +241,8 @@ impl RuntimeHandle {
             let bytes = raw.checked_add(serialized_bytes(&(child, &task.id, &task.agent_id))?)
                 .and_then(|n| n.checked_add(512)).and_then(|n| n.checked_mul(8))
                 .context("TaskStop child discovery bytes overflow")?;
-            let limits = ledger.limits();
-            anyhow::ensure!(bytes <= limits.history_per_agent_bytes.checked_add(limits.pending_per_agent_bytes)
-                .context("TaskStop child discovery limits overflow")?.min(64 * 1024 * 1024)
-                && limits.record_limit >= 16,
-                crate::runtime_db::task_snapshot::TaskSnapshotError::ResourceExhausted("TaskStop child discovery"));
+            let _limits = ledger.limits();
+
             let material = ledger.register_owned_bytes(&qualified.locator.scope, InputMemoryCategory::Candidate,
                 OwnedBytesEstimate { payload_bytes: bytes, metadata_estimate_bytes: 0 })?;
             // No child State or body is returned. Missing/mismatched association grants no child target.
@@ -297,19 +283,8 @@ impl RuntimeHandle {
             .checked_mul(8)
             .and_then(|n| n.checked_add(1024))
             .context("TaskStop original selector bytes overflow")?;
-        let limits = ledger.limits();
-        anyhow::ensure!(
-            bytes
-                <= limits
-                    .history_per_agent_bytes
-                    .checked_add(limits.pending_per_agent_bytes)
-                    .context("TaskStop selector limits overflow")?
-                    .min(64 * 1024 * 1024)
-                && limits.record_limit >= 8,
-            crate::runtime_db::task_snapshot::TaskSnapshotError::ResourceExhausted(
-                "TaskStop original selectors"
-            )
-        );
+        let _limits = ledger.limits();
+
         let scope = resident_input_evidence::InputEvidenceScope {
             agent_id: self.inner.mutation_owner.agent_id().to_owned(),
             identity_incarnation: self.inner.identity_incarnation,

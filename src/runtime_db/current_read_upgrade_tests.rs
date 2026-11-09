@@ -496,7 +496,7 @@ fn current_upgrade_streams_event_histories_larger_than_one_record_page() -> Resu
 }
 
 #[test]
-fn event_upgrade_byte_pages_preserve_every_ack_and_reject_oversized_records() -> Result<()> {
+fn event_upgrade_pages_preserve_every_ack_including_a_row_larger_than_the_page() -> Result<()> {
     let (mut connection, _) = legacy(0)?;
     migrate_to(&mut connection, current_read_writes::VERSION - 1)?;
     connection.execute_batch(current_migration().sql)?;
@@ -535,13 +535,18 @@ fn event_upgrade_byte_pages_preserve_every_ack_and_reject_oversized_records() ->
             VALUES('oversized-event',200,?1,'fixture','2026-10-01T00:00:00Z',?2)",
             params![AGENT, "x".repeat(65)],
         )?;
-        let error = capture_event_history_tx(&tx, &scope, 2, 64).unwrap_err();
-        assert!(error.to_string().contains("page byte limit"));
-        // Failed original transaction is rolled back, including any ACK writes.
+        capture_event_history_tx(&tx, &scope, 2, 64)?;
+        let large_ack: usize = tx.query_row(
+            "SELECT COUNT(*) FROM event_history_acks WHERE audit_event_id='oversized-event'",
+            [],
+            |row| row.get(0),
+        )?;
+        assert_eq!(large_ack, 1);
+        tx.commit()?;
     }
     let after: usize =
         connection.query_row("SELECT COUNT(*) FROM event_history_acks", [], |r| r.get(0))?;
-    assert_eq!(before, after);
+    assert_eq!(before + 1, after);
     {
         let tx = connection.transaction()?;
         tx.execute(

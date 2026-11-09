@@ -55,7 +55,7 @@ fn install_task(f: &Fixture) -> Result<TaskRecord> {
     Ok(task)
 }
 #[test]
-fn task_preflight_combined_limit_precedes_malformed_body_decode_and_releases_guard() -> Result<()> {
+fn task_preflight_rejects_malformed_body_without_quota_and_releases_guard() -> Result<()> {
     let f = Fixture::new(true)?;
     let task = install_task(&f)?;
     let ledger = InputEvidenceBudgetLedger::new(StateMemoryLimits::default())?;
@@ -92,7 +92,7 @@ fn task_preflight_combined_limit_precedes_malformed_body_decode_and_releases_gua
         .err()
         .unwrap();
         assert!(
-            matches!(
+            !matches!(
                 error.downcast_ref::<DispatchMemoryError>(),
                 Some(DispatchMemoryError::ResourceExhausted)
             ),
@@ -140,7 +140,7 @@ fn task_preflight_combined_limit_precedes_malformed_body_decode_and_releases_gua
     })
 }
 #[test]
-fn original_task_material_combined_limit_precedes_proof_decode_and_business_sql() -> Result<()> {
+fn original_task_material_rejects_corruption_without_quota_and_business_writes() -> Result<()> {
     let f = Fixture::new(true)?;
     let task = install_task(&f)?;
     let ledger = InputEvidenceBudgetLedger::new(StateMemoryLimits::default())?;
@@ -192,7 +192,7 @@ fn original_task_material_combined_limit_precedes_proof_decode_and_business_sql(
             .err()
             .unwrap();
     assert!(
-        matches!(
+        !matches!(
             error.downcast_ref::<DispatchMemoryError>(),
             Some(DispatchMemoryError::ResourceExhausted)
         ),
@@ -256,7 +256,7 @@ fn task_material_shares_its_owner_with_memory_without_duplicate_charge() -> Resu
 }
 
 #[test]
-fn task_material_memory_preflight_rejects_one_short_or_foreign_before_ownership() -> Result<()> {
+fn task_material_ignores_size_hint_but_rejects_foreign_ledger_and_scope() -> Result<()> {
     let f = Fixture::new(true)?;
     let ledger = InputEvidenceBudgetLedger::new(StateMemoryLimits::default())?;
     f.db.transaction(|tx| {
@@ -284,13 +284,11 @@ fn task_material_memory_preflight_rejects_one_short_or_foreign_before_ownership(
         let mut material =
             tasks::read_preparation::TaskReadMaterial::new(&f.scope, &request, Some(&ledger))
                 .with_memory_budget(Some(&mut memory));
-        let error = material.charge(4096, 1, 2, false).unwrap_err();
-        assert!(matches!(
-            error.downcast_ref::<DispatchMemoryError>(),
-            Some(DispatchMemoryError::ResourceExhausted)
-        ));
+        material.charge(4096, 1, 2, false)?;
         drop(material);
-        assert_eq!(ledger.report()?.observed_bytes, observed);
+        let charged = ledger.report()?.observed_bytes;
+        assert!(charged > observed);
+        let observed = charged;
         let foreign = InputEvidenceBudgetLedger::new(StateMemoryLimits::default())?;
         let mut material =
             tasks::read_preparation::TaskReadMaterial::new(&f.scope, &request, Some(&foreign))

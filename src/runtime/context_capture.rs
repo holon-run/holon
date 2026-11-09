@@ -788,10 +788,6 @@ fn context_input_evidence_request_for_plan(
     byte_limit: usize,
     admission: Option<ContextAdmissionPlan<'_>>,
 ) -> Result<InputEvidenceLoadRequest> {
-    anyhow::ensure!(
-        record_limit > 0 && byte_limit > 0,
-        "input evidence budget must be positive"
-    );
     for requested in [config.recent_messages, config.recent_briefs]
         .into_iter()
         .chain(history.work_item_scoped_window)

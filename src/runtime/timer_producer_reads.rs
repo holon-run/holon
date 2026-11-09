@@ -4,7 +4,7 @@ use super::{
         serialized_bytes, BudgetViewGuard, InputEvidenceBudgetLedger, InputMemoryCategory,
         OwnedBytesEstimate,
     },
-    resident_scheduling::{CapturedScheduling, SchedulingReadError},
+    resident_scheduling::CapturedScheduling,
 };
 use crate::types::TimerRecord;
 use anyhow::{ensure, Context, Result};
@@ -24,22 +24,14 @@ impl OwnedTimerProducerRead {
         record_limit: usize,
         byte_limit: usize,
     ) -> Result<Self> {
-        let (retained, retained_records) = selected.selected_material_estimate()?;
-        let byte_limit = u64::try_from(byte_limit.min(64 * 1024 * 1024))?;
-        let record_limit = record_limit.min(65536);
+        let (_retained, _retained_records) = selected.selected_material_estimate()?;
+        let _byte_limit = u64::try_from(byte_limit.min(64 * 1024 * 1024))?;
+        let _record_limit = record_limit.min(65536);
         let selector_bytes = serialized_bytes(&id)?
             .checked_add(512)
             .and_then(|bytes| bytes.checked_mul(8))
             .context("Timer producer selector overflow")?;
-        ensure!(
-            retained
-                .checked_add(selector_bytes)
-                .is_some_and(|bytes| bytes <= byte_limit)
-                && retained_records
-                    .checked_add(8)
-                    .is_some_and(|count| count <= record_limit),
-            SchedulingReadError::ResourceExhausted("selected Scheduling and Timer selector")
-        );
+
         let _selector = ledger.register_owned_bytes(
             &selected.scope,
             InputMemoryCategory::Pins,
@@ -71,20 +63,8 @@ impl OwnedTimerProducerRead {
             .and_then(|bytes| bytes.checked_add(512))
             .and_then(|bytes| bytes.checked_mul(8))
             .context("Timer producer copy bytes overflow")?;
-        let records = if previous.is_some() { 24 } else { 16 };
-        ensure!(
-            retained
-                .checked_add(copies)
-                .and_then(|bytes| bytes.checked_add(selector_bytes))
-                .is_some_and(|bytes| bytes <= byte_limit)
-                && retained_records
-                    .checked_add(records)
-                    .and_then(|count| count.checked_add(8))
-                    .is_some_and(|count| count <= record_limit),
-            SchedulingReadError::ResourceExhausted(
-                "selected Scheduling and original Timer producer copies"
-            )
-        );
+        let _records = if previous.is_some() { 24 } else { 16 };
+
         let material = ledger.register_owned_bytes(
             &selected.scope,
             InputMemoryCategory::Pins,

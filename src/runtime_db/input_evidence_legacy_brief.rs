@@ -67,10 +67,7 @@ fn proves_fixed_linkage_backfill(
     let mut fixed = false;
     while let Some(row) = rows.next()? {
         let json = row.get_ref(0)?.as_str()?;
-        ensure!(
-            json.len() <= MAX_METADATA_BYTES,
-            "fixed Brief fingerprint exceeds limit"
-        );
+
         fixed |= serde_json::from_str::<Fingerprint>(json)?.same_metadata(fingerprint);
     }
     if !fixed {

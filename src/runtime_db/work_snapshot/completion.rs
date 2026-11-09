@@ -37,7 +37,7 @@ pub(crate) fn completion_source_observations_with_scope_tx(
             "completion source scope retired"
         );
     }
-    bound_metadata(
+    observe_metadata(
         selected_heads.len(),
         selected_heads.iter().map(String::len).sum(),
     )?;
@@ -131,7 +131,7 @@ pub(crate) fn completion_source_observations_with_scope_tx(
             _ => {}
         }
     }
-    bound_metadata(observations.len(), serde_json::to_vec(&observations)?.len())?;
+    observe_metadata(observations.len(), serde_json::to_vec(&observations)?.len())?;
     Ok(observations)
 }
 
@@ -206,7 +206,7 @@ fn qualified_payload(
         agent == scope.agent_id,
         "completion source belongs to another agent"
     );
-    bound_metadata(1, bytes)?;
+    observe_metadata(1, bytes)?;
     let (payload, hash): (String, Option<String>) = tx.query_row(
         &format!("SELECT payload_json,content_hash FROM {table} WHERE {id}=?1"),
         [&key.id],
@@ -297,7 +297,7 @@ fn proven_payload_with_scope(
         [&key.id],
         |row| row.get(0),
     )?;
-    bound_metadata(1, bytes)?;
+    observe_metadata(1, bytes)?;
     use super::super::input_evidence_snapshot::ExistingAdmissionInputProof;
     let roots = BTreeSet::from([key.clone()]);
     let _proof = match read {

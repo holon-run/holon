@@ -93,10 +93,7 @@ impl OutputMaterialAllowance {
                 .context("Task Output combined count overflow")?,
             ..self
         };
-        anyhow::ensure!(
-            next.bytes <= next.byte_limit && next.records <= next.record_limit,
-            TaskReadError::ResourceExhausted("Task Output combined retained/render/file material")
-        );
+
         Ok(next)
     }
     fn remaining(self) -> (u64, usize) {
@@ -406,18 +403,10 @@ impl RuntimeHandle {
         &self,
         scope: &crate::runtime::resident_input_evidence::InputEvidenceScope,
         bytes: u64,
-        records: usize,
+        _records: usize,
     ) -> Result<Arc<BudgetViewGuard>> {
-        let limits = self.inner.input_evidence_budget.limits();
-        anyhow::ensure!(
-            u64::try_from(records)? <= limits.record_limit
-                && bytes
-                    <= limits
-                        .history_per_agent_bytes
-                        .checked_add(limits.pending_per_agent_bytes)
-                        .context("Task output material limits overflow")?,
-            TaskReadError::ResourceExhausted("Task output owned material")
-        );
+        let _limits = self.inner.input_evidence_budget.limits();
+
         Ok(self.inner.input_evidence_budget.register_owned_bytes(
             scope,
             InputMemoryCategory::Pins,

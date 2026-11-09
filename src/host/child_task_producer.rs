@@ -1680,14 +1680,8 @@ impl RuntimeHostBridge {
                 recovery_at: None,
                 query: Default::default(),
                 capture: crate::runtime::resident_task::TaskCaptureRequest::current(),
-                record_limit: request
-                    .record_limit
-                    .checked_sub(8)
-                    .context("monitor owner slots exceed record bound")?,
-                byte_limit: request
-                    .byte_limit
-                    .checked_sub(bytes)
-                    .context("monitor owner slots exceed byte bound")?,
+                record_limit: request.record_limit,
+                byte_limit: request.byte_limit,
             };
             let held = host
                 .reserve_mutation_scopes(&[(scope.agent_id.clone(), scope.identity_incarnation)])

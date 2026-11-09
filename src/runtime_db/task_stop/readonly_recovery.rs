@@ -43,7 +43,7 @@ impl TaskStopReadonlyIdentity {
 pub(crate) fn observe_task_stop_readonly_identity_tx(
     tx: &Transaction<'_>,
     child: &TaskStopChildTarget,
-    request: &super::super::task_snapshot::TaskDomainLoadRequest,
+    _request: &super::super::task_snapshot::TaskDomainLoadRequest,
     ledger: &InputEvidenceBudgetLedger,
 ) -> Result<TaskStopReadonlyIdentity> {
     let row_bytes:usize=tx.query_row("SELECT COALESCE(SUM(COALESCE(length(CAST(agent_id AS BLOB)),0)+COALESCE(length(CAST(status AS BLOB)),0)+COALESCE(length(CAST(payload_json AS BLOB)),0)),0) FROM agent_identities WHERE agent_id=?1",[&child.scope.agent_id],|r|r.get(0))?;
@@ -51,12 +51,7 @@ pub(crate) fn observe_task_stop_readonly_identity_tx(
         .checked_add(usize::try_from(serialized_bytes(child)?)?)
         .and_then(|v| v.checked_mul(8))
         .context("readonly child material overflow")?;
-    ensure!(
-        bytes <= request.byte_limit.min(MAX_BYTES) && 8 <= request.record_limit.min(MAX_RECORDS),
-        super::super::task_snapshot::TaskSnapshotError::ResourceExhausted(
-            "Stop readonly child identity"
-        )
-    );
+
     let guard = ledger.register_owned_bytes(
         &child.scope,
         InputMemoryCategory::Candidate,

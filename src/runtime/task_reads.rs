@@ -247,8 +247,8 @@ pub(crate) fn context_task_request(
     tasks: &CapturedTasks,
     state: &AgentState,
     ledger: &super::input_evidence_budget::InputEvidenceBudgetLedger,
-    record_limit: usize,
-    byte_limit: usize,
+    _record_limit: usize,
+    _byte_limit: usize,
 ) -> Result<(TaskCaptureRequest, Arc<BudgetViewGuard>)> {
     anyhow::ensure!(
         state.id == tasks.scope.agent_id,
@@ -289,15 +289,10 @@ pub(crate) fn context_task_request(
         .and_then(|n| n.checked_add(128))
         .and_then(|n| n.checked_mul(4))
         .context("context Task selector bytes overflow")?;
-    let records = count
+    let _records = count
         .checked_mul(4)
         .context("context Task selector count overflow")?;
-    anyhow::ensure!(
-        records <= record_limit && bytes <= u64::try_from(byte_limit)?,
-        crate::runtime_db::task_snapshot::TaskSnapshotError::ResourceExhausted(
-            "context Task selectors"
-        )
-    );
+
     let guard = ledger.register_owned_bytes(
         &tasks.scope,
         InputMemoryCategory::Candidate,
@@ -452,22 +447,12 @@ impl RuntimeHandle {
                 && tasks.scope().identity_incarnation == self.inner.identity_incarnation,
             "current Task capture scope differs"
         );
-        let limits = self.inner.input_evidence_budget.limits();
+        let _limits = self.inner.input_evidence_budget.limits();
         let bytes = serialized_bytes(&id)?
             .checked_add(128)
             .and_then(|bytes| bytes.checked_mul(4))
             .context("Task selector bytes overflow")?;
-        anyhow::ensure!(
-            limits.record_limit >= 4
-                && bytes
-                    <= limits
-                        .history_per_agent_bytes
-                        .checked_add(limits.pending_per_agent_bytes)
-                        .context("Task selector limit overflow")?,
-            crate::runtime_db::task_snapshot::TaskSnapshotError::ResourceExhausted(
-                "current Task selector"
-            )
-        );
+
         let guard = self.inner.input_evidence_budget.register_owned_bytes(
             tasks.scope(),
             InputMemoryCategory::Pins,

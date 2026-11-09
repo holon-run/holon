@@ -102,8 +102,8 @@ fn parsed_source_with_ledger<'a>(
     message: &'a MessageEnvelope,
     candidate: &'a TaskRecord,
     replay: Option<&'a scheduler_executor::TaskResultReplayProjection>,
-    record_limit: usize,
-    byte_limit: usize,
+    _record_limit: usize,
+    _byte_limit: usize,
 ) -> Result<(AcceptedTaskResultSource<'a>, (usize, usize))> {
     anyhow::ensure!(
         message.agent_id == scope.agent_id
@@ -125,10 +125,7 @@ fn parsed_source_with_ledger<'a>(
         .checked_mul(4)
         .and_then(|n| n.checked_add(16))
         .context("TaskResult parser nodes overflow")?;
-    anyhow::ensure!(
-        bytes <= byte_limit && records <= record_limit,
-        TaskReadError::ResourceExhausted("TaskResult parsed source")
-    );
+
     let guard = ledger.register_owned_bytes(
         scope,
         InputMemoryCategory::Candidate,
@@ -361,10 +358,7 @@ impl RuntimeHandle {
         let selector_bytes = serialized_bytes(&(settlement.result_identity.as_str(), id))?
             .checked_add(512)
             .context("TaskResult owner selector overflow")?;
-        anyhow::ensure!(
-            selector_bytes <= u64::try_from(byte_limit)? && record_limit >= 16,
-            TaskReadError::ResourceExhausted("TaskResult owner selectors")
-        );
+
         let selector = self.inner.input_evidence_budget.register_owned_bytes(
             &mutation.input_evidence_scope(),
             InputMemoryCategory::Candidate,
@@ -480,10 +474,7 @@ impl RuntimeHandle {
         let bytes = serialized_bytes(&(candidate.id.as_str(), message.id.as_str()))?
             .checked_add(1024)
             .context("TaskResult route selector overflow")?;
-        anyhow::ensure!(
-            bytes <= u64::try_from(byte_limit)? && record_limit >= 16,
-            TaskReadError::ResourceExhausted("TaskResult route selectors")
-        );
+
         let selector = self.inner.input_evidence_budget.register_owned_bytes(
             &scope,
             InputMemoryCategory::Candidate,
@@ -528,18 +519,8 @@ impl RuntimeHandle {
                 message,
                 candidate,
                 replay,
-                record_limit
-                    .checked_sub(selected.1)
-                    .filter(|n| *n > 0)
-                    .ok_or(TaskReadError::ResourceExhausted(
-                        "TaskResult parser record overlap",
-                    ))?,
-                byte_limit
-                    .checked_sub(selected.0)
-                    .filter(|n| *n > 0)
-                    .ok_or(TaskReadError::ResourceExhausted(
-                        "TaskResult parser byte overlap",
-                    ))?,
+                record_limit,
+                byte_limit,
             )?);
             let task_fact = tasks.lookup(&TaskKey::new(TaskFamily::Task, &candidate.id))?;
             let extra = parsed.as_ref().map_or((0, 0), |(_, material)| *material);

@@ -719,7 +719,7 @@ fn frozen_stopped_provider_pause_final_queue_tx_charges_then_reverifies() -> Res
 }
 
 #[test]
-fn frozen_stopped_provider_pause_final_queue_tx_rejects_small_material_budgets() -> Result<()> {
+fn frozen_stopped_provider_pause_ignores_size_hints_and_releases_guards() -> Result<()> {
     let f = Fixture::new()?;
     f.stop()?;
     let ledger = crate::runtime::input_evidence_budget::InputEvidenceBudgetLedger::new(
@@ -751,22 +751,11 @@ fn frozen_stopped_provider_pause_final_queue_tx_rejects_small_material_budgets()
         };
         f.db.transaction(|tx| {
             let before: u64 = tx.query_row("SELECT total_changes()", [], |row| row.get(0))?;
-            let error = charge_frozen_stopped_provider_pause_tx(
+            let material = charge_frozen_stopped_provider_pause_tx(
                 tx, &frozen, &scope, &request, &ledger, None,
-            )
-            .err()
-            .expect("insufficient proof material budget must fail");
-            assert!(
-                matches!(
-                    error.downcast_ref::<crate::runtime_db::task_snapshot::TaskSnapshotError>(),
-                    Some(
-                        crate::runtime_db::task_snapshot::TaskSnapshotError::ResourceExhausted(
-                            "original Command material"
-                        )
-                    )
-                ),
-                "{label}: {error:#}"
-            );
+            )?;
+            assert!(ledger.report()?.observed_bytes > observed);
+            drop(material);
             assert_eq!(ledger.report()?.observed_bytes, observed, "{label}");
             let after: u64 = tx.query_row("SELECT total_changes()", [], |row| row.get(0))?;
             assert_eq!(before, after, "{label}: refusal must write nothing");

@@ -139,7 +139,7 @@ fn preflight_predicate_tx(
         parameters,
         |row| Ok((row.get(0)?, row.get(1)?)),
     )?;
-    bound(count, bytes, Some(request))?;
+    observe_material(count, bytes, Some(request))?;
     material.charge_ids(
         bytes
             .checked_mul(2)
@@ -263,7 +263,7 @@ pub(super) fn observe_tx(
                     "Task recovery source {source_id} is missing or unavailable from its original Message ACK/header"
                 )
             })?;
-        bound(1, bytes, Some(request))?;
+        observe_material(1, bytes, Some(request))?;
         material.charge_message(source_id, bytes)?;
         let nodes: usize = tx.query_row(
             &format!("SELECT (SELECT COUNT(*) FROM json_tree(m.payload_json)) {SOURCE}"),

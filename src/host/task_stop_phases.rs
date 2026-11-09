@@ -56,18 +56,7 @@ impl RuntimeHost {
         let selector_bytes = serialized_bytes(&request.capture.required_keys)?
             .checked_mul(8)
             .context("Stop request material overflow")?;
-        anyhow::ensure!(
-            selector_bytes <= u64::try_from(request.byte_limit)?
-                && request.capture.required_keys.len() <= request.record_limit
-                && selector_bytes
-                    <= limits
-                        .history_per_agent_bytes
-                        .checked_add(limits.pending_per_agent_bytes)
-                        .context("Stop actor limits overflow")?,
-            crate::runtime_db::task_snapshot::TaskSnapshotError::ResourceExhausted(
-                "Stop actor request metadata"
-            )
-        );
+
         let _selectors = ledger.register_owned_bytes(
             scope,
             InputMemoryCategory::Candidate,

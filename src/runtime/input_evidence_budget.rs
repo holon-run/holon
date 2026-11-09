@@ -37,6 +37,7 @@ pub(crate) enum BudgetResource {
 }
 #[derive(Debug, thiserror::Error)]
 pub(crate) enum InputEvidenceBudgetError {
+    #[cfg(test)]
     #[error("ResourceExhausted: {resource:?}, used={used}, requested={requested}, limit={limit}")]
     ResourceExhausted {
         resource: BudgetResource,
@@ -587,21 +588,21 @@ impl InputEvidenceBudgetLedger {
             };
         }
         let used = state.pending_usage.get(&sk).copied().unwrap_or_default();
-        check(
+        observe_admission(
             BudgetResource::PendingAgentCount,
             Some(scope),
             used.count,
             1,
             self.inner.limits.pending_per_agent_count,
         )?;
-        check(
+        observe_admission(
             BudgetResource::PendingAgentBytes,
             Some(scope),
             used.body_bytes,
             body_bytes,
             self.inner.limits.pending_per_agent_bytes,
         )?;
-        check(
+        observe_admission(
             BudgetResource::PendingHostBytes,
             None,
             state.pending_host_bytes,
@@ -773,21 +774,21 @@ impl InputEvidenceBudgetLedger {
             .pending_host_bytes
             .checked_sub(old.body_bytes)
             .ok_or(InputEvidenceBudgetError::CounterOverflow)?;
-        check(
+        observe_admission(
             BudgetResource::PendingAgentCount,
             Some(scope),
             0,
             count,
             self.inner.limits.pending_per_agent_count,
         )?;
-        check(
+        observe_admission(
             BudgetResource::PendingAgentBytes,
             Some(scope),
             0,
             conservative_payload_bytes,
             self.inner.limits.pending_per_agent_bytes,
         )?;
-        check(
+        observe_admission(
             BudgetResource::PendingHostBytes,
             None,
             other_host_bytes,
@@ -797,8 +798,7 @@ impl InputEvidenceBudgetLedger {
         Ok(())
     }
     /// Cold activation, under scope reservation and one fresh durable snapshot.
-    /// Over-limit still installs actual Accepted charges, preserving durable work;
-    /// ResourceExhausted rejects activation until explicitly adjusted limits.
+    /// Install actual Accepted charges without a cumulative admission quota.
     pub(crate) fn install_actual_pending(
         &self,
         scope: &InputEvidenceScope,
@@ -887,21 +887,21 @@ impl InputEvidenceBudgetLedger {
             state.pending_usage.insert(sk, usage);
         }
         state.pending_host_bytes = next_host;
-        check(
+        observe_admission(
             BudgetResource::PendingAgentCount,
             Some(scope),
             usage.count,
             0,
             self.inner.limits.pending_per_agent_count,
         )?;
-        check(
+        observe_admission(
             BudgetResource::PendingAgentBytes,
             Some(scope),
             usage.body_bytes,
             0,
             self.inner.limits.pending_per_agent_bytes,
         )?;
-        check(
+        observe_admission(
             BudgetResource::PendingHostBytes,
             None,
             next_host,
@@ -1521,7 +1521,7 @@ impl InputEvidenceBudgetLedger {
                 .categories
                 .get(&InputMemoryCategory::History)
                 .map_or(0, |x| x.bytes);
-            check(
+            observe_admission(
                 BudgetResource::HistoryAgentBytes,
                 Some(&scope.scope),
                 bytes,
@@ -1533,7 +1533,7 @@ impl InputEvidenceBudgetLedger {
             .categories
             .get(&InputMemoryCategory::History)
             .map_or(0, |x| x.bytes);
-        check(
+        observe_admission(
             BudgetResource::HistoryHostBytes,
             None,
             bytes,
@@ -1596,30 +1596,21 @@ fn valid_identity(agent_id: &str, identity_incarnation: u64) -> Result<()> {
     }
     Ok(())
 }
-fn check(
+fn observe_admission(
     resource: BudgetResource,
     scope: Option<&InputEvidenceScope>,
     used: u64,
     requested: u64,
     limit: u64,
 ) -> Result<()> {
-    if add(used, requested)? > limit {
-        tracing::warn!(
-            ?resource,
-            ?scope,
-            used,
-            requested,
-            limit,
-            "Input evidence allowance exceeded"
-        );
-        return Err(InputEvidenceBudgetError::ResourceExhausted {
-            resource,
-            scope: scope.cloned(),
-            used,
-            requested,
-            limit,
-        });
-    }
+    let total = add(used, requested)?;
+    tracing::trace!(
+        ?resource,
+        ?scope,
+        total,
+        limit,
+        "input responsibility observation"
+    );
     Ok(())
 }
 fn add(a: u64, b: u64) -> Result<u64> {

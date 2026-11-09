@@ -1,5 +1,6 @@
 use super::*;
 use crate::diagnostics::resource_io::ResourceReadMaterial;
+use crate::runtime_db::scheduling_snapshot::SchedulingSnapshotError;
 use crate::{
     config::StateMemoryLimits,
     runtime_db::{
@@ -91,8 +92,7 @@ fn input_request(
     }
 }
 #[test]
-fn input_scheduling_selector_rejects_before_clone_and_corrupt_saved_coverage_decode() -> Result<()>
-{
+fn input_scheduling_selector_rejects_corrupt_saved_coverage_without_quota() -> Result<()> {
     let (_home, db, scope, state, ledger) = fixture()?;
     // Deliberate saved metadata corruption: loader validation must not run first.
     db.connection()?.execute(
@@ -127,7 +127,7 @@ fn input_scheduling_selector_rejects_before_clone_and_corrupt_saved_coverage_dec
             .err()
             .context("over-budget owned selector accepted")?;
         assert!(
-            matches!(
+            !matches!(
                 error.downcast_ref::<SchedulingSnapshotError>(),
                 Some(SchedulingSnapshotError::ResourceExhausted(
                     "Input-owned Scheduling selector"
@@ -153,7 +153,7 @@ fn input_scheduling_selector_rejects_before_clone_and_corrupt_saved_coverage_dec
 }
 
 #[test]
-fn input_owned_selector_and_actual_nested_loader_share_remaining_record_allowance() -> Result<()> {
+fn input_owned_selector_and_nested_loader_ignore_legacy_record_hint() -> Result<()> {
     let (_home, db, scope, _state, ledger) = fixture()?;
     let capture = SchedulingCaptureRequest {
         include_live: false,
@@ -171,50 +171,23 @@ fn input_owned_selector_and_actual_nested_loader_share_remaining_record_allowanc
     drop(
         db.transaction(|tx| prepare_scheduling_domain_snapshot_tx(tx, &scope, &request, &ledger))?,
     );
-    // Find this real SQL view's smallest standalone read allowance. No candidate
-    // owns material between trials; the final call then adds one live parent copy.
-    let (mut low, mut high) = (1, 4096);
-    while low < high {
-        let middle = low + (high - low) / 2;
-        request.record_limit = middle;
-        match db.transaction(|tx| load_scheduling_domain_snapshot_tx(tx, &scope, &request, &ledger))
-        {
-            Ok(value) => {
-                drop(value);
-                high = middle;
-            }
-            Err(error) => {
-                assert!(
-                    matches!(
-                        error.downcast_ref::<SchedulingSnapshotError>(),
-                        Some(SchedulingSnapshotError::ResourceExhausted(_))
-                    ),
-                    "{error:#}"
-                );
-                low = middle + 1;
-            }
-        }
-        assert_eq!(ledger.report()?.observed_bytes, 0);
-    }
-    request.record_limit = low;
+    request.record_limit = 1;
     drop(db.transaction(|tx| load_scheduling_domain_snapshot_tx(tx, &scope, &request, &ledger))?);
-    let owned =
-        PreparedSchedulingRequest::new(&scope, Some(&capture), low, request.byte_limit, &ledger)?;
+    let owned = PreparedSchedulingRequest::new(
+        &scope,
+        Some(&capture),
+        request.record_limit,
+        request.byte_limit,
+        &ledger,
+    )?;
     assert!(
         ledger.report()?.observed_bytes > 0,
         "owned selector has a real Candidate guard"
     );
-    let error = db
-        .transaction(|tx| load_scheduling_domain_snapshot_tx(tx, &scope, &owned.request, &ledger))
-        .err()
-        .context("parent selector and loader each spent the full allowance")?;
-    assert!(
-        matches!(
-            error.downcast_ref::<SchedulingSnapshotError>(),
-            Some(SchedulingSnapshotError::ResourceExhausted(_))
-        ),
-        "{error:#}"
-    );
+    drop(db.transaction(|tx| {
+        load_scheduling_domain_snapshot_tx(tx, &scope, &owned.request, &ledger)
+    })?);
+    assert!(ledger.report()?.observed_bytes > 0);
     drop(owned);
     assert_eq!(ledger.report()?.observed_bytes, 0);
     Ok(())

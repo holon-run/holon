@@ -5125,7 +5125,7 @@ pub(in crate::runtime_db) fn predicted_trigger_wait_tx(
     scope: &InputEvidenceScope,
     message: &MessageEnvelope,
     queue: &QueueEntryRecord,
-    request: &crate::runtime_db::work_snapshot::WorkDomainLoadRequest,
+    _request: &crate::runtime_db::work_snapshot::WorkDomainLoadRequest,
     ledger: &crate::runtime::input_evidence_budget::InputEvidenceBudgetLedger,
     memory_budget: Option<&mut crate::runtime_db::dispatch_memory::DispatchMemoryTransactionBudget>,
 ) -> Result<(
@@ -5152,13 +5152,10 @@ pub(in crate::runtime_db) fn predicted_trigger_wait_tx(
     let records = count.checked_mul(copies).context(exhausted())?;
     let payload_bytes = bytes.checked_mul(copies).context(exhausted())?;
     let metadata_bytes = records.checked_mul(256).context(exhausted())?;
-    let total_bytes = payload_bytes
+    let _total_bytes = payload_bytes
         .checked_add(metadata_bytes)
         .context(exhausted())?;
-    anyhow::ensure!(
-        records <= request.record_limit && total_bytes <= request.byte_limit,
-        exhausted()
-    );
+
     let guard = if let Some(budget) = memory_budget {
         budget.additional_material(bytes, count, copies)?;
         None

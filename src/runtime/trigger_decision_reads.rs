@@ -4,7 +4,7 @@ use super::{
         serialized_bytes, BudgetViewGuard, InputEvidenceBudgetLedger, InputMemoryCategory,
         OwnedBytesEstimate,
     },
-    resident_scheduling::{CapturedScheduling, SchedulingCaptureRequest, SchedulingReadError},
+    resident_scheduling::{CapturedScheduling, SchedulingCaptureRequest},
     resident_work::CapturedWork,
     timer_mutation_reads::selected_work_material,
     RuntimeHandle,
@@ -17,10 +17,10 @@ fn owned_trigger_material(
     selected: &CapturedScheduling,
     work: Option<&CapturedWork>,
     owned_bytes: u64,
-    owned_records: usize,
+    _owned_records: usize,
     ledger: &InputEvidenceBudgetLedger,
-    record_limit: usize,
-    byte_limit: usize,
+    _record_limit: usize,
+    _byte_limit: usize,
 ) -> Result<Arc<BudgetViewGuard>> {
     let (mut bytes, mut records) = selected.selected_material_estimate()?;
     if let Some(work) = work {
@@ -33,15 +33,8 @@ fn owned_trigger_material(
             .checked_add(other_records)
             .context("Trigger selected records overflow")?;
     }
-    ensure!(
-        bytes
-            .checked_add(owned_bytes)
-            .is_some_and(|n| n <= byte_limit.min(64 * 1024 * 1024) as u64)
-            && records
-                .checked_add(owned_records)
-                .is_some_and(|n| n <= record_limit.min(65_536)),
-        SchedulingReadError::ResourceExhausted("selected domains and Trigger decision copies")
-    );
+
+    tracing::trace!(bytes, records, "Trigger selected material observation");
     Ok(ledger.register_owned_bytes(
         &selected.scope,
         InputMemoryCategory::Candidate,

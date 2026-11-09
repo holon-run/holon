@@ -29,16 +29,8 @@ impl TaskResultReplayProjection {
             .checked_mul(4)
             .and_then(|bytes| bytes.checked_add(512))
             .context("TaskResult replay metadata overflow")?;
-        let limits = runtime.inner.input_evidence_budget.limits();
-        anyhow::ensure!(
-            limits.record_limit >= 32
-                && bytes
-                    <= limits
-                        .history_per_agent_bytes
-                        .checked_add(limits.pending_per_agent_bytes)
-                        .context("TaskResult replay limits overflow")?,
-            resident_task::TaskReadError::ResourceExhausted("TaskResult replay metadata")
-        );
+        let _limits = runtime.inner.input_evidence_budget.limits();
+
         let budget = runtime.inner.input_evidence_budget.register_owned_bytes(
             &source.locator.scope,
             input_evidence_budget::InputMemoryCategory::Pins,

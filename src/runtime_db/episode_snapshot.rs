@@ -381,12 +381,7 @@ fn load_episode_memory_snapshot_inner(
     for row in rows {
         let (id, agent_id, work_item_id, payload) = row?;
         payload_bytes = payload_bytes.saturating_add(payload.len());
-        if payload_bytes > CONTINUITY_MAX_PAYLOAD_BYTES {
-            return Err(EpisodeSnapshotError::ClosureResourceExhausted {
-                limit: "payload bytes",
-            }
-            .into());
-        }
+
         let episode = decode_context_episode_payload(&payload)?;
         ensure!(
             episode.id == id
@@ -1153,16 +1148,7 @@ fn all_episode_rows(connection: &Connection, agent_id: &str) -> Result<Vec<Episo
         let payload = row.get_ref(0)?.as_str()?;
         let receipted = row.get::<_, bool>(1)?;
         bytes = bytes.saturating_add(payload.len());
-        if records.len() >= CONTINUITY_MAX_RECORDS || bytes > CONTINUITY_MAX_PAYLOAD_BYTES {
-            return Err(EpisodeSnapshotError::ClosureResourceExhausted {
-                limit: if bytes > CONTINUITY_MAX_PAYLOAD_BYTES {
-                    "payload bytes"
-                } else {
-                    "record count"
-                },
-            }
-            .into());
-        }
+
         crate::diagnostics::resource_io::admit_json_payload(payload)?;
         crate::diagnostics::resource_io::charge_owned_metadata(
             u64::try_from(payload.len())?
@@ -1322,12 +1308,12 @@ struct RootCollector {
     visited: BTreeSet<(String, String)>,
     current_depth: usize,
     payload_bytes: usize,
-    budget_error: Option<&'static str>,
+    depth_error: Option<&'static str>,
 }
 
 impl RootCollector {
     fn reference(&mut self, kind: &str, id: &str) {
-        if id.is_empty() || self.budget_error.is_some() {
+        if id.is_empty() || self.depth_error.is_some() {
             return;
         }
         let key = (kind.to_owned(), id.to_owned());
@@ -1335,7 +1321,7 @@ impl RootCollector {
             return;
         }
         if self.current_depth > CONTINUITY_MAX_REF_DEPTH {
-            self.budget_error = Some("reference depth");
+            self.depth_error = Some("reference depth");
         } else {
             self.queued.insert(key.clone());
             self.pending.push_back((key.0, key.1, self.current_depth));
@@ -1372,15 +1358,15 @@ impl RootCollector {
         }
     }
 
-    fn ensure_budget(&self) -> Result<()> {
-        if let Some(limit) = self.budget_error {
+    fn validate_depth(&self) -> Result<()> {
+        if let Some(limit) = self.depth_error {
             return Err(EpisodeSnapshotError::ClosureResourceExhausted { limit }.into());
         }
         Ok(())
     }
 
     fn digest(&mut self, kind: &str, id: &str, payload: &str) -> Result<()> {
-        self.ensure_budget()?;
+        self.validate_depth()?;
         let key = format!("{kind}:{id}");
         if self.roots.record_digests.contains_key(&key) {
             return Ok(());
@@ -1868,9 +1854,9 @@ fn expand_episode_root_refs(
     collector: &mut RootCollector,
     tables: Option<&BTreeSet<String>>,
 ) -> Result<()> {
-    collector.ensure_budget()?;
+    collector.validate_depth()?;
     while let Some((kind, id, depth)) = collector.pending.pop_front() {
-        collector.ensure_budget()?;
+        collector.validate_depth()?;
         if !collector.visited.insert((kind.clone(), id.clone())) {
             continue;
         }
@@ -2072,7 +2058,7 @@ fn expand_episode_root_refs(
             _ => unreachable!("canonical continuity reference matched above"),
         }
     }
-    collector.ensure_budget()
+    collector.validate_depth()
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -3338,7 +3324,7 @@ mod tests {
             ..Default::default()
         };
         collector.reference("message", "must-keep");
-        let error = collector.ensure_budget().unwrap_err();
+        let error = collector.validate_depth().unwrap_err();
         assert_eq!(
             error.downcast_ref::<EpisodeSnapshotError>(),
             Some(&EpisodeSnapshotError::ClosureResourceExhausted {
@@ -3358,7 +3344,7 @@ mod tests {
             collector.reference("message", &id);
             collector.digest("message", &id, "history").unwrap();
         }
-        collector.ensure_budget().unwrap();
+        collector.validate_depth().unwrap();
         assert!(collector.roots.record_digests.len() > CONTINUITY_MAX_RECORDS);
         assert!(collector.pending.len() > CONTINUITY_MAX_RECORDS);
     }

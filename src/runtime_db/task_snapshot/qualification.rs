@@ -45,7 +45,7 @@ pub(in crate::runtime_db) fn capture_task_domain_seed_if_ready_tx(
 fn capture_seed(tx: &Transaction<'_>, seed: &str, phase: &str) -> Result<()> {
     let checkpoint = task_checkpoint::load(tx, seed, phase)?;
     let encoded = serde_json::to_vec(&checkpoint)?;
-    bound(
+    observe_material(
         checkpoint
             .record_digests
             .len()

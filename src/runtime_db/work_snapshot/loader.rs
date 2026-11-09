@@ -232,16 +232,14 @@ fn load_with_scope_facts(
             .iter()
             .map(|id| WorkKey::new(WorkFamily::Work, id)),
     );
-    bound_metadata(
+    observe_metadata(
         pending.len(),
         pending
             .iter()
             .map(|key| key.id.len() + std::mem::size_of::<WorkKey>())
             .sum(),
     )?;
-    if pending.len() > request.record_limit {
-        return Err(WorkSnapshotError::ResourceExhausted("selected record count").into());
-    }
+
     let mut records = Vec::new();
     let mut observations = BTreeMap::new();
     let mut bytes = 0usize;
@@ -253,10 +251,8 @@ fn load_with_scope_facts(
         }
         metadata_bytes =
             metadata_bytes.saturating_add(key.id.len() + std::mem::size_of::<WorkKey>());
-        bound_metadata(observations.len() + 1, metadata_bytes)?;
-        if observations.len() >= request.record_limit {
-            return Err(WorkSnapshotError::ResourceExhausted("selected record count").into());
-        }
+        observe_metadata(observations.len() + 1, metadata_bytes)?;
+
         let alias = alias(tx, scope, &key)?;
         if alias
             .as_ref()
@@ -296,9 +292,7 @@ fn load_with_scope_facts(
             continue;
         };
         bytes = bytes.saturating_add(length);
-        if bytes > request.byte_limit {
-            return Err(WorkSnapshotError::ResourceExhausted("selected body bytes").into());
-        }
+
         let stored = stored_on(tx, &scope.agent_id, &key)?
             .context("Work body disappeared in read transaction")?;
         let record_revision = validate_member(tx, scope, seed.as_deref(), &key, &stored)?;
@@ -586,7 +580,7 @@ pub(super) fn current_coverage(
     let Some((revision, bytes)) = row else {
         return Ok(None);
     };
-    bound_metadata(0, bytes)?;
+    observe_metadata(0, bytes)?;
     let json:String=tx.query_row("SELECT coverage_json FROM work_domain_current WHERE agent_id=?1 AND identity_incarnation=?2",params![scope.agent_id,scope.identity_incarnation],|row|row.get(0))?;
     let coverage: WorkCoverage = serde_json::from_str(&json)?;
     ensure!(
@@ -601,7 +595,7 @@ pub(super) fn persist_coverage(
     coverage: &WorkCoverage,
 ) -> Result<()> {
     let json = serde_json::to_string(coverage)?;
-    bound_metadata(coverage.observations.len(), json.len())?;
+    observe_metadata(coverage.observations.len(), json.len())?;
     tx.execute("INSERT INTO work_domain_current(agent_id,identity_incarnation,revision,coverage_json)VALUES(?1,?2,?3,?4)ON CONFLICT(agent_id,identity_incarnation)DO UPDATE SET revision=excluded.revision,coverage_json=excluded.coverage_json",params![scope.agent_id,scope.identity_incarnation,coverage.revision,json])?;
     Ok(())
 }
@@ -669,12 +663,12 @@ fn namespace_ids(
                 scope.identity_incarnation,
                 family_name(family),
                 seed,
-                i64::try_from(limit.unwrap_or(MAX_METADATA_RECORDS + 1))?
+                limit.map(i64::try_from).transpose()?.unwrap_or(-1)
             ],
             |row| row.get::<_, String>(0),
         )?
         .collect::<std::result::Result<Vec<_>, _>>()?;
-    bound_metadata(ids.len(), ids.iter().map(String::len).sum())?;
+    observe_metadata(ids.len(), ids.iter().map(String::len).sum())?;
     Ok(ids)
 }
 
@@ -685,7 +679,7 @@ pub(super) fn result_head_on(
 ) -> Result<Option<Option<WorkCompletionRef>>> {
     let bytes:Option<usize>=tx.query_row("SELECT length(CAST(head_json AS BLOB)) FROM work_domain_result_heads WHERE agent_id=?1 AND identity_incarnation=?2 AND work_item_id=?3",params![scope.agent_id,scope.identity_incarnation,work],|row|row.get(0)).optional()?;
     let Some(bytes) = bytes else { return Ok(None) };
-    bound_metadata(1, bytes)?;
+    observe_metadata(1, bytes)?;
     let json:String=tx.query_row("SELECT head_json FROM work_domain_result_heads WHERE agent_id=?1 AND identity_incarnation=?2 AND work_item_id=?3",params![scope.agent_id,scope.identity_incarnation,work],|row|row.get(0))?;
     Ok(Some(serde_json::from_str(&json)?))
 }
@@ -700,7 +694,7 @@ pub(super) fn persist_result_head(
         return Ok(());
     }
     let json = serde_json::to_string(head)?;
-    bound_metadata(1, json.len().saturating_add(work.len()))?;
+    observe_metadata(1, json.len().saturating_add(work.len()))?;
     tx.execute("INSERT INTO work_domain_result_heads(agent_id,identity_incarnation,work_item_id,revision,head_json) VALUES(?1,?2,?3,?4,?5) ON CONFLICT(agent_id,identity_incarnation,work_item_id) DO UPDATE SET revision=excluded.revision,head_json=excluded.head_json",params![scope.agent_id,scope.identity_incarnation,work,revision,json])?;
     Ok(())
 }

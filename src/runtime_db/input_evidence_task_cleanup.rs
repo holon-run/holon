@@ -60,7 +60,7 @@ impl ExistingAdmissionInputProof {
             first_message: !existing,
             source: DerivedTaskMessageSource::Terminal,
         };
-        let bytes = input
+        let _bytes = input
             .allowed
             .iter()
             .try_fold(0usize, |n, key| n.checked_add(key.id.len()))
@@ -68,10 +68,7 @@ impl ExistingAdmissionInputProof {
             .and_then(|n| n.checked_add(witness.task_id.len()))
             .and_then(|n| n.checked_add(witness.result_id.as_ref().map_or(0, String::len) + 128))
             .context("Task input footprint overflow")?;
-        ensure!(
-            input.allowed.len() + 1 <= MAX_RECORDS && bytes <= MAX_METADATA_BYTES,
-            "Task input footprint exceeds fixed preparation bounds"
-        );
+
         input.allowed.insert(key.clone());
         input.derived.insert(key.clone());
         ensure!(
@@ -200,16 +197,13 @@ impl ExistingAdmissionInputProof {
             let known:bool=tx.query_row("SELECT EXISTS(SELECT 1 FROM input_evidence_current WHERE family='message' AND record_id=?1 UNION ALL SELECT 1 FROM input_evidence_eligibility WHERE family='message' AND record_id=?1)",[&key.id],|r|r.get(0))?;
             ensure!(!known, "Task cleanup cannot revive an old Message ID");
         }
-        let bytes = self
+        let _bytes = self
             .allowed
             .iter()
             .try_fold(0usize, |n, k| n.checked_add(k.id.len()))
             .and_then(|n| n.checked_add(key.id.len() + before.id.len() + 256))
             .context("Stop input footprint overflow")?;
-        ensure!(
-            self.allowed.len() + 1 <= MAX_RECORDS && bytes <= MAX_METADATA_BYTES,
-            "Stop input footprint exceeds fixed preparation bounds"
-        );
+
         self.allowed.insert(key.clone());
         self.derived.insert(key.clone());
         ensure!(

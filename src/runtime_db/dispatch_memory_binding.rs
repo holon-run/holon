@@ -321,10 +321,6 @@ fn final_closure_tx(
         bytes = bytes
             .checked_add(size)
             .context(DispatchMemoryError::ResourceExhausted)?;
-        ensure!(
-            records <= request.record_limit.min(MAX_METADATA_RECORDS) && bytes <= budget,
-            DispatchMemoryError::ResourceExhausted
-        );
     }
     let read = ContextDurableRead::new(tx, &state.id);
     let triggers = read.external_triggers()?;
@@ -417,10 +413,10 @@ fn final_closure_tx(
 fn recent_events_tx(
     tx: &Transaction<'_>,
     agent_id: &str,
-    byte_limit: usize,
+    _byte_limit: usize,
 ) -> Result<(Vec<AuditEvent>, usize)> {
     let size:usize=tx.query_row("SELECT COALESCE(SUM(length(CAST(data_json AS BLOB))),0) FROM (SELECT data_json FROM audit_events WHERE agent_id=?1 ORDER BY event_seq DESC,created_at DESC LIMIT 64)", [agent_id], |r|r.get(0))?;
-    ensure!(size <= byte_limit, DispatchMemoryError::ResourceExhausted);
+
     let mut statement=tx.prepare("SELECT audit_event_id,event_seq,kind,created_at,data_json FROM audit_events WHERE agent_id=?1 ORDER BY event_seq DESC,created_at DESC LIMIT 64")?;
     let mut result = Vec::new();
     for row in statement.query_map([agent_id], |r| {
@@ -466,12 +462,9 @@ pub(crate) fn dispatch_memory_retention_roots_in(
     } else {
         "SELECT COUNT(*),COALESCE(SUM(length(CAST(payload_json AS BLOB))),0) FROM dispatch_memory_checkpoints WHERE state!='done'"
     };
-    let (count, bytes): (usize, usize) =
+    let (_count, _bytes): (usize, usize) =
         connection.query_row(budget_sql, [], |r| Ok((r.get(0)?, r.get(1)?)))?;
-    ensure!(
-        count <= MAX_METADATA_RECORDS && bytes <= MAX_METADATA_BYTES,
-        DispatchMemoryError::ResourceExhausted
-    );
+
     let mut statement=connection.prepare("SELECT agent_id,identity_incarnation,turn_id,source_message_id,turn_index FROM dispatch_memory_checkpoints WHERE state!='done' ORDER BY agent_id,identity_incarnation,turn_index,turn_id")?;
     let mut roots = BTreeSet::new();
     for row in statement.query_map([], |r| {
@@ -502,10 +495,6 @@ pub(crate) fn dispatch_memory_retention_roots_in(
         validate_dispatch_memory_members_in(connection, &record)?;
         for key in record.input_roots() {
             roots.insert(key);
-            ensure!(
-                roots.len() <= MAX_METADATA_RECORDS,
-                DispatchMemoryError::ResourceExhausted
-            );
         }
     }
     Ok(roots)

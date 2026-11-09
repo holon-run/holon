@@ -106,8 +106,8 @@ impl CapturedScheduling {
     pub(in crate::runtime) fn clone_trigger_records(
         &self,
         ledger: &super::input_evidence_budget::InputEvidenceBudgetLedger,
-        record_limit: usize,
-        byte_limit: usize,
+        _record_limit: usize,
+        _byte_limit: usize,
     ) -> Result<OwnedSchedulingTriggers> {
         use super::input_evidence_budget::{
             serialized_bytes, InputMemoryCategory, OwnedBytesEstimate,
@@ -133,20 +133,12 @@ impl CapturedScheduling {
             .and_then(|n| n.checked_add(512))
             .and_then(|n| n.checked_mul(4))
             .ok_or_else(|| anyhow::anyhow!("Trigger owned material overflow"))?;
-        let (selected, selected_records) = self.selected_material_estimate()?;
-        let output_records = count
+        let (_selected, _selected_records) = self.selected_material_estimate()?;
+        let _output_records = count
             .checked_add(1)
             .and_then(|n| n.checked_mul(4))
             .ok_or_else(|| anyhow::anyhow!("Trigger output records overflow"))?;
-        ensure!(
-            selected
-                .checked_add(bytes)
-                .is_some_and(|n| n <= u64::try_from(byte_limit.min(64 * 1024 * 1024)).unwrap_or(0))
-                && selected_records
-                    .checked_add(output_records)
-                    .is_some_and(|n| n <= record_limit.min(65536)),
-            SchedulingReadError::ResourceExhausted("selected Scheduling and Trigger output")
-        );
+
         let material = ledger.register_owned_bytes(
             &self.scope,
             InputMemoryCategory::Pins,

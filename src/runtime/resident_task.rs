@@ -712,10 +712,6 @@ impl ResidentTaskDomain {
                     pending.push(related);
                 }
             }
-            ensure!(
-                keys.len() <= self.record_limit,
-                TaskReadError::ResourceExhausted("closure records")
-            );
         }
         Ok(keys)
     }
@@ -725,10 +721,7 @@ impl ResidentTaskDomain {
                 && self.coverage.terminal.keys.len() <= self.coverage.terminal.limit,
             "Task terminal coverage invalid"
         );
-        ensure!(
-            coverage_record_count(&self.coverage)? <= self.record_limit,
-            TaskReadError::ResourceExhausted("metadata records")
-        );
+
         let roots = self.closure(self.coverage.resident_roots())?;
         self.records.retain(|key, _| roots.contains(key));
         self.stop_records
@@ -739,25 +732,16 @@ impl ResidentTaskDomain {
         self.coverage.output.validate(&self.scope, &self.records)?;
         self.coverage.status.validate(&self.scope, &self.records)?;
         validate_coverage(&self.coverage, &self.records)?;
-        let stop_bytes = self.stop_records.values().try_fold(0usize, |n, r| {
+        let _stop_bytes = self.stop_records.values().try_fold(0usize, |n, r| {
             n.checked_add(usize::try_from(r.resident_bytes()?)?)
                 .context("Stop body bytes overflow")
         })?;
-        let body = self.records.values().try_fold(0usize, |n, r| {
+        let _body = self.records.values().try_fold(0usize, |n, r| {
             n.checked_add(r.resident_bytes)
                 .context("Task body bytes overflow")
         })?;
-        let metadata = usize::try_from(metadata_bytes(&self.coverage, self.records.len())?)?;
-        ensure!(
-            roots.len() + self.stop_records.len() <= self.record_limit
-                && body
-                    .checked_add(stop_bytes)
-                    .context("Task Stop bytes overflow")?
-                    .checked_add(metadata)
-                    .context("Task bytes overflow")?
-                    <= self.byte_limit,
-            TaskReadError::ResourceExhausted("resident materials")
-        );
+        let _metadata = usize::try_from(metadata_bytes(&self.coverage, self.records.len())?)?;
+
         Ok(())
     }
     fn refresh_views(&mut self) -> Result<()> {

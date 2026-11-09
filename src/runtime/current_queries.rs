@@ -93,18 +93,10 @@ impl CurrentQueryRegistry {
         scope: &InputEvidenceScope,
         ledger: &super::input_evidence_budget::InputEvidenceBudgetLedger,
         bytes: usize,
-        count: usize,
+        _count: usize,
     ) -> Result<Arc<BudgetViewGuard>> {
-        let limits = ledger.limits();
-        anyhow::ensure!(
-            u64::try_from(bytes)?
-                <= limits
-                    .history_per_agent_bytes
-                    .checked_add(limits.pending_per_agent_bytes)
-                    .context("Current roles budget overflow")?
-                && u64::try_from(count)? <= limits.record_limit,
-            "Current roles resource exhausted"
-        );
+        let _limits = ledger.limits();
+
         Ok(ledger.register_owned_bytes(
             scope,
             InputMemoryCategory::Candidate,

@@ -247,7 +247,7 @@ impl RuntimeHost {
 
     pub(super) async fn retained_task_stop_runtime_inventory(
         &self,
-        request: &TaskDomainLoadRequest,
+        _request: &TaskDomainLoadRequest,
     ) -> Result<(Vec<RuntimeHandle>, Arc<BudgetViewGuard>)> {
         let registry = self.inner.runtimes.read().await;
         let mut count = 0usize;
@@ -275,16 +275,10 @@ impl RuntimeHost {
         let bytes = bytes
             .checked_mul(4)
             .context("retained Stop fleet bytes overflow")?;
-        let count = count
+        let _count = count
             .checked_mul(4)
             .context("retained Stop fleet count overflow")?;
-        anyhow::ensure!(
-            count <= request.record_limit.min(65_536)
-                && bytes <= request.byte_limit.min(64 * 1024 * 1024),
-            crate::runtime_db::task_snapshot::TaskSnapshotError::ResourceExhausted(
-                "retained Stop fleet metadata"
-            )
-        );
+
         let metadata = self.inner.input_evidence_budget.register_host_owned_bytes(
             InputMemoryCategory::Candidate,
             OwnedBytesEstimate {

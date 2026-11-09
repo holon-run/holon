@@ -732,21 +732,14 @@ impl ResidentSchedulingDomain {
                 }
             }
         }
-        let bytes = self.records.values().try_fold(
+        let _bytes = self.records.values().try_fold(
             metadata_bytes(&self.scope, &self.coverage, self.records.len())?,
             |n, r| {
                 n.checked_add(u64::try_from(r.resident_bytes)?)
                     .context("Scheduling byte overflow")
             },
         )?;
-        ensure!(
-            self.records
-                .len()
-                .checked_add(self.coverage.observations.len())
-                .is_some_and(|n| n <= self.record_limit)
-                && bytes <= u64::try_from(self.byte_limit)?,
-            "Scheduling ResourceExhausted"
-        );
+
         Ok(())
     }
     fn is_live_view_key(&self, key: &SchedulingKey) -> bool {
@@ -879,18 +872,11 @@ impl ResidentSchedulingDomain {
         let request_bytes = serialized_bytes(&request.required_keys)?
             .checked_mul(4)
             .context("Scheduling capture selector overflow")?;
-        ensure!(
-            request.required_keys.len() <= self.record_limit
-                && request_bytes <= u64::try_from(self.byte_limit)?,
-            "Scheduling capture ResourceExhausted"
-        );
+
         let capture_metadata = metadata_bytes(&self.scope, &self.coverage, self.records.len())?
             .checked_add(request_bytes)
             .context("Scheduling capture metadata overflow")?;
-        ensure!(
-            capture_metadata <= u64::try_from(self.byte_limit)?,
-            "Scheduling capture ResourceExhausted"
-        );
+
         Ok(capture_metadata)
     }
     /// Readiness borrows the same qualified roots and Wake parents. Only the

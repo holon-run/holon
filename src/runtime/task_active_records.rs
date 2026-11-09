@@ -61,14 +61,14 @@ impl RuntimeHandle {
             .and_then(|n| n.checked_add(payload))
             .and_then(|n| n.checked_add(slots))
             .context("active Task record combined bytes overflow")?;
-        let records = selected
+        let _records = selected
             .len()
             .checked_mul(8)
             .and_then(|n| n.checked_add(refs_records))
             .and_then(|n| n.checked_add(captured_records))
             .context("active Task record combined count overflow")?;
         anyhow::ensure!(
-            bytes <= max_bytes && u64::try_from(records)? <= limits.record_limit,
+            bytes <= max_bytes,
             TaskReadError::ResourceExhausted("active Task record DTO material")
         );
         let owned = self.inner.input_evidence_budget.register_owned_bytes(

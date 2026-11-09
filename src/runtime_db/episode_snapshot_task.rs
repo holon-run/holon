@@ -106,10 +106,7 @@ pub(in crate::runtime_db::episode_snapshot) fn capture(
         inspected = inspected
             .checked_add(n.unwrap_or_default())
             .context("Task checkpoint bytes overflow")?;
-        ensure!(
-            inspected <= CONTINUITY_MAX_PAYLOAD_BYTES,
-            "Task checkpoint body budget exceeded"
-        );
+
         let Some((fact, digest, projection)) =
             super::super::task_snapshot::checkpoint_fact_on(connection, agent, &key)?
         else {
@@ -146,10 +143,7 @@ pub(in crate::runtime_db::episode_snapshot) fn capture(
                     inspected = inspected
                         .checked_add(bytes)
                         .context("fixed Task predicate bytes overflow")?;
-                    ensure!(
-                        inspected <= CONTINUITY_MAX_PAYLOAD_BYTES,
-                        "Task checkpoint predicate budget exceeded"
-                    );
+
                     match dependency {
                         TaskCheckpointDependency::Current(key) => vec![key],
                         TaskCheckpointDependency::Missing(key) => {
@@ -168,10 +162,7 @@ pub(in crate::runtime_db::episode_snapshot) fn capture(
         }
     }
     out.query_inventory = Some(queries::capture(connection, agent, tables)?);
-    ensure!(
-        serde_json::to_vec(&out)?.len() <= CONTINUITY_MAX_PAYLOAD_BYTES,
-        "Task checkpoint metadata budget exceeded"
-    );
+
     Ok(out)
 }
 fn insert(keys: &mut BTreeSet<TaskKey>, key: TaskKey, bytes: &mut usize) -> Result<bool> {
@@ -181,24 +172,16 @@ fn insert(keys: &mut BTreeSet<TaskKey>, key: TaskKey, bytes: &mut usize) -> Resu
     let next = bytes
         .checked_add(key.id.len() + 128)
         .context("Task checkpoint metadata overflow")?;
-    ensure!(
-        keys.len() < CONTINUITY_MAX_RECORDS && next <= CONTINUITY_MAX_PAYLOAD_BYTES,
-        "Task checkpoint metadata budget exceeded"
-    );
+
     *bytes = next;
     Ok(keys.insert(key))
 }
 fn ids(connection: &Connection, sql: &str, agent: &str) -> Result<Vec<String>> {
     let mut q = connection.prepare(sql)?;
     let mut out = Vec::new();
-    let mut bytes = 0usize;
     for row in q.query_map([agent], |r| r.get::<_, String>(0))? {
         let id = row?;
-        bytes += id.len() + 128;
-        ensure!(
-            out.len() < CONTINUITY_MAX_RECORDS && bytes <= CONTINUITY_MAX_PAYLOAD_BYTES,
-            "Task checkpoint ID budget exceeded"
-        );
+
         out.push(id)
     }
     Ok(out)
@@ -218,11 +201,8 @@ pub(in crate::runtime_db) fn load(
     } else {
         "SELECT length(CAST(roots_json AS BLOB)) FROM episode_continuity_seeds WHERE seed_id=?1"
     };
-    let size: usize = connection.query_row(size_sql, [seed], |r| r.get(0))?;
-    ensure!(
-        size <= CONTINUITY_MAX_PAYLOAD_BYTES,
-        "fixed Task root material budget exceeded"
-    );
+    let _size: usize = connection.query_row(size_sql, [seed], |r| r.get(0))?;
+
     let roots: EpisodeContinuityRoots =
         serde_json::from_str(&connection.query_row(sql, [seed], |r| r.get::<_, String>(0))?)?;
     let out = roots

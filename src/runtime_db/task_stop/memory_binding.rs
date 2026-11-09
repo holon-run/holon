@@ -10,19 +10,8 @@ fn charge_identity_or_state(
     let bytes = u64::try_from(bytes)?
         .checked_mul(8)
         .context("TaskStop Memory material overflow")?;
-    let limits = ledger.limits();
-    ensure!(
-        bytes
-            <= limits
-                .history_per_agent_bytes
-                .checked_add(limits.pending_per_agent_bytes)
-                .context("TaskStop Memory limits overflow")?
-                .min(MAX_BYTES as u64)
-            && limits.record_limit >= 8,
-        super::super::task_snapshot::TaskSnapshotError::ResourceExhausted(
-            "TaskStop Memory identity/State"
-        )
-    );
+    let _limits = ledger.limits();
+
     Ok(ledger.register_owned_bytes(
         scope,
         InputMemoryCategory::Candidate,

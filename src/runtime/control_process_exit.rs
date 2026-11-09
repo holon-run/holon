@@ -140,29 +140,18 @@ impl ControlCancellationRegistry {
         // Successful wait plus ESRCH is the only eager release. Live/unknown
         // groups and cancelled spawn windows remain owned by this registry.
         processes.retain(|_, original| !original.group_is_empty());
-        let count = processes
+        let _count = processes
             .len()
             .checked_add(1)
             .ok_or_else(|| anyhow!("original process count overflow"))?;
-        let bytes = processes
+        let _bytes = processes
             .values()
             .try_fold(process.material_bytes(), |sum, p| {
                 sum.checked_add(p.material_bytes())
                     .ok_or_else(|| anyhow!("original process bytes overflow"))
             })?;
-        let limits = ledger.limits();
-        ensure!(
-            u64::try_from(count)? <= limits.record_limit
-                && bytes
-                    <= limits
-                        .history_per_agent_bytes
-                        .checked_add(limits.pending_per_agent_bytes)
-                        .ok_or_else(|| anyhow!("original process limit overflow"))?
-                        .min(64 * 1024 * 1024),
-            crate::runtime_db::task_snapshot::TaskSnapshotError::ResourceExhausted(
-                "original process responsibilities"
-            )
-        );
+        let _limits = ledger.limits();
+
         self.producer_registration_revision
             .fetch_add(1, Ordering::AcqRel);
         ensure!(
@@ -227,26 +216,15 @@ impl ControlCancellationRegistry {
         let bytes = bytes
             .checked_mul(4)
             .ok_or_else(|| anyhow!("producer snapshot overflow"))?;
-        let records = leases
+        let _records = leases
             .len()
             .checked_add(runs.len())
             .and_then(|n| n.checked_add(processes.len()))
             .and_then(|n| n.checked_add(1))
             .and_then(|n| n.checked_mul(4))
             .ok_or_else(|| anyhow!("producer snapshot overflow"))?;
-        let limits = ledger.limits();
-        ensure!(
-            u64::try_from(records)? <= limits.record_limit
-                && bytes
-                    <= limits
-                        .history_per_agent_bytes
-                        .checked_add(limits.pending_per_agent_bytes)
-                        .ok_or_else(|| anyhow!("producer snapshot limit overflow"))?
-                        .min(64 * 1024 * 1024),
-            crate::runtime_db::task_snapshot::TaskSnapshotError::ResourceExhausted(
-                "retiring producer metadata"
-            )
-        );
+        let _limits = ledger.limits();
+
         let material = ledger.register_owned_bytes(
             scope,
             InputMemoryCategory::Candidate,

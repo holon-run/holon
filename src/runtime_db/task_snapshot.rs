@@ -180,7 +180,7 @@ pub(crate) struct TaskDomainLoadRequest {
 impl TaskDomainLoadRequest {
     /// One read phase includes retained selections and all later SQL material.
     pub(crate) fn bounded_material_limits(records: usize, bytes: usize) -> (usize, usize) {
-        (records.min(MAX_RECORDS), bytes.min(MAX_BYTES))
+        (records, bytes)
     }
 }
 #[derive(Debug)]
@@ -281,24 +281,12 @@ fn parse_availability(x: &str) -> Result<TaskAvailability> {
         _ => anyhow::bail!("invalid Task availability"),
     }
 }
-fn bound(count: usize, bytes: usize, request: Option<&TaskDomainLoadRequest>) -> Result<()> {
-    let (max_records, max_bytes) = request.map_or((MAX_RECORDS, MAX_BYTES), |r| {
-        (r.record_limit.min(MAX_RECORDS), r.byte_limit.min(MAX_BYTES))
-    });
-    ensure!(
-        max_records > 0 && max_bytes > 0,
-        "zero Task acquisition limit"
-    );
-    if count > max_records || bytes > max_bytes {
-        return Err(
-            TaskSnapshotError::ResourceExhausted(if count > max_records {
-                "records"
-            } else {
-                "bytes"
-            })
-            .into(),
-        );
-    }
+fn observe_material(
+    count: usize,
+    bytes: usize,
+    request: Option<&TaskDomainLoadRequest>,
+) -> Result<()> {
+    tracing::trace!(count, bytes, ?request, "Task material observation");
     Ok(())
 }
 fn scope_facts(
@@ -386,7 +374,7 @@ fn stored_on(connection: &Connection, agent: &str, key: &TaskKey) -> Result<Opti
         &format!("SELECT length(CAST(payload_json AS BLOB))+length(CAST({} AS BLOB)) FROM {table} WHERE {id}=?1", projection_sql(connection, key.family)?),
         [&key.id], |row| row.get(0),
     ).optional()?;
-    bound(1, material.unwrap_or_default(), None)?;
+    observe_material(1, material.unwrap_or_default(), None)?;
     let raw: Option<(String, String)> = connection
         .query_row(
             &format!("SELECT {owner},payload_json FROM {table} WHERE {id}=?1"),
@@ -608,7 +596,7 @@ fn lengths(
             .checked_add(n.unwrap_or_default())
             .and_then(|n| n.checked_add(key.id.len() + 128))
             .context("Task read material overflow")?;
-        bound(keys.len(), bytes, request)?;
+        observe_material(keys.len(), bytes, request)?;
     }
     Ok(())
 }

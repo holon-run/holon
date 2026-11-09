@@ -17,9 +17,12 @@ claim: the existing seed JSON still contains every candidate digest.
 Remove cumulative body/count rejection from the Episode/Work upgrade closure
 and its Wait relation inventory; do not replace it with a larger threshold.
 Retain reference deduplication and depth validation, fixed transaction cutover,
-rollback, and the separate bounds on ordinary current reads. No schema or
-historical payload rewrite is required. Task/current-read domains retain their
-separate contracts.
+and rollback. The same availability rule applies to ordinary current reads,
+Task/Input/Scheduling capture, resident views, and writer preparation: cumulative
+bytes, records and decoded nodes are observations, not admission quotas. Complete
+closure queries must not truncate at a former quota. Explicitly requested
+page/window sizes remain selection semantics. No historical payload rewrite is
+required.
 
 The fixed Task Message inventory also accepts an exact RFC3339 timestamp from
 older SQL rows when it denotes the same instant as the Message body. The existing

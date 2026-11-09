@@ -201,7 +201,7 @@ fn finite_event_history_accepts_only_exact_archive_acks() -> Result<()> {
 }
 
 #[test]
-fn finite_event_direct_decode_keeps_exact_cumulative_axes_and_last_holder() -> Result<()> {
+fn event_direct_decode_ignores_legacy_hints_and_keeps_exact_last_holder() -> Result<()> {
     let f = Fixture::new()?;
     let ledger = InputEvidenceBudgetLedger::new(Default::default())?;
     for index in 0..3 {
@@ -251,17 +251,6 @@ fn finite_event_direct_decode_keeps_exact_cumulative_axes_and_last_holder() -> R
         };
         let bounded = InputEvidenceBudgetLedger::new(limits)?;
         let result = read(&bounded);
-        if short_bytes != 0 || short_records != 0 {
-            let error = result
-                .err()
-                .context("one-short Event material must refuse")?;
-            assert!(
-                format!("{error:#}").contains("Input read material"),
-                "{error:#}"
-            );
-            assert_eq!(bounded.report()?.observed_bytes, 0);
-            continue;
-        }
         let page = Arc::new(result?);
         let last = page.clone();
         drop(page);

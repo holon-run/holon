@@ -29,10 +29,7 @@ impl ResidentInputEvidence {
             .history_per_agent_bytes
             .checked_add(limits.pending_per_agent_bytes)
             .ok_or_else(|| anyhow::anyhow!("Output recall byte limit overflow"))?;
-        ensure!(
-            u64::try_from(count)? <= limits.record_limit && metadata <= byte_limit,
-            "Output recall metadata exceeds the actual owner request"
-        );
+
         let _original_copy = budget.register_owned_bytes(
             &selected.scope,
             InputMemoryCategory::Candidate,

@@ -16,7 +16,7 @@ pub(crate) fn qualified_task_recovery_selectors_tx(
         scope_facts(tx, scope, true)?.is_some(),
         TaskSnapshotError::RetiredScope
     );
-    bound(
+    observe_material(
         keys.len(),
         keys.iter().map(|key| key.id.len() + 128).sum(),
         None,
@@ -115,7 +115,7 @@ impl<'a> TaskReadMaterial<'a> {
             self.budget.is_some(),
             "original phase requires an actual owner ledger"
         );
-        bound(admitted.records, admitted.bytes, Some(self.request))?;
+        observe_material(admitted.records, admitted.bytes, Some(self.request))?;
         self.bytes = admitted.bytes;
         self.records = admitted.records;
         Ok(self)
@@ -144,7 +144,7 @@ impl<'a> TaskReadMaterial<'a> {
             .records
             .checked_add(records)
             .context("Task read record total overflow")?;
-        bound(self.records, self.bytes, Some(self.request))?;
+        observe_material(self.records, self.bytes, Some(self.request))?;
         if let Some(memory) = &mut self.memory_budget {
             memory.preflight_observed_task_material(self.scope, budget, bytes, records)?;
         }
@@ -231,7 +231,7 @@ impl<'a> TaskReadMaterial<'a> {
                 && !original.agent_id.is_empty(),
             "Task metadata material differs from original scope/request/ledger"
         );
-        bound(self.records, self.bytes, Some(request))
+        observe_material(self.records, self.bytes, Some(request))
     }
     pub(in crate::runtime_db) fn charge_record(
         &mut self,

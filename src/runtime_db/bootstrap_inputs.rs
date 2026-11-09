@@ -119,11 +119,8 @@ pub(crate) fn prepare_pending_queue_read_tx<'tx, 'conn>(
          WHERE q.agent_id=?1 AND q.status IN ('queued','interrupted')",
         [&scope.agent_id], |r| Ok((r.get(0)?,r.get(1)?,r.get(2)?)))?;
     let count = u64::try_from(count)?;
-    ensure!(
-        count <= budget.limits().record_limit,
-        "bootstrap pending queue exceeds input record limit"
-    );
-    // Full envelope/queue encoded bytes conservatively gate materialization;
+
+    // Observe envelope/queue bytes without a cumulative admission quota;
     // only exact typed MessageBody bytes below become logical Accepted charges.
     budget.preflight_actual_pending(scope, count, u64::try_from(payload_bytes)?)?;
     ensure!(
@@ -246,7 +243,7 @@ mod tests {
     use super::*;
     use crate::{
         config::StateMemoryLimits,
-        runtime::input_evidence_budget::{BudgetResource, InputEvidenceBudgetError},
+        runtime::input_evidence_budget::InputEvidenceBudgetError,
         runtime_db::evidence::{
             append_message_tx, upsert_agent_identity_tx, upsert_agent_state_tx,
         },
@@ -414,7 +411,7 @@ mod tests {
     }
 
     #[test]
-    fn metadata_budget_rejects_before_pending_payload_decode_or_normalization() -> Result<()> {
+    fn metadata_observes_backlog_without_quota_and_corrupt_payload_stays_rejected() -> Result<()> {
         let (_dir, db, scope, message) = fixture()?;
         db.transaction(|tx| {
             tx.execute_batch("DROP INDEX idx_messages_agent_trusted_operator;")?;
@@ -428,10 +425,8 @@ mod tests {
             pending_per_agent_bytes: 1,
             ..Default::default()
         })?;
+        assert_eq!(db.bootstrap_pending_metadata(&scope, &budget)?.count, 1);
         for error in [
-            db.bootstrap_pending_metadata(&scope, &budget)
-                .err()
-                .unwrap(),
             db.transaction(|tx| pending_queue_inputs_and_charges_tx(tx, &scope, &budget))
                 .err()
                 .unwrap(),
@@ -441,13 +436,7 @@ mod tests {
                 .unwrap(),
         ] {
             assert!(
-                matches!(
-                    error.downcast_ref::<InputEvidenceBudgetError>(),
-                    Some(InputEvidenceBudgetError::ResourceExhausted {
-                        resource: BudgetResource::PendingAgentBytes,
-                        ..
-                    })
-                ),
+                error.downcast_ref::<InputEvidenceBudgetError>().is_none(),
                 "{error:#}"
             );
         }

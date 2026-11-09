@@ -507,11 +507,8 @@ pub(super) fn prepare_tx<'tx, 'conn>(
         let bytes = usize::try_from(serialized_bytes(timer)?)?
             .checked_mul(8)
             .context("Timer intent material overflow")?;
-        let remaining = proof.remaining_request(request)?;
-        anyhow::ensure!(
-            bytes <= remaining.byte_limit && remaining.record_limit >= 8,
-            scheduling::SchedulingSnapshotError::ResourceExhausted("Timer intent material")
-        );
+        let _remaining = proof.remaining_request(request)?;
+
         if let Some(memory) = memory.as_deref_mut() {
             memory.additional_material(bytes, 8, 1)?;
         }
@@ -673,7 +670,7 @@ fn terminal_queue_timer_tx(
     tx: &Transaction<'_>,
     scope: &InputEvidenceScope,
     message: &str,
-    request: &scheduling::SchedulingDomainLoadRequest,
+    _request: &scheduling::SchedulingDomainLoadRequest,
     ledger: &InputEvidenceBudgetLedger,
     memory: Option<&mut crate::runtime_db::dispatch_memory::DispatchMemoryTransactionBudget>,
     guards: &mut Vec<Arc<BudgetViewGuard>>,
@@ -692,10 +689,7 @@ fn terminal_queue_timer_tx(
     let bytes = bytes
         .checked_mul(8)
         .context("terminal Timer selector overflow")?;
-    anyhow::ensure!(
-        bytes <= request.byte_limit.min(64 * 1024 * 1024) && request.record_limit >= 8,
-        scheduling::SchedulingSnapshotError::ResourceExhausted("terminal Timer selector")
-    );
+
     if let Some(memory) = memory {
         memory.additional_material(bytes, 8, 1)?;
     }
@@ -742,7 +736,7 @@ fn charge_queue(
     tx: &Transaction<'_>,
     scope: &InputEvidenceScope,
     id: &str,
-    request: &scheduling::SchedulingDomainLoadRequest,
+    _request: &scheduling::SchedulingDomainLoadRequest,
     ledger: &InputEvidenceBudgetLedger,
     memory: Option<&mut crate::runtime_db::dispatch_memory::DispatchMemoryTransactionBudget>,
     guards: &mut Vec<Arc<BudgetViewGuard>>,
@@ -751,10 +745,7 @@ fn charge_queue(
     let bytes = bytes
         .checked_mul(8)
         .context("Timer Queue material overflow")?;
-    anyhow::ensure!(
-        bytes <= request.byte_limit.min(64 * 1024 * 1024) && request.record_limit >= 8,
-        scheduling::SchedulingSnapshotError::ResourceExhausted("Timer queue material")
-    );
+
     if let Some(memory) = memory {
         memory.additional_material(bytes, 8, 1)?;
     }

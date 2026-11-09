@@ -15,7 +15,7 @@ pub(crate) fn prepare_cold_scheduling_query_tx(
     request: &SchedulingDomainLoadRequest,
     ledger: &InputEvidenceBudgetLedger,
 ) -> Result<ColdSchedulingQuery> {
-    bound(0, 0, request)?;
+    observe_material(0, 0, request)?;
     let mut material = Material::new(scope, request, ledger);
     let identity = loader::scope_identity(tx, scope, &mut material, false)?
         .ok_or(SchedulingSnapshotError::RetiredScope)?;
@@ -88,7 +88,7 @@ pub(crate) fn read_cold_scheduling_scope_tx(
     request: &SchedulingDomainLoadRequest,
     ledger: &InputEvidenceBudgetLedger,
 ) -> Result<(ContextScopeFacts, (usize, usize), Vec<Arc<BudgetViewGuard>>)> {
-    bound(0, 0, request)?;
+    observe_material(0, 0, request)?;
     let mut material = Material::new(scope, request, ledger);
     let facts = loader::scope_facts(tx, scope, &mut material, false)?
         .ok_or(SchedulingSnapshotError::RetiredScope)?;

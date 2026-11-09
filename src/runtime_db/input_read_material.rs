@@ -86,10 +86,7 @@ impl<'a> InputReadMaterial<'a> {
             self.usage.0.checked_add(usage.0).context(exhausted())?,
             self.usage.1.checked_add(usage.1).context(exhausted())?,
         );
-        ensure!(
-            next.0 <= self.limits.0 && next.1 <= self.limits.1,
-            exhausted()
-        );
+
         self.usage = next;
         Ok(())
     }
@@ -106,12 +103,7 @@ impl<'a> InputReadMaterial<'a> {
             self.usage.0.checked_add(bytes).context(exhausted())?,
             self.usage.1.checked_add(records).context(exhausted())?,
         );
-        if next.0 > self.limits.0 || next.1 > self.limits.1 {
-            return Err(anyhow::Error::new(exhausted()).context(format!(
-                "Input read material exceeds original allowance: used={:?}, requested=({bytes}, {records}), limits={:?}",
-                self.usage, self.limits,
-            )));
-        }
+
         let guard = self.ledger.register_owned_bytes(
             self.scope,
             InputMemoryCategory::Candidate,
@@ -165,7 +157,10 @@ impl<'a> InputReadMaterial<'a> {
     }
 
     pub(in crate::runtime_db) fn remaining_limits(&self) -> (usize, usize) {
-        (self.limits.0 - self.usage.0, self.limits.1 - self.usage.1)
+        (
+            self.limits.0.saturating_sub(self.usage.0),
+            self.limits.1.saturating_sub(self.usage.1),
+        )
     }
 
     pub(in crate::runtime_db) fn scope_guard(&self) -> Result<Arc<BudgetViewGuard>> {

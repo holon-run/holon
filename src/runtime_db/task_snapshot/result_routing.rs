@@ -65,7 +65,7 @@ pub(crate) fn prepare_task_result_parent_read_tx(
     message: &MessageEnvelope,
     candidate: &crate::types::TaskRecord,
     source_proof: Option<&AcceptedTaskResultSource<'_>>,
-    selected_material: (usize, usize),
+    _selected_material: (usize, usize),
     request: &TaskDomainLoadRequest,
     ledger: &InputEvidenceBudgetLedger,
 ) -> Result<TaskResultParentRead> {
@@ -85,18 +85,8 @@ pub(crate) fn prepare_task_result_parent_read_tx(
             recovery_source_ids: BTreeSet::new(),
             required_keys: BTreeSet::new(),
         },
-        record_limit: record_limit
-            .checked_sub(selected_material.1)
-            .filter(|n| *n > 0)
-            .ok_or(TaskSnapshotError::ResourceExhausted(
-                "TaskResult selected record overlap",
-            ))?,
-        byte_limit: byte_limit
-            .checked_sub(selected_material.0)
-            .filter(|n| *n > 0)
-            .ok_or(TaskSnapshotError::ResourceExhausted(
-                "TaskResult selected byte overlap",
-            ))?,
+        record_limit: record_limit,
+        byte_limit: byte_limit,
     };
     let key = TaskKey::new(TaskFamily::Task, &candidate.id);
     let mut read = super::qualified_input_read::prepare_task_input_read_base_tx(

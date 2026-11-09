@@ -73,24 +73,8 @@ impl TaskStopWorktreeProducerExit {
         )
         .and_then(|n| n.checked_mul(4))
         .context("worktree exit metadata overflow")?;
-        let limits = ledger.limits();
-        anyhow::ensure!(
-            complete
-                .instances
-                .len()
-                .checked_add(1)
-                .and_then(|n| n.checked_mul(4))
-                .is_some_and(|n| u64::try_from(n).is_ok_and(|n| n <= limits.record_limit))
-                && bytes
-                    <= limits
-                        .history_per_agent_bytes
-                        .checked_add(limits.pending_per_agent_bytes)
-                        .context("worktree exit limit overflow")?
-                        .min(64 * 1024 * 1024),
-            crate::runtime_db::task_snapshot::TaskSnapshotError::ResourceExhausted(
-                "worktree producer exit metadata"
-            )
-        );
+        let _limits = ledger.limits();
+
         let material = ledger.register_owned_bytes(
             &record.intent.task.scope,
             InputMemoryCategory::Candidate,
@@ -198,24 +182,13 @@ impl HostRuntimeRegistry {
         let count = u64::try_from(count)?;
         // Bound only retained instance metadata/address entries, not their native
         // allocations or RSS. Original Runtime retention remains a D7 audit item.
-        let bytes = serialized_bytes(&(agent_id, incarnation))?
+        let _bytes = serialized_bytes(&(agent_id, incarnation))?
             .checked_add(1024)
             .and_then(|n| n.checked_mul(count))
             .and_then(|n| n.checked_mul(4))
             .context("retiring instance metadata overflow")?;
-        let limits = ledger.limits();
-        anyhow::ensure!(
-            count <= limits.record_limit
-                && bytes
-                    <= limits
-                        .history_per_agent_bytes
-                        .checked_add(limits.pending_per_agent_bytes)
-                        .context("retiring instance byte limit overflow")?
-                        .min(64 * 1024 * 1024),
-            crate::runtime_db::task_snapshot::TaskSnapshotError::ResourceExhausted(
-                "retiring original process instances"
-            )
-        );
+        let _limits = ledger.limits();
+
         Ok(())
     }
     // Every release path must preserve an instance whose original registered
@@ -281,21 +254,8 @@ impl RuntimeHost {
                     .and_then(|n| n.checked_mul(u64::try_from(count).ok()?.checked_add(1)?))
                     .and_then(|n| n.checked_mul(4))
                     .context("TaskStop fleet metadata overflow")?;
-                let limits = self.inner.input_evidence_budget.limits();
-                anyhow::ensure!(
-                    u64::try_from(count)?
-                        .checked_mul(4)
-                        .is_some_and(|n| n <= limits.record_limit)
-                        && bytes
-                            <= limits
-                                .history_per_agent_bytes
-                                .checked_add(limits.pending_per_agent_bytes)
-                                .context("TaskStop fleet budget overflow")?
-                                .min(64 * 1024 * 1024),
-                    crate::runtime_db::task_snapshot::TaskSnapshotError::ResourceExhausted(
-                        "TaskStop original fleet"
-                    )
-                );
+                let _limits = self.inner.input_evidence_budget.limits();
+
                 let material = self.inner.input_evidence_budget.register_owned_bytes(
                     scope,
                     InputMemoryCategory::Candidate,

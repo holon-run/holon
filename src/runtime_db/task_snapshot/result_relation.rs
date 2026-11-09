@@ -77,7 +77,7 @@ pub(in crate::runtime_db) fn prepare_pending_task_result_dependency_using_materi
     let Some((key_bytes, bytes)) = row else {
         return Ok(None);
     };
-    bound(
+    observe_material(
         1,
         bytes
             .checked_add(key_bytes)
@@ -184,7 +184,7 @@ pub(super) fn observe_task_predicate_tx(
         .unwrap_or_default()
         .checked_add(key.id.len() + 256)
         .context("Task predicate bytes overflow")?;
-    bound(1, metadata_bytes, Some(request))?;
+    observe_material(1, metadata_bytes, Some(request))?;
     material.charge_relation(metadata_bytes)?;
     let raw: Option<String> = tx
         .query_row(
@@ -262,7 +262,7 @@ pub(super) fn observe_task_predicate_tx(
         || fixed.is_some()
     {
         let n = checkpoint_material_size_on(tx, &key)?.context("qualified Task disappeared")?;
-        bound(
+        observe_material(
             1,
             metadata_bytes
                 .checked_add(n)
@@ -414,7 +414,7 @@ pub(in crate::runtime_db) fn checkpoint_result_dependency_on(
         .unwrap_or_default()
         .checked_add(result.task_id.len() + 256)
         .context("fixed Task predicate size overflow")?;
-    bound(1, bytes, None)?;
+    observe_material(1, bytes, None)?;
     let raw: Option<String> = connection
         .query_row(
             &format!("SELECT {TASK_PREDICATE_SQL} FROM tasks WHERE task_id=?1"),

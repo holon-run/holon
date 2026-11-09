@@ -7,10 +7,8 @@ use crate::runtime::{
     resident_input_evidence::InputEvidenceScope,
     resident_scheduling::{SchedulingCaptureRequest, SchedulingKey},
 };
-use crate::runtime_db::scheduling_snapshot::{
-    SchedulingDomainLoadRequest, SchedulingSnapshotError,
-};
-use anyhow::{ensure, Context, Result};
+use crate::runtime_db::scheduling_snapshot::SchedulingDomainLoadRequest;
+use anyhow::{Context, Result};
 use std::sync::Arc;
 
 pub(super) struct PreparedSchedulingRequest {
@@ -48,10 +46,7 @@ impl PreparedSchedulingRequest {
                 .len()
                 .checked_mul(8)
                 .context("Scheduling preparation selector records overflow")?;
-            ensure!(
-                bytes < byte_limit && records < record_limit,
-                SchedulingSnapshotError::ResourceExhausted("Input-owned Scheduling selector")
-            );
+
             crate::diagnostics::resource_io::admit_cloned_value(&capture.required_keys)?;
             let context_material =
                 crate::diagnostics::resource_io::ResourceReadMaterial::active_guard()?;

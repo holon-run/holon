@@ -85,7 +85,7 @@ fn reserve(
         .records
         .checked_add(records)
         .context("startup Task metadata count overflow")?;
-    bound(
+    observe_material(
         scope.records,
         scope.bytes,
         Some(&TaskDomainLoadRequest {
@@ -210,7 +210,7 @@ pub(crate) fn prepare_exclusive_startup_task_metadata_tx<'tx, 'connection, 'capa
         // The old coverage is never read into Rust. Enforce its original hard
         // structural ceiling, without reserving copies that do not exist.
         if let Some(bytes) = coverage_bytes {
-            bound(1, bytes, None)?;
+            observe_material(1, bytes, None)?;
         }
         let mut observed = ScopeMetadata {
             scope,

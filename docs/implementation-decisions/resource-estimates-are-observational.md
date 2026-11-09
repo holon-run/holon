@@ -17,7 +17,17 @@ remain fault-injection tools; they cannot be configured or constructed by the
 running product. Regressions must use the normal constructor to prove that
 exceeding the former byte/node thresholds still preserves full valid results.
 
-This change does not relax actual query cardinality or body/input limits,
-pending admission, history residency policy, source qualification, canonical
-hashes, execution ownership, source generations, or publication fences. No SQL
-repair, migration, configuration change or wire change is needed.
+The follow-up continuity upgrade repair also removes independent cumulative
+read/materialization quotas and pending/history admission quotas, including
+ordinary requests. Legacy state-memory sizing fields and internal request hints
+remain readable for compatibility and diagnostic observations; they do not
+reject valid reads, pending tickets, startup, or writes. Complete dependency
+queries do not silently truncate at these former quotas. Explicitly requested
+pagination/window cardinality remains a selector, and streaming migration page
+sizes remain traversal choices. A single valid event larger than a page target
+must still advance the cursor.
+
+Preserve source qualification, canonical hashes, execution ownership, source
+generations, structural recursion checks, publication fences, accounting
+ownership and arithmetic overflow checks. No larger threshold or opt-out flag
+replaces the removed quotas.

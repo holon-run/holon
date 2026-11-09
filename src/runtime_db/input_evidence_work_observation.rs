@@ -71,10 +71,6 @@ fn message_work_ids(
             );
             ids.insert(work);
         }
-        ensure!(
-            ids.len() <= MAX_RECORDS,
-            "execution Work metadata count exceeded"
-        );
     }
     Ok(())
 }
@@ -131,18 +127,11 @@ pub(super) fn capture_seed_tx(
             positive.insert(Key::new(Family::WorkExecution, &id));
         }
         bytes = bytes.saturating_add(id.len() + 128);
-        ensure!(
-            bytes <= MAX_METADATA_BYTES,
-            "execution Work metadata bytes exceeded"
-        );
+
         manifest.push((id, encode(presence)));
     }
     let (stored_count, stored_bytes): (i64, i64) = tx.query_row("SELECT COUNT(*),COALESCE(SUM(length(CAST(work_item_id AS BLOB))+128),0) FROM input_evidence_execution_seed_work WHERE seed_id=?1", [seed], |r| Ok((r.get(0)?,r.get(1)?)))?;
-    ensure!(
-        usize::try_from(stored_count)? <= MAX_RECORDS
-            && usize::try_from(stored_bytes)? <= MAX_METADATA_BYTES,
-        "fixed execution Work metadata budget exceeded"
-    );
+
     Ok((
         positive,
         bytes_digest(&serde_json::to_vec(&manifest)?),

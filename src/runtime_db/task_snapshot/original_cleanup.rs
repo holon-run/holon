@@ -139,7 +139,7 @@ pub(crate) fn original_task_result_cleanup_material_tx(
         .records
         .checked_add(16)
         .context("Task cleanup record overflow")?;
-    bound(material.records, material.bytes, None)?;
+    observe_material(material.records, material.bytes, None)?;
     Ok(material)
 }
 

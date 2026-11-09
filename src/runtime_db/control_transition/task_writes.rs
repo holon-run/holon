@@ -27,6 +27,11 @@ impl Material<'_> {
         let records = records
             .checked_mul(copies)
             .context("Control Task count overflow")?;
+        tracing::trace!(
+            record_hint = self.request.record_limit,
+            byte_hint = self.request.byte_limit,
+            "Control Task material observation"
+        );
         self.bytes = self
             .bytes
             .checked_add(bytes)
@@ -35,11 +40,7 @@ impl Material<'_> {
             .records
             .checked_add(records)
             .context("Control Task count overflow")?;
-        ensure!(
-            self.bytes <= self.request.byte_limit.min(64 * 1024 * 1024)
-                && self.records <= self.request.record_limit.min(65_536),
-            tasks::TaskSnapshotError::ResourceExhausted("Control Task material")
-        );
+
         self.guards.push(self.ledger.register_owned_bytes(
             self.scope,
             InputMemoryCategory::Candidate,

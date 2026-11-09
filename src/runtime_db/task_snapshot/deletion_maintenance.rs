@@ -45,7 +45,7 @@ fn charge(
         .min(MAX_BYTES),
         record_limit: usize::try_from(limits.record_limit)?.min(MAX_RECORDS),
     };
-    bound(material.records, material.bytes, Some(&request))?;
+    observe_material(material.records, material.bytes, Some(&request))?;
     Ok(ledger.register_owned_bytes(
         scope,
         InputMemoryCategory::Candidate,
@@ -135,10 +135,6 @@ impl RuntimeDb {
                 "SELECT COALESCE((SELECT length(CAST(payload_json AS BLOB))+length(CAST(agent_id AS BLOB))+length(CAST(status AS BLOB)) FROM agent_identities WHERE agent_id=?1),0)+COALESCE((SELECT length(CAST(payload_json AS BLOB)) FROM agent_states WHERE agent_id=?1),0)",
                 [agent_id], |row|row.get(0))?;
             let bytes=raw_bytes.checked_add(agent_id.len()+512).and_then(|n|n.checked_mul(8)).context("deletion Task scope material overflow")?;
-            let limits=ledger.limits();
-            let byte_limit=usize::try_from(limits.history_per_agent_bytes.checked_add(limits.pending_per_agent_bytes).context("deletion Task scope limits overflow")?)?.min(MAX_BYTES);
-            ensure!(bytes<=byte_limit && 16<=limits.record_limit, TaskSnapshotError::ResourceExhausted("deletion Task scope header"));
-            // Bound first: even malformed JSON must not beat the resource error.
             // Only a scalar is returned; no identity/State body is decoded here.
             let incarnation: Option<u64>=tx.query_row(
                 "SELECT CASE WHEN json_valid(payload_json) THEN CASE WHEN json_extract(payload_json,'$.agent_id')=agent_id AND json_extract(payload_json,'$.status')=status THEN CASE WHEN json_type(payload_json,'$.incarnation') IS NULL THEN 1 WHEN json_type(payload_json,'$.incarnation')='integer' AND json_extract(payload_json,'$.incarnation')>0 THEN json_extract(payload_json,'$.incarnation') END END END FROM agent_identities WHERE agent_id=?1", [agent_id], |row|row.get(0))?;

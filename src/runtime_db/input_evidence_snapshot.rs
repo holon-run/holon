@@ -457,10 +457,7 @@ pub(in crate::runtime_db) fn validate_fixed_upgrade_message_tx(
         .next()?
         .context("Current upgrade mandatory Message is absent")?;
     let frozen = row.get_ref(0)?.as_str()?;
-    ensure!(
-        frozen.len() <= MAX_METADATA_BYTES,
-        "Current upgrade fingerprint exceeds limit"
-    );
+
     let frozen: Fingerprint = serde_json::from_str(frozen)?;
     let key = Key::new(Family::Message, id);
     let current = fingerprint_on(tx, &scope.agent_id, &key)?
@@ -518,9 +515,7 @@ pub(super) fn capture_input_evidence_seed_tx(
             |r| Ok((r.get(0)?, r.get(1)?)),
         )?
     };
-    if roots_json.len() > MAX_METADATA_BYTES {
-        return Err(InputEvidenceSnapshotError::ResourceExhausted("root metadata bytes").into());
-    }
+
     let roots: serde_json::Value = serde_json::from_str(&roots_json)?;
     // Released partial schemas can legitimately lack a historical table. Freeze
     // that checkpoint's absence; normal preparation and later actors stay strict.
@@ -649,7 +644,6 @@ pub(super) fn capture_input_evidence_seed_tx(
     let selected_count = selected.len();
     let mut bytes = 0usize;
     let mut manifest = Vec::new();
-    let mut fixed_body_bytes = 0usize;
     for key in selected {
         if captured_tables
             .as_ref()
@@ -661,13 +655,6 @@ pub(super) fn capture_input_evidence_seed_tx(
             continue;
         };
         let fixed_payload = if requires_frozen_body_digest(&key, &fingerprint) {
-            if fingerprint.payload_bytes > MAX_METADATA_BYTES.saturating_sub(fixed_body_bytes) {
-                return Err(InputEvidenceSnapshotError::ResourceExhausted(
-                    "fixed input digest body bytes",
-                )
-                .into());
-            }
-            fixed_body_bytes += fingerprint.payload_bytes;
             let payload = payload_on(tx, &agent_id, &key)?.context("fixed input disappeared")?;
             fingerprint.frozen_payload_digest = Some(bytes_digest(payload.as_bytes()));
             Some(payload)
@@ -689,12 +676,7 @@ pub(super) fn capture_input_evidence_seed_tx(
         bytes = bytes
             .saturating_add(json.len())
             .saturating_add(attempt_proof_json.as_ref().map_or(0, String::len));
-        if bytes > MAX_METADATA_BYTES {
-            return Err(InputEvidenceSnapshotError::ResourceExhausted(
-                "eligibility metadata bytes",
-            )
-            .into());
-        }
+
         tx.execute("INSERT INTO input_evidence_eligibility(seed_id,capture_phase,family,record_id,fingerprint_json,mandatory) VALUES(?1,?2,?3,?4,?5,?6) ON CONFLICT DO NOTHING",params![seed_id,phase,key.family.as_str(),key.id,json,mandatory.contains(&key)])?;
         let actual:String=tx.query_row("SELECT fingerprint_json FROM input_evidence_eligibility WHERE seed_id=?1 AND capture_phase=?2 AND family=?3 AND record_id=?4",params![seed_id,phase,key.family.as_str(),key.id],|r|r.get(0))?;
         ensure!(
@@ -768,15 +750,7 @@ impl ExistingAdmissionInputProof {
             derived.is_empty() || !roots.is_empty(),
             "cleanup derives evidence without an admitted root"
         );
-        ensure!(
-            roots.len().saturating_add(derived.len()) <= MAX_RECORDS
-                && roots
-                    .iter()
-                    .chain(&derived)
-                    .try_fold(0usize, |bytes, key| bytes.checked_add(key.id.len()))
-                    .is_some_and(|bytes| bytes <= MAX_METADATA_BYTES),
-            "cleanup footprint exceeds fixed input preparation bounds"
-        );
+
         for key in &roots {
             ensure!(
                 fingerprint_on(tx, &scope.agent_id, key)?.is_some(),
@@ -808,11 +782,8 @@ impl ExistingAdmissionInputProof {
             !roots.is_empty() || !derived.is_empty(),
             "cleanup has no existing admission"
         );
-        ensure!(
-            roots.len().saturating_add(derived.len()) <= MAX_RECORDS,
-            "Work cleanup footprint exceeds record bound"
-        );
-        let metadata_bytes = roots
+
+        let _metadata_bytes = roots
             .iter()
             .map(|key| key.id.len())
             .chain(
@@ -822,10 +793,7 @@ impl ExistingAdmissionInputProof {
             )
             .try_fold(0usize, usize::checked_add)
             .context("Work cleanup footprint size overflow")?;
-        ensure!(
-            metadata_bytes <= MAX_METADATA_BYTES,
-            "Work cleanup footprint exceeds byte bound"
-        );
+
         let scope = work.scope();
         let admitted = work.admitted_work_ids();
         let mut proof = Self::prepare_tx(tx, scope, roots, BTreeSet::new())?;
@@ -889,14 +857,7 @@ impl ExistingAdmissionInputProof {
         validate_existing_input_evidence_inner_tx(tx, &self.scope, &key)?;
         let mut allowed = self.allowed.clone();
         allowed.insert(key.clone());
-        ensure!(
-            allowed.len() <= MAX_RECORDS
-                && allowed
-                    .iter()
-                    .try_fold(0usize, |bytes, key| bytes.checked_add(key.id.len()))
-                    .is_some_and(|bytes| bytes <= MAX_METADATA_BYTES),
-            "cleanup recovery outcome exceeds fixed preparation bounds"
-        );
+
         self.allowed = allowed;
         self.derived.insert(key);
         Ok(())
@@ -1306,11 +1267,9 @@ fn affected_projection_keys_for_agent_tx(
         } else {
             continue;
         };
-        let mut statement=tx.prepare(&format!("SELECT attempt_id FROM execution_protocol_attempts WHERE agent_id=?1 AND json_extract(payload_json,'{path}')=?2 ORDER BY attempt_id LIMIT ?3"))?;
+        let mut statement=tx.prepare(&format!("SELECT attempt_id FROM execution_protocol_attempts WHERE agent_id=?1 AND json_extract(payload_json,'{path}')=?2 ORDER BY attempt_id"))?;
         let attempts = statement
-            .query_map(params![agent_id, key.id, MAX_RECORDS as i64 + 1], |r| {
-                r.get::<_, String>(0)
-            })?
+            .query_map(params![agent_id, key.id], |r| r.get::<_, String>(0))?
             .collect::<rusqlite::Result<Vec<_>>>()?;
         for id in attempts {
             extend_metadata_selection(&mut keys, &mut bytes, [Key::new(Family::Attempt, id)])?;
@@ -1502,10 +1461,6 @@ fn prepare_input_records_tx(
     include_live_protocol: bool,
 ) -> Result<ResidentInputEvidence> {
     let binding = binding_on(tx, scope)?;
-    ensure!(
-        request.record_limit > 0 && request.byte_limit > 0,
-        "input evidence budget is empty"
-    );
     let query = request
         .query
         .as_ref()
@@ -1651,9 +1606,7 @@ fn prepare_input_records_tx(
         if !expanded_paths.insert((key.clone(), path.clone())) {
             continue;
         }
-        if expanded_paths.len() > request.record_limit.min(MAX_RECORDS).saturating_mul(3) {
-            return Err(InputEvidenceSnapshotError::ResourceExhausted("reference paths").into());
-        }
+
         if depth > MAX_DEPTH {
             return Err(InputEvidenceSnapshotError::ResourceExhausted("reference depth").into());
         }
@@ -1693,11 +1646,7 @@ fn prepare_input_records_tx(
         if unavailable.contains(&key) {
             continue;
         }
-        if depth > MAX_DEPTH
-            || records.len() + unavailable.len() >= request.record_limit.min(MAX_RECORDS)
-        {
-            return Err(InputEvidenceSnapshotError::ResourceExhausted("record count/depth").into());
-        }
+
         let Some(fingerprint) = fingerprint_on(tx, &scope.agent_id, &key)? else {
             if key.family == Family::WorkExecution && execution_coverage.work_items.get(&key.id)
                 .is_some_and(|x| x.presence == crate::runtime::resident_input_evidence::ExecutionWorkPresence::Absent) {
@@ -1730,28 +1679,6 @@ fn prepare_input_records_tx(
                 return Err(InputEvidenceSnapshotError::NeedsPreparation(key.id.clone()).into());
             }
             fixed_body_digests = require_eligible_metadata(tx, &binding, &key, &fingerprint)?;
-        }
-        if key.family != Family::ToolExecution
-            && fingerprint.payload_bytes > request.byte_limit.saturating_sub(bytes)
-        {
-            tracing::warn!(
-                agent_id = %scope.agent_id,
-                family = key.family.as_str(),
-                body_bytes = fingerprint.payload_bytes,
-                prepared_bytes = bytes,
-                byte_limit = request.byte_limit,
-                prepared_records = records.len(),
-                mandatory_roots = mandatory_roots.len(),
-                selected_keys = selected.len(),
-                turn_records = records.keys().filter(|key| key.family == Family::Turn).count(),
-                transcript_records = records.keys().filter(|key| key.family == Family::Transcript).count(),
-                tool_records = records.keys().filter(|key| key.family == Family::ToolExecution).count(),
-                depth,
-                "input evidence body exceeds preparation allowance"
-            );
-            return Err(
-                InputEvidenceSnapshotError::ResourceExhausted("prepared body bytes").into(),
-            );
         }
         // One materialization per selected body, reused for decode and digest.
         let payload = if key.family == Family::ToolExecution {
@@ -1843,20 +1770,9 @@ fn prepare_input_records_tx(
             attempt_turn_proof,
         )?);
         bytes = bytes.saturating_add(qualified.resident_bytes);
-        if bytes > request.byte_limit {
-            return Err(InputEvidenceSnapshotError::ResourceExhausted("resident bytes").into());
-        }
+
         if let Some(proof) = replay_source_absence_tx(tx, scope, &qualified)? {
             replay_source_absences.insert(key.id.clone(), proof);
-            if replay_source_absences.len() > request.record_limit.min(MAX_RECORDS)
-                || serde_json::to_vec(&replay_source_absences)?.len()
-                    > request.byte_limit.min(MAX_METADATA_BYTES)
-            {
-                return Err(InputEvidenceSnapshotError::ResourceExhausted(
-                    "replay source absence metadata",
-                )
-                .into());
-            }
         }
         let mut refs = replay_references(&qualified, &replay_source_absences)?;
         if let PreparedInputEvidence::Message(message) = &qualified.record {
@@ -2184,7 +2100,7 @@ fn recovery_source_children_tx(
     source: &str,
     terminal: crate::types::TurnTerminalKind,
     observations: &mut BTreeMap<String, RecoverySourceAbsence>,
-    (record_limit, byte_limit): (usize, usize),
+    (_record_limit, _byte_limit): (usize, usize),
 ) -> Result<(Vec<Key>, bool)> {
     let children = [
         Key::new(Family::Message, source),
@@ -2225,14 +2141,6 @@ fn recovery_source_children_tx(
                 absent: absent.clone(),
             },
         );
-        if observations.len() > record_limit.min(MAX_RECORDS)
-            || serde_json::to_vec(observations)?.len() > byte_limit.min(MAX_METADATA_BYTES)
-        {
-            return Err(InputEvidenceSnapshotError::ResourceExhausted(
-                "recovery source absence metadata",
-            )
-            .into());
-        }
     }
     Ok((
         children
@@ -2264,11 +2172,7 @@ fn qualified(
     let resident_bytes = serde_json::to_vec(&record)?
         .len()
         .saturating_add(serde_json::to_vec(&attempt_turn_keys)?.len());
-    if matches!(record, PreparedInputEvidence::ToolExecution(_)) && resident_bytes > 32 * 1024 {
-        return Err(
-            InputEvidenceSnapshotError::ResourceExhausted("bounded Tool projection bytes").into(),
-        );
-    }
+
     if let PreparedInputEvidence::Transcript(entry) = &record {
         ensure!(
             entry
@@ -2441,13 +2345,8 @@ fn bounded_body_payload(
     tx: &Transaction<'_>,
     agent: &str,
     key: &Key,
-    fingerprint: &Fingerprint,
+    _fingerprint: &Fingerprint,
 ) -> Result<String> {
-    if fingerprint.payload_bytes > MAX_METADATA_BYTES {
-        return Err(
-            InputEvidenceSnapshotError::ResourceExhausted("input validation body bytes").into(),
-        );
-    }
     payload_on(tx, agent, key)?.context("qualified input body missing")
 }
 fn validate_alias_body(
@@ -2772,15 +2671,6 @@ pub(in crate::runtime_db) fn fixed_task_query_message_on(
     agent: &str,
     id: &str,
 ) -> Result<(crate::types::MessageEnvelope, String, String)> {
-    let bytes: usize = connection.query_row(
-        "SELECT length(CAST(m.payload_json AS BLOB))+length(CAST(m.evidence_id AS BLOB))+length(CAST(m.agent_id AS BLOB))+COALESCE(length(CAST(m.message_id AS BLOB)),0)+length(CAST(m.created_at AS BLOB))+COALESCE(length(CAST(m.content_hash AS BLOB)),0)+COALESCE((SELECT length(CAST(a.turn_id AS BLOB)) FROM conversation_input_assignments a WHERE a.agent_id=m.agent_id AND a.message_id=m.evidence_id),0)+1024 FROM messages m WHERE m.agent_id=?1 AND m.evidence_id=?2",
-        params![agent,id], |row| row.get(0))?;
-    ensure!(
-        bytes
-            .checked_mul(8)
-            .is_some_and(|n| n <= MAX_METADATA_BYTES),
-        InputEvidenceSnapshotError::ResourceExhausted("fixed Task query Message material")
-    );
     let key = Key::new(Family::Message, id);
     let mut fingerprint =
         fingerprint_on(connection, agent, &key)?.context("fixed Task query Message missing")?;
@@ -2988,7 +2878,7 @@ fn qualified_turn_transcript_keys(
     scope: &InputEvidenceScope,
     binding: &Binding,
     turn_id: &str,
-    limit: usize,
+    _limit: usize,
 ) -> Result<BTreeSet<Key>> {
     let mut statement = tx.prepare(
         "SELECT record_id FROM input_evidence_current
@@ -3000,32 +2890,27 @@ fn qualified_turn_transcript_keys(
            AND json_extract(e.fingerprint_json,'$.related_turn_id')=?4
            AND NOT EXISTS(SELECT 1 FROM input_evidence_current c
              WHERE c.agent_id=?1 AND c.identity_incarnation=?2 AND c.family=e.family AND c.record_id=e.record_id)
-         ORDER BY record_id LIMIT ?5")?;
+         ORDER BY record_id")?;
     let rows = statement.query_map(
         params![
             scope.agent_id,
             i64::try_from(scope.identity_incarnation)?,
             binding.seed_id,
-            turn_id,
-            i64::try_from(limit.saturating_add(1))?
+            turn_id
         ],
         |r| r.get::<_, String>(0),
     )?;
     let keys = rows
         .map(|row| Ok(Key::new(Family::Transcript, row?)))
         .collect::<Result<BTreeSet<_>>>()?;
-    if keys.len() > limit {
-        return Err(
-            InputEvidenceSnapshotError::ResourceExhausted("Turn transcript closure").into(),
-        );
-    }
+
     Ok(keys)
 }
 fn qualified_live_protocol_keys(
     tx: &Transaction<'_>,
     scope: &InputEvidenceScope,
     binding: &Binding,
-    limit: usize,
+    _limit: usize,
 ) -> Result<Vec<Key>> {
     let mut result = Vec::new();
     for (family, filter) in [
@@ -3037,24 +2922,18 @@ fn qualified_live_protocol_keys(
         let (table, id) = table(family);
         let matching=format!("c.agent_id=r.agent_id AND c.identity_incarnation=?2 AND c.family='{}' AND c.record_id=r.{id}",family.as_str());
         let qualified=format!("(EXISTS(SELECT 1 FROM input_evidence_current c WHERE {matching} AND c.availability='present') OR (NOT EXISTS(SELECT 1 FROM input_evidence_current c WHERE {matching}) AND EXISTS(SELECT 1 FROM input_evidence_seed_membership e WHERE e.seed_id=?3 AND e.family='{}' AND e.record_id=r.{id})))",family.as_str());
-        let sql=format!("SELECT r.{id} FROM {table} r WHERE r.agent_id=?1 AND {filter} AND {qualified} ORDER BY r.{id} LIMIT ?4");
+        let sql=format!("SELECT r.{id} FROM {table} r WHERE r.agent_id=?1 AND {filter} AND {qualified} ORDER BY r.{id}");
         let mut statement = tx.prepare(&sql)?;
         let rows = statement.query_map(
             params![
                 scope.agent_id,
                 i64::try_from(scope.identity_incarnation)?,
-                binding.seed_id,
-                i64::try_from(limit.saturating_add(1))?
+                binding.seed_id
             ],
             |r| r.get::<_, String>(0),
         )?;
         for row in rows {
             result.push(Key::new(family, row?));
-            if result.len() > limit {
-                return Err(
-                    InputEvidenceSnapshotError::ResourceExhausted("live protocol count").into(),
-                );
-            }
         }
     }
     Ok(result)
@@ -3069,12 +2948,7 @@ fn extend_metadata_selection(
             let next_bytes = bytes
                 .saturating_add(key.id.len())
                 .saturating_add(key.family.as_str().len());
-            if selected.len() >= MAX_RECORDS || next_bytes > MAX_METADATA_BYTES {
-                return Err(InputEvidenceSnapshotError::ResourceExhausted(
-                    "eligibility selection count/bytes",
-                )
-                .into());
-            }
+
             selected.insert(key);
             *bytes = next_bytes;
         }
@@ -3160,12 +3034,7 @@ fn metadata_closure(
                 .flatten();
             if let Some(value) = value {
                 bytes = bytes.saturating_add(value.len());
-                if bytes > MAX_METADATA_BYTES {
-                    return Err(InputEvidenceSnapshotError::ResourceExhausted(
-                        "eligibility reference metadata bytes",
-                    )
-                    .into());
-                }
+
                 let ids: Vec<Option<String>> = serde_json::from_str(&value)?;
                 for id in ids.into_iter().flatten() {
                     enqueue_metadata_key(

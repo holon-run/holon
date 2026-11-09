@@ -154,13 +154,7 @@ impl crate::runtime_db::RuntimeDb {
                 let bytes = task_stop_phase_identity_material_tx(tx, scope)?
                     .checked_mul(8)
                     .context("Stop sparse identity material overflow")?;
-                ensure!(
-                    bytes <= request.byte_limit.min(MAX_BYTES)
-                        && 8 <= request.record_limit.min(MAX_RECORDS),
-                    super::super::task_snapshot::TaskSnapshotError::ResourceExhausted(
-                        "Stop sparse identity material"
-                    )
-                );
+
                 guards.push(ledger.register_owned_bytes(
                     scope,
                     InputMemoryCategory::Candidate,

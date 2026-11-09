@@ -169,6 +169,12 @@ selection, identity/content validation, reference deduplication and depth checks
 are unchanged. Ordinary current reads keep their separate bounds. See
 [incremental Episode upgrade](../implementation-decisions/incremental-episode-upgrade.md).
 
+The original Input upgrade may retain an explicitly closed, pre-Turn
+record as historical evidence after verifying its exact terminal source
+and outcome. Its proof records the closed outcome and cannot authorize reopening
+the claim or adopting a late Turn. Ordinary readers cannot mint this observation.
+See [closed claim upgrade observations](../implementation-decisions/closed-claim-upgrade-observations.md).
+
 Repository `import_legacy` entrypoints and their domain-import transaction
 wrapper are removed, rather than retained as an alternate import API. Work
 import-write bookkeeping and Task/Timer/Trigger import-inventory writers are
@@ -5137,3 +5143,18 @@ The blocking State projection and nested child summary acquisition retain the
 same read scope through preparation and final capture under one owner. Release
 the parent reservation before collecting child observations. No intervening
 metadata publication may separate a prepared cut from its capture.
+
+
+### Cumulative state sizes are observational
+
+Startup migration and ordinary requests do not apply cumulative byte, record,
+or decoded-node quotas to valid state reads, resident views, writer preparation,
+pending inputs, or history. Legacy state-memory sizing configuration and request
+hints remain compatible diagnostic values, not admission authority. This
+supersedes earlier cumulative allowance rules in this document. Complete
+dependency closures must not be truncated at a former quota. Explicit request
+pages/windows still select their requested number of results; streaming upgrade
+batches do not exclude an otherwise valid large row. Keep scope, incarnation,
+source generation, canonical digest, execution ownership, structural depth and
+publication-fence validation, exact pending-ticket lifecycle accounting, and
+real I/O/arithmetic failure propagation.

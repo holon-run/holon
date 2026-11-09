@@ -294,7 +294,7 @@ pub(in crate::runtime_db) fn receipt_budget_with_material_tx(
     tx: &Transaction<'_>,
     original: &crate::runtime_db::input_mutation_receipts::PreparedInputMutation,
     scope: &InputEvidenceScope,
-    request: &crate::runtime_db::task_snapshot::TaskDomainLoadRequest,
+    _request: &crate::runtime_db::task_snapshot::TaskDomainLoadRequest,
     ledger: &crate::runtime::input_evidence_budget::InputEvidenceBudgetLedger,
 ) -> Result<(
     std::sync::Arc<crate::runtime::input_evidence_budget::BudgetViewGuard>,
@@ -302,7 +302,7 @@ pub(in crate::runtime_db) fn receipt_budget_with_material_tx(
     usize,
 )> {
     use crate::runtime::input_evidence_budget::{InputMemoryCategory, OwnedBytesEstimate};
-    let receipt_material = if original.family()
+    let _receipt_material = if original.family()
         == crate::runtime_db::input_mutation_receipts::InputMutationFamily::Task
     {
         "original Task receipt"
@@ -314,27 +314,15 @@ pub(in crate::runtime_db) fn receipt_budget_with_material_tx(
     let bytes = bytes
         .checked_mul(8)
         .context("TaskResult receipt bytes overflow")?;
-    anyhow::ensure!(
-        bytes <= request.byte_limit.min(64 * 1024 * 1024),
-        crate::runtime_db::task_snapshot::TaskSnapshotError::ResourceExhausted(receipt_material)
-    );
+
     let records:usize=tx.query_row("SELECT COALESCE((SELECT MAX(COALESCE(json_array_length(outcome_json,'$.result.outcome.value'),1),1)+COALESCE(json_array_length(outcome_json,'$.scopes'),0)+COALESCE((SELECT SUM(COALESCE(json_array_length(s.value,'$.install_keys.tasks'),0)+COALESCE(json_array_length(s.value,'$.install_keys.task_result_settlements'),0)+COALESCE(json_array_length(s.value,'$.install_keys.input_roots'),0)+COALESCE(json_array_length(s.value,'$.install_keys.work_items'),0)+COALESCE(json_array_length(s.value,'$.install_keys.wait_conditions'),0)+COALESCE(json_array_length(s.value,'$.install_keys.continuations'),0)+COALESCE(json_array_length(s.value,'$.install_keys.scheduling'),0)+COALESCE(json_array_length(s.value,'$.audit_events'),0)) FROM json_each(outcome_json,'$.scopes') s),0) FROM input_mutation_receipts WHERE command_nonce=?1),0)",
         [original.command_nonce()],|r|r.get(0))?;
     let records = records
         .checked_mul(8)
         .context("TaskResult receipt count overflow")?;
-    anyhow::ensure!(
-        records <= request.record_limit.min(65536),
-        crate::runtime_db::task_snapshot::TaskSnapshotError::ResourceExhausted(receipt_material)
-    );
+
     let metadata_bytes = records.checked_mul(128).context("receipt nodes overflow")?;
-    anyhow::ensure!(
-        bytes
-            .checked_add(metadata_bytes)
-            .context("receipt material overflow")?
-            <= request.byte_limit.min(64 * 1024 * 1024),
-        crate::runtime_db::task_snapshot::TaskSnapshotError::ResourceExhausted(receipt_material)
-    );
+
     Ok((
         ledger.register_owned_bytes(
             scope,

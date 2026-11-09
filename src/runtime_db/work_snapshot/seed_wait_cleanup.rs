@@ -16,7 +16,7 @@ pub(crate) fn prepare_unbound_work_wait_cleanup_tx<'a, 'lease>(
     tx: &Transaction<'_>,
     scope: &LegacySeedRecoveryScope,
     wait_ids: &BTreeSet<String>,
-    request: &WorkDomainLoadRequest,
+    _request: &WorkDomainLoadRequest,
     capability: &'a ExclusiveStartupInputRecovery<'lease>,
 ) -> Result<PreparedUnboundWorkWaitCleanup<'a, 'lease>> {
     ensure!(
@@ -33,7 +33,7 @@ pub(crate) fn prepare_unbound_work_wait_cleanup_tx<'a, 'lease>(
     );
     // Verify the immutable checkpoint before using its finite membership.
     qualification::manifests(tx, Some(&scope.seed_id))?;
-    bound_metadata(wait_ids.len(), wait_ids.iter().map(String::len).sum())?;
+    observe_metadata(wait_ids.len(), wait_ids.iter().map(String::len).sum())?;
     let mut before = BTreeMap::new();
     let mut bytes = 0usize;
     for id in wait_ids {
@@ -46,10 +46,7 @@ pub(crate) fn prepare_unbound_work_wait_cleanup_tx<'a, 'lease>(
         let length: usize = tx.query_row("SELECT length(CAST(payload_json AS BLOB)) FROM wait_conditions WHERE wait_condition_id=?1",
             [id], |row| row.get(0))?;
         bytes = bytes.saturating_add(length);
-        ensure!(
-            bytes <= request.byte_limit && before.len() < request.record_limit,
-            "unbound Work Wait cleanup budget exhausted"
-        );
+
         let stored =
             stored_on(tx, &scope.agent_id, &key)?.context("fixed startup Wait disappeared")?;
         ensure!(

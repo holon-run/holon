@@ -2082,18 +2082,8 @@ impl RuntimeHandle {
         let order_records = count
             .checked_add(1)
             .context("Timer recovery order count overflow")?;
-        let (retained, retained_records) = timers.selected_material_estimate()?;
-        anyhow::ensure!(
-            retained
-                .checked_add(order_bytes)
-                .is_some_and(|bytes| bytes <= byte_limit)
-                && retained_records
-                    .checked_add(order_records)
-                    .is_some_and(|n| n <= record_limit),
-            super::resident_scheduling::SchedulingReadError::ResourceExhausted(
-                "original Timer recovery order"
-            )
-        );
+        let (_retained, _retained_records) = timers.selected_material_estimate()?;
+
         let _order_material = self.inner.input_evidence_budget.register_owned_bytes(
             &timers.scope,
             super::input_evidence_budget::InputMemoryCategory::Pins,

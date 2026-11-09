@@ -38,7 +38,7 @@ pub(super) fn capture_work_domain_seed_tx(
 ) -> Result<()> {
     let checkpoint = work_checkpoint::load(tx, seed, phase)?;
     let json = serde_json::to_vec(&checkpoint)?;
-    bound_metadata(checkpoint.record_digests.len(), json.len())?;
+    observe_metadata(checkpoint.record_digests.len(), json.len())?;
     let previous:Option<String>=tx.query_row("SELECT metadata_digest FROM work_domain_captures WHERE seed_id=?1 AND capture_phase=?2",params![seed,phase],|row|row.get(0)).optional()?;
     let expected = digest(&json);
     if let Some(previous) = previous {

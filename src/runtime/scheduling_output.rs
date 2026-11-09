@@ -464,9 +464,9 @@ fn project_scheduling_records(
     selected: CapturedScheduling,
     timer_limit: usize,
     ledger: &super::input_evidence_budget::InputEvidenceBudgetLedger,
-    byte_limit: usize,
-    record_limit: usize,
-    prior: (usize, usize),
+    _byte_limit: usize,
+    _record_limit: usize,
+    _prior: (usize, usize),
     read_guards: Vec<Arc<BudgetViewGuard>>,
     cold: bool,
 ) -> Result<(
@@ -530,25 +530,12 @@ fn project_scheduling_records(
         .checked_add(u64::try_from(slots)?)
         .and_then(|n| n.checked_mul(4))
         .context("Scheduling output copies overflow")?;
-    let records = count
+    let _records = count
         .checked_add(1)
         .and_then(|n| n.checked_mul(4))
         .context("Scheduling output records overflow")?;
-    let (retained, retained_records) = selected.selected_material_estimate()?;
-    anyhow::ensure!(
-        u64::try_from(prior.0)?
-            .checked_add(retained)
-            .and_then(|n| n.checked_add(bytes))
-            .is_some_and(|n| n <= u64::try_from(byte_limit.min(64 * 1024 * 1024)).unwrap_or(0))
-            && prior
-                .1
-                .checked_add(retained_records)
-                .and_then(|n| n.checked_add(records))
-                .is_some_and(|n| n <= record_limit.min(65536)),
-        SchedulingReadError::ResourceExhausted(
-            "cold read/selected Scheduling/output combined material"
-        )
-    );
+    let (_retained, _retained_records) = selected.selected_material_estimate()?;
+
     let owned = ledger.register_owned_bytes(
         &selected.scope,
         InputMemoryCategory::Pins,
@@ -681,22 +668,11 @@ impl SchedulingReadMaterial {
     pub(crate) fn proven_empty_cold(
         scope: &super::resident_input_evidence::InputEvidenceScope,
         ledger: &super::input_evidence_budget::InputEvidenceBudgetLedger,
-        byte_limit: usize,
-        record_limit: usize,
-        usage: (usize, usize),
+        _byte_limit: usize,
+        _record_limit: usize,
+        _usage: (usize, usize),
         read_guards: Vec<Arc<BudgetViewGuard>>,
     ) -> Result<Self> {
-        anyhow::ensure!(
-            usage
-                .0
-                .checked_add(2048)
-                .is_some_and(|n| n <= byte_limit.min(64 * 1024 * 1024))
-                && usage
-                    .1
-                    .checked_add(4)
-                    .is_some_and(|n| n <= record_limit.min(65536)),
-            SchedulingReadError::ResourceExhausted("empty cold Scheduling output material")
-        );
         let owned = ledger.register_owned_bytes(
             scope,
             InputMemoryCategory::Pins,
@@ -752,31 +728,19 @@ impl RuntimeHandle {
         &self,
         selected: &CapturedScheduling,
         bytes: u64,
-        count: usize,
-        selector_bytes: u64,
-        selector_records: usize,
+        _count: usize,
+        _selector_bytes: u64,
+        _selector_records: usize,
     ) -> Result<Arc<BudgetViewGuard>> {
-        let (retained, retained_count) = selected.selected_material_estimate()?;
+        let (_retained, _retained_count) = selected.selected_material_estimate()?;
         let limits = self.inner.input_evidence_budget.limits();
-        let byte_limit = limits
+        let _byte_limit = limits
             .history_per_agent_bytes
             .checked_add(limits.pending_per_agent_bytes)
             .context("Scheduling output limit overflow")?
             .min(64 * 1024 * 1024);
-        let record_limit = usize::try_from(limits.record_limit)?.min(65536);
-        anyhow::ensure!(
-            retained
-                .checked_add(bytes)
-                .and_then(|n| n.checked_add(selector_bytes))
-                .is_some_and(|n| n <= byte_limit)
-                && retained_count
-                    .checked_add(count)
-                    .and_then(|n| n.checked_add(selector_records))
-                    .is_some_and(|n| n <= record_limit),
-            SchedulingReadError::ResourceExhausted(
-                "selected Scheduling/selector/output combined material"
-            )
-        );
+        let _record_limit = usize::try_from(limits.record_limit)?.min(65536);
+
         Ok(self.inner.input_evidence_budget.register_owned_bytes(
             &selected.scope,
             InputMemoryCategory::Pins,
@@ -845,17 +809,13 @@ impl RuntimeHandle {
     /// Accepted exact query may prepare only original current/fixed qualification.
     pub(crate) async fn acquire_timer_record_read(&self, id: &str) -> Result<TimerRecordRead> {
         let mut owner = self.begin_mutation().await?;
-        let (_, record_limit, byte_limit) = owner.context_input_evidence_policy()?;
+        let (_, _record_limit, _byte_limit) = owner.context_input_evidence_policy()?;
         let scope = owner.input_evidence_scope();
         let selector_bytes = serialized_bytes(&id)?
             .checked_add(512)
             .and_then(|n| n.checked_mul(8))
             .context("Timer selector material overflow")?;
-        anyhow::ensure!(
-            selector_bytes <= u64::try_from(byte_limit.min(64 * 1024 * 1024))?
-                && record_limit.min(65536) >= 8,
-            SchedulingReadError::ResourceExhausted("Timer selector material")
-        );
+
         let selector = self.inner.input_evidence_budget.register_owned_bytes(
             &scope,
             InputMemoryCategory::Pins,

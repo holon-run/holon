@@ -43,17 +43,12 @@ pub(in crate::runtime_db) fn capture_fixed_checkpoint_on(
         };
         let sql=format!("SELECT COUNT(*),COALESCE(SUM(length(CAST({key} AS BLOB))+length(CAST(c.status AS BLOB))+length(CAST({sort} AS BLOB))+length(CAST(c.created_at AS BLOB))+512),0) FROM {from} WHERE {owner}=?1 AND {predicate}");
         let original_id = original.map(|x| x.inventory_id.as_str());
-        let estimated: usize = if original.is_some() {
+        let _estimated: usize = if original.is_some() {
             connection.query_row(&sql, params![agent, original_id], |r| r.get(1))?
         } else {
             connection.query_row(&sql, [agent], |r| r.get(1))?
         };
-        ensure!(
-            metadata
-                .checked_add(estimated)
-                .is_some_and(|n| n <= MAX_BYTES),
-            SchedulingSnapshotError::ResourceExhausted("fixed metadata")
-        );
+
         let sql =
             format!("SELECT {key} FROM {from} WHERE {owner}=?1 AND {predicate} ORDER BY {key}");
         let mut statement = connection.prepare(&sql)?;
@@ -88,10 +83,7 @@ pub(in crate::runtime_db) fn capture_fixed_checkpoint_on(
             metadata = metadata
                 .checked_add(size)
                 .context("fixed Scheduling metadata overflow")?;
-            ensure!(
-                metadata <= MAX_BYTES,
-                SchedulingSnapshotError::ResourceExhausted("fixed metadata")
-            );
+
             count = count
                 .checked_add(1)
                 .context("fixed Scheduling member count overflow")?;
@@ -104,10 +96,7 @@ pub(in crate::runtime_db) fn capture_fixed_checkpoint_on(
         connection.execute("INSERT OR IGNORE INTO scheduling_fixed_members SELECT ?1,family,record_id,content_digest,projection_digest,status,sort_at,created_at FROM scheduling_fixed_members WHERE inventory_id=?2",params![id,original.inventory_id])?;
     }
     let (actual_count,actual_bytes):(u64,usize)=connection.query_row("SELECT COUNT(*),COALESCE(SUM(length(CAST(record_id AS BLOB))+length(CAST(content_digest AS BLOB))+length(CAST(projection_digest AS BLOB))+length(CAST(status AS BLOB))+length(CAST(sort_at AS BLOB))+length(CAST(created_at AS BLOB))+128),0) FROM scheduling_fixed_members WHERE inventory_id=?1",[&id],|r|Ok((r.get(0)?,r.get(1)?)))?;
-    ensure!(
-        actual_count >= count && actual_bytes <= MAX_BYTES,
-        SchedulingSnapshotError::ResourceExhausted("fixed final metadata")
-    );
+
     let mut hash = Sha256::new();
     hash.update(table_json.as_bytes());
     let mut statement=connection.prepare("SELECT family,record_id,content_digest,projection_digest,status,sort_at,created_at FROM scheduling_fixed_members WHERE inventory_id=?1 ORDER BY family,record_id")?;
@@ -141,9 +130,7 @@ fn validate_manifest(
     checkpoint: &SchedulingContinuityCheckpoint,
 ) -> Result<()> {
     ensure!(
-        checkpoint.policy_version == 1
-            && checkpoint.content_digest.len() == 64
-            && checkpoint.metadata_bytes <= u64::try_from(MAX_BYTES)?,
+        checkpoint.policy_version == 1 && checkpoint.content_digest.len() == 64,
         "invalid Scheduling fixed checkpoint"
     );
     let (length,agent_length,digest_length):(usize,usize,usize)=connection.query_row("SELECT length(CAST(tables_json AS BLOB)),length(CAST(agent_id AS BLOB)),length(CAST(content_digest AS BLOB)) FROM scheduling_fixed_manifests WHERE inventory_id=?1",[&checkpoint.inventory_id],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?)))?;
@@ -300,11 +287,8 @@ pub(super) fn known_anywhere(tx: &Connection, key: &SchedulingKey) -> Result<boo
     Ok(tx.query_row("SELECT EXISTS(SELECT 1 FROM scheduling_domain_records WHERE family=?1 AND record_id=?2 AND availability!='absent' UNION ALL SELECT 1 FROM scheduling_fixed_members WHERE family=?1 AND record_id=?2)",params![family_name(key.family),key.id],|r|r.get(0))?)
 }
 pub(in crate::runtime_db) fn consume_scheduling_upgrade_tx(tx: &Transaction<'_>) -> Result<()> {
-    let (count,bytes):(usize,usize)=tx.query_row("SELECT COUNT(*),COALESCE(SUM(length(CAST(seed_id AS BLOB))+length(CAST(source_kind AS BLOB))),0) FROM episode_continuity_seeds",[],|r|Ok((r.get(0)?,r.get(1)?)))?;
-    ensure!(
-        count <= MAX_RECORDS && bytes <= MAX_BYTES,
-        SchedulingSnapshotError::ResourceExhausted("seed inventory")
-    );
+    let (_count,_bytes):(usize,usize)=tx.query_row("SELECT COUNT(*),COALESCE(SUM(length(CAST(seed_id AS BLOB))+length(CAST(source_kind AS BLOB))),0) FROM episode_continuity_seeds",[],|r|Ok((r.get(0)?,r.get(1)?)))?;
+
     let mut statement =
         tx.prepare("SELECT seed_id,source_kind FROM episode_continuity_seeds ORDER BY seed_id")?;
     let rows = statement
@@ -345,15 +329,12 @@ pub(in crate::runtime_db) fn capture_scheduling_seed_if_ready_tx(
     } else {
         "episode_continuity_seeds"
     };
-    let size: usize = tx.query_row(
+    let _size: usize = tx.query_row(
         &format!("SELECT length(CAST(roots_json AS BLOB)) FROM {table} WHERE seed_id=?1"),
         [seed],
         |r| r.get(0),
     )?;
-    ensure!(
-        size <= MAX_BYTES,
-        SchedulingSnapshotError::ResourceExhausted("original roots")
-    );
+
     let raw: String = tx.query_row(
         &format!("SELECT roots_json FROM {table} WHERE seed_id=?1"),
         [seed],

@@ -52,7 +52,7 @@ pub(super) fn prepare_control_scheduling_writes_tx<'tx, 'conn>(
         .and_then(|n| n.checked_add(256))
         .and_then(|n| n.checked_mul(8))
         .context("Control Scheduling bytes overflow")?;
-    let records = count
+    let _records = count
         .checked_add(command.expected.timers.len())
         .and_then(|n| n.checked_add(command.expected.pending_timer_wakes.len()))
         .and_then(|n| n.checked_add(command.expected.external_triggers.len()))
@@ -60,22 +60,8 @@ pub(super) fn prepare_control_scheduling_writes_tx<'tx, 'conn>(
         .and_then(|n| n.checked_add(1))
         .and_then(|n| n.checked_mul(8))
         .context("Control Scheduling count overflow")?;
-    let remaining_bytes = request
-        .byte_limit
-        .min(64 * 1024 * 1024)
-        .checked_sub(bytes)
-        .filter(|n| *n > 0)
-        .ok_or(scheduling::SchedulingSnapshotError::ResourceExhausted(
-            "Control original Scheduling snapshot",
-        ))?;
-    let remaining_records = request
-        .record_limit
-        .min(65_536)
-        .checked_sub(records)
-        .filter(|n| *n > 0)
-        .ok_or(scheduling::SchedulingSnapshotError::ResourceExhausted(
-            "Control original Scheduling snapshot",
-        ))?;
+    let remaining_bytes = request.byte_limit;
+    let remaining_records = request.record_limit;
     let guard = ledger.register_owned_bytes(
         &scope,
         InputMemoryCategory::Candidate,

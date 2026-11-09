@@ -32,7 +32,7 @@ fn source_raw_metadata(
     tx: &Transaction<'_>,
     agent: &str,
     source: &str,
-    limit: usize,
+    _limit: usize,
 ) -> Result<BTreeMap<String, SourceAttemptObservation>> {
     // Reject oversized scalar metadata before copying it into Rust. No attempt
     // payload, source identity JSON, or body bytes are loaded here.
@@ -56,29 +56,21 @@ fn source_raw_metadata(
           json_extract(payload_json,'$.turn_id'),terminal_outcome_id
         FROM execution_protocol_attempts
         WHERE agent_id=?1 AND json_extract(payload_json,'$.source_message_id')=?2
-        ORDER BY json_extract(payload_json,'$.admitted_at'),attempt_id LIMIT ?3",
+        ORDER BY json_extract(payload_json,'$.admitted_at'),attempt_id",
     )?;
-    let rows = statement.query_map(
-        params![agent, source, i64::try_from(limit.saturating_add(1))?],
-        |r| {
-            Ok((
-                r.get::<_, String>(0)?,
-                r.get::<_, String>(1)?,
-                r.get::<_, String>(2)?,
-                r.get::<_, Option<String>>(3)?,
-                r.get::<_, Option<String>>(4)?,
-            ))
-        },
-    )?;
+    let rows = statement.query_map(params![agent, source], |r| {
+        Ok((
+            r.get::<_, String>(0)?,
+            r.get::<_, String>(1)?,
+            r.get::<_, String>(2)?,
+            r.get::<_, Option<String>>(3)?,
+            r.get::<_, Option<String>>(4)?,
+        ))
+    })?;
     let mut result = BTreeMap::new();
     for row in rows {
         let (attempt_id, admitted_at, state, turn_id_hint, terminal_outcome_id) = row?;
-        if result.len() >= limit {
-            return Err(InputEvidenceSnapshotError::ResourceExhausted(
-                "execution source metadata count",
-            )
-            .into());
-        }
+
         let state = match state.as_str() {
             "open" => ExecutionAttemptState::Open,
             "settled" => ExecutionAttemptState::Settled,
@@ -137,13 +129,19 @@ fn freeze_ordinals(
     }
     Ok(highwater)
 }
-fn check_budget(count: usize, bytes: usize, record_limit: usize, byte_limit: usize) -> Result<()> {
-    if count > record_limit.min(MAX_RECORDS) || bytes > byte_limit.min(MAX_METADATA_BYTES) {
-        return Err(InputEvidenceSnapshotError::ResourceExhausted(
-            "execution metadata count/bytes",
-        )
-        .into());
-    }
+fn observe_metadata(
+    count: usize,
+    bytes: usize,
+    record_limit: usize,
+    byte_limit: usize,
+) -> Result<()> {
+    tracing::trace!(
+        count,
+        bytes,
+        record_limit,
+        byte_limit,
+        "execution metadata observation"
+    );
     Ok(())
 }
 /// Freeze the bodies the ordinary reader requires for mandatory sources,
@@ -179,7 +177,7 @@ pub(super) fn fixed_required_body_keys_tx(
         };
         count = count.saturating_add(1 + coverage.attempts.len());
         bytes = bytes.saturating_add(coverage.metadata_bytes()?);
-        check_budget(count, bytes, MAX_RECORDS, MAX_METADATA_BYTES)?;
+        observe_metadata(count, bytes, MAX_RECORDS, MAX_METADATA_BYTES)?;
         sources.insert(key.id.clone(), coverage);
     }
     Ok(ExecutionInputCoverage {
@@ -219,7 +217,7 @@ pub(super) fn capture_sources_tx(
             }
             _ => {}
         }
-        check_budget(
+        observe_metadata(
             base_count.saturating_add(sources.len()),
             base_bytes.saturating_add(source_id_bytes),
             MAX_RECORDS,
@@ -231,7 +229,7 @@ pub(super) fn capture_sources_tx(
     let mut bytes = base_bytes
         .saturating_add(usize::try_from(stored_bytes)?)
         .saturating_add(usize::try_from(stored_count)?.saturating_mul(128));
-    check_budget(count, bytes, MAX_RECORDS, MAX_METADATA_BYTES)?;
+    observe_metadata(count, bytes, MAX_RECORDS, MAX_METADATA_BYTES)?;
     let mut manifest = Vec::new();
     for source in sources {
         ensure!(
@@ -264,7 +262,7 @@ pub(super) fn capture_sources_tx(
             count = count.saturating_add(1 + coverage.attempts.len());
             bytes = bytes.saturating_add(metadata_bytes(&coverage)?);
         }
-        check_budget(count, bytes, MAX_RECORDS, MAX_METADATA_BYTES)?;
+        observe_metadata(count, bytes, MAX_RECORDS, MAX_METADATA_BYTES)?;
         manifest.push((source, metadata_digest(&coverage)?));
     }
     Ok((
@@ -285,10 +283,6 @@ fn decode_source(
     bytes: usize,
 ) -> Result<ExecutionSourceCoverage> {
     ensure!(
-        json.len() <= bytes.min(MAX_METADATA_BYTES),
-        "execution source metadata exceeds byte budget"
-    );
-    ensure!(
         bytes_digest(json.as_bytes()) == digest,
         "execution source metadata digest mismatch"
     );
@@ -298,7 +292,7 @@ fn decode_source(
         "execution source header/payload mismatch"
     );
     record.validate()?;
-    check_budget(
+    observe_metadata(
         1 + record.attempts.len(),
         metadata_bytes(&record)?,
         limit,
@@ -318,16 +312,13 @@ fn fixed_seed_source_on(
     let Some((size, count)) = header else {
         return Ok(None);
     };
-    check_budget(
+    observe_metadata(
         1 + usize::try_from(count)?,
         usize::try_from(size)?,
         limit,
         bytes,
     )?;
-    ensure!(
-        usize::try_from(size)? <= bytes.min(MAX_METADATA_BYTES),
-        "execution seed source metadata exceeds byte budget"
-    );
+
     let (json,digest):(String,String)=tx.query_row("SELECT metadata_json,content_digest FROM input_evidence_execution_seed_sources WHERE seed_id=?1 AND source_message_id=?2",params![seed,source],|r|Ok((r.get(0)?,r.get(1)?)))?;
     decode_source(source, json, digest, 0, limit, bytes).map(Some)
 }
@@ -343,16 +334,13 @@ fn seed_source_on(
     let Some((revision, size, count)) = header else {
         return fixed_seed_source_on(tx, seed, source, limit, bytes);
     };
-    check_budget(
+    observe_metadata(
         1 + usize::try_from(count)?,
         usize::try_from(size)?,
         limit,
         bytes,
     )?;
-    ensure!(
-        usize::try_from(size)? <= bytes.min(MAX_METADATA_BYTES),
-        "execution recovery metadata exceeds byte budget"
-    );
+
     let (json,digest):(String,String)=tx.query_row("SELECT metadata_json,content_digest FROM input_evidence_execution_seed_source_recovery WHERE seed_id=?1 AND source_message_id=?2",params![seed_id,source],|r|Ok((r.get(0)?,r.get(1)?)))?;
     let record = decode_source(source, json, digest, u64::try_from(revision)?, limit, bytes)?;
     let fixed = match fixed_seed_source_on(tx, seed, source, limit, bytes)? {
@@ -412,16 +400,13 @@ fn current_source_on(
     let Some((revision, size, count)) = header else {
         return Ok(None);
     };
-    check_budget(
+    observe_metadata(
         1 + usize::try_from(count)?,
         usize::try_from(size)?,
         limit,
         bytes,
     )?;
-    ensure!(
-        usize::try_from(size)? <= bytes.min(MAX_METADATA_BYTES),
-        "execution current source metadata exceeds byte budget"
-    );
+
     let (json,digest):(String,String)=tx.query_row("SELECT metadata_json,content_digest FROM input_evidence_execution_current_sources WHERE agent_id=?1 AND identity_incarnation=?2 AND source_message_id=?3",params![scope.agent_id,i64::try_from(scope.identity_incarnation)?,source],|r|Ok((r.get(0)?,r.get(1)?)))?;
     decode_source(source, json, digest, u64::try_from(revision)?, limit, bytes).map(Some)
 }
@@ -529,7 +514,7 @@ pub(super) fn load_coverage_tx(
         assert_actual_source(tx, &scope.agent_id, &record, limit)?;
         count = count.saturating_add(1 + record.attempts.len());
         metadata_bytes_used = metadata_bytes_used.saturating_add(metadata_bytes(&record)?);
-        check_budget(count, metadata_bytes_used, limit, bytes)?;
+        observe_metadata(count, metadata_bytes_used, limit, bytes)?;
         result.sources.insert(source.clone(), record);
     }
     for key in qualified_live_protocol_keys(tx, scope, binding, limit)? {
@@ -546,7 +531,7 @@ pub(super) fn load_coverage_tx(
             _ => unreachable!(),
         }
     }
-    check_budget(
+    observe_metadata(
         result.metadata_count(),
         result.metadata_bytes()?,
         limit,
@@ -672,7 +657,7 @@ pub(super) fn register_tx(
                 );
             }
         }
-        check_budget(
+        observe_metadata(
             1 + next.attempts.len(),
             metadata_bytes(&next)?,
             MAX_RECORDS,
@@ -764,7 +749,7 @@ pub(super) fn prune_tx(
         .context("execution prune source disappeared")?;
         count = count.saturating_add(1 + record.attempts.len());
         bytes = bytes.saturating_add(metadata_bytes(&record)?);
-        check_budget(count, bytes, MAX_RECORDS, MAX_METADATA_BYTES)?;
+        observe_metadata(count, bytes, MAX_RECORDS, MAX_METADATA_BYTES)?;
         let mut changed = false;
         for id in &targets {
             if let Some(observed) = record.attempts.get_mut(*id) {

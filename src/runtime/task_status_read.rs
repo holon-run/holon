@@ -31,10 +31,7 @@ impl StatusMaterialAllowance {
             byte_limit: self.byte_limit,
             record_limit: self.record_limit,
         };
-        anyhow::ensure!(
-            next.bytes <= next.byte_limit && next.records <= next.record_limit,
-            TaskReadError::ResourceExhausted("TaskStatus combined material")
-        );
+
         Ok(next)
     }
 }
@@ -179,20 +176,12 @@ impl RuntimeHandle {
             Ok(read) => read,
             Err(error) if matches!(error.downcast_ref::<TaskReadError>(),Some(TaskReadError::NeedsPreparation(key)) if key.family == TaskFamily::Task && key.id == id) =>
             {
-                let limits = self.inner.input_evidence_budget.limits();
+                let _limits = self.inner.input_evidence_budget.limits();
                 let bytes = serialized_bytes(&id)?
                     .checked_add(512)
                     .and_then(|bytes| bytes.checked_mul(8))
                     .context("named TaskStatus selector overflow")?;
-                anyhow::ensure!(
-                    limits.record_limit >= 8
-                        && bytes
-                            <= limits
-                                .history_per_agent_bytes
-                                .checked_add(limits.pending_per_agent_bytes)
-                                .context("named TaskStatus limit overflow")?,
-                    TaskReadError::ResourceExhausted("named TaskStatus selector")
-                );
+
                 let _selector = self.inner.input_evidence_budget.register_host_owned_bytes(
                     InputMemoryCategory::Candidate,
                     OwnedBytesEstimate {

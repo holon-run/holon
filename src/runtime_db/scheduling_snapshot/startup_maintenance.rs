@@ -37,20 +37,14 @@ pub(in crate::runtime_db) struct StartupSchedulingCleanup<'tx, 'conn> {
 }
 fn remaining(
     request: &SchedulingDomainLoadRequest,
-    material: &Material<'_, '_>,
+    _material: &Material<'_, '_>,
 ) -> Result<SchedulingDomainLoadRequest> {
     let next = SchedulingDomainLoadRequest {
         capture: request.capture.clone(),
-        record_limit: request
-            .record_limit
-            .checked_sub(material.records)
-            .context("startup Scheduling record allowance exhausted")?,
-        byte_limit: request
-            .byte_limit
-            .checked_sub(material.bytes)
-            .context("startup Scheduling byte allowance exhausted")?,
+        record_limit: request.record_limit,
+        byte_limit: request.byte_limit,
     };
-    bound(0, 0, &next)?;
+    observe_material(0, 0, &next)?;
     Ok(next)
 }
 impl StartupSchedulingMaterial {

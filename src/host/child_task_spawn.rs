@@ -126,12 +126,8 @@ impl RuntimeHostBridge {
             recovery_at: None,
             query: Default::default(),
             capture: crate::runtime::resident_task::TaskCaptureRequest::current(),
-            record_limit: record_limit
-                .checked_sub(8)
-                .context("unstarted owner count exceeds bound")?,
-            byte_limit: byte_limit
-                .checked_sub(bytes)
-                .context("unstarted owner bytes exceed bound")?,
+            record_limit,
+            byte_limit,
         };
         let held = host
             .reserve_mutation_scopes(&[(scope.agent_id.clone(), scope.identity_incarnation)])

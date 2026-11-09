@@ -963,10 +963,6 @@ impl ResidentInputEvidence {
                     }
                 }
             }
-            ensure!(
-                selected.len() <= self.coverage.record_limit,
-                "input memory closure exceeds count limit"
-            );
         }
         Ok(selected)
     }
@@ -1343,10 +1339,6 @@ impl ResidentInputEvidence {
         &self,
         request: &crate::runtime_db::input_evidence_snapshot::InputEvidenceLoadRequest,
     ) -> Result<()> {
-        ensure!(
-            request.record_limit > 0 && request.byte_limit > 0,
-            "input request needs positive resource bounds"
-        );
         for key in &request.mandatory_roots {
             if !self.records.contains_key(key) && !self.coverage.unavailable.contains(key) {
                 return Err(InputEvidenceReadError::NeedsPreparation(key.clone()).into());
@@ -1422,10 +1414,7 @@ impl ResidentInputEvidence {
         material: &crate::diagnostics::resource_io::ResourceReadMaterial,
     ) -> Result<bool> {
         self.validate_request_material(request, material)?;
-        ensure!(
-            request.record_limit > 0 && request.byte_limit > 0,
-            "input request needs positive resource bounds"
-        );
+
         if request.record_limit < self.coverage.record_limit
             || request.byte_limit < self.coverage.byte_limit
             || !request
@@ -1617,10 +1606,7 @@ impl ResidentInputEvidence {
                 keys,
             });
         }
-        ensure!(
-            selected.len() <= request.record_limit,
-            "input request closure record limit exceeded"
-        );
+
         let strict_roots = mandatory_roots
             .iter()
             .cloned()
@@ -2184,7 +2170,7 @@ impl ResidentInputEvidence {
         roots: BTreeSet<InputEvidenceKey>,
         strict_roots: BTreeSet<InputEvidenceKey>,
         heads: &BTreeSet<String>,
-        record_limit: usize,
+        _record_limit: usize,
     ) -> Result<BTreeSet<InputEvidenceKey>> {
         use super::completion_sources::{completion_references, CompletionInputPath};
         let mut selected = roots.clone();
@@ -2207,20 +2193,9 @@ impl ResidentInputEvidence {
                 .entry(candidate)
                 .or_insert_with_key(|candidate| pending.push_back(candidate.clone()));
         }
-        let mut expanded = 0usize;
         while let Some((key, path)) = pending.pop_front() {
             selected.insert(key.clone());
-            ensure!(
-                selected.len() <= record_limit,
-                "input evidence closure record limit exceeded"
-            );
-            expanded += 1;
-            // There are at most the bounded strict graph plus two selected
-            // completion edges per head, never a path cross-product.
-            ensure!(
-                expanded <= record_limit.saturating_mul(3),
-                "input evidence path limit exceeded"
-            );
+
             let Some(record) = self.records.get(&key) else {
                 continue;
             };
@@ -2374,18 +2349,7 @@ impl ResidentInputEvidence {
                 "replay source absence overlaps prepared or pruned evidence"
             );
         }
-        ensure!(
-            selected
-                .len()
-                .saturating_add(self.coverage.recovery_source_absences.len())
-                .saturating_add(self.coverage.replay_source_absences.len())
-                .saturating_add(self.coverage.completion_source_observations.len())
-                .saturating_add(self.coverage.selected_completion_brief_ids.len())
-                .saturating_add(self.coverage.recovery_lineage_messages.len())
-                .saturating_add(self.coverage.execution.metadata_count())
-                <= self.coverage.record_limit,
-            "input evidence and execution metadata record limit exceeded"
-        );
+
         let mut bytes = serde_json::to_vec(&self.coverage.turn_transcript_keys)?
             .len()
             .saturating_add(serde_json::to_vec(&self.coverage.message_turn_keys)?.len())
@@ -2437,10 +2401,7 @@ impl ResidentInputEvidence {
                 );
             }
         }
-        ensure!(
-            bytes <= self.coverage.byte_limit,
-            "input evidence resident byte limit exceeded"
-        );
+
         for window in &self.coverage.windows {
             ensure!(
                 window.limit <= window.selector.maximum_candidates(),

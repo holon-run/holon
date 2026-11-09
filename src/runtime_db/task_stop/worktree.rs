@@ -219,22 +219,14 @@ fn worktree_disposition_tx(
 fn worktree_material(
     ledger: &InputEvidenceBudgetLedger,
     scope: &InputEvidenceScope,
-    request: &TaskDomainLoadRequest,
+    _request: &TaskDomainLoadRequest,
     bytes: usize,
-    records: usize,
+    _records: usize,
 ) -> Result<Arc<BudgetViewGuard>> {
     let bytes = bytes
         .checked_mul(16)
         .context("worktree association material overflow")?;
-    ensure!(
-        bytes <= request.byte_limit.min(MAX_BYTES)
-            && records
-                .checked_mul(16)
-                .is_some_and(|n| n <= request.record_limit.min(MAX_RECORDS)),
-        crate::runtime_db::task_snapshot::TaskSnapshotError::ResourceExhausted(
-            "worktree association"
-        )
-    );
+
     Ok(ledger.register_owned_bytes(
         scope,
         InputMemoryCategory::Candidate,

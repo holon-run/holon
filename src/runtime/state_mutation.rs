@@ -639,14 +639,8 @@ impl RuntimeMutation {
             root.state.as_ref() == &self.candidate.state,
             "input preparation cannot publish a private candidate"
         );
-        let (_, record_limit, byte_limit) = self.context_input_evidence_policy()?;
-        anyhow::ensure!(
-            request.record_limit > 0
-                && request.record_limit <= record_limit
-                && request.byte_limit > 0
-                && request.byte_limit <= byte_limit,
-            "input preparation request exceeds the held owner's budget"
-        );
+        let (_, _record_limit, _byte_limit) = self.context_input_evidence_policy()?;
+
         let input_roles = self.owner_input_query_roles()?;
         if let Some(query) = &request.query {
             anyhow::ensure!(
@@ -2697,21 +2691,7 @@ impl RuntimeHandle {
                 episodes,
                 input_evidence,
                 |material| {
-                    anyhow::ensure!(
-                        material.bytes <= remaining.byte_limit
-                            && material.records <= remaining.record_limit,
-                        crate::runtime_db::task_snapshot::TaskSnapshotError::ResourceExhausted(
-                            "binding queue container material"
-                        )
-                    );
-                    remaining.byte_limit = remaining
-                        .byte_limit
-                        .checked_sub(material.bytes)
-                        .context("binding queue byte allowance underflow")?;
-                    remaining.record_limit = remaining
-                        .record_limit
-                        .checked_sub(material.records)
-                        .context("binding queue record allowance underflow")?;
+                    let _ = material;
                     Ok(())
                 },
             )
@@ -2747,18 +2727,8 @@ impl RuntimeHandle {
         let material = readonly_queue_material(slots)?;
         let metadata_bytes = material.bytes;
         before_clone(material)?;
-        let limits = self.inner.input_evidence_budget.limits();
-        anyhow::ensure!(
-            slots <= usize::try_from(limits.record_limit)?
-                && u64::try_from(metadata_bytes)?
-                    <= limits
-                        .history_per_agent_bytes
-                        .checked_add(limits.pending_per_agent_bytes)
-                        .context("readonly queue limit overflow")?,
-            crate::runtime_db::task_snapshot::TaskSnapshotError::ResourceExhausted(
-                "Stop readonly queue metadata"
-            )
-        );
+        let _limits = self.inner.input_evidence_budget.limits();
+
         let queue_metadata = self.inner.input_evidence_budget.register_owned_bytes(
             &super::resident_input_evidence::InputEvidenceScope {
                 agent_id: reservation.agent_id().to_owned(),

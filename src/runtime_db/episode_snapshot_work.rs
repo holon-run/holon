@@ -496,17 +496,12 @@ pub(in crate::runtime_db) fn load(
         &format!("SELECT length(CAST({prefix}.roots_json AS BLOB)),s.source_kind FROM {table} {joined} WHERE {filter}"),
         [seed_id], |row|Ok((row.get(0)?,row.get(1)?)),
     ).optional()?;
-    let (bytes, source_kind) = metadata.ok_or_else(missing)?;
+    let (_bytes, source_kind) = metadata.ok_or_else(missing)?;
     ensure!(
         phase == "first_import" || (phase == "upgrade") == source_kind.starts_with("upgrade_"),
         "Work checkpoint source/phase mismatch"
     );
-    if bytes > CONTINUITY_MAX_PAYLOAD_BYTES {
-        return Err(EpisodeSnapshotError::ClosureResourceExhausted {
-            limit: "Work checkpoint metadata bytes",
-        }
-        .into());
-    }
+
     let payload: String = tx.query_row(
         &format!("SELECT {prefix}.roots_json FROM {table} {joined} WHERE {filter}"),
         [seed_id],

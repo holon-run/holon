@@ -40,7 +40,7 @@ impl TokenMaterial<'_> {
         let records = records.checked_mul(8).context(exhausted())?;
         self.bytes = self.bytes.checked_add(bytes).context(exhausted())?;
         self.records = self.records.checked_add(records).context(exhausted())?;
-        bound(self.records, self.bytes, self.request)?;
+        observe_material(self.records, self.bytes, self.request)?;
         self.guards.push(self.ledger.register_host_owned_bytes(
             InputMemoryCategory::Candidate,
             OwnedBytesEstimate {

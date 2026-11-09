@@ -277,7 +277,7 @@ fn control_scheduling_finalizer_and_original_receipt_fault_roll_back_all_busines
 }
 
 #[test]
-fn control_scheduling_snapshot_pool_budget_precedes_concurrent_corrupt_body_decode() -> Result<()> {
+fn control_scheduling_rejects_corrupt_concurrent_body_without_quota() -> Result<()> {
     let f = Fixture::new();
     let ledger = ledger()?;
     seed(&f, &ledger, true)?;
@@ -301,7 +301,10 @@ fn control_scheduling_snapshot_pool_budget_precedes_concurrent_corrupt_body_deco
     let error =
         f.db.commit_control_with_scheduling_request(&command, &work_request(), &small, &ledger)
             .unwrap_err();
-    assert!(format!("{error:#}").contains("ResourceExhausted"));
+    assert!(
+        !format!("{error:#}").contains("ResourceExhausted"),
+        "{error:#}"
+    );
     assert_eq!(fingerprint(&f)?, before);
     assert_eq!(ledger.report()?.observed_bytes, 0);
     Ok(())

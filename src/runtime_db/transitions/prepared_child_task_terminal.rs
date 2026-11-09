@@ -487,17 +487,7 @@ impl PreparedInputTransition {
         )?);
         phase.include(bytes, 64)?;
         include(tasks::TaskMaintenanceMaterial { bytes, records: 64 })?;
-        let remaining = phase.remaining()?;
-        material.bytes = request
-            .byte_limit
-            .min(64 * 1024 * 1024)
-            .checked_sub(remaining.byte_limit)
-            .context("child prepared material underflow")?;
-        material.records = request
-            .record_limit
-            .min(65_536)
-            .checked_sub(remaining.record_limit)
-            .context("child prepared count underflow")?;
+        material = phase.material_estimate();
         let intent = OriginalChildTerminalIntent {
             original: source.address().clone(),
             before,

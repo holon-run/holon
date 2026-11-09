@@ -44,22 +44,8 @@ impl SchedulingWriteProof<'_, '_> {
         &self,
         request: &SchedulingDomainLoadRequest,
     ) -> Result<SchedulingDomainLoadRequest> {
-        let bytes = request
-            .byte_limit
-            .min(MAX_BYTES)
-            .checked_sub(self.material_bytes)
-            .filter(|n| *n > 0)
-            .ok_or(SchedulingSnapshotError::ResourceExhausted(
-                "Scheduling external material",
-            ))?;
-        let records = request
-            .record_limit
-            .min(MAX_RECORDS)
-            .checked_sub(self.material_records)
-            .filter(|n| *n > 0)
-            .ok_or(SchedulingSnapshotError::ResourceExhausted(
-                "Scheduling external material",
-            ))?;
+        let bytes = request.byte_limit;
+        let records = request.record_limit;
         Ok(SchedulingDomainLoadRequest {
             // This view is only an allowance for frozen external material.
             // The original finalizer still uses its full original selector.
@@ -82,7 +68,7 @@ impl SchedulingWriteProof<'_, '_> {
             .material_records
             .checked_add(records)
             .context("Scheduling external count overflow")?;
-        bound(self.material_records, self.material_bytes, request)
+        observe_material(self.material_records, self.material_bytes, request)
     }
 }
 #[derive(Debug)]

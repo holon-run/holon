@@ -150,7 +150,7 @@ pub(crate) struct CommandTaskOwnerObservation {
 pub(crate) fn observe_original_owner_tx(
     tx: &rusqlite::Transaction<'_>,
     scope: &InputEvidenceScope,
-    request: &super::task_snapshot::TaskDomainLoadRequest,
+    _request: &super::task_snapshot::TaskDomainLoadRequest,
     ledger: &crate::runtime::input_evidence_budget::InputEvidenceBudgetLedger,
 ) -> Result<CommandTaskOwnerObservation> {
     use crate::runtime::input_evidence_budget::{InputMemoryCategory, OwnedBytesEstimate};
@@ -161,12 +161,7 @@ pub(crate) fn observe_original_owner_tx(
         .checked_add(scope.agent_id.len() + 256)
         .and_then(|n| n.checked_mul(8))
         .context("Command owner metadata overflow")?;
-    ensure!(
-        bytes <= request.byte_limit.min(64 * 1024 * 1024) && request.record_limit >= 8,
-        super::task_snapshot::TaskSnapshotError::ResourceExhausted(
-            "original Command owner metadata"
-        )
-    );
+
     let guard = ledger.register_owned_bytes(
         scope,
         InputMemoryCategory::Candidate,
@@ -251,16 +246,12 @@ impl CommandTaskOwnerObservation {
 pub(crate) fn charge_material(
     scope: &InputEvidenceScope,
     bytes: usize,
-    records: usize,
-    request: &super::task_snapshot::TaskDomainLoadRequest,
+    _records: usize,
+    _request: &super::task_snapshot::TaskDomainLoadRequest,
     ledger: &crate::runtime::input_evidence_budget::InputEvidenceBudgetLedger,
 ) -> Result<std::sync::Arc<crate::runtime::input_evidence_budget::BudgetViewGuard>> {
     use crate::runtime::input_evidence_budget::{InputMemoryCategory, OwnedBytesEstimate};
-    ensure!(
-        bytes <= request.byte_limit.min(64 * 1024 * 1024)
-            && records <= request.record_limit.min(65536),
-        super::task_snapshot::TaskSnapshotError::ResourceExhausted("original Command material")
-    );
+
     Ok(ledger.register_owned_bytes(
         scope,
         InputMemoryCategory::Candidate,
@@ -561,7 +552,8 @@ mod memory_material_tests {
     };
 
     #[test]
-    fn original_command_turn_raw_material_precedes_json_in_both_binding_branches() -> Result<()> {
+    fn original_command_turn_rejects_corruption_without_size_quota_in_both_binding_branches(
+    ) -> Result<()> {
         let directory = tempfile::tempdir()?;
         let db = RuntimeDb::open_and_migrate(
             directory.path().join("runtime.sqlite"),
@@ -614,9 +606,9 @@ mod memory_material_tests {
             let error = db
                 .transaction(|tx| memory_binding_material_tx(tx, &scope, &state, &request, &ledger))
                 .err()
-                .expect("oversized malformed original Turn must fail before JSON");
+                .expect("malformed original Turn must fail validation");
             assert!(
-                matches!(
+                !matches!(
                     error.downcast_ref::<super::super::task_snapshot::TaskSnapshotError>(),
                     Some(super::super::task_snapshot::TaskSnapshotError::ResourceExhausted(_))
                 ),

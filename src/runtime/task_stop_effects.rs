@@ -73,15 +73,12 @@ impl PreparedTaskStopEffects {
             .and_then(|bytes| bytes.checked_add(1024))
             .context("TaskStop local material overflow")?;
         let limits = ledger.limits();
-        let byte_limit = limits
+        let _byte_limit = limits
             .history_per_agent_bytes
             .checked_add(limits.pending_per_agent_bytes)
             .context("TaskStop local limit overflow")?
             .min(64 * 1024 * 1024);
-        ensure!(
-            bytes <= byte_limit && limits.record_limit >= 4,
-            "TaskStop local ResourceExhausted before clone"
-        );
+
         let material = ledger.register_owned_bytes(
             &intent.task.scope,
             InputMemoryCategory::Candidate,
@@ -368,18 +365,8 @@ impl TaskStopEffectRegistry {
         let bytes = u64::try_from(count)?
             .checked_mul(64)
             .context("TaskStop retained selectors overflow")?;
-        let limits = ledger.limits();
-        ensure!(
-            u64::try_from(count)? <= limits.record_limit
-                && bytes
-                    <= limits
-                        .history_per_agent_bytes
-                        .checked_add(limits.pending_per_agent_bytes)
-                        .context("TaskStop selector limits overflow")?,
-            crate::runtime_db::task_snapshot::TaskSnapshotError::ResourceExhausted(
-                "retained Stop selectors"
-            )
-        );
+        let _limits = ledger.limits();
+
         let guard = ledger.register_owned_bytes(
             scope,
             InputMemoryCategory::Candidate,

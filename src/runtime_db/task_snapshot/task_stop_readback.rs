@@ -27,7 +27,7 @@ pub(crate) fn prepare_task_sql_readback_tx(
         .and_then(|n| n.checked_add(256))
         .and_then(|n| n.checked_mul(8))
         .context("TaskStop SQL readback material overflow")?;
-    bound(8, material, Some(request))?;
+    observe_material(8, material, Some(request))?;
     let budget = ledger.register_owned_bytes(
         scope,
         InputMemoryCategory::Candidate,

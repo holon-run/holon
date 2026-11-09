@@ -70,7 +70,7 @@ pub(crate) fn task_maintenance_material_tx(
             .checked_add(n)
             .and_then(|n| n.checked_add(key.id.len() + 512))
             .context("Task maintenance material overflow")?;
-        bound(keys.len() + 1, bytes, None)?;
+        observe_material(keys.len() + 1, bytes, None)?;
     }
     let material = TaskMaintenanceMaterial {
         bytes: bytes
@@ -80,7 +80,7 @@ pub(crate) fn task_maintenance_material_tx(
             .checked_mul(8)
             .context("Task maintenance records overflow")?,
     };
-    bound(material.records, material.bytes, None)?;
+    observe_material(material.records, material.bytes, None)?;
     Ok(material)
 }
 fn revision_tx(tx: &Transaction<'_>, scope: &InputEvidenceScope) -> Result<u64> {
@@ -116,7 +116,7 @@ pub(super) fn require_existing_maintenance_scope_tx(
             |r| r.get(0),
         )
         .optional()?;
-    bound(1, size.unwrap_or_default(), None)?;
+    observe_material(1, size.unwrap_or_default(), None)?;
     let raw: Option<(String, String, String)> = tx
         .query_row(
             "SELECT agent_id,status,payload_json FROM agent_identities WHERE agent_id=?1",

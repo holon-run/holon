@@ -484,7 +484,7 @@ fn current_install_rejects_an_old_body_even_at_the_same_qualified_address() -> R
 }
 
 #[test]
-fn current_body_admission_failure_rolls_back_original_write_and_qualification() -> Result<()> {
+fn current_body_above_legacy_hint_commits_original_write_and_qualification() -> Result<()> {
     let f = Fixture::new()?;
     let ledger = InputEvidenceBudgetLedger::new(Default::default())?;
     let event = AuditEvent::legacy(
@@ -492,22 +492,18 @@ fn current_body_admission_failure_rolls_back_original_write_and_qualification() 
         serde_json::json!({"text":"x".repeat(1024 * 1024)}),
     );
     let keys = [(CurrentFamily::Event, event.id.as_str())];
-    let error = attempt(&f, &ledger, &keys, &keys, |tx| {
+    let ack = attempt(&f, &ledger, &keys, &keys, |tx| {
         append_audit_event_tx(tx, Some(&f.scope.agent_id), &event)?;
         Ok(())
-    })
-    .unwrap_err();
-    assert!(matches!(
-        error.downcast_ref::<crate::runtime_db::input_evidence_snapshot::InputEvidenceSnapshotError>(),
-        Some(crate::runtime_db::input_evidence_snapshot::InputEvidenceSnapshotError::ResourceExhausted(_))
-    ));
-    assert_eq!(qualified_count(&f)?, 0);
+    })?;
+    assert!(ack.is_complete());
+    assert_eq!(qualified_count(&f)?, 1);
     let count: usize = f.db.connection()?.query_row(
         "SELECT COUNT(*) FROM audit_events WHERE audit_event_id=?1",
         [&event.id],
         |row| row.get(0),
     )?;
-    assert_eq!(count, 0);
+    assert_eq!(count, 1);
     assert_eq!(ledger.report()?.observed_bytes, 0);
     Ok(())
 }
@@ -621,57 +617,24 @@ fn current_generated_addresses_cover_original_and_command_waits_not_late_or_raw(
 }
 
 #[test]
-fn current_generated_address_one_byte_short_cannot_replenish_original_phase_and_rolls_back(
-) -> Result<()> {
+fn current_generated_addresses_ignore_legacy_hint_without_writing_during_preparation() -> Result<()>
+{
     let f = Fixture::new()?;
     let ledger = InputEvidenceBudgetLedger::new(Default::default())?;
-    let error =
-        f.db.transaction(|tx| {
-            let mut native = NativeInputWriteProof::prepare_tx(
-                tx,
-                &f.scope,
-                &ledger,
-                (4 * 1024 * 1024, 4096),
-                None,
-                |_| Ok(()),
-            )?
-            .context("Native source")?;
-            let mut current = native
-                .with_input_phase(tx, &ledger, None, |material| {
-                    OriginalCurrentWrites::prepare(tx, &f.scope, material, |_| Ok(()))
-                })?
-                .context("Current source")?;
-            let first = native
-                .with_input_phase(tx, &ledger, None, |material| {
-                    let batch_bytes = crate::runtime_db::transitions::WAIT_TRIGGERED_AUDIT_PREFIX
-                        .len()
-                        + crate::runtime_db::transitions::WAIT_STALE_AUDIT_PREFIX.len()
-                        + 2 * "result-路".len()
-                        + 2 * 1024;
-                    let overhead = std::mem::size_of::<
-                        crate::runtime::input_evidence_budget::BudgetViewGuard,
-                    >() + 2 * std::mem::size_of::<
-                        std::sync::Arc<crate::runtime::input_evidence_budget::BudgetViewGuard>,
-                    >();
-                    let consume = material.remaining_limits().0 - batch_bytes - 2 * overhead + 1;
-                    material.observe_native_footprint(consume, 0)?;
-                    assert_eq!(material.remaining_limits().0, batch_bytes + overhead - 1);
-                    current.prepare_trigger_events("result-路", std::iter::empty(), material)
-                })
-                .unwrap_err();
-            let retry = native
-                .with_input_phase(tx, &ledger, None, |material| {
-                    current.prepare_trigger_events("result-路", std::iter::empty(), material)
-                })
-                .unwrap_err();
-            assert_eq!(format!("{first:#}"), format!("{retry:#}"));
-            Err::<(), _>(first)
-        })
-        .unwrap_err();
-    assert!(matches!(
-        error.downcast_ref::<crate::runtime_db::input_evidence_snapshot::InputEvidenceSnapshotError>(),
-        Some(crate::runtime_db::input_evidence_snapshot::InputEvidenceSnapshotError::ResourceExhausted(_))
-    ));
+    f.db.transaction(|tx| {
+        let mut native =
+            NativeInputWriteProof::prepare_tx(tx, &f.scope, &ledger, (1, 1), None, |_| Ok(()))?
+                .context("Native source")?;
+        let mut current = native
+            .with_input_phase(tx, &ledger, None, |material| {
+                OriginalCurrentWrites::prepare(tx, &f.scope, material, |_| Ok(()))
+            })?
+            .context("Current source")?;
+        native.with_input_phase(tx, &ledger, None, |material| {
+            current.prepare_trigger_events("result-路", std::iter::empty(), material)
+        })?;
+        Ok(())
+    })?;
     let revisions: usize =
         f.db.connection()?
             .query_row("SELECT COUNT(*) FROM current_read_revisions", [], |row| {
@@ -1121,16 +1084,22 @@ fn current_empty_ack_keeps_revision_and_native_phase_remains_cumulative() -> Res
     assert!(ack.is_complete());
     f.db.transaction(|tx| {
         let mut native = NativeInputWriteProof::prepare_tx(
-            tx, &f.scope, &ledger, (4 * 1024 * 1024, 4096), None, |_| Ok(()),
-        )?.unwrap();
+            tx,
+            &f.scope,
+            &ledger,
+            (4 * 1024 * 1024, 4096),
+            None,
+            |_| Ok(()),
+        )?
+        .unwrap();
         native.with_input_phase(tx, &ledger, None, |material| {
             let before = material.remaining_limits();
-            let current = OriginalCurrentWrites::prepare(tx, &f.scope, material, |_| Ok(()))?
-                .unwrap();
+            let current =
+                OriginalCurrentWrites::prepare(tx, &f.scope, material, |_| Ok(()))?.unwrap();
             let after = material.remaining_limits();
             assert!(after.0 < before.0 && after.1 < before.1);
-            let error = material.observe_native_footprint(after.0, after.1).unwrap_err();
-            assert!(error.downcast_ref::<crate::runtime_db::input_evidence_snapshot::InputEvidenceSnapshotError>().is_some());
+            material.observe_native_footprint(after.0, after.1)?;
+            assert_eq!(material.remaining_limits(), (0, 0));
             drop(current);
             Ok(())
         })?;

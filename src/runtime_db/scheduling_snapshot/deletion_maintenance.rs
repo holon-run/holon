@@ -137,20 +137,14 @@ fn charge_target(
 }
 fn remaining(
     load: &SchedulingDomainLoadRequest,
-    material: &Material<'_, '_>,
+    _material: &Material<'_, '_>,
 ) -> Result<SchedulingDomainLoadRequest> {
     let next = SchedulingDomainLoadRequest {
         capture: load.capture.clone(),
-        byte_limit: load
-            .byte_limit
-            .checked_sub(material.bytes)
-            .context("deletion Scheduling bytes exhausted")?,
-        record_limit: load
-            .record_limit
-            .checked_sub(material.records)
-            .context("deletion Scheduling records exhausted")?,
+        byte_limit: load.byte_limit,
+        record_limit: load.record_limit,
     };
-    bound(0, 0, &next)?;
+    observe_material(0, 0, &next)?;
     Ok(next)
 }
 impl RuntimeDb {

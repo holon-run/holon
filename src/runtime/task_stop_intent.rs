@@ -55,15 +55,12 @@ impl FrozenTaskStopIntent {
             .and_then(|n| n.checked_add(4096))
             .context("TaskStop frozen intent material overflow")?;
         let limits = ledger.limits();
-        let byte_limit = limits
+        let _byte_limit = limits
             .history_per_agent_bytes
             .checked_add(limits.pending_per_agent_bytes)
             .context("TaskStop frozen intent limit overflow")?
             .min(64 * 1024 * 1024);
-        ensure!(
-            bytes <= byte_limit && limits.record_limit >= 8,
-            "TaskStop frozen intent ResourceExhausted before clone"
-        );
+
         let material = ledger.register_owned_bytes(
             &qualified.locator.scope,
             InputMemoryCategory::Candidate,

@@ -10,7 +10,7 @@ fn typed_edges(wait: &WaitConditionRecord) -> Result<BTreeSet<(&'static str, Str
         ensure!(!id.is_empty(), "empty qualified Wait relation source");
         if !edges.contains(&(kind, id.to_owned())) {
             bytes = bytes.saturating_add(id.len()).saturating_add(wait.id.len());
-            bound_metadata(edges.len() + 1, bytes)?;
+            observe_metadata(edges.len() + 1, bytes)?;
             edges.insert((kind, id.to_owned()));
         }
         Ok(())
@@ -88,7 +88,7 @@ pub(super) fn load_wait_relations_tx(
             ensure!(!key.is_empty(), "empty Work Wait relation source");
             relation_count = relation_count.saturating_add(1);
             relation_bytes = relation_bytes.saturating_add(key.len());
-            bound_metadata(relation_count, relation_bytes)?;
+            observe_metadata(relation_count, relation_bytes)?;
             // Missing fixed members are not a fresh absence. An actual qualified
             // update replaces their relation using the durable edge index.
             for manifest in &fixed {
@@ -108,32 +108,21 @@ pub(super) fn load_wait_relations_tx(
                     }
                 }
             }
-            let mut query=tx.prepare(&format!("SELECT wait_condition_id FROM wait_conditions WHERE agent_id=?1 AND ({predicate}) ORDER BY wait_condition_id LIMIT ?3"))?;
+            let mut query=tx.prepare(&format!("SELECT wait_condition_id FROM wait_conditions WHERE agent_id=?1 AND ({predicate}) ORDER BY wait_condition_id"))?;
             let mut ids = BTreeSet::new();
-            for row in query.query_map(
-                params![
-                    scope.agent_id,
-                    key,
-                    i64::try_from(MAX_METADATA_RECORDS + 1)?
-                ],
-                |row| row.get::<_, String>(0),
-            )? {
+            for row in
+                query.query_map(params![scope.agent_id, key], |row| row.get::<_, String>(0))?
+            {
                 let id = row?;
                 relation_count = relation_count.saturating_add(1);
                 relation_bytes = relation_bytes.saturating_add(id.len());
-                bound_metadata(relation_count, relation_bytes)?;
+                observe_metadata(relation_count, relation_bytes)?;
                 required.insert(WorkKey::new(WorkFamily::Wait, &id));
                 ids.insert(id);
             }
-            let mut edges=tx.prepare("SELECT wait_id,availability,revision FROM work_domain_wait_edges WHERE agent_id=?1 AND identity_incarnation=?2 AND edge_kind=?3 AND source_id=?4 ORDER BY wait_id LIMIT ?5")?;
+            let mut edges=tx.prepare("SELECT wait_id,availability,revision FROM work_domain_wait_edges WHERE agent_id=?1 AND identity_incarnation=?2 AND edge_kind=?3 AND source_id=?4 ORDER BY wait_id")?;
             for row in edges.query_map(
-                params![
-                    scope.agent_id,
-                    scope.identity_incarnation,
-                    kind,
-                    key,
-                    i64::try_from(MAX_METADATA_RECORDS + 1)?
-                ],
+                params![scope.agent_id, scope.identity_incarnation, kind, key],
                 |row| {
                     Ok((
                         row.get::<_, String>(0)?,
@@ -145,7 +134,7 @@ pub(super) fn load_wait_relations_tx(
                 let (id, availability, revision) = row?;
                 relation_count = relation_count.saturating_add(1);
                 relation_bytes = relation_bytes.saturating_add(id.len());
-                bound_metadata(relation_count, relation_bytes)?;
+                observe_metadata(relation_count, relation_bytes)?;
                 let wait = WorkKey::new(WorkFamily::Wait, &id);
                 let current = alias(tx, scope, &wait)?
                     .context("qualified Wait relation has no original alias")?;
