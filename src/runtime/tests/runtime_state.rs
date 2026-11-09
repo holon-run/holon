@@ -25019,7 +25019,7 @@ enum D5BeginRetryCase {
     PhysicallyCompleted,
     LegacyCompletedBeforeStart,
     CorruptOriginalReceipt,
-    OversizeOriginalReceipt,
+    LargeMalformedOriginalReceipt,
 }
 
 fn d5_q1_start_observation(
@@ -25216,7 +25216,8 @@ fn d5_q1_retry_processing(
         }
         if matches!(
             case,
-            D5BeginRetryCase::CorruptOriginalReceipt | D5BeginRetryCase::OversizeOriginalReceipt
+            D5BeginRetryCase::CorruptOriginalReceipt
+                | D5BeginRetryCase::LargeMalformedOriginalReceipt
         ) {
             let limits = processing_runtime.inner.input_evidence_budget.limits();
             let bytes = (limits.history_per_agent_bytes + limits.pending_per_agent_bytes) / 8 + 1;
@@ -25262,7 +25263,7 @@ fn d5_q1_retry_processing(
             D5BeginRetryCase::MissingStart
                 | D5BeginRetryCase::PhysicallyCompleted
                 | D5BeginRetryCase::CorruptOriginalReceipt
-                | D5BeginRetryCase::OversizeOriginalReceipt
+                | D5BeginRetryCase::LargeMalformedOriginalReceipt
         ) {
             assert!(
                 retry.is_err(),
@@ -25279,10 +25280,21 @@ fn d5_q1_retry_processing(
                     )
                 ));
             }
-            if matches!(case, D5BeginRetryCase::OversizeOriginalReceipt) {
-                assert!(matches!(retry.as_ref().unwrap_err().downcast_ref::<crate::runtime_db::dispatch_memory::DispatchMemoryError>(),
-                    Some(crate::runtime_db::dispatch_memory::DispatchMemoryError::ResourceExhausted)),
-                    "oversize malformed outcome must fail before String/JSON decode");
+            if matches!(case, D5BeginRetryCase::LargeMalformedOriginalReceipt) {
+                let error = retry.as_ref().unwrap_err();
+                assert!(
+                    error
+                        .downcast_ref::<serde_json::Error>()
+                        .is_some_and(serde_json::Error::is_syntax),
+                    "malformed outcome must fail JSON validation: {error:#}"
+                );
+                assert!(
+                    !matches!(
+                        error.downcast_ref::<crate::runtime_db::dispatch_memory::DispatchMemoryError>(),
+                        Some(crate::runtime_db::dispatch_memory::DispatchMemoryError::ResourceExhausted)
+                    ),
+                    "legacy sizing hints must not reject the receipt"
+                );
             }
             assert_eq!(
                 d5_q1_start_observation(&processing_runtime, &turn, &scheduled.message.id),
@@ -25363,6 +25375,6 @@ async fn d5_begin_retry_validates_original_whole_start_outcome_checksum() {
 }
 #[cfg(holon_lib_test_shard = "a")]
 #[tokio::test]
-async fn d5_begin_retry_counts_all_receipt_fields_before_decode() {
-    d5_q1_retry_case(D5BeginRetryCase::OversizeOriginalReceipt).await;
+async fn d5_begin_retry_rejects_large_malformed_receipt_without_size_quota() {
+    d5_q1_retry_case(D5BeginRetryCase::LargeMalformedOriginalReceipt).await;
 }
