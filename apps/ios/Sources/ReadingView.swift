@@ -143,12 +143,15 @@ private struct AgentSummaryRow: View {
                     .font(.subheadline).foregroundStyle(.secondary).lineLimit(1)
                 }
                 HStack(spacing: 8) {
-                    Text(LocalizedStringKey(presentation.statusKey))
+                    AgentStatusLabel(presentation: presentation)
                     if let unread = agent.unreadCount, unread > 0 {
                         Text("reading.unread \(unread)").fontWeight(.semibold)
                     }
                 }
                 .font(.caption).foregroundStyle(.secondary)
+                if let key = presentation.connectionStatusKey {
+                    Text(LocalizedStringKey(key)).font(.caption).foregroundStyle(.secondary)
+                }
             }
         }
         .padding(.vertical, 8)
@@ -166,8 +169,11 @@ private struct AgentConversationTitle: View {
             AgentAvatarView(store: store, agentID: agent.id, presentation: presentation, size: 28)
             VStack(alignment: .leading, spacing: 1) {
                 Text(verbatim: agent.name).font(.subheadline.weight(.semibold)).lineLimit(1)
-                Text(LocalizedStringKey(presentation.statusKey))
+                AgentStatusLabel(presentation: presentation)
                     .font(.caption2).foregroundStyle(.secondary).lineLimit(1)
+                if let key = presentation.connectionStatusKey {
+                    Text(LocalizedStringKey(key)).font(.caption2).foregroundStyle(.secondary).lineLimit(1)
+                }
             }
         }
         .accessibilityElement(children: .combine)
@@ -409,7 +415,12 @@ struct ConversationReadingView: View {
                         isRefreshing: reader.isRefreshing
                     ))
                 } else {
-                    Text(verbatim: reader.selectedAgentID ?? "Holon").lineLimit(1)
+                    VStack(alignment: .leading, spacing: 1) {
+                        Text(verbatim: reader.selectedAgentID ?? "Holon").lineLimit(1)
+                        AgentStatusLabel(presentation: .init(kind: .unknown)).font(.caption2)
+                    }
+                    .accessibilityElement(children: .combine)
+                    .accessibilityIdentifier("conversation.identity")
                 }
             }
             ToolbarItemGroup(placement: .primaryAction) {

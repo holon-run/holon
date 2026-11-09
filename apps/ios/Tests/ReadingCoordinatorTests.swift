@@ -2320,7 +2320,7 @@ final class ReadingCoordinatorTests: XCTestCase {
             XCTAssertEqual(AgentIdentityPresentation.derive(
                 agent, status: coordinator.status, isRosterCurrent: coordinator.isRosterCurrent,
                 isCached: coordinator.rosterIsCached, isRefreshing: coordinator.isRefreshing
-            ), .init(statusKey: "reading.cache.refreshing", expression: .neutral))
+            ), .init(kind: .unknown, connectionStatusKey: "reading.cache.refreshing"))
 
             await fake.releaseRoster()
             try await wait { !coordinator.isRefreshing }
@@ -2330,7 +2330,7 @@ final class ReadingCoordinatorTests: XCTestCase {
             XCTAssertEqual(AgentIdentityPresentation.derive(
                 agent, status: coordinator.status, isRosterCurrent: coordinator.isRosterCurrent,
                 isCached: coordinator.rosterIsCached, isRefreshing: coordinator.isRefreshing
-            ), .init(statusKey: "reading.cache.saved", expression: .neutral))
+            ), .init(kind: .unknown, connectionStatusKey: "reading.cache.saved"))
 
             await fake.setRosterError(nil)
             await coordinator.refresh()
@@ -2338,7 +2338,7 @@ final class ReadingCoordinatorTests: XCTestCase {
             XCTAssertEqual(AgentIdentityPresentation.derive(
                 agent, status: coordinator.status, isRosterCurrent: coordinator.isRosterCurrent,
                 isCached: coordinator.rosterIsCached, isRefreshing: coordinator.isRefreshing
-            ), .init(statusKey: "avatar.status.running", expression: .focused))
+            ), .init(kind: .running))
             coordinator.disconnect()
         }
     }

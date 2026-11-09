@@ -447,9 +447,11 @@
 "avatar.status.offline" = "Offline";
 "avatar.status.deleting" = "Deleting";
 "avatar.status.stopped" = "Stopped";
-"avatar.status.running" = "Working";
-"avatar.status.needsInput" = "Needs your reply";
+"avatar.status.running" = "Running";
+"avatar.status.runnable" = "Runnable";
+"avatar.status.needsInput" = "Needs input";
 "avatar.status.waiting" = "Waiting";
+"avatar.status.blocked" = "Blocked";
 "avatar.status.sleeping" = "Sleeping";
 "avatar.status.ready" = "Ready";
 "avatar.status.unknown" = "Status unavailable";
