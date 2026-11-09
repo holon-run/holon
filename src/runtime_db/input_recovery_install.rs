@@ -9,8 +9,6 @@ use serde::{Deserialize, Serialize};
 use super::{repositories, transitions::PostCommitEffects};
 use crate::runtime::resident_input_evidence::{InputEvidenceKey, InputEvidenceScope};
 
-const MAX_INSTALL_KEYS: usize = 65_536;
-
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct InputMutationInstallKeys {
@@ -65,13 +63,10 @@ impl InputMutationInstallKeys {
             self.input_roots.iter().all(|key| !key.id.trim().is_empty()),
             "input owning target has an empty ID"
         );
-        count = count
+        let total = count
             .checked_add(self.input_roots.len())
             .context("input owning target count overflow")?;
-        ensure!(
-            count <= MAX_INSTALL_KEYS,
-            "input cache targets exceed preparation limit"
-        );
+        tracing::trace!(total, "observed Input install selectors");
         Ok(())
     }
 

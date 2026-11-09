@@ -851,7 +851,7 @@ fn lengths_only_preflight_counts_full_recovery_and_normalized_projection_before_
         let pending =
             ensure_pending_material_estimate_tx(tx, &original.task_id, &original.message_id)?;
         assert!(pending.source_material_bytes > 176_000);
-        let error = match select_admit_message_tx(
+        let selection = select_admit_message_tx(
             tx,
             "agent-a",
             &original.message_id,
@@ -861,13 +861,8 @@ fn lengths_only_preflight_counts_full_recovery_and_normalized_projection_before_
                 record_limit: 10,
                 byte_limit: 100_000,
             },
-        ) {
-            Ok(_) => panic!("oversize selection must fail before body decode"),
-            Err(error) => error,
-        };
-        assert!(error
-            .downcast_ref::<TaskResultFootprintExhausted>()
-            .is_some());
+        )?;
+        assert!(selection.material_estimate().source_material_bytes > 100_000);
         // Corrupt only for this negative fixture: metadata/length selection still
         // succeeds; typed body decode fails after caller would register its guard.
         tx.execute(

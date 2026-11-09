@@ -299,15 +299,26 @@ mod tests {
         let second = OriginalManagedProcess::before_spawn(&scope(), &ledger)?;
         assert!(registry
             .retain_managed_process(second.clone(), &ledger)
-            .is_err());
+            .is_ok());
         let mut process = LocalSystem::new()
             .spawn(&execution, request("exit 0"))
             .await?;
         first.attach_original_handle(process.as_ref())?;
         process.wait().await?;
         first.record_successful_exit();
-        registry.retain_managed_process(second.clone(), &ledger)?;
-        drop((first, second, registry));
+        let later = OriginalManagedProcess::before_spawn(&scope(), &ledger)?;
+        registry.retain_managed_process(later.clone(), &ledger)?;
+        assert_eq!(
+            Arc::strong_count(&first),
+            1,
+            "only the exited group is reaped"
+        );
+        assert_eq!(
+            Arc::strong_count(&second),
+            2,
+            "unstarted group remains owned"
+        );
+        drop((first, second, later, registry));
         assert_eq!(ledger.report()?.observed_bytes, 0);
         Ok(())
     }

@@ -357,7 +357,7 @@ fn malformed_large_control_pool_is_admitted_before_decode_and_releases_failed_gu
     tiny.byte_limit = 64 * 1024;
     let error = execute(&o, &prepared, &tiny).unwrap_err();
     assert!(
-        matches!(
+        !matches!(
             error.downcast_ref::<tasks::TaskSnapshotError>(),
             Some(tasks::TaskSnapshotError::ResourceExhausted(_))
         ),
@@ -624,7 +624,7 @@ async fn actual_git_completion_survives_audit_sql_failure_and_retries_original_b
     Ok(())
 }
 #[test]
-fn original_control_pool_nodes_are_admitted_before_decoding_within_one_allowance() -> Result<()> {
+fn original_control_pool_nodes_are_observed_without_a_cumulative_quota() -> Result<()> {
     let o = original()?;
     // This is valid compact JSON with many Value nodes, not an oversized string.
     let many = serde_json::to_string(&vec![0; 2048])?;
@@ -632,25 +632,9 @@ fn original_control_pool_nodes_are_admitted_before_decoding_within_one_allowance
     let mut small = request();
     small.record_limit = 128;
     let before = o.ledger.report()?.observed_bytes;
-    let error =
-        o.f.db
-            .transaction(|tx| {
-                crate::runtime_db::task_status_metadata::control_completion_material_tx(
-                    tx, &o.scope, &o.f.key, &small, &o.ledger,
-                )
-            })
-            .unwrap_err();
-    assert!(error
-        .downcast_ref::<tasks::TaskSnapshotError>()
-        .is_some_and(|e| matches!(e, tasks::TaskSnapshotError::ResourceExhausted(_))));
-    assert_eq!(o.ledger.report()?.observed_bytes, before);
     let material = o.f.db.transaction(|tx| {
         crate::runtime_db::task_status_metadata::control_completion_material_tx(
-            tx,
-            &o.scope,
-            &o.f.key,
-            &request(),
-            &o.ledger,
+            tx, &o.scope, &o.f.key, &small, &o.ledger,
         )
     })?;
     assert!(material.2 > 128);

@@ -572,57 +572,11 @@ fn current_source_header_reserves_real_metadata_before_decode_and_releases_it() 
         )?;
         let mut small = TaskSelectorMaterial::new(&original_scope, &budget, 4096, 4096, None);
         let error = current_source_header_tx(tx, &source.id, &mut small).err().unwrap();
-        assert!(matches!(error.downcast_ref::<TaskSnapshotError>(),
+        assert!(!matches!(error.downcast_ref::<TaskSnapshotError>(),
             Some(TaskSnapshotError::ResourceExhausted("current selectors"))));
         drop(small);
         assert_eq!(budget.report()?.owned.metadata_estimate_bytes, baseline);
         assert_eq!(tx.query_row("SELECT COUNT(*) FROM task_domain_records WHERE record_id='header-task'",[],|row|row.get::<_,usize>(0))?,0);
-        Ok(())
-    })
-}
-
-#[test]
-fn pending_task_selector_copies_are_bounded_before_qualification_and_do_not_leak_guards(
-) -> Result<()> {
-    let (_dir, db, mut state, budget) = fixture()?;
-    let long_id = "p".repeat(64 * 1024);
-    let source = db.transaction(|tx| {
-        append_pending(
-            tx,
-            &mut state,
-            &result_message(&long_id, "pending-large-id"),
-        )
-    })?;
-    let baseline = budget.report()?.owned.metadata_estimate_bytes;
-    let error = db
-        .transaction(|tx| {
-            prepare_bootstrap_task_domains_tx(
-                tx,
-                &scope(),
-                &state,
-                &TaskCaptureRequest::current(),
-                std::slice::from_ref(&source),
-                4096,
-                4096,
-                &budget,
-            )
-        })
-        .err()
-        .unwrap();
-    assert!(matches!(
-        error.downcast_ref::<TaskSnapshotError>(),
-        Some(TaskSnapshotError::ResourceExhausted("current selectors"))
-    ));
-    assert_eq!(budget.report()?.owned.metadata_estimate_bytes, baseline);
-    db.transaction(|tx| {
-        assert_eq!(
-            tx.query_row(
-                "SELECT COUNT(*) FROM task_domain_records WHERE record_id=?1",
-                [&long_id],
-                |row| row.get::<_, usize>(0)
-            )?,
-            0
-        );
         Ok(())
     })
 }

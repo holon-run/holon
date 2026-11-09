@@ -247,6 +247,50 @@ class BuildToolContracts(unittest.TestCase):
         self.assertFalse(self.log.exists())
 
 
+class UIFixtureTaskResultContracts(unittest.TestCase):
+    def test_result_commands_wait_until_all_creations_are_acknowledged(self):
+        seed = fixture_helpers()["seed_fixture_task_results"]
+        processes = []
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+
+            def local(method, path, payload):
+                self.assertEqual((method, path), ("POST", "/control/agents/fixture/tasks"))
+                self.assertFalse((root / "release-task-results").exists())
+                self.assertTrue(all(process.poll() is None for process in processes))
+                process = subprocess.Popen(["sh", "-c", payload["cmd"]], cwd=payload["workdir"],
+                                           stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+                processes.append(process)
+                self.assertIsNone(process.poll())
+                return {"id": f"task-{len(processes)}"}
+
+            try:
+                results = seed(local, "fixture", root)
+                self.assertEqual(results, {"COMPLETED": {"task": "task-1"},
+                                           "FAILED": {"task": "task-2"}})
+                for process, status, stdout, stderr in [
+                    (processes[0], 0, b"IOS_TASK_OUTPUT_COMPLETE\n", b""),
+                    (processes[1], 7, b"", b"IOS_TASK_FAILURE_REASON\n"),
+                ]:
+                    self.assertEqual(process.communicate(timeout=5), (stdout, stderr))
+                    self.assertEqual(process.returncode, status)
+            finally:
+                for process in processes:
+                    if process.poll() is None:
+                        process.kill()
+                    process.communicate()
+
+    def test_failed_creation_does_not_release_results_or_retry_commands(self):
+        seed = fixture_helpers()["seed_fixture_task_results"]
+        local = Mock(side_effect=[{"id": "task-1"}, RuntimeError("creation failed")])
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            with self.assertRaisesRegex(RuntimeError, "creation failed"):
+                seed(local, "fixture", root)
+            self.assertEqual(local.call_count, 2)
+            self.assertFalse((root / "release-task-results").exists())
+
+
 class UIFixtureBootstrapContracts(unittest.TestCase):
     def setUp(self):
         self.helpers = fixture_helpers()

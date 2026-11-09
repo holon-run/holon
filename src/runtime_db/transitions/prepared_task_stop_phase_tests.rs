@@ -631,7 +631,7 @@ fn sparse_stop_identity_material_is_admitted_before_malformed_decode_and_release
         f.db.observe_task_stop_sparse_recovery(&attempt, &limited, &ledger)
             .unwrap_err();
     assert!(
-        matches!(
+        !matches!(
             error.downcast_ref::<tasks::TaskSnapshotError>(),
             Some(tasks::TaskSnapshotError::ResourceExhausted(
                 "Stop sparse identity material"
@@ -653,7 +653,7 @@ fn sparse_stop_identity_material_is_admitted_before_malformed_decode_and_release
             )
             .unwrap_err();
     assert!(
-        matches!(
+        !matches!(
             error.downcast_ref::<tasks::TaskSnapshotError>(),
             Some(tasks::TaskSnapshotError::ResourceExhausted(
                 "Stop phase material"

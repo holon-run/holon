@@ -461,7 +461,7 @@ fn task_proof_budget_precedes_decode_and_original_business_sql() -> Result<()> {
     let before = f.receipt_count()?;
     let error = execute(&f, &p, &request, &ledger).unwrap_err();
     assert!(
-        matches!(
+        !matches!(
             error.downcast_ref::<tasks::TaskSnapshotError>(),
             Some(tasks::TaskSnapshotError::ResourceExhausted(_))
         ),

@@ -174,18 +174,13 @@ fn original_boot_task_capture_does_not_follow_a_later_qualified_terminal_write()
 }
 
 #[test]
-fn original_boot_task_copy_budget_rejects_before_cloning_and_releases_source_pins() -> Result<()> {
+fn original_boot_task_copy_ignores_size_hint_and_releases_source_pins() -> Result<()> {
     let (_home, _db, ledger, mut recovery, _expected) = fixture()?;
     let weak = Arc::downgrade(recovery.selected.records.first().unwrap());
     recovery.byte_limit = 1;
-    let error = match recovery.into_records(&ledger) {
-        Ok(_) => anyhow::bail!("tiny copy budget accepted"),
-        Err(e) => e,
-    };
-    assert!(matches!(
-        error.downcast_ref::<super::super::resident_task::TaskReadError>(),
-        Some(super::super::resident_task::TaskReadError::ResourceExhausted(_))
-    ));
+    let rows = recovery.into_records(&ledger)?;
+    assert!(!rows.0.is_empty());
+    drop(rows);
     assert!(weak.upgrade().is_none());
     assert_eq!(ledger.report()?.owned.payload_bytes, 0);
     Ok(())

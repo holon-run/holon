@@ -1,6 +1,6 @@
 //! Same-view original identity/State-presence observation, never Task readiness.
 use super::*;
-use crate::runtime_db::task_snapshot::{TaskDomainLoadRequest, TaskSnapshotError};
+use crate::runtime_db::task_snapshot::TaskDomainLoadRequest;
 
 pub(crate) struct OriginalTaskStopOwnerState {
     unavailable: Option<TaskStopPhaseInstallMode>,
@@ -17,17 +17,14 @@ impl OriginalTaskStopOwnerState {
 pub(crate) fn observe_original_task_stop_owner_state_tx(
     tx: &Transaction<'_>,
     scope: &InputEvidenceScope,
-    request: &TaskDomainLoadRequest,
+    _request: &TaskDomainLoadRequest,
     ledger: &InputEvidenceBudgetLedger,
 ) -> Result<OriginalTaskStopOwnerState> {
     let bytes = phase::task_stop_phase_identity_material_tx(tx, scope)?;
     let bytes = bytes
         .checked_mul(8)
         .context("original Stop identity material overflow")?;
-    ensure!(
-        bytes <= request.byte_limit.min(MAX_BYTES) && request.record_limit.min(MAX_RECORDS) >= 8,
-        TaskSnapshotError::ResourceExhausted("original Stop owner identity")
-    );
+
     let material = ledger.register_owned_bytes(
         scope,
         InputMemoryCategory::Candidate,

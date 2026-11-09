@@ -272,30 +272,6 @@ pub(in crate::runtime_db::episode_snapshot) fn capture(
     // Same bounded canonical edges as the original collector. Only its exact
     // digests are merged; its Episode owner/ref sets are deliberately discarded.
     expand_episode_root_refs(connection, agent_id, &mut inputs, tables)?;
-    let aggregate_keys = inputs
-        .roots
-        .record_digests
-        .keys()
-        .chain(inputs.roots.unavailable_refs.iter())
-        .chain(episode_roots.unavailable_refs.iter())
-        .chain(checkpoint.unavailable_refs.iter())
-        .collect::<BTreeSet<_>>();
-    if aggregate_keys.len() > CONTINUITY_MAX_RECORDS {
-        return Err(EpisodeSnapshotError::ClosureResourceExhausted {
-            limit: "Work checkpoint aggregate count",
-        }
-        .into());
-    }
-    if inputs
-        .payload_bytes
-        .saturating_add(serde_json::to_vec(&checkpoint)?.len())
-        > CONTINUITY_MAX_PAYLOAD_BYTES
-    {
-        return Err(EpisodeSnapshotError::ClosureResourceExhausted {
-            limit: "Work checkpoint aggregate bytes",
-        }
-        .into());
-    }
     Ok((checkpoint, inputs.roots.record_digests))
 }
 
@@ -313,10 +289,7 @@ fn enqueue(
         return Ok(());
     }
     *bytes = bytes.saturating_add(kind.len()).saturating_add(id.len());
-    if depth > CONTINUITY_MAX_REF_DEPTH
-        || selected.len() >= CONTINUITY_MAX_RECORDS
-        || *bytes > CONTINUITY_MAX_PAYLOAD_BYTES
-    {
+    if depth > CONTINUITY_MAX_REF_DEPTH {
         return Err(EpisodeSnapshotError::ClosureResourceExhausted {
             limit: "Work checkpoint metadata/depth",
         }
@@ -523,17 +496,12 @@ pub(in crate::runtime_db) fn load(
         &format!("SELECT length(CAST({prefix}.roots_json AS BLOB)),s.source_kind FROM {table} {joined} WHERE {filter}"),
         [seed_id], |row|Ok((row.get(0)?,row.get(1)?)),
     ).optional()?;
-    let (bytes, source_kind) = metadata.ok_or_else(missing)?;
+    let (_bytes, source_kind) = metadata.ok_or_else(missing)?;
     ensure!(
         phase == "first_import" || (phase == "upgrade") == source_kind.starts_with("upgrade_"),
         "Work checkpoint source/phase mismatch"
     );
-    if bytes > CONTINUITY_MAX_PAYLOAD_BYTES {
-        return Err(EpisodeSnapshotError::ClosureResourceExhausted {
-            limit: "Work checkpoint metadata bytes",
-        }
-        .into());
-    }
+
     let payload: String = tx.query_row(
         &format!("SELECT {prefix}.roots_json FROM {table} {joined} WHERE {filter}"),
         [seed_id],

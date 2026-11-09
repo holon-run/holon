@@ -36,15 +36,12 @@ pub(in crate::runtime_db) fn capture_tx(tx: &Transaction<'_>) -> Result<()> {
     if !has_candidates {
         return Ok(());
     }
-    let (count, bytes): (usize, usize) = tx.query_row(
+    let (_count, _bytes): (usize, usize) = tx.query_row(
         &format!("SELECT COUNT(*),COALESCE(SUM(length(CAST(c.agent_id AS BLOB))+length(CAST(c.seed_id AS BLOB))+length(CAST(s.roots_json AS BLOB))+length(CAST(i.payload_json AS BLOB))+length(CAST(s.boundary_id AS BLOB))+length(CAST(s.identity_digest AS BLOB))),0) {SCOPES}"),
         [],
         |row| Ok((row.get(0)?, row.get(1)?)),
     )?;
-    ensure!(
-        count <= CONTINUITY_MAX_RECORDS && bytes <= CONTINUITY_MAX_PAYLOAD_BYTES,
-        "Current upgrade scope inventory exceeds limit"
-    );
+
     let mut statement = tx.prepare(&format!(
         "SELECT c.agent_id,c.identity_incarnation,c.seed_id,s.agent_id,
                 s.identity_incarnation,s.boundary_id,s.identity_digest,s.roots_json,
@@ -83,10 +80,7 @@ pub(in crate::runtime_db) fn capture_tx(tx: &Transaction<'_>) -> Result<()> {
             "Current upgrade identity differs"
         );
         let roots: EpisodeContinuityRoots = serde_json::from_str(row.get_ref(7)?.as_str()?)?;
-        ensure!(
-            roots.record_digests.len() <= CONTINUITY_MAX_RECORDS,
-            "Current upgrade record inventory exceeds limit"
-        );
+
         let mut body_bytes = 0usize;
         let mut revision_inserted = false;
         for (key, frozen) in &roots.record_digests {
@@ -106,8 +100,7 @@ pub(in crate::runtime_db) fn capture_tx(tx: &Transaction<'_>) -> Result<()> {
                 .checked_add(payload.len())
                 .context("Current upgrade bytes overflow")?;
             ensure!(
-                body_bytes <= CONTINUITY_MAX_PAYLOAD_BYTES
-                    && bytes_digest(payload.as_bytes()) == *frozen,
+                bytes_digest(payload.as_bytes()) == *frozen,
                 "Current upgrade Queue fixed body changed"
             );
             let queue: QueueEntryRecord = serde_json::from_str(payload)?;
@@ -143,11 +136,10 @@ pub(in crate::runtime_db) fn capture_tx(tx: &Transaction<'_>) -> Result<()> {
                 .checked_add(message_payload.len())
                 .context("Current upgrade bytes overflow")?;
             ensure!(
-                body_bytes <= CONTINUITY_MAX_PAYLOAD_BYTES
-                    && roots
-                        .record_digests
-                        .get(&format!("message:{id}"))
-                        .is_some_and(|digest| *digest == bytes_digest(message_payload.as_bytes())),
+                roots
+                    .record_digests
+                    .get(&format!("message:{id}"))
+                    .is_some_and(|digest| *digest == bytes_digest(message_payload.as_bytes())),
                 "Current upgrade Message fixed body changed"
             );
             let message: MessageEnvelope = serde_json::from_str(message_payload)?;
@@ -197,24 +189,14 @@ fn capture_event_history_tx(
     record_limit: usize,
     byte_limit: usize,
 ) -> Result<()> {
-    ensure!(
-        record_limit > 0
-            && record_limit <= CONTINUITY_MAX_RECORDS
-            && byte_limit > 0
-            && byte_limit <= CONTINUITY_MAX_PAYLOAD_BYTES,
-        "invalid Current upgrade Event page limits"
-    );
+    ensure!(record_limit > 0, "Event migration page must make progress");
     let invalid: bool = tx.query_row(
         "SELECT EXISTS(SELECT 1 FROM audit_events WHERE agent_id=?1 AND
-            (event_seq IS NULL OR typeof(event_seq)!='integer' OR event_seq<=0
-                OR length(CAST(audit_event_id AS BLOB))+length(CAST(data_json AS BLOB))>?2))",
-        params![scope.agent_id, i64::try_from(byte_limit)?],
+            (event_seq IS NULL OR typeof(event_seq)!='integer' OR event_seq<=0))",
+        params![scope.agent_id],
         |row| row.get(0),
     )?;
-    ensure!(
-        !invalid,
-        "Current upgrade Event has an invalid sequence or exceeds its page byte limit"
-    );
+    ensure!(!invalid, "Current upgrade Event has an invalid sequence");
     let mut cursor = 0i64;
     loop {
         let mut statement = tx.prepare(
@@ -236,7 +218,7 @@ fn capture_event_history_tx(
                 .checked_add(id.len())
                 .and_then(|n| n.checked_add(payload.len()))
                 .context("Current upgrade Event page bytes overflow")?;
-            if next_bytes > byte_limit {
+            if count > 0 && next_bytes > byte_limit {
                 break;
             }
             ensure!(

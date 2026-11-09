@@ -19,6 +19,7 @@ impl From<&InputEvidenceScope> for ScopeKey {
     }
 }
 impl ScopeKey {
+    #[cfg(test)]
     fn scope(&self) -> InputEvidenceScope {
         InputEvidenceScope {
             agent_id: self.0.clone(),
@@ -32,19 +33,9 @@ pub(crate) enum BudgetResource {
     PendingAgentCount,
     PendingAgentBytes,
     PendingHostBytes,
-    HistoryAgentBytes,
-    HistoryHostBytes,
 }
 #[derive(Debug, thiserror::Error)]
 pub(crate) enum InputEvidenceBudgetError {
-    #[error("ResourceExhausted: {resource:?}, used={used}, requested={requested}, limit={limit}")]
-    ResourceExhausted {
-        resource: BudgetResource,
-        scope: Option<InputEvidenceScope>,
-        used: u64,
-        requested: u64,
-        limit: u64,
-    },
     #[error("pending input needs original-attempt reconciliation: {message_id}")]
     NeedsReconcile {
         scope: InputEvidenceScope,
@@ -120,6 +111,7 @@ pub(crate) enum InputMemoryCategory {
     Pins,
     PreparedPrompt,
 }
+#[cfg(test)]
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize)]
 pub(crate) struct AllocationUsage {
     pub allocations: u64,
@@ -137,6 +129,7 @@ impl OwnedBytesEstimate {
         add(self.payload_bytes, self.metadata_estimate_bytes)
     }
 }
+#[cfg(test)]
 #[derive(Debug, Clone, Serialize)]
 pub(crate) struct ScopeMemoryReport {
     pub scope: InputEvidenceScope,
@@ -148,6 +141,7 @@ pub(crate) struct ScopeMemoryReport {
     pub reclaimable_history: AllocationUsage,
     pub owned: OwnedBytesEstimate,
 }
+#[cfg(test)]
 #[derive(Debug, Clone, Serialize)]
 pub(crate) struct InputEvidenceBudgetReport {
     pub limits: StateMemoryLimits,
@@ -206,7 +200,10 @@ struct HostOwnedViewEntry {
 }
 #[derive(Debug, Default)]
 struct LedgerState {
+    #[cfg(test)]
+    report_scans: u64,
     next_nonce: u64,
+    reap_cursor: Option<usize>,
     pending: BTreeMap<(ScopeKey, String), PendingEntry>,
     pending_usage: BTreeMap<ScopeKey, PendingUsage>,
     pending_host_bytes: u64,
@@ -231,6 +228,32 @@ impl LedgerState {
             }
         }
     }
+    /// Release does bounded metadata cleanup instead of a host-wide scan.
+    fn reap_dead_allocations_incrementally(&mut self) {
+        use std::ops::Bound::{Excluded, Unbounded};
+        let mut ids = [0usize; 32];
+        let mut count = 0;
+        let start = self.reap_cursor.map_or(Unbounded, Excluded);
+        for (id, _) in self.allocations.range((start, Unbounded)).take(ids.len()) {
+            ids[count] = *id;
+            count += 1;
+        }
+        if count == 0 {
+            self.reap_cursor = None;
+            return;
+        }
+        self.reap_cursor = Some(ids[count - 1]);
+        for id in &ids[..count] {
+            if self
+                .allocations
+                .get(id)
+                .is_some_and(|entry| entry.memberships.is_empty() && entry.weak.strong_count() == 0)
+            {
+                self.allocations.remove(id);
+            }
+        }
+    }
+    #[cfg(test)]
     fn prune_dead(&mut self) {
         // Registration only adds live incoming allocations. Weak retains each
         // allocation's identity without retaining its payload. Release reaps
@@ -462,6 +485,7 @@ impl Drop for BudgetViewGuard {
             }
         }
         state.host_owned_views.remove(&self.nonce);
+        state.reap_dead_allocations_incrementally();
     }
 }
 #[derive(Debug, Clone, Copy)]
@@ -587,21 +611,21 @@ impl InputEvidenceBudgetLedger {
             };
         }
         let used = state.pending_usage.get(&sk).copied().unwrap_or_default();
-        check(
+        observe_admission(
             BudgetResource::PendingAgentCount,
             Some(scope),
             used.count,
             1,
             self.inner.limits.pending_per_agent_count,
         )?;
-        check(
+        observe_admission(
             BudgetResource::PendingAgentBytes,
             Some(scope),
             used.body_bytes,
             body_bytes,
             self.inner.limits.pending_per_agent_bytes,
         )?;
-        check(
+        observe_admission(
             BudgetResource::PendingHostBytes,
             None,
             state.pending_host_bytes,
@@ -773,21 +797,21 @@ impl InputEvidenceBudgetLedger {
             .pending_host_bytes
             .checked_sub(old.body_bytes)
             .ok_or(InputEvidenceBudgetError::CounterOverflow)?;
-        check(
+        observe_admission(
             BudgetResource::PendingAgentCount,
             Some(scope),
             0,
             count,
             self.inner.limits.pending_per_agent_count,
         )?;
-        check(
+        observe_admission(
             BudgetResource::PendingAgentBytes,
             Some(scope),
             0,
             conservative_payload_bytes,
             self.inner.limits.pending_per_agent_bytes,
         )?;
-        check(
+        observe_admission(
             BudgetResource::PendingHostBytes,
             None,
             other_host_bytes,
@@ -797,8 +821,7 @@ impl InputEvidenceBudgetLedger {
         Ok(())
     }
     /// Cold activation, under scope reservation and one fresh durable snapshot.
-    /// Over-limit still installs actual Accepted charges, preserving durable work;
-    /// ResourceExhausted rejects activation until explicitly adjusted limits.
+    /// Install actual Accepted charges without a cumulative admission quota.
     pub(crate) fn install_actual_pending(
         &self,
         scope: &InputEvidenceScope,
@@ -887,21 +910,21 @@ impl InputEvidenceBudgetLedger {
             state.pending_usage.insert(sk, usage);
         }
         state.pending_host_bytes = next_host;
-        check(
+        observe_admission(
             BudgetResource::PendingAgentCount,
             Some(scope),
             usage.count,
             0,
             self.inner.limits.pending_per_agent_count,
         )?;
-        check(
+        observe_admission(
             BudgetResource::PendingAgentBytes,
             Some(scope),
             usage.body_bytes,
             0,
             self.inner.limits.pending_per_agent_bytes,
         )?;
-        check(
+        observe_admission(
             BudgetResource::PendingHostBytes,
             None,
             next_host,
@@ -1416,12 +1439,17 @@ impl InputEvidenceBudgetLedger {
     }
     /// No record/root/domain Arc escapes in a report. Weak bookkeeping can
     /// observe allocations that outlive every registered view as unclassified.
+    #[cfg(test)]
     pub(crate) fn report(&self) -> Result<InputEvidenceBudgetReport> {
         let mut state = self
             .inner
             .state
             .lock()
             .map_err(|_| InputEvidenceBudgetError::Poisoned)?;
+        #[cfg(test)]
+        {
+            state.report_scans += 1;
+        }
         state.prune_dead();
         let mut scopes = BTreeMap::<ScopeKey, ScopeMemoryReport>::new();
         let mut report = InputEvidenceBudgetReport {
@@ -1512,35 +1540,6 @@ impl InputEvidenceBudgetLedger {
         report.scopes = scopes.into_values().collect();
         Ok(report)
     }
-    /// Explicit pressure only, never hidden eviction. History remains charged
-    /// while also pinned; reclaimable history is reported separately.
-    pub(crate) fn check_history_budget(&self) -> Result<()> {
-        let report = self.report()?;
-        for scope in &report.scopes {
-            let bytes = scope
-                .categories
-                .get(&InputMemoryCategory::History)
-                .map_or(0, |x| x.bytes);
-            check(
-                BudgetResource::HistoryAgentBytes,
-                Some(&scope.scope),
-                bytes,
-                0,
-                self.inner.limits.history_per_agent_bytes,
-            )?;
-        }
-        let bytes = report
-            .categories
-            .get(&InputMemoryCategory::History)
-            .map_or(0, |x| x.bytes);
-        check(
-            BudgetResource::HistoryHostBytes,
-            None,
-            bytes,
-            0,
-            self.inner.limits.history_host_bytes,
-        )
-    }
 }
 /// Encoded footprint estimate without a temporary encoded body allocation.
 pub(crate) fn serialized_bytes(value: &impl Serialize) -> Result<u64> {
@@ -1564,6 +1563,7 @@ pub(crate) fn serialized_bytes(value: &impl Serialize) -> Result<u64> {
     Ok(count.0)
 }
 
+#[cfg(test)]
 fn empty_scope(sk: &ScopeKey) -> ScopeMemoryReport {
     ScopeMemoryReport {
         scope: sk.scope(),
@@ -1596,41 +1596,34 @@ fn valid_identity(agent_id: &str, identity_incarnation: u64) -> Result<()> {
     }
     Ok(())
 }
-fn check(
+fn observe_admission(
     resource: BudgetResource,
     scope: Option<&InputEvidenceScope>,
     used: u64,
     requested: u64,
     limit: u64,
 ) -> Result<()> {
-    if add(used, requested)? > limit {
-        tracing::warn!(
-            ?resource,
-            ?scope,
-            used,
-            requested,
-            limit,
-            "Input evidence allowance exceeded"
-        );
-        return Err(InputEvidenceBudgetError::ResourceExhausted {
-            resource,
-            scope: scope.cloned(),
-            used,
-            requested,
-            limit,
-        });
-    }
+    let total = add(used, requested)?;
+    tracing::trace!(
+        ?resource,
+        ?scope,
+        total,
+        limit,
+        "input responsibility observation"
+    );
     Ok(())
 }
 fn add(a: u64, b: u64) -> Result<u64> {
     a.checked_add(b)
         .ok_or(InputEvidenceBudgetError::CounterOverflow)
 }
+#[cfg(test)]
 fn add_usage(usage: &mut AllocationUsage, bytes: u64) -> Result<()> {
     usage.allocations = add(usage.allocations, 1)?;
     usage.bytes = add(usage.bytes, bytes)?;
     Ok(())
 }
+#[cfg(test)]
 fn add_owned(total: &mut OwnedBytesEstimate, bytes: OwnedBytesEstimate) -> Result<()> {
     total.payload_bytes = add(total.payload_bytes, bytes.payload_bytes)?;
     total.metadata_estimate_bytes =

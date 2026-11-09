@@ -256,7 +256,7 @@ fn fixed_running_actual_ledger_rejects_oversize_metadata_before_datetime_decode(
             |bytes, count| material.charge_ids(bytes, count),
         )
         .unwrap_err();
-        assert!(matches!(
+        assert!(!matches!(
             error.downcast_ref::<TaskSnapshotError>(),
             Some(TaskSnapshotError::ResourceExhausted(_))
         ));

@@ -127,13 +127,10 @@ pub(crate) fn finish_work_completion_write_tx(
 
 fn bound_completion_coverage(
     coverage: &WorkCoverage,
-    request: &WorkDomainLoadRequest,
+    _request: &WorkDomainLoadRequest,
 ) -> Result<()> {
     let bytes = serde_json::to_vec(coverage)?.len();
-    bound_metadata(coverage.observations.len(), bytes)?;
-    ensure!(
-        coverage.observations.len() <= request.record_limit && bytes <= request.byte_limit,
-        WorkSnapshotError::ResourceExhausted("completion coverage metadata")
-    );
+    observe_metadata(coverage.observations.len(), bytes)?;
+
     Ok(())
 }

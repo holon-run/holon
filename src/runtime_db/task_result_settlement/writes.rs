@@ -147,15 +147,6 @@ const WAKE_SQL: &str = "SELECT payload_json
                    AND recovery_epoch = 0 AND recovery_attempts = 0
                    AND next_recheck_at IS NOT NULL";
 
-#[derive(Debug, thiserror::Error)]
-#[error("TaskResult footprint ResourceExhausted: {records}/{record_limit} records, {bytes}/{byte_limit} bytes")]
-pub(crate) struct TaskResultFootprintExhausted {
-    pub records: usize,
-    pub bytes: usize,
-    pub record_limit: usize,
-    pub byte_limit: usize,
-}
-
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct TaskResultWriteLimits {
     pub record_limit: usize,
@@ -171,19 +162,13 @@ impl Default for TaskResultWriteLimits {
 }
 impl TaskResultWriteLimits {
     fn check(self, count: usize, bytes: usize) -> Result<()> {
-        ensure!(
-            self.record_limit > 0 && self.byte_limit > 0,
-            "zero TaskResult footprint limit"
+        tracing::trace!(
+            count,
+            bytes,
+            record_hint = self.record_limit,
+            byte_hint = self.byte_limit,
+            "TaskResult footprint observation"
         );
-        if count > self.record_limit || bytes > self.byte_limit {
-            return Err(TaskResultFootprintExhausted {
-                records: count,
-                bytes,
-                record_limit: self.record_limit,
-                byte_limit: self.byte_limit,
-            }
-            .into());
-        }
         Ok(())
     }
 }

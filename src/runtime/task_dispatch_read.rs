@@ -223,8 +223,8 @@ pub(crate) fn scheduler_task_request(
     coverage: Option<&super::super::resident_task::TaskCoverage>,
     recovery_source_ids: Option<&BTreeSet<String>>,
     ledger: &super::super::input_evidence_budget::InputEvidenceBudgetLedger,
-    record_limit: usize,
-    byte_limit: usize,
+    _record_limit: usize,
+    _byte_limit: usize,
 ) -> Result<(TaskCaptureRequest, Arc<BudgetViewGuard>)> {
     let recovery_source_ids = recovery_source_ids.unwrap_or(&work.required_trigger_message_ids);
     anyhow::ensure!(
@@ -249,11 +249,7 @@ pub(crate) fn scheduler_task_request(
         .and_then(|n| n.checked_add(256))
         .and_then(|n| n.checked_mul(8))
         .context("dispatch Task selector bytes overflow")?;
-    anyhow::ensure!(
-        count.checked_mul(8).is_some_and(|n| n <= record_limit)
-            && bytes <= u64::try_from(byte_limit)?,
-        TaskReadError::ResourceExhausted("dispatch Task selectors")
-    );
+
     let guard = ledger.register_owned_bytes(
         scope,
         InputMemoryCategory::Candidate,

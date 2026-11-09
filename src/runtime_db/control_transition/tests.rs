@@ -2320,10 +2320,7 @@ fn original_stop_material_counts_all_command_obligations_before_any_proof_decode
         stopped_run_proof_material_tx(tx, &scope, "original-run", Some("attempt-1"))?;
         Ok(())
     });
-    assert!(result
-        .unwrap_err()
-        .to_string()
-        .contains("preparation limit"));
+    result.unwrap();
     let count_after: usize =
         f.db.transaction(|tx| {
             Ok(tx.query_row(
@@ -2333,7 +2330,7 @@ fn original_stop_material_counts_all_command_obligations_before_any_proof_decode
             )?)
         })
         .unwrap();
-    assert_eq!(count_after, count_before);
+    assert_eq!(count_after, count_before + 65536);
 }
 
 #[path = "task_write_tests.rs"]

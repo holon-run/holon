@@ -16,7 +16,7 @@ pub(crate) fn qualified_task_recovery_selectors_tx(
         scope_facts(tx, scope, true)?.is_some(),
         TaskSnapshotError::RetiredScope
     );
-    bound(
+    observe_material(
         keys.len(),
         keys.iter().map(|key| key.id.len() + 128).sum(),
         None,
@@ -115,7 +115,7 @@ impl<'a> TaskReadMaterial<'a> {
             self.budget.is_some(),
             "original phase requires an actual owner ledger"
         );
-        bound(admitted.records, admitted.bytes, Some(self.request))?;
+        observe_material(admitted.records, admitted.bytes, Some(self.request))?;
         self.bytes = admitted.bytes;
         self.records = admitted.records;
         Ok(self)
@@ -144,7 +144,7 @@ impl<'a> TaskReadMaterial<'a> {
             .records
             .checked_add(records)
             .context("Task read record total overflow")?;
-        bound(self.records, self.bytes, Some(self.request))?;
+        observe_material(self.records, self.bytes, Some(self.request))?;
         if let Some(memory) = &mut self.memory_budget {
             memory.preflight_observed_task_material(self.scope, budget, bytes, records)?;
         }
@@ -231,7 +231,7 @@ impl<'a> TaskReadMaterial<'a> {
                 && !original.agent_id.is_empty(),
             "Task metadata material differs from original scope/request/ledger"
         );
-        bound(self.records, self.bytes, Some(request))
+        observe_material(self.records, self.bytes, Some(request))
     }
     pub(in crate::runtime_db) fn charge_record(
         &mut self,
@@ -457,7 +457,7 @@ mod tests {
     }
 
     #[test]
-    fn shared_read_owner_still_rejects_cumulative_record_and_byte_exhaustion() -> Result<()> {
+    fn shared_read_owner_observes_cumulative_material_above_legacy_hints() -> Result<()> {
         for records in [false, true] {
             let ledger = InputEvidenceBudgetLedger::new(StateMemoryLimits::default())?;
             let scope = scope();
@@ -469,11 +469,8 @@ mod tests {
             }
             let mut material = TaskReadMaterial::new(&scope, &request, Some(&ledger));
             material.charge(1, 1, 8, false)?;
-            let error = material.charge(1, 1, 8, false).unwrap_err();
-            assert!(matches!(
-                error.downcast_ref::<TaskSnapshotError>(),
-                Some(TaskSnapshotError::ResourceExhausted(_))
-            ));
+            material.charge(1, 1, 8, false)?;
+            assert!(ledger.report()?.observed_bytes > 0);
             drop(material);
             assert_eq!(ledger.report()?.observed_bytes, 0);
         }

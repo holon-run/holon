@@ -393,22 +393,18 @@ fn same_millis_canonical_change_advances_locator_and_raw_backwrite_is_rejected()
 
 #[cfg(holon_lib_test_shard = "b")]
 #[test]
-fn final_combined_body_metadata_budget_failure_keeps_canonical_and_coverage_unchanged() -> Result<()>
-{
+fn final_combined_body_metadata_above_legacy_hint_commits_canonical_and_coverage() -> Result<()> {
     let (_dir, db) = fresh()?;
     let before = db.transaction(|tx| current_coverage(tx, &scope()))?;
     let value = task("budget-rollback", TaskStatus::Running);
-    let error = db
-        .transaction(|tx| {
-            let keys = BTreeSet::from([TaskKey::new(TaskFamily::Task, &value.id)]);
-            let proof = prepare_task_write_tx(tx, &scope(), &keys)?;
-            repositories::upsert_task_tx(tx, &value)?;
-            let mut tiny = request();
-            tiny.byte_limit = 64;
-            register_task_writes_tx(tx, &proof, &keys, &AgentState::new("task-agent"), &tiny)
-        })
-        .unwrap_err();
-    assert!(format!("{error:#}").contains("ResourceExhausted"));
+    db.transaction(|tx| {
+        let keys = BTreeSet::from([TaskKey::new(TaskFamily::Task, &value.id)]);
+        let proof = prepare_task_write_tx(tx, &scope(), &keys)?;
+        repositories::upsert_task_tx(tx, &value)?;
+        let mut tiny = request();
+        tiny.byte_limit = 64;
+        register_task_writes_tx(tx, &proof, &keys, &AgentState::new("task-agent"), &tiny)
+    })?;
     db.transaction(|tx| {
         assert_eq!(
             tx.query_row(
@@ -416,7 +412,7 @@ fn final_combined_body_metadata_budget_failure_keeps_canonical_and_coverage_unch
                 [&value.id],
                 |r| r.get::<_, i64>(0)
             )?,
-            0
+            1
         );
         assert_eq!(
             tx.query_row(
@@ -424,9 +420,9 @@ fn final_combined_body_metadata_budget_failure_keeps_canonical_and_coverage_unch
                 [&value.id],
                 |r| r.get::<_, i64>(0)
             )?,
-            0
+            1
         );
-        assert_eq!(current_coverage(tx, &scope())?, before);
+        assert_ne!(current_coverage(tx, &scope())?, before);
         Ok(())
     })
 }

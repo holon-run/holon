@@ -41,7 +41,7 @@ pub(crate) fn pending_task_stop_host_scope_inventory_tx(
 fn pending_scope_inventory_inner_tx(
     tx: &Transaction<'_>,
     accounting_scope: Option<&InputEvidenceScope>,
-    request: &TaskDomainLoadRequest,
+    _request: &TaskDomainLoadRequest,
     ledger: &InputEvidenceBudgetLedger,
 ) -> Result<PendingTaskStopScopeInventory> {
     let (scope_count,bytes,effects):(usize,usize,usize)=tx.query_row(&format!(
@@ -50,16 +50,12 @@ fn pending_scope_inventory_inner_tx(
     let exhausted = || TaskSnapshotError::ResourceExhausted("Stop startup scope inventory");
     // SQL integers precede every String, scope clone and Vec allocation. Four
     // copies cover row tuple, DTO, reservation selector and sorted group metadata.
-    let records = scope_count.checked_mul(4).context(exhausted())?;
+    let _records = scope_count.checked_mul(4).context(exhausted())?;
     let bytes = bytes
         .checked_add(scope_count.checked_mul(256).context(exhausted())?)
         .and_then(|n| n.checked_mul(4))
         .context(exhausted())?;
-    ensure!(
-        records <= request.record_limit.min(MAX_RECORDS)
-            && bytes <= request.byte_limit.min(MAX_BYTES),
-        exhausted()
-    );
+
     let estimate = OwnedBytesEstimate {
         payload_bytes: u64::try_from(bytes)?,
         metadata_estimate_bytes: 0,

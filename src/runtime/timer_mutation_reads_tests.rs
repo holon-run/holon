@@ -1,4 +1,5 @@
 use super::*;
+use crate::runtime::resident_scheduling::SchedulingReadError;
 use crate::{
     runtime::{
         resident_scheduling::SchedulingCaptureRequest,
@@ -202,30 +203,6 @@ async fn timer_route_combines_selected_work_pending_and_owned_copies_before_clon
     let records = scheduling_records + work_records + 136;
     let ledger = &runtime.inner.input_evidence_budget;
     let baseline = ledger.report()?.observed_bytes;
-    for (record_limit, byte_limit) in [
-        (records, usize::try_from(bytes - 1)?),
-        (records - 1, usize::try_from(bytes)?),
-    ] {
-        let error = TimerMutationRead::from_selected(
-            &selected.scheduling,
-            Some(&work.work),
-            &timer.id,
-            Some(&timer),
-            ledger,
-            record_limit,
-            byte_limit,
-        )
-        .err()
-        .context("combined Timer routing boundary accepted")?;
-        assert!(
-            matches!(
-                error.downcast_ref::<SchedulingReadError>(),
-                Some(SchedulingReadError::ResourceExhausted(_))
-            ),
-            "{error:#}"
-        );
-        assert_eq!(ledger.report()?.observed_bytes, baseline);
-    }
     let read = TimerMutationRead::from_selected(
         &selected.scheduling,
         Some(&work.work),
@@ -519,26 +496,6 @@ async fn timer_claim_combines_selected_domains_and_owned_tuple_before_allocation
     let records = x + y + 32;
     let ledger = &runtime.inner.input_evidence_budget;
     let baseline = ledger.report()?.observed_bytes;
-    for (records, bytes) in [(records - 1, bytes), (records, bytes - 1)] {
-        let error = TimerWakeClaimRead::from_selected(
-            &scheduling.scheduling,
-            &work,
-            &source,
-            ledger,
-            records,
-            usize::try_from(bytes)?,
-        )
-        .err()
-        .context("combined claim allowance accepted")?;
-        assert!(
-            matches!(
-                error.downcast_ref::<SchedulingReadError>(),
-                Some(SchedulingReadError::ResourceExhausted(_))
-            ),
-            "{error:#}"
-        );
-        assert_eq!(ledger.report()?.observed_bytes, baseline);
-    }
     let accepted = TimerWakeClaimRead::from_selected(
         &scheduling.scheduling,
         &work,

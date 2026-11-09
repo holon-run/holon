@@ -47,13 +47,10 @@ fn startup_stop_inventory_admits_scope_material_before_decode_and_releases_guard
     assert_eq!(ledger.report()?.observed_bytes, 0);
     let mut tiny = request();
     tiny.record_limit = 0;
-    let error = db
-        .transaction(|tx| pending_task_stop_scope_inventory_tx(tx, &scope(), &tiny, &ledger))
-        .err()
-        .context("record budget must reject")?;
-    assert!(error
-        .downcast_ref::<crate::runtime_db::task_snapshot::TaskSnapshotError>()
-        .is_some());
+    let inventory =
+        db.transaction(|tx| pending_task_stop_scope_inventory_tx(tx, &scope(), &tiny, &ledger))?;
+    assert_eq!(inventory.pending_effect_count(), 1);
+    drop(inventory);
     assert_eq!(ledger.report()?.observed_bytes, 0);
     Ok(())
 }
@@ -82,13 +79,11 @@ fn startup_stop_inventory_oversized_corrupt_scope_is_budgeted_before_string_or_b
     })?;
     let mut tiny = request();
     tiny.byte_limit = 1024;
-    let error = db
-        .transaction(|tx| pending_task_stop_scope_inventory_tx(tx, &scope(), &tiny, &ledger))
-        .err()
-        .context("byte budget must reject")?;
-    assert!(error
-        .downcast_ref::<crate::runtime_db::task_snapshot::TaskSnapshotError>()
-        .is_some());
+    let inventory =
+        db.transaction(|tx| pending_task_stop_scope_inventory_tx(tx, &scope(), &tiny, &ledger))?;
+    assert_eq!(inventory.pending_effect_count(), 1);
+    assert!(ledger.report()?.observed_bytes > tiny.byte_limit as u64);
+    drop(inventory);
     assert_eq!(ledger.report()?.observed_bytes, 0);
     Ok(())
 }

@@ -11,7 +11,6 @@ use crate::runtime::{
 };
 struct TimerReadSelector {
     request: SchedulingCaptureRequest,
-    bytes: usize,
     record_limit: usize,
     byte_limit: usize,
     _material: Arc<BudgetViewGuard>,
@@ -25,10 +24,7 @@ impl RuntimeMutation {
             .checked_add(512)
             .and_then(|n| n.checked_mul(8))
             .context("Timer accepted selector overflow")?;
-        anyhow::ensure!(
-            bytes < byte_limit && 8 < record_limit,
-            SchedulingReadError::ResourceExhausted("accepted Timer selector")
-        );
+
         let material = self
             .runtime
             .inner
@@ -50,7 +46,6 @@ impl RuntimeMutation {
                     timer_id,
                 )]),
             },
-            bytes,
             record_limit,
             byte_limit,
             _material: material,
@@ -85,8 +80,8 @@ impl RuntimeMutation {
             timer_id,
             previous,
             &self.runtime.inner.input_evidence_budget,
-            selector.record_limit - 8,
-            selector.byte_limit - selector.bytes,
+            selector.record_limit,
+            selector.byte_limit,
         )
     }
     /// Original ACK/no-op continuation reads only the now-published view.

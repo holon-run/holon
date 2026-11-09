@@ -81,7 +81,6 @@ CREATE INDEX IF NOT EXISTS idx_dispatch_memory_unfinished
   WHERE state != 'done';
 "#;
 
-const MAX_METADATA_RECORDS: usize = 65_536;
 const MAX_METADATA_BYTES: usize = 64 * 1024 * 1024;
 
 #[derive(Debug, thiserror::Error)]
@@ -590,13 +589,10 @@ fn load_dispatch_memory_in(
         params![key.agent_id,key.identity_incarnation,key.actual_dispatch_turn_id],
         |row| Ok((row.get(0)?,row.get(1)?,row.get(2)?,row.get(3)?,row.get(4)?,row.get(5)?)),
     ).optional()?;
-    let Some((source, index, status, seed_digest, record_digest, bytes)) = row else {
+    let Some((source, index, status, seed_digest, record_digest, _bytes)) = row else {
         return Ok(None);
     };
-    ensure!(
-        bytes <= MAX_METADATA_BYTES,
-        DispatchMemoryError::ResourceExhausted
-    );
+
     let payload: String = tx.query_row(
         "SELECT payload_json FROM dispatch_memory_checkpoints WHERE agent_id=?1 AND identity_incarnation=?2 AND turn_id=?3",
         params![key.agent_id,key.identity_incarnation,key.actual_dispatch_turn_id], |row| row.get(0),
@@ -621,36 +617,22 @@ pub(crate) fn unfinished_dispatch_memory_tx(
     tx: &Transaction<'_>,
     scope: &InputEvidenceScope,
 ) -> Result<Vec<DispatchMemoryRecord>> {
-    let (count, total_bytes): (usize, usize) = tx.query_row(
+    let (_count, _total_bytes): (usize, usize) = tx.query_row(
         "SELECT COUNT(*),COALESCE(SUM(length(CAST(payload_json AS BLOB))),0) FROM dispatch_memory_checkpoints WHERE agent_id=?1 AND identity_incarnation=?2 AND state!='done'",
         params![scope.agent_id,scope.identity_incarnation], |row| Ok((row.get(0)?,row.get(1)?)),
     )?;
-    ensure!(
-        count <= MAX_METADATA_RECORDS && total_bytes <= MAX_METADATA_BYTES,
-        DispatchMemoryError::ResourceExhausted
-    );
-    let mut query = tx.prepare("SELECT turn_id,source_message_id,turn_index FROM dispatch_memory_checkpoints WHERE agent_id=?1 AND identity_incarnation=?2 AND state!='done' ORDER BY turn_index,turn_id LIMIT ?3")?;
-    let rows = query.query_map(
-        params![
-            scope.agent_id,
-            scope.identity_incarnation,
-            MAX_METADATA_RECORDS + 1
-        ],
-        |row| {
-            Ok((
-                row.get::<_, String>(0)?,
-                row.get::<_, String>(1)?,
-                row.get::<_, u64>(2)?,
-            ))
-        },
-    )?;
+
+    let mut query = tx.prepare("SELECT turn_id,source_message_id,turn_index FROM dispatch_memory_checkpoints WHERE agent_id=?1 AND identity_incarnation=?2 AND state!='done' ORDER BY turn_index,turn_id")?;
+    let rows = query.query_map(params![scope.agent_id, scope.identity_incarnation], |row| {
+        Ok((
+            row.get::<_, String>(0)?,
+            row.get::<_, String>(1)?,
+            row.get::<_, u64>(2)?,
+        ))
+    })?;
     let mut result = Vec::new();
     let mut bytes = 0usize;
     for row in rows {
-        ensure!(
-            result.len() < MAX_METADATA_RECORDS,
-            DispatchMemoryError::ResourceExhausted
-        );
         let (turn, source, index) = row?;
         let record = load_dispatch_memory_tx(
             tx,
@@ -668,10 +650,7 @@ pub(crate) fn unfinished_dispatch_memory_tx(
         bytes = bytes
             .checked_add(bounded_json(&record)?.len())
             .context(DispatchMemoryError::ResourceExhausted)?;
-        ensure!(
-            bytes <= MAX_METADATA_BYTES,
-            DispatchMemoryError::ResourceExhausted
-        );
+
         result.push(record);
     }
     Ok(result)
@@ -871,20 +850,13 @@ fn valid_digest(value: &str) -> bool {
 }
 fn bounded_json(value: &impl Serialize) -> Result<String> {
     let json = serde_json::to_string(value)?;
-    ensure!(
-        json.len() <= MAX_METADATA_BYTES,
-        DispatchMemoryError::ResourceExhausted
-    );
+
     Ok(json)
 }
 fn bound_members_with(
     members: &BTreeMap<String, DispatchMemoryMember>,
     member: &DispatchMemoryMember,
 ) -> Result<()> {
-    ensure!(
-        members.len() < MAX_METADATA_RECORDS,
-        DispatchMemoryError::ResourceExhausted
-    );
     let mut bytes = bounded_json(member)?
         .len()
         .checked_add(member.original.command_nonce().len())
@@ -904,32 +876,23 @@ fn bound_members_with(
             .and_then(|value| value.checked_add(existing.input_refs.len()))
             .and_then(|value| value.checked_add(1))
             .context(DispatchMemoryError::ResourceExhausted)?;
-        ensure!(
-            bytes <= MAX_METADATA_BYTES && count <= MAX_METADATA_RECORDS,
-            DispatchMemoryError::ResourceExhausted
-        );
     }
-    ensure!(
-        bytes <= MAX_METADATA_BYTES && count <= MAX_METADATA_RECORDS,
-        DispatchMemoryError::ResourceExhausted
-    );
+
     Ok(())
 }
 fn bound_footprint(work: &BTreeSet<WorkKey>, inputs: &BTreeSet<InputEvidenceKey>) -> Result<()> {
-    let count = work
+    let _count = work
         .len()
         .checked_add(inputs.len())
         .context(DispatchMemoryError::ResourceExhausted)?;
-    let bytes = work
+    let _bytes = work
         .iter()
         .map(|key| key.id.len())
         .chain(inputs.iter().map(|key| key.id.len()))
         .try_fold(0usize, |bytes, next| bytes.checked_add(next))
         .context(DispatchMemoryError::ResourceExhausted)?;
     ensure!(
-        count <= MAX_METADATA_RECORDS
-            && bytes <= MAX_METADATA_BYTES
-            && work.iter().all(|key| !key.id.trim().is_empty())
+        work.iter().all(|key| !key.id.trim().is_empty())
             && inputs.iter().all(|key| !key.id.trim().is_empty()),
         DispatchMemoryError::ResourceExhausted
     );
@@ -949,10 +912,6 @@ fn bound_members(members: &BTreeMap<String, DispatchMemoryMember>) -> Result<()>
             .and_then(|value| value.checked_add(member.input_refs.len()))
             .and_then(|value| value.checked_add(1))
             .context(DispatchMemoryError::ResourceExhausted)?;
-        ensure!(
-            bytes <= MAX_METADATA_BYTES && count <= MAX_METADATA_RECORDS,
-            DispatchMemoryError::ResourceExhausted
-        );
     }
     Ok(())
 }
@@ -1019,11 +978,8 @@ pub(super) fn capture_legacy_dispatches_at_upgrade_tx(tx: &Transaction<'_>) -> R
             return Ok(());
         }
     }
-    let count:usize=tx.query_row("SELECT COUNT(*) FROM agent_states s JOIN agent_identities i ON i.agent_id=s.agent_id WHERE i.status IN ('active','deleting') AND json_type(s.payload_json,'$.current_execution_binding')='object' AND json_type(s.payload_json,'$.current_turn_id')='text'",[],|r|r.get(0))?;
-    ensure!(
-        count <= MAX_METADATA_RECORDS,
-        DispatchMemoryError::ResourceExhausted
-    );
+    let _count:usize=tx.query_row("SELECT COUNT(*) FROM agent_states s JOIN agent_identities i ON i.agent_id=s.agent_id WHERE i.status IN ('active','deleting') AND json_type(s.payload_json,'$.current_execution_binding')='object' AND json_type(s.payload_json,'$.current_turn_id')='text'",[],|r|r.get(0))?;
+
     tx.execute("INSERT INTO dispatch_memory_legacy_dispatches(agent_id,identity_incarnation,turn_id,source_message_id,turn_index)
       SELECT s.agent_id,json_extract(i.payload_json,'$.incarnation'),t.turn_id,m.evidence_id,t.turn_index
       FROM agent_states s JOIN agent_identities i ON i.agent_id=s.agent_id
@@ -1037,11 +993,8 @@ pub(super) fn capture_legacy_dispatches_at_upgrade_tx(tx: &Transaction<'_>) -> R
       AND json_extract(s.payload_json,'$.current_run_id') IS s.current_run_id
       AND (EXISTS(SELECT 1 FROM json_each(json_extract(t.payload_json,'$.input_message_ids')) WHERE value=m.evidence_id)
            OR json_extract(t.payload_json,'$.trigger.message_id')=m.evidence_id)",[])?;
-    let bytes:usize=tx.query_row("SELECT COALESCE(SUM(length(agent_id)+length(turn_id)+length(source_message_id)+32),0) FROM dispatch_memory_legacy_dispatches",[],|r|r.get(0))?;
-    ensure!(
-        bytes <= MAX_METADATA_BYTES,
-        DispatchMemoryError::ResourceExhausted
-    );
+    let _bytes:usize=tx.query_row("SELECT COALESCE(SUM(length(agent_id)+length(turn_id)+length(source_message_id)+32),0) FROM dispatch_memory_legacy_dispatches",[],|r|r.get(0))?;
+
     Ok(())
 }
 

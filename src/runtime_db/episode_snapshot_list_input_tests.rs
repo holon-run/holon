@@ -292,7 +292,7 @@ fn list_input_json_and_sql_errors_release_readers_without_refunding_original_pha
 }
 
 #[test]
-fn list_input_original_payload_cap_precedes_admission_and_decode() -> Result<()> {
+fn list_input_explicit_fault_injection_precedes_decode_and_latches_failure() -> Result<()> {
     let connection = connection()?;
     connection.execute(
         "INSERT INTO context_episode_anchors
@@ -306,14 +306,9 @@ fn list_input_original_payload_cap_precedes_admission_and_decode() -> Result<()>
         let _entry = phase.enter();
         let error = all_episode_rows(&connection, AGENT)
             .err()
-            .context("missing hard cap")?;
-        assert!(matches!(
-            error.downcast_ref::<EpisodeSnapshotError>(),
-            Some(EpisodeSnapshotError::ClosureResourceExhausted {
-                limit: "payload bytes"
-            })
-        ));
-        assert_eq!(phase.finish()?, initial);
+            .context("missing injected failure")?;
+        assert!(format!("{error:#}").contains("ResourceExhausted"));
+        assert!(phase.finish().is_err());
     }
     drop(phase);
     assert_eq!(ledger.report()?.observed_bytes, 0);

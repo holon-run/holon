@@ -317,7 +317,7 @@ async fn supervisor_open_discovery_carries_loaded_original_runtime_without_repla
 }
 
 #[tokio::test]
-async fn supervisor_retained_fleet_deduplicates_actual_instances_and_budgets_before_clones(
+async fn supervisor_retained_fleet_deduplicates_actual_instances_without_metadata_quota(
 ) -> Result<()> {
     let (_home, host) = test_host();
     let runtime = host.default_runtime().await?;
@@ -348,14 +348,14 @@ async fn supervisor_retained_fleet_deduplicates_actual_instances_and_budgets_bef
     let before = host.inner.input_evidence_budget.report()?.host_owned;
     let mut tiny = request();
     tiny.record_limit = 1;
-    let error = host
-        .retained_task_stop_runtime_inventory(&tiny)
-        .await
-        .err()
-        .context("metadata budget")?;
-    assert!(error
-        .downcast_ref::<crate::runtime_db::task_snapshot::TaskSnapshotError>()
-        .is_some());
+    tiny.byte_limit = 1;
+    let (fleet, guard) = host.retained_task_stop_runtime_inventory(&tiny).await?;
+    assert_eq!(fleet.len(), 1);
+    assert_eq!(
+        fleet[0].original_process_registry_id(),
+        runtime.original_process_registry_id()
+    );
+    drop((fleet, guard));
     assert_eq!(
         host.inner.input_evidence_budget.report()?.host_owned,
         before

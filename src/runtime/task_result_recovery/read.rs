@@ -98,8 +98,8 @@ fn queue_observation_tx(
     runtime: &RuntimeHandle,
     scope: &InputEvidenceScope,
     state: &AgentState,
-    record_limit: usize,
-    byte_limit: usize,
+    _record_limit: usize,
+    _byte_limit: usize,
     work_revision: Option<u64>,
     task_revision: Option<u64>,
 ) -> Result<QueueObservation> {
@@ -118,16 +118,7 @@ fn queue_observation_tx(
         .and_then(|n| n.checked_add(scope_bytes))
         .and_then(|n| n.checked_mul(8))
         .context("recovery Queue material overflow")?;
-    anyhow::ensure!(
-        count
-            .checked_mul(8)
-            .context("recovery Queue count overflow")?
-            <= record_limit
-            && bytes <= u64::try_from(byte_limit)?,
-        crate::runtime_db::task_snapshot::TaskSnapshotError::ResourceExhausted(
-            "recovery Queue adapter"
-        )
-    );
+
     let guard = runtime.inner.input_evidence_budget.register_owned_bytes(
         scope,
         InputMemoryCategory::Candidate,
@@ -359,16 +350,7 @@ fn input_selector_guard(
         .and_then(|n| n.checked_add(1024))
         .and_then(|n| n.checked_mul(8))
         .context("recovery Input selector bytes overflow")?;
-    anyhow::ensure!(
-        count
-            .checked_mul(8)
-            .context("recovery Input selector copies overflow")?
-            <= request.record_limit
-            && bytes <= u64::try_from(request.byte_limit)?,
-        crate::runtime_db::task_snapshot::TaskSnapshotError::ResourceExhausted(
-            "recovery Input selectors"
-        )
-    );
+
     Ok(runtime.inner.input_evidence_budget.register_owned_bytes(
         &mutation.input_evidence_scope(),
         InputMemoryCategory::Candidate,
@@ -457,18 +439,7 @@ impl RuntimeMutation {
             .checked_add(1024)
             .and_then(|n| n.checked_mul(8))
             .context("recovery selector bytes overflow")?;
-        anyhow::ensure!(
-            due.iter()
-                .flatten()
-                .count()
-                .checked_mul(8)
-                .context("recovery selector count overflow")?
-                <= record_limit
-                && bytes <= u64::try_from(byte_limit)?,
-            crate::runtime_db::task_snapshot::TaskSnapshotError::ResourceExhausted(
-                "recovery selectors"
-            )
-        );
+
         let selectors = runtime.inner.input_evidence_budget.register_owned_bytes(
             &metadata.tasks.scope,
             InputMemoryCategory::Candidate,
@@ -538,7 +509,7 @@ impl RuntimeMutation {
         drop(selected);
         self.prepare_owner_work_request(&work_request).await?;
         let work = self.capture_work(&work_request)?;
-        let (work_keys, work_bytes) =
+        let (_work_keys, work_bytes) =
             work.records
                 .iter()
                 .try_fold((0usize, 0u64), |(count, bytes), record| {
@@ -559,16 +530,7 @@ impl RuntimeMutation {
         let work_bytes = work_bytes
             .checked_mul(8)
             .context("recovery Work selector copies overflow")?;
-        anyhow::ensure!(
-            work_keys
-                .checked_mul(8)
-                .context("recovery Work selector count overflow")?
-                <= record_limit
-                && work_bytes <= u64::try_from(byte_limit)?,
-            crate::runtime_db::task_snapshot::TaskSnapshotError::ResourceExhausted(
-                "recovery Work selectors"
-            )
-        );
+
         let work_selectors = runtime.inner.input_evidence_budget.register_owned_bytes(
             &work.scope,
             InputMemoryCategory::Candidate,
@@ -857,7 +819,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn recovery_queue_id_budget_precedes_malformed_source_decode() -> Result<()> {
+    async fn recovery_queue_rejects_malformed_source_without_size_quota() -> Result<()> {
         let (_home, runtime) = fixture().await?;
         let source = recovery("owner", "task_result_recovery");
         let id = source.id.clone();
@@ -908,14 +870,16 @@ mod tests {
             )
             .err()
             .context("oversize rejected")?;
-            assert!(matches!(
-                error.downcast_ref::<crate::runtime_db::task_snapshot::TaskSnapshotError>(),
-                Some(
-                    crate::runtime_db::task_snapshot::TaskSnapshotError::ResourceExhausted(
-                        "recovery Queue adapter"
+            assert!(
+                !(matches!(
+                    error.downcast_ref::<crate::runtime_db::task_snapshot::TaskSnapshotError>(),
+                    Some(
+                        crate::runtime_db::task_snapshot::TaskSnapshotError::ResourceExhausted(
+                            "recovery Queue adapter"
+                        )
                     )
-                )
-            ));
+                ))
+            );
             Ok(())
         })?;
         assert_eq!(

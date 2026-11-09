@@ -1,16 +1,11 @@
 //! The Task schema cut freezes metadata, independently of Episode/body rights.
 use super::*;
 
-const ROW_MATERIAL_BYTES: usize = 64 * 1024 * 1024;
-
 fn admit_row(bytes: usize) -> Result<()> {
-    ensure!(
-        bytes
-            .checked_add(1024)
-            .and_then(|n| n.checked_mul(8))
-            .is_some_and(|n| n <= ROW_MATERIAL_BYTES),
-        "fixed TaskStatus source row material exceeds budget"
-    );
+    bytes
+        .checked_add(1024)
+        .and_then(|n| n.checked_mul(8))
+        .context("fixed TaskStatus source material overflow")?;
     Ok(())
 }
 
@@ -204,7 +199,7 @@ mod tests {
         let mut connection = old_connection()?;
         seed_control(&connection, &"invalid original JSON ".repeat(500_000))?;
         let error = migrate_task(&mut connection).unwrap_err();
-        assert!(format!("{error:#}").contains("source row material exceeds budget"));
+        assert!(format!("{error:#}").contains("fixed TaskStatus Control source JSON is invalid"));
         assert!(!connection.query_row(
             "SELECT EXISTS(SELECT 1 FROM schema_migrations WHERE version=?1)",
             [TASK_DOMAIN_VERSION],

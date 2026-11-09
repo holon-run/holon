@@ -606,42 +606,48 @@ impl RuntimeServiceHandle {
 
 pub async fn runtime_activity_summary(host: &RuntimeHost) -> Result<RuntimeActivitySummary> {
     let agents = host.public_agent_activity_snapshots().await?;
-    let active_task_count = agents
-        .iter()
-        .map(|agent| agent.active_task_count)
-        .sum::<usize>();
-    let processing_agent_count = agents
-        .iter()
-        .filter(|agent| {
-            matches!(
-                agent.status,
-                AgentStatus::Booting | AgentStatus::AwakeRunning
-            )
-        })
-        .count();
-    let waiting_agent_count = agents
-        .iter()
-        .filter(|agent| {
-            !matches!(
-                agent.status,
-                AgentStatus::Booting | AgentStatus::AwakeRunning
-            ) && (agent.active_task_count > 0 || agent.status == AgentStatus::AwaitingTask)
-        })
-        .count();
-    let state = if processing_agent_count > 0 {
-        RuntimeActivityState::Processing
-    } else if waiting_agent_count > 0 || active_task_count > 0 {
-        RuntimeActivityState::Waiting
-    } else {
-        RuntimeActivityState::Idle
-    };
-    Ok(RuntimeActivitySummary {
-        state,
-        active_agent_count: agents.len(),
-        active_task_count,
-        processing_agent_count,
-        waiting_agent_count,
-    })
+    Ok(RuntimeActivitySummary::from_snapshots(&agents))
+}
+
+impl RuntimeActivitySummary {
+    pub(crate) fn from_snapshots(agents: &[crate::host::PublicAgentActivitySnapshot]) -> Self {
+        let active_task_count = agents
+            .iter()
+            .map(|agent| agent.active_task_count)
+            .sum::<usize>();
+        let processing_agent_count = agents
+            .iter()
+            .filter(|agent| {
+                matches!(
+                    agent.status,
+                    AgentStatus::Booting | AgentStatus::AwakeRunning
+                )
+            })
+            .count();
+        let waiting_agent_count = agents
+            .iter()
+            .filter(|agent| {
+                !matches!(
+                    agent.status,
+                    AgentStatus::Booting | AgentStatus::AwakeRunning
+                ) && (agent.active_task_count > 0 || agent.status == AgentStatus::AwaitingTask)
+            })
+            .count();
+        let state = if processing_agent_count > 0 {
+            RuntimeActivityState::Processing
+        } else if waiting_agent_count > 0 || active_task_count > 0 {
+            RuntimeActivityState::Waiting
+        } else {
+            RuntimeActivityState::Idle
+        };
+        RuntimeActivitySummary {
+            state,
+            active_agent_count: agents.len(),
+            active_task_count,
+            processing_agent_count,
+            waiting_agent_count,
+        }
+    }
 }
 
 pub(crate) fn runtime_activity_message(summary: &RuntimeActivitySummary) -> &'static str {

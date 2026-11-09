@@ -144,11 +144,7 @@ impl ResidentTaskDomain {
             .and_then(|n| n.checked_add(u64::try_from(count).ok()?.checked_mul(256)?))
             .and_then(|n| n.checked_mul(4))
             .context("Task query capture bytes overflow")?;
-        ensure!(
-            bytes <= u64::try_from(self.byte_limit)?
-                && count.checked_mul(4).is_some_and(|n| n <= self.record_limit),
-            TaskReadError::ResourceExhausted("Task query capture selectors")
-        );
+
         let selector = self
             .budget
             .as_ref()

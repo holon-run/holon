@@ -13,7 +13,7 @@ use crate::{
     runtime_db::{
         control_transition::{ControlCancellationKind, ControlCancellationTarget, ControlKey},
         input_mutation_receipts::{InputMutationFamily, PreparedInputMutation},
-        task_snapshot::{TaskDomainLoadRequest, TaskSnapshotError},
+        task_snapshot::TaskDomainLoadRequest,
     },
 };
 use anyhow::{ensure, Context, Result};
@@ -299,12 +299,15 @@ impl<'a> PhaseMaterial<'a> {
             .records
             .checked_add(records)
             .context("Status phase records overflow")?;
-        ensure!(
-            self.bytes <= self.request.byte_limit.min(64 * 1024 * 1024)
-                && self.records <= self.request.record_limit.min(65536),
-            TaskSnapshotError::ResourceExhausted("Status phase combined material")
-        );
         Ok(())
+    }
+    pub(in crate::runtime_db) fn material_estimate(
+        &self,
+    ) -> crate::runtime_db::task_snapshot::TaskMaintenanceMaterial {
+        crate::runtime_db::task_snapshot::TaskMaintenanceMaterial {
+            bytes: self.bytes,
+            records: self.records,
+        }
     }
     pub(in crate::runtime_db) fn remaining(&self) -> Result<TaskDomainLoadRequest> {
         let mut request = TaskDomainLoadRequest {
@@ -314,18 +317,8 @@ impl<'a> PhaseMaterial<'a> {
             byte_limit: 0,
             record_limit: 0,
         };
-        request.byte_limit = self
-            .request
-            .byte_limit
-            .min(64 * 1024 * 1024)
-            .checked_sub(self.bytes)
-            .context("Status phase bytes exhausted")?;
-        request.record_limit = self
-            .request
-            .record_limit
-            .min(65536)
-            .checked_sub(self.records)
-            .context("Status phase records exhausted")?;
+        request.byte_limit = self.request.byte_limit;
+        request.record_limit = self.request.record_limit;
         Ok(request)
     }
     pub(in crate::runtime_db) fn owner_tx(

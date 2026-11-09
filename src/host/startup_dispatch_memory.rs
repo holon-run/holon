@@ -39,8 +39,8 @@ use crate::{
 };
 use rusqlite::{params, OptionalExtension};
 
+#[cfg(test)]
 const MAX_RECORDS: usize = 65_536;
-const MAX_BYTES: usize = 64 * 1024 * 1024;
 const HEADER_ALLOWANCE: usize = 128 * 1024;
 
 /// Only metadata survives a later-phase error. It cannot retain a resident root,
@@ -154,7 +154,7 @@ fn report_guards(
         .iter()
         .chain(&report.recovered_execution_agent_ids)
         .collect::<BTreeSet<_>>();
-    let bytes = ids.iter().try_fold(
+    let _bytes = ids.iter().try_fold(
         std::mem::size_of::<StartupRuntimeRecoveryReport>(),
         |n, id| {
             n.checked_add(
@@ -166,10 +166,7 @@ fn report_guards(
             .context("startup report length overflow")
         },
     )?;
-    anyhow::ensure!(
-        ids.len() <= MAX_RECORDS && bytes <= MAX_BYTES,
-        "startup recovery report exceeds metadata budget"
-    );
+
     let mut guards = ids
         .into_iter()
         .map(|id| {
@@ -339,10 +336,7 @@ impl RuntimeHost {
                     .0
                     .checked_add(sizes.1)
                     .context("startup phase resolution material overflow")?;
-                anyhow::ensure!(
-                    material <= MAX_BYTES,
-                    "startup phase resolution exceeds metadata budget"
-                );
+
                 let _resolution_guard = observe(
                     &self.inner.input_evidence_budget,
                     &reservation_scope(&single[0]),
@@ -437,8 +431,8 @@ impl RuntimeHost {
             .checked_mul(6)
             .context("startup phase descriptor length overflow")?;
         anyhow::ensure!(
-            bytes <= MAX_BYTES && descriptor.scopes() == std::slice::from_ref(scope),
-            "startup phase metadata exceeds its original scope budget"
+            descriptor.scopes() == std::slice::from_ref(scope),
+            "startup phase metadata differs from its original scope"
         );
         let guard = observe(
             &self.inner.input_evidence_budget,
@@ -455,15 +449,12 @@ impl RuntimeHost {
             !retained.phases.contains_key(descriptor.command_nonce()),
             "startup phase nonce already registered"
         );
-        let total = retained.phases.values().try_fold(bytes, |n, phase| {
+        let _total = retained.phases.values().try_fold(bytes, |n, phase| {
             n.checked_add(phase.metadata_bytes)
                 .and_then(|n| n.checked_add(phase.notification_bytes))
                 .context("startup phase registry overflow")
         })?;
-        anyhow::ensure!(
-            retained.phases.len() < MAX_RECORDS && total <= MAX_BYTES,
-            "startup phase registry exceeds aggregate metadata budget"
-        );
+
         retained.phases.insert(
             descriptor.command_nonce().into(),
             StartupPhaseAttempt {
@@ -492,10 +483,7 @@ impl RuntimeHost {
             "startup notifications differ from original scope or observed replay"
         );
         let bytes = serde_json::to_vec(&notifications)?.len();
-        anyhow::ensure!(
-            bytes <= MAX_BYTES,
-            "startup original notifications exceed preparation budget"
-        );
+
         let guard = observe(
             &self.inner.input_evidence_budget,
             &notifications.scope,
@@ -522,15 +510,12 @@ impl RuntimeHost {
             );
             return Ok(());
         }
-        let total = retained.phases.values().try_fold(bytes, |n, phase| {
+        let _total = retained.phases.values().try_fold(bytes, |n, phase| {
             n.checked_add(phase.metadata_bytes)
                 .and_then(|n| n.checked_add(phase.notification_bytes))
                 .context("startup notification registry overflow")
         })?;
-        anyhow::ensure!(
-            total <= MAX_BYTES,
-            "startup original notification registry exceeds preparation budget"
-        );
+
         let phase = retained
             .phases
             .get_mut(descriptor.command_nonce())
@@ -841,17 +826,11 @@ impl RuntimeHost {
         for reservation in reservations {
             let scope = reservation_scope(reservation);
             let bytes:usize=tx.query_row("SELECT COALESCE((SELECT length(CAST(payload_json AS BLOB)) FROM agent_identities WHERE agent_id=?1),0)+COALESCE((SELECT length(CAST(payload_json AS BLOB)) FROM agent_states WHERE agent_id=?1),0)",[&scope.agent_id],|r|r.get(0))?;
-            anyhow::ensure!(
-                bytes <= MAX_BYTES,
-                "startup identity metadata exceeds preparation budget"
-            );
+
             total_bytes = total_bytes
                 .checked_add(bytes)
                 .context("startup identity metadata overflow")?;
-            anyhow::ensure!(
-                total_bytes <= MAX_BYTES,
-                "startup identity facts exceed aggregate preparation budget"
-            );
+
             guards.push(observe(
                 &self.inner.input_evidence_budget,
                 &scope,
@@ -955,11 +934,8 @@ impl RuntimeHost {
             let mut handoffs = tx.prepare("SELECT length(CAST(run_id AS BLOB))+length(CAST(runtime_lease_id AS BLOB))+length(CAST(source_message_id AS BLOB)),run_id,runtime_lease_id,source_message_id,json_extract(payload_json,'$.physical_stop.owner_epoch') FROM dispatch_memory_retired_handoffs WHERE agent_id=?1 AND identity_incarnation=?2 ORDER BY turn_id")?;
             let mut rows = handoffs.query(params![scope.agent_id, scope.identity_incarnation])?;
             while let Some(row) = rows.next()? {
-                let size: usize = row.get(0)?;
-                anyhow::ensure!(
-                    size <= 64 * 1024,
-                    "retired startup address exceeds bounded proof budget"
-                );
+                let _size: usize = row.get(0)?;
+
                 let run: String = row.get(1)?;
                 let lease: String = row.get(2)?;
                 let source: String = row.get(3)?;
@@ -993,10 +969,7 @@ impl RuntimeHost {
             bytes = bytes
                 .checked_add(scope_bytes)
                 .context("unfinished startup metadata overflow")?;
-            anyhow::ensure!(
-                count <= MAX_RECORDS && bytes <= MAX_BYTES,
-                "unfinished dispatch inventory exceeds metadata budget"
-            );
+
             current_scopes.push(scope);
         }
         let mut addresses = Vec::with_capacity(count);
@@ -1042,10 +1015,7 @@ impl RuntimeHost {
         // Header/descriptor are each <=64KiB. All ordinary owned material is
         // counted before ContextDurableRead or the canonical proof decodes it.
         let bytes:usize=tx.query_row("SELECT COALESCE((SELECT length(CAST(payload_json AS BLOB)) FROM agent_identities WHERE agent_id=?1),0)+COALESCE((SELECT length(CAST(payload_json AS BLOB)) FROM agent_states WHERE agent_id=?1),0)+COALESCE((SELECT length(CAST(payload_json AS BLOB)) FROM messages WHERE evidence_id=?2),0)+COALESCE((SELECT length(CAST(payload_json AS BLOB)) FROM turn_records WHERE turn_id=?3),0)",params![address.scope.agent_id,address.source_message_id,address.turn_id],|r|r.get(0))?;
-        anyhow::ensure!(
-            bytes <= MAX_BYTES,
-            "startup dispatch source material exceeds preparation budget"
-        );
+
         let mut charged = bytes
             .checked_add(HEADER_ALLOWANCE)
             .and_then(|n| n.checked_mul(12))
@@ -1128,10 +1098,8 @@ impl RuntimeHost {
             proof_records = proof_records
                 .checked_add(lineage_records)
                 .context("startup Stop count overflow")?;
-            anyhow::ensure!(
-                proof_records <= MAX_RECORDS,
-                "startup Stop proof record budget exceeded"
-            );
+            tracing::trace!(proof_records, "startup Stop proof observation");
+
             charged = charged
                 .checked_add(
                     proof_bytes
@@ -1186,12 +1154,9 @@ impl RuntimeHost {
                 guard,
             )
         } else {
-            let (proof_bytes, proof_records) =
+            let (proof_bytes, _proof_records) =
                 session.interrupted_proof_material_tx(&tx, &binding)?;
-            anyhow::ensure!(
-                proof_records <= MAX_RECORDS,
-                "startup interruption proof record budget exceeded"
-            );
+
             charged = charged
                 .checked_add(
                     proof_bytes
@@ -1458,14 +1423,11 @@ fn inventory_guard(
     scopes: &[InputEvidenceScope],
     ledger: &InputEvidenceBudgetLedger,
 ) -> Result<Vec<Arc<BudgetViewGuard>>> {
-    let bytes = scopes.iter().try_fold(0usize, |n, s| {
+    let _bytes = scopes.iter().try_fold(0usize, |n, s| {
         n.checked_add(s.agent_id.len() + 64)
             .context("startup scope inventory overflow")
     })?;
-    anyhow::ensure!(
-        scopes.len() <= MAX_RECORDS && bytes <= MAX_BYTES,
-        "startup scope inventory exceeds metadata budget"
-    );
+
     scopes
         .iter()
         .map(|scope| {

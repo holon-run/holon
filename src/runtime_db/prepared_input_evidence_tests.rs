@@ -429,8 +429,7 @@ fn native_input_birth_does_not_adopt_an_existing_unqualified_body() -> Result<()
 }
 
 #[test]
-fn native_input_allowance_rejects_before_business_and_receipt_failure_rolls_back_birth(
-) -> Result<()> {
+fn native_input_ignores_legacy_hints_and_receipt_failure_rolls_back_birth() -> Result<()> {
     use crate::{
         config::StateMemoryLimits, runtime::input_evidence_budget::InputEvidenceBudgetLedger,
     };
@@ -452,8 +451,15 @@ fn native_input_allowance_rejects_before_business_and_receipt_failure_rolls_back
             ..Default::default()
         },
     ] {
+        let f = Fixture::new()?;
+        let prepared = PreparedInputEvidence::transcript(
+            f.scope.clone(),
+            "native-hint".into(),
+            f.at,
+            f.transcript(),
+        )?;
         let ledger = InputEvidenceBudgetLedger::new(limits)?;
-        let error =
+        let ack =
             f.db.evidence()
                 .commit_prepared_input_evidence_with_task_budget(
                     &prepared,
@@ -472,21 +478,15 @@ fn native_input_allowance_rejects_before_business_and_receipt_failure_rolls_back
                     &ledger,
                     None,
                     None,
-                )
-                .expect_err("configured Input allowance cannot admit original Native material");
-        assert!(matches!(
-            error.downcast_ref::<super::super::input_evidence_snapshot::InputEvidenceSnapshotError>(),
-            Some(
-                super::super::input_evidence_snapshot::InputEvidenceSnapshotError::ResourceExhausted(_)
-            )
-        ), "{error:#}");
+                )?;
+        drop(ack);
         for table in [
             "transcript_entries",
             "input_query_birth_members",
             "input_query_birth_cursors",
             "input_mutation_receipts",
         ] {
-            assert_eq!(f.count(table)?, 0, "{table}");
+            assert_eq!(f.count(table)?, 1, "{table}");
         }
         assert_eq!(ledger.report()?.observed_bytes, 0);
     }

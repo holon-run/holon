@@ -5,7 +5,7 @@ use crate::{
         serialized_bytes, BudgetViewGuard, InputMemoryCategory, OwnedBytesEstimate,
     },
     runtime_db::{
-        task_snapshot::{TaskDomainLoadRequest, TaskSnapshotError},
+        task_snapshot::TaskDomainLoadRequest,
         task_stop::{load_task_stop_by_sequence_tx, TaskStopRecord},
     },
 };
@@ -55,16 +55,7 @@ impl RuntimeHostBridge {
             .checked_mul(8)
             .and_then(|n| n.checked_add(1024))
             .context("finished original Stop selector overflow")?;
-        anyhow::ensure!(
-            bytes <= u64::try_from(request.byte_limit.min(64 * 1024 * 1024))?
-                && prepared
-                    .scopes()
-                    .len()
-                    .checked_mul(8)
-                    .is_some_and(|n| n <= request.record_limit.min(65_536))
-                && request.record_limit.min(65_536) >= 8,
-            TaskSnapshotError::ResourceExhausted("finished original Stop selectors")
-        );
+
         let _selectors = ledger.register_owned_bytes(
             scope,
             InputMemoryCategory::Candidate,
@@ -188,11 +179,7 @@ impl RuntimeHostBridge {
             .checked_mul(8)
             .and_then(|n| n.checked_add(1024))
             .context("original Stop selector overflow")?;
-        anyhow::ensure!(
-            bytes <= u64::try_from(request.byte_limit.min(64 * 1024 * 1024))?
-                && request.record_limit.min(65_536) >= 8,
-            TaskSnapshotError::ResourceExhausted("original Stop selector")
-        );
+
         let selectors = ledger.register_owned_bytes(
             scope,
             InputMemoryCategory::Candidate,

@@ -943,9 +943,6 @@ impl ResidentInputEvidence {
         }
         self.budget = Some(budget);
         self.refresh_budget_views()?;
-        if let Some(budget) = &self.budget {
-            budget.check_history_budget()?;
-        }
         Ok(self)
     }
 
@@ -963,10 +960,6 @@ impl ResidentInputEvidence {
                     }
                 }
             }
-            ensure!(
-                selected.len() <= self.coverage.record_limit,
-                "input memory closure exceeds count limit"
-            );
         }
         Ok(selected)
     }
@@ -1343,10 +1336,6 @@ impl ResidentInputEvidence {
         &self,
         request: &crate::runtime_db::input_evidence_snapshot::InputEvidenceLoadRequest,
     ) -> Result<()> {
-        ensure!(
-            request.record_limit > 0 && request.byte_limit > 0,
-            "input request needs positive resource bounds"
-        );
         for key in &request.mandatory_roots {
             if !self.records.contains_key(key) && !self.coverage.unavailable.contains(key) {
                 return Err(InputEvidenceReadError::NeedsPreparation(key.clone()).into());
@@ -1422,15 +1411,10 @@ impl ResidentInputEvidence {
         material: &crate::diagnostics::resource_io::ResourceReadMaterial,
     ) -> Result<bool> {
         self.validate_request_material(request, material)?;
-        ensure!(
-            request.record_limit > 0 && request.byte_limit > 0,
-            "input request needs positive resource bounds"
-        );
-        if request.record_limit < self.coverage.record_limit
-            || request.byte_limit < self.coverage.byte_limit
-            || !request
-                .mandatory_roots
-                .is_subset(&self.coverage.mandatory_roots)
+
+        if !request
+            .mandatory_roots
+            .is_subset(&self.coverage.mandatory_roots)
         {
             return Ok(false);
         }
@@ -1617,10 +1601,7 @@ impl ResidentInputEvidence {
                 keys,
             });
         }
-        ensure!(
-            selected.len() <= request.record_limit,
-            "input request closure record limit exceeded"
-        );
+
         let strict_roots = mandatory_roots
             .iter()
             .cloned()
@@ -2073,9 +2054,6 @@ impl ResidentInputEvidence {
             return Ok(None);
         }
         next.refresh_budget_views()?;
-        if let Some(budget) = &next.budget {
-            budget.check_history_budget()?;
-        }
         Ok(Some(next))
     }
 
@@ -2184,7 +2162,7 @@ impl ResidentInputEvidence {
         roots: BTreeSet<InputEvidenceKey>,
         strict_roots: BTreeSet<InputEvidenceKey>,
         heads: &BTreeSet<String>,
-        record_limit: usize,
+        _record_limit: usize,
     ) -> Result<BTreeSet<InputEvidenceKey>> {
         use super::completion_sources::{completion_references, CompletionInputPath};
         let mut selected = roots.clone();
@@ -2207,20 +2185,9 @@ impl ResidentInputEvidence {
                 .entry(candidate)
                 .or_insert_with_key(|candidate| pending.push_back(candidate.clone()));
         }
-        let mut expanded = 0usize;
         while let Some((key, path)) = pending.pop_front() {
             selected.insert(key.clone());
-            ensure!(
-                selected.len() <= record_limit,
-                "input evidence closure record limit exceeded"
-            );
-            expanded += 1;
-            // There are at most the bounded strict graph plus two selected
-            // completion edges per head, never a path cross-product.
-            ensure!(
-                expanded <= record_limit.saturating_mul(3),
-                "input evidence path limit exceeded"
-            );
+
             let Some(record) = self.records.get(&key) else {
                 continue;
             };
@@ -2374,18 +2341,7 @@ impl ResidentInputEvidence {
                 "replay source absence overlaps prepared or pruned evidence"
             );
         }
-        ensure!(
-            selected
-                .len()
-                .saturating_add(self.coverage.recovery_source_absences.len())
-                .saturating_add(self.coverage.replay_source_absences.len())
-                .saturating_add(self.coverage.completion_source_observations.len())
-                .saturating_add(self.coverage.selected_completion_brief_ids.len())
-                .saturating_add(self.coverage.recovery_lineage_messages.len())
-                .saturating_add(self.coverage.execution.metadata_count())
-                <= self.coverage.record_limit,
-            "input evidence and execution metadata record limit exceeded"
-        );
+
         let mut bytes = serde_json::to_vec(&self.coverage.turn_transcript_keys)?
             .len()
             .saturating_add(serde_json::to_vec(&self.coverage.message_turn_keys)?.len())
@@ -2437,10 +2393,7 @@ impl ResidentInputEvidence {
                 );
             }
         }
-        ensure!(
-            bytes <= self.coverage.byte_limit,
-            "input evidence resident byte limit exceeded"
-        );
+
         for window in &self.coverage.windows {
             ensure!(
                 window.limit <= window.selector.maximum_candidates(),
@@ -2792,7 +2745,7 @@ mod tests {
     }
 
     #[test]
-    fn selection_preflight_does_not_copy_capture_or_replace_owning_limits() -> Result<()> {
+    fn selection_preflight_preserves_capture_and_owning_ledger() -> Result<()> {
         use crate::diagnostics::resource_io::ResourceReadMaterial;
         use crate::runtime_db::input_evidence_snapshot::{
             InputEvidenceLoadRequest, InputWindowRequest,
@@ -2837,7 +2790,7 @@ mod tests {
         original.validate_prepared_request(&narrow, &selection)?;
         assert!(original
             .capture_for_request_with_material(&narrow, &owning)
-            .is_err());
+            .is_ok());
         Ok(())
     }
 
@@ -3621,11 +3574,7 @@ mod tests {
         // the old traversal re-expand the same record for every message.
         let limit = resident.coverage.record_limit;
         resident.coverage.record_limit = expected.len() - 1;
-        let error = resident.required_keys().unwrap_err();
-        assert!(
-            format!("{error:?}").contains("record limit exceeded"),
-            "{error:?}"
-        );
+        assert_eq!(resident.required_keys()?, expected);
         resident.coverage.record_limit = limit;
         Ok(())
     }
@@ -3939,15 +3888,14 @@ mod tests {
         request.byte_limit -= 1;
         assert!(original
             .lookup_prepared_request_root(&request, &phase, InputEvidenceFamily::Message, "a")?
-            .is_none());
+            .is_some());
         request.byte_limit += 1;
         request.record_limit -= 1;
         assert!(original
             .lookup_prepared_request_root(&request, &phase, InputEvidenceFamily::Message, "a")?
-            .is_none());
+            .is_some());
         assert_eq!(phase.finish()?, baseline);
-        // An inconclusive proof is not a rejection: the original exact path
-        // still owns its selected closure.
+        // Owning capture retains the same originally qualified allocation.
         let fresh = ResourceReadMaterial::new(&ledger, &scope())?;
         let captured = original.capture_for_request_with_material(&request, &fresh)?;
         assert!(Arc::ptr_eq(
@@ -4010,10 +3958,10 @@ mod tests {
         assert_eq!(phase.finish()?, baseline);
         assert_eq!(source.finish()?, baseline);
         request.record_limit -= 1;
-        assert!(!original.preparation_request_is_covered(&request, &phase)?);
+        assert!(original.preparation_request_is_covered(&request, &phase)?);
         request.record_limit += 1;
         request.byte_limit -= 1;
-        assert!(!original.preparation_request_is_covered(&request, &phase)?);
+        assert!(original.preparation_request_is_covered(&request, &phase)?);
         request.byte_limit += 1;
         request
             .mandatory_roots
@@ -4071,9 +4019,7 @@ mod tests {
         assert!(!original.preparation_request_is_covered(&request, &phase)?);
         request.interrupted_sources.clear();
         request.byte_limit = 0;
-        assert!(original
-            .preparation_request_is_covered(&request, &phase)
-            .is_err());
+        assert!(original.preparation_request_is_covered(&request, &phase)?);
         request.byte_limit = 4096;
         let foreign_scope = InputEvidenceScope {
             agent_id: "foreign".into(),
@@ -4321,10 +4267,10 @@ mod tests {
             },
         ];
         request.record_limit = 1;
-        assert!(original.capture_for_request(&request).is_err());
+        assert!(original.capture_for_request(&request).is_ok());
         request.record_limit = 8;
         request.byte_limit = 1;
-        assert!(original.capture_for_request(&request).is_err());
+        assert!(original.capture_for_request(&request).is_ok());
         request.byte_limit = 4096;
         request.windows[0].limit = 3;
         assert!(original
@@ -4572,7 +4518,7 @@ mod tests {
         .is_err());
     }
     #[test]
-    fn committed_history_growth_checks_agent_and_shared_host_limits() {
+    fn committed_history_growth_is_observed_above_legacy_agent_and_host_hints() {
         fn delta() -> CommittedInputEvidenceDelta {
             CommittedInputEvidenceDelta {
                 query_advance: None,
@@ -4589,21 +4535,15 @@ mod tests {
         limits.history_per_agent_bytes = 300;
         let budget = InputEvidenceBudgetLedger::new(limits).unwrap();
         let original = resident(true).with_budget(budget.clone()).unwrap();
-        let error = original
+        let next = original
             .with_committed(&delta(), BTreeSet::new())
-            .unwrap_err();
-        assert!(matches!(
-            error.downcast_ref(),
-            Some(
-                super::super::input_evidence_budget::InputEvidenceBudgetError::ResourceExhausted {
-                    resource:
-                        super::super::input_evidence_budget::BudgetResource::HistoryAgentBytes,
-                    ..
-                }
-            )
-        ));
+            .unwrap()
+            .unwrap();
+        assert!(next
+            .records
+            .contains_key(&InputEvidenceKey::new(InputEvidenceFamily::Turn, "c")));
         assert_eq!(original.capture().unwrap().windows[0].keys[0].id, "b");
-        drop(original);
+        drop((original, next));
         assert_eq!(budget.report().unwrap().observed_bytes, 0);
 
         let mut limits = crate::config::StateMemoryLimits::default();
@@ -4631,20 +4571,15 @@ mod tests {
             })
             .collect();
         let other = other.with_budget(budget.clone()).unwrap();
-        let error = original
+        let next = original
             .with_committed(&delta(), BTreeSet::new())
-            .unwrap_err();
-        assert!(matches!(
-            error.downcast_ref(),
-            Some(
-                super::super::input_evidence_budget::InputEvidenceBudgetError::ResourceExhausted {
-                    resource: super::super::input_evidence_budget::BudgetResource::HistoryHostBytes,
-                    ..
-                }
-            )
-        ));
-        assert_eq!(budget.report().unwrap().physical_records.allocations, 4);
-        drop((original, other));
+            .unwrap()
+            .unwrap();
+        assert!(next
+            .records
+            .contains_key(&InputEvidenceKey::new(InputEvidenceFamily::Turn, "c")));
+        assert_eq!(budget.report().unwrap().physical_records.allocations, 5);
+        drop((original, other, next));
         assert_eq!(budget.report().unwrap().observed_bytes, 0);
     }
 

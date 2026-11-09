@@ -29,13 +29,9 @@ pub(super) fn capture_relations(
         }
     }
     if root_table_available(tables, "queue_entries") {
-        let mut query = connection.prepare("SELECT message_id FROM queue_entries WHERE agent_id=?1 AND status IN ('queued','interrupted','dequeued','interjected') ORDER BY message_id LIMIT ?2")?;
-        for row in query.query_map(
-            params![agent_id, i64::try_from(CONTINUITY_MAX_RECORDS + 1)?],
-            |row| row.get::<_, String>(0),
-        )? {
+        let mut query = connection.prepare("SELECT message_id FROM queue_entries WHERE agent_id=?1 AND status IN ('queued','interrupted','dequeued','interjected') ORDER BY message_id")?;
+        for row in query.query_map(params![agent_id], |row| row.get::<_, String>(0))? {
             sources.insert(row?);
-            bound_sources(&sources)?;
         }
     }
     let mut tasks = BTreeSet::new();
@@ -44,27 +40,20 @@ pub(super) fn capture_relations(
         if !root_table_available(tables, "messages") {
             continue;
         }
-        let metadata: Option<(String,usize)> = connection.query_row(
-            "SELECT agent_id,length(CAST(payload_json AS BLOB)) FROM messages WHERE evidence_id=?1",[&id],
-            |row|Ok((row.get(0)?,row.get(1)?)),
-        ).optional()?;
-        let Some((stored_agent, bytes)) = metadata else {
+        let stored_agent: Option<String> = connection
+            .query_row(
+                "SELECT agent_id FROM messages WHERE evidence_id=?1",
+                [&id],
+                |row| row.get(0),
+            )
+            .optional()?;
+        let Some(stored_agent) = stored_agent else {
             continue;
         };
         ensure!(
             stored_agent == agent_id,
             "fixed Wait source belongs to another agent"
         );
-        let already = inputs
-            .roots
-            .record_digests
-            .contains_key(&format!("message:{id}"));
-        if !already && inputs.payload_bytes.saturating_add(bytes) > CONTINUITY_MAX_PAYLOAD_BYTES {
-            return Err(EpisodeSnapshotError::ClosureResourceExhausted {
-                limit: "Wait relation source bytes",
-            }
-            .into());
-        }
         let payload: String = connection.query_row(
             "SELECT payload_json FROM messages WHERE evidence_id=?1",
             [&id],
@@ -85,20 +74,6 @@ pub(super) fn capture_relations(
             }
         }
     }
-    for keys in [&turns, &tasks, &triggers] {
-        bound_sources(keys)?;
-    }
-    let mut metadata_count = turns
-        .len()
-        .saturating_add(tasks.len())
-        .saturating_add(triggers.len());
-    let mut metadata_bytes = turns
-        .iter()
-        .chain(&tasks)
-        .chain(&triggers)
-        .map(String::len)
-        .sum::<usize>();
-    bound_relation(metadata_count, metadata_bytes)?;
     for (kind, keys) in [("turn", turns), ("task", tasks), ("trigger", triggers)] {
         for source in keys {
             let mut ids = BTreeSet::new();
@@ -108,16 +83,12 @@ pub(super) fn capture_relations(
                     "task"=>"EXISTS(SELECT 1 FROM json_each(payload_json,'$.wake_sources') w WHERE json_extract(w.value,'$.kind')='task_result' AND json_extract(w.value,'$.task_id')=?2)",
                     _=>"trigger_message_id=?2 OR json_extract(payload_json,'$.trigger_message_id')=?2",
                 };
-                let mut query=connection.prepare(&format!("SELECT wait_condition_id,agent_id FROM wait_conditions WHERE agent_id=?1 AND ({predicate}) ORDER BY wait_condition_id LIMIT ?3"))?;
-                for row in query.query_map(
-                    params![agent_id, source, i64::try_from(CONTINUITY_MAX_RECORDS + 1)?],
-                    |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
-                )? {
+                let mut query=connection.prepare(&format!("SELECT wait_condition_id,agent_id FROM wait_conditions WHERE agent_id=?1 AND ({predicate}) ORDER BY wait_condition_id"))?;
+                for row in query.query_map(params![agent_id, source], |row| {
+                    Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+                })? {
                     let (id, agent) = row?;
                     ensure!(agent == agent_id, "fixed Wait relation scope mismatch");
-                    metadata_count = metadata_count.saturating_add(1);
-                    metadata_bytes = metadata_bytes.saturating_add(id.len());
-                    bound_relation(metadata_count, metadata_bytes)?;
                     enqueue(pending, selected, selected_bytes, "wait", &id, 0)?;
                     ids.insert(id);
                 }
@@ -134,18 +105,6 @@ pub(super) fn capture_relations(
                 }
             }
         }
-    }
-    Ok(())
-}
-fn bound_sources(keys: &BTreeSet<String>) -> Result<()> {
-    bound_relation(keys.len(), keys.iter().map(String::len).sum())
-}
-fn bound_relation(count: usize, bytes: usize) -> Result<()> {
-    if count > CONTINUITY_MAX_RECORDS || bytes > CONTINUITY_MAX_PAYLOAD_BYTES {
-        return Err(EpisodeSnapshotError::ClosureResourceExhausted {
-            limit: "Wait relation metadata",
-        }
-        .into());
     }
     Ok(())
 }

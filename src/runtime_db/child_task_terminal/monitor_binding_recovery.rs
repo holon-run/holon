@@ -191,21 +191,10 @@ impl crate::runtime_db::RuntimeDb {
                 );
                 let observation = phase.borrow_mut().owner_tx(tx, scope, ledger)?;
                 let mode = observation.mode;
-                let (record_limit, byte_limit) = TaskDomainLoadRequest::bounded_material_limits(
-                    request.record_limit,
-                    request.byte_limit,
-                );
-                let remaining = phase.borrow().remaining()?;
+                let observed = phase.borrow().material_estimate();
                 let mut material =
                     tasks::read_preparation::TaskReadMaterial::new(scope, request, Some(ledger))
-                        .with_admitted_material(tasks::TaskMaintenanceMaterial {
-                            bytes: byte_limit
-                                .checked_sub(remaining.byte_limit)
-                                .context("binding fresh bytes underflow")?,
-                            records: record_limit
-                                .checked_sub(remaining.record_limit)
-                                .context("binding fresh records underflow")?,
-                        })?;
+                        .with_admitted_material(observed)?;
                 let value = read(
                     tx,
                     &mut OriginalChildMonitorBindingReadView {

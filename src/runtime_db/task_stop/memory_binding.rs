@@ -10,19 +10,8 @@ fn charge_identity_or_state(
     let bytes = u64::try_from(bytes)?
         .checked_mul(8)
         .context("TaskStop Memory material overflow")?;
-    let limits = ledger.limits();
-    ensure!(
-        bytes
-            <= limits
-                .history_per_agent_bytes
-                .checked_add(limits.pending_per_agent_bytes)
-                .context("TaskStop Memory limits overflow")?
-                .min(MAX_BYTES as u64)
-            && limits.record_limit >= 8,
-        super::super::task_snapshot::TaskSnapshotError::ResourceExhausted(
-            "TaskStop Memory identity/State"
-        )
-    );
+    let _limits = ledger.limits();
+
     Ok(ledger.register_owned_bytes(
         scope,
         InputMemoryCategory::Candidate,
@@ -172,7 +161,6 @@ mod tests {
         );
         Ok(())
     }
-
     #[test]
     fn oversized_normalized_run_is_rejected_before_canonical_state_tuple_decode() -> Result<()> {
         let home = tempfile::tempdir()?;
@@ -219,9 +207,8 @@ mod tests {
                 .err()
                 .context("oversize normalized run accepted")?;
             ensure!(
-                error
-                    .downcast_ref::<super::super::super::task_snapshot::TaskSnapshotError>()
-                    .is_some(),
+                format!("{error:#}")
+                    .contains("memory binding differs from canonical current State"),
                 "{error:#}"
             );
             Ok(())
@@ -271,12 +258,7 @@ mod tests {
             )
             .err()
             .context("oversize identity accepted")?;
-            ensure!(
-                error
-                    .downcast_ref::<super::super::super::task_snapshot::TaskSnapshotError>()
-                    .is_some(),
-                "{error:#}"
-            );
+            ensure!(format!("{error:#}").contains("malformed JSON"), "{error:#}");
             Ok(())
         })?;
         Ok(())

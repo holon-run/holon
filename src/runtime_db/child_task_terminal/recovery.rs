@@ -218,10 +218,6 @@ impl OriginalChildTerminalRecoveryMaterial<'_, '_, '_> {
     pub(crate) fn request(&self) -> &TaskDomainLoadRequest {
         self.request
     }
-    #[cfg(test)]
-    pub(crate) fn material_for_test(&self) -> super::super::task_snapshot::TaskMaintenanceMaterial {
-        self.material.material_estimate()
-    }
     pub(crate) fn observe_known_slots(&mut self, tx: &Transaction<'_>) -> Result<()> {
         let scope = match &self.view.receipt().outcome.result {
             InputMutationResult::ChildTaskTerminal { ack } => &ack.original.scope,

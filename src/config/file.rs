@@ -536,6 +536,8 @@ pub struct RuntimeStateMemoryConfigFile {
     pub record_limit: Option<u64>,
 }
 
+/// Legacy sizing hints retained for configuration/report compatibility.
+/// Cumulative state sizes are observational and do not reject runtime work.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 pub struct StateMemoryLimits {
     pub history_per_agent_bytes: u64,

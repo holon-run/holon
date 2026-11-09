@@ -127,19 +127,9 @@ impl RuntimeHandle {
             message.kind,
             MessageKind::TaskStatus | MessageKind::TaskResult
         ) {
-            let limits = self.inner.input_evidence_budget.limits();
-            let (bytes, records) = super::task_reads::dispatch_plan_material(message, task)?;
-            anyhow::ensure!(
-                records <= limits.record_limit
-                    && bytes
-                        <= limits
-                            .history_per_agent_bytes
-                            .checked_add(limits.pending_per_agent_bytes)
-                            .context("dispatch Task plan limits overflow")?,
-                super::resident_task::TaskReadError::ResourceExhausted(
-                    "dispatch Task plan material"
-                )
-            );
+            let _limits = self.inner.input_evidence_budget.limits();
+            let (bytes, _records) = super::task_reads::dispatch_plan_material(message, task)?;
+
             Some(self.inner.input_evidence_budget.register_owned_bytes(
                 &tasks.scope,
                 input_evidence_budget::InputMemoryCategory::Pins,

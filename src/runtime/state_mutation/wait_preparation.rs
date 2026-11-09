@@ -151,24 +151,16 @@ impl RuntimeMutation {
 fn external_wait_read(
     scheduling: &crate::runtime::resident_scheduling::CapturedScheduling,
     ledger: &crate::runtime::input_evidence_budget::InputEvidenceBudgetLedger,
-    record_limit: usize,
-    byte_limit: usize,
+    _record_limit: usize,
+    _byte_limit: usize,
 ) -> Result<WaitSchedulingRead> {
     let trigger = scheduling.active_default_trigger()?;
     let bytes = serialized_bytes(&trigger.map(|trigger| &trigger.external_trigger_id))?
         .checked_add(512)
         .and_then(|n| n.checked_mul(32))
         .context("Wait Trigger material overflow")?;
-    let (selected, records) = scheduling.selected_material_estimate()?;
-    anyhow::ensure!(
-        selected
-            .checked_add(bytes)
-            .is_some_and(|n| n <= byte_limit.min(64 * 1024 * 1024) as u64)
-            && records
-                .checked_add(32)
-                .is_some_and(|n| n <= record_limit.min(65_536)),
-        SchedulingReadError::ResourceExhausted("selected Scheduling and Wait Trigger copies")
-    );
+    let (_selected, _records) = scheduling.selected_material_estimate()?;
+
     let material = ledger.register_owned_bytes(
         &scheduling.scope,
         InputMemoryCategory::Candidate,

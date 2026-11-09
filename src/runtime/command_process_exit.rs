@@ -60,19 +60,8 @@ impl OriginalCommandProcessExit {
         .checked_add(512)
         .and_then(|n| n.checked_mul(4))
         .context("Command exit proof material overflow")?;
-        let limits = ledger.limits();
-        ensure!(
-            limits.record_limit >= 4
-                && bytes
-                    <= limits
-                        .history_per_agent_bytes
-                        .checked_add(limits.pending_per_agent_bytes)
-                        .context("Command exit proof limit overflow")?
-                        .min(64 * 1024 * 1024),
-            crate::runtime_db::task_snapshot::TaskSnapshotError::ResourceExhausted(
-                "Command exit proof"
-            )
-        );
+        let _limits = ledger.limits();
+
         let material = ledger.register_owned_bytes(
             scope,
             InputMemoryCategory::Candidate,

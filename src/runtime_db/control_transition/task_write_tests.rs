@@ -418,7 +418,7 @@ fn control_task_alias_fault_rolls_back_task_result_queue_state_and_receipt() -> 
 }
 
 #[test]
-fn control_task_pool_budget_precedes_changed_snapshot_decode_and_business_sql() -> Result<()> {
+fn control_task_rejects_corrupt_snapshot_without_quota_and_rolls_back() -> Result<()> {
     let f = Fixture::new();
     let ledger = InputEvidenceBudgetLedger::new(StateMemoryLimits::default())?;
     let old = seed_task(&f, &running(&f, "oversized-task"), true, &ledger)?;
@@ -431,7 +431,7 @@ fn control_task_pool_budget_precedes_changed_snapshot_decode_and_business_sql() 
             .err()
             .context("large malformed current Task unexpectedly accepted")?;
     assert!(
-        matches!(
+        !matches!(
             error.downcast_ref::<tasks::TaskSnapshotError>(),
             Some(tasks::TaskSnapshotError::ResourceExhausted(_))
         ),

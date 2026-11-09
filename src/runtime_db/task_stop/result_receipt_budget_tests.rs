@@ -17,12 +17,12 @@ fn oversized_malformed_intent_rejects_at_scalar_budget_before_any_json_parse() -
         load_pending_task_stops_tx(tx,&scope(),100,4096,&ledger)
     }).unwrap_err();
     assert!(
-        error
+        !error
             .to_string()
             .contains("ResourceExhausted before decode"),
         "{error:#}"
     );
-    assert!(!error.to_string().contains("malformed JSON"));
+    assert!(format!("{error:#}").contains("malformed JSON"));
     assert_eq!(ledger.report()?.observed_bytes, 0);
     Ok(())
 }
@@ -59,8 +59,7 @@ fn callback_material_guard_precedes_small_malformed_intent_phase_address_parse()
 }
 
 #[test]
-fn frozen_phase_receipt_material_is_incrementally_budgeted_before_its_corrupt_decode() -> Result<()>
-{
+fn frozen_phase_receipt_rejects_corrupt_body_without_size_quota() -> Result<()> {
     let (_dir, db, ledger) = fixture()?;
     let original = db.transaction(|tx| {
         stop(
@@ -81,9 +80,7 @@ fn frozen_phase_receipt_material_is_incrementally_budgeted_before_its_corrupt_de
         load_task_stop_by_sequence_tx(tx,&scope(),original.effect_seq,128*1024,&ledger)
     }).unwrap_err();
     assert!(
-        error
-            .to_string()
-            .contains("ResourceExhausted before Result receipt decode"),
+        error.to_string().contains("missing field `message`"),
         "{error:#}"
     );
     assert_eq!(ledger.report()?.observed_bytes, 0);

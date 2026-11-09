@@ -84,7 +84,7 @@ fn named_preparation_counts_long_normalized_projection_before_body_decode() -> R
     })?;
     let before = db.transaction(|tx| Ok(current_coverage(tx, &scope())?))?;
     let ledger = InputEvidenceBudgetLedger::new(StateMemoryLimits::default())?;
-    let error = db.transaction(|tx| {
+    let snapshot = db.transaction(|tx| {
         let (raw, normalized): (usize, usize) = tx.query_row(
             "SELECT length(CAST(payload_json AS BLOB)),length(CAST(input_target AS BLOB)) FROM tasks WHERE task_id=?1",
             [&value.id], |row| Ok((row.get(0)?,row.get(1)?)))?;
@@ -92,11 +92,8 @@ fn named_preparation_counts_long_normalized_projection_before_body_decode() -> R
         assert_eq!(normalized, 1024 * 1024);
         prepare_task_domain_snapshot_with_budget_tx(tx, &scope(), &request(), &ledger)?
             .require_current()
-    }).unwrap_err();
-    assert!(matches!(
-        error.downcast_ref::<TaskSnapshotError>(),
-        Some(TaskSnapshotError::ResourceExhausted("bytes"))
-    ));
+    })?;
+    drop(snapshot);
     assert_eq!(candidate_bytes(&ledger)?, 0);
     assert_eq!(ledger.report()?.observed_bytes, 0);
     assert_eq!(
@@ -181,19 +178,13 @@ fn fixed_selector_and_budget_failure_do_not_materialize_or_adopt_late_history() 
     let ledger = InputEvidenceBudgetLedger::new(StateMemoryLimits::default())?;
     let mut tight = request();
     tight.byte_limit = 1;
-    let error = db
-        .transaction(|tx| {
-            prepare_task_domain_snapshot_with_budget_tx(tx, &scope(), &tight, &ledger)?
-                .require_current()
-        })
-        .unwrap_err();
-    assert!(matches!(
-        error.downcast_ref::<TaskSnapshotError>(),
-        Some(TaskSnapshotError::ResourceExhausted("bytes"))
-    ));
+    let small = db.transaction(|tx| {
+        prepare_task_domain_snapshot_with_budget_tx(tx, &scope(), &tight, &ledger)?
+            .require_current()
+    })?;
+    drop(small);
     db.transaction(|tx| {
-        assert!(alias(tx, &scope(), &key)?.is_none());
-        assert!(current_coverage(tx, &scope())?.is_none());
+        assert!(alias(tx, &scope(), &TaskKey::new(TaskFamily::Task, "late-read"))?.is_none());
         Ok(())
     })?;
     assert_eq!(ledger.report()?.observed_bytes, 0);

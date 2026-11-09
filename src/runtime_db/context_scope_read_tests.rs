@@ -12,7 +12,7 @@ fn scope() -> InputEvidenceScope {
 }
 
 #[test]
-fn native_original_material_uses_configured_input_limits_and_keeps_its_own_cap() -> Result<()> {
+fn native_original_material_hints_do_not_gate_preparation() -> Result<()> {
     use crate::runtime::resident_input_evidence::InputEvidenceFamily;
     use crate::runtime_db::input_evidence_snapshot::native_birth::{
         original_material_limits, NativeInputWriteProof,
@@ -31,25 +31,17 @@ fn native_original_material_uses_configured_input_limits_and_keeps_its_own_cap()
             ..Default::default()
         })?;
         assert_eq!(original_material_limits(&ledger)?, expected);
-        if records == 1 {
-            let error = db
-                .transaction(|tx| {
-                    NativeInputWriteProof::prepare_tx(
-                        tx,
-                        &scope,
-                        &ledger,
-                        original_material_limits(&ledger)?,
-                        None,
-                        |visit| visit(InputEvidenceFamily::Transcript, "native-configured-cap"),
-                    )
-                    .map(drop)
-                })
-                .unwrap_err();
-            assert!(
-                format!("{error:#}").contains("Input read material"),
-                "{error:#}"
-            );
-        }
+        db.transaction(|tx| {
+            NativeInputWriteProof::prepare_tx(
+                tx,
+                &scope,
+                &ledger,
+                original_material_limits(&ledger)?,
+                None,
+                |visit| visit(InputEvidenceFamily::Transcript, "native-configured-hint"),
+            )
+            .map(drop)
+        })?;
         assert_eq!(ledger.report()?.observed_bytes, 0);
     }
     Ok(())
@@ -67,13 +59,13 @@ fn native_birth_borrows_validated_scope_without_another_identity_tree() -> Resul
     let limits = (64 * 1024 * 1024, 259);
     db.transaction(|tx| {
         let read = ContextDurableRead::new(tx, &scope.agent_id).scope_read()?;
-        assert!(
-            NativeInputWriteProof::prepare_tx(tx, &scope, &ledger, limits, None, |visit| visit(
-                InputEvidenceFamily::Transcript,
-                "native-scope-read"
-            ),)
-            .is_err()
-        );
+        let independent =
+            NativeInputWriteProof::prepare_tx(tx, &scope, &ledger, limits, None, |visit| {
+                visit(InputEvidenceFamily::Transcript, "native-scope-read")
+            })?
+            .expect("native source");
+        let independent_bytes = ledger.report()?.observed_bytes;
+        drop(independent);
         assert_eq!(ledger.report()?.observed_bytes, 0);
         let proof = NativeInputWriteProof::prepare_with_scope_read_tx(
             tx,
@@ -86,6 +78,7 @@ fn native_birth_borrows_validated_scope_without_another_identity_tree() -> Resul
         )?
         .expect("installed native source");
         assert!(ledger.report()?.observed_bytes > 0);
+        assert!(ledger.report()?.observed_bytes < independent_bytes);
         drop(proof);
         assert_eq!(ledger.report()?.observed_bytes, 0);
         tx.execute(

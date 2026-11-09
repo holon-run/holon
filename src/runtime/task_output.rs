@@ -93,17 +93,11 @@ impl OutputMaterialAllowance {
                 .context("Task Output combined count overflow")?,
             ..self
         };
-        anyhow::ensure!(
-            next.bytes <= next.byte_limit && next.records <= next.record_limit,
-            TaskReadError::ResourceExhausted("Task Output combined retained/render/file material")
-        );
+
         Ok(next)
     }
     fn remaining(self) -> (u64, usize) {
-        (
-            self.byte_limit - self.bytes,
-            self.record_limit - self.records,
-        )
+        (self.byte_limit, self.record_limit)
     }
 }
 impl TaskOutputRead {
@@ -238,10 +232,7 @@ impl RuntimeHandle {
             roots.extend(reply.map(|id| InputEvidenceKey::new(InputEvidenceFamily::Message, id)));
         }
         let (remaining_bytes, remaining_records) = material.remaining();
-        anyhow::ensure!(
-            roots.is_empty() || (remaining_bytes > 0 && remaining_records > 0),
-            TaskReadError::ResourceExhausted("Task Output selected Input remaining material")
-        );
+
         let request = InputEvidenceLoadRequest {
             query: None,
             windows: vec![],
@@ -406,18 +397,10 @@ impl RuntimeHandle {
         &self,
         scope: &crate::runtime::resident_input_evidence::InputEvidenceScope,
         bytes: u64,
-        records: usize,
+        _records: usize,
     ) -> Result<Arc<BudgetViewGuard>> {
-        let limits = self.inner.input_evidence_budget.limits();
-        anyhow::ensure!(
-            u64::try_from(records)? <= limits.record_limit
-                && bytes
-                    <= limits
-                        .history_per_agent_bytes
-                        .checked_add(limits.pending_per_agent_bytes)
-                        .context("Task output material limits overflow")?,
-            TaskReadError::ResourceExhausted("Task output owned material")
-        );
+        let _limits = self.inner.input_evidence_budget.limits();
+
         Ok(self.inner.input_evidence_budget.register_owned_bytes(
             scope,
             InputMemoryCategory::Pins,
@@ -947,19 +930,18 @@ mod tests {
         runtime.await_initial_resources().await;
         let _refresh = runtime.hold_resource_refresh_for_test().await?;
         let baseline = runtime.inner.input_evidence_budget.report()?.observed_bytes;
-        let error = runtime
+        let (output, guard, material) = runtime
             .read_command_task_output(
                 &read.tasks.scope,
                 read.task(),
                 Some(path.to_str().unwrap()),
                 read.material,
             )
-            .await
-            .unwrap_err();
-        assert!(matches!(
-            error.downcast_ref::<TaskReadError>(),
-            Some(TaskReadError::ResourceExhausted(_))
-        ));
+            .await?;
+        assert!(!output.is_empty());
+        assert!(material.bytes > limits.history_per_agent_bytes + limits.pending_per_agent_bytes);
+        assert!(runtime.inner.input_evidence_budget.report()?.observed_bytes > baseline);
+        drop((output, guard));
         assert_eq!(
             runtime.inner.input_evidence_budget.report()?.observed_bytes,
             baseline
@@ -967,7 +949,8 @@ mod tests {
         Ok(())
     }
     #[tokio::test]
-    async fn held_render_material_and_full_file_use_one_remaining_output_budget() -> Result<()> {
+    async fn held_render_material_and_full_file_are_observed_above_legacy_size_hint() -> Result<()>
+    {
         let harness = LifecycleHarness::new();
         let runtime = harness.runtime();
         let task = task("combined-file-output");
@@ -1004,27 +987,17 @@ mod tests {
         runtime.await_initial_resources().await;
         let _refresh = runtime.hold_resource_refresh_for_test().await?;
         let baseline = runtime.inner.input_evidence_budget.report()?.observed_bytes;
-        let error = runtime
+        let (large, guard, _) = runtime
             .read_command_task_output(
                 &read.tasks.scope,
                 read.task(),
                 Some(path.to_str().unwrap()),
                 material,
             )
-            .await
-            .unwrap_err();
-        assert!(
-            matches!(
-                error.downcast_ref::<TaskReadError>(),
-                Some(TaskReadError::ResourceExhausted(_))
-            ),
-            "{error:#}"
-        );
-        assert_eq!(
-            runtime.inner.input_evidence_budget.report()?.observed_bytes,
-            baseline,
-            "combined rejection precedes file buffer/guard acquisition"
-        );
+            .await?;
+        assert!(!large.is_empty() && large.len() <= size);
+        assert!(runtime.inner.input_evidence_budget.report()?.observed_bytes > baseline);
+        drop((large, guard));
         file.set_len(1024)?;
         drop(file);
         let (output, file_guard, _) = runtime
@@ -1047,18 +1020,17 @@ mod tests {
     }
 
     #[test]
-    fn output_remaining_material_rejects_count_and_overflow_without_mutating_the_prior_view(
-    ) -> Result<()> {
+    fn output_material_ignores_size_hints_but_rejects_arithmetic_overflow() -> Result<()> {
         let original = OutputMaterialAllowance {
             bytes: 32,
             records: 3,
             byte_limit: 64,
             record_limit: 4,
         };
-        assert!(original.additional(1, 2).is_err());
+        assert!(original.additional(1, 2).is_ok());
         assert!(original.additional(u64::MAX, 0).is_err());
-        assert_eq!(original.remaining(), (32, 1));
-        assert_eq!(original.additional(32, 1)?.remaining(), (0, 0));
+        assert_eq!(original.remaining(), (64, 4));
+        assert_eq!(original.additional(32, 1)?.remaining(), (64, 4));
         Ok(())
     }
     #[tokio::test]

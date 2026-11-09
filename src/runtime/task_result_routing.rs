@@ -102,8 +102,8 @@ fn parsed_source_with_ledger<'a>(
     message: &'a MessageEnvelope,
     candidate: &'a TaskRecord,
     replay: Option<&'a scheduler_executor::TaskResultReplayProjection>,
-    record_limit: usize,
-    byte_limit: usize,
+    _record_limit: usize,
+    _byte_limit: usize,
 ) -> Result<(AcceptedTaskResultSource<'a>, (usize, usize))> {
     anyhow::ensure!(
         message.agent_id == scope.agent_id
@@ -125,10 +125,7 @@ fn parsed_source_with_ledger<'a>(
         .checked_mul(4)
         .and_then(|n| n.checked_add(16))
         .context("TaskResult parser nodes overflow")?;
-    anyhow::ensure!(
-        bytes <= byte_limit && records <= record_limit,
-        TaskReadError::ResourceExhausted("TaskResult parsed source")
-    );
+
     let guard = ledger.register_owned_bytes(
         scope,
         InputMemoryCategory::Candidate,
@@ -242,17 +239,14 @@ fn restricted_route_limits(
     let limits = restriction.map_or(actual, |(records, bytes)| {
         (records.min(actual.0), bytes.min(actual.1))
     });
-    anyhow::ensure!(
-        limits.0 > 0 && limits.1 > 0,
-        TaskReadError::ResourceExhausted("TaskResult empty read allowance")
-    );
+
     Ok(limits)
 }
 fn combined_route_material(
     selected: (usize, usize),
     selector_bytes: usize,
     other: (usize, usize),
-    limits: (usize, usize),
+    _limits: (usize, usize),
 ) -> Result<(usize, usize)> {
     let combined = (
         selected
@@ -266,10 +260,7 @@ fn combined_route_material(
             .and_then(|n| n.checked_add(other.1))
             .context("TaskResult combined records overflow")?,
     );
-    anyhow::ensure!(
-        combined.0 <= limits.1 && combined.1 <= limits.0,
-        TaskReadError::ResourceExhausted("TaskResult combined selected/selector/outcome material")
-    );
+
     Ok(combined)
 }
 fn owner_disposition(
@@ -361,10 +352,7 @@ impl RuntimeHandle {
         let selector_bytes = serialized_bytes(&(settlement.result_identity.as_str(), id))?
             .checked_add(512)
             .context("TaskResult owner selector overflow")?;
-        anyhow::ensure!(
-            selector_bytes <= u64::try_from(byte_limit)? && record_limit >= 16,
-            TaskReadError::ResourceExhausted("TaskResult owner selectors")
-        );
+
         let selector = self.inner.input_evidence_budget.register_owned_bytes(
             &mutation.input_evidence_scope(),
             InputMemoryCategory::Candidate,
@@ -480,10 +468,7 @@ impl RuntimeHandle {
         let bytes = serialized_bytes(&(candidate.id.as_str(), message.id.as_str()))?
             .checked_add(1024)
             .context("TaskResult route selector overflow")?;
-        anyhow::ensure!(
-            bytes <= u64::try_from(byte_limit)? && record_limit >= 16,
-            TaskReadError::ResourceExhausted("TaskResult route selectors")
-        );
+
         let selector = self.inner.input_evidence_budget.register_owned_bytes(
             &scope,
             InputMemoryCategory::Candidate,
@@ -528,18 +513,8 @@ impl RuntimeHandle {
                 message,
                 candidate,
                 replay,
-                record_limit
-                    .checked_sub(selected.1)
-                    .filter(|n| *n > 0)
-                    .ok_or(TaskReadError::ResourceExhausted(
-                        "TaskResult parser record overlap",
-                    ))?,
-                byte_limit
-                    .checked_sub(selected.0)
-                    .filter(|n| *n > 0)
-                    .ok_or(TaskReadError::ResourceExhausted(
-                        "TaskResult parser byte overlap",
-                    ))?,
+                record_limit,
+                byte_limit,
             )?);
             let task_fact = tasks.lookup(&TaskKey::new(TaskFamily::Task, &candidate.id))?;
             let extra = parsed.as_ref().map_or((0, 0), |(_, material)| *material);

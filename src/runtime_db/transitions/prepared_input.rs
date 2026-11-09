@@ -4460,16 +4460,13 @@ fn extend_cleanup_turn_tx(
             .as_ref()
             .and_then(|trigger| trigger.message_id.clone()),
     );
-    let mut statement = tx.prepare("SELECT evidence_id FROM tool_executions WHERE agent_id=?1 AND turn_id=?2 AND json_extract(payload_json,'$.status')='deferred' ORDER BY evidence_id LIMIT 65537")?;
+    let mut statement = tx.prepare("SELECT evidence_id FROM tool_executions WHERE agent_id=?1 AND turn_id=?2 AND json_extract(payload_json,'$.status')='deferred' ORDER BY evidence_id")?;
     let ids = statement
         .query_map(params![scope.agent_id, old.turn_id], |row| {
             row.get::<_, String>(0)
         })?
         .collect::<rusqlite::Result<Vec<_>>>()?;
-    anyhow::ensure!(
-        ids.len() <= 65_536,
-        "cleanup deferred tools exceed fixed preparation limit"
-    );
+
     roots.extend(
         ids.into_iter()
             .map(|id| Key::new(Family::ToolExecution, id)),
@@ -4581,7 +4578,7 @@ impl PreparedInputTransition {
                 // Focus validates the whole active topology. Observe its old
                 // qualified members before the reducer replaces any frame.
                 if command.active_continuation_expectations.is_some() {
-                    let mut query = tx.prepare("SELECT continuation_id FROM work_item_continuations WHERE agent_id=?1 AND state='active' ORDER BY continuation_id LIMIT 65537")?;
+                    let mut query = tx.prepare("SELECT continuation_id FROM work_item_continuations WHERE agent_id=?1 AND state='active' ORDER BY continuation_id")?;
                     for id in query.query_map([&scope.agent_id], |row| row.get::<_, String>(0))? {
                         keys.insert(WorkKey::new(WorkFamily::Frame, id?));
                     }
@@ -5125,7 +5122,7 @@ pub(in crate::runtime_db) fn predicted_trigger_wait_tx(
     scope: &InputEvidenceScope,
     message: &MessageEnvelope,
     queue: &QueueEntryRecord,
-    request: &crate::runtime_db::work_snapshot::WorkDomainLoadRequest,
+    _request: &crate::runtime_db::work_snapshot::WorkDomainLoadRequest,
     ledger: &crate::runtime::input_evidence_budget::InputEvidenceBudgetLedger,
     memory_budget: Option<&mut crate::runtime_db::dispatch_memory::DispatchMemoryTransactionBudget>,
 ) -> Result<(
@@ -5152,13 +5149,10 @@ pub(in crate::runtime_db) fn predicted_trigger_wait_tx(
     let records = count.checked_mul(copies).context(exhausted())?;
     let payload_bytes = bytes.checked_mul(copies).context(exhausted())?;
     let metadata_bytes = records.checked_mul(256).context(exhausted())?;
-    let total_bytes = payload_bytes
+    let _total_bytes = payload_bytes
         .checked_add(metadata_bytes)
         .context(exhausted())?;
-    anyhow::ensure!(
-        records <= request.record_limit && total_bytes <= request.byte_limit,
-        exhausted()
-    );
+
     let guard = if let Some(budget) = memory_budget {
         budget.additional_material(bytes, count, copies)?;
         None

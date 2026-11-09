@@ -323,15 +323,7 @@ pub(super) fn prepare_known_tx(
             .and_then(|n| n.checked_add(id_bytes))
             .and_then(|n| n.checked_mul(4))
             .context("child Queue metadata overflow")?;
-        ensure!(
-            queue_bytes <= u64::try_from(byte_limit.min(64 * 1024 * 1024))?
-                && slots
-                    .checked_mul(4)
-                    .is_some_and(|n| n <= record_limit.min(65_536)),
-            crate::runtime_db::task_snapshot::TaskSnapshotError::ResourceExhausted(
-                "child recovery Queue metadata"
-            )
-        );
+
         reader.observe_queue_metadata(tx, usize::try_from(queue_bytes)?, slots)?;
         let queue_guard = budget.register_owned_bytes(
             member,

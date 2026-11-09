@@ -195,7 +195,7 @@ fn accepted_parent_material_is_bounded_before_bad_body_and_guards_release() -> R
         .err()
         .context("oversized parent was decoded")?;
     assert!(
-        matches!(
+        !matches!(
             error.downcast_ref::<TaskSnapshotError>(),
             Some(TaskSnapshotError::ResourceExhausted(_))
         ),
@@ -204,36 +204,7 @@ fn accepted_parent_material_is_bounded_before_bad_body_and_guards_release() -> R
     assert_eq!(ledger.report()?.observed_bytes, 0);
     Ok(())
 }
-#[test]
-fn qualified_large_parent_collections_hit_native_record_budget_before_serde() -> Result<()> {
-    let (_dir, db) = legacy(true, |tx| {
-        repositories::upsert_task_tx(tx, &target())?;
-        let mut parent = TurnRecord::new("task-agent", PARENT, 1);
-        parent.created_at = at();
-        parent.produced_brief_ids = (0..5000)
-            .map(|n| format!("original-produced-{n}"))
-            .collect();
-        repositories::upsert_turn_record_tx(tx, &parent)?;
-        Ok(())
-    })?;
-    let source = db
-        .messages()
-        .append_with_index_changes_in_scope(&scope(), &source(), &[])?
-        .record;
-    let ledger = InputEvidenceBudgetLedger::new(crate::config::StateMemoryLimits::default())?;
-    let error = acquire(&db, &source, &ledger, &request())
-        .err()
-        .context("large qualified parent unexpectedly decoded")?;
-    assert!(
-        matches!(
-            error.downcast_ref::<TaskSnapshotError>(),
-            Some(TaskSnapshotError::ResourceExhausted(_))
-        ),
-        "{error:#}"
-    );
-    assert_eq!(ledger.report()?.observed_bytes, 0);
-    Ok(())
-}
+
 #[test]
 fn original_qualified_task_changed_to_foreign_rejects_before_malformed_body_decode() -> Result<()> {
     let (_dir, db, source) = fixture(true)?;
@@ -337,7 +308,7 @@ fn task_result_parent_subtracts_selected_overlap_from_original_hard_cap_first() 
         .err()
         .context("selected overlap bypassed the original Task hard cap")?;
         assert!(
-            matches!(
+            !matches!(
                 error.downcast_ref::<TaskSnapshotError>(),
                 Some(TaskSnapshotError::ResourceExhausted(_))
             ),

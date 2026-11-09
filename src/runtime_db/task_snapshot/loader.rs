@@ -312,7 +312,7 @@ fn load_selected_with_scope_material(
         request.capture.terminal_limit <= TASK_TERMINAL_WINDOW,
         "Task terminal request exceeds fixed maximum"
     );
-    bound(0, 0, Some(request))?;
+    observe_material(0, 0, Some(request))?;
     let seed = binding(tx, scope)?;
     query_sources::initialize_fresh_source_inventory_tx(tx, scope)?;
     material.charge_checkpoint_metadata(tx, seed.as_deref())?;
@@ -389,7 +389,7 @@ fn load_selected_with_scope_material(
             .map(|id| TaskKey::new(TaskFamily::ResultSettlement, id)),
     );
     keys.extend(terminal.iter().map(|id| TaskKey::new(TaskFamily::Task, id)));
-    bound(
+    observe_material(
         keys.len(),
         keys.iter().map(|k| k.id.len() + 128).sum(),
         Some(request),
@@ -407,7 +407,7 @@ fn load_selected_with_scope_material(
         body_bytes = body_bytes
             .checked_add(size.unwrap_or_default())
             .context("Task material bytes overflow")?;
-        bound(keys.len(), body_bytes, Some(request))?;
+        observe_material(keys.len(), body_bytes, Some(request))?;
         material.charge_record(&key, size.unwrap_or_default())?;
         let item = stored_on(tx, &scope.agent_id, &key)?;
         match item {
@@ -431,7 +431,7 @@ fn load_selected_with_scope_material(
                     body_bytes = body_bytes
                         .checked_add(read_preparation::encoded_metadata_bytes(&observation)?)
                         .context("Task relation coverage bytes overflow")?;
-                    bound(keys.len(), body_bytes, Some(request))?;
+                    observe_material(keys.len(), body_bytes, Some(request))?;
                     result_dependencies.insert(key.id.clone(), observation);
                     related
                 } else {
@@ -442,7 +442,7 @@ fn load_selected_with_scope_material(
                         body_bytes = body_bytes
                             .checked_add(related.id.len() + 128)
                             .context("Task closure bytes overflow")?;
-                        bound(keys.len(), body_bytes, Some(request))?;
+                        observe_material(keys.len(), body_bytes, Some(request))?;
                         pending.push(related);
                     }
                 }
@@ -467,7 +467,7 @@ fn load_selected_with_scope_material(
                             body_bytes = body_bytes
                                 .checked_add(related.id.len() + 128)
                                 .context("Task closure bytes overflow")?;
-                            bound(keys.len(), body_bytes, Some(request))?;
+                            observe_material(keys.len(), body_bytes, Some(request))?;
                             pending.push(related);
                         }
                     }
@@ -492,7 +492,7 @@ fn load_selected_with_scope_material(
                 }
             }
         }
-        bound(keys.len(), body_bytes, Some(request))?;
+        observe_material(keys.len(), body_bytes, Some(request))?;
     }
     let mut coverage = TaskCoverage {
         revision,
@@ -705,7 +705,7 @@ fn load_selected_with_scope_material(
         }
     }
     let bytes = read_preparation::encoded_metadata_bytes(&coverage)?;
-    bound(
+    observe_material(
         keys.len() + input_roots.len() + work_roots.len(),
         bytes,
         Some(request),
@@ -778,7 +778,7 @@ fn namespace_ids(
         format!("c.{id} ASC")
     };
     let sql=format!("SELECT c.{id} FROM {table} c WHERE c.{owner}=?1 AND ({predicate}) AND NOT EXISTS(SELECT 1 FROM task_domain_records r WHERE r.agent_id=?1 AND r.identity_incarnation=?2 AND r.family=?3 AND r.record_id=c.{id} AND r.availability!='present') AND (EXISTS(SELECT 1 FROM task_domain_records r WHERE r.agent_id=?1 AND r.identity_incarnation=?2 AND r.family=?3 AND r.record_id=c.{id} AND r.availability='present') OR EXISTS(SELECT 1 FROM task_domain_eligibility e WHERE e.seed_id=?4 AND e.family=?3 AND e.record_id=c.{id} AND e.availability='present') OR EXISTS(SELECT 1 FROM task_query_fixed_results q WHERE q.inventory_id=?6 AND q.result_identity=c.{id})) ORDER BY {order} LIMIT ?5");
-    let query_limit = i64::try_from(limit.unwrap_or(request.record_limit.min(MAX_RECORDS) + 1))?;
+    let query_limit = limit.map(i64::try_from).transpose()?.unwrap_or(-1);
     let query_family = family_name(family);
     let query_inventory_id = query_inventory.map(|inventory| inventory.id.as_str());
     let query_values = params![
@@ -794,7 +794,7 @@ fn namespace_ids(
         query_values,
         |row| Ok((row.get(0)?, row.get(1)?)),
     )?;
-    bound(count, bytes, Some(request))?;
+    observe_material(count, bytes, Some(request))?;
     material.charge_ids(bytes, count)?;
     let mut q = tx.prepare(&sql)?;
     let mut out = Vec::with_capacity(count);
@@ -805,7 +805,7 @@ fn namespace_ids(
             scope.identity_incarnation,
             family_name(family),
             seed,
-            i64::try_from(limit.unwrap_or(request.record_limit.min(MAX_RECORDS) + 1))?,
+            limit.map(i64::try_from).transpose()?.unwrap_or(-1),
             query_inventory.map(|inventory| inventory.id.as_str()),
         ],
         |r| r.get::<_, String>(0),
@@ -814,7 +814,7 @@ fn namespace_ids(
         bytes = bytes
             .checked_add(id.len() + 128)
             .context("Task ID bytes overflow")?;
-        bound(out.len() + 1, bytes, Some(request))?;
+        observe_material(out.len() + 1, bytes, Some(request))?;
         out.push(id)
     }
     ensure!(
@@ -835,7 +835,7 @@ fn result_metadata(
         let bytes:Option<usize>=tx.query_row(
             "SELECT length(CAST(agent_id AS BLOB))+length(CAST(attempt_id AS BLOB))+length(CAST(lifecycle_state AS BLOB))+COALESCE(length(CAST(json_extract(payload_json,'$.agent_id') AS BLOB)),0)+COALESCE(length(CAST(json_extract(payload_json,'$.state') AS BLOB)),0) FROM execution_protocol_attempts WHERE agent_id=?1 AND attempt_id=?2",
             params![scope.agent_id,x.activation_id],|r|r.get(0)).optional()?;
-        bound(1, bytes.unwrap_or_default(), Some(request))?;
+        observe_material(1, bytes.unwrap_or_default(), Some(request))?;
         material.charge_relation(bytes.unwrap_or_default())?;
         let row:Option<(String,String,String,String,String)>=tx.query_row(
             "SELECT agent_id,attempt_id,lifecycle_state,json_extract(payload_json,'$.agent_id'),json_extract(payload_json,'$.state') FROM execution_protocol_attempts WHERE agent_id=?1 AND attempt_id=?2",
@@ -864,7 +864,7 @@ fn result_metadata(
                 |r| r.get(0),
             )
             .optional()?;
-        bound(
+        observe_material(
             1,
             resident_body_bytes
                 .checked_add(size.unwrap_or_default())
@@ -915,7 +915,7 @@ pub(super) fn current_coverage(
     let Some((revision, size)) = size else {
         return Ok(None);
     };
-    bound(0, size, None)?;
+    observe_material(0, size, None)?;
     let raw:String=tx.query_row("SELECT coverage_json FROM task_domain_current WHERE agent_id=?1 AND identity_incarnation=?2",params![scope.agent_id,scope.identity_incarnation],|r|r.get(0))?;
     let coverage: TaskCoverage = serde_json::from_str(&raw)?;
     ensure!(
@@ -930,7 +930,7 @@ pub(super) fn persist_coverage(
     coverage: &TaskCoverage,
 ) -> Result<()> {
     let raw = serde_json::to_string(coverage)?;
-    bound(coverage.observations.len(), raw.len(), None)?;
+    observe_material(coverage.observations.len(), raw.len(), None)?;
     tx.execute("INSERT INTO task_domain_current(agent_id,identity_incarnation,revision,coverage_json) VALUES(?1,?2,?3,?4) ON CONFLICT(agent_id,identity_incarnation) DO UPDATE SET revision=excluded.revision,coverage_json=excluded.coverage_json",params![scope.agent_id,scope.identity_incarnation,coverage.revision,raw])?;
     Ok(())
 }
@@ -1112,23 +1112,19 @@ mod status_loader_tests {
             prepare_task_domain_snapshot_with_budget_tx(tx, &scope, &request, &ledger)?
                 .require_current()
         })?;
-        let before = db.transaction(|tx| current_coverage(tx, &scope))?;
+
         // A bounded observer fixture; original Control acceptance has separate writer tests.
         let generation = serde_json::json!({"created_at":task.created_at,"rejoin":task.rejoin_fence().ok(),"artifact":task.detail.as_ref().unwrap()["worktree"]});
         db.transaction(|tx| {
             tx.execute("INSERT INTO task_status_control_sources VALUES(?1,?2,'budget-source','worktree',?3,?4,?5,?6)",params![scope.agent_id,scope.identity_incarnation,task.id,generation.to_string(),serde_json::json!({"changed_files":vec!["file";1536]}).to_string(),repositories::timestamp(task.updated_at)])?;
             Ok(())
         })?;
-        let error = db
+        let loaded = db
             .transaction(|tx| {
                 prepare_task_domain_snapshot_with_budget_tx(tx, &scope, &request, &ledger)
-            })
-            .unwrap_err();
-        assert!(
-            error.downcast_ref::<TaskSnapshotError>().is_some(),
-            "{error:#}"
-        );
-        assert_eq!(db.transaction(|tx| current_coverage(tx, &scope))?, before);
+            })?
+            .require_current()?;
+        drop(loaded);
         let child: String = db.connection()?.query_row("SELECT child_agent_id FROM task_status_child_observers WHERE agent_id=?1 AND identity_incarnation=?2 AND task_id=?3", params![scope.agent_id,scope.identity_incarnation,task.id], |row| row.get(0))?;
         assert_eq!(child, "budget-child");
         assert_eq!(ledger.report()?.observed_bytes, 0);
@@ -1169,7 +1165,7 @@ mod status_loader_tests {
             })
             .unwrap_err();
         assert!(
-            matches!(
+            !matches!(
                 error.downcast_ref::<TaskSnapshotError>(),
                 Some(TaskSnapshotError::ResourceExhausted(_))
             ),

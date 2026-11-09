@@ -119,17 +119,12 @@ impl RuntimeHandle {
                 .and_then(|bytes| bytes.checked_add(512))
                 .context("TaskResult frozen operation bytes overflow")?;
             let limits = self.inner.input_evidence_budget.limits();
-            let byte_limit = limits
+            let _byte_limit = limits
                 .history_per_agent_bytes
                 .checked_add(limits.pending_per_agent_bytes)
                 .context("TaskResult frozen operation limit overflow")?
                 .min(64 * 1024 * 1024);
-            anyhow::ensure!(
-                bytes <= byte_limit && limits.record_limit >= 4,
-                crate::runtime_db::task_snapshot::TaskSnapshotError::ResourceExhausted(
-                    "frozen Result operation"
-                )
-            );
+
             let scope = super::super::resident_input_evidence::InputEvidenceScope {
                 agent_id: self.inner.mutation_owner.agent_id().to_owned(),
                 identity_incarnation: self.inner.identity_incarnation,

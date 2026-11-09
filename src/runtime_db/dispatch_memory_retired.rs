@@ -331,11 +331,8 @@ fn stop_addresses_in(
 ) -> Result<(String, String)> {
     validate_address(binding, address)?;
     let key = &address.control_key;
-    let size: usize = connection.query_row("SELECT length(CAST(receipt_json AS BLOB)) FROM control_command_receipts WHERE agent_id=?1 AND identity_incarnation=?2 AND command_id=?3", params![key.agent_id,key.identity_incarnation,key.command_id], |r| r.get(0))?;
-    ensure!(
-        size <= MAX_METADATA_BYTES,
-        DispatchMemoryError::ResourceExhausted
-    );
+    let _size: usize = connection.query_row("SELECT length(CAST(receipt_json AS BLOB)) FROM control_command_receipts WHERE agent_id=?1 AND identity_incarnation=?2 AND command_id=?3", params![key.agent_id,key.identity_incarnation,key.command_id], |r| r.get(0))?;
+
     // The full canonical validator ran when the typed physical proof was minted.
     // Freeze only this disposition's immutable address, not unrelated outcome bodies.
     let (version,action,digest,invocation_digest,committed_at,projected): (u32,String,String,String,String,String) = connection.query_row(

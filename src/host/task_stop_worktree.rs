@@ -123,23 +123,13 @@ impl TaskStopWorktreeCleanupObserved {
         audits: Vec<AuditEvent>,
         producer: Option<Arc<TaskStopWorktreeProducerExit>>,
         mut guards: Vec<Arc<BudgetViewGuard>>,
-        request: &TaskDomainLoadRequest,
+        _request: &TaskDomainLoadRequest,
         ledger: &InputEvidenceBudgetLedger,
     ) -> Result<Self> {
         let bytes = serialized_bytes(&(&original.prepared, original.receipt_binding(), &audits))?
             .checked_mul(16)
             .context("worktree observation material overflow")?;
-        anyhow::ensure!(
-            bytes <= u64::try_from(request.byte_limit.min(64 * 1024 * 1024))?
-                && audits
-                    .len()
-                    .checked_add(1)
-                    .and_then(|n| n.checked_mul(16))
-                    .is_some_and(|n| n <= request.record_limit.min(65536)),
-            crate::runtime_db::task_snapshot::TaskSnapshotError::ResourceExhausted(
-                "worktree observation"
-            )
-        );
+
         guards.push(ledger.register_owned_bytes(
             &original.intent.task.scope,
             InputMemoryCategory::Candidate,

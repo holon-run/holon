@@ -47,10 +47,7 @@ pub(in crate::runtime_db) fn closure_protocol_material_tx(
         inventory_bytes = inventory_bytes
             .checked_add(total)
             .context("closure inventory overflow")?;
-        anyhow::ensure!(
-            inventory_records <= 65536 && inventory_bytes <= 64 * 1024 * 1024,
-            "closure protocol inventory exceeds original bound"
-        );
+
         let peak: usize = tx.query_row(&format!("SELECT COALESCE(MAX(length(CAST(payload_json AS BLOB))+length(CAST({id} AS BLOB))),0) FROM {table} WHERE agent_id=?1"), [agent_id], |r| r.get(0))?;
         bytes = bytes
             .checked_add(

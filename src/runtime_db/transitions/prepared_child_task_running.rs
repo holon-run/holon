@@ -181,24 +181,12 @@ impl PreparedInputTransition {
             ledger,
         )?);
         phase.include(bytes, 64)?;
-        let remaining = phase.remaining()?;
-        let (count, bytes) = tasks::TaskDomainLoadRequest::bounded_material_limits(
-            request.record_limit,
-            request.byte_limit,
-        );
         let intent = OriginalChildRunningIntent {
             original: source.address().clone(),
             before,
             task_digest: canonical_command_digest(&command.task)?,
             message_digest: canonical_command_digest(&frozen.message)?,
-            material: tasks::TaskMaintenanceMaterial {
-                bytes: bytes
-                    .checked_sub(remaining.byte_limit)
-                    .context("Running bytes underflow")?,
-                records: count
-                    .checked_sub(remaining.record_limit)
-                    .context("Running count underflow")?,
-            },
+            material: phase.material_estimate(),
         };
         let mut task = PreparedTaskTransition::new(command, Default::default(), false, None, None)?;
         task.original_child_running = Some(PreparedOriginalChildRunning {
@@ -477,20 +465,16 @@ pub(super) fn preflight_current_entry_tx(
         ledger,
     )?);
     phase.include(bytes, records)?;
-    let remaining = phase.remaining()?;
-    let (count, bytes) = tasks::TaskDomainLoadRequest::bounded_material_limits(
-        request.record_limit,
-        request.byte_limit,
-    );
+    let observed = phase.material_estimate();
     Ok(super::child_terminal::ChildCurrentEntryMaterial {
         usage: tasks::TaskMaintenanceMaterial {
-            bytes: bytes
-                .checked_sub(remaining.byte_limit)
-                .and_then(|n| n.checked_sub(running.intent.material.bytes))
+            bytes: observed
+                .bytes
+                .checked_sub(running.intent.material.bytes)
                 .context("Running entry bytes underflow")?,
-            records: count
-                .checked_sub(remaining.record_limit)
-                .and_then(|n| n.checked_sub(running.intent.material.records))
+            records: observed
+                .records
+                .checked_sub(running.intent.material.records)
                 .context("Running entry count underflow")?,
         },
         guards,

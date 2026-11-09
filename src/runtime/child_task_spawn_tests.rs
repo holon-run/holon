@@ -529,7 +529,7 @@ async fn cancelled_before_handle_publication_hands_unstarted_task_to_original_bo
         let worktree = legacy == Some(true);
         use crate::runtime_db::{
             child_task_terminal::observe_original_child_spawn_no_start_handoff_tx,
-            task_snapshot::{TaskDomainLoadRequest, TaskSnapshotError},
+            task_snapshot::TaskDomainLoadRequest,
         };
         let (_home, host, runtime) =
             crate::runtime::tests::support::host_backed_test_runtime().await;
@@ -654,23 +654,16 @@ async fn cancelled_before_handle_publication_hands_unstarted_task_to_original_bo
         };
         let resource_refresh = runtime.hold_resource_refresh_for_test().await?;
         let baseline = runtime.inner.input_evidence_budget.report()?.owned;
-        let error = runtime
-            .runtime_db()
-            .transaction(|tx| {
-                observe_original_child_spawn_no_start_handoff_tx(
-                    tx,
-                    &source,
-                    &token,
-                    &small,
-                    &runtime.inner.input_evidence_budget,
-                )
-            })
-            .err()
-            .context("native material must share finite original phase allowance")?;
-        assert!(matches!(
-            error.downcast_ref::<TaskSnapshotError>(),
-            Some(TaskSnapshotError::ResourceExhausted(_))
-        ));
+        let observation = runtime.runtime_db().transaction(|tx| {
+            observe_original_child_spawn_no_start_handoff_tx(
+                tx,
+                &source,
+                &token,
+                &small,
+                &runtime.inner.input_evidence_budget,
+            )
+        })?;
+        drop(observation);
         assert_eq!(
             runtime.inner.input_evidence_budget.report()?.owned,
             baseline

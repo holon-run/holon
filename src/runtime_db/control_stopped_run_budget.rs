@@ -2,9 +2,6 @@
 use super::*;
 use crate::runtime::resident_input_evidence::InputEvidenceScope;
 
-const MAX_PROOF_BYTES: usize = 64 * 1024 * 1024;
-const MAX_PROOF_RECORDS: usize = 65_536;
-
 /// Count every candidate that the original-run locator may decode, including
 /// all obligations of each command. This is not canonical or physical proof.
 /// The caller observes the returned material in its shared combined budget
@@ -26,7 +23,6 @@ pub(crate) fn stopped_run_proof_material_tx(
         "WITH commands AS ({commands}) SELECT COUNT(*),COALESCE(SUM(length(CAST(receipt_json AS BLOB))+length(CAST(outcome_json AS BLOB))+length(CAST(command_id AS BLOB))+length(CAST(invocation_digest AS BLOB))+length(CAST(command_digest AS BLOB))+length(CAST(committed_at AS BLOB))+length(CAST(action AS BLOB))),0) FROM control_command_receipts WHERE agent_id=?1 AND identity_incarnation=?2 AND command_id IN commands"),
         params![scope.agent_id,scope.identity_incarnation,run_id], |r|Ok((r.get(0)?,r.get(1)?)))?;
     let mut material = (bytes, receipts);
-    bound(material)?;
     let (count, bytes): (usize,usize) = tx.query_row(&format!(
         "WITH commands AS ({commands}) SELECT COUNT(*),COALESCE(SUM(length(CAST(command_id AS BLOB))+length(CAST(obligation_id AS BLOB))+length(CAST(target_kind AS BLOB))+length(CAST(target_identity AS BLOB))+length(CAST(target_generation_json AS BLOB))+length(CAST(target_json AS BLOB))+COALESCE(length(CAST(completion_evidence_json AS BLOB)),0)+length(CAST(state AS BLOB))+length(CAST(created_at AS BLOB))+length(CAST(updated_at AS BLOB))),0) FROM control_cancellation_obligations WHERE agent_id=?1 AND identity_incarnation=?2 AND command_id IN commands"),
         params![scope.agent_id,scope.identity_incarnation,run_id], |r|Ok((r.get(0)?,r.get(1)?)))?;
@@ -35,7 +31,7 @@ pub(crate) fn stopped_run_proof_material_tx(
         return Ok(material);
     }
     // SQL JSON extraction produces only address/length scalars. Receipts and
-    // obligation payloads have already passed their aggregate hard ceiling.
+    // obligation payloads are included in this observation.
     let prefix = format!(
         "WITH commands AS ({commands}), receipts AS (SELECT outcome_json,receipt_json FROM control_command_receipts WHERE agent_id=?1 AND identity_incarnation=?2 AND command_id IN commands), sources AS (SELECT DISTINCT json_extract(target_generation_json,'$.source_message_id') id FROM control_cancellation_obligations WHERE agent_id=?1 AND identity_incarnation=?2 AND command_id IN commands AND target_kind='run' AND target_identity=?3), turns AS (SELECT value id FROM receipts,json_each(outcome_json,'$.interrupted_turn_ids') UNION SELECT value FROM receipts,json_each(receipt_json,'$.outcome.interrupted_turn_ids') UNION SELECT turn_id FROM turn_records WHERE agent_id=?1 AND run_id=?3), attempts AS (SELECT attempt_id,terminal_outcome_id FROM execution_protocol_attempts WHERE agent_id=?1 AND (attempt_id=?4 OR json_extract(payload_json,'$.run_id')=?3 OR json_extract(payload_json,'$.source_message_id') IN (SELECT id FROM sources))) "
     );
@@ -68,12 +64,5 @@ fn add(material: &mut (usize, usize), bytes: usize, records: usize) -> Result<()
         .1
         .checked_add(records)
         .context("original Stop proof count overflow")?;
-    bound(*material)
-}
-fn bound((bytes, records): (usize, usize)) -> Result<()> {
-    ensure!(
-        bytes <= MAX_PROOF_BYTES && records <= MAX_PROOF_RECORDS,
-        "original Stop proof exceeds preparation limit"
-    );
     Ok(())
 }

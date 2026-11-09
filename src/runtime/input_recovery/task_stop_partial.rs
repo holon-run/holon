@@ -103,12 +103,7 @@ pub(super) fn prepare_partial_stop_known_tx(
             .checked_add(limits.pending_per_agent_bytes)
             .context("partial Stop limit overflow")?,
     )?;
-    ensure!(
-        bytes <= cap.min(64 * 1024 * 1024) && limits.record_limit >= 8,
-        crate::runtime_db::task_snapshot::TaskSnapshotError::ResourceExhausted(
-            "Stop partial State material"
-        )
-    );
+
     let material = budget.register_owned_bytes(
         scope,
         super::super::input_evidence_budget::InputMemoryCategory::Candidate,
@@ -212,13 +207,7 @@ pub(super) fn prepare_partial_stop_known_tx(
     .checked_add(id_bytes)
     .and_then(|n| n.checked_mul(4))
     .context("partial Queue copies overflow")?;
-    ensure!(
-        slots <= usize::try_from(limits.record_limit)?
-            && queue_bytes <= u64::try_from(cap.min(64 * 1024 * 1024))?,
-        crate::runtime_db::task_snapshot::TaskSnapshotError::ResourceExhausted(
-            "Stop partial Queue metadata"
-        )
-    );
+
     let queue_metadata = budget.register_owned_bytes(
         scope,
         super::super::input_evidence_budget::InputMemoryCategory::Candidate,

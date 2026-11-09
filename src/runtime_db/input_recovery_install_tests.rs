@@ -384,3 +384,13 @@ fn scheduling_recovery_scalar_scope_rejects_foreign_without_parsing_poisoned_bod
     }
     Ok(())
 }
+
+#[test]
+fn complete_install_selectors_have_no_cumulative_count_quota() -> Result<()> {
+    let mut keys = InputMutationInstallKeys::default();
+    keys.work_items = (0..65_537).map(|n| format!("work-{n}")).collect();
+    keys.validate()?;
+    keys.tasks.insert(" ".into());
+    assert!(keys.validate().is_err(), "empty identities remain invalid");
+    Ok(())
+}

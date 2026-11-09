@@ -514,7 +514,7 @@ pub(super) fn load_with_revision(
     memory_budget: Option<&mut crate::runtime_db::dispatch_memory::DispatchMemoryTransactionBudget>,
     scope_read: Option<SchedulingScopeRead<'_, '_>>,
 ) -> Result<SchedulingBootstrapSnapshot> {
-    bound(0, 0, request)?;
+    observe_material(0, 0, request)?;
     ensure!(
         request.capture.history_limit <= SCHEDULING_HISTORY_WINDOW,
         "Scheduling history policy exceeded"

@@ -140,7 +140,7 @@ fn prepare_child_associated_material_tx(
     tx: &Transaction<'_>,
     target: &TaskStopChildTarget,
     include_state: bool,
-    byte_limit: usize,
+    _byte_limit: usize,
     ledger: &InputEvidenceBudgetLedger,
 ) -> Result<Arc<BudgetViewGuard>> {
     let bytes:usize=tx.query_row(
@@ -150,10 +150,7 @@ fn prepare_child_associated_material_tx(
         .checked_mul(8)
         .and_then(|n| n.checked_add(2048))
         .context("TaskStop child associated material overflow")?;
-    ensure!(
-        8 <= ledger.limits().record_limit && material <= byte_limit.min(MAX_BYTES),
-        "TaskStop child associated ResourceExhausted before decode"
-    );
+
     ledger
         .register_owned_bytes(
             &target.scope,
@@ -171,13 +168,13 @@ fn prepare_child_associated_material_tx(
 pub(crate) fn prepare_task_stop_archive_material_tx(
     tx: &Transaction<'_>,
     scope: &InputEvidenceScope,
-    byte_limit: usize,
+    _byte_limit: usize,
     ledger: &InputEvidenceBudgetLedger,
 ) -> Result<Arc<BudgetViewGuard>> {
     let (count,bytes):(usize,usize)=tx.query_row(
         "SELECT SUM(n),SUM(bytes) FROM (SELECT COUNT(*) n,COALESCE(SUM(length(CAST(payload_json AS BLOB))+length(CAST(json_array(wait_condition_id,agent_id,work_item_id,status,kind,source,subject_ref,waiting_for,created_at,updated_at,expires_at,resolved_at,cancelled_at,last_turn_id,trigger_message_id,triggered_at,wake_sources_json,continuation_json) AS BLOB))),0) bytes FROM wait_conditions WHERE agent_id=?1 AND status='active' UNION ALL SELECT COUNT(*),COALESCE(SUM(length(CAST(payload_json AS BLOB))),0) FROM work_items WHERE work_item_id IN (SELECT work_item_id FROM wait_conditions WHERE agent_id=?1 AND status='active' AND work_item_id IS NOT NULL) UNION ALL SELECT COUNT(*),COALESCE(SUM(length(CAST(payload_json AS BLOB))),0) FROM queue_entries WHERE agent_id=?1 AND status IN ('queued','interrupted'))",
         [&scope.agent_id],|row|Ok((row.get(0)?,row.get(1)?)))?;
-    let records = count
+    let _records = count
         .checked_mul(16)
         .context("TaskStop archive record copies overflow")?;
     let material = count
@@ -185,11 +182,7 @@ pub(crate) fn prepare_task_stop_archive_material_tx(
         .and_then(|n| n.checked_add(bytes))
         .and_then(|n| n.checked_mul(16))
         .context("TaskStop archive material overflow")?;
-    ensure!(
-        u64::try_from(records)? <= ledger.limits().record_limit
-            && material <= byte_limit.min(MAX_BYTES),
-        "TaskStop archive ResourceExhausted before decode"
-    );
+
     ledger
         .register_owned_bytes(
             scope,
@@ -206,7 +199,7 @@ fn read_original_child_identity_tx(
     tx: &Transaction<'_>,
     target: &TaskStopChildTarget,
     require_deleted: bool,
-    byte_limit: usize,
+    _byte_limit: usize,
     ledger: &InputEvidenceBudgetLedger,
 ) -> Result<(AgentIdentityRecord, Arc<BudgetViewGuard>)> {
     const PROJECTION: &str = "json_array(agent_id,kind,visibility,ownership,profile_preset,status,parent_agent_id,lineage_parent_agent_id,delegated_from_task_id,created_at,updated_at,archived_at)";
@@ -217,10 +210,7 @@ fn read_original_child_identity_tx(
         .and_then(|n| n.checked_mul(8))
         .and_then(|n| n.checked_add(2048))
         .context("TaskStop child material overflow")?;
-    ensure!(
-        8 <= ledger.limits().record_limit && material <= u64::try_from(byte_limit.min(MAX_BYTES))?,
-        "TaskStop child ResourceExhausted before decode"
-    );
+
     let budget = ledger.register_owned_bytes(
         &target.scope,
         InputMemoryCategory::Candidate,

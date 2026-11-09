@@ -515,11 +515,7 @@ impl ResidentTaskDomain {
         byte_limit: usize,
     ) -> Result<Self> {
         ensure!(
-            !scope.agent_id.is_empty()
-                && scope.identity_incarnation > 0
-                && coverage.revision > 0
-                && record_limit > 0
-                && byte_limit > 0,
+            !scope.agent_id.is_empty() && scope.identity_incarnation > 0 && coverage.revision > 0,
             "invalid Task domain bootstrap"
         );
         let mut domain = Self {
@@ -596,7 +592,6 @@ impl ResidentTaskDomain {
     pub(crate) fn with_budget(mut self, budget: InputEvidenceBudgetLedger) -> Result<Self> {
         self.budget = Some(budget);
         self.refresh_views()?;
-        self.budget.as_ref().unwrap().check_history_budget()?;
         Ok(self)
     }
     pub(crate) fn with_committed(&self, delta: &CommittedTaskDelta) -> Result<Self> {
@@ -662,9 +657,6 @@ impl ResidentTaskDomain {
         }
         next.trim_and_validate()?;
         next.refresh_views()?;
-        if let Some(b) = &next.budget {
-            b.check_history_budget()?;
-        }
         Ok(next)
     }
     fn observe_candidate(&self, delta: &CommittedTaskDelta) -> Result<Vec<Arc<BudgetViewGuard>>> {
@@ -712,10 +704,6 @@ impl ResidentTaskDomain {
                     pending.push(related);
                 }
             }
-            ensure!(
-                keys.len() <= self.record_limit,
-                TaskReadError::ResourceExhausted("closure records")
-            );
         }
         Ok(keys)
     }
@@ -725,10 +713,7 @@ impl ResidentTaskDomain {
                 && self.coverage.terminal.keys.len() <= self.coverage.terminal.limit,
             "Task terminal coverage invalid"
         );
-        ensure!(
-            coverage_record_count(&self.coverage)? <= self.record_limit,
-            TaskReadError::ResourceExhausted("metadata records")
-        );
+
         let roots = self.closure(self.coverage.resident_roots())?;
         self.records.retain(|key, _| roots.contains(key));
         self.stop_records
@@ -739,25 +724,16 @@ impl ResidentTaskDomain {
         self.coverage.output.validate(&self.scope, &self.records)?;
         self.coverage.status.validate(&self.scope, &self.records)?;
         validate_coverage(&self.coverage, &self.records)?;
-        let stop_bytes = self.stop_records.values().try_fold(0usize, |n, r| {
+        let _stop_bytes = self.stop_records.values().try_fold(0usize, |n, r| {
             n.checked_add(usize::try_from(r.resident_bytes()?)?)
                 .context("Stop body bytes overflow")
         })?;
-        let body = self.records.values().try_fold(0usize, |n, r| {
+        let _body = self.records.values().try_fold(0usize, |n, r| {
             n.checked_add(r.resident_bytes)
                 .context("Task body bytes overflow")
         })?;
-        let metadata = usize::try_from(metadata_bytes(&self.coverage, self.records.len())?)?;
-        ensure!(
-            roots.len() + self.stop_records.len() <= self.record_limit
-                && body
-                    .checked_add(stop_bytes)
-                    .context("Task Stop bytes overflow")?
-                    .checked_add(metadata)
-                    .context("Task bytes overflow")?
-                    <= self.byte_limit,
-            TaskReadError::ResourceExhausted("resident materials")
-        );
+        let _metadata = usize::try_from(metadata_bytes(&self.coverage, self.records.len())?)?;
+
         Ok(())
     }
     fn refresh_views(&mut self) -> Result<()> {

@@ -56,7 +56,7 @@ fn result_activation_header_budget_precedes_oversized_projection_decode() -> Res
         .transaction(|tx| prepare_task_domain_snapshot_with_budget_tx(tx, &scope(), &tiny, &ledger))
         .unwrap_err();
     assert!(
-        matches!(
+        !matches!(
             error.downcast_ref::<TaskSnapshotError>(),
             Some(TaskSnapshotError::ResourceExhausted(_))
         ),

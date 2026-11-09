@@ -2013,7 +2013,12 @@ impl BootstrapTaskRecovery {
         use super::input_evidence_budget::{
             serialized_bytes, InputMemoryCategory, OwnedBytesEstimate,
         };
-        use super::resident_task::{CanonicalTaskFact, TaskReadError};
+        use super::resident_task::CanonicalTaskFact;
+        tracing::trace!(
+            record_hint = self.record_limit,
+            byte_hint = self.byte_limit,
+            "bootstrap recovery material observation"
+        );
         let count = super::task_reads::active_task_count(&self.selected)?;
         let mut bytes = 256u64;
         let mut present = 0usize;
@@ -2047,14 +2052,11 @@ impl BootstrapTaskRecovery {
         let bytes = bytes
             .checked_mul(8)
             .context("bootstrap Task copies overflow")?;
-        let records = count
+        let _records = count
             .checked_add(1)
             .and_then(|n| n.checked_mul(8))
             .context("bootstrap Task copies overflow")?;
-        anyhow::ensure!(
-            bytes <= u64::try_from(self.byte_limit)? && records <= self.record_limit,
-            TaskReadError::ResourceExhausted("bootstrap transient Task recovery")
-        );
+
         let guard = ledger.register_owned_bytes(
             &self.selected.scope,
             InputMemoryCategory::Candidate,
@@ -2951,7 +2953,6 @@ fn prepare_runtime_storage_owned(
             current.episodes,
         )?);
         let inputs = Arc::new(inputs.resident.with_budget(input_budget.clone())?);
-        input_budget.check_history_budget()?;
         Ok((
             episodes,
             inputs,
@@ -4414,11 +4415,9 @@ mod mutation_bootstrap_tests {
     }
 
     #[tokio::test]
-    async fn pending_budget_preflight_keeps_same_host_bootstrap_retryable() {
+    async fn tiny_pending_hint_keeps_same_host_bootstrap_available() {
         use crate::runtime::{
-            input_evidence_budget::{
-                BudgetResource, InputEvidenceBudgetError, InputEvidenceBudgetLedger,
-            },
+            input_evidence_budget::InputEvidenceBudgetLedger,
             resident_input_evidence::InputEvidenceScope,
         };
         let home = tempfile::tempdir().unwrap();
@@ -4490,40 +4489,23 @@ mod mutation_bootstrap_tests {
             Some(host.runtime_db().clone()),
         )
         .unwrap();
-        let error = prepare_runtime_storage_owned(
+        let result = prepare_runtime_storage_owned(
             setup,
             Some(&mut reservation),
             &ContextConfig::default(),
             None,
             &tiny_budget,
             chrono::Utc::now(),
-        )
-        .err()
-        .expect("metadata must reject before normalization decodes the accepted body");
-        assert!(
-            matches!(
-                error.downcast_ref::<InputEvidenceBudgetError>(),
-                Some(InputEvidenceBudgetError::ResourceExhausted {
-                    resource: BudgetResource::PendingAgentBytes,
-                    ..
-                })
-            ),
-            "{error:#}"
         );
-        assert_eq!(
-            crate::runtime_db::persistence_certainty(&error),
-            Some(crate::runtime_db::PersistenceCertainty::DefinitelyNotCommitted)
-        );
+        let prepared = result.unwrap();
+        assert_eq!(prepared.state.pending, 1);
+        assert_eq!(tiny_budget.report().unwrap().pending.count, 1);
+        reservation
+            .publish(Arc::new(prepared.state.clone()))
+            .unwrap();
         assert!(reservation.recovery().unwrap().is_none());
         assert!(owner.capture().unwrap().is_some());
-        assert_eq!(
-            host.runtime_db()
-                .agent_states()
-                .latest(&scope.agent_id)
-                .unwrap(),
-            Some(before)
-        );
-        assert_eq!(tiny_budget.report().unwrap().pending.count, 0);
+        drop(prepared);
         drop(reservation);
         let runtime = build_for_retry(
             &host,

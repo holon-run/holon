@@ -340,6 +340,21 @@ def wait_for_agent_bootstrap(local, created, timeout=30):
         time.sleep(min(.1, max(0, deadline - time.monotonic())))
 
 
+def seed_fixture_task_results(local, agent, root):
+    # Let every creation ACK settle before any result can start another Turn.
+    release = root / "release-task-results"
+    results = {}
+    for name, command in [("COMPLETED", "printf 'IOS_TASK_OUTPUT_COMPLETE\\n'"),
+                          ("FAILED", "printf 'IOS_TASK_FAILURE_REASON\\n' >&2; exit 7")]:
+        task = local("POST", f"/control/agents/{agent}/tasks", {
+            "summary": "IOS_TASK_PROCESS_" + name,
+            "cmd": "while [ ! -f release-task-results ]; do sleep 0.1; done; " + command,
+            "workdir": str(root), "login": False, "yield_time_ms": 1})
+        results[name] = {"task": task["id"]}
+    release.touch()
+    return results
+
+
 @contextmanager
 def fixture_directory(repo):
     """Retain only an explicitly requested, new, private directory outside the repo."""
@@ -1094,12 +1109,7 @@ with fixture_directory(repo) as root:
             task_id = task["id"]
             result_turns = {}
             if task_result_acceptance:
-                for name, command in [("COMPLETED", "printf 'IOS_TASK_OUTPUT_COMPLETE\\n'"),
-                                      ("FAILED", "printf 'IOS_TASK_FAILURE_REASON\\n' >&2; exit 7")]:
-                    completed_task = local("POST", f"/control/agents/{agent}/tasks", {
-                        "summary": "IOS_TASK_PROCESS_" + name, "cmd": command,
-                        "workdir": str(root), "login": False, "yield_time_ms": 1})
-                    result_turns[name] = {"task": completed_task["id"]}
+                result_turns = seed_fixture_task_results(local, agent, root)
                 for attempt in range(300):
                     conversation = local("GET", f"/agents/{agent}/conversation")
                     for turn in conversation.get("turns", []):

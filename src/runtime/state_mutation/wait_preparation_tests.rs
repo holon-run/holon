@@ -163,8 +163,7 @@ async fn external_wait_default_and_revoked_empty_use_one_root_without_trigger_bo
     Ok(())
 }
 #[tokio::test]
-async fn external_wait_selected_plus_owned_material_rejects_before_clone_and_releases_on_drop(
-) -> Result<()> {
+async fn external_wait_selected_material_ignores_size_hints_and_releases_on_drop() -> Result<()> {
     let home = tempdir()?;
     let runtime = runtime(home.path())?;
     let trigger = runtime
@@ -180,26 +179,10 @@ async fn external_wait_selected_plus_owned_material_rejects_before_clone_and_rel
     let read = owner.capture_scheduling_read(&request)?;
     let (_, selected_count) = read.scheduling.selected_material_estimate()?;
     let baseline = runtime.inner.input_evidence_budget.report()?.observed_bytes;
-    let error = external_wait_read(
-        &read.scheduling,
-        &runtime.inner.input_evidence_budget,
-        selected_count,
-        64 * 1024 * 1024,
-    )
-    .err()
-    .context("selected alone cannot cover owned Wait material")?;
-    assert!(matches!(
-        error.downcast_ref::<SchedulingReadError>(),
-        Some(SchedulingReadError::ResourceExhausted(_))
-    ));
-    assert_eq!(
-        runtime.inner.input_evidence_budget.report()?.observed_bytes,
-        baseline
-    );
     let material = external_wait_read(
         &read.scheduling,
         &runtime.inner.input_evidence_budget,
-        65_536,
+        selected_count,
         64 * 1024 * 1024,
     )?;
     assert_eq!(

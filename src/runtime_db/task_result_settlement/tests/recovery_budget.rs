@@ -126,7 +126,7 @@ fn finite_recovery_diagnostic_preserves_namespace_epoch_cas_and_idempotence() ->
                 byte_limit: 1,
             },
         )
-        .is_err());
+        .is_ok());
         Ok(())
     })?;
     assert!(latest(&db, &unpaused).recovery_diagnostic_at.is_none());

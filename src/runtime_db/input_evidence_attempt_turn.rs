@@ -8,6 +8,9 @@ use crate::types::{
     AgentMessageDeliveryState, AgentState, AgentStatus, QueueEntryRecord, QueueEntryStatus,
 };
 
+#[path = "input_evidence_closed_claim.rs"]
+mod closed_claim;
+
 fn isolated_delivery_hint_tx(
     tx: &Transaction<'_>,
     attempt: &ExecutionAttempt,
@@ -33,6 +36,12 @@ fn isolated_delivery_hint_tx(
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+struct ClosedClaimObservation {
+    state: ExecutionAttemptState,
+    outcome_id: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub(super) struct AttemptTurnProof {
     source_message_id: Option<String>,
     source: ExecutionSource,
@@ -42,6 +51,9 @@ pub(super) struct AttemptTurnProof {
     hint_turn_id: Option<String>,
     /// Empty is a verified claim-only observation, not missing metadata.
     pub(super) turn_keys: BTreeSet<Key>,
+    /// Closed historical record, never permission to resume an unstarted claim.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    closed_claim: Option<ClosedClaimObservation>,
 }
 impl AttemptTurnProof {
     pub(super) fn for_output(attempt: &ExecutionAttempt, turn_keys: BTreeSet<Key>) -> Self {
@@ -53,6 +65,7 @@ impl AttemptTurnProof {
             admitted_at: attempt.admitted_at.clone(),
             hint_turn_id: attempt.turn_id.clone(),
             turn_keys,
+            closed_claim: None,
         }
     }
     fn matches_attempt(&self, attempt: &ExecutionAttempt) -> bool {
@@ -61,6 +74,11 @@ impl AttemptTurnProof {
             && self.binding == attempt.binding
             && self.fences == attempt.admitted_fences
             && self.admitted_at == attempt.admitted_at
+            && self.closed_claim.as_ref().is_none_or(|closed| {
+                attempt.state == closed.state
+                    && attempt.run_id.is_none()
+                    && attempt.terminal_outcome_id.as_ref() == Some(&closed.outcome_id)
+            })
     }
 }
 
@@ -337,12 +355,24 @@ pub(super) fn observe(
             }
         }
     }
-    if turns.is_empty() && prior.is_none() && !strict_unstarted(tx, attempt, state.as_ref())? {
-        return Err(InputEvidenceSnapshotError::NeedsPreparation(format!(
-            "Attempt {} lacks fixed claim-only Turn proof",
-            attempt.attempt_id
-        ))
+    let mut closed_claim = prior.and_then(|proof| proof.closed_claim.clone());
+    if closed_claim.is_some() && !turns.is_empty() {
+        return Err(InputEvidenceSnapshotError::NeedsPreparation(
+            "closed historical claim cannot acquire an actual Turn".into(),
+        )
         .into());
+    }
+    if turns.is_empty() && prior.is_none() && !strict_unstarted(tx, attempt, state.as_ref())? {
+        if scope.is_none() {
+            closed_claim = closed_claim::original_observation(tx, attempt, state.as_ref())?;
+        }
+        if closed_claim.is_none() {
+            return Err(InputEvidenceSnapshotError::NeedsPreparation(format!(
+                "Attempt {} lacks fixed claim-only Turn proof",
+                attempt.attempt_id
+            ))
+            .into());
+        }
     }
     Ok(AttemptTurnProof {
         source_message_id: attempt.source_message_id.clone(),
@@ -352,6 +382,7 @@ pub(super) fn observe(
         admitted_at: attempt.admitted_at.clone(),
         hint_turn_id: attempt.turn_id.clone(),
         turn_keys: turns,
+        closed_claim,
     })
 }
 
@@ -403,7 +434,18 @@ fn fixed_proof_on(
                     "fixed Attempt Turn proof source/fences changed"
                 );
                 if let Some(old) = prior.as_mut() {
+                    if let Some(closed) = p.closed_claim {
+                        ensure!(
+                            old.closed_claim.as_ref().is_none_or(|id| id == &closed),
+                            "fixed closed claim outcome changed"
+                        );
+                        old.closed_claim = Some(closed);
+                    }
                     old.turn_keys.extend(p.turn_keys);
+                    ensure!(
+                        old.closed_claim.is_none() || old.turn_keys.is_empty(),
+                        "closed historical claim cannot merge an actual Turn"
+                    );
                 } else {
                     prior = Some(p);
                 }

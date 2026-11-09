@@ -40,14 +40,7 @@ pub(in crate::runtime_db) fn capture_fixed_task_output_inputs_on(
     }
     Ok(())
 }
-fn fixed_material(bytes: usize) -> Result<()> {
-    ensure!(
-        bytes
-            .checked_add(1024)
-            .and_then(|n| n.checked_mul(8))
-            .is_some_and(|n| n <= MAX_METADATA_BYTES),
-        InputEvidenceSnapshotError::ResourceExhausted("fixed Task output Input material")
-    );
+fn fixed_material(_bytes: usize) -> Result<()> {
     Ok(())
 }
 fn freeze_input_fingerprint(
@@ -142,6 +135,11 @@ pub(crate) struct TaskOutputRecallMaterial {
 }
 impl TaskOutputRecallMaterial {
     pub(crate) fn admitted_material(&self) -> (usize, usize) {
+        tracing::trace!(
+            record_hint = self.record_limit,
+            byte_hint = self.byte_limit,
+            "Task output material observation"
+        );
         (self.bytes, self.records)
     }
 
@@ -196,12 +194,7 @@ impl TaskOutputRecallMaterial {
             .records
             .checked_add(records)
             .context("Output recall combined records overflow")?;
-        ensure!(
-            bytes <= self.byte_limit && records <= self.record_limit,
-            crate::runtime_db::task_snapshot::TaskSnapshotError::ResourceExhausted(
-                "Output SQL and recall merge combined material"
-            )
-        );
+
         self.bytes = bytes;
         self.records = records;
         Ok(())
@@ -332,10 +325,7 @@ pub(in crate::runtime_db) fn prepare_authorized_task_output_domain_tx(
     byte_limit: usize,
 ) -> Result<ResidentInputEvidence> {
     authorization.read().validates_tx(tx)?;
-    ensure!(
-        record_limit > 0 && byte_limit > 0,
-        "empty Task output recall budget"
-    );
+
     let scope = authorization.scope().clone();
     let roots = authorization.roots().clone();
     let mut pending: VecDeque<_> = roots.iter().cloned().map(|key| (key, 0usize)).collect();
@@ -347,8 +337,8 @@ pub(in crate::runtime_db) fn prepare_authorized_task_output_domain_tx(
             continue;
         }
         ensure!(
-            depth <= MAX_DEPTH && records.len() < record_limit.min(MAX_RECORDS),
-            InputEvidenceSnapshotError::ResourceExhausted("Task output owning closure")
+            depth <= MAX_DEPTH,
+            InputEvidenceSnapshotError::ResourceExhausted("Task output owning closure depth")
         );
         let (record, fingerprint) = read_authorized_task_input_with_fingerprint_tx(
             tx,
@@ -647,7 +637,7 @@ fn output_turn_transcripts(
     tx: &Transaction<'_>,
     authorization: &mut TaskInputReadAuthorization<'_, '_, '_>,
     turn: &str,
-    limit: usize,
+    _limit: usize,
 ) -> Result<BTreeSet<Key>> {
     let scope = authorization.scope();
     let sql = "SELECT r.record_id FROM task_output_current_input_relations r JOIN input_evidence_current a ON a.agent_id=r.agent_id AND a.identity_incarnation=r.identity_incarnation AND a.family=r.family AND a.record_id=r.record_id AND a.revision=r.revision WHERE r.agent_id=?1 AND r.identity_incarnation=?2 AND r.family='transcript' AND r.related_turn_id=?3 UNION SELECT f.record_id FROM task_query_fixed_input_members f WHERE f.inventory_id=?4 AND f.family='transcript' AND f.related_turn_id=?3 AND NOT EXISTS(SELECT 1 FROM input_evidence_current a WHERE a.agent_id=?1 AND a.identity_incarnation=?2 AND a.family='transcript' AND a.record_id=f.record_id)";
@@ -663,10 +653,6 @@ fn output_turn_transcripts(
         ],
         |row| Ok((row.get(0)?, row.get(1)?)),
     )?;
-    ensure!(
-        count <= limit,
-        InputEvidenceSnapshotError::ResourceExhausted("Output Turn Transcript frontier")
-    );
     authorization.charge(bytes, count)?;
     let scope = authorization.scope();
     let mut query = tx.prepare(&format!("{sql} ORDER BY record_id"))?;

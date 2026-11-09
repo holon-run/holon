@@ -122,15 +122,7 @@ pub(crate) fn prepare_tx(
             for key in &original.allowed {
                 flatten_fixed_roots_tx(tx, &prepared.scope.seed_id, key, &mut fixed_roots)?;
             }
-            ensure!(
-                original
-                    .allowed
-                    .len()
-                    .saturating_add(outcomes.len())
-                    .saturating_add(1)
-                    <= MAX_RECORDS,
-                "fallback qualification footprint exceeds input record limit"
-            );
+
             let origins = outcomes
                 .iter()
                 .map(|(key, before)| (key.clone(), Some(before.clone())))
@@ -149,10 +141,6 @@ pub(crate) fn prepare_tx(
                 origin_bytes = origin_bytes
                     .checked_add(serde_json::to_vec(&origin)?.len())
                     .context("fallback origin size overflow")?;
-                ensure!(
-                    origin_bytes <= MAX_METADATA_BYTES,
-                    "fallback provenance exceeds input metadata limit"
-                );
             }
             let mut bounded = BTreeSet::new();
             let mut bytes = 0;
@@ -323,10 +311,7 @@ fn write_origin_tx(tx: &Transaction<'_>, agent: &str, origin: &FallbackOrigin) -
             Some(bounded_body_digest(tx, agent, &origin.key, &fingerprint)?);
     }
     let json = serde_json::to_string(origin)?;
-    ensure!(
-        json.len() <= MAX_METADATA_BYTES,
-        "fallback origin exceeds input metadata budget"
-    );
+
     let exists:bool=tx.query_row("SELECT EXISTS(SELECT 1 FROM input_evidence_seed_recovery_current WHERE seed_id=?1 AND family=?2 AND record_id=?3) OR EXISTS(SELECT 1 FROM input_evidence_eligibility WHERE seed_id=?1 AND family=?2 AND record_id=?3)",params![origin.seed_id,origin.key.family.as_str(),origin.key.id],|r|r.get(0))?;
     ensure!(!exists, "fallback derived ID already has a legacy origin");
     tx.execute("INSERT INTO input_evidence_seed_recovery_current(seed_id,family,record_id,revision,fingerprint_json,origin_kind,maintenance_proof_json) VALUES(?1,?2,?3,1,?4,'maintenance_created',?5)",params![origin.seed_id,origin.key.family.as_str(),origin.key.id,serde_json::to_string(&fingerprint)?,json])?;
@@ -343,10 +328,7 @@ fn write_origin_tx(tx: &Transaction<'_>, agent: &str, origin: &FallbackOrigin) -
 }
 pub(crate) fn validate_origin_tx(tx: &Transaction<'_>, seed: &str, key: &Key) -> Result<()> {
     let json:String=tx.query_row("SELECT maintenance_proof_json FROM input_evidence_seed_recovery_current WHERE seed_id=?1 AND family=?2 AND record_id=?3",params![seed,key.family.as_str(),key.id],|r|r.get(0))?;
-    ensure!(
-        json.len() <= MAX_METADATA_BYTES,
-        "fallback origin exceeds input metadata budget"
-    );
+
     let origin: FallbackOrigin = serde_json::from_str(&json)?;
     ensure!(
         origin.seed_id == seed && origin.key == *key && !origin.fixed_roots.is_empty(),

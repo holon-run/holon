@@ -447,15 +447,11 @@ impl ResidentSchedulingDomain {
     fn validate_bootstrap_header(
         scope: &InputEvidenceScope,
         coverage: &SchedulingCoverage,
-        record_limit: usize,
-        byte_limit: usize,
+        _record_limit: usize,
+        _byte_limit: usize,
     ) -> Result<()> {
         ensure!(
-            !scope.agent_id.is_empty()
-                && scope.identity_incarnation > 0
-                && coverage.revision > 0
-                && record_limit > 0
-                && byte_limit > 0,
+            !scope.agent_id.is_empty() && scope.identity_incarnation > 0 && coverage.revision > 0,
             "invalid Scheduling bootstrap"
         );
         Ok(())
@@ -552,7 +548,6 @@ impl ResidentSchedulingDomain {
     pub(crate) fn with_budget(mut self, budget: InputEvidenceBudgetLedger) -> Result<Self> {
         self.budget = Some(budget);
         self.refresh_views()?;
-        self.budget.as_ref().unwrap().check_history_budget()?;
         Ok(self)
     }
     pub(crate) fn with_context_material(mut self, material: Option<Arc<BudgetViewGuard>>) -> Self {
@@ -732,21 +727,14 @@ impl ResidentSchedulingDomain {
                 }
             }
         }
-        let bytes = self.records.values().try_fold(
+        let _bytes = self.records.values().try_fold(
             metadata_bytes(&self.scope, &self.coverage, self.records.len())?,
             |n, r| {
                 n.checked_add(u64::try_from(r.resident_bytes)?)
                     .context("Scheduling byte overflow")
             },
         )?;
-        ensure!(
-            self.records
-                .len()
-                .checked_add(self.coverage.observations.len())
-                .is_some_and(|n| n <= self.record_limit)
-                && bytes <= u64::try_from(self.byte_limit)?,
-            "Scheduling ResourceExhausted"
-        );
+
         Ok(())
     }
     fn is_live_view_key(&self, key: &SchedulingKey) -> bool {
@@ -879,18 +867,11 @@ impl ResidentSchedulingDomain {
         let request_bytes = serialized_bytes(&request.required_keys)?
             .checked_mul(4)
             .context("Scheduling capture selector overflow")?;
-        ensure!(
-            request.required_keys.len() <= self.record_limit
-                && request_bytes <= u64::try_from(self.byte_limit)?,
-            "Scheduling capture ResourceExhausted"
-        );
+
         let capture_metadata = metadata_bytes(&self.scope, &self.coverage, self.records.len())?
             .checked_add(request_bytes)
             .context("Scheduling capture metadata overflow")?;
-        ensure!(
-            capture_metadata <= u64::try_from(self.byte_limit)?,
-            "Scheduling capture ResourceExhausted"
-        );
+
         Ok(capture_metadata)
     }
     /// Readiness borrows the same qualified roots and Wake parents. Only the

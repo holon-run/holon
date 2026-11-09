@@ -244,19 +244,20 @@ fn untracked_old_source_cannot_be_initialized_from_latest_history() -> Result<()
     Ok(())
 }
 #[test]
-fn metadata_budget_rejects_whole_fixed_capture_instead_of_truncating() -> Result<()> {
+fn fixed_capture_ignores_former_metadata_quota_without_truncation() -> Result<()> {
     let mut db = connection()?;
     let tx = db.transaction()?;
     store(&tx, &attempt("activation:message:input", "input"))?;
+    assert_eq!(source_raw_metadata(&tx, "agent", "input", 0)?.len(), 1);
     let roots = BTreeSet::from([Key::new(Family::Message, "input")]);
-    assert!(capture_sources_tx(&tx, "seed", "upgrade", "agent", &roots, MAX_RECORDS, 0).is_err());
+    capture_sources_tx(&tx, "seed", "upgrade", "agent", &roots, MAX_RECORDS, 0)?;
     assert_eq!(
         tx.query_row(
             "SELECT count(*) FROM input_evidence_execution_seed_sources",
             [],
             |r| r.get::<_, i64>(0)
         )?,
-        0
+        1
     );
     Ok(())
 }

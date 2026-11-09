@@ -4,7 +4,7 @@ use super::*;
 use crate::runtime::resident_input_evidence::InputEvidenceScope;
 use crate::{
     runtime::input_evidence_budget::{serialized_bytes, InputMemoryCategory, OwnedBytesEstimate},
-    runtime_db::task_snapshot::{DeletionTaskAck, TaskSnapshotError},
+    runtime_db::task_snapshot::DeletionTaskAck,
 };
 impl RuntimeHost {
     pub(super) async fn terminalize_deletion_tasks(
@@ -37,8 +37,6 @@ impl RuntimeHost {
                     .and_then(|n| n.checked_add(id.len() as u64 + 256))
                     .and_then(|n| n.checked_mul(8))
                     .context("deletion Task frozen metadata overflow")?;
-                let limits = ledger.limits();
-                ensure_actor_material(bytes, &limits)?;
                 let guard = ledger.register_owned_bytes(
                     &scope,
                     InputMemoryCategory::Candidate,
@@ -80,20 +78,6 @@ impl RuntimeHost {
         Ok(changed)
     }
 }
-fn ensure_actor_material(bytes: u64, limits: &crate::config::StateMemoryLimits) -> Result<()> {
-    anyhow::ensure!(
-        bytes
-            <= limits
-                .history_per_agent_bytes
-                .checked_add(limits.pending_per_agent_bytes)
-                .context("deletion Task limits overflow")?
-                .min(64 * 1024 * 1024)
-            && 8 <= limits.record_limit,
-        TaskSnapshotError::ResourceExhausted("deletion Task frozen metadata")
-    );
-    Ok(())
-}
-
 #[cfg(holon_lib_test_shard = "d")]
 #[cfg(test)]
 mod tests {
@@ -296,7 +280,7 @@ mod tests {
 mod scope_budget_tests {
     use super::*;
     #[tokio::test]
-    async fn deletion_task_header_budget_precedes_bad_identity_and_state_decode() -> Result<()> {
+    async fn deletion_task_rejects_bad_identity_and_state_without_size_quota() -> Result<()> {
         for table in ["agent_identities", "agent_states"] {
             let (_home, host) = crate::deletion::tests::metadata_test_host();
             let identity = crate::deletion::tests::metadata_identity(&host, "delete-scope-budget");
@@ -317,20 +301,18 @@ mod scope_budget_tests {
             let ledger = host.bridge().input_evidence_budget()?;
             let before = ledger.report()?.observed_bytes;
             host.runtime_db().connection()?.execute(&format!("UPDATE {table} SET payload_json='{{'||hex(zeroblob(5*1024*1024)) WHERE agent_id=?1"),[&identity.agent_id])?;
-            let error = host
+            let result = host
                 .terminalize_deletion_tasks(&identity.agent_id, &job, Utc::now())
-                .await
-                .err()
-                .context("bad large scope body accepted")?;
-            assert!(
-                matches!(
-                    error.downcast_ref::<TaskSnapshotError>(),
-                    Some(TaskSnapshotError::ResourceExhausted(
-                        "deletion Task scope header"
-                    ))
-                ),
-                "{table}: {error:#}"
-            );
+                .await;
+            if table == "agent_identities" {
+                let error = result.err().context("bad scope identity accepted")?;
+                assert!(format!("{error:#}").contains("deletion Task scope header is invalid"));
+            } else {
+                assert_eq!(
+                    result?, 0,
+                    "metadata-only empty Task inventory grants no State authority"
+                );
+            }
             assert_eq!(ledger.report()?.observed_bytes, before);
             let owner = host
                 .bridge()

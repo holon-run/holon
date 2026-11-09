@@ -321,8 +321,6 @@ pub(crate) enum WorkReadError {
     WindowExpansion { requested: usize, prepared: usize },
     #[error("Work domain revision mismatch: expected={expected}, actual={actual}")]
     RevisionMismatch { expected: u64, actual: u64 },
-    #[error("Work domain resource exhausted: {0}")]
-    ResourceExhausted(&'static str),
 }
 
 #[derive(Debug)]
@@ -387,9 +385,6 @@ impl ResidentWorkDomain {
     pub(crate) fn with_budget(mut self, budget: InputEvidenceBudgetLedger) -> Result<Self> {
         self.budget = Some(budget);
         self.refresh_budget_views()?;
-        if let Some(budget) = &self.budget {
-            budget.check_history_budget()?;
-        }
         Ok(self)
     }
     fn metadata_bytes(
@@ -575,9 +570,6 @@ impl ResidentWorkDomain {
         next.coverage = delta.coverage.clone();
         next.trim_and_validate()?;
         next.refresh_budget_views()?;
-        if let Some(budget) = &next.budget {
-            budget.check_history_budget()?;
-        }
         Ok(next)
     }
     pub(crate) fn capture(&self, request: &WorkCaptureRequest) -> Result<CapturedWork> {
@@ -780,9 +772,7 @@ impl ResidentWorkDomain {
             if !selected.insert(key.clone()) {
                 continue;
             }
-            if selected.len() > self.record_limit {
-                return Err(WorkReadError::ResourceExhausted("required record count").into());
-            }
+
             match self.coverage.observations.get(&key) {
                 Some(WorkAvailability::Present) => {
                     let record = self
@@ -1055,7 +1045,7 @@ impl ResidentWorkDomain {
         self.coverage
             .latest_results
             .retain(|id, _| selected.contains(&WorkKey::new(WorkFamily::Work, id)));
-        let bytes = self.records.values().try_fold(
+        let _bytes = self.records.values().try_fold(
             serde_json::to_vec(&self.coverage)?.len(),
             |total, x| {
                 total
@@ -1063,9 +1053,7 @@ impl ResidentWorkDomain {
                     .ok_or_else(|| anyhow::anyhow!("Work byte estimate overflow"))
             },
         )?;
-        if bytes > self.byte_limit {
-            return Err(WorkReadError::ResourceExhausted("required body/metadata bytes").into());
-        }
+
         Ok(())
     }
 }
@@ -1826,20 +1814,17 @@ mod tests {
     }
 
     #[test]
-    fn insufficient_current_budget_rejects_domain_instead_of_evicting_live_work() {
+    fn current_work_survives_tiny_legacy_size_hints() {
         let record = qualified("work", WorkItemState::Open, 1);
-        let error = ResidentWorkDomain::bootstrap(
+        let domain = ResidentWorkDomain::bootstrap(
             scope(),
             coverage(&[record.clone()], 1),
             vec![record],
-            1_000,
+            0,
             1,
         )
-        .unwrap_err();
-        assert!(matches!(
-            error.downcast_ref::<WorkReadError>(),
-            Some(WorkReadError::ResourceExhausted(_))
-        ));
+        .unwrap();
+        assert_eq!(domain.records.len(), 1);
     }
 
     #[test]

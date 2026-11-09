@@ -117,7 +117,7 @@ fn prepare(
         "Work write scope retired"
     );
     let seed = binding(tx, scope)?;
-    bound_metadata(
+    observe_metadata(
         keys.len(),
         keys.iter()
             .map(|key| key.id.len() + std::mem::size_of::<WorkKey>())
@@ -142,7 +142,7 @@ fn prepare(
             )
             .optional()?;
         bytes = bytes.saturating_add(length.unwrap_or_default());
-        bound_metadata(keys.len(), bytes)?;
+        observe_metadata(keys.len(), bytes)?;
         let stored = stored_on(tx, &scope.agent_id, key)?;
         if let Some(stored) = &stored {
             qualification::validate_member(tx, scope, seed.as_deref(), key, stored)?;
@@ -206,20 +206,15 @@ pub(crate) fn work_wait_write_keys_tx(
             crate::types::WaitConditionStatus::Active
                 | crate::types::WaitConditionStatus::Triggered
         ) {
-            let mut query=tx.prepare("SELECT wait_condition_id FROM wait_conditions WHERE agent_id=?1 AND work_item_id IS ?2 AND status IN ('active','triggered') AND wait_condition_id!=?3 LIMIT ?4")?;
+            let mut query=tx.prepare("SELECT wait_condition_id FROM wait_conditions WHERE agent_id=?1 AND work_item_id IS ?2 AND status IN ('active','triggered') AND wait_condition_id!=?3")?;
             for id in query.query_map(
-                params![
-                    record.agent_id,
-                    record.work_item_id,
-                    record.id,
-                    i64::try_from(MAX_METADATA_RECORDS + 1)?
-                ],
+                params![record.agent_id, record.work_item_id, record.id],
                 |row| row.get::<_, String>(0),
             )? {
                 keys.insert(WorkKey::new(WorkFamily::Wait, id?));
             }
         }
-        bound_metadata(keys.len(), keys.iter().map(|key| key.id.len()).sum())?;
+        observe_metadata(keys.len(), keys.iter().map(|key| key.id.len()).sum())?;
     }
     Ok(keys)
 }
@@ -637,7 +632,7 @@ pub(super) fn update_result_heads(
     brief_ids: &BTreeSet<String>,
 ) -> Result<()> {
     let mut touched = BTreeSet::new();
-    bound_metadata(brief_ids.len(), brief_ids.iter().map(String::len).sum())?;
+    observe_metadata(brief_ids.len(), brief_ids.iter().map(String::len).sum())?;
     for id in brief_ids {
         let key = InputEvidenceKey::new(InputEvidenceFamily::Brief, id);
         let present:bool=tx.query_row("SELECT EXISTS(SELECT 1 FROM input_evidence_current WHERE agent_id=?1 AND identity_incarnation=?2 AND family='brief' AND record_id=?3 AND availability='present')",params![scope.agent_id,scope.identity_incarnation,id],|row|row.get(0))?;
@@ -668,7 +663,7 @@ pub(super) fn update_result_heads(
             [&work],
             |row| row.get(0),
         )?;
-        bound_metadata(1, bytes)?;
+        observe_metadata(1, bytes)?;
         let stored =
             stored_on(tx, &scope.agent_id, &key)?.context("actual Result has no original Work")?;
         qualification::validate_member(tx, scope, binding(tx, scope)?.as_deref(), &key, &stored)?;

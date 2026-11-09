@@ -530,10 +530,9 @@ impl RuntimeHandle {
             let charged = u64::try_from(material)?.checked_mul(8)
                 .context("retry proof copies overflow")?;
             let limits = self.inner.input_evidence_budget.limits();
-            let byte_limit = limits.history_per_agent_bytes.checked_add(limits.pending_per_agent_bytes)
+            let _byte_limit = limits.history_per_agent_bytes.checked_add(limits.pending_per_agent_bytes)
                 .context("retry owner byte limit overflow")?;
-            ensure!(charged <= byte_limit && 18 * 8 <= limits.record_limit,
-                crate::runtime_db::dispatch_memory::DispatchMemoryError::ResourceExhausted);
+
             let _budget = self.inner.input_evidence_budget.register_owned_bytes(
                 &inputs.scope,
                 InputMemoryCategory::Candidate,

@@ -516,7 +516,8 @@ fn fixed_eligibility_is_metadata_only_and_tool_resident_does_not_pin_stdout() ->
     let count:i64=db.connection()?.query_row("SELECT COUNT(*) FROM input_evidence_eligibility WHERE family='tool_execution' AND length(fingerprint_json)<1024",[],|r|r.get(0))?;
     assert_eq!(count, 1);
     let mut policy = request(InputWindowSelector::RecentTools, 1);
-    policy.byte_limit = 16 * 1024;
+    policy.byte_limit = 1;
+    policy.record_limit = 0;
     let prepared =
         db.transaction(|tx| prepare_input_evidence_snapshot_tx(tx, &scope(), &policy))?;
     let captured = current(prepared).resident.capture()?;
@@ -992,7 +993,7 @@ fn selected_turn_and_message_closure_materialize_frozen_full_transcript() -> Res
 }
 
 #[test]
-fn qualification_window_accumulator_rejects_before_collecting_unbounded_owners() -> Result<()> {
+fn qualification_window_accumulator_keeps_every_owner_beyond_former_quota() -> Result<()> {
     let mut selected = BTreeSet::new();
     let mut bytes = 0;
     for owner in 0..128 {
@@ -1003,17 +1004,12 @@ fn qualification_window_accumulator_rejects_before_collecting_unbounded_owners()
         )?;
     }
     assert_eq!(selected.len(), MAX_RECORDS);
-    let error = extend_metadata_selection(
+    extend_metadata_selection(
         &mut selected,
         &mut bytes,
         (0..512).map(|turn| Key::new(Family::Turn, format!("owner-129-turn-{turn}"))),
-    )
-    .unwrap_err();
-    assert!(matches!(
-        error.downcast_ref::<InputEvidenceSnapshotError>(),
-        Some(InputEvidenceSnapshotError::ResourceExhausted(_))
-    ));
-    assert_eq!(selected.len(), MAX_RECORDS);
+    )?;
+    assert_eq!(selected.len(), MAX_RECORDS + 512);
     Ok(())
 }
 
@@ -1535,6 +1531,182 @@ fn successor_cannot_reuse_original_incarnation_claim_only_proof() -> Result<()> 
     assert_eq!(count, 0);
     Ok(())
 }
+#[test]
+fn fixed_closed_claim_is_history_only_and_cannot_reopen_or_adopt_a_late_turn() -> Result<()> {
+    use crate::domain::execution_protocol::*;
+    use crate::types::{QueueEntryRecord, QueueEntryStatus, TaskKind, TaskRecord, TaskStatus};
+    for closed_state in [
+        ExecutionAttemptState::Interrupted,
+        ExecutionAttemptState::Settled,
+    ] {
+        for status in [
+            QueueEntryStatus::Dropped,
+            QueueEntryStatus::Aborted,
+            QueueEntryStatus::Quarantined,
+        ] {
+            let (_dir, db) = legacy(|tx| {
+                let mut work = WorkItemRecord::new("agent-a", "finished", WorkItemState::Completed);
+                work.id = "closed-work".into();
+                tx.execute("INSERT INTO work_items(work_item_id,agent_id,state,objective,revision,created_at,updated_at,payload_json) VALUES(?1,?2,'completed',?3,1,?4,?4,?5)",
+                params![work.id,work.agent_id,work.objective,time().to_rfc3339(),serde_json::to_string(&work)?])?;
+                tx.execute("INSERT INTO execution_protocol_work_items(agent_id,work_item_id,source_revision,generation,lifecycle_state,payload_json) VALUES('agent-a','closed-work',1,1,'terminal',?1)",
+                [serde_json::to_string(&WorkItemExecutionRecord { source_revision:1, state:WorkItemExecutionState::Terminal { generation:1, completion:"done".into() } })?])?;
+                let task = TaskRecord {
+                    id: "closed-task".into(),
+                    agent_id: "agent-a".into(),
+                    kind: TaskKind::CommandTask,
+                    status: TaskStatus::Completed,
+                    created_at: time(),
+                    updated_at: time(),
+                    parent_message_id: None,
+                    work_item_id: Some(work.id.clone()),
+                    summary: None,
+                    detail: None,
+                    recovery: None,
+                };
+                crate::runtime_db::repositories::upsert_task_tx(tx, &task)?;
+                let mut source = message("closed-source");
+                source.kind = MessageKind::TaskResult;
+                source.origin = MessageOrigin::Task {
+                    task_id: task.id.clone(),
+                };
+                source.task_id = Some(task.id.clone());
+                source.work_item_id = Some(work.id.clone());
+                source.turn_id = Some("never-installed".into());
+                let (source, _) = append_message_tx(tx, &source)?;
+                crate::runtime_db::repositories::upsert_queue_entry_tx(
+                    tx,
+                    &QueueEntryRecord {
+                        message_id: source.id.clone(),
+                        agent_id: "agent-a".into(),
+                        priority: Priority::Normal,
+                        status: status.clone(),
+                        created_at: time(),
+                        updated_at: time(),
+                    },
+                )?;
+                let mut brief = BriefRecord::new(
+                    "agent-a",
+                    crate::types::BriefKind::Result,
+                    "done",
+                    Some(source.id.clone()),
+                    Some(task.id.clone()),
+                );
+                brief.work_item_id = Some(work.id.clone());
+                brief.created_at = time();
+                crate::runtime_db::evidence::insert_brief_evidence_tx(tx, &brief)?;
+                let attempt = ExecutionAttempt {
+                    input_projection: None,
+                    attempt_id: "closed-claim".into(),
+                    agent_id: "agent-a".into(),
+                    source_message_id: Some(source.id.clone()),
+                    source: ExecutionSource {
+                        identity: ExecutionSourceIdentity::TaskResult {
+                            task_id: task.id,
+                            result_message_id: source.id,
+                        },
+                        generation: source.message_seq.unwrap(),
+                    },
+                    binding: ExecutionBinding::WorkItem {
+                        work_item_id: work.id,
+                    },
+                    provenance: ExecutionProvenance {
+                        origin: ExecutionOrigin::Operator,
+                        trust: ExecutionTrust::OperatorInstruction,
+                        priority: ExecutionPriority::Normal,
+                        correlation_id: None,
+                        causation_id: None,
+                    },
+                    admitted_fences: AdmittedFences {
+                        source_revision: source.message_seq.unwrap(),
+                        work_item_source_revision: Some(1),
+                        work_item_generation: Some(1),
+                        rejoin: None,
+                        agent_control_revision: 1,
+                        host_registry_revision: 1,
+                    },
+                    state: closed_state,
+                    run_id: None,
+                    turn_id: Some("never-installed".into()),
+                    recovery_of_attempt_id: None,
+                    terminal_outcome_id: Some("closed-outcome".into()),
+                    admitted_at: time().to_rfc3339(),
+                    terminal_at: Some(time().to_rfc3339()),
+                };
+                store_attempt(tx, &attempt)?;
+                let outcome = ExecutionOutcomeRecord {
+                    outcome_id: "closed-outcome".into(),
+                    attempt_id: attempt.attempt_id.clone(),
+                    outcome: ExecutionOutcome::WorkItem(
+                        if closed_state == ExecutionAttemptState::Interrupted {
+                            WorkItemOutcome::Interrupted {
+                                reason: "stopped before Turn".into(),
+                            }
+                        } else {
+                            WorkItemOutcome::Continue
+                        },
+                    ),
+                    created_at: time().to_rfc3339(),
+                };
+                tx.execute("INSERT INTO execution_protocol_outcomes(agent_id,outcome_id,attempt_id,payload_json) VALUES('agent-a',?1,?2,?3)",
+                params![outcome.outcome_id,outcome.attempt_id,serde_json::to_string(&outcome)?])?;
+                if closed_state == ExecutionAttemptState::Interrupted
+                    && status == QueueEntryStatus::Quarantined
+                {
+                    let mut retry = attempt.clone();
+                    retry.attempt_id = "closed-retry".into();
+                    retry.recovery_of_attempt_id = Some(attempt.attempt_id.clone());
+                    retry.terminal_outcome_id = Some("retry-outcome".into());
+                    store_attempt(tx, &retry)?;
+                    let mut retry_outcome = outcome.clone();
+                    retry_outcome.attempt_id = retry.attempt_id;
+                    retry_outcome.outcome_id = "retry-outcome".into();
+                    tx.execute("INSERT INTO execution_protocol_outcomes(agent_id,outcome_id,attempt_id,payload_json) VALUES('agent-a',?1,?2,?3)",
+                        params![retry_outcome.outcome_id,retry_outcome.attempt_id,serde_json::to_string(&retry_outcome)?])?;
+                }
+
+                Ok(())
+            })?;
+            db.transaction(|tx| {
+            let payload = payload_on(tx,"agent-a",&Key::new(Family::Attempt,"closed-claim"))?.unwrap();
+            let attempt: ExecutionAttempt = serde_json::from_str(&payload)?;
+            let json: String = tx.query_row("SELECT proof_json FROM input_evidence_seed_attempt_turns WHERE attempt_id='closed-claim'",[],|row|row.get(0))?;
+            assert_eq!(serde_json::from_str::<serde_json::Value>(&json)?["closed_claim"]["outcome_id"], "closed-outcome");
+            assert_eq!(serde_json::from_str::<serde_json::Value>(&json)?["closed_claim"]["state"],serde_json::to_value(closed_state)?);
+            let proof: AttemptTurnProof = serde_json::from_str(&json)?;
+            assert!(proof.turn_keys.is_empty());
+            // A normal reader cannot mint this legacy observation for itself.
+            assert!(attempt_turn::observe(tx,Some(&scope()),&attempt,None).is_err());
+            attempt_turn::observe(tx,Some(&scope()),&attempt,Some(&proof))?;
+            let mut reopened = attempt.clone(); reopened.state = ExecutionAttemptState::Open;
+            assert!(attempt_turn::observe(tx,Some(&scope()),&reopened,Some(&proof)).is_err());
+            let mut changed = attempt.clone(); changed.admitted_fences.source_revision += 1;
+            assert!(attempt_turn::observe(tx,None,&changed,None).is_err());
+            let original_queue: String = tx.query_row("SELECT payload_json FROM queue_entries WHERE message_id='closed-source'",[],|row|row.get(0))?;
+            tx.execute("UPDATE queue_entries SET status='dequeued',payload_json=json_set(payload_json,'$.status','dequeued') WHERE message_id='closed-source'",[])?;
+            assert!(attempt_turn::observe(tx,None,&attempt,None).is_err());
+            tx.execute("UPDATE queue_entries SET status=?1,payload_json=?2 WHERE message_id='closed-source'",
+                params![serde_json::to_value(&status)?.as_str(),original_queue])?;
+            let original_state: String = tx.query_row("SELECT payload_json FROM agent_states WHERE agent_id='agent-a'",[],|row|row.get(0))?;
+            tx.execute("UPDATE agent_states SET payload_json=json_set(payload_json,'$.current_turn_id','never-installed') WHERE agent_id='agent-a'",[])?;
+            assert!(attempt_turn::observe(tx,None,&attempt,None).is_err());
+            tx.execute("UPDATE agent_states SET payload_json=?1 WHERE agent_id='agent-a'",[original_state])?;
+            let original_outcome: String = tx.query_row("SELECT payload_json FROM execution_protocol_outcomes WHERE outcome_id='closed-outcome'",[],|row|row.get(0))?;
+            tx.execute("DELETE FROM execution_protocol_outcomes WHERE outcome_id='closed-outcome'",[])?;
+            assert!(attempt_turn::observe(tx,None,&attempt,None).is_err());
+            tx.execute("INSERT INTO execution_protocol_outcomes(agent_id,outcome_id,attempt_id,payload_json) VALUES('agent-a','closed-outcome','closed-claim',?1)",[original_outcome])?;
+            let mut turn = TurnRecord::new("agent-a","never-installed",1);
+            turn.current_work_item_id = Some("closed-work".into());
+            turn.owner = Some(crate::types::TurnOwner::WorkItem { work_item_id:"closed-work".into() });
+            upsert_turn_record_tx(tx,&turn)?;
+            assert!(attempt_turn::observe(tx,Some(&scope()),&attempt,Some(&proof)).is_err());
+            Ok(())
+        })?;
+        }
+    }
+    Ok(())
+}
+
 #[test]
 fn legacy_fixed_boundary_freezes_claim_only_relation() -> Result<()> {
     let (_dir, db) = legacy(|tx| {
@@ -2601,7 +2773,7 @@ fn queue_observer_revisions_do_not_invalidate_qualified_input_bodies() -> Result
 }
 
 #[test]
-fn fixed_unprepared_turn_rejects_equal_length_body_change_after_budget_preflight() -> Result<()> {
+fn fixed_unprepared_turn_rejects_body_change_even_with_tiny_size_hints() -> Result<()> {
     let (_directory, db) = legacy(|tx| {
         let mut turn = TurnRecord::new("agent-a", "unprepared-turn", 1);
         turn.created_at = time();
@@ -2641,7 +2813,7 @@ fn fixed_unprepared_turn_rejects_equal_length_body_change_after_budget_preflight
         .unwrap_err();
     assert!(matches!(
         too_large.downcast_ref::<InputEvidenceSnapshotError>(),
-        Some(InputEvidenceSnapshotError::ResourceExhausted(_))
+        Some(InputEvidenceSnapshotError::ProjectionChanged(id)) if id == &key.id
     ));
     policy.byte_limit = 1024 * 1024;
     let changed = db
@@ -3149,7 +3321,10 @@ fn dispatch_briefs_read_fixed_members_without_alias_hydration_or_late_adoption()
                 row.get(0)
             })?;
         assert_eq!(before, after);
-        assert!(qualified_dispatch_briefs_tx(tx, &scope(), 64, 1).is_err());
+        assert_eq!(
+            qualified_dispatch_briefs_tx(tx, &scope(), 64, 1)?,
+            vec![fixed.clone()]
+        );
         Ok(())
     })?;
     Ok(())
@@ -3430,4 +3605,20 @@ fn fixed_mandatory_message_captures_its_settled_latest_attempt_and_outcome_bodie
 #[test]
 fn fixed_optional_turn_captures_its_idle_batch_activation_and_outcome() -> Result<()> {
     fixed_settled_source_fixture(false)
+}
+
+#[test]
+fn fixed_metadata_selection_preserves_every_key_beyond_former_cumulative_quotas() -> Result<()> {
+    let mut selected = BTreeSet::new();
+    let mut bytes = MAX_METADATA_BYTES;
+    extend_metadata_selection(
+        &mut selected,
+        &mut bytes,
+        (0..=MAX_RECORDS).map(|index| Key::new(Family::Message, format!("source-{index}"))),
+    )?;
+    assert_eq!(selected.len(), MAX_RECORDS + 1);
+    assert!(bytes > MAX_METADATA_BYTES);
+    assert!(selected.contains(&Key::new(Family::Message, "source-0")));
+    assert!(selected.contains(&Key::new(Family::Message, format!("source-{MAX_RECORDS}"))));
+    Ok(())
 }

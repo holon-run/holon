@@ -1,5 +1,5 @@
 //! One-shot terminal membership. IDs select bodies; they never qualify them.
-use anyhow::{ensure, Context, Result};
+use anyhow::{Context, Result};
 use rusqlite::{params, OptionalExtension, Transaction};
 use serde::Serialize;
 
@@ -49,7 +49,7 @@ pub(crate) fn select_tx(
     tx: &Transaction<'_>,
     scope: &InputEvidenceScope,
     selector: &TurnInputSelector<'_>,
-    record_limit: usize,
+    _record_limit: usize,
 ) -> Result<TurnInputMembers> {
     // Bound and admit the complete relation before allocating any selected ID.
     // No history-window cutoff is allowed for a terminal Turn.
@@ -83,10 +83,7 @@ pub(crate) fn select_tx(
         params![scope.agent_id, selector.source_message_id],
         |row| row.get(0),
     )?;
-    ensure!(
-        count <= record_limit,
-        "Turn Input membership exceeds record budget"
-    );
+
     let nodes = count
         .checked_mul(4)
         .and_then(|n| n.checked_add(16))

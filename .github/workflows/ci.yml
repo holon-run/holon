@@ -553,6 +553,7 @@ jobs:
       - name: Test standalone log ownership and bounded tails on macOS
         env:
           CARGO_TARGET_DIR: target/macos-aarch64
+          HOLON_LIB_TEST_SHARD: c
         run: |
           cargo test --locked --lib daemon::logging -- --test-threads=2
           cargo test --locked --lib daemon_logs -- --test-threads=2
@@ -905,7 +906,8 @@ jobs:
       CARGO_PROFILE_DEV_DEBUG_ASSERTIONS: "true"
       CARGO_PROFILE_TEST_DEBUG: "line-tables-only"
       CARGO_PROFILE_TEST_DEBUG_ASSERTIONS: "true"
-      CARGO_PROFILE_TEST_CODEGEN_UNITS: "1"
+      # Keep the database test binary out of one large LLVM module.
+      CARGO_PROFILE_TEST_CODEGEN_UNITS: ${{ matrix.shard == 'lib-b' && '16' || '1' }}
       CARGO_PROFILE_RELEASE_CODEGEN_UNITS: "1"
       CARGO_BUILD_JOBS: "2"
       HOLON_TEST_SATURATION_HEARTBEAT_BUDGET_MS: "1000"
@@ -938,7 +940,8 @@ jobs:
         run: |
           set -o pipefail
           mkdir -p target/ci-timing
-          make test-shard SHARD=${{ matrix.shard }} 2>&1 | tee target/ci-timing/rust-test.log
+          free -h
+          /usr/bin/time -v make test-shard SHARD=${{ matrix.shard }} 2>&1 | tee target/ci-timing/rust-test.log
 
       - name: Summarize Rust test targets
         if: always()

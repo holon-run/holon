@@ -192,24 +192,12 @@ impl PreparedInputTransition {
         };
         let mut prepared_task =
             PreparedTaskTransition::new(command, Default::default(), false, None, None)?;
-        let usage = phase.remaining()?;
-        let (record_limit, byte_limit) = tasks::TaskDomainLoadRequest::bounded_material_limits(
-            request.record_limit,
-            request.byte_limit,
-        );
         prepared_task.original_child_binding = Some(PreparedOriginalChildMonitorBinding {
             intent: OriginalChildMonitorBindingIntent {
                 original: source.address().clone(),
                 before,
                 task_digest,
-                material: tasks::TaskMaintenanceMaterial {
-                    bytes: byte_limit
-                        .checked_sub(usage.byte_limit)
-                        .context("binding used bytes underflow")?,
-                    records: record_limit
-                        .checked_sub(usage.record_limit)
-                        .context("binding used records underflow")?,
-                },
+                material: phase.material_estimate(),
             },
             source: Arc::downgrade(source),
             _guards: guards,
@@ -338,20 +326,8 @@ pub(super) fn preflight_current_entry_tx(
     let target_usage = fresh.binding_material_estimate();
     phase.include(target_usage.bytes, target_usage.records)?;
 
-    let (record_limit, byte_limit) = tasks::TaskDomainLoadRequest::bounded_material_limits(
-        request.record_limit,
-        request.byte_limit,
-    );
-    let remaining = phase.remaining()?;
     let mut material = tasks::read_preparation::TaskReadMaterial::new(scope, request, Some(ledger))
-        .with_admitted_material(tasks::TaskMaintenanceMaterial {
-            bytes: byte_limit
-                .checked_sub(remaining.byte_limit)
-                .context("binding owner byte underflow")?,
-            records: record_limit
-                .checked_sub(remaining.record_limit)
-                .context("binding owner count underflow")?,
-        })?;
+        .with_admitted_material(phase.material_estimate())?;
     let bytes: usize = tx.query_row("SELECT COALESCE((SELECT length(CAST(payload_json AS BLOB))+length(CAST(agent_id AS BLOB))+COALESCE(length(CAST(current_run_id AS BLOB)),0) FROM agent_states WHERE agent_id=?1),0)",[&scope.agent_id],|row|row.get(0))?;
     material.charge_ids(
         bytes

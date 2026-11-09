@@ -125,10 +125,7 @@ impl AutomaticMemoryMetadata {
                 && self.base.prepared_at() == self.final_descriptor.prepared_at(),
             ReceiptError::CorruptReceipt("automatic memory changed original command address")
         );
-        ensure!(
-            self.base.scopes().len() <= MAX_METADATA_RECORDS,
-            DispatchMemoryError::ResourceExhausted
-        );
+
         Ok(())
     }
 }
@@ -141,13 +138,10 @@ fn load_metadata_tx(
     let length: Option<usize> = tx.query_row(
         "SELECT length(CAST(payload_json AS BLOB)) FROM dispatch_memory_auto_commands WHERE command_nonce=?1",
         [base.command_nonce()], |row| row.get(0)).optional()?;
-    let Some(length) = length else {
+    let Some(_length) = length else {
         return Ok(None);
     };
-    ensure!(
-        length <= MAX_METADATA_BYTES,
-        DispatchMemoryError::ResourceExhausted
-    );
+
     let (base_digest, final_digest, digest, payload): (String,String,String,String) = tx.query_row(
         "SELECT base_command_digest,final_command_digest,metadata_digest,payload_json FROM dispatch_memory_auto_commands WHERE command_nonce=?1",
         [base.command_nonce()], |row| Ok((row.get(0)?,row.get(1)?,row.get(2)?,row.get(3)?)))?;
@@ -212,10 +206,7 @@ pub(in crate::runtime_db) fn insert_original_auto_memory_tx(
         return Ok(());
     }
     let payload = serde_json::to_string(&metadata)?;
-    ensure!(
-        payload.len() <= MAX_METADATA_BYTES,
-        DispatchMemoryError::ResourceExhausted
-    );
+
     tx.execute("INSERT INTO dispatch_memory_auto_commands(command_nonce,base_command_digest,final_command_digest,metadata_digest,payload_json) VALUES(?1,?2,?3,?4,?5)",
         params![base.command_nonce(),base.command_digest(),final_descriptor.command_digest(),canonical_command_digest(&metadata)?,payload])?;
     Ok(())

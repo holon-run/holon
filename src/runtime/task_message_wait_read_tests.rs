@@ -259,8 +259,7 @@ async fn message_wait_current_generation_and_foreign_owner_are_rejected_without_
 
 #[cfg(holon_lib_test_shard = "a")]
 #[tokio::test]
-async fn message_wait_terminal_projection_is_budgeted_before_new_owned_detail_and_writes(
-) -> Result<()> {
+async fn message_wait_terminal_projection_commits_above_legacy_size_hint() -> Result<()> {
     let harness = LifecycleHarness::new();
     let runtime = harness.runtime();
     let original = waiting_task(runtime, "message-wait-large-terminal-detail");
@@ -270,32 +269,19 @@ async fn message_wait_terminal_projection_is_budgeted_before_new_owned_detail_an
     let max_records =
         usize::try_from(runtime.inner.input_evidence_budget.limits().record_limit)?.min(65536);
     let detail = serde_json::json!({"waiting_on":vec![0;max_records/8+1]});
-    let root = runtime.inner.mutation_owner.capture()?.unwrap();
-    let baseline = runtime.inner.input_evidence_budget.report()?.observed_bytes;
-    let error = runtime
+    runtime
         .finish_agent_message_wait(
             &original,
             TaskStatus::Failed,
-            detail,
+            detail.clone(),
             "original failure".into(),
         )
-        .await
-        .unwrap_err();
-    assert!(matches!(
-        error.downcast_ref::<TaskReadError>(),
-        Some(TaskReadError::ResourceExhausted(_))
-    ));
+        .await?;
+    let updated = runtime.runtime_db().tasks().latest(&original.id)?.unwrap();
+    assert_eq!(updated.status, TaskStatus::Failed);
     assert_eq!(
-        runtime.inner.input_evidence_budget.report()?.observed_bytes,
-        baseline
-    );
-    assert_eq!(
-        runtime.inner.mutation_owner.capture()?.unwrap().token,
-        root.token
-    );
-    assert_eq!(
-        runtime.runtime_db().tasks().latest(&original.id)?.unwrap(),
-        original
+        updated.detail.as_ref().unwrap()["waiting_on"],
+        crate::runtime_db::repositories::slim_task_detail_value(&detail)["waiting_on"]
     );
     Ok(())
 }

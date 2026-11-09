@@ -238,7 +238,7 @@ async fn summary_projection_rejects_combined_selected_and_output_before_body_clo
         read.scheduling
     };
     let (bytes, records) = scheduling.selected_material_estimate()?;
-    let error = project_selected_scheduling_records(
+    let projected = project_selected_scheduling_records(
         scheduling,
         0,
         &runtime.inner.input_evidence_budget,
@@ -246,13 +246,9 @@ async fn summary_projection_rejects_combined_selected_and_output_before_body_clo
         records,
         (0, 0),
         Vec::new(),
-    )
-    .err()
-    .context("selected alone fits but projected summary must not")?;
-    assert!(matches!(
-        error.downcast_ref::<super::super::resident_scheduling::SchedulingReadError>(),
-        Some(super::super::resident_scheduling::SchedulingReadError::ResourceExhausted(_))
-    ));
+    )?;
+    assert!(runtime.inner.input_evidence_budget.report()?.observed_bytes > baseline);
+    drop(projected);
     assert_eq!(
         runtime.inner.input_evidence_budget.report()?.observed_bytes,
         baseline

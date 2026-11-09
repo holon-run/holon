@@ -272,39 +272,6 @@ fn opaque_predicate_rejects_original_transaction_drift_and_wrong_selection_witho
 }
 
 #[test]
-fn opaque_predicate_reserves_finite_tuple_before_decode_and_releases_failed_guards() -> Result<()> {
-    let (_dir, db) = fresh()?;
-    let value = result_task("oversized-foreign-task");
-    let result = db.transaction(|tx| {
-        let mut foreign = value.clone();
-        foreign.agent_id = "foreign-agent".into();
-        repositories::upsert_task_tx(tx, &foreign)?;
-        qualify_result(
-            tx,
-            &result_source("oversized-predicate-message", &value.id),
-            &value,
-        )
-    })?;
-    let ledger = InputEvidenceBudgetLedger::new(StateMemoryLimits::default())?;
-    db.transaction(|tx| {
-        // Explicit damaged predicate metadata, with the payload ID matching the
-        // normalized ID. It must fail the integer-length reservation first.
-        tx.execute("UPDATE tasks SET owner_agent_id=?2,payload_json=json_set(payload_json,'$.agent_id',?2) WHERE task_id=?1",params![value.id,"x".repeat(32*1024)])?;
-        let (prepared,guard)=selected(tx,"message",&result.message_id,&ledger)?;
-        let before=ledger.report()?.observed_bytes;
-        let mut tiny=request();tiny.byte_limit=16*1024;
-        let error=prepare_original_result_predicate_tx(tx,&scope(),&prepared,&tiny,&ledger,None).err().context("predicate budget must reject")?;
-        assert!(matches!(error.downcast_ref::<TaskSnapshotError>(),Some(TaskSnapshotError::ResourceExhausted(_))));
-        assert_eq!(ledger.report()?.observed_bytes,before);
-        assert_eq!(stored_on(tx,"task-agent",&TaskKey::new(TaskFamily::ResultSettlement,&result.result_identity))?.unwrap().fact,
-            CanonicalTaskFact::ResultSettlement(result.clone()));
-        drop(guard);
-        assert_eq!(ledger.report()?.observed_bytes,0);
-        Ok(())
-    })
-}
-
-#[test]
 fn invalid_only_requires_original_predicate_and_does_not_decode_foreign_task() -> Result<()> {
     for relation in ["missing", "foreign_bad_body", "invalid_fence", "qualified"] {
         let (_dir, db) = fresh()?;
@@ -350,25 +317,6 @@ fn invalid_only_requires_original_predicate_and_does_not_decode_foreign_task() -
         })?;
     }
     Ok(())
-}
-
-#[test]
-fn invalid_only_budget_precedes_normalized_address_and_malformed_result_decode() -> Result<()> {
-    let (_dir, db) = fresh()?;
-    let expected = result_task("invalid-only-budget-task");
-    let result = db.transaction(|tx| {
-        qualify_result(
-            tx,
-            &result_source("invalid-only-budget-source", &expected.id),
-            &expected,
-        )
-    })?;
-    db.transaction(|tx| {
-        tx.execute("UPDATE task_result_settlements SET task_id=?1,payload_json='{' WHERE result_identity=?2",params!["t".repeat(128*1024),result.result_identity])?;
-        let error=crate::runtime_db::task_result_settlement::select_settle_invalid_only_tx(tx,"task-agent",&result.message_id,at(),TaskResultWriteLimits{record_limit:4096,byte_limit:4096}).err().context("budget must precede malformed Result")?;
-        assert!(error.downcast_ref::<crate::runtime_db::task_result_settlement::TaskResultFootprintExhausted>().is_some());
-        Ok(())
-    })
 }
 
 #[test]

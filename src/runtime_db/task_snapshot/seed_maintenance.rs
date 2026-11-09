@@ -38,7 +38,7 @@ pub(crate) fn unbound_task_maintenance_material_tx(
             .checked_add(n)
             .and_then(|n| n.checked_add(key.id.len() + 768))
             .context("unbound Task material overflow")?;
-        bound(keys.len() + 1, bytes, None)?;
+        observe_material(keys.len() + 1, bytes, None)?;
     }
     let bytes = bytes
         .checked_mul(8)
@@ -46,7 +46,7 @@ pub(crate) fn unbound_task_maintenance_material_tx(
     let records = (keys.len() + 1)
         .checked_mul(8)
         .context("unbound Task count overflow")?;
-    bound(records, bytes, None)?;
+    observe_material(records, bytes, None)?;
     Ok(TaskMaintenanceMaterial { bytes, records })
 }
 fn validate_seed_tx(tx: &Transaction<'_>, seed: &LegacySeedRecoveryScope) -> Result<()> {
@@ -70,7 +70,7 @@ pub(crate) fn qualified_unbound_task_maintenance_keys_tx(
         legacy_seed_recovery_scope_tx(tx, &seed.agent_id)? == *seed,
         "unbound Task fixed seed changed/bound"
     );
-    bound(
+    observe_material(
         keys.len(),
         keys.iter().map(|key| key.id.len() + 128).sum(),
         None,

@@ -739,7 +739,8 @@ async fn no_state_cold_empty_display_requires_every_original_inventory_empty() -
     Ok(())
 }
 #[test]
-fn cold_preparation_native_state_budget_and_retired_scope_precede_corrupt_decode() -> Result<()> {
+fn cold_preparation_rejects_corrupt_state_without_quota_and_checks_retired_scope_first(
+) -> Result<()> {
     let (_home, host) = test_host();
     let identity = host.ensure_default_agent_identity()?;
     let scope = InputEvidenceScope {
@@ -761,11 +762,11 @@ fn cold_preparation_native_state_budget_and_retired_scope_precede_corrupt_decode
         .runtime_db()
         .transaction(|tx| prepare_cold_scheduling_query_tx(tx, &scope, &small, ledger))
         .err()
-        .context("native node gate must precede corrupt State decoder")?;
+        .context("invalid State must still fail without a node quota")?;
     assert!(
         matches!(
-            error.downcast_ref::<SchedulingSnapshotError>(),
-            Some(SchedulingSnapshotError::ResourceExhausted(_))
+            error.downcast_ref::<serde_json::Error>(),
+            Some(error) if error.is_data()
         ),
         "{error:#}"
     );

@@ -8,12 +8,8 @@ pub(crate) fn qualified_dispatch_briefs_tx(
     tx: &Transaction<'_>,
     scope: &InputEvidenceScope,
     limit: usize,
-    byte_limit: usize,
+    _byte_limit: usize,
 ) -> Result<Vec<BriefRecord>> {
-    ensure!(
-        limit <= 64 && byte_limit > 0,
-        "invalid dispatch Brief observation budget"
-    );
     require_original_input_recovery_scope(tx, scope)?;
     let binding = binding_on(tx, scope)?;
     let keys = qualified_window_keys(
@@ -38,11 +34,7 @@ pub(crate) fn qualified_dispatch_briefs_tx(
         } else {
             require_eligible_metadata(tx, &binding, &key, &fingerprint)?
         };
-        if fingerprint.payload_bytes > byte_limit.min(MAX_METADATA_BYTES).saturating_sub(bytes) {
-            return Err(
-                InputEvidenceSnapshotError::ResourceExhausted("dispatch Brief body bytes").into(),
-            );
-        }
+
         let payload = payload_on(tx, &scope.agent_id, &key)?
             .context("qualified dispatch Brief payload disappeared")?;
         let actual_digest = bytes_digest(payload.as_bytes());
@@ -86,7 +78,6 @@ pub(crate) fn qualified_dispatch_brief_material_tx(
     scope: &InputEvidenceScope,
     limit: usize,
 ) -> Result<(usize, usize)> {
-    ensure!(limit <= 64, "invalid dispatch Brief observation limit");
     require_original_input_recovery_scope(tx, scope)?;
     let binding = binding_on(tx, scope)?;
     let keys = qualified_window_keys(
@@ -103,10 +94,6 @@ pub(crate) fn qualified_dispatch_brief_material_tx(
         bytes = bytes.checked_add(fingerprint.payload_bytes).context(
             InputEvidenceSnapshotError::ResourceExhausted("dispatch Brief body bytes"),
         )?;
-        ensure!(
-            bytes <= MAX_METADATA_BYTES,
-            InputEvidenceSnapshotError::ResourceExhausted("dispatch Brief body bytes")
-        );
     }
     Ok((keys.len(), bytes))
 }

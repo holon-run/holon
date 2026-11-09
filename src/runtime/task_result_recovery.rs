@@ -64,7 +64,7 @@ pub(super) fn outstanding_recovery_message_id(
         agent_id: agent_id.to_owned(),
         identity_incarnation: runtime.inner.identity_incarnation,
     };
-    let limits = runtime.inner.input_evidence_budget.limits();
+    let _limits = runtime.inner.input_evidence_budget.limits();
     runtime.inner.runtime_db.transaction(|tx| {
         let owner_live: bool = tx.query_row(
             "SELECT EXISTS(SELECT 1 FROM agent_identities
@@ -88,14 +88,7 @@ pub(super) fn outstanding_recovery_message_id(
             .and_then(|n| n.checked_add(bytes))
             .and_then(|n| n.checked_mul(8))
             .context("recovery active source material overflow")?;
-        anyhow::ensure!(
-            count.checked_mul(8).context("recovery active source count overflow")? <= limits.record_limit
-                && bytes <= limits.history_per_agent_bytes.checked_add(limits.pending_per_agent_bytes)
-                    .context("recovery active source limit overflow")?,
-            crate::runtime_db::task_snapshot::TaskSnapshotError::ResourceExhausted(
-                "recovery active Queue sources"
-            )
-        );
+
         let _guard = runtime.inner.input_evidence_budget.register_owned_bytes(
             &scope,
             InputMemoryCategory::Candidate,
@@ -417,7 +410,7 @@ impl RuntimeHandle {
     )> {
         use super::input_evidence_budget::{InputMemoryCategory, OwnedBytesEstimate};
         let scope = mutation.input_evidence_scope();
-        let (_, record_limit, byte_limit) = mutation.context_input_evidence_policy()?;
+        let (_, _record_limit, _byte_limit) = mutation.context_input_evidence_policy()?;
         anyhow::ensure!(
             work.scope == scope,
             "exact recovery Wait witness scope differs"
@@ -457,16 +450,7 @@ impl RuntimeHandle {
         )
         .and_then(|bytes| bytes.checked_mul(8))
         .context("exact recovery Wait witness material overflow")?;
-        anyhow::ensure!(
-            count
-                .checked_mul(8)
-                .context("exact recovery Wait witness count overflow")?
-                <= record_limit
-                && bytes <= u64::try_from(byte_limit)?,
-            crate::runtime_db::task_snapshot::TaskSnapshotError::ResourceExhausted(
-                "exact recovery Wait witness"
-            )
-        );
+
         let guard = self.inner.input_evidence_budget.register_owned_bytes(
             &scope,
             InputMemoryCategory::Candidate,

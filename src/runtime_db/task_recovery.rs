@@ -77,6 +77,11 @@ impl<'scope, 'phase, 'material> TaskSelectorMaterial<'scope, 'phase, 'material> 
         let records = records
             .checked_mul(4)
             .context("Task selector count overflow")?;
+        tracing::trace!(
+            record_hint = self.record_limit,
+            byte_hint = self.byte_limit,
+            "Task selector material observation"
+        );
         self.bytes = self
             .bytes
             .checked_add(bytes)
@@ -85,10 +90,7 @@ impl<'scope, 'phase, 'material> TaskSelectorMaterial<'scope, 'phase, 'material> 
             .records
             .checked_add(records)
             .context("Task selector total overflow")?;
-        ensure!(
-            self.bytes <= self.byte_limit && self.records <= self.record_limit,
-            task_snapshot::TaskSnapshotError::ResourceExhausted("current selectors")
-        );
+
         self.guards.push(self.budget.register_owned_bytes(
             self.scope,
             InputMemoryCategory::Candidate,
@@ -476,8 +478,8 @@ fn current_dependencies(
     tasks: &ResidentTaskDomain,
     binding_tasks: BTreeSet<TaskKey>,
     budget: &InputEvidenceBudgetLedger,
-    record_limit: usize,
-    byte_limit: usize,
+    _record_limit: usize,
+    _byte_limit: usize,
     material: Option<&mut task_snapshot::read_preparation::TaskReadMaterial<'_>>,
 ) -> Result<(
     BTreeSet<InputEvidenceKey>,
@@ -510,10 +512,7 @@ fn current_dependencies(
     bytes = bytes
         .checked_mul(2)
         .context("Task dependency copies overflow")?;
-    ensure!(
-        records <= record_limit && bytes <= byte_limit,
-        task_snapshot::TaskSnapshotError::ResourceExhausted("current dependencies")
-    );
+
     // The grouped original recovery must debit the same remaining allowance
     // before these distinct selectors coexist with its primary Task bodies.
     if let Some(material) = material {

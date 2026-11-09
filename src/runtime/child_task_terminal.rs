@@ -127,24 +127,11 @@ impl OriginalChildTaskProducer {
             .checked_add(8)
             .and_then(|n| n.checked_mul(8))
             .context("child source nodes overflow")?;
-        let limits = ledger.limits();
+        let _limits = ledger.limits();
         let node_bytes = u64::try_from(records)?
             .checked_mul(256)
             .context("child source node bytes overflow")?;
-        ensure!(
-            usize::try_from(limits.record_limit)? >= records
-                && bytes
-                    .checked_add(node_bytes)
-                    .context("child source combined bytes overflow")?
-                    <= limits
-                        .history_per_agent_bytes
-                        .checked_add(limits.pending_per_agent_bytes)
-                        .context("child source limit overflow")?
-                        .min(64 * 1024 * 1024),
-            crate::runtime_db::task_snapshot::TaskSnapshotError::ResourceExhausted(
-                "original child producer"
-            )
-        );
+
         let owned = ledger.register_owned_bytes(
             scope,
             InputMemoryCategory::Candidate,

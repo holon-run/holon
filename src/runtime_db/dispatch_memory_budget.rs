@@ -18,8 +18,6 @@ pub(crate) struct DispatchMemoryTransactionBudget {
     final_material: Option<Arc<DispatchAuditMaterial>>,
     bytes: usize,
     records: usize,
-    byte_limit: usize,
-    record_limit: usize,
     state_material: usize,
     adapter_material: (usize, usize),
     protocol_material: (usize, usize),
@@ -135,13 +133,9 @@ impl DispatchMemoryTransactionBudget {
     pub(crate) fn prepare_tx(
         tx: &Transaction<'_>,
         memory: &DispatchMemoryIntent,
-        request: &super::super::work_snapshot::WorkDomainLoadRequest,
+        _request: &super::super::work_snapshot::WorkDomainLoadRequest,
         ledger: &InputEvidenceBudgetLedger,
     ) -> Result<Self> {
-        ensure!(
-            request.byte_limit > 0 && request.record_limit > 0,
-            DispatchMemoryError::ResourceExhausted
-        );
         let scope = memory.binding_scope();
         let mut result = Self {
             scope,
@@ -150,8 +144,6 @@ impl DispatchMemoryTransactionBudget {
             final_material: None,
             bytes: 0,
             records: 0,
-            byte_limit: request.byte_limit.min(MAX_METADATA_BYTES),
-            record_limit: request.record_limit.min(MAX_METADATA_RECORDS),
             state_material: 0,
             adapter_material: (0, 0),
             protocol_material: (0, 0),
@@ -170,10 +162,7 @@ impl DispatchMemoryTransactionBudget {
                     "SELECT length(CAST(payload_json AS BLOB)) FROM dispatch_memory_checkpoints WHERE agent_id=?1 AND identity_incarnation=?2 AND turn_id=?3",
                     params![binding.key().agent_id,binding.key().identity_incarnation,binding.key().actual_dispatch_turn_id],
                     |r|r.get(0))?;
-                ensure!(
-                    bytes <= MAX_METADATA_BYTES,
-                    DispatchMemoryError::ResourceExhausted
-                );
+
                 let members:usize=tx.query_row(
                     "SELECT COUNT(*) FROM dispatch_memory_checkpoints c,json_each(json_extract(c.payload_json,'$.obligation.members')) WHERE c.agent_id=?1 AND c.identity_incarnation=?2 AND c.turn_id=?3",
                     params![binding.key().agent_id,binding.key().identity_incarnation,binding.key().actual_dispatch_turn_id],|r|r.get(0))?;
@@ -249,14 +238,7 @@ impl DispatchMemoryTransactionBudget {
             .records
             .checked_add(usage.1)
             .context(DispatchMemoryError::ResourceExhausted)?;
-        if bytes > self.byte_limit || records > self.record_limit {
-            tracing::warn!(agent_id = %self.scope.agent_id, used_bytes = self.bytes,
-                requested_bytes = usage.0, used_records = self.records,
-                requested_records = usage.1, byte_limit = self.byte_limit,
-                record_limit = self.record_limit,
-                "dispatch memory Input material allowance exceeded");
-            return Err(DispatchMemoryError::ResourceExhausted.into());
-        }
+
         // The original Input phase owns the guard; Memory only borrows it.
         self.bytes = bytes;
         self.records = records;
@@ -276,29 +258,14 @@ impl DispatchMemoryTransactionBudget {
         &self,
         scope: &InputEvidenceScope,
         ledger: &InputEvidenceBudgetLedger,
-        bytes: usize,
-        records: usize,
+        _bytes: usize,
+        _records: usize,
     ) -> Result<()> {
         ensure!(
             self.scope == *scope && self.ledger.same_ledger(ledger),
             "Task material differs from original Memory scope/ledger"
         );
-        if !self
-            .bytes
-            .checked_add(bytes)
-            .is_some_and(|n| n <= self.byte_limit)
-            || !self
-                .records
-                .checked_add(records)
-                .is_some_and(|n| n <= self.record_limit)
-        {
-            tracing::warn!(agent_id = %self.scope.agent_id, used_bytes = self.bytes,
-                requested_bytes = bytes, used_records = self.records,
-                requested_records = records, byte_limit = self.byte_limit,
-                record_limit = self.record_limit,
-                "dispatch memory Task material allowance exceeded");
-            return Err(DispatchMemoryError::ResourceExhausted.into());
-        }
+
         Ok(())
     }
     pub(in crate::runtime_db) fn additional_observed_task_material(
@@ -344,15 +311,7 @@ impl DispatchMemoryTransactionBudget {
                     .context(DispatchMemoryError::ResourceExhausted)?,
             )
             .context(DispatchMemoryError::ResourceExhausted)?;
-        if next > self.byte_limit || next_records > self.record_limit {
-            tracing::warn!(agent_id = %self.scope.agent_id,
-                used_bytes = self.bytes, requested_bytes = combined,
-                used_records = self.records, requested_records = records.saturating_mul(copies),
-                byte_limit = self.byte_limit, record_limit = self.record_limit,
-                copies, source_line = std::panic::Location::caller().line(),
-                "dispatch memory preparation allowance exceeded");
-            return Err(DispatchMemoryError::ResourceExhausted.into());
-        }
+
         if combined > 0 {
             self.guards.push(self.ledger.register_owned_bytes(
                 &self.scope,
@@ -456,21 +415,12 @@ impl DispatchMemoryTransactionBudget {
         );
         Ok(())
     }
-    /// Work's original loader gets only the remaining combined preparation
-    /// allowance. No alias or body is acquired by this calculation.
+    /// Preserve the caller's selector hints; cumulative material is observational.
     pub(crate) fn work_request(
         &self,
         original: &super::super::work_snapshot::WorkDomainLoadRequest,
     ) -> Result<super::super::work_snapshot::WorkDomainLoadRequest> {
-        let mut result = original.clone();
-        let copies = if self.finish { 4 } else { 1 };
-        result.byte_limit = self.byte_limit.saturating_sub(self.bytes) / copies;
-        result.record_limit = self.record_limit.saturating_sub(self.records) / copies;
-        ensure!(
-            result.byte_limit > 0 && result.record_limit > 0,
-            DispatchMemoryError::ResourceExhausted
-        );
-        Ok(result)
+        Ok(original.clone())
     }
     pub(crate) fn before_finalizer_tx(&mut self, tx: &Transaction<'_>) -> Result<()> {
         self.refresh_state_tx(tx)?;

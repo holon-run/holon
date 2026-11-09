@@ -194,17 +194,11 @@ impl RuntimeHandle {
             .checked_mul(256)
             .context("ended proof metadata overflow")?;
         let limits = self.inner.input_evidence_budget.limits();
-        let byte_limit = limits
+        let _byte_limit = limits
             .history_per_agent_bytes
             .checked_add(limits.pending_per_agent_bytes)
             .context("ended proof budget overflow")?;
-        ensure!(
-            payload
-                .checked_add(metadata)
-                .is_some_and(|total| total as u64 <= byte_limit)
-                && copies as u64 <= limits.record_limit,
-            "ended original proof exceeds preparation budget"
-        );
+
         Ok(self.inner.input_evidence_budget.register_owned_bytes(
             scope,
             super::input_evidence_budget::InputMemoryCategory::Candidate,

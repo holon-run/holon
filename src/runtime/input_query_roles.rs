@@ -93,16 +93,11 @@ fn account(
     ledger: &InputEvidenceBudgetLedger,
     bytes: u64,
     count: usize,
-    limits: (usize, usize),
+    _limits: (usize, usize),
 ) -> Result<Arc<BudgetViewGuard>> {
     let bytes = bytes.checked_mul(8).context("Input roles bytes overflow")?;
-    let count = count.checked_mul(8).context("Input roles count overflow")?;
-    ensure!(
-        bytes <= u64::try_from(limits.1)? && count <= limits.0,
-        crate::runtime_db::input_evidence_snapshot::InputEvidenceSnapshotError::ResourceExhausted(
-            "live Input query selectors"
-        )
-    );
+    let _count = count.checked_mul(8).context("Input roles count overflow")?;
+
     Ok(ledger.register_owned_bytes(
         scope,
         InputMemoryCategory::Candidate,

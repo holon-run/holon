@@ -340,14 +340,13 @@ pub async fn runtime_status(
         .runtime_service
         .as_ref()
         .ok_or_else(|| service_unavailable("runtime service metadata is unavailable"))?;
-    let activity = runtime_activity_summary(&state.host)
-        .await
-        .map_err(error_response)?;
-    let last_failure = state
+    let agents = state
         .host
         .public_agent_activity_snapshots()
         .await
-        .map_err(error_response)?
+        .map_err(error_response)?;
+    let activity = crate::daemon::RuntimeActivitySummary::from_snapshots(&agents);
+    let last_failure = agents
         .into_iter()
         .filter_map(|agent| agent.last_runtime_failure)
         .max_by(|left, right| left.occurred_at.cmp(&right.occurred_at));

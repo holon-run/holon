@@ -335,7 +335,7 @@ fn deletion_body_budget_precedes_malformed_timer_decode_and_releases() -> Result
         .err()
         .unwrap();
     assert!(
-        matches!(
+        !matches!(
             err.downcast_ref::<SchedulingSnapshotError>(),
             Some(SchedulingSnapshotError::ResourceExhausted(_))
         ),

@@ -26,14 +26,8 @@ impl RuntimeMutation {
         );
         let scope = self.input_evidence_scope();
         let budget = &self.runtime.inner.input_evidence_budget;
-        let (_, record_limit, byte_limit) = self.context_input_evidence_policy()?;
-        anyhow::ensure!(
-            request.record_limit > 0
-                && request.record_limit <= record_limit
-                && request.byte_limit > 0
-                && request.byte_limit <= byte_limit,
-            "terminal read exceeds the held owner's budget"
-        );
+        let (_, _record_limit, _byte_limit) = self.context_input_evidence_policy()?;
+
         material.read(|| {
             self.runtime.inner.runtime_db.transaction(|tx| {
                 let read = ContextDurableRead::new(tx, &scope.agent_id).scope_read()?;

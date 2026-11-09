@@ -8,6 +8,7 @@ use std::thread;
 use std::time::Duration;
 use std::time::Instant;
 
+use super::blocking::at_blocking_boundary;
 use anyhow::{anyhow, bail, Context, Result};
 use rusqlite::{Connection, Transaction};
 
@@ -278,18 +279,20 @@ impl RuntimeDbWriter {
     /// A short canonical read outside a transaction. The callback must neither
     /// control transactions nor reenter the writer.
     pub(crate) fn read_committed<T>(&self, f: impl FnOnce(&Connection) -> Result<T>) -> Result<T> {
-        let _turn = self.state.queue.wait_turn()?;
-        let connection = self
-            .state
-            .connection
-            .lock()
-            .map_err(|_| anyhow!("runtime db writer mutex poisoned"))?;
-        self.state.ensure_protected()?;
-        anyhow::ensure!(
-            connection.is_autocommit(),
-            "runtime db committed read requires an idle writer connection"
-        );
-        f(&connection)
+        at_blocking_boundary(|| {
+            let _turn = self.state.queue.wait_turn()?;
+            let connection = self
+                .state
+                .connection
+                .lock()
+                .map_err(|_| anyhow!("runtime db writer mutex poisoned"))?;
+            self.state.ensure_protected()?;
+            anyhow::ensure!(
+                connection.is_autocommit(),
+                "runtime db committed read requires an idle writer connection"
+            );
+            f(&connection)
+        })
     }
 
     /// A short read in its own deferred transaction. The callback must neither
@@ -298,25 +301,29 @@ impl RuntimeDbWriter {
         &self,
         f: impl FnOnce(&Transaction<'_>) -> Result<T>,
     ) -> Result<T> {
-        let _turn = self.state.queue.wait_turn()?;
-        let connection = self
-            .state
-            .connection
-            .lock()
-            .map_err(|_| anyhow!("runtime db writer mutex poisoned"))?;
-        self.state.ensure_protected()?;
-        anyhow::ensure!(
-            connection.is_autocommit(),
-            "runtime db deferred read requires an idle writer connection"
-        );
-        let result = (|| {
-            let tx =
-                Transaction::new_unchecked(&connection, rusqlite::TransactionBehavior::Deferred)?;
-            let value = f(&tx)?;
-            tx.commit()?;
-            Ok(value)
-        })();
-        self.state.finish_transaction_attempt(&connection, result)
+        at_blocking_boundary(|| {
+            let _turn = self.state.queue.wait_turn()?;
+            let connection = self
+                .state
+                .connection
+                .lock()
+                .map_err(|_| anyhow!("runtime db writer mutex poisoned"))?;
+            self.state.ensure_protected()?;
+            anyhow::ensure!(
+                connection.is_autocommit(),
+                "runtime db deferred read requires an idle writer connection"
+            );
+            let result = (|| {
+                let tx = Transaction::new_unchecked(
+                    &connection,
+                    rusqlite::TransactionBehavior::Deferred,
+                )?;
+                let value = f(&tx)?;
+                tx.commit()?;
+                Ok(value)
+            })();
+            self.state.finish_transaction_attempt(&connection, result)
+        })
     }
 
     pub(crate) fn protection_status(&self) -> RuntimeDbProtectionStatus {
@@ -354,7 +361,7 @@ impl RuntimeDbWriter {
     }
 
     pub(crate) fn append_wait<T>(&self, f: impl FnMut(&Transaction<'_>) -> Result<T>) -> Result<T> {
-        self.state.append_wait(f)
+        at_blocking_boundary(|| self.state.append_wait(f))
     }
 
     #[cfg(test)]
@@ -379,14 +386,14 @@ impl RuntimeDbWriter {
         context: RuntimeDbWriteContext,
         f: impl FnMut(&Transaction<'_>) -> Result<T>,
     ) -> Result<T> {
-        self.state.append_wait_with_context(context, f)
+        at_blocking_boundary(|| self.state.append_wait_with_context(context, f))
     }
 
     pub(crate) fn append_wait_once<T>(
         &self,
         f: impl FnOnce(&Transaction<'_>) -> Result<T>,
     ) -> Result<T> {
-        self.state.append_wait_once(f)
+        at_blocking_boundary(|| self.state.append_wait_once(f))
     }
 }
 
@@ -1038,6 +1045,71 @@ mod tests {
             .any(|source| source.is::<RuntimeDbProtectionError>()));
         assert_eq!(writer.protection_status(), first_status);
         assert!(!wal_path.exists(), "quarantine must remain fail-stop");
+        Ok(())
+    }
+}
+
+#[cfg(all(test, holon_lib_test_shard = "b"))]
+mod async_worker_tests {
+    use super::*;
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+    async fn borrowed_sql_callbacks_keep_their_thread_and_leave_the_async_worker_available(
+    ) -> Result<()> {
+        for mode in [
+            "pooled",
+            "committed",
+            "deferred",
+            "append",
+            "context",
+            "once",
+        ] {
+            let home = tempfile::tempdir()?;
+            let db = crate::runtime_db::RuntimeDb::open_and_migrate(
+                home.path().join("runtime.sqlite"),
+                home.path().join("runtime.lock"),
+            )?;
+            let writer = db.writer.clone();
+            let entered = Arc::new(tokio::sync::Notify::new());
+            let observed = entered.clone();
+            let (release, wait) = mpsc::channel();
+            let callback = tokio::spawn(async move {
+                let original_thread = thread::current().id();
+                let original_scope = std::cell::Cell::new(7);
+                let borrowed = &original_scope;
+                let progress = || -> Result<()> {
+                    assert_eq!(thread::current().id(), original_thread);
+                    assert_eq!(borrowed.get(), 7);
+                    observed.notify_one();
+                    wait.recv_timeout(Duration::from_secs(3))
+                        .context("async probe could not progress while SQL callback was waiting")?;
+                    borrowed.set(8);
+                    Ok(())
+                };
+                match mode {
+                    "pooled" => db.with_read(|_| progress()),
+                    "committed" => writer.read_committed(|_| progress()),
+                    "deferred" => writer.read_deferred(|_| progress()),
+                    "append" => writer.append_wait(|_| progress()),
+                    "context" => writer.append_wait_with_context(
+                        RuntimeDbWriteContext::sync("worker_probe", "probe"),
+                        |_| progress(),
+                    ),
+                    "once" => writer.append_wait_once(|_| progress()),
+                    _ => unreachable!(),
+                }?;
+                assert_eq!(original_scope.get(), 8);
+                Ok::<_, anyhow::Error>(())
+            });
+            let probe = tokio::spawn(async move {
+                entered.notified().await;
+                release
+                    .send(())
+                    .context("original callback ended before async probe ran")
+            });
+            probe.await??;
+            callback.await??;
+        }
         Ok(())
     }
 }

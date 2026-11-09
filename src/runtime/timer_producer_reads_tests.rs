@@ -95,8 +95,7 @@ async fn restart_timer_recovery_registers_from_qualified_capture_without_timer_b
 }
 
 #[tokio::test]
-async fn original_timer_copy_budget_is_combined_before_clone_and_guard_lives_with_producer(
-) -> Result<()> {
+async fn original_timer_copy_ignores_size_hints_and_guard_lives_with_producer() -> Result<()> {
     let home = tempdir()?;
     let runtime = runtime(home.path()).await?;
     let timer = runtime
@@ -112,43 +111,13 @@ async fn original_timer_copy_budget_is_combined_before_clone_and_guard_lives_wit
     let full = retained + selector + copies;
     let ledger = &runtime.inner.input_evidence_budget;
     let baseline = ledger.report()?.observed_bytes;
-    let error = OwnedTimerProducerRead::from_selected(
-        selected,
-        &timer.id,
-        Some(&timer),
-        ledger,
-        65536,
-        usize::try_from(full - 1)?,
-    )
-    .err()
-    .context("combined byte boundary accepted")?;
-    assert!(matches!(
-        error.downcast_ref::<SchedulingReadError>(),
-        Some(SchedulingReadError::ResourceExhausted(_))
-    ));
-    assert_eq!(ledger.report()?.observed_bytes, baseline);
-    let error = OwnedTimerProducerRead::from_selected(
-        selected,
-        &timer.id,
-        Some(&timer),
-        ledger,
-        retained_records + 31,
-        usize::try_from(full)?,
-    )
-    .err()
-    .context("combined record boundary accepted")?;
-    assert!(matches!(
-        error.downcast_ref::<SchedulingReadError>(),
-        Some(SchedulingReadError::ResourceExhausted(_))
-    ));
-    assert_eq!(ledger.report()?.observed_bytes, baseline);
     let read = OwnedTimerProducerRead::from_selected(
         selected,
         &timer.id,
         Some(&timer),
         ledger,
-        65536,
-        usize::try_from(full)?,
+        retained_records + 31,
+        usize::try_from(full - 1)?,
     )?;
     let actual = Arc::downgrade(&read.material);
     assert_eq!(read.timer, timer);

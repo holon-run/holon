@@ -25,7 +25,7 @@ fn prepare_cleanup(
     tx: &Transaction<'_>,
     scope: &InputEvidenceScope,
     wait_ids: &BTreeSet<String>,
-    request: &WorkDomainLoadRequest,
+    _request: &WorkDomainLoadRequest,
     original: bool,
 ) -> Result<WorkWriteProof> {
     // Only existing owning closure is admitted. No optional history body is
@@ -42,15 +42,12 @@ fn prepare_cleanup(
             continue;
         }
         key_bytes = key_bytes.saturating_add(key.id.len());
-        bound_metadata(keys.len(), key_bytes)?;
+        observe_metadata(keys.len(), key_bytes)?;
         ensure!(
             depth <= MAX_CLOSURE_DEPTH,
             "Wait cleanup owning closure depth exhausted"
         );
-        ensure!(
-            keys.len() <= request.record_limit,
-            "Wait cleanup record budget exhausted"
-        );
+
         let (table, id) = family_table(key.family);
         let bytes: usize = tx.query_row(
             &format!("SELECT length(CAST(payload_json AS BLOB)) FROM {table} WHERE {id}=?1"),
@@ -58,10 +55,7 @@ fn prepare_cleanup(
             |row| row.get(0),
         )?;
         body_bytes = body_bytes.saturating_add(bytes);
-        ensure!(
-            body_bytes <= request.byte_limit,
-            "Wait cleanup body budget exhausted"
-        );
+
         let record =
             stored_on(tx, &scope.agent_id, &key)?.context("Wait cleanup owning body missing")?;
         for child in record.record.references() {
@@ -208,10 +202,7 @@ fn register_wait_cleanup_ids_tx<'a>(
             continue;
         }
         body_bytes = body_bytes.saturating_add(after.payload.len());
-        ensure!(
-            body_bytes <= request.byte_limit,
-            "Wait cleanup ACK body budget exhausted"
-        );
+
         upsert_alias(
             tx,
             &proof.scope,
@@ -259,10 +250,7 @@ fn register_wait_cleanup_ids_tx<'a>(
                 &current,
             )?;
             body_bytes = body_bytes.saturating_add(current.payload.len());
-            ensure!(
-                body_bytes <= request.byte_limit && records.len() < request.record_limit,
-                "Wait cleanup owning ACK budget exhausted"
-            );
+
             upsert_alias(
                 tx,
                 &proof.scope,
@@ -381,7 +369,7 @@ fn register_state_less_waits(
     tx: &Transaction<'_>,
     proof: &WorkWriteProof,
     actual: &BTreeSet<WorkKey>,
-    request: &WorkDomainLoadRequest,
+    _request: &WorkDomainLoadRequest,
 ) -> Result<()> {
     let mut bytes = 0usize;
     for key in actual {
@@ -406,10 +394,7 @@ fn register_state_less_waits(
             "State-less startup has an alias newer than missing coverage"
         );
         bytes = bytes.saturating_add(after.payload.len());
-        ensure!(
-            bytes <= request.byte_limit && actual.len() <= request.record_limit,
-            "State-less startup Wait ACK budget exhausted"
-        );
+
         if before.payload != after.payload || before.fingerprint != after.fingerprint {
             upsert_alias(
                 tx,
@@ -486,7 +471,7 @@ fn prepare_existing(
     );
     let seed = binding(tx, scope)?;
     qualification::manifests(tx, seed.as_deref())?;
-    bound_metadata(wait_ids.len(), wait_ids.iter().map(String::len).sum())?;
+    observe_metadata(wait_ids.len(), wait_ids.iter().map(String::len).sum())?;
     let mut qualified_waits = BTreeSet::new();
     for id in wait_ids {
         let key = WorkKey::new(WorkFamily::Wait, id);

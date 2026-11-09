@@ -333,8 +333,7 @@ mod shared_material_tests {
         }
     }
     #[test]
-    fn two_observer_scopes_share_one_predecode_allowance_and_rollback_all_metadata_and_source(
-    ) -> Result<()> {
+    fn two_observer_scopes_commit_above_legacy_hint_and_release_shared_material() -> Result<()> {
         let (_home, db) = super::super::tests::fresh()?;
         let ledger = InputEvidenceBudgetLedger::new(Default::default())?;
         let original = super::super::tests::scope();
@@ -392,51 +391,10 @@ mod shared_material_tests {
         assert!(estimates.iter().all(|e| e.bytes <= limited.byte_limit));
         assert!(estimates.iter().map(|e| e.bytes).sum::<usize>() > limited.byte_limit);
         let before = ledger.report()?.observed_bytes;
-        let error = db
-            .transaction(|tx| {
-                repositories::upsert_work_item_delegation_tx(tx, &delegation())?;
-                let mut material =
-                    read_preparation::TaskReadMaterial::new(&original, &limited, Some(&ledger));
-                for (scope, record, revision) in [
-                    (&original, &first, first_before.revision),
-                    (&other, &second, second_before.revision),
-                ] {
-                    refresh_task_status_metadata_using_material_tx(
-                        tx,
-                        scope,
-                        revision,
-                        std::slice::from_ref(record),
-                        &original,
-                        &limited,
-                        &ledger,
-                        &mut material,
-                    )?;
-                }
-                Ok(())
-            })
-            .unwrap_err();
-        assert!(error
-            .downcast_ref::<TaskSnapshotError>()
-            .is_some_and(|e| matches!(e, TaskSnapshotError::ResourceExhausted(_))));
-        assert_eq!(ledger.report()?.observed_bytes, before);
-        assert_eq!(
-            db.transaction(|tx| loader::current_coverage(tx, &original))?,
-            Some(first_before.clone())
-        );
-        assert_eq!(
-            db.transaction(|tx| loader::current_coverage(tx, &other))?,
-            Some(second_before.clone())
-        );
-        assert!(db
-            .work_item_delegations()
-            .latest_for_child("shared-status-child")?
-            .is_none());
-        let header_count:usize=db.connection()?.query_row("SELECT COUNT(*) FROM task_status_delegation_sources WHERE child_agent_id='shared-status-child'",[],|r|r.get(0))?;
-        assert_eq!(header_count, 0);
         let (deltas, guards) = db.transaction(|tx| {
             repositories::upsert_work_item_delegation_tx(tx, &delegation())?;
             let mut material =
-                read_preparation::TaskReadMaterial::new(&original, &request, Some(&ledger));
+                read_preparation::TaskReadMaterial::new(&original, &limited, Some(&ledger));
             let mut deltas = Vec::new();
             for (scope, record, revision) in [
                 (&original, &first, first_before.revision),
@@ -449,7 +407,7 @@ mod shared_material_tests {
                         revision,
                         std::slice::from_ref(record),
                         &original,
-                        &request,
+                        &limited,
                         &ledger,
                         &mut material,
                     )?

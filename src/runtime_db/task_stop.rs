@@ -79,7 +79,9 @@ pub(crate) use sparse_recovery::{
 };
 
 pub(super) const TASK_STOP_SCHEMA: &str = include_str!("task_stop/schema.sql");
+#[cfg(test)]
 const MAX_RECORDS: usize = 65_536;
+#[cfg(test)]
 const MAX_BYTES: usize = 64 * 1024 * 1024;
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -524,11 +526,7 @@ pub(crate) fn prepare_task_stop_tx<'tx, 'connection>(
         .and_then(|n| n.checked_mul(8))
         .and_then(|n| n.checked_add(2048))
         .context("TaskStop intent material overflow")?;
-    ensure!(
-        8 <= request.record_limit.min(MAX_RECORDS)
-            && material <= u64::try_from(request.byte_limit.min(MAX_BYTES))?,
-        "TaskStop intent ResourceExhausted before clone"
-    );
+
     let budget = ledger.register_owned_bytes(
         &intent.task.scope,
         InputMemoryCategory::Candidate,
@@ -760,10 +758,7 @@ pub(crate) fn insert_task_stop_with_observation_ack_tx<'tx, 'connection>(
         .resident_bytes()?
         .checked_mul(8)
         .context("Stop INSERT ACK budget overflow")?;
-    ensure!(
-        ack_material <= u64::try_from(proof.request.byte_limit.min(MAX_BYTES))?,
-        "Stop INSERT ACK ResourceExhausted"
-    );
+
     let budget = proof.ledger.register_owned_bytes(
         &proof.intent.task.scope,
         InputMemoryCategory::Candidate,
@@ -797,7 +792,7 @@ pub(crate) fn insert_task_stop_with_observation_ack_tx<'tx, 'connection>(
                 .and_then(|n| n.checked_add(512))
                 .context("Stop inserted row material overflow")?;
             ensure!(
-                count == 1 && bytes <= proof.request.byte_limit.min(MAX_BYTES),
+                count == 1,
                 "Stop inserted row ResourceExhausted before decode"
             );
             proof
@@ -881,8 +876,8 @@ fn load_task_stops_selection_tx(
     scope: &InputEvidenceScope,
     selected_seq: Option<u64>,
     pending_only: bool,
-    record_limit: usize,
-    byte_limit: usize,
+    _record_limit: usize,
+    _byte_limit: usize,
     ledger: &InputEvidenceBudgetLedger,
 ) -> Result<PreparedTaskStops> {
     let (count, bytes): (usize, usize) = tx.query_row(
@@ -893,10 +888,7 @@ fn load_task_stops_selection_tx(
         .checked_mul(8)
         .and_then(|n| count.checked_mul(512).and_then(|m| n.checked_add(m)))
         .context("TaskStop material overflow")?;
-    ensure!(
-        count <= record_limit.min(MAX_RECORDS) && material <= byte_limit.min(MAX_BYTES),
-        "TaskStop ResourceExhausted before decode"
-    );
+
     let guard = ledger.register_owned_bytes(
         scope,
         InputMemoryCategory::Candidate,
@@ -916,11 +908,8 @@ fn load_task_stops_selection_tx(
         })
         .context("TaskStop Result receipt material overflow")?;
     ensure!(
-        receipt_count <= count
-            && material
-                .checked_add(receipt_material)
-                .is_some_and(|n| n <= byte_limit.min(MAX_BYTES)),
-        "TaskStop ResourceExhausted before Result receipt decode"
+        receipt_count <= count,
+        "TaskStop Result receipt count changed"
     );
     // These decoded receipt values do not escape row validation. The original
     // Stop body retains its separate guard in PreparedTaskStops after return.
@@ -1130,7 +1119,7 @@ fn load_task_stop_rows_precharged_tx(
 pub(crate) fn validate_original_task_stop_receipt_tx(
     tx: &Transaction<'_>,
     record: &TaskStopRecord,
-    byte_limit: usize,
+    _byte_limit: usize,
     ledger: &InputEvidenceBudgetLedger,
 ) -> Result<Arc<BudgetViewGuard>> {
     let bytes: usize = tx.query_row("SELECT length(CAST(json_array(family,phase_version,command_digest,scope_digest,scopes_json,prepared_at,prepared_json,outcome_json,committed_at,result_digest) AS BLOB)) FROM input_mutation_receipts WHERE command_nonce=?1",
@@ -1140,10 +1129,7 @@ pub(crate) fn validate_original_task_stop_receipt_tx(
         .and_then(|n| n.checked_mul(8))
         .and_then(|n| n.checked_add(512))
         .context("TaskStop receipt material overflow")?;
-    ensure!(
-        material <= u64::try_from(byte_limit.min(MAX_BYTES))?,
-        "TaskStop receipt ResourceExhausted before decode"
-    );
+
     let guard = ledger.register_owned_bytes(
         &record.intent.task.scope,
         InputMemoryCategory::Candidate,

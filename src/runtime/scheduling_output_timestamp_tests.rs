@@ -206,21 +206,9 @@ fn timestamp_projection_keeps_both_combined_refusal_boundaries() -> Result<()> {
             (97, 7),
             Vec::new(),
         );
-        if axis.is_none() {
-            let (_, _, material) = result?;
-            assert_eq!(ledger.report()?.observed_bytes, cost.0 + body);
-            drop(material);
-        } else {
-            assert!(matches!(
-                result
-                    .err()
-                    .context("combined boundary must refuse")?
-                    .downcast_ref::<SchedulingReadError>(),
-                Some(SchedulingReadError::ResourceExhausted(
-                    "cold read/selected Scheduling/output combined material"
-                ))
-            ));
-        }
+        let (_, _, material) = result?;
+        assert_eq!(ledger.report()?.observed_bytes, cost.0 + body);
+        drop(material);
         assert!(sources.iter().all(|source| source.upgrade().is_none()));
         assert_eq!(ledger.report()?.observed_bytes, 0);
     }

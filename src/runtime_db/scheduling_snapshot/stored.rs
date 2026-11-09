@@ -110,10 +110,6 @@ pub(super) fn read_stored(
         material.charge(bytes, 1)?;
         crate::diagnostics::resource_io::ResourceReadMaterial::active_guard()?
     } else {
-        ensure!(
-            bytes.checked_mul(8).is_some_and(|n| n <= MAX_BYTES),
-            SchedulingSnapshotError::ResourceExhausted("fixed single record")
-        );
         None
     };
     // Owner is compared before decoding a foreign body.

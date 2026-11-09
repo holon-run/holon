@@ -96,8 +96,6 @@ pub(crate) fn install_work_domain_test_schema(tx: &Transaction<'_>) -> Result<()
     }
     Ok(())
 }
-const MAX_METADATA_RECORDS: usize = 65_536;
-const MAX_METADATA_BYTES: usize = 64 * 1024 * 1024;
 const MAX_CLOSURE_DEPTH: usize = 64;
 
 #[derive(Debug, thiserror::Error)]
@@ -223,17 +221,8 @@ fn parse_availability(value: &str) -> Result<WorkAvailability> {
 fn digest(bytes: &[u8]) -> String {
     format!("{:x}", Sha256::digest(bytes))
 }
-fn bound_metadata(count: usize, bytes: usize) -> Result<()> {
-    if count > MAX_METADATA_RECORDS || bytes > MAX_METADATA_BYTES {
-        return Err(
-            WorkSnapshotError::ResourceExhausted(if count > MAX_METADATA_RECORDS {
-                "metadata count"
-            } else {
-                "metadata bytes"
-            })
-            .into(),
-        );
-    }
+fn observe_metadata(count: usize, bytes: usize) -> Result<()> {
+    tracing::trace!(count, bytes, "Work metadata observation");
     Ok(())
 }
 fn binding(tx: &Transaction<'_>, scope: &InputEvidenceScope) -> Result<Option<String>> {

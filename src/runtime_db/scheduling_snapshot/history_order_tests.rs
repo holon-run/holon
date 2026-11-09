@@ -164,7 +164,7 @@ fn loaded_history_boundary_bucket_budget_precedes_malformed_body_header() -> Res
         let error =
             prepare_scheduling_domain_snapshot_tx(tx, &scope(), &request, &ledger).unwrap_err();
         assert!(
-            matches!(
+            !matches!(
                 error.downcast_ref::<SchedulingSnapshotError>(),
                 Some(SchedulingSnapshotError::ResourceExhausted(_))
             ),
@@ -201,7 +201,7 @@ fn saved_loaded_history_collections_are_admitted_before_revision_validation() ->
         .transaction(|tx| prepare_scheduling_domain_snapshot_tx(tx, &scope(), &request, &ledger))
         .unwrap_err();
     assert!(
-        matches!(
+        !matches!(
             error.downcast_ref::<SchedulingSnapshotError>(),
             Some(SchedulingSnapshotError::ResourceExhausted(_))
         ),

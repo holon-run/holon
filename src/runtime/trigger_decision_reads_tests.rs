@@ -2,8 +2,7 @@ use super::*;
 use crate::runtime::tests::support::{context_config, tempdir, StubProvider};
 
 #[tokio::test]
-async fn trigger_decision_selected_and_owned_material_share_one_remaining_allowance() -> Result<()>
-{
+async fn trigger_decision_material_ignores_legacy_hints_and_releases_owning_guards() -> Result<()> {
     let home = tempdir()?;
     let runtime = RuntimeHandle::new(
         "default",
@@ -41,19 +40,16 @@ async fn trigger_decision_selected_and_owned_material_share_one_remaining_allowa
         (active_records - 1, active_bytes),
         (active_records, active_bytes - 1),
     ] {
-        let error = ActiveTriggerDecisionRead::from_selected(
+        let accepted = ActiveTriggerDecisionRead::from_selected(
             &captured.scheduling,
             &work,
             ledger,
             records,
             usize::try_from(bytes)?,
-        )
-        .err()
-        .context("combined Focus Trigger material accepted")?;
-        assert!(matches!(
-            error.downcast_ref::<SchedulingReadError>(),
-            Some(SchedulingReadError::ResourceExhausted(_))
-        ));
+        )?;
+        assert_eq!(accepted.records.len(), 1);
+        assert!(ledger.report()?.observed_bytes > baseline);
+        drop(accepted);
         assert_eq!(ledger.report()?.observed_bytes, baseline);
     }
     let base_url = runtime.inner.callback_base_url.as_str();
@@ -61,19 +57,16 @@ async fn trigger_decision_selected_and_owned_material_share_one_remaining_allowa
         + (u64::try_from(base_url.len() + trigger.token.as_ref().unwrap().len())? + 512) * 32;
     let url_records = count + 32;
     for (records, bytes) in [(url_records - 1, url_bytes), (url_records, url_bytes - 1)] {
-        let error = CommandTriggerRead::from_selected(
+        let accepted = CommandTriggerRead::from_selected(
             &captured.scheduling,
             base_url,
             ledger,
             records,
             usize::try_from(bytes)?,
-        )
-        .err()
-        .context("combined URL material accepted")?;
-        assert!(matches!(
-            error.downcast_ref::<SchedulingReadError>(),
-            Some(SchedulingReadError::ResourceExhausted(_))
-        ));
+        )?;
+        assert!(accepted.url.is_some());
+        assert!(ledger.report()?.observed_bytes > baseline);
+        drop(accepted);
         assert_eq!(ledger.report()?.observed_bytes, baseline);
     }
     let accepted = CommandTriggerRead::from_selected(

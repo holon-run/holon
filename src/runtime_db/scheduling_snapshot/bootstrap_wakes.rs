@@ -194,21 +194,15 @@ fn prepare_pending_terminal_sources_tx(
 }
 fn remaining(
     request: &SchedulingDomainLoadRequest,
-    bytes: usize,
-    records: usize,
+    _bytes: usize,
+    _records: usize,
 ) -> Result<SchedulingDomainLoadRequest> {
     let next = SchedulingDomainLoadRequest {
         capture: request.capture.clone(),
-        byte_limit: request
-            .byte_limit
-            .checked_sub(bytes)
-            .context("bootstrap Wake bytes exhausted")?,
-        record_limit: request
-            .record_limit
-            .checked_sub(records)
-            .context("bootstrap Wake records exhausted")?,
+        byte_limit: request.byte_limit,
+        record_limit: request.record_limit,
     };
-    bound(0, 0, &next)?;
+    observe_material(0, 0, &next)?;
     Ok(next)
 }
 fn message_material(
@@ -413,7 +407,7 @@ impl<'tx, 'conn> BootstrapWakeMaterial<'tx, 'conn> {
             .context("bootstrap proof count overflow")?;
         existing.inner.guards.extend(self.guards);
         existing.inner.guards.extend(material.guards);
-        bound(
+        observe_material(
             existing.inner.material_records,
             existing.inner.material_bytes,
             &self.request,

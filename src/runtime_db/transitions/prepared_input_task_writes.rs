@@ -36,11 +36,7 @@ impl Material<'_, '_> {
             .records
             .checked_add(records)
             .context("Task writer count overflow")?;
-        anyhow::ensure!(
-            self.bytes <= self.request.byte_limit.min(64 * 1024 * 1024)
-                && self.records <= self.request.record_limit.min(65_536),
-            tasks::TaskSnapshotError::ResourceExhausted("original writer material")
-        );
+
         if let Some(memory) = &mut self.memory_budget {
             memory.additional_material(bytes, records, 1)?;
         }
@@ -55,24 +51,8 @@ impl Material<'_, '_> {
         Ok(())
     }
     fn remaining(&self) -> Result<tasks::TaskDomainLoadRequest> {
-        let byte_limit = self
-            .request
-            .byte_limit
-            .min(64 * 1024 * 1024)
-            .checked_sub(self.bytes)
-            .filter(|limit| *limit > 0)
-            .ok_or(tasks::TaskSnapshotError::ResourceExhausted(
-                "original predicate allowance",
-            ))?;
-        let record_limit = self
-            .request
-            .record_limit
-            .min(65_536)
-            .checked_sub(self.records)
-            .filter(|limit| *limit > 0)
-            .ok_or(tasks::TaskSnapshotError::ResourceExhausted(
-                "original predicate allowance",
-            ))?;
+        let byte_limit = self.request.byte_limit;
+        let record_limit = self.request.record_limit;
         Ok(tasks::TaskDomainLoadRequest {
             recovery_at: None,
             query: Default::default(),
@@ -91,11 +71,7 @@ impl Material<'_, '_> {
             .records
             .checked_add(observed.records)
             .context("Task predicate count overflow")?;
-        anyhow::ensure!(
-            self.bytes <= self.request.byte_limit.min(64 * 1024 * 1024)
-                && self.records <= self.request.record_limit.min(65_536),
-            tasks::TaskSnapshotError::ResourceExhausted("original predicate allowance")
-        );
+
         // The token has already charged real Host + the same Memory callback.
         // This is just cumulative accounting, never a second charge/guard.
         Ok(())
@@ -764,10 +740,7 @@ pub(super) fn prepare_task_transaction_inner_tx<'tx, 'connection, 'command: 'tx>
         records: 0,
         guards: Vec::new(),
     };
-    anyhow::ensure!(
-        request.record_limit > 0 && request.byte_limit > 0,
-        "zero Task writer limits"
-    );
+
     let child_phase = prepared.original_child_terminal().is_some();
     if let Some(original) = prepared.original_child_terminal() {
         let observed = original.material_estimate();

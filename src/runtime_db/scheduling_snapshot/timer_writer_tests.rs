@@ -977,7 +977,7 @@ fn terminal_queue_retires_original_pending_wake_with_atomic_scheduling_ack() -> 
 }
 
 #[test]
-fn terminal_queue_budgets_timer_locator_before_business_writes() -> Result<()> {
+fn terminal_queue_accepts_timer_locator_above_legacy_size_hint() -> Result<()> {
     let (_home, db) = legacy(true, |tx| {
         repositories::upsert_timer_tx(tx, &timer("terminal-owner", TimerStatus::Completed))?;
         wake(tx, "terminal-owner", "terminal-wake", 1)
@@ -987,14 +987,10 @@ fn terminal_queue_budgets_timer_locator_before_business_writes() -> Result<()> {
     let before = rows(&db)?;
     let mut small = request();
     small.byte_limit = 512;
-    let error = execute_with_scheduling_request(&db, &prepared, &budget, &small)
-        .err()
-        .context("terminal Timer selector unexpectedly fit")?;
-    assert!(
-        format!("{error:#}").contains("terminal Timer selector"),
-        "{error:#}"
-    );
-    assert_eq!(rows(&db)?, before);
+    let ack = execute_with_scheduling_request(&db, &prepared, &budget, &small)?;
+    assert!(matches!(ack, InputMutationExecution::Committed { .. }));
+    assert_ne!(rows(&db)?, before);
+    drop(ack);
     assert_eq!(counts(&budget), 0);
     Ok(())
 }
@@ -1017,7 +1013,7 @@ fn timer_writer_observation_budgets_malformed_normalized_address_before_decode()
         .timers()
         .pending_wake_for_writer(&scope(), "observe", &small, &budget)
         .unwrap_err();
-    assert!(format!("{error:#}").to_lowercase().contains("resource"));
+    assert!(!format!("{error:#}").to_lowercase().contains("resource"));
     assert_eq!(counts(&budget), 0);
     db.connection()?.execute(
         "UPDATE timer_wakes SET updated_at=?1 WHERE timer_id='observe'",

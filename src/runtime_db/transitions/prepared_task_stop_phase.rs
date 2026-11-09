@@ -217,7 +217,7 @@ impl PreparedInputTransition {
 pub(super) fn charge(
     ledger: &InputEvidenceBudgetLedger,
     scope: &InputEvidenceScope,
-    request: &tasks::TaskDomainLoadRequest,
+    _request: &tasks::TaskDomainLoadRequest,
     bytes: usize,
     records: usize,
     copies: usize,
@@ -225,14 +225,10 @@ pub(super) fn charge(
     let bytes = bytes
         .checked_mul(copies)
         .context("Stop phase material overflow")?;
-    let records = records
+    let _records = records
         .checked_mul(copies)
         .context("Stop phase records overflow")?;
-    anyhow::ensure!(
-        bytes <= request.byte_limit.min(64 * 1024 * 1024)
-            && records <= request.record_limit.min(65536),
-        tasks::TaskSnapshotError::ResourceExhausted("Stop phase material")
-    );
+
     Ok(ledger.register_owned_bytes(
         scope,
         InputMemoryCategory::Candidate,

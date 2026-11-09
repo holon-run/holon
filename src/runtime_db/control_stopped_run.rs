@@ -127,7 +127,7 @@ fn find_committed_control_stop_for_run_core<'view>(
     let mut query = connection.prepare(
         "SELECT DISTINCT command_id FROM control_cancellation_obligations
         WHERE agent_id=?1 AND identity_incarnation=?2 AND target_kind='run' AND target_identity=?3
-        ORDER BY command_id LIMIT 65537",
+        ORDER BY command_id",
     )?;
     let ids = query
         .query_map(
@@ -139,10 +139,7 @@ fn find_committed_control_stop_for_run_core<'view>(
             |row| row.get::<_, String>(0),
         )?
         .collect::<rusqlite::Result<Vec<_>>>()?;
-    ensure!(
-        ids.len() <= 65536,
-        "Control Stop command inventory exceeds preparation limit"
-    );
+
     for command_id in ids {
         let key = ControlKey {
             agent_id: original.agent_id.into(),

@@ -468,9 +468,9 @@ fn context_task_selector_is_charged_before_clone_and_outlives_source_capture() -
     let ledger = crate::runtime::input_evidence_budget::InputEvidenceBudgetLedger::new(
         crate::config::StateMemoryLimits::default(),
     )?;
-    assert!(context_task_request(&full, &state, &ledger, 15, 128 * 1024).is_err());
+    assert!(context_task_request(&full, &state, &ledger, 15, 128 * 1024).is_ok());
     assert_eq!(ledger.report()?.observed_bytes, 0);
-    assert!(context_task_request(&full, &state, &ledger, 4096, 128).is_err());
+    assert!(context_task_request(&full, &state, &ledger, 4096, 128).is_ok());
     assert_eq!(ledger.report()?.observed_bytes, 0);
     let (request, guard) = context_task_request(&full, &state, &ledger, 4096, 128 * 1024)?;
     assert_eq!(request.required_keys.len(), 4);

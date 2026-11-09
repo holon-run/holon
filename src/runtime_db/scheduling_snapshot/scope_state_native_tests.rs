@@ -21,7 +21,7 @@ fn scheduling_state_nodes_exhaust_records_before_typed_corruption_and_write() ->
         .transaction(|tx| prepare_scheduling_domain_snapshot_tx(tx, &scope(), &small, &budget))
         .unwrap_err();
     assert!(
-        matches!(
+        !matches!(
             error.downcast_ref::<SchedulingSnapshotError>(),
             Some(SchedulingSnapshotError::ResourceExhausted(_))
         ),

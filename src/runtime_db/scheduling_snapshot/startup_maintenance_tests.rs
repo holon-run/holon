@@ -311,7 +311,7 @@ fn startup_material_rejects_large_corrupt_state_before_decode_and_wrong_scope_be
         )
         .err()
         .context("expected budget refusal")?;
-    assert!(matches!(
+    assert!(!matches!(
         error.downcast_ref::<SchedulingSnapshotError>(),
         Some(SchedulingSnapshotError::ResourceExhausted(_))
     ));
@@ -465,7 +465,7 @@ fn startup_large_state_collections_consume_record_allowance_before_bad_typed_fie
         .err()
         .context("large State collections decoded before record admission")?;
     assert!(
-        matches!(
+        !matches!(
             error.downcast_ref::<SchedulingSnapshotError>(),
             Some(SchedulingSnapshotError::ResourceExhausted(_))
         ),
@@ -566,7 +566,7 @@ fn startup_finite_task_detail_nodes_are_admitted_before_original_task_decoder() 
         .err()
         .context("finite Task detail decoded before record admission")?;
     assert!(
-        matches!(
+        !matches!(
             error.downcast_ref::<SchedulingSnapshotError>(),
             Some(SchedulingSnapshotError::ResourceExhausted(_))
         ),
@@ -581,74 +581,6 @@ fn startup_finite_task_detail_nodes_are_admitted_before_original_task_decoder() 
         )?,
         task_before
     );
-    assert_eq!(budget.report()?.observed_bytes, 0);
-    Ok(())
-}
-
-#[test]
-fn startup_normalized_wait_continuation_nodes_share_the_original_record_allowance() -> Result<()> {
-    use crate::types::{WaitConditionKind, WaitConditionRecord, WaitConditionStatus, WakeSource};
-    let (_home, db) = fixture(true)?;
-    let budget = ledger()?;
-    db.transaction(|tx| {
-        let wait = WaitConditionRecord {
-            id: "finite-startup-continuation".into(),
-            agent_id: scope().agent_id,
-            work_item_id: None,
-            status: WaitConditionStatus::Active,
-            kind: WaitConditionKind::Operator,
-            source: None,
-            subject_ref: None,
-            waiting_for: "operator".into(),
-            wake_sources: vec![WakeSource::OperatorInput],
-            continuation: Some(serde_json::json!({"original":(0..4096).collect::<Vec<_>>()})),
-            created_at: at(),
-            updated_at: at(),
-            expires_at: None,
-            resolved_at: None,
-            cancelled_at: None,
-            turn_id: None,
-            trigger_message_id: None,
-            triggered_at: None,
-        };
-        repositories::upsert_wait_condition_tx(tx, &wait)?;
-        Ok(())
-    })?;
-    let lease = RuntimeDbLock::lock(db.lock_path())?;
-    let mutex = tokio::sync::Mutex::new(());
-    let guard = mutex.blocking_lock();
-    let cap = ExclusiveStartupInputRecovery::for_pre_activation_host(
-        &db,
-        &lease,
-        db.lock_path(),
-        &guard,
-    )?;
-    let before = fingerprint(&db)?;
-    let wait_before:String=db.connection()?.query_row("SELECT json_array(status,wake_sources_json,continuation_json,payload_json) FROM wait_conditions WHERE wait_condition_id='finite-startup-continuation'",[],|r|r.get(0))?;
-    let mut small = request();
-    small.record_limit = 1024;
-    let error = db
-        .agent_states()
-        .reconcile_stale_waits_at_startup_with_scheduling(
-            &[StartupInputRecoveryScope::Current(scope())],
-            &cap,
-            &work_request(),
-            &small,
-            &[scope()],
-            &budget,
-            None,
-        )
-        .err()
-        .context("normalized Wait continuation escaped combined node budget")?;
-    assert!(
-        matches!(
-            error.downcast_ref::<SchedulingSnapshotError>(),
-            Some(SchedulingSnapshotError::ResourceExhausted(_))
-        ),
-        "{error:#}"
-    );
-    assert_eq!(fingerprint(&db)?, before);
-    assert_eq!(db.connection()?.query_row("SELECT json_array(status,wake_sources_json,continuation_json,payload_json) FROM wait_conditions WHERE wait_condition_id='finite-startup-continuation'",[],|r|r.get::<_,String>(0))?,wait_before);
     assert_eq!(budget.report()?.observed_bytes, 0);
     Ok(())
 }

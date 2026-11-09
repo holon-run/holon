@@ -60,42 +60,27 @@ fn record(scope: &InputEvidenceScope, id: &str, bytes: usize) -> Arc<QualifiedIn
     })
 }
 #[test]
-fn pending_count_bytes_and_cross_agent_host_admission_are_checked_before_charge() {
+fn cumulative_pending_quotas_do_not_reject_and_accounting_remains_exact() {
     let ledger = InputEvidenceBudgetLedger::new(limits()).unwrap();
     let a = scope("a", 1);
     let b = scope("b", 1);
-    accepted(&ledger, &a, "a1", 5);
-    accepted(&ledger, &a, "a2", 5);
-    assert!(matches!(
-        ledger.reserve_pending(&a, "a3", 0),
-        Err(InputEvidenceBudgetError::ResourceExhausted {
-            resource: BudgetResource::PendingAgentCount,
-            ..
-        })
-    ));
-    accepted(&ledger, &b, "b1", 5);
-    assert!(matches!(
-        ledger.reserve_pending(&b, "b2", 1),
-        Err(InputEvidenceBudgetError::ResourceExhausted {
-            resource: BudgetResource::PendingHostBytes,
-            ..
-        })
-    ));
-    let report = ledger.report().unwrap();
-    assert_eq!(report.pending.count, 3);
-    assert_eq!(report.pending.body_bytes, 15);
-    ledger.release_accepted(&a, &["a1".into()]).unwrap();
-    assert!(matches!(
-        ledger.reserve_pending(&b, "b2", 6),
-        Err(InputEvidenceBudgetError::ResourceExhausted {
-            resource: BudgetResource::PendingAgentBytes,
-            ..
-        })
-    ));
-    assert_eq!(ledger.report().unwrap().pending.body_bytes, 10);
+    for (scope, id, bytes) in [
+        (&a, "a1", 5),
+        (&a, "a2", 5),
+        (&a, "a3", 50),
+        (&b, "b1", 500),
+    ] {
+        accepted(&ledger, scope, id, bytes);
+    }
+    assert_eq!(ledger.report().unwrap().pending.count, 4);
+    assert_eq!(ledger.report().unwrap().pending.body_bytes, 560);
+    ledger
+        .release_accepted(&a, &["a1".into(), "a2".into(), "a3".into()])
+        .unwrap();
+    assert_eq!(ledger.report().unwrap().pending.body_bytes, 500);
 }
 #[test]
-fn concurrent_agents_cannot_oversubscribe_host_pending_bytes() {
+fn concurrent_agents_are_accounted_without_host_pending_quota() {
     let ledger = InputEvidenceBudgetLedger::new(limits()).unwrap();
     let barrier = Arc::new(std::sync::Barrier::new(3));
     let workers = (0..2)
@@ -113,8 +98,8 @@ fn concurrent_agents_cannot_oversubscribe_host_pending_bytes() {
         .into_iter()
         .map(|w| w.join().unwrap())
         .collect::<Vec<_>>();
-    assert_eq!(results.iter().filter(|r| r.is_ok()).count(), 1);
-    assert_eq!(ledger.report().unwrap().pending.body_bytes, 10);
+    assert_eq!(results.iter().filter(|r| r.is_ok()).count(), 2);
+    assert_eq!(ledger.report().unwrap().pending.body_bytes, 20);
 }
 #[test]
 fn exact_reentry_unknown_drop_and_positive_resolution_preserve_one_charge() {
@@ -191,7 +176,7 @@ fn accepted_queue_removal_validates_whole_compound_before_releasing() {
     assert_eq!(ledger.report().unwrap().pending.count, 2);
 }
 #[test]
-fn bootstrap_over_limit_retains_actual_backlog_and_does_not_rewrite_unknown() {
+fn bootstrap_retains_actual_backlog_and_does_not_rewrite_unknown() {
     let ledger = InputEvidenceBudgetLedger::new(limits()).unwrap();
     let scope = scope("a", 1);
     let actual = (0..3)
@@ -200,15 +185,13 @@ fn bootstrap_over_limit_retains_actual_backlog_and_does_not_rewrite_unknown() {
             body_bytes: 5,
         })
         .collect::<Vec<_>>();
-    assert!(matches!(
-        ledger.install_actual_pending(&scope, &actual),
-        Err(InputEvidenceBudgetError::ResourceExhausted { .. })
-    ));
+    ledger.install_actual_pending(&scope, &actual).unwrap();
     let report = ledger.report().unwrap();
     assert_eq!(report.pending.count, 3);
     assert_eq!(report.pending.body_bytes, 15);
     assert_eq!(report.pending.unresolved_count, 0);
-    assert!(ledger.reserve_pending(&scope, "new", 0).is_err());
+    let extra = ticket(&ledger, &scope, "new", 1000);
+    ledger.definitely_not_committed(&extra).unwrap();
     ledger.install_actual_pending(&scope, &actual[..1]).unwrap();
     assert_eq!(ledger.report().unwrap().pending.count, 1);
     let pending = ticket(&ledger, &scope, "inflight", 1);
@@ -300,7 +283,7 @@ fn shared_allocations_are_physical_once_categories_overlap_and_pins_prevent_recl
             report.scopes[0].reclaimable_history, reclaimable,
             "mask={mask}"
         );
-        ledger.check_history_budget().unwrap();
+        ledger.report().unwrap();
         drop(guards);
         assert_eq!(ledger.report().unwrap().retained_unclassified, physical);
         drop(item);
@@ -369,7 +352,7 @@ fn view_registration_preserves_identity_until_report_reaps_dead_allocations() {
         .unwrap();
     // Registration touches incoming identities, not unrelated dead entries.
     assert_eq!(ledger.inner.state.lock().unwrap().allocations.len(), 2);
-    ledger.check_history_budget().unwrap();
+    ledger.report().unwrap();
     let report = ledger.report().unwrap();
     assert_eq!(report.physical_records.allocations, 1);
     assert_eq!(report.physical_records.bytes, 70);
@@ -422,7 +405,7 @@ fn view_release_reaps_only_touched_allocations_before_exact_budget_observation()
         assert!(!state.allocations.contains_key(&released_id));
         assert!(state.allocations[&retained_id].memberships.is_empty());
     }
-    ledger.check_history_budget().unwrap();
+    ledger.report().unwrap();
     let report = ledger.report().unwrap();
     assert_eq!(report.physical_records.allocations, 1);
     assert_eq!(report.physical_records.bytes, 70);
@@ -456,13 +439,7 @@ fn new_root_does_not_remove_old_root_membership_and_reports_do_not_pin_records()
         ledger.report().unwrap().categories[&InputMemoryCategory::History].bytes,
         130
     );
-    assert!(matches!(
-        ledger.check_history_budget(),
-        Err(InputEvidenceBudgetError::ResourceExhausted {
-            resource: BudgetResource::HistoryAgentBytes,
-            ..
-        })
-    ));
+    ledger.report().unwrap();
     let report = ledger.report().unwrap();
     let weak = Arc::downgrade(&old);
     drop(old);
@@ -475,7 +452,7 @@ fn new_root_does_not_remove_old_root_membership_and_reports_do_not_pin_records()
     assert_eq!(ledger.report().unwrap().observed_bytes, 0);
 }
 #[test]
-fn host_history_limit_deduplicates_shared_views_and_remains_separate_from_current() {
+fn host_history_observation_deduplicates_shared_views_and_remains_separate_from_current() {
     let ledger = InputEvidenceBudgetLedger::new(limits()).unwrap();
     let a = scope("a", 1);
     let b = scope("b", 1);
@@ -490,13 +467,7 @@ fn host_history_limit_deduplicates_shared_views_and_remains_separate_from_curren
     let _shared = ledger
         .register_view(&a, InputMemoryCategory::History, &[ar.clone()])
         .unwrap();
-    assert!(matches!(
-        ledger.check_history_budget(),
-        Err(InputEvidenceBudgetError::ResourceExhausted {
-            resource: BudgetResource::HistoryHostBytes,
-            ..
-        })
-    ));
+    ledger.report().unwrap();
     let current = record(&a, "current", 1_000_000);
     let _current = ledger
         .register_view(&a, InputMemoryCategory::Current, &[current.clone()])
@@ -615,13 +586,7 @@ fn cold_preflight_does_not_charge_conservative_bytes() {
     accepted(&ledger, &b, "b", 5);
     ledger.preflight_actual_pending(&a, 1, 9).unwrap();
     assert_eq!(ledger.report().unwrap().pending.body_bytes, 8);
-    assert!(matches!(
-        ledger.preflight_actual_pending(&a, 1, 11),
-        Err(InputEvidenceBudgetError::ResourceExhausted {
-            resource: BudgetResource::PendingAgentBytes,
-            ..
-        })
-    ));
+    ledger.preflight_actual_pending(&a, 1, 11).unwrap();
     assert_eq!(ledger.report().unwrap().pending.body_bytes, 8);
     ledger
         .install_actual_pending(
@@ -774,5 +739,71 @@ fn host_owned_metadata_does_not_change_scoped_pending_or_history_responsibility(
         )
         .is_err());
     assert_eq!(ledger.report()?.host_owned.total()?, 0);
+    Ok(())
+}
+
+#[test]
+fn publishing_and_capturing_views_do_not_scan_the_full_history_ledger() -> anyhow::Result<()> {
+    use crate::runtime::resident_scheduling::{
+        ResidentSchedulingDomain, SchedulingCaptureRequest, SchedulingCoverage, SchedulingFamily,
+        SchedulingHistory,
+    };
+    let ledger = InputEvidenceBudgetLedger::new(limits())?;
+    let mut coverage = SchedulingCoverage::empty(1);
+    for family in [
+        SchedulingFamily::Timer,
+        SchedulingFamily::TimerWake,
+        SchedulingFamily::ExternalTrigger,
+    ] {
+        coverage.history.insert(
+            family,
+            SchedulingHistory {
+                keys: Vec::new(),
+                loaded_keys: Vec::new(),
+                is_exhaustive: true,
+            },
+        );
+    }
+    let view = ResidentSchedulingDomain::bootstrap(
+        scope("report-on-demand", 1),
+        coverage,
+        Vec::new(),
+        1,
+        1,
+    )?
+    .with_budget(ledger.clone())?;
+    let captured = view.capture(&SchedulingCaptureRequest::current())?;
+    assert_eq!(ledger.inner.state.lock().unwrap().report_scans, 0);
+    drop((captured, view));
+    let report = ledger.report()?;
+    assert_eq!(ledger.inner.state.lock().unwrap().report_scans, 1);
+    assert_eq!(report.observed_bytes, 0);
+    Ok(())
+}
+
+#[test]
+fn last_view_release_eventually_reaps_later_dead_allocations_without_a_report() -> Result<()> {
+    let ledger = InputEvidenceBudgetLedger::new(limits())?;
+    let scope = scope("incremental-release", 1);
+    let records = (0..129)
+        .map(|n| record(&scope, &format!("turn-{n}"), 10))
+        .collect::<Vec<_>>();
+    let view = ledger.register_view(&scope, InputMemoryCategory::History, &records)?;
+    drop(view);
+    assert_eq!(
+        ledger.inner.state.lock().unwrap().allocations.len(),
+        records.len()
+    );
+    drop(records);
+    for _ in 0..130 {
+        drop(ledger.register_owned_bytes(
+            &scope,
+            InputMemoryCategory::Candidate,
+            OwnedBytesEstimate::default(),
+        )?);
+    }
+    let state = ledger.inner.state.lock().unwrap();
+    assert!(state.allocations.is_empty());
+    assert_eq!(state.report_scans, 0);
     Ok(())
 }

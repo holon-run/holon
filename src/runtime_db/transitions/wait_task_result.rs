@@ -17,10 +17,6 @@ use crate::{
     types::{QueueEntryRecord, WaitConditionRecord, WaitConditionStatus},
 };
 
-const MAX_LIVE_WAITS: usize = 65_536;
-const MAX_EXACT_WAITS: usize = 64;
-const MAX_WITNESS_BYTES: usize = 64 * 1024 * 1024;
-
 // The same current/seed membership as the Work loader, without historical bodies.
 const QUALIFIED_WAIT: &str = "
     (EXISTS(SELECT 1 FROM work_domain_records a
@@ -58,10 +54,6 @@ impl WaitTaskResultWitness {
         if self.scope.agent_id != agent_id
             || self.scope.identity_incarnation == 0
             || self.work_revision == 0
-            || self.live_waits.len() > MAX_LIVE_WAITS
-            || self.exact_waits.len() > MAX_EXACT_WAITS
-            || crate::runtime::input_evidence_budget::serialized_bytes(self)?
-                > u64::try_from(MAX_WITNESS_BYTES)?
         {
             return Err(conflict().into());
         }
@@ -123,10 +115,7 @@ impl WaitTaskResultWitness {
                 let Some(bytes) = bytes else {
                     return Err(conflict().into());
                 };
-                material_bytes = material_bytes
-                    .checked_add(bytes)
-                    .filter(|bytes| *bytes <= MAX_WITNESS_BYTES)
-                    .ok_or_else(conflict)?;
+                material_bytes = material_bytes.checked_add(bytes).ok_or_else(conflict)?;
                 if canonical_wait_record_tx(tx, agent_id, &wait.id)?.as_ref() != Some(wait) {
                     return Err(conflict().into());
                 }

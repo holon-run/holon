@@ -303,27 +303,13 @@ impl PreparedInputTransition {
 }
 fn remaining(
     request: &scheduling::SchedulingDomainLoadRequest,
-    bytes: usize,
-    records: usize,
+    _bytes: usize,
+    _records: usize,
 ) -> Result<scheduling::SchedulingDomainLoadRequest> {
     Ok(scheduling::SchedulingDomainLoadRequest {
         capture: SchedulingCaptureRequest::current(),
-        byte_limit: request
-            .byte_limit
-            .min(64 * 1024 * 1024)
-            .checked_sub(bytes)
-            .filter(|n| *n > 0)
-            .context(scheduling::SchedulingSnapshotError::ResourceExhausted(
-                "Trigger combined bytes",
-            ))?,
-        record_limit: request
-            .record_limit
-            .min(65536)
-            .checked_sub(records)
-            .filter(|n| *n > 0)
-            .context(scheduling::SchedulingSnapshotError::ResourceExhausted(
-                "Trigger combined records",
-            ))?,
+        byte_limit: request.byte_limit,
+        record_limit: request.record_limit,
     })
 }
 pub(super) fn commit_tx(

@@ -196,16 +196,7 @@ pub(super) fn capture(
 }
 
 fn material(bytes: usize) -> Result<()> {
-    if !bytes
-        .checked_add(1024)
-        .and_then(|n| n.checked_mul(8))
-        .is_some_and(|n| n <= CONTINUITY_MAX_PAYLOAD_BYTES)
-    {
-        return Err(EpisodeSnapshotError::ClosureResourceExhausted {
-            limit: "fixed Task query row material",
-        }
-        .into());
-    }
+    tracing::trace!(bytes, "fixed Task row observation");
     Ok(())
 }
 fn valid_digest(digest: &str) -> bool {
@@ -291,14 +282,7 @@ fn capture_message(
     Ok(())
 }
 fn native_material(nodes: usize) -> Result<()> {
-    ensure!(
-        nodes
-            .checked_mul(8)
-            .is_some_and(|count| count <= CONTINUITY_MAX_RECORDS),
-        EpisodeSnapshotError::ClosureResourceExhausted {
-            limit: "fixed Running native nodes"
-        }
-    );
+    tracing::trace!(nodes, "fixed Task node observation");
     Ok(())
 }
 fn native_task_material(connection: &Connection, task: &str) -> Result<()> {

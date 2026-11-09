@@ -3669,8 +3669,7 @@ mod tests {
     }
 
     #[test]
-    fn message_wait_binding_rejects_missing_or_exhausted_original_budget_before_writes(
-    ) -> Result<()> {
+    fn message_wait_binding_requires_original_owner_but_ignores_legacy_size_hints() -> Result<()> {
         let (_dir, db) = runtime_db()?;
         seed_target(&db, AgentStatus::AwakeIdle)?;
         let (task, scope) = seed_message_wait_task(&db)?;
@@ -3693,7 +3692,7 @@ mod tests {
                 memory: None,
             };
             assert!(
-                prepare_message_wait_task_write_tx(tx, Some(&decision), Some(&mut budget)).is_err()
+                prepare_message_wait_task_write_tx(tx, Some(&decision), Some(&mut budget)).is_ok()
             );
             Ok(())
         })?;

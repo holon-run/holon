@@ -60,26 +60,12 @@ impl ExternalTriggerWriterObservation {
 
 fn remaining(
     request: &SchedulingDomainLoadRequest,
-    material: &Material<'_, '_>,
+    _material: &Material<'_, '_>,
 ) -> Result<SchedulingDomainLoadRequest> {
     Ok(SchedulingDomainLoadRequest {
         capture: SchedulingCaptureRequest::current(),
-        byte_limit: request
-            .byte_limit
-            .min(MAX_BYTES)
-            .checked_sub(material.bytes)
-            .filter(|n| *n > 0)
-            .ok_or(SchedulingSnapshotError::ResourceExhausted(
-                "Trigger observation bytes",
-            ))?,
-        record_limit: request
-            .record_limit
-            .min(MAX_RECORDS)
-            .checked_sub(material.records)
-            .filter(|n| *n > 0)
-            .ok_or(SchedulingSnapshotError::ResourceExhausted(
-                "Trigger observation records",
-            ))?,
+        byte_limit: request.byte_limit,
+        record_limit: request.record_limit,
     })
 }
 fn observe_tx(

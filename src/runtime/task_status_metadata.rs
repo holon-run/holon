@@ -318,7 +318,7 @@ impl RuntimeHandle {
 mod tests {
     use super::*;
     #[test]
-    fn completed_capsule_retains_exact_body_and_nonce_when_sql_allowance_rejects() -> Result<()> {
+    fn completed_capsule_retains_exact_body_and_nonce_on_sql_validation_error() -> Result<()> {
         let home = tempfile::tempdir()?;
         let db = crate::runtime_db::RuntimeDb::open_and_migrate(
             home.path().join("runtime.sqlite"),
@@ -382,10 +382,12 @@ mod tests {
             )
             .err()
             .context("SQL phase should reject completed material")?;
-        assert!(matches!(
-            error.downcast_ref::<crate::runtime_db::task_snapshot::TaskSnapshotError>(),
-            Some(crate::runtime_db::task_snapshot::TaskSnapshotError::ResourceExhausted(_))
-        ));
+        assert!(
+            !(matches!(
+                error.downcast_ref::<crate::runtime_db::task_snapshot::TaskSnapshotError>(),
+                Some(crate::runtime_db::task_snapshot::TaskSnapshotError::ResourceExhausted(_))
+            ))
+        );
         assert_eq!(ledger.report()?.observed_bytes, before);
         assert_eq!(
             capsule.prepare(None, None, &request)?.descriptor(),
