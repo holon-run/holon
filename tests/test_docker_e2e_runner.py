@@ -15,7 +15,7 @@ import time
 import unittest
 import urllib.error
 from pathlib import Path
-from unittest.mock import Mock, patch
+from unittest.mock import MagicMock, Mock, patch
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -2094,6 +2094,61 @@ class DockerE2ERunnerTests(unittest.TestCase):
 
             self.assertEqual(result, {"ok": True})
             self.assertEqual(urlopen.call_count, 2)
+
+    def test_request_retries_only_transient_observer_reads(self) -> None:
+        cases = [
+            ("GET", "runtime_db_busy", True, True),
+            ("GET", "projection_stale_unhandled", True, True),
+            ("POST", "runtime_db_busy", True, False),
+            ("GET", "runtime_db_quarantined", True, False),
+            ("GET", "runtime_db_busy", False, False),
+        ]
+        for method, code, retryable, should_retry in cases:
+            with self.subTest(method=method, code=code, retryable=retryable):
+                with tempfile.TemporaryDirectory() as directory:
+                    harness = runner.CaseHarness(
+                        case_id="observer-retry-test",
+                        image="holon:test",
+                        model="deepseek/deepseek-v4-flash",
+                        credential_envs=[],
+                        env_file=None,
+                        runtime_env={},
+                        evidence_root=Path(directory),
+                        timeout_seconds=1,
+                        keep=False,
+                    )
+                    harness.base_url = "http://127.0.0.1:7878"
+                    unavailable = urllib.error.HTTPError(
+                        harness.base_url + "/api/agents/default/state",
+                        503,
+                        "Service Unavailable",
+                        {"Retry-After": "0"},
+                        io.BytesIO(
+                            json.dumps({"code": code, "retryable": retryable}).encode()
+                        ),
+                    )
+                    response = MagicMock()
+                    response.__enter__.return_value = response
+                    response.status = 200
+                    response.headers = {}
+                    response.read.return_value = b'{"ok":true}'
+                    with (
+                        patch.object(
+                            runner.urllib.request,
+                            "urlopen",
+                            side_effect=[unavailable, response],
+                        ) as urlopen,
+                        patch.object(runner.time, "sleep"),
+                    ):
+                        if should_retry:
+                            self.assertEqual(
+                                harness.request(method, "/api/agents/default/state"),
+                                {"ok": True},
+                            )
+                        else:
+                            with self.assertRaisesRegex(AssertionError, "returned 503"):
+                                harness.request(method, "/api/agents/default/state")
+                    self.assertEqual(urlopen.call_count, 2 if should_retry else 1)
 
     def test_runtime_db_snapshot_records_docker_copy_timeout(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

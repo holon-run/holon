@@ -604,7 +604,7 @@ impl RuntimeHandle {
             let root = self.observer_ready_root(&self.inner.runtime_db)?;
             let config = self.inner.config_snapshot.load_full();
             let material = self.context_resource_material()?;
-            let captured = self.capture_instruction_resources(&root.state, &config, &material);
+            let captured = self.capture_instruction_resources(&root, &config, &material);
             material.finish()?;
             captured
         };
@@ -883,6 +883,20 @@ impl RuntimeHandle {
         state: &AgentState,
         config: &ConfigSnapshot,
     ) -> Result<ContextResourceSource> {
+        let root = self
+            .inner
+            .mutation_owner
+            .capture()?
+            .context("plan source has no root")?;
+        self.context_resource_source_with_root(state, config, &root)
+    }
+
+    fn context_resource_source_with_root(
+        &self,
+        state: &AgentState,
+        config: &ConfigSnapshot,
+        root: &super::resident_state::AgentSnapshot,
+    ) -> Result<ContextResourceSource> {
         let workspace = state.active_workspace_entry.as_ref();
         let path_bytes = self.inner.storage.data_dir().as_os_str().len()
             + config
@@ -901,11 +915,6 @@ impl RuntimeHandle {
             128,
         )?;
         let selector = Sha256::digest(serde_json::to_vec(&state.active_skills)?);
-        let root = self
-            .inner
-            .mutation_owner
-            .capture()?
-            .context("plan source has no root")?;
         let work = root
             .work
             .as_ref()
@@ -965,12 +974,18 @@ impl RuntimeHandle {
     }
     pub(super) fn capture_instruction_resources(
         &self,
-        state: &AgentState,
+        root: &super::resident_state::AgentSnapshot,
         config: &ConfigSnapshot,
         material: &ResourceReadMaterial,
     ) -> Result<super::resource_observation::InstructionResourceRead> {
         let _io = material.enter();
-        let source = self.context_resource_source(state, config)?;
+        anyhow::ensure!(
+            root.state.id == self.inner.resources.scope.agent_id
+                && root.token.identity_incarnation
+                    == self.inner.resources.scope.identity_incarnation,
+            "instruction resource Root scope differs"
+        );
+        let source = self.context_resource_source_with_root(&root.state, config, root)?;
         let _fence = self.inner.resources.gate.ready(source.host_generation)?;
         self.inner
             .resources

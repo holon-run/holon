@@ -265,7 +265,19 @@ async fn exercise_budget_lifecycle() -> Result<()> {
 }
 
 async fn assert_unknown_budget(runtime: &RuntimeHandle) -> Result<()> {
-    let summary = runtime.agent_summary().await?;
+    let deadline = Instant::now() + Duration::from_secs(3);
+    let summary = loop {
+        match runtime.agent_summary().await {
+            Ok(summary) => break summary,
+            Err(error)
+                if error.is::<holon::runtime_db::RuntimeDbRetryableError>()
+                    && Instant::now() < deadline =>
+            {
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+            Err(error) => return Err(error),
+        }
+    };
     let policy = &summary.model.resolved_policy;
     assert_eq!(policy.context_window_tokens, None);
     assert_eq!(policy.prompt_budget_estimated_tokens, 128_000);

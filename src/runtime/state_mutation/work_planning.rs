@@ -572,15 +572,23 @@ impl RuntimeHandle {
             )
         })?;
         if let SchedulerAdapterRoot::ObservedPublication(db) = adapter_root {
-            let current = self.observer_ready_root(db)?;
-            anyhow::ensure!(
-                current.token == root.token,
-                crate::runtime_db::RuntimeDbRetryableError::new(
-                    "child observer publication",
-                    db.path(),
-                    "publication changed during read",
-                )
-            );
+            db.check_read_scope()?;
+            if root
+                .current
+                .as_ref()
+                .and_then(|current| current.query.as_ref())
+                .is_none()
+            {
+                let current = self.observer_ready_root(db)?;
+                anyhow::ensure!(
+                    current.token == root.token,
+                    crate::runtime_db::RuntimeDbRetryableError::new(
+                        "child observer publication",
+                        db.path(),
+                        "publication changed during read",
+                    )
+                );
+            }
         }
         Ok(read)
     }

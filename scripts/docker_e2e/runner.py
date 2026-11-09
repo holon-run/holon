@@ -1007,15 +1007,23 @@ class CaseHarness:
             except urllib.error.URLError:
                 self.check_docker_health("request-failure")
                 raise
-            if status != 429 or time.monotonic() >= retry_deadline:
+            if status not in (429, 503) or time.monotonic() >= retry_deadline:
                 break
             try:
                 error_body = json.loads(payload)
             except json.JSONDecodeError:
                 break
-            if (
-                error_body.get("code") != "projection_busy"
-                or error_body.get("retryable") is not True
+            retryable_projection = (
+                status == 429 and error_body.get("code") == "projection_busy"
+            )
+            retryable_observer = (
+                method == "GET"
+                and status == 503
+                and error_body.get("code")
+                in ("runtime_db_busy", "projection_stale_unhandled")
+            )
+            if error_body.get("retryable") is not True or not (
+                retryable_projection or retryable_observer
             ):
                 break
             retry_after = response_headers.get("Retry-After", "1")

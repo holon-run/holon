@@ -347,10 +347,10 @@ pub async fn attach_default_workspace(host: &RuntimeHost) -> Result<()> {
                         == "context resource source differs from its observation"
                         || error
                             .to_string()
-                            .starts_with("context resources are not ready: Dirty") =>
+                            .starts_with("context resources are not ready: Dirty")
+                        || error.is::<holon::runtime_db::RuntimeDbRetryableError>() =>
                 {
-                    // Summary reserves the mutation owner. Leave a real gap for
-                    // the observer's non-blocking publication reservation.
+                    // Let the workspace/resource writer finish its publication.
                     tokio::time::sleep(Duration::from_millis(50)).await;
                 }
                 Err(error) => return Err(error),

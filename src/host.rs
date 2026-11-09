@@ -14659,7 +14659,19 @@ mod tests {
 
         let before = host.inner.runtimes.read().await.agents.len();
         assert!(before >= 1);
-        let entries = host.list_agent_entries().await.unwrap();
+        let deadline = std::time::Instant::now() + Duration::from_secs(3);
+        let entries = loop {
+            match host.list_agent_entries().await {
+                Ok(entries) => break entries,
+                Err(error)
+                    if error.is::<crate::runtime_db::RuntimeDbRetryableError>()
+                        && std::time::Instant::now() < deadline =>
+                {
+                    tokio::time::sleep(Duration::from_millis(20)).await;
+                }
+                Err(error) => panic!("{error:#}"),
+            }
+        };
         let after = host.inner.runtimes.read().await.agents.len();
         assert_eq!(before, after);
         assert!(entries

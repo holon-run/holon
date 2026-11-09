@@ -31,7 +31,7 @@ async fn summary_prepares_invalidated_instructions_after_initial_resources() -> 
     let root = runtime.inner.mutation_owner.capture()?.unwrap();
     let material = runtime.context_resource_material()?;
     runtime.capture_instruction_resources(
-        &root.state,
+        &root,
         &runtime.inner.config_snapshot.load_full(),
         &material,
     )?;

@@ -201,7 +201,7 @@ impl RuntimeHandle {
     )> {
         let (read, identity, metadata) = self.roster_scheduler_from_root(root)?;
         let resources = self.capture_instruction_resources(
-            &read.state,
+            root,
             &self.inner.config_snapshot.load_full(),
             &read.acquisition,
         )?;

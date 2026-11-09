@@ -2,6 +2,45 @@ use super::*;
 use crate::runtime::tests::support::LifecycleHarness;
 
 #[tokio::test]
+async fn pinned_summary_and_child_cut_survive_a_new_pending_mutation() -> Result<()> {
+    use crate::{
+        diagnostics::io_probe::DenyResourceReaders, runtime::mutation_owner::MutationReservation,
+        runtime_db::RuntimeDbReadScope,
+    };
+    use std::time::{Duration, Instant};
+
+    let harness = LifecycleHarness::new();
+    let runtime = harness.runtime();
+    runtime.await_initial_resources().await;
+    let _refresh = runtime.hold_resource_refresh_for_test().await?;
+    let mut prepare = runtime.begin_mutation().await?;
+    prepare.prepare_current_scheduler_query(None).await?;
+    drop(prepare);
+    let root = runtime.inner.mutation_owner.capture()?.unwrap();
+    let (_, _, _, original_resources) = runtime.summary_scheduler_from_root(&root)?;
+    let mut owners = vec![runtime.inner.mutation_owner.reserve().await?];
+    MutationReservation::begin_all(&mut owners, "pending-after-summary-capture".into())?;
+    let denied = DenyResourceReaders::new();
+
+    let (_, identity, _, resources) = runtime.summary_scheduler_from_root(&root)?;
+    assert_eq!(identity.agent_id, root.state.id);
+    assert!(original_resources
+        .observation_weak()
+        .ptr_eq(&resources.observation_weak()));
+    let child = runtime.child_summary_from_root(&root, runtime.runtime_db())?;
+    assert_eq!(child.state, root.state);
+    assert_eq!(denied.attempts(), 0);
+    assert!(runtime.inner.mutation_owner.capture().is_err());
+
+    let scope = RuntimeDbReadScope::new(Instant::now() + Duration::from_secs(5));
+    scope.cancel();
+    let cancelled = runtime.runtime_db().with_read_scope(scope);
+    assert!(runtime.child_summary_from_root(&root, &cancelled).is_err());
+    MutationReservation::definitely_not_committed_all(&mut owners)?;
+    Ok(())
+}
+
+#[tokio::test]
 async fn fleet_state_decided_posture_still_requires_the_original_current_binding() -> Result<()> {
     use crate::diagnostics::resource_io::ResourceReadMaterial;
 
