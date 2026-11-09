@@ -7,17 +7,17 @@ impl RuntimeHandle {
         tasks: &CapturedTasks,
     ) -> Result<Arc<BudgetViewGuard>> {
         let count = active_task_count(tasks)?;
-        let (selected_bytes, selected_records) = tasks.selected_material_estimate()?;
+        let (_selected_bytes, _selected_records) = tasks.selected_material_estimate()?;
         let metadata = count
             .checked_mul(std::mem::size_of::<&TaskRecord>())
             .and_then(|n| n.checked_add(std::mem::size_of::<Vec<&TaskRecord>>() + 512))
             .and_then(|n| n.checked_mul(4))
             .context("message Wait reference slots overflow")?;
-        let records = count
+        let _records = count
             .checked_mul(4)
             .context("message Wait reference count overflow")?;
         let limits = self.inner.input_evidence_budget.limits();
-        let (max_records, max_bytes) =
+        let (_max_records, _max_bytes) =
             crate::runtime_db::task_snapshot::TaskDomainLoadRequest::bounded_material_limits(
                 usize::try_from(limits.record_limit)?,
                 usize::try_from(
@@ -27,15 +27,7 @@ impl RuntimeHandle {
                         .context("message Wait reference limits overflow")?,
                 )?,
             );
-        anyhow::ensure!(
-            selected_bytes
-                .checked_add(u64::try_from(metadata)?)
-                .is_some_and(|n| n <= max_bytes as u64)
-                && selected_records
-                    .checked_add(records)
-                    .is_some_and(|n| n <= max_records),
-            TaskReadError::ResourceExhausted("message Wait active references")
-        );
+
         Ok(self.inner.input_evidence_budget.register_owned_bytes(
             &tasks.scope,
             InputMemoryCategory::Pins,
@@ -93,7 +85,7 @@ impl RuntimeHandle {
             .and_then(|n| n.checked_add(native.checked_mul(8)?))
             .context("message Wait retained reply records overflow")?;
         let limits = self.inner.input_evidence_budget.limits();
-        let (max_records, max_bytes) =
+        let (_max_records, _max_bytes) =
             crate::runtime_db::task_snapshot::TaskDomainLoadRequest::bounded_material_limits(
                 usize::try_from(limits.record_limit)?,
                 usize::try_from(
@@ -103,10 +95,7 @@ impl RuntimeHandle {
                         .context("message Wait reply limits overflow")?,
                 )?,
             );
-        anyhow::ensure!(
-            bytes <= u64::try_from(max_bytes)? && records <= max_records,
-            TaskReadError::ResourceExhausted("message Wait retained reply detail")
-        );
+
         let guard = self.inner.input_evidence_budget.register_owned_bytes(
             &tasks.scope,
             InputMemoryCategory::Pins,
@@ -216,7 +205,7 @@ impl RuntimeHandle {
             .and_then(|n| n.checked_mul(4))
             .context("message Wait selector overlap overflow")?;
         let limits = self.inner.input_evidence_budget.limits();
-        let (max_records, max_bytes) =
+        let (_max_records, _max_bytes) =
             crate::runtime_db::task_snapshot::TaskDomainLoadRequest::bounded_material_limits(
                 usize::try_from(limits.record_limit)?,
                 usize::try_from(
@@ -226,22 +215,19 @@ impl RuntimeHandle {
                         .context("message Wait byte limit overflow")?,
                 )?,
             );
-        let bytes = captured_bytes
+        let _bytes = captured_bytes
             .checked_add(retained_material.0)
             .and_then(|n| n.checked_add(selector))
             .and_then(|n| n.checked_add(payload))
             .and_then(|n| n.checked_add(u64::try_from(metadata).ok()?))
             .context("message Wait combined bytes overflow")?;
-        let records = count
+        let _records = count
             .checked_mul(8)
             .and_then(|n| n.checked_add(4))
             .and_then(|n| n.checked_add(captured_records))
             .and_then(|n| n.checked_add(retained_material.1))
             .context("message Wait combined records overflow")?;
-        anyhow::ensure!(
-            bytes <= u64::try_from(max_bytes)? && records <= max_records,
-            TaskReadError::ResourceExhausted("message Wait terminal projection")
-        );
+
         Ok(self.inner.input_evidence_budget.register_owned_bytes(
             &selected.tasks.scope,
             InputMemoryCategory::Pins,

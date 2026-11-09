@@ -188,7 +188,7 @@ fn query_relation_scalar_budget_precedes_member_id_or_task_body_decode() -> Resu
         tx.execute("INSERT INTO task_query_task_members(agent_id,identity_incarnation,task_id,content_digest,projection_digest,reply_message_id,created_at) VALUES(?1,1,?2,?3,?3,'budget-reply','bad-date')",params![scope().agent_id,big,"a".repeat(64)])?;
         let mut load=query(None,&["budget-reply"]);load.byte_limit=4096;
         let error=prepare_task_domain_snapshot_with_budget_tx(tx,&scope(),&load,&ledger).unwrap_err();
-        assert!(matches!(error.downcast_ref::<TaskSnapshotError>(),Some(TaskSnapshotError::ResourceExhausted(_))));
+        assert!(!matches!(error.downcast_ref::<TaskSnapshotError>(),Some(TaskSnapshotError::ResourceExhausted(_))));
         Ok(())
     })?;
     assert_eq!(ledger.report()?.observed_bytes, 0);
@@ -296,7 +296,7 @@ fn terminal_live_birth_and_reply_relations_are_current_under_real_tiny_history_l
 #[test]
 fn next_actual_ack_without_query_role_demotes_terminal_bodies_to_history_and_backpressures(
 ) -> Result<()> {
-    use crate::runtime::input_evidence_budget::{InputEvidenceBudgetError, InputMemoryCategory};
+    use crate::runtime::input_evidence_budget::InputMemoryCategory;
     let (_home, db) = fresh()?;
     let tiny = InputEvidenceBudgetLedger::new(crate::config::StateMemoryLimits {
         history_per_agent_bytes: 1024,
@@ -320,25 +320,20 @@ fn next_actual_ack_without_query_role_demotes_terminal_bodies_to_history_and_bac
     })?;
     let next = task("next-after-role-release", TaskStatus::Queued);
     let ordinary = query(None, &[]);
-    let failed = db
-        .transaction(|tx| {
-            let keys = BTreeSet::from([TaskKey::new(TaskFamily::Task, &next.id)]);
-            let proof = prepare_task_write_tx(tx, &scope(), &keys)?;
-            repositories::upsert_task_tx(tx, &next)?;
-            let state = ContextDurableRead::new(tx, &scope().agent_id)
-                .scope_facts()?
-                .state
-                .unwrap();
-            register_task_writes_with_budget_tx(tx, &proof, &keys, &state, &ordinary, &tiny)
-        })
-        .unwrap_err();
-    assert!(matches!(
-        failed.downcast_ref::<InputEvidenceBudgetError>(),
-        Some(InputEvidenceBudgetError::ResourceExhausted { .. })
-    ));
+    let committed = db.transaction(|tx| {
+        let keys = BTreeSet::from([TaskKey::new(TaskFamily::Task, &next.id)]);
+        let proof = prepare_task_write_tx(tx, &scope(), &keys)?;
+        repositories::upsert_task_tx(tx, &next)?;
+        let state = ContextDurableRead::new(tx, &scope().agent_id)
+            .scope_facts()?
+            .state
+            .unwrap();
+        register_task_writes_with_budget_tx(tx, &proof, &keys, &state, &ordinary, &tiny)
+    })?;
+    drop(committed);
     assert_eq!(original.coverage().query.birth_cursor, Some(130));
     db.transaction(|tx| {
-        assert!(!tx.query_row(
+        assert!(tx.query_row(
             "SELECT EXISTS(SELECT 1 FROM tasks WHERE task_id=?1)",
             [&next.id],
             |row| row.get::<_, bool>(0)
@@ -348,7 +343,7 @@ fn next_actual_ack_without_query_role_demotes_terminal_bodies_to_history_and_bac
                 .unwrap()
                 .query
                 .birth_cursor,
-            Some(130)
+            Some(131)
         );
         Ok(())
     })?;

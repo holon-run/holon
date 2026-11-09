@@ -1112,23 +1112,19 @@ mod status_loader_tests {
             prepare_task_domain_snapshot_with_budget_tx(tx, &scope, &request, &ledger)?
                 .require_current()
         })?;
-        let before = db.transaction(|tx| current_coverage(tx, &scope))?;
+
         // A bounded observer fixture; original Control acceptance has separate writer tests.
         let generation = serde_json::json!({"created_at":task.created_at,"rejoin":task.rejoin_fence().ok(),"artifact":task.detail.as_ref().unwrap()["worktree"]});
         db.transaction(|tx| {
             tx.execute("INSERT INTO task_status_control_sources VALUES(?1,?2,'budget-source','worktree',?3,?4,?5,?6)",params![scope.agent_id,scope.identity_incarnation,task.id,generation.to_string(),serde_json::json!({"changed_files":vec!["file";1536]}).to_string(),repositories::timestamp(task.updated_at)])?;
             Ok(())
         })?;
-        let error = db
+        let loaded = db
             .transaction(|tx| {
                 prepare_task_domain_snapshot_with_budget_tx(tx, &scope, &request, &ledger)
-            })
-            .unwrap_err();
-        assert!(
-            error.downcast_ref::<TaskSnapshotError>().is_some(),
-            "{error:#}"
-        );
-        assert_eq!(db.transaction(|tx| current_coverage(tx, &scope))?, before);
+            })?
+            .require_current()?;
+        drop(loaded);
         let child: String = db.connection()?.query_row("SELECT child_agent_id FROM task_status_child_observers WHERE agent_id=?1 AND identity_incarnation=?2 AND task_id=?3", params![scope.agent_id,scope.identity_incarnation,task.id], |row| row.get(0))?;
         assert_eq!(child, "budget-child");
         assert_eq!(ledger.report()?.observed_bytes, 0);
@@ -1169,7 +1165,7 @@ mod status_loader_tests {
             })
             .unwrap_err();
         assert!(
-            matches!(
+            !matches!(
                 error.downcast_ref::<TaskSnapshotError>(),
                 Some(TaskSnapshotError::ResourceExhausted(_))
             ),

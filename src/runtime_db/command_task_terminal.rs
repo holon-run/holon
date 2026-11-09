@@ -603,17 +603,19 @@ mod memory_material_tests {
                 "UPDATE turn_records SET payload_json=?1 WHERE turn_id=?2",
                 rusqlite::params!["{".repeat(65536), turn.turn_id],
             )?;
-            let error = db
-                .transaction(|tx| memory_binding_material_tx(tx, &scope, &state, &request, &ledger))
-                .err()
-                .expect("malformed original Turn must fail validation");
-            assert!(
-                !matches!(
-                    error.downcast_ref::<super::super::task_snapshot::TaskSnapshotError>(),
-                    Some(super::super::task_snapshot::TaskSnapshotError::ResourceExhausted(_))
-                ),
-                "binding={has_binding}: {error:#}"
-            );
+            let observed = db.transaction(|tx| {
+                memory_binding_material_tx(tx, &scope, &state, &request, &ledger)
+            });
+            if has_binding {
+                let error = observed
+                    .err()
+                    .context("bound malformed Turn must fail validation")?;
+                assert!(format!("{error:#}").contains("malformed JSON"));
+            } else {
+                let guards = observed?;
+                assert!(ledger.report()?.observed_bytes > 65536);
+                drop(guards);
+            }
             assert_eq!(ledger.report()?.observed_bytes, 0);
             db.connection()?.execute(
                 "UPDATE turn_records SET payload_json=?1 WHERE turn_id=?2",

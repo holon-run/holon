@@ -340,13 +340,11 @@ fn load_episode_memory_snapshot_inner(
         EpisodeContinuityBinding::FreshEmpty => None,
         EpisodeContinuityBinding::LegacyAdopted { seed_id, .. } => Some(seed_id.as_str()),
     };
-    if recent_limit > 512 {
-        return Err(EpisodeSnapshotError::ClosureResourceExhausted {
-            limit: "recent window count",
-        }
-        .into());
-    }
-    let limit = i64::try_from(recent_limit + 1)?;
+    let limit = i64::try_from(
+        recent_limit
+            .checked_add(1)
+            .context("Episode window count overflow")?,
+    )?;
     let mut statement = connection.prepare(
         "SELECT e.episode_id, e.agent_id, e.work_item_id, e.payload_json
          FROM context_episode_anchors e

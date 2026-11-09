@@ -419,18 +419,12 @@ impl DispatchMemoryTransactionBudget {
         );
         Ok(())
     }
-    /// Work's original loader gets only the remaining combined preparation
-    /// allowance. No alias or body is acquired by this calculation.
+    /// Preserve the caller's selector hints; cumulative material is observational.
     pub(crate) fn work_request(
         &self,
         original: &super::super::work_snapshot::WorkDomainLoadRequest,
     ) -> Result<super::super::work_snapshot::WorkDomainLoadRequest> {
-        let mut result = original.clone();
-        let copies = if self.finish { 4 } else { 1 };
-        result.byte_limit = self.byte_limit.saturating_sub(self.bytes) / copies;
-        result.record_limit = self.record_limit.saturating_sub(self.records) / copies;
-
-        Ok(result)
+        Ok(original.clone())
     }
     pub(crate) fn before_finalizer_tx(&mut self, tx: &Transaction<'_>) -> Result<()> {
         self.refresh_state_tx(tx)?;

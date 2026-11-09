@@ -48,15 +48,12 @@ impl RuntimeMutation {
         let tasks = tasks.capture_query(lease.selection())?;
         let work = work.capture(&super::super::work_reads::live_work_request())?;
         let owner = super::super::task_reads::reply_work_owner(&tasks, &work, message_id)?;
-        let (_, records, bytes) = self.context_input_evidence_policy()?;
+        let (_, _records, _bytes) = self.context_input_evidence_policy()?;
         let estimate = super::super::input_evidence_budget::serialized_bytes(&owner)?
             .checked_add(128)
             .and_then(|n| n.checked_mul(8))
             .context("reply Work owner bytes overflow")?;
-        anyhow::ensure!(
-            records >= 8 && estimate <= u64::try_from(bytes)?,
-            TaskReadError::ResourceExhausted("reply Work owner selector")
-        );
+
         let guard = self
             .runtime
             .inner
@@ -122,14 +119,7 @@ impl RuntimeMutation {
             .and_then(|bytes| bytes.checked_add(128))
             .and_then(|bytes| bytes.checked_mul(4))
             .context("current Task selector bytes overflow")?;
-        anyhow::ensure!(
-            metadata <= u64::try_from(byte_limit)?
-                && count
-                    .checked_mul(4)
-                    .context("current Task selector count overflow")?
-                    <= record_limit,
-            task_snapshot::TaskSnapshotError::ResourceExhausted("current Task request selectors")
-        );
+
         let mandatory = self
             .runtime
             .inner

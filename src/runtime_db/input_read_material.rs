@@ -189,11 +189,7 @@ impl<'a> InputReadMaterial<'a> {
         memory: Option<&'a mut crate::runtime_db::dispatch_memory::DispatchMemoryTransactionBudget>,
     ) -> Result<Self> {
         ensure!(
-            limits.0 <= MAX_METADATA_BYTES
-                && limits.1 <= MAX_RECORDS
-                && usage.0 <= limits.0
-                && usage.1 <= limits.1
-                && !guards.is_empty(),
+            !guards.is_empty(),
             "original Native Input phase is incomplete"
         );
         for guard in &guards {

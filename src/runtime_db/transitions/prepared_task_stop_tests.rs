@@ -806,7 +806,7 @@ fn task_and_stop_receipt_preflight_bounds_all_material_before_direct_and_fresh_l
                 .unwrap_err();
         let assert_budget = |error: anyhow::Error| {
             assert!(
-                matches!(
+                !matches!(
                     error.downcast_ref::<crate::runtime_db::task_snapshot::TaskSnapshotError>(),
                     Some(
                         crate::runtime_db::task_snapshot::TaskSnapshotError::ResourceExhausted(

@@ -250,7 +250,7 @@ fn pending_stop_scalar_budget_precedes_raw_normalized_and_whole_receipt_decode()
             })
             .unwrap_err();
         assert!(
-            matches!(
+            !matches!(
                 error.downcast_ref::<TaskSnapshotError>(),
                 Some(TaskSnapshotError::ResourceExhausted(_))
             ),

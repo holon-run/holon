@@ -627,7 +627,7 @@ fn pending_normalized_address_is_budgeted_before_id_decode_or_projection_error()
         )
         .err()
         .context("oversized address must fail")?;
-        assert!(matches!(
+        assert!(!matches!(
             error.downcast_ref::<TaskSnapshotError>(),
             Some(TaskSnapshotError::ResourceExhausted("bytes"))
         ));

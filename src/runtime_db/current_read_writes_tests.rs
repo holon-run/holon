@@ -504,6 +504,8 @@ fn current_body_above_legacy_hint_commits_original_write_and_qualification() -> 
         |row| row.get(0),
     )?;
     assert_eq!(count, 1);
+    assert!(ledger.report()?.observed_bytes > 0);
+    drop(ack);
     assert_eq!(ledger.report()?.observed_bytes, 0);
     Ok(())
 }
@@ -621,6 +623,11 @@ fn current_generated_addresses_ignore_legacy_hint_without_writing_during_prepara
 {
     let f = Fixture::new()?;
     let ledger = InputEvidenceBudgetLedger::new(Default::default())?;
+    let before: usize =
+        f.db.connection()?
+            .query_row("SELECT COUNT(*) FROM current_read_revisions", [], |r| {
+                r.get(0)
+            })?;
     f.db.transaction(|tx| {
         let mut native =
             NativeInputWriteProof::prepare_tx(tx, &f.scope, &ledger, (1, 1), None, |_| Ok(()))?
@@ -640,7 +647,8 @@ fn current_generated_addresses_ignore_legacy_hint_without_writing_during_prepara
             .query_row("SELECT COUNT(*) FROM current_read_revisions", [], |row| {
                 row.get(0)
             })?;
-    assert_eq!(revisions, 0);
+    assert_eq!(revisions, before);
+    assert_eq!(qualified_count(&f)?, 0);
     assert_eq!(ledger.report()?.observed_bytes, 0);
     Ok(())
 }

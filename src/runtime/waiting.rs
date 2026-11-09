@@ -2079,7 +2079,7 @@ impl RuntimeHandle {
             .checked_mul(std::mem::size_of::<&TimerRecord>() as u64)
             .and_then(|bytes| bytes.checked_add(512))
             .context("Timer recovery order overflow")?;
-        let order_records = count
+        let _order_records = count
             .checked_add(1)
             .context("Timer recovery order count overflow")?;
         let (_retained, _retained_records) = timers.selected_material_estimate()?;
@@ -2125,8 +2125,8 @@ impl RuntimeHandle {
                 &timer.id,
                 None,
                 &self.inner.input_evidence_budget,
-                record_limit - order_records,
-                usize::try_from(byte_limit - order_bytes)?,
+                record_limit,
+                usize::try_from(byte_limit)?,
             )?;
             self.recover_timer(owned).await?;
         }

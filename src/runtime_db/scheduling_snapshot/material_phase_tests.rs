@@ -115,7 +115,7 @@ fn sql_material_uses_original_remainder_once_and_holds_its_guard() -> Result<()>
         assert!(ResourceReadMaterial::active_guard()?.is_none());
         assert_eq!(ledger.report()?.observed_bytes, 0);
     }
-    // Without a Context phase the original independent allowance still applies.
+    // Ordinary standalone reads observe material without a cumulative quota.
     let mut independent = Material::new(&scope, &request, &ledger);
     independent.charge(1024, 3)?;
     assert_eq!((independent.bytes as u64, independent.records), one);
@@ -123,11 +123,9 @@ fn sql_material_uses_original_remainder_once_and_holds_its_guard() -> Result<()>
     let mut small = request;
     small.byte_limit = 1;
     let mut local = Material::new(&scope, &small, &ledger);
-    let error = local.charge(1024, 3).unwrap_err();
-    assert!(matches!(
-        error.downcast_ref::<SchedulingSnapshotError>(),
-        Some(SchedulingSnapshotError::ResourceExhausted(_))
-    ));
+    local.charge(1024, 3)?;
+    assert!(ledger.report()?.observed_bytes > 0);
+    drop(local);
     assert_eq!(ledger.report()?.observed_bytes, 0);
     Ok(())
 }

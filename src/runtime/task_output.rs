@@ -97,10 +97,7 @@ impl OutputMaterialAllowance {
         Ok(next)
     }
     fn remaining(self) -> (u64, usize) {
-        (
-            self.byte_limit - self.bytes,
-            self.record_limit - self.records,
-        )
+        (self.byte_limit, self.record_limit)
     }
 }
 impl TaskOutputRead {
@@ -235,10 +232,7 @@ impl RuntimeHandle {
             roots.extend(reply.map(|id| InputEvidenceKey::new(InputEvidenceFamily::Message, id)));
         }
         let (remaining_bytes, remaining_records) = material.remaining();
-        anyhow::ensure!(
-            roots.is_empty() || (remaining_bytes > 0 && remaining_records > 0),
-            TaskReadError::ResourceExhausted("Task Output selected Input remaining material")
-        );
+
         let request = InputEvidenceLoadRequest {
             query: None,
             windows: vec![],

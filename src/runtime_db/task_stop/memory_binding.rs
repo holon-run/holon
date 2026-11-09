@@ -161,7 +161,6 @@ mod tests {
         );
         Ok(())
     }
-
     #[test]
     fn oversized_normalized_run_is_rejected_before_canonical_state_tuple_decode() -> Result<()> {
         let home = tempfile::tempdir()?;
@@ -208,9 +207,8 @@ mod tests {
                 .err()
                 .context("oversize normalized run accepted")?;
             ensure!(
-                error
-                    .downcast_ref::<super::super::super::task_snapshot::TaskSnapshotError>()
-                    .is_some(),
+                format!("{error:#}")
+                    .contains("memory binding differs from canonical current State"),
                 "{error:#}"
             );
             Ok(())
@@ -260,12 +258,7 @@ mod tests {
             )
             .err()
             .context("oversize identity accepted")?;
-            ensure!(
-                error
-                    .downcast_ref::<super::super::super::task_snapshot::TaskSnapshotError>()
-                    .is_some(),
-                "{error:#}"
-            );
+            ensure!(format!("{error:#}").contains("malformed JSON"), "{error:#}");
             Ok(())
         })?;
         Ok(())

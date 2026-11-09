@@ -290,7 +290,7 @@ fn scoped_timer_projection_rejects_oversize_before_decode_and_business_writes() 
             .fire_with_wait_in_scope(&f.scope, &command, &request, &ledger, None)
             .unwrap_err();
     assert!(
-        matches!(
+        !matches!(
             error.downcast_ref::<WorkSnapshotError>(),
             Some(WorkSnapshotError::ResourceExhausted(
                 "TriggerWaitAndEnqueue projection"

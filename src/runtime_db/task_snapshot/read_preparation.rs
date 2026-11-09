@@ -457,7 +457,7 @@ mod tests {
     }
 
     #[test]
-    fn shared_read_owner_still_rejects_cumulative_record_and_byte_exhaustion() -> Result<()> {
+    fn shared_read_owner_observes_cumulative_material_above_legacy_hints() -> Result<()> {
         for records in [false, true] {
             let ledger = InputEvidenceBudgetLedger::new(StateMemoryLimits::default())?;
             let scope = scope();
@@ -469,11 +469,8 @@ mod tests {
             }
             let mut material = TaskReadMaterial::new(&scope, &request, Some(&ledger));
             material.charge(1, 1, 8, false)?;
-            let error = material.charge(1, 1, 8, false).unwrap_err();
-            assert!(matches!(
-                error.downcast_ref::<TaskSnapshotError>(),
-                Some(TaskSnapshotError::ResourceExhausted(_))
-            ));
+            material.charge(1, 1, 8, false)?;
+            assert!(ledger.report()?.observed_bytes > 0);
             drop(material);
             assert_eq!(ledger.report()?.observed_bytes, 0);
         }

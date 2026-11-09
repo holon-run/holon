@@ -152,11 +152,8 @@ impl<'tx, 'conn> NativeInputWriteProof<'tx, 'conn> {
         let records = records
             .checked_mul(8)
             .context("Input birth nodes overflow")?;
-        let remaining = material.remaining_limits();
-        ensure!(
-            bytes <= remaining.0 && records <= remaining.1,
-            InputEvidenceSnapshotError::ResourceExhausted("Input birth original footprint")
-        );
+        let _remaining = material.remaining_limits();
+
         material.observe_native_footprint(bytes, records)?;
         let current = if let Some(read) = scope_read {
             // Borrow the canonical decode from this unchanged transaction;

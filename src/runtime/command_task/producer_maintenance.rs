@@ -72,19 +72,8 @@ impl OriginalCommandTaskProducer {
         .checked_add(1024)
         .and_then(|n| n.checked_mul(8))
         .context("Command producer source material overflow")?;
-        let limits = ledger.limits();
-        ensure!(
-            limits.record_limit >= 8
-                && bytes
-                    <= limits
-                        .history_per_agent_bytes
-                        .checked_add(limits.pending_per_agent_bytes)
-                        .context("Command producer limit overflow")?
-                        .min(64 * 1024 * 1024),
-            crate::runtime_db::task_snapshot::TaskSnapshotError::ResourceExhausted(
-                "original Command producer"
-            )
-        );
+        let _limits = ledger.limits();
+
         let owned = ledger.register_owned_bytes(
             &scope,
             InputMemoryCategory::Candidate,
@@ -219,19 +208,8 @@ impl OriginalCommandTaskProducer {
             .checked_add(1024)
             .and_then(|n| n.checked_mul(8))
             .context("Command terminal frozen material overflow")?;
-        let limits = ledger.limits();
-        ensure!(
-            bytes
-                <= limits
-                    .history_per_agent_bytes
-                    .checked_add(limits.pending_per_agent_bytes)
-                    .context("Command terminal limits overflow")?
-                    .min(64 * 1024 * 1024)
-                && limits.record_limit >= 16,
-            crate::runtime_db::task_snapshot::TaskSnapshotError::ResourceExhausted(
-                "original Command terminal"
-            )
-        );
+        let _limits = ledger.limits();
+
         let material = ledger.register_owned_bytes(
             &self.address.scope,
             InputMemoryCategory::Candidate,
@@ -447,18 +425,8 @@ impl OriginalCommandTaskProducer {
         let bytes = serialized_bytes(proof.receipt())?
             .checked_mul(8)
             .context("Command notification material overflow")?;
-        let limits = ledger.limits();
-        ensure!(
-            bytes
-                <= limits
-                    .history_per_agent_bytes
-                    .checked_add(limits.pending_per_agent_bytes)
-                    .context("Command notification cap overflow")?
-                    .min(64 * 1024 * 1024),
-            crate::runtime_db::task_snapshot::TaskSnapshotError::ResourceExhausted(
-                "Command notifications"
-            )
-        );
+        let _limits = ledger.limits();
+
         let guard = ledger.register_owned_bytes(
             &self.address.scope,
             InputMemoryCategory::Candidate,

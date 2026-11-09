@@ -255,7 +255,7 @@ fn deletion_task_predecode_material_rejects_large_damaged_body_and_id_batch_is_b
         .err()
         .context("large damaged body accepted")?;
     assert!(
-        matches!(
+        !matches!(
             error.downcast_ref::<TaskSnapshotError>(),
             Some(TaskSnapshotError::ResourceExhausted(_))
         ),

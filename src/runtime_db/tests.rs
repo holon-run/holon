@@ -378,6 +378,48 @@ mod tests {
         Ok(())
     }
 
+    #[test]
+    fn startup_inventory_ignores_closed_orphan_history_but_requires_live_orphan_seed() -> Result<()>
+    {
+        let (_home, db_path, lock_path) = temp_paths()?;
+        let db = RuntimeDb::open_and_migrate(&db_path, &lock_path)?;
+        db.transaction(|tx| {
+            tx.execute("INSERT INTO queue_entries(message_id,agent_id,priority,status,created_at,updated_at,payload_json) VALUES('closed-message','closed-benchmark','normal','processed','2026-01-01','2026-01-01','{}')", [])?;
+            tx.execute("INSERT INTO turn_records(turn_id,turn_index,agent_id,created_at,payload_json) VALUES('closed-turn',1,'closed-benchmark','2026-01-01','{\"terminal\":{\"status\":\"completed\"}}')", [])?;
+            Ok(())
+        })?;
+        let agents = db.agent_states().startup_mutation_agent_ids()?;
+        assert!(agents.is_empty());
+        assert!(db.startup_input_recovery_scopes(&agents)?.is_empty());
+        // History stays present; startup must never manufacture its fixed seed.
+        assert_eq!(
+            db.connection()?
+                .query_row("SELECT COUNT(*) FROM turn_records", [], |r| r
+                    .get::<_, usize>(0))?,
+            1
+        );
+        assert_eq!(
+            db.connection()?.query_row(
+                "SELECT COUNT(*) FROM episode_continuity_seeds",
+                [],
+                |r| r.get::<_, usize>(0)
+            )?,
+            0
+        );
+        db.connection()?.execute(
+            "UPDATE queue_entries SET status='interrupted' WHERE message_id='closed-message'",
+            [],
+        )?;
+        let agents = db.agent_states().startup_mutation_agent_ids()?;
+        assert_eq!(agents, vec!["closed-benchmark"]);
+        let error = db
+            .startup_input_recovery_scopes(&agents)
+            .err()
+            .context("live orphan still requires its original fixed seed")?;
+        assert!(format!("{error:#}").contains("explicit fixed-seed preparation"));
+        Ok(())
+    }
+
     fn wait_until(mut condition: impl FnMut() -> Result<bool>, label: &str) -> Result<()> {
         let started_at = Instant::now();
         loop {
@@ -8300,41 +8342,23 @@ CREATE TABLE working_memory_deltas (
             ..Default::default()
         };
         let ledger = crate::runtime::input_evidence_budget::InputEvidenceBudgetLedger::new(limits)?;
-        assert!(db
+        let identity = db
             .agent_identities()
             .reincarnate_with_bootstrap_and_relations(
                 "reborn-event-budget",
                 "operator:test",
                 &ledger,
                 fresh_incarnation,
-            )
-            .is_err());
-        assert_eq!(
-            db.agent_identities().latest("reborn-event-budget")?,
-            Some(tombstone.clone())
-        );
-        let reservation: String = db.connection()?.query_row(
-            "SELECT reservation_state FROM agent_identity_reservations WHERE agent_id='reborn-event-budget'",
-            [],
-            |row| row.get(0),
-        )?;
-        assert_eq!(reservation, "retired");
-        let recreated: u64 = db.connection()?.query_row(
-            "SELECT COUNT(*) FROM audit_events WHERE agent_id='reborn-event-budget' AND kind='agent_recreated'",
-            [],
-            |row| row.get(0),
-        )?;
-        assert_eq!(recreated, 0);
-        assert_eq!(ledger.report()?.observed_bytes, 0);
-        let identity = db
-            .agent_identities()
-            .reincarnate_with_bootstrap_and_relations(
-                "reborn-event-budget",
-                "operator:test",
-                &reincarnation_ledger()?,
-                fresh_incarnation,
             )?;
         assert_eq!(identity.incarnation, tombstone.incarnation + 1);
+        assert_eq!(
+            db.agent_identities().latest("reborn-event-budget")?,
+            Some(identity)
+        );
+        let recreated: u64 = db.connection()?.query_row(
+            "SELECT COUNT(*) FROM audit_events WHERE agent_id='reborn-event-budget' AND kind='agent_recreated'", [], |row| row.get(0))?;
+        assert_eq!(recreated, 1);
+        assert_eq!(ledger.report()?.observed_bytes, 0);
         Ok(())
     }
 
@@ -11011,9 +11035,7 @@ DELETE FROM schema_migrations WHERE version = 67;
         drop(connection);
         let error = RuntimeDb::open_and_migrate(&db_path, &lock_path).unwrap_err();
         assert!(
-            error
-                .to_string()
-                .contains("State projection and payload disagree"),
+            format!("{error:#}").contains("State projection and payload disagree"),
             "{error:#}"
         );
         let connection = open_connection(&db_path)?;

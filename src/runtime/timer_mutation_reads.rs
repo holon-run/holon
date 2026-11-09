@@ -4,7 +4,7 @@ use super::{
         serialized_bytes, BudgetViewGuard, InputEvidenceBudgetLedger, InputMemoryCategory,
         OwnedBytesEstimate,
     },
-    resident_scheduling::{CapturedScheduling, SchedulingReadError, SchedulingWakeStatus},
+    resident_scheduling::{CapturedScheduling, SchedulingWakeStatus},
     resident_work::CapturedWork,
 };
 use crate::{
@@ -50,7 +50,7 @@ impl TimerMutationRead {
             .checked_add(512)
             .and_then(|n| n.checked_mul(8))
             .context("Timer routing selector overflow")?;
-        let fits = |bytes: u64, records: usize| {
+        let _fits = |bytes: u64, records: usize| {
             selected_bytes
                 .checked_add(bytes)
                 .is_some_and(|n| n <= byte_limit)
@@ -58,10 +58,7 @@ impl TimerMutationRead {
                     .checked_add(records)
                     .is_some_and(|n| n <= record_limit)
         };
-        ensure!(
-            fits(selector_bytes, 8),
-            SchedulingReadError::ResourceExhausted("selected domains and Timer route selector")
-        );
+
         let _selector = ledger.register_owned_bytes(
             &scheduling.scope,
             InputMemoryCategory::Candidate,
@@ -103,18 +100,8 @@ impl TimerMutationRead {
             .and_then(|n| n.checked_add(work_item_bytes))
             .and_then(|n| n.checked_mul(32))
             .context("Timer route command copies overflow")?;
-        let records = 128usize;
-        ensure!(
-            fits(
-                bytes
-                    .checked_add(selector_bytes)
-                    .context("Timer route combined bytes overflow")?,
-                records + 8
-            ),
-            SchedulingReadError::ResourceExhausted(
-                "selected domains and original Timer command copies"
-            )
-        );
+        let _records = 128usize;
+
         let material = ledger.register_owned_bytes(
             &scheduling.scope,
             InputMemoryCategory::Candidate,

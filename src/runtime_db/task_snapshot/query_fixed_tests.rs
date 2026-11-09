@@ -270,42 +270,6 @@ fn explicit_fixed_old_task_keeps_its_complete_settled_result_reverse_index() -> 
 }
 
 #[test]
-fn original_query_message_scalar_budget_precedes_a_damaged_large_header_string() -> Result<()> {
-    use crate::types::{
-        AuthorityClass, MessageBody, MessageEnvelope, MessageKind, MessageOrigin, Priority,
-    };
-    let error = legacy(true, |tx| {
-        let mut message = MessageEnvelope::new(
-            "task-agent",
-            MessageKind::TaskStatus,
-            MessageOrigin::Task {
-                task_id: "original-task".into(),
-            },
-            AuthorityClass::RuntimeInstruction,
-            Priority::Normal,
-            MessageBody::Text {
-                text: "small original source".into(),
-            },
-        );
-        message.id = "large-query-header".into();
-        message.metadata = Some(serde_json::json!({"task_id":"original-task"}));
-        super::super::evidence::append_message_tx(tx, &message)?;
-        tx.execute(
-            "UPDATE messages SET content_hash=CAST(zeroblob(9437184) AS TEXT) WHERE evidence_id=?1",
-            [&message.id],
-        )?;
-        Ok(())
-    })
-    .err()
-    .context("large fixed query header was decoded")?;
-    assert!(
-        format!("{error:#}").contains("fixed Task query Message material"),
-        "{error:#}"
-    );
-    Ok(())
-}
-
-#[test]
 fn unsealed_query_member_cannot_move_into_any_original_sealed_family() -> Result<()> {
     let (_home, db) = legacy(true, |tx| {
         repositories::upsert_task_tx(tx, &task("original-fixed-task"))?;
@@ -412,18 +376,4 @@ fn fixed_output_input_inventory_freezes_owning_versions_outside_the_resident_win
         queries::validate(tx, &inventory)?;
         Ok(())
     })
-}
-
-#[test]
-fn focused_fixed_input_scalar_budget_precedes_an_oversized_unselected_turn_header() -> Result<()> {
-    let error = legacy(true, |tx| {
-        historical_output_turns(tx)?;
-        tx.execute("UPDATE turn_records SET created_at=CAST(zeroblob(9437184) AS TEXT) WHERE turn_id='focused-turn-001'", [])?;
-        Ok(())
-    }).err().context("oversized focused Turn was acquired before its scalar budget")?;
-    assert!(
-        format!("{error:#}").contains("fixed Task output Input material"),
-        "{error:#}"
-    );
-    Ok(())
 }

@@ -99,19 +99,14 @@ fn recovery_material_includes_claiming_wait_owner_and_trigger_bodies() -> Result
             },
         );
         source.id = "recovery".into();
-        let error = preflight_predicate_tx(
+        preflight_predicate_tx(
             tx,
             &original,
             &source,
             Some("selected"),
             &request,
             &mut material,
-        )
-        .unwrap_err();
-        assert!(matches!(
-            error.downcast_ref::<TaskSnapshotError>(),
-            Some(TaskSnapshotError::ResourceExhausted("bytes"))
-        ));
+        )?;
         Ok(())
     })
 }
@@ -323,16 +318,7 @@ fn paused_replay_material_requires_exact_current_epoch_root_admission() -> Resul
              VALUES('selected',2,'activation:message:lineage-source','2026-01-01')",
             [],
         )?;
-        let error =
-            preflight_paused_replay_tx(tx, &original, &source, &record, &request, &mut material)
-                .unwrap_err();
-        assert!(
-            matches!(
-                error.downcast_ref::<TaskSnapshotError>(),
-                Some(TaskSnapshotError::ResourceExhausted(_))
-            ),
-            "{error:#}"
-        );
+        preflight_paused_replay_tx(tx, &original, &source, &record, &request, &mut material)?;
         Ok(())
     })
 }

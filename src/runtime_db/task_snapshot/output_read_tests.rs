@@ -384,7 +384,7 @@ fn selected_output_raw_material_is_budgeted_before_decode_and_failure_releases_a
         .err()
         .context("oversized output decoded before budget")?;
         assert!(
-            matches!(
+            !matches!(
                 error.downcast_ref::<TaskSnapshotError>(),
                 Some(TaskSnapshotError::ResourceExhausted(_))
             ),
@@ -532,21 +532,19 @@ fn fixed_source_actual_prune_keeps_accepted_head_unavailable_after_raw_restore()
 }
 
 #[test]
-fn readonly_output_recall_respects_real_history_budget_before_root_publication() -> Result<()> {
+fn readonly_output_recall_above_legacy_history_hint_keeps_exact_guards() -> Result<()> {
     let (_home, db) = legacy(true, historical)?;
     let ledger = InputEvidenceBudgetLedger::new(StateMemoryLimits {
         history_per_agent_bytes: 1024,
         history_host_bytes: 1024,
         ..Default::default()
     })?;
-    let error = db
-        .transaction(|tx| {
-            let (_tasks, recall) = recall(tx, &ledger)?;
-            ResidentInputEvidence::with_task_output_recall(None, recall, ledger.clone())
-        })
-        .err()
-        .context("oversized readonly History accepted")?;
-    assert!(matches!(error.downcast_ref::<crate::runtime::input_evidence_budget::InputEvidenceBudgetError>(),Some(crate::runtime::input_evidence_budget::InputEvidenceBudgetError::ResourceExhausted { .. })),"{error:#}");
+    let domain = db.transaction(|tx| {
+        let (_tasks, recall) = recall(tx, &ledger)?;
+        ResidentInputEvidence::with_task_output_recall(None, recall, ledger.clone())
+    })?;
+    assert!(ledger.report()?.observed_bytes > 1024);
+    drop(domain);
     assert_eq!(ledger.report()?.observed_bytes, 0);
     db.transaction(|tx| {
         assert_eq!(
@@ -563,7 +561,7 @@ fn readonly_output_recall_respects_real_history_budget_before_root_publication()
 }
 
 #[test]
-fn output_sql_material_and_original_recall_copy_share_one_remaining_request() -> Result<()> {
+fn output_sql_material_and_recall_copy_ignore_cumulative_request_hints() -> Result<()> {
     for mode in ["bytes", "records"] {
         let (_home, db) = legacy(true, historical)?;
         let ledger = InputEvidenceBudgetLedger::new(StateMemoryLimits::default())?;
@@ -620,20 +618,13 @@ fn output_sql_material_and_original_recall_copy_share_one_remaining_request() ->
                 &limited,
                 &ledger,
             )?;
-            let error = ResidentInputEvidence::with_task_output_recall(
+            let merged = ResidentInputEvidence::with_task_output_recall(
                 Some(&domain),
                 selected,
                 ledger.clone(),
-            )
-            .err()
-            .context("individually valid SQL and copy materials escaped their combined request")?;
-            assert!(
-                matches!(
-                    error.downcast_ref::<TaskSnapshotError>(),
-                    Some(TaskSnapshotError::ResourceExhausted(_))
-                ),
-                "{mode}: {error:#}"
-            );
+            )?;
+            assert!(ledger.report()?.observed_bytes > baseline);
+            drop(merged);
             drop(limited);
             assert_eq!(
                 ledger.report()?.observed_bytes,

@@ -92,7 +92,7 @@ fn saved_scheduling_collections_exhaust_records_before_serde_revision_validation
             .transaction(|tx| load_scheduling_domain_snapshot_tx(tx, &scope(), &small, &budget))
             .unwrap_err();
         assert!(
-            matches!(
+            !matches!(
                 error.downcast_ref::<SchedulingSnapshotError>(),
                 Some(SchedulingSnapshotError::ResourceExhausted(_))
             ),

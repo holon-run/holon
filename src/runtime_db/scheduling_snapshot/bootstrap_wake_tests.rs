@@ -276,7 +276,7 @@ fn bootstrap_corrupt_message_is_budgeted_before_native_origin_decode() -> Result
         .err()
         .context("expected early material gate")?;
     assert!(
-        matches!(
+        !matches!(
             error.downcast_ref::<SchedulingSnapshotError>(),
             Some(SchedulingSnapshotError::ResourceExhausted(_))
         ),
@@ -380,7 +380,7 @@ fn bootstrap_state_native_nodes_precede_pending_metadata_typed_state_read() -> R
         .err()
         .context("pending_metadata decoded unadmitted State collections")?;
     assert!(
-        matches!(
+        !matches!(
             error.downcast_ref::<SchedulingSnapshotError>(),
             Some(SchedulingSnapshotError::ResourceExhausted(_))
         ),

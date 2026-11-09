@@ -549,7 +549,7 @@ fn normalized_trigger_material_is_budgeted_before_corrupt_body_and_scope_guards_
         .observe_active_for_admission(&scope(), &original.external_trigger_id, &tiny, &budget)
         .unwrap_err();
     assert!(
-        matches!(
+        !matches!(
             error.downcast_ref::<SchedulingSnapshotError>(),
             Some(SchedulingSnapshotError::ResourceExhausted(_))
         ),
@@ -575,8 +575,7 @@ fn trigger_original_observation_cannot_move_to_another_actual_ledger() -> Result
 }
 
 #[test]
-fn trigger_observation_and_intent_share_one_phase_allowance_before_any_business_sql() -> Result<()>
-{
+fn trigger_observation_and_intent_above_legacy_hint_commit_one_exact_noop_receipt() -> Result<()> {
     let mut original = trigger();
     original.token = Some("t".repeat(8192));
     let (_home, db, budget) = fixture(Some(original))?;
@@ -606,16 +605,16 @@ fn trigger_observation_and_intent_share_one_phase_allowance_before_any_business_
     )?;
     let exact = saved(&db)?;
     let held = budget.report()?.observed_bytes;
-    let error = commit(&db, &budget, &p, &tiny).unwrap_err();
-    assert!(
-        matches!(
-            error.downcast_ref::<SchedulingSnapshotError>(),
-            Some(SchedulingSnapshotError::ResourceExhausted(_))
-        ),
-        "{error:#}"
+    let ack = commit(&db, &budget, &p, &tiny)?;
+    assert!(matches!(ack, InputMutationExecution::Committed { .. }));
+    let after = saved(&db)?;
+    assert_eq!(
+        (&after.0, &after.1, &after.2),
+        (&exact.0, &exact.1, &exact.2)
     );
-    assert_eq!(saved(&db)?, exact);
+    assert_eq!(after.3, exact.3 + 1);
     assert_eq!(side_effects(&db)?, (0, 0, 0, 0));
+    drop(ack);
     assert_eq!(budget.report()?.observed_bytes, held);
     drop(p);
     assert_eq!(budget.report()?.observed_bytes, 0);

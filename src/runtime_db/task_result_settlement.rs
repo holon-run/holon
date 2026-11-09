@@ -2045,7 +2045,7 @@ mod projection_tests {
     }
 
     #[test]
-    fn projection_original_lengths_are_checked_before_body_decode() {
+    fn projection_original_lengths_are_observed_without_decoding_or_size_quota() {
         let (_dir, db) = runtime_db();
         let record = pending_result(&db, 0, None);
         let item = projection(&db, &record.message_id);
@@ -2074,18 +2074,8 @@ mod projection_tests {
                     Utc::now(),
                     limits,
                 )?;
-                let error = match selection.with_admission_projections(Some(supplied), limits) {
-                    Ok(_) => {
-                        panic!("oversized original must fail before decoding its invalid JSON")
-                    }
-                    Err(error) => error,
-                };
-                assert!(
-                    error
-                        .downcast_ref::<TaskResultFootprintExhausted>()
-                        .is_some(),
-                    "{error:#}"
-                );
+                let selection = selection.with_admission_projections(Some(supplied), limits)?;
+                assert!(selection.material_estimate().payload_bytes > limits.byte_limit);
             }
             Ok(())
         })

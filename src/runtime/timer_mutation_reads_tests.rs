@@ -1,4 +1,5 @@
 use super::*;
+use crate::runtime::resident_scheduling::SchedulingReadError;
 use crate::{
     runtime::{
         resident_scheduling::SchedulingCaptureRequest,

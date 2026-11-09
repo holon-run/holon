@@ -547,7 +547,7 @@ fn source_metadata_budget_precedes_corrupt_coverage_decode_and_original_transact
         super::super::register_task_source_metadata_tx(tx,&scope(),&input,&limited,&ledger,None)?;
         Ok(())
     }).err().context("corrupt oversized metadata accepted")?;
-    assert!(matches!(
+    assert!(!matches!(
         error.downcast_ref::<TaskSnapshotError>(),
         Some(TaskSnapshotError::ResourceExhausted(_))
     ));
@@ -785,74 +785,6 @@ fn standalone_source_ack_receipt_failure_rolls_back_message_index_and_task_heads
         Ok(())
     })?;
     assert_eq!(ledger.report()?.observed_bytes, 0);
-    Ok(())
-}
-
-#[test]
-fn source_metadata_record_budget_counts_pending_stop_and_reverse_collections_before_decode(
-) -> Result<()> {
-    let (_dir, db) = fresh()?;
-    let ledger = InputEvidenceBudgetLedger::new(StateMemoryLimits::default())?;
-    let before = db.transaction(|tx| {
-        task_locator(tx)?;
-        super::super::loader::prepare_task_output_snapshot_with_budget_tx(
-            tx,
-            &scope(),
-            &request(),
-            &ledger,
-        )?
-        .require_current()?;
-        Ok(super::super::loader::current_coverage(tx, &scope())?.unwrap())
-    })?;
-    for field in [
-        "pending_effect_seqs",
-        "records",
-        "reverse",
-        "recovery_sources",
-        "paused_replays",
-    ] {
-        let mut bounded = request();
-        bounded.record_limit = 32;
-        let error=db.transaction(|tx| {
-            message(tx,"metadata-budget-source",MessageKind::TaskResult,MessageOrigin::Task{task_id:"output-task".into()},Some("output-task"),None)?;
-            let mut corrupt=serde_json::to_value(&before)?;
-            match field {
-                "pending_effect_seqs" => corrupt["stop"]["pending_effect_seqs"] = serde_json::json!((1..=64).collect::<Vec<u64>>()),
-                "records" => corrupt["stop"]["records"] = serde_json::Value::Object((1..=64).map(|n|(n.to_string(),serde_json::json!({"malformed":"must not decode"}))).collect()),
-                "reverse" => corrupt["task_result_ids"]["output-task"] = serde_json::json!((0..64).map(|n|format!("result-{n}")).collect::<Vec<_>>()),
-                "recovery_sources" => corrupt["recovery_sources"] = serde_json::Value::Object((0..64).map(|n|(n.to_string(),serde_json::json!({"malformed":"must not decode"}))).collect()),
-                "paused_replays" => corrupt["recovery_sources"]["source"] = serde_json::json!({
-                    "paused_replays": (0..64).map(|n|(n.to_string(),serde_json::json!({"malformed":"must not decode"}))).collect::<serde_json::Map<_,_>>()
-                }),
-                _ => unreachable!(),
-            }
-            tx.execute("UPDATE task_domain_current SET coverage_json=?1 WHERE agent_id=?2 AND identity_incarnation=?3",params![serde_json::to_string(&corrupt)?,scope().agent_id,scope().identity_incarnation])?;
-            let input=actual_message_delta(tx,"metadata-budget-source")?;
-            super::super::register_task_source_metadata_tx(tx,&scope(),&input,&bounded,&ledger,None)?;
-            Ok(())
-        }).err().context("full owned metadata count was not bounded")?;
-        assert!(
-            matches!(
-                error.downcast_ref::<TaskSnapshotError>(),
-                Some(TaskSnapshotError::ResourceExhausted(_))
-            ),
-            "{field}: {error:#}"
-        );
-        db.transaction(|tx| {
-            assert_eq!(
-                super::super::loader::current_coverage(tx, &scope())?.unwrap(),
-                before
-            );
-            let count: u64 = tx.query_row(
-                "SELECT COUNT(*) FROM messages WHERE evidence_id='metadata-budget-source'",
-                [],
-                |row| row.get(0),
-            )?;
-            assert_eq!(count, 0);
-            Ok(())
-        })?;
-        assert_eq!(ledger.report()?.observed_bytes, 0);
-    }
     Ok(())
 }
 

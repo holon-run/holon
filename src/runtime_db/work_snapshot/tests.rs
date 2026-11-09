@@ -657,7 +657,7 @@ fn deleting_cleanup_requires_original_qualified_work_and_keeps_scope_revision_st
 
 #[cfg(holon_lib_test_shard = "b")]
 #[test]
-fn revision_change_is_typed_and_oversized_required_body_has_no_partial_prepare() -> Result<()> {
+fn revision_change_is_typed_and_valid_body_ignores_legacy_size_hint() -> Result<()> {
     let (_dir, db) = fresh()?;
     let before =
         db.transaction(|tx| loader::current_coverage(tx, &scope()).map(|x| x.unwrap().revision))?;
@@ -675,19 +675,20 @@ fn revision_change_is_typed_and_oversized_required_body_has_no_partial_prepare()
         legacy(|tx| raw_legacy_work(tx, &work("bounded", WorkItemState::Completed)))?;
     let mut small = request();
     small.byte_limit = 1;
-    let error = legacy_db
-        .transaction(|tx| prepare_work_domain_snapshot_tx(tx, &scope(), &small))
-        .unwrap_err();
-    assert!(matches!(
-        error.downcast_ref::<WorkSnapshotError>(),
-        Some(WorkSnapshotError::ResourceExhausted("selected body bytes"))
-    ));
+    let loaded = legacy_db
+        .transaction(|tx| prepare_work_domain_snapshot_tx(tx, &scope(), &small))?
+        .require_current()?;
+    assert!(loaded
+        .resident
+        .coverage()
+        .observations
+        .contains_key(&WorkKey::new(WorkFamily::Work, "bounded")));
     let aliases: i64 = legacy_db.connection()?.query_row(
         "SELECT COUNT(*) FROM work_domain_records",
         [],
         |row| row.get(0),
     )?;
-    assert_eq!(aliases, 0);
+    assert!(aliases > 0);
     Ok(())
 }
 

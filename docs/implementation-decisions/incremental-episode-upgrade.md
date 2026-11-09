@@ -38,3 +38,5 @@ and the Turn is not current or bound to the current execution. Retain the Tool
 and Turn evidence without adopting the foreign Work. This exception is confined
 to the original upgrade; ordinary closures and independent current ownership
 claims still reject foreign Work IDs.
+
+Startup recovery reserves registered scopes, original fixed seeds, and unfinished obligations. Closed Queue/Turn history without a registered scope or original seed remains history; its presence alone cannot require or mint recovery authority. Live orphan obligations still fail closed when their fixed seed is missing.

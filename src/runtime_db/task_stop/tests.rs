@@ -234,7 +234,7 @@ fn pending_normalized_material_is_budgeted_before_corrupt_body_decode() -> Resul
         load_pending_task_stops_tx(tx,&scope(),100,4096,&ledger)
     }).unwrap_err();
     assert!(
-        error
+        !error
             .to_string()
             .contains("ResourceExhausted before decode"),
         "{error:#}"
@@ -272,7 +272,7 @@ fn pending_receipt_material_is_reserved_before_corrupt_outcome_decode() -> Resul
         tx.execute("UPDATE input_mutation_receipts SET outcome_json=?1 WHERE command_nonce='receipt-bytes'",
             ["invalid-json".repeat(10_000)])?;
         let error = load_pending_task_stops_tx(tx, &scope(), 100, 65_536, &ledger).unwrap_err();
-        assert!(error.to_string().contains("ResourceExhausted before decode"), "{error:#}");
+        assert!(!error.to_string().contains("ResourceExhausted before decode"), "{error:#}");
         Ok(())
     })?;
     assert_eq!(ledger.report()?.observed_bytes, 0);

@@ -8,8 +8,7 @@ starting.
 Only the original fixed capture can record this closed observation. It requires
 matching canonical Attempt headers, source identity/generation/fences, Queue
 headers/body, Message headers/body and an exact binding-compatible terminal
-Outcome. An assignment, current State binding, owning Work execution or recovery
-successor prevents this observation. Missing or inconsistent evidence still fails.
+Outcome. An assignment, current State binding, owning Work execution prevents this observation. Missing or inconsistent evidence still fails.
 
 Persist the terminal state and outcome ID in `closed_claim` in the existing Attempt proof JSON to distinguish the
 historical observation. It remains usable only for the same terminal Attempt

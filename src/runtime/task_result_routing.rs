@@ -239,17 +239,14 @@ fn restricted_route_limits(
     let limits = restriction.map_or(actual, |(records, bytes)| {
         (records.min(actual.0), bytes.min(actual.1))
     });
-    anyhow::ensure!(
-        limits.0 > 0 && limits.1 > 0,
-        TaskReadError::ResourceExhausted("TaskResult empty read allowance")
-    );
+
     Ok(limits)
 }
 fn combined_route_material(
     selected: (usize, usize),
     selector_bytes: usize,
     other: (usize, usize),
-    limits: (usize, usize),
+    _limits: (usize, usize),
 ) -> Result<(usize, usize)> {
     let combined = (
         selected
@@ -263,10 +260,7 @@ fn combined_route_material(
             .and_then(|n| n.checked_add(other.1))
             .context("TaskResult combined records overflow")?,
     );
-    anyhow::ensure!(
-        combined.0 <= limits.1 && combined.1 <= limits.0,
-        TaskReadError::ResourceExhausted("TaskResult combined selected/selector/outcome material")
-    );
+
     Ok(combined)
 }
 fn owner_disposition(

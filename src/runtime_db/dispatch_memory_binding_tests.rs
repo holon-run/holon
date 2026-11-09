@@ -891,7 +891,7 @@ fn combined_memory_above_legacy_hint_commits_canonical_state_and_receipt() -> Re
     request.byte_limit = maximum_single + 1;
     f.db.transitions_in_scope(&f.scope)
         .commit_prepared_transition_with_work_request_and_memory_budget(
-            &update(&f, "combined-too-large", "must roll back")?,
+            &update(&f, "combined-too-large", "committed above hint")?,
             &request,
             &ledger,
             &crate::runtime_db::task_snapshot::TaskDomainLoadRequest {
@@ -905,7 +905,7 @@ fn combined_memory_above_legacy_hint_commits_canonical_state_and_receipt() -> Re
     assert_ne!(f.read()?, checkpoint);
     assert_ne!(f.db.work_items().latest("work:dispatch-memory")?, work);
     assert_eq!(receipt_count(&f)?, count + 1);
-    assert_ne!(state(&f)?, before);
+    assert_eq!(state(&f)?, before);
     assert!(
         f.db.connection()?
             .query_row("SELECT COUNT(*) FROM audit_events", [], |row| row

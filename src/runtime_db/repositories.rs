@@ -435,16 +435,25 @@ impl AgentStateRepository<'_> {
     /// Includes orphan rows whose agent identity has not been materialized.
     pub(crate) fn startup_mutation_agent_ids(&self) -> Result<Vec<String>> {
         let connection = self.db.connection()?;
+        // Retained closed history grants no startup recovery authority. Keep
+        // explicit fixed seeds and live obligations, including orphan owners.
         let mut statement = connection.prepare(
             "SELECT agent_id FROM agent_identities
              UNION SELECT agent_id FROM agent_states
-             UNION SELECT agent_id FROM queue_entries
-             UNION SELECT agent_id FROM turn_records
-             UNION SELECT agent_id FROM execution_protocol_attempts
-             UNION SELECT agent_id FROM wait_conditions
-             UNION SELECT owner_agent_id FROM tasks
-             UNION SELECT agent_id FROM timers
-             UNION SELECT target_agent_id FROM external_triggers
+             UNION SELECT agent_id FROM episode_continuity_seeds
+             UNION SELECT agent_id FROM queue_entries WHERE status IN ('queued', 'dequeued', 'interrupted', 'interjected')
+             UNION SELECT agent_id FROM turn_records WHERE json_extract(payload_json, '$.terminal') IS NULL
+             UNION SELECT agent_id FROM execution_protocol_attempts WHERE lifecycle_state != 'settled'
+             UNION SELECT agent_id FROM execution_protocol_work_items WHERE lifecycle_state != 'terminal'
+             UNION SELECT agent_id FROM work_items WHERE state IN ('open', 'completing') OR EXISTS (SELECT 1 FROM json_each(work_items.payload_json, '$.work_refs') r WHERE json_extract(r.value, '$.status') = 'active')
+             UNION SELECT agent_id FROM work_item_continuations WHERE state = 'active'
+             UNION SELECT agent_id FROM task_result_settlements WHERE state != 'settled'
+             UNION SELECT agent_id FROM wait_conditions WHERE status IN ('active', 'triggered')
+             UNION SELECT owner_agent_id FROM tasks WHERE status IN ('queued', 'running', 'cancelling')
+             UNION SELECT agent_id FROM timers WHERE status IN ('active', 'scheduled')
+             UNION SELECT t.agent_id FROM timer_wakes w JOIN timers t ON t.timer_id=w.timer_id WHERE w.status='pending'
+             UNION SELECT target_agent_id FROM external_triggers WHERE status='active'
+             UNION SELECT agent_id FROM dispatch_memory_checkpoints WHERE state != 'done'
              ORDER BY 1",
         )?;
         let rows = statement.query_map([], |row| row.get::<_, String>(0))?;

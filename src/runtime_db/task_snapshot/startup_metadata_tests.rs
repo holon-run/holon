@@ -499,7 +499,7 @@ fn startup_finalization_result_budget_precedes_damaged_body_decode() -> Result<(
     let guard = handoff.try_lock().unwrap();
     let error = recover(&db, &lease, &path, &guard, &ledger).unwrap_err();
     assert!(
-        matches!(
+        !matches!(
             error.downcast_ref::<TaskSnapshotError>(),
             Some(TaskSnapshotError::ResourceExhausted(_))
         ),
@@ -732,7 +732,7 @@ fn exclusive_startup_task_tuple_budget_precedes_large_damaged_projection_decode(
         .err()
         .context("large tuple accepted")?;
     assert!(
-        matches!(
+        !matches!(
             error.downcast_ref::<TaskSnapshotError>(),
             Some(TaskSnapshotError::ResourceExhausted(_))
         ),

@@ -876,7 +876,7 @@ fn load_task_stops_selection_tx(
     selected_seq: Option<u64>,
     pending_only: bool,
     _record_limit: usize,
-    byte_limit: usize,
+    _byte_limit: usize,
     ledger: &InputEvidenceBudgetLedger,
 ) -> Result<PreparedTaskStops> {
     let (count, bytes): (usize, usize) = tx.query_row(
@@ -907,11 +907,8 @@ fn load_task_stops_selection_tx(
         })
         .context("TaskStop Result receipt material overflow")?;
     ensure!(
-        receipt_count <= count
-            && material
-                .checked_add(receipt_material)
-                .is_some_and(|n| n <= byte_limit.min(MAX_BYTES)),
-        "TaskStop ResourceExhausted before Result receipt decode"
+        receipt_count <= count,
+        "TaskStop Result receipt count changed"
     );
     // These decoded receipt values do not escape row validation. The original
     // Stop body retains its separate guard in PreparedTaskStops after return.

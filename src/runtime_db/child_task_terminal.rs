@@ -1170,14 +1170,10 @@ pub(crate) fn observe_original_child_actor_modes_tx(
         guards.extend(owner.into_material());
         rows.push((scope, mode));
     }
-    let remaining = phase.remaining()?;
     Ok(OriginalChildActorOwnerModes {
         rows,
         guards,
-        material: super::task_snapshot::TaskMaintenanceMaterial {
-            bytes: request.byte_limit.min(64 * 1024 * 1024) - remaining.byte_limit,
-            records: request.record_limit.min(65536) - remaining.record_limit,
-        },
+        material: phase.material_estimate(),
     })
 }
 

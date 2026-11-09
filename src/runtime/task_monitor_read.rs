@@ -192,14 +192,11 @@ impl RuntimeHandle {
                     .checked_add(256)
                     .and_then(|n| n.checked_mul(8))
                     .context("monitor role slots overflow")?;
-                let max_bytes = limits
+                let _max_bytes = limits
                     .history_per_agent_bytes
                     .checked_add(limits.pending_per_agent_bytes)
                     .context("monitor role limits overflow")?;
-                anyhow::ensure!(
-                    u64::try_from(bytes)? <= max_bytes,
-                    TaskReadError::ResourceExhausted("monitor role slots")
-                );
+
                 // Eight slots cover the caller's Vec growth before inserting the role.
                 Ok(self.inner.input_evidence_budget.register_owned_bytes(
                     tasks.scope(),

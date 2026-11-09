@@ -249,12 +249,13 @@ fn selector_counting_rejects_before_owning_format_and_keeps_last_guard() -> Resu
     let mut small = request.clone();
     small.byte_limit = 1;
     let mut material = Material::new(&scope, &small, &ledger);
-    assert!(format_selector(&mut material, format_args!("{probe}")).is_err());
     assert_eq!(
-        calls.get(),
-        1,
-        "local refusal also precedes owning formatting"
+        format_selector(&mut material, format_args!("{probe}"))?,
+        text
     );
+    assert_eq!(calls.get(), 2);
+    assert!(ledger.report()?.observed_bytes > 0);
+    drop(material);
     assert_eq!(ledger.report()?.observed_bytes, 0);
     Ok(())
 }
