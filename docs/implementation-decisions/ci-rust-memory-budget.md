@@ -6,6 +6,8 @@ Decision:
   `CARGO_INCREMENTAL=0`, `CARGO_BUILD_JOBS=2`, and
   `CARGO_PROFILE_{DEV,TEST}_DEBUG=line-tables-only` with
   `CARGO_PROFILE_{DEV,TEST,RELEASE}_CODEGEN_UNITS=1`.
+- The `lib-b` matrix job overrides test codegen units to 16 after the
+  source-level test split described below; other jobs retain one unit.
 - Test jobs additionally keep `CARGO_PROFILE_{DEV,TEST}_DEBUG_ASSERTIONS=true`,
   so the reduced debuginfo does not weaken test semantics.
 - macOS and release jobs are outside this Linux regression experiment.
@@ -96,3 +98,20 @@ Source-level candidates:
   still compiles the full library test binary. Any compilation-structure fix
   must preserve all 8162 original test names and assertions, and pass all
   four original jobs without diagnostic switches or relaxed budgets.
+
+Subsequent CI configuration:
+
+- Library tests now compile in four disjoint groups (`a` through `d`), with
+  two groups per library job. The macOS logging gate compiles group `c`,
+  which contains every selected logging test. The split preserves the
+  assertions and checks test-name coverage rather than skipping tests.
+- After this split, `lib-b` still received runner shutdown during compilation
+  with one codegen unit. With 16 test codegen units, CI completed both group
+  builds and reached every test: group `b` passed 2078 tests with two existing
+  ignores; group `d` exposed four obsolete quota assertions. The timed whole
+  shard command reported a maximum child RSS of 14151480 KiB. This is not a
+  measurement of aggregate cgroup memory and does not establish the cause of
+  earlier runner shutdowns. CI records `free -h` and `/usr/bin/time -v` output
+  to distinguish subsequent compile, runner, and test failures.
+- Test debug assertions, warning checks, and the existing job timeouts remain
+  enabled. Successful compilation alone does not certify the full test gate.
