@@ -135,3 +135,7 @@ dependencies {
 kapt {
     correctErrorTypes = true
 }
+
+tasks.withType<Test>().configureEach {
+    systemProperty("holon.agentStatusFixture", rootProject.file("../../tests/fixtures/agent-status-display.json").absolutePath)
+}

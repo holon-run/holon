@@ -175,13 +175,7 @@ internal fun fileIcon(entry: HolonWorkspaceEntry): ImageVector =
     }
 
 internal fun AgentSummary.statusTone(): StatusTone =
-    when {
-        needsReply() -> StatusTone.Warning
-        schedulingPosture == "blocked" -> StatusTone.Danger
-        schedulingPosture == "active_turn" || runtimeStatus.lowercase() in setOf("running", "active") -> StatusTone.Accent
-        schedulingPosture in setOf("has_queued_input", "has_runnable_work") -> StatusTone.Accent
-        else -> StatusTone.Neutral
-    }
+    statusPresentation().kind.tone
 
 internal fun AgentSummary.statusLabel(): String =
     statusPresentation().label

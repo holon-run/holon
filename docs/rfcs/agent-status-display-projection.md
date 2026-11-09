@@ -104,6 +104,12 @@ Agent list rows should:
   `unknown` primary status and retain last-known information only as explicitly
   cached secondary detail.
 
+`offline` and `unloaded` compatibility hints mean freshness is unavailable, not
+that the scheduler is stopped. They therefore use `unknown` rather than
+replaying a cached running/waiting posture. A deleted lifecycle uses the
+stopped presentation. A static activity glyph is an acceptable native
+equivalent of the running spinner; animation is not required.
+
 Agent detail views may show more state, but should keep these axes visually
 separate:
 
